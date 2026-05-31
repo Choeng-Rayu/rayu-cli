@@ -41,8 +41,27 @@ embedding, OCR) will fail with `404` on the chat endpoint. Examples:
 |-------|---------|
 | `meta/llama-3.3-70b-instruct` | `google/codegemma-7b` |
 | `deepseek-chat`, `deepseek-reasoner` | `*-embedding`, `bge-*` |
-| `deepseek-ai/deepseek-v4-pro` | `*-ocr`, `deplot` |
-| `kimi-k2-*`, `qwen3-*-instruct` | `starcoder2-*` |
+| `deepseek-ai/deepseek-v4-pro` | `*-ocr`, `deplot`, `*-parse` |
+| `kimi-k2-*`, `qwen3-*-instruct` | `starcoder2-*`, `*-rerank`, `*-guard` |
+
+Non-chat ids (embeddings, rerankers, OCR, safety/guard) `404` on the chat
+endpoint; Rayu skips them when auto-picking a default model.
+
+### Vision (image) models
+
+Pasted images and images returned by tools are sent to the provider as
+OpenAI `image_url` parts, so any **vision** model can see them. Examples:
+
+- NVIDIA: `meta/llama-3.2-11b-vision-instruct`, `meta/llama-3.2-90b-vision-instruct`
+- Doubleword: `Qwen/Qwen3-VL-30B-A3B-Instruct-FP8`
+
+### Reasoning models
+
+Models that emit hidden reasoning (`deepseek-reasoner`, Qwen/`gpt-oss`, o-series)
+show their thinking as a separate block. Give them a larger `max_tokens` —
+reasoning is spent from the same output budget, so a small cap can leave no room
+for the final answer. OpenAI `o1`/`o3`/`o4`/`gpt-5` are handled automatically
+(`max_completion_tokens`, no `temperature`).
 
 ## The model catalog
 
@@ -59,11 +78,13 @@ order for an OpenAI-compatible model:
 1. **`RAYU_CONTEXT_TOKENS`** env var (overrides everything).
 2. **Per-model config** override — `providers[].modelContextWindows["model-id"]`.
 3. **Known-model table** — built-in defaults, e.g.:
-   - `deepseek-v4-flash` / `deepseek-v4-pro` → 1,000,000
+   - `deepseek-v4-flash` / `deepseek-v4-pro` / `minimax` → 1,000,000
+   - `kimi`/`moonshot`, `qwen3-coder`/`qwen3-next`, `jamba` → 256,000
    - `deepseek-chat` / `deepseek-reasoner` / `deepseek-v3` → 131,072
-   - `llama-3.x`, `nemotron`, `qwen3`, `gemma-2/3/4`, `mistral`/`mixtral` → 131,072
-   - `kimi` / `moonshot` → 256,000
-   - `gpt-4o` / `gpt-4.1` / `o3` / `o4` → 128,000
+   - `llama-3.x`/`llama-4`, `nemotron`, `qwen2/3`, `gemma-2/3/4` → 131,072
+   - `mistral`/`mixtral`/`ministral`/`codestral`/`devstral` → 131,072
+   - `glm-4/5`, `gpt-oss`, `phi-3/4`, `command-r` → 131,072
+   - `gpt-4o` / `gpt-4.1` / `o1` / `o3` / `o4` / `gpt-5` → 128,000
 4. **Per-provider default** — `providers[].contextWindow`.
 5. Otherwise falls back to 200,000 **and logs an `issue` diagnostic**
    (`rayu_context.unknown_model`) so you can see which models need a value.

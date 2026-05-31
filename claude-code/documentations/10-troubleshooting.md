@@ -84,6 +84,24 @@ and may call tools eagerly. In non-interactive `--print` mode without
 only). Interactively, you'll get permission prompts you can decline. Prefer
 stronger instruct models for agentic tasks.
 
+## A reasoning model replies with empty/blank output
+
+**Cause:** reasoning models (`deepseek-reasoner`, Qwen/`gpt-oss`, o-series) spend
+output tokens on hidden reasoning first. With a small `max_tokens` they can hit
+the limit before producing the visible answer (`finish_reason: length`).
+
+**Fix:** allow more output budget (the on-screen thinking confirms it's working).
+OpenAI `o1`/`o3`/`o4`/`gpt-5` token/temperature params are handled automatically.
+
+## Images aren't recognized
+
+**Cause:** the selected model isn't a vision model — only vision models can read
+images (pasted or returned by tools).
+
+**Fix:** switch to a vision model with `/model`, e.g.
+`meta/llama-3.2-11b-vision-instruct` (NVIDIA) or
+`Qwen/Qwen3-VL-30B-A3B-Instruct-FP8` (Doubleword).
+
 ## Build fails: "Could not resolve '@anthropic-ai/sdk'" (or similar)
 
 **Cause:** incomplete/partial dependency install.

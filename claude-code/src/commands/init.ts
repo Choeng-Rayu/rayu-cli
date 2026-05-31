@@ -1,17 +1,44 @@
 import { feature } from 'bun:bundle'
+import { existsSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import type { Command } from '../commands.js'
 import { maybeMarkProjectOnboardingComplete } from '../projectOnboardingState.js'
+import { getCwd } from '../utils/cwd.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 
-const OLD_INIT_PROMPT = `Please analyze this codebase and create a CLAUDE.md file, which will be given to future instances of RAYU to operate in this repository.
+const RAYU_MD_SCAFFOLD = `# RAYU.md
+
+This file provides guidance to RAYU when working with code in this repository.
+`
+
+/**
+ * Ensure a RAYU.md exists so /init always produces one. Only writes when none
+ * of RAYU.md / CLAUDE.md / AGENTS.md is present yet, so existing instructions
+ * are never clobbered — the /init prompt then fills in / improves the content.
+ * Best-effort: a write failure is ignored (the prompt still asks the model to
+ * create RAYU.md).
+ */
+function ensureRayuMd(): void {
+  try {
+    const cwd = getCwd()
+    if (['RAYU.md', 'CLAUDE.md', 'AGENTS.md'].some(n => existsSync(join(cwd, n)))) {
+      return
+    }
+    writeFileSync(join(cwd, 'RAYU.md'), RAYU_MD_SCAFFOLD, { flag: 'wx' })
+  } catch {
+    // best-effort scaffold; ignore (e.g. read-only dir or race)
+  }
+}
+
+const OLD_INIT_PROMPT = `Please analyze this codebase and create a RAYU.md file, which will be given to future instances of RAYU to operate in this repository.
 
 What to add:
 1. Commands that will be commonly used, such as how to build, lint, and run tests. Include the necessary commands to develop in this codebase, such as how to run a single test.
 2. High-level code architecture and structure so that future instances can be productive more quickly. Focus on the "big picture" architecture that requires reading multiple files to understand.
 
 Usage notes:
-- If there's already a CLAUDE.md, suggest improvements to it.
-- When you make the initial CLAUDE.md, do not repeat yourself and do not include obvious instructions like "Provide helpful error messages to users", "Write unit tests for all new utilities", "Never include sensitive information (API keys, tokens) in code or commits".
+- RAYU.md, CLAUDE.md, and AGENTS.md are all loaded automatically into every RAYU session. Create RAYU.md as the primary instructions file. If a CLAUDE.md or AGENTS.md already exists, read it for context and suggest improvements rather than duplicating it; if a RAYU.md already exists, suggest improvements to it.
+- When you make the initial RAYU.md, do not repeat yourself and do not include obvious instructions like "Provide helpful error messages to users", "Write unit tests for all new utilities", "Never include sensitive information (API keys, tokens) in code or commits".
 - Avoid listing every component or file structure that can be easily discovered.
 - Don't include generic development practices.
 - If there are Cursor rules (in .cursor/rules/ or .cursorrules) or Copilot rules (in .github/copilot-instructions.md), make sure to include the important parts.
@@ -20,9 +47,9 @@ Usage notes:
 - Be sure to prefix the file with the following text:
 
 \`\`\`
-# CLAUDE.md
+# RAYU.md
 
-This file provides guidance to RAYU (claude.ai/code) when working with code in this repository.
+This file provides guidance to RAYU when working with code in this repository.
 \`\`\``
 
 const NEW_INIT_PROMPT = `Set up a minimal CLAUDE.md (and optionally skills and hooks) for this repo. CLAUDE.md is loaded into every RAYU session, so it must be concise — only include what Claude would get wrong without it.
@@ -231,13 +258,14 @@ const command = {
       (process.env.USER_TYPE === 'ant' ||
         isEnvTruthy(process.env.CLAUDE_CODE_NEW_INIT))
       ? 'Initialize new CLAUDE.md file(s) and optional skills/hooks with codebase documentation'
-      : 'Initialize a new CLAUDE.md file with codebase documentation'
+      : 'Initialize a new RAYU.md file with codebase documentation'
   },
   contentLength: 0, // Dynamic content
   progressMessage: 'analyzing your codebase',
   source: 'builtin',
   async getPromptForCommand() {
     maybeMarkProjectOnboardingComplete()
+    ensureRayuMd()
 
     return [
       {

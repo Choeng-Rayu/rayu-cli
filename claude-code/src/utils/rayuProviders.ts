@@ -41,7 +41,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     label: 'Doubleword (api.doubleword.ai)',
     kind: 'openai-compatible',
     baseURL: 'https://api.doubleword.ai/v1',
-    defaultModel: 'moonshotai/kimi-k2-6',
+    defaultModel: 'moonshotai/Kimi-K2.6',
     envKeys: ['DOUBLE_WORD_API_KEY', 'DOUBLEWORD_API_KEY'],
   },
   {

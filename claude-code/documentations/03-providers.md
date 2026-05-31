@@ -89,11 +89,27 @@ These env vars take precedence over the active provider in `providers.json`.
 
 For openai-compatible providers, Rayu translates:
 
-- **Request:** Anthropic `system`/`messages`/`tools`/`tool_use`/`tool_result`
-  → OpenAI `chat/completions` (`tools`, `tool_calls`, `tool` role).
+- **Request:** Anthropic `system`/`messages`/`tools`/`tool_use`/`tool_result`/
+  `tool_choice` → OpenAI `chat/completions` (`tools`, `tool_calls`, `tool` role,
+  `tool_choice`). `tool` messages are ordered to immediately follow the
+  assistant `tool_calls` they answer (required by OpenAI/NVIDIA).
+- **Images / vision:** Anthropic image blocks (base64 or URL) → OpenAI
+  `image_url` parts (a `data:` URI for base64). Works for images you paste and
+  for images returned by tools (re-emitted as a follow-up user message, since
+  the `tool` role can't carry images). Use a vision model (see
+  [Models](./04-models.md)).
+- **Model-aware params:** reasoning models (`o1`/`o3`/`o4`/`gpt-5`) get
+  `max_completion_tokens` instead of `max_tokens` and no `temperature` (sending
+  them 400s); other models are unchanged.
+- **Reasoning display:** providers that return `reasoning_content` (DeepSeek) or
+  `reasoning` (Qwen/Doubleword/OpenRouter) surface as a **thinking** block in
+  both streaming and non-streaming responses.
 - **Response/stream:** OpenAI completion / SSE deltas → Anthropic stream events
   (`message_start` → `content_block_*` → `message_delta` → `message_stop`),
-  including streamed tool calls.
+  including streamed tool calls and thinking.
+- **Reliability:** transient errors (429 / 5xx / connection) are normalized to
+  the Anthropic SDK error shape so the standard retry/backoff applies; if a
+  provider rejects `stream_options`, Rayu retries the stream once without it.
 
 Translation problems are recorded to diagnostics (see
 [Diagnostics](./09-diagnostics-privacy.md)).
