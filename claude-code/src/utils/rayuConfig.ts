@@ -261,3 +261,41 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
 export function _resetRayuConfigCache(): void {
   cache = null
 }
+
+/** Separator encoding provider+model in a single picker value. */
+export const RAYU_MODEL_SEP = '\u0000'
+
+export type RayuModelChoice = {
+  /** Encoded value: `${providerId}\u0000${model}`. */
+  value: string
+  providerId: string
+  model: string
+}
+
+/**
+ * Aggregate selectable models across ALL configured OpenAI-compatible providers,
+ * so the model picker can search across every connected provider at once.
+ * Active provider's models come first.
+ */
+export function getAllProviderModelOptions(): RayuModelChoice[] {
+  const cfg = loadRayuConfig()
+  const active = getActiveProvider()?.id
+  const providers = cfg.providers
+    .filter(p => p.kind === 'openai-compatible')
+    .sort((a, b) => (a.id === active ? -1 : b.id === active ? 1 : 0))
+  const out: RayuModelChoice[] = []
+  const seen = new Set<string>()
+  for (const p of providers) {
+    const ids = new Set<string>()
+    if (p.defaultModel) ids.add(p.defaultModel)
+    for (const m of p.models ?? []) ids.add(m)
+    for (const m of p.fetchedModels ?? []) ids.add(m)
+    for (const model of ids) {
+      const value = `${p.id}${RAYU_MODEL_SEP}${model}`
+      if (seen.has(value)) continue
+      seen.add(value)
+      out.push({ value, providerId: p.id, model })
+    }
+  }
+  return out
+}
