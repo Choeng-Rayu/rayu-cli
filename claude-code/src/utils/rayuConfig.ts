@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getClaudeConfigHomeDir } from './envUtils.js'
-import { reportBug, reportVulnerability } from './rayuDiagnostics.js'
+import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
 export type ProviderKind = 'anthropic' | 'openai-compatible'
 
@@ -21,6 +21,10 @@ export type RayuProvider = {
   defaultModel?: string
   /** Optional small/fast model id for cheap requests (titles, etc.). */
   smallFastModel?: string
+  /** Default context-window (tokens) for this provider's models. */
+  contextWindow?: number
+  /** Per-model context-window (tokens) overrides, keyed by model id. */
+  modelContextWindows?: Record<string, number>
   /** User-listed model ids selectable via /model (openai-compatible). */
   models?: string[]
   /** Models fetched live from {baseURL}/models, cached for the /model picker. */
@@ -150,6 +154,53 @@ export function getActiveProviderModelOptions(): Array<{
     label: id,
     description: `${p.id} · ${id}`,
   }))
+}
+
+// Best-effort known context windows (tokens) for common OpenAI-compatible
+// models, matched by case-insensitive substring of the model id. Providers'
+// /v1/models endpoints don't report context length, so this table + the
+// per-provider/per-model config overrides + RAYU_CONTEXT_TOKENS are the
+// sources of truth. Order matters — more specific patterns first.
+const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
+  [/deepseek[-/]?v4[-/]?(flash|pro)/i, 1_000_000],
+  [/deepseek-(chat|reasoner|v3|coder)/i, 131_072],
+  [/llama-3\.[13]|llama-3-70b|llama-4|nemotron/i, 131_072],
+  [/kimi|moonshot/i, 256_000],
+  [/qwen3|qwen-3|qwq/i, 131_072],
+  [/gpt-4o|gpt-4\.1|o3|o4/i, 128_000],
+  [/gemma-[234]/i, 131_072],
+  [/mixtral|mistral/i, 131_072],
+]
+
+/**
+ * Resolve the context window (tokens) for an OpenAI-compatible model.
+ * Priority: RAYU_CONTEXT_TOKENS env → per-model config override →
+ * per-provider config default → known-model table → null (caller defaults).
+ * Records a diagnostic when it falls back so unknown models surface for tuning.
+ */
+export function getRayuModelContextWindow(model: string): number | null {
+  const envOverride = parseInt(process.env.RAYU_CONTEXT_TOKENS || '', 10)
+  if (!isNaN(envOverride) && envOverride > 0) return envOverride
+
+  const p = getActiveProvider()
+  if (!p || p.kind !== 'openai-compatible') return null
+
+  const perModel = p.modelContextWindows?.[model]
+  if (perModel && perModel > 0) return perModel
+
+  for (const [re, ctx] of KNOWN_MODEL_CONTEXT) {
+    if (re.test(model)) return ctx
+  }
+
+  if (p.contextWindow && p.contextWindow > 0) return p.contextWindow
+
+  reportIssue(
+    'rayu_context.unknown_model',
+    'context window unknown for model; using default — set provider.modelContextWindows or RAYU_CONTEXT_TOKENS',
+    { provider: p.id, model },
+    'low',
+  )
+  return null
 }
 
 /**

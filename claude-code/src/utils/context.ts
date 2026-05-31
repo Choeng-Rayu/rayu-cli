@@ -71,6 +71,26 @@ export function getContextWindowForModel(
     return 1_000_000
   }
 
+  // Rayu: for OpenAI-compatible providers (NVIDIA/DeepSeek/Kimi/…), the context
+  // window depends on the actual model, not Claude's 200k. Resolve from config
+  // overrides / known-model table / RAYU_CONTEXT_TOKENS.
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { isOpenAICompatibleActive } =
+      require('./model/providers.js') as typeof import('./model/providers.js')
+    if (isOpenAICompatibleActive()) {
+      const { getRayuModelContextWindow } =
+        require('./rayuConfig.js') as typeof import('./rayuConfig.js')
+      const ctx = getRayuModelContextWindow(model)
+      if (ctx && ctx > 0) {
+        return ctx
+      }
+    }
+    /* eslint-enable @typescript-eslint/no-require-imports */
+  } catch {
+    // fall through to default resolution
+  }
+
   const cap = getModelCapability(model)
   if (cap?.max_input_tokens && cap.max_input_tokens >= 100_000) {
     if (
