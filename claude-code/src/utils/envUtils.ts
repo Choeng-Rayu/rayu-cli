@@ -1,17 +1,37 @@
 import memoize from 'lodash-es/memoize.js'
+import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
+/**
+ * Pure resolver for the config home dir. Precedence:
+ *   1. explicit env (RAYU_CONFIG_DIR preferred, then legacy CLAUDE_CONFIG_DIR)
+ *   2. existing ~/.rayu  (Rayu's own config)
+ *   3. existing ~/.claude (so existing Claude Code users work out of the box)
+ *   4. default ~/.rayu   (fresh installs)
+ * Both ~/.rayu and ~/.claude config layouts are therefore supported.
+ */
+export function resolveConfigHomeDir(
+  home: string,
+  envDir: string | undefined,
+  dirExists: (p: string) => boolean,
+): string {
+  if (envDir) return envDir
+  const rayu = join(home, '.rayu')
+  if (dirExists(rayu)) return rayu
+  const claude = join(home, '.claude')
+  if (dirExists(claude)) return claude
+  return rayu
+}
+
 // Memoized: 150+ callers, many on hot paths. Keyed off the config-dir env vars
 // so tests that change them get a fresh value without explicit cache.clear.
-// Rayu default is ~/.rayu; RAYU_CONFIG_DIR (preferred) and legacy
-// CLAUDE_CONFIG_DIR env overrides are both honored.
 export const getClaudeConfigHomeDir = memoize(
   (): string => {
-    return (
-      process.env.RAYU_CONFIG_DIR ??
-      process.env.CLAUDE_CONFIG_DIR ??
-      join(homedir(), '.rayu')
+    return resolveConfigHomeDir(
+      homedir(),
+      process.env.RAYU_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+      existsSync,
     ).normalize('NFC')
   },
   () => process.env.RAYU_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,

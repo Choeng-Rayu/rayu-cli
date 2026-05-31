@@ -7,42 +7,41 @@ import { isEnvDefinedFalsy } from '../utils/envUtils.js'
 import { getAPIProvider } from '../utils/model/providers.js'
 import { getWorkload } from '../utils/workloadContext.js'
 
-const DEFAULT_PREFIX = `You are RAYU, Anthropic's official CLI for Claude.`
-const AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX = `You are RAYU, Anthropic's official CLI for Claude, running within the Claude Agent SDK.`
-const AGENT_SDK_PREFIX = `You are a Claude agent, built on Anthropic's Claude Agent SDK.`
+// Brand identity: the assistant presents itself as the active model, operated
+// as the official CLI by Choeng Rayu.
+function rayuIdentity(model?: string): string {
+  const name = model?.trim() ? model : 'an AI assistant'
+  return `You are ${name}, the official CLI powered by Choeng Rayu.`
+}
+const AGENT_SDK_PREFIX = `You are an AI agent, the official CLI powered by Choeng Rayu.`
 
-const CLI_SYSPROMPT_PREFIX_VALUES = [
-  DEFAULT_PREFIX,
-  AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX,
-  AGENT_SDK_PREFIX,
-] as const
-
-export type CLISyspromptPrefix = (typeof CLI_SYSPROMPT_PREFIX_VALUES)[number]
+export type CLISyspromptPrefix = string
 
 /**
- * All possible CLI sysprompt prefix values, used by splitSysPromptPrefix
- * to identify prefix blocks by content rather than position.
+ * Fixed sysprompt prefixes used by splitSysPromptPrefix to identify prefix
+ * blocks by content for cache scoping. The model-aware identity is dynamic so
+ * it is not listed here (it is handled as a normal block).
  */
-export const CLI_SYSPROMPT_PREFIXES: ReadonlySet<string> = new Set(
-  CLI_SYSPROMPT_PREFIX_VALUES,
-)
+export const CLI_SYSPROMPT_PREFIXES: ReadonlySet<string> = new Set([
+  AGENT_SDK_PREFIX,
+])
 
 export function getCLISyspromptPrefix(options?: {
   isNonInteractive: boolean
   hasAppendSystemPrompt: boolean
+  model?: string
 }): CLISyspromptPrefix {
-  const apiProvider = getAPIProvider()
-  if (apiProvider === 'vertex') {
-    return DEFAULT_PREFIX
+  if (getAPIProvider() === 'vertex') {
+    return rayuIdentity(options?.model)
   }
 
   if (options?.isNonInteractive) {
     if (options.hasAppendSystemPrompt) {
-      return AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX
+      return `${rayuIdentity(options?.model)} Running within the agent SDK.`
     }
     return AGENT_SDK_PREFIX
   }
-  return DEFAULT_PREFIX
+  return rayuIdentity(options?.model)
 }
 
 /**

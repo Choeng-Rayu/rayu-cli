@@ -1,20 +1,21 @@
 import * as React from 'react'
 import { Box, Text } from 'src/ink.js'
 
-// First-launch brand icon: "RAYU" as an ASCII-art block banner with a
+// First-launch brand icon: "RAYU" in the ANSI Shadow figlet style with a
 // top-to-bottom green gradient.
-const RAYU_LOGO: ReadonlyArray<readonly [string, string]> = [
-  ['██████   █████   ██    ██ ██    ██', '#7CFFA0'],
-  ['██   ██ ██   ██   ██  ██  ██    ██', '#4DF581'],
-  ['██████  ███████    ████   ██    ██', '#22E063'],
-  ['██   ██ ██   ██     ██    ██    ██', '#15BD4E'],
-  ['██   ██ ██   ██     ██     ██████ ', '#0E9B3E'],
+const RAYU_BANNER: ReadonlyArray<readonly [string, string]> = [
+  ['██████╗  █████╗ ██╗   ██╗██╗   ██╗', '#cfff7c'],
+  ['██╔══██╗██╔══██╗╚██╗ ██╔╝██║   ██║', '#5BF58D'],
+  ['██████╔╝███████║ ╚████╔╝ ██║   ██║', '#ea1ddc'],
+  ['██╔══██╗██╔══██║  ╚██╔╝  ██║   ██║', '#592af2'],
+  ['██║  ██║██║  ██║   ██║   ╚██████╔╝', '#64b815'],
+  ['╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ', '#001495'],
 ]
 
 export function WelcomeV2(): React.ReactNode {
   return (
     <Box flexDirection="column" marginY={1}>
-      {RAYU_LOGO.map(([line, color], i) => (
+      {RAYU_BANNER.map(([line, color], i) => (
         <Text key={i} bold color={color}>
           {line}
         </Text>
