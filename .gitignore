@@ -1,3 +1,4 @@
-claude-code/node_modules/
-claude-code/graphify-out/
-app/node_modules/
+rayu/node_modules/
+rayu/graphify-out/
+rayu/dist/bin/
+rayu/dist/pkg
