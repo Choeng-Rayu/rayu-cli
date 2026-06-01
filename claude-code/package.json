@@ -1,6 +1,6 @@
 {
   "name": "rayu-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Rayu-CLI — a multi-provider AI coding CLI",
   "type": "module",
   "bin": {
@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "bun run src/entrypoints/cli.tsx",
     "build": "bun run scripts/build.ts",
+    "build:binaries": "bun run scripts/build-binaries.ts",
+    "build:packages": "bun run scripts/build-packages.ts",
     "package": "bun run scripts/build-binaries.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"

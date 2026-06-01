@@ -35,9 +35,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
 mkdir -p "$INSTALL_DIR"
 DEST="$INSTALL_DIR/rayu"
 
-if [ -f "$SCRIPT_DIR/dist/bin/$BIN" ]; then
-  echo "rayu: installing from local build ($BIN)…"
-  cp "$SCRIPT_DIR/dist/bin/$BIN" "$DEST"
+# Newest local build matching this OS/arch (versioned or unversioned).
+LOCAL_BIN="$(ls -1t "$SCRIPT_DIR"/dist/bin/rayu-"$OS"-"$ARCH"* 2>/dev/null | head -n1 || true)"
+if [ -n "$LOCAL_BIN" ] && [ -f "$LOCAL_BIN" ]; then
+  echo "rayu: installing from local build ($(basename "$LOCAL_BIN"))…"
+  cp "$LOCAL_BIN" "$DEST"
 elif [ -f "$SCRIPT_DIR/$BIN" ]; then
   echo "rayu: installing from local file ($BIN)…"
   cp "$SCRIPT_DIR/$BIN" "$DEST"
