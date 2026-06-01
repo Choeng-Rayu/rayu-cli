@@ -19,6 +19,7 @@ import {
   APIError as AnthropicAPIError,
 } from '@anthropic-ai/sdk/index.js'
 import { reportBug, reportIssue } from 'src/utils/rayuDiagnostics.js'
+import { hashPair } from 'src/utils/hash.js'
 
 type AnyObj = Record<string, unknown>
 
@@ -259,6 +260,11 @@ export function buildOpenAIRequest(params: BetaParams): AnyObj {
     const toolChoice = translateToolChoice(params.tool_choice)
     if (toolChoice !== undefined) req.tool_choice = toolChoice
   }
+  // Stable cache key for providers with prompt/prefix caching (OpenAI, DeepSeek,
+  // vLLM/SGLang/NIM): same system+model → same key across turns, so the cached
+  // prefix is reused instead of re-processed. Ignored by providers that don't
+  // support it (and stripped on a strict-provider 400 — see create()).
+  req.prompt_cache_key = hashPair(systemToText(params.system) ?? '', params.model)
   return req
 }
 
@@ -462,16 +468,23 @@ export type OpenAICompatibleConfig = {
   maxRetries?: number
 }
 
-/** True when an error looks like the provider rejecting `stream_options`. */
-function isStreamOptionsRejection(e: unknown): boolean {
+/** True when an error looks like the provider rejecting an unknown request
+ *  param (e.g. `stream_options` or `prompt_cache_key`). */
+function isUnknownParamRejection(e: unknown): boolean {
   const status = (e as AnyObj)?.status
   const msg = String((e as AnyObj)?.message ?? '')
   return (
     status === 400 &&
-    /stream_options|include_usage|unrecognized|unexpected|unknown|unsupported|invalid.*(param|argument)/i.test(
+    /stream_options|include_usage|prompt_cache_key|unrecognized|unexpected|unknown|unsupported|invalid.*(param|argument)/i.test(
       msg,
     )
   )
+}
+
+/** Drop optional params some strict providers reject, before a retry. */
+function withoutOptionalParams(req: AnyObj): AnyObj {
+  const { prompt_cache_key: _pck, stream_options: _so, ...rest } = req as AnyObj
+  return rest
 }
 
 /**
@@ -534,6 +547,24 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
       )) as unknown as AnyObj
       return toBetaMessage(completion, model)
     } catch (e) {
+      // Strict providers may reject the optional prompt_cache_key — retry once
+      // without it before surfacing the error.
+      if (isUnknownParamRejection(e) && 'prompt_cache_key' in req) {
+        try {
+          const completion = (await client.chat.completions.create(
+            { ...withoutOptionalParams(req), stream: false } as never,
+            { signal },
+          )) as unknown as AnyObj
+          return toBetaMessage(completion, model)
+        } catch (e2) {
+          reportIssue(
+            'openai_adapter.request_failed',
+            'OpenAI-compatible request failed',
+            { model, status: (e2 as AnyObj)?.status, error: e2 instanceof Error ? e2.message : String(e2) },
+          )
+          throw normalizeError(e2)
+        }
+      }
       reportIssue(
         'openai_adapter.request_failed',
         'OpenAI-compatible request failed',
@@ -556,13 +587,15 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
         { signal },
       )) as unknown as AsyncIterable<AnyObj>
     } catch (e) {
-      // Some providers reject the unknown `stream_options` param — retry once
-      // without it (usage will be absent, which the consumer tolerates).
-      if (isStreamOptionsRejection(e)) {
+      // Some providers reject unknown params (stream_options / prompt_cache_key)
+      // — retry once without them (usage may be absent, which the consumer
+      // tolerates).
+      if (isUnknownParamRejection(e)) {
         try {
-          oaStream = (await client.chat.completions.create(base as never, {
-            signal,
-          })) as unknown as AsyncIterable<AnyObj>
+          oaStream = (await client.chat.completions.create(
+            withoutOptionalParams(base) as never,
+            { signal },
+          )) as unknown as AsyncIterable<AnyObj>
         } catch (e2) {
           throw normalizeError(e2)
         }

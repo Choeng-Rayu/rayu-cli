@@ -456,3 +456,59 @@ describe('openaiAdapter assistant content normalization', () => {
     expect(a2.tool_calls).toBeUndefined()
   })
 })
+
+describe('openaiAdapter prompt caching', () => {
+  test('prompt_cache_key is stable for same system+model and changes with system', () => {
+    const mk = (system: string, model = 'm') =>
+      buildOpenAIRequest({ model, system, messages: [{ role: 'user', content: 'hi' }] }).prompt_cache_key
+    const a = mk('You are helpful')
+    expect(typeof a).toBe('string')
+    expect(a).toBe(mk('You are helpful')) // stable
+    expect(a).not.toBe(mk('You are different')) // system changed
+    expect(a).not.toBe(mk('You are helpful', 'other-model')) // model changed
+  })
+
+  test('prompt_cache_key is stable across turns (different user messages, same prefix)', () => {
+    const k1 = buildOpenAIRequest({ model: 'm', system: 's', messages: [{ role: 'user', content: 'first' }] }).prompt_cache_key
+    const k2 = buildOpenAIRequest({
+      model: 'm',
+      system: 's',
+      messages: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'a' },
+        { role: 'user', content: 'second' },
+      ],
+    }).prompt_cache_key
+    expect(k1).toBe(k2)
+  })
+
+  test('non-streaming retries without prompt_cache_key when a strict provider rejects it', async () => {
+    let calls = 0
+    let keyOnFinalCall = true
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      calls++
+      const body = JSON.parse(init.body)
+      keyOnFinalCall = 'prompt_cache_key' in body
+      if (body.prompt_cache_key) {
+        return new Response(
+          JSON.stringify({ error: { message: 'Unrecognized request argument: prompt_cache_key' } }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(
+        JSON.stringify({ id: 'c', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({ apiKey: 'k', baseURL: 'http://x/v1', maxRetries: 0 })
+      const msg: any = await client.beta.messages.create({ model: 'm', system: 's', messages: [{ role: 'user', content: 'hi' }] })
+      expect(msg.content[0].text).toBe('ok')
+      expect(calls).toBe(2) // first with key (400), retry without
+      expect(keyOnFinalCall).toBe(false)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
