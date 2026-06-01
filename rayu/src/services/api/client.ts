@@ -105,7 +105,12 @@ async function getRayuOpenAICompatibleClient(
   if (!baseURL) {
     return null
   }
-  return createOpenAICompatibleClient({ apiKey, baseURL, maxRetries })
+  return createOpenAICompatibleClient({
+    apiKey,
+    baseURL,
+    maxRetries,
+    providerId: active?.id,
+  })
 }
 
 export async function getAnthropicClient({
