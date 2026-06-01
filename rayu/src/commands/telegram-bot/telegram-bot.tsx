@@ -1,3 +1,5 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-expect-error — qrcode ships without bundled types; works at runtime
 import { toString as qrToString } from 'qrcode'
 import { randomUUID } from 'crypto'
 import * as React from 'react'

@@ -79,6 +79,7 @@ describe('generateVideo client', () => {
     const { buffer } = await generateVideo({
       params: { prompt: 'a river' },
       apiKey: 'k',
+      _pollIntervalMs: 0,
     })
     expect(buffer.toString()).toBe('ASYNCMP4')
     expect(calls).toBe(2)

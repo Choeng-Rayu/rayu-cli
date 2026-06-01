@@ -1,7 +1,7 @@
 /** In-process Telegram bridge: relays chat messages <-> REPL with no middle server. */
 
 import { hostname } from 'os'
-import { formatMessage, type ToolLabeler } from './formatActivity.js'
+import { formatMessage, type ToolLabeler, type WrappedMessage } from './formatActivity.js'
 import {
   consumePendingToken,
   readTelegramConfig,
@@ -13,11 +13,6 @@ import {
   type TelegramUpdate,
 } from './telegramApi.js'
 
-interface WrappedMessage {
-  type: string
-  isMeta?: boolean
-  message?: { role?: string; content?: unknown }
-}
 
 export interface TelegramBridgeOptions {
   token: string

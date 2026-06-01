@@ -38,11 +38,12 @@ async function pollNvcf(
   reqId: string,
   apiKey: string,
   signal?: AbortSignal,
+  intervalMs: number = POLL_INTERVAL_MS,
 ): Promise<unknown> {
   const deadline = Date.now() + DEFAULT_TIMEOUT_MS
   for (;;) {
     if (Date.now() > deadline) throw new Error('Video generation timed out.')
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
+    if (intervalMs > 0) await new Promise(r => setTimeout(r, intervalMs))
     const res = await fetch(`${NVCF_STATUS_HOST}/${reqId}`, {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
       signal,
@@ -62,6 +63,8 @@ export async function generateVideo(opts: {
   isImage2Video?: boolean
   apiKey?: string
   signal?: AbortSignal
+  /** Override poll interval ms. Pass 0 in tests to skip the wait. */
+  _pollIntervalMs?: number
 }): Promise<GeneratedVideo> {
   const apiKey = opts.apiKey ?? getNvidiaApiKey()
   if (!apiKey) {
@@ -86,7 +89,8 @@ export async function generateVideo(opts: {
   if (res.status === 202) {
     const reqId = res.headers.get('NVCF-REQID')
     if (!reqId) throw new Error('NVIDIA returned 202 without a request id.')
-    json = await pollNvcf(reqId, apiKey, opts.signal)
+    const interval = opts._pollIntervalMs ?? POLL_INTERVAL_MS
+    json = await pollNvcf(reqId, apiKey, opts.signal, interval)
   } else if (res.ok) {
     json = await res.json()
   } else {

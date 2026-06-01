@@ -1,6 +1,6 @@
 /** Render REPL messages into Telegram-friendly plain text mirroring the CLI. */
 
-interface ContentBlock {
+export interface ContentBlock {
   type: string
   text?: string
   thinking?: string
@@ -9,7 +9,7 @@ interface ContentBlock {
   content?: unknown
 }
 
-interface WrappedMessage {
+export interface WrappedMessage {
   type: string
   isMeta?: boolean
   message?: { role?: string; content?: string | ContentBlock[] }
