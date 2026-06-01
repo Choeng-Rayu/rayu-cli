@@ -59,7 +59,7 @@ export function useTelegramBridge(
     const fresh: WrappedMessage[] = []
     for (let i = start; i < messages.length; i++) {
       const msg = messages[i]
-      if (msg && (msg.type === 'user' || msg.type === 'assistant')) fresh.push(msg)
+      if (msg && msg.type === 'assistant') fresh.push(msg)
     }
     lastSentIndexRef.current = messages.length
     if (fresh.length > 0) handle.pushActivity(fresh)

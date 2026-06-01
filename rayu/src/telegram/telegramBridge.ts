@@ -11,6 +11,7 @@ import {
   getUpdates,
   sendMessage,
   sendPhoto,
+  setMyCommands,
   type TelegramUpdate,
 } from './telegramApi.js'
 import {
@@ -146,6 +147,42 @@ async function handleUpdate(
   enqueue({ value: text, mode: 'prompt' })
 }
 
+/**
+ * Load all CLI commands and register them with Telegram's setMyCommands so the
+ * bot shows autocomplete suggestions when the user types /.
+ * Telegram limits: 100 commands max, command name ≤32 chars, description ≤256 chars.
+ */
+async function registerCommandsWithTelegram(token: string): Promise<void> {
+  try {
+    const { getCommands } = await import('../commands.js')
+    const { getCwd } = await import('../utils/cwd.js')
+    const allCommands = await getCommands(getCwd())
+
+    // Built-in bridge commands always included.
+    const builtins = [
+      { command: 'disconnect', description: 'Unlink this Telegram chat from the CLI' },
+    ]
+
+    const fromCli = allCommands
+      .filter(cmd => !cmd.isHidden && cmd.name.length <= 32)
+      .map(cmd => ({
+        command: cmd.name.slice(0, 32),
+        description: (cmd.description || cmd.name).slice(0, 256),
+      }))
+
+    // Dedupe (builtins take precedence over same-named CLI commands).
+    const builtinNames = new Set(builtins.map(b => b.command))
+    const merged = [
+      ...builtins,
+      ...fromCli.filter(c => !builtinNames.has(c.command)),
+    ].slice(0, 100)
+
+    await setMyCommands(token, merged)
+  } catch {
+    // Non-fatal
+  }
+}
+
 export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBridgeHandle {
   let running = true
   let offset = 0
@@ -161,6 +198,9 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
       return editMessageText(options.token, chatId, messageId, text)
     },
   }
+
+  // Register CLI commands with Telegram so they appear as autocomplete.
+  void registerCommandsWithTelegram(options.token)
 
   const poll = async (): Promise<void> => {
     while (running) {

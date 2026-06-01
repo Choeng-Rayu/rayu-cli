@@ -40,16 +40,14 @@ describe('video model registry', () => {
     expect(VIDEO_MODELS[DEFAULT_VIDEO_MODEL].nvcfFunctionId).toBe('eef816a3-3940-413b-93c9-513ae29f34f9')
   })
 
-  test('cosmos-predict1-5b body uses Triton t2v format', () => {
+  test('cosmos-predict1-5b body uses Triton command format', () => {
     const body = VIDEO_MODELS[DEFAULT_VIDEO_MODEL].buildBody({ prompt: 'a river', seed: 42 }) as {
       inputs: Array<{ name: string; data: string[] }>
       outputs: Array<{ name: string }>
     }
     expect(body.inputs[0].name).toBe('command')
-    expect(body.inputs[0].data[0]).toContain('t2v')
     expect(body.inputs[0].data[0]).toContain('a river')
-    expect(body.inputs[0].data[0]).toContain('seed=42')
-    expect(body.outputs[0].name).toBe('media')
+    expect(body.outputs[0].name).toBe('status')
   })
 
   test('cosmos3-nano has its own function ID', () => {

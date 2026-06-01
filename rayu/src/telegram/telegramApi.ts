@@ -114,3 +114,15 @@ export async function sendPhoto(
     await sendMessage(token, chatId, caption ?? '🖼 Image generated (could not send as photo)')
   }
 }
+
+/** Register bot commands so Telegram shows them as autocomplete when user types /. */
+export async function setMyCommands(
+  token: string,
+  commands: Array<{ command: string; description: string }>,
+): Promise<void> {
+  try {
+    await callApi(token, 'setMyCommands', { commands })
+  } catch {
+    // Non-fatal — commands work even if registration fails
+  }
+}

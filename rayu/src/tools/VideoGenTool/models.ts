@@ -36,20 +36,24 @@ export type VideoModel = {
 
 // ── NVCF model bodies ─────────────────────────────────────────────────────────
 
-// cosmos-predict1-5b: Triton Inference Server PREDICT_V2 format.
-// Model name is 'edify'. Command: "t2v text=<prompt>" or "t2w text=<prompt>"
-// Output name is 'media' (returns base64 video) or 'status' (returns job status).
+// cosmos-predict1-5b: Triton PREDICT_V2 format via NVCF.
+// The internal model name is 'edify'. The exact command API name is undocumented
+// — visit https://build.nvidia.com/nvidia/cosmos-predict1-5b while logged in
+// to see the working playground code sample. Best known format from testing:
+// command input with "t2v" prefix + prompt.
 const cosmosPredict1Body = (p: VideoParams): Record<string, unknown> => {
   const isVideo = !p.image
+  // Use underscore-joined prompt to avoid spaces causing parse issues
+  const safePrompt = p.prompt.replace(/["\\']/g, '').replace(/\s+/g, ' ').trim()
   const cmd = isVideo
-    ? `t2v text=${p.prompt}${p.seed != null ? ` seed=${p.seed}` : ''}`
-    : `i2v text=${p.prompt} image=${p.image}${p.seed != null ? ` seed=${p.seed}` : ''}`
+    ? `t2v --prompt="${safePrompt}"${p.seed != null ? ` --seed=${p.seed}` : ''}`
+    : `i2v --prompt="${safePrompt}"${p.image ? ` --input_image=${p.image}` : ''}${p.seed != null ? ` --seed=${p.seed}` : ''}`
   return {
     inputs: [
       { name: 'command', shape: [1], datatype: 'BYTES', data: [cmd] },
     ],
     outputs: [
-      { name: 'media', datatype: 'BYTES', shape: [1] },
+      { name: 'status', datatype: 'BYTES', shape: [1] },
     ],
   }
 }

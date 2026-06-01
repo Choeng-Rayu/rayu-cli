@@ -117,13 +117,29 @@ async function generateVideoNvcf(opts: {
   if (json.outputs) {
     // Check status output first for errors
     const statusOut = json.outputs.find(o => o.name === 'status')
-    if (statusOut?.data?.[0] && statusOut.data[0].startsWith('inference failed')) {
-      throw new Error(`NVIDIA video generation failed: ${statusOut.data[0]}`)
+    const statusMsg = statusOut?.data?.[0] ?? ''
+    if (statusMsg.includes('unknown API in cmd string')) {
+      throw new Error(
+        `NVIDIA cosmos-predict1-5b: the internal API command name is undocumented. ` +
+        `Visit https://build.nvidia.com/nvidia/cosmos-predict1-5b while logged in ` +
+        `to see the working code sample. Error: ${statusMsg.slice(0, 150)}`,
+      )
     }
-    // Get media output
+    if (statusMsg.startsWith('inference failed')) {
+      throw new Error(`NVIDIA video generation failed: ${statusMsg}`)
+    }
+    // Success — get media/video output
     const mediaOut = json.outputs.find(o => o.name === 'media' || o.name === 'video' || o.name === 'output')
     const b64 = mediaOut?.data?.[0]
     if (b64) return { buffer: Buffer.from(b64, 'base64'), mediaType: 'video/mp4' }
+    // If status says success (no error) but no media, the video may be in the status response itself
+    if (statusMsg && !statusMsg.includes('failed')) {
+      // Some edify responses put the video directly in status as base64
+      try {
+        const buf = Buffer.from(statusMsg, 'base64')
+        if (buf.length > 1000) return { buffer: buf, mediaType: 'video/mp4' }
+      } catch { /* not base64 */ }
+    }
   }
 
   // asset_url response
