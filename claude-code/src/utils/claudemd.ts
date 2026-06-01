@@ -87,9 +87,15 @@ const teamMemPaths = feature('TEAMMEM')
 let hasLoggedInitialLoad = false
 
 const MEMORY_INSTRUCTION_PROMPT =
-  'Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.'
+  'Codebase and user instructions are shown below (loaded from RAYU.md / CLAUDE.md / AGENTS.md and rules files). Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.'
 // Recommended max character count for a memory file
 export const MAX_MEMORY_CHARACTER_COUNT = 40000
+
+// Project memory filenames + config dirs supported per directory. CLAUDE.md is
+// kept first for back-compat; RAYU.md/AGENTS.md are also honored. Missing files
+// are silently skipped by processMemoryFile.
+const PROJECT_MEMORY_FILENAMES = ['CLAUDE.md', 'RAYU.md', 'AGENTS.md'] as const
+const PROJECT_CONFIG_DIRS = ['.claude', '.rayu', '.agents'] as const
 
 // File extensions that are allowed for @include directives
 // This prevents binary files (images, PDFs, etc.) from being loaded into memory
@@ -824,15 +830,17 @@ export const getMemoryFiles = memoize(
 
     // Process User file (only if userSettings is enabled)
     if (isSettingSourceEnabled('userSettings')) {
-      const userClaudeMd = getMemoryPath('User')
-      result.push(
-        ...(await processMemoryFile(
-          userClaudeMd,
-          'User',
-          processedPaths,
-          true, // User memory can always include external files
-        )),
-      )
+      // User memory: CLAUDE.md / RAYU.md / AGENTS.md in the config home (~/.rayu).
+      for (const memName of PROJECT_MEMORY_FILENAMES) {
+        result.push(
+          ...(await processMemoryFile(
+            join(getClaudeConfigHomeDir(), memName),
+            'User',
+            processedPaths,
+            true, // User memory can always include external files
+          )),
+        )
+      }
       // Process User ~/.claude/rules/*.md files
       const userClaudeRulesDir = getUserClaudeRulesDir()
       result.push(
@@ -883,40 +891,43 @@ export const getMemoryFiles = memoize(
         pathInWorkingPath(dir, canonicalRoot) &&
         !pathInWorkingPath(dir, gitRoot)
 
-      // Try reading CLAUDE.md (Project) - only if projectSettings is enabled
+      // Project memory: RAYU.md / CLAUDE.md / AGENTS.md at the dir root and in
+      // .rayu/.claude/.agents (plus each config dir's rules/). Only if
+      // projectSettings is enabled. Missing files are skipped silently.
       if (isSettingSourceEnabled('projectSettings') && !skipProject) {
-        const projectPath = join(dir, 'CLAUDE.md')
-        result.push(
-          ...(await processMemoryFile(
-            projectPath,
-            'Project',
-            processedPaths,
-            includeExternal,
-          )),
-        )
+        for (const memName of PROJECT_MEMORY_FILENAMES) {
+          result.push(
+            ...(await processMemoryFile(
+              join(dir, memName),
+              'Project',
+              processedPaths,
+              includeExternal,
+            )),
+          )
+        }
 
-        // Try reading .claude/CLAUDE.md (Project)
-        const dotClaudePath = join(dir, '.claude', 'CLAUDE.md')
-        result.push(
-          ...(await processMemoryFile(
-            dotClaudePath,
-            'Project',
-            processedPaths,
-            includeExternal,
-          )),
-        )
+        for (const cfgDir of PROJECT_CONFIG_DIRS) {
+          for (const memName of PROJECT_MEMORY_FILENAMES) {
+            result.push(
+              ...(await processMemoryFile(
+                join(dir, cfgDir, memName),
+                'Project',
+                processedPaths,
+                includeExternal,
+              )),
+            )
+          }
 
-        // Try reading .claude/rules/*.md files (Project)
-        const rulesDir = join(dir, '.claude', 'rules')
-        result.push(
-          ...(await processMdRules({
-            rulesDir,
-            type: 'Project',
-            processedPaths,
-            includeExternal,
-            conditionalRule: false,
-          })),
-        )
+          result.push(
+            ...(await processMdRules({
+              rulesDir: join(dir, cfgDir, 'rules'),
+              type: 'Project',
+              processedPaths,
+              includeExternal,
+              conditionalRule: false,
+            })),
+          )
+        }
       }
 
       // Try reading CLAUDE.local.md (Local) - only if localSettings is enabled
@@ -940,39 +951,40 @@ export const getMemoryFiles = memoize(
     if (isEnvTruthy(process.env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD)) {
       const additionalDirs = getAdditionalDirectoriesForClaudeMd()
       for (const dir of additionalDirs) {
-        // Try reading CLAUDE.md from the additional directory
-        const projectPath = join(dir, 'CLAUDE.md')
-        result.push(
-          ...(await processMemoryFile(
-            projectPath,
-            'Project',
-            processedPaths,
-            includeExternal,
-          )),
-        )
+        // Memory files (RAYU.md / CLAUDE.md / AGENTS.md) at the dir root
+        for (const memName of PROJECT_MEMORY_FILENAMES) {
+          result.push(
+            ...(await processMemoryFile(
+              join(dir, memName),
+              'Project',
+              processedPaths,
+              includeExternal,
+            )),
+          )
+        }
 
-        // Try reading .claude/CLAUDE.md from the additional directory
-        const dotClaudePath = join(dir, '.claude', 'CLAUDE.md')
-        result.push(
-          ...(await processMemoryFile(
-            dotClaudePath,
-            'Project',
-            processedPaths,
-            includeExternal,
-          )),
-        )
-
-        // Try reading .claude/rules/*.md files from the additional directory
-        const rulesDir = join(dir, '.claude', 'rules')
-        result.push(
-          ...(await processMdRules({
-            rulesDir,
-            type: 'Project',
-            processedPaths,
-            includeExternal,
-            conditionalRule: false,
-          })),
-        )
+        // ...and inside each config dir, plus that config dir's rules/
+        for (const cfgDir of PROJECT_CONFIG_DIRS) {
+          for (const memName of PROJECT_MEMORY_FILENAMES) {
+            result.push(
+              ...(await processMemoryFile(
+                join(dir, cfgDir, memName),
+                'Project',
+                processedPaths,
+                includeExternal,
+              )),
+            )
+          }
+          result.push(
+            ...(await processMdRules({
+              rulesDir: join(dir, cfgDir, 'rules'),
+              type: 'Project',
+              processedPaths,
+              includeExternal,
+              conditionalRule: false,
+            })),
+          )
+        }
       }
     }
 
@@ -1253,26 +1265,31 @@ export async function getMemoryFilesForNestedDirectory(
 ): Promise<MemoryFileInfo[]> {
   const result: MemoryFileInfo[] = []
 
-  // Process project memory files (CLAUDE.md and .claude/CLAUDE.md)
+  // Process project memory files (RAYU.md / CLAUDE.md / AGENTS.md at the dir
+  // root and inside each config dir — .rayu / .claude / .agents).
   if (isSettingSourceEnabled('projectSettings')) {
-    const projectPath = join(dir, 'CLAUDE.md')
-    result.push(
-      ...(await processMemoryFile(
-        projectPath,
-        'Project',
-        processedPaths,
-        false,
-      )),
-    )
-    const dotClaudePath = join(dir, '.claude', 'CLAUDE.md')
-    result.push(
-      ...(await processMemoryFile(
-        dotClaudePath,
-        'Project',
-        processedPaths,
-        false,
-      )),
-    )
+    for (const memName of PROJECT_MEMORY_FILENAMES) {
+      result.push(
+        ...(await processMemoryFile(
+          join(dir, memName),
+          'Project',
+          processedPaths,
+          false,
+        )),
+      )
+    }
+    for (const cfgDir of PROJECT_CONFIG_DIRS) {
+      for (const memName of PROJECT_MEMORY_FILENAMES) {
+        result.push(
+          ...(await processMemoryFile(
+            join(dir, cfgDir, memName),
+            'Project',
+            processedPaths,
+            false,
+          )),
+        )
+      }
+    }
   }
 
   // Process local memory file (CLAUDE.local.md)
@@ -1283,31 +1300,34 @@ export async function getMemoryFilesForNestedDirectory(
     )
   }
 
-  const rulesDir = join(dir, '.claude', 'rules')
-
-  // Process project unconditional .claude/rules/*.md files, which were not eagerly loaded
-  // Use a separate processedPaths set to avoid marking conditional rule files as processed
+  // Process project unconditional rules across all config dirs (.rayu/.claude/
+  // .agents rules/), which were not eagerly loaded. Use a separate
+  // processedPaths set to avoid marking conditional rule files as processed.
   const unconditionalProcessedPaths = new Set(processedPaths)
-  result.push(
-    ...(await processMdRules({
-      rulesDir,
-      type: 'Project',
-      processedPaths: unconditionalProcessedPaths,
-      includeExternal: false,
-      conditionalRule: false,
-    })),
-  )
+  for (const cfgDir of PROJECT_CONFIG_DIRS) {
+    result.push(
+      ...(await processMdRules({
+        rulesDir: join(dir, cfgDir, 'rules'),
+        type: 'Project',
+        processedPaths: unconditionalProcessedPaths,
+        includeExternal: false,
+        conditionalRule: false,
+      })),
+    )
+  }
 
-  // Process project conditional .claude/rules/*.md files
-  result.push(
-    ...(await processConditionedMdRules(
-      targetPath,
-      rulesDir,
-      'Project',
-      processedPaths,
-      false,
-    )),
-  )
+  // Process project conditional rules across all config dirs
+  for (const cfgDir of PROJECT_CONFIG_DIRS) {
+    result.push(
+      ...(await processConditionedMdRules(
+        targetPath,
+        join(dir, cfgDir, 'rules'),
+        'Project',
+        processedPaths,
+        false,
+      )),
+    )
+  }
 
   // processedPaths must be seeded with unconditional paths for subsequent directories
   for (const path of unconditionalProcessedPaths) {
@@ -1331,14 +1351,19 @@ export async function getConditionalRulesForCwdLevelDirectory(
   targetPath: string,
   processedPaths: Set<string>,
 ): Promise<MemoryFileInfo[]> {
-  const rulesDir = join(dir, '.claude', 'rules')
-  return processConditionedMdRules(
-    targetPath,
-    rulesDir,
-    'Project',
-    processedPaths,
-    false,
-  )
+  const result: MemoryFileInfo[] = []
+  for (const cfgDir of PROJECT_CONFIG_DIRS) {
+    result.push(
+      ...(await processConditionedMdRules(
+        targetPath,
+        join(dir, cfgDir, 'rules'),
+        'Project',
+        processedPaths,
+        false,
+      )),
+    )
+  }
+  return result
 }
 
 /**
@@ -1430,22 +1455,31 @@ export async function shouldShowClaudeMdExternalIncludesWarning(): Promise<boole
 }
 
 /**
- * Check if a file path is a memory file (CLAUDE.md, CLAUDE.local.md, or .claude/rules/*.md)
+ * Check if a file path is a memory file (RAYU.md / CLAUDE.md / AGENTS.md, their
+ * *.local.md variants, or a .md under any config dir's rules/).
  */
 export function isMemoryFilePath(filePath: string): boolean {
   const name = basename(filePath)
 
-  // CLAUDE.md or CLAUDE.local.md anywhere
-  if (name === 'CLAUDE.md' || name === 'CLAUDE.local.md') {
+  // Project/User memory files anywhere: RAYU.md, CLAUDE.md, AGENTS.md
+  if ((PROJECT_MEMORY_FILENAMES as readonly string[]).includes(name)) {
     return true
   }
+  // Local variants (e.g. CLAUDE.local.md)
+  if (name.endsWith('.local.md')) {
+    const base = name.slice(0, -'.local.md'.length) + '.md'
+    if ((PROJECT_MEMORY_FILENAMES as readonly string[]).includes(base)) {
+      return true
+    }
+  }
 
-  // .md files in .claude/rules/ directories
-  if (
-    name.endsWith('.md') &&
-    filePath.includes(`${sep}.claude${sep}rules${sep}`)
-  ) {
-    return true
+  // .md files in any config dir's rules/ (.claude/rules, .rayu/rules, .agents/rules)
+  if (name.endsWith('.md')) {
+    for (const cfgDir of PROJECT_CONFIG_DIRS) {
+      if (filePath.includes(`${sep}${cfgDir}${sep}rules${sep}`)) {
+        return true
+      }
+    }
   }
 
   return false

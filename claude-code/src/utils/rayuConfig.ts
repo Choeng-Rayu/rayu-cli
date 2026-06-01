@@ -102,6 +102,32 @@ export function getActiveProvider(): RayuProvider | undefined {
   )
 }
 
+// Model ids that are NOT chat/completions models (embeddings, rerankers, OCR,
+// safety/guard, audio/video, etc.) — these 404 on /v1/chat/completions.
+const NON_CHAT_MODEL_RE =
+  /embed|bge-|rerank|reward|guard|safety|moderation|topic-control|ocr|parse|deplot|nvclip|clip|whisper|tts|stt|video|detector|nemoretriever|content-safety/i
+
+/** Heuristic: is this model id usable on the chat/completions endpoint? */
+export function isLikelyChatModel(id: string): boolean {
+  return !NON_CHAT_MODEL_RE.test(id)
+}
+
+/**
+ * A provider's default model, guarded against a stale/mismatched id. If the
+ * configured defaultModel isn't present in the fetched catalog (e.g. a preset
+ * default that was renamed/re-cased upstream — Doubleword's `moonshotai/kimi-k2-6`
+ * vs the catalog's `moonshotai/Kimi-K2.6`), fall back to the first chat-capable
+ * fetched model so we don't 404 on every request.
+ */
+export function getValidDefaultModel(p: RayuProvider | undefined): string | undefined {
+  if (!p) return undefined
+  const fetched = p.fetchedModels ?? []
+  if (p.defaultModel && (fetched.length === 0 || fetched.includes(p.defaultModel))) {
+    return p.defaultModel
+  }
+  return fetched.find(isLikelyChatModel) ?? fetched[0] ?? p.defaultModel
+}
+
 export function upsertProvider(provider: RayuProvider, setActive = true): void {
   const cfg = loadRayuConfig()
   const idx = cfg.providers.findIndex(p => p.id === provider.id)
@@ -162,14 +188,27 @@ export function getActiveProviderModelOptions(): Array<{
 // per-provider/per-model config overrides + RAYU_CONTEXT_TOKENS are the
 // sources of truth. Order matters — more specific patterns first.
 const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
+  // ~1M-context families
   [/deepseek[-/]?v4[-/]?(flash|pro)/i, 1_000_000],
-  [/deepseek-(chat|reasoner|v3|coder)/i, 131_072],
-  [/llama-3\.[13]|llama-3-70b|llama-4|nemotron/i, 131_072],
+  [/minimax/i, 1_000_000],
+  // 256k
   [/kimi|moonshot/i, 256_000],
-  [/qwen3|qwen-3|qwq/i, 131_072],
-  [/gpt-4o|gpt-4\.1|o3|o4/i, 128_000],
+  [/qwen[-.]?3[-.]?(coder|next)/i, 256_000],
+  [/jamba/i, 256_000],
+  // 131k / 128k families
+  [/deepseek-(chat|reasoner|v3|coder)/i, 131_072],
+  [/llama-3\.[1-3]|llama-3-70b|llama-4|nemotron/i, 131_072],
+  [/qwen[-_.]?[23]|qwq/i, 131_072],
   [/gemma-[234]/i, 131_072],
-  [/mixtral|mistral/i, 131_072],
+  [/mixtral|mistral|ministral|codestral|devstral/i, 131_072],
+  [/glm-[45]/i, 131_072],
+  [/gpt-oss/i, 131_072],
+  [/phi-[34]/i, 131_072],
+  [/command-r|c4ai/i, 131_072],
+  [/step-3/i, 65_536],
+  // OpenAI (anchor o-series so e.g. gpt-4o / nemotron don't false-match)
+  [/gpt-5|(?:^|[/_-])(o1|o3|o4)(?:[.\-_]|$)/i, 128_000],
+  [/gpt-4o|gpt-4\.1/i, 128_000],
 ]
 
 /**

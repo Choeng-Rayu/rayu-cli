@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "bun run src/entrypoints/cli.tsx",
     "build": "bun run scripts/build.ts",
+    "package": "bun run scripts/build-binaries.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

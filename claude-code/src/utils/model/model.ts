@@ -6,6 +6,7 @@
  * during dead code elimination
  */
 import { getMainLoopModelOverride } from '../../bootstrap/state.js'
+import { getAntModelOverrideConfig, resolveAntModel } from './antModels.js'
 import {
   getSubscriptionType,
   isClaudeAISubscriber,
@@ -43,11 +44,11 @@ export function getSmallFastModel(): ModelName {
   // provider's default model.
   if (isOpenAICompatibleActive()) {
     /* eslint-disable @typescript-eslint/no-require-imports */
-    const { getActiveProvider } =
+    const { getActiveProvider, getValidDefaultModel } =
       require('../rayuConfig.js') as typeof import('../rayuConfig.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
     const p = getActiveProvider()
-    const m = p?.smallFastModel || p?.defaultModel
+    const m = p?.smallFastModel || getValidDefaultModel(p)
     if (m) return m
   }
   return getDefaultHaikuModel()
@@ -196,10 +197,10 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   // configured model rather than an Anthropic model string.
   if (isOpenAICompatibleActive()) {
     /* eslint-disable @typescript-eslint/no-require-imports */
-    const { getActiveProvider } =
+    const { getActiveProvider, getValidDefaultModel } =
       require('../rayuConfig.js') as typeof import('../rayuConfig.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
-    const m = getActiveProvider()?.defaultModel
+    const m = getValidDefaultModel(getActiveProvider())
     if (m) return m
   }
 

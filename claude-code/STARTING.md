@@ -73,5 +73,12 @@ node dist/rayu.js --print --model deepseek-chat "summarize this repo"
 ## 8. Tests
 
 ```bash
-bun test          # 27 tests (translation, config, model registry, providers, network guard)
+bun test          # hermetic unit tests (translation, config, models, providers, network guard)
+
+# opt-in live end-to-end tests against your configured providers (uses credits):
+RAYU_LIVE=1 bun test test/liveSmoke.test.ts
 ```
+
+The live smoke suite exercises chat, tool round-trips, vision, streaming, and
+reasoning against the providers in `~/.rayu/providers.json` (it skips cleanly
+when `RAYU_LIVE` is unset or no provider is configured).

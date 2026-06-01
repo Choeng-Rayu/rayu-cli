@@ -10,7 +10,14 @@
 // SECURITY: the API key is read from the Rayu provider config / env and sent
 // only to the user-configured base URL; it is never logged. Translation
 // failures are recorded via rayuDiagnostics for later improvement.
-import OpenAI from 'openai'
+import OpenAI, {
+  APIConnectionError as OpenAIAPIConnectionError,
+  APIError as OpenAIAPIError,
+} from 'openai'
+import {
+  APIConnectionError as AnthropicAPIConnectionError,
+  APIError as AnthropicAPIError,
+} from '@anthropic-ai/sdk'
 import { reportBug, reportIssue } from 'src/utils/rayuDiagnostics.js'
 
 type AnyObj = Record<string, unknown>
@@ -49,6 +56,35 @@ function blocksToText(content: unknown): string {
     .join('\n')
 }
 
+/**
+ * Translate one Anthropic image block → an OpenAI `image_url` content part.
+ * Supports base64 sources ({type:'base64',media_type,data}) and url sources.
+ * Returns null for non-image / unrecognized blocks.
+ */
+function imageBlockToOpenAI(block: AnyObj): AnyObj | null {
+  if (!block || block.type !== 'image') return null
+  const src = (block.source as AnyObj) ?? {}
+  if (src.type === 'base64' && src.data) {
+    const mt = (src.media_type as string) ?? 'image/png'
+    return { type: 'image_url', image_url: { url: `data:${mt};base64,${src.data}` } }
+  }
+  if (src.type === 'url' && src.url) {
+    return { type: 'image_url', image_url: { url: src.url as string } }
+  }
+  return null
+}
+
+/** Collect OpenAI image_url parts from an Anthropic blocks array. */
+function imagePartsFrom(content: unknown): AnyObj[] {
+  if (!Array.isArray(content)) return []
+  const parts: AnyObj[] = []
+  for (const b of content as AnyObj[]) {
+    const img = imageBlockToOpenAI(b)
+    if (img) parts.push(img)
+  }
+  return parts
+}
+
 /** Translate Anthropic messages[] → OpenAI messages[] (incl tool calls/results). */
 function translateMessages(params: BetaParams): AnyObj[] {
   const out: AnyObj[] = []
@@ -79,7 +115,13 @@ function translateMessages(params: BetaParams): AnyObj[] {
       } else if (typeof content === 'string') {
         text = content
       }
-      const m: AnyObj = { role: 'assistant', content: text || null }
+      // OpenAI allows null content only when tool_calls are present; otherwise
+      // send '' (e.g. an assistant turn that was reasoning-only/truncated, where
+      // the dropped thinking block leaves no text).
+      const m: AnyObj = {
+        role: 'assistant',
+        content: text || (toolCalls.length ? null : ''),
+      }
       if (toolCalls.length) m.tool_calls = toolCalls
       out.push(m)
       continue
@@ -93,8 +135,11 @@ function translateMessages(params: BetaParams): AnyObj[] {
         const others = (content as AnyObj[]).filter(
           b => b.type !== 'tool_result',
         )
-        const text = blocksToText(others)
-        if (text) out.push({ role: 'user', content: text })
+        // OpenAI requires `tool` messages to immediately follow the assistant
+        // message that made the tool_calls — emit them (contiguously) BEFORE any
+        // user text. `tool` role content must be a string, so images returned by
+        // a tool are re-emitted as a follow-up user message (below).
+        const toolImages: AnyObj[] = []
         for (const tr of toolResults) {
           out.push({
             role: 'tool',
@@ -104,6 +149,28 @@ function translateMessages(params: BetaParams): AnyObj[] {
                 ? tr.content
                 : blocksToText(tr.content),
           })
+          toolImages.push(...imagePartsFrom(tr.content))
+        }
+        if (toolImages.length) {
+          out.push({
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Images returned by the previous tool call(s):' },
+              ...toolImages,
+            ],
+          })
+        }
+        // Remaining user content: use a multimodal array when images are present,
+        // otherwise a plain string (keeps simple/text-only providers happy).
+        const text = blocksToText(others)
+        const images = imagePartsFrom(others)
+        if (images.length) {
+          const parts: AnyObj[] = []
+          if (text) parts.push({ type: 'text', text })
+          parts.push(...images)
+          out.push({ role: 'user', content: parts })
+        } else if (text) {
+          out.push({ role: 'user', content: text })
         }
       } else {
         out.push({ role: 'user', content: String(content ?? '') })
@@ -134,15 +201,64 @@ function translateTools(tools?: Array<AnyObj>): AnyObj[] | undefined {
     })
 }
 
+// OpenAI reasoning families (o1/o3/o4/gpt-5) reject `max_tokens` — they require
+// `max_completion_tokens`. Matched as a path/segment token so e.g. `gpt-4o`
+// (contains no standalone o3/o4) and `llama-3` are unaffected.
+const NEEDS_MAX_COMPLETION_RE = /(?:^|[/_-])(o1|o3|o4|gpt-5)(?:[.\-_]|$)/i
+// Broader reasoning detection (adds gpt-oss / deepseek-reasoner / *-reasoning /
+// *-thinking) used only to drop `temperature`, which reasoning models reject or
+// ignore (they allow the default only).
+const REASONING_RE =
+  /(?:^|[/_-])(o1|o3|o4|gpt-5|gpt-oss)(?:[.\-_]|$)|reason|thinking/i
+
+export function usesMaxCompletionTokens(model: string): boolean {
+  return NEEDS_MAX_COMPLETION_RE.test(model)
+}
+export function isReasoningModel(model: string): boolean {
+  return REASONING_RE.test(model)
+}
+
+/** Translate Anthropic tool_choice → OpenAI tool_choice. */
+function translateToolChoice(tc: AnyObj | undefined): unknown {
+  if (!tc) return undefined
+  switch (tc.type) {
+    case 'auto':
+      return 'auto'
+    case 'any':
+      return 'required'
+    case 'none':
+      return 'none'
+    case 'tool':
+      return tc.name
+        ? { type: 'function', function: { name: tc.name } }
+        : 'required'
+    default:
+      return undefined
+  }
+}
+
 export function buildOpenAIRequest(params: BetaParams): AnyObj {
   const req: AnyObj = {
     model: params.model,
     messages: translateMessages(params),
-    max_tokens: params.max_tokens,
   }
-  if (typeof params.temperature === 'number') req.temperature = params.temperature
+  if (typeof params.max_tokens === 'number') {
+    if (usesMaxCompletionTokens(params.model)) {
+      req.max_completion_tokens = params.max_tokens
+    } else {
+      req.max_tokens = params.max_tokens
+    }
+  }
+  // Reasoning models only support the default temperature; sending one 400s.
+  if (typeof params.temperature === 'number' && !isReasoningModel(params.model)) {
+    req.temperature = params.temperature
+  }
   const tools = translateTools(params.tools)
-  if (tools) req.tools = tools
+  if (tools) {
+    req.tools = tools
+    const toolChoice = translateToolChoice(params.tool_choice)
+    if (toolChoice !== undefined) req.tool_choice = toolChoice
+  }
   return req
 }
 
@@ -176,6 +292,12 @@ export function toBetaMessage(completion: AnyObj, model: string): AnyObj {
   const choice = (completion.choices as AnyObj[])?.[0] ?? {}
   const msg = (choice.message as AnyObj) ?? {}
   const content: AnyObj[] = []
+  // Reasoning models surface hidden reasoning as `reasoning_content` (DeepSeek)
+  // or `reasoning` (Qwen/Doubleword/OpenRouter). Expose it as a thinking block.
+  const reasoning = (msg.reasoning_content ?? msg.reasoning) as string | undefined
+  if (typeof reasoning === 'string' && reasoning.length) {
+    content.push({ type: 'thinking', thinking: reasoning, signature: '' })
+  }
   if (msg.content) content.push({ type: 'text', text: msg.content as string })
   for (const tc of (msg.tool_calls as AnyObj[]) ?? []) {
     const fn = (tc.function as AnyObj) ?? {}
@@ -228,11 +350,12 @@ export async function* translateStream(
     },
   }
 
-  let textOpen = false
+  let thinkingIndex: number | null = null
+  let textIndex: number | null = null
   let finishReason: string | null = null
   let usage: AnyObj | undefined
   const toolIndexByOaIndex = new Map<number, number>()
-  let nextIndex = 1
+  let nextIndex = 0
 
   for await (const chunk of openaiStream) {
     const choice = (chunk.choices as AnyObj[])?.[0]
@@ -242,18 +365,38 @@ export async function* translateStream(
     }
     const delta = (choice.delta as AnyObj) ?? {}
 
-    if (typeof delta.content === 'string' && delta.content.length) {
-      if (!textOpen) {
+    // Reasoning (thinking) deltas — emitted before content by reasoning models.
+    const reasoning = (delta.reasoning_content ?? delta.reasoning) as
+      | string
+      | undefined
+    if (typeof reasoning === 'string' && reasoning.length) {
+      if (thinkingIndex === null) {
+        thinkingIndex = nextIndex++
         yield {
           type: 'content_block_start',
-          index: 0,
-          content_block: { type: 'text', text: '' },
+          index: thinkingIndex,
+          content_block: { type: 'thinking', thinking: '', signature: '' },
         }
-        textOpen = true
       }
       yield {
         type: 'content_block_delta',
-        index: 0,
+        index: thinkingIndex,
+        delta: { type: 'thinking_delta', thinking: reasoning },
+      }
+    }
+
+    if (typeof delta.content === 'string' && delta.content.length) {
+      if (textIndex === null) {
+        textIndex = nextIndex++
+        yield {
+          type: 'content_block_start',
+          index: textIndex,
+          content_block: { type: 'text', text: '' },
+        }
+      }
+      yield {
+        type: 'content_block_delta',
+        index: textIndex,
         delta: { type: 'text_delta', text: delta.content },
       }
     }
@@ -294,7 +437,8 @@ export async function* translateStream(
     if (chunk.usage) usage = chunk.usage as AnyObj
   }
 
-  if (textOpen) yield { type: 'content_block_stop', index: 0 }
+  if (thinkingIndex !== null) yield { type: 'content_block_stop', index: thinkingIndex }
+  if (textIndex !== null) yield { type: 'content_block_stop', index: textIndex }
   for (const index of toolIndexByOaIndex.values()) {
     yield { type: 'content_block_stop', index }
   }
@@ -318,6 +462,43 @@ export type OpenAICompatibleConfig = {
   maxRetries?: number
 }
 
+/** True when an error looks like the provider rejecting `stream_options`. */
+function isStreamOptionsRejection(e: unknown): boolean {
+  const status = (e as AnyObj)?.status
+  const msg = String((e as AnyObj)?.message ?? '')
+  return (
+    status === 400 &&
+    /stream_options|include_usage|unrecognized|unexpected|unknown|unsupported|invalid.*(param|argument)/i.test(
+      msg,
+    )
+  )
+}
+
+/**
+ * Re-shape an error thrown by the OpenAI SDK as the equivalent Anthropic SDK
+ * error. The shared retry/error layer (withRetry.ts, errors.ts) recognizes
+ * provider 429 / 5xx / connection failures only via `instanceof` checks against
+ * @anthropic-ai/sdk classes — without this, OpenAI-path errors never retry and
+ * surface with the wrong shape.
+ */
+function normalizeError(e: unknown): unknown {
+  if (e instanceof OpenAIAPIConnectionError) {
+    return new AnthropicAPIConnectionError({
+      message: e.message,
+      cause: (e as { cause?: Error }).cause,
+    })
+  }
+  if (e instanceof OpenAIAPIError) {
+    return AnthropicAPIError.generate(
+      e.status as number | undefined,
+      e.error as object | undefined,
+      e.message,
+      e.headers as Headers | undefined,
+    )
+  }
+  return e
+}
+
 /**
  * Build an object that quacks like the Anthropic SDK client for the call sites
  * in claude.ts. Only `beta.messages.create` is implemented.
@@ -334,7 +515,10 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
   const client = new OpenAI({
     apiKey: config.apiKey || 'unset',
     baseURL: config.baseURL,
-    maxRetries: config.maxRetries ?? 0,
+    // Retry transient 408/409/429/5xx at the SDK level by default. The main
+    // query path passes 0 here and retries via withRetry.ts instead (which now
+    // recognizes our normalized Anthropic-shaped errors).
+    maxRetries: config.maxRetries ?? 2,
     defaultHeaders: config.headers,
   })
 
@@ -353,9 +537,9 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
       reportIssue(
         'openai_adapter.request_failed',
         'OpenAI-compatible request failed',
-        { model, error: e instanceof Error ? e.message : String(e) },
+        { model, status: (e as AnyObj)?.status, error: e instanceof Error ? e.message : String(e) },
       )
-      throw e
+      throw normalizeError(e)
     }
   }
 
@@ -364,10 +548,37 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
     model: string,
     signal?: AbortSignal,
   ): Promise<{ data: AsyncGenerator<StreamEvent>; request_id: null; response: Response }> {
-    const oaStream = (await client.chat.completions.create(
-      { ...req, stream: true, stream_options: { include_usage: true } } as never,
-      { signal },
-    )) as unknown as AsyncIterable<AnyObj>
+    const base = { ...req, stream: true }
+    let oaStream: AsyncIterable<AnyObj>
+    try {
+      oaStream = (await client.chat.completions.create(
+        { ...base, stream_options: { include_usage: true } } as never,
+        { signal },
+      )) as unknown as AsyncIterable<AnyObj>
+    } catch (e) {
+      // Some providers reject the unknown `stream_options` param — retry once
+      // without it (usage will be absent, which the consumer tolerates).
+      if (isStreamOptionsRejection(e)) {
+        try {
+          oaStream = (await client.chat.completions.create(base as never, {
+            signal,
+          })) as unknown as AsyncIterable<AnyObj>
+        } catch (e2) {
+          throw normalizeError(e2)
+        }
+      } else {
+        reportIssue(
+          'openai_adapter.stream_failed',
+          'OpenAI-compatible streaming request failed',
+          {
+            model,
+            status: (e as AnyObj)?.status,
+            error: e instanceof Error ? e.message : String(e),
+          },
+        )
+        throw normalizeError(e)
+      }
+    }
     return {
       data: translateStream(oaStream, model),
       request_id: null,
