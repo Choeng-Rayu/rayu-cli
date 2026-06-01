@@ -873,8 +873,10 @@ export function REPL({
   // read in the onQuery finally block to notify mobile clients that a turn ended.
   const sendBridgeResultRef = useRef<() => void>(() => {});
   // Set after handleIncomingPrompt is defined; the Telegram bridge calls
-  // through this ref to inject inbound chat messages as REPL turns.
-  const telegramPromptRef = useRef<((text: string) => void) | null>(null);
+  // Holds the Telegram streaming wrapper for onStreamingText; populated by useTelegramBridge.
+  const tgStreamingWrapRef = useRef<
+    ((f: (current: string | null) => string | null) => void) | null
+  >(null);
 
   // Ref for the synchronous restore callback — set after restoreMessageSync is
   // defined, read in the onQuery finally block for auto-restore on interrupt.
@@ -2660,7 +2662,7 @@ export function REPL({
         responseLengthBaseline: baseline,
         endResponseLength: baseline
       });
-    }, onStreamingText);
+    }, tgStreamingWrapRef.current ?? onStreamingText);
   }, [setMessages, setResponseLength, setStreamMode, setStreamingToolUses, setStreamingThinking, onStreamingText]);
   const onQueryImpl = useCallback(async (messagesIncludingNewMessages: MessageType[], newMessages: MessageType[], abortController: AbortController, shouldQuery: boolean, additionalAllowedTools: string[], mainLoopModelParam: string, effort?: EffortValue) => {
     // Prepare IDE integration for new prompt. Read mcpClients fresh from
@@ -3838,7 +3840,8 @@ export function REPL({
     sendBridgeResult
   } = useReplBridge(messages, setMessages, abortControllerRef, commands, mainLoopModel);
   sendBridgeResultRef.current = sendBridgeResult;
-  useTelegramBridge(messages, telegramPromptRef);
+  const { wrapOnStreamingText } = useTelegramBridge(messages);
+  tgStreamingWrapRef.current = wrapOnStreamingText(onStreamingText);
   useAfterFirstRender();
 
   // Track prompt queue usage for analytics. Fire once per transition from
@@ -4022,7 +4025,6 @@ export function REPL({
     void onQuery([userMessage], newAbortController, true, [], mainLoopModel);
     return true;
   }, [onQuery, mainLoopModel, store]);
-  telegramPromptRef.current = handleIncomingPrompt;
 
   // Voice input integration (VOICE_MODE builds only)
   const voice = feature('VOICE_MODE') ?

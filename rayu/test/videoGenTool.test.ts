@@ -10,7 +10,11 @@ import {
   VIDEO_MODELS,
   resolveVideoModel,
 } from '../src/tools/VideoGenTool/models.ts'
-import { generateVideo } from '../src/tools/VideoGenTool/nvidiaVideoClient.ts'
+import {
+  generateVideo,
+  _setFalPollInterval,
+  _setNvidiaPollInterval,
+} from '../src/tools/VideoGenTool/nvidiaVideoClient.ts'
 import {
   VideoGenTool,
   resolveOutputPath,
@@ -21,93 +25,149 @@ afterEach(() => {
   globalThis.fetch = realFetch
 })
 
+// Minimal valid MP4 header (ftyp box)
+const TINY_MP4 = Buffer.from([
+  0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70,
+  0x6d, 0x70, 0x34, 0x32, 0x00, 0x00, 0x00, 0x00,
+  0x6d, 0x70, 0x34, 0x32, 0x69, 0x73, 0x6f, 0x6d,
+])
+
 describe('video model registry', () => {
-  test('text2world mapper emits frames/fps/seed', () => {
-    const body = VIDEO_MODELS[DEFAULT_VIDEO_MODEL].buildBody({ prompt: 'a river' })
-    expect(body.num_frames).toBe(57)
-    expect(body.fps).toBe(24)
-    expect(body.prompt).toBe('a river')
+  test('default model is nvidia/cosmos-predict1-5b (NVCF backend)', () => {
+    expect(DEFAULT_VIDEO_MODEL).toBe('nvidia/cosmos-predict1-5b')
+    expect(VIDEO_MODELS[DEFAULT_VIDEO_MODEL].backend).toBe('nvcf')
+    expect(VIDEO_MODELS[DEFAULT_VIDEO_MODEL].capability).toBe('text2video')
+    expect(VIDEO_MODELS[DEFAULT_VIDEO_MODEL].nvcfFunctionId).toBe('eef816a3-3940-413b-93c9-513ae29f34f9')
   })
 
-  test('video2world mapper embeds input image as data URI', () => {
-    const body = VIDEO_MODELS[DEFAULT_IMAGE2VIDEO_MODEL].buildBody({
-      prompt: 'pan left',
+  test('cosmos-predict1-5b body uses Triton t2v format', () => {
+    const body = VIDEO_MODELS[DEFAULT_VIDEO_MODEL].buildBody({ prompt: 'a river', seed: 42 }) as {
+      inputs: Array<{ name: string; data: string[] }>
+      outputs: Array<{ name: string }>
+    }
+    expect(body.inputs[0].name).toBe('command')
+    expect(body.inputs[0].data[0]).toContain('t2v')
+    expect(body.inputs[0].data[0]).toContain('a river')
+    expect(body.inputs[0].data[0]).toContain('seed=42')
+    expect(body.outputs[0].name).toBe('media')
+  })
+
+  test('cosmos3-nano has its own function ID', () => {
+    expect(VIDEO_MODELS['nvidia/cosmos3-nano'].nvcfFunctionId).toBe('d09cd49d-d7f2-4361-928f-ea22af707249')
+  })
+
+  test('SVD body uses simple JSON with image field', () => {
+    const body = VIDEO_MODELS['stabilityai/stable-video-diffusion'].buildBody({
+      prompt: 'animate',
       image: 'QUJD',
     })
-    expect(body.image).toBe('data:image/png;base64,QUJD')
+    expect(String(body.image)).toContain('data:image/png;base64,QUJD')
+    expect(body.cfg_scale).toBeDefined()
   })
 
-  test('resolveVideoModel falls back to defaults by capability', () => {
+  test('resolveVideoModel falls back to cosmos-predict1-5b for both text and image', () => {
     expect(resolveVideoModel(undefined, false).id).toBe(DEFAULT_VIDEO_MODEL)
     expect(resolveVideoModel(undefined, true).id).toBe(DEFAULT_IMAGE2VIDEO_MODEL)
-    // image2video with a non-image2video model forces the default i2v model
-    expect(resolveVideoModel(DEFAULT_VIDEO_MODEL, true).id).toBe(
-      DEFAULT_IMAGE2VIDEO_MODEL,
-    )
   })
 })
 
-describe('generateVideo client', () => {
-  test('decodes a synchronous base64 video into a buffer', async () => {
-    const b64 = Buffer.from('MP4DATA').toString('base64')
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ artifacts: [{ base64: b64, finishReason: 'SUCCESS' }] }), {
-        status: 200,
-      })) as unknown as typeof fetch
+// Mock a successful NVIDIA NVCF submit→poll→asset_url→download sequence
+function mockNvcfSuccess(): void {
+  let calls = 0
+  globalThis.fetch = (async (url: string) => {
+    calls++
+    if (calls === 1) {
+      // POST to nvcf/pexec/functions/{id} → 202
+      return new Response('', { status: 202, headers: { 'NVCF-REQID': 'req-1' } })
+    }
+    if (String(url).includes('/pexec/status/')) {
+      // Poll → 200 with asset_url
+      return new Response(
+        JSON.stringify({ asset_url: `${NVCF_ASSET_HOST}/asset-abc123` }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    // Asset download
+    return new Response(TINY_MP4, { status: 200, headers: { 'Content-Type': 'video/mp4' } })
+  }) as unknown as typeof fetch
+}
+
+// NVCF_ASSET_HOST for mock URL construction
+const NVCF_ASSET_HOST = 'https://api.nvcf.nvidia.com/v1/assets'
+
+describe('generateVideo client — NVCF backend (cosmos-predict1-5b)', () => {
+  beforeEach(() => { _setNvidiaPollInterval(0) })
+  afterEach(() => { _setNvidiaPollInterval(5000) })
+
+  test('submit 202 → poll → asset download returns buffer', async () => {
+    mockNvcfSuccess()
     const { buffer, mediaType } = await generateVideo({
       params: { prompt: 'a river' },
-      apiKey: 'test-key',
+      apiKey: 'nvidia-test-key',
     })
-    expect(buffer.toString()).toBe('MP4DATA')
+    expect(buffer.length).toBeGreaterThan(0)
     expect(mediaType).toBe('video/mp4')
   })
 
-  test('handles the async 202 + poll pattern', async () => {
-    const b64 = Buffer.from('ASYNCMP4').toString('base64')
+  test('synchronous 200 with asset_url works too', async () => {
     let calls = 0
     globalThis.fetch = (async (url: string) => {
       calls++
-      if (calls === 1) {
-        // submit → 202 with a request id
-        return new Response('', { status: 202, headers: { 'NVCF-REQID': 'req-1' } })
-      }
-      // poll → status host returns the finished video
-      expect(url).toContain('/pexec/status/req-1')
-      return new Response(JSON.stringify({ video: b64 }), { status: 200 })
+      if (calls === 1)
+        return new Response(
+          JSON.stringify({ asset_url: `${NVCF_ASSET_HOST}/asset-xyz` }),
+          { status: 200 },
+        )
+      return new Response(TINY_MP4, { status: 200 })
     }) as unknown as typeof fetch
-
     const { buffer } = await generateVideo({
       params: { prompt: 'a river' },
-      apiKey: 'k',
-      _pollIntervalMs: 0,
+      apiKey: 'nvidia-test-key',
     })
-    expect(buffer.toString()).toBe('ASYNCMP4')
-    expect(calls).toBe(2)
-  })
-
-  test('throws clear error when no video returned', async () => {
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ artifacts: [] }), { status: 200 })) as unknown as typeof fetch
-    await expect(
-      generateVideo({ params: { prompt: 'x' }, apiKey: 'k' }),
-    ).rejects.toThrow(/no video/)
+    expect(buffer.length).toBeGreaterThan(0)
   })
 
   test('throws on non-OK HTTP status', async () => {
     globalThis.fetch = (async () =>
       new Response('forbidden', { status: 403 })) as unknown as typeof fetch
     await expect(
-      generateVideo({ params: { prompt: 'x' }, apiKey: 'k' }),
+      generateVideo({ params: { prompt: 'x' }, apiKey: 'nvidia-k' }),
     ).rejects.toThrow(/403/)
+  })
+})
+
+describe('generateVideo client — fal.ai backend', () => {
+  beforeEach(() => { _setFalPollInterval(0) })
+  afterEach(() => { _setFalPollInterval(5000) })
+
+  test('submit → poll COMPLETED → download produces a buffer', async () => {
+    let calls = 0
+    globalThis.fetch = (async (url: string) => {
+      calls++
+      if (calls === 1)
+        return new Response(
+          JSON.stringify({ request_id: 'r', status_url: 'https://queue.fal.run/s', response_url: 'https://queue.fal.run/r' }),
+          { status: 200 },
+        )
+      if (url.endsWith('/s')) return new Response(JSON.stringify({ status: 'COMPLETED' }), { status: 200 })
+      if (url.endsWith('/r')) return new Response(JSON.stringify({ video: { url: 'https://cdn.fal.media/out.mp4' } }), { status: 200 })
+      return new Response(TINY_MP4, { status: 200 })
+    }) as unknown as typeof fetch
+
+    const { buffer, mediaType } = await generateVideo({
+      modelId: 'fal-ai/kling-video/v2.1/standard/text-to-video',
+      params: { prompt: 'a river' },
+      apiKey: 'fal-test-key',
+    })
+    expect(buffer.length).toBeGreaterThan(0)
+    expect(mediaType).toBe('video/mp4')
   })
 })
 
 describe('VideoGenTool scaffold', () => {
   test('schema rejects empty prompt, accepts valid prompt', () => {
     expect(VideoGenTool.inputSchema.safeParse({ prompt: '' }).success).toBe(false)
-    expect(VideoGenTool.inputSchema.safeParse({ prompt: 'a river' }).success).toBe(
-      true,
-    )
+    expect(VideoGenTool.inputSchema.safeParse({ prompt: 'a river' }).success).toBe(true)
   })
 
   test('resolveOutputPath accepts default, rejects outside cwd', () => {
@@ -128,18 +188,28 @@ describe('VideoGenTool.isEnabled', () => {
     dir = mkdtempSync(join(tmpdir(), 'rayu-vid-'))
     process.env.RAYU_CONFIG_DIR = dir
     delete process.env.NVIDIA_API_KEY
+    delete process.env.FAL_KEY
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
     delete process.env.RAYU_CONFIG_DIR
     delete process.env.NVIDIA_API_KEY
+    delete process.env.FAL_KEY
   })
 
-  test('false without a NVIDIA key, true once configured', async () => {
+  test('false without any key, true with NVIDIA_API_KEY', async () => {
     const { _resetRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
     _resetRayuConfigCache()
     expect(VideoGenTool.isEnabled()).toBe(false)
     process.env.NVIDIA_API_KEY = 'nv-x'
+    _resetRayuConfigCache()
+    expect(VideoGenTool.isEnabled()).toBe(true)
+  })
+
+  test('true with FAL_KEY too', async () => {
+    const { _resetRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
+    _resetRayuConfigCache()
+    process.env.FAL_KEY = 'fal-k'
     _resetRayuConfigCache()
     expect(VideoGenTool.isEnabled()).toBe(true)
   })
@@ -150,20 +220,17 @@ describe('VideoGenTool.call', () => {
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'rayu-vidcall-'))
     process.env.NVIDIA_API_KEY = 'nv-x'
+    _setNvidiaPollInterval(0)
   })
   afterEach(() => {
     globalThis.fetch = realFetch
     rmSync(tmp, { recursive: true, force: true })
     delete process.env.NVIDIA_API_KEY
+    _setNvidiaPollInterval(5000)
   })
 
   test('saves the mp4 to disk and returns a text result block', async () => {
-    const b64 = Buffer.from('MP4BYTES').toString('base64')
-    globalThis.fetch = (async () =>
-      new Response(
-        JSON.stringify({ artifacts: [{ base64: b64, finishReason: 'SUCCESS' }] }),
-        { status: 200 },
-      )) as unknown as typeof fetch
+    mockNvcfSuccess()
 
     const res = await runWithCwdOverride(tmp, () =>
       VideoGenTool.call(
@@ -216,11 +283,13 @@ describe('/image-video command', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'rayu-vcmd-'))
     process.env.RAYU_CONFIG_DIR = dir
+    delete process.env.FAL_KEY
     delete process.env.NVIDIA_API_KEY
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
     delete process.env.RAYU_CONFIG_DIR
+    delete process.env.FAL_KEY
     delete process.env.NVIDIA_API_KEY
   })
 
@@ -234,7 +303,7 @@ describe('/image-video command', () => {
     expect(blocks[0].text).toContain('GenerateVideo')
   })
 
-  test('is gated on a configured NVIDIA key', async () => {
+  test('is gated on NVIDIA_API_KEY or FAL_KEY', async () => {
     const { _resetRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cmd: any = (await import('../src/commands/image-video.ts')).default

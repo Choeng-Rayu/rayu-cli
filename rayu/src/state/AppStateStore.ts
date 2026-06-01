@@ -445,6 +445,8 @@ export type AppState = DeepImmutable<{
   isUltraplanMode?: boolean
   // Always-on bridge: permission callbacks for bidirectional permission checks
   replBridgePermissionCallbacks?: BridgePermissionCallbacks
+  // Telegram bot permission callbacks — permission prompts sent to the linked chat.
+  telegramPermissionCallbacks?: BridgePermissionCallbacks
   // Channel permission callbacks — permission prompts over Telegram/iMessage/etc.
   // Races against local UI + bridge + hooks + classifier via claim() in
   // interactiveHandler.ts. Constructed once in useManageMCPConnections.

@@ -92,3 +92,25 @@ export async function editMessageText(
     text: text.slice(0, MAX_MESSAGE_CHARS),
   })
 }
+
+/** Send a base64-encoded image as a photo. Falls back to text on failure. */
+export async function sendPhoto(
+  token: string,
+  chatId: number,
+  base64Data: string,
+  mediaType: string,
+  caption?: string,
+): Promise<void> {
+  const ext = mediaType.includes('jpeg') || mediaType.includes('jpg') ? 'jpg' : 'png'
+  const buffer = Buffer.from(base64Data, 'base64')
+  const blob = new Blob([buffer], { type: mediaType })
+  const form = new FormData()
+  form.append('chat_id', String(chatId))
+  form.append('photo', blob, `image.${ext}`)
+  if (caption) form.append('caption', caption.slice(0, 1024))
+  const res = await fetch(`${API_BASE}/bot${token}/sendPhoto`, { method: 'POST', body: form })
+  if (!res.ok) {
+    // Photo send failed (too large etc.) — send a text fallback
+    await sendMessage(token, chatId, caption ?? '🖼 Image generated (could not send as photo)')
+  }
+}

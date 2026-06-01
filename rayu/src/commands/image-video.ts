@@ -1,16 +1,16 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../commands.js'
 import { VIDEO_GEN_TOOL_NAME } from '../tools/VideoGenTool/constants.js'
-import { getNvidiaApiKey } from '../tools/VideoGenTool/nvidiaVideoClient.js'
+import { isVideoEnabled } from '../tools/VideoGenTool/nvidiaVideoClient.js'
 
 const generateVideo: Command = {
   type: 'prompt',
   name: 'image-video',
-  description: 'Generate a video from a text prompt (NVIDIA)',
+  description: 'Generate a video from a text prompt (fal.ai / NVIDIA)',
   progressMessage: 'generating video',
   contentLength: 0,
   source: 'builtin',
-  isEnabled: () => getNvidiaApiKey() != null,
+  isEnabled: () => isVideoEnabled(),
   async getPromptForCommand(args): Promise<ContentBlockParam[]> {
     const prompt = args.trim()
     return [

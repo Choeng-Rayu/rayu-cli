@@ -33,6 +33,7 @@ import breakCache from './commands/break-cache/index.js'
 import mcp from './commands/mcp/index.js'
 import mobile from './commands/mobile/index.js'
 import telegramBot from './commands/telegram-bot/index.js'
+import disconnectTelegram from './commands/telegram-bot/disconnect-index.js'
 import onboarding from './commands/onboarding/index.js'
 import pr_comments from './commands/pr_comments/index.js'
 import releaseNotes from './commands/release-notes/index.js'
@@ -40,6 +41,7 @@ import rename from './commands/rename/index.js'
 import resume from './commands/resume/index.js'
 import review, { ultrareview } from './commands/review.js'
 import generateImage from './commands/generate-image.js'
+import imageEditor from './commands/image-editor.js'
 import generateVideo from './commands/image-video.js'
 import session from './commands/session/index.js'
 import share from './commands/share/index.js'
@@ -292,6 +294,7 @@ const COMMANDS = memoize((): Command[] => [
   memory,
   mobile,
   telegramBot,
+  disconnectTelegram,
   model,
   connect,
   outputStyle,
@@ -314,6 +317,7 @@ const COMMANDS = memoize((): Command[] => [
   review,
   ultrareview,
   generateImage,
+  imageEditor,
   generateVideo,
   rewind,
   securityReview,
