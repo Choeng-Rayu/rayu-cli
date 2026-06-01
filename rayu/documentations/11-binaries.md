@@ -21,7 +21,7 @@ runtime + bundled code, so end users need neither Bun nor Node installed.
 ## Build all platforms
 
 ```bash
-cd claude-code
+cd rayu
 export PATH="$HOME/.bun/bin:$PATH"
 bun run build:binaries
 ```
@@ -88,7 +88,7 @@ sudo dnf install ./rayu-0.1.1-1.x86_64.rpm   # Fedora/RHEL (or: rpm -i)
 The version is the single source of truth in `package.json` (`"version"`),
 inlined at build time as `MACRO.VERSION`. To cut a new version:
 
-1. Bump `"version"` in `claude-code/package.json` (e.g. `0.1.1`).
+1. Bump `"version"` in `rayu/package.json` (e.g. `0.1.1`).
 2. Rebuild: `bun run build:binaries`.
 3. Verify: `./dist/bin/rayu-linux-x64 --version` → `0.1.1 (Rayu-CLI)`.
 

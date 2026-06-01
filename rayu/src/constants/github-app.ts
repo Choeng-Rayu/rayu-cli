@@ -61,7 +61,7 @@ This PR adds a GitHub Actions workflow that enables RAYU integration in our repo
 
 ### What is RAYU?
 
-[RAYU](https://claude.com/claude-code) is an AI coding agent that can help with:
+[RAYU](https://github.com/rayu-cli/rayu-cli) is an AI coding agent that can help with:
 - Bug fixes and improvements  
 - Documentation updates
 - Implementing new features

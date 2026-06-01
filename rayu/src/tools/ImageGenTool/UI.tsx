@@ -23,6 +23,7 @@ function ImagePreview({ output }: { output: Output }): React.ReactNode {
 }
 
 export function renderToolResultMessage(output: Output): React.ReactNode {
+  const preview = ImagePreview({ output })
   return (
     <MessageResponse>
       <Box flexDirection="column">
@@ -32,7 +33,13 @@ export function renderToolResultMessage(output: Output): React.ReactNode {
             ({output.width}×{output.height}, {output.model})
           </Text>
         </Text>
-        <ImagePreview output={output} />
+        {preview}
+        {preview && (
+          <Text dimColor>
+            Low-res preview — open {toRelativePath(output.path)} in an image
+            viewer for full resolution (hi-res terminal rendering coming soon).
+          </Text>
+        )}
       </Box>
     </MessageResponse>
   )

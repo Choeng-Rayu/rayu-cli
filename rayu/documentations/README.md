@@ -29,7 +29,7 @@ switching, MCP support, and the full built-in tool suite.
 
 ```bash
 # build
-cd claude-code && export PATH="$HOME/.bun/bin:$PATH"
+cd rayu && export PATH="$HOME/.bun/bin:$PATH"
 bun install && bun run build
 
 # run (interactive) — on first launch, pick a provider + paste your API key
