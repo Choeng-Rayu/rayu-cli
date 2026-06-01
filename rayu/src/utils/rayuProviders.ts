@@ -53,12 +53,20 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     envKeys: ['DEEPSEEK_API_KEY'],
   },
   {
-    id: 'kimi',
+    id: 'kimi-moonshot',
     label: 'Kimi / Moonshot (api.moonshot.ai)',
     kind: 'openai-compatible',
     baseURL: 'https://api.moonshot.ai/v1',
-    defaultModel: 'kimi-k2-0711-preview',
-    envKeys: ['KIMI_FOR_CODE_API_KEY', 'KIMI_API_KEY', 'MOONSHOT_API_KEY'],
+    defaultModel: 'kimi-k2.6',
+    envKeys: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
+  },
+  {
+    id: 'kimi-for-code',
+    label: 'Kimi for Code (api.kimi.com/coding)',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.kimi.com/coding/v1',
+    defaultModel: 'kimi-for-coding',
+    envKeys: ['KIMI_FOR_CODE_API_KEY'],
   },
   {
     id: 'openai',

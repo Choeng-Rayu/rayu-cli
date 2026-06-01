@@ -1,4 +1,5 @@
 rayu/node_modules/
 rayu/graphify-out/
 rayu/dist/bin/
-rayu/dist/pkg
+rayu/dist/pkg/
+rayu/.playwright-mcp/

@@ -1,6 +1,6 @@
 # RAYU.md
 
-This file provides guidance to **RAYU** (the Claude‑Code CLI) when working with code in this repository.
+This file provides guidance to **RAYU** (the Rayu CLI) when working with code in this repository.
 
 ---
 
@@ -38,7 +38,7 @@ src/
 ├─ utils/
 │   ├─ config.ts        ← Loads `~/.claude` / `~/.rayu` configs, env vars, feature gates
 │   ├─ startupProfiler.ts ← Simple performance profiling for CLI stages
-│   ├─ auth.ts          ← OAuth / Claude AIO token handling
+│   ├─ auth.ts          ← OAuth / API token handling
 │   ├─ earlyInput.ts   ← Captures piped stdin before full init
 │   ├─ process.ts       ← Helper wrappers for graceful process exits
 │   └─ sinks.ts         ← Initializes telemetry/log sinks
@@ -83,6 +83,8 @@ src/
 | `documentations/02‑quickstart.md`   | Shows the typical workflow (`/connect`, `/model`). |
 | `documentations/06‑cli-reference.md`| Full flag list & sub‑command table (referenced by the CLI). |
 | `documentations/07‑slash-commands.md`| In‑session commands (e.g., `/help`, `/model`, `/connect`). |
+| `documentations/12‑image-generation.md`| Built‑in `GenerateImage` tool (NVIDIA): create/edit images, save to disk, inline + terminal display. |
+| `src/tools/ImageGenTool/` | Implements the `GenerateImage` tool (NVIDIA genai image models, registered in `src/tools.ts`). |
 | `RAYU.md` (this file) | Provides guidance for future RAYU instances. |
 | `STARTING.md` | Explains the early‑input capture and profiling steps. |
 | `scripts/build.ts` | The build script that bundles the CLI; contains stub aliasing and macro handling. |
@@ -123,7 +125,7 @@ src/
 1. **Clone & Install**
    ```bash
    git clone <repo‑url>
-   cd claude-code
+   cd rayu
    bun install
    ```
 2. **Build & Run**

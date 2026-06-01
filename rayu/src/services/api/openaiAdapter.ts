@@ -584,6 +584,42 @@ function rejectedOptionalParams(
   return rejected
 }
 
+/** True when the (translated) request carries at least one image part. */
+function requestHasImage(req: AnyObj): boolean {
+  const msgs = req.messages as AnyObj[] | undefined
+  return (
+    Array.isArray(msgs) &&
+    msgs.some(
+      m =>
+        Array.isArray(m.content) &&
+        (m.content as AnyObj[]).some(p => p?.type === 'image_url'),
+    )
+  )
+}
+
+/**
+ * Some vision models (e.g. NVIDIA `llama-3.2-*-vision`) reject a request that
+ * carries BOTH tools and an image — NVIDIA NIM returns 400 "The number of image
+ * tokens (0) must be the same as the number of images (1)". The agent always
+ * sends tools, so pasted/Read images would always fail. Retrying without tools
+ * lets the model actually read the image (it just can't call a tool that turn).
+ */
+function isImageToolConflict(e: unknown, req: AnyObj): boolean {
+  if ((e as AnyObj)?.status !== 400 || !req.tools || !requestHasImage(req)) {
+    return false
+  }
+  const msg = String((e as AnyObj)?.message ?? '')
+  return /image token|number of images|image.*not.*support|do not support tools|tools?.*not.*support.*(image|vision)|vision.*not.*support.*tool/i.test(
+    msg,
+  )
+}
+
+/** Drop tools/tool_choice for an image-only fallback retry. */
+function withoutTools(req: AnyObj): AnyObj {
+  const { tools: _tools, tool_choice: _tc, ...rest } = req as AnyObj
+  return rest
+}
+
 /**
  * Re-shape an error thrown by the OpenAI SDK as the equivalent Anthropic SDK
  * error. The shared retry/error layer (withRetry.ts, errors.ts) recognizes
@@ -665,6 +701,22 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
           throw normalizeError(e2)
         }
       }
+      if (isImageToolConflict(e, request)) {
+        try {
+          const completion = (await client.chat.completions.create(
+            withoutTools(request) as never,
+            { signal },
+          )) as unknown as AnyObj
+          return toBetaMessage(completion, model)
+        } catch (e2) {
+          reportIssue(
+            'openai_adapter.request_failed',
+            'OpenAI-compatible request failed',
+            { model, status: (e2 as AnyObj)?.status, error: e2 instanceof Error ? e2.message : String(e2) },
+          )
+          throw normalizeError(e2)
+        }
+      }
       reportIssue(
         'openai_adapter.request_failed',
         'OpenAI-compatible request failed',
@@ -702,6 +754,15 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
         try {
           oaStream = (await client.chat.completions.create(
             withoutOptionalParams(request, rejected) as never,
+            { signal },
+          )) as unknown as AsyncIterable<AnyObj>
+        } catch (e2) {
+          throw normalizeError(e2)
+        }
+      } else if (isImageToolConflict(e, request)) {
+        try {
+          oaStream = (await client.chat.completions.create(
+            withoutTools(request) as never,
             { signal },
           )) as unknown as AsyncIterable<AnyObj>
         } catch (e2) {
