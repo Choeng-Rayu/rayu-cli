@@ -5,7 +5,7 @@ export const PRODUCT_NAME = 'Rayu-CLI'
 export const PRODUCT_COMMAND = 'rayu'
 export const PRODUCT_CONFIG_DIRNAME = '.rayu'
 
-export const PRODUCT_URL = 'https://claude.com/claude-code'
+export const PRODUCT_URL = 'https://github.com/rayu-cli/rayu-cli'
 
 // RAYU Remote session URLs
 export const CLAUDE_AI_BASE_URL = 'https://claude.ai'

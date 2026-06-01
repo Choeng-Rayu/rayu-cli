@@ -222,55 +222,35 @@ describe('ImageGenTool.call', () => {
 })
 
 describe('terminal image rendering', () => {
-  const TERM_KEYS = [
-    'TERM_PROGRAM',
-    'TERM',
-    'KITTY_WINDOW_ID',
-    'ITERM_SESSION_ID',
-  ]
-  const saved: Record<string, string | undefined> = {}
-  beforeEach(() => {
-    for (const k of TERM_KEYS) {
-      saved[k] = process.env[k]
-      delete process.env[k]
-    }
-  })
-  afterEach(() => {
-    for (const k of TERM_KEYS) {
-      if (saved[k] === undefined) delete process.env[k]
-      else process.env[k] = saved[k]
-    }
-  })
-
-  test('iTerm2 sequence wraps base64 in OSC 1337 with byte size', async () => {
-    const { itermImageSequence } = await import(
+  test('decodeImage decodes a JPEG to RGBA dimensions', async () => {
+    const { encode: encodeJpeg } = await import('jpeg-js')
+    const { decodeImage } = await import(
       '../src/tools/ImageGenTool/terminalImage.ts'
     )
-    const seq = itermImageSequence(TINY_PNG_B64)
-    expect(seq).toContain('\x1b]1337;File=inline=1;size=')
-    expect(seq).toContain(TINY_PNG_B64)
-    expect(seq.endsWith('\x07')).toBe(true)
+    const jpg = encodeJpeg(
+      { data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]), width: 2, height: 1 },
+      90,
+    )
+    const img = decodeImage(Buffer.from(jpg.data), 'image/jpeg')
+    expect(img?.width).toBe(2)
+    expect(img?.height).toBe(1)
+    expect(img?.data.length).toBe(8)
   })
 
-  test('Kitty sequence transmits a PNG (a=T,f=100)', async () => {
-    const { kittyImageSequence } = await import(
+  test('imageToAnsiLines emits truecolor half-block rows', async () => {
+    const { imageToAnsiLines } = await import(
       '../src/tools/ImageGenTool/terminalImage.ts'
     )
-    const seq = kittyImageSequence(TINY_PNG_B64)
-    expect(seq.startsWith('\x1b_Ga=T,f=100')).toBe(true)
-    expect(seq.endsWith('\x1b\\')).toBe(true)
-  })
-
-  test('buildTerminalImage selects protocol by terminal, null when unsupported', async () => {
-    const { buildTerminalImage } = await import(
-      '../src/tools/ImageGenTool/terminalImage.ts'
+    const { lines, width } = imageToAnsiLines(
+      { width: 1, height: 2, data: new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]) },
+      1,
     )
-    expect(buildTerminalImage(TINY_PNG_B64)).toBeNull()
-    process.env.TERM_PROGRAM = 'iTerm.app'
-    expect(buildTerminalImage(TINY_PNG_B64)?.includes('1337')).toBe(true)
-    delete process.env.TERM_PROGRAM
-    process.env.KITTY_WINDOW_ID = '1'
-    expect(buildTerminalImage(TINY_PNG_B64)?.startsWith('\x1b_G')).toBe(true)
+    expect(width).toBe(1)
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain('▀')
+    expect(lines[0]).toContain('\x1b[38;2;255;0;0m')
+    expect(lines[0]).toContain('\x1b[48;2;0;0;255m')
+    expect(lines[0].endsWith('\x1b[0m')).toBe(true)
   })
 })
 

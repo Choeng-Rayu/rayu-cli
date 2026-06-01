@@ -11,7 +11,6 @@ import { expandPath } from '../../utils/path.js'
 import { IMAGE_MODELS, resolveModel } from './models.js'
 import { generateImage, getNvidiaApiKey } from './nvidiaImageClient.js'
 import { DESCRIPTION, getImageGenPrompt, IMAGE_GEN_TOOL_NAME } from './prompt.js'
-import { displayImageInTerminal } from './terminalImage.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 
 const inputSchema = lazySchema(() =>
@@ -230,11 +229,6 @@ export const ImageGenTool = buildTool({
     }
 
     const dims = imageDimensions(buffer)
-
-    // Show the image to the user in the terminal (best-effort, interactive only).
-    if (!context.options.isNonInteractiveSession) {
-      displayImageInTerminal(inlineB64)
-    }
 
     return {
       data: {

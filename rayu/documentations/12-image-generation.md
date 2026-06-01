@@ -19,8 +19,9 @@ The tool is hidden when no NVIDIA key is configured.
 2. **Saves** the PNG to disk (default `./generated-image-<timestamp>.png`, always
    inside the working directory) so generated assets can be referenced from code.
 3. Returns the image **inline** so the model can see the result.
-4. **Displays** it in your terminal when supported (iTerm2, WezTerm, Kitty,
-   Ghostty); otherwise it prints the saved path.
+4. **Displays** it in your terminal: native inline image on iTerm2/WezTerm, or
+   truecolor ANSI half-blocks on any 24-bit/256-color terminal (xterm-256color,
+   Kitty, Ghostty, most Linux terminals). Falls back to printing the path.
 
 ## Parameters
 

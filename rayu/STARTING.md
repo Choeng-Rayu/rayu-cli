@@ -3,7 +3,7 @@
 ## 1. Build
 
 ```bash
-cd claude-code
+cd rayu
 export PATH="$HOME/.bun/bin:$PATH"
 bun install
 bun run build                         # → dist/rayu.js

@@ -1,6 +1,6 @@
 # RAYU.md
 
-This file provides guidance to **RAYU** (the Claude‑Code CLI) when working with code in this repository.
+This file provides guidance to **RAYU** (the Rayu CLI) when working with code in this repository.
 
 ---
 
@@ -38,7 +38,7 @@ src/
 ├─ utils/
 │   ├─ config.ts        ← Loads `~/.claude` / `~/.rayu` configs, env vars, feature gates
 │   ├─ startupProfiler.ts ← Simple performance profiling for CLI stages
-│   ├─ auth.ts          ← OAuth / Claude AIO token handling
+│   ├─ auth.ts          ← OAuth / API token handling
 │   ├─ earlyInput.ts   ← Captures piped stdin before full init
 │   ├─ process.ts       ← Helper wrappers for graceful process exits
 │   └─ sinks.ts         ← Initializes telemetry/log sinks
@@ -125,7 +125,7 @@ src/
 1. **Clone & Install**
    ```bash
    git clone <repo‑url>
-   cd claude-code
+   cd rayu
    bun install
    ```
 2. **Build & Run**

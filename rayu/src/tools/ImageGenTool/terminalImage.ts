@@ -1,66 +1,60 @@
-// Inline-image rendering for terminals that support it. Builds the escape
-// sequence for the active terminal (iTerm2 OSC 1337 or the Kitty graphics
-// protocol), or returns null when unsupported so the caller falls back to
-// printing the saved file path.
+// Decode a generated image and render it as truecolor ANSI half-blocks (each
+// character cell = 2 vertical pixels via ▀). The lines are rendered inside the
+// Ink transcript via <RawAnsi>, so the preview persists in scrollback instead
+// of being clobbered by Ink's next frame redraw.
+import { decode as decodeJpeg } from 'jpeg-js'
+import { PNG } from 'pngjs'
 
 const ESC = '\x1b'
-const BEL = '\x07'
 
-/** iTerm2 / WezTerm support the iTerm2 inline-image protocol. */
-function supportsIterm(): boolean {
-  return (
-    process.env.TERM_PROGRAM === 'iTerm.app' ||
-    process.env.TERM_PROGRAM === 'WezTerm' ||
-    !!process.env.ITERM_SESSION_ID
-  )
-}
+export type DecodedImage = { width: number; height: number; data: Uint8Array }
 
-/** Kitty / Ghostty support the Kitty graphics protocol. */
-function supportsKitty(): boolean {
-  return (
-    process.env.TERM === 'xterm-kitty' ||
-    !!process.env.KITTY_WINDOW_ID ||
-    process.env.TERM === 'xterm-ghostty' ||
-    process.env.TERM_PROGRAM === 'ghostty'
-  )
-}
-
-/** iTerm2 inline image: OSC 1337 File=inline=1:<base64> BEL. */
-export function itermImageSequence(b64: string): string {
-  const bytes = Buffer.byteLength(b64, 'base64')
-  return `${ESC}]1337;File=inline=1;size=${bytes}:${b64}${BEL}`
-}
-
-/** Kitty graphics protocol: transmit+display a PNG (f=100) in base64 chunks. */
-export function kittyImageSequence(b64: string): string {
-  const CHUNK = 4096
-  if (b64.length <= CHUNK) return `${ESC}_Ga=T,f=100;${b64}${ESC}\\`
-  let out = ''
-  for (let i = 0; i < b64.length; i += CHUNK) {
-    const chunk = b64.slice(i, i + CHUNK)
-    const more = i + CHUNK < b64.length ? 1 : 0
-    const control = i === 0 ? `a=T,f=100,m=${more}` : `m=${more}`
-    out += `${ESC}_G${control};${chunk}${ESC}\\`
-  }
-  return out
-}
-
-/** Escape sequence to render the image in the active terminal, or null. */
-export function buildTerminalImage(b64: string): string | null {
-  if (supportsKitty()) return kittyImageSequence(b64)
-  if (supportsIterm()) return itermImageSequence(b64)
-  return null
-}
-
-/** Best-effort: render the image in the user's terminal. Returns true if emitted. */
-export function displayImageInTerminal(b64: string): boolean {
+/** Decode JPEG/PNG bytes to RGBA pixels (null on failure). */
+export function decodeImage(
+  buffer: Buffer,
+  mediaType: string,
+): DecodedImage | null {
   try {
-    if (!process.stdout.isTTY) return false
-    const seq = buildTerminalImage(b64)
-    if (!seq) return false
-    process.stdout.write(`\n${seq}\n`)
-    return true
+    if (mediaType === 'image/png') {
+      const png = PNG.sync.read(buffer)
+      return { width: png.width, height: png.height, data: png.data }
+    }
+    const img = decodeJpeg(buffer, { useTArray: true, formatAsRGBA: true })
+    return { width: img.width, height: img.height, data: img.data }
   } catch {
-    return false
+    return null
   }
+}
+
+/**
+ * Render decoded RGBA as truecolor ANSI half-block rows (2 px per row).
+ * Each returned line is exactly `width` cells wide (reset-terminated).
+ */
+export function imageToAnsiLines(
+  img: DecodedImage,
+  maxCols: number,
+): { lines: string[]; width: number } {
+  const { width: W, height: H, data: D } = img
+  const cols = Math.max(1, Math.min(maxCols, W))
+  const cellW = W / cols
+  const rows = Math.max(1, Math.round(H / cellW / 2))
+  const cellH = H / (rows * 2)
+  const color = (x: number, y: number): string => {
+    const xi = Math.min(W - 1, Math.max(0, Math.floor(x)))
+    const yi = Math.min(H - 1, Math.max(0, Math.floor(y)))
+    const i = (yi * W + xi) * 4
+    return `${D[i]};${D[i + 1]};${D[i + 2]}`
+  }
+  const lines: string[] = []
+  for (let r = 0; r < rows; r++) {
+    let line = ''
+    for (let c = 0; c < cols; c++) {
+      const x = (c + 0.5) * cellW
+      const top = color(x, (2 * r + 0.5) * cellH)
+      const bot = color(x, (2 * r + 1.5) * cellH)
+      line += `${ESC}[38;2;${top}m${ESC}[48;2;${bot}m▀`
+    }
+    lines.push(`${line}${ESC}[0m`)
+  }
+  return { lines, width: cols }
 }

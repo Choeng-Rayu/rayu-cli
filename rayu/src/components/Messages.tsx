@@ -700,6 +700,13 @@ const MessagesImpl = ({
           <VirtualMessageList messages={renderableMessages} scrollRef={scrollRef} columns={columns} itemKey={messageKey} renderItem={renderMessageRow} onItemClick={onItemClick} isItemClickable={isItemClickable} isItemExpanded={isItemExpanded} trackStickyPrompt={trackStickyPrompt} selectedIndex={selectedIdx >= 0 ? selectedIdx : undefined} cursorNavRef={cursorNavRef} setCursor={setCursor} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} extractSearchText={extractSearchText} />
         </InVirtualListContext.Provider> : renderableMessages.flatMap(renderMessageRow)}
 
+      {isStreamingThinkingVisible && streamingThinking && !isBriefOnly && <Box marginTop={1}>
+          <AssistantThinkingMessage param={{
+        type: 'thinking',
+        thinking: streamingThinking.thinking
+      }} addMargin={false} isTranscriptMode={true} verbose={verbose} hideInTranscript={false} />
+        </Box>}
+
       {streamingText && !isBriefOnly && <Box alignItems="flex-start" flexDirection="row" marginTop={1} width="100%">
           <Box flexDirection="row">
             <Box minWidth={2}>
@@ -709,13 +716,6 @@ const MessagesImpl = ({
               <StreamingMarkdown>{streamingText}</StreamingMarkdown>
             </Box>
           </Box>
-        </Box>}
-
-      {isStreamingThinkingVisible && streamingThinking && !isBriefOnly && <Box marginTop={1}>
-          <AssistantThinkingMessage param={{
-        type: 'thinking',
-        thinking: streamingThinking.thinking
-      }} addMargin={false} isTranscriptMode={true} verbose={verbose} hideInTranscript={false} />
         </Box>}
     </>;
 };
