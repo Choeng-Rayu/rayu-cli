@@ -1,10 +1,15 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import {
+  _resetOpenAIAdapterUnsupportedParamCacheForTesting,
   buildOpenAIRequest,
   createOpenAICompatibleClient,
   toBetaMessage,
   translateStream,
 } from '../src/services/api/openaiAdapter.ts'
+
+beforeEach(() => {
+  _resetOpenAIAdapterUnsupportedParamCacheForTesting()
+})
 
 describe('openaiAdapter request translation (Anthropic -> OpenAI)', () => {
   test('system + user text + tools', () => {
@@ -368,12 +373,14 @@ describe('openaiAdapter reasoning + stream_options fallback', () => {
     expect(text).toBe('Hello')
   })
 
-  test('streaming client retries without stream_options when provider rejects it', async () => {
+  test('streaming client retries without stream_options when provider rejects it, then suppresses it', async () => {
     let calls = 0
+    const bodies: any[] = []
     const origFetch = globalThis.fetch
     globalThis.fetch = (async (_url: any, init: any) => {
       calls++
       const body = JSON.parse(init.body)
+      bodies.push(body)
       if (body.stream_options) {
         return new Response(JSON.stringify({ error: { message: 'Unrecognized request argument: stream_options' } }), { status: 400, headers: { 'content-type': 'application/json' } })
       }
@@ -387,6 +394,13 @@ describe('openaiAdapter reasoning + stream_options fallback', () => {
       for await (const e of result.data as AsyncIterable<any>) types.push(e.type)
       expect(types).toContain('message_stop')
       expect(calls).toBe(2) // first with stream_options (400), retry without
+
+      const result2: any = await client.beta.messages.create({ model: 'm', messages: [{ role: 'user', content: 'again' }], stream: true }).withResponse()
+      for await (const _e of result2.data as AsyncIterable<any>) {
+        // drain
+      }
+      expect(calls).toBe(3)
+      expect(bodies.map(body => 'stream_options' in body)).toEqual([true, false, false])
     } finally {
       globalThis.fetch = origFetch
     }
@@ -454,5 +468,136 @@ describe('openaiAdapter assistant content normalization', () => {
     const a2 = (reasoningOnly.messages as any[]).find(m => m.role === 'assistant')
     expect(a2.content).toBe('')
     expect(a2.tool_calls).toBeUndefined()
+  })
+})
+
+describe('openaiAdapter prompt caching', () => {
+  test('buildOpenAIRequest omits prompt_cache_key by default', () => {
+    const req = buildOpenAIRequest({
+      model: 'm',
+      system: 'You are helpful',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(req.prompt_cache_key).toBeUndefined()
+  })
+
+  test('prompt_cache_key is stable for same system+model and changes with system', () => {
+    const mk = (system: string, model = 'm') =>
+      buildOpenAIRequest(
+        { model, system, messages: [{ role: 'user', content: 'hi' }] },
+        { promptCacheKey: true },
+      ).prompt_cache_key
+    const a = mk('You are helpful')
+    expect(typeof a).toBe('string')
+    expect(a).toBe(mk('You are helpful')) // stable
+    expect(a).not.toBe(mk('You are different')) // system changed
+    expect(a).not.toBe(mk('You are helpful', 'other-model')) // model changed
+  })
+
+  test('prompt_cache_key is stable across turns (different user messages, same prefix)', () => {
+    const k1 = buildOpenAIRequest(
+      { model: 'm', system: 's', messages: [{ role: 'user', content: 'first' }] },
+      { promptCacheKey: true },
+    ).prompt_cache_key
+    const k2 = buildOpenAIRequest(
+      {
+        model: 'm',
+        system: 's',
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'a' },
+          { role: 'user', content: 'second' },
+        ],
+      },
+      { promptCacheKey: true },
+    ).prompt_cache_key
+    expect(k1).toBe(k2)
+  })
+
+  test('OpenAI auto mode includes prompt_cache_key', async () => {
+    let body: any
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      body = JSON.parse(init.body)
+      return new Response(
+        JSON.stringify({ id: 'c', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k',
+        baseURL: 'https://api.openai.com/v1',
+        providerId: 'openai',
+        maxRetries: 0,
+      })
+      await client.beta.messages.create({ model: 'gpt-4o', system: 's', messages: [{ role: 'user', content: 'hi' }] })
+      expect(typeof body.prompt_cache_key).toBe('string')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('NVIDIA auto mode does not send prompt_cache_key on the first request', async () => {
+    let body: any
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      body = JSON.parse(init.body)
+      return new Response(
+        JSON.stringify({ id: 'c', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k',
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+        providerId: 'nvidia',
+        maxRetries: 0,
+      })
+      await client.beta.messages.create({ model: 'meta/llama-3.3-70b-instruct', system: 's', messages: [{ role: 'user', content: 'hi' }] })
+      expect(body.prompt_cache_key).toBeUndefined()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('non-streaming retries without prompt_cache_key when a strict provider rejects it, then suppresses it', async () => {
+    let calls = 0
+    const bodies: any[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      calls++
+      const body = JSON.parse(init.body)
+      bodies.push(body)
+      if (body.prompt_cache_key) {
+        return new Response(
+          JSON.stringify({ error: { message: 'Unrecognized request argument: prompt_cache_key' } }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(
+        JSON.stringify({ id: 'c', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k',
+        baseURL: 'http://strict-cache-key.test/v1',
+        maxRetries: 0,
+        promptCacheKey: 'enabled',
+      })
+      const msg: any = await client.beta.messages.create({ model: 'm', system: 's', messages: [{ role: 'user', content: 'hi' }] })
+      expect(msg.content[0].text).toBe('ok')
+      expect(calls).toBe(2) // first with key (400), retry without
+
+      const msg2: any = await client.beta.messages.create({ model: 'm', system: 's', messages: [{ role: 'user', content: 'again' }] })
+      expect(msg2.content[0].text).toBe('ok')
+      expect(calls).toBe(3)
+      expect(bodies.map(body => 'prompt_cache_key' in body)).toEqual([true, false, false])
+    } finally {
+      globalThis.fetch = origFetch
+    }
   })
 })

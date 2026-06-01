@@ -3093,6 +3093,13 @@ export function handleMessageFromStream(
         }
         case 'thinking_delta':
           onUpdateLength(message.event.delta.thinking)
+          // Surface reasoning live (reset when a prior block already completed).
+          onStreamingThinking?.(current => ({
+            thinking:
+              (current?.isStreaming ? current.thinking : '') +
+              message.event.delta.thinking,
+            isStreaming: true,
+          }))
           return
         case 'signature_delta':
           // Signatures are cryptographic authentication strings, not model

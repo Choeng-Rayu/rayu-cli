@@ -19,6 +19,7 @@ import {
   APIError as AnthropicAPIError,
 } from '@anthropic-ai/sdk/index.js'
 import { reportBug, reportIssue } from 'src/utils/rayuDiagnostics.js'
+import { hashPair } from 'src/utils/hash.js'
 
 type AnyObj = Record<string, unknown>
 
@@ -33,6 +34,10 @@ type BetaParams = {
   temperature?: number
   stream?: boolean
   metadata?: AnyObj
+}
+
+type BuildOpenAIRequestOptions = {
+  promptCacheKey?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +242,10 @@ function translateToolChoice(tc: AnyObj | undefined): unknown {
   }
 }
 
-export function buildOpenAIRequest(params: BetaParams): AnyObj {
+export function buildOpenAIRequest(
+  params: BetaParams,
+  options: BuildOpenAIRequestOptions = {},
+): AnyObj {
   const req: AnyObj = {
     model: params.model,
     messages: translateMessages(params),
@@ -258,6 +266,12 @@ export function buildOpenAIRequest(params: BetaParams): AnyObj {
     req.tools = tools
     const toolChoice = translateToolChoice(params.tool_choice)
     if (toolChoice !== undefined) req.tool_choice = toolChoice
+  }
+  if (options.promptCacheKey) {
+    // Stable cache key for providers with prompt/prefix routing (OpenAI):
+    // same system+model -> same key across turns, so the cached prefix is
+    // more likely to be reused instead of re-processed.
+    req.prompt_cache_key = hashPair(systemToText(params.system) ?? '', params.model)
   }
   return req
 }
@@ -460,18 +474,114 @@ export type OpenAICompatibleConfig = {
   baseURL: string
   headers?: Record<string, string>
   maxRetries?: number
+  providerId?: string
+  promptCacheKey?: 'auto' | 'enabled' | 'disabled'
 }
 
-/** True when an error looks like the provider rejecting `stream_options`. */
-function isStreamOptionsRejection(e: unknown): boolean {
+type OptionalRequestParam = 'prompt_cache_key' | 'stream_options'
+
+const unsupportedOptionalParams = new Map<string, Set<OptionalRequestParam>>()
+
+export function _resetOpenAIAdapterUnsupportedParamCacheForTesting(): void {
+  unsupportedOptionalParams.clear()
+}
+
+function providerModelCacheKey(baseURL: string, model: string): string {
+  return `${baseURL.replace(/\/+$/, '').toLowerCase()}\n${model}`
+}
+
+function isOptionalParamUnsupported(
+  baseURL: string,
+  model: string,
+  param: OptionalRequestParam,
+): boolean {
+  return unsupportedOptionalParams
+    .get(providerModelCacheKey(baseURL, model))
+    ?.has(param) ?? false
+}
+
+function markOptionalParamUnsupported(
+  baseURL: string,
+  model: string,
+  param: OptionalRequestParam,
+): void {
+  const key = providerModelCacheKey(baseURL, model)
+  const params = unsupportedOptionalParams.get(key) ?? new Set<OptionalRequestParam>()
+  params.add(param)
+  unsupportedOptionalParams.set(key, params)
+}
+
+function shouldUsePromptCacheKey(config: OpenAICompatibleConfig): boolean {
+  const mode = config.promptCacheKey ?? 'auto'
+  if (mode === 'enabled') return true
+  if (mode === 'disabled') return false
+
+  if (config.providerId?.toLowerCase() === 'openai') return true
+  try {
+    return new URL(config.baseURL).hostname.toLowerCase() === 'api.openai.com'
+  } catch {
+    return false
+  }
+}
+
+function optionalParamsIn(req: AnyObj): OptionalRequestParam[] {
+  const params: OptionalRequestParam[] = []
+  if ('prompt_cache_key' in req) params.push('prompt_cache_key')
+  if ('stream_options' in req) params.push('stream_options')
+  return params
+}
+
+function withoutOptionalParams(
+  req: AnyObj,
+  params: Iterable<OptionalRequestParam>,
+): AnyObj {
+  const next = { ...req }
+  for (const param of params) {
+    delete next[param]
+  }
+  return next
+}
+
+function errorText(e: unknown): string {
+  const err = e as AnyObj
+  const parts = [String(err?.message ?? '')]
+  const detail = err?.error
+  if (typeof detail === 'string') {
+    parts.push(detail)
+  } else if (detail && typeof detail === 'object') {
+    for (const value of Object.values(detail as AnyObj)) {
+      if (typeof value === 'string') parts.push(value)
+    }
+  }
+  return parts.join(' ')
+}
+
+function rejectedOptionalParams(
+  e: unknown,
+  candidates: OptionalRequestParam[],
+): Set<OptionalRequestParam> {
   const status = (e as AnyObj)?.status
-  const msg = String((e as AnyObj)?.message ?? '')
-  return (
-    status === 400 &&
-    /stream_options|include_usage|unrecognized|unexpected|unknown|unsupported|invalid.*(param|argument)/i.test(
+  const rejected = new Set<OptionalRequestParam>()
+  if (status !== 400 || candidates.length === 0) return rejected
+
+  const msg = errorText(e)
+  if (/stream_options|include_usage/i.test(msg)) {
+    if (candidates.includes('stream_options')) rejected.add('stream_options')
+  }
+  if (/prompt_cache_key/i.test(msg)) {
+    if (candidates.includes('prompt_cache_key')) rejected.add('prompt_cache_key')
+  }
+  if (rejected.size > 0) return rejected
+
+  if (
+    /unrecognized|unexpected|unknown|unsupported|invalid.*(param|argument)|extra_forbidden/i.test(
       msg,
     )
-  )
+  ) {
+    for (const param of candidates) rejected.add(param)
+  }
+
+  return rejected
 }
 
 /**
@@ -527,13 +637,34 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
     model: string,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    const request = { ...req, stream: false }
     try {
       const completion = (await client.chat.completions.create(
-        { ...req, stream: false } as never,
+        request as never,
         { signal },
       )) as unknown as AnyObj
       return toBetaMessage(completion, model)
     } catch (e) {
+      const rejected = rejectedOptionalParams(e, optionalParamsIn(request))
+      if (rejected.size > 0) {
+        for (const param of rejected) {
+          markOptionalParamUnsupported(config.baseURL, model, param)
+        }
+        try {
+          const completion = (await client.chat.completions.create(
+            withoutOptionalParams(request, rejected) as never,
+            { signal },
+          )) as unknown as AnyObj
+          return toBetaMessage(completion, model)
+        } catch (e2) {
+          reportIssue(
+            'openai_adapter.request_failed',
+            'OpenAI-compatible request failed',
+            { model, status: (e2 as AnyObj)?.status, error: e2 instanceof Error ? e2.message : String(e2) },
+          )
+          throw normalizeError(e2)
+        }
+      }
       reportIssue(
         'openai_adapter.request_failed',
         'OpenAI-compatible request failed',
@@ -549,20 +680,30 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
     signal?: AbortSignal,
   ): Promise<{ data: AsyncGenerator<StreamEvent>; request_id: null; response: Response }> {
     const base = { ...req, stream: true }
+    const request = isOptionalParamUnsupported(
+      config.baseURL,
+      model,
+      'stream_options',
+    )
+      ? base
+      : { ...base, stream_options: { include_usage: true } }
     let oaStream: AsyncIterable<AnyObj>
     try {
       oaStream = (await client.chat.completions.create(
-        { ...base, stream_options: { include_usage: true } } as never,
+        request as never,
         { signal },
       )) as unknown as AsyncIterable<AnyObj>
     } catch (e) {
-      // Some providers reject the unknown `stream_options` param — retry once
-      // without it (usage will be absent, which the consumer tolerates).
-      if (isStreamOptionsRejection(e)) {
+      const rejected = rejectedOptionalParams(e, optionalParamsIn(request))
+      if (rejected.size > 0) {
+        for (const param of rejected) {
+          markOptionalParamUnsupported(config.baseURL, model, param)
+        }
         try {
-          oaStream = (await client.chat.completions.create(base as never, {
-            signal,
-          })) as unknown as AsyncIterable<AnyObj>
+          oaStream = (await client.chat.completions.create(
+            withoutOptionalParams(request, rejected) as never,
+            { signal },
+          )) as unknown as AsyncIterable<AnyObj>
         } catch (e2) {
           throw normalizeError(e2)
         }
@@ -587,7 +728,15 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
   }
 
   function create(params: BetaParams, opts?: AnyObj): unknown {
-    const req = buildOpenAIRequest(params)
+    const req = buildOpenAIRequest(params, {
+      promptCacheKey:
+        shouldUsePromptCacheKey(config) &&
+        !isOptionalParamUnsupported(
+          config.baseURL,
+          params.model,
+          'prompt_cache_key',
+        ),
+    })
     const signal = opts?.signal as AbortSignal | undefined
 
     // Lazy hybrid: a thenable whose non-streaming request only fires if the
