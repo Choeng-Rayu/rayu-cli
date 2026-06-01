@@ -23,6 +23,7 @@ switching, MCP support, and the full built-in tool suite.
 | 9 | [Diagnostics & Privacy](./09-diagnostics-privacy.md) | Bug/issue logging, telemetry, network posture |
 | 10 | [Troubleshooting](./10-troubleshooting.md) | Common errors and fixes |
 | 11 | [Building binaries](./11-binaries.md) | Cross-platform standalone executables, versioning, install |
+| 12 | [Image Generation](./12-image-generation.md) | Built-in `GenerateImage` tool (NVIDIA), save/inline/terminal display |
 
 ## 30-second tour
 

@@ -601,3 +601,71 @@ describe('openaiAdapter prompt caching', () => {
     }
   })
 })
+
+describe('openaiAdapter image+tools conflict fallback', () => {
+  const img = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }
+
+  test('vision model that 400s on tools+image retries without tools and reads the image', async () => {
+    let calls = 0
+    let toolsOnFinalCall = true
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      calls++
+      const body = JSON.parse(init.body)
+      toolsOnFinalCall = 'tools' in body
+      if (body.tools) {
+        // NVIDIA NIM llama-3.2-vision rejects tools+image with this exact 400.
+        return new Response(
+          JSON.stringify({ error: { message: 'The number of image tokens (0) must be the same as the number of images (1)' } }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(
+        JSON.stringify({ id: 'c', choices: [{ message: { content: 'VISION-OK 482' }, finish_reason: 'stop' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({ apiKey: 'k', baseURL: 'http://x/v1', maxRetries: 0 })
+      const msg: any = await client.beta.messages.create({
+        model: 'meta/llama-3.2-11b-vision-instruct',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'read it' }, img] }],
+        tools: [{ name: 'Read', input_schema: { type: 'object' } }],
+      })
+      expect(msg.content[0].text).toBe('VISION-OK 482')
+      expect(calls).toBe(2) // first with tools (400), retry without
+      expect(toolsOnFinalCall).toBe(false)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('a 400 without an image does NOT strip tools (normal tool errors propagate)', async () => {
+    let calls = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response(
+        JSON.stringify({ error: { message: 'The number of image tokens (0) must be the same as the number of images (1)' } }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({ apiKey: 'k', baseURL: 'http://x/v1', maxRetries: 0 })
+      let threw = false
+      try {
+        await client.beta.messages.create({
+          model: 'm',
+          messages: [{ role: 'user', content: 'no image here' }],
+          tools: [{ name: 'Read', input_schema: { type: 'object' } }],
+        })
+      } catch {
+        threw = true
+      }
+      expect(threw).toBe(true)
+      expect(calls).toBe(1) // no image → no tool-stripping retry
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})

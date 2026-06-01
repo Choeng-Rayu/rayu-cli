@@ -83,6 +83,8 @@ src/
 | `documentations/02‑quickstart.md`   | Shows the typical workflow (`/connect`, `/model`). |
 | `documentations/06‑cli-reference.md`| Full flag list & sub‑command table (referenced by the CLI). |
 | `documentations/07‑slash-commands.md`| In‑session commands (e.g., `/help`, `/model`, `/connect`). |
+| `documentations/12‑image-generation.md`| Built‑in `GenerateImage` tool (NVIDIA): create/edit images, save to disk, inline + terminal display. |
+| `src/tools/ImageGenTool/` | Implements the `GenerateImage` tool (NVIDIA genai image models, registered in `src/tools.ts`). |
 | `RAYU.md` (this file) | Provides guidance for future RAYU instances. |
 | `STARTING.md` | Explains the early‑input capture and profiling steps. |
 | `scripts/build.ts` | The build script that bundles the CLI; contains stub aliasing and macro handling. |
