@@ -205,6 +205,7 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/gpt-oss/i, 131_072],
   [/phi-[34]/i, 131_072],
   [/command-r|c4ai/i, 131_072],
+  [/step[-_.]?3\.7/i, 256_000],
   [/step-3/i, 65_536],
   // OpenAI (anchor o-series so e.g. gpt-4o / nemotron don't false-match)
   [/gpt-5|(?:^|[/_-])(o1|o3|o4)(?:[.\-_]|$)/i, 128_000],

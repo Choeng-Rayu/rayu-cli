@@ -73,6 +73,7 @@ describe('curated context windows + default-model guard', () => {
       ['minimaxai/minimax-m2.7', 1_000_000],
       ['qwen/qwen3.5-397b-a17b', 131_072],
       ['qwen/qwen3-coder-480b-a35b-instruct', 256_000],
+      ['stepfun-ai/step-3.7-flash', 256_000],
     ]
     for (const [model, ctx] of cases) {
       expect(m.getRayuModelContextWindow(model)).toBe(ctx)
