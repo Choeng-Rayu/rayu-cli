@@ -8,12 +8,13 @@ import { plugin } from 'bun'
 import { resolve } from 'path'
 import { MACRO_VALUES } from './macroValues.ts'
 
+const V = MACRO_VALUES.VERSION
 const ALL_TARGETS: Record<string, { bunTarget: string; outfile: string }> = {
-  'linux-x64': { bunTarget: 'bun-linux-x64', outfile: 'dist/bin/rayu-linux-x64' },
-  'linux-arm64': { bunTarget: 'bun-linux-arm64', outfile: 'dist/bin/rayu-linux-arm64' },
-  'windows-x64': { bunTarget: 'bun-windows-x64', outfile: 'dist/bin/rayu-windows-x64.exe' },
-  'darwin-x64': { bunTarget: 'bun-darwin-x64', outfile: 'dist/bin/rayu-darwin-x64' },
-  'darwin-arm64': { bunTarget: 'bun-darwin-arm64', outfile: 'dist/bin/rayu-darwin-arm64' },
+  'linux-x64': { bunTarget: 'bun-linux-x64', outfile: `dist/bin/rayu-linux-x64-${V}` },
+  'linux-arm64': { bunTarget: 'bun-linux-arm64', outfile: `dist/bin/rayu-linux-arm64-${V}` },
+  'windows-x64': { bunTarget: 'bun-windows-x64', outfile: `dist/bin/rayu-windows-x64-${V}.exe` },
+  'darwin-x64': { bunTarget: 'bun-darwin-x64', outfile: `dist/bin/rayu-darwin-x64-${V}` },
+  'darwin-arm64': { bunTarget: 'bun-darwin-arm64', outfile: `dist/bin/rayu-darwin-arm64-${V}` },
 }
 
 const define: Record<string, string> = {

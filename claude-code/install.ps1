@@ -22,12 +22,14 @@ New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $dest = Join-Path $installDir 'rayu.exe'
 
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
-$localBuild = Join-Path $scriptDir "dist\bin\$bin"
+# Newest local build matching this arch (versioned or unversioned).
+$localBuild = Get-ChildItem -Path (Join-Path $scriptDir 'dist\bin') -Filter "rayu-windows-$arch*.exe" -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $localFile = Join-Path $scriptDir $bin
 
-if (Test-Path $localBuild) {
-  Write-Host "rayu: installing from local build ($bin)..."
-  Copy-Item $localBuild $dest -Force
+if ($localBuild) {
+  Write-Host "rayu: installing from local build ($($localBuild.Name))..."
+  Copy-Item $localBuild.FullName $dest -Force
 } elseif (Test-Path $localFile) {
   Write-Host "rayu: installing from local file ($bin)..."
   Copy-Item $localFile $dest -Force

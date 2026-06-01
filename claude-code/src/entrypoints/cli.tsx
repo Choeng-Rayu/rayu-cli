@@ -47,6 +47,17 @@ async function main(): Promise<void> {
   } = await import('../utils/startupProfiler.js');
   profileCheckpoint('cli_entry');
 
+  // Windows: when launched as a standalone exe from a non-install location
+  // (e.g. a double-clicked download), register it on PATH so `rayu` works from
+  // any terminal afterwards. No-op on Linux/macOS, under node/bun, or once
+  // installed. Cheap guard first so non-Windows pays nothing.
+  if (process.platform === 'win32') {
+    const {
+      maybeSelfInstallWindows
+    } = await import('../utils/firstRunInstall.js');
+    maybeSelfInstallWindows();
+  }
+
   // Fast-path for --dump-system-prompt: output the rendered system prompt and exit.
   // Used by prompt sensitivity evals to extract the system prompt at a specific commit.
   // Ant-only: eliminated from external builds via feature flag.
