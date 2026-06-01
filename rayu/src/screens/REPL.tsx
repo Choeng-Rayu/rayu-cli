@@ -872,6 +872,9 @@ export function REPL({
   // Ref for the bridge result callback — set after useReplBridge initializes,
   // read in the onQuery finally block to notify mobile clients that a turn ended.
   const sendBridgeResultRef = useRef<() => void>(() => {});
+  // Set after handleIncomingPrompt is defined; the Telegram bridge calls
+  // through this ref to inject inbound chat messages as REPL turns.
+  const telegramPromptRef = useRef<((text: string) => void) | null>(null);
 
   // Ref for the synchronous restore callback — set after restoreMessageSync is
   // defined, read in the onQuery finally block for auto-restore on interrupt.
@@ -3835,6 +3838,7 @@ export function REPL({
     sendBridgeResult
   } = useReplBridge(messages, setMessages, abortControllerRef, commands, mainLoopModel);
   sendBridgeResultRef.current = sendBridgeResult;
+  useTelegramBridge(messages, telegramPromptRef);
   useAfterFirstRender();
 
   // Track prompt queue usage for analytics. Fire once per transition from
@@ -4018,6 +4022,7 @@ export function REPL({
     void onQuery([userMessage], newAbortController, true, [], mainLoopModel);
     return true;
   }, [onQuery, mainLoopModel, store]);
+  telegramPromptRef.current = handleIncomingPrompt;
 
   // Voice input integration (VOICE_MODE builds only)
   const voice = feature('VOICE_MODE') ?

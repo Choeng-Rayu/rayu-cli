@@ -16,7 +16,9 @@ function ImagePreview({ output }: { output: Output }): React.ReactNode {
     ? decodeImage(Buffer.from(output.base64, 'base64'), output.mediaType)
     : null
   if (!img) return null
-  const maxCols = Math.max(16, Math.min(64, (process.stdout.columns || 80) - 4))
+  // Use the full terminal width (bounded) so the half-block preview is as
+  // high-resolution as a cell-based terminal allows.
+  const maxCols = Math.max(16, Math.min(160, (process.stdout.columns || 80) - 2))
   const { lines, width } = imageToAnsiLines(img, maxCols)
   if (lines.length === 0) return null
   return <RawAnsi lines={lines} width={width} />
