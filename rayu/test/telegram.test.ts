@@ -11,7 +11,8 @@ import {
   consumePendingToken,
   writeTelegramConfig,
 } from '../src/telegram/telegramConfig.js'
-import { formatMessage } from '../src/telegram/formatActivity.js'
+import { formatFileChangeReview, formatMessage, isFileChangeReviewMessage, toolIcon } from '../src/telegram/formatActivity.js'
+import { handlePermissionReply } from '../src/telegram/telegramPermissions.js'
 import { getClaudeConfigHomeDir } from '../src/utils/envUtils.js'
 
 // ---- chunkText ----
@@ -97,6 +98,70 @@ describe('telegramConfig', () => {
   })
 })
 
+// ---- toolIcon ----
+describe('toolIcon', () => {
+  test('bash tool gets terminal icon', () => {
+    expect(toolIcon('Bash')).toBe('🖥️')
+    expect(toolIcon('bash')).toBe('🖥️')
+  })
+
+  test('file read tool gets book icon', () => {
+    expect(toolIcon('FileRead')).toBe('📖')
+    expect(toolIcon('file_read')).toBe('📖')
+  })
+
+  test('file write tool gets pencil icon', () => {
+    expect(toolIcon('FileWrite')).toBe('✏️')
+    expect(toolIcon('file_write')).toBe('✏️')
+  })
+
+  test('file edit tool gets memo icon', () => {
+    expect(toolIcon('FileEdit')).toBe('📝')
+    expect(toolIcon('str_replace_based_edit_tool')).toBe('📝')
+  })
+
+  test('glob tool gets magnifier icon', () => {
+    expect(toolIcon('Glob')).toBe('🔍')
+  })
+
+  test('grep tool gets magnifier-right icon', () => {
+    expect(toolIcon('Grep')).toBe('🔎')
+  })
+
+  test('web fetch/search tools get globe icon', () => {
+    expect(toolIcon('WebFetch')).toBe('🌐')
+    expect(toolIcon('WebSearch')).toBe('🌐')
+  })
+
+  test('image gen gets art palette icon', () => {
+    expect(toolIcon('ImageGen')).toBe('🎨')
+    expect(toolIcon('generate_image')).toBe('🎨')
+  })
+
+  test('video gen gets movie icon', () => {
+    expect(toolIcon('VideoGen')).toBe('🎬')
+    expect(toolIcon('generate_video')).toBe('🎬')
+  })
+
+  test('agent tool gets robot icon', () => {
+    expect(toolIcon('Agent')).toBe('🤖')
+  })
+
+  test('todo write gets clipboard icon', () => {
+    expect(toolIcon('TodoWrite')).toBe('📋')
+  })
+
+  test('unknown tool falls back to wrench', () => {
+    expect(toolIcon('SomeUnknownTool')).toBe('🔧')
+  })
+
+  test('hyphenated names are normalized', () => {
+    expect(toolIcon('file-read')).toBe('📖')
+    expect(toolIcon('file-write')).toBe('✏️')
+    expect(toolIcon('web-fetch')).toBe('🌐')
+  })
+})
+
 // ---- formatActivity ----
 describe('formatMessage', () => {
   test('formats text block', () => {
@@ -109,11 +174,42 @@ describe('formatMessage', () => {
     expect(formatMessage(msg)).toBe('💭 pondering')
   })
 
-  test('formats tool_use block with wrench emoji', () => {
-    const msg = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'bash', input: { command: 'ls' } }] } }
+  test('formats bash tool_use with terminal icon', () => {
+    const msg = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls' } }] } }
+    const text = formatMessage(msg)!
+    expect(text).toContain('🖥️')
+    expect(text).toContain('Bash')
+  })
+
+  test('formats file read tool_use with book icon', () => {
+    const msg = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'FileRead', input: { path: '/tmp/foo' } }] } }
+    const text = formatMessage(msg)!
+    expect(text).toContain('📖')
+    expect(text).toContain('FileRead')
+  })
+
+  test('formats file write tool_use with pencil icon', () => {
+    const msg = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'FileWrite', input: { path: '/tmp/foo' } }] } }
+    const text = formatMessage(msg)!
+    expect(text).toContain('✏️')
+  })
+
+  test('formats file edit tool_use with memo icon', () => {
+    const msg = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'FileEdit', input: {} }] } }
+    const text = formatMessage(msg)!
+    expect(text).toContain('📝')
+  })
+
+  test('formats image gen tool_use with art palette icon', () => {
+    const msg = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'ImageGen', input: { prompt: 'cat' } }] } }
+    const text = formatMessage(msg)!
+    expect(text).toContain('🎨')
+  })
+
+  test('unknown tool falls back to wrench icon', () => {
+    const msg = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'SomeTool', input: {} }] } }
     const text = formatMessage(msg)!
     expect(text).toContain('🔧')
-    expect(text).toContain('bash')
   })
 
   test('formats tool_result block with arrow prefix', () => {
@@ -140,5 +236,121 @@ describe('formatMessage', () => {
   test('handles string content body', () => {
     const msg = { type: 'assistant', message: { content: 'plain string message' } }
     expect(formatMessage(msg)).toBe('plain string message')
+  })
+
+  test('truncates long tool_result to under MAX_RESULT_CHARS', () => {
+    const msg = { type: 'user', message: { content: [{ type: 'tool_result', content: 'x'.repeat(1000) }] } }
+    const text = formatMessage(msg)!
+    expect(text.length).toBeLessThan(600)
+    expect(text).toContain('↳')
+  })
+})
+
+// ---- permission reply "always" ----
+describe('handlePermissionReply (always)', () => {
+  test('returns false when no pending permissions', () => {
+    expect(handlePermissionReply('always')).toBe(false)
+  })
+
+  test('returns false for unrecognized text when no pending', () => {
+    expect(handlePermissionReply('maybe')).toBe(false)
+  })
+})
+
+// ---- isFileChangeReviewMessage ----
+describe('isFileChangeReviewMessage', () => {
+  test('returns true for a valid file change review message', () => {
+    const msg = {
+      type: 'system',
+      subtype: 'file_change_review',
+      review: { totalFiles: 1, totalAdditions: 2, totalRemovals: 1, files: [] },
+    }
+    expect(isFileChangeReviewMessage(msg)).toBe(true)
+  })
+
+  test('returns false for assistant message', () => {
+    expect(isFileChangeReviewMessage({ type: 'assistant', message: { content: [] } })).toBe(false)
+  })
+
+  test('returns false for system message with wrong subtype', () => {
+    expect(isFileChangeReviewMessage({ type: 'system', subtype: 'other' })).toBe(false)
+  })
+
+  test('returns false for null', () => {
+    expect(isFileChangeReviewMessage(null)).toBe(false)
+  })
+})
+
+// ---- formatFileChangeReview ----
+describe('formatFileChangeReview', () => {
+  const makeReview = (files: Array<{ displayPath: string; additions: number; removals: number; isCreated?: boolean }>) => ({
+    type: 'system',
+    subtype: 'file_change_review',
+    review: {
+      totalFiles: files.length,
+      totalAdditions: files.reduce((s, f) => s + f.additions, 0),
+      totalRemovals: files.reduce((s, f) => s + f.removals, 0),
+      files,
+    },
+  })
+
+  test('shows file count, additions, and removals in header', () => {
+    const msg = makeReview([{ displayPath: 'src/foo.ts', additions: 8, removals: 3 }])
+    const text = formatFileChangeReview(msg)
+    expect(text).toContain('1 file')
+    expect(text).toContain('+8')
+    expect(text).toContain('−3')
+  })
+
+  test('shows each file with its stats', () => {
+    const msg = makeReview([
+      { displayPath: 'src/foo.ts', additions: 8, removals: 3 },
+      { displayPath: 'src/bar.ts', additions: 2, removals: 0 },
+    ])
+    const text = formatFileChangeReview(msg)
+    expect(text).toContain('src/foo.ts')
+    expect(text).toContain('src/bar.ts')
+    expect(text).toContain('+8')
+    expect(text).toContain('+2')
+  })
+
+  test('marks new files with ✨ icon', () => {
+    const msg = makeReview([{ displayPath: 'src/new.ts', additions: 5, removals: 0, isCreated: true }])
+    const text = formatFileChangeReview(msg)
+    expect(text).toContain('✨')
+    expect(text).toContain('new file')
+  })
+
+  test('includes undo and review_detail instructions', () => {
+    const msg = makeReview([{ displayPath: 'src/foo.ts', additions: 1, removals: 1 }])
+    const text = formatFileChangeReview(msg)
+    expect(text).toContain('/undo')
+    expect(text).toContain('/review_detail')
+  })
+
+  test('truncates to 8 files and shows overflow count', () => {
+    const files = Array.from({ length: 10 }, (_, i) => ({
+      displayPath: `src/file${i}.ts`,
+      additions: 1,
+      removals: 0,
+    }))
+    const msg = makeReview(files)
+    const text = formatFileChangeReview(msg)
+    expect(text).toContain('… and 2 more')
+    expect(text).toContain('src/file0.ts')
+    expect(text).not.toContain('src/file9.ts')
+  })
+
+  test('uses plural "files" for multiple files', () => {
+    const msg = makeReview([
+      { displayPath: 'a.ts', additions: 1, removals: 0 },
+      { displayPath: 'b.ts', additions: 1, removals: 0 },
+    ])
+    expect(formatFileChangeReview(msg)).toContain('2 files')
+  })
+
+  test('uses singular "file" for one file', () => {
+    const msg = makeReview([{ displayPath: 'a.ts', additions: 1, removals: 0 }])
+    expect(formatFileChangeReview(msg)).toContain('1 file')
   })
 })

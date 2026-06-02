@@ -1,7 +1,13 @@
 /** In-process Telegram bridge: relays chat messages <-> REPL with no middle server. */
 
 import { hostname } from 'os'
-import { formatMessage, type ToolLabeler, type WrappedMessage } from './formatActivity.js'
+import {
+  formatFileChangeReview,
+  formatMessage,
+  isFileChangeReviewMessage,
+  type ToolLabeler,
+  type WrappedMessage,
+} from './formatActivity.js'
 import {
   consumePendingToken,
   readTelegramConfig,
@@ -9,6 +15,7 @@ import {
 } from './telegramConfig.js'
 import {
   getUpdates,
+  sendChatAction,
   sendMessage,
   sendPhoto,
   setMyCommands,
@@ -195,12 +202,18 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
   // Per-turn streaming mirror — created on startTurn(), finalized on endTurn().
   let mirror: StreamingMirror | null = null
 
+  // Accumulates thinking deltas during a turn; sent as a single message at endTurn.
+  let thinkingBuffer = ''
+  let thinkingActionSent = false
+
   const mirrorApi = {
     sendMessage: (chatId: number, text: string) => sendMessage(options.token, chatId, text),
     editMessageText: async (chatId: number, messageId: number, text: string) => {
       const { editMessageText } = await import('./telegramApi.js')
       return editMessageText(options.token, chatId, messageId, text)
     },
+    sendChatAction: (chatId: number, action?: 'typing') =>
+      sendChatAction(options.token, chatId, action ?? 'typing'),
   }
 
   // Register CLI commands with Telegram so they appear as autocomplete.
@@ -228,6 +241,8 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
     startTurn(): void {
       const chatId = linkedChatId()
       if (chatId === undefined) return
+      thinkingBuffer = ''
+      thinkingActionSent = false
       mirror = new StreamingMirror(mirrorApi, chatId)
       void mirror.start().catch(() => {})
     },
@@ -236,11 +251,40 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
       mirror?.append(delta)
     },
 
+    /**
+     * Called for each thinking token delta.
+     * - Sends a `typing` chat action on the first thinking token so the user
+     *   sees "typing…" in the chat header immediately.
+     * - Accumulates all thinking text; it is sent as a single 💭 message at endTurn.
+     */
     onThinkingDelta(delta: string): void {
-      mirror?.append(`💭 ${delta}`)
+      const chatId = linkedChatId()
+      if (chatId === undefined) return
+      thinkingBuffer += delta
+      // Send the typing indicator once when thinking starts (non-blocking).
+      if (!thinkingActionSent) {
+        thinkingActionSent = true
+        void sendChatAction(options.token, chatId, 'typing')
+      }
     },
 
     async endTurn(): Promise<void> {
+      // If there was thinking content this turn, send it as a compact summary
+      // before finalizing the streaming mirror.
+      if (thinkingBuffer.trim()) {
+        const chatId = linkedChatId()
+        if (chatId !== undefined) {
+          const MAX_THINKING_CHARS = 600
+          const thinking = thinkingBuffer.trim()
+          const preview =
+            thinking.length > MAX_THINKING_CHARS
+              ? `${thinking.slice(0, MAX_THINKING_CHARS)}…`
+              : thinking
+          void sendMessage(options.token, chatId, `💭 ${preview}`).catch(() => {})
+        }
+        thinkingBuffer = ''
+        thinkingActionSent = false
+      }
       if (mirror) {
         await mirror.finalize().catch(() => {})
         mirror = null
@@ -251,12 +295,15 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
       const chatId = linkedChatId()
       if (chatId === undefined) return
       for (const message of messages) {
+        // File change review system messages get their own formatter.
+        if (isFileChangeReviewMessage(message)) {
+          const text = formatFileChangeReview(message)
+          void sendMessage(options.token, chatId, text).catch(() => {})
+          continue
+        }
         const images = extractImages(message)
-        process.stderr.write(`[TG] pushActivity type=${message.type} isMeta=${message.isMeta} images=${images.length} contentLen=${Array.isArray(message.message?.content) ? message.message!.content!.length : 'str'}\n`)
         for (const img of images) {
-          void sendPhoto(options.token, chatId, img.base64, img.mediaType, img.caption).catch(e => {
-            process.stderr.write(`[TG] sendPhoto error: ${e}\n`)
-          })
+          void sendPhoto(options.token, chatId, img.base64, img.mediaType, img.caption).catch(() => {})
         }
         const text = formatMessage(message, options.toolLabeler)
         if (text) void sendMessage(options.token, chatId, text).catch(() => {})

@@ -3,6 +3,7 @@
 export interface MirrorApi {
   sendMessage: (chatId: number, text: string) => Promise<number>
   editMessageText: (chatId: number, messageId: number, text: string) => Promise<void>
+  sendChatAction: (chatId: number, action?: 'typing') => Promise<void>
 }
 
 const EDIT_INTERVAL_MS = 1100 // stay under Telegram's ~1 edit/sec/chat limit
@@ -11,6 +12,8 @@ const PLACEHOLDER = '💬 …'
 /**
  * Buffers streamed deltas and flushes to one Telegram message via edits,
  * coalescing rapid deltas into at most one edit per EDIT_INTERVAL_MS.
+ * Sends a `typing` chat action before posting the placeholder so users
+ * see the animated indicator immediately when the model starts responding.
  */
 export class StreamingMirror {
   private buffer = ''
@@ -25,11 +28,13 @@ export class StreamingMirror {
     private readonly intervalMs = EDIT_INTERVAL_MS,
   ) {}
 
-  /** Begin a turn: post a placeholder we then edit in place. */
+  /** Begin a turn: show typing indicator, then post a placeholder we edit in place. */
   async start(): Promise<void> {
     this.buffer = ''
     this.sent = ''
     this.lastEditAt = 0
+    // Show "typing…" in the chat header before the first message appears
+    await this.api.sendChatAction(this.chatId, 'typing')
     this.messageId = await this.api.sendMessage(this.chatId, PLACEHOLDER)
   }
 

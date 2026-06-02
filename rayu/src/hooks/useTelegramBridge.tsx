@@ -6,6 +6,7 @@ import {
   type TelegramBridgeHandle,
 } from '../telegram/telegramBridge.js'
 import type { ContentBlock, WrappedMessage } from '../telegram/formatActivity.js'
+import { isFileChangeReviewMessage } from '../telegram/formatActivity.js'
 import { useSetAppState } from '../state/AppState.js'
 
 /** True for user messages that are tool results (not human-typed text). */
@@ -70,10 +71,9 @@ export function useTelegramBridge(
     for (let i = start; i < messages.length; i++) {
       const msg = messages[i]
       const isTR = msg ? isToolResultMessage(msg) : false
-      process.stderr.write(`[TG] msg[${i}] type=${msg?.type} isMeta=${msg?.isMeta} isTR=${isTR}\n`)
-      // Forward assistant messages AND tool-result user messages (which carry images).
-      // Skip plain human-typed user messages so we don't echo the user's own input.
-      if (msg && (msg.type === 'assistant' || isTR)) fresh.push(msg)
+      // Forward assistant messages, tool-result user messages (images), and
+      // file_change_review system messages. Skip plain human-typed user messages.
+      if (msg && (msg.type === 'assistant' || isTR || isFileChangeReviewMessage(msg))) fresh.push(msg)
     }
     lastSentIndexRef.current = messages.length
     if (fresh.length > 0) handle.pushActivity(fresh)
