@@ -52,25 +52,25 @@ Usage notes:
 This file provides guidance to RAYU when working with code in this repository.
 \`\`\``
 
-const NEW_INIT_PROMPT = `Set up a minimal CLAUDE.md (and optionally skills and hooks) for this repo. CLAUDE.md is loaded into every RAYU session, so it must be concise — only include what Claude would get wrong without it.
+const NEW_INIT_PROMPT = `Set up a minimal RAYU.md (and optionally skills and hooks) for this repo. RAYU.md is loaded into every RAYU session, so it must be concise — only include what RAYU would get wrong without it.
 
 ## Phase 1: Ask what to set up
 
 Use AskUserQuestion to find out what the user wants:
 
-- "Which CLAUDE.md files should /init set up?"
-  Options: "Project CLAUDE.md" | "Personal CLAUDE.local.md" | "Both project + personal"
+- "Which RAYU.md files should /init set up?"
+  Options: "Project RAYU.md" | "Personal RAYU.local.md" | "Both project + personal"
   Description for project: "Team-shared instructions checked into source control — architecture, coding standards, common workflows."
   Description for personal: "Your private preferences for this project (gitignored, not shared) — your role, sandbox URLs, preferred test data, workflow quirks."
 
 - "Also set up skills and hooks?"
-  Options: "Skills + hooks" | "Skills only" | "Hooks only" | "Neither, just CLAUDE.md"
-  Description for skills: "On-demand capabilities you or Claude invoke with \`/skill-name\` — good for repeatable workflows and reference knowledge."
-  Description for hooks: "Deterministic shell commands that run on tool events (e.g., format after every edit). Claude can't skip them."
+  Options: "Skills + hooks" | "Skills only" | "Hooks only" | "Neither, just RAYU.md"
+  Description for skills: "On-demand capabilities you or RAYU invoke with \`/skill-name\` — good for repeatable workflows and reference knowledge."
+  Description for hooks: "Deterministic shell commands that run on tool events (e.g., format after every edit). RAYU can't skip them."
 
 ## Phase 2: Explore the codebase
 
-Launch a subagent to survey the codebase, and ask it to read key files to understand the project: manifest files (package.json, Cargo.toml, pyproject.toml, go.mod, pom.xml, etc.), README, Makefile/build configs, CI config, existing CLAUDE.md, .claude/rules/, AGENTS.md, .cursor/rules or .cursorrules, .github/copilot-instructions.md, .windsurfrules, .clinerules, .mcp.json.
+Launch a subagent to survey the codebase, and ask it to read key files to understand the project: manifest files (package.json, Cargo.toml, pyproject.toml, go.mod, pom.xml, etc.), README, Makefile/build configs, CI config, existing RAYU.md, .claude/rules/, AGENTS.md, .cursor/rules or .cursorrules, .github/copilot-instructions.md, .windsurfrules, .clinerules, .mcp.json.
 
 Detect:
 - Build, test, and lint commands (especially non-standard ones)
@@ -80,30 +80,30 @@ Detect:
 - Non-obvious gotchas, required env vars, or workflow quirks
 - Existing .claude/skills/ and .claude/rules/ directories
 - Formatter configuration (prettier, biome, ruff, black, gofmt, rustfmt, or a unified format script like \`npm run format\` / \`make fmt\`)
-- Git worktree usage: run \`git worktree list\` to check if this repo has multiple worktrees (only relevant if the user wants a personal CLAUDE.local.md)
+- Git worktree usage: run \`git worktree list\` to check if this repo has multiple worktrees (only relevant if the user wants a personal RAYU.local.md)
 
 Note what you could NOT figure out from code alone — these become interview questions.
 
 ## Phase 3: Fill in the gaps
 
-Use AskUserQuestion to gather what you still need to write good CLAUDE.md files and skills. Ask only things the code can't answer.
+Use AskUserQuestion to gather what you still need to write good RAYU.md files and skills. Ask only things the code can't answer.
 
-If the user chose project CLAUDE.md or both: ask about codebase practices — non-obvious commands, gotchas, branch/PR conventions, required env setup, testing quirks. Skip things already in README or obvious from manifest files. Do not mark any options as "recommended" — this is about how their team works, not best practices.
+If the user chose project RAYU.md or both: ask about codebase practices — non-obvious commands, gotchas, branch/PR conventions, required env setup, testing quirks. Skip things already in README or obvious from manifest files. Do not mark any options as "recommended" — this is about how their team works, not best practices.
 
-If the user chose personal CLAUDE.local.md or both: ask about them, not the codebase. Do not mark any options as "recommended" — this is about their personal preferences, not best practices. Examples of questions:
+If the user chose personal RAYU.local.md or both: ask about them, not the codebase. Do not mark any options as "recommended" — this is about their personal preferences, not best practices. Examples of questions:
   - What's their role on the team? (e.g., "backend engineer", "data scientist", "new hire onboarding")
-  - How familiar are they with this codebase and its languages/frameworks? (so Claude can calibrate explanation depth)
-  - Do they have personal sandbox URLs, test accounts, API key paths, or local setup details Claude should know?
-  - Only if Phase 2 found multiple git worktrees: ask whether their worktrees are nested inside the main repo (e.g., \`.claude/worktrees/<name>/\`) or siblings/external (e.g., \`../myrepo-feature/\`). If nested, the upward file walk finds the main repo's CLAUDE.local.md automatically — no special handling needed. If sibling/external, the personal content should live in a home-directory file (e.g., \`~/.claude/<project-name>-instructions.md\`) and each worktree gets a one-line CLAUDE.local.md stub that imports it: \`@~/.claude/<project-name>-instructions.md\`. Never put this import in the project CLAUDE.md — that would check a personal reference into the team-shared file.
+  - How familiar are they with this codebase and its languages/frameworks? (so RAYU can calibrate explanation depth)
+  - Do they have personal sandbox URLs, test accounts, API key paths, or local setup details RAYU should know?
+  - Only if Phase 2 found multiple git worktrees: ask whether their worktrees are nested inside the main repo (e.g., \`.claude/worktrees/<name>/\`) or siblings/external (e.g., \`../myrepo-feature/\`). If nested, the upward file walk finds the main repo's RAYU.local.md automatically — no special handling needed. If sibling/external, the personal content should live in a home-directory file (e.g., \`~/.claude/<project-name>-instructions.md\`) and each worktree gets a one-line RAYU.local.md stub that imports it: \`@~/.claude/<project-name>-instructions.md\`. Never put this import in the project RAYU.md — that would check a personal reference into the team-shared file.
   - Any communication preferences? (e.g., "be terse", "always explain tradeoffs", "don't summarize at the end")
 
-**Synthesize a proposal from Phase 2 findings** — e.g., format-on-edit if a formatter exists, a \`/verify\` skill if tests exist, a CLAUDE.md note for anything from the gap-fill answers that's a guideline rather than a workflow. For each, pick the artifact type that fits, **constrained by the Phase 1 skills+hooks choice**:
+**Synthesize a proposal from Phase 2 findings** — e.g., format-on-edit if a formatter exists, a \`/verify\` skill if tests exist, a RAYU.md note for anything from the gap-fill answers that's a guideline rather than a workflow. For each, pick the artifact type that fits, **constrained by the Phase 1 skills+hooks choice**:
 
-  - **Hook** (stricter) — deterministic shell command on a tool event; Claude can't skip it. Fits mechanical, fast, per-edit steps: formatting, linting, running a quick test on the changed file.
-  - **Skill** (on-demand) — you or Claude invoke \`/skill-name\` when you want it. Fits workflows that don't belong on every edit: deep verification, session reports, deploys.
-  - **CLAUDE.md note** (looser) — influences Claude's behavior but not enforced. Fits communication/thinking preferences: "plan before coding", "be terse", "explain tradeoffs".
+  - **Hook** (stricter) — deterministic shell command on a tool event; RAYU can't skip it. Fits mechanical, fast, per-edit steps: formatting, linting, running a quick test on the changed file.
+  - **Skill** (on-demand) — you or RAYU invoke \`/skill-name\` when you want it. Fits workflows that don't belong on every edit: deep verification, session reports, deploys.
+  - **RAYU.md note** (looser) — influences RAYU's behavior but not enforced. Fits communication/thinking preferences: "plan before coding", "be terse", "explain tradeoffs".
 
-  **Respect Phase 1's skills+hooks choice as a hard filter**: if the user picked "Skills only", downgrade any hook you'd suggest to a skill or a CLAUDE.md note. If "Hooks only", downgrade skills to hooks (where mechanically possible) or notes. If "Neither", everything becomes a CLAUDE.md note. Never propose an artifact type the user didn't opt into.
+  **Respect Phase 1's skills+hooks choice as a hard filter**: if the user picked "Skills only", downgrade any hook you'd suggest to a skill or a RAYU.md note. If "Hooks only", downgrade skills to hooks (where mechanically possible) or notes. If "Neither", everything becomes a RAYU.md note. Never propose an artifact type the user didn't opt into.
 
 **Show the proposal via AskUserQuestion's \`preview\` field, not as a separate text message** — the dialog overlays your output, so preceding text is hidden. The \`preview\` field renders markdown in a side-panel (like plan mode); the \`question\` field is plain-text-only. Structure it as:
 

@@ -9,6 +9,7 @@ import {
   sep as pathSep,
   relative,
 } from 'path'
+import { getExternalSkillDirs } from '../utils/externalSkillDiscovery.js'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getSessionId,
@@ -353,19 +354,30 @@ export function createSkillCommand({
         argumentNames,
       )
 
-      // Replace ${CLAUDE_SKILL_DIR} with the skill's own directory so bash
-      // injection (!`...`) can reference bundled scripts. Normalize backslashes
-      // to forward slashes on Windows so shell commands don't treat them as escapes.
+      // Replace ${CLAUDE_SKILL_DIR} / ${RAYU_SKILL_DIR} with the skill's own
+      // directory so bash injection (!`...`) can reference bundled scripts.
+      // Both variable names are supported for backward compatibility:
+      //   ${CLAUDE_SKILL_DIR} — original Claude Code name (still works)
+      //   ${RAYU_SKILL_DIR}   — Rayu-native alias
+      // Normalize backslashes to forward slashes on Windows so shell commands
+      // don't treat them as escapes.
       if (baseDir) {
         const skillDir =
           process.platform === 'win32' ? baseDir.replace(/\\/g, '/') : baseDir
         finalContent = finalContent.replace(/\$\{CLAUDE_SKILL_DIR\}/g, skillDir)
+        finalContent = finalContent.replace(/\$\{RAYU_SKILL_DIR\}/g, skillDir)
       }
 
-      // Replace ${CLAUDE_SESSION_ID} with the current session ID
+      // Replace ${CLAUDE_SESSION_ID} / ${RAYU_SESSION_ID} with the current
+      // session ID. Both names are supported for compatibility.
+      const sessionId = getSessionId()
       finalContent = finalContent.replace(
         /\$\{CLAUDE_SESSION_ID\}/g,
-        getSessionId(),
+        sessionId,
+      )
+      finalContent = finalContent.replace(
+        /\$\{RAYU_SESSION_ID\}/g,
+        sessionId,
       )
 
       // Security: MCP skills are remote and untrusted — never execute inline
@@ -674,6 +686,16 @@ export const getSkillDirCommands = memoize(
       return additionalSkillsNested.flat().map(s => s.skill)
     }
 
+    // External skill dirs: ~/.agents/skills/, ~/.claude/skills/, extraSkillDirs
+    // (Phase 2 + 4: auto-discover skills from agent frameworks and Claude Code)
+    const externalSkillDirs = isSettingSourceEnabled('userSettings') && !skillsLocked
+      ? getExternalSkillDirs()
+      : []
+
+    logForDebugging(
+      `[external-skills] Scanning ${externalSkillDirs.length} external skill dir(s)`,
+    )
+
     // Load from /skills/ directories, additional dirs, and legacy /commands/ in parallel
     // (all independent — different directories, no shared state)
     const [
@@ -681,6 +703,7 @@ export const getSkillDirCommands = memoize(
       userSkills,
       projectSkillsNested,
       additionalSkillsNested,
+      externalSkills,
       legacyCommands,
     ] = await Promise.all([
       isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_POLICY_SKILLS)
@@ -706,6 +729,15 @@ export const getSkillDirCommands = memoize(
             ),
           )
         : Promise.resolve([]),
+      // External skill dirs: ~/.agents/skills/, ~/.claude/skills/, extraSkillDirs
+      // Loaded as userSettings source — they are user-installed skills.
+      isSettingSourceEnabled('userSettings') && !skillsLocked && externalSkillDirs.length > 0
+        ? Promise.all(
+            externalSkillDirs.map(dir =>
+              loadSkillsFromSkillsDir(dir, 'userSettings'),
+            ),
+          )
+        : Promise.resolve([]),
       // Legacy commands-as-skills goes through markdownConfigLoader with
       // subdir='commands', which our agents-only guard there skips. Block
       // here when skills are locked — these ARE skills, regardless of the
@@ -719,6 +751,7 @@ export const getSkillDirCommands = memoize(
       ...userSkills,
       ...projectSkillsNested.flat(),
       ...additionalSkillsNested.flat(),
+      ...(externalSkills as SkillWithPath[][]).flat(),
       ...legacyCommands,
     ]
 

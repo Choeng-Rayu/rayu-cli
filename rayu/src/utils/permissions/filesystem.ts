@@ -104,14 +104,34 @@ export function getClaudeSkillScope(
   const absolutePath = expandPath(filePath)
   const absolutePathLower = normalizeCaseForComparison(absolutePath)
 
+  // Check all Rayu-recognised config dirs so skills under .rayu/ and .agents/
+  // also get the narrowed session-allow treatment.
   const bases = [
+    // Project-level: .claude/skills/, .rayu/skills/, .agents/skills/
     {
       dir: expandPath(join(getOriginalCwd(), '.claude', 'skills')),
       prefix: '/.claude/skills/',
     },
     {
+      dir: expandPath(join(getOriginalCwd(), '.rayu', 'skills')),
+      prefix: '/.rayu/skills/',
+    },
+    {
+      dir: expandPath(join(getOriginalCwd(), '.agents', 'skills')),
+      prefix: '/.agents/skills/',
+    },
+    // User-level: ~/.claude/skills/, ~/.rayu/skills/, ~/.agents/skills/
+    {
       dir: expandPath(join(homedir(), '.claude', 'skills')),
       prefix: '~/.claude/skills/',
+    },
+    {
+      dir: expandPath(join(homedir(), '.rayu', 'skills')),
+      prefix: '~/.rayu/skills/',
+    },
+    {
+      dir: expandPath(join(homedir(), '.agents', 'skills')),
+      prefix: '~/.agents/skills/',
     },
   ]
 
