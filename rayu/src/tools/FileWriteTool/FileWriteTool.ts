@@ -33,6 +33,7 @@ import {
 } from '../../utils/gitDiff.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
+import { recordPendingFileChange } from '../../utils/pendingFileChanges.js'
 import { expandPath } from '../../utils/path.js'
 import {
   checkWritePermissionForTool,
@@ -200,7 +201,7 @@ export const FileWriteTool = buildTool({
       return {
         result: false,
         message:
-          'File has not been read yet. Read it first before writing to it.',
+          'File has not been read yet. Existing-file Write requires a fresh full Read of this exact file path first, even when edit permission is already granted. Use Read without offset or limit, then retry Write with the complete new file content.',
         errorCode: 2,
       }
     }
@@ -213,7 +214,7 @@ export const FileWriteTool = buildTool({
       return {
         result: false,
         message:
-          'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+          'File has been modified since read, either by the user or by a linter. Existing-file Write requires a fresh full Read of this exact file path first, even when edit permission is already granted. Use Read without offset or limit, then retry Write with the complete new file content.',
         errorCode: 3,
       }
     }
@@ -222,10 +223,12 @@ export const FileWriteTool = buildTool({
   },
   async call(
     { file_path, content },
-    { readFileState, updateFileHistoryState, dynamicSkillDirTriggers },
+    context,
     _,
     parentMessage,
   ) {
+    const { readFileState, updateFileHistoryState, dynamicSkillDirTriggers } =
+      context
     const fullFilePath = expandPath(file_path)
     const dir = dirname(fullFilePath)
 
@@ -356,7 +359,7 @@ export const FileWriteTool = buildTool({
       })
     }
 
-    if (oldContent) {
+    if (oldContent !== null) {
       const patch = getPatchForDisplay({
         filePath: file_path,
         fileContents: oldContent,
@@ -377,6 +380,20 @@ export const FileWriteTool = buildTool({
         originalFile: oldContent,
         ...(gitDiff && { gitDiff }),
       }
+      recordPendingFileChange(context, {
+        filePath: fullFilePath,
+        toolName: 'FileWriteTool',
+        toolUseId: context.toolUseId,
+        parentMessageId: parentMessage.uuid,
+        before: {
+          exists: true,
+          content: oldContent,
+          encoding: enc,
+          lineEndings: meta?.lineEndings ?? 'LF',
+        },
+        afterContent: content,
+        structuredPatch: patch,
+      })
       // Track lines added and removed for file updates, right before yielding result
       countLinesChanged(patch)
 
@@ -400,6 +417,16 @@ export const FileWriteTool = buildTool({
       originalFile: null,
       ...(gitDiff && { gitDiff }),
     }
+
+    recordPendingFileChange(context, {
+      filePath: fullFilePath,
+      toolName: 'FileWriteTool',
+      toolUseId: context.toolUseId,
+      parentMessageId: parentMessage.uuid,
+      before: { exists: false },
+      afterContent: content,
+      structuredPatch: [],
+    })
 
     // For creation of new files, count all lines as additions, right before yielding the result
     countLinesChanged([], content)

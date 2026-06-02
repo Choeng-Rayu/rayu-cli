@@ -28,6 +28,7 @@ import {
 } from '../utils/commitAttribution.js'
 import type { EffortValue } from '../utils/effort.js'
 import type { FileHistoryState } from '../utils/fileHistory.js'
+import type { PendingFileChangesState } from '../utils/pendingFileChanges.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import type { SessionHooksState } from '../utils/hooks/sessionHooks.js'
 import type { ModelSetting } from '../utils/model/model.js'
@@ -216,6 +217,7 @@ export type AppState = DeepImmutable<{
   }
   agentDefinitions: AgentDefinitionsResult
   fileHistory: FileHistoryState
+  pendingFileChanges: PendingFileChangesState
   attribution: AttributionState
   todos: { [agentId: string]: TodoList }
   remoteAgentTaskSuggestions: { summary: string; task: string }[]
@@ -510,6 +512,7 @@ export function getDefaultAppState(): AppState {
       trackedFiles: new Set(),
       snapshotSequence: 0,
     },
+    pendingFileChanges: [],
     attribution: createEmptyAttributionState(),
     mcp: {
       clients: [],

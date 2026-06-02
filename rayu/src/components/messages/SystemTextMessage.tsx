@@ -27,6 +27,8 @@ import { useAppStateStore } from '../../state/AppState.js';
 import { isBackgroundTask, type TaskState } from '../../tasks/types.js';
 import { getPillLabel } from '../../tasks/pillLabel.js';
 import { useSelectedMessageBg } from '../messageActions.js';
+import { FileChangeReviewCard } from '../FileChangeReviewCard.js';
+import { isFileChangeReviewSystemMessage } from '../../utils/pendingFileChanges.js';
 type Props = {
   message: SystemMessage;
   addMargin: boolean;
@@ -42,6 +44,9 @@ export function SystemTextMessage(t0) {
     isTranscriptMode
   } = t0;
   const bg = useSelectedMessageBg();
+  if (isFileChangeReviewSystemMessage(message)) {
+    return <FileChangeReviewCard message={message} addMargin={addMargin} />;
+  }
   if (message.subtype === "turn_duration") {
     let t1;
     if ($[0] !== addMargin || $[1] !== message) {

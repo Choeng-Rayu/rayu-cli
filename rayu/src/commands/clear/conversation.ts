@@ -177,6 +177,7 @@ export async function clearConversation({
           trackedFiles: new Set(),
           snapshotSequence: 0,
         },
+        pendingFileChanges: [],
         // Reset MCP state to default to trigger re-initialization.
         // Preserve pluginReconnectKey so /clear doesn't cause a no-op
         // (it's only bumped by /reload-plugins).

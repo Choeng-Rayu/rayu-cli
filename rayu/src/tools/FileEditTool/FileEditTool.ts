@@ -41,6 +41,7 @@ import {
   type ToolUseDiff,
 } from '../../utils/gitDiff.js'
 import { logError } from '../../utils/log.js'
+import { recordPendingFileChange } from '../../utils/pendingFileChanges.js'
 import { expandPath } from '../../utils/path.js'
 import {
   checkWritePermissionForTool,
@@ -278,7 +279,7 @@ export const FileEditTool = buildTool({
         result: false,
         behavior: 'ask',
         message:
-          'File has not been read yet. Read it first before writing to it.',
+          'File has not been read yet. Edit requires a fresh full Read of this exact file path first. Use Read without offset or limit, then retry with an exact old_string copied from that result.',
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
@@ -303,7 +304,7 @@ export const FileEditTool = buildTool({
             result: false,
             behavior: 'ask',
             message:
-              'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+              'File has been modified since read, either by the user or by a linter. Read it again without offset or limit, then retry with an exact old_string copied from that fresh result.',
             errorCode: 7,
           }
         }
@@ -318,7 +319,7 @@ export const FileEditTool = buildTool({
       return {
         result: false,
         behavior: 'ask',
-        message: `String to replace not found in file.\nString: ${old_string}`,
+        message: `String to replace not found in file.\nString: ${old_string}\nRetry with a smaller exact string copied from a fresh Read result. If this needs a complete rewrite, first perform a fresh full Read of this exact file path, then use Write with the complete new file content.`,
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
@@ -386,15 +387,16 @@ export const FileEditTool = buildTool({
   },
   async call(
     input: FileEditInput,
-    {
+    context,
+    _,
+    parentMessage,
+  ) {
+    const {
       readFileState,
       userModified,
       updateFileHistoryState,
       dynamicSkillDirTriggers,
-    },
-    _,
-    parentMessage,
-  ) {
+    } = context
     const { file_path, old_string, new_string, replace_all = false } = input
 
     // 1. Get current state
@@ -522,6 +524,23 @@ export const FileEditTool = buildTool({
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,
       limit: undefined,
+    })
+
+    recordPendingFileChange(context, {
+      filePath: absoluteFilePath,
+      toolName: 'FileEditTool',
+      toolUseId: context.toolUseId,
+      parentMessageId: parentMessage.uuid,
+      before: fileExists
+        ? {
+            exists: true,
+            content: originalFileContents,
+            encoding,
+            lineEndings: endings,
+          }
+        : { exists: false },
+      afterContent: updatedFile,
+      structuredPatch: patch,
     })
 
     // 7. Log events
