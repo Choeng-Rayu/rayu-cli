@@ -18,7 +18,7 @@ import { isNotEmptyMessage, normalizeMessages } from '../src/utils/messages.ts'
 import {
   buildFileChangeReviewSummary,
   createFileChangeReviewSystemMessage,
-  createFileChangeReviewSystemMessageSinceBaseline,
+  createPendingFileChangeReviewSystemMessage,
   isFileChangeReviewSystemMessage,
   recordPendingFileChange,
 } from '../src/utils/pendingFileChanges.ts'
@@ -34,10 +34,10 @@ afterEach(() => {
 })
 
 describe('FileChangeReviewCard', () => {
-  test('creates a renderable review message for changes after the turn baseline', () => {
+  test('creates a renderable review message for all pending session changes', () => {
     const state = getDefaultAppState()
     const context = createContext(state)
-    const firstPath = join(dir, 'before-baseline.ts')
+    const firstPath = join(dir, 'first.ts')
     writeFileSync(firstPath, 'new\n')
     recordPendingFileChange(context, {
       filePath: firstPath,
@@ -55,9 +55,11 @@ describe('FileChangeReviewCard', () => {
         newContent: 'new\n',
       }),
     })
-
-    const baseline = new Set(state.pendingFileChanges.map(change => change.id))
-    const secondPath = join(dir, 'after-baseline.ts')
+    state.pendingFileChanges[0] = {
+      ...state.pendingFileChanges[0]!,
+      status: 'kept',
+    }
+    const secondPath = join(dir, 'second.ts')
     writeFileSync(secondPath, 'after\n')
     recordPendingFileChange(context, {
       filePath: secondPath,
@@ -71,9 +73,8 @@ describe('FileChangeReviewCard', () => {
       }),
     })
 
-    const message = createFileChangeReviewSystemMessageSinceBaseline(
+    const message = createPendingFileChangeReviewSystemMessage(
       state.pendingFileChanges,
-      baseline,
     )
     expect(message).not.toBeNull()
     expect(message?.review.totalFiles).toBe(1)
@@ -82,6 +83,72 @@ describe('FileChangeReviewCard', () => {
     const normalized = normalizeMessages([message!]).filter(isNotEmptyMessage)
     expect(normalized).toHaveLength(1)
     expect(isFileChangeReviewSystemMessage(normalized[0])).toBe(true)
+  })
+
+  test('filters kept files from an older review card and recalculates totals', async () => {
+    const state = getDefaultAppState()
+    const context = createContext(state)
+    const firstPath = join(dir, 'kept.ts')
+    const secondPath = join(dir, 'pending.ts')
+
+    for (const [filePath, before, after] of [
+      [firstPath, 'old\n', 'new\n'],
+      [secondPath, 'x\n', 'y\n'],
+    ] as const) {
+      writeFileSync(filePath, after)
+      recordPendingFileChange(context, {
+        filePath,
+        toolName: 'FileEditTool',
+        before: {
+          exists: true,
+          content: before,
+          encoding: 'utf8',
+          lineEndings: 'LF',
+        },
+        afterContent: after,
+        structuredPatch: getPatchFromContents({
+          filePath,
+          oldContent: before,
+          newContent: after,
+        }),
+      })
+    }
+
+    const summary = buildFileChangeReviewSummary(state.pendingFileChanges)
+    if (!summary) throw new Error('Expected review summary')
+    const message = createFileChangeReviewSystemMessage(summary)
+    state.pendingFileChanges[0] = {
+      ...state.pendingFileChanges[0]!,
+      status: 'kept',
+    }
+
+    const stdout = new CaptureStream()
+    const instance = await render(
+      <AppStateProvider initialState={state}>
+        <FileChangeReviewActionsProvider
+          actions={{ undoChangeIds: async () => 'No pending changes.' }}
+        >
+          <FileChangeReviewCard message={message} />
+        </FileChangeReviewActionsProvider>
+      </AppStateProvider>,
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    )
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    instance.unmount()
+    instance.cleanup()
+
+    const output = stripAnsi(stdout.output)
+    expect(output).toContain('Edited 1 file')
+    expect(output).toContain('+1')
+    expect(output).toContain('-1')
+    expect(output).toContain('pending.ts')
+    expect(output).not.toContain('kept.ts')
+    expect(output).not.toContain('kept')
   })
 
   test('renders summary rows and show-more without inline code preview', async () => {

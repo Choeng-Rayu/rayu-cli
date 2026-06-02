@@ -319,7 +319,7 @@ export const FileEditTool = buildTool({
       return {
         result: false,
         behavior: 'ask',
-        message: `String to replace not found in file.\nString: ${old_string}\nRetry with a smaller exact string copied from a fresh Read result. If this needs a complete rewrite, first perform a fresh full Read of this exact file path, then use Write with the complete new file content.`,
+        message: `String to replace not found in file.\nString: ${old_string}\nRetry with a smaller exact string copied from a fresh Read result. If this needs a complete rewrite, first perform a fresh full Read of this exact file path, then use Write with the complete new file content.\nTip: Use only 2-5 unique lines as old_string instead of large blocks — a smaller anchor is more likely to match exactly.`,
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
