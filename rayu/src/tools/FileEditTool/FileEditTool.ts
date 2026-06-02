@@ -41,6 +41,7 @@ import {
   type ToolUseDiff,
 } from '../../utils/gitDiff.js'
 import { logError } from '../../utils/log.js'
+import { recordPendingFileChange } from '../../utils/pendingFileChanges.js'
 import { expandPath } from '../../utils/path.js'
 import {
   checkWritePermissionForTool,
@@ -386,15 +387,16 @@ export const FileEditTool = buildTool({
   },
   async call(
     input: FileEditInput,
-    {
+    context,
+    _,
+    parentMessage,
+  ) {
+    const {
       readFileState,
       userModified,
       updateFileHistoryState,
       dynamicSkillDirTriggers,
-    },
-    _,
-    parentMessage,
-  ) {
+    } = context
     const { file_path, old_string, new_string, replace_all = false } = input
 
     // 1. Get current state
@@ -522,6 +524,23 @@ export const FileEditTool = buildTool({
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,
       limit: undefined,
+    })
+
+    recordPendingFileChange(context, {
+      filePath: absoluteFilePath,
+      toolName: 'FileEditTool',
+      toolUseId: context.toolUseId,
+      parentMessageId: parentMessage.uuid,
+      before: fileExists
+        ? {
+            exists: true,
+            content: originalFileContents,
+            encoding,
+            lineEndings: endings,
+          }
+        : { exists: false },
+      afterContent: updatedFile,
+      structuredPatch: patch,
     })
 
     // 7. Log events

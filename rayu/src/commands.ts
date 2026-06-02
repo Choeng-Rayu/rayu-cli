@@ -25,6 +25,7 @@ import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import keybindings from './commands/keybindings/index.js'
+import keep from './commands/keep/index.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
 import installGitHubApp from './commands/install-github-app/index.js'
@@ -58,6 +59,7 @@ const agentsPlatform =
 import securityReview from './commands/security-review.js'
 import bughunter from './commands/bughunter/index.js'
 import terminalSetup from './commands/terminalSetup/index.js'
+import undo from './commands/undo/index.js'
 import usage from './commands/usage/index.js'
 import theme from './commands/theme/index.js'
 import vim from './commands/vim/index.js'
@@ -288,6 +290,7 @@ const COMMANDS = memoize((): Command[] => [
   ide,
   init,
   keybindings,
+  keep,
   installGitHubApp,
   installSlackApp,
   mcp,
@@ -322,6 +325,7 @@ const COMMANDS = memoize((): Command[] => [
   rewind,
   securityReview,
   terminalSetup,
+  undo,
   upgrade,
   extraUsage,
   extraUsageNonInteractive,

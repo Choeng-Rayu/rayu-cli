@@ -21,6 +21,7 @@ import { firstLineOf } from '../../utils/stringUtils.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { FileEditOutput } from './types.js';
 import { findActualString, getPatchForEdit, preserveQuoteStyle } from './utils.js';
+const FILE_CHANGE_REVIEW_HINT = 'Pending review: /keep [file] | /undo | /diff';
 export function userFacingName(input: Partial<{
   file_path: string;
   old_string: string;
@@ -87,7 +88,7 @@ export function renderToolResultMessage({
 }): React.ReactNode {
   // For plan files, show /plan hint above the diff
   const isPlanFile = filePath.startsWith(getPlansDirectory());
-  return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={originalFile.split('\n')[0] ?? null} fileContent={originalFile} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} />;
+  return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={originalFile.split('\n')[0] ?? null} fileContent={originalFile} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
 }
 export function renderToolUseRejectedMessage(input: {
   file_path: string;

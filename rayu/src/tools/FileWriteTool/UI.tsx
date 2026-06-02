@@ -27,6 +27,7 @@ const MAX_LINES_TO_RENDER = 10;
 // Model output uses \n regardless of platform, so always split on \n.
 // os.EOL is \r\n on Windows, which would give numLines=1 for all files.
 const EOL = '\n';
+const FILE_CHANGE_REVIEW_HINT = 'Pending review: /keep [file] | /undo | /diff';
 
 /**
  * Count visible lines in file content. A trailing newline is treated as a
@@ -41,7 +42,8 @@ function FileWriteToolCreatedMessage(t0) {
   const {
     filePath,
     content,
-    verbose
+    verbose,
+    reviewHint
   } = t0;
   const {
     columns
@@ -113,17 +115,7 @@ function FileWriteToolCreatedMessage(t0) {
   } else {
     t8 = $[20];
   }
-  let t9;
-  if ($[21] !== t4 || $[22] !== t7 || $[23] !== t8) {
-    t9 = <MessageResponse><Box flexDirection="column">{t4}{t7}{t8}</Box></MessageResponse>;
-    $[21] = t4;
-    $[22] = t7;
-    $[23] = t8;
-    $[24] = t9;
-  } else {
-    t9 = $[24];
-  }
-  return t9;
+  return <MessageResponse><Box flexDirection="column">{t4}{t7}{t8}{reviewHint ? <Text dimColor={true}>{reviewHint}</Text> : null}</Box></MessageResponse>;
 }
 export function userFacingName(input: Partial<{
   file_path: string;
@@ -393,12 +385,12 @@ export function renderToolResultMessage({
             <Text bold>{relative(getCwd(), filePath)}</Text>
           </Text>;
         }
-        return <FileWriteToolCreatedMessage filePath={filePath} content={content} verbose={verbose} />;
+        return <FileWriteToolCreatedMessage filePath={filePath} content={content} verbose={verbose} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
       }
     case 'update':
       {
         const isPlanFile = filePath.startsWith(getPlansDirectory());
-        return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={content.split('\n')[0] ?? null} fileContent={originalFile ?? undefined} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} />;
+        return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={content.split('\n')[0] ?? null} fileContent={originalFile ?? undefined} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
       }
   }
 }
