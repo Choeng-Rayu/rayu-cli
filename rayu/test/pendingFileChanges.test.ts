@@ -17,10 +17,14 @@ import { runWithCwdOverride } from '../src/utils/cwd.ts'
 import { getFileModificationTime } from '../src/utils/file.ts'
 import { createFileStateCacheWithSizeLimit } from '../src/utils/fileStateCache.ts'
 import {
+  buildFileChangeReviewSummary,
+  getPendingFileChangeReviewDetail,
   keepPendingFileChanges,
   recordPendingFileChange,
   undoLatestPendingFileChange,
+  undoPendingFileChangesByIds,
 } from '../src/utils/pendingFileChanges.ts'
+import { getPatchFromContents } from '../src/utils/diff.ts'
 
 let dir: string
 
@@ -168,6 +172,216 @@ describe('pending file changes', () => {
       expect(context.getAppState().pendingFileChanges[0]?.status).toBe('pending')
     })
   })
+
+  test('undo file reverts that file pending changes in reverse order', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const targetPath = join(dir, 'target.ts')
+      const otherPath = join(dir, 'other.ts')
+      recordUpdate(context, targetPath, 'one\n', 'two\n')
+      recordUpdate(context, targetPath, 'two\n', 'three\n')
+      recordUpdate(context, otherPath, 'other-before\n', 'other-after\n')
+
+      const message = await undoLatestPendingFileChange(context, 'target.ts')
+
+      expect(message).toBe('Undid 2 pending changes for target.ts.')
+      expect(readFileSync(targetPath, 'utf8')).toBe('one\n')
+      expect(readFileSync(otherPath, 'utf8')).toBe('other-after\n')
+      expect(
+        context
+          .getAppState()
+          .pendingFileChanges.map((change: { status: string }) => change.status),
+      ).toEqual(['undone', 'undone', 'pending'])
+    })
+  })
+
+  test('ambiguous basename undo returns an error without changing state', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      mkdirSync(join(dir, 'a'))
+      mkdirSync(join(dir, 'b'))
+      recordUpdate(context, join(dir, 'a', 'same.ts'), 'a\n', 'aa\n')
+      recordUpdate(context, join(dir, 'b', 'same.ts'), 'b\n', 'bb\n')
+
+      expect(await undoLatestPendingFileChange(context, 'same.ts')).toBe(
+        'Multiple pending files match same.ts: a/same.ts, b/same.ts. Use a more specific path.',
+      )
+      expect(readFileSync(join(dir, 'a', 'same.ts'), 'utf8')).toBe('aa\n')
+      expect(readFileSync(join(dir, 'b', 'same.ts'), 'utf8')).toBe('bb\n')
+      expect(
+        context
+          .getAppState()
+          .pendingFileChanges.map((change: { status: string }) => change.status),
+      ).toEqual(['pending', 'pending'])
+    })
+  })
+
+  test('scoped undo blocks when the target file is dirty', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const filePath = join(dir, 'dirty-scoped.ts')
+      recordUpdate(context, filePath, 'before\n', 'after\n')
+      writeFileSync(filePath, 'manual\n')
+
+      expect(await undoLatestPendingFileChange(context, 'dirty-scoped.ts')).toBe(
+        'Cannot undo dirty-scoped.ts: file changed since Rayu edited it.',
+      )
+      expect(readFileSync(filePath, 'utf8')).toBe('manual\n')
+      expect(context.getAppState().pendingFileChanges[0]?.status).toBe('pending')
+    })
+  })
+
+  test('card batch undo by ids is all-or-nothing when one file is dirty', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const cleanPath = join(dir, 'clean.ts')
+      const dirtyPath = join(dir, 'dirty-batch.ts')
+      recordUpdate(context, cleanPath, 'clean-before\n', 'clean-after\n')
+      recordUpdate(context, dirtyPath, 'dirty-before\n', 'dirty-after\n')
+      writeFileSync(dirtyPath, 'manual\n')
+      const ids = context
+        .getAppState()
+        .pendingFileChanges.map((change: { id: string }) => change.id)
+
+      expect(await undoPendingFileChangesByIds(context, ids)).toBe(
+        'Cannot undo dirty-batch.ts: file changed since Rayu edited it.',
+      )
+      expect(readFileSync(cleanPath, 'utf8')).toBe('clean-after\n')
+      expect(readFileSync(dirtyPath, 'utf8')).toBe('manual\n')
+      expect(
+        context
+          .getAppState()
+          .pendingFileChanges.map((change: { status: string }) => change.status),
+      ).toEqual(['pending', 'pending'])
+    })
+  })
+
+  test('card batch undo by ids reverts pending review changes', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const onePath = join(dir, 'one.ts')
+      const twoPath = join(dir, 'two.ts')
+      recordUpdate(context, onePath, 'one-before\n', 'one-after\n')
+      recordUpdate(context, twoPath, 'two-before\n', 'two-after\n')
+      const ids = context
+        .getAppState()
+        .pendingFileChanges.map((change: { id: string }) => change.id)
+
+      expect(await undoPendingFileChangesByIds(context, ids)).toBe(
+        'Undid 2 pending changes from this review.',
+      )
+      expect(readFileSync(onePath, 'utf8')).toBe('one-before\n')
+      expect(readFileSync(twoPath, 'utf8')).toBe('two-before\n')
+      expect(
+        context
+          .getAppState()
+          .pendingFileChanges.map((change: { status: string }) => change.status),
+      ).toEqual(['undone', 'undone'])
+    })
+  })
+
+  test('review summary groups repeated edits and keeps file order', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const onePath = join(dir, 'one.ts')
+      const twoPath = join(dir, 'two.ts')
+      recordUpdateWithPatch(context, onePath, 'a\n', 'b\n')
+      recordUpdateWithPatch(context, twoPath, 'x\n', 'x\ny\n')
+      recordUpdateWithPatch(context, onePath, 'b\n', 'b\nc\n')
+
+      const summary = buildFileChangeReviewSummary(
+        context.getAppState().pendingFileChanges,
+      )
+
+      expect(summary?.totalFiles).toBe(2)
+      expect(summary?.files.map(file => file.displayPath)).toEqual([
+        'one.ts',
+        'two.ts',
+      ])
+      expect(summary?.files[0]?.changeIds).toHaveLength(2)
+      expect(summary?.files[0]?.additions).toBe(2)
+      expect(summary?.files[0]?.removals).toBe(1)
+      expect(summary?.files[1]?.additions).toBe(1)
+      expect(summary?.totalAdditions).toBe(3)
+      expect(summary?.totalRemovals).toBe(1)
+    })
+  })
+
+  test('review summary synthesizes create-file hunks', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const filePath = join(dir, 'created-review.ts')
+      writeFileSync(filePath, 'one\ntwo\n')
+      recordPendingFileChange(context, {
+        filePath,
+        toolName: 'FileWriteTool',
+        before: { exists: false },
+        afterContent: 'one\ntwo\n',
+        structuredPatch: [],
+      })
+
+      const summary = buildFileChangeReviewSummary(
+        context.getAppState().pendingFileChanges,
+      )
+
+      expect(summary?.totalFiles).toBe(1)
+      expect(summary?.files[0]?.isCreated).toBe(true)
+      expect(summary?.files[0]?.hunks.length).toBeGreaterThan(0)
+      expect(summary?.files[0]?.additions).toBe(2)
+      expect(summary?.files[0]?.removals).toBe(0)
+    })
+  })
+
+  test('review detail with no file shows all pending code diffs', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      recordUpdateWithPatch(context, join(dir, 'one.ts'), 'a\n', 'b\n')
+      recordUpdateWithPatch(context, join(dir, 'two.ts'), 'x\n', 'y\n')
+
+      const detail = getPendingFileChangeReviewDetail(context, '')
+
+      expect(detail).toContain('Edited 2 files +2 -2')
+      expect(detail).toContain('one.ts +1 -1')
+      expect(detail).toContain('two.ts +1 -1')
+      expect(detail).toContain('@@')
+      expect(detail).toContain('-a')
+      expect(detail).toContain('+b')
+      expect(detail).toContain('-x')
+      expect(detail).toContain('+y')
+    })
+  })
+
+  test('review detail file shows only matching pending code diffs', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      recordUpdateWithPatch(context, join(dir, 'one.ts'), 'a\n', 'b\n')
+      recordUpdateWithPatch(context, join(dir, 'two.ts'), 'x\n', 'y\n')
+
+      const detail = getPendingFileChangeReviewDetail(context, 'one.ts')
+
+      expect(detail).toContain('Edited 1 file +1 -1')
+      expect(detail).toContain('one.ts +1 -1')
+      expect(detail).toContain('-a')
+      expect(detail).toContain('+b')
+      expect(detail).not.toContain('two.ts')
+      expect(detail).not.toContain('-x')
+      expect(detail).not.toContain('+y')
+    })
+  })
+
+  test('review detail ambiguous basename returns an error', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      mkdirSync(join(dir, 'a'))
+      mkdirSync(join(dir, 'b'))
+      recordUpdateWithPatch(context, join(dir, 'a', 'same.ts'), 'a\n', 'aa\n')
+      recordUpdateWithPatch(context, join(dir, 'b', 'same.ts'), 'b\n', 'bb\n')
+
+      expect(getPendingFileChangeReviewDetail(context, 'same.ts')).toBe(
+        'Multiple pending files match same.ts: a/same.ts, b/same.ts. Use a more specific path.',
+      )
+    })
+  })
 })
 
 function createContext() {
@@ -197,6 +411,27 @@ function recordUpdate(
     before: beforeSnapshot(before),
     afterContent: after,
     structuredPatch: [],
+  })
+}
+
+function recordUpdateWithPatch(
+  context: ReturnType<typeof createContext>,
+  filePath: string,
+  before: string,
+  after: string,
+): void {
+  writeFileSync(filePath, after)
+  context.readFileState.set(filePath, fileState(after, filePath))
+  recordPendingFileChange(context, {
+    filePath,
+    toolName: 'FileEditTool',
+    before: beforeSnapshot(before),
+    afterContent: after,
+    structuredPatch: getPatchFromContents({
+      filePath,
+      oldContent: before,
+      newContent: after,
+    }),
   })
 }
 

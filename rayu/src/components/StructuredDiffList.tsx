@@ -11,6 +11,14 @@ type Props = {
   firstLine: string | null;
   fileContent?: string;
 };
+const TypedStructuredDiff = StructuredDiff as React.ComponentType<{
+  patch: StructuredPatchHunk;
+  dim: boolean;
+  width: number;
+  filePath: string;
+  firstLine: string | null;
+  fileContent?: string;
+}>;
 
 /** Renders a list of diff hunks with ellipsis separators between them. */
 export function StructuredDiffList({
@@ -21,8 +29,8 @@ export function StructuredDiffList({
   firstLine,
   fileContent
 }: Props): React.ReactNode {
-  return intersperse(hunks.map(hunk => <Box flexDirection="column" key={hunk.newStart}>
-        <StructuredDiff patch={hunk} dim={dim} width={width} filePath={filePath} firstLine={firstLine} fileContent={fileContent} />
+  return intersperse(hunks.map((hunk, index) => <Box flexDirection="column" key={`${hunk.oldStart}:${hunk.newStart}:${index}`}>
+        <TypedStructuredDiff patch={hunk} dim={dim} width={width} filePath={filePath} firstLine={firstLine} fileContent={fileContent} />
       </Box>), i => <NoSelect fromLeftEdge key={`ellipsis-${i}`}>
         <Text dimColor>...</Text>
       </NoSelect>);

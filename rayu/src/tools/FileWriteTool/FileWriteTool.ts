@@ -201,7 +201,7 @@ export const FileWriteTool = buildTool({
       return {
         result: false,
         message:
-          'File has not been read yet. Read it first before writing to it.',
+          'File has not been read yet. Existing-file Write requires a fresh full Read of this exact file path first, even when edit permission is already granted. Use Read without offset or limit, then retry Write with the complete new file content.',
         errorCode: 2,
       }
     }
@@ -214,7 +214,7 @@ export const FileWriteTool = buildTool({
       return {
         result: false,
         message:
-          'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+          'File has been modified since read, either by the user or by a linter. Existing-file Write requires a fresh full Read of this exact file path first, even when edit permission is already granted. Use Read without offset or limit, then retry Write with the complete new file content.',
         errorCode: 3,
       }
     }

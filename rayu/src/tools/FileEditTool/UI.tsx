@@ -21,7 +21,7 @@ import { firstLineOf } from '../../utils/stringUtils.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { FileEditOutput } from './types.js';
 import { findActualString, getPatchForEdit, preserveQuoteStyle } from './utils.js';
-const FILE_CHANGE_REVIEW_HINT = 'Pending review: /keep [file] | /undo | /diff';
+const FILE_CHANGE_REVIEW_HINT = 'Pending review appears below when Rayu finishes. Use /keep [file] or /undo [file].';
 export function userFacingName(input: Partial<{
   file_path: string;
   old_string: string;

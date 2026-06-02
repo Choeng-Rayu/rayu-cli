@@ -279,7 +279,7 @@ export const FileEditTool = buildTool({
         result: false,
         behavior: 'ask',
         message:
-          'File has not been read yet. Read it first before writing to it.',
+          'File has not been read yet. Edit requires a fresh full Read of this exact file path first. Use Read without offset or limit, then retry with an exact old_string copied from that result.',
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
@@ -304,7 +304,7 @@ export const FileEditTool = buildTool({
             result: false,
             behavior: 'ask',
             message:
-              'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+              'File has been modified since read, either by the user or by a linter. Read it again without offset or limit, then retry with an exact old_string copied from that fresh result.',
             errorCode: 7,
           }
         }
@@ -319,7 +319,7 @@ export const FileEditTool = buildTool({
       return {
         result: false,
         behavior: 'ask',
-        message: `String to replace not found in file.\nString: ${old_string}`,
+        message: `String to replace not found in file.\nString: ${old_string}\nRetry with a smaller exact string copied from a fresh Read result. If this needs a complete rewrite, first perform a fresh full Read of this exact file path, then use Write with the complete new file content.`,
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },

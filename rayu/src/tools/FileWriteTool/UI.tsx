@@ -27,7 +27,7 @@ const MAX_LINES_TO_RENDER = 10;
 // Model output uses \n regardless of platform, so always split on \n.
 // os.EOL is \r\n on Windows, which would give numLines=1 for all files.
 const EOL = '\n';
-const FILE_CHANGE_REVIEW_HINT = 'Pending review: /keep [file] | /undo | /diff';
+const FILE_CHANGE_REVIEW_HINT = 'Pending review appears below when Rayu finishes. Use /keep [file] or /undo [file].';
 
 /**
  * Count visible lines in file content. A trailing newline is treated as a

@@ -1,9 +1,9 @@
 import type { Command } from '../../commands.js'
 
 const undo = {
-  description: 'Undo the latest pending Rayu file change',
+  description: 'Undo pending Rayu file changes',
   name: 'undo',
-  argumentHint: '',
+  argumentHint: '[file]',
   type: 'local',
   supportsNonInteractive: false,
   load: () => import('./undo.js'),
