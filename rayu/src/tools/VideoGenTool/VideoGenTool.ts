@@ -9,7 +9,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
 import { extractPreviewFrame } from './framePreview.js'
 import { resolveVideoModel, VIDEO_MODELS } from './models.js'
-import { generateVideo, getNvidiaApiKey } from './nvidiaVideoClient.js'
+import { generateVideo, isVideoEnabled } from './nvidiaVideoClient.js'
 import { DESCRIPTION, getVideoGenPrompt, VIDEO_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 
@@ -86,7 +86,7 @@ export const VideoGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return getNvidiaApiKey() != null
+    return isVideoEnabled()
   },
   isReadOnly() {
     return false

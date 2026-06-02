@@ -35,6 +35,7 @@ import { safeParseJSON } from '../../utils/json.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isRayuNonAnthropicActive,
 } from '../../utils/model/providers.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { sleep } from '../../utils/sleep.js'
@@ -166,7 +167,7 @@ function computeChecksum(
  */
 export function isPolicyLimitsEligible(): boolean {
   // 3p provider users should not hit the policy limits endpoint
-  if (getAPIProvider() !== 'firstParty') {
+  if (getAPIProvider() !== 'firstParty' || isRayuNonAnthropicActive()) {
     return false
   }
 

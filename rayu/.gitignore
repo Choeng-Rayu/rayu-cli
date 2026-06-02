@@ -1,2 +1,6 @@
 # Locally downloaded build tooling (e.g. nfpm) — not committed.
 .tools/
+
+# Local secrets (Telegram bot token, etc.) — never commit.
+.env
+.env.local

@@ -19,6 +19,7 @@ import {
   getClaudeAIOAuthTokens,
   getOauthAccountInfo,
   isClaudeAISubscriber,
+  isUsing3PServices,
 } from 'src/utils/auth.js'
 import {
   createAssistantAPIErrorMessage,
@@ -878,7 +879,9 @@ export function getAssistantMessageFromError(
       error: 'authentication_failed',
       content: getIsNonInteractiveSession()
         ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`
-        : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
+        : isUsing3PServices()
+          ? `API Error: ${error.status} ${error.message}`
+          : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
     })
   }
 

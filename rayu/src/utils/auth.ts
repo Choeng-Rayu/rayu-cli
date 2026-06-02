@@ -113,13 +113,19 @@ export function isAnthropicAuthEnabled(): boolean {
     return !!process.env.CLAUDE_CODE_OAUTH_TOKEN
   }
 
+  // Rayu: if a non-anthropic provider is active, Anthropic auth is not needed.
+  try {
+    const kind = getActiveProvider()?.kind
+    if (kind && kind !== 'anthropic') return false
+  } catch {
+    // fall through to original logic
+  }
+
   const is3P =
     isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
 
-  // Check if user has configured an external API key source
-  // This allows externally-provided API keys to work (without requiring proxy configuration)
   const settings = getSettings_DEPRECATED() || {}
   const apiKeyHelper = settings.apiKeyHelper
   const hasExternalAuthToken =
@@ -127,20 +133,12 @@ export function isAnthropicAuthEnabled(): boolean {
     apiKeyHelper ||
     process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
 
-  // Check if API key is from an external source (not managed by /login)
   const { source: apiKeySource } = getAnthropicApiKeyWithSource({
     skipRetrievingKeyFromApiKeyHelper: true,
   })
   const hasExternalApiKey =
     apiKeySource === 'ANTHROPIC_API_KEY' || apiKeySource === 'apiKeyHelper'
 
-  // Disable Anthropic auth if:
-  // 1. Using 3rd party services (Bedrock/Vertex/Foundry)
-  // 2. User has an external API key (regardless of proxy configuration)
-  // 3. User has an external auth token (regardless of proxy configuration)
-  // this may cause issues if users have complex proxy / gateway "client-side creds" auth scenarios,
-  // e.g. if they want to set X-Api-Key to a gateway key but use Anthropic OAuth for the Authorization
-  // if we get reports of that, we should probably add an env var to force OAuth enablement
   const shouldDisableAuth =
     is3P ||
     (hasExternalAuthToken && !isManagedOAuthContext()) ||
@@ -1755,11 +1753,21 @@ export function getSubscriptionName(): string {
 
 /** Check if using third-party services (Bedrock or Vertex or Foundry) */
 export function isUsing3PServices(): boolean {
-  return !!(
+  if (
     isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
-  )
+  ) {
+    return true
+  }
+  // Rayu: any non-anthropic provider routes through its own adapter —
+  // no Anthropic key is needed, so bypass Anthropic auth entirely.
+  try {
+    const kind = getActiveProvider()?.kind
+    return !!kind && kind !== 'anthropic'
+  } catch {
+    return false
+  }
 }
 
 /**

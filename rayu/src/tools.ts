@@ -210,6 +210,7 @@ export function getAllBaseTools(): Tools {
     TodoWriteTool,
     WebSearchTool,
     ImageGenTool,
+    VideoGenTool,
     TaskStopTool,
     AskUserQuestionTool,
     SkillTool,

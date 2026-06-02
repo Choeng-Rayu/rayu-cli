@@ -21,4 +21,11 @@ declare module 'bun:bundle' {
   export function feature(flag: string): boolean
 }
 
+declare module 'qrcode' {
+  export function toString(
+    text: string,
+    opts?: { type?: string; errorCorrectionLevel?: string },
+  ): Promise<string>
+}
+
 export {}

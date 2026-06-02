@@ -4,6 +4,7 @@
 // added by the client and never logged.
 
 export const NVIDIA_IMAGE_HOST = 'https://ai.api.nvidia.com/v1/genai'
+export const NVCF_ASSET_HOST = 'https://api.nvcf.nvidia.com/v2/nvcf/assets'
 
 export type ImageCapability = 'generate' | 'edit'
 
@@ -18,6 +19,10 @@ export type ImageParams = {
   negative_prompt?: string
   /** base64-encoded input image (no data-URI prefix) for editing models. */
   image?: string
+  /** NVCF asset ID for the input image; set by the client after upload. */
+  imageAssetId?: string
+  /** MIME type of the uploaded asset (e.g. "image/jpeg"). */
+  imageMimeType?: string
 }
 
 export type ImageModel = {
@@ -50,14 +55,21 @@ const sdBody = (p: ImageParams): Record<string, unknown> => ({
   negative_prompt: p.negative_prompt ?? '',
 })
 
-// FLUX.1-Kontext-dev: in-context editing — input image + prompt.
-const kontextBody = (p: ImageParams): Record<string, unknown> => ({
-  prompt: p.prompt,
-  image: `data:image/png;base64,${p.image ?? ''}`,
-  cfg_scale: p.cfg_scale ?? 3.5,
-  steps: p.steps ?? 30,
-  seed: p.seed ?? 0,
-})
+// FLUX.1-Kontext-dev: in-context editing — requires uploaded asset (example_id).
+// The client uploads the image first and populates imageAssetId + detects the mime type.
+const kontextBody = (p: ImageParams): Record<string, unknown> => {
+  if (!p.imageAssetId) {
+    throw new Error('kontextBody requires imageAssetId (asset must be uploaded first)')
+  }
+  const mime = p.imageMimeType ?? 'image/jpeg'
+  return {
+    prompt: p.prompt,
+    image: `data:${mime};example_id,${p.imageAssetId}`,
+    cfg_scale: p.cfg_scale ?? 3.5,
+    steps: p.steps ?? 30,
+    seed: p.seed ?? 0,
+  }
+}
 
 export const DEFAULT_IMAGE_MODEL = 'black-forest-labs/flux.1-schnell'
 export const DEFAULT_EDIT_MODEL = 'black-forest-labs/flux.1-kontext-dev'

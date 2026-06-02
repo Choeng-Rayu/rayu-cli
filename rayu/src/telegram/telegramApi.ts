@@ -92,3 +92,38 @@ export async function editMessageText(
     text: text.slice(0, MAX_MESSAGE_CHARS),
   })
 }
+
+/** Send a base64-encoded image as a photo. Falls back to text on failure. */
+export async function sendPhoto(
+  token: string,
+  chatId: number,
+  base64Data: string,
+  mediaType: string,
+  caption?: string,
+): Promise<void> {
+  const ext = mediaType.includes('jpeg') || mediaType.includes('jpg') ? 'jpg' : 'png'
+  const buffer = Buffer.from(base64Data, 'base64')
+  const blob = new Blob([buffer], { type: mediaType })
+  const form = new FormData()
+  form.append('chat_id', String(chatId))
+  form.append('photo', blob, `image.${ext}`)
+  if (caption) form.append('caption', caption.slice(0, 1024))
+  const res = await fetch(`${API_BASE}/bot${token}/sendPhoto`, { method: 'POST', body: form })
+  const json = await res.json().catch(() => ({})) as { ok?: boolean }
+  if (!res.ok || !json.ok) {
+    // Photo send failed (too large, wrong format, etc.) — send a text fallback
+    await sendMessage(token, chatId, caption ?? '🖼 Image generated (could not send as photo)')
+  }
+}
+
+/** Register bot commands so Telegram shows them as autocomplete when user types /. */
+export async function setMyCommands(
+  token: string,
+  commands: Array<{ command: string; description: string }>,
+): Promise<void> {
+  try {
+    await callApi(token, 'setMyCommands', { commands })
+  } catch {
+    // Non-fatal — commands work even if registration fails
+  }
+}

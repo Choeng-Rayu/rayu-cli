@@ -162,7 +162,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                 description,
                 result,
                 awaitAutomatedChecksBeforeDialog: appState.toolPermissionContext.awaitAutomatedChecksBeforeDialog,
-                bridgeCallbacks: feature("BRIDGE_MODE") ? appState.replBridgePermissionCallbacks : undefined,
+                bridgeCallbacks: (feature("BRIDGE_MODE") ? appState.replBridgePermissionCallbacks : undefined) ?? appState.telegramPermissionCallbacks,
                 channelCallbacks: feature("KAIROS") || feature("KAIROS_CHANNELS") ? appState.channelPermissionCallbacks : undefined
               }, resolve);
               return;

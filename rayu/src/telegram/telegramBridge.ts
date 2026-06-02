@@ -1,7 +1,7 @@
 /** In-process Telegram bridge: relays chat messages <-> REPL with no middle server. */
 
 import { hostname } from 'os'
-import { formatMessage, type ToolLabeler } from './formatActivity.js'
+import { formatMessage, type ToolLabeler, type WrappedMessage } from './formatActivity.js'
 import {
   consumePendingToken,
   readTelegramConfig,
@@ -10,26 +10,36 @@ import {
 import {
   getUpdates,
   sendMessage,
+  sendPhoto,
+  setMyCommands,
   type TelegramUpdate,
 } from './telegramApi.js'
-
-interface WrappedMessage {
-  type: string
-  isMeta?: boolean
-  message?: { role?: string; content?: unknown }
-}
+import {
+  createTelegramPermissionCallbacks,
+  handlePermissionReply,
+} from './telegramPermissions.js'
+import { StreamingMirror } from './streamingMirror.js'
+import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
+import { enqueue } from '../utils/messageQueueManager.js'
 
 export interface TelegramBridgeOptions {
   token: string
-  /** Inject a prompt into the REPL as a new turn (REPL.handleIncomingPrompt). */
-  onInboundPrompt: (text: string) => void
-  /** Maps a tool name + input to its CLI-facing label. */
   toolLabeler?: ToolLabeler
 }
 
 export interface TelegramBridgeHandle {
-  /** Mirror REPL messages (user/assistant) to the linked chat. */
+  /** Mirror complete REPL messages (user/assistant) to the linked chat. */
   pushActivity: (messages: WrappedMessage[]) => void
+  /** Called when a new assistant turn begins streaming. */
+  startTurn: () => void
+  /** Called with each streamed text token delta. */
+  onTextDelta: (delta: string) => void
+  /** Called with each streamed thinking token delta. */
+  onThinkingDelta: (delta: string) => void
+  /** Called when the streaming turn is complete. Finalizes the live message. */
+  endTurn: () => Promise<void>
+  /** BridgePermissionCallbacks to inject into AppState for permission prompts. */
+  permissionCallbacks: BridgePermissionCallbacks
   stop: () => void
 }
 
@@ -44,6 +54,41 @@ function parseCommand(text: string): { cmd: string; arg: string } {
   return { cmd: trimmed.slice(0, space), arg: trimmed.slice(space + 1).trim() }
 }
 
+/** Extract image blocks from WrappedMessage content for Telegram sendPhoto. */
+interface ImageBlock {
+  base64: string
+  mediaType: string
+  caption?: string
+}
+
+function extractImages(message: WrappedMessage): ImageBlock[] {
+  const content = message.message?.content
+  if (!Array.isArray(content)) return []
+  const images: ImageBlock[] = []
+  for (const block of content) {
+    if (block && typeof block === 'object' && block.type === 'image') {
+      const src = (block as { source?: { data?: string; media_type?: string } }).source
+      if (src?.data) {
+        images.push({ base64: src.data, mediaType: src.media_type ?? 'image/png' })
+      }
+    }
+    if (block && typeof block === 'object' && block.type === 'tool_result') {
+      const inner = (block as { content?: unknown[] }).content
+      if (Array.isArray(inner)) {
+        for (const sub of inner) {
+          if (sub && typeof sub === 'object' && (sub as { type?: string }).type === 'image') {
+            const src = (sub as { source?: { data?: string; media_type?: string } }).source
+            if (src?.data) {
+              images.push({ base64: src.data, mediaType: src.media_type ?? 'image/png' })
+            }
+          }
+        }
+      }
+    }
+  }
+  return images
+}
+
 async function handleUpdate(
   update: TelegramUpdate,
   options: TelegramBridgeOptions,
@@ -54,8 +99,9 @@ async function handleUpdate(
   const chatId = message.chat.id
   const username = message.from?.username ?? message.chat.username
 
-  // `/start <token>` (deep-link) and `/link <token>` both pair.
   const { cmd, arg } = parseCommand(text)
+
+  // Pairing commands work from any chat.
   if (cmd === '/link' || cmd === '/start') {
     if (!arg) {
       await sendMessage(options.token, chatId, 'Send /link <token> with the token from `/telegram-bot`.')
@@ -66,7 +112,7 @@ async function handleUpdate(
       await sendMessage(
         options.token,
         chatId,
-        `✅ Linked to ${hostname()}${username ? ` as @${username}` : ''}. Send a message to drive the CLI.`,
+        `✅ Linked to ${hostname()}${username ? ` as @${username}` : ''}.\n\nSend any message to drive the CLI. Use /disconnect to unlink.`,
       )
     } else {
       await sendMessage(options.token, chatId, '❌ Invalid or expired token.')
@@ -74,22 +120,91 @@ async function handleUpdate(
     return
   }
 
-  if (cmd === '/stop') {
+  // /disconnect and /stop both unlink from any chat (security: allow owner to revoke).
+  if (cmd === '/disconnect' || cmd === '/stop') {
     if (chatId === linkedChatId()) {
       unlink()
-      await sendMessage(options.token, chatId, '🔌 Unlinked. Run /telegram-bot to link again.')
+      await sendMessage(options.token, chatId, '🔌 Disconnected. Run `/telegram-bot` in the CLI to link again.')
     }
     return
   }
 
-  // Only the linked chat can drive the CLI. All other chats are ignored.
+  // Only the linked chat drives the CLI.
   if (chatId !== linkedChatId()) return
-  options.onInboundPrompt(text)
+
+  // Permission reply (y/n) takes priority.
+  if (handlePermissionReply(text)) return
+
+  // Slash commands → REPL command queue.
+  if (text.startsWith('/')) {
+    const commandName = cmd.slice(1)
+    const args = arg
+    enqueue({ value: args ? `${commandName} ${args}` : commandName, mode: 'prompt' })
+    return
+  }
+
+  // Plain text → new REPL turn.
+  enqueue({ value: text, mode: 'prompt' })
+}
+
+/**
+ * Load all CLI commands and register them with Telegram's setMyCommands so the
+ * bot shows autocomplete suggestions when the user types /.
+ * Telegram limits: 100 commands max, command name ≤32 chars, description ≤256 chars.
+ */
+async function registerCommandsWithTelegram(token: string): Promise<void> {
+  try {
+    const { getCommands } = await import('../commands.js')
+    const { getCwd } = await import('../utils/cwd.js')
+    const allCommands = await getCommands(getCwd())
+
+    // Built-in bridge commands always included.
+    const builtins = [
+      { command: 'disconnect', description: 'Unlink this Telegram chat from the CLI' },
+    ]
+
+    const fromCli = allCommands
+      .filter(cmd => !cmd.isHidden)
+      .map(cmd => ({
+        // Telegram only allows [a-z0-9_] in command names — replace hyphens with underscores,
+        // strip any other invalid characters, and truncate to 32.
+        command: cmd.name.replace(/-/g, '_').replace(/[^a-z0-9_]/gi, '').toLowerCase().slice(0, 32),
+        description: (cmd.description || cmd.name).slice(0, 256),
+      }))
+      // Drop commands whose name became empty or too short after sanitization.
+      .filter(c => c.command.length >= 1)
+
+    // Dedupe (builtins take precedence over same-named CLI commands).
+    const builtinNames = new Set(builtins.map(b => b.command))
+    const merged = [
+      ...builtins,
+      ...fromCli.filter(c => !builtinNames.has(c.command)),
+    ].slice(0, 100)
+
+    await setMyCommands(token, merged)
+  } catch {
+    // Non-fatal
+  }
 }
 
 export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBridgeHandle {
   let running = true
   let offset = 0
+  const permissionCallbacks = createTelegramPermissionCallbacks(options.token)
+
+  // Per-turn streaming mirror — created on startTurn(), finalized on endTurn().
+  let mirror: StreamingMirror | null = null
+
+  const mirrorApi = {
+    sendMessage: (chatId: number, text: string) => sendMessage(options.token, chatId, text),
+    editMessageText: async (chatId: number, messageId: number, text: string) => {
+      const { editMessageText } = await import('./telegramApi.js')
+      return editMessageText(options.token, chatId, messageId, text)
+    },
+  }
+
+  // Register CLI commands with Telegram so they appear as autocomplete.
+  void registerCommandsWithTelegram(options.token)
 
   const poll = async (): Promise<void> => {
     while (running) {
@@ -108,15 +223,47 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
   void poll()
 
   return {
-    pushActivity: (messages: WrappedMessage[]): void => {
+    permissionCallbacks,
+
+    startTurn(): void {
+      const chatId = linkedChatId()
+      if (chatId === undefined) return
+      mirror = new StreamingMirror(mirrorApi, chatId)
+      void mirror.start().catch(() => {})
+    },
+
+    onTextDelta(delta: string): void {
+      mirror?.append(delta)
+    },
+
+    onThinkingDelta(delta: string): void {
+      mirror?.append(`💭 ${delta}`)
+    },
+
+    async endTurn(): Promise<void> {
+      if (mirror) {
+        await mirror.finalize().catch(() => {})
+        mirror = null
+      }
+    },
+
+    pushActivity(messages: WrappedMessage[]): void {
       const chatId = linkedChatId()
       if (chatId === undefined) return
       for (const message of messages) {
+        const images = extractImages(message)
+        process.stderr.write(`[TG] pushActivity type=${message.type} isMeta=${message.isMeta} images=${images.length} contentLen=${Array.isArray(message.message?.content) ? message.message!.content!.length : 'str'}\n`)
+        for (const img of images) {
+          void sendPhoto(options.token, chatId, img.base64, img.mediaType, img.caption).catch(e => {
+            process.stderr.write(`[TG] sendPhoto error: ${e}\n`)
+          })
+        }
         const text = formatMessage(message, options.toolLabeler)
         if (text) void sendMessage(options.token, chatId, text).catch(() => {})
       }
     },
-    stop: (): void => {
+
+    stop(): void {
       running = false
     },
   }
