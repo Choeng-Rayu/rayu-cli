@@ -13,6 +13,7 @@ import {
 } from '../src/telegram/telegramConfig.js'
 import { formatFileChangeReview, formatMessage, isFileChangeReviewMessage, toolIcon } from '../src/telegram/formatActivity.js'
 import { handlePermissionReply } from '../src/telegram/telegramPermissions.js'
+import { isConnectSessionActive } from '../src/telegram/telegramConnect.js'
 import { getClaudeConfigHomeDir } from '../src/utils/envUtils.js'
 
 // ---- chunkText ----
@@ -352,5 +353,17 @@ describe('formatFileChangeReview', () => {
   test('uses singular "file" for one file', () => {
     const msg = makeReview([{ displayPath: 'a.ts', additions: 1, removals: 0 }])
     expect(formatFileChangeReview(msg)).toContain('1 file')
+  })
+})
+
+// ---- connect wizard session state ----
+describe('isConnectSessionActive', () => {
+  test('returns false for unknown chatId', () => {
+    expect(isConnectSessionActive(99999)).toBe(false)
+  })
+
+  test('returns false for chatId with no active session', () => {
+    // No session has been started for this chatId
+    expect(isConnectSessionActive(12345)).toBe(false)
   })
 })

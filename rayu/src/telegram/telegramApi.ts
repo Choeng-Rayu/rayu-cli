@@ -3,12 +3,32 @@
 const API_BASE = 'https://api.telegram.org'
 const MAX_MESSAGE_CHARS = 4096
 
+/** One button in an inline keyboard row. */
+export interface InlineKeyboardButton {
+  text: string
+  /** Opaque payload sent back as callback_query.data (max 64 bytes). */
+  callback_data: string
+}
+
+/** Inline keyboard markup — array of rows, each row is an array of buttons. */
+export type InlineKeyboard = InlineKeyboardButton[][]
+
 export interface TelegramUpdate {
   update_id: number
   message?: {
     message_id: number
     text?: string
     chat: { id: number; username?: string; first_name?: string }
+    from?: { username?: string; first_name?: string }
+  }
+  /** Fired when the user taps an inline keyboard button. */
+  callback_query?: {
+    id: string
+    data?: string
+    message?: {
+      message_id: number
+      chat: { id: number }
+    }
     from?: { username?: string; first_name?: string }
   }
 }
@@ -127,6 +147,68 @@ export async function sendChatAction(
 ): Promise<void> {
   try {
     await callApi(token, 'sendChatAction', { chat_id: chatId, action })
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
+ * Send a message with an inline keyboard attached.
+ * Returns the message_id of the sent message.
+ */
+export async function sendMessageWithInlineKeyboard(
+  token: string,
+  chatId: number,
+  text: string,
+  keyboard: InlineKeyboard,
+): Promise<number> {
+  const result = await callApi(token, 'sendMessage', {
+    chat_id: chatId,
+    text: text.slice(0, MAX_MESSAGE_CHARS),
+    reply_markup: { inline_keyboard: keyboard },
+  })
+  return (result as { message_id: number }).message_id
+}
+
+/**
+ * Edit an existing message's text and/or inline keyboard.
+ * Silently ignores "message is not modified" errors (Telegram returns 400 for no-op edits).
+ */
+export async function editMessageWithInlineKeyboard(
+  token: string,
+  chatId: number,
+  messageId: number,
+  text: string,
+  keyboard?: InlineKeyboard,
+): Promise<void> {
+  try {
+    await callApi(token, 'editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: text.slice(0, MAX_MESSAGE_CHARS),
+      ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+    })
+  } catch (e) {
+    // Ignore "message is not modified" — not a real error
+    if (e instanceof Error && e.message.includes('not modified')) return
+    throw e
+  }
+}
+
+/**
+ * Answer a callback query (dismisses the loading spinner on the tapped button).
+ * Must be called within 10 seconds of receiving the callback_query.
+ */
+export async function answerCallbackQuery(
+  token: string,
+  callbackQueryId: string,
+  text?: string,
+): Promise<void> {
+  try {
+    await callApi(token, 'answerCallbackQuery', {
+      callback_query_id: callbackQueryId,
+      ...(text ? { text: text.slice(0, 200) } : {}),
+    })
   } catch {
     // Non-fatal
   }
