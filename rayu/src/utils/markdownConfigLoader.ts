@@ -25,7 +25,7 @@ import {
 import { getManagedFilePath } from './settings/managedPath.js'
 import { isRestrictedToPluginOnly } from './settings/pluginOnlyPolicy.js'
 
-// Claude configuration directory names
+// Claude/Rayu configuration directory names
 export const CLAUDE_CONFIG_DIRECTORIES = [
   'commands',
   'agents',
@@ -36,6 +36,17 @@ export const CLAUDE_CONFIG_DIRECTORIES = [
 ] as const
 
 export type ClaudeConfigDirectory = (typeof CLAUDE_CONFIG_DIRECTORIES)[number]
+
+/**
+ * All config dir names that Rayu recognises for project-level configuration.
+ * The walker in getProjectDirsUpToHome checks .claude/ by default; callers
+ * that want to also discover .rayu/ and .agents/ should use
+ * getAllProjectConfigDirPaths() instead.
+ *
+ * Priority (highest → lowest): .rayu > .agents > .claude
+ */
+export const ALL_CONFIG_DIRS = ['.rayu', '.agents', '.claude'] as const
+export type RayuConfigDirName = (typeof ALL_CONFIG_DIRS)[number]
 
 export type MarkdownFile = {
   filePath: string
@@ -250,18 +261,24 @@ export function getProjectDirsUpToHome(
       break
     }
 
-    const claudeSubdir = join(current, '.claude', subdir)
-    // Filter to existing dirs. This is a perf filter (avoids spawning
-    // ripgrep on non-existent dirs downstream) and the worktree fallback
-    // in loadMarkdownFilesForSubdir relies on it. statSync + explicit error
-    // handling instead of existsSync — re-throws unexpected errors rather
-    // than silently swallowing them. Downstream loadMarkdownFiles handles
-    // the TOCTOU window (dir disappearing before read) gracefully.
-    try {
-      statSync(claudeSubdir)
-      dirs.push(claudeSubdir)
-    } catch (e: unknown) {
-      if (!isFsInaccessible(e)) throw e
+    // Check all recognised config dirs (.rayu, .agents, .claude) so that
+    // project-level skills/commands/agents installed under any of them are
+    // discovered automatically.  Priority within a single directory level is
+    // .rayu > .agents > .claude (same order as ALL_CONFIG_DIRS).
+    for (const cfgDir of ALL_CONFIG_DIRS) {
+      const configSubdir = join(current, cfgDir, subdir)
+      // Filter to existing dirs. This is a perf filter (avoids spawning
+      // ripgrep on non-existent dirs downstream) and the worktree fallback
+      // in loadMarkdownFilesForSubdir relies on it. statSync + explicit error
+      // handling instead of existsSync — re-throws unexpected errors rather
+      // than silently swallowing them. Downstream loadMarkdownFiles handles
+      // the TOCTOU window (dir disappearing before read) gracefully.
+      try {
+        statSync(configSubdir)
+        dirs.push(configSubdir)
+      } catch (e: unknown) {
+        if (!isFsInaccessible(e)) throw e
+      }
     }
 
     // Stop after processing the git root directory - this prevents commands from parent

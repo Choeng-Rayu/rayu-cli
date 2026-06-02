@@ -45,7 +45,7 @@ export function Opus1mMergeNotice() {
   }
   let t2;
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Box paddingLeft={2}><AnimatedAsterisk char={UP_ARROW} /><Text dimColor={true}>{" "}Opus now defaults to 1M context · 5x more room, same pricing</Text></Box>;
+    t2 = <Box paddingLeft={2}><AnimatedAsterisk char={UP_ARROW} /><Text dimColor={true}>{" "}Welcome!, Thank You For Choosing Rayu!</Text></Box>;
     $[3] = t2;
   } else {
     t2 = $[3];

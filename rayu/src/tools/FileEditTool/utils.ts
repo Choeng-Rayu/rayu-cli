@@ -65,7 +65,7 @@ export function stripTrailingWhitespace(str: string): string {
 
 /**
  * Finds the actual string in the file content that matches the search string,
- * accounting for quote normalization
+ * accounting for quote normalization and trailing whitespace differences.
  * @param fileContent The file content to search in
  * @param searchString The string to search for
  * @returns The actual string found in the file, or null if not found
@@ -85,11 +85,77 @@ export function findActualString(
 
   const searchIndex = normalizedFile.indexOf(normalizedSearch)
   if (searchIndex !== -1) {
-    // Find the actual string in the file that matches
-    return fileContent.substring(searchIndex, searchIndex + searchString.length)
+    // Use normalizedSearch.length (not searchString.length) because curly quotes
+    // are multi-byte (3 bytes each) while straight quotes are single-byte.
+    // Using searchString.length here would extract the wrong-length substring.
+    return fileContent.substring(searchIndex, searchIndex + normalizedSearch.length)
+  }
+
+  // Try with trailing whitespace stripped from each line.
+  // This handles cases where the AI's old_string has trailing spaces removed
+  // but the actual file has trailing spaces (or vice versa), which is a very
+  // common cause of "String to replace not found in file" errors.
+  const strippedSearch = stripTrailingWhitespace(searchString)
+  const strippedFile = stripTrailingWhitespace(fileContent)
+
+  const strippedIndex = strippedFile.indexOf(strippedSearch)
+  if (strippedIndex !== -1) {
+    // Map the position in the stripped file back to the original file.
+    // We walk both strings simultaneously to find the corresponding original offset.
+    const originalStart = mapStrippedIndexToOriginal(fileContent, strippedFile, strippedIndex)
+    if (originalStart !== -1) {
+      // Determine the end offset by mapping strippedIndex + strippedSearch.length
+      const originalEnd = mapStrippedIndexToOriginal(
+        fileContent,
+        strippedFile,
+        strippedIndex + strippedSearch.length,
+      )
+      if (originalEnd !== -1) {
+        return fileContent.substring(originalStart, originalEnd)
+      }
+    }
   }
 
   return null
+}
+
+/**
+ * Maps a character index in a whitespace-stripped string back to the
+ * corresponding index in the original (unstripped) string.
+ *
+ * Both strings must be related by stripTrailingWhitespace(original) === stripped.
+ *
+ * Returns -1 if the mapping cannot be determined (should not happen for valid inputs).
+ */
+function mapStrippedIndexToOriginal(
+  original: string,
+  stripped: string,
+  strippedIndex: number,
+): number {
+  // Walk both strings in parallel. Characters are identical except the original
+  // may have extra trailing-whitespace characters per line that are absent from
+  // the stripped version.
+  let origPos = 0
+  let stripPos = 0
+
+  while (stripPos < strippedIndex) {
+    if (origPos >= original.length) {
+      return -1
+    }
+    const origChar = original[origPos]
+    const stripChar = stripped[stripPos]
+
+    if (origChar === stripChar) {
+      origPos++
+      stripPos++
+    } else {
+      // The original has a character that was stripped (trailing whitespace).
+      // Advance only the original pointer.
+      origPos++
+    }
+  }
+
+  return origPos
 }
 
 /**

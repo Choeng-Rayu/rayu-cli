@@ -289,7 +289,7 @@ import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type M
 import { setClipboard } from '../ink/termio/osc.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/attachments.js';
-import { createFileChangeReviewSystemMessageSinceBaseline, undoPendingFileChangesByIds, type PendingFileChange } from '../utils/pendingFileChanges.js';
+import { createPendingFileChangeReviewSystemMessage, undoPendingFileChangesByIds, type PendingFileChange } from '../utils/pendingFileChanges.js';
 
 // Stable empty array for hooks that accept MCPServerConnection[] — avoids
 // creating a new [] literal on every render in remote mode, which would
@@ -2899,9 +2899,6 @@ export function REPL({
       });
       return;
     }
-    const pendingFileChangeBaseline = shouldQuery ? new Set((store.getState() as {
-      pendingFileChanges: PendingFileChange[];
-    }).pendingFileChanges.map(change => change.id)) : null;
     try {
       // isLoading is derived from queryGuard — tryStart() above already
       // transitioned dispatching→running, so no setter call needed here.
@@ -2946,10 +2943,10 @@ export function REPL({
         // onQueryImpl only on successful completion.
         resetLoadingState();
         await mrOnTurnComplete(messagesRef.current, abortController.signal.aborted);
-        if (!abortController.signal.aborted && pendingFileChangeBaseline) {
-          const reviewMessage = createFileChangeReviewSystemMessageSinceBaseline((store.getState() as {
+        if (!abortController.signal.aborted && shouldQuery) {
+          const reviewMessage = createPendingFileChangeReviewSystemMessage((store.getState() as {
             pendingFileChanges: PendingFileChange[];
-          }).pendingFileChanges, pendingFileChangeBaseline);
+          }).pendingFileChanges);
           if (reviewMessage) {
             setMessages(prev => [...prev, reviewMessage as MessageType]);
           }

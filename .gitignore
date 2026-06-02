@@ -3,3 +3,5 @@ rayu/graphify-out/
 rayu/dist/bin/
 rayu/dist/pkg/
 rayu/.playwright-mcp/
+rayu/dist/
+rayu/dist/rayu.js

@@ -6,10 +6,21 @@ import { registerBundledSkill } from '../bundledSkills.js'
 /**
  * Generate JSON Schema from the settings Zod schema.
  * This keeps the skill prompt in sync with the actual types.
+ *
+ * Returns null when the schema contains types that cannot be represented in
+ * JSON Schema (e.g. z.undefined() inside a z.union), so the skill gracefully
+ * falls back to its static documentation instead of crashing.
  */
-function generateSettingsSchema(): string {
-  const jsonSchema = toJSONSchema(SettingsSchema(), { io: 'input' })
-  return jsonStringify(jsonSchema, null, 2)
+function generateSettingsSchema(): string | null {
+  try {
+    const jsonSchema = toJSONSchema(SettingsSchema(), { io: 'input' })
+    return jsonStringify(jsonSchema, null, 2)
+  } catch {
+    // Some Zod types (z.undefined in a union, z.function, etc.) cannot be
+    // represented in JSON Schema. Return null so the skill falls back to
+    // the hand-written documentation block.
+    return null
+  }
 }
 
 const SETTINGS_EXAMPLES_DOCS = `## Settings File Locations
@@ -459,11 +470,15 @@ export function registerUpdateConfigSkill(): void {
         return [{ type: 'text', text: prompt }]
       }
 
-      // Generate schema dynamically to stay in sync with types
+      // Generate schema dynamically to stay in sync with types.
+      // Falls back to omitting the generated block when serialisation fails
+      // (e.g. a z.undefined inside a union cannot be represented in JSON Schema).
       const jsonSchema = generateSettingsSchema()
 
       let prompt = UPDATE_CONFIG_PROMPT
-      prompt += `\n\n## Full Settings JSON Schema\n\n\`\`\`json\n${jsonSchema}\n\`\`\``
+      if (jsonSchema !== null) {
+        prompt += `\n\n## Full Settings JSON Schema\n\n\`\`\`json\n${jsonSchema}\n\`\`\``
+      }
 
       if (args) {
         prompt += `\n\n## User Request\n\n${args}`

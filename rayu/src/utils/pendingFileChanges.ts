@@ -304,13 +304,10 @@ export function createFileChangeReviewSystemMessage(
   }
 }
 
-export function createFileChangeReviewSystemMessageSinceBaseline(
+export function createPendingFileChangeReviewSystemMessage(
   changes: readonly PendingFileChange[],
-  baselineIds: ReadonlySet<string>,
 ): FileChangeReviewSystemMessage | null {
-  const review = buildFileChangeReviewSummary(
-    changes.filter(change => !baselineIds.has(change.id)),
-  )
+  const review = buildFileChangeReviewSummary(changes)
   return review ? createFileChangeReviewSystemMessage(review) : null
 }
 

@@ -259,6 +259,41 @@ export const SettingsSchema = lazySchema(() =>
         .literal(CLAUDE_CODE_SETTINGS_SCHEMA_URL)
         .optional()
         .describe('JSON Schema reference for RAYU settings'),
+
+      // -----------------------------------------------------------------------
+      // Steering file porting (Phase 3)
+      // -----------------------------------------------------------------------
+      steeringFilePortMode: z
+        .enum(['copy', 'symlink', 'ask', 'off'])
+        .optional()
+        .describe(
+          "How to port legacy CLAUDE.md / .claude/ files to RAYU.md / .rayu/. " +
+          "'copy' = copy on startup, 'symlink' = create symlink, " +
+          "'ask' = prompt user (default), 'off' = never port",
+        ),
+
+      // -----------------------------------------------------------------------
+      // External skill discovery (Phase 4)
+      // -----------------------------------------------------------------------
+      claudeCodeSkillsEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Load skills from ~/.claude/skills/ (Claude Code compatibility). Defaults to true.',
+        ),
+      agentSkillsEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Load skills from ~/.agents/skills/ (agent-framework compatibility, e.g. playwright, graphify). Defaults to true.',
+        ),
+      extraSkillDirs: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Additional directories to scan for skills. Each entry is an absolute path (or ~ prefix) to a skills directory.',
+        ),
+
       apiKeyHelper: z
         .string()
         .optional()
@@ -559,7 +594,7 @@ export const SettingsSchema = lazySchema(() =>
       enabledPlugins: z
         .record(
           z.string(),
-          z.union([z.array(z.string()), z.boolean(), z.undefined()]),
+          z.union([z.array(z.string()), z.boolean()]).optional(),
         )
         .optional()
         .describe(

@@ -18,8 +18,10 @@ import { getFileModificationTime } from '../src/utils/file.ts'
 import { createFileStateCacheWithSizeLimit } from '../src/utils/fileStateCache.ts'
 import {
   buildFileChangeReviewSummary,
+  createPendingFileChangeReviewSystemMessage,
   getPendingFileChangeReviewDetail,
   keepPendingFileChanges,
+  type PendingFileChange,
   recordPendingFileChange,
   undoLatestPendingFileChange,
   undoPendingFileChangesByIds,
@@ -329,6 +331,33 @@ describe('pending file changes', () => {
       expect(summary?.files[0]?.hunks.length).toBeGreaterThan(0)
       expect(summary?.files[0]?.additions).toBe(2)
       expect(summary?.files[0]?.removals).toBe(0)
+    })
+  })
+
+  test('pending review message includes all unkept session changes', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      recordUpdateWithPatch(context, join(dir, 'kept.ts'), 'a\n', 'b\n')
+      recordUpdateWithPatch(context, join(dir, 'pending.ts'), 'x\n', 'y\n')
+      context.setAppState(prev => ({
+        ...prev,
+        pendingFileChanges: prev.pendingFileChanges.map(
+          (change: PendingFileChange) =>
+            change.displayPath === 'kept.ts'
+              ? { ...change, status: 'kept' }
+              : change,
+        ),
+      }))
+
+      const message = createPendingFileChangeReviewSystemMessage(
+        context.getAppState().pendingFileChanges,
+      )
+
+      expect(message).not.toBeNull()
+      expect(message?.review.totalFiles).toBe(1)
+      expect(message?.review.files[0]?.displayPath).toBe('pending.ts')
+      expect(message?.review.totalAdditions).toBe(1)
+      expect(message?.review.totalRemovals).toBe(1)
     })
   })
 

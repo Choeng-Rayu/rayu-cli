@@ -116,6 +116,22 @@ export async function sendPhoto(
   }
 }
 
+/**
+ * Send a chat action (e.g. 'typing') to show the bot is active.
+ * Fire-and-forget — failures are silently ignored.
+ */
+export async function sendChatAction(
+  token: string,
+  chatId: number,
+  action: 'typing' | 'upload_photo' | 'upload_document' = 'typing',
+): Promise<void> {
+  try {
+    await callApi(token, 'sendChatAction', { chat_id: chatId, action })
+  } catch {
+    // Non-fatal
+  }
+}
+
 /** Register bot commands so Telegram shows them as autocomplete when user types /. */
 export async function setMyCommands(
   token: string,
