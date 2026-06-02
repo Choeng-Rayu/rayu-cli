@@ -14,6 +14,7 @@ import {
   unlink,
 } from './telegramConfig.js'
 import {
+  answerCallbackQuery,
   getUpdates,
   sendChatAction,
   sendMessage,
@@ -25,6 +26,14 @@ import {
   createTelegramPermissionCallbacks,
   handlePermissionReply,
 } from './telegramPermissions.js'
+import {
+  handleCallbackQuery,
+  handleConnectCommand,
+  handleConnectTextInput,
+  handleModelCommand,
+  handleProviderCommand,
+  isConnectSessionActive,
+} from './telegramConnect.js'
 import { StreamingMirror } from './streamingMirror.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import { enqueue } from '../utils/messageQueueManager.js'
@@ -100,6 +109,30 @@ async function handleUpdate(
   update: TelegramUpdate,
   options: TelegramBridgeOptions,
 ): Promise<void> {
+  // ---- Handle callback_query (inline keyboard button taps) ----
+  if (update.callback_query) {
+    const cq = update.callback_query
+    const chatId = cq.message?.chat.id
+    if (chatId === undefined) return
+
+    // Only the linked chat can use inline keyboards
+    if (chatId !== linkedChatId()) {
+      await answerCallbackQuery(options.token, cq.id)
+      return
+    }
+
+    const data = cq.data ?? ''
+    // Try connect wizard first
+    if (data.startsWith('cnx:')) {
+      await handleCallbackQuery(options.token, cq.id, chatId, data)
+    } else {
+      // Unknown callback — just dismiss the spinner
+      await answerCallbackQuery(options.token, cq.id)
+    }
+    return
+  }
+
+  // ---- Handle regular messages ----
   const message = update.message
   const text = message?.text
   if (!message || !text) return
@@ -119,7 +152,7 @@ async function handleUpdate(
       await sendMessage(
         options.token,
         chatId,
-        `✅ Linked to ${hostname()}${username ? ` as @${username}` : ''}.\n\nSend any message to drive the CLI. Use /disconnect to unlink.`,
+        `✅ Linked to ${hostname()}${username ? ` as @${username}` : ''}.\n\nSend any message to drive the CLI. Use /disconnect to unlink.\n\nTip: Use /connect to set up your AI provider.`,
       )
     } else {
       await sendMessage(options.token, chatId, '❌ Invalid or expired token.')
@@ -139,14 +172,35 @@ async function handleUpdate(
   // Only the linked chat drives the CLI.
   if (chatId !== linkedChatId()) return
 
-  // Permission reply (y/n) takes priority.
+  // Permission reply (y/n/always) takes priority.
   if (handlePermissionReply(text)) return
 
-  // Slash commands → REPL command queue.
+  // If a /connect wizard session is active, intercept text input for it.
+  if (isConnectSessionActive(chatId)) {
+    const handled = await handleConnectTextInput(options.token, chatId, text)
+    if (handled) return
+  }
+
+  // Built-in connect/model/provider commands (slash commands).
+  if (cmd === '/connect') {
+    await handleConnectCommand(options.token, chatId)
+    return
+  }
+
+  if (cmd === '/model') {
+    await handleModelCommand(options.token, chatId, arg)
+    return
+  }
+
+  if (cmd === '/provider' || cmd === '/providers') {
+    await handleProviderCommand(options.token, chatId)
+    return
+  }
+
+  // Other slash commands → REPL command queue.
+  // Keep the leading slash so the CLI recognises it as a command (not plain text).
   if (text.startsWith('/')) {
-    const commandName = cmd.slice(1)
-    const args = arg
-    enqueue({ value: args ? `${commandName} ${args}` : commandName, mode: 'prompt' })
+    enqueue({ value: text, mode: 'prompt' })
     return
   }
 
@@ -165,8 +219,11 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
     const { getCwd } = await import('../utils/cwd.js')
     const allCommands = await getCommands(getCwd())
 
-    // Built-in bridge commands always included.
+    // Built-in bridge commands always included (these come first).
     const builtins = [
+      { command: 'connect', description: 'Connect a provider and select a model' },
+      { command: 'model', description: 'Show or set the active model (/model <name>)' },
+      { command: 'provider', description: 'Show all configured providers' },
       { command: 'disconnect', description: 'Unlink this Telegram chat from the CLI' },
     ]
 
