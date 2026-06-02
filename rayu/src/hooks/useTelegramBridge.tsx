@@ -5,8 +5,18 @@ import {
   initTelegramBridge,
   type TelegramBridgeHandle,
 } from '../telegram/telegramBridge.js'
-import type { WrappedMessage } from '../telegram/formatActivity.js'
+import type { ContentBlock, WrappedMessage } from '../telegram/formatActivity.js'
 import { useSetAppState } from '../state/AppState.js'
+
+/** True for user messages that are tool results (not human-typed text). */
+function isToolResultMessage(msg: WrappedMessage): boolean {
+  if (msg.type !== 'user') return false
+  const content = msg.message?.content
+  if (!Array.isArray(content)) return false
+  return content.some(
+    b => b != null && typeof b === 'object' && (b as ContentBlock).type === 'tool_result',
+  )
+}
 
 /**
  * Always-on Telegram bridge. Activates when TELEGRAM_BOT_TOKEN is in the env.
@@ -59,7 +69,11 @@ export function useTelegramBridge(
     const fresh: WrappedMessage[] = []
     for (let i = start; i < messages.length; i++) {
       const msg = messages[i]
-      if (msg && msg.type === 'assistant') fresh.push(msg)
+      const isTR = msg ? isToolResultMessage(msg) : false
+      process.stderr.write(`[TG] msg[${i}] type=${msg?.type} isMeta=${msg?.isMeta} isTR=${isTR}\n`)
+      // Forward assistant messages AND tool-result user messages (which carry images).
+      // Skip plain human-typed user messages so we don't echo the user's own input.
+      if (msg && (msg.type === 'assistant' || isTR)) fresh.push(msg)
     }
     lastSentIndexRef.current = messages.length
     if (fresh.length > 0) handle.pushActivity(fresh)

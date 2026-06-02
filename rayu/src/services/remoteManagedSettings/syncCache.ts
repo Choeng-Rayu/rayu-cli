@@ -15,6 +15,7 @@ import {
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isRayuNonAnthropicActive,
 } from '../../utils/model/providers.js'
 
 import {
@@ -50,7 +51,7 @@ export function isRemoteManagedSettingsEligible(): boolean {
   if (cached !== undefined) return cached
 
   // 3p provider users should not hit the settings endpoint
-  if (getAPIProvider() !== 'firstParty') {
+  if (getAPIProvider() !== 'firstParty' || isRayuNonAnthropicActive()) {
     return (cached = setEligibility(false))
   }
 

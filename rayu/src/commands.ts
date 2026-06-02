@@ -346,7 +346,8 @@ const COMMANDS = memoize((): Command[] => [
   hooks,
   exportCommand,
   sandboxToggle,
-  ...(!isUsing3PServices() ? [logout, login()] : []),
+  // /login and /logout hidden — use /connect instead (rayu: skip for now)
+  ...([]),
   passes,
   ...(peersCmd ? [peersCmd] : []),
   tasks,

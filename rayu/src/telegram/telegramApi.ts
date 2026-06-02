@@ -109,8 +109,9 @@ export async function sendPhoto(
   form.append('photo', blob, `image.${ext}`)
   if (caption) form.append('caption', caption.slice(0, 1024))
   const res = await fetch(`${API_BASE}/bot${token}/sendPhoto`, { method: 'POST', body: form })
-  if (!res.ok) {
-    // Photo send failed (too large etc.) — send a text fallback
+  const json = await res.json().catch(() => ({})) as { ok?: boolean }
+  if (!res.ok || !json.ok) {
+    // Photo send failed (too large, wrong format, etc.) — send a text fallback
     await sendMessage(token, chatId, caption ?? '🖼 Image generated (could not send as photo)')
   }
 }

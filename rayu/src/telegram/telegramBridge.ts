@@ -164,11 +164,15 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
     ]
 
     const fromCli = allCommands
-      .filter(cmd => !cmd.isHidden && cmd.name.length <= 32)
+      .filter(cmd => !cmd.isHidden)
       .map(cmd => ({
-        command: cmd.name.slice(0, 32),
+        // Telegram only allows [a-z0-9_] in command names — replace hyphens with underscores,
+        // strip any other invalid characters, and truncate to 32.
+        command: cmd.name.replace(/-/g, '_').replace(/[^a-z0-9_]/gi, '').toLowerCase().slice(0, 32),
         description: (cmd.description || cmd.name).slice(0, 256),
       }))
+      // Drop commands whose name became empty or too short after sanitization.
+      .filter(c => c.command.length >= 1)
 
     // Dedupe (builtins take precedence over same-named CLI commands).
     const builtinNames = new Set(builtins.map(b => b.command))
@@ -248,8 +252,11 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
       if (chatId === undefined) return
       for (const message of messages) {
         const images = extractImages(message)
+        process.stderr.write(`[TG] pushActivity type=${message.type} isMeta=${message.isMeta} images=${images.length} contentLen=${Array.isArray(message.message?.content) ? message.message!.content!.length : 'str'}\n`)
         for (const img of images) {
-          void sendPhoto(options.token, chatId, img.base64, img.mediaType, img.caption).catch(() => {})
+          void sendPhoto(options.token, chatId, img.base64, img.mediaType, img.caption).catch(e => {
+            process.stderr.write(`[TG] sendPhoto error: ${e}\n`)
+          })
         }
         const text = formatMessage(message, options.toolLabeler)
         if (text) void sendMessage(options.token, chatId, text).catch(() => {})

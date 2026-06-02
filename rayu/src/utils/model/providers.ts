@@ -14,6 +14,24 @@ export function getAPIProvider(): APIProvider {
 }
 
 /**
+ * Rayu: true when the active Rayu provider is NOT anthropic (i.e. openai-compatible
+ * or any other non-Anthropic kind). Use this to gate Anthropic-specific network
+ * calls (policy limits, remote settings) that must be skipped for third-party providers.
+ */
+export function isRayuNonAnthropicActive(): boolean {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getActiveProvider } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    const kind = getActiveProvider()?.kind
+    return !!kind && kind !== 'anthropic'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Rayu: true when the active provider is an OpenAI-compatible endpoint
  * (OpenAI / NVIDIA / OpenRouter / local). Kept separate from the APIProvider
  * union so the Record<APIProvider, ModelName> model-config contract is

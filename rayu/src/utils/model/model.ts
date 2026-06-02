@@ -91,6 +91,24 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     return undefined
   }
 
+  // Rayu: when an OpenAI-compatible provider is active, Anthropic model aliases
+  // (opus, sonnet, haiku, opusplan) and any model ID that looks like a Claude
+  // first-party or Bedrock ID would be sent verbatim to the OpenAI endpoint and
+  // 404. Ignore them so getDefaultMainLoopModelSetting() returns the provider's
+  // own default model instead.
+  if (specifiedModel && isOpenAICompatibleActive()) {
+    const lower = specifiedModel.toLowerCase().trim().replace(/\[1m\]$/i, '').trim()
+    const isClaudeAlias = ['opus', 'sonnet', 'haiku', 'best', 'opusplan'].includes(lower)
+    const isClaudeId = lower.startsWith('claude-') ||
+      lower.startsWith('us.anthropic.') ||
+      lower.startsWith('eu.anthropic.') ||
+      lower.startsWith('global.anthropic.') ||
+      lower.startsWith('apac.anthropic.')
+    if (isClaudeAlias || isClaudeId) {
+      return undefined
+    }
+  }
+
   return specifiedModel
 }
 
