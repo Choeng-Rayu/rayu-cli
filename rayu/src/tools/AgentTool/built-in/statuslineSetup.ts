@@ -138,7 +138,7 @@ export const STATUSLINE_SETUP_AGENT: BuiltInAgentDefinition = {
   tools: ['Read', 'Edit'],
   source: 'built-in',
   baseDir: 'built-in',
-  model: 'sonnet',
+  model: process.env.RAYU_STATUSLINE_AGENT_MODEL || 'sonnet',
   color: 'orange',
   getSystemPrompt: () => STATUSLINE_SYSTEM_PROMPT,
 }

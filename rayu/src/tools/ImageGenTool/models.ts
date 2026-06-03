@@ -3,8 +3,10 @@
 // SECURITY: only the model id + user prompt/params are sent; the API key is
 // added by the client and never logged.
 
-export const NVIDIA_IMAGE_HOST = 'https://ai.api.nvidia.com/v1/genai'
-export const NVCF_ASSET_HOST = 'https://api.nvcf.nvidia.com/v2/nvcf/assets'
+export const NVIDIA_IMAGE_HOST =
+  process.env.NVIDIA_IMAGE_HOST || 'https://ai.api.nvidia.com/v1/genai'
+export const NVCF_ASSET_HOST =
+  process.env.NVCF_ASSET_HOST || 'https://api.nvcf.nvidia.com/v2/nvcf/assets'
 
 export type ImageCapability = 'generate' | 'edit'
 
@@ -71,8 +73,10 @@ const kontextBody = (p: ImageParams): Record<string, unknown> => {
   }
 }
 
-export const DEFAULT_IMAGE_MODEL = 'black-forest-labs/flux.1-schnell'
-export const DEFAULT_EDIT_MODEL = 'black-forest-labs/flux.1-kontext-dev'
+export const DEFAULT_IMAGE_MODEL =
+  process.env.NVIDIA_IMAGE_MODEL || 'black-forest-labs/flux.1-schnell'
+export const DEFAULT_EDIT_MODEL =
+  process.env.NVIDIA_EDIT_MODEL || 'black-forest-labs/flux.1-kontext-dev'
 
 export const IMAGE_MODELS: Record<string, ImageModel> = {
   [DEFAULT_IMAGE_MODEL]: {

@@ -91,12 +91,19 @@ function createStderrLogger(): ClientOptions['logger'] {
  * config (api key + base URL). Env overrides RAYU_OPENAI_BASE_URL /
  * RAYU_OPENAI_API_KEY take precedence (useful for CI/tests). Returns null when
  * no base URL can be resolved, so the caller falls back to the Anthropic path.
+ *
+ * Always reads a fresh copy of the config from disk (bypassing the in-memory
+ * cache) so that a provider configured via /connect is picked up immediately
+ * without restarting the CLI.
  */
 async function getRayuOpenAICompatibleClient(
   maxRetries: number,
 ): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const { _resetRayuConfigCache, getActiveProvider } = await import('src/utils/rayuConfig.js')
   const { createOpenAICompatibleClient } = await import('./openaiAdapter.js')
+  // Force-invalidate the in-memory cache so we always read the latest
+  // providers.json (e.g. after /connect changes the active provider via Telegram).
+  _resetRayuConfigCache()
   const active = getActiveProvider()
   const baseURL =
     process.env.RAYU_OPENAI_BASE_URL ?? active?.baseURL ?? ''

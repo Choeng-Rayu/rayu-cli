@@ -16,10 +16,10 @@ import {
 
 export type GeneratedVideo = { buffer: Buffer; mediaType: string }
 
-const NVCF_PEXEC_HOST = 'https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions'
-const NVCF_STATUS_HOST = 'https://api.nvcf.nvidia.com/v2/nvcf/pexec/status'
-const NVCF_ASSET_HOST = 'https://api.nvcf.nvidia.com/v1/assets'
-const NVIDIA_COSMOS_HOST = 'https://ai.api.nvidia.com/v1/cosmos'
+const NVCF_PEXEC_HOST = process.env.NVCF_PEXEC_HOST || 'https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions'
+const NVCF_STATUS_HOST = process.env.NVCF_STATUS_HOST || 'https://api.nvcf.nvidia.com/v2/nvcf/pexec/status'
+const NVCF_ASSET_HOST = process.env.NVCF_VIDEO_ASSET_HOST || 'https://api.nvcf.nvidia.com/v1/assets'
+const NVIDIA_COSMOS_HOST = process.env.NVIDIA_COSMOS_HOST || 'https://ai.api.nvidia.com/v1/cosmos'
 
 // ── Key helpers ───────────────────────────────────────────────────────────────
 

@@ -1,6 +1,9 @@
 /** In-process Telegram bridge: relays chat messages <-> REPL with no middle server. */
 
 import { hostname } from 'os'
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from 'fs'
+import { join } from 'path'
+import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import {
   formatFileChangeReview,
   formatMessage,
@@ -251,7 +254,194 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
   }
 }
 
+// ---- Single-session lock with heartbeat ----
+// Only one rayu-cli process should run the Telegram bridge at a time.
+// Lock file format: "PID:STARTTIME:HEARTBEAT_MS"
+//   PID          — system process ID of the holding process
+//   STARTTIME    — /proc/<pid>/stat field 22 (clock ticks since boot), used to
+//                  detect PID reuse across restarts
+//   HEARTBEAT_MS — Date.now() timestamp refreshed every HEARTBEAT_INTERVAL_MS.
+//                  If older than HEARTBEAT_STALE_MS, the lock is considered
+//                  abandoned and any session may take it (handles SIGKILL,
+//                  background sessions, and old-format locks with no heartbeat).
+
+const HEARTBEAT_INTERVAL_MS = 10_000  // refresh the lock timestamp every 10 s
+const HEARTBEAT_STALE_MS = 30_000     // consider the lock abandoned after 30 s
+
+function lockFilePath(): string {
+  return join(getClaudeConfigHomeDir(), 'telegram-bridge.lock')
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Returns the start time of the given process (Linux: /proc/<pid>/stat field 22).
+ * Returns empty string on non-Linux platforms or on any read error.
+ */
+function getProcessStartTime(pid: number): string {
+  try {
+    if (process.platform !== 'linux') return ''
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const afterComm = stat.indexOf(')')
+    if (afterComm === -1) return ''
+    const fields = stat.slice(afterComm + 2).split(' ')
+    return fields[19] ?? '' // field 22 overall (0-indexed 19 after comm)
+  } catch {
+    return ''
+  }
+}
+
+/** Build the lock file content for the current process. */
+function buildLockContent(): string {
+  const startTime = getProcessStartTime(process.pid)
+  return `${process.pid}:${startTime}:${Date.now()}`
+}
+
+/**
+ * Try to acquire the Telegram bridge lock.
+ * Returns true if this process now owns the lock, false if a live session holds it.
+ */
+function acquireBridgeLock(): boolean {
+  const path = lockFilePath()
+  const content = buildLockContent()
+
+  // Atomic exclusive create (O_EXCL) — fails with EEXIST if the file exists.
+  try {
+    const fd = openSync(path, 'wx', 0o600)
+    writeSync(fd, content)
+    closeSync(fd)
+    return true
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'EEXIST') {
+      // Unexpected error (permissions, etc.) — proceed best-effort.
+      return true
+    }
+  }
+
+  // Lock file exists — read it and decide.
+  try {
+    const raw = readFileSync(path, 'utf8').trim()
+    const parts = raw.split(':')
+    const existingPid = parseInt(parts[0] ?? '', 10)
+    const existingStartTime = parts[1] ?? ''
+    const existingHeartbeat = parseInt(parts[2] ?? '0', 10)
+
+    // Old-format locks ("PID:STARTTIME", no heartbeat field) have parts[2] = undefined
+    // → existingHeartbeat = 0 → age = Date.now() → always stale. This cleanly
+    // migrates old-format locks without requiring manual deletion.
+    const heartbeatAge = Date.now() - (isNaN(existingHeartbeat) ? 0 : existingHeartbeat)
+    const heartbeatStale = heartbeatAge > HEARTBEAT_STALE_MS
+
+    if (
+      !isNaN(existingPid) &&
+      existingPid !== process.pid &&
+      isPidAlive(existingPid) &&
+      !heartbeatStale
+    ) {
+      // PID is alive and heartbeat is fresh — verify it's the same process
+      // instance (not a recycled PID with a different start time).
+      const myStartTime = getProcessStartTime(process.pid)
+      if (existingStartTime && myStartTime) {
+        const currentStartTime = getProcessStartTime(existingPid)
+        if (currentStartTime === existingStartTime) {
+          // Genuine live bridge with fresh heartbeat. Respect it.
+          return false
+        }
+        // Start time differs → PID recycled → fall through to overwrite.
+      } else {
+        // Can't compare start times (non-Linux) — trust the heartbeat alone.
+        return false
+      }
+    }
+
+    // Stale or dead lock — take it.
+    writeFileSync(path, content, { mode: 0o600 })
+  } catch {
+    // Corrupt or unreadable — proceed best-effort.
+  }
+  return true
+}
+
+/** Refresh the heartbeat timestamp in the lock file. Only writes if we own it. */
+function updateHeartbeat(): void {
+  try {
+    const path = lockFilePath()
+    if (!existsSync(path)) return
+    const raw = readFileSync(path, 'utf8').trim()
+    const pid = parseInt(raw.split(':')[0] ?? '', 10)
+    if (pid === process.pid) {
+      writeFileSync(path, buildLockContent(), { mode: 0o600 })
+    }
+  } catch {
+    // Best effort
+  }
+}
+
+function releaseBridgeLock(): void {
+  try {
+    const path = lockFilePath()
+    if (existsSync(path)) {
+      const raw = readFileSync(path, 'utf8').trim()
+      const pid = parseInt(raw.split(':')[0] ?? '', 10)
+      if (pid === process.pid) unlinkSync(path)
+    }
+  } catch {
+    // Best effort
+  }
+}
+
+/** A no-op handle returned when another session holds the bridge lock. */
+function makeNoOpHandle(): TelegramBridgeHandle {
+  const noop = (): void => {}
+  const noopAsync = async (): Promise<void> => {}
+  return {
+    pushActivity: noop,
+    startTurn: noop,
+    onTextDelta: noop,
+    onThinkingDelta: noop,
+    endTurn: noopAsync,
+    permissionCallbacks: {
+      sendRequest: noop,
+      sendResponse: noop,
+      cancelRequest: noop,
+      onResponse: () => noop,
+    },
+    stop: noop,
+  }
+}
+
 export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBridgeHandle {
+  // Ensure only one session runs the Telegram bridge at a time.
+  if (!acquireBridgeLock()) {
+    // Another live rayu-cli process already owns the Telegram bridge.
+    // Return a no-op handle so this session doesn't interfere.
+    return makeNoOpHandle()
+  }
+
+  // Clean up the lock when this process exits for any reason.
+  // The 'exit' event fires after all signal handlers complete (including
+  // gracefulShutdown's SIGINT/SIGTERM handlers), so this is sufficient.
+  process.once('exit', () => releaseBridgeLock())
+
+  // Periodically refresh the lock heartbeat so other sessions can detect
+  // if this session is abandoned (e.g. SIGKILL). unref() prevents the timer
+  // from keeping the process alive if everything else has exited.
+  const heartbeatTimer = setInterval(() => updateHeartbeat(), HEARTBEAT_INTERVAL_MS)
+  try {
+    // Works on Node.js and Bun — makes the timer non-blocking.
+    (heartbeatTimer as unknown as { unref(): void }).unref()
+  } catch {
+    // Not available in all runtimes — safe to ignore.
+  }
+
   let running = true
   let offset = 0
   const permissionCallbacks = createTelegramPermissionCallbacks(options.token)
@@ -369,6 +559,8 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
 
     stop(): void {
       running = false
+      clearInterval(heartbeatTimer)
+      releaseBridgeLock()
     },
   }
 }

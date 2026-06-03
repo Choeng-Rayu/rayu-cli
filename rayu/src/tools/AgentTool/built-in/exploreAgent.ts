@@ -75,7 +75,7 @@ export const EXPLORE_AGENT: BuiltInAgentDefinition = {
   baseDir: 'built-in',
   // Ants get inherit to use the main agent's model; external users get haiku for speed
   // Note: For ants, getAgentModel() checks tengu_explore_agent GrowthBook flag at runtime
-  model: process.env.USER_TYPE === 'ant' ? 'inherit' : 'haiku',
+  model: process.env.RAYU_EXPLORE_AGENT_MODEL || (process.env.USER_TYPE === 'ant' ? 'inherit' : 'haiku'),
   // Explore is a fast read-only search agent — it doesn't need commit/PR/lint
   // rules from CLAUDE.md. The main agent has full context and interprets results.
   omitClaudeMd: true,

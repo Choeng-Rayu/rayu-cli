@@ -1,4 +1,4 @@
-import { useEffect, useReducer } from 'react'
+import { useEffect, useReducer, useSyncExternalStore } from 'react'
 import { onGrowthBookRefresh } from '../services/analytics/growthbook.js'
 import { useAppState } from '../state/AppState.js'
 import {
@@ -6,6 +6,10 @@ import {
   type ModelName,
   parseUserSpecifiedModel,
 } from '../utils/model/model.js'
+import {
+  getRemoteModelOverride,
+  subscribeToRemoteModelOverride,
+} from '../utils/remoteModelOverride.js'
 
 // The value of the selector is a full model name that can be used directly in
 // API calls. Use this over getMainLoopModel() when the component needs to
@@ -13,6 +17,16 @@ import {
 export function useMainLoopModel(): ModelName {
   const mainLoopModel = useAppState(s => s.mainLoopModel)
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession)
+
+  // Subscribe to remote (Telegram) model overrides. When the Telegram bridge
+  // calls setRemoteModelOverride(), useSyncExternalStore detects the snapshot
+  // change, triggers a re-render, and the next query closure captures the
+  // updated model — without requiring any AppState mutation from non-React code.
+  const remoteModelOverride = useSyncExternalStore(
+    subscribeToRemoteModelOverride,
+    getRemoteModelOverride,
+    getRemoteModelOverride,
+  )
 
   // parseUserSpecifiedModel reads tengu_ant_model_override via
   // _CACHED_MAY_BE_STALE (in resolveAntModel). Until GB init completes,
@@ -27,6 +41,7 @@ export function useMainLoopModel(): ModelName {
 
   const model = parseUserSpecifiedModel(
     mainLoopModelForSession ??
+      remoteModelOverride ??      // Telegram/remote model change (wins over mainLoopModel)
       mainLoopModel ??
       getDefaultMainLoopModelSetting(),
   )

@@ -904,9 +904,17 @@ export function getAssistantMessageFromError(
 
   // 404 Not Found — usually means the selected model doesn't exist or isn't
   // available. Guide the user to /model so they can pick a valid one.
-  // For 3P users, suggest a specific fallback model they can try.
   if (error instanceof APIError && error.status === 404) {
     const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'
+    // For Rayu non-Anthropic providers (NVIDIA, OpenRouter, etc.), give a
+    // provider-specific message. isRayuNonAnthropicActive() is already imported
+    // from providers.js — no dynamic require needed.
+    if (isRayuNonAnthropicActive()) {
+      return createAssistantAPIErrorMessage({
+        content: `The model "${model}" is not available on your provider. It may not exist or your API key may not have access to it. Run ${switchCmd} to pick a different model, or use /connect to check your provider settings.`,
+        error: 'invalid_request',
+      })
+    }
     const fallbackSuggestion = get3PModelFallbackSuggestion(model)
     return createAssistantAPIErrorMessage({
       content: fallbackSuggestion

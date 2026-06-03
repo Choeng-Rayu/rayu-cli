@@ -84,7 +84,8 @@ const cosmosLegacyText2World = (p: VideoParams): Record<string, unknown> => ({
 })
 
 // ── NVIDIA SVD (simple genai host) ───────────────────────────────────────────
-export const NVIDIA_GENAI_HOST = 'https://ai.api.nvidia.com/v1/genai'
+export const NVIDIA_GENAI_HOST =
+  process.env.NVIDIA_GENAI_HOST || 'https://ai.api.nvidia.com/v1/genai'
 
 const svdBody = (p: VideoParams): Record<string, unknown> => ({
   image: p.image ? `data:image/png;base64,${p.image}` : '',
@@ -111,8 +112,10 @@ const falKlingImage2VideoBody = (p: VideoParams): Record<string, unknown> => ({
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 
-export const DEFAULT_VIDEO_MODEL = 'nvidia/cosmos-predict1-5b'
-export const DEFAULT_IMAGE2VIDEO_MODEL = 'nvidia/cosmos-predict1-5b'
+export const DEFAULT_VIDEO_MODEL =
+  process.env.NVIDIA_VIDEO_MODEL || 'nvidia/cosmos-predict1-5b'
+export const DEFAULT_IMAGE2VIDEO_MODEL =
+  process.env.NVIDIA_IMAGE2VIDEO_MODEL || 'nvidia/cosmos-predict1-5b'
 
 export const VIDEO_MODELS: Record<string, VideoModel> = {
   // ── NVIDIA Physical AI (free, 20 requests, NVCF function IDs) ──────────────

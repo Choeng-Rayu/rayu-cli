@@ -84,7 +84,7 @@ export const PLAN_AGENT: BuiltInAgentDefinition = {
   source: 'built-in',
   tools: EXPLORE_AGENT.tools,
   baseDir: 'built-in',
-  model: 'inherit',
+  model: process.env.RAYU_PLAN_AGENT_MODEL || 'inherit',
   // Plan is read-only and can Read CLAUDE.md directly if it needs conventions.
   // Dropping it from context saves tokens without blocking access.
   omitClaudeMd: true,
