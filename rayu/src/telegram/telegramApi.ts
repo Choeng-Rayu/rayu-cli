@@ -18,8 +18,13 @@ export interface TelegramUpdate {
   message?: {
     message_id: number
     text?: string
+    caption?: string
     chat: { id: number; username?: string; first_name?: string }
     from?: { username?: string; first_name?: string }
+    /** Photo array — Telegram sends multiple sizes; last element is largest. */
+    photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>
+    /** Document (file attachment). */
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
   }
   /** Fired when the user taps an inline keyboard button. */
   callback_query?: {
@@ -223,5 +228,47 @@ export async function setMyCommands(
     await callApi(token, 'setMyCommands', { commands })
   } catch {
     // Non-fatal — commands work even if registration fails
+  }
+}
+
+/**
+ * Get file path from Telegram servers using a file_id.
+ * Returns the file_path needed to construct the download URL, or undefined on failure.
+ */
+export async function getFile(token: string, fileId: string): Promise<string | undefined> {
+  try {
+    const result = await callApi(token, 'getFile', { file_id: fileId })
+    return (result as { file_path?: string }).file_path
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Download a Telegram file and return it as a base64 string.
+ * Requires the file_path from getFile().
+ * Returns { base64, mediaType } or undefined on failure.
+ */
+export async function downloadFileAsBase64(
+  token: string,
+  filePath: string,
+): Promise<{ base64: string; mediaType: string } | undefined> {
+  try {
+    const fileUrl = `${API_BASE}/file/bot${token}/${filePath}`
+    const res = await fetch(fileUrl)
+    if (!res.ok) return undefined
+    const buffer = Buffer.from(await res.arrayBuffer())
+    // Infer media type from extension or content-type header
+    const contentType = res.headers.get('content-type') ?? ''
+    let mediaType = 'image/jpeg'
+    if (contentType.includes('png')) mediaType = 'image/png'
+    else if (contentType.includes('webp')) mediaType = 'image/webp'
+    else if (contentType.includes('gif')) mediaType = 'image/gif'
+    else if (filePath.endsWith('.png')) mediaType = 'image/png'
+    else if (filePath.endsWith('.webp')) mediaType = 'image/webp'
+    else if (filePath.endsWith('.gif')) mediaType = 'image/gif'
+    return { base64: buffer.toString('base64'), mediaType }
+  } catch {
+    return undefined
   }
 }

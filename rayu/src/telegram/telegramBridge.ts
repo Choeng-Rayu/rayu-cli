@@ -18,6 +18,8 @@ import {
 } from './telegramConfig.js'
 import {
   answerCallbackQuery,
+  downloadFileAsBase64,
+  getFile,
   getUpdates,
   sendChatAction,
   sendMessage,
@@ -138,10 +140,81 @@ async function handleUpdate(
 
   // ---- Handle regular messages ----
   const message = update.message
-  const text = message?.text
-  if (!message || !text) return
+  if (!message) return
   const chatId = message.chat.id
   const username = message.from?.username ?? message.chat.username
+  const text = message.text ?? message.caption ?? ''
+
+  // ---- Handle photo messages ----
+  if (message.photo && message.photo.length > 0) {
+    // Pairing: photos from unlinked chats are ignored.
+    if (chatId !== linkedChatId()) return
+
+    // Download the largest photo (last element in the array).
+    const largest = message.photo[message.photo.length - 1]!
+    const filePath = await getFile(options.token, largest.file_id)
+    if (!filePath) {
+      await sendMessage(options.token, chatId, '⚠️ Could not download the photo.')
+      return
+    }
+    const downloaded = await downloadFileAsBase64(options.token, filePath)
+    if (!downloaded) {
+      await sendMessage(options.token, chatId, '⚠️ Failed to process the photo.')
+      return
+    }
+
+    // Enqueue as a message with pasted image content — same format as CLI paste.
+    const caption = text || 'Analyze this image'
+    enqueue({
+      value: caption,
+      mode: 'prompt',
+      pastedContents: {
+        0: {
+          id: 0,
+          type: 'image',
+          content: downloaded.base64,
+          mediaType: downloaded.mediaType,
+          dimensions: { width: largest.width, height: largest.height },
+        },
+      },
+    })
+    return
+  }
+
+  // ---- Handle document messages (image files sent as documents) ----
+  if (message.document && message.document.mime_type?.startsWith('image/')) {
+    if (chatId !== linkedChatId()) return
+
+    const filePath = await getFile(options.token, message.document.file_id)
+    if (!filePath) {
+      await sendMessage(options.token, chatId, '⚠️ Could not download the file.')
+      return
+    }
+    const downloaded = await downloadFileAsBase64(options.token, filePath)
+    if (!downloaded) {
+      await sendMessage(options.token, chatId, '⚠️ Failed to process the file.')
+      return
+    }
+
+    const caption = text || `Analyze this image${message.document.file_name ? ` (${message.document.file_name})` : ''}`
+    enqueue({
+      value: caption,
+      mode: 'prompt',
+      pastedContents: {
+        0: {
+          id: 0,
+          type: 'image',
+          content: downloaded.base64,
+          mediaType: downloaded.mediaType,
+          filename: message.document.file_name,
+        },
+      },
+    })
+    return
+  }
+
+  // ---- Handle text messages ----
+  if (!text) return
 
   const { cmd, arg } = parseCommand(text)
 
@@ -202,7 +275,6 @@ async function handleUpdate(
   }
 
   // Other slash commands → REPL command queue.
-  // Keep the leading slash so the CLI recognises it as a command (not plain text).
   if (text.startsWith('/')) {
     enqueue({ value: text, mode: 'prompt' })
     return
