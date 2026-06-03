@@ -30,7 +30,7 @@ import {
   isNonCustomOpusModel,
 } from 'src/utils/model/model.js'
 import { getModelStrings } from 'src/utils/model/modelStrings.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import { getAPIProvider, isRayuNonAnthropicActive } from 'src/utils/model/providers.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {
   API_PDF_MAX_PAGES,
@@ -878,9 +878,9 @@ export function getAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
       content: getIsNonInteractiveSession()
-        ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`
-        : isUsing3PServices()
-          ? `API Error: ${error.status} ${error.message}`
+        ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${error.status}`
+        : isRayuNonAnthropicActive()
+          ? `${API_ERROR_MESSAGE_PREFIX}: ${error.status} — API key may be invalid or may not have access to this model. Use /connect to update your API key or /model to switch models.`
           : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
     })
   }
