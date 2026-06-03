@@ -60,6 +60,8 @@ export interface TelegramBridgeHandle {
   /** BridgePermissionCallbacks to inject into AppState for permission prompts. */
   permissionCallbacks: BridgePermissionCallbacks
   stop: () => void
+  /** True when this handle is a no-op because another session owns the bridge lock. */
+  isNoOp: boolean
 }
 
 function linkedChatId(): number | undefined {
@@ -125,13 +127,12 @@ async function handleUpdate(
     }
 
     const data = cq.data ?? ''
-    // Try connect wizard first
-    if (data.startsWith('cnx:')) {
-      await handleCallbackQuery(options.token, cq.id, chatId, data)
-    } else {
-      // Unknown callback — just dismiss the spinner
-      await answerCallbackQuery(options.token, cq.id)
-    }
+    // Route all callbacks through the wizard handler.
+    // handleCallbackQuery always calls answerCallbackQuery first (dismisses
+    // the spinner unconditionally), then returns false for unknown data.
+    // This means adding new callback namespaces (mdl:, etc.) never requires
+    // changes here.
+    await handleCallbackQuery(options.token, cq.id, chatId, data)
     return
   }
 
@@ -403,6 +404,7 @@ function makeNoOpHandle(): TelegramBridgeHandle {
   const noop = (): void => {}
   const noopAsync = async (): Promise<void> => {}
   return {
+    isNoOp: true,
     pushActivity: noop,
     startTurn: noop,
     onTextDelta: noop,
@@ -418,6 +420,9 @@ function makeNoOpHandle(): TelegramBridgeHandle {
   }
 }
 
+/** Guard: only register the process 'exit' cleanup listener once across retries. */
+let _exitListenerRegistered = false
+
 export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBridgeHandle {
   // Ensure only one session runs the Telegram bridge at a time.
   if (!acquireBridgeLock()) {
@@ -429,7 +434,10 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
   // Clean up the lock when this process exits for any reason.
   // The 'exit' event fires after all signal handlers complete (including
   // gracefulShutdown's SIGINT/SIGTERM handlers), so this is sufficient.
-  process.once('exit', () => releaseBridgeLock())
+  if (!_exitListenerRegistered) {
+    _exitListenerRegistered = true
+    process.once('exit', () => releaseBridgeLock())
+  }
 
   // Periodically refresh the lock heartbeat so other sessions can detect
   // if this session is abandoned (e.g. SIGKILL). unref() prevents the timer
@@ -483,6 +491,7 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
   void poll()
 
   return {
+    isNoOp: false,
     permissionCallbacks,
 
     startTurn(): void {

@@ -13,6 +13,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
   delete process.env.RAYU_CONFIG_DIR
   delete process.env.RAYU_OPENAI_COMPATIBLE
+  delete process.env.ANTHROPIC_MODEL
 })
 
 async function fresh() {
@@ -52,5 +53,19 @@ describe('provider/model registry', () => {
     const cfg = await fresh()
     cfg.upsertProvider({ id: 'anthropic', kind: 'anthropic', apiKey: 'a' })
     expect(cfg.getActiveProviderModelOptions()).toEqual([])
+  })
+
+  test('openai-compatible provider ignores Anthropic model settings and uses provider default', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'k',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'stepfun-ai/step-3.7-flash',
+    })
+    process.env.ANTHROPIC_MODEL = 'claude-sonnet-4-6'
+    const { getMainLoopModel } = await import('../src/utils/model/model.ts')
+    expect(getMainLoopModel()).toBe('stepfun-ai/step-3.7-flash')
   })
 })

@@ -1,7 +1,164 @@
 import memoize from 'lodash-es/memoize.js'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { join, dirname } from 'path'
+
+/**
+ * Robust .env reader: traverses up from process.cwd() to locate the .env file,
+ * and loads its KEY=VALUE pairs into process.env (without overriding existing values).
+ */
+/**
+ * Parse a raw value string from a .env line, stripping inline comments
+ * and surrounding quotes.
+ *
+ * Rules:
+ *   - Quoted values ("..." or '...') are taken literally; the `#` inside
+ *     quotes is NOT treated as a comment delimiter.
+ *   - Unquoted values are trimmed, and everything from the first ` #` or
+ *     `\t#` (whitespace + hash) onward is stripped as an inline comment.
+ *   - An empty result (e.g. `KEY=` or `KEY= # comment`) returns '' so the
+ *     caller can decide whether to set it.
+ */
+function parseDotEnvValue(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed || trimmed[0] === '#') return ''
+
+  // Quoted value — find the matching closing quote and ignore everything after.
+  const first = trimmed[0]
+  if (first === '"' || first === "'") {
+    const end = trimmed.indexOf(first, 1)
+    if (end !== -1) return trimmed.slice(1, end)
+    // No closing quote — fall through and treat as unquoted.
+    return trimmed.slice(1)
+  }
+
+  // Unquoted value — strip inline comment (space/tab followed by #).
+  const commentIdx = trimmed.search(/[\s]#/)
+  if (commentIdx !== -1) {
+    return trimmed.slice(0, commentIdx).trim()
+  }
+  return trimmed
+}
+
+export function loadDotEnv(): void {
+  let dir = process.cwd()
+  let file = join(dir, '.env')
+  // Traverse up to 10 levels to find the .env file
+  for (let i = 0; i < 10; i++) {
+    if (existsSync(file)) {
+      try {
+        const content = readFileSync(file, 'utf8')
+        for (const raw of content.split('\n')) {
+          const line = raw.trim()
+          if (!line || line.startsWith('#')) continue
+          const eq = line.indexOf('=')
+          if (eq <= 0) continue
+          const key = line.slice(0, eq).trim()
+          const val = parseDotEnvValue(line.slice(eq + 1))
+          // Only set non-empty values; empty KEY= lines are intentionally
+          // left as undefined so they don't shadow real env vars or trigger
+          // truthy checks (e.g. auth conflict detection).
+          if (key && val && process.env[key] === undefined) {
+            process.env[key] = val
+          }
+        }
+        break // found and loaded
+      } catch {
+        // best-effort
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break // reached root
+    dir = parent
+    file = join(dir, '.env')
+  }
+
+  // Run lightweight validation after loading
+  validateDotEnvConfig()
+}
+
+/**
+ * Lightweight startup validation for .env configuration. Warns about common
+ * mistakes to stderr so the user sees them immediately. Never throws — all
+ * checks are advisory.
+ */
+function validateDotEnvConfig(): void {
+  const warnings: string[] = []
+
+  // 1. Multiple provider backends enabled simultaneously
+  const bedrock = isBoolEnvActive(process.env.CLAUDE_CODE_USE_BEDROCK)
+  const vertex = isBoolEnvActive(process.env.CLAUDE_CODE_USE_VERTEX)
+  const foundry = isBoolEnvActive(process.env.CLAUDE_CODE_USE_FOUNDRY)
+  const openai = isBoolEnvActive(process.env.RAYU_OPENAI_COMPATIBLE)
+  const activeProviders = [
+    bedrock && 'Bedrock',
+    vertex && 'Vertex',
+    foundry && 'Foundry',
+    openai && 'OpenAI-compatible',
+  ].filter(Boolean)
+  if (activeProviders.length > 1) {
+    warnings.push(
+      `Multiple providers enabled: ${activeProviders.join(', ')}. Only one provider can be active at a time.`,
+    )
+  }
+
+  // 2. Anthropic auth set alongside OpenAI-compatible mode
+  if (openai) {
+    if (process.env.ANTHROPIC_API_KEY) {
+      warnings.push(
+        'ANTHROPIC_API_KEY is set while RAYU_OPENAI_COMPATIBLE=true. This may cause auth conflicts.',
+      )
+    }
+    if (process.env.ANTHROPIC_AUTH_TOKEN) {
+      warnings.push(
+        'ANTHROPIC_AUTH_TOKEN is set while RAYU_OPENAI_COMPATIBLE=true. This may cause auth conflicts.',
+      )
+    }
+  }
+
+  // 3. Boolean env vars with non-boolean string values
+  const boolVars = [
+    'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+    'RAYU_OPENAI_COMPATIBLE', 'DISABLE_PROMPT_CACHING', 'CLAUDE_CODE_DISABLE_THINKING',
+    'CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING', 'CLAUDE_CODE_DISABLE_1M_CONTEXT',
+    'CLAUDE_CODE_SIMPLE', 'CLAUDE_CODE_REMOTE',
+  ]
+  const validBoolValues = ['', '0', '1', 'true', 'false', 'yes', 'no', 'on', 'off']
+  for (const name of boolVars) {
+    const v = process.env[name]
+    if (v !== undefined && !validBoolValues.includes(v.toLowerCase().trim())) {
+      warnings.push(
+        `${name}="${v}" is not a recognized boolean value. Use true/false, 1/0, yes/no, or on/off.`,
+      )
+    }
+  }
+
+  // 4. Numeric env vars with non-numeric values
+  const numVars = [
+    'API_TIMEOUT_MS', 'CLAUDE_CODE_MAX_RETRIES', 'MAX_STRUCTURED_OUTPUT_RETRIES',
+    'CLAUDE_STREAM_IDLE_TIMEOUT_MS', 'RAYU_CONTEXT_TOKENS',
+  ]
+  for (const name of numVars) {
+    const v = process.env[name]
+    if (v !== undefined && v !== '' && (isNaN(Number(v)) || Number(v) < 0)) {
+      warnings.push(
+        `${name}="${v}" is not a valid positive number.`,
+      )
+    }
+  }
+
+  if (warnings.length > 0) {
+    process.stderr.write(
+      `\n⚠ .env configuration warnings:\n${warnings.map(w => `  • ${w}`).join('\n')}\n\n`,
+    )
+  }
+}
+
+/** Quick check if a string env var evaluates to an active/true boolean. */
+function isBoolEnvActive(v: string | undefined): boolean {
+  if (!v) return false
+  return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase().trim())
+}
 
 /**
  * Pure resolver for the config home dir. Precedence:

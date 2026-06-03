@@ -1,13 +1,33 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
-import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
+import { MODEL_ALIASES, type ModelAlias, isClaudeModelOrAlias } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import {
   getCanonicalName,
   getRuntimeMainLoopModel,
   parseUserSpecifiedModel,
+  getSmallFastModel,
 } from './model.js'
-import { getAPIProvider } from './providers.js'
+import { getAPIProvider, isOpenAICompatibleActive } from './providers.js'
+
+
+function resolveOpenAICompatibleAgentModel(
+  requested: string,
+  parentModel: string,
+): string {
+  const trimmed = requested.trim()
+  const normalized = trimmed.toLowerCase()
+  if (normalized === 'inherit') {
+    return parentModel
+  }
+  if (normalized === 'haiku' || normalized.startsWith('claude-3-5-haiku') || normalized.startsWith('claude-haiku')) {
+    return getSmallFastModel()
+  }
+  if (isClaudeModelOrAlias(trimmed)) {
+    return parentModel
+  }
+  return trimmed
+}
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
@@ -40,6 +60,17 @@ export function getAgentModel(
   toolSpecifiedModel?: ModelAlias,
   permissionMode?: PermissionMode,
 ): string {
+  if (isOpenAICompatibleActive()) {
+    if (process.env.CLAUDE_CODE_SUBAGENT_MODEL) {
+      return resolveOpenAICompatibleAgentModel(process.env.CLAUDE_CODE_SUBAGENT_MODEL, parentModel)
+    }
+    if (toolSpecifiedModel) {
+      return resolveOpenAICompatibleAgentModel(toolSpecifiedModel, parentModel)
+    }
+    const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
+    return resolveOpenAICompatibleAgentModel(agentModelWithExp, parentModel)
+  }
+
   if (process.env.CLAUDE_CODE_SUBAGENT_MODEL) {
     return parseUserSpecifiedModel(process.env.CLAUDE_CODE_SUBAGENT_MODEL)
   }

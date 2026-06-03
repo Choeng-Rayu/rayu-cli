@@ -450,6 +450,25 @@ async function* queryLoop(
       appendSystemContext(systemPrompt, systemContext),
     )
 
+    const appState = toolUseContext.getAppState()
+    const permissionMode = appState.toolPermissionContext.mode
+    let currentModel = getRuntimeMainLoopModel({
+      permissionMode,
+      mainLoopModel: toolUseContext.options.mainLoopModel,
+      exceeds200kTokens:
+        permissionMode === 'plan' &&
+        doesMostRecentAssistantMessageExceed200k(messagesForQuery),
+    })
+    if (currentModel !== toolUseContext.options.mainLoopModel) {
+      toolUseContext = {
+        ...toolUseContext,
+        options: {
+          ...toolUseContext.options,
+          mainLoopModel: currentModel,
+        },
+      }
+    }
+
     queryCheckpoint('query_autocompact_start')
     const { compactionResult, consecutiveFailures } = await deps.autocompact(
       messagesForQuery,
@@ -566,16 +585,6 @@ async function* queryLoop(
           toolUseContext,
         )
       : null
-
-    const appState = toolUseContext.getAppState()
-    const permissionMode = appState.toolPermissionContext.mode
-    let currentModel = getRuntimeMainLoopModel({
-      permissionMode,
-      mainLoopModel: toolUseContext.options.mainLoopModel,
-      exceeds200kTokens:
-        permissionMode === 'plan' &&
-        doesMostRecentAssistantMessageExceed200k(messagesForQuery),
-    })
 
     queryCheckpoint('query_setup_end')
 

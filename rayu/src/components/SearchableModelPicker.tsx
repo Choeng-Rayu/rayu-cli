@@ -13,7 +13,7 @@ import { useSetAppState } from '../state/AppState.js'
 import {
   RAYU_MODEL_SEP,
   getAllProviderModelOptions,
-  setActiveProvider,
+  setActiveProviderModel,
 } from '../utils/rayuConfig.js'
 import {
   getSettingsForSource,
@@ -63,7 +63,7 @@ export function SearchableModelPicker({
     const sep = value.indexOf(RAYU_MODEL_SEP)
     const providerId = sep < 0 ? '' : value.slice(0, sep)
     const model = sep < 0 ? value : value.slice(sep + 1)
-    if (providerId) setActiveProvider(providerId)
+    if (providerId) setActiveProviderModel(providerId, model)
     setAppState(prev => ({
       ...prev,
       mainLoopModel: model,

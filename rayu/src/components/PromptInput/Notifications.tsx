@@ -24,6 +24,7 @@ import { formatDuration } from '../../utils/format.js';
 import { setEnvHookNotifier } from '../../utils/hooks/fileChangedWatcher.js';
 import { toIDEDisplayName } from '../../utils/ide.js';
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js';
+import { hasUsableOpenAICompatibleProvider } from '../../utils/rayuConfig.js';
 import { tokenCountFromLastAPIResponse } from '../../utils/tokens.js';
 import { AutoUpdaterWrapper } from '../AutoUpdaterWrapper.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -38,6 +39,10 @@ const VoiceIndicator: typeof import('./VoiceIndicator.js').VoiceIndicator = feat
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 export const FOOTER_TEMPORARY_STATUS_TIMEOUT = 5000;
+export function shouldShowClaudeAuthError(apiKeyStatus: VerificationStatus): boolean {
+  return (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && !hasUsableOpenAICompatibleProvider();
+}
+
 type Props = {
   apiKeyStatus: VerificationStatus;
   autoUpdaterResult: AutoUpdaterResult | null;
@@ -303,7 +308,7 @@ function NotificationContent({
             ({apiKeyHelperSlow})
           </Text>
         </Box>}
-      {(apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
+      {shouldShowClaudeAuthError(apiKeyStatus) && <Box>
           <Text color="error" wrap="truncate">
             {isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? 'Authentication error · Try again' : 'Not logged in · Run /login'}
           </Text>

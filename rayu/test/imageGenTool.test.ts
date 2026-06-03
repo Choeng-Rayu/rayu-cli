@@ -42,9 +42,10 @@ describe('image model registry', () => {
   test('kontext mapper embeds input image as data URI', () => {
     const body = IMAGE_MODELS[DEFAULT_EDIT_MODEL].buildBody({
       prompt: 'add bg',
-      image: 'QUJD',
+      imageAssetId: 'asset-123',
+      imageMimeType: 'image/png',
     })
-    expect(body.image).toBe('data:image/png;base64,QUJD')
+    expect(body.image).toBe('data:image/png;example_id,asset-123')
   })
 
   test('resolveModel falls back to defaults by capability', () => {
@@ -197,8 +198,17 @@ describe('ImageGenTool.call', () => {
       url: '',
       body: {},
     }
-    globalThis.fetch = (async (url: string, init: { body: string }) => {
-      captured = { url, body: JSON.parse(init.body) }
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      if (url.includes('/assets')) {
+        return new Response(
+          JSON.stringify({ assetId: 'asset-456', uploadUrl: 'https://s3-upload-url' }),
+          { status: 200 },
+        )
+      }
+      if (url.includes('s3-upload-url')) {
+        return new Response('', { status: 200 })
+      }
+      captured = { url, body: JSON.parse(init?.body as string) }
       return new Response(
         JSON.stringify({ artifacts: [{ base64: TINY_PNG_B64, finishReason: 'SUCCESS' }] }),
         { status: 200 },
@@ -216,7 +226,7 @@ describe('ImageGenTool.call', () => {
     )
 
     expect(captured.url).toContain('flux.1-kontext-dev')
-    expect(String(captured.body.image)).toContain('data:image/png;base64,')
+    expect(String(captured.body.image)).toContain('data:image/png;example_id,asset-456')
     expect(res.data.model).toBe('black-forest-labs/flux.1-kontext-dev')
   })
 })

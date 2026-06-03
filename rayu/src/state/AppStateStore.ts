@@ -449,6 +449,8 @@ export type AppState = DeepImmutable<{
   replBridgePermissionCallbacks?: BridgePermissionCallbacks
   // Telegram bot permission callbacks — permission prompts sent to the linked chat.
   telegramPermissionCallbacks?: BridgePermissionCallbacks
+  /** True when the user has explicitly activated the Telegram bridge via /telegram-bot in this session. */
+  telegramBridgeActive?: boolean
   // Channel permission callbacks — permission prompts over Telegram/iMessage/etc.
   // Races against local UI + bridge + hooks + classifier via claim() in
   // interactiveHandler.ts. Constructed once in useManageMCPConnections.

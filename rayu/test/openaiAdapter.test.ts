@@ -388,7 +388,12 @@ describe('openaiAdapter reasoning + stream_options fallback', () => {
       return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
     }) as unknown as typeof fetch
     try {
-      const client: any = createOpenAICompatibleClient({ apiKey: 'k', baseURL: 'http://x/v1', maxRetries: 0 })
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k',
+        baseURL: 'http://x/v1',
+        maxRetries: 0,
+        streamOptions: 'enabled',
+      })
       const result: any = await client.beta.messages.create({ model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true }).withResponse()
       const types: string[] = []
       for await (const e of result.data as AsyncIterable<any>) types.push(e.type)
@@ -538,15 +543,13 @@ describe('openaiAdapter prompt caching', () => {
     }
   })
 
-  test('NVIDIA auto mode does not send prompt_cache_key on the first request', async () => {
+  test('NVIDIA auto mode does not send optional OpenAI params on the first request', async () => {
     let body: any
     const origFetch = globalThis.fetch
     globalThis.fetch = (async (_url: any, init: any) => {
       body = JSON.parse(init.body)
-      return new Response(
-        JSON.stringify({ id: 'c', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )
+      const sse = 'data: ' + JSON.stringify({ choices: [{ delta: { content: 'ok' } }] }) + '\n\n' + 'data: [DONE]\n\n'
+      return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
     }) as unknown as typeof fetch
     try {
       const client: any = createOpenAICompatibleClient({
@@ -555,8 +558,19 @@ describe('openaiAdapter prompt caching', () => {
         providerId: 'nvidia',
         maxRetries: 0,
       })
-      await client.beta.messages.create({ model: 'meta/llama-3.3-70b-instruct', system: 's', messages: [{ role: 'user', content: 'hi' }] })
+      const result: any = await client.beta.messages.create({
+        model: 'stepfun-ai/step-3.7-flash',
+        system: 's',
+        messages: [{ role: 'user', content: 'hi' }],
+        output_config: { effort: 'medium' },
+        stream: true,
+      } as any).withResponse()
+      for await (const _e of result.data as AsyncIterable<any>) {
+        // drain
+      }
       expect(body.prompt_cache_key).toBeUndefined()
+      expect(body.reasoning_effort).toBeUndefined()
+      expect(body.stream_options).toBeUndefined()
     } finally {
       globalThis.fetch = origFetch
     }
@@ -664,6 +678,101 @@ describe('openaiAdapter image+tools conflict fallback', () => {
       }
       expect(threw).toBe(true)
       expect(calls).toBe(1) // no image → no tool-stripping retry
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
+
+describe('openaiAdapter reasoning_effort parameter', () => {
+  test('translates effort levels to reasoning_effort', async () => {
+    let body: any
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      body = JSON.parse(init.body)
+      return new Response(
+        JSON.stringify({ id: 'c', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k',
+        baseURL: 'https://api.openai.com/v1',
+        providerId: 'openai',
+        maxRetries: 0,
+      })
+
+      // 'high' effort -> 'high' reasoning_effort
+      await client.beta.messages.create({
+        model: 'o3',
+        messages: [{ role: 'user', content: 'hi' }],
+        output_config: { effort: 'high' },
+      } as any)
+      expect(body.reasoning_effort).toBe('high')
+
+      // 'max' effort -> 'high' reasoning_effort (clamped)
+      await client.beta.messages.create({
+        model: 'o3',
+        messages: [{ role: 'user', content: 'hi' }],
+        output_config: { effort: 'max' },
+      } as any)
+      expect(body.reasoning_effort).toBe('high')
+
+      // 'medium' effort -> 'medium' reasoning_effort
+      await client.beta.messages.create({
+        model: 'o3',
+        messages: [{ role: 'user', content: 'hi' }],
+        output_config: { effort: 'medium' },
+      } as any)
+      expect(body.reasoning_effort).toBe('medium')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('gracefully retries without reasoning_effort if provider rejects it, then suppresses it', async () => {
+    let calls = 0
+    const bodies: any[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      calls++
+      const body = JSON.parse(init.body)
+      bodies.push(body)
+      if (body.reasoning_effort) {
+        return new Response(
+          JSON.stringify({ error: { message: 'Unrecognized request argument: reasoning_effort' } }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(
+        JSON.stringify({ id: 'c', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k',
+        baseURL: 'http://strict-effort.test/v1',
+        maxRetries: 0,
+        reasoningEffort: 'enabled',
+      })
+      const msg: any = await client.beta.messages.create({
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        output_config: { effort: 'medium' },
+      } as any)
+      expect(msg.content[0].text).toBe('ok')
+      expect(calls).toBe(2) // first with reasoning_effort (400), retry without
+
+      const msg2: any = await client.beta.messages.create({
+        model: 'm',
+        messages: [{ role: 'user', content: 'again' }],
+        output_config: { effort: 'medium' },
+      } as any)
+      expect(msg2.content[0].text).toBe('ok')
+      expect(calls).toBe(3)
+      expect(bodies.map(body => 'reasoning_effort' in body)).toEqual([true, false, false])
     } finally {
       globalThis.fetch = origFetch
     }

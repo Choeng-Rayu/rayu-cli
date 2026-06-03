@@ -27,9 +27,10 @@ describe('provider presets', () => {
   test('registry includes the 4 user providers as OpenAI-compatible with /v1 base URLs', async () => {
     const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
     const byId = Object.fromEntries(PROVIDER_PRESETS.map(p => [p.id, p]))
-    for (const id of ['nvidia', 'doubleword', 'deepseek', 'kimi']) {
+    for (const id of ['nvidia', 'doubleword', 'deepseek', 'kimi-moonshot', 'kimi-for-code']) {
       expect(byId[id]?.kind).toBe('openai-compatible')
       expect(byId[id]?.baseURL?.endsWith('/v1')).toBe(true)
+      expect(byId[id]?.smallFastModel).toBeTruthy()
     }
     expect(byId['doubleword'].baseURL).toBe('https://api.doubleword.ai/v1')
   })
@@ -58,5 +59,25 @@ describe('env key migration', () => {
     const dw = cfg.loadRayuConfig().providers.find(p => p.id === 'doubleword')
     expect(dw?.apiKey).toBe('dw-1')
     expect(dw?.baseURL).toBe('https://api.doubleword.ai/v1')
+    expect(dw?.smallFastModel).toBe('Qwen/Qwen3.5-9B')
+  })
+
+  test('migration fills missing preset smallFastModel without overwriting user values', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'user-key',
+      baseURL: 'https://custom.example/v1',
+      defaultModel: 'user/main-model',
+    })
+    const { migrateEnvKeysToConfig } = await import('../src/utils/rayuProviders.ts')
+    migrateEnvKeysToConfig()
+    cfg._resetRayuConfigCache()
+    const nvidia = cfg.loadRayuConfig().providers.find(p => p.id === 'nvidia')
+    expect(nvidia?.apiKey).toBe('user-key')
+    expect(nvidia?.baseURL).toBe('https://custom.example/v1')
+    expect(nvidia?.defaultModel).toBe('user/main-model')
+    expect(nvidia?.smallFastModel).toBe('nvidia/llama-3.1-nemotron-nano-8b-v1')
   })
 })

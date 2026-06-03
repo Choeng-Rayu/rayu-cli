@@ -10,6 +10,8 @@ export interface PendingToken {
 
 /** Persisted Telegram bridge state. Stored at <configHome>/telegram.json (0600). */
 export interface TelegramConfig {
+  /** The bot token (from @BotFather). Stored here so users don't need env vars. */
+  botToken?: string
   linkedChatId?: number
   linkedUsername?: string
   pendingToken?: PendingToken
@@ -19,10 +21,22 @@ function configPath(): string {
   return join(getClaudeConfigHomeDir(), 'telegram.json')
 }
 
-/** Bot token: env-first (TELEGRAM_BOT_TOKEN), no config-file fallback for secrets. */
+/**
+ * Bot token: config-first (telegram.json → botToken), then env fallback (TELEGRAM_BOT_TOKEN).
+ * This way users can paste their token into rayu-cli instead of setting an env var.
+ */
 export function getBotToken(): string | undefined {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  return token && token.trim().length > 0 ? token.trim() : undefined
+  const cfg = readTelegramConfig()
+  if (cfg.botToken && cfg.botToken.trim().length > 0) return cfg.botToken.trim()
+  const env = process.env.TELEGRAM_BOT_TOKEN
+  return env && env.trim().length > 0 ? env.trim() : undefined
+}
+
+/** Save a bot token to the config file. */
+export function saveBotToken(token: string): void {
+  const cfg = readTelegramConfig()
+  cfg.botToken = token.trim()
+  writeTelegramConfig(cfg)
 }
 
 export function readTelegramConfig(): TelegramConfig {
@@ -63,13 +77,17 @@ export function consumePendingToken(
     return null
   }
   const next: TelegramConfig = {
+    ...current,
     linkedChatId: chatId,
     linkedUsername: username,
+    pendingToken: undefined, // consumed
   }
   writeTelegramConfig(next)
   return next
 }
 
 export function unlink(): void {
-  writeTelegramConfig({})
+  const current = readTelegramConfig()
+  // Keep botToken but clear linking state
+  writeTelegramConfig({ botToken: current.botToken })
 }

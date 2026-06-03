@@ -32,6 +32,7 @@ import {
 } from '../utils/rayuConfig.js'
 import { enqueue } from '../utils/messageQueueManager.js'
 import { setRemoteModelOverride } from '../utils/remoteModelOverride.js'
+import { setMainLoopModelOverride } from '../bootstrap/state.js'
 import {
   answerCallbackQuery,
   editMessageWithInlineKeyboard,
@@ -188,6 +189,23 @@ function modelPickerPageText(models: string[], page: number, activeModel: string
   ].join('\n')
 }
 
+function refreshProviderModelsInBackground(providerId: string): void {
+  void (async () => {
+    const provider = loadRayuConfig().providers.find(p => p.id === providerId)
+    if (!provider || provider.kind !== 'openai-compatible') return
+    const fetched = await fetchProviderModels(provider)
+    if (fetched.length === 0) return
+    const cfg = loadRayuConfig()
+    const cur = cfg.providers.find(p => p.id === providerId)
+    if (cur) {
+      cur.fetchedModels = fetched
+      saveRayuConfig(cfg)
+    }
+  })().catch(() => {
+    // Best-effort cache warmup; /model can fetch live later if this fails.
+  })
+}
+
 // ---- Public API ----
 
 /**
@@ -275,6 +293,7 @@ export async function handleCallbackQuery(
 
     _resetRayuConfigCache()
     setRemoteModelOverride(model)
+    setMainLoopModelOverride(model)
     enqueue({ value: `[Telegram] Provider changed to ${state.providerId} · Model: ${model}`, mode: 'task-notification' })
 
     clearSession(chatId)
@@ -326,6 +345,7 @@ export async function handleCallbackQuery(
 
     _resetRayuConfigCache()
     setRemoteModelOverride(model)
+    setMainLoopModelOverride(model)
     enqueue({
       value: `[Telegram] Model changed to ${model}${active ? ` (provider: ${active.id})` : ''}`,
       mode: 'task-notification',
@@ -389,7 +409,7 @@ export async function handleConnectTextInput(
 
     await sendChatAction(token, chatId, 'typing')
     await editMessageWithInlineKeyboard(token, chatId, state.messageId,
-      `⏳ Verifying connection to *${state.providerId}*…`)
+      `⏳ Saving provider *${state.providerId}*…`)
 
     upsertProvider(
       {
@@ -398,27 +418,34 @@ export async function handleConnectTextInput(
         apiKey: apiKey || undefined,
         baseURL: state.baseURL ?? preset?.baseURL,
         defaultModel: preset?.defaultModel,
+        smallFastModel: preset?.smallFastModel,
       },
       true,
     )
 
-    let models: string[] = []
-    if (state.providerId === 'anthropic') {
-      models = ANTHROPIC_MODELS
-    } else {
-      const p = loadRayuConfig().providers.find(x => x.id === state.providerId)
-      if (p) {
-        const fetched = await fetchProviderModels(p)
-        models = fetched.filter(isLikelyChatModel)
-        if (models.length === 0) models = fetched
-        if (models.length === 0 && preset?.defaultModel) models = [preset.defaultModel]
-        if (fetched.length > 0) {
-          const cfg = loadRayuConfig()
-          const cur = cfg.providers.find(x => x.id === state.providerId)
-          if (cur) { cur.fetchedModels = fetched; saveRayuConfig(cfg) }
-        }
+    if (state.providerId !== 'anthropic') {
+      if (preset?.defaultModel) {
+        setRemoteModelOverride(preset.defaultModel)
+        setMainLoopModelOverride(preset.defaultModel)
+        enqueue({
+          value: `[Telegram] Provider changed to ${state.providerId} · Model: ${preset.defaultModel}`,
+          mode: 'task-notification',
+        })
       }
+      refreshProviderModelsInBackground(state.providerId)
+      clearSession(chatId)
+      await editMessageWithInlineKeyboard(token, chatId, state.messageId, [
+        `✅ Connected to *${state.providerId}*!`,
+        ``,
+        `Active model: \`${preset?.defaultModel ?? '(none)'}\``,
+        ``,
+        `Model list is refreshing in the background. Use \`/model\` to switch anytime.`,
+      ].join('\n'))
+      return true
     }
+
+    let models: string[] = []
+    models = ANTHROPIC_MODELS
 
     if (models.length === 0) {
       clearSession(chatId)
@@ -528,6 +555,8 @@ export async function handleModelCommand(token: string, chatId: number, arg: str
   saveRayuConfig(cfg)
   _resetRayuConfigCache()
   setRemoteModelOverride(name)
+  setMainLoopModelOverride(name)
+  // Notify the terminal.
   enqueue({
     value: `[Telegram] Model changed to ${name} (provider: ${active.id})`,
     mode: 'task-notification',

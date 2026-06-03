@@ -27,7 +27,7 @@ import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider, isOpenAICompatibleActive } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
-import { type ModelAlias, isModelAlias } from './aliases.js'
+import { type ModelAlias, isModelAlias, isClaudeModelOrAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
 
 export type ModelShortName = string
@@ -35,21 +35,25 @@ export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
 export function getSmallFastModel(): ModelName {
-  if (process.env.ANTHROPIC_SMALL_FAST_MODEL) {
-    return process.env.ANTHROPIC_SMALL_FAST_MODEL
-  }
-  // Rayu: under an OpenAI-compatible provider, small/fast requests (titles,
-  // etc.) must use a provider model — a hardcoded Claude haiku id would 404
-  // against NVIDIA/DeepSeek/etc. Prefer a configured smallFastModel, else the
-  // provider's default model.
   if (isOpenAICompatibleActive()) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { getActiveProvider, getValidDefaultModel } =
       require('../rayuConfig.js') as typeof import('../rayuConfig.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
     const p = getActiveProvider()
+    
+    // If the user set a custom non-Claude model via env, use it.
+    if (process.env.ANTHROPIC_SMALL_FAST_MODEL) {
+      const isClaude = isClaudeModelOrAlias(process.env.ANTHROPIC_SMALL_FAST_MODEL)
+      if (!isClaude) {
+        return process.env.ANTHROPIC_SMALL_FAST_MODEL
+      }
+    }
+    
     const m = p?.smallFastModel || getValidDefaultModel(p)
     if (m) return m
+  } else if (process.env.ANTHROPIC_SMALL_FAST_MODEL) {
+    return process.env.ANTHROPIC_SMALL_FAST_MODEL
   }
   return getDefaultHaikuModel()
 }
@@ -96,20 +100,19 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
   // first-party or Bedrock ID would be sent verbatim to the OpenAI endpoint and
   // 404. Ignore them so getDefaultMainLoopModelSetting() returns the provider's
   // own default model instead.
-  if (specifiedModel && isOpenAICompatibleActive()) {
-    const lower = specifiedModel.toLowerCase().trim().replace(/\[1m\]$/i, '').trim()
-    const isClaudeAlias = ['opus', 'sonnet', 'haiku', 'best', 'opusplan'].includes(lower)
-    const isClaudeId = lower.startsWith('claude-') ||
-      lower.startsWith('us.anthropic.') ||
-      lower.startsWith('eu.anthropic.') ||
-      lower.startsWith('global.anthropic.') ||
-      lower.startsWith('apac.anthropic.')
-    if (isClaudeAlias || isClaudeId) {
-      return undefined
-    }
+  if (
+    specifiedModel &&
+    isOpenAICompatibleActive() &&
+    isAnthropicOnlyModelSetting(specifiedModel)
+  ) {
+    return undefined
   }
 
   return specifiedModel
+}
+
+export function isAnthropicOnlyModelSetting(model: string): boolean {
+  return isClaudeModelOrAlias(model) || resolveAntModel(model) !== undefined
 }
 
 /**

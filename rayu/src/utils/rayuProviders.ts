@@ -9,6 +9,8 @@ import {
   loadRayuConfig,
   saveRayuConfig,
 } from './rayuConfig.js'
+import { loadDotEnv } from './envUtils.js'
+
 
 export type ProviderPreset = {
   /** Stable provider id (also the config id). */
@@ -19,6 +21,8 @@ export type ProviderPreset = {
   baseURL?: string
   /** Sensible default model id (used until the live catalog is fetched). */
   defaultModel?: string
+  /** Provider-native small/fast model for lightweight work and haiku aliases. */
+  smallFastModel?: string
   /** Env var names whose value is the API key for this provider. */
   envKeys?: string[]
   /** True for endpoints where the user must type the base URL (no fixed host). */
@@ -34,6 +38,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'openai-compatible',
     baseURL: 'https://integrate.api.nvidia.com/v1',
     defaultModel: 'meta/llama-3.3-70b-instruct',
+    smallFastModel: 'nvidia/llama-3.1-nemotron-nano-8b-v1',
     envKeys: ['NVIDIA_API_KEY'],
   },
   {
@@ -42,6 +47,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'openai-compatible',
     baseURL: 'https://api.doubleword.ai/v1',
     defaultModel: 'moonshotai/Kimi-K2.6',
+    smallFastModel: 'Qwen/Qwen3.5-9B',
     envKeys: ['DOUBLE_WORD_API_KEY', 'DOUBLEWORD_API_KEY'],
   },
   {
@@ -50,6 +56,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'openai-compatible',
     baseURL: 'https://api.deepseek.com/v1',
     defaultModel: 'deepseek-chat',
+    smallFastModel: 'deepseek-v4-flash',
     envKeys: ['DEEPSEEK_API_KEY'],
   },
   {
@@ -58,6 +65,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'openai-compatible',
     baseURL: 'https://api.moonshot.ai/v1',
     defaultModel: 'kimi-k2.6',
+    smallFastModel: 'kimi-k2.6',
     envKeys: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
   },
   {
@@ -66,6 +74,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'openai-compatible',
     baseURL: 'https://api.kimi.com/coding/v1',
     defaultModel: 'kimi-for-coding',
+    smallFastModel: 'kimi-for-coding',
     envKeys: ['KIMI_FOR_CODE_API_KEY'],
   },
   {
@@ -74,6 +83,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'openai-compatible',
     baseURL: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o',
+    smallFastModel: 'gpt-4o-mini',
     envKeys: ['OPENAI_API_KEY'],
   },
   {
@@ -82,6 +92,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'openai-compatible',
     baseURL: 'https://openrouter.ai/api/v1',
     defaultModel: 'anthropic/claude-3.5-sonnet',
+    smallFastModel: 'openai/gpt-4o-mini',
     envKeys: ['OPENROUTER_API_KEY'],
   },
   {
@@ -92,25 +103,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
 ]
 
-/** Minimal .env reader: loads KEY=VALUE pairs into process.env (without overriding). */
-function loadDotEnv(): void {
-  for (const file of [join(process.cwd(), '.env')]) {
-    if (!existsSync(file)) continue
-    try {
-      for (const raw of readFileSync(file, 'utf8').split('\n')) {
-        const line = raw.trim()
-        if (!line || line.startsWith('#')) continue
-        const eq = line.indexOf('=')
-        if (eq <= 0) continue
-        const key = line.slice(0, eq).trim()
-        let val = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '')
-        if (key && process.env[key] === undefined) process.env[key] = val
-      }
-    } catch {
-      // best-effort
-    }
-  }
-}
+
 
 /**
  * Import API keys from known env vars / .env into the provider config. Adds a
@@ -122,6 +115,22 @@ export function migrateEnvKeysToConfig(): void {
   loadDotEnv()
   const cfg = loadRayuConfig()
   let changed = false
+  for (const provider of cfg.providers) {
+    const preset = PROVIDER_PRESETS.find(p => p.id === provider.id)
+    if (!preset) continue
+    if (!provider.baseURL && preset.baseURL) {
+      provider.baseURL = preset.baseURL
+      changed = true
+    }
+    if (!provider.defaultModel && preset.defaultModel) {
+      provider.defaultModel = preset.defaultModel
+      changed = true
+    }
+    if (!provider.smallFastModel && preset.smallFastModel) {
+      provider.smallFastModel = preset.smallFastModel
+      changed = true
+    }
+  }
   for (const preset of PROVIDER_PRESETS) {
     const key = preset.envKeys
       ?.map(k => process.env[k])
@@ -133,6 +142,7 @@ export function migrateEnvKeysToConfig(): void {
       existing.apiKey = key
       existing.baseURL ??= preset.baseURL
       existing.defaultModel ??= preset.defaultModel
+      existing.smallFastModel ??= preset.smallFastModel
     } else {
       cfg.providers.push({
         id: preset.id,
@@ -140,6 +150,7 @@ export function migrateEnvKeysToConfig(): void {
         apiKey: key,
         ...(preset.baseURL ? { baseURL: preset.baseURL } : {}),
         ...(preset.defaultModel ? { defaultModel: preset.defaultModel } : {}),
+        ...(preset.smallFastModel ? { smallFastModel: preset.smallFastModel } : {}),
       })
     }
     changed = true

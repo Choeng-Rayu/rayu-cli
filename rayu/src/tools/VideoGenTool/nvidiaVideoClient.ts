@@ -24,11 +24,11 @@ const NVIDIA_COSMOS_HOST = process.env.NVIDIA_COSMOS_HOST || 'https://ai.api.nvi
 // ── Key helpers ───────────────────────────────────────────────────────────────
 
 export function getNvidiaApiKey(): string | null {
-  return getRayuApiKey('nvidia') ?? process.env.NVIDIA_API_KEY ?? null
+  return process.env.NVIDIA_API_KEY ?? getRayuApiKey('nvidia') ?? null
 }
 
 export function getFalApiKey(): string | null {
-  return getRayuApiKey('fal') ?? process.env.FAL_KEY ?? null
+  return process.env.FAL_KEY ?? getRayuApiKey('fal') ?? null
 }
 
 export function isVideoEnabled(): boolean {

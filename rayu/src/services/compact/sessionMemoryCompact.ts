@@ -12,7 +12,6 @@ import {
   createUserMessage,
   isCompactBoundaryMessage,
 } from '../../utils/messages.js'
-import { getMainLoopModel } from '../../utils/model/model.js'
 import { getSessionMemoryPath } from '../../utils/permissions/filesystem.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
 import { getTranscriptPath } from '../../utils/sessionStorage.js'
@@ -515,6 +514,7 @@ export async function trySessionMemoryCompaction(
   messages: Message[],
   agentId?: AgentId,
   autoCompactThreshold?: number,
+  model?: string,
 ): Promise<CompactionResult | null> {
   if (!shouldUseSessionMemoryCompaction()) {
     return null
@@ -582,7 +582,7 @@ export async function trySessionMemoryCompaction(
 
     // Run session start hooks to restore CLAUDE.md and other context
     const hookResults = await processSessionStartHooks('compact', {
-      model: getMainLoopModel(),
+      model,
     })
 
     // Get transcript path for the summary message

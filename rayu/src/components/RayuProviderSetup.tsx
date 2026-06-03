@@ -19,7 +19,7 @@ import { PROVIDER_PRESETS, type ProviderPreset } from '../utils/rayuProviders.js
 type Preset = ProviderPreset
 const PRESETS = PROVIDER_PRESETS
 
-type Phase = 'pick' | 'baseURL' | 'model' | 'key' | 'fetching'
+type Phase = 'pick' | 'baseURL' | 'model' | 'key'
 
 export function RayuProviderSetup({
   onDone,
@@ -53,27 +53,14 @@ export function RayuProviderSetup({
         ? { baseURL: (baseURL || preset.baseURL || '').trim() }
         : {}),
       ...(model.trim() ? { defaultModel: model.trim() } : {}),
+      ...(preset.smallFastModel ? { smallFastModel: preset.smallFastModel } : {}),
     }
     upsertProvider(provider, true)
-    // For OpenAI-compatible providers, fetch the live model catalog now so the
-    // /model picker immediately lists every model the provider offers.
-    if (provider.kind === 'openai-compatible' && provider.apiKey) {
-      setPhase('fetching')
-      void refreshActiveProviderModels()
-        .catch(() => [])
-        .finally(() => onDone())
-      return
+    // Populate /model opportunistically, but do not block the first chat turn.
+    if (provider.kind === 'openai-compatible' && provider.baseURL) {
+      void refreshActiveProviderModels().catch(() => [])
     }
     onDone()
-  }
-
-  if (phase === 'fetching') {
-    return (
-      <Box flexDirection="column" gap={1} paddingLeft={1}>
-        <Text>Fetching available models from {preset?.label}…</Text>
-        <Text dimColor>This populates /model with the provider's full catalog.</Text>
-      </Box>
-    )
   }
 
   if (phase === 'pick') {

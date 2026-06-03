@@ -20,6 +20,7 @@ import {
 } from '@anthropic-ai/sdk/index.js'
 import { reportBug, reportIssue } from 'src/utils/rayuDiagnostics.js'
 import { hashPair } from 'src/utils/hash.js'
+import type { ProviderFeatureMode } from 'src/utils/rayuConfig.js'
 
 type AnyObj = Record<string, unknown>
 
@@ -38,6 +39,7 @@ type BetaParams = {
 
 type BuildOpenAIRequestOptions = {
   promptCacheKey?: boolean
+  reasoningEffort?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +275,9 @@ export function buildOpenAIRequest(
     // more likely to be reused instead of re-processed.
     req.prompt_cache_key = hashPair(systemToText(params.system) ?? '', params.model)
   }
+  if (options.reasoningEffort) {
+    req.reasoning_effort = options.reasoningEffort
+  }
   return req
 }
 
@@ -475,15 +480,22 @@ export type OpenAICompatibleConfig = {
   headers?: Record<string, string>
   maxRetries?: number
   providerId?: string
-  promptCacheKey?: 'auto' | 'enabled' | 'disabled'
+  promptCacheKey?: ProviderFeatureMode
+  reasoningEffort?: ProviderFeatureMode
+  streamOptions?: ProviderFeatureMode
 }
 
-type OptionalRequestParam = 'prompt_cache_key' | 'stream_options'
+type OptionalRequestParam = 'prompt_cache_key' | 'stream_options' | 'reasoning_effort'
 
 const unsupportedOptionalParams = new Map<string, Set<OptionalRequestParam>>()
+const clientCache = new Map<
+  string,
+  ReturnType<typeof createOpenAICompatibleClientUncached>
+>()
 
 export function _resetOpenAIAdapterUnsupportedParamCacheForTesting(): void {
   unsupportedOptionalParams.clear()
+  clientCache.clear()
 }
 
 function providerModelCacheKey(baseURL: string, model: string): string {
@@ -511,11 +523,9 @@ function markOptionalParamUnsupported(
   unsupportedOptionalParams.set(key, params)
 }
 
-function shouldUsePromptCacheKey(config: OpenAICompatibleConfig): boolean {
-  const mode = config.promptCacheKey ?? 'auto'
-  if (mode === 'enabled') return true
-  if (mode === 'disabled') return false
-
+function isOpenAIHost(
+  config: Pick<OpenAICompatibleConfig, 'baseURL' | 'providerId'>,
+): boolean {
   if (config.providerId?.toLowerCase() === 'openai') return true
   try {
     return new URL(config.baseURL).hostname.toLowerCase() === 'api.openai.com'
@@ -524,10 +534,38 @@ function shouldUsePromptCacheKey(config: OpenAICompatibleConfig): boolean {
   }
 }
 
+function providerModeAllows(
+  mode: ProviderFeatureMode | undefined,
+  autoAllowed: boolean,
+): boolean {
+  if (mode === 'enabled') return true
+  if (mode === 'disabled') return false
+  return autoAllowed
+}
+
+function shouldUsePromptCacheKey(config: OpenAICompatibleConfig): boolean {
+  return providerModeAllows(config.promptCacheKey, isOpenAIHost(config))
+}
+
+function shouldUseReasoningEffort(
+  config: OpenAICompatibleConfig,
+  model: string,
+): boolean {
+  return providerModeAllows(
+    config.reasoningEffort,
+    isOpenAIHost(config) && usesMaxCompletionTokens(model),
+  )
+}
+
+function shouldUseStreamOptions(config: OpenAICompatibleConfig): boolean {
+  return providerModeAllows(config.streamOptions, isOpenAIHost(config))
+}
+
 function optionalParamsIn(req: AnyObj): OptionalRequestParam[] {
   const params: OptionalRequestParam[] = []
   if ('prompt_cache_key' in req) params.push('prompt_cache_key')
   if ('stream_options' in req) params.push('stream_options')
+  if ('reasoning_effort' in req) params.push('reasoning_effort')
   return params
 }
 
@@ -570,6 +608,9 @@ function rejectedOptionalParams(
   }
   if (/prompt_cache_key/i.test(msg)) {
     if (candidates.includes('prompt_cache_key')) rejected.add('prompt_cache_key')
+  }
+  if (/reasoning_effort/i.test(msg)) {
+    if (candidates.includes('reasoning_effort')) rejected.add('reasoning_effort')
   }
   if (rejected.size > 0) return rejected
 
@@ -658,6 +699,37 @@ function normalizeError(e: unknown): unknown {
  * streaming path.
  */
 export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
+  const cacheKey = openAIClientCacheKey(config)
+  const cached = clientCache.get(cacheKey)
+  if (cached) return cached
+  const client = createOpenAICompatibleClientUncached(config)
+  clientCache.set(cacheKey, client)
+  return client
+}
+
+function stableHeaders(headers: Record<string, string> | undefined): string {
+  if (!headers) return ''
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+  )
+}
+
+function openAIClientCacheKey(config: OpenAICompatibleConfig): string {
+  return JSON.stringify({
+    providerId: config.providerId ?? '',
+    baseURL: config.baseURL.replace(/\/+$/, ''),
+    keyHash: hashPair(config.apiKey || 'unset', 'openai-compatible-client'),
+    headers: stableHeaders(config.headers),
+    maxRetries: config.maxRetries ?? 2,
+    promptCacheKey: config.promptCacheKey ?? 'auto',
+    reasoningEffort: config.reasoningEffort ?? 'auto',
+    streamOptions: config.streamOptions ?? 'auto',
+  })
+}
+
+function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
   const client = new OpenAI({
     apiKey: config.apiKey || 'unset',
     baseURL: config.baseURL,
@@ -732,13 +804,12 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
     signal?: AbortSignal,
   ): Promise<{ data: AsyncGenerator<StreamEvent>; request_id: null; response: Response }> {
     const base = { ...req, stream: true }
-    const request = isOptionalParamUnsupported(
-      config.baseURL,
-      model,
-      'stream_options',
-    )
-      ? base
-      : { ...base, stream_options: { include_usage: true } }
+    const includeStreamOptions =
+      shouldUseStreamOptions(config) &&
+      !isOptionalParamUnsupported(config.baseURL, model, 'stream_options')
+    const request = includeStreamOptions
+      ? { ...base, stream_options: { include_usage: true } }
+      : base
     let oaStream: AsyncIterable<AnyObj>
     try {
       oaStream = (await client.chat.completions.create(
@@ -789,6 +860,16 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
   }
 
   function create(params: BetaParams, opts?: AnyObj): unknown {
+    const outputConfig = (params as AnyObj).output_config as AnyObj | undefined
+    const effort = outputConfig?.effort as string | undefined
+    const hasReasoningEffort =
+      !!effort &&
+      shouldUseReasoningEffort(config, params.model) &&
+      !isOptionalParamUnsupported(
+        config.baseURL,
+        params.model,
+        'reasoning_effort',
+      )
     const req = buildOpenAIRequest(params, {
       promptCacheKey:
         shouldUsePromptCacheKey(config) &&
@@ -797,6 +878,9 @@ export function createOpenAICompatibleClient(config: OpenAICompatibleConfig) {
           params.model,
           'prompt_cache_key',
         ),
+      reasoningEffort: hasReasoningEffort
+        ? (effort === 'max' ? 'high' : effort)
+        : undefined,
     })
     const signal = opts?.signal as AbortSignal | undefined
 

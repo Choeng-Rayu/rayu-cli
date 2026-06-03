@@ -9,6 +9,7 @@ import { getClaudeConfigHomeDir } from './envUtils.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
 export type ProviderKind = 'anthropic' | 'openai-compatible'
+export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
   /** Stable id, e.g. 'anthropic', 'nvidia', 'openai', 'openrouter', 'local'. */
@@ -29,6 +30,12 @@ export type RayuProvider = {
   models?: string[]
   /** Models fetched live from {baseURL}/models, cached for the /model picker. */
   fetchedModels?: string[]
+  /** Optional OpenAI-specific prompt cache routing mode. */
+  promptCacheKey?: ProviderFeatureMode
+  /** Optional OpenAI-compatible reasoning_effort request parameter mode. */
+  reasoningEffort?: ProviderFeatureMode
+  /** Optional OpenAI stream_options.include_usage request parameter mode. */
+  streamOptions?: ProviderFeatureMode
 }
 
 export type RayuConfig = {
@@ -145,9 +152,29 @@ export function setActiveProvider(id: string): void {
   }
 }
 
+export function setActiveProviderModel(providerId: string, model: string): void {
+  const cfg = loadRayuConfig()
+  const provider = cfg.providers.find(p => p.id === providerId)
+  if (!provider) return
+  cfg.activeProvider = providerId
+  provider.defaultModel = model
+  saveRayuConfig(cfg)
+}
+
 /** True when at least one provider has credentials configured. */
 export function hasConfiguredProvider(): boolean {
   return loadRayuConfig().providers.some(p => !!p.apiKey || p.kind === 'openai-compatible')
+}
+
+/** True when the active OpenAI-compatible provider can satisfy Rayu auth itself. */
+export function hasUsableOpenAICompatibleProvider(): boolean {
+  const p = getActiveProvider()
+  if (p?.kind !== 'openai-compatible') {
+    return !!process.env.RAYU_OPENAI_BASE_URL && !!process.env.RAYU_OPENAI_API_KEY
+  }
+  const baseURL = process.env.RAYU_OPENAI_BASE_URL ?? p.baseURL
+  const apiKey = process.env.RAYU_OPENAI_API_KEY ?? p.apiKey
+  return !!baseURL && (!!apiKey || p.id === 'local')
 }
 
 /** API key for the active provider (or a specific provider id), if any. */

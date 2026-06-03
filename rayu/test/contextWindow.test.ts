@@ -27,6 +27,8 @@ describe('openai-compatible context window', () => {
     m.upsertProvider({ id: 'nvidia', kind: 'openai-compatible', apiKey: 'k', baseURL: 'https://x/v1' })
     expect(m.getRayuModelContextWindow('deepseek-ai/deepseek-v4-flash')).toBe(1_000_000)
     expect(m.getRayuModelContextWindow('meta/llama-3.3-70b-instruct')).toBe(131_072)
+    expect(m.getRayuModelContextWindow('stepfun-ai/step-3.7-flash')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('stepfun-ai/step-3.5-flash')).toBe(65_536)
   })
 
   test('per-model config override wins', async () => {
@@ -74,6 +76,7 @@ describe('curated context windows + default-model guard', () => {
       ['qwen/qwen3.5-397b-a17b', 131_072],
       ['qwen/qwen3-coder-480b-a35b-instruct', 256_000],
       ['stepfun-ai/step-3.7-flash', 256_000],
+      ['stepfun-ai/step-3.5-flash', 65_536],
     ]
     for (const [model, ctx] of cases) {
       expect(m.getRayuModelContextWindow(model)).toBe(ctx)
@@ -102,5 +105,14 @@ describe('curated context windows + default-model guard', () => {
     expect(
       m.getValidDefaultModel({ id: 'p', kind: 'openai-compatible', defaultModel: 'meta/llama-3.3-70b-instruct' }),
     ).toBe('meta/llama-3.3-70b-instruct')
+  })
+
+  test('Step 3.7 at 50k tokens is not near the compact warning limit', async () => {
+    const m = await fresh()
+    m.upsertProvider({ id: 'nvidia', kind: 'openai-compatible', apiKey: 'k', baseURL: 'https://x/v1' })
+    const { calculateTokenWarningState } = await import('../src/services/compact/autoCompact.ts')
+    const state = calculateTokenWarningState(50_000, 'stepfun-ai/step-3.7-flash')
+    expect(state.isAboveWarningThreshold).toBe(false)
+    expect(state.isAboveAutoCompactThreshold).toBe(false)
   })
 })

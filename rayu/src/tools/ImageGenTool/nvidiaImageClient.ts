@@ -18,9 +18,9 @@ import {
 
 export type GeneratedImage = { buffer: Buffer; mediaType: string }
 
-/** NVIDIA API key from rayu config (preferred) or env fallback. */
+/** NVIDIA API key from env (preferred) or rayu config fallback. */
 export function getNvidiaApiKey(): string | null {
-  return getRayuApiKey('nvidia') ?? process.env.NVIDIA_API_KEY ?? null
+  return process.env.NVIDIA_API_KEY ?? getRayuApiKey('nvidia') ?? null
 }
 
 /**
