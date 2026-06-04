@@ -39,6 +39,11 @@
 
 import { createReadStream, fstat } from 'fs'
 import { stat as fsStat, readFile } from 'fs/promises'
+import {
+  getCachedReadFileRange,
+  setCachedReadFileRange,
+  stableContextPrepCacheKey,
+} from './contextPrepCache.js'
 import { formatFileSize } from './format.js'
 
 const FAST_PATH_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
@@ -101,14 +106,29 @@ export async function readFileInRange(
       throw new FileTooLargeError(stats.size, maxBytes)
     }
 
+    const cacheKey = stableContextPrepCacheKey({
+      type: 'readFileInRange',
+      filePath,
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      offset,
+      maxLines,
+      maxBytes,
+      truncateOnByteLimit,
+    })
+    const cached = getCachedReadFileRange(cacheKey)
+    if (cached) return cached
+
     const text = await readFile(filePath, { encoding: 'utf8', signal })
-    return readFileInRangeFast(
+    const result = readFileInRangeFast(
       text,
       stats.mtimeMs,
       offset,
       maxLines,
       truncateOnByteLimit ? maxBytes : undefined,
     )
+    setCachedReadFileRange(cacheKey, result)
+    return result
   }
 
   return readFileInRangeStreaming(

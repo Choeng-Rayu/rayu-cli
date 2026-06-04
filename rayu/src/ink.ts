@@ -1,5 +1,9 @@
-import { createElement, type ReactNode } from 'react'
+import { createElement, Profiler, type ReactNode } from 'react'
 import { ThemeProvider } from './components/design-system/ThemeProvider.js'
+import {
+  isRenderProfilerEnabled,
+  renderProfilerOnRender,
+} from './utils/renderProfiler.js'
 import inkRender, {
   type Instance,
   createRoot as inkCreateRoot,
@@ -12,7 +16,13 @@ export type { RenderOptions, Instance, Root }
 // Wrap all CC render calls with ThemeProvider so ThemedBox/ThemedText work
 // without every call site having to mount it. Ink itself is theme-agnostic.
 function withTheme(node: ReactNode): ReactNode {
-  return createElement(ThemeProvider, null, node)
+  const themed = createElement(ThemeProvider, null, node)
+  if (!isRenderProfilerEnabled()) return themed
+  return createElement(
+    Profiler,
+    { id: 'rayu-root', onRender: renderProfilerOnRender },
+    themed,
+  )
 }
 
 export async function render(

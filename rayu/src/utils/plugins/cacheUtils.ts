@@ -5,6 +5,7 @@ import { clearAllOutputStylesCache } from '../../constants/outputStyles.js'
 import { clearAgentDefinitionsCache } from '../../tools/AgentTool/loadAgentsDir.js'
 import { clearPromptCache } from '../../tools/SkillTool/prompt.js'
 import { resetSentSkillNames } from '../attachments.js'
+import { clearContextPrepCache } from '../contextPrepCache.js'
 import { logForDebugging } from '../debug.js'
 import { getErrnoCode } from '../errors.js'
 import { logError } from '../log.js'
@@ -47,6 +48,7 @@ export function clearAllCaches(): void {
   clearAgentDefinitionsCache()
   clearPromptCache()
   resetSentSkillNames()
+  clearContextPrepCache('plugin-cache-reset')
 }
 
 /**

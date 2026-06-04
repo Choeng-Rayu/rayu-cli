@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { logForDebugging } from 'src/utils/debug.js'
+import { withRenderProfiler } from 'src/utils/renderProfiler.js'
 import { Stream } from 'stream'
 import type { FrameEvent } from './frame.js'
 import Ink, { type Options as InkOptions } from './ink.js'
@@ -85,6 +86,7 @@ export const renderSync = (
     exitOnCtrlC: true,
     patchConsole: true,
     ...opts,
+    onFrame: withRenderProfiler(opts.onFrame),
   }
 
   const instance: Ink = getInstance(
@@ -142,7 +144,7 @@ export async function createRoot({
     stderr,
     exitOnCtrlC,
     patchConsole,
-    onFrame,
+    onFrame: withRenderProfiler(onFrame),
   })
 
   // Register in the instances map so that code that looks up the Ink

@@ -10,6 +10,7 @@ import {
 } from '../../bootstrap/state.js'
 import { getRemoteManagedSettingsSyncFromCache } from '../../services/remoteManagedSettings/syncCacheState.js'
 import { uniq } from '../array.js'
+import { clearContextPrepCache } from '../contextPrepCache.js'
 import { logForDebugging } from '../debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../envUtils.js'
@@ -504,6 +505,7 @@ export function updateSettingsForSource(
 
     // Invalidate the session cache since settings have been updated
     resetSettingsCache()
+    clearContextPrepCache('settings-save')
 
     if (source === 'localSettings') {
       // Okay to add to gitignore async without awaiting

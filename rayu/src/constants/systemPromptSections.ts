@@ -4,6 +4,7 @@ import {
   getSystemPromptSectionCache,
   setSystemPromptSectionCacheEntry,
 } from '../bootstrap/state.js'
+import { clearContextPrepCache } from '../utils/contextPrepCache.js'
 
 type ComputeFn = () => string | null | Promise<string | null>
 
@@ -65,4 +66,5 @@ export async function resolveSystemPromptSections(
 export function clearSystemPromptSections(): void {
   clearSystemPromptSectionState()
   clearBetaHeaderLatches()
+  clearContextPrepCache('system-prompt-sections')
 }

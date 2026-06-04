@@ -13,6 +13,12 @@ import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
 import { getPlatform } from './platform.js'
 import { countCharInString } from './stringUtils.js'
+import {
+  getCachedSearchResults,
+  setCachedSearchResults,
+  stableContextPrepCacheKey,
+} from './contextPrepCache.js'
+import { getCwd } from './cwd.js'
 
 const __filename = fileURLToPath(import.meta.url)
 // we use node:path.join instead of node:url.resolve because the former doesn't encode spaces
@@ -347,14 +353,31 @@ export async function ripGrep(
   target: string,
   abortSignal: AbortSignal,
 ): Promise<string[]> {
+  abortSignal.throwIfAborted?.()
   await codesignRipgrepIfNecessary()
 
   // Test ripgrep on first use and cache the result (fire and forget)
-  void testRipgrepOnFirstUse().catch(error => {
+  void testRipgrepOnFirstUse().catch((error: unknown) => {
     logError(error)
   })
 
+  const cacheKey = stableContextPrepCacheKey({
+    type: 'ripGrep',
+    cwd: getCwd(),
+    args,
+    target,
+  })
+  const cached = getCachedSearchResults(cacheKey)
+  if (cached && !abortSignal.aborted) return cached
+
   return new Promise((resolve, reject) => {
+    const resolveAndCache = (results: string[]): void => {
+      if (!abortSignal.aborted) {
+        setCachedSearchResults(cacheKey, results)
+      }
+      resolve(results)
+    }
+
     const handleResult = (
       error: ExecFileException | null,
       stdout: string,
@@ -363,7 +386,7 @@ export async function ripGrep(
     ): void => {
       // Success case
       if (!error) {
-        resolve(
+        resolveAndCache(
           stdout
             .trim()
             .split('\n')
@@ -375,7 +398,7 @@ export async function ripGrep(
 
       // Exit code 1 is normal "no matches"
       if (error.code === 1) {
-        resolve([])
+        resolveAndCache([])
         return
       }
 

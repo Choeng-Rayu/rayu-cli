@@ -20,6 +20,11 @@ import type { Message } from '../types/message.js'
 import { createAbortController } from './abortController.js'
 import type { FileStateCache } from './fileStateCache.js'
 import type { CacheSafeParams } from './forkedAgent.js'
+import {
+  getOrSetContextPrep,
+  stableContextPrepCacheKey,
+} from './contextPrepCache.js'
+import { getCwd } from './cwd.js'
 import { getMainLoopModel } from './model/model.js'
 import { asSystemPrompt } from './systemPromptType.js'
 import {
@@ -58,19 +63,48 @@ export async function fetchSystemPromptParts({
   userContext: { [k: string]: string }
   systemContext: { [k: string]: string }
 }> {
-  const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([
-    customSystemPrompt !== undefined
-      ? Promise.resolve([])
-      : getSystemPrompt(
-          tools,
-          mainLoopModel,
-          additionalWorkingDirectories,
-          mcpClients,
-        ),
-    getUserContext(),
-    customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext(),
-  ])
-  return { defaultSystemPrompt, userContext, systemContext }
+  const key = stableContextPrepCacheKey({
+    cwd: getCwd(),
+    model: mainLoopModel,
+    tools: tools.map(t => t.name),
+    additionalWorkingDirectories,
+    mcpClients: mcpClients.map(client => {
+      const c = client as unknown as Record<string, unknown>
+      return {
+        name: c.name,
+        type: c.type,
+        instructions: c.instructions,
+      }
+    }),
+    customSystemPrompt,
+  })
+
+  return getOrSetContextPrep(
+    key,
+    async () => {
+      const [defaultSystemPrompt, userContext, systemContext] =
+        await Promise.all([
+          customSystemPrompt !== undefined
+            ? Promise.resolve([])
+            : getSystemPrompt(
+                tools,
+                mainLoopModel,
+                additionalWorkingDirectories,
+                mcpClients,
+              ),
+          getUserContext(),
+          customSystemPrompt !== undefined
+            ? Promise.resolve({})
+            : getSystemContext(),
+        ])
+      return { defaultSystemPrompt, userContext, systemContext }
+    },
+    value => ({
+      defaultSystemPrompt: [...value.defaultSystemPrompt],
+      userContext: { ...value.userContext },
+      systemContext: { ...value.systemContext },
+    }),
+  )
 }
 
 /**

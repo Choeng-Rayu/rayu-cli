@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getClaudeConfigHomeDir } from './envUtils.js'
+import { clearContextPrepCache } from './contextPrepCache.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
 export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock'
@@ -107,6 +108,7 @@ export function saveRayuConfig(config: RayuConfig): void {
   // 0600: secrets must not be world/group readable.
   writeFileSync(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
   cache = config
+  clearContextPrepCache('rayu-config-save')
 }
 
 export function getActiveProvider(): RayuProvider | undefined {

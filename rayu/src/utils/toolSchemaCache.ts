@@ -1,4 +1,5 @@
 import type { BetaTool } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import { clearContextPrepCache } from './contextPrepCache.js'
 
 // Session-scoped cache of rendered tool schemas. Tool schemas render at server
 // position 2 (before system prompt), so any byte-level change busts the entire
@@ -23,4 +24,5 @@ export function getToolSchemaCache(): Map<string, CachedSchema> {
 
 export function clearToolSchemaCache(): void {
   TOOL_SCHEMA_CACHE.clear()
+  clearContextPrepCache('tool-schema-cache')
 }
