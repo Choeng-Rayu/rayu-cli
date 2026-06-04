@@ -112,6 +112,25 @@ function extractImages(message: WrappedMessage): ImageBlock[] {
   return images
 }
 
+/**
+ * Commands that render interactive React UI (local-jsx type) and would block
+ * the REPL's message queue if triggered from Telegram. These require physical
+ * terminal interaction (ESC, arrow keys, Enter) to dismiss.
+ * Excluded: /connect, /model — these have custom Telegram inline keyboard handlers.
+ */
+const TELEGRAM_BLOCKED_COMMANDS = new Set([
+  'add-dir', 'agents', 'branch', 'brief', 'btw', 'chrome', 'color',
+  'config', 'context', 'copy', 'desktop', 'diff', 'doctor', 'effort',
+  'exit', 'export', 'extra-usage', 'fast', 'feedback', 'help', 'hooks',
+  'ide', 'install', 'install-github-app', 'login', 'logout', 'mcp',
+  'memory', 'mobile', 'output-style', 'passes', 'permissions', 'plan',
+  'plugin', 'privacy-settings', 'rate-limit-options', 'remote-control',
+  'remote-env', 'rename', 'resume', 'sandbox', 'session', 'skills',
+  'stats', 'status', 'tag', 'tasks', 'telegram-bot', 'terminal-setup',
+  'theme', 'think-back', 'ultraplan', 'ultrareview', 'upgrade', 'usage',
+  'web-setup',
+])
+
 async function handleUpdate(
   update: TelegramUpdate,
   options: TelegramBridgeOptions,
@@ -275,7 +294,19 @@ async function handleUpdate(
   }
 
   // Other slash commands → REPL command queue.
+  // Block local-jsx commands that require terminal interaction (pickers, dialogs).
+  // These would render a React UI in the terminal and block the message queue
+  // until someone physically presses ESC/Enter at the terminal.
   if (text.startsWith('/')) {
+    const cmdName = cmd.slice(1) // strip leading /
+    if (TELEGRAM_BLOCKED_COMMANDS.has(cmdName)) {
+      await sendMessage(
+        options.token,
+        chatId,
+        `⚠️ \`${cmd}\` requires the terminal UI and cannot be used from Telegram.\n\nPlease run it directly in rayu-cli.`,
+      )
+      return
+    }
     enqueue({ value: text, mode: 'prompt' })
     return
   }
