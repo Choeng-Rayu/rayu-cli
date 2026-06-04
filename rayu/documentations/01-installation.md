@@ -19,6 +19,7 @@ bun --version                            # expect ≥ 1.3
 From the project directory (the folder containing `package.json` and `src/`):
 
 ```bash
+cd rayu
 bun install        # install dependencies
 bun run build      # bundle → dist/rayu.js (a single Node-runnable file)
 ```
@@ -94,6 +95,7 @@ PATH automatically, so you can run `rayu` from anywhere (like `opencode`).
 **Linux / macOS:**
 
 ```bash
+cd rayu
 ./install.sh                 # installs from a local `dist/bin` build
 # or, from a hosted release:
 curl -fsSL https://<host>/install.sh | sh
@@ -102,6 +104,7 @@ curl -fsSL https://<host>/install.sh | sh
 **Windows (PowerShell):**
 
 ```powershell
+cd rayu
 .\install.ps1                # installs from a local dist\bin build
 # or:  irm https://<host>/install.ps1 | iex
 ```

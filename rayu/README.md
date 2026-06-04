@@ -67,11 +67,11 @@ Inside a session:
 
 ## Providers
 
-Rayu supports two provider types:
+Rayu supports three provider types:
 
 - **`anthropic`** — Anthropic API (`ANTHROPIC_API_KEY`)
-- **`openai-compatible`** — Any OpenAI-style endpoint (NVIDIA, DeepSeek, Kimi,
-  OpenRouter, Ollama, LM Studio, etc.)
+- **`openai-compatible`** — Any OpenAI-style endpoint (NVIDIA, DeepSeek, Kimi, OpenRouter, Ollama, LM Studio, etc.)
+- **`bedrock`** — AWS Bedrock API (`AWS_BEARER_TOKEN_BEDROCK` or default AWS credentials)
 
 Example — NVIDIA NIM headless run:
 
@@ -105,6 +105,9 @@ All settings are preserved across updates and uninstalls.
 | 8 | [MCP](./documentations/08-mcp.md) | Model Context Protocol server management |
 | 9 | [Diagnostics & Privacy](./documentations/09-diagnostics-privacy.md) | Logging, telemetry, network posture |
 | 10 | [Troubleshooting](./documentations/10-troubleshooting.md) | Common errors and fixes |
+| 11 | [Codebase Knowledge Graph](./documentations/11-knowledge-graph.md) | Local indexing, querying, and tracing using `/graphify` |
+| 12 | [Image Generation](./documentations/12-image-generation.md) | Built-in `GenerateImage` tool (NVIDIA), save/inline/terminal display |
+| 13 | [Building binaries](./documentations/13-binaries.md) | Cross-platform standalone executables, versioning, install |
 
 ---
 

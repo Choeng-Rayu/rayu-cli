@@ -22,8 +22,9 @@ switching, MCP support, and the full built-in tool suite.
 | 8 | [MCP](./08-mcp.md) | Model Context Protocol server management |
 | 9 | [Diagnostics & Privacy](./09-diagnostics-privacy.md) | Bug/issue logging, telemetry, network posture |
 | 10 | [Troubleshooting](./10-troubleshooting.md) | Common errors and fixes |
-| 11 | [Building binaries](./11-binaries.md) | Cross-platform standalone executables, versioning, install |
+| 11 | [Codebase Knowledge Graph](./11-knowledge-graph.md) | Local indexing, querying, and tracing using `/graphify` |
 | 12 | [Image Generation](./12-image-generation.md) | Built-in `GenerateImage` tool (NVIDIA), save/inline/terminal display |
+| 13 | [Building binaries](./13-binaries.md) | Cross-platform standalone executables, versioning, install |
 
 ## 30-second tour
 
