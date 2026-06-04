@@ -12,7 +12,7 @@
 $ErrorActionPreference = 'Stop'
 
 $installDir = if ($env:RAYU_INSTALL_DIR) { $env:RAYU_INSTALL_DIR } else { "$env:USERPROFILE\.rayu\bin" }
-$releaseBase = if ($env:RAYU_RELEASE_BASE_URL) { $env:RAYU_RELEASE_BASE_URL } else { 'https://github.com/rayu-cli/rayu-cli/releases/latest/download' }
+$releaseBase = if ($env:RAYU_RELEASE_BASE_URL) { $env:RAYU_RELEASE_BASE_URL } else { 'https://github.com/Choeng-Rayu/rayu-cli/releases/latest/download' }
 
 # Detect architecture (x64 / arm64). Only x64 is currently published.
 $arch = if ($env:PROCESSOR_ARCHITECTURE -match 'ARM64') { 'arm64' } else { 'x64' }

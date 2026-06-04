@@ -4367,6 +4367,14 @@ async function run(): Promise<CommanderCommand> {
     await update();
   });
 
+  // rayu uninstall — remove the globally installed rayu-cli package
+  program.command('uninstall').alias('remove').description('Uninstall Rayu CLI from your system').action(async () => {
+    const {
+      uninstall
+    } = await import('src/cli/uninstall.js');
+    await uninstall();
+  });
+
   // claude up — run the project's CLAUDE.md "# claude up" setup instructions.
   if ("external" === 'ant') {
     program.command('up').description('[ANT-ONLY] Initialize or upgrade the local dev environment using the "# claude up" section of the nearest CLAUDE.md').action(async () => {

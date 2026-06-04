@@ -301,6 +301,14 @@ async function main(): Promise<void> {
     process.env.CLAUDE_CODE_SIMPLE = '1';
   }
 
+  // First-run welcome message — shown once after a fresh npm install.
+  // Runs from the binary itself because npm v7+ suppresses lifecycle script
+  // output (postinstall) in subprocesses that have no controlling terminal.
+  {
+    const { showFirstRunWelcome } = await import('../utils/firstRun.js');
+    showFirstRunWelcome();
+  }
+
   // No special flags detected, load and run the full CLI
   const {
     startCapturingEarlyInput

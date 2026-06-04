@@ -1,56 +1,113 @@
-# Rayu-CLI Documentation
+# Rayu CLI
 
-Rayu-CLI is a terminal-based AI coding agent. It is a self-branded, multi-provider
-fork of the Claude Code CLI that lets you **bring your own API key** and use
-**any OpenAI-compatible provider** (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword,
-OpenAI, OpenRouter, local servers) as well as Anthropic — with free model
-switching, MCP support, and the full built-in tool suite.
+Rayu CLI is a terminal-based AI coding agent. Bring your own API key and connect
+to any provider — Anthropic, OpenAI, NVIDIA, DeepSeek, Kimi/Moonshot, OpenRouter,
+local servers, or any OpenAI-compatible endpoint — with free model switching,
+full MCP support, and a complete built-in tool suite.
 
-> Educational/research. Not affiliated with or endorsed.
+> Educational / research use. Not affiliated with any AI provider.
 
-## Documentation map
+---
 
-| # | Document | What's inside |
-|---|----------|---------------|
-| 1 | [Installation](./01-installation.md) | Requirements, build, the `rayu` binary |
-| 2 | [Quickstart](./02-quickstart.md) | First run, your first conversation |
-| 3 | [Providers](./03-providers.md) | Connecting providers, `/connect`, API keys, `.env` import |
-| 4 | [Models](./04-models.md) | Searchable `/model` picker, context windows |
-| 5 | [Configuration](./05-configuration.md) | Config directories, files, all environment variables |
-| 6 | [CLI Reference](./06-cli-reference.md) | Commands, flags, interactive vs print mode |
-| 7 | [Slash Commands](./07-slash-commands.md) | In-session commands (`/connect`, `/model`, …) |
-| 8 | [MCP](./08-mcp.md) | Model Context Protocol server management |
-| 9 | [Diagnostics & Privacy](./09-diagnostics-privacy.md) | Bug/issue logging, telemetry, network posture |
-| 10 | [Troubleshooting](./10-troubleshooting.md) | Common errors and fixes |
-| 11 | [Codebase Knowledge Graph](./11-knowledge-graph.md) | Explore the codebase with `graphify` — query symbols, find paths, understand architecture | |
-
-## 30-second tour
+## Installation
 
 ```bash
-# build
-cd claude-code && export PATH="$HOME/.bun/bin:$PATH"
-bun install && bun run build
+npm install -g @rayu-dev/rayu-cli
+```
 
-# run (interactive) — on first launch, pick a provider + paste your API key
-node dist/rayu.js
+Then start:
 
-# or headless, against NVIDIA
+```bash
+rayu
+```
+
+---
+
+## Update
+
+```bash
+rayu update
+```
+
+Or reinstall the latest directly:
+
+```bash
+npm install -g @rayu-dev/rayu-cli
+```
+
+---
+
+## Uninstall
+
+```bash
+rayu uninstall
+```
+
+---
+
+## Quick start
+
+On first launch, Rayu will ask you to connect a provider and enter your API key.
+
+```bash
+rayu                      # start an interactive session
+rayu "fix the bug in X"   # one-shot prompt, no interaction
+rayu --help               # all CLI flags and subcommands
+```
+
+Inside a session:
+
+| Command    | What it does                                      |
+|------------|---------------------------------------------------|
+| `/connect` | Add a provider (type → key → model)               |
+| `/model`   | Searchable model picker across all providers      |
+| `/help`    | List all slash commands                           |
+
+---
+
+## Providers
+
+Rayu supports two provider types:
+
+- **`anthropic`** — Anthropic API (`ANTHROPIC_API_KEY`)
+- **`openai-compatible`** — Any OpenAI-style endpoint (NVIDIA, DeepSeek, Kimi,
+  OpenRouter, Ollama, LM Studio, etc.)
+
+Example — NVIDIA NIM headless run:
+
+```bash
 RAYU_OPENAI_COMPATIBLE=1 \
 RAYU_OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1 \
 RAYU_OPENAI_API_KEY=nvapi-xxxxx \
-node dist/rayu.js --print --model meta/llama-3.3-70b-instruct "summarize this repo"
+rayu --print --model meta/llama-3.3-70b-instruct "summarize this repo"
 ```
 
-In a session:
-- `/connect` — add a provider (pick type → enter key → choose a model)
-- `/model` — searchable model picker across all connected providers
-- `/help` — list all slash commands
+---
 
-## Key concepts
+## Configuration
 
-- **Provider** — an API endpoint + key. Two kinds: `anthropic` (Anthropic API)
-  and `openai-compatible` (everything else, via an OpenAI ↔ Anthropic translation layer).
-- **Config home** — `~/.rayu` by default; an existing `~/.claude` (Claude Code)
-  is used automatically if `~/.rayu` is absent. See [Configuration](./05-configuration.md).
-- **Diagnostics** — runtime bugs/issues/vulnerabilities are logged to
-  `~/.rayu/diagnostics.jsonl`. See [Diagnostics](./09-diagnostics-privacy.md).
+Config is stored in `~/.rayu` by default.
+All settings are preserved across updates and uninstalls.
+
+---
+
+## Documentation
+
+| # | Document | Contents |
+|---|----------|----------|
+| 1 | [Installation](./documentations/01-installation.md) | Requirements, install, the `rayu` binary |
+| 2 | [Quickstart](./documentations/02-quickstart.md) | First run, first conversation |
+| 3 | [Providers](./documentations/03-providers.md) | Connecting providers, `/connect`, API keys |
+| 4 | [Models](./documentations/04-models.md) | Model picker, context windows |
+| 5 | [Configuration](./documentations/05-configuration.md) | Config files, environment variables |
+| 6 | [CLI Reference](./documentations/06-cli-reference.md) | Commands, flags, interactive vs print mode |
+| 7 | [Slash Commands](./documentations/07-slash-commands.md) | In-session commands |
+| 8 | [MCP](./documentations/08-mcp.md) | Model Context Protocol server management |
+| 9 | [Diagnostics & Privacy](./documentations/09-diagnostics-privacy.md) | Logging, telemetry, network posture |
+| 10 | [Troubleshooting](./documentations/10-troubleshooting.md) | Common errors and fixes |
+
+---
+
+## Issues & feedback
+
+https://github.com/Choeng-Rayu/rayu-cli/issues

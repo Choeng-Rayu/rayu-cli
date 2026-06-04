@@ -105,7 +105,7 @@ export async function handleUrlSchemeLaunch(): Promise<number | null> {
 }
 
 /**
- * Resolve the working directory for the launched Claude instance.
+ * Resolve the working directory for the launched Rayu instance.
  * Precedence: explicit cwd > repo lookup (MRU clone) > home.
  * A repo that isn't cloned locally is not an error — fall through to home
  * so a web link referencing a repo the user doesn't have still opens Claude.
