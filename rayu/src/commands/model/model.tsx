@@ -298,7 +298,7 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
   /* eslint-disable @typescript-eslint/no-require-imports */
   const providers = require('../../utils/model/providers.js') as typeof import('../../utils/model/providers.js');
   if (
-    providers.isOpenAICompatibleActive() || providers.getAPIProvider() === 'bedrock'
+    providers.isRayuNonAnthropicActive()
   ) {
     const { SearchableModelPicker } =
       require('../../components/SearchableModelPicker.js') as typeof import('../../components/SearchableModelPicker.js');

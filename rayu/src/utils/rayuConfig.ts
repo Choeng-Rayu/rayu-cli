@@ -9,7 +9,7 @@ import { getClaudeConfigHomeDir } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock'
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
@@ -198,9 +198,10 @@ export function getRayuApiKey(providerId?: string): string | null {
 }
 
 /**
- * Model options across ALL configured Rayu providers (openai-compatible and
- * bedrock), for the /model picker. Active provider models come first, then
- * models from other providers, so users see their full multi-provider catalog.
+ * Model options across ALL configured non-anthropic Rayu providers, for the
+ * /model picker fallback path (keybinding shortcut). Active provider first,
+ * then other providers. Any new provider kind (vertex, etc.) is included
+ * automatically as long as kind !== 'anthropic'.
  */
 export function getActiveProviderModelOptions(): Array<{
   value: string
@@ -209,7 +210,7 @@ export function getActiveProviderModelOptions(): Array<{
 }> {
   const cfg = loadRayuConfig()
   const active = getActiveProvider()
-  if (!active || (active.kind !== 'openai-compatible' && active.kind !== 'bedrock')) return []
+  if (!active || active.kind === 'anthropic') return []
 
   const result: Array<{ value: string; label: string; description: string }> = []
   const seen = new Set<string>()
@@ -233,7 +234,7 @@ export function getActiveProviderModelOptions(): Array<{
   // Then all other non-anthropic providers
   for (const p of cfg.providers) {
     if (p.id === active.id) continue
-    if (p.kind !== 'openai-compatible' && p.kind !== 'bedrock') continue
+    if (p.kind === 'anthropic') continue
     addProvider(p)
   }
 
@@ -246,15 +247,20 @@ export function getActiveProviderModelOptions(): Array<{
 // per-provider/per-model config overrides + RAYU_CONTEXT_TOKENS are the
 // sources of truth. Order matters — more specific patterns first.
 const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
-  // ~1M-context families
+  // ~1M-context families — most specific patterns first
+  [/nemotron.*ultra|nemotron-3-ultra/i, 1_048_576],           // NVIDIA nemotron-ultra (1M)
+  [/gpt-4\.1/i, 1_048_576],                                   // OpenAI GPT-4.1 / 4.1-mini / 4.1-nano (1M)
   [/deepseek[-/]?v4[-/]?(flash|pro)/i, 1_000_000],
   [/minimax/i, 1_000_000],
   // 256k
-  [/kimi|moonshot/i, 256_000],
+  [/kimi-k1|kimi.*long/i, 200_000],                           // Kimi K1.5 long-context
+  [/kimi|moonshot/i, 131_072],                                 // Kimi K2 / Moonshot standard (128k)
   [/qwen[-.]?3[-.]?(coder|next)/i, 256_000],
   [/jamba/i, 256_000],
+  [/step[-_.]?3\.7/i, 256_000],
   // 131k / 128k families
   [/deepseek-(chat|reasoner|v3|coder)/i, 131_072],
+  [/deepseek-r1/i, 131_072],
   [/llama-3\.[1-3]|llama-3-70b|llama-4|nemotron/i, 131_072],
   [/qwen[-_.]?[23]|qwq/i, 131_072],
   [/gemma-[234]/i, 131_072],
@@ -263,11 +269,10 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/gpt-oss/i, 131_072],
   [/phi-[34]/i, 131_072],
   [/command-r|c4ai/i, 131_072],
-  [/step[-_.]?3\.7/i, 256_000],
   [/step-3/i, 65_536],
-  // OpenAI (anchor o-series so e.g. gpt-4o / nemotron don't false-match)
+  // OpenAI (anchor o-series so e.g. gpt-4o don't false-match)
   [/gpt-5|(?:^|[/_-])(o1|o3|o4)(?:[.\-_]|$)/i, 128_000],
-  [/gpt-4o|gpt-4\.1/i, 128_000],
+  [/gpt-4o/i, 128_000],
 ]
 
 /**
@@ -415,55 +420,37 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
   )
 
   for (const p of sorted) {
-    if (p.kind === 'openai-compatible') {
-      const ids = new Set<string>()
-      if (p.defaultModel) ids.add(p.defaultModel)
-      for (const m of p.models ?? []) ids.add(m)
-      for (const m of p.fetchedModels ?? []) ids.add(m)
-      for (const model of ids) {
-        const value = `${p.id}${RAYU_MODEL_SEP}${model}`
-        if (seen.has(value)) continue
-        seen.add(value)
-        out.push({ value, providerId: p.id, model })
-      }
-    } else if (p.kind === 'bedrock') {
-      // For Bedrock, build the model list in priority order:
-      //   1. fetchedModels (live catalog fetched at /connect time — all models incl.
-      //      DeepSeek, Llama, Kimi, etc.)
-      //   2. User-pinned models (p.models)
-      //   3. defaultModel
-      //   4. Hardcoded Claude IDs from configs (fallback when no live catalog)
-      const bedrockIds = new Set<string>()
+    if (p.kind === 'anthropic') continue
 
-      // Live catalog from /connect — this is the full set of available models
-      for (const m of p.fetchedModels ?? []) bedrockIds.add(m)
-      // User-pinned models
-      for (const m of p.models ?? []) bedrockIds.add(m)
-      // Default model
-      if (p.defaultModel) bedrockIds.add(p.defaultModel)
+    // Collect model ids for any non-anthropic provider kind (openai-compatible,
+    // bedrock, vertex, etc.). Priority: fetchedModels → pinned models → defaultModel.
+    const ids = new Set<string>()
+    for (const m of p.fetchedModels ?? []) ids.add(m)
+    for (const m of p.models ?? []) ids.add(m)
+    if (p.defaultModel) ids.add(p.defaultModel)
 
-      // If no live catalog, fall back to the hardcoded Claude Bedrock IDs
-      if (bedrockIds.size === 0) {
-        try {
-          /* eslint-disable @typescript-eslint/no-require-imports */
-          const { ALL_MODEL_CONFIGS } =
-            require('./model/configs.js') as typeof import('./model/configs.js')
-          /* eslint-enable @typescript-eslint/no-require-imports */
-          for (const cfg of Object.values(ALL_MODEL_CONFIGS)) {
-            const bedrockId = (cfg as Record<string, string>)['bedrock']
-            if (bedrockId) bedrockIds.add(bedrockId)
-          }
-        } catch {
-          // ignore
+    // Bedrock-specific fallback: if we have no live catalog yet, use the
+    // hardcoded Claude Bedrock model IDs from configs so the picker isn't empty.
+    if (p.kind === 'bedrock' && ids.size === 0) {
+      try {
+        /* eslint-disable @typescript-eslint/no-require-imports */
+        const { ALL_MODEL_CONFIGS } =
+          require('./model/configs.js') as typeof import('./model/configs.js')
+        /* eslint-enable @typescript-eslint/no-require-imports */
+        for (const cfg of Object.values(ALL_MODEL_CONFIGS)) {
+          const bedrockId = (cfg as Record<string, string>)['bedrock']
+          if (bedrockId) ids.add(bedrockId)
         }
+      } catch {
+        // ignore
       }
+    }
 
-      for (const model of bedrockIds) {
-        const value = `${p.id}${RAYU_MODEL_SEP}${model}`
-        if (seen.has(value)) continue
-        seen.add(value)
-        out.push({ value, providerId: p.id, model })
-      }
+    for (const model of ids) {
+      const value = `${p.id}${RAYU_MODEL_SEP}${model}`
+      if (seen.has(value)) continue
+      seen.add(value)
+      out.push({ value, providerId: p.id, model })
     }
   }
 

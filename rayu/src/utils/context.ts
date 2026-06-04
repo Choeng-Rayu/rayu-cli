@@ -71,6 +71,21 @@ export function getContextWindowForModel(
     return 1_000_000
   }
 
+  // For Anthropic models that natively support 1M context (claude-opus-4-6,
+  // claude-sonnet-4-*), always report and use the full 1M window. The 1M beta
+  // header is sent automatically by betas.ts for these models.
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { isOpenAICompatibleActive } =
+      require('./model/providers.js') as typeof import('./model/providers.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    if (!isOpenAICompatibleActive() && modelSupports1M(model)) {
+      return 1_000_000
+    }
+  } catch {
+    // fall through
+  }
+
   // Rayu: for OpenAI-compatible providers (NVIDIA/DeepSeek/Kimi/…), the context
   // window depends on the actual model, not Claude's 200k. Resolve from config
   // overrides / known-model table / RAYU_CONTEXT_TOKENS.
