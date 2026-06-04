@@ -172,12 +172,19 @@ export async function getAnthropicClient({
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
-  logForDebugging('[API:auth] OAuth token check starting')
-  await checkAndRefreshOAuthTokenIfNeeded()
-  logForDebugging('[API:auth] OAuth token check complete')
+  // Detect Bedrock FIRST — Bedrock uses AWS credential chain or Bearer token,
+  // NOT Anthropic API keys. Running OAuth refresh or injecting Anthropic auth
+  // headers for Bedrock causes 403 "Authorization header is missing".
+  const isBedrock = isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) || getAPIProvider() === 'bedrock'
 
-  if (!isClaudeAISubscriber()) {
-    await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
+  if (!isBedrock) {
+    logForDebugging('[API:auth] OAuth token check starting')
+    await checkAndRefreshOAuthTokenIfNeeded()
+    logForDebugging('[API:auth] OAuth token check complete')
+
+    if (!isClaudeAISubscriber()) {
+      await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
+    }
   }
 
   const resolvedFetch = buildFetch(fetchOverride, source)
@@ -194,17 +201,58 @@ export async function getAnthropicClient({
       fetch: resolvedFetch,
     }),
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) || getAPIProvider() === 'bedrock') {
     const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
-    // Use region override for small fast model if specified
+
+    // Read Bedrock config from ~/.rayu/providers.json (set via /connect → AWS Bedrock).
+    // The provider stores the Bearer token as apiKey and the AWS region.
+    let rayuBedrockConfig: { bearerToken?: string; region?: string } | undefined
+    try {
+      const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+      const active = getActiveProvider()
+      logForDebugging(`[API:bedrock] Active provider: kind=${active?.kind}, id=${active?.id}, hasApiKey=${!!active?.apiKey}, region=${active?.awsRegion}`)
+      if (active?.kind === 'bedrock') {
+        rayuBedrockConfig = {
+          bearerToken: active.apiKey || undefined,
+          region: active.awsRegion || undefined,
+        }
+      }
+    } catch (err) {
+      logForDebugging(`[API:bedrock] Failed to read Rayu config: ${err}`)
+      // fall through — env vars or AWS credential chain will be used
+    }
+
+    // Resolve region — priority:
+    //   1. Small-fast model region override env var
+    //   2. providers.json awsRegion
+    //   3. AWS_REGION / AWS_DEFAULT_REGION env vars
     const awsRegion =
       model === getSmallFastModel() &&
       process.env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
         ? process.env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
-        : getAWSRegion()
+        : rayuBedrockConfig?.region || getAWSRegion()
+
+    // ── Bedrock auth is completely separate from Anthropic auth ──
+    // Strip ALL Anthropic-specific headers — Bedrock doesn't understand them
+    // and they cause 403 "Authorization header is missing".
+    delete defaultHeaders['Authorization']
+    delete defaultHeaders['x-api-key']
+
+    // Resolve the Bearer token — priority:
+    //   1. providers.json apiKey (set via /connect — primary Rayu flow)
+    //   2. AWS_BEARER_TOKEN_BEDROCK env var (read by the SDK itself as fallback)
+    const bearerToken =
+      rayuBedrockConfig?.bearerToken || undefined
+
+    logForDebugging(`[API:bedrock] bearerToken resolved: hasToken=${!!bearerToken}, region=${awsRegion}, envToken=${!!process.env.AWS_BEARER_TOKEN_BEDROCK}`)
 
     const bedrockArgs: ConstructorParameters<typeof AnthropicBedrock>[0] = {
       ...ARGS,
+      // Pass the Bearer token as apiKey — the SDK handles it natively:
+      //   apiKey set → _useSigV4=false → authHeaders() returns "Authorization: Bearer <apiKey>"
+      // If apiKey is undefined, SDK reads AWS_BEARER_TOKEN_BEDROCK from env,
+      // then falls back to SigV4 with the default AWS credential chain.
+      apiKey: bearerToken,
       awsRegion,
       ...(isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH) && {
         skipAuth: true,
@@ -212,16 +260,9 @@ export async function getAnthropicClient({
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
 
-    // Add API key authentication if available
-    if (process.env.AWS_BEARER_TOKEN_BEDROCK) {
-      bedrockArgs.skipAuth = true
-      // Add the Bearer token for Bedrock API key authentication
-      bedrockArgs.defaultHeaders = {
-        ...bedrockArgs.defaultHeaders,
-        Authorization: `Bearer ${process.env.AWS_BEARER_TOKEN_BEDROCK}`,
-      }
-    } else if (!isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)) {
-      // Refresh auth and get credentials with cache clearing
+    if (!bearerToken && !process.env.AWS_BEARER_TOKEN_BEDROCK && !isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)) {
+      // No Bearer token from any source — pre-resolve AWS credentials so the
+      // SDK doesn't need to hit the credential chain on every request.
       const cachedCredentials = await refreshAndGetAwsCredentials()
       if (cachedCredentials) {
         bedrockArgs.awsAccessKey = cachedCredentials.accessKeyId
@@ -342,11 +383,12 @@ export async function getAnthropicClient({
   }
 
   // Determine authentication method based on available tokens
+  const subscriberToken = isClaudeAISubscriber()
+    ? (getClaudeAIOAuthTokens()?.accessToken ?? undefined)
+    : undefined
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
-    authToken: isClaudeAISubscriber()
-      ? getClaudeAIOAuthTokens()?.accessToken
-      : undefined,
+    apiKey: isClaudeAISubscriber() ? undefined : apiKey || getAnthropicApiKey() || undefined,
+    ...(subscriberToken ? { authToken: subscriberToken } : {}),
     // Set baseURL from OAuth config when using staging OAuth
     ...(process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)

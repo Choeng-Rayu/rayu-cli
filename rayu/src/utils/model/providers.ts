@@ -4,13 +4,24 @@ import { isEnvTruthy } from '../envUtils.js'
 export type APIProvider = 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
 
 export function getAPIProvider(): APIProvider {
-  return isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
-    ? 'bedrock'
-    : isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)
-      ? 'vertex'
-      : isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
-        ? 'foundry'
-        : 'firstParty'
+  // Env vars take absolute precedence (existing behavior).
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) return 'bedrock'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) return 'vertex'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) return 'foundry'
+
+  // Rayu config: if the active provider is kind:'bedrock', route to bedrock.
+  // This allows /connect → AWS Bedrock to work without env vars.
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getActiveProvider } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    if (getActiveProvider()?.kind === 'bedrock') return 'bedrock'
+  } catch {
+    // fall through
+  }
+
+  return 'firstParty'
 }
 
 /**

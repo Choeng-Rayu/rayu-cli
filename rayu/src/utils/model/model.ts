@@ -214,15 +214,19 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
-  // Rayu: when an OpenAI-compatible provider is active, default to its
-  // configured model rather than an Anthropic model string.
-  if (isOpenAICompatibleActive()) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { getActiveProvider, getValidDefaultModel } =
-      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    const m = getValidDefaultModel(getActiveProvider())
-    if (m) return m
+  // Rayu: when an OpenAI-compatible or Bedrock provider is active, default to
+  // its configured model rather than a hardcoded Anthropic model string.
+  if (isOpenAICompatibleActive() || getAPIProvider() === 'bedrock') {
+    try {
+      /* eslint-disable @typescript-eslint/no-require-imports */
+      const { getActiveProvider, getValidDefaultModel } =
+        require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+      /* eslint-enable @typescript-eslint/no-require-imports */
+      const m = getValidDefaultModel(getActiveProvider())
+      if (m) return m
+    } catch {
+      // fall through to hardcoded defaults
+    }
   }
 
   // Ants default to defaultModel from flag config, or Opus 1M if not configured

@@ -101,6 +101,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'openai-compatible',
     promptBaseURL: true,
   },
+  {
+    id: 'bedrock',
+    label: 'AWS Bedrock',
+    kind: 'bedrock',
+    // Use base model IDs without region prefix — the /connect flow fetches
+    // the actual regional model IDs (us., apac., global., eu.) available in
+    // the user's region and stores them in fetchedModels. These base IDs are
+    // only used as initial fallbacks before the model fetch completes.
+    defaultModel: 'anthropic.claude-sonnet-4-20250514-v1:0',
+    smallFastModel: 'anthropic.claude-3-haiku-20240307-v1:0',
+    envKeys: ['AWS_BEARER_TOKEN_BEDROCK'],
+  },
 ]
 
 

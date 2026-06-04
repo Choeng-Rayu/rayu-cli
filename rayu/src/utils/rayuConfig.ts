@@ -8,11 +8,11 @@ import { join } from 'path'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'openai-compatible'
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
-  /** Stable id, e.g. 'anthropic', 'nvidia', 'openai', 'openrouter', 'local'. */
+  /** Stable id, e.g. 'anthropic', 'nvidia', 'openai', 'openrouter', 'local', 'bedrock'. */
   id: string
   kind: ProviderKind
   apiKey?: string
@@ -36,6 +36,13 @@ export type RayuProvider = {
   reasoningEffort?: ProviderFeatureMode
   /** Optional OpenAI stream_options.include_usage request parameter mode. */
   streamOptions?: ProviderFeatureMode
+  // --- AWS Bedrock fields (kind: 'bedrock') ---
+  /** AWS Access Key ID. SECURITY: stored in 0600 config file. */
+  awsAccessKeyId?: string
+  /** AWS Secret Access Key. SECURITY: stored in 0600 config file. */
+  awsSecretAccessKey?: string
+  /** AWS region for Bedrock API calls (default: us-east-1). */
+  awsRegion?: string
 }
 
 export type RayuConfig = {
@@ -163,7 +170,9 @@ export function setActiveProviderModel(providerId: string, model: string): void 
 
 /** True when at least one provider has credentials configured. */
 export function hasConfiguredProvider(): boolean {
-  return loadRayuConfig().providers.some(p => !!p.apiKey || p.kind === 'openai-compatible')
+  return loadRayuConfig().providers.some(
+    p => !!p.apiKey || p.kind === 'openai-compatible' || (p.kind === 'bedrock' && !!p.awsAccessKeyId),
+  )
 }
 
 /** True when the active OpenAI-compatible provider can satisfy Rayu auth itself. */
@@ -340,29 +349,76 @@ export type RayuModelChoice = {
 }
 
 /**
- * Aggregate selectable models across ALL configured OpenAI-compatible providers,
+ * Aggregate selectable models across ALL configured providers,
  * so the model picker can search across every connected provider at once.
  * Active provider's models come first.
+ *
+ * For OpenAI-compatible providers: uses the live-fetched catalog + pinned models.
+ * For Bedrock providers: uses the hardcoded ALL_MODEL_CONFIGS bedrock IDs.
  */
 export function getAllProviderModelOptions(): RayuModelChoice[] {
   const cfg = loadRayuConfig()
   const active = getActiveProvider()?.id
-  const providers = cfg.providers
-    .filter(p => p.kind === 'openai-compatible')
-    .sort((a, b) => (a.id === active ? -1 : b.id === active ? 1 : 0))
   const out: RayuModelChoice[] = []
   const seen = new Set<string>()
-  for (const p of providers) {
-    const ids = new Set<string>()
-    if (p.defaultModel) ids.add(p.defaultModel)
-    for (const m of p.models ?? []) ids.add(m)
-    for (const m of p.fetchedModels ?? []) ids.add(m)
-    for (const model of ids) {
-      const value = `${p.id}${RAYU_MODEL_SEP}${model}`
-      if (seen.has(value)) continue
-      seen.add(value)
-      out.push({ value, providerId: p.id, model })
+
+  // Sort: active provider first, then others
+  const sorted = [...cfg.providers].sort((a, b) =>
+    a.id === active ? -1 : b.id === active ? 1 : 0,
+  )
+
+  for (const p of sorted) {
+    if (p.kind === 'openai-compatible') {
+      const ids = new Set<string>()
+      if (p.defaultModel) ids.add(p.defaultModel)
+      for (const m of p.models ?? []) ids.add(m)
+      for (const m of p.fetchedModels ?? []) ids.add(m)
+      for (const model of ids) {
+        const value = `${p.id}${RAYU_MODEL_SEP}${model}`
+        if (seen.has(value)) continue
+        seen.add(value)
+        out.push({ value, providerId: p.id, model })
+      }
+    } else if (p.kind === 'bedrock') {
+      // For Bedrock, build the model list in priority order:
+      //   1. fetchedModels (live catalog fetched at /connect time — all models incl.
+      //      DeepSeek, Llama, Kimi, etc.)
+      //   2. User-pinned models (p.models)
+      //   3. defaultModel
+      //   4. Hardcoded Claude IDs from configs (fallback when no live catalog)
+      const bedrockIds = new Set<string>()
+
+      // Live catalog from /connect — this is the full set of available models
+      for (const m of p.fetchedModels ?? []) bedrockIds.add(m)
+      // User-pinned models
+      for (const m of p.models ?? []) bedrockIds.add(m)
+      // Default model
+      if (p.defaultModel) bedrockIds.add(p.defaultModel)
+
+      // If no live catalog, fall back to the hardcoded Claude Bedrock IDs
+      if (bedrockIds.size === 0) {
+        try {
+          /* eslint-disable @typescript-eslint/no-require-imports */
+          const { ALL_MODEL_CONFIGS } =
+            require('./model/configs.js') as typeof import('./model/configs.js')
+          /* eslint-enable @typescript-eslint/no-require-imports */
+          for (const cfg of Object.values(ALL_MODEL_CONFIGS)) {
+            const bedrockId = (cfg as Record<string, string>)['bedrock']
+            if (bedrockId) bedrockIds.add(bedrockId)
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      for (const model of bedrockIds) {
+        const value = `${p.id}${RAYU_MODEL_SEP}${model}`
+        if (seen.has(value)) continue
+        seen.add(value)
+        out.push({ value, providerId: p.id, model })
+      }
     }
   }
+
   return out
 }

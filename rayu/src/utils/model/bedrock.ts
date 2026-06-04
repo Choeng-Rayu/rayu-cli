@@ -7,6 +7,21 @@ import { getAWSClientProxyConfig } from '../proxy.js'
 export const getBedrockInferenceProfiles = memoize(async function (): Promise<
   string[]
 > {
+  // First, try to read cached models from providers.json (set during /connect).
+  // This is the primary source for Rayu users who authenticate with a Bearer
+  // token — they don't have IAM credentials to call ListInferenceProfiles.
+  try {
+    const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+    const active = getActiveProvider()
+    if (active?.kind === 'bedrock' && active.fetchedModels?.length) {
+      // Filter to only Anthropic models (same as the live API path below)
+      return active.fetchedModels.filter(m => m.includes('anthropic'))
+    }
+  } catch {
+    // fall through to live API call
+  }
+
+  // Fall back to live AWS SDK call (requires IAM credentials)
   const [client, { ListInferenceProfilesCommand }] = await Promise.all([
     createBedrockClient(),
     import('@aws-sdk/client-bedrock'),
@@ -53,9 +68,28 @@ async function createBedrockClient() {
   // - Reads AWS_REGION or AWS_DEFAULT_REGION env vars (not AWS config files)
   // - Falls back to 'us-east-1' if neither is set
   // This ensures we query profiles from the same region the client will use
-  const region = getAWSRegion()
+  let region = getAWSRegion()
 
   const skipAuth = isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)
+
+  // Check for Bearer token in providers.json (Rayu config) — primary auth source
+  // for users who configured via /connect → AWS Bedrock.
+  let rayuBearerToken: string | undefined
+  try {
+    const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+    const active = getActiveProvider()
+    if (active?.kind === 'bedrock') {
+      rayuBearerToken = active.apiKey || undefined
+      // Also use the region from providers.json if not set via env vars
+      if (active.awsRegion && !process.env.AWS_REGION && !process.env.AWS_DEFAULT_REGION) {
+        region = active.awsRegion
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  const hasBearerToken = !!process.env.AWS_BEARER_TOKEN_BEDROCK || !!rayuBearerToken
 
   const clientConfig: ConstructorParameters<typeof BedrockClient>[0] = {
     region,
@@ -78,7 +112,7 @@ async function createBedrockClient() {
     }),
   }
 
-  if (!skipAuth && !process.env.AWS_BEARER_TOKEN_BEDROCK) {
+  if (!skipAuth && !hasBearerToken) {
     // Only refresh credentials if not using API key authentication
     const cachedCredentials = await refreshAndGetAwsCredentials()
     if (cachedCredentials) {
