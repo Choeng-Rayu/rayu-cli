@@ -52,6 +52,18 @@ export function RayuProviderSetup({
   async function finishBedrockAsync(region: string): Promise<void> {
     if (!preset) return onDone()
     const resolvedRegion = region.trim() || 'us-east-1'
+
+    // Preserve existing model selections if the provider was previously configured.
+    // This prevents /connect from resetting an auto-selected global. model back
+    // to the hardcoded preset default.
+    let existingProvider: RayuProvider | undefined
+    try {
+      const { loadRayuConfig } = await import('../utils/rayuConfig.js')
+      existingProvider = loadRayuConfig().providers.find(p => p.id === preset.id)
+    } catch {
+      // first run — no existing config
+    }
+
     const provider: RayuProvider = {
       id: preset.id,
       kind: 'bedrock',
@@ -59,8 +71,8 @@ export function RayuProviderSetup({
       // Authorization: Bearer header for Bedrock API key auth.
       apiKey: awsApiKey.trim() || undefined,
       awsRegion: resolvedRegion,
-      defaultModel: preset.defaultModel,
-      ...(preset.smallFastModel ? { smallFastModel: preset.smallFastModel } : {}),
+      defaultModel: existingProvider?.defaultModel || preset.defaultModel,
+      smallFastModel: existingProvider?.smallFastModel || preset.smallFastModel,
     }
     upsertProvider(provider, true)
 

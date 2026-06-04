@@ -169,15 +169,13 @@ export const init = memoize(async (): Promise<void> => {
       /* best-effort */
     }
 
-    // Rayu: when an OpenAI-compatible provider is active, refresh its model
-    // catalog from {baseURL}/models in the background so /model lists every
-    // available model (e.g. all NVIDIA models). Fire-and-forget; cached to
+    // Rayu: refresh model catalogs for all openai-compatible providers in the
+    // background so /model lists every available model across all providers
+    // (e.g. NVIDIA, DeepSeek, OpenRouter). Fire-and-forget; cached to
     // ~/.rayu/providers.json for the sync /model picker. Fail-open.
-    if (isOpenAICompatibleActive()) {
-      void import('../utils/rayuConfig.js')
-        .then(m => m.refreshActiveProviderModels())
-        .catch(() => {})
-    }
+    void import('../utils/rayuConfig.js')
+      .then(m => m.refreshAllProviderModels())
+      .catch(() => {})
 
     // CCR upstreamproxy: start the local CONNECT relay so agent subprocesses
     // can reach org-configured upstreams with credential injection. Gated on

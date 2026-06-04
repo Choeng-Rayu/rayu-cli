@@ -198,26 +198,46 @@ export function getRayuApiKey(providerId?: string): string | null {
 }
 
 /**
- * Model options for the active OpenAI-compatible provider, for the /model
- * picker. Returns the provider's listed models (default model first), or just
- * the default model. Empty for anthropic/no provider.
+ * Model options across ALL configured Rayu providers (openai-compatible and
+ * bedrock), for the /model picker. Active provider models come first, then
+ * models from other providers, so users see their full multi-provider catalog.
  */
 export function getActiveProviderModelOptions(): Array<{
   value: string
   label: string
   description: string
 }> {
-  const p = getActiveProvider()
-  if (!p || p.kind !== 'openai-compatible') return []
-  const ids = new Set<string>()
-  if (p.defaultModel) ids.add(p.defaultModel)
-  for (const m of p.models ?? []) ids.add(m) // user-pinned
-  for (const m of p.fetchedModels ?? []) ids.add(m) // live from /v1/models
-  return [...ids].map(id => ({
-    value: id,
-    label: id,
-    description: `${p.id} · ${id}`,
-  }))
+  const cfg = loadRayuConfig()
+  const active = getActiveProvider()
+  if (!active || (active.kind !== 'openai-compatible' && active.kind !== 'bedrock')) return []
+
+  const result: Array<{ value: string; label: string; description: string }> = []
+  const seen = new Set<string>()
+
+  const addProvider = (p: RayuProvider) => {
+    const ids: string[] = []
+    if (p.defaultModel) ids.push(p.defaultModel)
+    for (const m of p.models ?? []) ids.push(m)
+    for (const m of p.fetchedModels ?? []) ids.push(m)
+    for (const id of ids) {
+      if (!seen.has(id)) {
+        seen.add(id)
+        result.push({ value: id, label: id, description: `${p.id} · ${id}` })
+      }
+    }
+  }
+
+  // Active provider first
+  addProvider(active)
+
+  // Then all other non-anthropic providers
+  for (const p of cfg.providers) {
+    if (p.id === active.id) continue
+    if (p.kind !== 'openai-compatible' && p.kind !== 'bedrock') continue
+    addProvider(p)
+  }
+
+  return result
 }
 
 // Best-effort known context windows (tokens) for common OpenAI-compatible
@@ -333,6 +353,31 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
     }
   }
   return models
+}
+
+/**
+ * Fetch + cache model catalogs for ALL openai-compatible providers that have
+ * an empty fetchedModels cache. This ensures the /model picker shows full
+ * catalogs across all providers, not just the active one.
+ * Fire-and-forget; providers that fail silently keep their existing cache.
+ */
+export async function refreshAllProviderModels(): Promise<void> {
+  const cfg = loadRayuConfig()
+  let dirty = false
+  const promises = cfg.providers
+    .filter(p => p.kind === 'openai-compatible' && p.baseURL && !(p.fetchedModels?.length))
+    .map(async p => {
+      const models = await fetchProviderModels(p)
+      if (models.length) {
+        const cur = cfg.providers.find(x => x.id === p.id)
+        if (cur) {
+          cur.fetchedModels = models
+          dirty = true
+        }
+      }
+    })
+  await Promise.allSettled(promises)
+  if (dirty) saveRayuConfig(cfg)
 }
 
 /** Reset the in-memory cache (tests). */

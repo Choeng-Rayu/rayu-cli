@@ -291,12 +291,14 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     });
     return <SetModelAndClose args={args} onDone={onDone} />;
   }
-  // Rayu: when an OpenAI-compatible provider is active, use the searchable
-  // cross-provider model picker (better with 100s of models). Lazy require to
-  // avoid touching the compiler-mangled module graph at import time.
+  // Rayu: when a non-firstParty provider is active (OpenAI-compatible or
+  // Bedrock), use the searchable cross-provider model picker that shows models
+  // from ALL configured providers. Lazy require to avoid touching the
+  // compiler-mangled module graph at import time.
   /* eslint-disable @typescript-eslint/no-require-imports */
+  const providers = require('../../utils/model/providers.js') as typeof import('../../utils/model/providers.js');
   if (
-    (require('../../utils/model/providers.js') as typeof import('../../utils/model/providers.js')).isOpenAICompatibleActive()
+    providers.isOpenAICompatibleActive() || providers.getAPIProvider() === 'bedrock'
   ) {
     const { SearchableModelPicker } =
       require('../../components/SearchableModelPicker.js') as typeof import('../../components/SearchableModelPicker.js');

@@ -459,16 +459,25 @@ function getKnownModelOption(model: string): ModelOption | null {
 }
 
 export function getModelOptions(fastMode = false): ModelOption[] {
-  // Rayu: when an OpenAI-compatible provider is active, surface its configured
-  // models (NVIDIA/OpenAI/OpenRouter/local) at the top of the picker so users
+  // Rayu: when a non-Anthropic provider is active (OpenAI-compatible or
+  // Bedrock), surface its configured models at the top of the picker so users
   // can freely switch models per provider.
-  if (isOpenAICompatibleActive()) {
+  if (isOpenAICompatibleActive() || getAPIProvider() === 'bedrock') {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { getActiveProviderModelOptions } =
       require('../rayuConfig.js') as typeof import('../rayuConfig.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
     const rayuOptions = getActiveProviderModelOptions() as ModelOption[]
     if (rayuOptions.length) {
+      // Also include the standard base model options (Sonnet, Opus, Haiku)
+      // so the keybinding model picker shows all options.
+      const baseOptions = getModelOptionsBase(fastMode)
+      const seen = new Set(rayuOptions.map(o => o.value))
+      for (const opt of baseOptions) {
+        if (!seen.has(opt.value)) {
+          rayuOptions.push(opt)
+        }
+      }
       return rayuOptions
     }
   }
