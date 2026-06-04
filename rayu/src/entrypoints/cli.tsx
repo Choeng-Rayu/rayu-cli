@@ -295,6 +295,19 @@ async function main(): Promise<void> {
     process.argv = [process.argv[0]!, process.argv[1]!, 'update'];
   }
 
+  // Fast-path for update/uninstall: skip full CLI initialization
+  // These commands only need npm access, not the full agent runtime
+  if (args.length === 1 && (args[0] === 'update' || args[0] === 'upgrade')) {
+    const { update } = await import('../cli/update.js');
+    await update();
+    return;
+  }
+  if (args.length === 1 && (args[0] === 'uninstall' || args[0] === 'remove')) {
+    const { uninstall } = await import('../cli/uninstall.js');
+    await uninstall();
+    return;
+  }
+
   // --bare: set SIMPLE early so gates fire during module eval / commander
   // option building (not just inside the action handler).
   if (args.includes('--bare')) {
