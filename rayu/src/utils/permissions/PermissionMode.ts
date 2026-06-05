@@ -70,6 +70,13 @@ const PERMISSION_MODE_CONFIG: Partial<
     color: 'error',
     external: 'bypassPermissions',
   },
+  fullManage: {
+    title: 'Full Manage',
+    shortTitle: 'FullMng',
+    symbol: '⏩',
+    color: 'error',
+    external: 'bypassPermissions',
+  },
   dontAsk: {
     title: "Don't Ask",
     shortTitle: 'DontAsk',
@@ -97,11 +104,10 @@ const PERMISSION_MODE_CONFIG: Partial<
 export function isExternalPermissionMode(
   mode: PermissionMode,
 ): mode is ExternalPermissionMode {
-  // External users can't have auto, so always true for them
   if (process.env.USER_TYPE !== 'ant') {
-    return true
+    return mode !== 'fullManage'
   }
-  return mode !== 'auto' && mode !== 'bubble'
+  return mode !== 'auto' && mode !== 'bubble' && mode !== 'fullManage'
 }
 
 function getModeConfig(mode: PermissionMode): PermissionModeConfig {

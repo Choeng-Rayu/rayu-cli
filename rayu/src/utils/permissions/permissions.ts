@@ -1166,6 +1166,18 @@ async function hasPermissionsToUseToolInner(
 
   let appState = context.getAppState()
 
+  // 0. fullManage mode: allow everything unconditionally without any permission checks
+  if (appState.toolPermissionContext.mode === 'fullManage') {
+    return {
+      behavior: 'allow',
+      updatedInput: input,
+      decisionReason: {
+        type: 'mode',
+        mode: 'fullManage',
+      },
+    }
+  }
+
   // 1. Check if the tool is denied
   // 1a. Entire tool is denied
   const denyRule = getDenyRuleForTool(appState.toolPermissionContext, tool)

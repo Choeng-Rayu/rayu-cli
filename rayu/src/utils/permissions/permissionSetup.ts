@@ -938,6 +938,7 @@ export async function initializeToolPermissionContext({
     settings.permissions?.disableBypassPermissionsMode === 'disable'
   const isBypassPermissionsModeAvailable =
     (permissionMode === 'bypassPermissions' ||
+      permissionMode === 'fullManage' ||
       allowDangerouslySkipPermissions) &&
     !growthBookDisableBypassPermissionsMode &&
     !settingsDisableBypassPermissionsMode

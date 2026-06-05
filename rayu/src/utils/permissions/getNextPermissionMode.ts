@@ -42,10 +42,7 @@ export function getNextPermissionMode(
         if (toolPermissionContext.isBypassPermissionsModeAvailable) {
           return 'bypassPermissions'
         }
-        if (canCycleToAuto(toolPermissionContext)) {
-          return 'auto'
-        }
-        return 'default'
+        return 'fullManage'
       }
       return 'acceptEdits'
 
@@ -56,12 +53,12 @@ export function getNextPermissionMode(
       if (toolPermissionContext.isBypassPermissionsModeAvailable) {
         return 'bypassPermissions'
       }
-      if (canCycleToAuto(toolPermissionContext)) {
-        return 'auto'
-      }
-      return 'default'
+      return 'fullManage'
 
     case 'bypassPermissions':
+      return 'fullManage'
+
+    case 'fullManage':
       if (canCycleToAuto(toolPermissionContext)) {
         return 'auto'
       }
