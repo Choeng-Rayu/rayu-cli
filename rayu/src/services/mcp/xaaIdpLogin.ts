@@ -30,7 +30,11 @@ import { jsonParse } from '../../utils/slowOperations.js'
 import { buildRedirectUri, findAvailablePort } from './oauthPort.js'
 
 export function isXaaEnabled(): boolean {
-  return isEnvTruthy(process.env.RAYU_ENABLE_XAA)
+  // Removed in Rayu: XAA (Cross-App Access / SEP-990) is Claude-org IdP MCP
+  // auth. Hard-disabled so every XAA branch (command registration, `--xaa`
+  // server flag, and the auth.ts cross-app-access flow) is unreachable. The
+  // implementation is retained only as inert dead code behind this gate.
+  return false
 }
 
 export type XaaIdpSettings = {

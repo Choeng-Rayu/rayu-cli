@@ -1,14 +1,10 @@
 import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk/index.js'
 import { randomUUID } from 'crypto'
-import type { GoogleAuth } from 'google-auth-library'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAnthropicApiKey,
-  refreshAndGetAwsCredentials,
-  refreshGcpCredentialsIfNeeded,
 } from 'src/utils/auth.js'
 import { getUserAgent } from 'src/utils/http.js'
-import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
@@ -21,11 +17,7 @@ import {
 } from '../../bootstrap/state.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
-import {
-  getAWSRegion,
-  getVertexRegionForModel,
-  isEnvTruthy,
-} from '../../utils/envUtils.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 
 /**
  * Environment variables for different client types:
@@ -169,18 +161,14 @@ export async function getAnthropicClient({
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
-  // Detect Bedrock FIRST — Bedrock uses AWS credential chain or Bearer token,
-  // NOT Anthropic API keys. Running OAuth refresh or injecting Anthropic auth
-  // headers for Bedrock causes 403 "Authorization header is missing".
-  const isBedrock = isEnvTruthy(process.env.RAYU_USE_BEDROCK) || getAPIProvider() === 'bedrock'
+  // Rayu connects only to first-party Anthropic-shaped endpoints and
+  // OpenAI-compatible providers. The OpenAI-compatible path already returned
+  // above; here we configure standard Anthropic auth headers.
+  logForDebugging('[API:auth] OAuth token check starting')
+  await checkAndRefreshOAuthTokenIfNeeded()
+  logForDebugging('[API:auth] OAuth token check complete')
 
-  if (!isBedrock) {
-    logForDebugging('[API:auth] OAuth token check starting')
-    await checkAndRefreshOAuthTokenIfNeeded()
-    logForDebugging('[API:auth] OAuth token check complete')
-
-    await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
-  }
+  await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
 
   const resolvedFetch = buildFetch(fetchOverride, source)
 
@@ -195,188 +183,6 @@ export async function getAnthropicClient({
     ...(resolvedFetch && {
       fetch: resolvedFetch,
     }),
-  }
-  if (isEnvTruthy(process.env.RAYU_USE_BEDROCK) || getAPIProvider() === 'bedrock') {
-    const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
-
-    // Read Bedrock config from ~/.rayu/providers.json (set via /connect → AWS Bedrock).
-    // The provider stores the Bearer token as apiKey and the AWS region.
-    let rayuBedrockConfig: { bearerToken?: string; region?: string } | undefined
-    try {
-      const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-      const active = getActiveProvider()
-      logForDebugging(`[API:bedrock] Active provider: kind=${active?.kind}, id=${active?.id}, hasApiKey=${!!active?.apiKey}, region=${active?.awsRegion}`)
-      if (active?.kind === 'bedrock') {
-        rayuBedrockConfig = {
-          bearerToken: active.apiKey || undefined,
-          region: active.awsRegion || undefined,
-        }
-      }
-    } catch (err) {
-      logForDebugging(`[API:bedrock] Failed to read Rayu config: ${err}`)
-      // fall through — env vars or AWS credential chain will be used
-    }
-
-    // Resolve region — priority:
-    //   1. Small-fast model region override env var
-    //   2. providers.json awsRegion
-    //   3. AWS_REGION / AWS_DEFAULT_REGION env vars
-    const awsRegion =
-      model === getSmallFastModel() &&
-      process.env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
-        ? process.env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
-        : rayuBedrockConfig?.region || getAWSRegion()
-
-    // ── Bedrock auth is completely separate from Anthropic auth ──
-    // Strip ALL Anthropic-specific headers — Bedrock doesn't understand them
-    // and they cause 403 "Authorization header is missing".
-    delete defaultHeaders['Authorization']
-    delete defaultHeaders['x-api-key']
-
-    // Resolve the Bearer token — priority:
-    //   1. providers.json apiKey (set via /connect — primary Rayu flow)
-    //   2. AWS_BEARER_TOKEN_BEDROCK env var (read by the SDK itself as fallback)
-    const bearerToken =
-      rayuBedrockConfig?.bearerToken || undefined
-
-    logForDebugging(`[API:bedrock] bearerToken resolved: hasToken=${!!bearerToken}, region=${awsRegion}, envToken=${!!process.env.AWS_BEARER_TOKEN_BEDROCK}`)
-
-    const bedrockArgs: ConstructorParameters<typeof AnthropicBedrock>[0] = {
-      ...ARGS,
-      // Pass the Bearer token as apiKey — the SDK handles it natively:
-      //   apiKey set → _useSigV4=false → authHeaders() returns "Authorization: Bearer <apiKey>"
-      // If apiKey is undefined, SDK reads AWS_BEARER_TOKEN_BEDROCK from env,
-      // then falls back to SigV4 with the default AWS credential chain.
-      apiKey: bearerToken,
-      awsRegion,
-      ...(isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH) && {
-        skipAuth: true,
-      }),
-      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
-    }
-
-    if (!bearerToken && !process.env.AWS_BEARER_TOKEN_BEDROCK && !isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH)) {
-      // No Bearer token from any source — pre-resolve AWS credentials so the
-      // SDK doesn't need to hit the credential chain on every request.
-      const cachedCredentials = await refreshAndGetAwsCredentials()
-      if (cachedCredentials) {
-        Object.assign(bedrockArgs, {
-          awsAccessKey: cachedCredentials.accessKeyId,
-          awsSecretKey: cachedCredentials.secretAccessKey,
-          awsSessionToken: cachedCredentials.sessionToken,
-        })
-      }
-    }
-    // we have always been lying about the return type - this doesn't support batching or models
-    return new AnthropicBedrock(bedrockArgs) as unknown as Anthropic
-  }
-  if (isEnvTruthy(process.env.RAYU_USE_FOUNDRY)) {
-    const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
-    // Determine Azure AD token provider based on configuration
-    // SDK reads ANTHROPIC_FOUNDRY_API_KEY by default
-    let azureADTokenProvider: (() => Promise<string>) | undefined
-    if (!process.env.ANTHROPIC_FOUNDRY_API_KEY) {
-      if (isEnvTruthy(process.env.RAYU_SKIP_FOUNDRY_AUTH)) {
-        // Mock token provider for testing/proxy scenarios (similar to Vertex mock GoogleAuth)
-        azureADTokenProvider = () => Promise.resolve('')
-      } else {
-        // Use real Azure AD authentication with DefaultAzureCredential
-        const {
-          DefaultAzureCredential: AzureCredential,
-          getBearerTokenProvider,
-        } = await import('@azure/identity')
-        azureADTokenProvider = getBearerTokenProvider(
-          new AzureCredential(),
-          'https://cognitiveservices.azure.com/.default',
-        )
-      }
-    }
-
-    const foundryArgs: ConstructorParameters<typeof AnthropicFoundry>[0] = {
-      ...ARGS,
-      ...(azureADTokenProvider && { azureADTokenProvider }),
-      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
-    }
-    // we have always been lying about the return type - this doesn't support batching or models
-    return new AnthropicFoundry(foundryArgs) as unknown as Anthropic
-  }
-  if (isEnvTruthy(process.env.RAYU_USE_VERTEX)) {
-    // Refresh GCP credentials if gcpAuthRefresh is configured and credentials are expired
-    // This is similar to how we handle AWS credential refresh for Bedrock
-    if (!isEnvTruthy(process.env.RAYU_SKIP_VERTEX_AUTH)) {
-      await refreshGcpCredentialsIfNeeded()
-    }
-
-    const [{ AnthropicVertex }, { GoogleAuth }] = await Promise.all([
-      import('@anthropic-ai/vertex-sdk'),
-      import('google-auth-library'),
-    ])
-    // TODO: Cache either GoogleAuth instance or AuthClient to improve performance
-    // Currently we create a new GoogleAuth instance for every getAnthropicClient() call
-    // This could cause repeated authentication flows and metadata server checks
-    // However, caching needs careful handling of:
-    // - Credential refresh/expiration
-    // - Environment variable changes (GOOGLE_APPLICATION_CREDENTIALS, project vars)
-    // - Cross-request auth state management
-    // See: https://github.com/googleapis/google-auth-library-nodejs/issues/390 for caching challenges
-
-    // Prevent metadata server timeout by providing projectId as fallback
-    // google-auth-library checks project ID in this order:
-    // 1. Environment variables (GCLOUD_PROJECT, GOOGLE_CLOUD_PROJECT, etc.)
-    // 2. Credential files (service account JSON, ADC file)
-    // 3. gcloud config
-    // 4. GCE metadata server (causes 12s timeout outside GCP)
-    //
-    // We only set projectId if user hasn't configured other discovery methods
-    // to avoid interfering with their existing auth setup
-
-    // Check project environment variables in same order as google-auth-library
-    // See: https://github.com/googleapis/google-auth-library-nodejs/blob/main/src/auth/googleauth.ts
-    const hasProjectEnvVar =
-      process.env['GCLOUD_PROJECT'] ||
-      process.env['GOOGLE_CLOUD_PROJECT'] ||
-      process.env['gcloud_project'] ||
-      process.env['google_cloud_project']
-
-    // Check for credential file paths (service account or ADC)
-    // Note: We're checking both standard and lowercase variants to be safe,
-    // though we should verify what google-auth-library actually checks
-    const hasKeyFile =
-      process.env['GOOGLE_APPLICATION_CREDENTIALS'] ||
-      process.env['google_application_credentials']
-
-    const googleAuth = isEnvTruthy(process.env.RAYU_SKIP_VERTEX_AUTH)
-      ? ({
-          // Mock GoogleAuth for testing/proxy scenarios
-          getClient: () => ({
-            getRequestHeaders: () => ({}),
-          }),
-        } as unknown as GoogleAuth)
-      : new GoogleAuth({
-          scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-          // Only use ANTHROPIC_VERTEX_PROJECT_ID as last resort fallback
-          // This prevents the 12-second metadata server timeout when:
-          // - No project env vars are set AND
-          // - No credential keyfile is specified AND
-          // - ADC file exists but lacks project_id field
-          //
-          // Risk: If auth project != API target project, this could cause billing/audit issues
-          // Mitigation: Users can set GOOGLE_CLOUD_PROJECT to override
-          ...(hasProjectEnvVar || hasKeyFile
-            ? {}
-            : {
-                projectId: process.env.ANTHROPIC_VERTEX_PROJECT_ID,
-              }),
-        })
-
-    const vertexArgs: ConstructorParameters<typeof AnthropicVertex>[0] = {
-      ...ARGS,
-      region: getVertexRegionForModel(model),
-      googleAuth,
-      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
-    }
-    // we have always been lying about the return type - this doesn't support batching or models
-    return new AnthropicVertex(vertexArgs) as unknown as Anthropic
   }
 
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
