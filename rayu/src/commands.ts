@@ -153,6 +153,7 @@ import exportCommand from './commands/export/index.js'
 import connect from './commands/connect/index.js'
 import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
+import modelSubagent from './commands/model-subagent/index.js'
 import tag from './commands/tag/index.js'
 import outputStyle from './commands/output-style/index.js'
 import statusline from './commands/statusline.js'
@@ -254,6 +255,7 @@ const COMMANDS = memoize((): Command[] => [
   telegramBot,
   disconnectTelegram,
   model,
+  modelSubagent,
   connect,
   installSkill,
   outputStyle,

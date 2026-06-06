@@ -1,4 +1,5 @@
 import { mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
+import { existsSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { z } from 'zod/v4'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
@@ -230,6 +231,36 @@ export function getTaskPath(taskListId: string, taskId: string): string {
   return join(getTasksDir(taskListId), `${sanitizePathComponent(taskId)}.json`)
 }
 
+/**
+ * Resolve which task-list directory actually holds a given task id.
+ *
+ * Task files are written under a taskListId derived from session/team context
+ * (getTaskListId), which can diverge between the call that CREATED a task and a
+ * later call that reads/updates/deletes it — e.g. a subagent, a resumed
+ * session, or a team-name change. That divergence is the root cause of the
+ * "task not found" failures in the tool report. When the task isn't under
+ * `preferred`, scan all `~/.rayu/tasks/*` lists and return the one that has it,
+ * so by-id resolution is context-independent. Falls back to `preferred` when
+ * not found anywhere (callers then surface a clean not-found / no-op).
+ */
+export function resolveTaskListId(preferred: string, taskId: string): string {
+  if (existsSync(getTaskPath(preferred, taskId))) return preferred
+  const base = join(getRayuConfigHomeDir(), 'tasks')
+  const fileName = `${sanitizePathComponent(taskId)}.json`
+  const preferredDir = sanitizePathComponent(preferred)
+  let entries: string[]
+  try {
+    entries = readdirSync(base)
+  } catch {
+    return preferred
+  }
+  for (const entry of entries) {
+    if (entry === preferredDir) continue
+    if (existsSync(join(base, entry, fileName))) return entry
+  }
+  return preferred
+}
+
 export async function ensureTasksDir(taskListId: string): Promise<void> {
   const dir = getTasksDir(taskListId)
   try {
@@ -311,7 +342,8 @@ export async function getTask(
   taskListId: string,
   taskId: string,
 ): Promise<Task | null> {
-  const path = getTaskPath(taskListId, taskId)
+  // Resolve the real list the task lives in (context-independent lookup).
+  const path = getTaskPath(resolveTaskListId(taskListId, taskId), taskId)
   try {
     const content = await readFile(path, 'utf-8')
     const data = jsonParse(content) as { status?: string }
@@ -372,6 +404,9 @@ export async function updateTask(
   taskId: string,
   updates: Partial<Omit<Task, 'id'>>,
 ): Promise<Task | null> {
+  // Resolve the real list first so the lock and write target the dir the task
+  // actually lives in (it may have been created in a different context).
+  taskListId = resolveTaskListId(taskListId, taskId)
   const path = getTaskPath(taskListId, taskId)
 
   // Check existence before locking — proper-lockfile throws if the
@@ -394,6 +429,8 @@ export async function deleteTask(
   taskListId: string,
   taskId: string,
 ): Promise<boolean> {
+  // Resolve the real list so deletion + reference cleanup target the right dir.
+  taskListId = resolveTaskListId(taskListId, taskId)
   const path = getTaskPath(taskListId, taskId)
 
   try {

@@ -667,5 +667,10 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
 }
 
 export function normalizeModelStringForAPI(model: string): string {
-  return model.replace(/\[(1|2)m\]/gi, '')
+  // Strip any provider-routing prefix (providerId\u0000model) that a subagent
+  // request may carry, then strip the [1m]/[2m] context-window suffixes. The
+  // result is the bare model id sent to the API.
+  const sepIdx = model.indexOf('\u0000')
+  const bare = sepIdx === -1 ? model : model.slice(sepIdx + 1)
+  return bare.replace(/\[(1|2)m\]/gi, '')
 }

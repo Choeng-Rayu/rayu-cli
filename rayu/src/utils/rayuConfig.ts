@@ -58,6 +58,20 @@ export type RayuConfig = {
   /** id of the currently active provider. */
   activeProvider?: string
   providers: RayuProvider[]
+  /**
+   * Globally-configured model for built-in subagents (the Agent tool). Lets the
+   * subagent run on a DIFFERENT provider than the main agent (e.g. main on
+   * Bedrock/Claude, subagents on NVIDIA's fast model). When unset, subagents
+   * default to the main provider's instant/small-fast model.
+   *
+   * Shaped as a single selection for now; kept as an object so it can grow into
+   * per-specialty selections later (e.g. subagentsBySpecialty) without a
+   * breaking migration.
+   */
+  subagent?: {
+    providerId: string
+    model: string
+  }
 }
 
 const FILE_NAME = 'providers.json'
@@ -176,6 +190,39 @@ export function setActiveProviderModel(providerId: string, model: string): void 
   cfg.activeProvider = providerId
   provider.defaultModel = model
   saveRayuConfig(cfg)
+}
+
+/**
+ * The globally-configured subagent model selection (provider + model), or
+ * undefined when the user hasn't set one (subagents then default to the main
+ * provider's instant model — see resolveSubagentExecution in model/agent code).
+ */
+export function getSubagentSelection():
+  | { providerId: string; model: string }
+  | undefined {
+  const sel = loadRayuConfig().subagent
+  if (!sel || !sel.providerId || !sel.model) return undefined
+  return { providerId: sel.providerId, model: sel.model }
+}
+
+/**
+ * Persist the subagent model selection (set via /model_subagent). Does NOT
+ * change the active (main) provider — subagents can run on a different provider
+ * than the main agent concurrently.
+ */
+export function setSubagentSelection(providerId: string, model: string): void {
+  const cfg = loadRayuConfig()
+  cfg.subagent = { providerId, model }
+  saveRayuConfig(cfg)
+}
+
+/** Clear the subagent selection (revert to the instant default). */
+export function clearSubagentSelection(): void {
+  const cfg = loadRayuConfig()
+  if (cfg.subagent) {
+    delete cfg.subagent
+    saveRayuConfig(cfg)
+  }
 }
 
 /** True when at least one provider has credentials configured. */
@@ -559,6 +606,34 @@ export function _resetRayuConfigCache(): void {
 
 /** Separator encoding provider+model in a single picker value. */
 export const RAYU_MODEL_SEP = '\u0000'
+
+/**
+ * Encode a provider id + model id into a single string carried as the request
+ * "model". Used to route a subagent request to a DIFFERENT provider than the
+ * active one WITHOUT global state or AsyncLocalStorage (which is unreliable
+ * across async generators on Bun). The prefix is decoded at client construction
+ * (to pick the provider) and stripped before the model reaches the wire.
+ */
+export function encodeModelWithProvider(providerId: string, model: string): string {
+  return `${providerId}${RAYU_MODEL_SEP}${model}`
+}
+
+/**
+ * Decode a possibly provider-prefixed model string. Returns the bare model and,
+ * when present, the providerId. Plain model strings (no separator) pass through
+ * unchanged with providerId undefined.
+ */
+export function decodeModelProvider(model: string): {
+  providerId?: string
+  model: string
+} {
+  const idx = model.indexOf(RAYU_MODEL_SEP)
+  if (idx === -1) return { model }
+  return {
+    providerId: model.slice(0, idx),
+    model: model.slice(idx + RAYU_MODEL_SEP.length),
+  }
+}
 
 export type RayuModelChoice = {
   /** Encoded value: `${providerId}\u0000${model}`. */

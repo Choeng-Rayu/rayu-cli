@@ -1,6 +1,6 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
-import { MODEL_ALIASES, type ModelAlias, isClaudeModelOrAlias } from './aliases.js'
+import { MODEL_ALIASES, isClaudeModelOrAlias } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import {
   getCanonicalName,
@@ -8,7 +8,7 @@ import {
   parseUserSpecifiedModel,
   getSmallFastModel,
 } from './model.js'
-import { getAPIProvider, isOpenAICompatibleActive } from './providers.js'
+import { getAPIProvider, isOpenAICompatibleActive, isRayuNonAnthropicActive } from './providers.js'
 
 
 function resolveOpenAICompatibleAgentModel(
@@ -31,6 +31,42 @@ function resolveOpenAICompatibleAgentModel(
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
+
+/**
+ * Resolve the provider + model a (default) subagent should run on, for
+ * multi-provider mode. Precedence:
+ *  1. The user's configured subagent selection (/model_subagent), which may
+ *     target a DIFFERENT provider than the main agent.
+ *  2. Otherwise the MAIN (active) provider's instant/small-fast model — so the
+ *     subagent defaults to a cheap/fast model on the same provider, never the
+ *     hardcoded 'haiku' (which doesn't exist outside Anthropic).
+ *
+ * Returns { providerId, model }. The caller encodes these into the request
+ * model (encodeModelWithProvider) only when providerId differs from the active
+ * provider, so a different-provider subagent routes correctly and concurrently.
+ */
+export function resolveSubagentExecution(): {
+  providerId: string
+  model: string
+} | undefined {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const {
+    getSubagentSelection,
+    getActiveProvider,
+    getValidDefaultModel,
+  } = require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+  /* eslint-enable @typescript-eslint/no-require-imports */
+
+  const sel = getSubagentSelection()
+  if (sel) return { providerId: sel.providerId, model: sel.model }
+
+  const active = getActiveProvider()
+  if (!active) return undefined
+  const instant =
+    active.smallFastModel || getValidDefaultModel(active) || active.defaultModel
+  if (!instant) return undefined
+  return { providerId: active.id, model: instant }
+}
 
 export type AgentModelOption = {
   value: AgentModelAlias
@@ -57,9 +93,37 @@ export function getDefaultSubagentModel(): string {
 export function getAgentModel(
   agentModel: string | undefined,
   parentModel: string,
-  toolSpecifiedModel?: ModelAlias,
+  toolSpecifiedModel?: string,
   permissionMode?: PermissionMode,
 ): string {
+  // Rayu multi-provider subagent routing. When a non-Anthropic provider is
+  // active and the caller hasn't pinned an explicit model (no env override, no
+  // tool-specified model, and the agent uses the built-in default — undefined
+  // or 'haiku'), resolve the configured subagent selection. If it targets a
+  // different provider than the active one, encode provider+model so the
+  // request routes to that provider concurrently. 'inherit' is left untouched
+  // so fork/inherit agents keep the parent's exact model.
+  const usesBuiltinDefault =
+    agentModel === undefined || agentModel.toLowerCase() === 'haiku'
+  if (
+    !process.env.CLAUDE_CODE_SUBAGENT_MODEL &&
+    !toolSpecifiedModel &&
+    usesBuiltinDefault &&
+    isRayuNonAnthropicActive()
+  ) {
+    const sub = resolveSubagentExecution()
+    if (sub) {
+      /* eslint-disable @typescript-eslint/no-require-imports */
+      const { getActiveProvider, encodeModelWithProvider } =
+        require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+      /* eslint-enable @typescript-eslint/no-require-imports */
+      const activeId = getActiveProvider()?.id
+      return sub.providerId !== activeId
+        ? encodeModelWithProvider(sub.providerId, sub.model)
+        : sub.model
+    }
+  }
+
   if (isOpenAICompatibleActive()) {
     if (process.env.CLAUDE_CODE_SUBAGENT_MODEL) {
       return resolveOpenAICompatibleAgentModel(process.env.CLAUDE_CODE_SUBAGENT_MODEL, parentModel)
@@ -156,6 +220,11 @@ export function getAgentModelDisplay(model: string | undefined): string {
   // When model is omitted, getDefaultSubagentModel() returns 'inherit' at runtime
   if (!model) return 'Inherit from parent (default)'
   if (model === 'inherit') return 'Inherit from parent'
+  // Strip any provider-routing prefix (providerId\u0000model) for display.
+  const sep = model.indexOf('\u0000')
+  if (sep !== -1) {
+    return `${model.slice(sep + 1)} (${model.slice(0, sep)})`
+  }
   return capitalize(model)
 }
 

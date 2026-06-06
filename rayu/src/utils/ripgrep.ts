@@ -1,5 +1,6 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
+import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -67,8 +68,25 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
       ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
       : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
 
+  // The vendored binary may not be present (e.g. an npm/source install that
+  // didn't run the ripgrep vendoring step). When it's missing, fall back to a
+  // system `rg` on PATH so Grep still works instead of failing with ENOENT.
+  // SECURITY: use the bare command name 'rg' (not the resolved absolute path)
+  // to avoid PATH hijacking, matching the system branch above.
+  if (!existsSync(command)) {
+    const { cmd: systemPath } = findExecutable('rg', [])
+    if (systemPath !== 'rg') {
+      return { mode: 'system', command: 'rg', args: [] }
+    }
+  }
+
   return { mode: 'builtin', command, args: [] }
 })
+
+/** Reset the memoized ripgrep config (tests only). */
+export function _resetRipgrepConfigForTesting(): void {
+  getRipgrepConfig.cache?.clear?.()
+}
 
 export function ripgrepCommand(): {
   rgPath: string

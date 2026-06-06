@@ -138,6 +138,51 @@ async function getRayuBedrockAnthropicClient(
   })
 }
 
+/**
+ * Rayu: build an API client for a SPECIFIC provider (not necessarily the active
+ * one). Used to route a subagent request to a provider chosen via
+ * /model_subagent that differs from the main agent's provider. Mirrors the
+ * active-provider routing: Anthropic-style Bedrock → AnthropicBedrock SDK;
+ * OpenAI-compatible (incl. OpenAI-style Bedrock) → OpenAI adapter. Returns null
+ * when the provider can't be served this way (caller falls back).
+ * SECURITY: credentials are read from the 0600 provider config; never logged.
+ */
+async function buildClientForProvider(
+  provider: import('src/utils/rayuConfig.js').RayuProvider,
+  maxRetries: number,
+): Promise<unknown | null> {
+  if (
+    provider.kind === 'bedrock' &&
+    provider.bedrockApi === 'anthropic' &&
+    provider.apiKey
+  ) {
+    const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
+    return new AnthropicBedrock({
+      apiKey: provider.apiKey,
+      awsRegion: provider.awsRegion || process.env.AWS_REGION || 'us-east-1',
+      maxRetries,
+    })
+  }
+  // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
+  // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
+  if (
+    (provider.kind === 'openai-compatible' || provider.kind === 'bedrock') &&
+    provider.baseURL
+  ) {
+    const { createOpenAICompatibleClient } = await import('./openaiAdapter.js')
+    return createOpenAICompatibleClient({
+      apiKey: provider.apiKey ?? '',
+      baseURL: provider.baseURL,
+      maxRetries,
+      providerId: provider.id,
+      promptCacheKey: provider.promptCacheKey,
+      reasoningEffort: provider.reasoningEffort,
+      streamOptions: provider.streamOptions,
+    })
+  }
+  return null
+}
+
 export async function getAnthropicClient({
   apiKey,
   maxRetries,
@@ -151,6 +196,29 @@ export async function getAnthropicClient({
   fetchOverride?: ClientOptions['fetch']
   source?: string
 }): Promise<Anthropic> {
+  // Rayu multi-provider subagent routing: the request "model" may carry a
+  // provider prefix (providerId\u0000model) so a subagent can run on a DIFFERENT
+  // provider than the active one, concurrently. Decode it and build the client
+  // for that specific provider. The request body's model is independently
+  // stripped to the bare id by normalizeModelStringForAPI, so the wire model is
+  // always clean regardless of routing. This avoids AsyncLocalStorage, which is
+  // unreliable across async generators on Bun.
+  if (model) {
+    const { decodeModelProvider, loadRayuConfig } = await import(
+      'src/utils/rayuConfig.js'
+    )
+    const { providerId } = decodeModelProvider(model)
+    if (providerId) {
+      const provider = loadRayuConfig().providers.find(p => p.id === providerId)
+      if (provider) {
+        const overrideClient = await buildClientForProvider(provider, maxRetries)
+        if (overrideClient) {
+          return overrideClient as unknown as Anthropic
+        }
+      }
+    }
+  }
+
   // Rayu: route to the AnthropicBedrock SDK when the active provider is a
   // Bedrock provider configured for the Anthropic Messages API (Claude models).
   const bedrockAnthropicClient = await getRayuBedrockAnthropicClient(maxRetries)

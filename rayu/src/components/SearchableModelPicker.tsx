@@ -24,8 +24,22 @@ type OnDone = (result?: string, options?: { display?: string }) => void
 
 export function SearchableModelPicker({
   onDone,
+  onSelectModel,
+  title,
+  headerTip,
 }: {
   onDone: OnDone
+  /**
+   * Optional selection handler. When provided, the picker calls this instead of
+   * setting the MAIN active provider/model — used by /model_subagent to persist
+   * the subagent selection (a possibly different provider) without touching the
+   * main agent. Receives the decoded providerId + model.
+   */
+  onSelectModel?: (providerId: string, model: string) => void
+  /** Optional heading (defaults to "Select a model"). */
+  title?: string
+  /** Optional dim tip line shown under the heading (e.g. a cost note). */
+  headerTip?: string
 }): React.ReactNode {
   const setAppState = useSetAppState()
   const all = React.useMemo(() => getAllProviderModelOptions(), [])
@@ -63,6 +77,14 @@ export function SearchableModelPicker({
     const sep = value.indexOf(RAYU_MODEL_SEP)
     const providerId = sep < 0 ? '' : value.slice(0, sep)
     const model = sep < 0 ? value : value.slice(sep + 1)
+    // Subagent (or other) target: delegate instead of changing the main model.
+    if (onSelectModel) {
+      onSelectModel(providerId, model)
+      onDone(
+        `Subagent model set to ${model}${providerId ? ` (${providerId})` : ''}`,
+      )
+      return
+    }
     if (providerId) setActiveProviderModel(providerId, model)
     setAppState(prev => ({
       ...prev,
@@ -76,7 +98,8 @@ export function SearchableModelPicker({
 
   return (
     <Box flexDirection="column" paddingLeft={1}>
-      <Text bold>Select a model</Text>
+      <Text bold>{title ?? 'Select a model'}</Text>
+      {headerTip ? <Text dimColor>{headerTip}</Text> : null}
       <Text>
         Search: <Text color="claude">{query}</Text>
         <Text dimColor>
