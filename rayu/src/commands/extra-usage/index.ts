@@ -10,13 +10,15 @@ function isExtraUsageAllowed(): boolean {
   return isOverageProvisioningAllowed()
 }
 
+// Stub: command removed from registration. isEnabled() still used by UI components
+// for conditional display. Full implementation preserved in un-use-code/commands/extra-usage/.
 export const extraUsage = {
   type: 'local-jsx',
   name: 'extra-usage',
   description: 'Configure extra usage to keep working when limits are hit',
   isEnabled: () => isExtraUsageAllowed() && !getIsNonInteractiveSession(),
-  load: () => import('./extra-usage.js'),
-} satisfies Command
+  load: () => Promise.resolve({ default: null as unknown as React.ComponentType<any> }),
+} satisfies Omit<Command, 'load'> & { load: () => Promise<any> }
 
 export const extraUsageNonInteractive = {
   type: 'local',
@@ -27,5 +29,5 @@ export const extraUsageNonInteractive = {
   get isHidden() {
     return !getIsNonInteractiveSession()
   },
-  load: () => import('./extra-usage-noninteractive.js'),
-} satisfies Command
+  load: () => Promise.resolve({ default: null as unknown as React.ComponentType<any> }),
+} satisfies Omit<Command, 'load'> & { load: () => Promise<any> }

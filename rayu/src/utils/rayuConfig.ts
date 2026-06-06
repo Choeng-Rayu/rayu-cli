@@ -38,6 +38,14 @@ export type RayuProvider = {
   /** Optional OpenAI stream_options.include_usage request parameter mode. */
   streamOptions?: ProviderFeatureMode
   // --- AWS Bedrock fields (kind: 'bedrock') ---
+  /**
+   * Which Bedrock API surface this provider uses:
+   * - 'openai' (default): OpenAI-compatible Chat Completions endpoint, for
+   *   open-weight models (openai.gpt-oss, qwen, deepseek, ...).
+   * - 'anthropic': Anthropic Messages API (via @anthropic-ai/bedrock-sdk),
+   *   for Claude models invoked with cross-region inference-profile ids.
+   */
+  bedrockApi?: 'openai' | 'anthropic'
   /** AWS Access Key ID. SECURITY: stored in 0600 config file. */
   awsAccessKeyId?: string
   /** AWS Secret Access Key. SECURITY: stored in 0600 config file. */
@@ -311,7 +319,161 @@ export function getRayuModelContextWindow(model: string): number | null {
  * (NVIDIA/OpenAI/OpenRouter/local all expose this). Returns model ids, or [] on failure.
  * SECURITY: the api key is sent only to the user-configured baseURL; never logged.
  */
+/**
+ * Resolve the AWS region for a Bedrock provider: explicit awsRegion, else parse
+ * from the bedrock-runtime base URL host, else the us-east-1 default.
+ */
+function bedrockRegionOf(p: RayuProvider): string {
+  if (p.awsRegion) return p.awsRegion
+  const m = p.baseURL?.match(/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i)
+  return m?.[1] ?? 'us-east-1'
+}
+
+type BedrockModelSummary = {
+  modelId?: string
+  inputModalities?: string[]
+  outputModalities?: string[]
+  inferenceTypesSupported?: string[]
+  modelLifecycle?: { status?: string }
+  // Bedrock reports, per model, which inference APIs it supports. The OpenAI
+  // Chat Completions endpoint only serves models where openAiChatCompletions
+  // is true (open-weight / OpenAI models); Anthropic & Nova are false.
+  inferenceAPIsSupported?: { openAiChatCompletions?: boolean }
+}
+
+/**
+ * Fetch the Bedrock model catalog from the control-plane endpoint
+ * `GET https://bedrock.{region}.amazonaws.com/foundation-models`, authenticated
+ * with the Bedrock API key (bearer token). Bedrock has no OpenAI-style /models
+ * listing, so this control-plane call is the source of truth.
+ *
+ * Returns only models the region marks as `openAiChatCompletions: true` — the
+ * authoritative signal that a model is invocable via Bedrock's OpenAI Chat
+ * Completions endpoint (which Rayu's adapter uses). Anthropic Claude and Amazon
+ * Nova report false here (they require the Anthropic Messages / Converse APIs),
+ * so they are excluded to avoid 400/404 errors at chat time. These models are
+ * invoked with their bare modelId (no inference-profile geo prefix).
+ * SECURITY: the key is sent only to the AWS Bedrock control-plane host; never logged.
+ */
+async function fetchBedrockModels(p: RayuProvider): Promise<string[]> {
+  if (!p.apiKey) return []
+  const region = bedrockRegionOf(p)
+  const url = `https://bedrock.${region}.amazonaws.com/foundation-models`
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${p.apiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) {
+      reportIssue('rayu_models.fetch_failed', 'bedrock foundation-models returned non-OK', {
+        provider: p.id,
+        status: res.status,
+      })
+      return []
+    }
+    const json = (await res.json()) as { modelSummaries?: BedrockModelSummary[] }
+    const ids = new Set<string>()
+    for (const m of json.modelSummaries ?? []) {
+      const id = m.modelId
+      if (!id) continue
+      const status = m.modelLifecycle?.status
+      if (status && status !== 'ACTIVE') continue
+      // Authoritative: only list models the OpenAI Chat Completions endpoint serves.
+      if (m.inferenceAPIsSupported?.openAiChatCompletions !== true) continue
+      ids.add(id)
+    }
+    return [...ids].sort()
+  } catch (e) {
+    reportIssue('rayu_models.fetch_error', 'bedrock foundation-models request failed', {
+      provider: p.id,
+      error: e instanceof Error ? e.message : String(e),
+    })
+    return []
+  }
+}
+
+type BedrockInferenceProfileSummary = {
+  inferenceProfileId?: string
+  status?: string
+}
+
+/**
+ * Fetch the Claude model ids usable via Bedrock's Anthropic Messages API
+ * (@anthropic-ai/bedrock-sdk, invoked with the bearer token). Combines:
+ *  - cross-region inference profiles (GET /inference-profiles) whose id targets
+ *    an Anthropic model — the invocable ids for newer Claude models
+ *    (e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0); and
+ *  - ON_DEMAND Anthropic foundation models (GET /foundation-models) invocable
+ *    by their bare id (older Claude 3.x in some regions).
+ * SECURITY: the key is sent only to the AWS Bedrock control-plane host; never logged.
+ */
+async function fetchBedrockAnthropicModels(p: RayuProvider): Promise<string[]> {
+  if (!p.apiKey) return []
+  const region = bedrockRegionOf(p)
+  const headers = { Authorization: `Bearer ${p.apiKey}` }
+  const ids = new Set<string>()
+  // 1) Cross-region inference profiles (the invocable ids for newer Claude).
+  try {
+    const res = await fetch(
+      `https://bedrock.${region}.amazonaws.com/inference-profiles?maxResults=1000`,
+      { headers, signal: AbortSignal.timeout(15_000) },
+    )
+    if (res.ok) {
+      const json = (await res.json()) as {
+        inferenceProfileSummaries?: BedrockInferenceProfileSummary[]
+      }
+      for (const s of json.inferenceProfileSummaries ?? []) {
+        const id = s.inferenceProfileId
+        if (!id) continue
+        if (s.status && s.status !== 'ACTIVE') continue
+        // Anthropic Claude profiles only (this provider speaks the Messages API).
+        if (!/anthropic|claude/i.test(id)) continue
+        ids.add(id)
+      }
+    } else {
+      reportIssue('rayu_models.fetch_failed', 'bedrock inference-profiles non-OK', {
+        provider: p.id,
+        status: res.status,
+      })
+    }
+  } catch (e) {
+    reportIssue('rayu_models.fetch_error', 'bedrock inference-profiles request failed', {
+      provider: p.id,
+      error: e instanceof Error ? e.message : String(e),
+    })
+  }
+  // 2) ON_DEMAND Anthropic foundation models (bare ids, older Claude 3.x).
+  try {
+    const res = await fetch(
+      `https://bedrock.${region}.amazonaws.com/foundation-models`,
+      { headers, signal: AbortSignal.timeout(15_000) },
+    )
+    if (res.ok) {
+      const json = (await res.json()) as { modelSummaries?: BedrockModelSummary[] }
+      for (const m of json.modelSummaries ?? []) {
+        const id = m.modelId
+        if (!id || !/anthropic|claude/i.test(id)) continue
+        const out = m.outputModalities ?? []
+        const status = m.modelLifecycle?.status
+        const inf = m.inferenceTypesSupported ?? []
+        if (out.length && !out.includes('TEXT')) continue
+        if (status && status !== 'ACTIVE') continue
+        if (inf.includes('ON_DEMAND')) ids.add(id)
+      }
+    }
+  } catch {
+    // best-effort; profiles above are the primary source
+  }
+  return [...ids].sort()
+}
+
 export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
+  // Bedrock exposes no OpenAI-style /models endpoint; list via its control plane.
+  if (p.kind === 'bedrock') {
+    return p.bedrockApi === 'anthropic'
+      ? fetchBedrockAnthropicModels(p)
+      : fetchBedrockModels(p)
+  }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
   try {
@@ -347,7 +509,7 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
  */
 export async function refreshActiveProviderModels(): Promise<string[]> {
   const p = getActiveProvider()
-  if (!p || p.kind !== 'openai-compatible') return []
+  if (!p || (p.kind !== 'openai-compatible' && p.kind !== 'bedrock')) return []
   const models = await fetchProviderModels(p)
   if (models.length) {
     const cfg = loadRayuConfig()
@@ -370,7 +532,12 @@ export async function refreshAllProviderModels(): Promise<void> {
   const cfg = loadRayuConfig()
   let dirty = false
   const promises = cfg.providers
-    .filter(p => p.kind === 'openai-compatible' && p.baseURL && !(p.fetchedModels?.length))
+    .filter(
+      p =>
+        (p.kind === 'openai-compatible' || p.kind === 'bedrock') &&
+        p.baseURL &&
+        !(p.fetchedModels?.length),
+    )
     .map(async p => {
       const models = await fetchProviderModels(p)
       if (models.length) {

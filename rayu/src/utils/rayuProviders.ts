@@ -27,12 +27,48 @@ export type ProviderPreset = {
   envKeys?: string[]
   /** True for endpoints where the user must type the base URL (no fixed host). */
   promptBaseURL?: boolean
+  /** For bedrock presets: which Bedrock API surface to use (default 'openai'). */
+  bedrockApi?: 'openai' | 'anthropic'
 }
 
-// All confirmed OpenAI-compatible providers (tool calling + /v1/models).
-// Rayu connects ONLY to OpenAI-compatible endpoints — there is no direct
-// first-party Anthropic provider, no Anthropic OAuth, and no AWS Bedrock
-// (Bedrock routes Claude via the Anthropic SDK, which Rayu does not use).
+// --- AWS Bedrock (API key / bearer token) -----------------------------------
+// Bedrock exposes an OpenAI-compatible Chat Completions API on the
+// `bedrock-runtime` endpoint. It is region-scoped and authenticated with a
+// Bedrock API key (the AWS_BEARER_TOKEN_BEDROCK bearer token). Both
+// `GET /v1/models` and `POST /v1/chat/completions` work with that token, so
+// Rayu can reuse its OpenAI-compatible adapter + model-catalog fetch verbatim.
+
+/** Default AWS region used for Bedrock when none is specified. */
+export const DEFAULT_BEDROCK_REGION = 'us-east-1'
+
+/** Build the OpenAI-compatible Bedrock base URL for a given AWS region. */
+export function bedrockBaseURL(region: string): string {
+  const r = (region || DEFAULT_BEDROCK_REGION).trim()
+  // The bedrock-runtime endpoint serves the OpenAI Chat Completions API under
+  // the /openai/v1 path (POST /openai/v1/chat/completions), authenticated with
+  // a Bedrock API key. (The bare /v1 path returns UnknownOperation.)
+  return `https://bedrock-runtime.${r}.amazonaws.com/openai/v1`
+}
+
+/** AWS regions that commonly support the Bedrock runtime endpoint. */
+export const BEDROCK_REGIONS: Array<{ id: string; label: string }> = [
+  { id: 'us-east-1', label: 'US East (N. Virginia) · us-east-1' },
+  { id: 'us-east-2', label: 'US East (Ohio) · us-east-2' },
+  { id: 'us-west-2', label: 'US West (Oregon) · us-west-2' },
+  { id: 'ap-south-1', label: 'Asia Pacific (Mumbai) · ap-south-1' },
+  { id: 'ap-southeast-1', label: 'Asia Pacific (Singapore) · ap-southeast-1' },
+  { id: 'ap-southeast-2', label: 'Asia Pacific (Sydney) · ap-southeast-2' },
+  { id: 'ap-northeast-1', label: 'Asia Pacific (Tokyo) · ap-northeast-1' },
+  { id: 'eu-central-1', label: 'Europe (Frankfurt) · eu-central-1' },
+  { id: 'eu-west-1', label: 'Europe (Ireland) · eu-west-1' },
+  { id: 'eu-west-3', label: 'Europe (Paris) · eu-west-3' },
+]
+
+// All confirmed OpenAI-compatible providers (tool calling + /v1/models), plus
+// AWS Bedrock via its OpenAI-compatible bedrock-runtime endpoint (authenticated
+// with a Bedrock API key / bearer token). Rayu connects to OpenAI-compatible
+// endpoints; Bedrock is routed through the same adapter once a region + API key
+// are supplied via /connect.
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     id: 'nvidia',
@@ -98,6 +134,24 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     envKeys: ['OPENROUTER_API_KEY'],
   },
   {
+    id: 'bedrock',
+    label: 'AWS Bedrock — open models (OpenAI-compatible: gpt-oss, qwen, …)',
+    kind: 'bedrock',
+    bedrockApi: 'openai',
+    // No fixed baseURL: it is region-scoped and computed from the region the
+    // user selects in /connect (bedrockBaseURL). Models are fetched live.
+    envKeys: ['AWS_BEARER_TOKEN_BEDROCK'],
+  },
+  {
+    id: 'bedrock-anthropic',
+    label: 'AWS Bedrock — Claude (Anthropic Messages API)',
+    kind: 'bedrock',
+    bedrockApi: 'anthropic',
+    // Region-scoped; uses @anthropic-ai/bedrock-sdk with the Bedrock API key.
+    // No envKeys here so AWS_BEARER_TOKEN_BEDROCK maps to a single (openai)
+    // provider during env migration; pick this explicitly via /connect.
+  },
+  {
     id: 'local',
     label: 'Local / custom OpenAI-compatible endpoint',
     kind: 'openai-compatible',
@@ -140,19 +194,30 @@ export function migrateEnvKeysToConfig(): void {
     if (!key) continue
     const existing = cfg.providers.find(p => p.id === preset.id)
     if (existing?.apiKey) continue // already configured with a key
+    // Bedrock is region-scoped: derive region from AWS env (or default) and
+    // compute the OpenAI-compatible bedrock-runtime base URL from it.
+    const isBedrock = preset.kind === 'bedrock'
+    const region = isBedrock
+      ? (process.env.AWS_REGION ||
+          process.env.AWS_DEFAULT_REGION ||
+          DEFAULT_BEDROCK_REGION)
+      : undefined
+    const baseURL = isBedrock ? bedrockBaseURL(region as string) : preset.baseURL
     if (existing) {
       existing.apiKey = key
-      existing.baseURL ??= preset.baseURL
+      existing.baseURL ??= baseURL
       existing.defaultModel ??= preset.defaultModel
       existing.smallFastModel ??= preset.smallFastModel
+      if (isBedrock) existing.awsRegion ??= region
     } else {
       cfg.providers.push({
         id: preset.id,
         kind: preset.kind,
         apiKey: key,
-        ...(preset.baseURL ? { baseURL: preset.baseURL } : {}),
+        ...(baseURL ? { baseURL } : {}),
         ...(preset.defaultModel ? { defaultModel: preset.defaultModel } : {}),
         ...(preset.smallFastModel ? { smallFastModel: preset.smallFastModel } : {}),
+        ...(isBedrock ? { awsRegion: region } : {}),
       })
     }
     changed = true

@@ -108,6 +108,36 @@ async function getRayuOpenAICompatibleClient(
   })
 }
 
+/**
+ * Rayu: build an AnthropicBedrock client (@anthropic-ai/bedrock-sdk) for the
+ * active provider when it is a Bedrock provider configured for the Anthropic
+ * Messages API (bedrockApi:'anthropic'). Authenticates with the Bedrock API key
+ * (bearer token) — no AWS SigV4 credentials required — and presents the same
+ * beta.messages.create surface (incl. streaming + tool use) that claude.ts uses.
+ * Returns null when the active provider is not an Anthropic-style Bedrock
+ * provider, so the caller falls through to the other client paths.
+ * SECURITY: the bearer token is read from the 0600 provider config; never logged.
+ */
+async function getRayuBedrockAnthropicClient(
+  maxRetries: number,
+): Promise<unknown | null> {
+  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const active = getActiveProvider()
+  if (
+    active?.kind !== 'bedrock' ||
+    active.bedrockApi !== 'anthropic' ||
+    !active.apiKey
+  ) {
+    return null
+  }
+  const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
+  return new AnthropicBedrock({
+    apiKey: active.apiKey,
+    awsRegion: active.awsRegion || process.env.AWS_REGION || 'us-east-1',
+    maxRetries,
+  })
+}
+
 export async function getAnthropicClient({
   apiKey,
   maxRetries,
@@ -121,6 +151,13 @@ export async function getAnthropicClient({
   fetchOverride?: ClientOptions['fetch']
   source?: string
 }): Promise<Anthropic> {
+  // Rayu: route to the AnthropicBedrock SDK when the active provider is a
+  // Bedrock provider configured for the Anthropic Messages API (Claude models).
+  const bedrockAnthropicClient = await getRayuBedrockAnthropicClient(maxRetries)
+  if (bedrockAnthropicClient) {
+    return bedrockAnthropicClient as unknown as Anthropic
+  }
+
   // Rayu: route to the OpenAI-compatible adapter when the active provider is an
   // OpenAI-compatible endpoint (OpenAI/NVIDIA/OpenRouter/local). The adapter
   // presents the same beta.messages.create surface claude.ts depends on.
