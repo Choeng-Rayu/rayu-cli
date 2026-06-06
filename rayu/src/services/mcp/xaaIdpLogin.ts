@@ -30,7 +30,7 @@ import { jsonParse } from '../../utils/slowOperations.js'
 import { buildRedirectUri, findAvailablePort } from './oauthPort.js'
 
 export function isXaaEnabled(): boolean {
-  return isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_XAA)
+  return isEnvTruthy(process.env.RAYU_ENABLE_XAA)
 }
 
 export type XaaIdpSettings = {
@@ -182,7 +182,7 @@ export function getIdpClientSecret(idpIssuer: string): string | undefined {
 
 /**
  * Remove the IdP client secret for the given issuer from secure storage.
- * Used by `claude mcp xaa clear`.
+ * Used by `rayu mcp xaa clear`.
  */
 export function clearIdpClientSecret(idpIssuer: string): void {
   const storage = getSecureStorage()

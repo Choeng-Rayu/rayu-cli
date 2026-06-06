@@ -1,4 +1,4 @@
-// OAuth client for handling authentication flows with Claude services
+// Legacy OAuth client. Rayu does not support Claude account OAuth.
 import axios from 'axios'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -32,11 +32,12 @@ import type {
 } from './types.js'
 
 /**
- * Check if the user has Claude.ai authentication scope
+ * Rayu does not use Claude account authentication scopes.
  * @private Only call this if you're OAuth / auth related code!
  */
 export function shouldUseClaudeAIAuth(scopes: string[] | undefined): boolean {
-  return Boolean(scopes?.includes(CLAUDE_AI_INFERENCE_SCOPE))
+  void scopes
+  return false
 }
 
 export function parseScopes(scopeString?: string): string[] {
@@ -64,44 +65,18 @@ export function buildAuthUrl({
   loginHint?: string
   loginMethod?: string
 }): string {
-  const authUrlBase = loginWithClaudeAi
-    ? getOauthConfig().CLAUDE_AI_AUTHORIZE_URL
-    : getOauthConfig().CONSOLE_AUTHORIZE_URL
-
-  const authUrl = new URL(authUrlBase)
-  authUrl.searchParams.append('code', 'true') // this tells the login page to show Claude Max upsell
-  authUrl.searchParams.append('client_id', getOauthConfig().CLIENT_ID)
-  authUrl.searchParams.append('response_type', 'code')
-  authUrl.searchParams.append(
-    'redirect_uri',
-    isManual
-      ? getOauthConfig().MANUAL_REDIRECT_URL
-      : `http://localhost:${port}/callback`,
+  void codeChallenge
+  void state
+  void port
+  void isManual
+  void loginWithClaudeAi
+  void inferenceOnly
+  void orgUUID
+  void loginHint
+  void loginMethod
+  throw new Error(
+    'OAuth login is not supported in Rayu. Configure providers with /connect or ~/.rayu/providers.json.',
   )
-  const scopesToUse = inferenceOnly
-    ? [CLAUDE_AI_INFERENCE_SCOPE] // Long-lived inference-only tokens
-    : ALL_OAUTH_SCOPES
-  authUrl.searchParams.append('scope', scopesToUse.join(' '))
-  authUrl.searchParams.append('code_challenge', codeChallenge)
-  authUrl.searchParams.append('code_challenge_method', 'S256')
-  authUrl.searchParams.append('state', state)
-
-  // Add orgUUID as URL param if provided
-  if (orgUUID) {
-    authUrl.searchParams.append('orgUUID', orgUUID)
-  }
-
-  // Pre-populate email on the login form (standard OIDC parameter)
-  if (loginHint) {
-    authUrl.searchParams.append('login_hint', loginHint)
-  }
-
-  // Request a specific login method (e.g. 'sso', 'magic_link', 'google')
-  if (loginMethod) {
-    authUrl.searchParams.append('login_method', loginMethod)
-  }
-
-  return authUrl.toString()
 }
 
 export async function exchangeCodeForTokens(
@@ -424,24 +399,7 @@ export async function fetchProfileInfo(accessToken: string): Promise<{
  * @returns The organization UUID or null if not authenticated
  */
 export async function getOrganizationUUID(): Promise<string | null> {
-  // Check global config first to avoid unnecessary API call
-  const globalConfig = getGlobalConfig()
-  const orgUUID = globalConfig.oauthAccount?.organizationUuid
-  if (orgUUID) {
-    return orgUUID
-  }
-
-  // Fall back to fetching from profile (requires user:profile scope)
-  const accessToken = getClaudeAIOAuthTokens()?.accessToken
-  if (accessToken === undefined || !hasProfileScope()) {
-    return null
-  }
-  const profile = await getOauthProfileFromOauthToken(accessToken)
-  const profileOrgUUID = profile?.organization?.uuid
-  if (!profileOrgUUID) {
-    return null
-  }
-  return profileOrgUUID
+  return null
 }
 
 /**
@@ -449,68 +407,6 @@ export async function getOrganizationUUID(): Promise<string | null> {
  * @returns Whether or not the oauth account info was populated.
  */
 export async function populateOAuthAccountInfoIfNeeded(): Promise<boolean> {
-  // Check env vars first (synchronous, no network call needed).
-  // SDK callers like Cowork can provide account info directly, which also
-  // eliminates the race condition where early telemetry events lack account info.
-  // NB: If/when adding additional SDK-relevant functionality requiring _other_ OAuth account properties,
-  // please reach out to #proj-cowork so the team can add additional env var fallbacks.
-  const envAccountUuid = process.env.CLAUDE_CODE_ACCOUNT_UUID
-  const envUserEmail = process.env.CLAUDE_CODE_USER_EMAIL
-  const envOrganizationUuid = process.env.CLAUDE_CODE_ORGANIZATION_UUID
-  const hasEnvVars = Boolean(
-    envAccountUuid && envUserEmail && envOrganizationUuid,
-  )
-  if (envAccountUuid && envUserEmail && envOrganizationUuid) {
-    if (!getGlobalConfig().oauthAccount) {
-      storeOAuthAccountInfo({
-        accountUuid: envAccountUuid,
-        emailAddress: envUserEmail,
-        organizationUuid: envOrganizationUuid,
-      })
-    }
-  }
-
-  // Wait for any in-flight token refresh to complete first, since
-  // refreshOAuthToken already fetches and stores profile info
-  await checkAndRefreshOAuthTokenIfNeeded()
-
-  const config = getGlobalConfig()
-  if (
-    (config.oauthAccount &&
-      config.oauthAccount.billingType !== undefined &&
-      config.oauthAccount.accountCreatedAt !== undefined &&
-      config.oauthAccount.subscriptionCreatedAt !== undefined) ||
-    !isClaudeAISubscriber() ||
-    !hasProfileScope()
-  ) {
-    return false
-  }
-
-  const tokens = getClaudeAIOAuthTokens()
-  if (tokens?.accessToken) {
-    const profile = await getOauthProfileFromOauthToken(tokens.accessToken)
-    if (profile) {
-      if (hasEnvVars) {
-        logForDebugging(
-          'OAuth profile fetch succeeded, overriding env var account info',
-          { level: 'info' },
-        )
-      }
-      storeOAuthAccountInfo({
-        accountUuid: profile.account.uuid,
-        emailAddress: profile.account.email,
-        organizationUuid: profile.organization.uuid,
-        displayName: profile.account.display_name || undefined,
-        hasExtraUsageEnabled:
-          profile.organization.has_extra_usage_enabled ?? false,
-        billingType: profile.organization.billing_type ?? undefined,
-        accountCreatedAt: profile.account.created_at,
-        subscriptionCreatedAt:
-          profile.organization.subscription_created_at ?? undefined,
-      })
-      return true
-    }
-  }
   return false
 }
 

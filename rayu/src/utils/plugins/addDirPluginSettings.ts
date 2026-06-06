@@ -21,6 +21,9 @@ type ExtraKnownMarketplace = z.infer<
 
 const SETTINGS_FILES = ['settings.json', 'settings.local.json'] as const
 
+// Rayu reads --add-dir plugin settings from the project's .rayu config dir.
+const CONFIG_DIR = '.rayu'
+
 /**
  * Returns a merged record of enabledPlugins from all --add-dir directories.
  *
@@ -37,7 +40,7 @@ export function getAddDirEnabledPlugins(): NonNullable<
   const result: NonNullable<SettingsJson['enabledPlugins']> = {}
   for (const dir of getAdditionalDirectoriesForClaudeMd()) {
     for (const file of SETTINGS_FILES) {
-      const { settings } = parseSettingsFile(join(dir, '.claude', file))
+      const { settings } = parseSettingsFile(join(dir, CONFIG_DIR, file))
       if (!settings?.enabledPlugins) {
         continue
       }
@@ -60,7 +63,7 @@ export function getAddDirExtraMarketplaces(): Record<
   const result: Record<string, ExtraKnownMarketplace> = {}
   for (const dir of getAdditionalDirectoriesForClaudeMd()) {
     for (const file of SETTINGS_FILES) {
-      const { settings } = parseSettingsFile(join(dir, '.claude', file))
+      const { settings } = parseSettingsFile(join(dir, CONFIG_DIR, file))
       if (!settings?.extraKnownMarketplaces) {
         continue
       }

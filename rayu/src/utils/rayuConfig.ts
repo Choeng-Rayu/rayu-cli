@@ -5,7 +5,7 @@
 // never logged or echoed; callers reference providers by id, not by key value.
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
@@ -55,7 +55,7 @@ export type RayuConfig = {
 const FILE_NAME = 'providers.json'
 
 function configPath(): string {
-  return join(getClaudeConfigHomeDir(), FILE_NAME)
+  return join(getRayuConfigHomeDir(), FILE_NAME)
 }
 
 let cache: RayuConfig | null = null
@@ -103,7 +103,7 @@ export function loadRayuConfig(): RayuConfig {
 }
 
 export function saveRayuConfig(config: RayuConfig): void {
-  const dir = getClaudeConfigHomeDir()
+  const dir = getRayuConfigHomeDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   // 0600: secrets must not be world/group readable.
   writeFileSync(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
@@ -428,23 +428,6 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
     for (const m of p.fetchedModels ?? []) ids.add(m)
     for (const m of p.models ?? []) ids.add(m)
     if (p.defaultModel) ids.add(p.defaultModel)
-
-    // Bedrock-specific fallback: if we have no live catalog yet, use the
-    // hardcoded Claude Bedrock model IDs from configs so the picker isn't empty.
-    if (p.kind === 'bedrock' && ids.size === 0) {
-      try {
-        /* eslint-disable @typescript-eslint/no-require-imports */
-        const { ALL_MODEL_CONFIGS } =
-          require('./model/configs.js') as typeof import('./model/configs.js')
-        /* eslint-enable @typescript-eslint/no-require-imports */
-        for (const cfg of Object.values(ALL_MODEL_CONFIGS)) {
-          const bedrockId = (cfg as Record<string, string>)['bedrock']
-          if (bedrockId) ids.add(bedrockId)
-        }
-      } catch {
-        // ignore
-      }
-    }
 
     for (const model of ids) {
       const value = `${p.id}${RAYU_MODEL_SEP}${model}`

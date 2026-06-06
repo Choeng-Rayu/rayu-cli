@@ -85,7 +85,7 @@ export const PLAN_AGENT: BuiltInAgentDefinition = {
   tools: EXPLORE_AGENT.tools,
   baseDir: 'built-in',
   model: process.env.RAYU_PLAN_AGENT_MODEL || 'inherit',
-  // Plan is read-only and can Read CLAUDE.md directly if it needs conventions.
+  // Plan is read-only and can Read RAYU.md directly if it needs conventions.
   // Dropping it from context saves tokens without blocking access.
   omitClaudeMd: true,
   getSystemPrompt: () => getPlanV2SystemPrompt(),

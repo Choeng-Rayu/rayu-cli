@@ -197,14 +197,14 @@ function ClaudeInChromeMenu(t0) {
   }
   let t6;
   if ($[20] === Symbol.for("react.memo_cache_sentinel")) {
-    t6 = <Text>Claude in Chrome works with the Chrome extension to let you control your browser directly from RAYU. Navigate websites, fill forms, capture screenshots, record GIFs, and debug with console logs and network requests.</Text>;
+    t6 = <Text>Rayu in Chrome works with the Chrome extension to let you control your browser directly from RAYU. Navigate websites, fill forms, capture screenshots, record GIFs, and debug with console logs and network requests.</Text>;
     $[20] = t6;
   } else {
     t6 = $[20];
   }
   let t7;
   if ($[21] !== isWSL) {
-    t7 = isWSL && <Text color="error">Claude in Chrome is not supported in WSL at this time.</Text>;
+    t7 = isWSL && <Text color="error">Rayu in Chrome is not supported in WSL at this time.</Text>;
     $[21] = isWSL;
     $[22] = t7;
   } else {
@@ -212,7 +212,7 @@ function ClaudeInChromeMenu(t0) {
   }
   let t8;
   if ($[23] !== isClaudeAISubscriber) {
-    t8 = true && !isClaudeAISubscriber && <Text color="error">Claude in Chrome requires a claude.ai subscription.</Text>;
+    t8 = true && !isClaudeAISubscriber && <Text color="error">Rayu in Chrome requires a claude.ai subscription.</Text>;
     $[23] = isClaudeAISubscriber;
     $[24] = t8;
   } else {

@@ -47,6 +47,7 @@ import { createUserMessage } from './messages.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isOpenAICompatibleActive,
 } from './model/providers.js'
 import {
   getFileReadIgnorePatterns,
@@ -197,7 +198,8 @@ export async function toolToAPISchema(
     // Gated to direct api.anthropic.com: proxies (LiteLLM etc.) and Bedrock/Vertex
     // with Claude 4.5 reject this field with 400. See GH#32742, PR #21729.
     if (
-      getAPIProvider() === 'firstParty' &&
+      getAPIProvider() === 'anthropic' &&
+      !isOpenAICompatibleActive() &&
       isFirstPartyAnthropicBaseUrl() &&
       (getFeatureValue_CACHED_MAY_BE_STALE('tengu_fgts', false) ||
         isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING))

@@ -975,7 +975,7 @@ export function Config({
     }
   }] : []), ...(shouldShowExternalIncludesToggle ? [{
     id: 'showExternalIncludesDialog',
-    label: 'External CLAUDE.md includes',
+    label: 'External RAYU.md includes',
     value: (() => {
       const projectConfig = getCurrentProjectConfig();
       if (projectConfig.hasClaudeMdExternalIncludesApproved) {
@@ -988,61 +988,11 @@ export function Config({
     onChange() {
       // Will be handled by toggleSetting function
     }
-  }] : []), ...(process.env.ANTHROPIC_API_KEY && !isRunningOnHomespace() ? [{
-    id: 'apiKey',
-    label: <Text>
-                Use custom API key:{' '}
-                <Text bold>
-                  {normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY)}
-                </Text>
-              </Text>,
-    searchText: 'Use custom API key',
-    value: Boolean(process.env.ANTHROPIC_API_KEY && globalConfig.customApiKeyResponses?.approved?.includes(normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY))),
-    type: 'boolean' as const,
-    onChange(useCustomKey: boolean) {
-      saveGlobalConfig(current_22 => {
-        const updated = {
-          ...current_22
-        };
-        if (!updated.customApiKeyResponses) {
-          updated.customApiKeyResponses = {
-            approved: [],
-            rejected: []
-          };
-        }
-        if (!updated.customApiKeyResponses.approved) {
-          updated.customApiKeyResponses = {
-            ...updated.customApiKeyResponses,
-            approved: []
-          };
-        }
-        if (!updated.customApiKeyResponses.rejected) {
-          updated.customApiKeyResponses = {
-            ...updated.customApiKeyResponses,
-            rejected: []
-          };
-        }
-        if (process.env.ANTHROPIC_API_KEY) {
-          const truncatedKey = normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY);
-          if (useCustomKey) {
-            updated.customApiKeyResponses = {
-              ...updated.customApiKeyResponses,
-              approved: [...(updated.customApiKeyResponses.approved ?? []).filter(k => k !== truncatedKey), truncatedKey],
-              rejected: (updated.customApiKeyResponses.rejected ?? []).filter(k_0 => k_0 !== truncatedKey)
-            };
-          } else {
-            updated.customApiKeyResponses = {
-              ...updated.customApiKeyResponses,
-              approved: (updated.customApiKeyResponses.approved ?? []).filter(k_1 => k_1 !== truncatedKey),
-              rejected: [...(updated.customApiKeyResponses.rejected ?? []).filter(k_2 => k_2 !== truncatedKey), truncatedKey]
-            };
-          }
-        }
-        return updated;
-      });
-      setGlobalConfig(getGlobalConfig());
-    }
-  }] : [])];
+  }] : []),
+  // Rayu manages provider credentials via /connect and ~/.rayu/providers.json.
+  // The legacy Claude Code "custom API key approval" row (gated on
+  // process.env.ANTHROPIC_API_KEY) is intentionally not surfaced in Rayu.
+  ];
 
   // Filter settings based on search query
   const filteredSettingsItems = React.useMemo(() => {

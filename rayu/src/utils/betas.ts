@@ -27,7 +27,7 @@ import { has1mContext, modelSupports1M } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { getAPIProvider } from './model/providers.js'
+import { getAPIProvider, isOpenAICompatibleActive } from './model/providers.js'
 import { getInitialSettings } from './settings/settings.js'
 
 /**
@@ -103,7 +103,7 @@ export function modelSupportsISP(model: string): boolean {
   if (provider === 'foundry') {
     return true
   }
-  if (provider === 'firstParty') {
+  if (provider === 'anthropic') {
     return !canonical.includes('claude-3-')
   }
   return (
@@ -128,7 +128,7 @@ export function modelSupportsContextManagement(model: string): boolean {
   if (provider === 'foundry') {
     return true
   }
-  if (provider === 'firstParty') {
+  if (provider === 'anthropic') {
     return !canonical.includes('claude-3-')
   }
   return (
@@ -142,8 +142,8 @@ export function modelSupportsContextManagement(model: string): boolean {
 export function modelSupportsStructuredOutputs(model: string): boolean {
   const canonical = getCanonicalName(model)
   const provider = getAPIProvider()
-  // Structured outputs only supported on firstParty and Foundry (not Bedrock/Vertex yet)
-  if (provider !== 'firstParty' && provider !== 'foundry') {
+  // Structured outputs only supported on anthropic and Foundry (not Bedrock/Vertex yet)
+  if (provider !== 'anthropic' && provider !== 'foundry') {
     return false
   }
   return (
@@ -160,10 +160,10 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
 export function modelSupportsAutoMode(model: string): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     const m = getCanonicalName(model)
-    // External: firstParty-only at launch (PI probes not wired for
+    // External: anthropic-only at launch (PI probes not wired for
     // Bedrock/Vertex/Foundry yet). Checked before allowModels so the GB
     // override can't enable auto mode on unsupported providers.
-    if (process.env.USER_TYPE !== 'ant' && getAPIProvider() !== 'firstParty') {
+    if (process.env.USER_TYPE !== 'ant' && getAPIProvider() !== 'anthropic') {
       return false
     }
     // GrowthBook override: tengu_auto_mode_config.allowModels force-enables
@@ -188,7 +188,7 @@ export function modelSupportsAutoMode(model: string): boolean {
       if (/claude-(opus|sonnet|haiku)-4(?!-[6-9])/.test(m)) return false
       return true
     }
-    // External allowlist (firstParty already checked above).
+    // External allowlist (anthropic already checked above).
     return /^claude-(opus|sonnet)-4-6/.test(m)
   }
   return false
@@ -209,24 +209,26 @@ export function getToolSearchBetaHeader(): string {
 
 /**
  * Check if experimental betas should be included.
- * These are betas that are only available on firstParty provider
+ * These are betas that are only available on anthropic provider
  * and may not be supported by proxies or other providers.
  */
 export function shouldIncludeFirstPartyOnlyBetas(): boolean {
   return (
-    (getAPIProvider() === 'firstParty' || getAPIProvider() === 'foundry') &&
+    (getAPIProvider() === 'anthropic' || getAPIProvider() === 'foundry') &&
+    !isOpenAICompatibleActive() &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   )
 }
 
 /**
- * Global-scope prompt caching is firstParty only. Foundry is excluded because
+ * Global-scope prompt caching is anthropic only. Foundry is excluded because
  * GrowthBook never bucketed Foundry users into the rollout experiment — the
- * treatment data is firstParty-only.
+ * treatment data is anthropic-only.
  */
 export function shouldUseGlobalCacheScope(): boolean {
   return (
-    getAPIProvider() === 'firstParty' &&
+    getAPIProvider() === 'anthropic' &&
+    !isOpenAICompatibleActive() &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   )
 }
@@ -317,7 +319,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   // Gate on includeFirstPartyOnlyBetas: CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
   // already strips schema.strict from tool bodies at api.ts's choke point, but
   // this header was escaping that kill switch. Proxy gateways that look like
-  // firstParty but forward to Vertex reject this header with 400.
+  // anthropic but forward to Vertex reject this header with 400.
   // github.com/deshaw/anthropic-issues/issues/5
   const strictToolsEnabled =
     checkStatsigFeatureGate_CACHED_MAY_BE_STALE('tengu_tool_pear')

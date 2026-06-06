@@ -14,7 +14,7 @@ import { isInBundledMode } from '../bundledMode.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from '../debug.js'
 import {
-  getClaudeConfigHomeDir,
+  getRayuConfigHomeDir,
   isEnvDefinedFalsy,
   isEnvTruthy,
 } from '../envUtils.js'
@@ -299,7 +299,7 @@ function registerWindowsNativeHosts(manifestPath: string): void {
 }
 
 /**
- * Create a wrapper script in ~/.claude/chrome/ that invokes the given command. This is
+ * Create a wrapper script in ~/.rayu/chrome/ that invokes the given command. This is
  * necessary because Chrome's native host manifest "path" field cannot contain arguments.
  *
  * @param command - The full command to execute (e.g., "/path/to/claude --chrome-native-host")
@@ -307,7 +307,7 @@ function registerWindowsNativeHosts(manifestPath: string): void {
  */
 async function createWrapperScript(command: string): Promise<string> {
   const platform = getPlatform()
-  const chromeDir = join(getClaudeConfigHomeDir(), 'chrome')
+  const chromeDir = join(getRayuConfigHomeDir(), 'chrome')
   const wrapperPath =
     platform === 'windows'
       ? join(chromeDir, 'chrome-native-host.bat')
@@ -355,7 +355,7 @@ exec ${command}
  *
  * Only positive detections are persisted. A negative result from the
  * filesystem scan is not cached, because it may come from a machine that
- * shares ~/.claude.json but has no local Chrome (e.g. a remote dev
+ * shares ~/.rayu/config.json but has no local Chrome (e.g. a remote dev
  * environment using the bridge), and caching it would permanently poison
  * auto-enable for every session on every machine that reads that config.
  */

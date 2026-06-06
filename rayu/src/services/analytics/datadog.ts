@@ -168,7 +168,7 @@ export async function trackDatadogEvent(
   }
 
   // Don't send events for 3P providers (Bedrock, Vertex, Foundry)
-  if (getAPIProvider() !== 'firstParty') {
+  if (getAPIProvider() !== 'anthropic') {
     return
   }
 

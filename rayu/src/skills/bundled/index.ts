@@ -11,8 +11,6 @@ import { registerSkillifySkill } from './skillify.js'
 import { registerStuckSkill } from './stuck.js'
 import { registerUpdateConfigSkill } from './updateConfig.js'
 import { registerVerifySkill } from './verify.js'
-// Phase 3: steering file porter + skill discovery status (/port-config)
-import './portConfig.js'
 
 /**
  * Initialize all bundled skills.

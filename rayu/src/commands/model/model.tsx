@@ -291,7 +291,7 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     });
     return <SetModelAndClose args={args} onDone={onDone} />;
   }
-  // Rayu: when a non-firstParty provider is active (OpenAI-compatible or
+  // Rayu: when a non-anthropic provider is active (OpenAI-compatible or
   // Bedrock), use the searchable cross-provider model picker that shows models
   // from ALL configured providers. Lazy require to avoid touching the
   // compiler-mangled module graph at import time.

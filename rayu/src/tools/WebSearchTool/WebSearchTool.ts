@@ -169,8 +169,8 @@ export const WebSearchTool = buildTool({
     const provider = getAPIProvider()
     const model = getMainLoopModel()
 
-    // Enable for firstParty
-    if (provider === 'firstParty') {
+    // Enable for anthropic
+    if (provider === 'anthropic') {
       return true
     }
 

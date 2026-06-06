@@ -1,10 +1,10 @@
 /**
  * Files are loaded in the following order:
  *
- * 1. Managed memory (eg. /etc/claude-code/CLAUDE.md) - Global instructions for all users
- * 2. User memory (~/.claude/CLAUDE.md) - Private global instructions for all projects
- * 3. Project memory (CLAUDE.md, .claude/CLAUDE.md, and .claude/rules/*.md in project roots) - Instructions checked into the codebase
- * 4. Local memory (CLAUDE.local.md in project roots) - Private project-specific instructions
+ * 1. Managed memory (eg. /etc/rayu/RAYU.md) - Global instructions for all users
+ * 2. User memory (~/.rayu/RAYU.md) - Private global instructions for all projects
+ * 3. Project memory (RAYU.md, .rayu/RAYU.md, AGENTS.md, and rules/*.md in project roots) - Instructions checked into the codebase
+ * 4. Local memory (RAYU.local.md in project roots) - Private project-specific instructions
  *
  * Files are loaded in reverse order of priority, i.e. the latest files are highest priority
  * with the model paying more attention to them.
@@ -13,7 +13,7 @@
  * - User memory is loaded from the user's home directory
  * - Project and Local files are discovered by traversing from the current directory up to root
  * - Files closer to the current directory have higher priority (loaded later)
- * - CLAUDE.md, .claude/CLAUDE.md, and all .md files in .claude/rules/ are checked in each directory for Project memory
+ * - RAYU.md, AGENTS.md, .rayu/RAYU.md, and all .md files in .rayu/rules/ or .agents/rules/ are checked in each directory for Project memory
  *
  * Memory @include directive:
  * - Memory files can include other files using @ notation
@@ -56,7 +56,7 @@ import {
 } from './config.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
-import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { getRayuConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { getErrnoCode } from './errors.js'
 import { normalizePathForComparison } from './file.js'
 import { cacheKeys, type FileStateCache } from './fileStateCache.js'
@@ -87,15 +87,14 @@ const teamMemPaths = feature('TEAMMEM')
 let hasLoggedInitialLoad = false
 
 const MEMORY_INSTRUCTION_PROMPT =
-  'Codebase and user instructions are shown below (loaded from RAYU.md / CLAUDE.md / AGENTS.md and rules files). Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.'
+  'Codebase and user instructions are shown below (loaded from RAYU.md / AGENTS.md and rules files). Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.'
 // Recommended max character count for a memory file
 export const MAX_MEMORY_CHARACTER_COUNT = 40000
 
-// Project memory filenames + config dirs supported per directory. CLAUDE.md is
-// kept first for back-compat; RAYU.md/AGENTS.md are also honored. Missing files
+// Project memory filenames + config dirs supported per directory. Missing files
 // are silently skipped by processMemoryFile.
-const PROJECT_MEMORY_FILENAMES = ['CLAUDE.md', 'RAYU.md', 'AGENTS.md'] as const
-const PROJECT_CONFIG_DIRS = ['.claude', '.rayu', '.agents'] as const
+const PROJECT_MEMORY_FILENAMES = ['RAYU.md', 'AGENTS.md'] as const
+const PROJECT_CONFIG_DIRS = ['.rayu', '.agents'] as const
 
 // File extensions that are allowed for @include directives
 // This prevents binary files (images, PDFs, etc.) from being loaded into memory
@@ -416,7 +415,7 @@ function handleMemoryFileReadError(error: unknown, filePath: string): void {
     // Don't log the full file path to avoid PII/security issues
     logEvent('tengu_claude_md_permission_error', {
       is_access_error: 1,
-      has_home_dir: filePath.includes(getClaudeConfigHomeDir()) ? 1 : 0,
+      has_home_dir: filePath.includes(getRayuConfigHomeDir()) ? 1 : 0,
     })
   }
 }
@@ -543,7 +542,7 @@ function extractIncludePathsFromTokens(
 const MAX_INCLUDE_DEPTH = 5
 
 /**
- * Checks whether a CLAUDE.md file path is excluded by the claudeMdExcludes setting.
+ * Checks whether a Rayu memory file path is excluded by the claudeMdExcludes setting.
  * Only applies to User, Project, and Local memory types.
  * Managed, AutoMem, and TeamMem types are never excluded.
  *
@@ -565,7 +564,7 @@ function isClaudeMdExcluded(filePath: string, type: MemoryType): boolean {
 
   // Build an expanded pattern list that includes realpath-resolved versions of
   // absolute patterns. This handles symlinks like /tmp -> /private/tmp on macOS:
-  // the user writes "/tmp/project/CLAUDE.md" in their exclude, but the system
+  // the user writes "/tmp/project/RAYU.md" in their exclude, but the system
   // resolves the CWD to "/private/tmp/project/...", so the file path uses the
   // real path. By resolving the patterns too, both sides match.
   const expandedPatterns = resolveExcludePatterns(patterns).filter(
@@ -691,7 +690,7 @@ export async function processMemoryFile(
 }
 
 /**
- * Processes all .md files in the .claude/rules/ directory and its subdirectories
+ * Processes all .md files in a Rayu rules directory and its subdirectories
  * @param rulesDir The path to the rules directory
  * @param type Type of memory file (User, Project, Local)
  * @param processedPaths Set of already processed file paths
@@ -786,7 +785,7 @@ export async function processMdRules({
     if (error instanceof Error && error.message.includes('EACCES')) {
       logEvent('tengu_claude_rules_md_permission_error', {
         is_access_error: 1,
-        has_home_dir: rulesDir.includes(getClaudeConfigHomeDir()) ? 1 : 0,
+        has_home_dir: rulesDir.includes(getRayuConfigHomeDir()) ? 1 : 0,
       })
     }
     return []
@@ -816,7 +815,7 @@ export const getMemoryFiles = memoize(
         includeExternal,
       )),
     )
-    // Process Managed .claude/rules/*.md files
+    // Process managed .rayu/rules/*.md files
     const managedClaudeRulesDir = getManagedClaudeRulesDir()
     result.push(
       ...(await processMdRules({
@@ -830,18 +829,18 @@ export const getMemoryFiles = memoize(
 
     // Process User file (only if userSettings is enabled)
     if (isSettingSourceEnabled('userSettings')) {
-      // User memory: CLAUDE.md / RAYU.md / AGENTS.md in the config home (~/.rayu).
+      // User memory: RAYU.md / AGENTS.md in the config home (~/.rayu).
       for (const memName of PROJECT_MEMORY_FILENAMES) {
         result.push(
           ...(await processMemoryFile(
-            join(getClaudeConfigHomeDir(), memName),
+            join(getRayuConfigHomeDir(), memName),
             'User',
             processedPaths,
             true, // User memory can always include external files
           )),
         )
       }
-      // Process User ~/.claude/rules/*.md files
+      // Process User ~/.rayu/rules/*.md files
       const userClaudeRulesDir = getUserClaudeRulesDir()
       result.push(
         ...(await processMdRules({
@@ -865,12 +864,12 @@ export const getMemoryFiles = memoize(
     }
 
     // When running from a git worktree nested inside its main repo (e.g.,
-    // .claude/worktrees/<name>/ from `claude -w`), the upward walk passes
+    // .rayu/worktrees/<name>/ from `rayu -w`), the upward walk passes
     // through both the worktree root and the main repo root. Both contain
-    // checked-in files like CLAUDE.md and .claude/rules/*.md, so the same
+    // checked-in files like RAYU.md and .rayu/rules/*.md, so the same
     // content gets loaded twice. Skip Project-type (checked-in) files from
     // directories above the worktree but within the main repo — the worktree
-    // already has its own checkout. CLAUDE.local.md is gitignored so it only
+    // already has its own checkout. RAYU.local.md is gitignored so it only
     // exists in the main repo and is still loaded.
     // See: https://github.com/anthropics/claude-code/issues/29599
     const gitRoot = findGitRoot(originalCwd)
@@ -891,8 +890,8 @@ export const getMemoryFiles = memoize(
         pathInWorkingPath(dir, canonicalRoot) &&
         !pathInWorkingPath(dir, gitRoot)
 
-      // Project memory: RAYU.md / CLAUDE.md / AGENTS.md at the dir root and in
-      // .rayu/.claude/.agents (plus each config dir's rules/). Only if
+      // Project memory: RAYU.md / AGENTS.md at the dir root and in
+      // .rayu/.agents (plus each config dir's rules/). Only if
       // projectSettings is enabled. Missing files are skipped silently.
       if (isSettingSourceEnabled('projectSettings') && !skipProject) {
         for (const memName of PROJECT_MEMORY_FILENAMES) {
@@ -930,9 +929,9 @@ export const getMemoryFiles = memoize(
         }
       }
 
-      // Try reading CLAUDE.local.md (Local) - only if localSettings is enabled
+      // Try reading RAYU.local.md (Local) - only if localSettings is enabled
       if (isSettingSourceEnabled('localSettings')) {
-        const localPath = join(dir, 'CLAUDE.local.md')
+        const localPath = join(dir, 'RAYU.local.md')
         result.push(
           ...(await processMemoryFile(
             localPath,
@@ -944,14 +943,14 @@ export const getMemoryFiles = memoize(
       }
     }
 
-    // Process CLAUDE.md from additional directories (--add-dir) if env var is enabled
-    // This is controlled by CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD and defaults to off
+    // Process Rayu memory files from additional directories (--add-dir) if enabled.
+    // This is controlled by RAYU_ADDITIONAL_DIRECTORIES_RAYU_MD and defaults to off.
     // Note: we don't check isSettingSourceEnabled('projectSettings') here because --add-dir
     // is an explicit user action and the SDK defaults settingSources to [] when not specified
-    if (isEnvTruthy(process.env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD)) {
+    if (isEnvTruthy(process.env.RAYU_ADDITIONAL_DIRECTORIES_RAYU_MD)) {
       const additionalDirs = getAdditionalDirectoriesForClaudeMd()
       for (const dir of additionalDirs) {
-        // Memory files (RAYU.md / CLAUDE.md / AGENTS.md) at the dir root
+        // Memory files (RAYU.md / AGENTS.md) at the dir root
         for (const memName of PROJECT_MEMORY_FILENAMES) {
           result.push(
             ...(await processMemoryFile(
@@ -1054,7 +1053,7 @@ export const getMemoryFiles = memoize(
     // Fire InstructionsLoaded hook for each instruction file loaded
     // (fire-and-forget, audit/observability only).
     // AutoMem/TeamMem are intentionally excluded — they're a separate
-    // memory system, not "instructions" in the CLAUDE.md/rules sense.
+    // memory system, not "instructions" in the RAYU.md/rules sense.
     // Gated on !forceIncludeExternal: the forceIncludeExternal=true variant
     // is only used by getExternalClaudeMdIncludes() for approval checks, not
     // for building context — firing the hook there would double-fire on startup.
@@ -1220,7 +1219,7 @@ export async function getManagedAndUserConditionalRules(
 ): Promise<MemoryFileInfo[]> {
   const result: MemoryFileInfo[] = []
 
-  // Process Managed conditional .claude/rules/*.md files
+  // Process managed conditional .rayu/rules/*.md files
   const managedClaudeRulesDir = getManagedClaudeRulesDir()
   result.push(
     ...(await processConditionedMdRules(
@@ -1233,7 +1232,7 @@ export async function getManagedAndUserConditionalRules(
   )
 
   if (isSettingSourceEnabled('userSettings')) {
-    // Process User conditional .claude/rules/*.md files
+    // Process user conditional .rayu/rules/*.md files
     const userClaudeRulesDir = getUserClaudeRulesDir()
     result.push(
       ...(await processConditionedMdRules(
@@ -1251,7 +1250,7 @@ export async function getManagedAndUserConditionalRules(
 
 /**
  * Gets memory files for a single nested directory (between CWD and target).
- * Loads CLAUDE.md, unconditional rules, and conditional rules for that directory.
+ * Loads Rayu memory files, unconditional rules, and conditional rules for that directory.
  *
  * @param dir The directory to process
  * @param targetPath The target file path (for conditional rule matching)
@@ -1265,8 +1264,8 @@ export async function getMemoryFilesForNestedDirectory(
 ): Promise<MemoryFileInfo[]> {
   const result: MemoryFileInfo[] = []
 
-  // Process project memory files (RAYU.md / CLAUDE.md / AGENTS.md at the dir
-  // root and inside each config dir — .rayu / .claude / .agents).
+  // Process project memory files (RAYU.md / AGENTS.md at the dir root and
+  // inside each config dir — .rayu / .agents).
   if (isSettingSourceEnabled('projectSettings')) {
     for (const memName of PROJECT_MEMORY_FILENAMES) {
       result.push(
@@ -1292,16 +1291,16 @@ export async function getMemoryFilesForNestedDirectory(
     }
   }
 
-  // Process local memory file (CLAUDE.local.md)
+  // Process local memory file (RAYU.local.md)
   if (isSettingSourceEnabled('localSettings')) {
-    const localPath = join(dir, 'CLAUDE.local.md')
+    const localPath = join(dir, 'RAYU.local.md')
     result.push(
       ...(await processMemoryFile(localPath, 'Local', processedPaths, false)),
     )
   }
 
-  // Process project unconditional rules across all config dirs (.rayu/.claude/
-  // .agents rules/), which were not eagerly loaded. Use a separate
+  // Process project unconditional rules across all config dirs (.rayu/.agents
+  // rules/), which were not eagerly loaded. Use a separate
   // processedPaths set to avoid marking conditional rule files as processed.
   const unconditionalProcessedPaths = new Set(processedPaths)
   for (const cfgDir of PROJECT_CONFIG_DIRS) {
@@ -1367,7 +1366,7 @@ export async function getConditionalRulesForCwdLevelDirectory(
 }
 
 /**
- * Processes all .md files in the .claude/rules/ directory and its subdirectories,
+ * Processes all .md files in a rules directory and its subdirectories,
  * filtering to only include files with frontmatter paths that match the target path
  * @param targetPath The file path to match against frontmatter glob patterns
  * @param rulesDir The path to the rules directory
@@ -1397,11 +1396,11 @@ export async function processConditionedMdRules(
       return false
     }
 
-    // For Project rules: glob patterns are relative to the directory containing .claude
+    // For Project rules: glob patterns are relative to the directory containing .rayu/.agents
     // For Managed/User rules: glob patterns are relative to the original CWD
     const baseDir =
       type === 'Project'
-        ? dirname(dirname(rulesDir)) // Parent of .claude
+        ? dirname(dirname(rulesDir)) // Parent of .rayu/.agents
         : getOriginalCwd() // Project root for managed/user rules
 
     const relativePath = isAbsolute(targetPath)
@@ -1455,17 +1454,17 @@ export async function shouldShowClaudeMdExternalIncludesWarning(): Promise<boole
 }
 
 /**
- * Check if a file path is a memory file (RAYU.md / CLAUDE.md / AGENTS.md, their
+ * Check if a file path is a memory file (RAYU.md / AGENTS.md, their
  * *.local.md variants, or a .md under any config dir's rules/).
  */
 export function isMemoryFilePath(filePath: string): boolean {
   const name = basename(filePath)
 
-  // Project/User memory files anywhere: RAYU.md, CLAUDE.md, AGENTS.md
+  // Project/User memory files anywhere: RAYU.md, AGENTS.md
   if ((PROJECT_MEMORY_FILENAMES as readonly string[]).includes(name)) {
     return true
   }
-  // Local variants (e.g. CLAUDE.local.md)
+  // Local variants (e.g. RAYU.local.md)
   if (name.endsWith('.local.md')) {
     const base = name.slice(0, -'.local.md'.length) + '.md'
     if ((PROJECT_MEMORY_FILENAMES as readonly string[]).includes(base)) {
@@ -1473,7 +1472,7 @@ export function isMemoryFilePath(filePath: string): boolean {
     }
   }
 
-  // .md files in any config dir's rules/ (.claude/rules, .rayu/rules, .agents/rules)
+  // .md files in any config dir's rules/ (.rayu/rules, .agents/rules)
   if (name.endsWith('.md')) {
     for (const cfgDir of PROJECT_CONFIG_DIRS) {
       if (filePath.includes(`${sep}${cfgDir}${sep}rules${sep}`)) {

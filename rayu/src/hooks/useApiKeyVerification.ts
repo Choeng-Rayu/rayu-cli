@@ -3,7 +3,6 @@ import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { verifyApiKey } from '../services/api/claude.js'
 import {
   getAnthropicApiKeyWithSource,
-  getApiKeyFromApiKeyHelper,
   isAnthropicAuthEnabled,
   isClaudeAISubscriber,
   isUsing3PServices,
@@ -31,14 +30,10 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
     ) {
       return 'valid'
     }
-    // Use skipRetrievingKeyFromApiKeyHelper to avoid executing apiKeyHelper
-    // before trust dialog is shown (security: prevents RCE via settings.json)
     const { key, source } = getAnthropicApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true,
     })
-    // If apiKeyHelper is configured, we have a key source even though we
-    // haven't executed it yet - return 'loading' to indicate we'll verify later
-    if (key || source === 'apiKeyHelper') {
+    if (key || source !== 'none') {
       return 'loading'
     }
     return 'missing'
@@ -54,16 +49,9 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
       setStatus('valid')
       return
     }
-    // Warm the apiKeyHelper cache (no-op if not configured), then read from
-    // all sources. getAnthropicApiKeyWithSource() reads the now-warm cache.
-    await getApiKeyFromApiKeyHelper(getIsNonInteractiveSession())
+    void getIsNonInteractiveSession()
     const { key: apiKey, source } = getAnthropicApiKeyWithSource()
     if (!apiKey) {
-      if (source === 'apiKeyHelper') {
-        setStatus('error')
-        setError(new Error('API key helper did not return a valid key'))
-        return
-      }
       const newStatus = 'missing'
       setStatus(newStatus)
       return

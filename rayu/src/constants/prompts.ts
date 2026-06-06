@@ -99,9 +99,6 @@ const skillSearchFeatureCheck = feature('EXPERIMENTAL_SKILL_SEARCH')
 import type { OutputStyleConfig } from './outputStyles.js'
 import { CYBER_RISK_INSTRUCTION } from './cyberRiskInstruction.js'
 
-export const CLAUDE_CODE_DOCS_MAP_URL =
-  'https://code.claude.com/docs/en/claude_code_docs_map.md'
-
 /**
  * Boundary marker separating static (cross-org cacheable) content from dynamic content.
  * Everything BEFORE this marker in the system prompt array can use scope: 'global'.
@@ -227,7 +224,7 @@ function getSimpleDoingTasksSection(): string {
         ]
       : []),
     `In general, do not propose changes to code you haven't read. If a user asks about or wants you to modify a file, read it first. Understand existing code before suggesting modifications.`,
-    `This project's instructions live in RAYU.md, CLAUDE.md, and AGENTS.md files (at the repo root, in subdirectories, or under .rayu/.claude/.agents). Treat any that exist as authoritative project instructions and follow them; if their contents are not already provided to you, read them with the file tools before working in the areas they govern. When they conflict, RAYU.md takes precedence.`,
+    `This project's instructions live in RAYU.md and AGENTS.md files (at the repo root, in subdirectories, or under .rayu/.agents). Treat any that exist as authoritative project instructions and follow them; if their contents are not already provided to you, read them with the file tools before working in the areas they govern. When they conflict, RAYU.md takes precedence.`,
     `Do not create files unless they're absolutely necessary for achieving your goal. Generally prefer editing an existing file to creating a new one, as this prevents file bloat and builds on existing work more effectively.`,
     `Avoid giving time estimates or predictions for how long tasks will take, whether for your own work or for users planning projects. Focus on what needs to be done, not how long it might take.`,
     `If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate to the user with ${ASK_USER_QUESTION_TOOL_NAME} only when you're genuinely stuck after investigation, not as a first response to friction.`,
@@ -255,7 +252,7 @@ function getSimpleDoingTasksSection(): string {
 function getActionsSection(): string {
   return `# Executing actions with care
 
-Carefully consider the reversibility and blast radius of actions. Generally you can freely take local, reversible actions like editing files or running tests. But for actions that are hard to reverse, affect shared systems beyond your local environment, or could otherwise be risky or destructive, check with the user before proceeding. The cost of pausing to confirm is low, while the cost of an unwanted action (lost work, unintended messages sent, deleted branches) can be very high. For actions like these, consider the context, the action, and user instructions, and by default transparently communicate the action and ask for confirmation before proceeding. This default can be changed by user instructions - if explicitly asked to operate more autonomously, then you may proceed without confirmation, but still attend to the risks and consequences when taking actions. A user approving an action (like a git push) once does NOT mean that they approve it in all contexts, so unless actions are authorized in advance in durable instructions like CLAUDE.md files, always confirm first. Authorization stands for the scope specified, not beyond. Match the scope of your actions to what was actually requested.
+Carefully consider the reversibility and blast radius of actions. Generally you can freely take local, reversible actions like editing files or running tests. But for actions that are hard to reverse, affect shared systems beyond your local environment, or could otherwise be risky or destructive, check with the user before proceeding. The cost of pausing to confirm is low, while the cost of an unwanted action (lost work, unintended messages sent, deleted branches) can be very high. For actions like these, consider the context, the action, and user instructions, and by default transparently communicate the action and ask for confirmation before proceeding. This default can be changed by user instructions - if explicitly asked to operate more autonomously, then you may proceed without confirmation, but still attend to the risks and consequences when taking actions. A user approving an action (like a git push) once does NOT mean that they approve it in all contexts, so unless actions are authorized in advance in durable instructions like RAYU.md files, always confirm first. Authorization stands for the scope specified, not beyond. Match the scope of your actions to what was actually requested.
 
 Examples of the kind of risky actions that warrant user confirmation:
 - Destructive operations: deleting files/branches, dropping database tables, killing processes, rm -rf, overwriting uncommitted changes
@@ -792,7 +789,7 @@ export async function enhanceSystemPromptWithEnvDetails(
 
 /**
  * Returns instructions for using the scratchpad directory if enabled.
- * The scratchpad is a per-session directory where Claude can write temporary files.
+ * The scratchpad is a per-session directory where Rayu can write temporary files.
  */
 export function getScratchpadInstructions(): string | null {
   if (!isScratchpadEnabled()) {

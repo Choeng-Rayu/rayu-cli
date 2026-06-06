@@ -15,25 +15,27 @@ afterEach(() => {
   delete process.env.RAYU_CONFIG_DIR
 })
 
-describe('isMemoryFilePath recognizes all three memory filenames', () => {
-  test('RAYU.md / CLAUDE.md / AGENTS.md and local + rules variants are memory files', async () => {
+describe('isMemoryFilePath recognizes Rayu memory filenames', () => {
+  test('RAYU.md / AGENTS.md and local + rules variants are memory files', async () => {
     const { isMemoryFilePath } = await import('../src/utils/claudemd.ts')
-    for (const name of ['RAYU.md', 'CLAUDE.md', 'AGENTS.md']) {
+    for (const name of ['RAYU.md', 'AGENTS.md']) {
       expect(isMemoryFilePath(join('/x/y', name))).toBe(true)
     }
-    expect(isMemoryFilePath('/x/y/CLAUDE.local.md')).toBe(true)
     expect(isMemoryFilePath('/x/y/RAYU.local.md')).toBe(true)
-    for (const cfg of ['.claude', '.rayu', '.agents']) {
+    for (const cfg of ['.rayu', '.agents']) {
       expect(isMemoryFilePath(join('/x/y', cfg, 'rules', 'style.md'))).toBe(true)
     }
+    expect(isMemoryFilePath('/x/y/CLAUDE.md')).toBe(false)
+    expect(isMemoryFilePath('/x/y/CLAUDE.local.md')).toBe(false)
+    expect(isMemoryFilePath('/x/y/.claude/rules/style.md')).toBe(false)
     // negatives
     expect(isMemoryFilePath('/x/y/README.md')).toBe(false)
     expect(isMemoryFilePath('/x/y/notes.md')).toBe(false)
   })
 })
 
-describe('nested-directory memory loading covers RAYU.md / CLAUDE.md / AGENTS.md', () => {
-  test('getMemoryFilesForNestedDirectory loads all three project memory files', async () => {
+describe('nested-directory memory loading covers RAYU.md / AGENTS.md', () => {
+  test('getMemoryFilesForNestedDirectory loads Rayu project memory files', async () => {
     writeFileSync(join(dir, 'RAYU.md'), '# rayu rules\nuse bun')
     writeFileSync(join(dir, 'CLAUDE.md'), '# claude rules\nbe terse')
     writeFileSync(join(dir, 'AGENTS.md'), '# agents rules\nrun tests')
@@ -48,9 +50,9 @@ describe('nested-directory memory loading covers RAYU.md / CLAUDE.md / AGENTS.md
     )
     const names = files.map(f => f.path.split('/').pop())
     expect(names).toContain('RAYU.md')
-    expect(names).toContain('CLAUDE.md')
     expect(names).toContain('AGENTS.md')
     expect(names).toContain('extra.md')
+    expect(names).not.toContain('CLAUDE.md')
   })
 })
 
@@ -69,11 +71,10 @@ describe('/init auto-creates RAYU.md', () => {
     expect(readFileSync(path, 'utf8')).toContain('# RAYU.md')
   })
 
-  test('does not clobber an existing CLAUDE.md (no stray RAYU.md)', async () => {
-    writeFileSync(join(dir, 'CLAUDE.md'), '# existing claude rules')
+  test('does not clobber an existing RAYU.md', async () => {
+    writeFileSync(join(dir, 'RAYU.md'), '# existing rayu rules')
     await runInit()
-    expect(existsSync(join(dir, 'RAYU.md'))).toBe(false)
-    expect(readFileSync(join(dir, 'CLAUDE.md'), 'utf8')).toBe('# existing claude rules')
+    expect(readFileSync(join(dir, 'RAYU.md'), 'utf8')).toBe('# existing rayu rules')
   })
 })
 
@@ -89,18 +90,18 @@ describe('real getMemoryFiles + getClaudeMds surface RAYU.md content', () => {
     const m = await import('../src/utils/claudemd.ts')
     m.resetGetMemoryFilesCache()
     const files = await m.getMemoryFiles()
+    type LoadedMemoryFile = Awaited<ReturnType<typeof m.getMemoryFiles>>[number]
 
     const userPaths = files
-      .filter(f => f.type === 'User')
-      .map(f => f.path.split('/').pop())
+      .filter((f: LoadedMemoryFile) => f.type === 'User')
+      .map((f: LoadedMemoryFile) => f.path.split('/').pop())
     expect(userPaths).toContain('RAYU.md')
     expect(userPaths).toContain('AGENTS.md')
 
     const injected = m.getClaudeMds(files)
     expect(injected).toContain('RAYU_MARKER: prefer bun')
     expect(injected).toContain('AGENTS_MARKER: run tests')
-    // header names the three files
-    expect(injected).toContain('RAYU.md / CLAUDE.md / AGENTS.md')
+    expect(injected).toContain('RAYU.md / AGENTS.md')
     m.resetGetMemoryFilesCache()
   })
 })

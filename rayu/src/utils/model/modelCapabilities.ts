@@ -8,7 +8,7 @@ import { OAUTH_BETA_HEADER } from '../../constants/oauth.js'
 import { getAnthropicClient } from '../../services/api/client.js'
 import { isClaudeAISubscriber } from '../auth.js'
 import { logForDebugging } from '../debug.js'
-import { getClaudeConfigHomeDir } from '../envUtils.js'
+import { getRayuConfigHomeDir } from '../envUtils.js'
 import { safeParseJSON } from '../json.js'
 import { lazySchema } from '../lazySchema.js'
 import { isEssentialTrafficOnly } from '../privacyLevel.js'
@@ -36,7 +36,7 @@ const CacheFileSchema = lazySchema(() =>
 export type ModelCapability = z.infer<ReturnType<typeof ModelCapabilitySchema>>
 
 function getCacheDir(): string {
-  return join(getClaudeConfigHomeDir(), 'cache')
+  return join(getRayuConfigHomeDir(), 'cache')
 }
 
 function getCachePath(): string {
@@ -45,7 +45,7 @@ function getCachePath(): string {
 
 function isModelCapabilitiesEligible(): boolean {
   if (process.env.USER_TYPE !== 'ant') return false
-  if (getAPIProvider() !== 'firstParty') return false
+  if (getAPIProvider() !== 'anthropic') return false
   if (!isFirstPartyAnthropicBaseUrl()) return false
   return true
 }
@@ -57,7 +57,7 @@ function sortForMatching(models: ModelCapability[]): ModelCapability[] {
   )
 }
 
-// Keyed on cache path so tests that set CLAUDE_CONFIG_DIR get a fresh read
+// Keyed on cache path so tests that set RAYU_CONFIG_DIR get a fresh read
 const loadCache = memoize(
   (path: string): ModelCapability[] | null => {
     try {

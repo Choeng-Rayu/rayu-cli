@@ -13,24 +13,18 @@ import {
   getIsNonInteractiveSession,
   getSessionId,
 } from '../../bootstrap/state.js'
-import { ClaudeCodeInternalEvent } from '../../types/generated/events_mono/claude_code/v1/claude_code_internal_event.js'
+import { RayuInternalEvent } from '../../types/generated/events_mono/rayu/v1/rayu_internal_event.js'
 import { GrowthbookExperimentEvent } from '../../types/generated/events_mono/growthbook/v1/growthbook_experiment_event.js'
-import {
-  getClaudeAIOAuthTokens,
-  hasProfileScope,
-  isClaudeAISubscriber,
-} from '../../utils/auth.js'
 import { checkHasTrustDialogAccepted } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
 import { errorMessage, isFsInaccessible, toError } from '../../utils/errors.js'
 import { getAuthHeaders } from '../../utils/http.js'
 import { readJSONLFile } from '../../utils/json.js'
 import { logError } from '../../utils/log.js'
 import { sleep } from '../../utils/sleep.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
-import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
-import { isOAuthTokenExpired } from '../oauth/client.js'
+import { getRayuUserAgent } from '../../utils/userAgent.js'
 import { stripProtoFields } from './index.js'
 import { type EventMetadata, to1PEventFormat } from './metadata.js'
 
@@ -40,14 +34,14 @@ const BATCH_UUID = randomUUID()
 // File prefix for failed event storage
 const FILE_PREFIX = '1p_failed_events.'
 
-// Storage directory for failed events - evaluated at runtime to respect CLAUDE_CONFIG_DIR in tests
+// Storage directory for failed events - evaluated at runtime to respect RAYU_CONFIG_DIR in tests
 function getStorageDir(): string {
-  return path.join(getClaudeConfigHomeDir(), 'telemetry')
+  return path.join(getRayuConfigHomeDir(), 'telemetry')
 }
 
 // API envelope - event_data is the JSON output from proto toJSON()
 type FirstPartyEventLoggingEvent = {
-  event_type: 'ClaudeCodeInternalEvent' | 'GrowthbookExperimentEvent'
+  event_type: 'RayuInternalEvent' | 'GrowthbookExperimentEvent'
   event_data: unknown
 }
 
@@ -103,21 +97,17 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       path?: string
       baseUrl?: string
       // Injected killswitch probe. Checked per-POST so that disabling the
-      // firstParty sink also stops backoff retries (not just new emits).
+      // Rayu sink also stops backoff retries (not just new emits).
       // Passed in rather than imported to avoid a cycle with firstPartyEventLogger.ts.
       isKilled?: () => boolean
       schedule?: (fn: () => Promise<void>, delayMs: number) => () => void
     } = {},
   ) {
-    // Default: prod, except when ANTHROPIC_BASE_URL is explicitly staging.
-    // Overridable via tengu_1p_event_batch_config.baseUrl.
-    const baseUrl =
-      options.baseUrl ||
-      (process.env.ANTHROPIC_BASE_URL === 'https://api-staging.anthropic.com'
-        ? 'https://api-staging.anthropic.com'
-        : 'https://api.anthropic.com')
+    const baseUrl = options.baseUrl || process.env.RAYU_EVENT_LOGGING_URL || ''
 
-    this.endpoint = `${baseUrl}${options.path || '/api/event_logging/batch'}`
+    this.endpoint = baseUrl
+      ? `${baseUrl}${options.path || '/api/event_logging/batch'}`
+      : ''
 
     this.timeout = options.timeout || 10000
     this.maxBatchSize = options.maxBatchSize || 200
@@ -290,6 +280,10 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       })
       return
     }
+    if (!this.endpoint) {
+      resultCallback({ code: ExportResultCode.SUCCESS })
+      return
+    }
 
     const exportPromise = this.doExport(logs, resultCallback)
     this.pendingExports.push(exportPromise)
@@ -311,7 +305,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       // Filter for event logs only (by scope name)
       const eventLogs = logs.filter(
         log =>
-          log.instrumentationScope?.name === 'com.anthropic.claude_code.events',
+          log.instrumentationScope?.name === 'io.rayu.events',
       )
 
       if (eventLogs.length === 0) {
@@ -532,13 +526,13 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       // everything to disk. Zero network traffic while killed; the backoff
       // timer keeps ticking and will resume POSTs as soon as the GrowthBook
       // cache picks up the cleared flag.
-      throw new Error('firstParty sink killswitch active')
+      throw new Error('Rayu sink killswitch active')
     }
 
     const baseHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
-      'User-Agent': getClaudeCodeUserAgent(),
-      'x-service-name': 'claude-code',
+      'User-Agent': getRayuUserAgent(),
+      'x-service-name': 'rayu',
     }
 
     // Skip auth if trust hasn't been established yet
@@ -550,24 +544,9 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       logForDebugging('1P event logging: Trust not accepted')
     }
 
-    // Skip auth when the OAuth token is expired or lacks user:profile
-    // scope (service key sessions). Falls through to unauthenticated send.
-    let shouldSkipAuth = this.skipAuth || !hasTrust
-    if (!shouldSkipAuth && isClaudeAISubscriber()) {
-      const tokens = getClaudeAIOAuthTokens()
-      if (!hasProfileScope()) {
-        shouldSkipAuth = true
-      } else if (tokens && isOAuthTokenExpired(tokens.expiresAt)) {
-        shouldSkipAuth = true
-        if (process.env.USER_TYPE === 'ant') {
-          logForDebugging(
-            '1P event logging: OAuth token expired, skipping auth to avoid 401',
-          )
-        }
-      }
-    }
+    const shouldSkipAuth = this.skipAuth || !hasTrust
 
-    // Try with auth headers first (unless trust not established or token is known to be expired)
+    // Try with Rayu auth headers first unless trust is not established.
     const authResult = shouldSkipAuth
       ? { headers: {}, error: 'trust not established or Oauth token expired' }
       : getAuthHeaders()
@@ -688,8 +667,8 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
           )
         }
         events.push({
-          event_type: 'ClaudeCodeInternalEvent',
-          event_data: ClaudeCodeInternalEvent.toJSON({
+          event_type: 'RayuInternalEvent',
+          event_data: RayuInternalEvent.toJSON({
             event_id: attributes.event_id as string | undefined,
             event_name: eventName,
             client_timestamp: this.hrTimeToDate(log.hrTime),
@@ -725,8 +704,8 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       const additionalMetadata = stripProtoFields(rest)
 
       events.push({
-        event_type: 'ClaudeCodeInternalEvent',
-        event_data: ClaudeCodeInternalEvent.toJSON({
+        event_type: 'RayuInternalEvent',
+        event_data: RayuInternalEvent.toJSON({
           event_id: attributes.event_id as string | undefined,
           event_name: eventName,
           client_timestamp: this.hrTimeToDate(log.hrTime),

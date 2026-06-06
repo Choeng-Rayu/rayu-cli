@@ -314,7 +314,7 @@ export type PermissionDecisionReason =
       type: 'safetyCheck'
       reason: string
       // When true, auto mode lets the classifier evaluate this instead of
-      // forcing a prompt. True for sensitive-file paths (.claude/, .git/,
+      // forcing a prompt. True for sensitive-file paths (.rayu/, .git/,
       // shell configs) — the classifier can see context and decide. False
       // for Windows path bypass attempts and cross-machine bridge messages.
       classifierApprovable: boolean

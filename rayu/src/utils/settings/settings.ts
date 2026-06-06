@@ -13,7 +13,7 @@ import { uniq } from '../array.js'
 import { clearContextPrepCache } from '../contextPrepCache.js'
 import { logForDebugging } from '../debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'
-import { getClaudeConfigHomeDir, isEnvTruthy } from '../envUtils.js'
+import { getRayuConfigHomeDir, isEnvTruthy } from '../envUtils.js'
 import { getErrnoCode, isENOENT } from '../errors.js'
 import { writeFileSyncAndFlush_DEPRECATED } from '../file.js'
 import { readFileSync } from '../fileRead.js'
@@ -233,14 +233,14 @@ function parseSettingsFileUncached(path: string): {
 
 /**
  * Get the absolute path to the associated file root for a given settings source
- * (e.g. for $PROJ_DIR/.claude/settings.json, returns $PROJ_DIR)
+ * (e.g. for $PROJ_DIR/.rayu/settings.json, returns $PROJ_DIR)
  * @param source The source of the settings
  * @returns The root path of the settings file
  */
 export function getSettingsRootPathForSource(source: SettingSource): string {
   switch (source) {
     case 'userSettings':
-      return resolve(getClaudeConfigHomeDir())
+      return resolve(getRayuConfigHomeDir())
     case 'policySettings':
     case 'projectSettings':
     case 'localSettings': {
@@ -301,9 +301,9 @@ export function getRelativeSettingsFilePathForSource(
 ): string {
   switch (source) {
     case 'projectSettings':
-      return join('.claude', 'settings.json')
+      return join('.rayu', 'settings.json')
     case 'localSettings':
-      return join('.claude', 'settings.local.json')
+      return join('.rayu', 'settings.local.json')
   }
 }
 

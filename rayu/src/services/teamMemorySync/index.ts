@@ -149,7 +149,7 @@ function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
  * Check if user is authenticated with first-party OAuth (required for team memory sync).
  */
 function isUsingOAuth(): boolean {
-  if (getAPIProvider() !== 'firstParty' || !isFirstPartyAnthropicBaseUrl()) {
+  if (getAPIProvider() !== 'anthropic' || !isFirstPartyAnthropicBaseUrl()) {
     return false
   }
   const tokens = getClaudeAIOAuthTokens()

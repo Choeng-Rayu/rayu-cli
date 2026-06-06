@@ -14,7 +14,7 @@ import {
 import { formatFileChangeReview, formatMessage, isFileChangeReviewMessage, toolIcon } from '../src/telegram/formatActivity.js'
 import { handlePermissionReply } from '../src/telegram/telegramPermissions.js'
 import { isConnectSessionActive } from '../src/telegram/telegramConnect.js'
-import { getClaudeConfigHomeDir } from '../src/utils/envUtils.js'
+import { getRayuConfigHomeDir } from '../src/utils/envUtils.js'
 
 // ---- chunkText ----
 describe('chunkText', () => {
@@ -46,7 +46,7 @@ describe('telegramConfig', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'rayu-tg-test-'))
     process.env.RAYU_CONFIG_DIR = tmpDir
     // Reset memoize cache so the new dir is picked up
-    const cache = (getClaudeConfigHomeDir as unknown as { cache?: Map<unknown, unknown> }).cache
+    const cache = (getRayuConfigHomeDir as unknown as { cache?: Map<unknown, unknown> }).cache
     cache?.clear?.()
     delete process.env.TELEGRAM_BOT_TOKEN
   })
@@ -57,7 +57,7 @@ describe('telegramConfig', () => {
     else process.env.RAYU_CONFIG_DIR = origConfigDir
     if (origToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN
     else process.env.TELEGRAM_BOT_TOKEN = origToken
-    const cache = (getClaudeConfigHomeDir as unknown as { cache?: Map<unknown, unknown> }).cache
+    const cache = (getRayuConfigHomeDir as unknown as { cache?: Map<unknown, unknown> }).cache
     cache?.clear?.()
   })
 

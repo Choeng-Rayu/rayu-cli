@@ -108,7 +108,7 @@ export function getAllHooks(appState: AppState): IndividualHookConfig[] {
 
     // Track which settings files we've already processed to avoid duplicates
     // (e.g., when running from home directory, userSettings and projectSettings
-    // both resolve to ~/.claude/settings.json)
+    // both resolve to ~/.rayu/settings.json)
     const seenFiles = new Set<string>()
 
     for (const source of sources) {
@@ -178,8 +178,8 @@ export function hookSourceDescriptionDisplayString(source: HookSource): string {
     case 'pluginHook':
       // TODO: Get the actual plugin hook file paths instead of using glob pattern
       // We should capture the specific plugin paths during hook registration and display them here
-      // e.g., "Plugin hooks (~/.claude/plugins/repos/source/example-plugin/example-plugin/hooks/hooks.json)"
-      return 'Plugin hooks (~/.claude/plugins/*/hooks/hooks.json)'
+      // e.g., "Plugin hooks (~/.rayu/plugins/repos/source/example-plugin/example-plugin/hooks/hooks.json)"
+      return 'Plugin hooks (~/.rayu/plugins/*/hooks/hooks.json)'
     case 'sessionHook':
       return 'Session hooks (in-memory, temporary)'
     case 'builtinHook':

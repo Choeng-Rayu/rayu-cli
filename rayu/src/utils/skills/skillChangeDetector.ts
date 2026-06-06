@@ -172,7 +172,7 @@ async function getWatchablePaths(): Promise<string[]> {
   const fs = getFsImplementation()
   const paths: string[] = []
 
-  // User skills directory (~/.claude/skills)
+  // User skills directory (~/.rayu/skills)
   const userSkillsPath = getSkillsPath('userSettings', 'skills')
   if (userSkillsPath) {
     try {
@@ -183,7 +183,7 @@ async function getWatchablePaths(): Promise<string[]> {
     }
   }
 
-  // User commands directory (~/.claude/commands)
+  // User commands directory (~/.rayu/commands)
   const userCommandsPath = getSkillsPath('userSettings', 'commands')
   if (userCommandsPath) {
     try {
@@ -194,7 +194,7 @@ async function getWatchablePaths(): Promise<string[]> {
     }
   }
 
-  // Project skills directory (.claude/skills)
+  // Project skills directory (.rayu/skills)
   const projectSkillsPath = getSkillsPath('projectSettings', 'skills')
   if (projectSkillsPath) {
     try {
@@ -207,7 +207,7 @@ async function getWatchablePaths(): Promise<string[]> {
     }
   }
 
-  // Project commands directory (.claude/commands)
+  // Project commands directory (.rayu/commands)
   const projectCommandsPath = getSkillsPath('projectSettings', 'commands')
   if (projectCommandsPath) {
     try {
@@ -220,9 +220,11 @@ async function getWatchablePaths(): Promise<string[]> {
     }
   }
 
-  // Additional directories (--add-dir) skills
+  // Additional directories (--add-dir) skills. Matches the loader, which scans
+  // <add-dir>/.rayu/skills (see loadSkillsDir.ts). Claude Code skills are loaded
+  // from ~/.claude/skills as a user-level source, not per --add-dir.
   for (const dir of getAdditionalDirectoriesForClaudeMd()) {
-    const additionalSkillsPath = platformPath.join(dir, '.claude', 'skills')
+    const additionalSkillsPath = platformPath.join(dir, '.rayu', 'skills')
     try {
       await fs.stat(additionalSkillsPath)
       paths.push(additionalSkillsPath)

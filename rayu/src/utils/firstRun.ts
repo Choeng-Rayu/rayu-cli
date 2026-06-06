@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 
 // Marker written on first run — prevents showing the message more than once
 function markerPath(): string {
-  return join(getClaudeConfigHomeDir(), '.installed')
+  return join(getRayuConfigHomeDir(), '.installed')
 }
 
 export function showFirstRunWelcome(): void {
@@ -40,7 +40,7 @@ export function showFirstRunWelcome(): void {
 
   // Write the marker so we never show this again
   try {
-    mkdirSync(getClaudeConfigHomeDir(), { recursive: true })
+    mkdirSync(getRayuConfigHomeDir(), { recursive: true })
     writeFileSync(markerPath(), MACRO.VERSION, 'utf8')
   } catch {
     // If we can't write the marker, the message will show again next run.

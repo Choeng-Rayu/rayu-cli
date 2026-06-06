@@ -194,7 +194,19 @@ function translateMessages(params: BetaParams): AnyObj[] {
 function translateTools(tools?: Array<AnyObj>): AnyObj[] | undefined {
   if (!tools?.length) return undefined
   return tools
-    .filter(t => t && (t.name || t.function))
+    .filter(t => {
+      if (!t) return false
+      // Already OpenAI-shaped function tools pass through.
+      if (t.function) return true
+      // Anthropic server tools (advisor, web_search, tool_search, etc.) carry a
+      // `type` like 'advisor_20260301' and have no JSON input_schema. They have
+      // no OpenAI equivalent — drop them instead of emitting a phantom empty
+      // function the model could try to call.
+      if (typeof t.type === 'string' && t.type !== 'custom' && !t.input_schema) {
+        return false
+      }
+      return !!t.name
+    })
     .map(t => {
       if (t.function) return t // already OpenAI-shaped
       return {

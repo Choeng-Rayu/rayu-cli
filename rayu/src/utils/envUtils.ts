@@ -86,9 +86,9 @@ function validateDotEnvConfig(): void {
   const warnings: string[] = []
 
   // 1. Multiple provider backends enabled simultaneously
-  const bedrock = isBoolEnvActive(process.env.CLAUDE_CODE_USE_BEDROCK)
-  const vertex = isBoolEnvActive(process.env.CLAUDE_CODE_USE_VERTEX)
-  const foundry = isBoolEnvActive(process.env.CLAUDE_CODE_USE_FOUNDRY)
+  const bedrock = isBoolEnvActive(process.env.RAYU_USE_BEDROCK)
+  const vertex = isBoolEnvActive(process.env.RAYU_USE_VERTEX)
+  const foundry = isBoolEnvActive(process.env.RAYU_USE_FOUNDRY)
   const openai = isBoolEnvActive(process.env.RAYU_OPENAI_COMPATIBLE)
   const activeProviders = [
     bedrock && 'Bedrock',
@@ -118,7 +118,7 @@ function validateDotEnvConfig(): void {
 
   // 3. Boolean env vars with non-boolean string values
   const boolVars = [
-    'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+    'RAYU_USE_BEDROCK', 'RAYU_USE_VERTEX', 'RAYU_USE_FOUNDRY',
     'RAYU_OPENAI_COMPATIBLE', 'DISABLE_PROMPT_CACHING', 'CLAUDE_CODE_DISABLE_THINKING',
     'CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING', 'CLAUDE_CODE_DISABLE_1M_CONTEXT',
     'CLAUDE_CODE_SIMPLE', 'CLAUDE_CODE_REMOTE',
@@ -161,41 +161,42 @@ function isBoolEnvActive(v: string | undefined): boolean {
 }
 
 /**
- * Pure resolver for the config home dir. Precedence:
- *   1. explicit env (RAYU_CONFIG_DIR preferred, then legacy CLAUDE_CONFIG_DIR)
- *   2. existing ~/.rayu  (Rayu's own config)
- *   3. existing ~/.claude (so existing Claude Code users work out of the box)
- *   4. default ~/.rayu   (fresh installs)
- * Both ~/.rayu and ~/.claude config layouts are therefore supported.
+ * Pure resolver for the Rayu config home dir. Precedence:
+ *   1. explicit RAYU_CONFIG_DIR
+ *   2. default ~/.rayu
+ *
+ * Legacy Claude config locations are intentionally ignored. Rayu owns its
+ * runtime config/auth boundary and does not migrate legacy config.
  */
-export function resolveConfigHomeDir(
+export function resolveRayuConfigHomeDir(
   home: string,
   envDir: string | undefined,
-  dirExists: (p: string) => boolean,
+  _dirExists: (p: string) => boolean,
 ): string {
   if (envDir) return envDir
   const rayu = join(home, '.rayu')
-  if (dirExists(rayu)) return rayu
-  const claude = join(home, '.claude')
-  if (dirExists(claude)) return claude
   return rayu
 }
 
-// Memoized: 150+ callers, many on hot paths. Keyed off the config-dir env vars
+export const resolveConfigHomeDir = resolveRayuConfigHomeDir
+
+// Memoized: 150+ callers, many on hot paths. Keyed off the Rayu config-dir env var
 // so tests that change them get a fresh value without explicit cache.clear.
-export const getClaudeConfigHomeDir = memoize(
+export const getRayuConfigHomeDir = memoize(
   (): string => {
-    return resolveConfigHomeDir(
+    return resolveRayuConfigHomeDir(
       homedir(),
-      process.env.RAYU_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+      process.env.RAYU_CONFIG_DIR,
       existsSync,
     ).normalize('NFC')
   },
-  () => process.env.RAYU_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+  () => process.env.RAYU_CONFIG_DIR,
 )
 
+export const getClaudeConfigHomeDir = getRayuConfigHomeDir
+
 export function getTeamsDir(): string {
-  return join(getClaudeConfigHomeDir(), 'teams')
+  return join(getRayuConfigHomeDir(), 'teams')
 }
 
 /**

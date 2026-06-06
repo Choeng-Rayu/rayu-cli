@@ -163,7 +163,7 @@ export function getVersionedCachePathIn(
 
 /**
  * Get versioned cache path for a plugin under the primary plugins directory.
- * Format: ~/.claude/plugins/cache/{marketplace}/{plugin}/{version}/
+ * Format: ~/.rayu/plugins/cache/{marketplace}/{plugin}/{version}/
  *
  * @param pluginId - Plugin identifier in format "name@marketplace"
  * @param version - Version string (semver, git SHA, etc.)
@@ -239,7 +239,7 @@ export async function probeSeedCacheAnyVersion(
 
 /**
  * Get legacy (non-versioned) cache path for a plugin.
- * Format: ~/.claude/plugins/cache/{plugin-name}/
+ * Format: ~/.rayu/plugins/cache/{plugin-name}/
  *
  * Used for backward compatibility with existing installations.
  *
@@ -3122,7 +3122,7 @@ export const loadAllPlugins = memoize(async (): Promise<PluginLoadResult> => {
  *
  * CLAUDE_CODE_SYNC_PLUGIN_INSTALL=1 delegates to the full loader — that
  * mode explicitly opts into blocking install before first query, and
- * main.tsx's getClaudeCodeMcpConfigs()/getInitialSettings().agent run
+ * main.tsx's getRayuMcpConfigs()/getInitialSettings().agent run
  * BEFORE runHeadless() can warm this cache. First-run CCR/headless has
  * no installed_plugins.json, so cache-only would miss plugin MCP servers
  * and plugin settings (the agent key). The interactive startup win is

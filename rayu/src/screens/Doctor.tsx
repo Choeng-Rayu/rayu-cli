@@ -5,7 +5,7 @@ import React, { Suspense, use, useCallback, useEffect, useMemo, useState } from 
 import { KeybindingWarnings } from 'src/components/KeybindingWarnings.js';
 import { McpParsingWarnings } from 'src/components/mcp/McpParsingWarnings.js';
 import { getModelMaxOutputTokens } from 'src/utils/context.js';
-import { getClaudeConfigHomeDir } from 'src/utils/envUtils.js';
+import { getRayuConfigHomeDir } from 'src/utils/envUtils.js';
 import type { SettingSource } from 'src/utils/settings/constants.js';
 import { getOriginalCwd } from '../bootstrap/state.js';
 import type { CommandResultDisplay } from '../commands.js';
@@ -165,7 +165,7 @@ export function Doctor(t0) {
     t5 = () => {
       getDoctorDiagnostic().then(setDiagnostic);
       (async () => {
-        const userAgentsDir = join(getClaudeConfigHomeDir(), "agents");
+        const userAgentsDir = join(getRayuConfigHomeDir(), "agents");
         const projectAgentsDir = join(getOriginalCwd(), ".claude", "agents");
         const {
           activeAgents,

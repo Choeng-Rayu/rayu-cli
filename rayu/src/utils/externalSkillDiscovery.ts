@@ -2,24 +2,27 @@
  * External Skill Discovery — Phase 4
  *
  * Discovers skill directories from external tool configurations so Rayu can
- * load skills installed by Claude Code, agent frameworks, and other compatible
- * tools automatically — without the user needing to configure anything.
+ * load skills installed by agent frameworks and other compatible tools
+ * automatically — without the user needing to configure anything.
  *
  * Discovery sources (in priority order):
  *   1. ~/.rayu/skills/         — Rayu native user skills (already in core loader)
  *   2. ~/.agents/skills/       — Agent-framework skills (playwright, graphify, etc.)
- *   3. ~/.claude/skills/       — Claude Code user skills (compatibility)
+ *   3. ~/.claude/skills/       — Claude Code skills (skills only; never config/model)
  *   4. settings.extraSkillDirs — User-configured additional directories
  *   5. RAYU_EXTRA_SKILL_DIRS   — Env-var override (colon-separated on Unix)
  *
- * Project-level equivalents (.rayu/skills/, .agents/skills/, .claude/skills/)
+ * Rayu prefers its own configuration; Claude Code skills are loaded only as an
+ * additional, lower-priority *skill* source. No model, provider, auth, or other
+ * Claude Code configuration is ever read here — only SKILL.md directories.
+ *
+ * Project-level equivalents (.rayu/skills/, .agents/skills/)
  * are handled in markdownConfigLoader.ts via the multi-config-dir walk.
  */
 
 import { homedir } from 'os'
 import { join, resolve } from 'path'
 import { logForDebugging } from './debug.js'
-import { getClaudeConfigHomeDir } from './envUtils.js'
 import { getFsImplementation } from './fsOperations.js'
 import { getInitialSettings } from './settings/settings.js'
 
@@ -27,8 +30,8 @@ import { getInitialSettings } from './settings/settings.js'
 // Constants
 // ---------------------------------------------------------------------------
 
-/** All config dir names Rayu recognises, in priority order. */
-export const RAYU_CONFIG_DIRS = ['.rayu', '.agents', '.claude'] as const
+/** All project config dir names Rayu recognises, in priority order. */
+export const RAYU_CONFIG_DIRS = ['.rayu', '.agents'] as const
 export type RayuConfigDir = (typeof RAYU_CONFIG_DIRS)[number]
 
 // ---------------------------------------------------------------------------
@@ -65,19 +68,6 @@ export function getAgentFrameworkSkillsDir(): string | undefined {
 }
 
 /**
- * Returns ~/.claude/skills/ if it exists.
- * This is where Claude Code (Anthropic's official CLI) installs user skills.
- * Enabled by default; can be disabled via settings.claudeCodeSkillsEnabled = false.
- */
-export function getClaudeCodeSkillsDir(): string | undefined {
-  const settings = getInitialSettings()
-  const enabled =
-    (settings as Record<string, unknown>).claudeCodeSkillsEnabled !== false
-  if (!enabled) return undefined
-  return existingDir(join(homedir(), '.claude', 'skills'))
-}
-
-/**
  * Returns ~/.agents/skills/ if it exists and agent skills are enabled.
  * Can be disabled via settings.agentSkillsEnabled = false.
  */
@@ -87,6 +77,27 @@ export function getAgentSkillsDirIfEnabled(): string | undefined {
     (settings as Record<string, unknown>).agentSkillsEnabled !== false
   if (!enabled) return undefined
   return getAgentFrameworkSkillsDir()
+}
+
+/**
+ * Returns ~/.claude/skills/ if it exists. Rayu loads Claude Code skills as an
+ * additional skill source so users can reuse skills they already have. ONLY
+ * the SKILL.md directories are read — never any model/provider/auth config.
+ */
+export function getClaudeCodeSkillsDir(): string | undefined {
+  return existingDir(join(homedir(), '.claude', 'skills'))
+}
+
+/**
+ * Returns ~/.claude/skills/ if it exists and Claude-skill loading is enabled.
+ * Opt out via settings.claudeSkillsEnabled = false.
+ */
+export function getClaudeCodeSkillsDirIfEnabled(): string | undefined {
+  const settings = getInitialSettings()
+  const enabled =
+    (settings as Record<string, unknown>).claudeSkillsEnabled !== false
+  if (!enabled) return undefined
+  return getClaudeCodeSkillsDir()
 }
 
 /**
@@ -137,8 +148,9 @@ export function getExternalSkillDirs(): string[] {
   const agentDir = getAgentSkillsDirIfEnabled()
   if (agentDir) candidates.push(agentDir)
 
-  // 2. ~/.claude/skills/ — Claude Code compat
-  const claudeDir = getClaudeCodeSkillsDir()
+  // 2. ~/.claude/skills/ — Claude Code skills (skills only; lower priority than
+  //    Rayu-native and agent-framework skills). Never reads Claude config/model.
+  const claudeDir = getClaudeCodeSkillsDirIfEnabled()
   if (claudeDir) candidates.push(claudeDir)
 
   // 3. settings.extraSkillDirs
@@ -172,14 +184,14 @@ export function getExternalSkillDirs(): string[] {
 
 /**
  * For a given project directory and subdir name, returns all config-dir paths
- * that exist across all recognised config dirs (.rayu, .agents, .claude).
+ * that exist across all recognised config dirs (.rayu, .agents).
  *
  * Example: for cwd=/my/project and subdir='skills', returns:
- *   ['/my/project/.rayu/skills', '/my/project/.agents/skills', '/my/project/.claude/skills']
+ *   ['/my/project/.rayu/skills', '/my/project/.agents/skills']
  *   (only those that exist on disk)
  *
  * Used by markdownConfigLoader to extend the project-level walk to cover
- * .agents/skills/ and .rayu/skills/ in addition to the classic .claude/skills/.
+ * .agents/skills/ and .rayu/skills/.
  */
 export function getProjectConfigDirPaths(
   projectDir: string,
@@ -200,7 +212,7 @@ export function getProjectConfigDirPaths(
  * across all recognised config dirs.
  *
  * Example: for subdir='skills', returns dirs from:
- *   ~/.rayu/skills/, ~/.agents/skills/, ~/.claude/skills/
+ *   ~/.rayu/skills/, ~/.agents/skills/
  */
 export function getUserConfigDirPaths(subdir: string): string[] {
   const home = homedir()
@@ -216,8 +228,7 @@ export function getUserConfigDirPaths(subdir: string): string[] {
 
 /**
  * Returns paths for the managed/policy config dir for a given subdir.
- * Managed config lives in /etc/rayu/ (or equivalent) and also supports
- * the legacy /etc/claude-code/ path.
+ * Managed config lives in /etc/rayu/ (or equivalent).
  */
 export function getManagedConfigDirPaths(
   managedBase: string,
@@ -227,11 +238,6 @@ export function getManagedConfigDirPaths(
   // Primary: /etc/rayu/<subdir>
   const rayuManaged = join(managedBase, subdir)
   if (existingDir(rayuManaged)) paths.push(rayuManaged)
-  // Legacy: /etc/rayu/.claude/<subdir> (same base, .claude subdir)
-  const claudeManaged = join(managedBase, '.claude', subdir)
-  if (existingDir(claudeManaged) && claudeManaged !== rayuManaged) {
-    paths.push(claudeManaged)
-  }
   return paths
 }
 
@@ -244,8 +250,8 @@ export type ExternalSkillSourceStatus = {
   claudeCodeDir: string | undefined
   extraDirsFromSettings: string[]
   extraDirsFromEnv: string[]
-  claudeCodeSkillsEnabled: boolean
   agentSkillsEnabled: boolean
+  claudeSkillsEnabled: boolean
 }
 
 /**
@@ -258,10 +264,10 @@ export function getExternalSkillSourceStatus(): ExternalSkillSourceStatus {
 
   return {
     agentFrameworkDir: getAgentFrameworkSkillsDir(),
-    claudeCodeDir: existingDir(join(homedir(), '.claude', 'skills')),
+    claudeCodeDir: getClaudeCodeSkillsDir(),
     extraDirsFromSettings: getExtraSkillDirsFromSettings(),
     extraDirsFromEnv: getExtraSkillDirsFromEnv(),
-    claudeCodeSkillsEnabled: s.claudeCodeSkillsEnabled !== false,
     agentSkillsEnabled: s.agentSkillsEnabled !== false,
+    claudeSkillsEnabled: s.claudeSkillsEnabled !== false,
   }
 }

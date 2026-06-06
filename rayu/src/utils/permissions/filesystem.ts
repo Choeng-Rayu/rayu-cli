@@ -7,9 +7,9 @@ import { join, normalize, posix, sep } from 'path'
 import { hasAutoMemPathOverride, isAutoMemPath } from 'src/memdir/paths.js'
 import { isAgentMemoryPath } from 'src/tools/AgentTool/agentMemory.js'
 import {
-  CLAUDE_FOLDER_PERMISSION_PATTERN,
   FILE_EDIT_TOOL_NAME,
-  GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN,
+  GLOBAL_RAYU_FOLDER_PERMISSION_PATTERN,
+  RAYU_FOLDER_PERMISSION_PATTERN,
 } from 'src/tools/FileEditTool/constants.js'
 import type { z } from 'zod/v4'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
@@ -17,7 +17,7 @@ import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/anal
 import type { AnyObject, Tool, ToolPermissionContext } from '../../Tool.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { getCwd } from '../cwd.js'
-import { getClaudeConfigHomeDir } from '../envUtils.js'
+import { getRayuConfigHomeDir } from '../envUtils.js'
 import {
   getFsImplementation,
   getPathsForPermissionCheck,
@@ -92,13 +92,13 @@ export function normalizeCaseForComparison(path: string): string {
 }
 
 /**
- * If filePath is inside a .claude/skills/{name}/ directory (project or global),
+ * If filePath is inside a Rayu-recognised skills/{name}/ directory,
  * return the skill name and a session-allow pattern scoped to just that skill.
  * Used to offer a narrower "allow edits to this skill only" option in the
  * permission dialog and SDK suggestions, so iterating on one skill doesn't
- * require granting session access to all of .claude/ (settings.json, hooks/, etc.).
+ * require granting session access to all of .rayu/ (settings.json, hooks/, etc.).
  */
-export function getClaudeSkillScope(
+export function getRayuSkillScope(
   filePath: string,
 ): { skillName: string; pattern: string } | null {
   const absolutePath = expandPath(filePath)
@@ -107,11 +107,7 @@ export function getClaudeSkillScope(
   // Check all Rayu-recognised config dirs so skills under .rayu/ and .agents/
   // also get the narrowed session-allow treatment.
   const bases = [
-    // Project-level: .claude/skills/, .rayu/skills/, .agents/skills/
-    {
-      dir: expandPath(join(getOriginalCwd(), '.claude', 'skills')),
-      prefix: '/.claude/skills/',
-    },
+    // Project-level: .rayu/skills/, .agents/skills/
     {
       dir: expandPath(join(getOriginalCwd(), '.rayu', 'skills')),
       prefix: '/.rayu/skills/',
@@ -120,11 +116,7 @@ export function getClaudeSkillScope(
       dir: expandPath(join(getOriginalCwd(), '.agents', 'skills')),
       prefix: '/.agents/skills/',
     },
-    // User-level: ~/.claude/skills/, ~/.rayu/skills/, ~/.agents/skills/
-    {
-      dir: expandPath(join(homedir(), '.claude', 'skills')),
-      prefix: '~/.claude/skills/',
-    },
+    // User-level: ~/.rayu/skills/, ~/.agents/skills/
     {
       dir: expandPath(join(homedir(), '.rayu', 'skills')),
       prefix: '~/.rayu/skills/',
@@ -165,7 +157,7 @@ export function getClaudeSkillScope(
         // Reject glob metacharacters. skillName is interpolated into a
         // gitignore pattern consumed by ignore().add() in matchingRuleForInput
         // at step 1.6. A directory literally named '*' (valid on POSIX) would
-        // produce '/.claude/skills/*/**' which matches ALL skills. Return null
+        // produce '/.rayu/skills/*/**' which matches ALL skills. Return null
         // to fall through to generateSuggestions() instead.
         if (/[*?[\]]/.test(skillName)) return null
         return { skillName, pattern: prefix + skillName + '/**' }
@@ -219,7 +211,7 @@ function getSettingsPaths(): string[] {
 
 export function isClaudeSettingsPath(filePath: string): boolean {
   // SECURITY: Normalize path structure first to prevent bypass via redundant ./
-  // sequences like `./.claude/./settings.json` which would evade the endsWith() check
+  // sequences like `./.rayu/./settings.json` which would evade the endsWith() check
   const expandedPath = expandPath(filePath)
 
   // Normalize for case-insensitive comparison to prevent bypassing security
@@ -231,7 +223,7 @@ export function isClaudeSettingsPath(filePath: string): boolean {
     normalizedPath.endsWith(`${sep}.claude${sep}settings.json`) ||
     normalizedPath.endsWith(`${sep}.claude${sep}settings.local.json`)
   ) {
-    // Include .claude/settings.json even for other projects
+    // Include .rayu/settings.json even for other projects
     return true
   }
   // Check for current project's settings files (including managed settings and CLI args)
@@ -247,18 +239,22 @@ function isClaudeConfigFilePath(filePath: string): boolean {
     return true
   }
 
-  // Check if file is within .claude/commands or .claude/agents directories
-  // using proper path segment validation (not string matching with includes())
-  // pathInWorkingPath now handles case-insensitive comparison to prevent bypasses
-  const commandsDir = join(getOriginalCwd(), '.claude', 'commands')
-  const agentsDir = join(getOriginalCwd(), '.claude', 'agents')
-  const skillsDir = join(getOriginalCwd(), '.claude', 'skills')
+  // Check if file is within the project's config dirs (commands/agents/skills)
+  // using proper path segment validation (not string matching with includes()).
+  // pathInWorkingPath now handles case-insensitive comparison to prevent bypasses.
+  // Rayu config lives under .rayu/; .claude/ is also guarded because Rayu loads
+  // Claude Code skills as an additional source, so editing them must still ask.
+  const cwd = getOriginalCwd()
+  const guardedDirs = [
+    join(cwd, '.rayu', 'commands'),
+    join(cwd, '.rayu', 'agents'),
+    join(cwd, '.rayu', 'skills'),
+    join(cwd, '.claude', 'commands'),
+    join(cwd, '.claude', 'agents'),
+    join(cwd, '.claude', 'skills'),
+  ]
 
-  return (
-    pathInWorkingPath(filePath, commandsDir) ||
-    pathInWorkingPath(filePath, agentsDir) ||
-    pathInWorkingPath(filePath, skillsDir)
-  )
+  return guardedDirs.some(dir => pathInWorkingPath(filePath, dir))
 }
 
 // Check if file is the plan file for the current session
@@ -299,7 +295,7 @@ function isSessionMemoryPath(absolutePath: string): boolean {
 
 /**
  * Check if file is within the current project's directory.
- * Path format: ~/.claude/projects/{sanitized-cwd}/...
+ * Path format: ~/.rayu/projects/{sanitized-cwd}/...
  */
 function isProjectDirPath(absolutePath: string): boolean {
   const projectDir = getProjectDir(getCwd())
@@ -473,7 +469,7 @@ function isDangerousFilePathToAutoEdit(path: string): boolean {
         continue
       }
 
-      // Special case: .claude/worktrees/ is a structural path (where Claude stores
+      // Special case: .rayu/worktrees/ is a structural path (where Claude stores
       // git worktrees), not a user-created dangerous directory. Skip the .claude
       // segment when it's followed by 'worktrees'. Any nested .claude directories
       // within the worktree (not followed by 'worktrees') are still blocked.
@@ -627,7 +623,7 @@ function hasSuspiciousWindowsPathPattern(path: string): boolean {
  *
  * This function performs comprehensive safety checks including:
  * - Suspicious Windows path patterns (NTFS streams, 8.3 names, long path prefixes, etc.)
- * - Claude config files (.claude/settings.json, .claude/commands/, .claude/agents/)
+ * - Claude config files (.rayu/settings.json, .rayu/commands/, .rayu/agents/)
  * - MCP CLI state files (managed internally by RAYU)
  * - Dangerous files (.bashrc, .gitconfig, .git/, .vscode/, .idea/, etc.)
  *
@@ -917,7 +913,7 @@ function patternWithRoot(
       root: homedir().normalize('NFC'),
     }
   } else if (pattern.startsWith(DIR_SEP)) {
-    // Patterns starting with / resolve relative to the directory where settings are stored (without .claude/)
+    // Patterns starting with / resolve relative to the directory where settings are stored (without .rayu/)
     return {
       relativePattern: pattern,
       root: rootPathForSource(source),
@@ -1269,10 +1265,10 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     return internalEditResult
   }
 
-  // 1.6. Check for .claude/** allow rules BEFORE safety checks
-  // This allows session-level permissions to bypass the safety blocks for .claude/
+  // 1.6. Check for .rayu/** allow rules BEFORE safety checks
+  // This allows session-level permissions to bypass the safety blocks for .rayu/
   // We only allow this for session-level rules to prevent users from accidentally
-  // permanently granting broad access to their .claude/ folder.
+  // permanently granting broad access to their .rayu/ folder.
   //
   // matchingRuleForInput returns the first match across all sources. If the user
   // also has a broader Edit(.claude) rule in userSettings (e.g. from sandbox
@@ -1291,19 +1287,19 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     'allow',
   )
   if (claudeFolderAllowRule) {
-    // Check if this rule is scoped under .claude/ (project or global).
-    // Accepts both the broad patterns ('/.claude/**', '~/.claude/**') and
-    // narrowed ones like '/.claude/skills/my-skill/**' so users can grant
+    // Check if this rule is scoped under .rayu/ (project or global).
+    // Accepts both the broad patterns ('/.rayu/**', '~/.rayu/**') and
+    // narrowed ones like '/.rayu/skills/my-skill/**' so users can grant
     // session access to a single skill without also exposing settings.json
     // or hooks/. The rule already matched the path via matchingRuleForInput;
     // this is an additional scope check. Reject '..' to prevent a rule like
-    // '/.claude/../**' from leaking this bypass outside .claude/.
+    // '/.rayu/../**' from leaking this bypass outside .rayu/.
     const ruleContent = claudeFolderAllowRule.ruleValue.ruleContent
     if (
       ruleContent &&
-      (ruleContent.startsWith(CLAUDE_FOLDER_PERMISSION_PATTERN.slice(0, -2)) ||
+      (ruleContent.startsWith(RAYU_FOLDER_PERMISSION_PATTERN.slice(0, -2)) ||
         ruleContent.startsWith(
-          GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN.slice(0, -2),
+          GLOBAL_RAYU_FOLDER_PERMISSION_PATTERN.slice(0, -2),
         )) &&
       !ruleContent.includes('..') &&
       ruleContent.endsWith('/**')
@@ -1324,12 +1320,12 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   // permission to edit protected files
   const safetyCheck = checkPathSafetyForAutoEdit(path, pathsToCheck)
   if (!safetyCheck.safe) {
-    // SDK suggestion: if under .claude/skills/{name}/, emit the narrowed
+    // SDK suggestion: if under .rayu/skills/{name}/, emit the narrowed
     // session-scoped addRules that step 1.6 will honor on the next call.
-    // Everything else (.claude/settings.json, .git/, .vscode/, .idea/) falls
+    // Everything else (.rayu/settings.json, .git/, .vscode/, .idea/) falls
     // back to generateSuggestions — its setMode suggestion doesn't bypass
     // this check, but preserving it avoids a surprising empty array.
-    const skillScope = getClaudeSkillScope(path)
+    const skillScope = getRayuSkillScope(path)
     const safetySuggestions: PermissionUpdate[] = skillScope
       ? [
           {
@@ -1531,7 +1527,7 @@ export function checkEditableInternalPath(
   // Template job's own directory. Env key hardcoded (vs importing JOB_ENV_KEY
   // from jobs/state) so tree-shaking eliminates the string from external
   // builds — spawn.test.ts asserts the string matches. Hijack guard: the env
-  // var value must itself resolve under ~/.claude/jobs/. Symlink guard: every
+    // var value must itself resolve under ~/.rayu/jobs/. Symlink guard: every
   // resolved form of the target (lexical + symlink chain) must fall under some
   // resolved form of the job dir, so a symlink inside the job dir pointing at
   // e.g. ~/.ssh/authorized_keys does not get a free write. Resolving both
@@ -1540,12 +1536,12 @@ export function checkEditableInternalPath(
   if (feature('TEMPLATES')) {
     const jobDir = process.env.CLAUDE_JOB_DIR
     if (jobDir) {
-      const jobsRoot = join(getClaudeConfigHomeDir(), 'jobs')
+      const jobsRoot = join(getRayuConfigHomeDir(), 'jobs')
       const jobDirForms = getPathsForPermissionCheck(jobDir).map(normalize)
       const jobsRootForms = getPathsForPermissionCheck(jobsRoot).map(normalize)
       // Hijack guard: every resolved form of the job dir must sit under
       // some resolved form of the jobs root. Resolving both sides handles
-      // the case where ~/.claude is a symlink (e.g. to /data/claude-config).
+      // the case where ~/.rayu is a symlink (e.g. to /data/rayu-config).
       const isUnderJobsRoot = jobDirForms.every(jd =>
         jobsRootForms.some(jr => jd.startsWith(jr + sep)),
       )
@@ -1584,7 +1580,7 @@ export function checkEditableInternalPath(
 
   // Memdir directory (persistent memory for cross-session learning)
   // This pre-safety-check carve-out exists because the default path is under
-  // ~/.claude/, which is in DANGEROUS_DIRECTORIES. The CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+  // ~/.rayu/, which is in DANGEROUS_DIRECTORIES. The RAYU_COWORK_MEMORY_PATH_OVERRIDE
   // override is an arbitrary caller-designated directory with no such conflict,
   // so it gets NO special permission treatment here — writes go through normal
   // permission flow (step 5 → ask). SDK callers who want silent memory should
@@ -1600,16 +1596,16 @@ export function checkEditableInternalPath(
     }
   }
 
-  // .claude/launch.json — desktop preview config (dev server command + port).
+  // .rayu/launch.json — desktop preview config (dev server command + port).
   // The desktop's preview_start MCP tool instructs Claude to create/update
   // this file as part of the preview workflow. Without this carve-out the
-  // .claude/ DANGEROUS_DIRECTORIES check prompts for it, which in SDK mode
+  // .rayu/ DANGEROUS_DIRECTORIES check prompts for it, which in SDK mode
   // cascades: user clicks "Always allow" → setMode:acceptEdits suggestion
   // applied → silent downgrade from auto mode. Matches the project-level
-  // .claude/ only (not ~/.claude/) since launch.json is per-project.
+  // .rayu/ only (not ~/.rayu/) since launch.json is per-project.
   if (
     normalizeCaseForComparison(normalizedPath) ===
-    normalizeCaseForComparison(join(getOriginalCwd(), '.claude', 'launch.json'))
+    normalizeCaseForComparison(join(getOriginalCwd(), '.rayu', 'launch.json'))
   ) {
     return {
       behavior: 'allow',
@@ -1649,7 +1645,7 @@ export function checkReadableInternalPath(
   }
 
   // Project directory (for reading past session memories)
-  // Path format: ~/.claude/projects/{sanitized-cwd}/...
+  // Path format: ~/.rayu/projects/{sanitized-cwd}/...
   if (isProjectDirPath(normalizedPath)) {
     return {
       behavior: 'allow',
@@ -1744,8 +1740,8 @@ export function checkReadableInternalPath(
     }
   }
 
-  // Tasks directory (~/.claude/tasks/) for swarm task coordination
-  const tasksDir = join(getClaudeConfigHomeDir(), 'tasks') + sep
+  // Tasks directory (~/.rayu/tasks/) for swarm task coordination
+  const tasksDir = join(getRayuConfigHomeDir(), 'tasks') + sep
   if (
     normalizedPath === tasksDir.slice(0, -1) ||
     normalizedPath.startsWith(tasksDir)
@@ -1760,8 +1756,8 @@ export function checkReadableInternalPath(
     }
   }
 
-  // Teams directory (~/.claude/teams/) for swarm coordination
-  const teamsReadDir = join(getClaudeConfigHomeDir(), 'teams') + sep
+  // Teams directory (~/.rayu/teams/) for swarm coordination
+  const teamsReadDir = join(getRayuConfigHomeDir(), 'teams') + sep
   if (
     normalizedPath === teamsReadDir.slice(0, -1) ||
     normalizedPath.startsWith(teamsReadDir)

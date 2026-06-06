@@ -28,7 +28,7 @@ import {
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
-import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
+import { getRayuConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
 import { getErrnoCode, isENOENT } from '../../utils/errors.js'
 import {
   addLineNumbers,
@@ -189,13 +189,13 @@ const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
 
 /**
  * Detects if a file path is a session-related file for analytics logging.
- * Only matches files within the Claude config directory (e.g., ~/.claude).
+ * Only matches files within the Rayu config directory (e.g., ~/.rayu).
  * Returns the type of session file or null if not a session file.
  */
 function detectSessionFileType(
   filePath: string,
 ): 'session_memory' | 'session_transcript' | null {
-  const configDir = getClaudeConfigHomeDir()
+  const configDir = getRayuConfigHomeDir()
 
   // Only match files within the Claude config directory
   if (!filePath.startsWith(configDir)) {
@@ -205,7 +205,7 @@ function detectSessionFileType(
   // Normalize path to use forward slashes for consistent matching across platforms
   const normalizedPath = filePath.split(win32.sep).join(posix.sep)
 
-  // Session memory files: ~/.claude/session-memory/*.md (including summary.md)
+  // Session memory files: ~/.rayu/session-memory/*.md (including summary.md)
   if (
     normalizedPath.includes('/session-memory/') &&
     normalizedPath.endsWith('.md')
@@ -213,7 +213,7 @@ function detectSessionFileType(
     return 'session_memory'
   }
 
-  // Session JSONL transcript files: ~/.claude/projects/*/*.jsonl
+  // Session JSONL transcript files: ~/.rayu/projects/*/*.jsonl
   if (
     normalizedPath.includes('/projects/') &&
     normalizedPath.endsWith('.jsonl')

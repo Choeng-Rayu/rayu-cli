@@ -4,7 +4,7 @@ import { open } from 'fs/promises'
 import { join } from 'path'
 import type { ModelUsage } from '../entrypoints/agentSdkTypes.js'
 import { logForDebugging } from './debug.js'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 import { errorMessage } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
 import { logError } from './log.js'
@@ -75,7 +75,7 @@ export type PersistedStatsCache = {
 }
 
 export function getStatsCachePath(): string {
-  return join(getClaudeConfigHomeDir(), STATS_CACHE_FILENAME)
+  return join(getRayuConfigHomeDir(), STATS_CACHE_FILENAME)
 }
 
 function getEmptyCache(): PersistedStatsCache {
@@ -220,7 +220,7 @@ export async function saveStatsCache(
 
   try {
     // Ensure the directory exists
-    const configDir = getClaudeConfigHomeDir()
+    const configDir = getRayuConfigHomeDir()
     try {
       await fs.mkdir(configDir)
     } catch {

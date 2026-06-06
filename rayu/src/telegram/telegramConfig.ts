@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { getRayuConfigHomeDir } from '../utils/envUtils.js'
 
 /** One-time pairing token shown by /telegram-bot and consumed via /link. */
 export interface PendingToken {
@@ -18,7 +18,7 @@ export interface TelegramConfig {
 }
 
 function configPath(): string {
-  return join(getClaudeConfigHomeDir(), 'telegram.json')
+  return join(getRayuConfigHomeDir(), 'telegram.json')
 }
 
 /**
@@ -51,7 +51,7 @@ export function readTelegramConfig(): TelegramConfig {
 }
 
 export function writeTelegramConfig(config: TelegramConfig): void {
-  const dir = getClaudeConfigHomeDir()
+  const dir = getRayuConfigHomeDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   writeFileSync(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
 }

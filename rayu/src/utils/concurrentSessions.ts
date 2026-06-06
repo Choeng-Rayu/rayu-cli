@@ -8,7 +8,7 @@ import {
 } from '../bootstrap/state.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 import { errorMessage, isFsInaccessible } from './errors.js'
 import { isProcessRunning } from './genericProcessUtils.js'
 import { getPlatform } from './platform.js'
@@ -19,7 +19,7 @@ export type SessionKind = 'interactive' | 'bg' | 'daemon' | 'daemon-worker'
 export type SessionStatus = 'busy' | 'idle' | 'waiting'
 
 function getSessionsDir(): string {
-  return join(getClaudeConfigHomeDir(), 'sessions')
+  return join(getRayuConfigHomeDir(), 'sessions')
 }
 
 /**
@@ -193,8 +193,8 @@ export async function countConcurrentSessions(): Promise<number> {
       count++
     } else if (getPlatform() !== 'wsl') {
       // Stale file from a crashed session — sweep it. Skip on WSL: if
-      // ~/.claude/sessions/ is shared with Windows-native Claude (symlink
-      // or CLAUDE_CONFIG_DIR), a Windows PID won't be probeable from WSL
+      // ~/.rayu/sessions/ is shared with Windows-native Claude (symlink
+      // or RAYU_CONFIG_DIR), a Windows PID won't be probeable from WSL
       // and we'd falsely delete a live session's file. This is just
       // telemetry so conservative undercount is acceptable.
       void unlink(join(dir, file)).catch(() => {})

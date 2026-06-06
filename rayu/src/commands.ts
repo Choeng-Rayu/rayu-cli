@@ -10,12 +10,10 @@ import clear from './commands/clear/index.js'
 import color from './commands/color/index.js'
 import commit from './commands/commit.js'
 import copy from './commands/copy/index.js'
-import desktop from './commands/desktop/index.js'
 import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
-import cost from './commands/cost/index.js'
 import diff from './commands/diff/index.js'
 import ctx_viz from './commands/ctx_viz/index.js'
 import doctor from './commands/doctor/index.js'
@@ -26,13 +24,8 @@ import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import keybindings from './commands/keybindings/index.js'
 import keep from './commands/keep/index.js'
-import login from './commands/login/index.js'
-import logout from './commands/logout/index.js'
-import installGitHubApp from './commands/install-github-app/index.js'
-import installSlackApp from './commands/install-slack-app/index.js'
 import breakCache from './commands/break-cache/index.js'
 import mcp from './commands/mcp/index.js'
-import mobile from './commands/mobile/index.js'
 import telegramBot from './commands/telegram-bot/index.js'
 import disconnectTelegram from './commands/telegram-bot/disconnect-index.js'
 import onboarding from './commands/onboarding/index.js'
@@ -61,7 +54,6 @@ import securityReview from './commands/security-review.js'
 import bughunter from './commands/bughunter/index.js'
 import terminalSetup from './commands/terminalSetup/index.js'
 import undo from './commands/undo/index.js'
-import usage from './commands/usage/index.js'
 import theme from './commands/theme/index.js'
 import vim from './commands/vim/index.js'
 import { feature } from 'bun:bundle'
@@ -78,27 +70,12 @@ const briefCommand =
 const assistantCommand = feature('KAIROS')
   ? require('./commands/assistant/index.js').default
   : null
-const bridge = feature('BRIDGE_MODE')
-  ? require('./commands/bridge/index.js').default
-  : null
-const remoteControlServerCommand =
-  feature('DAEMON') && feature('BRIDGE_MODE')
-    ? require('./commands/remoteControlServer/index.js').default
-    : null
-const voiceCommand = feature('VOICE_MODE')
-  ? require('./commands/voice/index.js').default
-  : null
 const forceSnip = feature('HISTORY_SNIP')
   ? require('./commands/force-snip.js').default
   : null
 const workflowsCmd = feature('WORKFLOW_SCRIPTS')
   ? (
       require('./commands/workflows/index.js') as typeof import('./commands/workflows/index.js')
-    ).default
-  : null
-const webCmd = feature('CCR_REMOTE_SETUP')
-  ? (
-      require('./commands/remote-setup/index.js') as typeof import('./commands/remote-setup/index.js')
     ).default
   : null
 const clearSkillIndexCache = feature('EXPERIMENTAL_SKILL_SEARCH')
@@ -133,8 +110,6 @@ import thinkback from './commands/thinkback/index.js'
 import thinkbackPlay from './commands/thinkback-play/index.js'
 import permissions from './commands/permissions/index.js'
 import plan from './commands/plan/index.js'
-import fast from './commands/fast/index.js'
-import passes from './commands/passes/index.js'
 import privacySettings from './commands/privacy-settings/index.js'
 import hooks from './commands/hooks/index.js'
 import files from './commands/files/index.js'
@@ -155,7 +130,6 @@ import {
 import antTrace from './commands/ant-trace/index.js'
 import perfIssue from './commands/perf-issue/index.js'
 import sandboxToggle from './commands/sandbox-toggle/index.js'
-import chrome from './commands/chrome/index.js'
 import stickers from './commands/stickers/index.js'
 import advisor from './commands/advisor.js'
 import { logError } from './utils/log.js'
@@ -181,16 +155,10 @@ import env from './commands/env/index.js'
 import exit from './commands/exit/index.js'
 import exportCommand from './commands/export/index.js'
 import connect from './commands/connect/index.js'
+import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
 import tag from './commands/tag/index.js'
 import outputStyle from './commands/output-style/index.js'
-import remoteEnv from './commands/remote-env/index.js'
-import upgrade from './commands/upgrade/index.js'
-import {
-  extraUsage,
-  extraUsageNonInteractive,
-} from './commands/extra-usage/index.js'
-import rateLimitOptions from './commands/rate-limit-options/index.js'
 import statusline from './commands/statusline.js'
 import effort from './commands/effort/index.js'
 import stats from './commands/stats/index.js'
@@ -209,7 +177,6 @@ const usageReport: Command = {
     return real.getPromptForCommand(args, context)
   },
 }
-import oauthRefresh from './commands/oauth-refresh/index.js'
 import debugToolCall from './commands/debug-tool-call/index.js'
 import { getSettingSourceName } from './utils/settings/constants.js'
 import {
@@ -256,7 +223,6 @@ export const INTERNAL_ONLY_COMMANDS = [
   antTrace,
   perfIssue,
   env,
-  oauthRefresh,
   debugToolCall,
   agentsPlatform,
   autofixPr,
@@ -270,21 +236,17 @@ const COMMANDS = memoize((): Command[] => [
   agents,
   branch,
   btw,
-  chrome,
   clear,
   color,
   compact,
   config,
   copy,
-  desktop,
   context,
   contextNonInteractive,
-  cost,
   diff,
   doctor,
   effort,
   exit,
-  fast,
   files,
   heapDump,
   help,
@@ -292,17 +254,14 @@ const COMMANDS = memoize((): Command[] => [
   init,
   keybindings,
   keep,
-  installGitHubApp,
-  installSlackApp,
   mcp,
   memory,
-  mobile,
   telegramBot,
   disconnectTelegram,
   model,
   connect,
+  installSkill,
   outputStyle,
-  remoteEnv,
   plugin,
   pr_comments,
   releaseNotes,
@@ -328,22 +287,13 @@ const COMMANDS = memoize((): Command[] => [
   securityReview,
   terminalSetup,
   undo,
-  upgrade,
-  extraUsage,
-  extraUsageNonInteractive,
-  rateLimitOptions,
-  usage,
   usageReport,
   vim,
-  ...(webCmd ? [webCmd] : []),
   ...(forkCmd ? [forkCmd] : []),
   ...(buddy ? [buddy] : []),
   ...(proactive ? [proactive] : []),
   ...(briefCommand ? [briefCommand] : []),
   ...(assistantCommand ? [assistantCommand] : []),
-  ...(bridge ? [bridge] : []),
-  ...(remoteControlServerCommand ? [remoteControlServerCommand] : []),
-  ...(voiceCommand ? [voiceCommand] : []),
   thinkback,
   thinkbackPlay,
   permissions,
@@ -352,9 +302,6 @@ const COMMANDS = memoize((): Command[] => [
   hooks,
   exportCommand,
   sandboxToggle,
-  // /login and /logout hidden — use /connect instead (rayu: skip for now)
-  ...([]),
-  passes,
   ...(peersCmd ? [peersCmd] : []),
   tasks,
   ...(workflowsCmd ? [workflowsCmd] : []),
@@ -643,8 +590,6 @@ export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set([
   theme, // Change terminal theme
   color, // Change agent color
   vim, // Toggle vim mode
-  cost, // Show session cost (local cost tracking)
-  usage, // Show usage info
   copy, // Copy last message
   btw, // Quick note
   feedback, // Send feedback
@@ -652,7 +597,6 @@ export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set([
   keybindings, // Keybinding management
   statusline, // Status line toggle
   stickers, // Stickers
-  mobile, // Mobile QR code
 ])
 
 /**
@@ -671,7 +615,6 @@ export const BRIDGE_SAFE_COMMANDS: Set<Command> = new Set(
   [
     compact, // Shrink context — useful mid-session from a phone
     clear, // Wipe transcript
-    cost, // Show session cost
     summary, // Summarize conversation
     releaseNotes, // Show changelog
     files, // List tracked files

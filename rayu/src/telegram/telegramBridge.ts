@@ -3,7 +3,7 @@
 import { hostname } from 'os'
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from 'fs'
 import { join } from 'path'
-import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { getRayuConfigHomeDir } from '../utils/envUtils.js'
 import {
   formatFileChangeReview,
   formatMessage,
@@ -373,7 +373,7 @@ const HEARTBEAT_INTERVAL_MS = 10_000  // refresh the lock timestamp every 10 s
 const HEARTBEAT_STALE_MS = 30_000     // consider the lock abandoned after 30 s
 
 function lockFilePath(): string {
-  return join(getClaudeConfigHomeDir(), 'telegram-bridge.lock')
+  return join(getRayuConfigHomeDir(), 'telegram-bridge.lock')
 }
 
 function isPidAlive(pid: number): boolean {

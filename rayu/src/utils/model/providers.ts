@@ -1,13 +1,13 @@
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
 import { isEnvTruthy } from '../envUtils.js'
 
-export type APIProvider = 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
+export type APIProvider = 'anthropic' | 'bedrock' | 'vertex' | 'foundry'
 
 export function getAPIProvider(): APIProvider {
   // Env vars take absolute precedence (existing behavior).
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) return 'bedrock'
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) return 'vertex'
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) return 'foundry'
+  if (isEnvTruthy(process.env.RAYU_USE_BEDROCK)) return 'bedrock'
+  if (isEnvTruthy(process.env.RAYU_USE_VERTEX)) return 'vertex'
+  if (isEnvTruthy(process.env.RAYU_USE_FOUNDRY)) return 'foundry'
 
   // Rayu config: if the active provider is kind:'bedrock', route to bedrock.
   // This allows /connect → AWS Bedrock to work without env vars.
@@ -21,7 +21,7 @@ export function getAPIProvider(): APIProvider {
     // fall through
   }
 
-  return 'firstParty'
+  return 'anthropic'
 }
 
 /**
@@ -56,9 +56,9 @@ export function isOpenAICompatibleActive(): boolean {
   // Anthropic 3P env providers take precedence; only consult Rayu config when
   // none of them are set.
   if (
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+    isEnvTruthy(process.env.RAYU_USE_BEDROCK) ||
+    isEnvTruthy(process.env.RAYU_USE_VERTEX) ||
+    isEnvTruthy(process.env.RAYU_USE_FOUNDRY)
   ) {
     return false
   }

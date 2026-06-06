@@ -17,7 +17,7 @@
  * 2. Optionally set CLAUDE_CODE_PERFETTO_WRITE_INTERVAL_S=<positive integer> to write the
  *    trace file periodically (default: write only on exit).
  * 3. Run RAYU normally
- * 4. Trace file is written to ~/.claude/traces/trace-<session-id>.json
+ * 4. Trace file is written to ~/.rayu/traces/trace-<session-id>.json
  *    or to the specified path
  * 5. Open in ui.perfetto.dev to visualize
  */
@@ -30,7 +30,7 @@ import { getSessionId } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from '../debug.js'
 import {
-  getClaudeConfigHomeDir,
+  getRayuConfigHomeDir,
   isEnvDefinedFalsy,
   isEnvTruthy,
 } from '../envUtils.js'
@@ -270,7 +270,7 @@ export function initializePerfettoTracing(): void {
 
     // Determine trace file path
     if (isEnvTruthy(envValue)) {
-      const tracesDir = join(getClaudeConfigHomeDir(), 'traces')
+      const tracesDir = join(getRayuConfigHomeDir(), 'traces')
       tracePath = join(tracesDir, `trace-${getSessionId()}.json`)
     } else {
       // Use the provided path

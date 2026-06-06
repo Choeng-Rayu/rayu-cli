@@ -23,6 +23,7 @@ import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isOpenAICompatibleActive,
 } from 'src/utils/model/providers.js'
 import {
   getAttributionHeader,
@@ -1434,7 +1435,7 @@ async function* queryModel(
     if (
       !cacheEditingHeaderLatched &&
       cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
+      getAPIProvider() === 'anthropic' &&
       options.querySource === 'repl_main_thread'
     ) {
       cacheEditingHeaderLatched = true
@@ -1675,11 +1676,11 @@ async function* queryModel(
     // the feature disables but the header doesn't flip.
     const useCachedMC =
       cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
+      getAPIProvider() === 'anthropic' &&
       options.querySource === 'repl_main_thread'
     if (
       cacheEditingHeaderLatched &&
-      getAPIProvider() === 'firstParty' &&
+      getAPIProvider() === 'anthropic' &&
       options.querySource === 'repl_main_thread' &&
       !betasParams.includes(cacheEditingBetaHeader)
     ) {
@@ -1812,7 +1813,9 @@ async function* queryModel(
         // server request ID) can still be correlated with server logs.
         // First-party only — 3P providers don't log it (inc-4029 class).
         clientRequestId =
-          getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+          getAPIProvider() === 'anthropic' &&
+          !isOpenAICompatibleActive() &&
+          isFirstPartyAnthropicBaseUrl()
             ? randomUUID()
             : undefined
 

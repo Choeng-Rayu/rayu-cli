@@ -8,7 +8,7 @@ import {
   shouldOfferTerminalSetup,
 } from '../commands/terminalSetup/terminalSetup.js'
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js'
-import { Box, Link, Newline, Text, useTheme } from '../ink.js'
+import { Box, Newline, Text, useTheme } from '../ink.js'
 import { useKeybindings } from '../keybindings/useKeybinding.js'
 import { env } from '../utils/env.js'
 import type { ThemeSetting } from '../utils/theme.js'
@@ -20,8 +20,9 @@ import { PressEnterToContinue } from './PressEnterToContinue.js'
 import { ThemePicker } from './ThemePicker.js'
 import { OrderedList } from './ui/OrderedList.js'
 
-// Rayu is bring-your-own-key: every provider (including Anthropic via API key)
-// is configured through RayuProviderSetup. There is no Anthropic OAuth flow.
+// Rayu is bring-your-own-key: every provider (OpenAI-compatible endpoints and
+// AWS Bedrock) is configured through RayuProviderSetup. There is no direct
+// Anthropic provider and no Anthropic OAuth flow.
 type StepId = 'theme' | 'provider' | 'security' | 'terminal-setup'
 
 interface OnboardingStep {
@@ -83,9 +84,9 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
          */}
         <OrderedList>
           <OrderedList.Item>
-            <Text>Claude can make mistakes</Text>
+            <Text>Rayu can make mistakes</Text>
             <Text dimColor wrap="wrap">
-              You should always review Claude&apos;s responses, especially when
+              You should always review Rayu&apos;s responses, especially when
               <Newline />
               running code.
               <Newline />
@@ -96,9 +97,9 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
               Due to prompt injection risks, only use it with code you trust
             </Text>
             <Text dimColor wrap="wrap">
-              For more details see:
+              Keep provider credentials scoped and review generated changes
+              before applying them.
               <Newline />
-              <Link url="https://code.claude.com/docs/en/security" />
             </Text>
           </OrderedList.Item>
         </OrderedList>
@@ -111,8 +112,8 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
   steps.push({ id: 'theme', component: themeStep })
 
   // Prompt for provider + API key when none is configured yet.
-  // RayuProviderSetup handles all provider kinds (openai-compatible, bedrock,
-  // anthropic-by-key). Run /connect any time to add or switch providers.
+  // RayuProviderSetup handles all provider kinds (openai-compatible, bedrock).
+  // Run /connect any time to add or switch providers.
   if (!hasConfiguredProvider()) {
     steps.push({
       id: 'provider',
@@ -148,7 +149,7 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
                   value: 'no',
                 },
               ]}
-              onChange={value => {
+              onChange={(value: string) => {
                 if (value === 'install') {
                   // Errors already logged in setupTerminal, just swallow and proceed
                   void setupTerminal(theme)

@@ -9,7 +9,7 @@
 import type { UUID } from 'crypto'
 import { open as fsOpen, readdir, realpath, stat } from 'fs/promises'
 import { join } from 'path'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 import { getWorktreePathsPortable } from './getWorktreePathsPortable.js'
 import { djb2Hash } from './hash.js'
 
@@ -323,7 +323,7 @@ export function sanitizePath(name: string): string {
 // ---------------------------------------------------------------------------
 
 export function getProjectsDir(): string {
-  return join(getClaudeConfigHomeDir(), 'projects')
+  return join(getRayuConfigHomeDir(), 'projects')
 }
 
 export function getProjectDir(projectDir: string): string {
@@ -387,7 +387,7 @@ export async function findProjectDir(
  * to sibling git worktrees. `projectPath` in the result is the canonical
  * user-facing directory the file was found under.
  *
- * When `dir` is omitted: scan all project directories under ~/.claude/projects/.
+ * When `dir` is omitted: scan all project directories under ~/.rayu/projects/.
  * `projectPath` is undefined in this case (no meaningful project path to report).
  *
  * Existence is checked by stat (operate-then-catch-ENOENT, no existsSync).

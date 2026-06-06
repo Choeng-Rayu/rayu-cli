@@ -20,42 +20,6 @@ import {
 } from '../../utils/teleport/environments.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 
-// Base58 alphabet (Bitcoin-style) used by the tagged ID system
-const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-
-/**
- * Decode a mcpsrv_ tagged ID to a UUID string.
- * Tagged IDs have format: mcpsrv_01{base58(uuid.int)}
- * where 01 is the version prefix.
- *
- * TODO(public-ship): Before shipping publicly, the /v1/mcp_servers endpoint
- * should return the raw UUID directly so we don't need this client-side decoding.
- * The tagged ID format is an internal implementation detail that could change.
- */
-function taggedIdToUUID(taggedId: string): string | null {
-  const prefix = 'mcpsrv_'
-  if (!taggedId.startsWith(prefix)) {
-    return null
-  }
-  const rest = taggedId.slice(prefix.length)
-  // Skip version prefix (2 chars, always "01")
-  const base58Data = rest.slice(2)
-
-  // Decode base58 to bigint
-  let n = 0n
-  for (const c of base58Data) {
-    const idx = BASE58.indexOf(c)
-    if (idx === -1) {
-      return null
-    }
-    n = n * 58n + BigInt(idx)
-  }
-
-  // Convert to UUID hex string
-  const hex = n.toString(16).padStart(32, '0')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
-}
-
 type ConnectorInfo = {
   uuid: string
   name: string
@@ -65,25 +29,8 @@ type ConnectorInfo = {
 function getConnectedClaudeAIConnectors(
   mcpClients: MCPServerConnection[],
 ): ConnectorInfo[] {
-  const connectors: ConnectorInfo[] = []
-  for (const client of mcpClients) {
-    if (client.type !== 'connected') {
-      continue
-    }
-    if (client.config.type !== 'claudeai-proxy') {
-      continue
-    }
-    const uuid = taggedIdToUUID(client.config.id)
-    if (!uuid) {
-      continue
-    }
-    connectors.push({
-      uuid,
-      name: client.name,
-      url: client.config.url,
-    })
-  }
-  return connectors
+  void mcpClients
+  return []
 }
 
 function sanitizeConnectorName(name: string): string {
@@ -96,7 +43,7 @@ function sanitizeConnectorName(name: string): string {
 
 function formatConnectorsInfo(connectors: ConnectorInfo[]): string {
   if (connectors.length === 0) {
-    return 'No connected MCP connectors found. The user may need to connect servers at https://claude.ai/settings/connectors'
+    return 'No connected Rayu MCP connectors found.'
   }
   const lines = ['Connected connectors (available for triggers):']
   for (const c of connectors) {

@@ -14,7 +14,7 @@ import { getPlanSlugCache, getSessionId } from '../bootstrap/state.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 import { isENOENT } from './errors.js'
 import { getEnvironmentKind } from './filePersistence/outputsScanner.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -91,13 +91,13 @@ export const getPlansDirectory = memoize(function getPlansDirectory(): string {
       logError(
         new Error(`plansDirectory must be within project root: ${settingsDir}`),
       )
-      plansPath = join(getClaudeConfigHomeDir(), 'plans')
+      plansPath = join(getRayuConfigHomeDir(), 'plans')
     } else {
       plansPath = resolved
     }
   } else {
     // Default
-    plansPath = join(getClaudeConfigHomeDir(), 'plans')
+    plansPath = join(getRayuConfigHomeDir(), 'plans')
   }
 
   // Ensure directory exists (mkdirSync with recursive: true is a no-op if it exists)

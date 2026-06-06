@@ -123,7 +123,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
 
   // Always show the trust dialog in interactive sessions, regardless of permission mode.
   // The trust dialog is the workspace trust boundary — it warns about untrusted repos
-  // and checks CLAUDE.md external includes. bypassPermissions mode
+  // and checks RAYU.md external includes. bypassPermissions mode
   // only affects tool execution permissions, not workspace trust.
   // Note: non-interactive sessions (CI/CD with -p) never reach showSetupScreens at all.
   // Skip permission checks in claubbit
@@ -271,7 +271,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     }
   }
 
-  // Show Chrome onboarding for first-time Claude in Chrome users
+  // Show Chrome onboarding for first-time Rayu in Chrome users
   if (claudeInChrome && !getGlobalConfig().hasCompletedClaudeInChromeOnboarding) {
     const {
       ClaudeInChromeOnboarding

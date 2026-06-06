@@ -51,7 +51,7 @@ export function isRemoteManagedSettingsEligible(): boolean {
   if (cached !== undefined) return cached
 
   // 3p provider users should not hit the settings endpoint
-  if (getAPIProvider() !== 'firstParty' || isRayuNonAnthropicActive()) {
+  if (getAPIProvider() !== 'anthropic' || isRayuNonAnthropicActive()) {
     return (cached = setEligibility(false))
   }
 

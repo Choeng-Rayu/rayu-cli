@@ -1,7 +1,7 @@
 /**
  * User keybinding configuration loader with hot-reload support.
  *
- * Loads keybindings from ~/.claude/keybindings.json and watches
+ * Loads keybindings from ~/.rayu/keybindings.json and watches
  * for changes to reload them automatically.
  *
  * NOTE: User keybinding customization is currently only available for
@@ -17,7 +17,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { logEvent } from '../services/analytics/index.js'
 import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { logForDebugging } from '../utils/debug.js'
-import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { getRayuConfigHomeDir } from '../utils/envUtils.js'
 import { errorMessage, isENOENT } from '../utils/errors.js'
 import { createSignal } from '../utils/signal.js'
 import { jsonParse } from '../utils/slowOperations.js'
@@ -113,7 +113,7 @@ function isKeybindingBlockArray(arr: unknown): arr is KeybindingBlock[] {
  * Get the path to the user keybindings file.
  */
 export function getKeybindingsPath(): string {
-  return join(getClaudeConfigHomeDir(), 'keybindings.json')
+  return join(getRayuConfigHomeDir(), 'keybindings.json')
 }
 
 /**

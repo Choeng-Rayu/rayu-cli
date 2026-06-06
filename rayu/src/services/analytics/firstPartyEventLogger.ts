@@ -140,7 +140,7 @@ export async function shutdown1PEventLogging(): Promise<void> {
  */
 export function is1PEventLoggingEnabled(): boolean {
   // Respect standard analytics opt-outs
-  return !isAnalyticsDisabled()
+  return !isAnalyticsDisabled() && !!process.env.RAYU_EVENT_LOGGING_URL
 }
 
 /**
@@ -221,7 +221,7 @@ export function logEventTo1P(
     return
   }
 
-  if (!firstPartyEventLogger || isSinkKilled('firstParty')) {
+  if (!firstPartyEventLogger || isSinkKilled('rayu')) {
     return
   }
 
@@ -259,7 +259,7 @@ export function logGrowthBookExperimentTo1P(
     return
   }
 
-  if (!firstPartyEventLogger || isSinkKilled('firstParty')) {
+  if (!firstPartyEventLogger || isSinkKilled('rayu')) {
     return
   }
 
@@ -341,7 +341,7 @@ export function initialize1PEventLogging(): void {
   // Build our own resource for 1P event logging with minimal attributes
   const platform = getPlatform()
   const attributes: Record<string, string> = {
-    [ATTR_SERVICE_NAME]: 'claude-code',
+    [ATTR_SERVICE_NAME]: 'rayu',
     [ATTR_SERVICE_VERSION]: MACRO.VERSION,
   }
 
@@ -365,7 +365,7 @@ export function initialize1PEventLogging(): void {
     maxAttempts: batchConfig.maxAttempts,
     path: batchConfig.path,
     baseUrl: batchConfig.baseUrl,
-    isKilled: () => isSinkKilled('firstParty'),
+    isKilled: () => isSinkKilled('rayu'),
   })
   firstPartyEventLoggerProvider = new LoggerProvider({
     resource,
@@ -383,7 +383,7 @@ export function initialize1PEventLogging(): void {
   // because logs.getLogger() returns a logger from the global provider, which is
   // separate and used for customer telemetry.
   firstPartyEventLogger = firstPartyEventLoggerProvider.getLogger(
-    'com.anthropic.claude_code.events',
+    'io.rayu.events',
     MACRO.VERSION,
   )
 }

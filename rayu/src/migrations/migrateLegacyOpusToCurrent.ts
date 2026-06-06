@@ -27,7 +27,7 @@ import {
  * project.
  */
 export function migrateLegacyOpusToCurrent(): void {
-  if (getAPIProvider() !== 'firstParty') {
+  if (getAPIProvider() !== 'anthropic') {
     return
   }
 

@@ -8,15 +8,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 
 // Configuration schemas and types
 export const ConfigScopeSchema = lazySchema(() =>
-  z.enum([
-    'local',
-    'user',
-    'project',
-    'dynamic',
-    'enterprise',
-    'claudeai',
-    'managed',
-  ]),
+  z.enum(['local', 'user', 'project', 'dynamic', 'enterprise', 'managed']),
 )
 export type ConfigScope = z.infer<ReturnType<typeof ConfigScopeSchema>>
 
@@ -112,15 +104,6 @@ export const McpSdkServerConfigSchema = lazySchema(() =>
   }),
 )
 
-// Config type for Claude.ai proxy servers
-export const McpClaudeAIProxyServerConfigSchema = lazySchema(() =>
-  z.object({
-    type: z.literal('claudeai-proxy'),
-    url: z.string(),
-    id: z.string(),
-  }),
-)
-
 export const McpServerConfigSchema = lazySchema(() =>
   z.union([
     McpStdioServerConfigSchema(),
@@ -130,7 +113,6 @@ export const McpServerConfigSchema = lazySchema(() =>
     McpHTTPServerConfigSchema(),
     McpWebSocketServerConfigSchema(),
     McpSdkServerConfigSchema(),
-    McpClaudeAIProxyServerConfigSchema(),
   ]),
 )
 
@@ -154,9 +136,6 @@ export type McpWebSocketServerConfig = z.infer<
 >
 export type McpSdkServerConfig = z.infer<
   ReturnType<typeof McpSdkServerConfigSchema>
->
-export type McpClaudeAIProxyServerConfig = z.infer<
-  ReturnType<typeof McpClaudeAIProxyServerConfigSchema>
 >
 export type McpServerConfig = z.infer<ReturnType<typeof McpServerConfigSchema>>
 

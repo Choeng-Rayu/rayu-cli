@@ -5,19 +5,19 @@
 import { access, chmod, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { type ReleaseChannel, saveGlobalConfig } from './config.js'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 import { getErrnoCode } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import { logError } from './log.js'
 import { jsonStringify } from './slowOperations.js'
 
-// Lazy getters: getClaudeConfigHomeDir() is memoized and reads process.env.
+// Lazy getters: getRayuConfigHomeDir() is memoized and reads process.env.
 // Evaluating at module scope would capture the value before entrypoints like
-// hfi.tsx get a chance to set CLAUDE_CONFIG_DIR in main(), and would also
+// hfi.tsx get a chance to set RAYU_CONFIG_DIR in main(), and would also
 // populate the memoize cache with that stale value for all 150+ other callers.
 function getLocalInstallDir(): string {
-  return join(getClaudeConfigHomeDir(), 'local')
+  return join(getRayuConfigHomeDir(), 'local')
 }
 export function getLocalClaudePath(): string {
   return join(getLocalInstallDir(), 'claude')
@@ -28,7 +28,7 @@ export function getLocalClaudePath(): string {
  */
 export function isRunningFromLocalInstallation(): boolean {
   const execPath = process.argv[1] || ''
-  return execPath.includes('/.claude/local/node_modules/')
+  return execPath.includes('/.rayu/local/node_modules/')
 }
 
 /**

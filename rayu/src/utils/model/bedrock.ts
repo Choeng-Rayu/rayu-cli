@@ -70,7 +70,7 @@ async function createBedrockClient() {
   // This ensures we query profiles from the same region the client will use
   let region = getAWSRegion()
 
-  const skipAuth = isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)
+  const skipAuth = isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH)
 
   // Check for Bearer token in providers.json (Rayu config) — primary auth source
   // for users who configured via /connect → AWS Bedrock.
@@ -132,7 +132,7 @@ export async function createBedrockRuntimeClient() {
     '@aws-sdk/client-bedrock-runtime'
   )
   const region = getAWSRegion()
-  const skipAuth = isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)
+  const skipAuth = isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH)
 
   const clientConfig: ConstructorParameters<typeof BedrockRuntimeClient>[0] = {
     region,

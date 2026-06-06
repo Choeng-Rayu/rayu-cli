@@ -42,9 +42,9 @@ export function preconnectAnthropicApi(): void {
 
   // Skip if using a cloud provider — different endpoint + auth
   if (
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+    isEnvTruthy(process.env.RAYU_USE_BEDROCK) ||
+    isEnvTruthy(process.env.RAYU_USE_VERTEX) ||
+    isEnvTruthy(process.env.RAYU_USE_FOUNDRY)
   ) {
     return
   }

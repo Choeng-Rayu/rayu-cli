@@ -678,7 +678,7 @@ export function REPL({
 
   // Note: standaloneAgentContext is initialized in main.tsx (via initialState) or
   // ResumeConversation.tsx (via setAppState before rendering REPL) to avoid
-  // useEffect-based state initialization on mount (per CLAUDE.md guidelines)
+  // useEffect-based state initialization on mount (per RAYU.md guidelines)
 
   // Local state for commands (hot-reloadable when skill files change)
   const [localCommands, setLocalCommands] = useState(initialCommands);
@@ -1656,7 +1656,7 @@ export function REPL({
     if (wt.creationDurationMs < 15_000) return;
     worktreeTipShownRef.current = true;
     const secs = Math.round(wt.creationDurationMs / 1000);
-    setMessages(prev => [...prev, createSystemMessage(`Worktree creation took ${secs}s. For large repos, set \`worktree.sparsePaths\` in .claude/settings.json to check out only the directories you need — e.g. \`{"worktree": {"sparsePaths": ["src", "packages/foo"]}}\`.`, 'info')]);
+    setMessages(prev => [...prev, createSystemMessage(`Worktree creation took ${secs}s. For large repos, set \`worktree.sparsePaths\` in .rayu/settings.json to check out only the directories you need — e.g. \`{"worktree": {"sparsePaths": ["src", "packages/foo"]}}\`.`, 'info')]);
   }, [setMessages]);
 
   // Hide spinner when the only in-progress tool is Sleep
@@ -1976,8 +1976,8 @@ export function REPL({
   // before onQuery builds its own context, and discovery on turn N must
   // still attribute a SkillTool call on turn N+k. Cleared in clearConversation.
   const discoveredSkillNamesRef = useRef(new Set<string>());
-  // Session-level dedup for nested_memory CLAUDE.md attachments.
-  // readFileState is a 100-entry LRU; once it evicts a CLAUDE.md path,
+  // Session-level dedup for nested_memory RAYU.md attachments.
+  // readFileState is a 100-entry LRU; once it evicts a RAYU.md path,
   // the next discovery cycle re-injects it. Cleared in clearConversation.
   const loadedNestedMemoryPathsRef = useRef(new Set<string>());
 
@@ -3817,13 +3817,13 @@ export function REPL({
     // bottom right corner of the screen if the API key is invalid.
     void reverify();
 
-    // Populate readFileState with CLAUDE.md files at startup
+    // Populate readFileState with RAYU.md files at startup
     const memoryFiles = await getMemoryFiles();
     if (memoryFiles.length > 0) {
       const fileList = memoryFiles.map(f => `  [${f.type}] ${f.path} (${f.content.length} chars)${f.parent ? ` (included by ${f.parent})` : ''}`).join('\n');
-      logForDebugging(`Loaded ${memoryFiles.length} CLAUDE.md/rules files:\n${fileList}`);
+      logForDebugging(`Loaded ${memoryFiles.length} RAYU.md/rules files:\n${fileList}`);
     } else {
-      logForDebugging('No CLAUDE.md/rules files found');
+      logForDebugging('No RAYU.md/rules files found');
     }
     for (const file of memoryFiles) {
       // When the injected content doesn't match disk (stripped HTML comments,
@@ -3865,7 +3865,7 @@ export function REPL({
   // empty to non-empty, not on every length change -- otherwise a render loop
   // (concurrent onQuery thrashing, etc.) spams saveGlobalConfig, which hits
   // ELOCKED under concurrent sessions and falls back to unlocked writes.
-  // That write storm is the primary trigger for ~/.claude.json corruption
+  // That write storm is the primary trigger for ~/.rayu/config.json corruption
   // (GH #3117).
   const hasCountedQueueUseRef = useRef(false);
   useEffect(() => {
@@ -4067,7 +4067,7 @@ export function REPL({
     onSubmitMessage: handleIncomingPrompt
   });
 
-  // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
+  // Scheduled tasks from .rayu/scheduled_tasks.json (CronCreate/Delete/List)
   if (feature('AGENT_TRIGGERS')) {
     // Assistant mode bypasses the isLoading gate (the proactive tick →
     // Sleep → tick loop would otherwise starve the scheduler).

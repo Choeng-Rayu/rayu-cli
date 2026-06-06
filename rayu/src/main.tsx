@@ -23,7 +23,6 @@ import { Command as CommanderCommand, InvalidArgumentError, Option } from 'node_
 import chalk from 'chalk';
 import { readFileSync } from 'fs';
 import mapValues from 'lodash-es/mapValues.js';
-import pickBy from 'lodash-es/pickBy.js';
 import uniqBy from 'lodash-es/uniqBy.js';
 import React from 'react';
 import { getOauthConfig } from './constants/oauth.js';
@@ -141,10 +140,7 @@ import { validateUuid } from './utils/uuid.js';
 import { registerMcpAddCommand } from 'src/commands/mcp/addCommand.js';
 import { registerMcpXaaIdpCommand } from 'src/commands/mcp/xaaIdpCommand.js';
 import { logPermissionContextForAnts } from 'src/services/internalLogging.js';
-import { fetchClaudeAIMcpConfigsIfEligible } from 'src/services/mcp/claudeai.js';
-import { clearServerCache } from 'src/services/mcp/client.js';
-import { areMcpConfigsAllowedWithEnterpriseMcpConfig, dedupClaudeAiMcpServers, doesEnterpriseMcpConfigExist, filterMcpServersByPolicy, getClaudeCodeMcpConfigs, getMcpServerSignature, parseMcpConfig, parseMcpConfigFromFilePath } from 'src/services/mcp/config.js';
-import { excludeCommandsByServer, excludeResourcesByServer } from 'src/services/mcp/utils.js';
+import { areMcpConfigsAllowedWithEnterpriseMcpConfig, doesEnterpriseMcpConfigExist, filterMcpServersByPolicy, getRayuMcpConfigs, parseMcpConfig, parseMcpConfigFromFilePath } from 'src/services/mcp/config.js';
 import { isXaaEnabled } from 'src/services/mcp/xaaIdpLogin.js';
 import { getRelevantTips } from 'src/services/tips/tipRegistry.js';
 import { logContextMetrics } from 'src/utils/api.js';
@@ -405,10 +401,10 @@ export function startDeferredPrefetches(): void {
   void getUserContext();
   prefetchSystemContextIfSafe();
   void getRelevantTips();
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) && !isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)) {
+  if (isEnvTruthy(process.env.RAYU_USE_BEDROCK) && !isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH)) {
     void prefetchAwsCredentialsAndBedRockInfoIfSafe();
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) && !isEnvTruthy(process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH)) {
+  if (isEnvTruthy(process.env.RAYU_USE_VERTEX) && !isEnvTruthy(process.env.RAYU_SKIP_VERTEX_AUTH)) {
     void prefetchGcpCredentialsIfSafe();
   }
   void countFilesRoundedRg(getCwd(), AbortSignal.timeout(3000), []);
@@ -561,7 +557,7 @@ const _pendingAssistantChat: PendingAssistantChat | undefined = feature('KAIROS'
   discover: false
 } : undefined;
 
-// `claude ssh <host> [dir]` — parsed from argv early (same pattern as
+// `rayu ssh <host> [dir]` — parsed from argv early (same pattern as
 // DIRECT_CONNECT above) so the main command path can pick it up and hand
 // the REPL an SSH-backed session instead of a local one.
 type PendingSSH = {
@@ -699,7 +695,7 @@ export async function main() {
     }
   }
 
-  // `claude ssh <host> [dir]` — strip from argv so the main command handler
+  // `rayu ssh <host> [dir]` — strip from argv so the main command handler
   // runs (full interactive TUI), stash the host/dir for the REPL branch at
   // ~line 3720 to pick up. Headless (-p) mode not supported in v1: SSH
   // sessions need the local REPL to drive them (interrupt, permissions).
@@ -708,7 +704,7 @@ export async function main() {
     // SSH-specific flags can appear before the host positional (e.g.
     // `ssh --permission-mode auto host /tmp` — standard POSIX flags-before-
     // positionals). Pull them all out BEFORE checking whether a host was
-    // given, so `claude ssh --permission-mode auto host` and `claude ssh host
+    // given, so `rayu ssh --permission-mode auto host` and `rayu ssh host
     // --permission-mode auto` are equivalent. The host check below only needs
     // to guard against `-h`/`--help` (which commander should handle).
     if (rawCliArgs[0] === 'ssh') {
@@ -734,7 +730,7 @@ export async function main() {
       }
       // Forward session-resume + model flags to the remote CLI's initial spawn.
       // --continue/-c and --resume <uuid> operate on the REMOTE session history
-      // (which persists under the remote's ~/.claude/projects/<cwd>/).
+      // (which persists under the remote's ~/.rayu/projects/<cwd>/).
       // --model controls which model the remote uses.
       const extractFlag = (flag: string, opts: {
         hasValue?: boolean;
@@ -784,7 +780,7 @@ export async function main() {
       // Headless (-p) mode is not supported with SSH in v1 — reject early
       // so the flag doesn't silently cause local execution.
       if (rest.includes('-p') || rest.includes('--print')) {
-        process.stderr.write('Error: headless (-p/--print) mode is not supported with claude ssh\n');
+        process.stderr.write('Error: headless (-p/--print) mode is not supported with rayu ssh\n');
         gracefulShutdownSync(1);
         return;
       }
@@ -973,7 +969,7 @@ async function run(): Promise<CommanderCommand> {
     // If not provided but flag is present, value will be true
     // The actual filtering is handled in debug.ts by parsing process.argv
     return true;
-  }).addOption(new Option('-d2e, --debug-to-stderr', 'Enable debug mode (to stderr)').argParser(Boolean).hideHelp()).option('--debug-file <path>', 'Write debug logs to a specific file path (implicitly enables debug mode)', () => true).option('--verbose', 'Override verbose mode setting from config', () => true).option('-p, --print', 'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run with the -p mode. Only use this flag in directories you trust.', () => true).option('--bare', 'Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.', () => true).addOption(new Option('--init', 'Run Setup hooks with init trigger, then continue').hideHelp()).addOption(new Option('--init-only', 'Run Setup and SessionStart:startup hooks, then exit').hideHelp()).addOption(new Option('--maintenance', 'Run Setup hooks with maintenance trigger, then continue').hideHelp()).addOption(new Option('--output-format <format>', 'Output format (only works with --print): "text" (default), "json" (single result), or "stream-json" (realtime streaming)').choices(['text', 'json', 'stream-json'])).addOption(new Option('--json-schema <schema>', 'JSON Schema for structured output validation. ' + 'Example: {"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}').argParser(String)).option('--include-hook-events', 'Include all hook lifecycle events in the output stream (only works with --output-format=stream-json)', () => true).option('--include-partial-messages', 'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)', () => true).addOption(new Option('--input-format <format>', 'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)').choices(['text', 'stream-json'])).option('--mcp-debug', '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)', () => true).option('--dangerously-skip-permissions', 'Bypass all permission checks. Recommended only for sandboxes with no internet access.', () => true).option('--allow-dangerously-skip-permissions', 'Enable bypassing all permission checks as an option, without it being enabled by default. Recommended only for sandboxes with no internet access.', () => true).addOption(new Option('--thinking <mode>', 'Thinking mode: enabled (equivalent to adaptive), disabled').choices(['enabled', 'adaptive', 'disabled']).hideHelp()).addOption(new Option('--max-thinking-tokens <tokens>', '[DEPRECATED. Use --thinking instead for newer models] Maximum number of thinking tokens (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-turns <turns>', 'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-budget-usd <amount>', 'Maximum dollar amount to spend on API calls (only works with --print)').argParser(value => {
+  }).addOption(new Option('-d2e, --debug-to-stderr', 'Enable debug mode (to stderr)').argParser(Boolean).hideHelp()).option('--debug-file <path>', 'Write debug logs to a specific file path (implicitly enables debug mode)', () => true).option('--verbose', 'Override verbose mode setting from config', () => true).option('-p, --print', 'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Rayu is run with the -p mode. Only use this flag in directories you trust.', () => true).option('--bare', 'Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and RAYU.md auto-discovery. Sets RAYU_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (RAYU.md dirs), --mcp-config, --settings, --agents, --plugin-dir.', () => true).addOption(new Option('--init', 'Run Setup hooks with init trigger, then continue').hideHelp()).addOption(new Option('--init-only', 'Run Setup and SessionStart:startup hooks, then exit').hideHelp()).addOption(new Option('--maintenance', 'Run Setup hooks with maintenance trigger, then continue').hideHelp()).addOption(new Option('--output-format <format>', 'Output format (only works with --print): "text" (default), "json" (single result), or "stream-json" (realtime streaming)').choices(['text', 'json', 'stream-json'])).addOption(new Option('--json-schema <schema>', 'JSON Schema for structured output validation. ' + 'Example: {"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}').argParser(String)).option('--include-hook-events', 'Include all hook lifecycle events in the output stream (only works with --output-format=stream-json)', () => true).option('--include-partial-messages', 'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)', () => true).addOption(new Option('--input-format <format>', 'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)').choices(['text', 'stream-json'])).option('--mcp-debug', '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)', () => true).option('--dangerously-skip-permissions', 'Bypass all permission checks. Recommended only for sandboxes with no internet access.', () => true).option('--allow-dangerously-skip-permissions', 'Enable bypassing all permission checks as an option, without it being enabled by default. Recommended only for sandboxes with no internet access.', () => true).addOption(new Option('--thinking <mode>', 'Thinking mode: enabled (equivalent to adaptive), disabled').choices(['enabled', 'adaptive', 'disabled']).hideHelp()).addOption(new Option('--max-thinking-tokens <tokens>', '[DEPRECATED. Use --thinking instead for newer models] Maximum number of thinking tokens (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-turns <turns>', 'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-budget-usd <amount>', 'Maximum dollar amount to spend on API calls (only works with --print)').argParser(value => {
     const amount = Number(value);
     if (isNaN(amount) || amount <= 0) {
       throw new Error('--max-budget-usd must be a positive number greater than 0');
@@ -999,20 +995,20 @@ async function run(): Promise<CommanderCommand> {
     return value;
   })).option('--agent <agent>', `Agent for the current session. Overrides the 'agent' setting.`).option('--betas <betas...>', 'Beta headers to include in API requests (API key users only)').option('--fallback-model <model>', 'Enable automatic fallback to specified model when default model is overloaded (only works with --print)').addOption(new Option('--workload <tag>', 'Workload tag for billing-header attribution (cc_workload). Process-scoped; set by SDK daemon callers that spawn subprocesses for cron work. (only works with --print)').hideHelp()).option('--settings <file-or-json>', 'Path to a settings JSON file or a JSON string to load additional settings from').option('--add-dir <directories...>', 'Additional directories to allow tool access to').option('--ide', 'Automatically connect to IDE on startup if exactly one valid IDE is available', () => true).option('--strict-mcp-config', 'Only use MCP servers from --mcp-config, ignoring all other MCP configurations', () => true).option('--session-id <uuid>', 'Use a specific session ID for the conversation (must be a valid UUID)').option('-n, --name <name>', 'Set a display name for this session (shown in /resume and terminal title)').option('--agents <json>', 'JSON object defining custom agents (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).')
   // gh-33508: <paths...> (variadic) consumed everything until the next
-  // --flag. `claude --plugin-dir /path mcp add --transport http` swallowed
+  // --flag. `rayu --plugin-dir /path mcp add --transport http` swallowed
   // `mcp` and `add` as paths, then choked on --transport as an unknown
   // top-level option. Single-value + collect accumulator means each
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
-  .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Claude in Chrome integration').option('--no-chrome', 'Disable Claude in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
+  .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Rayu in Chrome integration').option('--no-chrome', 'Disable Rayu in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
     profileCheckpoint('action_handler_start');
 
     // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
-    // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
+    // gates fire (RAYU.md, skills, hooks inside executeHooks, agent
     // dir-walk). Must be set before setup() / any of the gated work runs.
     if ((options as {
       bare?: boolean;
     }).bare) {
-      process.env.CLAUDE_CODE_SIMPLE = '1';
+      process.env.RAYU_SIMPLE = '1';
     }
 
     // Ignore "code" as a prompt - treat it the same as no prompt
@@ -1030,7 +1026,7 @@ async function run(): Promise<CommanderCommand> {
       });
     }
 
-    // Assistant mode: when .claude/settings.json has assistant: true AND
+    // Assistant mode: when .rayu/settings.json has assistant: true AND
     // the tengu_kairos GrowthBook gate is on, force brief on. Permission
     // mode is left to the user — settings defaultMode or --permission-mode
     // apply as normal. REPL-typed messages already default to 'next'
@@ -1040,10 +1036,10 @@ async function run(): Promise<CommanderCommand> {
     // kairosEnabled is computed once here and reused at the
     // getAssistantSystemPromptAddendum() call site further down.
     //
-    // Trust gate: .claude/settings.json is attacker-controllable in an
+    // Trust gate: .rayu/settings.json is attacker-controllable in an
     // untrusted clone. We run ~1000 lines before showSetupScreens() shows
     // the trust dialog, and by then we've already appended
-    // .claude/agents/assistant.md to the system prompt. Refuse to activate
+    // .rayu/agents/assistant.md to the system prompt. Refuse to activate
     // until the directory has been explicitly trusted.
     let kairosEnabled = false;
     let assistantTeamContext: Awaited<ReturnType<NonNullable<typeof assistantModule>['initializeAssistantTeam']>> | undefined;
@@ -1505,7 +1501,7 @@ async function run(): Promise<CommanderCommand> {
         // Enforce managed policy (allowedMcpServers / deniedMcpServers) on
         // --mcp-config servers. Without this, the CLI flag bypasses the
         // enterprise allowlist that user/project/local configs go through in
-        // getClaudeCodeMcpConfigs — callers spread dynamicMcpConfig back on
+        // getRayuMcpConfigs — callers spread dynamicMcpConfig back on
         // top of filtered results. Filter here at the source so all
         // downstream consumers see the policy-filtered set.
         const {
@@ -1522,7 +1518,7 @@ async function run(): Promise<CommanderCommand> {
       }
     }
 
-    // Extract Claude in Chrome option and enforce claude.ai subscriber check (unless user is ant)
+    // Extract Rayu in Chrome option and enforce claude.ai subscriber check (unless user is ant)
     const chromeOpts = options as {
       chrome?: boolean;
     };
@@ -1553,10 +1549,10 @@ async function run(): Promise<CommanderCommand> {
         logEvent('tengu_claude_in_chrome_setup_failed', {
           platform: platform as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
         });
-        logForDebugging(`[Claude in Chrome] Error: ${error}`);
+        logForDebugging(`[Rayu in Chrome] Error: ${error}`);
         logError(error);
         // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.error(`Error: Failed to run with Claude in Chrome.`);
+        console.error(`Error: Failed to run with Rayu in Chrome.`);
         process.exit(1);
       }
     } else if (autoEnableClaudeInChrome) {
@@ -1572,7 +1568,7 @@ async function run(): Promise<CommanderCommand> {
         appendSystemPrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${hint}` : hint;
       } catch (error) {
         // Silently skip any errors for the auto-enable
-        logForDebugging(`[Claude in Chrome] Error (auto-enable): ${error}`);
+        logForDebugging(`[Rayu in Chrome] Error (auto-enable): ${error}`);
       }
     }
 
@@ -1629,7 +1625,7 @@ async function run(): Promise<CommanderCommand> {
       }
     }
 
-    // Store additional directories for CLAUDE.md loading (controlled by env var)
+    // Store additional directories for RAYU.md loading (controlled by env var)
     setAdditionalDirectoriesForClaudeMd(addDir);
 
     // Channel server allowlist from --channels flag — servers whose
@@ -1777,27 +1773,8 @@ async function run(): Promise<CommanderCommand> {
     });
     void assertMinVersion();
 
-    // claude.ai config fetch: -p mode only (interactive uses useManageMCPConnections
-    // two-phase loading). Kicked off here to overlap with setup(); awaited
-    // before runHeadless so single-turn -p sees connectors. Skipped under
-    // enterprise/strict MCP to preserve policy boundaries.
-    const claudeaiConfigPromise: Promise<Record<string, ScopedMcpServerConfig>> = isNonInteractiveSession && !strictMcpConfig && !doesEnterpriseMcpConfigExist() &&
-    // --bare / SIMPLE: skip claude.ai proxy servers (datadog, Gmail,
-    // Slack, BigQuery, PubMed — 6-14s each to connect). Scripted calls
-    // that need MCP pass --mcp-config explicitly.
-    !isBareMode() ? fetchClaudeAIMcpConfigsIfEligible().then(configs => {
-      const {
-        allowed,
-        blocked
-      } = filterMcpServersByPolicy(configs);
-      if (blocked.length > 0) {
-        process.stderr.write(`Warning: claude.ai MCP ${plural(blocked.length, 'server')} blocked by enterprise policy: ${blocked.join(', ')}\n`);
-      }
-      return allowed;
-    }) : Promise.resolve({});
-
     // Kick off MCP config loading early (safe - just reads files, no execution).
-    // Both interactive and -p use getClaudeCodeMcpConfigs (local file reads only).
+    // Both interactive and -p use getRayuMcpConfigs (local file reads only).
     // The local promise is awaited later (before prefetchAllMcpResources) to
     // overlap config I/O with setup(), commands loading, and trust dialog.
     logForDebugging('[STARTUP] Loading MCP configs...');
@@ -1808,7 +1785,7 @@ async function run(): Promise<CommanderCommand> {
     // allMcpConfigs downstream so it survives this skip.
     const mcpConfigPromise = (strictMcpConfig || isBareMode() ? Promise.resolve({
       servers: {} as Record<string, ScopedMcpServerConfig>
-    }) : getClaudeCodeMcpConfigs(dynamicMcpConfig)).then(result => {
+    }) : getRayuMcpConfigs(dynamicMcpConfig)).then(result => {
       mcpConfigResolvedMs = Date.now() - mcpConfigStart;
       return result;
     });
@@ -1951,7 +1928,7 @@ async function run(): Promise<CommanderCommand> {
     }
     if (getIsNonInteractiveSession()) {
       // Apply full merged settings env now (including project-scoped
-      // .claude/settings.json PATH/GIT_DIR/GIT_WORK_TREE) so gitExe() and
+      // .rayu/settings.json PATH/GIT_DIR/GIT_WORK_TREE) so gitExe() and
       // the git spawn below see it. Trust is implicit in -p mode; the
       // docstring at managedEnv.ts:96-97 says this applies "potentially
       // dangerous environment variables such as LD_PRELOAD, PATH" from all
@@ -1976,7 +1953,7 @@ async function run(): Promise<CommanderCommand> {
       // (same gate as prefetchSystemContextIfSafe).
       void getSystemContext();
       // Kick getUserContext now too — its first await (fs.readFile in
-      // getMemoryFiles) yields naturally, so the CLAUDE.md directory walk
+      // getMemoryFiles) yields naturally, so the RAYU.md directory walk
       // runs during the ~280ms overlap window before the context
       // Promise.all join in print.ts. The void getUserContext() in
       // startDeferredPrefetches becomes a memoize cache-hit.
@@ -2296,9 +2273,8 @@ async function run(): Promise<CommanderCommand> {
         });
       }
 
-      // Validate that the active token's org matches forceLoginOrgUUID (if set
-      // in managed settings). Runs after onboarding so managed settings and
-      // login state are fully loaded.
+      // Rayu provider credentials are resolved from Rayu config; the legacy org
+      // validator is a compatibility no-op.
       const orgValidation = await validateForceLoginOrg();
       if (!orgValidation.valid) {
         await exitWithError(root, orgValidation.message);
@@ -2410,24 +2386,7 @@ async function run(): Promise<CommanderCommand> {
       tools: [],
       commands: []
     }) : prefetchAllMcpResources(regularMcpConfigs);
-    const claudeaiMcpPromise = isNonInteractiveSession ? Promise.resolve({
-      clients: [],
-      tools: [],
-      commands: []
-    }) : claudeaiConfigPromise.then(configs => Object.keys(configs).length > 0 ? prefetchAllMcpResources(configs) : {
-      clients: [],
-      tools: [],
-      commands: []
-    });
-    // Merge with dedup by name: each prefetchAllMcpResources call independently
-    // adds helper tools (ListMcpResourcesTool, ReadMcpResourceTool) via
-    // local dedup flags, so merging two calls can yield duplicates. print.ts
-    // already uniqBy's the final tool pool, but dedup here keeps appState clean.
-    const mcpPromise = Promise.all([localMcpPromise, claudeaiMcpPromise]).then(([local, claudeai]) => ({
-      clients: [...local.clients, ...claudeai.clients],
-      tools: uniqBy([...local.tools, ...claudeai.tools], 'name'),
-      commands: uniqBy([...local.commands, ...claudeai.commands], 'name')
-    }));
+    const mcpPromise = localMcpPromise;
 
     // Start hooks early so they run in parallel with MCP connections.
     // Skip for initOnly/init/maintenance (handled separately), non-interactive
@@ -2523,7 +2482,7 @@ async function run(): Promise<CommanderCommand> {
     void logPermissionContextForAnts(null, 'initialization');
     logManagedSettings();
 
-    // Register PID file for concurrent-session detection (~/.claude/sessions/)
+    // Register PID file for concurrent-session detection (~/.rayu/sessions/)
     // and fire multi-clauding telemetry. Lives here (not init.ts) so only the
     // REPL path registers — not subcommands like `claude doctor`. Chained:
     // count must run after register's write completes or it misses our own file.
@@ -2721,92 +2680,11 @@ async function run(): Promise<CommanderCommand> {
       // "late-connecting servers visible next turn" doesn't help. SDK init
       // message and turn-1 tool list both need configured MCP tools present.
       // Zero-server case is free via the early return in connectMcpBatch.
-      // Connectors parallelize inside getMcpToolsCommandsAndResources
-      // (processBatched with Promise.all). claude.ai is awaited too — its
-      // fetch was kicked off early (line ~2558) so only residual time blocks
-      // here. --bare skips claude.ai entirely for perf-sensitive scripts.
+      // Connections parallelize inside getMcpToolsCommandsAndResources
+      // (processBatched with Promise.all).
       profileCheckpoint('before_connectMcp');
       await connectMcpBatch(regularMcpConfigs, 'regular');
       profileCheckpoint('after_connectMcp');
-      // Dedup: suppress plugin MCP servers that duplicate a claude.ai
-      // connector (connector wins), then connect claude.ai servers.
-      // Bounded wait — #23725 made this blocking so single-turn -p sees
-      // connectors, but with 40+ slow connectors tengu_startup_perf p99
-      // climbed to 76s. If fetch+connect doesn't finish in time, proceed;
-      // the promise keeps running and updates headlessStore in the
-      // background so turn 2+ still sees connectors.
-      const CLAUDE_AI_MCP_TIMEOUT_MS = 5_000;
-      const claudeaiConnect = claudeaiConfigPromise.then(claudeaiConfigs => {
-        if (Object.keys(claudeaiConfigs).length > 0) {
-          const claudeaiSigs = new Set<string>();
-          for (const config of Object.values(claudeaiConfigs)) {
-            const sig = getMcpServerSignature(config);
-            if (sig) claudeaiSigs.add(sig);
-          }
-          const suppressed = new Set<string>();
-          for (const [name, config] of Object.entries(regularMcpConfigs)) {
-            if (!name.startsWith('plugin:')) continue;
-            const sig = getMcpServerSignature(config);
-            if (sig && claudeaiSigs.has(sig)) suppressed.add(name);
-          }
-          if (suppressed.size > 0) {
-            logForDebugging(`[MCP] Lazy dedup: suppressing ${suppressed.size} plugin server(s) that duplicate claude.ai connectors: ${[...suppressed].join(', ')}`);
-            // Disconnect before filtering from state. Only connected
-            // servers need cleanup — clearServerCache on a never-connected
-            // server triggers a real connect just to kill it (memoize
-            // cache-miss path, see useManageMCPConnections.ts:870).
-            for (const c of headlessStore.getState().mcp.clients) {
-              if (!suppressed.has(c.name) || c.type !== 'connected') continue;
-              c.client.onclose = undefined;
-              void clearServerCache(c.name, c.config).catch(() => {});
-            }
-            headlessStore.setState(prev => {
-              let {
-                clients,
-                tools,
-                commands,
-                resources
-              } = prev.mcp;
-              clients = clients.filter(c => !suppressed.has(c.name));
-              tools = tools.filter(t => !t.mcpInfo || !suppressed.has(t.mcpInfo.serverName));
-              for (const name of suppressed) {
-                commands = excludeCommandsByServer(commands, name);
-                resources = excludeResourcesByServer(resources, name);
-              }
-              return {
-                ...prev,
-                mcp: {
-                  ...prev.mcp,
-                  clients,
-                  tools,
-                  commands,
-                  resources
-                }
-              };
-            });
-          }
-        }
-        // Suppress claude.ai connectors that duplicate an enabled
-        // manual server (URL-signature match). Plugin dedup above only
-        // handles `plugin:*` keys; this catches manual `.mcp.json` entries.
-        // plugin:* must be excluded here — step 1 already suppressed
-        // those (claude.ai wins); leaving them in suppresses the
-        // connector too, and neither survives (gh-39974).
-        const nonPluginConfigs = pickBy(regularMcpConfigs, (_, n) => !n.startsWith('plugin:'));
-        const {
-          servers: dedupedClaudeAi
-        } = dedupClaudeAiMcpServers(claudeaiConfigs, nonPluginConfigs);
-        return connectMcpBatch(dedupedClaudeAi, 'claudeai');
-      });
-      let claudeaiTimer: ReturnType<typeof setTimeout> | undefined;
-      const claudeaiTimedOut = await Promise.race([claudeaiConnect.then(() => false), new Promise<boolean>(resolve => {
-        claudeaiTimer = setTimeout(r => r(true), CLAUDE_AI_MCP_TIMEOUT_MS, resolve);
-      })]);
-      if (claudeaiTimer) clearTimeout(claudeaiTimer);
-      if (claudeaiTimedOut) {
-        logForDebugging(`[MCP] claude.ai connectors not ready after ${CLAUDE_AI_MCP_TIMEOUT_MS}ms — proceeding; background connection continues`);
-      }
-      profileCheckpoint('after_connectMcp_claudeai');
 
       // In headless mode, start deferred prefetches immediately (no user typing delay)
       // --bare / SIMPLE: startDeferredPrefetches early-returns internally.
@@ -3155,7 +3033,7 @@ async function run(): Promise<CommanderCommand> {
         process.exit(1);
       }
     } else if (feature('DIRECT_CONNECT') && _pendingConnect?.url) {
-      // `claude connect <url>` — full interactive TUI connected to a remote server
+      // `rayu connect <url>` — full interactive TUI connected to a remote server
       let directConnectConfig;
       try {
         const session = await createDirectConnectSession({
@@ -3192,7 +3070,7 @@ async function run(): Promise<CommanderCommand> {
       }, renderAndRun);
       return;
     } else if (feature('SSH_REMOTE') && _pendingSSH?.host) {
-      // `claude ssh <host> [dir]` — probe remote, deploy binary if needed,
+      // `rayu ssh <host> [dir]` — probe remote, deploy binary if needed,
       // spawn ssh with unix-socket -R forward to a local auth proxy, hand
       // the REPL an SSHSession. Tools run remotely, UI renders locally.
       // `--local` skips probe/deploy/ssh and spawns the current binary
@@ -3414,7 +3292,7 @@ async function run(): Promise<CommanderCommand> {
         // Check if TUI mode is enabled - description is only optional in TUI mode
         const isRemoteTuiEnabled = getFeatureValue_CACHED_MAY_BE_STALE('tengu_remote_backend', false);
         if (!isRemoteTuiEnabled && !hasInitialPrompt) {
-          return await exitWithError(root, 'Error: --remote requires a description.\nUsage: claude --remote "your task description"', () => gracefulShutdown(1));
+          return await exitWithError(root, 'Error: --remote requires a description.\nUsage: rayu --remote "your task description"', () => gracefulShutdown(1));
         }
         logEvent('tengu_remote_create_session', {
           has_initial_prompt: String(hasInitialPrompt) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
@@ -3438,7 +3316,7 @@ async function run(): Promise<CommanderCommand> {
           // Original behavior: print session info and exit
           process.stdout.write(`Created remote session: ${createdSession.title}\n`);
           process.stdout.write(`View: ${getRemoteSessionUrl(createdSession.id)}?m=0\n`);
-          process.stdout.write(`Resume with: claude --teleport ${createdSession.id}\n`);
+          process.stdout.write(`Resume with: rayu --teleport ${createdSession.id}\n`);
           await gracefulShutdown(0);
           process.exit(0);
         }
@@ -3550,7 +3428,7 @@ async function run(): Promise<CommanderCommand> {
                   }
                 } else {
                   // No known paths - show original error
-                  throw new TeleportOperationError(`You must run claude --teleport ${teleport} from a checkout of ${sessionRepo}.`, chalk.red(`You must run claude --teleport ${teleport} from a checkout of ${chalk.bold(sessionRepo)}.\n`));
+                  throw new TeleportOperationError(`You must run rayu --teleport ${teleport} from a checkout of ${sessionRepo}.`, chalk.red(`You must run rayu --teleport ${teleport} from a checkout of ${chalk.bold(sessionRepo)}.\n`));
                 }
               }
             } else if (repoValidation.status === 'error') {
@@ -3776,7 +3654,7 @@ async function run(): Promise<CommanderCommand> {
       // knows the session originated externally. Linux xdg-open and
       // browsers with "always allow" set dispatch the link with no OS-level
       // confirmation, so this is the only signal the user gets that the
-      // prompt — and the working directory / CLAUDE.md it implies — came
+      // prompt — and the working directory / RAYU.md it implies — came
       // from an external source rather than something they typed.
       let deepLinkBanner: ReturnType<typeof createSystemMessage> | null = null;
       if (feature('LODESTONE')) {
@@ -3890,7 +3768,7 @@ async function run(): Promise<CommanderCommand> {
     return program;
   }
 
-  // claude mcp
+  // rayu mcp
 
   const mcp = program.command('mcp').description('Configure and manage MCP servers').configureHelp(createSortedHelpConfig()).enablePositionalOptions();
   mcp.command('serve').description(`Start the RAYU MCP server`).option('-d, --debug', 'Enable debug mode', () => true).option('--verbose', 'Override verbose mode setting from config', () => true).action(async ({
@@ -3943,14 +3821,6 @@ async function run(): Promise<CommanderCommand> {
     } = await import('./cli/handlers/mcp.js');
     await mcpAddJsonHandler(name, json, options);
   });
-  mcp.command('add-from-claude-desktop').description('Import MCP servers from Claude Desktop (Mac and WSL only)').option('-s, --scope <scope>', 'Configuration scope (local, user, or project)', 'local').action(async (options: {
-    scope?: string;
-  }) => {
-    const {
-      mcpAddFromDesktopHandler
-    } = await import('./cli/handlers/mcp.js');
-    await mcpAddFromDesktopHandler(options);
-  });
   mcp.command('reset-project-choices').description('Reset all approved and rejected project-scoped (.mcp.json) servers within this project').action(async () => {
     const {
       mcpResetChoicesHandler
@@ -3958,7 +3828,7 @@ async function run(): Promise<CommanderCommand> {
     await mcpResetChoicesHandler();
   });
 
-  // claude server
+  // rayu server
   if (feature('DIRECT_CONNECT')) {
     program.command('server').description('Start a RAYU session server').option('--port <number>', 'HTTP port', '0').option('--host <string>', 'Bind address', '0.0.0.0').option('--auth-token <token>', 'Bearer token for auth').option('--unix <path>', 'Listen on a unix domain socket').option('--workspace <dir>', 'Default working directory for sessions that do not specify cwd').option('--idle-timeout <ms>', 'Idle timeout for detached sessions in ms (0 = never expire)', '600000').option('--max-sessions <n>', 'Maximum concurrent sessions (0 = unlimited)', '32').action(async (opts: {
       port: string;
@@ -3994,7 +3864,7 @@ async function run(): Promise<CommanderCommand> {
       } = await import('./server/lockfile.js');
       const existing = await probeRunningServer();
       if (existing) {
-        process.stderr.write(`A claude server is already running (pid ${existing.pid}) at ${existing.httpUrl}\n`);
+        process.stderr.write(`A rayu server is already running (pid ${existing.pid}) at ${existing.httpUrl}\n`);
         process.exit(1);
       }
       const authToken = opts.authToken ?? `sk-ant-cc-${randomBytes(16).toString('base64url')}`;
@@ -4038,22 +3908,22 @@ async function run(): Promise<CommanderCommand> {
     });
   }
 
-  // `claude ssh <host> [dir]` — registered here only so --help shows it.
+  // `rayu ssh <host> [dir]` — registered here only so --help shows it.
   // The actual interactive flow is handled by early argv rewriting in main()
   // (parallels the DIRECT_CONNECT/cc:// pattern above). If commander reaches
   // this action it means the argv rewrite didn't fire (e.g. user ran
-  // `claude ssh` with no host) — just print usage.
+  // `rayu ssh` with no host) — just print usage.
   if (feature('SSH_REMOTE')) {
     program.command('ssh <host> [dir]').description('Run RAYU on a remote host over SSH. Deploys the binary and ' + 'tunnels API auth back through your local machine — no remote setup needed.').option('--permission-mode <mode>', 'Permission mode for the remote session').option('--dangerously-skip-permissions', 'Skip all permission prompts on the remote (dangerous)').option('--local', 'e2e test mode — spawn the child CLI locally (skip ssh/deploy). ' + 'Exercises the auth proxy and unix-socket plumbing without a remote host.').action(async () => {
       // Argv rewriting in main() should have consumed `ssh <host>` before
       // commander runs. Reaching here means host was missing or the
       // rewrite predicate didn't match.
-      process.stderr.write('Usage: claude ssh <user@host | ssh-config-alias> [dir]\n\n' + "Runs RAYU on a remote Linux host. You don't need to install\n" + 'anything on the remote or run `claude auth login` there — the binary is\n' + 'deployed over SSH and API auth tunnels back through your local machine.\n');
+      process.stderr.write('Usage: rayu ssh <user@host | ssh-config-alias> [dir]\n\n' + "Runs RAYU on a remote Linux host. You don't need to install\n" + 'anything on the remote or run `rayu connect` there — the binary is\n' + 'deployed over SSH and API auth tunnels back through your local machine.\n');
       process.exit(1);
     });
   }
 
-  // claude connect — subcommand only handles -p (headless) mode.
+  // rayu connect — subcommand only handles -p (headless) mode.
   // Interactive mode (without -p) is handled by early argv rewriting in main()
   // which redirects to the main command with full TUI support.
   if (feature('DIRECT_CONNECT')) {
@@ -4095,46 +3965,6 @@ async function run(): Promise<CommanderCommand> {
       await runConnectHeadless(connectConfig, prompt, opts.outputFormat, interactive);
     });
   }
-
-  // claude auth
-
-  const auth = program.command('auth').description('Manage authentication').configureHelp(createSortedHelpConfig());
-  auth.command('login').description('Sign in to your Anthropic account').option('--email <email>', 'Pre-populate email address on the login page').option('--sso', 'Force SSO login flow').option('--console', 'Use Anthropic Console (API usage billing) instead of Claude subscription').option('--claudeai', 'Use Claude subscription (default)').action(async ({
-    email,
-    sso,
-    console: useConsole,
-    claudeai
-  }: {
-    email?: string;
-    sso?: boolean;
-    console?: boolean;
-    claudeai?: boolean;
-  }) => {
-    const {
-      authLogin
-    } = await import('./cli/handlers/auth.js');
-    await authLogin({
-      email,
-      sso,
-      console: useConsole,
-      claudeai
-    });
-  });
-  auth.command('status').description('Show authentication status').option('--json', 'Output as JSON (default)').option('--text', 'Output as human-readable text').action(async (opts: {
-    json?: boolean;
-    text?: boolean;
-  }) => {
-    const {
-      authStatus
-    } = await import('./cli/handlers/auth.js');
-    await authStatus(opts);
-  });
-  auth.command('logout').description('Log out from your Anthropic account').action(async () => {
-    const {
-      authLogout
-    } = await import('./cli/handlers/auth.js');
-    await authLogout();
-  });
 
   /**
    * Helper function to handle marketplace command errors consistently.
@@ -4218,7 +4048,7 @@ async function run(): Promise<CommanderCommand> {
   });
 
   // Plugin uninstall command
-  pluginCmd.command('uninstall <plugin>').alias('remove').alias('rm').description('Uninstall an installed plugin').option('-s, --scope <scope>', 'Uninstall from scope: user, project, or local', 'user').option('--keep-data', "Preserve the plugin's persistent data directory (~/.claude/plugins/data/{id}/)").addOption(coworkOption()).action(async (plugin: string, options: {
+  pluginCmd.command('uninstall <plugin>').alias('remove').alias('rm').description('Uninstall an installed plugin').option('-s, --scope <scope>', 'Uninstall from scope: user, project, or local', 'user').option('--keep-data', "Preserve the plugin's persistent data directory (~/.rayu/plugins/data/{id}/)").addOption(coworkOption()).action(async (plugin: string, options: {
     scope?: string;
     cowork?: boolean;
     keepData?: boolean;
@@ -4263,17 +4093,6 @@ async function run(): Promise<CommanderCommand> {
     await pluginUpdateHandler(plugin, options);
   });
   // END ANT-ONLY
-
-  // Setup token command
-  program.command('setup-token').description('Set up a long-lived authentication token (requires Claude subscription)').action(async () => {
-    const [{
-      setupTokenHandler
-    }, {
-      createRoot
-    }] = await Promise.all([import('./cli/handlers/util.js'), import('./ink.js')]);
-    const root = await createRoot(getBaseRenderOptions(false));
-    await setupTokenHandler(root);
-  });
 
   // Agents command - list configured agents
   program.command('agents').description('List configured agents').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).').action(async () => {
@@ -4338,7 +4157,7 @@ async function run(): Promise<CommanderCommand> {
       // before commander runs. Reaching here means a root flag came first
       // (e.g. `--debug assistant`) and the position-0 predicate
       // didn't match. Print usage like the ssh stub does.
-      process.stderr.write('Usage: claude assistant [sessionId]\n\n' + 'Attach the REPL as a viewer client to a running bridge session.\n' + 'Omit sessionId to discover and pick from available sessions.\n');
+      process.stderr.write('Usage: rayu assistant [sessionId]\n\n' + 'Attach the REPL as a viewer client to a running bridge session.\n' + 'Omit sessionId to discover and pick from available sessions.\n');
       process.exit(1);
     });
   }
@@ -4354,7 +4173,7 @@ async function run(): Promise<CommanderCommand> {
     await doctorHandler(root);
   });
 
-  // claude update
+  // rayu update
   //
   // For SemVer-compliant versioning with build metadata (X.X.X+SHA):
   // - We perform exact string comparison (including SHA) to detect any change
@@ -4375,9 +4194,9 @@ async function run(): Promise<CommanderCommand> {
     await uninstall();
   });
 
-  // claude up — run the project's CLAUDE.md "# claude up" setup instructions.
+  // claude up — run the project's RAYU.md "# claude up" setup instructions.
   if ("external" === 'ant') {
-    program.command('up').description('[ANT-ONLY] Initialize or upgrade the local dev environment using the "# claude up" section of the nearest CLAUDE.md').action(async () => {
+    program.command('up').description('[ANT-ONLY] Initialize or upgrade the local dev environment using the "# claude up" section of the nearest RAYU.md').action(async () => {
       const {
         up
       } = await import('src/cli/up.js');
@@ -4385,10 +4204,10 @@ async function run(): Promise<CommanderCommand> {
     });
   }
 
-  // claude rollback (ant-only)
+  // rayu rollback (ant-only)
   // Rolls back to previous releases
   if ("external" === 'ant') {
-    program.command('rollback [target]').description('[ANT-ONLY] Roll back to a previous release\n\nExamples:\n  claude rollback                                    Go 1 version back from current\n  claude rollback 3                                  Go 3 versions back from current\n  claude rollback 2.0.73-dev.20251217.t190658        Roll back to a specific version').option('-l, --list', 'List recent published versions with ages').option('--dry-run', 'Show what would be installed without installing').option('--safe', 'Roll back to the server-pinned safe version (set by oncall during incidents)').action(async (target?: string, options?: {
+    program.command('rollback [target]').description('[ANT-ONLY] Roll back to a previous release\n\nExamples:\n  rayu rollback                                    Go 1 version back from current\n  rayu rollback 3                                  Go 3 versions back from current\n  rayu rollback 2.0.73-dev.20251217.t190658        Roll back to a specific version').option('-l, --list', 'List recent published versions with ages').option('--dry-run', 'Show what would be installed without installing').option('--safe', 'Roll back to the server-pinned safe version (set by oncall during incidents)').action(async (target?: string, options?: {
       list?: boolean;
       dryRun?: boolean;
       safe?: boolean;
@@ -4400,7 +4219,7 @@ async function run(): Promise<CommanderCommand> {
     });
   }
 
-  // claude install
+  // rayu install
   program.command('install [target]').description('Install RAYU native build. Use [target] to specify version (stable, latest, or specific version)').option('--force', 'Force installation even if already installed').action(async (target: string | undefined, options: {
     force?: boolean;
   }) => {
@@ -4433,13 +4252,13 @@ async function run(): Promise<CommanderCommand> {
       await errorHandler(number);
     });
 
-    // claude export
+    // rayu export
     program.command('export').description('[ANT-ONLY] Export a conversation to a text file.').usage('<source> <outputFile>').argument('<source>', 'Session ID, log index (0, 1, 2...), or path to a .json/.jsonl log file').argument('<outputFile>', 'Output file path for the exported text').addHelpText('after', `
 Examples:
-  $ claude export 0 conversation.txt                Export conversation at log index 0
-  $ claude export <uuid> conversation.txt           Export conversation by session ID
-  $ claude export input.json output.txt             Render JSON log file to text
-  $ claude export <uuid>.jsonl output.txt           Render JSONL session file to text`).action(async (source: string, outputFile: string) => {
+  $ rayu export 0 conversation.txt                Export conversation at log index 0
+  $ rayu export <uuid> conversation.txt           Export conversation by session ID
+  $ rayu export input.json output.txt             Render JSON log file to text
+  $ rayu export <uuid>.jsonl output.txt           Render JSONL session file to text`).action(async (source: string, outputFile: string) => {
       const {
         exportHandler
       } = await import('./cli/handlers/ant.js');
@@ -4497,7 +4316,7 @@ Examples:
       });
     }
 
-    // claude completion <shell>
+    // rayu completion <shell>
     program.command('completion <shell>', {
       hidden: true
     }).description('Generate shell completion script (bash, zsh, or fish)').option('--output <file>', 'Write completion script directly to a file instead of stdout').action(async (shell: string, opts: {

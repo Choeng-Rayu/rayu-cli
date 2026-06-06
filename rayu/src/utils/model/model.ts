@@ -145,9 +145,9 @@ export function getDefaultOpusModel(): ModelName {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
   // 3P providers (Bedrock, Vertex, Foundry) — kept as a separate branch
-  // even when values match, since 3P availability lags firstParty and
+  // even when values match, since 3P availability lags anthropic and
   // these will diverge again at the next model launch.
-  if (getAPIProvider() !== 'firstParty') {
+  if (getAPIProvider() !== 'anthropic') {
     return getModelStrings().opus46
   }
   return getModelStrings().opus46
@@ -159,7 +159,7 @@ export function getDefaultSonnetModel(): ModelName {
     return process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   }
   // Default to Sonnet 4.5 for 3P since they may not have 4.6 yet
-  if (getAPIProvider() !== 'firstParty') {
+  if (getAPIProvider() !== 'anthropic') {
     return getModelStrings().sonnet45
   }
   return getModelStrings().sonnet46
@@ -267,7 +267,7 @@ export function getDefaultMainLoopModel(): ModelName {
  * 'us.anthropic.claude-opus-4-6-v1:0'). Does not touch settings, so safe at
  * module top-level (see MODEL_COSTS in modelCost.ts).
  */
-export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
+export function anthropicNameToCanonical(name: ModelName): ModelShortName {
   name = name.toLowerCase()
   // Special cases for Claude 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-5 before 4)
@@ -331,8 +331,8 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
  */
 export function getCanonicalName(fullModelName: ModelName): ModelShortName {
   // Resolve overridden model IDs (e.g. Bedrock ARNs) back to canonical names.
-  // resolved is always a 1P-format ID, so firstPartyNameToCanonical can handle it.
-  return firstPartyNameToCanonical(resolveOverriddenModel(fullModelName))
+  // resolved is always a 1P-format ID, so anthropicNameToCanonical can handle it.
+  return anthropicNameToCanonical(resolveOverriddenModel(fullModelName))
 }
 
 // @[MODEL LAUNCH]: Update the default model description strings shown to users.
@@ -358,7 +358,7 @@ export function renderDefaultModelSetting(
 }
 
 export function getOpus46PricingSuffix(fastMode: boolean): string {
-  if (getAPIProvider() !== 'firstParty') return ''
+  if (getAPIProvider() !== 'anthropic') return ''
   const pricing = formatModelPricing(getOpus46CostTier(fastMode))
   const fastModeIndicator = fastMode ? ` (${LIGHTNING_BOLT})` : ''
   return ` ·${fastModeIndicator} ${pricing}`
@@ -368,7 +368,7 @@ export function isOpus1mMergeEnabled(): boolean {
   if (
     is1mContextDisabled() ||
     isProSubscriber() ||
-    getAPIProvider() !== 'firstParty'
+    getAPIProvider() !== 'anthropic'
   ) {
     return false
   }
@@ -528,7 +528,7 @@ export function parseUserSpecifiedModel(
   // strings pinned them in settings/env/--model/SDK before 4.5 launched.
   // 3P providers may not yet have 4.6 capacity, so pass through unchanged.
   if (
-    getAPIProvider() === 'firstParty' &&
+    getAPIProvider() === 'anthropic' &&
     isLegacyOpusFirstParty(modelString) &&
     isLegacyModelRemapEnabled()
   ) {

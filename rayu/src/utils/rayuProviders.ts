@@ -17,7 +17,7 @@ export type ProviderPreset = {
   id: string
   label: string
   kind: ProviderKind
-  /** Base URL for openai-compatible providers (omit for anthropic / local-prompt). */
+  /** Base URL for openai-compatible providers (omit for bedrock / local-prompt). */
   baseURL?: string
   /** Sensible default model id (used until the live catalog is fetched). */
   defaultModel?: string
@@ -29,9 +29,11 @@ export type ProviderPreset = {
   promptBaseURL?: boolean
 }
 
-// All confirmed OpenAI-compatible (tool calling + /v1/models), plus Anthropic.
+// All confirmed OpenAI-compatible providers (tool calling + /v1/models).
+// Rayu connects ONLY to OpenAI-compatible endpoints — there is no direct
+// first-party Anthropic provider, no Anthropic OAuth, and no AWS Bedrock
+// (Bedrock routes Claude via the Anthropic SDK, which Rayu does not use).
 export const PROVIDER_PRESETS: ProviderPreset[] = [
-  { id: 'anthropic', label: 'Anthropic (Claude)', kind: 'anthropic', envKeys: ['ANTHROPIC_API_KEY'] },
   {
     id: 'nvidia',
     label: 'NVIDIA NIM (integrate.api.nvidia.com)',
@@ -100,18 +102,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     label: 'Local / custom OpenAI-compatible endpoint',
     kind: 'openai-compatible',
     promptBaseURL: true,
-  },
-  {
-    id: 'bedrock',
-    label: 'AWS Bedrock',
-    kind: 'bedrock',
-    // Use base model IDs without region prefix — the /connect flow fetches
-    // the actual regional model IDs (us., apac., global., eu.) available in
-    // the user's region and stores them in fetchedModels. These base IDs are
-    // only used as initial fallbacks before the model fetch completes.
-    defaultModel: 'anthropic.claude-sonnet-4-20250514-v1:0',
-    smallFastModel: 'anthropic.claude-3-haiku-20240307-v1:0',
-    envKeys: ['AWS_BEARER_TOKEN_BEDROCK'],
   },
 ]
 

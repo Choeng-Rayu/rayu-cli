@@ -210,7 +210,7 @@ async function doDownloadUserSettings(
  * download a no-op there. Upload is independently guarded by getIsInteractive().
  */
 function isUsingOAuth(): boolean {
-  if (getAPIProvider() !== 'firstParty' || !isFirstPartyAnthropicBaseUrl()) {
+  if (getAPIProvider() !== 'anthropic' || !isFirstPartyAnthropicBaseUrl()) {
     return false
   }
 
@@ -483,7 +483,7 @@ async function writeFileForSync(
  *
  * After writing, invalidates relevant caches:
  * - resetSettingsCache() for settings files
- * - clearMemoryFileCaches() for memory files (CLAUDE.md)
+ * - clearMemoryFileCaches() for memory files (RAYU.md)
  */
 async function applyRemoteEntriesToLocal(
   entries: Record<string, string>,

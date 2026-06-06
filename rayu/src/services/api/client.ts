@@ -4,9 +4,6 @@ import type { GoogleAuth } from 'google-auth-library'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAnthropicApiKey,
-  getApiKeyFromApiKeyHelper,
-  getClaudeAIOAuthTokens,
-  isClaudeAISubscriber,
   refreshAndGetAwsCredentials,
   refreshGcpCredentialsIfNeeded,
 } from 'src/utils/auth.js'
@@ -175,16 +172,14 @@ export async function getAnthropicClient({
   // Detect Bedrock FIRST — Bedrock uses AWS credential chain or Bearer token,
   // NOT Anthropic API keys. Running OAuth refresh or injecting Anthropic auth
   // headers for Bedrock causes 403 "Authorization header is missing".
-  const isBedrock = isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) || getAPIProvider() === 'bedrock'
+  const isBedrock = isEnvTruthy(process.env.RAYU_USE_BEDROCK) || getAPIProvider() === 'bedrock'
 
   if (!isBedrock) {
     logForDebugging('[API:auth] OAuth token check starting')
     await checkAndRefreshOAuthTokenIfNeeded()
     logForDebugging('[API:auth] OAuth token check complete')
 
-    if (!isClaudeAISubscriber()) {
-      await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
-    }
+    await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
   }
 
   const resolvedFetch = buildFetch(fetchOverride, source)
@@ -201,7 +196,7 @@ export async function getAnthropicClient({
       fetch: resolvedFetch,
     }),
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) || getAPIProvider() === 'bedrock') {
+  if (isEnvTruthy(process.env.RAYU_USE_BEDROCK) || getAPIProvider() === 'bedrock') {
     const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
 
     // Read Bedrock config from ~/.rayu/providers.json (set via /connect → AWS Bedrock).
@@ -254,32 +249,34 @@ export async function getAnthropicClient({
       // then falls back to SigV4 with the default AWS credential chain.
       apiKey: bearerToken,
       awsRegion,
-      ...(isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH) && {
+      ...(isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH) && {
         skipAuth: true,
       }),
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
 
-    if (!bearerToken && !process.env.AWS_BEARER_TOKEN_BEDROCK && !isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)) {
+    if (!bearerToken && !process.env.AWS_BEARER_TOKEN_BEDROCK && !isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH)) {
       // No Bearer token from any source — pre-resolve AWS credentials so the
       // SDK doesn't need to hit the credential chain on every request.
       const cachedCredentials = await refreshAndGetAwsCredentials()
       if (cachedCredentials) {
-        bedrockArgs.awsAccessKey = cachedCredentials.accessKeyId
-        bedrockArgs.awsSecretKey = cachedCredentials.secretAccessKey
-        bedrockArgs.awsSessionToken = cachedCredentials.sessionToken
+        Object.assign(bedrockArgs, {
+          awsAccessKey: cachedCredentials.accessKeyId,
+          awsSecretKey: cachedCredentials.secretAccessKey,
+          awsSessionToken: cachedCredentials.sessionToken,
+        })
       }
     }
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicBedrock(bedrockArgs) as unknown as Anthropic
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
+  if (isEnvTruthy(process.env.RAYU_USE_FOUNDRY)) {
     const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
     // Determine Azure AD token provider based on configuration
     // SDK reads ANTHROPIC_FOUNDRY_API_KEY by default
     let azureADTokenProvider: (() => Promise<string>) | undefined
     if (!process.env.ANTHROPIC_FOUNDRY_API_KEY) {
-      if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH)) {
+      if (isEnvTruthy(process.env.RAYU_SKIP_FOUNDRY_AUTH)) {
         // Mock token provider for testing/proxy scenarios (similar to Vertex mock GoogleAuth)
         azureADTokenProvider = () => Promise.resolve('')
       } else {
@@ -303,10 +300,10 @@ export async function getAnthropicClient({
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicFoundry(foundryArgs) as unknown as Anthropic
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) {
+  if (isEnvTruthy(process.env.RAYU_USE_VERTEX)) {
     // Refresh GCP credentials if gcpAuthRefresh is configured and credentials are expired
     // This is similar to how we handle AWS credential refresh for Bedrock
-    if (!isEnvTruthy(process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH)) {
+    if (!isEnvTruthy(process.env.RAYU_SKIP_VERTEX_AUTH)) {
       await refreshGcpCredentialsIfNeeded()
     }
 
@@ -348,7 +345,7 @@ export async function getAnthropicClient({
       process.env['GOOGLE_APPLICATION_CREDENTIALS'] ||
       process.env['google_application_credentials']
 
-    const googleAuth = isEnvTruthy(process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH)
+    const googleAuth = isEnvTruthy(process.env.RAYU_SKIP_VERTEX_AUTH)
       ? ({
           // Mock GoogleAuth for testing/proxy scenarios
           getClient: () => ({
@@ -382,13 +379,8 @@ export async function getAnthropicClient({
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
   }
 
-  // Determine authentication method based on available tokens
-  const subscriberToken = isClaudeAISubscriber()
-    ? (getClaudeAIOAuthTokens()?.accessToken ?? undefined)
-    : undefined
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: isClaudeAISubscriber() ? undefined : apiKey || getAnthropicApiKey() || undefined,
-    ...(subscriberToken ? { authToken: subscriberToken } : {}),
+    apiKey: apiKey || getAnthropicApiKey() || undefined,
     // Set baseURL from OAuth config when using staging OAuth
     ...(process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)
@@ -405,9 +397,8 @@ async function configureApiKeyHeaders(
   headers: Record<string, string>,
   isNonInteractiveSession: boolean,
 ): Promise<void> {
-  const token =
-    process.env.ANTHROPIC_AUTH_TOKEN ||
-    (await getApiKeyFromApiKeyHelper(isNonInteractiveSession))
+  void isNonInteractiveSession
+  const token = process.env.RAYU_ANTHROPIC_AUTH_TOKEN
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
@@ -450,7 +441,9 @@ function buildFetch(
   // Only send to the first-party API — Bedrock/Vertex/Foundry don't log it
   // and unknown headers risk rejection by strict proxies (inc-4029 class).
   const injectClientRequestId =
-    getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+    getAPIProvider() === 'anthropic' &&
+    !isOpenAICompatibleActive() &&
+    isFirstPartyAnthropicBaseUrl()
   return (input, init) => {
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)

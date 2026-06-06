@@ -15,7 +15,7 @@ import type {
 } from '../types/message.js'
 import { getCwd } from '../utils/cwd.js'
 import { env } from '../utils/env.js'
-import { getClaudeConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
+import { getRayuConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
 import { getErrnoCode } from '../utils/errors.js'
 import { normalizeMessagesForAPI } from '../utils/messages.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
@@ -293,7 +293,7 @@ function dehydrateValue(s: unknown): unknown {
     return s
   }
   const cwd = getCwd()
-  const configHome = getClaudeConfigHomeDir()
+  const configHome = getRayuConfigHomeDir()
   let s1 = s
     .replace(/num_files="\d+"/g, 'num_files="[NUM]"')
     .replace(/duration_ms="\d+"/g, 'duration_ms="[DURATION]"')
@@ -342,7 +342,7 @@ function hydrateValue(s: unknown): unknown {
   return s
     .replaceAll('[NUM]', '1')
     .replaceAll('[DURATION]', '100')
-    .replaceAll('[CONFIG_HOME]', getClaudeConfigHomeDir())
+    .replaceAll('[CONFIG_HOME]', getRayuConfigHomeDir())
     .replaceAll('[CWD]', getCwd())
 }
 

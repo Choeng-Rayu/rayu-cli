@@ -7,7 +7,7 @@
 // Callers reference providers by id, not by key value.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 
 export type DiagnosticKind = 'bug' | 'issue' | 'vulnerability'
 export type DiagnosticSeverity = 'low' | 'medium' | 'high' | 'critical'
@@ -26,7 +26,7 @@ export type DiagnosticRecord = {
 const FILE_NAME = 'diagnostics.jsonl'
 
 function diagnosticsPath(): string {
-  return join(getClaudeConfigHomeDir(), FILE_NAME)
+  return join(getRayuConfigHomeDir(), FILE_NAME)
 }
 
 function isTestEnv(): boolean {
@@ -68,7 +68,7 @@ export function recordDiagnostic(
   // Opt-out of file persistence (e.g. tests that don't want disk writes).
   if (process.env.RAYU_DIAGNOSTICS_NO_FILE === '1') return
   try {
-    const dir = getClaudeConfigHomeDir()
+    const dir = getRayuConfigHomeDir()
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     appendFileSync(diagnosticsPath(), JSON.stringify(record) + '\n')
   } catch {

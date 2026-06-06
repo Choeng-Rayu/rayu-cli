@@ -17,7 +17,7 @@ import {
   CLAUDE_SONNET_4_CONFIG,
 } from './model/configs.js'
 import {
-  firstPartyNameToCanonical,
+  anthropicNameToCanonical,
   getCanonicalName,
   getDefaultMainLoopModelSetting,
   type ModelShortName,
@@ -102,26 +102,26 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
 // Costs from https://platform.claude.com/docs/en/about-claude/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
 export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
-  [firstPartyNameToCanonical(CLAUDE_3_5_HAIKU_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_3_5_HAIKU_CONFIG.anthropic)]:
     COST_HAIKU_35,
-  [firstPartyNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.anthropic)]:
     COST_HAIKU_45,
-  [firstPartyNameToCanonical(CLAUDE_3_5_V2_SONNET_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_3_5_V2_SONNET_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_3_7_SONNET_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_3_7_SONNET_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_SONNET_4_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_SONNET_4_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_SONNET_4_5_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_SONNET_4_5_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_SONNET_4_6_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_SONNET_4_6_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_CONFIG.firstParty)]: COST_TIER_15_75,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_OPUS_4_CONFIG.anthropic)]: COST_TIER_15_75,
+  [anthropicNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.anthropic)]:
     COST_TIER_15_75,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_5_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_OPUS_4_5_CONFIG.anthropic)]:
     COST_TIER_5_25,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)]:
+  [anthropicNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.anthropic)]:
     COST_TIER_5_25,
 }
 
@@ -146,7 +146,7 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
 
   // Check if this is an Opus 4.6 model with fast mode active.
   if (
-    shortName === firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)
+    shortName === anthropicNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.anthropic)
   ) {
     const isFastMode = usage.speed === 'fast'
     return getOpus46CostTier(isFastMode)

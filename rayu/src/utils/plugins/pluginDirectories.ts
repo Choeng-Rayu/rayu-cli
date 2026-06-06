@@ -14,7 +14,7 @@ import { readdir, rm, stat } from 'fs/promises'
 import { delimiter, join } from 'path'
 import { getUseCoworkPlugins } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
-import { getClaudeConfigHomeDir, isEnvTruthy } from '../envUtils.js'
+import { getRayuConfigHomeDir, isEnvTruthy } from '../envUtils.js'
 import { errorMessage, isFsInaccessible } from '../errors.js'
 import { formatFileSize } from '../format.js'
 import { expandTilde } from '../permissions/pathValidation.js'
@@ -48,18 +48,18 @@ function getPluginsDirectoryName(): string {
  *
  * Priority:
  * 1. CLAUDE_CODE_PLUGIN_CACHE_DIR env var (explicit override)
- * 2. Default: ~/.claude/plugins or ~/.claude/cowork_plugins
+ * 2. Default: ~/.rayu/plugins or ~/.rayu/cowork_plugins
  */
 export function getPluginsDirectory(): string {
   // expandTilde: when CLAUDE_CODE_PLUGIN_CACHE_DIR is set via settings.json
   // `env` (not shell), ~ is not expanded by the shell. Without this, a value
-  // like "~/.claude/plugins" becomes a literal `~` directory created in the
+  // like "~/.rayu/plugins" becomes a literal `~` directory created in the
   // cwd of every project (gh-30794 / CC-212).
   const envOverride = process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR
   if (envOverride) {
     return expandTilde(envOverride)
   }
-  return join(getClaudeConfigHomeDir(), getPluginsDirectoryName())
+  return join(getRayuConfigHomeDir(), getPluginsDirectoryName())
 }
 
 /**

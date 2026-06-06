@@ -4,7 +4,7 @@
  *
  * When CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST is truthy in the spawn env, these
  * are stripped from settings-sourced env so the host's routing config isn't
- * overridden by a user's ~/.claude/settings.json — e.g. a Bedrock setup for
+ * overridden by a user's ~/.rayu/settings.json — e.g. a Bedrock setup for
  * terminal CLI that would break a host that only supports first-party auth.
  *
  * @[MODEL LAUNCH]: New models usually don't need changes here —
@@ -15,9 +15,9 @@ const PROVIDER_MANAGED_ENV_VARS = new Set([
   // The flag itself — settings can't unset it once the host set it
   'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
   // Provider selection
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY',
+  'RAYU_USE_BEDROCK',
+  'RAYU_USE_VERTEX',
+  'RAYU_USE_FOUNDRY',
   // Endpoint config (base URLs, project/resource identifiers)
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_BEDROCK_BASE_URL',
@@ -33,9 +33,9 @@ const PROVIDER_MANAGED_ENV_VARS = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'AWS_BEARER_TOKEN_BEDROCK',
   'ANTHROPIC_FOUNDRY_API_KEY',
-  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
-  'CLAUDE_CODE_SKIP_VERTEX_AUTH',
-  'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
+  'RAYU_SKIP_BEDROCK_AUTH',
+  'RAYU_SKIP_VERTEX_AUTH',
+  'RAYU_SKIP_FOUNDRY_AUTH',
   // Model defaults — often set to provider-specific ID formats
   'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
@@ -141,13 +141,13 @@ export const SAFE_ENV_VARS = new Set([
   'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
   'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL',
   'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
-  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
-  'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
-  'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+  'RAYU_SKIP_BEDROCK_AUTH',
+  'RAYU_SKIP_FOUNDRY_AUTH',
+  'RAYU_SKIP_VERTEX_AUTH',
   'CLAUDE_CODE_SUBAGENT_MODEL',
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_FOUNDRY',
-  'CLAUDE_CODE_USE_VERTEX',
+  'RAYU_USE_BEDROCK',
+  'RAYU_USE_FOUNDRY',
+  'RAYU_USE_VERTEX',
   'DISABLE_AUTOUPDATER',
   'DISABLE_BUG_COMMAND',
   'DISABLE_COST_WARNINGS',

@@ -2,6 +2,7 @@
 import { toolMatchesName, type Tool, type Tools } from './Tool.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
+import { InstallSkillTool } from './tools/InstallSkillTool/InstallSkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
 import { FileReadTool } from './tools/FileReadTool/FileReadTool.js'
@@ -214,6 +215,7 @@ export function getAllBaseTools(): Tools {
     TaskStopTool,
     AskUserQuestionTool,
     SkillTool,
+    InstallSkillTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),

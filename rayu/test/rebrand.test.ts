@@ -18,10 +18,13 @@ describe('config dir', () => {
   test('defaults to ~/.rayu and honors RAYU_CONFIG_DIR override', async () => {
     delete process.env.RAYU_CONFIG_DIR
     delete process.env.CLAUDE_CONFIG_DIR
-    const { getClaudeConfigHomeDir } = await import('../src/utils/envUtils.ts')
-    expect(getClaudeConfigHomeDir().endsWith('/.rayu')).toBe(true)
+    const { getRayuConfigHomeDir } = await import('../src/utils/envUtils.ts')
+    expect(getRayuConfigHomeDir().endsWith('/.rayu')).toBe(true)
+
+    process.env.CLAUDE_CONFIG_DIR = '/tmp/claude-test-cfg'
+    expect(getRayuConfigHomeDir().endsWith('/.rayu')).toBe(true)
 
     process.env.RAYU_CONFIG_DIR = '/tmp/rayu-test-cfg'
-    expect(getClaudeConfigHomeDir()).toBe('/tmp/rayu-test-cfg')
+    expect(getRayuConfigHomeDir()).toBe('/tmp/rayu-test-cfg')
   })
 })

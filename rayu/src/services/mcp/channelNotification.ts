@@ -3,7 +3,7 @@
  * conversation. A "channel" (Discord, Slack, SMS, etc.) is just an MCP server
  * that:
  *   - exposes tools for outbound messages (e.g. `send_message`) — standard MCP
- *   - sends `notifications/claude/channel` notifications for inbound — this file
+ *   - sends channel notifications for inbound messages — this file
  *
  * The notification handler wraps the content in a <channel> tag and
  * enqueues it. SleepTool polls hasCommandsInQueue() and wakes within 1s.
@@ -11,19 +11,16 @@
  * with (the channel's MCP tool, SendUserMessage, or both).
  *
  * feature('KAIROS') || feature('KAIROS_CHANNELS'). Runtime gate tengu_harbor.
- * Requires claude.ai OAuth auth — API key users are blocked until
- * console gets a channelsEnabled admin surface. Teams/Enterprise orgs
- * must explicitly opt in via channelsEnabled: true in managed settings.
+ * Disabled by default unless a Rayu-owned channel auth/config path is enabled.
+ * Teams/Enterprise orgs must explicitly opt in via channelsEnabled: true in
+ * managed settings.
  */
 
 import type { ServerCapabilities } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod/v4'
 import { type ChannelEntry, getAllowedChannels } from '../../bootstrap/state.js'
 import { CHANNEL_TAG } from '../../constants/xml.js'
-import {
-  getClaudeAIOAuthTokens,
-  getSubscriptionType,
-} from '../../utils/auth.js'
+import { getSubscriptionType } from '../../utils/auth.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
@@ -176,14 +173,12 @@ export function findChannelEntry(
  * Gate an MCP server's channel-notification path. Caller checks
  * feature('KAIROS') || feature('KAIROS_CHANNELS') first (build-time
  * elimination). Gate order: capability → runtime gate (tengu_harbor) →
- * auth (OAuth only) → org policy → session --channels → allowlist.
- * API key users are blocked at the auth layer — channels requires
- * claude.ai auth; console orgs have no admin opt-in surface yet.
+ * Rayu channel auth/config → org policy → session --channels → allowlist.
  *
  *   skip      Not a channel server, or managed org hasn't opted in, or
  *             not in session --channels. Connection stays up; handler
  *             not registered.
- *   register  Subscribe to notifications/claude/channel.
+ *   register  Subscribe to channel notifications.
  *
  * Which servers can connect at all is governed by allowedMcpServers —
  * this gate only decides whether the notification handler registers.
@@ -216,14 +211,13 @@ export function gateChannelServer(
     }
   }
 
-  // OAuth-only. API key users (console) are blocked — there's no
-  // channelsEnabled admin surface in console yet, so the policy opt-in
-  // flow doesn't exist for them. Drop this when console parity lands.
-  if (!getClaudeAIOAuthTokens()?.accessToken) {
+  // Rayu channel auth/config gate. Claude account OAuth is intentionally not
+  // accepted as an auth path.
+  if (process.env.RAYU_CHANNELS_ENABLED !== '1') {
     return {
       action: 'skip',
       kind: 'auth',
-      reason: 'channels requires claude.ai authentication (run /login)',
+      reason: 'channels require Rayu channel configuration',
     }
   }
 

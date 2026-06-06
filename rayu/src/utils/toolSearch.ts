@@ -281,7 +281,7 @@ export function isToolSearchEnabledOptimistic(): boolean {
 
   // tool_reference is a beta content type that third-party API gateways
   // (ANTHROPIC_BASE_URL proxies) typically don't support. When the provider
-  // is 'firstParty' but the base URL points elsewhere, the proxy will reject
+  // is 'anthropic' but the base URL points elsewhere, the proxy will reject
   // tool_reference blocks with a 400. Vertex/Bedrock/Foundry are unaffected —
   // they have their own endpoints and beta headers.
   // https://github.com/anthropics/claude-code/issues/30912
@@ -298,7 +298,7 @@ export function isToolSearchEnabledOptimistic(): boolean {
   // with getToolSearchMode(), which also treats "" as unset.
   if (
     !process.env.ENABLE_TOOL_SEARCH &&
-    getAPIProvider() === 'firstParty' &&
+    getAPIProvider() === 'anthropic' &&
     !isFirstPartyAnthropicBaseUrl()
   ) {
     if (!loggedOptimistic) {

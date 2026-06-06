@@ -94,17 +94,17 @@ export function buildInheritedCliFlags(options?: {
  * parent's env, so we forward any that are set in the current process.
  */
 const TEAMMATE_ENV_VARS = [
-  // API provider selection — without these, teammates default to firstParty
+  // API provider selection — without these, teammates default to anthropic
   // and send requests to the wrong endpoint (GitHub issue #23561)
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY',
+  'RAYU_USE_BEDROCK',
+  'RAYU_USE_VERTEX',
+  'RAYU_USE_FOUNDRY',
   // Custom API endpoint
   'ANTHROPIC_BASE_URL',
   // Config directory override
-  'CLAUDE_CONFIG_DIR',
+  'RAYU_CONFIG_DIR',
   // CCR marker — teammates need this for CCR-aware code paths. Auth finds
-  // its own way via /home/claude/.claude/remote/.oauth_token regardless;
+  // its own way via /home/claude/.rayu/remote/.oauth_token regardless;
   // the FD env var wouldn't help (pipe FDs don't cross tmux).
   'CLAUDE_CODE_REMOTE',
   // Auto-memory gate (memdir/paths.ts) checks REMOTE && !MEMORY_DIR to

@@ -162,14 +162,13 @@ type LocalJSXCommand = {
  * Commands with `availability` are only shown if the user matches at least one
  * of the listed auth types. See meetsAvailabilityRequirement() in commands.ts.
  *
- * Example: `availability: ['claude-ai', 'console']` shows the command to
- * claude.ai subscribers and direct Console API key users (api.anthropic.com),
- * but hides it from Bedrock/Vertex/Foundry users and custom base URL users.
+ * Legacy availability values are retained only so old command modules can typecheck.
+ * Rayu-owned commands should prefer provider/config checks in their own logic.
  */
 export type CommandAvailability =
-  // claude.ai OAuth subscriber (Pro/Max/Team/Enterprise via claude.ai)
+  // Legacy Claude account OAuth subscriber. Do not use for new Rayu commands.
   | 'claude-ai'
-  // Console API key user (direct api.anthropic.com, not via claude.ai OAuth)
+  // Direct Anthropic Console API key user.
   | 'console'
 
 export type CommandBase = {

@@ -22,7 +22,7 @@ import type { LogOption } from 'src/types/logs.js'
 import { inspect } from 'util'
 import { getGlobalConfig } from './config.js'
 import { logForDebugging } from './debug.js'
-import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { getRayuConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { getErrnoCode, isENOENT } from './errors.js'
 import { pathExists } from './file.js'
 import { logError } from './log.js'
@@ -207,7 +207,7 @@ export async function fileHistoryMakeSnapshot(
 
   // Phase 1: capture current state with a no-op updater so we know which
   // files to back up. Returning the same reference keeps this a true no-op
-  // for any wrapper that honors same-ref returns (src/CLAUDE.md wrapper
+  // for any wrapper that honors same-ref returns (src/RAYU.md wrapper
   // rule). Wrappers that unconditionally spread will trigger one extra
   // re-render; acceptable for a once-per-turn call.
   let captured: FileHistoryState | undefined
@@ -731,7 +731,7 @@ function getBackupFileName(filePath: string, version: number): string {
 }
 
 function resolveBackupPath(backupFileName: string, sessionId?: string): string {
-  const configDir = getClaudeConfigHomeDir()
+  const configDir = getRayuConfigHomeDir()
   return join(
     configDir,
     'file-history',
@@ -951,7 +951,7 @@ export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
     // All backups share the same directory: {configDir}/file-history/{sessionId}/
     // Create it once upfront instead of once per backup file
     const newBackupDir = join(
-      getClaudeConfigHomeDir(),
+      getRayuConfigHomeDir(),
       'file-history',
       sessionId,
     )

@@ -197,7 +197,7 @@ async function main(): Promise<void> {
   }
 
   // Fast-path for `claude ps|logs|attach|kill` and `--bg`/`--background`.
-  // Session management against the ~/.claude/sessions/ registry. Flag
+  // Session management against the ~/.rayu/sessions/ registry. Flag
   // literals are inlined so bg.js only loads when actually dispatching.
   if (feature('BG_SESSIONS') && (args[0] === 'ps' || args[0] === 'logs' || args[0] === 'attach' || args[0] === 'kill' || args.includes('--bg') || args.includes('--background'))) {
     profileCheckpoint('cli_bg_path');

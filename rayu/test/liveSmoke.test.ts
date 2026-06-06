@@ -8,7 +8,7 @@
 // SECURITY: API keys are read from ~/.rayu/providers.json and sent only to the
 // provider's configured baseURL. Keys are NEVER printed or asserted on.
 import { describe, expect, test } from 'bun:test'
-import { existsSync, readFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { createOpenAICompatibleClient } from '../src/services/api/openaiAdapter.ts'
@@ -24,15 +24,9 @@ type Provider = {
 
 const LIVE = /^(1|true|yes|on)$/i.test(process.env.RAYU_LIVE ?? '')
 
-/** Resolve the config home the same way getClaudeConfigHomeDir() does. */
+/** Resolve the config home the same way Rayu runtime does. */
 function configHome(): string {
-  const env = process.env.RAYU_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR
-  if (env) return env
-  const rayu = join(homedir(), '.rayu')
-  if (existsSync(rayu)) return rayu
-  const claude = join(homedir(), '.claude')
-  if (existsSync(claude)) return claude
-  return rayu
+  return process.env.RAYU_CONFIG_DIR ?? join(homedir(), '.rayu')
 }
 
 function loadProviders(): Provider[] {
@@ -76,14 +70,19 @@ export async function callNonChatModel(p: Provider, model: string): Promise<unkn
 
 /** Build a solid-color square PNG and return its base64 (no data: prefix). */
 async function redPngBase64(): Promise<string> {
-  // pngjs ships no type declarations; it's a test-only image generator.
-  // @ts-expect-error no types for 'pngjs'
-  const { PNG } = await import('pngjs')
+  type TestPng = { data: Uint8Array }
+  type PngModule = {
+    PNG: {
+      new (options: { width: number; height: number }): TestPng
+      sync: { write(png: TestPng): Buffer }
+    }
+  }
+  const { PNG } = (await import('pngjs')) as unknown as PngModule
   const png = new PNG({ width: 16, height: 16 })
   for (let i = 0; i < png.data.length; i += 4) {
     png.data[i] = 220; png.data[i + 1] = 20; png.data[i + 2] = 20; png.data[i + 3] = 255
   }
-  return (PNG as any).sync.write(png).toString('base64')
+  return PNG.sync.write(png).toString('base64')
 }
 
 /** Send an image + question; returns the answer text. */

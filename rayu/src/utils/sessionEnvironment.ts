@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getSessionId } from '../bootstrap/state.js'
 import { logForDebugging } from './debug.js'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 import { getPlatform } from './platform.js'
 
@@ -14,7 +14,7 @@ let sessionEnvScript: string | null | undefined = undefined
 
 export async function getSessionEnvDirPath(): Promise<string> {
   const sessionEnvDir = join(
-    getClaudeConfigHomeDir(),
+    getRayuConfigHomeDir(),
     'session-env',
     getSessionId(),
   )

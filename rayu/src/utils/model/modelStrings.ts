@@ -42,13 +42,13 @@ async function getBedrockModelStrings(): Promise<ModelStrings> {
   if (!profiles?.length) {
     return fallback
   }
-  // Each config's firstParty ID is the canonical substring we search for in the
+  // Each config's anthropic ID is the canonical substring we search for in the
   // user's inference profile list (e.g. "claude-opus-4-6" matches
   // "eu.anthropic.claude-opus-4-6-v1"). Fall back to the hardcoded bedrock ID
   // when no matching profile is found.
   const out = {} as ModelStrings
   for (const key of MODEL_KEYS) {
-    const needle = ALL_MODEL_CONFIGS[key].firstParty
+    const needle = ALL_MODEL_CONFIGS[key].anthropic
     out[key] = findFirstMatch(profiles, needle) || fallback[key]
   }
   return out

@@ -188,7 +188,7 @@ export function emitStatusChange(limits: ClaudeAILimits) {
     (limits.resetsAt ? limits.resetsAt - Date.now() / 1000 : 0) / (60 * 60),
   )
 
-  logEvent('tengu_claudeai_limits_status_changed', {
+  logEvent('rayu_limits_status_changed', {
     status:
       limits.status as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     unifiedRateLimitFallbackAvailable: limits.unifiedRateLimitFallbackAvailable,

@@ -7,7 +7,7 @@ import {
 } from '../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
-  getClaudeConfigHomeDir,
+  getRayuConfigHomeDir,
   isEnvDefinedFalsy,
   isEnvTruthy,
 } from '../utils/envUtils.js'
@@ -80,13 +80,13 @@ export function isExtractModeActive(): boolean {
  * Returns the base directory for persistent memory storage.
  * Resolution order:
  *   1. CLAUDE_CODE_REMOTE_MEMORY_DIR env var (explicit override, set in CCR)
- *   2. ~/.claude (default config home)
+ *   2. ~/.rayu (default config home)
  */
 export function getMemoryBaseDir(): string {
   if (process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR) {
     return process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
   }
-  return getClaudeConfigHomeDir()
+  return getRayuConfigHomeDir()
 }
 
 const AUTO_MEM_DIRNAME = 'memory'
@@ -169,7 +169,7 @@ function getAutoMemPathOverride(): string | undefined {
  * Settings.json override for the full auto-memory directory path.
  * Supports ~/ expansion for user convenience.
  *
- * SECURITY: projectSettings (.claude/settings.json committed to the repo) is
+ * SECURITY: projectSettings (.rayu/settings.json committed to the repo) is
  * intentionally excluded — a malicious repo could otherwise set
  * autoMemoryDirectory: "~/.ssh" and gain silent write access to sensitive
  * directories via the filesystem.ts write carve-out (which fires when
@@ -217,7 +217,7 @@ function getAutoMemBase(): string {
  * fire per tool-use message per Messages re-render; each miss costs
  * getSettingsForSource × 4 → parseSettingsFile (realpathSync + readFileSync).
  * Keyed on projectRoot so tests that change its mock mid-block recompute;
- * env vars / settings.json / CLAUDE_CONFIG_DIR are session-stable in
+ * env vars / settings.json / RAYU_CONFIG_DIR are session-stable in
  * production and covered by per-test cache.clear.
  */
 export const getAutoMemPath = memoize(

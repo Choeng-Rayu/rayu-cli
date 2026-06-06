@@ -7,7 +7,7 @@ import {
   isAutoMemPath,
 } from '../memdir/paths.js'
 import { isAgentMemoryPath } from '../tools/AgentTool/agentMemory.js'
-import { getClaudeConfigHomeDir } from './envUtils.js'
+import { getRayuConfigHomeDir } from './envUtils.js'
 import {
   posixPathToWindowsPath,
   windowsPathToPosixPath,
@@ -34,13 +34,13 @@ function toComparable(p: string): string {
 }
 
 /**
- * Detects if a file path is a session-related file under ~/.claude.
+ * Detects if a file path is a session-related file under ~/.rayu.
  * Returns the type of session file or null if not a session file.
  */
 export function detectSessionFileType(
   filePath: string,
 ): 'session_memory' | 'session_transcript' | null {
-  const configDir = getClaudeConfigHomeDir()
+  const configDir = getRayuConfigHomeDir()
   // Compare in forward-slash form; on Windows also case-fold. The caller
   // (isShellCommandTargetingMemory) converts MinGW /c/... → native before
   // reaching here, so we only need separator + case normalization.
@@ -126,7 +126,7 @@ function isAgentMemFile(filePath: string): boolean {
 /**
  * Check if a file is a Claude-managed memory file (NOT user-managed instruction files).
  * Includes: auto-memory (memdir), agent memory, session memory/transcripts.
- * Excludes: CLAUDE.md, CLAUDE.local.md, .claude/rules/*.md (user-managed).
+ * Excludes: RAYU.md, RAYU.local.md, .rayu/rules/*.md (user-managed).
  *
  * Use this for collapse/badge logic where user-managed files should show full diffs.
  */
@@ -186,7 +186,7 @@ export function isMemoryDirectory(dirPath: string): boolean {
     }
   }
 
-  const configDirCmp = toComparable(getClaudeConfigHomeDir())
+  const configDirCmp = toComparable(getRayuConfigHomeDir())
   const memoryBaseCmp = toComparable(getMemoryBaseDir())
   const underConfig = normalizedCmp.startsWith(configDirCmp)
   const underMemoryBase = normalizedCmp.startsWith(memoryBaseCmp)
@@ -213,7 +213,7 @@ export function isMemoryDirectory(dirPath: string): boolean {
  * collapse logic.
  */
 export function isShellCommandTargetingMemory(command: string): boolean {
-  const configDir = getClaudeConfigHomeDir()
+  const configDir = getRayuConfigHomeDir()
   const memoryBase = getMemoryBaseDir()
   const autoMemDir = isAutoMemoryEnabled()
     ? getAutoMemPath().replace(/[/\\]+$/, '')
@@ -271,7 +271,7 @@ export function isShellCommandTargetingMemory(command: string): boolean {
 }
 
 // Check if a glob/pattern targets auto-managed memory files only.
-// Excludes CLAUDE.md, CLAUDE.local.md, .claude/rules/ (user-managed).
+// Excludes RAYU.md, RAYU.local.md, .rayu/rules/ (user-managed).
 // Used for collapse badge logic where user-managed files should not be
 // counted as "memory" operations.
 export function isAutoManagedMemoryPattern(pattern: string): boolean {

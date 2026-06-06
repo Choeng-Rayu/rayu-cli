@@ -277,7 +277,6 @@ export type McpServerType =
   | 'sdk'
   | 'sse-ide'
   | 'ws-ide'
-  | 'claudeai-proxy'
   | undefined
 
 function findMcpServerConnection(

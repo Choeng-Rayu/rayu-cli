@@ -55,10 +55,7 @@ import { extractConnectionErrorDetails, formatAPIError } from './errorUtils.js'
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
 
 export function startsWithApiErrorPrefix(text: string): boolean {
-  return (
-    text.startsWith(API_ERROR_MESSAGE_PREFIX) ||
-    text.startsWith(`Please run /login · ${API_ERROR_MESSAGE_PREFIX}`)
-  )
+  return text.startsWith(API_ERROR_MESSAGE_PREFIX)
 }
 export const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 
@@ -153,15 +150,16 @@ export function isMediaSizeErrorMessage(msg: AssistantMessage): boolean {
   )
 }
 export const CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE = 'Credit balance is too low'
-export const INVALID_API_KEY_ERROR_MESSAGE = 'Not logged in · Please run /login'
+export const INVALID_API_KEY_ERROR_MESSAGE =
+  'No valid provider API key · Configure Rayu with /connect or ~/.rayu/providers.json'
 export const INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL =
-  'Invalid API key · Fix external API key'
+  'Invalid provider API key · Update your Rayu provider configuration'
 export const ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH =
-  'Your ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your subscription instead'
+  'Your RAYU_ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your configured Rayu provider instead'
 export const ORG_DISABLED_ERROR_MESSAGE_ENV_KEY =
-  'Your ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable'
+  'Your RAYU_ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable'
 export const TOKEN_REVOKED_ERROR_MESSAGE =
-  'OAuth token revoked · Please run /login'
+  'Provider token revoked · Update your Rayu provider configuration'
 export const CCR_AUTH_ERROR_MESSAGE =
   'Authentication error · This may be a temporary network issue, please try again'
 export const REPEATED_529_ERROR_MESSAGE = 'Repeated 529 Overloaded errors'
@@ -196,11 +194,11 @@ export function getRequestTooLargeErrorMessage(): string {
     : `Request too large (${limits}). Double press esc to go back and try with a smaller file.`
 }
 export const OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE =
-  'Your account does not have access to RAYU. Please run /login.'
+  'Your configured provider account does not have access to Rayu.'
 
 export function getTokenRevokedErrorMessage(): string {
   return getIsNonInteractiveSession()
-    ? 'Your account does not have access to Claude. Please login again or contact your administrator.'
+    ? 'Your provider credentials are not valid. Update your Rayu provider configuration or contact your administrator.'
     : TOKEN_REVOKED_ERROR_MESSAGE
 }
 
@@ -779,10 +777,10 @@ export function getAssistantMessageFromError(
       error: 'billing_error',
     })
   }
-  // "Organization has been disabled" — commonly a stale ANTHROPIC_API_KEY
-  // from a previous employer/project overriding subscription auth. Only handle
-  // the env-var case; apiKeyHelper and /login-managed keys mean the active
-  // auth's org is genuinely disabled with no dormant fallback to point at.
+  // "Organization has been disabled" — commonly a stale Rayu Anthropic env key
+  // from a previous employer/project overriding provider config. Only handle
+  // the env-var case; provider config means the active auth's org is genuinely
+  // disabled with no dormant fallback to point at.
   if (
     error instanceof APIError &&
     error.status === 400 &&
@@ -794,8 +792,8 @@ export function getAssistantMessageFromError(
     // the env var. The three guards ensure we only blame the env var when it's
     // actually set and actually on the wire.
     if (
-      source === 'ANTHROPIC_API_KEY' &&
-      process.env.ANTHROPIC_API_KEY &&
+      source === 'RAYU_ANTHROPIC_API_KEY' &&
+      process.env.RAYU_ANTHROPIC_API_KEY &&
       !isClaudeAISubscriber()
     ) {
       const hasStoredOAuth = getClaudeAIOAuthTokens()?.accessToken != null
@@ -823,10 +821,9 @@ export function getAssistantMessageFromError(
       })
     }
 
-    // Check if the API key is from an external source
+    // Check if the API key is from an explicit Rayu source
     const { source } = getAnthropicApiKeyWithSource()
-    const isExternalSource =
-      source === 'ANTHROPIC_API_KEY' || source === 'apiKeyHelper'
+    const isExternalSource = source !== 'none'
 
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
@@ -881,14 +878,14 @@ export function getAssistantMessageFromError(
         ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${error.status}`
         : isRayuNonAnthropicActive()
           ? `${API_ERROR_MESSAGE_PREFIX}: ${error.status} — API key may be invalid or may not have access to this model. Use /connect to update your API key or /model to switch models.`
-          : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
+          : `${API_ERROR_MESSAGE_PREFIX}: ${error.message} — use /connect to update your provider credentials.`,
     })
   }
 
   // Bedrock errors like "403 You don't have access to the model with the specified model ID."
   // don't contain the actual model ID
   if (
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) &&
+    isEnvTruthy(process.env.RAYU_USE_BEDROCK) &&
     error instanceof Error &&
     error.message.toLowerCase().includes('model id')
   ) {
@@ -949,7 +946,7 @@ export function getAssistantMessageFromError(
  * Returns a model name suggestion, or undefined if no suggestion is applicable.
  */
 function get3PModelFallbackSuggestion(model: string): string | undefined {
-  if (getAPIProvider() === 'firstParty') {
+  if (getAPIProvider() === 'anthropic') {
     return undefined
   }
   // @[MODEL LAUNCH]: Add a fallback suggestion chain for the new model → previous version for 3P
@@ -1145,7 +1142,7 @@ export function classifyAPIError(error: unknown): string {
 
   // Bedrock-specific errors
   if (
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) &&
+    isEnvTruthy(process.env.RAYU_USE_BEDROCK) &&
     error instanceof Error &&
     error.message.toLowerCase().includes('model id')
   ) {

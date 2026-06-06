@@ -240,7 +240,7 @@ export function buildAccountProperties(): Property[] {
 export function buildAPIProviderProperties(): Property[] {
   const apiProvider = getAPIProvider();
   const properties: Property[] = [];
-  if (apiProvider !== 'firstParty') {
+  if (apiProvider !== 'anthropic') {
     const providerLabel = {
       bedrock: 'AWS Bedrock',
       vertex: 'Google Vertex AI',
@@ -251,7 +251,7 @@ export function buildAPIProviderProperties(): Property[] {
       value: providerLabel
     });
   }
-  if (apiProvider === 'firstParty') {
+  if (apiProvider === 'anthropic') {
     const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
     if (anthropicBaseUrl) {
       properties.push({
@@ -271,7 +271,7 @@ export function buildAPIProviderProperties(): Property[] {
       label: 'AWS region',
       value: getAWSRegion()
     });
-    if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)) {
+    if (isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH)) {
       properties.push({
         value: 'AWS auth skipped'
       });
@@ -295,7 +295,7 @@ export function buildAPIProviderProperties(): Property[] {
       label: 'Default region',
       value: getDefaultVertexRegion()
     });
-    if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH)) {
+    if (isEnvTruthy(process.env.RAYU_SKIP_VERTEX_AUTH)) {
       properties.push({
         value: 'GCP auth skipped'
       });
@@ -315,7 +315,7 @@ export function buildAPIProviderProperties(): Property[] {
         value: foundryResource
       });
     }
-    if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH)) {
+    if (isEnvTruthy(process.env.RAYU_SKIP_FOUNDRY_AUTH)) {
       properties.push({
         value: 'Microsoft Foundry auth skipped'
       });

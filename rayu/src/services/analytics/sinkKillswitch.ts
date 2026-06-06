@@ -3,11 +3,11 @@ import { getDynamicConfig_CACHED_MAY_BE_STALE } from './growthbook.js'
 // Mangled name: per-sink analytics killswitch
 const SINK_KILLSWITCH_CONFIG_NAME = 'tengu_frond_boric'
 
-export type SinkName = 'datadog' | 'firstParty'
+export type SinkName = 'datadog' | 'rayu'
 
 /**
  * GrowthBook JSON config that disables individual analytics sinks.
- * Shape: { datadog?: boolean, firstParty?: boolean }
+ * Shape: { datadog?: boolean, rayu?: boolean }
  * A value of true for a key stops all dispatch to that sink.
  * Default {} (nothing killed). Fail-open: missing/malformed config = sink stays on.
  *

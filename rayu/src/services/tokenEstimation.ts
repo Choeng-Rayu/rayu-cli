@@ -3,7 +3,7 @@ import type { BetaMessageParam as MessageParam } from '@anthropic-ai/sdk/resourc
 // @aws-sdk/client-bedrock-runtime is imported dynamically in countTokensWithBedrock()
 // to defer ~279KB of AWS SDK code until a Bedrock call is actually made
 import type { CountTokensCommandInput } from '@aws-sdk/client-bedrock-runtime'
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import { getAPIProvider, isOpenAICompatibleActive } from 'src/utils/model/providers.js'
 import { VERTEX_COUNT_TOKENS_ALLOWED_BETAS } from '../constants/betas.js'
 import type { Attachment } from '../utils/attachments.js'
 import { getModelBetas } from '../utils/betas.js'
@@ -141,6 +141,12 @@ export async function countMessagesTokensWithAPI(
   messages: Anthropic.Beta.Messages.BetaMessageParam[],
   tools: Anthropic.Beta.Messages.BetaToolUnion[],
 ): Promise<number | null> {
+  // OpenAI-compatible providers route through an adapter that does not
+  // implement `beta.messages.countTokens`. Return null so callers fall back
+  // to the local heuristic instead of throwing on every count.
+  if (isOpenAICompatibleActive()) {
+    return null
+  }
   return withTokenCountVCR(messages, tools, async () => {
     try {
       const model = getMainLoopModel()
@@ -252,19 +258,24 @@ export async function countTokensViaHaikuFallback(
   messages: Anthropic.Beta.Messages.BetaMessageParam[],
   tools: Anthropic.Beta.Messages.BetaToolUnion[],
 ): Promise<number | null> {
+  // OpenAI-compatible providers can't use the Anthropic countTokens endpoint
+  // (the adapter doesn't implement it); let callers fall back to estimation.
+  if (isOpenAICompatibleActive()) {
+    return null
+  }
   // Check if messages contain thinking blocks
   const containsThinking = hasThinkingBlocks(messages)
 
   // If we're on Vertex and using global region, always use Sonnet since Haiku is not available there.
   const isVertexGlobalEndpoint =
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) &&
+    isEnvTruthy(process.env.RAYU_USE_VERTEX) &&
     getVertexRegionForModel(getSmallFastModel()) === 'global'
   // If we're on Bedrock with thinking blocks, use Sonnet since Haiku 3.5 doesn't support thinking
   const isBedrockWithThinking =
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) && containsThinking
+    isEnvTruthy(process.env.RAYU_USE_BEDROCK) && containsThinking
   // If we're on Vertex with thinking blocks, use Sonnet since Haiku 3.5 doesn't support thinking
   const isVertexWithThinking =
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) && containsThinking
+    isEnvTruthy(process.env.RAYU_USE_VERTEX) && containsThinking
   // Otherwise always use Haiku - Haiku 4.5 supports thinking blocks.
   // WARNING: if you change this to use a non-Haiku model, this request will fail in 1P unless it uses getCLISyspromptPrefix.
   // Note: We don't need Sonnet for tool_reference blocks because we strip them via

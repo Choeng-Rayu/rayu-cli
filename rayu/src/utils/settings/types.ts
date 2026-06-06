@@ -8,7 +8,7 @@ import {
   PERMISSION_MODES,
 } from '../permissions/PermissionMode.js'
 import { MarketplaceSourceSchema } from '../plugins/schemas.js'
-import { CLAUDE_CODE_SETTINGS_SCHEMA_URL } from './constants.js'
+import { RAYU_SETTINGS_SCHEMA_URL } from './constants.js'
 import { PermissionRuleSchema } from './permissionValidation.js'
 
 // Re-export hook schemas and types from centralized location for backward compatibility
@@ -211,7 +211,7 @@ export const DeniedMcpServerEntrySchema = lazySchema(() =>
  *
  * ⚠️ BACKWARD COMPATIBILITY NOTICE ⚠️
  *
- * This schema defines the structure of user settings files (.claude/settings.json).
+ * This schema defines the structure of user settings files (.rayu/settings.json).
  * We support backward-compatible changes! Here's how:
  *
  * ✅ ALLOWED CHANGES:
@@ -256,31 +256,13 @@ export const SettingsSchema = lazySchema(() =>
   z
     .object({
       $schema: z
-        .literal(CLAUDE_CODE_SETTINGS_SCHEMA_URL)
+        .literal(RAYU_SETTINGS_SCHEMA_URL)
         .optional()
         .describe('JSON Schema reference for RAYU settings'),
 
       // -----------------------------------------------------------------------
-      // Steering file porting (Phase 3)
+      // External skill discovery
       // -----------------------------------------------------------------------
-      steeringFilePortMode: z
-        .enum(['copy', 'symlink', 'ask', 'off'])
-        .optional()
-        .describe(
-          "How to port legacy CLAUDE.md / .claude/ files to RAYU.md / .rayu/. " +
-          "'copy' = copy on startup, 'symlink' = create symlink, " +
-          "'ask' = prompt user (default), 'off' = never port",
-        ),
-
-      // -----------------------------------------------------------------------
-      // External skill discovery (Phase 4)
-      // -----------------------------------------------------------------------
-      claudeCodeSkillsEnabled: z
-        .boolean()
-        .optional()
-        .describe(
-          'Load skills from ~/.claude/skills/ (Claude Code compatibility). Defaults to true.',
-        ),
       agentSkillsEnabled: z
         .boolean()
         .optional()
@@ -576,7 +558,7 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'When set in managed settings, blocks non-plugin customization sources for the listed surfaces. ' +
             'Array form locks specific surfaces (e.g. ["skills", "hooks"]); `true` locks all four; `false` is an explicit no-op. ' +
-            'Blocked: ~/.claude/{surface}/, .claude/{surface}/ (project), settings.json hooks, .mcp.json. ' +
+            'Blocked: ~/.rayu/{surface}/, .rayu/{surface}/ (project), settings.json hooks, .mcp.json. ' +
             'NOT blocked: managed (policySettings) sources, plugin-provided customizations. ' +
             'Composes with strictKnownMarketplaces for end-to-end admin control — plugins gated by ' +
             'marketplace allowlist, everything else blocked here.',
@@ -631,7 +613,7 @@ export const SettingsSchema = lazySchema(() =>
         })
         .optional()
         .describe(
-          'Additional marketplaces to make available for this repository. Typically used in repository .claude/settings.json to ensure team members have required plugin sources.',
+          'Additional marketplaces to make available for this repository. Typically used in repository .rayu/settings.json to ensure team members have required plugin sources.',
         ),
       // Enterprise strict list of allowed marketplace sources (policy settings only)
       // When set, ONLY these exact sources can be added. Check happens BEFORE download.
@@ -655,18 +637,6 @@ export const SettingsSchema = lazySchema(() =>
             'these exact sources are blocked from being added as marketplaces. The check happens BEFORE ' +
             'downloading, so blocked sources never touch the filesystem.',
         ),
-      // Force a specific login method: 'claudeai' for Claude Pro/Max, 'console' for Console billing
-      forceLoginMethod: z
-        .enum(['claudeai', 'console'])
-        .optional()
-        .describe(
-          'Force a specific login method: "claudeai" for Claude Pro/Max, "console" for Console billing',
-        ),
-      // Organization UUID to use for OAuth login (will be added as URL param to authorization URL)
-      forceLoginOrgUUID: z
-        .string()
-        .optional()
-        .describe('Organization UUID to use for OAuth login'),
       otelHeadersHelper: z
         .string()
         .optional()
@@ -861,7 +831,7 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .describe(
           'Custom directory for plan files, relative to project root. ' +
-            'If not set, defaults to ~/.claude/plans/',
+            'If not set, defaults to ~/.rayu/plans/',
         ),
       ...(process.env.USER_TYPE === 'ant'
         ? {
@@ -980,7 +950,7 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe(
-          'Custom directory path for auto-memory storage. Supports ~/ prefix for home directory expansion. Ignored if set in projectSettings (checked-in .claude/settings.json) for security. When unset, defaults to ~/.claude/projects/<sanitized-cwd>/memory/.',
+          'Custom directory path for auto-memory storage. Supports ~/ prefix for home directory expansion. Ignored if set in projectSettings (checked-in .rayu/settings.json) for security. When unset, defaults to ~/.rayu/projects/<sanitized-cwd>/memory/.',
         ),
       autoDreamEnabled: z
         .boolean()
@@ -1089,10 +1059,10 @@ export const SettingsSchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe(
-          'Glob patterns or absolute paths of CLAUDE.md files to exclude from loading. ' +
+          'Glob patterns or absolute paths of RAYU.md files to exclude from loading. ' +
             'Patterns are matched against absolute file paths using picomatch. ' +
             'Only applies to User, Project, and Local memory types (Managed/policy files cannot be excluded). ' +
-            'Examples: "/home/user/monorepo/CLAUDE.md", "**/code/CLAUDE.md", "**/some-dir/.claude/rules/**"',
+            'Examples: "/home/user/monorepo/RAYU.md", "**/code/RAYU.md", "**/some-dir/.rayu/rules/**"',
         ),
       pluginTrustMessage: z
         .string()

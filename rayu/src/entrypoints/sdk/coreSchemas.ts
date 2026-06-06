@@ -148,20 +148,8 @@ export const McpServerConfigForProcessTransportSchema = lazySchema(() =>
   ]),
 )
 
-export const McpClaudeAIProxyServerConfigSchema = lazySchema(() =>
-  z.object({
-    type: z.literal('claudeai-proxy'),
-    url: z.string(),
-    id: z.string(),
-  }),
-)
-
-// Broader config type for status responses (includes claudeai-proxy which is output-only)
 export const McpServerStatusConfigSchema = lazySchema(() =>
-  z.union([
-    McpServerConfigForProcessTransportSchema(),
-    McpClaudeAIProxyServerConfigSchema(),
-  ]),
+  McpServerConfigForProcessTransportSchema(),
 )
 
 export const McpServerStatusSchema = lazySchema(() =>
@@ -189,7 +177,7 @@ export const McpServerStatusSchema = lazySchema(() =>
         .string()
         .optional()
         .describe(
-          'Configuration scope (e.g., project, user, local, claudeai, managed)',
+          'Configuration scope (e.g., project, user, local)',
         ),
       tools: z
         .array(
@@ -1087,10 +1075,10 @@ export const AccountInfoSchema = lazySchema(() =>
       tokenSource: z.string().optional(),
       apiKeySource: z.string().optional(),
       apiProvider: z
-        .enum(['firstParty', 'bedrock', 'vertex', 'foundry'])
+        .enum(['anthropic', 'bedrock', 'vertex', 'foundry'])
         .optional()
         .describe(
-          'Active API backend. Anthropic OAuth login only applies when "firstParty"; for 3P providers the other fields are absent and auth is external (AWS creds, gcloud ADC, etc.).',
+          'Active API backend. Anthropic OAuth login only applies when "anthropic"; for 3P providers the other fields are absent and auth is external (AWS creds, gcloud ADC, etc.).',
         ),
     })
     .describe("Information about the logged in user's account."),
@@ -1163,7 +1151,7 @@ export const AgentDefinitionSchema = lazySchema(() =>
         .enum(['user', 'project', 'local'])
         .optional()
         .describe(
-          "Scope for auto-loading agent memory files. 'user' - ~/.claude/agent-memory/<agentType>/, 'project' - .claude/agent-memory/<agentType>/, 'local' - .claude/agent-memory-local/<agentType>/",
+          "Scope for auto-loading agent memory files. 'user' - ~/.rayu/agent-memory/<agentType>/, 'project' - .rayu/agent-memory/<agentType>/, 'local' - .rayu/agent-memory-local/<agentType>/",
         ),
       effort: z
         .union([z.enum(['low', 'medium', 'high', 'max']), z.number().int()])
@@ -1191,9 +1179,9 @@ export const SettingSourceSchema = lazySchema(() =>
     .enum(['user', 'project', 'local'])
     .describe(
       'Source for loading filesystem-based settings. ' +
-        "'user' - Global user settings (~/.claude/settings.json). " +
-        "'project' - Project settings (.claude/settings.json). " +
-        "'local' - Local settings (.claude/settings.local.json).",
+        "'user' - Global user settings (~/.rayu/settings.json). " +
+        "'project' - Project settings (.rayu/settings.json). " +
+        "'local' - Local settings (.rayu/settings.local.json).",
     ),
 )
 

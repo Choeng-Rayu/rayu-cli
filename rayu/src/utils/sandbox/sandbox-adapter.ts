@@ -240,18 +240,19 @@ export function convertToSandboxRuntimeConfig(
   const cwd = getCwdState()
   const originalCwd = getOriginalCwd()
   if (cwd !== originalCwd) {
-    denyWrite.push(resolve(cwd, '.claude', 'settings.json'))
-    denyWrite.push(resolve(cwd, '.claude', 'settings.local.json'))
+    denyWrite.push(resolve(cwd, '.rayu', 'settings.json'))
+    denyWrite.push(resolve(cwd, '.rayu', 'settings.local.json'))
   }
 
-  // Block writes to .claude/skills in both original and current working directories.
-  // The sandbox-runtime's getDangerousDirectories() protects .claude/commands and
-  // .claude/agents but not .claude/skills. Skills have the same privilege level
-  // (auto-discovered, auto-loaded, full Claude capabilities) so they need the
-  // same OS-level sandbox protection.
-  denyWrite.push(resolve(originalCwd, '.claude', 'skills'))
-  if (cwd !== originalCwd) {
-    denyWrite.push(resolve(cwd, '.claude', 'skills'))
+  // Block writes to the skills dirs in both original and current working
+  // directories. The sandbox-runtime's getDangerousDirectories() protects
+  // .rayu/commands and .rayu/agents but not skills. Skills have the same
+  // privilege level (auto-discovered, auto-loaded, full capabilities) so they
+  // need the same OS-level sandbox protection. .claude/skills is also guarded
+  // because Rayu loads Claude Code skills as an additional source.
+  for (const base of [originalCwd, ...(cwd !== originalCwd ? [cwd] : [])]) {
+    denyWrite.push(resolve(base, '.rayu', 'skills'))
+    denyWrite.push(resolve(base, '.claude', 'skills'))
   }
 
   // SECURITY: Git's is_git_directory() treats cwd as a bare repo if it has
