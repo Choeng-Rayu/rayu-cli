@@ -5,7 +5,7 @@
 //     every turn via criticalSystemReminder_EXPERIMENTAL
 //   - "queen" authority rules: PA-AGENT owns architecture/stack, SEC-AGENT owns
 //     security — their decisions are final and other specialists adapt
-//   - native persistent memory (memory:'project' -> .claude/agent-memory/<id>/
+//   - native persistent memory (memory:'project' -> .rayu/agent-memory/<id>/
 //     MEMORY.md): the "search-before / store-after" pattern, reusing learnings
 //     to cut tokens on repeat work
 //   - model left undefined -> resolved per-specialty via the subagent model

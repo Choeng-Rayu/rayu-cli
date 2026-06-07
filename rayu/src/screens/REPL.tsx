@@ -3950,7 +3950,7 @@ export function REPL({
       // Use ref to get current dialog state, avoiding stale closure
       focusedInputDialogRef.current === undefined && idleTimeSinceResponse >= getGlobalConfig().messageIdleNotifThresholdMs) {
         void sendNotification({
-          message: 'Claude is waiting for your input',
+          message: 'Rayu is waiting for your input',
           notificationType: 'idle_prompt'
         }, terminal);
       }

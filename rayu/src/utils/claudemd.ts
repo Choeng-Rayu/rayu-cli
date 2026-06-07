@@ -13,7 +13,7 @@
  * - User memory is loaded from the user's home directory
  * - Project and Local files are discovered by traversing from the current directory up to root
  * - Files closer to the current directory have higher priority (loaded later)
- * - RAYU.md, AGENTS.md, .rayu/RAYU.md, and all .md files in .rayu/rules/ or .agents/rules/ are checked in each directory for Project memory
+ * - RAYU.md, AGENTS.md, CLAUDE.md, .rayu/RAYU.md, and all .md files in .rayu/rules/ or .agents/rules/ are checked in each directory for Project memory
  *
  * Memory @include directive:
  * - Memory files can include other files using @ notation
@@ -93,7 +93,7 @@ export const MAX_MEMORY_CHARACTER_COUNT = 40000
 
 // Project memory filenames + config dirs supported per directory. Missing files
 // are silently skipped by processMemoryFile.
-const PROJECT_MEMORY_FILENAMES = ['RAYU.md', 'AGENTS.md'] as const
+const PROJECT_MEMORY_FILENAMES = ['RAYU.md', 'AGENTS.md', 'CLAUDE.md'] as const
 const PROJECT_CONFIG_DIRS = ['.rayu', '.agents'] as const
 
 // File extensions that are allowed for @include directives

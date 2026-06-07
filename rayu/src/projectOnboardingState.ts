@@ -17,7 +17,7 @@ export type Step = {
 }
 
 export function getSteps(): Step[] {
-  const hasRayuMemory = ['RAYU.md', 'AGENTS.md'].some(name =>
+  const hasRayuMemory = ['RAYU.md', 'AGENTS.md', 'CLAUDE.md'].some(name =>
     getFsImplementation().existsSync(join(getCwd(), name)),
   )
   const isWorkspaceDirEmpty = isDirEmpty(getCwd())
@@ -25,7 +25,7 @@ export function getSteps(): Step[] {
   return [
     {
       key: 'workspace',
-      text: 'Ask Claude to create a new app or clone a repository',
+      text: 'Ask RAYU to create a new app or clone a repository',
       isComplete: false,
       isCompletable: true,
       isEnabled: isWorkspaceDirEmpty,

@@ -29,7 +29,7 @@ type SyncedMeta = z.infer<ReturnType<typeof syncedMetaSchema>>
  * e.g., <cwd>/.rayu/agent-memory-snapshots/<agentType>/
  */
 export function getSnapshotDirForAgent(agentType: string): string {
-  return join(getCwd(), '.claude', SNAPSHOT_BASE, agentType)
+  return join(getCwd(), '.rayu', SNAPSHOT_BASE, agentType)
 }
 
 function getSnapshotJsonPath(agentType: string): string {

@@ -25,8 +25,11 @@ describe('isMemoryFilePath recognizes Rayu memory filenames', () => {
     for (const cfg of ['.rayu', '.agents']) {
       expect(isMemoryFilePath(join('/x/y', cfg, 'rules', 'style.md'))).toBe(true)
     }
-    expect(isMemoryFilePath('/x/y/CLAUDE.md')).toBe(false)
-    expect(isMemoryFilePath('/x/y/CLAUDE.local.md')).toBe(false)
+    // CLAUDE.md is recognized as an AGENTS.md-equivalent (back-compat); its
+    // .local variant too. But .claude/ is NOT a config dir, so rules under it
+    // are not memory files.
+    expect(isMemoryFilePath('/x/y/CLAUDE.md')).toBe(true)
+    expect(isMemoryFilePath('/x/y/CLAUDE.local.md')).toBe(true)
     expect(isMemoryFilePath('/x/y/.claude/rules/style.md')).toBe(false)
     // negatives
     expect(isMemoryFilePath('/x/y/README.md')).toBe(false)
@@ -52,7 +55,7 @@ describe('nested-directory memory loading covers RAYU.md / AGENTS.md', () => {
     expect(names).toContain('RAYU.md')
     expect(names).toContain('AGENTS.md')
     expect(names).toContain('extra.md')
-    expect(names).not.toContain('CLAUDE.md')
+    expect(names).toContain('CLAUDE.md')
   })
 })
 

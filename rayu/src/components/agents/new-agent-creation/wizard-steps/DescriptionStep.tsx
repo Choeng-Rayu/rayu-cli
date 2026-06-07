@@ -111,7 +111,7 @@ export function DescriptionStep() {
   }
   let t8;
   if ($[15] !== t6 || $[16] !== t7) {
-    t8 = <WizardDialogLayout subtitle="Description (tell Claude when to use this agent)" footerText={t4}><Box flexDirection="column">{t5}{t6}{t7}</Box></WizardDialogLayout>;
+    t8 = <WizardDialogLayout subtitle="Description (tell Rayu when to use this agent)" footerText={t4}><Box flexDirection="column">{t5}{t6}{t7}</Box></WizardDialogLayout>;
     $[15] = t6;
     $[16] = t7;
     $[17] = t8;

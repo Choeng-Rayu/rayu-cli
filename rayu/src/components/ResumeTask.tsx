@@ -257,7 +257,7 @@ function renderErrorSpecificGuidance(errorType: LoadErrorType): React.ReactNode 
         </Box>;
     case 'api':
       return <Box marginY={1} flexDirection="column">
-          <Text dimColor>Sorry, Claude encountered an error</Text>
+          <Text dimColor>Sorry, Rayu encountered an error</Text>
         </Box>;
     case 'other':
       return <Box marginY={1} flexDirection="row">

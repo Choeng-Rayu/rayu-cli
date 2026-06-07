@@ -143,7 +143,7 @@ const externalTips: Tip[] = [
   {
     id: 'git-worktrees',
     content: async () =>
-      'Use git worktrees to run multiple Claude sessions in parallel.',
+      'Use git worktrees to run multiple Rayu sessions in parallel.',
     cooldownSessions: 10,
     isRelevant: async () => {
       try {
@@ -158,7 +158,7 @@ const externalTips: Tip[] = [
   {
     id: 'color-when-multi-clauding',
     content: async () =>
-      'Running multiple Claude sessions? Use /color and /rename to tell them apart at a glance.',
+      'Running multiple Rayu sessions? Use /color and /rename to tell them apart at a glance.',
     cooldownSessions: 10,
     isRelevant: async () => {
       if (getCurrentSessionAgentColor()) return false
@@ -255,7 +255,7 @@ const externalTips: Tip[] = [
   {
     id: 'prompt-queue',
     content: async () =>
-      'Hit Enter to queue up additional messages while Claude is working.',
+      'Hit Enter to queue up additional messages while Rayu is working.',
     cooldownSessions: 5,
     async isRelevant() {
       const config = getGlobalConfig()
@@ -272,7 +272,7 @@ const externalTips: Tip[] = [
   {
     id: 'todo-list',
     content: async () =>
-      'Ask Claude to create a todo list when working on complex tasks to track progress and remain on track',
+      'Ask RAYU to create a todo list when working on complex tasks to track progress and remain on track',
     cooldownSessions: 20,
     isRelevant: async () => true,
   },
@@ -376,7 +376,7 @@ const externalTips: Tip[] = [
   {
     id: 'continue',
     content: async () =>
-      'Run claude --continue or claude --resume to resume a conversation',
+      'Run rayu --continue or rayu --resume to resume a conversation',
     cooldownSessions: 10,
     isRelevant: async () => true,
   },

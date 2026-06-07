@@ -880,7 +880,7 @@ export const SettingsSchema = lazySchema(() =>
               .boolean()
               .optional()
               .describe(
-                'Start Claude in assistant mode (custom system prompt, brief view, scheduled check-in skills)',
+                'Start Rayu in assistant mode (custom system prompt, brief view, scheduled check-in skills)',
               ),
             assistantName: z
               .string()
