@@ -19,7 +19,6 @@ import {
 import {
   anthropicNameToCanonical,
   getCanonicalName,
-  getDefaultMainLoopModelSetting,
   type ModelShortName,
 } from './model/model.js'
 
@@ -86,7 +85,16 @@ export const COST_HAIKU_45 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
-const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
+// Zero-cost tier for models with no known price table (non-Anthropic providers
+// like NVIDIA, or custom endpoints). Used so usage is reported as tokens-only
+// without fabricating a dollar cost.
+const COST_ZERO = {
+  inputTokens: 0,
+  outputTokens: 0,
+  promptCacheWriteTokens: 0,
+  promptCacheReadTokens: 0,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
 
 /**
  * Get the cost tier for Opus 4.6 based on fast mode.
@@ -155,10 +163,11 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const costs = MODEL_COSTS[shortName]
   if (!costs) {
     trackUnknownModelCost(model, shortName)
-    return (
-      MODEL_COSTS[getCanonicalName(getDefaultMainLoopModelSetting())] ??
-      DEFAULT_UNKNOWN_MODEL_COST
-    )
+    // Rayu is multi-provider: do NOT assume Anthropic pricing for models we
+    // have no price table for (e.g. NVIDIA, custom OpenAI-compatible). Report
+    // zero cost so totals aren't fabricated; the UI shows token usage instead
+    // and omits the $ figure for these models.
+    return COST_ZERO
   }
   return costs
 }

@@ -501,10 +501,14 @@ const getGrowthBookClient = memoize(
         `GrowthBook: Creating client with clientKey=${clientKey}, attributes: ${jsonStringify(attributes)}`,
       )
     }
-    const baseUrl =
-      process.env.USER_TYPE === 'ant'
-        ? process.env.CLAUDE_CODE_GB_BASE_URL || 'https://api.anthropic.com/'
-        : 'https://api.anthropic.com/'
+    // Rayu: never fetch feature flags from Anthropic. GrowthBook only activates
+    // when an operator explicitly points it at their own host via
+    // CLAUDE_CODE_GB_BASE_URL; otherwise flags resolve to built-in defaults
+    // with zero outbound calls.
+    const baseUrl = process.env.CLAUDE_CODE_GB_BASE_URL
+    if (!baseUrl) {
+      return null
+    }
 
     // Skip auth if trust hasn't been established yet
     // This prevents executing apiKeyHelper commands before the trust dialog

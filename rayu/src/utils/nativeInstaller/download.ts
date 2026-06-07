@@ -21,9 +21,12 @@ import { logError } from '../log.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify, writeFileSync_DEPRECATED } from '../slowOperations.js'
 import { getBinaryName, getPlatform } from './installer.js'
+import {
+  getBinaryAssetName,
+  getGitHubAssetBaseUrl,
+  getLatestVersionFromGitHub,
+} from '../githubReleases.js'
 
-const GCS_BUCKET_URL =
-  'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases'
 export const ARTIFACTORY_REGISTRY_URL =
   'https://artifactory.infra.ant.dev/artifactory/api/npm/npm-all/'
 
@@ -144,8 +147,14 @@ export async function getLatestVersion(
     return getLatestVersionFromArtifactory(npmTag)
   }
 
-  // Use GCS for external users
-  return getLatestVersionFromBinaryRepo(channel, GCS_BUCKET_URL)
+  // Use GitHub Releases for external users
+  const ghVersion = await getLatestVersionFromGitHub(channel)
+  if (!ghVersion) {
+    throw new Error(
+      'No Rayu native release is available yet on GitHub Releases.',
+    )
+  }
+  return ghVersion
 }
 
 export async function downloadVersionFromArtifactory(
@@ -484,6 +493,93 @@ export async function downloadVersionFromBinaryRepo(
   }
 }
 
+/**
+ * Download a native binary for `version` from this repo's GitHub Release.
+ *
+ * Layout produced by the release workflow (flat assets — GitHub asset names
+ * cannot contain slashes):
+ *   <tag>/manifest.json            { platforms: { "<platform>": { checksum } } }
+ *   <tag>/rayu-cli-<platform>[.exe] the standalone executable
+ *
+ * Writes the verified binary to <stagingPath>/<binaryName> (claude / claude.exe),
+ * matching what the installer expects.
+ */
+export async function downloadVersionFromGitHub(
+  version: string,
+  stagingPath: string,
+) {
+  const fs = getFsImplementation()
+  await fs.rm(stagingPath, { recursive: true, force: true })
+
+  const platform = getPlatform()
+  const assetBase = getGitHubAssetBaseUrl(version)
+  const startTime = Date.now()
+  logEvent('tengu_binary_download_attempt', {})
+
+  // Fetch manifest for the per-platform checksum.
+  let manifest
+  try {
+    const manifestResponse = await axios.get(`${assetBase}/manifest.json`, {
+      timeout: 10000,
+      responseType: 'json',
+    })
+    manifest = manifestResponse.data
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    let httpStatus: number | undefined
+    if (axios.isAxiosError(error) && error.response) {
+      httpStatus = error.response.status
+    }
+    logEvent('tengu_binary_manifest_fetch_failure', {
+      latency_ms: Date.now() - startTime,
+      http_status: httpStatus,
+      is_timeout: errorMessage.includes('timeout'),
+    })
+    logError(
+      new Error(
+        `Failed to fetch manifest from ${assetBase}/manifest.json: ${errorMessage}`,
+      ),
+    )
+    throw error
+  }
+
+  const platformInfo = manifest?.platforms?.[platform]
+  if (!platformInfo?.checksum) {
+    logEvent('tengu_binary_platform_not_found', {})
+    throw new Error(
+      `Platform ${platform} not found in GitHub release manifest for version ${version}`,
+    )
+  }
+
+  const binaryName = getBinaryName(platform)
+  const binaryUrl = `${assetBase}/${getBinaryAssetName(platform)}`
+
+  await fs.mkdir(stagingPath)
+  const binaryPath = join(stagingPath, binaryName)
+  try {
+    await downloadAndVerifyBinary(binaryUrl, platformInfo.checksum, binaryPath)
+    logEvent('tengu_binary_download_success', {
+      latency_ms: Date.now() - startTime,
+    })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    let httpStatus: number | undefined
+    if (axios.isAxiosError(error) && error.response) {
+      httpStatus = error.response.status
+    }
+    logEvent('tengu_binary_download_failure', {
+      latency_ms: Date.now() - startTime,
+      http_status: httpStatus,
+      is_timeout: errorMessage.includes('timeout'),
+      is_checksum_mismatch: errorMessage.includes('Checksum mismatch'),
+    })
+    logError(
+      new Error(`Failed to download binary from ${binaryUrl}: ${errorMessage}`),
+    )
+    throw error
+  }
+}
+
 export async function downloadVersion(
   version: string,
   stagingPath: string,
@@ -512,8 +608,8 @@ export async function downloadVersion(
     return 'npm'
   }
 
-  // Use GCS for external users
-  await downloadVersionFromBinaryRepo(version, stagingPath, GCS_BUCKET_URL)
+  // Use GitHub Releases for external users
+  await downloadVersionFromGitHub(version, stagingPath)
   return 'binary'
 }
 

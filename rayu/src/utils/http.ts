@@ -3,12 +3,10 @@
  */
 
 import axios from 'axios'
-import { OAUTH_BETA_HEADER } from '../constants/oauth.js'
 import {
   getAnthropicApiKey,
   getClaudeAIOAuthTokens,
   handleOAuth401Error,
-  isClaudeAISubscriber,
 } from './auth.js'
 import { getRayuUserAgent } from './userAgent.js'
 import { getWorkload } from './workloadContext.js'
@@ -58,27 +56,11 @@ export type AuthHeaders = {
 }
 
 /**
- * Get authentication headers for API requests
- * Returns either OAuth headers for Max/Pro users or API key headers for regular users
+ * Get authentication headers for API requests.
+ * Rayu authenticates Anthropic as a normal provider via API key
+ * (~/.rayu/providers.json); Claude-account OAuth is not supported.
  */
 export function getAuthHeaders(): AuthHeaders {
-  if (isClaudeAISubscriber()) {
-    const oauthTokens = getClaudeAIOAuthTokens()
-    if (!oauthTokens?.accessToken) {
-      return {
-        headers: {},
-        error: 'No OAuth token available',
-      }
-    }
-    return {
-      headers: {
-        Authorization: `Bearer ${oauthTokens.accessToken}`,
-        'anthropic-beta': OAUTH_BETA_HEADER,
-      },
-    }
-  }
-  // TODO: this will fail if the API key is being set to an LLM Gateway key
-  // should we try to query keychain / credentials for a valid Anthropic key?
   const apiKey = getAnthropicApiKey()
   if (!apiKey) {
     return {

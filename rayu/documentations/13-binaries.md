@@ -18,6 +18,34 @@ runtime + bundled code, so end users need neither Bun nor Node installed.
 `build:binaries` runs `scripts/build-binaries.ts`, which calls Bun's
 `--compile` for each target.
 
+## Releasing + auto-update (GitHub Releases)
+
+Auto-update for native/standalone installs resolves against this repo's GitHub
+Releases (`Choeng-Rayu/rayu-cli`) — see `src/utils/githubReleases.ts`. The npm
+package `@rayu-dev/rayu-cli` is updated separately via `npm i -g`.
+
+`bun run build-native` (`scripts/build-native.ts`) produces the
+**auto-update-compatible** artifacts in `dist-native/`:
+
+- `rayu-cli-<platform>` (and `rayu-cli-win32-x64.exe`) — one per platform, named
+  to match `getPlatform()` in `src/utils/nativeInstaller/installer.ts`.
+- `manifest.json` — `{ version, platforms: { "<platform>": { checksum } } }`
+  (SHA-256), used by the downloader to verify each binary.
+
+To cut a release:
+
+1. Bump `version` in `package.json` (and `scripts/macroValues.ts` `VERSION` if
+   you keep it separate).
+2. `git tag v<version> && git push origin v<version>`.
+3. `.github/workflows/release.yml` builds all platforms on a single Ubuntu
+   runner (Bun cross-compiles), then creates the GitHub Release and uploads the
+   binaries + `manifest.json` as assets.
+
+Until a release exists, the updater's version check returns `null` and simply
+treats the current version as up to date (no errors). Tags containing `-`
+(e.g. `v1.2.3-beta.1`) are published as prereleases.
+
+
 ## Build all platforms
 
 ```bash

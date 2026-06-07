@@ -1,0 +1,49 @@
+# Builds standalone Rayu binaries for all platforms and publishes them as
+# GitHub Release assets when a v* tag is pushed. The auto-updater (native /
+# standalone installs) resolves the latest version and downloads these assets
+# from this repo's Releases — see src/utils/githubReleases.ts.
+#
+# Release flow:
+#   1. bump version in package.json (and macroValues VERSION if separate)
+#   2. git tag v<version> && git push origin v<version>
+#   3. this workflow builds dist-native/* + manifest.json and creates the Release
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # required to create releases + upload assets
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Bun cross-compiles all targets (linux/macos/windows, x64/arm64) from
+      # the ubuntu runner. Produces dist-native/rayu-cli-<platform>[.exe] and
+      # dist-native/manifest.json (per-platform sha256 checksums).
+      - name: Build native binaries + manifest
+        run: bun run build-native
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-native/rayu-cli-*
+            dist-native/manifest.json
+          generate_release_notes: true
+          # Mark prereleases automatically for -alpha/-beta/-rc tags.
+          prerelease: ${{ contains(github.ref_name, '-') }}

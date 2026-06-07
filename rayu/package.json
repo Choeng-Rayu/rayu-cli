@@ -18,6 +18,7 @@
     "dev": "bun run src/entrypoints/cli.tsx",
     "build": "bun run scripts/build.ts",
     "build:binaries": "bun run scripts/build-binaries.ts",
+    "build-native": "bun run scripts/build-native.ts",
     "build:packages": "bun run scripts/build-packages.ts",
     "package": "bun run scripts/build-binaries.ts",
     "typecheck": "tsc --noEmit",

@@ -219,7 +219,9 @@ function formatModelUsage(): string {
       (usage.webSearchRequests > 0
         ? `, ${formatNumber(usage.webSearchRequests)} web search`
         : '') +
-      ` (${formatCost(usage.costUSD)})`
+      // Only show a $ figure for models we have a price table for. Unpriced
+      // (non-Anthropic) models report tokens-only.
+      (usage.costUSD > 0 ? ` (${formatCost(usage.costUSD)})` : '')
     result += `\n` + `${shortName}:`.padStart(21) + usageString
   }
   return result
@@ -229,7 +231,7 @@ export function formatTotalCost(): string {
   const costDisplay =
     formatCost(getTotalCostUSD()) +
     (hasUnknownModelCost()
-      ? ' (costs may be inaccurate due to usage of unknown models)'
+      ? ' (priced models only; token usage for other providers/models is shown below without cost)'
       : '')
 
   const modelUsageDisplay = formatModelUsage()
