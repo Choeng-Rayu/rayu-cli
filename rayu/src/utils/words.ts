@@ -1,7 +1,7 @@
 /**
  * Random word slug generator for plan IDs
  * Inspired by https://github.com/nas5w/random-word-slugs
- * with Claude-flavored words
+ * with Rayu-flavored words
  */
 import { randomBytes } from 'crypto'
 

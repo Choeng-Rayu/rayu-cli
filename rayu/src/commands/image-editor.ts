@@ -2,15 +2,16 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../commands.js'
 import { IMAGE_GEN_TOOL_NAME } from '../tools/ImageGenTool/constants.js'
 import { getNvidiaApiKey } from '../tools/ImageGenTool/nvidiaImageClient.js'
+import { isGeminiVertexImageAvailable } from '../tools/ImageGenTool/vertexImageClient.js'
 
 const imageEditor: Command = {
   type: 'prompt',
   name: 'image-editor',
-  description: 'Edit an existing image with a text prompt (NVIDIA)',
+  description: 'Edit an existing image with a text prompt (NVIDIA / Vertex Imagen)',
   progressMessage: 'editing image',
   contentLength: 0,
   source: 'builtin',
-  isEnabled: () => getNvidiaApiKey() != null,
+  isEnabled: () => getNvidiaApiKey() != null || isGeminiVertexImageAvailable(),
   async getPromptForCommand(args): Promise<ContentBlockParam[]> {
     const text = args.trim()
     return [

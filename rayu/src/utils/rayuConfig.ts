@@ -52,6 +52,11 @@ export type RayuProvider = {
   awsSecretAccessKey?: string
   /** AWS region for Bedrock API calls (default: us-east-1). */
   awsRegion?: string
+  // --- Google Vertex AI fields (kind: 'vertex') ---
+  /** GCP project id for Vertex AI requests. */
+  gcpProject?: string
+  /** GCP region (location) for Vertex AI requests (default: us-central1). */
+  gcpRegion?: string
 }
 
 export type RayuConfig = {
@@ -548,12 +553,143 @@ async function fetchBedrockAnthropicModels(p: RayuProvider): Promise<string[]> {
   return [...ids].sort()
 }
 
+type VertexPublisherModel = { name?: string }
+
+/**
+ * Curated list of current Gemini chat models on Vertex AI, newest first. Used
+ * as a reliable fallback (and unioned with the live catalog) because the
+ * publisher-models listing can come back empty/partial depending on project
+ * permissions — without this the picker could be stuck on an old default.
+ * Override with VERTEX_GEMINI_MODELS (comma-separated) to pin your own set.
+ */
+export const KNOWN_GEMINI_VERTEX_MODELS: string[] = [
+  'gemini-3.5-flash',
+  'gemini-3-flash',
+  'gemini-3.1-pro-preview',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+]
+
+function curatedGeminiModels(): string[] {
+  const env = process.env.VERTEX_GEMINI_MODELS
+  if (env && env.trim()) {
+    return env
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+  }
+  return KNOWN_GEMINI_VERTEX_MODELS
+}
+
+/**
+ * Pick the preferred default Gemini model from a list: newest flash first
+ * (3.5 → 3.x → any 3 → any flash), else the first entry.
+ */
+export function pickPreferredGeminiModel(models: string[]): string | undefined {
+  const prefs = [
+    /^gemini-3\.5-flash/i,
+    /^gemini-3(\.\d+)?-flash/i,
+    /^gemini-3.*flash/i,
+    /^gemini-3/i,
+    /flash/i,
+  ]
+  for (const re of prefs) {
+    const hit = models.find(m => re.test(m))
+    if (hit) return hit
+  }
+  return models[0]
+}
+
+/**
+ * Parse the Vertex publisher-models response into bare Gemini chat model ids.
+ * Names look like `publishers/google/models/gemini-2.5-flash`; we keep only
+ * Gemini chat models (excluding imagen/veo/embedding/vision-only entries).
+ * Exported for unit testing the parser without a live endpoint.
+ */
+export function parseVertexGeminiModels(json: unknown): string[] {
+  const models =
+    (json as { publisherModels?: VertexPublisherModel[] })?.publisherModels ?? []
+  const ids = new Set<string>()
+  for (const m of models) {
+    const name = m?.name
+    if (!name) continue
+    const id = name.split('/').pop() ?? ''
+    // Gemini chat models only — skip imagen/veo/embedding/aqa/etc.
+    if (!/^gemini/i.test(id)) continue
+    if (/embedding|embed|imagen|veo|vision-only|aqa/i.test(id)) continue
+    // Skip image/audio-specialized previews that aren't general chat models.
+    if (/-image|-tts|-audio|-live/i.test(id)) continue
+    ids.add(id)
+  }
+  return [...ids].sort()
+}
+
+/**
+ * Merge live + curated Gemini model ids, newest-ish first. Curated models lead
+ * so current releases (Gemini 3.x) are always offered even when the live
+ * listing is empty or lagging; any extra live models are appended.
+ */
+export function mergeGeminiModels(live: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const id of [...curatedGeminiModels(), ...live]) {
+    if (!seen.has(id)) {
+      seen.add(id)
+      out.push(id)
+    }
+  }
+  return out
+}
+
+/**
+ * List Gemini models available on Vertex AI for the provider's region via the
+ * publisher catalog `GET …/publishers/google/models`, authenticated with a
+ * Google Cloud OAuth bearer token. Always unions with the curated current
+ * model set so newer Gemini releases are offered even if listing is empty.
+ * SECURITY: the bearer token is sent only to the Vertex host; never logged.
+ */
+async function fetchVertexGeminiModels(p: RayuProvider): Promise<string[]> {
+  const region = p.gcpRegion || 'global'
+  try {
+    const { getVertexAccessToken } = await import(
+      '../services/api/gemini/vertexAuth.js'
+    )
+    const { vertexHost } = await import('./rayuProviders.js')
+    const token = await getVertexAccessToken()
+    const url = `https://${vertexHost(region)}/v1beta1/publishers/google/models?pageSize=200`
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) {
+      reportIssue('rayu_models.fetch_failed', 'vertex publisher models non-OK', {
+        provider: p.id,
+        status: res.status,
+      })
+      return mergeGeminiModels([])
+    }
+    return mergeGeminiModels(parseVertexGeminiModels(await res.json()))
+  } catch (e) {
+    reportIssue('rayu_models.fetch_error', 'vertex publisher models request failed', {
+      provider: p.id,
+      error: e instanceof Error ? e.message : String(e),
+    })
+    return mergeGeminiModels([])
+  }
+}
+
 export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
   // Bedrock exposes no OpenAI-style /models endpoint; list via its control plane.
   if (p.kind === 'bedrock') {
     return p.bedrockApi === 'anthropic'
       ? fetchBedrockAnthropicModels(p)
       : fetchBedrockModels(p)
+  }
+  // Gemini on Vertex AI: list Gemini models from the publisher catalog,
+  // authenticated with a Google Cloud OAuth bearer token.
+  if (p.kind === 'vertex') {
+    return fetchVertexGeminiModels(p)
   }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
@@ -590,7 +726,13 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
  */
 export async function refreshActiveProviderModels(): Promise<string[]> {
   const p = getActiveProvider()
-  if (!p || (p.kind !== 'openai-compatible' && p.kind !== 'bedrock')) return []
+  if (
+    !p ||
+    (p.kind !== 'openai-compatible' &&
+      p.kind !== 'bedrock' &&
+      p.kind !== 'vertex')
+  )
+    return []
   const models = await fetchProviderModels(p)
   if (models.length) {
     const cfg = loadRayuConfig()
@@ -615,8 +757,10 @@ export async function refreshAllProviderModels(): Promise<void> {
   const promises = cfg.providers
     .filter(
       p =>
-        (p.kind === 'openai-compatible' || p.kind === 'bedrock') &&
-        p.baseURL &&
+        // Vertex has no stored baseURL (it's computed); the others need one.
+        (p.kind === 'vertex' ||
+          ((p.kind === 'openai-compatible' || p.kind === 'bedrock') &&
+            p.baseURL)) &&
         !(p.fetchedModels?.length),
     )
     .map(async p => {

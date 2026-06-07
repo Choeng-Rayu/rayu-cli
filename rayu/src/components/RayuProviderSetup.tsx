@@ -13,6 +13,7 @@ import {
   type RayuProvider,
   fetchProviderModels,
   isLikelyChatModel,
+  pickPreferredGeminiModel,
   refreshActiveProviderModels,
   upsertProvider,
 } from '../utils/rayuConfig.js'
@@ -22,6 +23,9 @@ import {
   BEDROCK_REGIONS,
   DEFAULT_BEDROCK_REGION,
   bedrockBaseURL,
+  GEMINI_VERTEX_PROVIDER_ID,
+  DEFAULT_VERTEX_REGION,
+  VERTEX_REGIONS,
 } from '../utils/rayuProviders.js'
 
 type Preset = ProviderPreset
@@ -35,6 +39,10 @@ type Phase =
   | 'region'
   | 'fetchingModels'
   | 'pickModel'
+  | 'vertexAuth'
+  | 'vertexProject'
+  | 'vertexRegion'
+  | 'vertexFetching'
 
 export function RayuProviderSetup({
   onDone,
@@ -51,6 +59,14 @@ export function RayuProviderSetup({
   const [region, setRegion] = useState(DEFAULT_BEDROCK_REGION)
   const [bedrockModels, setBedrockModels] = useState<string[]>([])
   const [fetchError, setFetchError] = useState<string | null>(null)
+  // Vertex (Gemini OAuth) state
+  const [vertexProject, setVertexProject] = useState('')
+  const [vertexRegion, setVertexRegion] = useState(DEFAULT_VERTEX_REGION)
+  const [vertexAuthState, setVertexAuthState] = useState<
+    'checking' | 'choose' | 'loggingIn'
+  >('checking')
+  const [vertexAdcAvailable, setVertexAdcAvailable] = useState(false)
+  const [vertexError, setVertexError] = useState<string | null>(null)
 
   function pick(p: Preset): void {
     setPreset(p)
@@ -59,7 +75,9 @@ export function RayuProviderSetup({
     setCursor(0)
     // Local/custom endpoints need a base URL; otherwise go straight to key.
     // Bedrock also starts at the key step (key → region → fetch models).
-    if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
+    // Vertex (Gemini OAuth) starts with credential detection.
+    if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
+    else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
     else setPhase('key')
   }
 
@@ -130,6 +148,99 @@ export function RayuProviderSetup({
       ''
     )
   }
+
+  // Persist the Gemini/Vertex provider (kind 'vertex') with the chosen GCP
+  // project + region. Model selection is handled afterwards by the shared
+  // model picker; we kick off a live catalog refresh but don't block the first
+  // chat turn on it.
+  // Advance from region selection to the model-fetch phase, which persists the
+  // provider and fetches the catalog BEFORE the shared model picker opens.
+  function finishVertex(regionOverride?: string): void {
+    if (regionOverride) setVertexRegion(regionOverride)
+    setPhase('vertexFetching')
+  }
+
+  // On entering the vertexAuth phase, detect ADC + pre-fill project/region,
+  // then ALWAYS present the auth choice (use detected ADC, or sign in with
+  // Google) rather than silently picking one.
+  React.useEffect(() => {
+    if (phase !== 'vertexAuth') return
+    let cancelled = false
+    setVertexAuthState('checking')
+    setVertexError(null)
+    void (async () => {
+      const [{ hasAdcCredentials, detectGcpProjectAndRegion }, { hasGeminiOAuthLogin }] =
+        await Promise.all([
+          import('../services/api/gemini/vertexAuth.js'),
+          import('../services/oauth/googleOAuth.js'),
+        ])
+      const detected = await detectGcpProjectAndRegion().catch(() => ({
+        project: undefined,
+        region: DEFAULT_VERTEX_REGION,
+      }))
+      if (cancelled) return
+      if (detected.project) setVertexProject(detected.project)
+      if (detected.region) setVertexRegion(detected.region)
+      const adc =
+        (await hasAdcCredentials().catch(() => false)) || hasGeminiOAuthLogin()
+      if (cancelled) return
+      setVertexAdcAvailable(adc)
+      setVertexAuthState('choose')
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [phase])
+
+  // Run the interactive loopback OAuth login, then advance to project entry.
+  async function handleVertexLogin(): Promise<void> {
+    setVertexAuthState('loggingIn')
+    setVertexError(null)
+    try {
+      const { loginGeminiOAuth } = await import('../services/oauth/googleOAuth.js')
+      await loginGeminiOAuth()
+      setPhase('vertexProject')
+    } catch (e) {
+      setVertexError(e instanceof Error ? e.message : String(e))
+      setVertexAuthState('choose')
+    }
+  }
+
+  // Persist the Vertex provider, fetch its Gemini catalog, set a sensible
+  // default, THEN open the shared model picker (which reads the cached catalog
+  // synchronously on mount). Mirrors the Bedrock fetch-before-finish flow.
+  React.useEffect(() => {
+    if (phase !== 'vertexFetching') return
+    let cancelled = false
+    void (async () => {
+      const base: RayuProvider = {
+        id: preset?.id ?? GEMINI_VERTEX_PROVIDER_ID,
+        kind: 'vertex',
+        gcpProject: vertexProject.trim() || undefined,
+        gcpRegion: (vertexRegion || DEFAULT_VERTEX_REGION).trim(),
+      }
+      // Persist first so getVertexAccessToken / fetch can resolve project+region.
+      upsertProvider(base, true)
+      const models = await fetchProviderModels(base).catch(() => [] as string[])
+      if (cancelled) return
+      const chat = models.filter(isLikelyChatModel)
+      const pickDefault = pickPreferredGeminiModel(chat)
+      upsertProvider(
+        {
+          ...base,
+          ...(chat.length ? { fetchedModels: chat } : {}),
+          // Fallback default keeps the picker non-empty even if listing failed.
+          defaultModel: pickDefault ?? 'gemini-3.5-flash',
+        },
+        true,
+      )
+      if (cancelled) return
+      onDone()
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [phase])
 
   // After the region is chosen, fetch the live model catalog so the shared
   // model picker is populated, then finish. Only if the fetch returns nothing
@@ -211,6 +322,108 @@ export function RayuProviderSetup({
           columns={80}
           cursorOffset={cursor}
           onChangeCursorOffset={setCursor}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'vertexAuth') {
+    if (vertexAuthState === 'checking') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Google Cloud sign-in</Text>
+          <Text dimColor>Checking for existing credentials (ADC)…</Text>
+        </Box>
+      )
+    }
+    if (vertexAuthState === 'loggingIn') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Signing in to Google…</Text>
+          <Text dimColor>
+            A browser window has opened. Approve access, then return here.
+          </Text>
+        </Box>
+      )
+    }
+    // choose: always let the user pick the auth method.
+    const options = [
+      ...(vertexAdcAvailable
+        ? [
+            {
+              label: 'Use detected Google Cloud credentials (ADC / gcloud)',
+              value: 'adc',
+            },
+          ]
+        : []),
+      { label: 'Sign in with Google (browser)', value: 'login' },
+      { label: 'Cancel', value: 'cancel' },
+    ]
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Gemini on Vertex AI — choose how to authenticate</Text>
+        <Text dimColor>
+          {vertexAdcAvailable
+            ? 'Application Default Credentials were detected. Use them, or sign in with a Google account instead.'
+            : 'No Application Default Credentials found. Sign in with Google to continue (opens a browser).'}
+        </Text>
+        {vertexError ? <Text color="yellow">{vertexError}</Text> : null}
+        <Select
+          options={options}
+          onChange={(v: string) => {
+            if (v === 'adc') setPhase('vertexProject')
+            else if (v === 'login') void handleVertexLogin()
+            else onDone()
+          }}
+          onCancel={onDone}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'vertexFetching') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Fetching Gemini models from Vertex AI…</Text>
+        <Text dimColor>
+          Listing models for project {vertexProject || '(default)'} in {vertexRegion}.
+        </Text>
+      </Box>
+    )
+  }
+
+  if (phase === 'vertexProject') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>GCP project id</Text>
+        <Text dimColor>
+          Project that has Vertex AI enabled. {vertexProject ? 'Detected default shown — edit if needed.' : 'Enter your project id.'}
+        </Text>
+        <TextInput
+          value={vertexProject}
+          onChange={setVertexProject}
+          onSubmit={() => setPhase('vertexRegion')}
+          placeholder="my-gcp-project"
+          columns={80}
+          cursorOffset={cursor}
+          onChangeCursorOffset={setCursor}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'vertexRegion') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Vertex AI region</Text>
+        <Text dimColor>Region that serves Gemini for your project.</Text>
+        <Select
+          options={VERTEX_REGIONS.map(r => ({ label: r.label, value: r.id }))}
+          onChange={(v: string) => {
+            setVertexRegion(v)
+            finishVertex(v)
+          }}
+          onCancel={onDone}
         />
       </Box>
     )

@@ -778,3 +778,41 @@ describe('openaiAdapter reasoning_effort parameter', () => {
     }
   })
 })
+
+describe('openaiAdapter dynamic-credential (Vertex OAuth) client', () => {
+  test('uses the custom fetch which injects an Authorization header', async () => {
+    let seenAuth: string | null = null
+    const fakeFetch = (async (input: any, init?: any) => {
+      seenAuth = new Headers(init?.headers).get('Authorization')
+      return new Response(
+        JSON.stringify({
+          id: 'x',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+
+    const client = createOpenAICompatibleClient({
+      apiKey: '',
+      baseURL: 'https://us-central1-aiplatform.googleapis.com/v1beta1/projects/p/locations/us-central1/endpoints/openapi',
+      providerId: 'gemini-vertex',
+      maxRetries: 0,
+      fetch: (async (input: any, init?: any) => {
+        const headers = new Headers(init?.headers)
+        headers.set('Authorization', 'Bearer fresh-token')
+        return fakeFetch(input, { ...init, headers })
+      }) as unknown as typeof fetch,
+    }) as any
+
+    await client.beta.messages.create({
+      model: 'google/gemini-2.5-flash',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(seenAuth).toBe('Bearer fresh-token')
+  })
+})

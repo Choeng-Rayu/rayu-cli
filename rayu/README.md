@@ -67,11 +67,14 @@ Inside a session:
 
 ## Providers
 
-Rayu supports three provider types:
+Rayu supports four provider types:
 
 - **`anthropic`** — Anthropic API (`ANTHROPIC_API_KEY`)
-- **`openai-compatible`** — Any OpenAI-style endpoint (NVIDIA, DeepSeek, Kimi, OpenRouter, Ollama, LM Studio, etc.)
+- **`openai-compatible`** — Any OpenAI-style endpoint (NVIDIA, DeepSeek, Kimi, OpenRouter, Google Gemini API, Ollama, LM Studio, etc.)
 - **`bedrock`** — AWS Bedrock API (`AWS_BEARER_TOKEN_BEDROCK` or default AWS credentials)
+- **`vertex`** — Google Gemini on Vertex AI (Google OAuth / Application Default Credentials)
+
+Google Gemini is available two ways: a **Gemini API key** (`GEMINI_API_KEY`, via the OpenAI-compatible endpoint) or **Vertex AI with OAuth/ADC** (project + region scoped). The Vertex credentials also power Imagen 4 image generation and Veo 3.1 video generation.
 
 Example — NVIDIA NIM headless run:
 

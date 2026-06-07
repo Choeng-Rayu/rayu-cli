@@ -1,17 +1,26 @@
 # Image Generation
 
 Rayu-CLI ships a built-in `GenerateImage` tool that lets the agent **create and
-edit images** from a text prompt using NVIDIA's free hosted image models. The
-agent uses it automatically when it needs an image (for example, generating
-assets for a frontend it is building) or when you ask for one.
+edit images** from a text prompt, using either NVIDIA's free hosted image models
+or Google **Imagen 4** on Vertex AI. The agent uses it automatically when it
+needs an image (for example, generating assets for a frontend it is building) or
+when you ask for one.
 
 ## Requirements
 
-- A configured **NVIDIA** provider (the tool reuses the `nvidia` API key from
-  `~/.rayu/providers.json`, or the `NVIDIA_API_KEY` environment variable).
-  Run `/connect` and pick NVIDIA, or set `NVIDIA_API_KEY`.
+Either backend enables the tool:
 
-The tool is hidden when no NVIDIA key is configured.
+- **NVIDIA** — reuses the `nvidia` API key from `~/.rayu/providers.json`, or the
+  `NVIDIA_API_KEY` environment variable. Run `/connect` and pick NVIDIA, or set
+  `NVIDIA_API_KEY`.
+- **Google Vertex AI (Imagen 4)** — uses a configured **Gemini / Vertex AI**
+  provider (OAuth / ADC). Run `/connect` → *Google Gemini — Vertex AI*, or have
+  Application Default Credentials + `GOOGLE_CLOUD_PROJECT` set. See
+  [Providers](./03-providers.md#google-gemini).
+
+The tool is hidden when neither backend is configured. When both are available,
+selecting an `imagen-*` model routes to Vertex; otherwise NVIDIA is used (Vertex
+is used automatically when it is the only configured backend).
 
 ## What it does
 
@@ -43,3 +52,23 @@ The tool is hidden when no NVIDIA key is configured.
 | `black-forest-labs/flux.1-dev` | Higher-quality text→image |
 | `stabilityai/stable-diffusion-3.5-large` | High-quality, `aspect_ratio`/`negative_prompt` |
 | `black-forest-labs/flux.1-kontext-dev` | Image **editing** (used automatically with `input_image`) |
+
+### Vertex AI (Imagen)
+
+Available when a Gemini / Vertex AI provider is configured.
+
+| Model id | Use |
+|----------|-----|
+| `imagen-4.0-generate-001` | **Default (Vertex)** — text→image |
+| `imagen-4.0-fast-generate-001` | Faster, lower-cost text→image |
+| `imagen-4.0-ultra-generate-001` | Highest-quality text→image |
+| `imagen-3.0-capability-001` | Image **editing** (used automatically with `input_image` on Vertex) |
+
+## Video generation (`GenerateVideo`)
+
+The companion `GenerateVideo` tool generates short videos from a text prompt. It
+is enabled by NVIDIA/fal.ai keys or by a Gemini / Vertex AI provider. On Vertex
+it uses **Veo 3.1** (`veo-3.1-generate-preview`, `veo-3.1-fast-generate-preview`)
+via the long-running prediction API (Rayu polls until the video is ready, then
+saves the MP4 inside the working directory).
+

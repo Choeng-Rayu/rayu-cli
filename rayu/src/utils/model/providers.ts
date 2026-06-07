@@ -94,6 +94,48 @@ export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS
 }
 
 /**
+ * Rayu: true when the active provider is the Gemini-on-Vertex provider
+ * (kind:'vertex'). Routed to a dedicated OpenAI-adapter client that injects a
+ * Google Cloud OAuth bearer token and the `google/` model prefix.
+ */
+export function isVertexGeminiActive(): boolean {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getActiveProvider } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return getActiveProvider()?.kind === 'vertex'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Rayu: synchronous best-effort check that Gemini-on-Vertex credentials are
+ * usable for image/video generation, without awaiting an ADC probe. True when
+ * a kind:'vertex' provider is configured, or GCP ADC env hints are present.
+ * Used to gate the Imagen/Veo tools and route them to Vertex.
+ */
+export function isGeminiVertexConfigured(): boolean {
+  if (
+    process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    process.env.ANTHROPIC_VERTEX_PROJECT_ID
+  ) {
+    return true
+  }
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { loadRayuConfig } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return loadRayuConfig().providers.some(p => p.kind === 'vertex')
+  } catch {
+    return false
+  }
+}
+
+/**
  * Check if ANTHROPIC_BASE_URL is a first-party Anthropic API URL.
  * Returns true if not set (default API) or points to api.anthropic.com
  * (or api-staging.anthropic.com for ant users).

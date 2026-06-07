@@ -15,6 +15,10 @@ export function getSpinnerVerbs(): string[] {
 // Spinner verbs for loading messages
 export const SPINNER_VERBS = [
   'Accomplishing',
+  'Bro coding',
+  'Building',
+  'Bro Code Yourself',
+  'Rayuing',
   'Actioning',
   'Actualizing',
   'Architecting',

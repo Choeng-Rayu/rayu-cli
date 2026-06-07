@@ -30,6 +30,8 @@ export type ImageParams = {
 export type ImageModel = {
   id: string
   capability: ImageCapability
+  /** Which backend serves this model. Defaults to NVIDIA's genai host. */
+  provider?: 'nvidia' | 'vertex'
   buildBody: (p: ImageParams) => Record<string, unknown>
 }
 
@@ -78,6 +80,26 @@ export const DEFAULT_IMAGE_MODEL =
 export const DEFAULT_EDIT_MODEL =
   process.env.NVIDIA_EDIT_MODEL || 'black-forest-labs/flux.1-kontext-dev'
 
+// --- Google Vertex AI (Imagen) ----------------------------------------------
+// Imagen 4 is generate-only; image editing uses the Imagen 3 capability model
+// with reference images. The Vertex client builds the :predict body itself
+// (instances/parameters), so these registry entries carry no NVIDIA buildBody.
+export const DEFAULT_VERTEX_IMAGE_MODEL =
+  process.env.VERTEX_IMAGE_MODEL || 'imagen-4.0-generate-001'
+export const DEFAULT_VERTEX_EDIT_MODEL =
+  process.env.VERTEX_EDIT_MODEL || 'imagen-3.0-capability-001'
+
+const vertexUnsupported = (): Record<string, unknown> => {
+  throw new Error('Vertex Imagen models are built by vertexImageClient, not buildBody')
+}
+
+/** True when a model id targets the Vertex Imagen backend. */
+export function isVertexImageModel(id: string | undefined): boolean {
+  if (!id) return false
+  const m = IMAGE_MODELS[id]
+  return m?.provider === 'vertex' || /^imagen-/i.test(id)
+}
+
 export const IMAGE_MODELS: Record<string, ImageModel> = {
   [DEFAULT_IMAGE_MODEL]: {
     id: DEFAULT_IMAGE_MODEL,
@@ -98,6 +120,31 @@ export const IMAGE_MODELS: Record<string, ImageModel> = {
     id: DEFAULT_EDIT_MODEL,
     capability: 'edit',
     buildBody: kontextBody,
+  },
+  // Vertex Imagen models (routed to vertexImageClient).
+  'imagen-4.0-generate-001': {
+    id: 'imagen-4.0-generate-001',
+    capability: 'generate',
+    provider: 'vertex',
+    buildBody: vertexUnsupported,
+  },
+  'imagen-4.0-fast-generate-001': {
+    id: 'imagen-4.0-fast-generate-001',
+    capability: 'generate',
+    provider: 'vertex',
+    buildBody: vertexUnsupported,
+  },
+  'imagen-4.0-ultra-generate-001': {
+    id: 'imagen-4.0-ultra-generate-001',
+    capability: 'generate',
+    provider: 'vertex',
+    buildBody: vertexUnsupported,
+  },
+  'imagen-3.0-capability-001': {
+    id: 'imagen-3.0-capability-001',
+    capability: 'edit',
+    provider: 'vertex',
+    buildBody: vertexUnsupported,
   },
 }
 

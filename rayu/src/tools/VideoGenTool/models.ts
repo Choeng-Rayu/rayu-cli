@@ -5,7 +5,7 @@
 // SECURITY: only model params + prompt sent; key never logged.
 
 export type VideoCapability = 'text2video' | 'image2video'
-export type VideoBackend = 'nvcf' | 'nvidia-svd' | 'fal'
+export type VideoBackend = 'nvcf' | 'nvidia-svd' | 'fal' | 'vertex'
 
 export type VideoParams = {
   prompt: string
@@ -117,6 +117,19 @@ export const DEFAULT_VIDEO_MODEL =
 export const DEFAULT_IMAGE2VIDEO_MODEL =
   process.env.NVIDIA_IMAGE2VIDEO_MODEL || 'nvidia/cosmos-predict1-5b'
 
+// Google Vertex AI Veo (long-running :predict). Body is built by
+// vertexVideoClient; the registry entry just records the backend + estimate.
+export const DEFAULT_VERTEX_VIDEO_MODEL =
+  process.env.VERTEX_VIDEO_MODEL || 'veo-3.1-generate-preview'
+
+const veoBody = (p: VideoParams): Record<string, unknown> => ({ prompt: p.prompt })
+
+/** True when a model id targets the Vertex Veo backend. */
+export function isVertexVideoModel(id: string | undefined): boolean {
+  if (!id) return false
+  return VIDEO_MODELS[id]?.backend === 'vertex' || /^veo-/i.test(id)
+}
+
 export const VIDEO_MODELS: Record<string, VideoModel> = {
   // ── NVIDIA Physical AI (free, 20 requests, NVCF function IDs) ──────────────
   'nvidia/cosmos-predict1-5b': {
@@ -174,6 +187,21 @@ export const VIDEO_MODELS: Record<string, VideoModel> = {
     capability: 'image2video',
     estimatedSeconds: 90,
     buildBody: falKlingImage2VideoBody,
+  },
+  // ── Google Vertex AI Veo 3.1 (long-running :predict) ───────────────────────
+  'veo-3.1-generate-preview': {
+    id: 'veo-3.1-generate-preview',
+    backend: 'vertex',
+    capability: 'text2video',
+    estimatedSeconds: 120,
+    buildBody: veoBody,
+  },
+  'veo-3.1-fast-generate-preview': {
+    id: 'veo-3.1-fast-generate-preview',
+    backend: 'vertex',
+    capability: 'text2video',
+    estimatedSeconds: 90,
+    buildBody: veoBody,
   },
 }
 

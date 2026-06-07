@@ -495,6 +495,13 @@ export type OpenAICompatibleConfig = {
   promptCacheKey?: ProviderFeatureMode
   reasoningEffort?: ProviderFeatureMode
   streamOptions?: ProviderFeatureMode
+  /**
+   * Custom fetch passed to the OpenAI SDK. Used for providers whose auth can't
+   * be a static apiKey — e.g. Vertex AI, where a fresh OAuth bearer token must
+   * be injected per request. When set, clients are cached by providerId+baseURL
+   * (not by apiKey) since the credential is dynamic.
+   */
+  fetch?: typeof fetch
 }
 
 type OptionalRequestParam = 'prompt_cache_key' | 'stream_options' | 'reasoning_effort'
@@ -732,7 +739,12 @@ function openAIClientCacheKey(config: OpenAICompatibleConfig): string {
   return JSON.stringify({
     providerId: config.providerId ?? '',
     baseURL: config.baseURL.replace(/\/+$/, ''),
-    keyHash: hashPair(config.apiKey || 'unset', 'openai-compatible-client'),
+    // Dynamic-credential clients (custom fetch, e.g. Vertex OAuth) have no
+    // stable apiKey to hash, so key them on providerId+baseURL only. Static
+    // providers continue to key on the apiKey hash so a key change rebuilds.
+    keyHash: config.fetch
+      ? 'dynamic'
+      : hashPair(config.apiKey || 'unset', 'openai-compatible-client'),
     headers: stableHeaders(config.headers),
     maxRetries: config.maxRetries ?? 2,
     promptCacheKey: config.promptCacheKey ?? 'auto',
@@ -750,6 +762,9 @@ function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
     // recognizes our normalized Anthropic-shaped errors).
     maxRetries: config.maxRetries ?? 2,
     defaultHeaders: config.headers,
+    // Dynamic-credential providers (e.g. Vertex OAuth) inject a fresh bearer
+    // token via a custom fetch wrapper instead of a static apiKey.
+    ...(config.fetch ? { fetch: config.fetch } : {}),
   })
 
   async function runNonStreaming(

@@ -139,6 +139,24 @@ async function getRayuBedrockAnthropicClient(
 }
 
 /**
+ * Rayu: build a Gemini-on-Vertex client (OpenAI adapter + OAuth fetch wrapper)
+ * for the active provider when it is a kind:'vertex' provider. Returns null
+ * otherwise so the caller falls through to the other client paths.
+ * SECURITY: the OAuth token is minted per request and never logged.
+ */
+async function getRayuVertexClient(
+  maxRetries: number,
+): Promise<unknown | null> {
+  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const active = getActiveProvider()
+  if (active?.kind !== 'vertex') {
+    return null
+  }
+  const { createVertexGeminiClient } = await import('./gemini/vertexChatClient.js')
+  return createVertexGeminiClient(active, maxRetries)
+}
+
+/**
  * Rayu: build an API client for a SPECIFIC provider (not necessarily the active
  * one). Used to route a subagent request to a provider chosen via
  * /model_subagent that differs from the main agent's provider. Mirrors the
@@ -162,6 +180,13 @@ async function buildClientForProvider(
       awsRegion: provider.awsRegion || process.env.AWS_REGION || 'us-east-1',
       maxRetries,
     })
+  }
+  // Gemini on Vertex AI: OpenAI adapter + OAuth fetch wrapper.
+  if (provider.kind === 'vertex') {
+    const { createVertexGeminiClient } = await import(
+      './gemini/vertexChatClient.js'
+    )
+    return createVertexGeminiClient(provider, maxRetries)
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
@@ -224,6 +249,13 @@ export async function getAnthropicClient({
   const bedrockAnthropicClient = await getRayuBedrockAnthropicClient(maxRetries)
   if (bedrockAnthropicClient) {
     return bedrockAnthropicClient as unknown as Anthropic
+  }
+
+  // Rayu: route to the Gemini-on-Vertex client when the active provider is a
+  // kind:'vertex' provider (OAuth bearer token + google/ model prefix).
+  const vertexClient = await getRayuVertexClient(maxRetries)
+  if (vertexClient) {
+    return vertexClient as unknown as Anthropic
   }
 
   // Rayu: route to the OpenAI-compatible adapter when the active provider is an

@@ -8,8 +8,18 @@ import { getCwd } from '../../utils/cwd.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
-import { IMAGE_MODELS, resolveModel } from './models.js'
+import {
+  DEFAULT_VERTEX_EDIT_MODEL,
+  DEFAULT_VERTEX_IMAGE_MODEL,
+  IMAGE_MODELS,
+  isVertexImageModel,
+  resolveModel,
+} from './models.js'
 import { generateImage, getNvidiaApiKey } from './nvidiaImageClient.js'
+import {
+  generateVertexImage,
+  isGeminiVertexImageAvailable,
+} from './vertexImageClient.js'
 import { DESCRIPTION, getImageGenPrompt, IMAGE_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 
@@ -121,7 +131,7 @@ export const ImageGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return getNvidiaApiKey() != null
+    return getNvidiaApiKey() != null || isGeminiVertexImageAvailable()
   },
   isReadOnly() {
     return false
@@ -185,22 +195,53 @@ export const ImageGenTool = buildTool({
         throw new Error(`input_image not found or unreadable: ${input.input_image}`)
       }
     }
-    const { buffer, mediaType } = await generateImage({
-      modelId: input.model,
-      isEdit,
-      params: {
-        prompt: input.prompt,
-        width: input.width,
-        height: input.height,
-        aspect_ratio: input.aspect_ratio,
-        steps: input.steps,
-        cfg_scale: input.cfg_scale,
-        seed: input.seed,
-        negative_prompt: input.negative_prompt,
-        image,
-      },
-      signal: context.abortController.signal,
-    })
+    // Route to Vertex Imagen when an imagen model is selected, or when Vertex
+    // is the only configured image backend. Otherwise use the NVIDIA client.
+    const useVertex =
+      isVertexImageModel(input.model) ||
+      (isGeminiVertexImageAvailable() && getNvidiaApiKey() == null)
+
+    const genParams = {
+      prompt: input.prompt,
+      width: input.width,
+      height: input.height,
+      aspect_ratio: input.aspect_ratio,
+      steps: input.steps,
+      cfg_scale: input.cfg_scale,
+      seed: input.seed,
+      negative_prompt: input.negative_prompt,
+      image,
+    }
+
+    let buffer: Buffer
+    let mediaType: string
+    let usedModelId: string
+    if (useVertex) {
+      const r = await generateVertexImage({
+        modelId: input.model,
+        isEdit,
+        params: genParams,
+        signal: context.abortController.signal,
+      })
+      buffer = r.buffer
+      mediaType = r.mediaType
+      usedModelId =
+        input.model && isVertexImageModel(input.model)
+          ? input.model
+          : isEdit
+            ? DEFAULT_VERTEX_EDIT_MODEL
+            : DEFAULT_VERTEX_IMAGE_MODEL
+    } else {
+      const r = await generateImage({
+        modelId: input.model,
+        isEdit,
+        params: genParams,
+        signal: context.abortController.signal,
+      })
+      buffer = r.buffer
+      mediaType = r.mediaType
+      usedModelId = resolveModel(input.model, isEdit).id
+    }
 
     // Resolve the output path; the default filename uses the real extension.
     const { path } = resolveOutputPath(
@@ -233,7 +274,7 @@ export const ImageGenTool = buildTool({
     return {
       data: {
         path,
-        model: resolveModel(input.model, isEdit).id,
+        model: usedModelId,
         width: dims?.width ?? input.width ?? 0,
         height: dims?.height ?? input.height ?? 0,
         mediaType: inlineMedia,

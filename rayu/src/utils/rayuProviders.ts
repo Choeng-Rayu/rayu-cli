@@ -29,6 +29,13 @@ export type ProviderPreset = {
   promptBaseURL?: boolean
   /** For bedrock presets: which Bedrock API surface to use (default 'openai'). */
   bedrockApi?: 'openai' | 'anthropic'
+  /**
+   * True for presets authenticated via Google OAuth / Application Default
+   * Credentials rather than a typed API key (e.g. Gemini on Vertex AI). The
+   * /connect flow runs ADC detection / loopback login + project/region prompts
+   * instead of the API-key step.
+   */
+  requiresOAuth?: boolean
 }
 
 // --- AWS Bedrock (API key / bearer token) -----------------------------------
@@ -63,6 +70,55 @@ export const BEDROCK_REGIONS: Array<{ id: string; label: string }> = [
   { id: 'eu-west-1', label: 'Europe (Ireland) · eu-west-1' },
   { id: 'eu-west-3', label: 'Europe (Paris) · eu-west-3' },
 ]
+
+// --- Google Vertex AI (Gemini via OAuth / ADC) ------------------------------
+// Vertex AI exposes an OpenAI-compatible Chat Completions endpoint under the
+// per-region `…/endpoints/openapi` path, authenticated with a Google Cloud
+// OAuth bearer token (cloud-platform scope) rather than a static API key. Rayu
+// reuses its OpenAI-compatible adapter with a fetch wrapper that injects a
+// freshly-minted token. The provider is project + region scoped.
+
+/** Stable provider id for the Gemini/Vertex (OAuth) preset. */
+export const GEMINI_VERTEX_PROVIDER_ID = 'gemini-vertex'
+
+/** Default GCP location for Vertex chat. `global` serves the newest Gemini
+ *  models (3.x) and also the 2.x line, so it's the most compatible default. */
+export const DEFAULT_VERTEX_REGION = 'global'
+
+/** Vertex AI host for a location: the `global` location uses the un-prefixed
+ *  host, every regional location uses the `{region}-` prefix. */
+export function vertexHost(region: string): string {
+  const r = (region || DEFAULT_VERTEX_REGION).trim()
+  return r === 'global'
+    ? 'aiplatform.googleapis.com'
+    : `${r}-aiplatform.googleapis.com`
+}
+
+/**
+ * Build the OpenAI-compatible Vertex AI base URL for a project + region. The
+ * Chat Completions endpoint lives at `{base}/chat/completions`; model ids are
+ * sent with a `google/` publisher prefix (handled at request time).
+ */
+export function vertexBaseURL(project: string, region: string): string {
+  const r = (region || DEFAULT_VERTEX_REGION).trim()
+  const p = project.trim()
+  return `https://${vertexHost(r)}/v1beta1/projects/${p}/locations/${r}/endpoints/openapi`
+}
+
+/** GCP locations that commonly serve Gemini on Vertex AI. `global` first — it
+ *  hosts the newest Gemini models and is the recommended default. */
+export const VERTEX_REGIONS: Array<{ id: string; label: string }> = [
+  { id: 'global', label: 'Global (recommended — newest Gemini models) · global' },
+  { id: 'us-central1', label: 'US Central (Iowa) · us-central1' },
+  { id: 'us-east1', label: 'US East (S. Carolina) · us-east1' },
+  { id: 'us-east4', label: 'US East (N. Virginia) · us-east4' },
+  { id: 'us-west1', label: 'US West (Oregon) · us-west1' },
+  { id: 'europe-west1', label: 'Europe West (Belgium) · europe-west1' },
+  { id: 'europe-west4', label: 'Europe West (Netherlands) · europe-west4' },
+  { id: 'asia-northeast1', label: 'Asia Northeast (Tokyo) · asia-northeast1' },
+  { id: 'asia-southeast1', label: 'Asia Southeast (Singapore) · asia-southeast1' },
+]
+
 
 // All confirmed OpenAI-compatible providers (tool calling + /v1/models), plus
 // AWS Bedrock via its OpenAI-compatible bedrock-runtime endpoint (authenticated
@@ -123,6 +179,31 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModel: 'gpt-4o',
     smallFastModel: 'gpt-4o-mini',
     envKeys: ['OPENAI_API_KEY'],
+  },
+  {
+    // Google Gemini via its OpenAI-compatible surface. The
+    // generativelanguage endpoint exposes /chat/completions and /models under
+    // the /v1beta/openai path, authenticated with a Gemini API key, so Rayu can
+    // reuse its OpenAI-compatible adapter + live model-catalog fetch verbatim.
+    // (The OAuth/Vertex path is a separate preset — see GEMINI_VERTEX_PRESET.)
+    // No hardcoded defaultModel: the catalog is fetched live and the picker
+    // chooses (e.g. gemini-2.5-flash / gemini-3.x-flash as they ship).
+    id: 'gemini',
+    label: 'Google Gemini — API key (generativelanguage.googleapis.com)',
+    kind: 'openai-compatible',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    envKeys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+  },
+  {
+    // Gemini on Google Vertex AI, authenticated with Google OAuth /
+    // Application Default Credentials (no static API key). Project + region
+    // scoped; the base URL is computed from the values chosen/detected in
+    // /connect (vertexBaseURL). Chat is served through the OpenAI-compatible
+    // adapter via a fetch wrapper that injects a fresh bearer token.
+    id: GEMINI_VERTEX_PROVIDER_ID,
+    label: 'Google Gemini — Vertex AI (OAuth / ADC)',
+    kind: 'vertex',
+    requiresOAuth: true,
   },
   {
     id: 'openrouter',

@@ -1,10 +1,11 @@
 # 3. Providers
 
-A **provider** is an API endpoint plus your credentials. Rayu supports three kinds:
+A **provider** is an API endpoint plus your credentials. Rayu supports these kinds:
 
 - **`anthropic`** — the Anthropic API (Claude models), via the Anthropic SDK.
-- **`openai-compatible`** — any endpoint that implements OpenAI's `/v1/chat/completions` (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword, OpenAI, OpenRouter, vLLM/Ollama/local, …). Requests are translated between the Anthropic message shape used internally and the OpenAI shape.
+- **`openai-compatible`** — any endpoint that implements OpenAI's `/v1/chat/completions` (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword, OpenAI, OpenRouter, Google Gemini API, vLLM/Ollama/local, …). Requests are translated between the Anthropic message shape used internally and the OpenAI shape.
 - **`bedrock`** — the AWS Bedrock API, via the `@anthropic-ai/bedrock-sdk` client.
+- **`vertex`** — Google **Gemini on Vertex AI**, authenticated with Google OAuth / Application Default Credentials. Served through the OpenAI-compatible adapter with a per-request OAuth bearer token.
 
 ## Built-in provider presets
 
@@ -17,6 +18,8 @@ A **provider** is an API endpoint plus your credentials. Rayu supports three kin
 | `kimi-moonshot` | Kimi / Moonshot | `https://api.moonshot.ai/v1` | `KIMI_API_KEY` / `MOONSHOT_API_KEY` |
 | `kimi-for-code` | Kimi for Code | `https://api.kimi.com/coding/v1` | `KIMI_FOR_CODE_API_KEY` |
 | `openai` | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `gemini` | Google Gemini — API key | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
+| `gemini-vertex` | Google Gemini — Vertex AI (OAuth) | _(per project/region)_ | _(OAuth / ADC)_ |
 | `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | `local` | Local / custom | _(you enter it)_ | — |
 | `bedrock` | AWS Bedrock | _(on-demand AWS Bedrock)_ | `AWS_BEARER_TOKEN_BEDROCK` |
@@ -50,6 +53,55 @@ When you connect to AWS Bedrock, Rayu queries your AWS account for available mod
 2. **Inference Profiles:** Calls `ListInferenceProfiles` (returns cross-region Claude inference profiles).
 
 These are merged and cached in `~/.rayu/providers.json`. This allows the `/model` command to list and switch between all available Bedrock models in your account.
+
+---
+
+## Google Gemini
+
+Rayu supports Gemini two ways — pick whichever matches how you access Google's models.
+
+### Gemini API key (`gemini`)
+
+The simplest path. Google's Gemini API exposes an **OpenAI-compatible** surface at
+`https://generativelanguage.googleapis.com/v1beta/openai`, so Rayu reuses its
+OpenAI-compatible adapter and live `/models` catalog.
+
+- Run `/connect` → **Google Gemini — API key**, paste your key (from Google AI Studio).
+- Or set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) and let auto-import pick it up.
+- `/model` lists the live Gemini catalog (e.g. `gemini-2.5-flash`, `gemini-2.5-pro`, newer `gemini-3.x` models as they ship).
+
+### Gemini on Vertex AI (`gemini-vertex`, OAuth / ADC)
+
+For Google Cloud users. Authenticated with a Google Cloud OAuth bearer token
+(cloud-platform scope) rather than a static key, scoped to a **project + region**.
+The token is minted per request and refreshed automatically (~1h lifetime).
+
+Run `/connect` → **Google Gemini — Vertex AI (OAuth / ADC)**:
+
+1. Rayu checks for **Application Default Credentials** (e.g. from
+   `gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`).
+2. If none are found, it offers an in-terminal **"Sign in with Google"** loopback
+   OAuth flow (opens your browser, captures the redirect on `localhost`, and
+   stores a refresh token in `~/.rayu/gemini-oauth.json`, mode `0600`).
+3. It pre-fills and confirms the **GCP project** and **region** (detected from
+   env / ADC where possible), then fetches the Gemini model catalog from the
+   Vertex publisher API.
+
+Relevant environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `GOOGLE_CLOUD_PROJECT` / `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project id for Vertex |
+| `GOOGLE_CLOUD_LOCATION` / `CLOUD_ML_REGION` | Vertex region (default `us-central1`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to a service-account key (ADC) |
+| `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` | Override the OAuth client used for the loopback login (defaults to the public Google Cloud SDK desktop client) |
+
+Vertex chat requests are sent to
+`https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{region}/endpoints/openapi/chat/completions`
+with the model id namespaced as `google/<model>` automatically.
+
+The same OAuth/ADC credentials also power **Imagen 4** image generation and
+**Veo 3.1** video generation — see [Image Generation](./12-image-generation.md).
 
 ---
 

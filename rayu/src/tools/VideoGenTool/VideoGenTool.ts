@@ -8,8 +8,17 @@ import { getCwd } from '../../utils/cwd.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
 import { extractPreviewFrame } from './framePreview.js'
-import { resolveVideoModel, VIDEO_MODELS } from './models.js'
+import {
+  DEFAULT_VERTEX_VIDEO_MODEL,
+  isVertexVideoModel,
+  resolveVideoModel,
+  VIDEO_MODELS,
+} from './models.js'
 import { generateVideo, isVideoEnabled } from './nvidiaVideoClient.js'
+import {
+  generateVertexVideo,
+  isGeminiVertexVideoAvailable,
+} from './vertexVideoClient.js'
 import { DESCRIPTION, getVideoGenPrompt, VIDEO_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 
@@ -86,7 +95,7 @@ export const VideoGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return isVideoEnabled()
+    return isVideoEnabled() || isGeminiVertexVideoAvailable()
   },
   isReadOnly() {
     return false
@@ -155,22 +164,47 @@ export const VideoGenTool = buildTool({
 
     const model = resolveVideoModel(input.model, isImage2Video)
 
-    const { buffer } = await generateVideo({
-      modelId: input.model,
-      isImage2Video,
-      params: {
-        prompt: input.prompt,
-        negative_prompt: input.negative_prompt,
-        num_frames: input.num_frames,
-        fps: input.fps,
-        height: input.height,
-        width: input.width,
-        aspect_ratio: input.aspect_ratio,
-        seed: input.seed,
-        image,
-      },
-      signal: context.abortController.signal,
-    })
+    // Route to Vertex Veo when a veo model is selected, or when Vertex is the
+    // only configured video backend. Otherwise use the NVIDIA/fal client.
+    const useVertex =
+      isVertexVideoModel(input.model) ||
+      (isGeminiVertexVideoAvailable() && !isVideoEnabled())
+
+    const vparams = {
+      prompt: input.prompt,
+      negative_prompt: input.negative_prompt,
+      num_frames: input.num_frames,
+      fps: input.fps,
+      height: input.height,
+      width: input.width,
+      aspect_ratio: input.aspect_ratio,
+      seed: input.seed,
+      image,
+    }
+
+    let buffer: Buffer
+    let usedModelId: string
+    if (useVertex) {
+      const r = await generateVertexVideo({
+        modelId: input.model,
+        params: vparams,
+        signal: context.abortController.signal,
+      })
+      buffer = r.buffer
+      usedModelId =
+        input.model && isVertexVideoModel(input.model)
+          ? input.model
+          : DEFAULT_VERTEX_VIDEO_MODEL
+    } else {
+      const r = await generateVideo({
+        modelId: input.model,
+        isImage2Video,
+        params: vparams,
+        signal: context.abortController.signal,
+      })
+      buffer = r.buffer
+      usedModelId = model.id
+    }
 
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, buffer)
@@ -181,7 +215,7 @@ export const VideoGenTool = buildTool({
     return {
       data: {
         path,
-        model: model.id,
+        model: usedModelId,
         frames: input.num_frames ?? 57,
         fps: input.fps ?? 24,
         mediaType: 'video/mp4',
