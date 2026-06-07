@@ -22,6 +22,7 @@ import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
+import swarm from './commands/swarm.js'
 import keybindings from './commands/keybindings/index.js'
 import keep from './commands/keep/index.js'
 import breakCache from './commands/break-cache/index.js'
@@ -205,6 +206,7 @@ export const INTERNAL_ONLY_COMMANDS = [
   goodClaude,
   issue,
   initVerifiers,
+  swarm,
   ...(forceSnip ? [forceSnip] : []),
   mockLimits,
   bridgeKick,

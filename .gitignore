@@ -5,3 +5,5 @@ rayu/dist/pkg/
 rayu/.playwright-mcp/
 rayu/dist/
 rayu/dist/rayu.js
+vertex-test/vertex-test/
+vertex-test/

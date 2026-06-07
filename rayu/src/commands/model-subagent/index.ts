@@ -10,6 +10,6 @@ export default {
       ? `Set the model used by subagents (currently ${sel.model} · ${sel.providerId})`
       : 'Set the model used by subagents (currently the main provider’s instant model)'
   },
-  argumentHint: '[default|show]',
+  argumentHint: '[AGENT] [default|show]',
   load: () => import('./command.js'),
 } satisfies Command

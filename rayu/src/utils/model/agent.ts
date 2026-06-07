@@ -45,7 +45,7 @@ export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
  * model (encodeModelWithProvider) only when providerId differs from the active
  * provider, so a different-provider subagent routes correctly and concurrently.
  */
-export function resolveSubagentExecution(): {
+export function resolveSubagentExecution(agentType?: string): {
   providerId: string
   model: string
 } | undefined {
@@ -57,7 +57,7 @@ export function resolveSubagentExecution(): {
   } = require('../rayuConfig.js') as typeof import('../rayuConfig.js')
   /* eslint-enable @typescript-eslint/no-require-imports */
 
-  const sel = getSubagentSelection()
+  const sel = getSubagentSelection(agentType)
   if (sel) return { providerId: sel.providerId, model: sel.model }
 
   const active = getActiveProvider()
@@ -95,6 +95,7 @@ export function getAgentModel(
   parentModel: string,
   toolSpecifiedModel?: string,
   permissionMode?: PermissionMode,
+  agentType?: string,
 ): string {
   // Rayu multi-provider subagent routing. When a non-Anthropic provider is
   // active and the caller hasn't pinned an explicit model (no env override, no
@@ -111,7 +112,7 @@ export function getAgentModel(
     usesBuiltinDefault &&
     isRayuNonAnthropicActive()
   ) {
-    const sub = resolveSubagentExecution()
+    const sub = resolveSubagentExecution(agentType)
     if (sub) {
       /* eslint-disable @typescript-eslint/no-require-imports */
       const { getActiveProvider, encodeModelWithProvider } =

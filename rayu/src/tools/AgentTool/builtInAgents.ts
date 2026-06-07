@@ -5,6 +5,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { CLAUDE_CODE_GUIDE_AGENT } from './built-in/claudeCodeGuideAgent.js'
 import { EXPLORE_AGENT } from './built-in/exploreAgent.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
+import { SPECIALIST_AGENTS } from './built-in/specialists.js'
 import { PLAN_AGENT } from './built-in/planAgent.js'
 import { STATUSLINE_SETUP_AGENT } from './built-in/statuslineSetup.js'
 import { VERIFICATION_AGENT } from './built-in/verificationAgent.js'
@@ -59,6 +60,16 @@ export function getBuiltInAgents(): AgentDefinition[] {
 
   if (isNonSdkEntrypoint) {
     agents.push(CLAUDE_CODE_GUIDE_AGENT)
+  }
+
+  // Specialist swarm (PA/BE/FE/DB/SEC/DO/MOB). Available for the MAIN agent
+  // to dispatch in parallel; the user does not pick specialists, only their
+  // model via /model_subagent. Opt out with RAYU_DISABLE_SPECIALIST_AGENTS=1.
+  if (
+    isNonSdkEntrypoint &&
+    !isEnvTruthy(process.env.RAYU_DISABLE_SPECIALIST_AGENTS)
+  ) {
+    agents.push(...SPECIALIST_AGENTS)
   }
 
   if (

@@ -72,6 +72,12 @@ export type RayuConfig = {
     providerId: string
     model: string
   }
+  /**
+   * Per-specialist overrides keyed by agent type (e.g. 'BE-AGENT'). Takes
+   * precedence over the global `subagent` selection for that agent. Lets each
+   * specialist run on its own provider/model (set via /model_subagent <AGENT>).
+   */
+  subagentByAgent?: Record<string, { providerId: string; model: string }>
 }
 
 const FILE_NAME = 'providers.json'
@@ -197,32 +203,60 @@ export function setActiveProviderModel(providerId: string, model: string): void 
  * undefined when the user hasn't set one (subagents then default to the main
  * provider's instant model — see resolveSubagentExecution in model/agent code).
  */
-export function getSubagentSelection():
-  | { providerId: string; model: string }
-  | undefined {
-  const sel = loadRayuConfig().subagent
+export function getSubagentSelection(
+  agentType?: string,
+): { providerId: string; model: string } | undefined {
+  const cfg = loadRayuConfig()
+  // Per-specialist override wins when present for this agent type.
+  if (agentType) {
+    const perAgent = cfg.subagentByAgent?.[agentType]
+    if (perAgent?.providerId && perAgent?.model) {
+      return { providerId: perAgent.providerId, model: perAgent.model }
+    }
+  }
+  const sel = cfg.subagent
   if (!sel || !sel.providerId || !sel.model) return undefined
   return { providerId: sel.providerId, model: sel.model }
 }
 
 /**
- * Persist the subagent model selection (set via /model_subagent). Does NOT
- * change the active (main) provider — subagents can run on a different provider
- * than the main agent concurrently.
+ * Persist a subagent model selection (set via /model_subagent). With no
+ * agentType, sets the GLOBAL default for all subagents. With an agentType
+ * (e.g. 'BE-AGENT'), sets a per-specialist override. Does NOT change the active
+ * (main) provider — subagents can run on a different provider concurrently.
  */
-export function setSubagentSelection(providerId: string, model: string): void {
+export function setSubagentSelection(
+  providerId: string,
+  model: string,
+  agentType?: string,
+): void {
   const cfg = loadRayuConfig()
-  cfg.subagent = { providerId, model }
+  if (agentType) {
+    cfg.subagentByAgent = { ...(cfg.subagentByAgent ?? {}), [agentType]: { providerId, model } }
+  } else {
+    cfg.subagent = { providerId, model }
+  }
   saveRayuConfig(cfg)
 }
 
-/** Clear the subagent selection (revert to the instant default). */
-export function clearSubagentSelection(): void {
+/**
+ * Clear a subagent selection. With no agentType, clears the global default.
+ * With an agentType, clears just that specialist's override.
+ */
+export function clearSubagentSelection(agentType?: string): void {
   const cfg = loadRayuConfig()
-  if (cfg.subagent) {
+  let changed = false
+  if (agentType) {
+    if (cfg.subagentByAgent?.[agentType]) {
+      delete cfg.subagentByAgent[agentType]
+      if (Object.keys(cfg.subagentByAgent).length === 0) delete cfg.subagentByAgent
+      changed = true
+    }
+  } else if (cfg.subagent) {
     delete cfg.subagent
-    saveRayuConfig(cfg)
+    changed = true
   }
+  if (changed) saveRayuConfig(cfg)
 }
 
 /** True when at least one provider has credentials configured. */

@@ -248,6 +248,23 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
 - Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
       : ''
 
+  // Specialist-swarm orchestration guidance. The specialists (PA/BE/FE/DB/
+  // SEC/DO/MOB) are in the agent list above; this tells the main agent HOW to
+  // run them as a coordinated swarm. Omitted when specialists are disabled.
+  const swarmSection = isEnvTruthy(process.env.RAYU_DISABLE_SPECIALIST_AGENTS)
+    ? ''
+    : `
+
+## Specialist swarm (orchestration)
+For multi-domain build/implementation work, act as the orchestrator and dispatch specialists instead of doing every domain yourself:
+- PA-AGENT (architecture/stack — run FIRST on new projects/features; its decisions are FINAL), DB-AGENT (schema), BE-AGENT (API), SEC-AGENT (security — FINAL), FE-AGENT (web UI), MOB-AGENT (mobile), DO-AGENT (devops, usually LAST).
+- Maximize parallelism: dispatch specialists with no unmet dependency in a SINGLE message with multiple ${AGENT_TOOL_NAME} tool calls. Spawn each as a NAMED BACKGROUND agent (run_in_background:true) with a stable lowercase name (pa/db/be/sec/fe/mob/do) so you can track and resume it.
+- Shared context (token-saver): specialists share context through a project-local artifact, NOT by you re-typing it. PA-AGENT writes the shared brief (.rayu/swarm/shared.json: goal/stack/flow/constraints) and its own .rayu/swarm/PA.md; every other specialist reads the shared brief plus only its dependency sections (auto-injected into its prompt) and writes its own .rayu/swarm/<AGENT>.md. So you do NOT need to hand-copy schema/routes/auth into each prompt — just give the task plus any brand-new decision not yet in the artifact.
+- Persistent sessions: keep specialists alive. For a follow-up or next task in a domain that already ran, RESUME the same session with ${SEND_MESSAGE_TOOL_NAME} (to: the agent's name or id) carrying just the new task + any changed contracts — do NOT spawn a fresh specialist. Resuming preserves that specialist's full working context and auto-refreshes its shared/dependency context; a fresh spawn only gets the shared artifact and loses its prior work. Spawn fresh only for a genuinely unrelated new domain.
+- After finishing a plan (e.g. leaving plan mode) for a multi-domain project, proactively run the swarm to implement it — you don't need the user to ask. Use your judgement; for single-file or trivial tasks, just do it directly.
+- Resolve conflicts by authority (SEC > PA > DB-naming > BE-contract > FE/MOB/DO). If a specialist emits a DRIFT_FLAG, route that item to the right specialist rather than letting it drift.
+- Then synthesize the specialists' outputs into one coherent result. The /swarm command frames a request for this flow.`
+
   // Non-coordinator gets the full prompt with all sections
   return `${shared}
 ${whenNotToUseSection}
@@ -281,7 +298,7 @@ Usage notes:
         ? `
 - The name, team_name, and mode parameters are not available in this context — teammates cannot spawn other teammates. Omit them to spawn a subagent.`
         : ''
-  }${whenToForkSection}${writingThePromptSection}
+  }${whenToForkSection}${writingThePromptSection}${swarmSection}
 
 ${forkEnabled ? forkExamples : currentExamples}`
 }
