@@ -33,16 +33,26 @@ function writeMarker() {
   } catch (_) {}
 }
 
-// npm v7+ pipes lifecycle script stdout/stderr, so we open /dev/tty directly
-// to write straight to the user's terminal (proven to work with PTY parent).
+// npm v7+ pipes lifecycle script stdout/stderr, so we open the terminal
+// device directly to write straight to the user's terminal.
+// On Unix: /dev/tty, on Windows: CON
+const isWindows = process.platform === 'win32';
+const ttyDevice = isWindows ? 'CON' : '/dev/tty';
+
 try {
-  const fd = fs.openSync('/dev/tty', 'w');
+  const fd = fs.openSync(ttyDevice, 'w');
   fs.writeSync(fd, message);
   fs.closeSync(fd);
   // Postinstall showed the message — mark as done so binary skips it
   writeMarker();
 } catch (_) {
-  // No controlling terminal (CI, Docker, Windows) — fall through.
-  // The binary will show the message on the user's first rayu run instead.
-  process.stdout.write(message);
+  // No controlling terminal (CI, Docker, headless) — fall through.
+  // Write to stdout as best-effort, and still write the marker so the
+  // binary doesn't try to show it again in a non-interactive context.
+  try {
+    process.stdout.write(message);
+  } catch (_e) {
+    // stdout may be closed in some CI environments
+  }
+  writeMarker();
 }
