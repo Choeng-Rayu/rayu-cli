@@ -152,8 +152,8 @@ async function getRayuVertexClient(
   if (active?.kind !== 'vertex') {
     return null
   }
-  const { createVertexGeminiClient } = await import('./gemini/vertexChatClient.js')
-  return createVertexGeminiClient(active, maxRetries)
+  const { createVertexGenaiClient } = await import('./gemini/vertexGenaiClient.js')
+  return createVertexGenaiClient(active, maxRetries)
 }
 
 /**
@@ -216,12 +216,13 @@ async function buildClientForProvider(
       maxRetries,
     })
   }
-  // Gemini on Vertex AI: OpenAI adapter + OAuth fetch wrapper.
+  // Gemini on Vertex AI: native genai endpoint (reuses genaiTranslate so tool
+  // schema sanitization + Gemini-3 thought_signature replay apply).
   if (provider.kind === 'vertex') {
-    const { createVertexGeminiClient } = await import(
-      './gemini/vertexChatClient.js'
+    const { createVertexGenaiClient } = await import(
+      './gemini/vertexGenaiClient.js'
     )
-    return createVertexGeminiClient(provider, maxRetries)
+    return createVertexGenaiClient(provider, maxRetries)
   }
   // Login-with-Gemini: @google/genai adapter (Vertex-global + OAuth).
   if (provider.kind === 'genai') {
