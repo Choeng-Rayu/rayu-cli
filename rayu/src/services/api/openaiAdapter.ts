@@ -122,12 +122,14 @@ function translateMessages(params: BetaParams): AnyObj[] {
       } else if (typeof content === 'string') {
         text = content
       }
-      // OpenAI allows null content only when tool_calls are present; otherwise
-      // send '' (e.g. an assistant turn that was reasoning-only/truncated, where
-      // the dropped thinking block leaves no text).
+      // Content must be a STRING (not null). OpenAI/NVIDIA accept null content
+      // alongside tool_calls, but Gemini's OpenAI-compatibility layer rejects
+      // null fields ("Value is not a string: null") and returns 400 (no body)
+      // on every later request once a tool-call turn is in history. '' is valid
+      // for all of them.
       const m: AnyObj = {
         role: 'assistant',
-        content: text || (toolCalls.length ? null : ''),
+        content: text,
       }
       if (toolCalls.length) m.tool_calls = toolCalls
       out.push(m)
@@ -330,6 +332,7 @@ export function toBetaMessage(completion: AnyObj, model: string): AnyObj {
     content.push({ type: 'thinking', thinking: reasoning, signature: '' })
   }
   if (msg.content) content.push({ type: 'text', text: msg.content as string })
+  let toolCallIdx = 0
   for (const tc of (msg.tool_calls as AnyObj[]) ?? []) {
     const fn = (tc.function as AnyObj) ?? {}
     let input: unknown = {}
@@ -342,7 +345,15 @@ export function toBetaMessage(completion: AnyObj, model: string): AnyObj {
         { tool: fn.name, error: e instanceof Error ? e.message : String(e) },
       )
     }
-    content.push({ type: 'tool_use', id: tc.id, name: fn.name, input })
+    // Some providers (notably Gemini's OpenAI-compat layer) return tool_calls
+    // with an empty id; replying with an empty tool_call_id then 400s. Ensure a
+    // stable non-empty id so the tool_use/tool_result round-trip is valid.
+    const id =
+      typeof tc.id === 'string' && tc.id.length > 0
+        ? tc.id
+        : `call_${Date.now()}_${toolCallIdx}`
+    toolCallIdx++
+    content.push({ type: 'tool_use', id, name: fn.name, input })
   }
   return {
     id: (completion.id as string) ?? `rayu_${Date.now()}`,

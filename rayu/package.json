@@ -43,6 +43,7 @@
     "@aws-sdk/client-bedrock-runtime": "^3.1057.0",
     "@aws-sdk/client-sts": "^3.1057.0",
     "@commander-js/extra-typings": "12",
+    "@google/genai": "2.8.0",
     "@growthbook/growthbook": "^1.6.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",

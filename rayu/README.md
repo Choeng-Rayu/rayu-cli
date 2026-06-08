@@ -74,7 +74,7 @@ Rayu supports four provider types:
 - **`bedrock`** — AWS Bedrock API (`AWS_BEARER_TOKEN_BEDROCK` or default AWS credentials)
 - **`vertex`** — Google Gemini on Vertex AI (Google OAuth / Application Default Credentials)
 
-Google Gemini is available two ways: a **Gemini API key** (`GEMINI_API_KEY`, via the OpenAI-compatible endpoint) or **Vertex AI with OAuth/ADC** (project + region scoped). The Vertex credentials also power Imagen 4 image generation and Veo 3.1 video generation.
+Google Gemini is available three ways: a **Gemini API key** (`GEMINI_API_KEY`, via the OpenAI-compatible endpoint), **Vertex AI with OAuth/ADC** (project + region scoped), or **Login with Gemini** (interactive Google sign-in — free, no GCP project, via the Gemini Code Assist backend like the Gemini CLI). The Vertex/OAuth credentials also power Imagen 4 image generation and Veo 3.1 video generation. Pick the image/video model with `/model_image_generation` and `/model_video_generation` (default: NVIDIA).
 
 Example — NVIDIA NIM headless run:
 

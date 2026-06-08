@@ -7,6 +7,7 @@ import { buildTool, type ToolDef, type ToolUseContext } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
+import { getVideoModelSelection } from '../../utils/rayuConfig.js'
 import { extractPreviewFrame } from './framePreview.js'
 import {
   DEFAULT_VERTEX_VIDEO_MODEL,
@@ -162,12 +163,15 @@ export const VideoGenTool = buildTool({
       }
     }
 
-    const model = resolveVideoModel(input.model, isImage2Video)
+    // Resolve the model: explicit input wins, else the configured default from
+    // /model_video_generation, else the backend default (NVIDIA/fal/Vertex).
+    const selectedModel = input.model ?? getVideoModelSelection()
+    const model = resolveVideoModel(selectedModel, isImage2Video)
 
     // Route to Vertex Veo when a veo model is selected, or when Vertex is the
     // only configured video backend. Otherwise use the NVIDIA/fal client.
     const useVertex =
-      isVertexVideoModel(input.model) ||
+      isVertexVideoModel(selectedModel) ||
       (isGeminiVertexVideoAvailable() && !isVideoEnabled())
 
     const vparams = {
@@ -186,18 +190,18 @@ export const VideoGenTool = buildTool({
     let usedModelId: string
     if (useVertex) {
       const r = await generateVertexVideo({
-        modelId: input.model,
+        modelId: selectedModel,
         params: vparams,
         signal: context.abortController.signal,
       })
       buffer = r.buffer
       usedModelId =
-        input.model && isVertexVideoModel(input.model)
-          ? input.model
+        selectedModel && isVertexVideoModel(selectedModel)
+          ? selectedModel
           : DEFAULT_VERTEX_VIDEO_MODEL
     } else {
       const r = await generateVideo({
-        modelId: input.model,
+        modelId: selectedModel,
         isImage2Video,
         params: vparams,
         signal: context.abortController.signal,

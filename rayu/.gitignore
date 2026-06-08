@@ -4,3 +4,10 @@
 # Local secrets (Telegram bot token, etc.) — never commit.
 .env
 .env.local
+
+# Generated media from /generate-image, /image-editor, /image-video tools.
+generated-image-*
+generated-video-*
+
+# OAuth client secret file (if a user drops one at the project root).
+client_secret.json

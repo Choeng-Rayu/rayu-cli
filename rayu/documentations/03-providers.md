@@ -20,6 +20,7 @@ A **provider** is an API endpoint plus your credentials. Rayu supports these kin
 | `openai` | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `gemini` | Google Gemini — API key | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | `gemini-vertex` | Google Gemini — Vertex AI (OAuth) | _(per project/region)_ | _(OAuth / ADC)_ |
+| `gemini-login` | Login with Gemini (Google account) | _(Code Assist — free, no project)_ | _(interactive OAuth)_ |
 | `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | `local` | Local / custom | _(you enter it)_ | — |
 | `bedrock` | AWS Bedrock | _(on-demand AWS Bedrock)_ | `AWS_BEARER_TOKEN_BEDROCK` |
@@ -102,6 +103,55 @@ with the model id namespaced as `google/<model>` automatically.
 
 The same OAuth/ADC credentials also power **Imagen 4** image generation and
 **Veo 3.1** video generation — see [Image Generation](./12-image-generation.md).
+
+### Login with Gemini (`gemini-login`, Google account)
+
+The simplest path, with **gemini-cli parity**: sign in with a Google account in
+your browser and use Gemini 3.x for **free — no GCP project, no billing, no
+`gcloud`**. It uses the **Gemini Code Assist** backend
+(`cloudcode-pa.googleapis.com`, the same one the Gemini CLI uses), which gives a
+free tier tied to your Google account (a Google-managed project is onboarded
+automatically on first use).
+
+Setup — nothing to configure:
+
+1. Run `/connect` → **Login with Gemini (Google account)** → *Sign in with
+   Google*. The browser opens; approve access; control returns to the terminal.
+   Rayu onboards the Code Assist free tier and lists Gemini models (defaulting
+   to the newest flash).
+
+That's it — **no Google Cloud project, API enablement, billing, OAuth client, or
+consent test users.** Rayu uses gemini-cli's built-in public installed-app OAuth
+client (the secret is intentionally non-confidential for installed apps), whose
+Google project already has the Code Assist API enabled.
+
+Advanced (optional): to use your **own** OAuth client instead, set
+`GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` in `.env` (or drop a
+Desktop `client_secret.json` at the project root). Your client's project must
+then have the **Cloud Code / Cloud AI Companion API enabled**, and your account
+added as a **Test user** on its consent screen — otherwise you'll get a 403
+("Cloud Code Private API has not been used in project …"). For most users, the
+default (no config) is the right choice.
+
+Tokens are cached at `~/.rayu/gemini-login.json` (mode `0600`) and refreshed
+automatically. **Note:** the Code Assist endpoint is a semi-internal API (not an
+officially published REST surface); it powers the free Gemini CLI experience and
+may change.
+
+---
+
+## Image / video generation models
+
+The built-in image/video tools default to NVIDIA but can be pointed at Vertex
+Imagen / Veo (or any registered model):
+
+- `/model_image_generation` — choose the model for `/generate-image` and
+  `/image-editor` (NVIDIA FLUX/SD or Vertex `imagen-*`).
+- `/model_video_generation` — choose the model for `/image-video` (NVIDIA
+  Cosmos / fal.ai or Vertex `veo-*`).
+
+Selecting "Default" reverts to NVIDIA (or Vertex when it's the only configured
+backend). Selections are stored in `~/.rayu/providers.json`.
 
 ---
 

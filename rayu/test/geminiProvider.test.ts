@@ -95,4 +95,23 @@ describe('Gemini provider presets', () => {
     expect(active?.gcpProject).toBe('proj-x')
     expect(active?.gcpRegion).toBe('us-east4')
   })
+
+  test('Login-with-Gemini (genai) preset + persistence contract', async () => {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
+    const preset = PROVIDER_PRESETS.find(p => p.id === 'gemini-login')
+    expect(preset).toBeDefined()
+    expect(preset?.kind).toBe('genai')
+    expect(preset?.requiresOAuth).toBe(true)
+    cfg._resetRayuConfigCache()
+    // Mirrors the genaiFetching effect in RayuProviderSetup.tsx.
+    cfg.upsertProvider(
+      { id: 'gemini-login', kind: 'genai', gcpProject: 'proj-x', defaultModel: 'gemini-3.5-flash' },
+      true,
+    )
+    cfg._resetRayuConfigCache()
+    const active = cfg.getActiveProvider()
+    expect(active?.kind).toBe('genai')
+    expect(active?.gcpProject).toBe('proj-x')
+  })
 })

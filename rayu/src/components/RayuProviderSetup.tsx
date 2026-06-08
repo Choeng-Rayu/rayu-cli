@@ -43,6 +43,8 @@ type Phase =
   | 'vertexProject'
   | 'vertexRegion'
   | 'vertexFetching'
+  | 'genaiLogin'
+  | 'genaiFetching'
 
 export function RayuProviderSetup({
   onDone,
@@ -67,6 +69,9 @@ export function RayuProviderSetup({
   >('checking')
   const [vertexAdcAvailable, setVertexAdcAvailable] = useState(false)
   const [vertexError, setVertexError] = useState<string | null>(null)
+  // Login-with-Gemini (genai) state
+  const [genaiState, setGenaiState] = useState<'idle' | 'loggingIn'>('idle')
+  const [genaiError, setGenaiError] = useState<string | null>(null)
 
   function pick(p: Preset): void {
     setPreset(p)
@@ -75,8 +80,10 @@ export function RayuProviderSetup({
     setCursor(0)
     // Local/custom endpoints need a base URL; otherwise go straight to key.
     // Bedrock also starts at the key step (key → region → fetch models).
-    // Vertex (Gemini OAuth) starts with credential detection.
-    if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
+    // Vertex (ADC/OAuth) → credential detection; Login-with-Gemini (genai) →
+    // interactive Google sign-in.
+    if (p.kind === 'genai') setPhase('genaiLogin')
+    else if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
     else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
     else setPhase('key')
   }
@@ -206,6 +213,54 @@ export function RayuProviderSetup({
     }
   }
 
+  // "Login with Gemini" (genai): run the interactive Google sign-in, then go to
+  // the model-fetch phase.
+  async function handleGenaiLogin(): Promise<void> {
+    setGenaiState('loggingIn')
+    setGenaiError(null)
+    try {
+      const { loginGemini } = await import('../services/oauth/geminiLogin.js')
+      await loginGemini()
+      setPhase('genaiFetching')
+    } catch (e) {
+      setGenaiError(e instanceof Error ? e.message : String(e))
+      setGenaiState('idle')
+    }
+  }
+
+  // Persist the genai provider, fetch the Gemini catalog, set a default, then
+  // open the shared model picker.
+  React.useEffect(() => {
+    if (phase !== 'genaiFetching') return
+    let cancelled = false
+    void (async () => {
+      const { getGeminiLoginProject } = await import('../services/oauth/geminiLogin.js')
+      const base: RayuProvider = {
+        id: preset?.id ?? 'gemini-login',
+        kind: 'genai',
+        gcpProject:
+          getGeminiLoginProject() || process.env.GOOGLE_CLOUD_PROJECT || undefined,
+      }
+      upsertProvider(base, true)
+      const models = await fetchProviderModels(base).catch(() => [] as string[])
+      if (cancelled) return
+      const chat = models.filter(isLikelyChatModel)
+      upsertProvider(
+        {
+          ...base,
+          ...(chat.length ? { fetchedModels: chat } : {}),
+          defaultModel: pickPreferredGeminiModel(chat) ?? 'gemini-2.5-flash',
+        },
+        true,
+      )
+      if (cancelled) return
+      onDone()
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [phase])
+
   // Persist the Vertex provider, fetch its Gemini catalog, set a sensible
   // default, THEN open the shared model picker (which reads the cached catalog
   // synchronously on mount). Mirrors the Bedrock fetch-before-finish flow.
@@ -323,6 +378,50 @@ export function RayuProviderSetup({
           cursorOffset={cursor}
           onChangeCursorOffset={setCursor}
         />
+      </Box>
+    )
+  }
+
+  if (phase === 'genaiLogin') {
+    if (genaiState === 'loggingIn') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Signing in to Google…</Text>
+          <Text dimColor>
+            A browser window has opened. Approve access, then return here.
+          </Text>
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Login with Gemini (Google account)</Text>
+        <Text dimColor>
+          Sign in with Google in your browser to use Gemini 3.x. No API key or
+          gcloud setup needed. Requires GEMINI_OAUTH_CLIENT_ID/SECRET in .env or
+          a Desktop client_secret.json.
+        </Text>
+        {genaiError ? <Text color="yellow">{genaiError}</Text> : null}
+        <Select
+          options={[
+            { label: 'Sign in with Google (browser)', value: 'login' },
+            { label: 'Cancel', value: 'cancel' },
+          ]}
+          onChange={(v: string) => {
+            if (v === 'login') void handleGenaiLogin()
+            else onDone()
+          }}
+          onCancel={onDone}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'genaiFetching') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Fetching your Gemini models…</Text>
+        <Text dimColor>Signed in. Listing available Gemini models.</Text>
       </Box>
     )
   }

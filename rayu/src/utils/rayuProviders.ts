@@ -206,6 +206,16 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     requiresOAuth: true,
   },
   {
+    // "Login with Gemini" — interactive Google sign-in (user's Desktop OAuth
+    // client). Served by the @google/genai adapter in Vertex mode on the
+    // `global` location, using the project from the client/login. No API key
+    // or gcloud/ADC required.
+    id: 'gemini-login',
+    label: 'Login with Gemini (Google account)',
+    kind: 'genai',
+    requiresOAuth: true,
+  },
+  {
     id: 'openrouter',
     label: 'OpenRouter (openrouter.ai)',
     kind: 'openai-compatible',

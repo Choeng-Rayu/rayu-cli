@@ -87,14 +87,15 @@ export function getContextWindowForModel(
     // fall through
   }
 
-  // Rayu: for OpenAI-compatible providers (NVIDIA/DeepSeek/Kimi/…), the context
+  // Rayu: for any non-Anthropic Rayu provider (OpenAI-compatible NVIDIA/DeepSeek/
+  // Kimi/…, Gemini on Vertex, and Login-with-Gemini/Code Assist), the context
   // window depends on the actual model, not Claude's 200k. Resolve from config
   // overrides / known-model table / RAYU_CONTEXT_TOKENS.
   try {
     /* eslint-disable @typescript-eslint/no-require-imports */
-    const { isOpenAICompatibleActive } =
+    const { isRayuNonAnthropicActive } =
       require('./model/providers.js') as typeof import('./model/providers.js')
-    if (isOpenAICompatibleActive()) {
+    if (isRayuNonAnthropicActive()) {
       const { getRayuModelContextWindow } =
         require('./rayuConfig.js') as typeof import('./rayuConfig.js')
       const ctx = getRayuModelContextWindow(model)

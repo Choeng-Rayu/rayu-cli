@@ -155,6 +155,8 @@ import connect from './commands/connect/index.js'
 import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
 import modelSubagent from './commands/model-subagent/index.js'
+import modelImageGeneration from './commands/model-image-generation/index.js'
+import modelVideoGeneration from './commands/model-video-generation/index.js'
 import tag from './commands/tag/index.js'
 import outputStyle from './commands/output-style/index.js'
 import statusline from './commands/statusline.js'
@@ -258,6 +260,8 @@ const COMMANDS = memoize((): Command[] => [
   disconnectTelegram,
   model,
   modelSubagent,
+  modelImageGeneration,
+  modelVideoGeneration,
   connect,
   installSkill,
   outputStyle,

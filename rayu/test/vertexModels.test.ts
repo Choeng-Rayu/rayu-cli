@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  KNOWN_GEMINI_CODE_ASSIST_MODELS,
   KNOWN_GEMINI_VERTEX_MODELS,
   mergeGeminiModels,
   parseVertexGeminiModels,
@@ -64,3 +65,17 @@ describe('mergeGeminiModels', () => {
     expect(mergeGeminiModels([])[0]).toBe('gemini-3.5-flash')
   })
 })
+
+describe('Code Assist model ids', () => {
+  test('uses Code-Assist-valid names (gemini-3.x-pro-preview, 2.5-*), not Vertex names', () => {
+    expect(KNOWN_GEMINI_CODE_ASSIST_MODELS).toContain('gemini-3.1-pro-preview')
+    expect(KNOWN_GEMINI_CODE_ASSIST_MODELS).toContain('gemini-2.5-flash')
+    expect(KNOWN_GEMINI_CODE_ASSIST_MODELS).not.toContain('gemini-3.5-flash')
+  })
+  test('pickPreferredGeminiModel selects a Gemini 3.x model from the Code Assist list', () => {
+    expect(pickPreferredGeminiModel(KNOWN_GEMINI_CODE_ASSIST_MODELS)).toMatch(/^gemini-3/)
+  })
+})
+
+
+

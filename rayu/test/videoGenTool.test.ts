@@ -187,6 +187,9 @@ describe('VideoGenTool.isEnabled', () => {
     process.env.RAYU_CONFIG_DIR = dir
     delete process.env.NVIDIA_API_KEY
     delete process.env.FAL_KEY
+    delete process.env.GOOGLE_CLOUD_PROJECT
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+    delete process.env.ANTHROPIC_VERTEX_PROJECT_ID
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
@@ -283,6 +286,9 @@ describe('/image-video command', () => {
     process.env.RAYU_CONFIG_DIR = dir
     delete process.env.FAL_KEY
     delete process.env.NVIDIA_API_KEY
+    delete process.env.GOOGLE_CLOUD_PROJECT
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+    delete process.env.ANTHROPIC_VERTEX_PROJECT_ID
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })

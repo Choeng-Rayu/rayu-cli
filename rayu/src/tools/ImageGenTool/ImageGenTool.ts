@@ -5,6 +5,7 @@ import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef, type ToolUseContext } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
+import { getImageModelSelection } from '../../utils/rayuConfig.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
@@ -195,10 +196,14 @@ export const ImageGenTool = buildTool({
         throw new Error(`input_image not found or unreadable: ${input.input_image}`)
       }
     }
+    // Resolve the model: explicit input wins, else the configured default from
+    // /model_image_generation, else the backend default (NVIDIA/Vertex).
+    const selectedModel = input.model ?? getImageModelSelection()
+
     // Route to Vertex Imagen when an imagen model is selected, or when Vertex
     // is the only configured image backend. Otherwise use the NVIDIA client.
     const useVertex =
-      isVertexImageModel(input.model) ||
+      isVertexImageModel(selectedModel) ||
       (isGeminiVertexImageAvailable() && getNvidiaApiKey() == null)
 
     const genParams = {
@@ -218,7 +223,7 @@ export const ImageGenTool = buildTool({
     let usedModelId: string
     if (useVertex) {
       const r = await generateVertexImage({
-        modelId: input.model,
+        modelId: selectedModel,
         isEdit,
         params: genParams,
         signal: context.abortController.signal,
@@ -226,21 +231,21 @@ export const ImageGenTool = buildTool({
       buffer = r.buffer
       mediaType = r.mediaType
       usedModelId =
-        input.model && isVertexImageModel(input.model)
-          ? input.model
+        selectedModel && isVertexImageModel(selectedModel)
+          ? selectedModel
           : isEdit
             ? DEFAULT_VERTEX_EDIT_MODEL
             : DEFAULT_VERTEX_IMAGE_MODEL
     } else {
       const r = await generateImage({
-        modelId: input.model,
+        modelId: selectedModel,
         isEdit,
         params: genParams,
         signal: context.abortController.signal,
       })
       buffer = r.buffer
       mediaType = r.mediaType
-      usedModelId = resolveModel(input.model, isEdit).id
+      usedModelId = resolveModel(selectedModel, isEdit).id
     }
 
     // Resolve the output path; the default filename uses the real extension.

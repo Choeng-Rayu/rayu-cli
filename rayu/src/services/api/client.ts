@@ -157,6 +157,41 @@ async function getRayuVertexClient(
 }
 
 /**
+ * Rayu: build a GenAI ("Login with Gemini") client for a provider. Uses the
+ * @google/genai adapter in Vertex-global mode, authenticated by the stored
+ * interactive-OAuth credentials. Returns null when login/project is missing.
+ */
+async function buildGenAIClientFor(
+  provider: import('src/utils/rayuConfig.js').RayuProvider,
+  maxRetries: number,
+): Promise<unknown | null> {
+  // "Login with Gemini" uses the Gemini Code Assist backend — free, tied to the
+  // Google account, NO GCP project required (gemini-cli parity).
+  const { createCodeAssistClient } = await import('./gemini/codeAssistClient.js')
+  const { getGeminiLoginAccessToken } = await import('../oauth/geminiLogin.js')
+  void provider
+  return createCodeAssistClient({
+    maxRetries,
+    providerId: provider.id,
+    getToken: async () => {
+      const r = await getGeminiLoginAccessToken()
+      if (!r?.token) {
+        throw new Error('Not signed in to Gemini. Run /connect → Login with Gemini.')
+      }
+      return r.token
+    },
+  })
+}
+
+/** Rayu: route the active provider to the GenAI client when kind is 'genai'. */
+async function getRayuGenAIClient(maxRetries: number): Promise<unknown | null> {
+  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const active = getActiveProvider()
+  if (active?.kind !== 'genai') return null
+  return buildGenAIClientFor(active, maxRetries)
+}
+
+/**
  * Rayu: build an API client for a SPECIFIC provider (not necessarily the active
  * one). Used to route a subagent request to a provider chosen via
  * /model_subagent that differs from the main agent's provider. Mirrors the
@@ -187,6 +222,10 @@ async function buildClientForProvider(
       './gemini/vertexChatClient.js'
     )
     return createVertexGeminiClient(provider, maxRetries)
+  }
+  // Login-with-Gemini: @google/genai adapter (Vertex-global + OAuth).
+  if (provider.kind === 'genai') {
+    return buildGenAIClientFor(provider, maxRetries)
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
@@ -249,6 +288,12 @@ export async function getAnthropicClient({
   const bedrockAnthropicClient = await getRayuBedrockAnthropicClient(maxRetries)
   if (bedrockAnthropicClient) {
     return bedrockAnthropicClient as unknown as Anthropic
+  }
+
+  // Rayu: route to the GenAI client ("Login with Gemini") when active.
+  const genaiClient = await getRayuGenAIClient(maxRetries)
+  if (genaiClient) {
+    return genaiClient as unknown as Anthropic
   }
 
   // Rayu: route to the Gemini-on-Vertex client when the active provider is a

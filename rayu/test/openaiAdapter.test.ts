@@ -456,13 +456,14 @@ describe('openaiAdapter error + retry hardening', () => {
 })
 
 describe('openaiAdapter assistant content normalization', () => {
-  test('assistant with tool_calls keeps null content; reasoning-only/empty assistant becomes ""', () => {
+  test('assistant with tool_calls uses "" content (never null); reasoning-only becomes ""', () => {
     const withTool = buildOpenAIRequest({
       model: 'm',
       messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'Read', input: {} }] }],
     })
     const a1 = (withTool.messages as any[]).find(m => m.role === 'assistant')
-    expect(a1.content).toBeNull()
+    // Gemini's OpenAI-compat layer rejects null content; we always send a string.
+    expect(a1.content).toBe('')
     expect(a1.tool_calls).toHaveLength(1)
 
     // thinking-only assistant (thinking is dropped on re-send) -> content '' not null
@@ -814,5 +815,47 @@ describe('openaiAdapter dynamic-credential (Vertex OAuth) client', () => {
       messages: [{ role: 'user', content: 'hi' }],
     })
     expect(seenAuth).toBe('Bearer fresh-token')
+  })
+})
+
+describe('Gemini OpenAI-compat compatibility (no null content, non-empty ids)', () => {
+  test('assistant tool-call message serializes content as a string, not null', () => {
+    const req = buildOpenAIRequest({
+      model: 'models/gemini-3.5-flash',
+      messages: [
+        { role: 'user', content: 'read foo' },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'call_1', name: 'Read', input: { path: 'foo' } }],
+        },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'data' }] },
+      ],
+    })
+    const assistant = (req.messages as any[]).find(m => m.role === 'assistant')
+    expect(assistant.content).toBe('') // string, never null
+    expect(assistant.tool_calls[0].id).toBe('call_1')
+  })
+
+  test('toBetaMessage synthesizes a non-empty id for tool_calls with empty id', () => {
+    const beta = toBetaMessage(
+      {
+        id: 'x',
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{ id: '', type: 'function', function: { name: 'Read', arguments: '{}' } }],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      },
+      'models/gemini-3.5-flash',
+    ) as any
+    const toolUse = beta.content.find((b: any) => b.type === 'tool_use')
+    expect(toolUse.id).toBeTruthy()
+    expect(toolUse.id.length).toBeGreaterThan(0)
   })
 })

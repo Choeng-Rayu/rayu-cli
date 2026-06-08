@@ -9,7 +9,7 @@ import { getRayuConfigHomeDir } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex'
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
@@ -83,6 +83,18 @@ export type RayuConfig = {
    * specialist run on its own provider/model (set via /model_subagent <AGENT>).
    */
   subagentByAgent?: Record<string, { providerId: string; model: string }>
+  /**
+   * Default model id for the GenerateImage tool (image generation + editing),
+   * chosen via /model_image_generation. When unset, the tool uses its NVIDIA
+   * default (or Vertex Imagen when that's the only configured backend).
+   */
+  imageModel?: string
+  /**
+   * Default model id for the GenerateVideo tool, chosen via
+   * /model_video_generation. When unset, the tool uses its NVIDIA/fal default
+   * (or Vertex Veo when that's the only configured backend).
+   */
+  videoModel?: string
 }
 
 const FILE_NAME = 'providers.json'
@@ -264,6 +276,32 @@ export function clearSubagentSelection(agentType?: string): void {
   if (changed) saveRayuConfig(cfg)
 }
 
+/** Default model for the GenerateImage tool (or undefined when unset). */
+export function getImageModelSelection(): string | undefined {
+  return loadRayuConfig().imageModel || undefined
+}
+
+/** Persist the default GenerateImage model (pass undefined to clear). */
+export function setImageModelSelection(model: string | undefined): void {
+  const cfg = loadRayuConfig()
+  if (model) cfg.imageModel = model
+  else delete cfg.imageModel
+  saveRayuConfig(cfg)
+}
+
+/** Default model for the GenerateVideo tool (or undefined when unset). */
+export function getVideoModelSelection(): string | undefined {
+  return loadRayuConfig().videoModel || undefined
+}
+
+/** Persist the default GenerateVideo model (pass undefined to clear). */
+export function setVideoModelSelection(model: string | undefined): void {
+  const cfg = loadRayuConfig()
+  if (model) cfg.videoModel = model
+  else delete cfg.videoModel
+  saveRayuConfig(cfg)
+}
+
 /** True when at least one provider has credentials configured. */
 export function hasConfiguredProvider(): boolean {
   return loadRayuConfig().providers.some(
@@ -344,6 +382,10 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   // ~1M-context families — most specific patterns first
   [/nemotron.*ultra|nemotron-3-ultra/i, 1_048_576],           // NVIDIA nemotron-ultra (1M)
   [/gpt-4\.1/i, 1_048_576],                                   // OpenAI GPT-4.1 / 4.1-mini / 4.1-nano (1M)
+  // Google Gemini 1.5/2/2.5/3.x — 1M-token context (pro & flash). Matches both
+  // bare ids (gemini-3.5-flash) and the catalog's models/ prefix.
+  [/gemini[-.]?(1\.5|2|2\.5|3)/i, 1_048_576],
+  [/gemini/i, 1_048_576],
   [/deepseek[-/]?v4[-/]?(flash|pro)/i, 1_000_000],
   [/minimax/i, 1_000_000],
   // 256k
@@ -380,7 +422,17 @@ export function getRayuModelContextWindow(model: string): number | null {
   if (!isNaN(envOverride) && envOverride > 0) return envOverride
 
   const p = getActiveProvider()
-  if (!p || p.kind !== 'openai-compatible') return null
+  // The known-model table + per-model overrides apply to any non-Anthropic
+  // provider that routes through a translated chat client: OpenAI-compatible,
+  // Gemini-on-Vertex ('vertex'), and Login-with-Gemini ('genai').
+  if (
+    !p ||
+    (p.kind !== 'openai-compatible' &&
+      p.kind !== 'vertex' &&
+      p.kind !== 'genai')
+  ) {
+    return null
+  }
 
   const perModel = p.modelContextWindows?.[model]
   if (perModel && perModel > 0) return perModel
@@ -583,6 +635,31 @@ function curatedGeminiModels(): string[] {
 }
 
 /**
+ * Gemini models available via the Gemini Code Assist backend (Login with
+ * Gemini). Code Assist uses DIFFERENT model ids than Vertex/AI-Studio — e.g.
+ * `gemini-3-pro-preview` (not `gemini-3.5-flash`). Sending an unknown id 404s
+ * ("Requested entity was not found"). Override with CODE_ASSIST_GEMINI_MODELS.
+ */
+export const KNOWN_GEMINI_CODE_ASSIST_MODELS: string[] = [
+  'gemini-3.1-pro-preview',
+  'gemini-3-pro-preview',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+]
+
+function curatedCodeAssistModels(): string[] {
+  const env = process.env.CODE_ASSIST_GEMINI_MODELS
+  if (env && env.trim()) {
+    return env
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+  }
+  return KNOWN_GEMINI_CODE_ASSIST_MODELS
+}
+
+/**
  * Pick the preferred default Gemini model from a list: newest flash first
  * (3.5 → 3.x → any 3 → any flash), else the first entry.
  */
@@ -679,6 +756,14 @@ async function fetchVertexGeminiModels(p: RayuProvider): Promise<string[]> {
   }
 }
 
+/**
+ * Models for the Login-with-Gemini (Code Assist) provider. Code Assist exposes
+ * no public model-listing endpoint, so we offer the curated current Gemini set.
+ */
+async function fetchGenAIGeminiModels(_p: RayuProvider): Promise<string[]> {
+  return curatedCodeAssistModels()
+}
+
 export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
   // Bedrock exposes no OpenAI-style /models endpoint; list via its control plane.
   if (p.kind === 'bedrock') {
@@ -690,6 +775,10 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
   // authenticated with a Google Cloud OAuth bearer token.
   if (p.kind === 'vertex') {
     return fetchVertexGeminiModels(p)
+  }
+  // Login-with-Gemini: list via the @google/genai SDK (OAuth), filter to chat.
+  if (p.kind === 'genai') {
+    return fetchGenAIGeminiModels(p)
   }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
@@ -730,7 +819,8 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
     !p ||
     (p.kind !== 'openai-compatible' &&
       p.kind !== 'bedrock' &&
-      p.kind !== 'vertex')
+      p.kind !== 'vertex' &&
+      p.kind !== 'genai')
   )
     return []
   const models = await fetchProviderModels(p)
@@ -757,8 +847,9 @@ export async function refreshAllProviderModels(): Promise<void> {
   const promises = cfg.providers
     .filter(
       p =>
-        // Vertex has no stored baseURL (it's computed); the others need one.
+        // Vertex/genai have no stored baseURL (computed); the others need one.
         (p.kind === 'vertex' ||
+          p.kind === 'genai' ||
           ((p.kind === 'openai-compatible' || p.kind === 'bedrock') &&
             p.baseURL)) &&
         !(p.fetchedModels?.length),
