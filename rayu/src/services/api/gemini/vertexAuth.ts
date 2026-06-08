@@ -87,15 +87,20 @@ let tokenSourcesOverride: VertexTokenSource[] | null = null
 
 function tokenSources(): VertexTokenSource[] {
   if (tokenSourcesOverride) return tokenSourcesOverride
-  const sources: VertexTokenSource[] = [adcTokenSource]
+  // Prefer the interactive "Sign in with Google" token when present: the user
+  // explicitly logged in for this provider, and that identity has the access /
+  // model catalog they expect. Ambient gcloud ADC (which may be a different,
+  // more limited identity) is only used when no interactive login exists.
+  const sources: VertexTokenSource[] = []
   if (oauthFallback) sources.push(oauthFallback)
+  sources.push(adcTokenSource)
   return sources
 }
 
 /**
- * Return a valid Vertex access token, minting/refreshing as needed. Tries ADC
- * first, then the registered interactive OAuth fallback. Throws when no source
- * can provide credentials.
+ * Return a valid Vertex access token, minting/refreshing as needed. Prefers the
+ * interactive "Sign in with Google" login when present, then falls back to
+ * Application Default Credentials. Throws when no source can provide credentials.
  */
 export async function getVertexAccessToken(): Promise<string> {
   const now = Date.now()

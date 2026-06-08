@@ -52,18 +52,18 @@ describe('pickPreferredGeminiModel', () => {
 })
 
 describe('mergeGeminiModels', () => {
-  test('always includes curated current models, newest first, deduped', () => {
+  test('always includes curated current models, deduped', () => {
     const merged = mergeGeminiModels(['gemini-2.5-flash', 'custom-x'])
-    expect(merged[0]).toBe('gemini-3.5-flash')
-    expect(merged).toContain('gemini-3-flash')
+    expect(merged[0]).toBe('gemini-2.5-pro')
+    expect(merged).toContain('gemini-2.5-flash')
     expect(merged).toContain('custom-x')
     // no duplicate of a model present in both curated + live
     expect(merged.filter(m => m === 'gemini-2.5-flash').length).toBe(1)
   })
 
-  test('curated list leads with gemini-3.5-flash', () => {
-    expect(KNOWN_GEMINI_VERTEX_MODELS[0]).toBe('gemini-3.5-flash')
-    expect(mergeGeminiModels([])[0]).toBe('gemini-3.5-flash')
+  test('curated Vertex list leads with the always-available gemini-2.5-pro', () => {
+    expect(KNOWN_GEMINI_VERTEX_MODELS[0]).toBe('gemini-2.5-pro')
+    expect(mergeGeminiModels([])[0]).toBe('gemini-2.5-pro')
   })
 })
 

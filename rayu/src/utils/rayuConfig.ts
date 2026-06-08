@@ -615,12 +615,16 @@ type VertexPublisherModel = { name?: string }
  * Override with VERTEX_GEMINI_MODELS (comma-separated) to pin your own set.
  */
 export const KNOWN_GEMINI_VERTEX_MODELS: string[] = [
-  'gemini-3.5-flash',
-  'gemini-3-flash',
-  'gemini-3.1-pro-preview',
+  // 2.5 family is available across all Vertex regions — safe fallback leaders.
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
+  // 3.x are valid Vertex publisher ids but only in some regions (global /
+  // us-central1) — included so they appear when the live catalog is unavailable.
+  'gemini-3-pro-preview',
+  'gemini-3.1-pro-preview',
+  'gemini-3.5-flash',
+  'gemini-3-flash-preview',
 ]
 
 function curatedGeminiModels(): string[] {
@@ -750,8 +754,13 @@ async function fetchVertexGeminiModels(p: RayuProvider): Promise<string[]> {
     const { vertexHost } = await import('./rayuProviders.js')
     const token = await getVertexAccessToken()
     const url = `https://${vertexHost(region)}/v1beta1/publishers/google/models?pageSize=200`
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+    // The publisher-models LIST endpoint requires a quota/billing project (the
+    // chat endpoint does not). Without this header it 403s and we'd fall back to
+    // the curated list (which may carry ids the region doesn't serve → 404s).
+    if (p.gcpProject) headers['x-goog-user-project'] = p.gcpProject
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers,
       signal: AbortSignal.timeout(15_000),
     })
     if (!res.ok) {
@@ -761,7 +770,12 @@ async function fetchVertexGeminiModels(p: RayuProvider): Promise<string[]> {
       })
       return mergeGeminiModels([])
     }
-    return mergeGeminiModels(parseVertexGeminiModels(await res.json()))
+    // Return ONLY the models this project+region actually serves. Do NOT merge
+    // the curated list here — curated ids (e.g. Gemini 3.x) that the region
+    // doesn't serve would 404 at chat time. Curated is a last resort only when
+    // the live listing yields nothing.
+    const live = parseVertexGeminiModels(await res.json())
+    return live.length ? live : mergeGeminiModels([])
   } catch (e) {
     reportIssue('rayu_models.fetch_error', 'vertex publisher models request failed', {
       provider: p.id,

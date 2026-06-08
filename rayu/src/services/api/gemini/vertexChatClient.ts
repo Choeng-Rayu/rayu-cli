@@ -65,6 +65,23 @@ export function buildVertexFetch(
         })
       }
     }
+    // 404 "Publisher Model … not found": the model isn't served in this region
+    // (e.g. Gemini 3.x isn't in asia-* regions) or the id is wrong for Vertex.
+    if (res.status === 404) {
+      const raw = await res.clone().text().catch(() => '')
+      if (/Publisher Model|not found|was not found/i.test(raw)) {
+        const hint =
+          'Model not available on Vertex in this region. Gemini 3.x is only served ' +
+          'in `global` / `us-central1` — reconnect (/connect → Vertex) and pick the ' +
+          '`global` region, or choose a model your region serves (e.g. gemini-2.5-pro, ' +
+          'gemini-2.5-flash). Original: ' +
+          raw.slice(0, 240)
+        return new Response(JSON.stringify({ error: { code: 404, status: 'NOT_FOUND', message: hint } }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    }
     return res
   }) as unknown as typeof fetch
 }

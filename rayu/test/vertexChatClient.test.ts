@@ -100,4 +100,23 @@ describe('buildVertexFetch', () => {
       globalThis.fetch = original
     }
   })
+
+  test('augments a 404 Publisher-Model-not-found with region/model guidance', async () => {
+    const original = globalThis.fetch
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).fetch = async () =>
+      new Response(
+        JSON.stringify({ error: { code: 404, message: 'Publisher Model `.../locations/asia-southeast1/.../gemini-3-flash` was not found' } }),
+        { status: 404 },
+      )
+    try {
+      const vfetch = buildVertexFetch(async () => 'tok')
+      const res = await vfetch('https://x/chat/completions', { method: 'POST', body: '{"model":"gemini-3-flash"}' })
+      expect(res.status).toBe(404)
+      const body = JSON.parse(await res.text())
+      expect(body.error.message).toMatch(/global|gemini-2\.5/)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
 })
