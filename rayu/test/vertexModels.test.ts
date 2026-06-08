@@ -17,7 +17,7 @@ describe('parseVertexGeminiModels', () => {
         { name: 'publishers/google/models/gemini-2.5-pro' },
         { name: 'publishers/google/models/gemini-3.1-flash-image' },
         { name: 'publishers/google/models/imagen-4.0-generate-001' },
-        { name: 'publishers/google/models/veo-3.1-generate-preview' },
+        { name: 'publishers/google/models/veo-3.1-generate-001' },
         { name: 'publishers/google/models/text-embedding-004' },
       ],
     }

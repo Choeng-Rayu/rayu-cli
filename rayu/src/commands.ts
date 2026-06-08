@@ -31,7 +31,6 @@ import telegramBot from './commands/telegram-bot/index.js'
 import disconnectTelegram from './commands/telegram-bot/disconnect-index.js'
 import onboarding from './commands/onboarding/index.js'
 import pr_comments from './commands/pr_comments/index.js'
-import releaseNotes from './commands/release-notes/index.js'
 import rename from './commands/rename/index.js'
 import reviewDetial from './commands/review-detial/index.js'
 import resume from './commands/resume/index.js'
@@ -267,7 +266,6 @@ const COMMANDS = memoize((): Command[] => [
   outputStyle,
   plugin,
   pr_comments,
-  releaseNotes,
   reloadPlugins,
   rename,
   reviewDetial,
@@ -594,7 +592,6 @@ export const BRIDGE_SAFE_COMMANDS: Set<Command> = new Set(
     compact, // Shrink context — useful mid-session from a phone
     clear, // Wipe transcript
     summary, // Summarize conversation
-    releaseNotes, // Show changelog
     files, // List tracked files
   ].filter((c): c is Command => c !== null),
 )

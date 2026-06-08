@@ -119,8 +119,10 @@ export const DEFAULT_IMAGE2VIDEO_MODEL =
 
 // Google Vertex AI Veo (long-running :predict). Body is built by
 // vertexVideoClient; the registry entry just records the backend + estimate.
+// NOTE: only GA model ids (…-generate-001). The preview ids (…-generate-preview)
+// were retired by Google on 2026-04-02 and now 404.
 export const DEFAULT_VERTEX_VIDEO_MODEL =
-  process.env.VERTEX_VIDEO_MODEL || 'veo-3.1-generate-preview'
+  process.env.VERTEX_VIDEO_MODEL || 'veo-3.1-generate-001'
 
 const veoBody = (p: VideoParams): Record<string, unknown> => ({ prompt: p.prompt })
 
@@ -188,16 +190,31 @@ export const VIDEO_MODELS: Record<string, VideoModel> = {
     estimatedSeconds: 90,
     buildBody: falKlingImage2VideoBody,
   },
-  // ── Google Vertex AI Veo 3.1 (long-running :predict) ───────────────────────
-  'veo-3.1-generate-preview': {
-    id: 'veo-3.1-generate-preview',
+  // ── Google Vertex AI Veo (GA, long-running :predictLongRunning) ────────────
+  // GA model ids only. The …-generate-preview ids were retired 2026-04-02.
+  'veo-3.1-generate-001': {
+    id: 'veo-3.1-generate-001',
     backend: 'vertex',
     capability: 'text2video',
     estimatedSeconds: 120,
     buildBody: veoBody,
   },
-  'veo-3.1-fast-generate-preview': {
-    id: 'veo-3.1-fast-generate-preview',
+  'veo-3.1-fast-generate-001': {
+    id: 'veo-3.1-fast-generate-001',
+    backend: 'vertex',
+    capability: 'text2video',
+    estimatedSeconds: 90,
+    buildBody: veoBody,
+  },
+  'veo-3.0-generate-001': {
+    id: 'veo-3.0-generate-001',
+    backend: 'vertex',
+    capability: 'text2video',
+    estimatedSeconds: 120,
+    buildBody: veoBody,
+  },
+  'veo-3.0-fast-generate-001': {
+    id: 'veo-3.0-fast-generate-001',
     backend: 'vertex',
     capability: 'text2video',
     estimatedSeconds: 90,

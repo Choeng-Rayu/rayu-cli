@@ -26,10 +26,10 @@ describe('image/video model selection', () => {
     expect(m.getVideoModelSelection()).toBeUndefined()
 
     m.setImageModelSelection('imagen-4.0-generate-001')
-    m.setVideoModelSelection('veo-3.1-generate-preview')
+    m.setVideoModelSelection('veo-3.1-generate-001')
     m._resetRayuConfigCache()
     expect(m.getImageModelSelection()).toBe('imagen-4.0-generate-001')
-    expect(m.getVideoModelSelection()).toBe('veo-3.1-generate-preview')
+    expect(m.getVideoModelSelection()).toBe('veo-3.1-generate-001')
 
     m.setImageModelSelection(undefined)
     m.setVideoModelSelection(undefined)

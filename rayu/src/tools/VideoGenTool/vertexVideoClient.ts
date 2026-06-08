@@ -14,6 +14,13 @@ import { DEFAULT_VERTEX_VIDEO_MODEL, type VideoParams } from './models.js'
 
 export type GeneratedVideo = { buffer: Buffer; mediaType: string }
 
+// Veo is served only in a limited set of regions. The `global` location used
+// for Gemini chat is NOT valid for Veo, and neither are many regional
+// locations (e.g. asia-southeast1). Remap anything outside this set to
+// us-central1 (the canonical Veo region) rather than 404.
+const VEO_REGIONS = new Set(['us-central1', 'us-east4', 'europe-west4'])
+const DEFAULT_VEO_REGION = 'us-central1'
+
 /** True when Veo-on-Vertex is configured/available (sync best-effort). */
 export function isGeminiVertexVideoAvailable(): boolean {
   return isGeminiVertexConfigured()
@@ -69,6 +76,19 @@ function baseModelUrl(region: string, project: string, model: string): string {
   )
 }
 
+/** Build a Veo API error, augmenting 404s with the GA-migration hint. */
+function veoApiError(stage: string, status: number, text: string): Error {
+  if (status === 404) {
+    return new Error(
+      `Vertex Veo ${stage} 404: model not found. Preview Veo models (…-generate-preview) ` +
+        'were retired by Google on 2026-04-02 — use a GA model like veo-3.1-generate-001 ' +
+        '(or veo-3.1-fast-generate-001). Also ensure your region serves Veo (us-central1). ' +
+        `Original: ${text.slice(0, 240)}`,
+    )
+  }
+  return new Error(`Vertex Veo ${stage} error ${status}: ${text.slice(0, 300)}`)
+}
+
 /** Generate a video on Vertex AI Veo. Polls the operation until done. */
 export async function generateVertexVideo(opts: {
   modelId?: string
@@ -86,9 +106,9 @@ export async function generateVertexVideo(opts: {
         'or set GOOGLE_CLOUD_PROJECT.',
     )
   }
-  // Veo is regional-only — the `global` location used for chat isn't valid
-  // here, so fall back to a real region.
-  const vidRegion = !region || region === 'global' ? 'us-central1' : region
+  // Veo is regional-only and served in a limited region set — remap any
+  // unsupported region (including the chat `global` location) to us-central1.
+  const vidRegion = region && VEO_REGIONS.has(region) ? region : DEFAULT_VEO_REGION
   const model =
     opts.modelId && /^veo-/i.test(opts.modelId)
       ? opts.modelId
@@ -108,7 +128,7 @@ export async function generateVertexVideo(opts: {
   })
   if (!startRes.ok) {
     const text = await startRes.text().catch(() => '')
-    throw new Error(`Vertex Veo API error ${startRes.status}: ${text.slice(0, 300)}`)
+    throw veoApiError('API', startRes.status, text)
   }
   const op = (await startRes.json()) as VeoOperation
   if (!op.name) {
@@ -132,7 +152,7 @@ export async function generateVertexVideo(opts: {
     })
     if (!pollRes.ok) {
       const text = await pollRes.text().catch(() => '')
-      throw new Error(`Vertex Veo poll error ${pollRes.status}: ${text.slice(0, 300)}`)
+      throw veoApiError('poll', pollRes.status, text)
     }
     const status = (await pollRes.json()) as VeoOperation
     if (status.error?.message) {

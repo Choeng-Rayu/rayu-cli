@@ -43,7 +43,7 @@ export function createWhatsNewFeed(releaseNotes: string[]): FeedConfig {
   return {
     title: "external" === 'ant' ? "What's new [ANT-ONLY: Latest CC commits]" : "What's new",
     lines,
-    footer: lines.length > 0 ? '/release-notes for more' : undefined,
+    footer: undefined,
     emptyMessage
   };
 }

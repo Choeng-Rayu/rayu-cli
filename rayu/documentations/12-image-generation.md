@@ -68,7 +68,7 @@ Available when a Gemini / Vertex AI provider is configured.
 
 The companion `GenerateVideo` tool generates short videos from a text prompt. It
 is enabled by NVIDIA/fal.ai keys or by a Gemini / Vertex AI provider. On Vertex
-it uses **Veo 3.1** (`veo-3.1-generate-preview`, `veo-3.1-fast-generate-preview`)
+it uses **Veo 3.1** (`veo-3.1-generate-001`, `veo-3.1-fast-generate-001`)
 via the long-running prediction API (Rayu polls until the video is ready, then
 saves the MP4 inside the working directory).
 
