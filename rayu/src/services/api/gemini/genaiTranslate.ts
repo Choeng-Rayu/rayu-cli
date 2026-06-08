@@ -394,6 +394,11 @@ export function buildGenAIBody(params: BetaParams): {
   const config: AnyObj = {}
   if (typeof params.max_tokens === 'number') config.maxOutputTokens = params.max_tokens
   if (typeof params.temperature === 'number') config.temperature = params.temperature
+  // Optional, opt-in speed lever: Gemini 3 "thinking" dominates latency on pro
+  // models. RAYU_GEMINI_THINKING_LEVEL=low|medium|high (Gemini 3) or
+  // RAYU_GEMINI_THINKING_BUDGET=<tokens> (2.5) lower it. Unset → model default.
+  const thinking = geminiThinkingConfig()
+  if (thinking) config.thinkingConfig = thinking
   return {
     model: params.model.replace(/^models\//, ''),
     contents: req.contents,
@@ -401,4 +406,16 @@ export function buildGenAIBody(params: BetaParams): {
     systemInstruction: req.systemInstruction,
     tools: req.tools,
   }
+}
+
+/** Build a thinkingConfig from env, or undefined to use the model default. */
+export function geminiThinkingConfig(): AnyObj | undefined {
+  const level = process.env.RAYU_GEMINI_THINKING_LEVEL?.trim().toLowerCase()
+  const budget = parseInt(process.env.RAYU_GEMINI_THINKING_BUDGET || '', 10)
+  const cfg: AnyObj = {}
+  if (level === 'low' || level === 'medium' || level === 'high') {
+    cfg.thinkingLevel = level
+  }
+  if (!isNaN(budget) && budget >= 0) cfg.thinkingBudget = budget
+  return Object.keys(cfg).length ? cfg : undefined
 }

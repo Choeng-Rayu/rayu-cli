@@ -156,6 +156,25 @@ describe('buildGenAIBody', () => {
     expect(b.config.temperature).toBe(0.5)
     expect(b.systemInstruction).toBe('sys')
   })
+
+  test('adds thinkingConfig only when RAYU_GEMINI_THINKING_* env is set', () => {
+    const prevL = process.env.RAYU_GEMINI_THINKING_LEVEL
+    const prevB = process.env.RAYU_GEMINI_THINKING_BUDGET
+    try {
+      delete process.env.RAYU_GEMINI_THINKING_LEVEL
+      delete process.env.RAYU_GEMINI_THINKING_BUDGET
+      expect((buildGenAIBody({ model: 'm', messages: [] }).config as any).thinkingConfig).toBeUndefined()
+
+      process.env.RAYU_GEMINI_THINKING_LEVEL = 'low'
+      const cfg = buildGenAIBody({ model: 'm', messages: [] }).config as any
+      expect(cfg.thinkingConfig).toEqual({ thinkingLevel: 'low' })
+    } finally {
+      if (prevL === undefined) delete process.env.RAYU_GEMINI_THINKING_LEVEL
+      else process.env.RAYU_GEMINI_THINKING_LEVEL = prevL
+      if (prevB === undefined) delete process.env.RAYU_GEMINI_THINKING_BUDGET
+      else process.env.RAYU_GEMINI_THINKING_BUDGET = prevB
+    }
+  })
 })
 
 describe('Gemini 3 thought_signature round-trip', () => {
