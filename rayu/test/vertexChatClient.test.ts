@@ -65,4 +65,39 @@ describe('buildVertexFetch', () => {
     }
     expect(seenBody.model).toBe('google/gemini-2.5-pro')
   })
+
+  test('augments a 403 PERMISSION_DENIED with Vertex setup guidance', async () => {
+    const original = globalThis.fetch
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).fetch = async () =>
+      new Response(
+        JSON.stringify({ error: { code: 403, status: 'PERMISSION_DENIED', message: 'Vertex AI API has not been used in project 123 before or it is disabled.' } }),
+        { status: 403 },
+      )
+    try {
+      const vfetch = buildVertexFetch(async () => 'tok')
+      const res = await vfetch('https://x/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({ model: 'gemini-2.5-pro' }),
+      })
+      expect(res.status).toBe(403)
+      const body = JSON.parse(await res.text())
+      expect(body.error.message).toMatch(/Vertex AI API|roles\/aiplatform\.user/)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  test('passes through non-403 responses unchanged', async () => {
+    const original = globalThis.fetch
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).fetch = async () => new Response('{"ok":true}', { status: 200 })
+    try {
+      const vfetch = buildVertexFetch(async () => 'tok')
+      const res = await vfetch('https://x/chat/completions', { method: 'POST', body: '{"model":"gemini-2.5-pro"}' })
+      expect(res.status).toBe(200)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
 })

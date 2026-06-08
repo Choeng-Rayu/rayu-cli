@@ -46,7 +46,26 @@ export function buildVertexFetch(
       }
     }
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-    return globalThis.fetch(input, { ...init, headers, body })
+    const res = await globalThis.fetch(input, { ...init, headers, body })
+    // Augment Vertex 403s with an actionable setup hint (the most common
+    // first-run failure: the project hasn't enabled the Vertex AI API or the
+    // account lacks the Vertex AI User role).
+    if (res.status === 403) {
+      const raw = await res.clone().text().catch(() => '')
+      if (/PERMISSION_DENIED|aiplatform|has not been used|disabled/i.test(raw)) {
+        const hint =
+          'Vertex AI access denied. On your GCP project: enable the "Vertex AI API" ' +
+          '(console.cloud.google.com/apis/library/aiplatform.googleapis.com), ensure ' +
+          'billing is active, and grant your account the "Vertex AI User" role ' +
+          '(roles/aiplatform.user). Original: ' +
+          raw.slice(0, 300)
+        return new Response(JSON.stringify({ error: { code: 403, status: 'PERMISSION_DENIED', message: hint } }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    }
+    return res
   }) as unknown as typeof fetch
 }
 

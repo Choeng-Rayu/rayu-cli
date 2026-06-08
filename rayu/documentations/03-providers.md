@@ -77,6 +77,19 @@ For Google Cloud users. Authenticated with a Google Cloud OAuth bearer token
 (cloud-platform scope) rather than a static key, scoped to a **project + region**.
 The token is minted per request and refreshed automatically (~1h lifetime).
 
+> **Recommended for heavy use.** Unlike the consumer "Login with Gemini" path
+> (which has a tight per-request rate window), Vertex uses **quota-based limits
+> on your own GCP project**, so large codebase reads / many requests don't trip
+> the ~40–60s consumer throttle. It's also the durable option given the consumer
+> endpoint's planned deprecation.
+
+**Project prerequisites** (one-time): the project must have the **Vertex AI API
+enabled** (console.cloud.google.com/apis/library/aiplatform.googleapis.com) with
+**billing active**, and your account needs the **Vertex AI User** role
+(`roles/aiplatform.user`). If these are missing you'll get a `403
+PERMISSION_DENIED` ("Vertex AI API has not been used in project …") — Rayu
+surfaces these exact steps when that happens.
+
 Run `/connect` → **Google Gemini — Vertex AI (OAuth / ADC)**:
 
 1. Rayu checks for **Application Default Credentials** (e.g. from
@@ -137,6 +150,21 @@ Tokens are cached at `~/.rayu/gemini-login.json` (mode `0600`) and refreshed
 automatically. **Note:** the Code Assist endpoint is a semi-internal API (not an
 officially published REST surface); it powers the free Gemini CLI experience and
 may change.
+
+**Rate limits & heavy use.** Consumer Gemini plans (free / AI Pro / Ultra) meter
+by *request complexity* — a single heavy agentic turn (large file reads, image
+generation, long context) can consume a whole ~40–60s rate-limit window, after
+which you get `RESOURCE_EXHAUSTED (429)`. Rayu waits out and retries that window
+automatically (like the Gemini CLI), so heavy tasks still complete — just more
+slowly. Tune with `RAYU_GEMINI_MAX_WAIT_S` (seconds to wait before surfacing a
+429; set `0` to fail fast). The default model is **`gemini-2.5-flash`** (lowest
+per-request cost); pick a pro/preview model via `/model` when needed.
+
+> **For sustained heavy use, prefer the Vertex AI provider** (next section) —
+> it uses quota-based limits on your own GCP project instead of the consumer
+> rate window. Also note Google is **deprecating the consumer Code Assist
+> endpoint for free/Pro/Ultra accounts on ~June 18, 2026** (migrating to
+> "Antigravity"), so Vertex is the more durable choice.
 
 ---
 

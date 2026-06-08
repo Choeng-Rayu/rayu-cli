@@ -25,6 +25,27 @@ export type GenAIRequest = {
 
 export type StreamEvent = { type: string } & AnyObj
 
+// Gemini 3 attaches an opaque `thoughtSignature` to each functionCall part that
+// MUST be echoed back on later turns (or it 400s). Our Anthropic↔genai bridge
+// would drop it, so we cache it keyed by the tool-call id — which the agent
+// preserves to pair tool_use↔tool_result — and replay it in toGenAIRequest.
+const thoughtSignatures = new Map<string, string>()
+
+function rememberThoughtSignature(id: string | undefined, sig: unknown): void {
+  if (id && typeof sig === 'string' && sig.length > 0) {
+    thoughtSignatures.set(id, sig)
+  }
+}
+
+function getThoughtSignature(id: string): string | undefined {
+  return thoughtSignatures.get(id)
+}
+
+/** Test hook: clear the thought-signature cache. */
+export function _resetThoughtSignaturesForTesting(): void {
+  thoughtSignatures.clear()
+}
+
 function systemToText(system: BetaParams['system']): string | undefined {
   if (!system) return undefined
   if (typeof system === 'string') return system
@@ -68,7 +89,15 @@ export function toGenAIRequest(params: BetaParams): GenAIRequest {
           if (b.type === 'text' && b.text) parts.push({ text: b.text })
           else if (b.type === 'tool_use') {
             if (b.id) idToName.set(b.id as string, b.name as string)
-            parts.push({ functionCall: { name: b.name, args: b.input ?? {} } })
+            const sig = b.id ? getThoughtSignature(b.id as string) : undefined
+            // Gemini 3 requires the original thoughtSignature to be echoed back
+            // on the functionCall part across turns, or it 400s ("Function call
+            // is missing a thought_signature"). It lives as a sibling field on
+            // the Part (not inside functionCall).
+            parts.push({
+              functionCall: { name: b.name, args: b.input ?? {} },
+              ...(sig ? { thoughtSignature: sig } : {}),
+            })
           }
         }
       }
@@ -241,9 +270,11 @@ export function toBetaMessageFromGenAI(resp: AnyObj, model: string): AnyObj {
     } else if (part.functionCall) {
       const fc = part.functionCall as AnyObj
       hadToolUse = true
+      const id = `call_${Date.now()}_${idx++}`
+      rememberThoughtSignature(id, part.thoughtSignature)
       content.push({
         type: 'tool_use',
-        id: `call_${Date.now()}_${idx++}`,
+        id,
         name: fc.name,
         input: fc.args ?? {},
       })
@@ -317,12 +348,14 @@ export async function* translateGenAIStream(
         const fc = part.functionCall as AnyObj
         hadToolUse = true
         yield* closeBlock()
+        const toolId = `call_${Date.now()}_${idx}`
+        rememberThoughtSignature(toolId, part.thoughtSignature)
         yield {
           type: 'content_block_start',
           index: idx,
           content_block: {
             type: 'tool_use',
-            id: `call_${Date.now()}_${idx}`,
+            id: toolId,
             name: fc.name,
             input: {},
           },

@@ -4,6 +4,7 @@ import {
   KNOWN_GEMINI_VERTEX_MODELS,
   mergeGeminiModels,
   parseVertexGeminiModels,
+  pickPreferredCodeAssistModel,
   pickPreferredGeminiModel,
 } from '../src/utils/rayuConfig.ts'
 
@@ -74,6 +75,13 @@ describe('Code Assist model ids', () => {
   })
   test('pickPreferredGeminiModel selects a Gemini 3.x model from the Code Assist list', () => {
     expect(pickPreferredGeminiModel(KNOWN_GEMINI_CODE_ASSIST_MODELS)).toMatch(/^gemini-3/)
+  })
+  test('pickPreferredCodeAssistModel defaults to gemini-2.5-flash (cheapest per request)', () => {
+    expect(pickPreferredCodeAssistModel(KNOWN_GEMINI_CODE_ASSIST_MODELS)).toBe('gemini-2.5-flash')
+    // Falls back to any flash, then first entry.
+    expect(pickPreferredCodeAssistModel(['gemini-3-flash', 'gemini-2.5-pro'])).toBe('gemini-3-flash')
+    expect(pickPreferredCodeAssistModel(['gemini-2.5-pro'])).toBe('gemini-2.5-pro')
+    expect(pickPreferredCodeAssistModel([])).toBeUndefined()
   })
 })
 

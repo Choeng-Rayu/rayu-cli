@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  _resetThoughtSignaturesForTesting,
   buildGenAIBody,
   sanitizeGeminiSchema,
   toBetaMessageFromGenAI,
@@ -154,5 +155,52 @@ describe('buildGenAIBody', () => {
     expect(b.config.maxOutputTokens).toBe(256)
     expect(b.config.temperature).toBe(0.5)
     expect(b.systemInstruction).toBe('sys')
+  })
+})
+
+describe('Gemini 3 thought_signature round-trip', () => {
+  test('captures thoughtSignature from a functionCall response and replays it', () => {
+    _resetThoughtSignaturesForTesting()
+    const beta = toBetaMessageFromGenAI(
+      {
+        candidates: [
+          {
+            content: {
+              parts: [
+                { functionCall: { name: 'Glob', args: { pattern: '**/*.ts' } }, thoughtSignature: 'SIG-abc' },
+              ],
+            },
+          },
+        ],
+      },
+      'gemini-3.1-pro-preview',
+    ) as any
+    const toolUse = beta.content.find((b: any) => b.type === 'tool_use')
+    expect(toolUse.name).toBe('Glob')
+
+    const req = toGenAIRequest({
+      model: 'gemini-3.1-pro-preview',
+      messages: [
+        { role: 'user', content: 'find ts files' },
+        { role: 'assistant', content: [toolUse] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUse.id, content: 'a.ts' }] },
+      ],
+    })
+    const modelTurn = req.contents.find((c: any) => c.role === 'model') as any
+    expect(modelTurn.parts[0].functionCall.name).toBe('Glob')
+    expect(modelTurn.parts[0].thoughtSignature).toBe('SIG-abc')
+  })
+
+  test('omits thoughtSignature when none was captured (no false placeholder)', () => {
+    _resetThoughtSignaturesForTesting()
+    const req = toGenAIRequest({
+      model: 'gemini-2.5-flash',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'x1', name: 'Read', input: {} }] },
+      ],
+    })
+    const modelTurn = req.contents.find((c: any) => c.role === 'model') as any
+    expect(modelTurn.parts[0].functionCall.name).toBe('Read')
+    expect('thoughtSignature' in modelTurn.parts[0]).toBe(false)
   })
 })

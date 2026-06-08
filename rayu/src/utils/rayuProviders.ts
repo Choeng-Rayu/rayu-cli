@@ -201,7 +201,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     // /connect (vertexBaseURL). Chat is served through the OpenAI-compatible
     // adapter via a fetch wrapper that injects a fresh bearer token.
     id: GEMINI_VERTEX_PROVIDER_ID,
-    label: 'Google Gemini — Vertex AI (OAuth / ADC)',
+    label: 'Google Gemini — Vertex AI (OAuth / ADC) · recommended for heavy use',
     kind: 'vertex',
     requiresOAuth: true,
   },
@@ -211,7 +211,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     // `global` location, using the project from the client/login. No API key
     // or gcloud/ADC required.
     id: 'gemini-login',
-    label: 'Login with Gemini (Google account)',
+    label: 'Login with Gemini (Google account) · free/Pro consumer quota',
     kind: 'genai',
     requiresOAuth: true,
   },

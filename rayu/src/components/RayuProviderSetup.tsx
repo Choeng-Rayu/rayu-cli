@@ -14,6 +14,7 @@ import {
   fetchProviderModels,
   isLikelyChatModel,
   pickPreferredGeminiModel,
+  pickPreferredCodeAssistModel,
   refreshActiveProviderModels,
   upsertProvider,
 } from '../utils/rayuConfig.js'
@@ -249,7 +250,7 @@ export function RayuProviderSetup({
         {
           ...base,
           ...(chat.length ? { fetchedModels: chat } : {}),
-          defaultModel: pickPreferredGeminiModel(chat) ?? 'gemini-2.5-flash',
+          defaultModel: pickPreferredCodeAssistModel(chat) ?? 'gemini-2.5-flash',
         },
         true,
       )

@@ -141,13 +141,24 @@ const TINY_PNG_B64 =
 
 describe('ImageGenTool.call', () => {
   let tmp: string
-  beforeEach(() => {
+  let cfgDir: string
+  beforeEach(async () => {
     tmp = mkdtempSync(join(tmpdir(), 'rayu-imgcall-'))
+    cfgDir = mkdtempSync(join(tmpdir(), 'rayu-imgcfg-'))
+    process.env.RAYU_CONFIG_DIR = cfgDir // isolate from the dev's real ~/.rayu
     process.env.NVIDIA_API_KEY = 'nv-x'
+    // Ensure no Vertex/genai signals leak in and flip image routing to Vertex.
+    delete process.env.GOOGLE_CLOUD_PROJECT
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+    delete process.env.ANTHROPIC_VERTEX_PROJECT_ID
+    const { _resetRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
+    _resetRayuConfigCache()
   })
   afterEach(() => {
     globalThis.fetch = realFetch
     rmSync(tmp, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+    delete process.env.RAYU_CONFIG_DIR
     delete process.env.NVIDIA_API_KEY
   })
 

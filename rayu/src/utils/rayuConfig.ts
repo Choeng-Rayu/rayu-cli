@@ -679,6 +679,21 @@ export function pickPreferredGeminiModel(models: string[]): string | undefined {
 }
 
 /**
+ * Preferred default model for the Login-with-Gemini (Code Assist) provider.
+ * Prefers the cheapest-per-request flash model (gemini-2.5-flash): Code Assist
+ * consumer plans meter by request complexity, so pro/preview models burn the
+ * quota far faster. Users can still pick pro/preview models via /model.
+ */
+export function pickPreferredCodeAssistModel(models: string[]): string | undefined {
+  const prefs = [/^gemini-2\.5-flash$/i, /flash/i]
+  for (const re of prefs) {
+    const hit = models.find(m => re.test(m))
+    if (hit) return hit
+  }
+  return models[0]
+}
+
+/**
  * Parse the Vertex publisher-models response into bare Gemini chat model ids.
  * Names look like `publishers/google/models/gemini-2.5-flash`; we keep only
  * Gemini chat models (excluding imagen/veo/embedding/vision-only entries).
