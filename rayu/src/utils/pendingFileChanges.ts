@@ -1,4 +1,5 @@
 import type { StructuredPatchHunk } from 'diff'
+import chalk from 'chalk'
 import { randomUUID } from 'crypto'
 import { basename, normalize, relative } from 'path'
 import { notifyVscodeFileUpdated } from '../services/mcp/vscodeSdkMcp.js'
@@ -598,12 +599,26 @@ function formatFileChangeReviewDetail(review: FileChangeReviewSummary): string {
     }
 
     for (const hunk of file.hunks) {
-      lines.push(formatHunkHeader(hunk))
-      lines.push(...hunk.lines)
+      lines.push(colorizeDiffLine(formatHunkHeader(hunk)))
+      for (const line of hunk.lines) {
+        lines.push(colorizeDiffLine(line))
+      }
     }
   }
 
   return lines.join('\n')
+}
+
+/**
+ * Colorize a unified-diff line so additions are green and removals are red
+ * (matching the convention), with hunk headers dimmed. Uses ANSI via chalk so
+ * the plain-text command result renders correctly in the terminal.
+ */
+function colorizeDiffLine(line: string): string {
+  if (line.startsWith('@@')) return chalk.cyan(line)
+  if (line.startsWith('+')) return chalk.green(line)
+  if (line.startsWith('-')) return chalk.red(line)
+  return line
 }
 
 function formatHunkHeader(hunk: StructuredPatchHunk): string {

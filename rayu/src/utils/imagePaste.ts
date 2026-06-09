@@ -62,11 +62,14 @@ function getClipboardCommands() {
       deleteFile: `rm -f "${screenshotPath}"`,
     },
     linux: {
+      // Prefer wl-paste (Wayland) then fall back to xclip (X11). Modern Ubuntu
+      // defaults to Wayland; trying wl-paste first avoids xclip's flaky
+      // behavior under XWayland.
       checkImage:
-        'xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)" || wl-paste -l 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)"',
-      saveImage: `xclip -selection clipboard -t image/png -o > "${screenshotPath}" 2>/dev/null || wl-paste --type image/png > "${screenshotPath}" 2>/dev/null || xclip -selection clipboard -t image/bmp -o > "${screenshotPath}" 2>/dev/null || wl-paste --type image/bmp > "${screenshotPath}"`,
+        'wl-paste -l 2>/dev/null | grep -iE "image/(png|jpeg|jpg|gif|webp|bmp)" || xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -iE "image/(png|jpeg|jpg|gif|webp|bmp)"',
+      saveImage: `wl-paste --type image/png > "${screenshotPath}" 2>/dev/null || xclip -selection clipboard -t image/png -o > "${screenshotPath}" 2>/dev/null || wl-paste --type image/bmp > "${screenshotPath}" 2>/dev/null || xclip -selection clipboard -t image/bmp -o > "${screenshotPath}" 2>/dev/null`,
       getPath:
-        'xclip -selection clipboard -t text/plain -o 2>/dev/null || wl-paste 2>/dev/null',
+        'wl-paste 2>/dev/null || xclip -selection clipboard -t text/plain -o 2>/dev/null',
       deleteFile: `rm -f "${screenshotPath}"`,
     },
     win32: {
@@ -239,6 +242,25 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
   } catch {
     return null
   }
+}
+
+/**
+ * On Linux, return an actionable hint when NO clipboard tool is installed, so
+ * "paste image" failures aren't a silent "nothing in clipboard". Returns null
+ * when a tool exists or on non-Linux (where the OS handles clipboard natively).
+ */
+export async function getLinuxClipboardToolHint(): Promise<string | null> {
+  if (process.platform !== 'linux') return null
+  for (const tool of ['wl-paste', 'xclip', 'xsel']) {
+    const r = await execFileNoThrowWithCwd('sh', ['-c', `command -v ${tool}`])
+    if (r.code === 0 && r.stdout.trim()) return null // a clipboard tool exists
+  }
+  const isWayland =
+    !!process.env.WAYLAND_DISPLAY ||
+    process.env.XDG_SESSION_TYPE === 'wayland'
+  return isWayland
+    ? 'No clipboard tool found — install it to paste images: sudo apt install wl-clipboard'
+    : 'No clipboard tool found — install it to paste images: sudo apt install xclip'
 }
 
 export async function getImagePathFromClipboard(): Promise<string | null> {

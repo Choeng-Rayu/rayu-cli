@@ -24,7 +24,9 @@ export function FileChangeReviewCard({
   message,
   addMargin = false,
 }: Props): React.ReactNode {
-  const [showAllFiles, setShowAllFiles] = useState(false)
+  // Show every changed file by default (users asked to see the full list, not
+  // a truncated 3). The expand toggle is kept for safety but starts expanded.
+  const [showAllFiles, setShowAllFiles] = useState(true)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const actions = useFileChangeReviewActions()
   const pendingFileChanges = useAppState(
@@ -96,8 +98,8 @@ export function FileChangeReviewCard({
             <Text color="success">+{liveReview.totalAdditions}</Text>
             <Text> </Text>
             <Text color="error">-{liveReview.totalRemovals}</Text>
-            <Box flexGrow={1} />
-            <Button onAction={handleUndo}>
+            <Box flexGrow={1}  />
+            {/* <Button onAction={handleUndo}>
               {({ focused }: ButtonState) => (
                 <Text
                   color={pendingChangeIds.length > 0 ? undefined : 'warning'}
@@ -106,7 +108,13 @@ export function FileChangeReviewCard({
                   Undo
                 </Text>
               )}
-            </Button>
+            </Button> */}
+            {/* <Text
+                  // color={pendingChangeIds.length > 0 ? undefined : 'warning'}
+                  // inverse={focused}
+                >
+                  Status
+                </Text> */}
           </Box>
 
           <Box flexDirection="column" marginTop={1}>
@@ -127,7 +135,8 @@ export function FileChangeReviewCard({
 
           {pendingChangeIds.length > 0 ? (
             <Box marginTop={1}>
-              <Text dimColor>Details: /review_detial [file]</Text>
+              <Text dimColor>Details: /review_detail, /keep, /undo  [file_name]</Text>
+              <Text dimColor>Use these commands to review changes, keep or undo them. warning with the command /undo all (it undo all file changes) </Text>
             </Box>
           ) : null}
 

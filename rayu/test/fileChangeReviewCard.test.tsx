@@ -151,7 +151,7 @@ describe('FileChangeReviewCard', () => {
     expect(output).not.toContain('kept')
   })
 
-  test('renders summary rows and show-more without inline code preview', async () => {
+  test('renders all summary rows (no truncation) without inline code preview', async () => {
     const state = getDefaultAppState()
     const context = createContext(state)
     const files = ['one.ts', 'two.ts', 'three.ts', 'four.ts']
@@ -204,9 +204,13 @@ describe('FileChangeReviewCard', () => {
     expect(output).toContain('Edited 4 files')
     expect(output).toContain('+4')
     expect(output).toContain('-4')
+    // All changed files are shown (no 3-file truncation / "Show more" button).
     expect(output).toContain('one.ts')
-    expect(output).toContain('Show 1 more file')
-    expect(output).toContain('Details: /review_detial [file]')
+    expect(output).toContain('two.ts')
+    expect(output).toContain('three.ts')
+    expect(output).toContain('four.ts')
+    expect(output).not.toContain('Show 1 more file')
+    expect(output).toContain('Details: /review_detail  [file_name]')
     expect(output).not.toContain('Hide review')
     expect(output).not.toContain('review record')
     expect(output).not.toContain('before')
