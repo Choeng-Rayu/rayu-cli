@@ -5,8 +5,7 @@ const reviewDetial = {
   name: 'review_detail',
   aliases: ['review_detail'],
   argumentHint: '[file]',
-  type: 'local',
-  supportsNonInteractive: false,
+  type: 'local-jsx',
   load: () => import('./review-detial.js'),
 } satisfies Command
 

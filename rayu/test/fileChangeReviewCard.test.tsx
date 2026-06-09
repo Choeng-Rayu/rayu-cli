@@ -210,7 +210,9 @@ describe('FileChangeReviewCard', () => {
     expect(output).toContain('three.ts')
     expect(output).toContain('four.ts')
     expect(output).not.toContain('Show 1 more file')
-    expect(output).toContain('Details: /review_detail  [file_name]')
+    expect(output).toContain('Details: /review_detail')
+    // Footer documents /undo all
+    expect(output).toContain('/undo all')
     expect(output).not.toContain('Hide review')
     expect(output).not.toContain('review record')
     expect(output).not.toContain('before')

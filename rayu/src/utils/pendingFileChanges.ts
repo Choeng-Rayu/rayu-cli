@@ -231,6 +231,25 @@ export async function undoPendingFileChangesByIds(
   })
 }
 
+/**
+ * Undo ALL pending file changes (the `/undo all` form).
+ */
+export async function undoAllPendingFileChanges(
+  context: PendingFileUndoContext,
+): Promise<string> {
+  const changes = context
+    .getAppState()
+    .pendingFileChanges.filter(
+      (change: PendingFileChange) => change.status === 'pending',
+    )
+
+  return undoPendingChanges(context, changes, {
+    emptyMessage: 'No pending file changes to undo.',
+    successMessage: count =>
+      `Undid all ${count} pending ${pluralize('change', count)}.`,
+  })
+}
+
 export function buildFileChangeReviewSummary(
   changes: readonly PendingFileChange[],
 ): FileChangeReviewSummary | null {
@@ -316,6 +335,22 @@ export function getPendingFileChangeReviewDetail(
   context: PendingFileChangeContext,
   rawFileArg: string,
 ): string {
+  const result = resolvePendingFileChangeReview(context, rawFileArg)
+  if (result.type === 'message') return result.message
+  return formatFileChangeReviewDetail(result.review)
+}
+
+/**
+ * Resolve the pending-change review for a file argument, returning either the
+ * review summary (for the rich /review_detail diff UI) or a user-facing
+ * message when there is nothing to show / the match is ambiguous.
+ */
+export function resolvePendingFileChangeReview(
+  context: PendingFileChangeContext,
+  rawFileArg: string,
+):
+  | { type: 'review'; review: FileChangeReviewSummary }
+  | { type: 'message'; message: string } {
   const fileArg = rawFileArg.trim()
   const match = findMatchingPendingChanges(
     context.getAppState().pendingFileChanges,
@@ -323,23 +358,32 @@ export function getPendingFileChangeReviewDetail(
   )
 
   if (match.type === 'none') {
-    return fileArg
-      ? `No pending file changes match ${fileArg}.`
-      : 'No pending file changes to review.'
+    return {
+      type: 'message',
+      message: fileArg
+        ? `No pending file changes match ${fileArg}.`
+        : 'No pending file changes to review.',
+    }
   }
 
   if (match.type === 'ambiguous') {
-    return `Multiple pending files match ${fileArg}: ${match.paths.join(', ')}. Use a more specific path.`
+    return {
+      type: 'message',
+      message: `Multiple pending files match ${fileArg}: ${match.paths.join(', ')}. Use a more specific path.`,
+    }
   }
 
   const review = buildFileChangeReviewSummary(match.changes)
   if (!review) {
-    return fileArg
-      ? `No pending file changes match ${fileArg}.`
-      : 'No pending file changes to review.'
+    return {
+      type: 'message',
+      message: fileArg
+        ? `No pending file changes match ${fileArg}.`
+        : 'No pending file changes to review.',
+    }
   }
 
-  return formatFileChangeReviewDetail(review)
+  return { type: 'review', review }
 }
 
 export function isFileChangeReviewSystemMessage(

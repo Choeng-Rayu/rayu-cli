@@ -275,7 +275,7 @@ const COMMANDS = memoize((): Command[] => [
   stats,
   status,
   statusline,
-  // stickers,
+  stickers,
   tag,
   theme,
   feedback,
