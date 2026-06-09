@@ -292,7 +292,8 @@ export function getTerminalIdeType(): IdeType | null {
 }
 
 /**
- * Gets sorted IDE lockfiles from ~/.rayu/ide directory
+ * Gets sorted IDE lockfiles from the ~/.rayu/ide and ~/.claude/ide directories
+ * (the latter for interop with an installed Claude Code editor extension).
  * @returns Array of full lockfile paths sorted by modification time (newest first)
  */
 export async function getSortedIdeLockfiles(): Promise<string[]> {
@@ -460,7 +461,13 @@ const getWindowsUserProfile = memoize(async (): Promise<string | undefined> => {
  * stat loop compounded startup latency.
  */
 export async function getIdeLockfilesPaths(): Promise<string[]> {
-  const paths: string[] = [join(getRayuConfigHomeDir(), 'ide')]
+  // Scan Rayu's own dir AND the upstream ~/.claude/ide dir, since installed
+  // VS Code / JetBrains extensions write their lockfile there. This lets the
+  // existing Claude Code editor extension integrate with rayu-cli.
+  const paths: string[] = [
+    join(getRayuConfigHomeDir(), 'ide'),
+    join(os.homedir(), '.claude', 'ide'),
+  ]
 
   if (getPlatform() !== 'wsl') {
     return paths
@@ -475,6 +482,7 @@ export async function getIdeLockfilesPaths(): Promise<string[]> {
     const converter = new WindowsToWSLConverter(process.env.WSL_DISTRO_NAME)
     const wslPath = converter.toLocalPath(windowsHome)
     paths.push(resolve(wslPath, '.rayu', 'ide'))
+    paths.push(resolve(wslPath, '.claude', 'ide'))
   }
 
   // Construct the path based on the standard Windows WSL locations
@@ -500,6 +508,7 @@ export async function getIdeLockfilesPaths(): Promise<string[]> {
         continue // Skip system directories
       }
       paths.push(join(usersDir, user.name, '.rayu', 'ide'))
+      paths.push(join(usersDir, user.name, '.claude', 'ide'))
     }
   } catch (error: unknown) {
     if (isFsInaccessible(error)) {
