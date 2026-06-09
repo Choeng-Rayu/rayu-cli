@@ -18,8 +18,12 @@
 import type { AgentColorName } from '../agentColorManager.js'
 import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
 import { isAutoMemoryEnabled } from '../../../memdir/paths.js'
+import { getCwd } from '../../../utils/cwd.js'
+import { detectStack } from '../../../utils/stackDetector.js'
 import { loadAgentMemoryPrompt } from '../agentMemory.js'
 import { assembleContext, getDomainPath, getSharedPath } from '../swarmContext.js'
+import { buildStackAwarenessFragment } from './stackAwareness.js'
+import { getProfileFragment } from './profiles.js'
 
 type SpecialistSpec = {
   agentType: string
@@ -31,6 +35,10 @@ type SpecialistSpec = {
   doNot: string[]
   outputSpec: string[]
   rules?: string[]
+  /** Optional runtime-computed fragment (e.g. PA's stack awareness), injected
+   *  right after the role block. Returns null to inject nothing. Kept as a
+   *  closure so the dynamic bit stays code-injected after the markdown move. */
+  getDynamicFragment?: () => string | null
 }
 
 const SHARED_AUTHORITY = [
@@ -80,12 +88,21 @@ function buildSpecialistPrompt(s: SpecialistSpec): string {
     contextIO(s.agentType),
     'Be concise and structured — the orchestrator is integrating your output with other specialists. Report back as a normal message (do not create report files).',
   ]
-  // Inject the SWARM CONTEXT block (shared brief + this agent's dependency
-  // sections) right after the role block, when the artifact exists. Empty on
-  // the very first spawn (e.g. PA-AGENT before anything is written).
+  // Inject runtime fragments right after the role block: first the agent's
+  // own dynamic fragment (e.g. PA's stack awareness), then the SWARM CONTEXT
+  // block (shared brief + dependency sections). Both may be empty (e.g. the
+  // very first PA-AGENT spawn before anything is written).
+  const dynamic: string[] = []
+  const frag = s.getDynamicFragment?.()
+  if (frag) dynamic.push(frag)
+  // Opt-in locale/stack profile fragment for this agent (null unless a profile
+  // is active and defines one for this agentType).
+  const profileFrag = getProfileFragment(s.agentType)
+  if (profileFrag) dynamic.push(profileFrag)
   const swarm = assembleContext(s.agentType)
-  if (swarm) {
-    parts.splice(3, 0, swarm, '')
+  if (swarm) dynamic.push(swarm)
+  if (dynamic.length > 0) {
+    parts.splice(3, 0, dynamic.join('\n\n'), '')
   }
   return parts.join('\n')
 }
@@ -144,6 +161,7 @@ export const PA_AGENT = defineSpecialist({
   whenToUse:
     'Use FIRST on any new project, feature, or architecture decision. Produces the tech-stack decision, phases, task breakdown, and risks that all other specialists build on. Its stack/architecture decisions are authoritative.',
   role: 'You are the senior tech lead. You set direction: pick the exact stack, break the work into phases, and define done. You are opinionated and decisive — never "X or Y", always pick one and justify briefly.',
+  getDynamicFragment: () => buildStackAwarenessFragment(detectStack(getCwd())),
   owns: [
     'Tech stack decision (exact: language, framework, DB, ORM, hosting, auth)',
     'Project phases (MVP / V1 / V2) and high-level task breakdown',
@@ -163,7 +181,6 @@ export const PA_AGENT = defineSpecialist({
   ],
   rules: [
     'Be opinionated and specific. No hedging.',
-    'When the project is Cambodia-relevant, prefer locally-relevant choices (Bakong/KHQR payments, KHR/USD dual currency, Khmer + English).',
     'Keep it concise — other specialists are waiting on you.',
   ],
 })
@@ -257,7 +274,6 @@ export const DB_AGENT = defineSpecialist({
   ],
   rules: [
     'Use the ORM/DB from PA-AGENT.',
-    'For Cambodia projects: KHR/USD decimal precision, Khmer Unicode (utf8mb4).',
     'Flag fields SEC-AGENT should hash/encrypt with DRIFT_FLAG.',
   ],
 })
@@ -349,7 +365,6 @@ export const MOB_AGENT = defineSpecialist({
   ],
   rules: [
     'All API calls must reference exact BE-AGENT routes; flag missing ones.',
-    'Handle KHR/USD display and Khmer + English when in the project constraints.',
   ],
 })
 

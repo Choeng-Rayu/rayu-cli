@@ -16,6 +16,7 @@ import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
+import { getTaskRoutingSection } from '../tools/AgentTool/taskRouting.js'
 import type { Tools } from '../Tool.js'
 import type { Command } from '../types/command.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
@@ -564,6 +565,9 @@ ${CYBER_RISK_INSTRUCTION}`,
       : null,
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
+    // Pre-response swarm routing (SINGLE/MULTI/TRIVIAL). Null when the
+    // specialist swarm is disabled. Cacheable: env is stable within a session.
+    getTaskRoutingSection(),
     getSimpleToneAndStyleSection(),
     getOutputEfficiencySection(),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===

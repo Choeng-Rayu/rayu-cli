@@ -95,6 +95,12 @@ export type RayuConfig = {
    * (or Vertex Veo when that's the only configured backend).
    */
   videoModel?: string
+  /**
+   * Opt-in project profile name for the specialist swarm (e.g. 'cambodia').
+   * When set, the matching locale/stack fragments are injected into PA/DB/MOB.
+   * Unset → no locale bias (the 'default' profile). See built-in/profiles.ts.
+   */
+  projectProfile?: string
 }
 
 const FILE_NAME = 'providers.json'
