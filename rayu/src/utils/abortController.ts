@@ -1,6 +1,35 @@
 import { setMaxListeners } from 'events'
 
 /**
+ * Abort reasons that represent a SYSTEM/non-user cancellation rather than a
+ * deliberate user interrupt (ESC / Ctrl+C). Used to avoid mislabeling a
+ * tool/turn that was aborted by a timeout or a sibling failure as
+ * "Interrupted by user" (the upstream "phantom interrupt" bug class).
+ */
+const SYSTEM_ABORT_REASONS = new Set<string>([
+  'sibling_error', // a parallel tool failed and cancelled its siblings
+  'streaming_fallback', // streaming executor discarded queued tools
+  'background', // moved to a background task
+])
+
+/**
+ * Returns true when an abort `reason` reflects a genuine user action
+ * (ESC/Ctrl+C cancel, or a queued-submit 'interrupt'), and false when it is a
+ * system-originated abort (timeout DOMException/Error, sibling-error cascade,
+ * streaming fallback, backgrounding). A bare abort() with no reason is treated
+ * as user-initiated to preserve historical behavior.
+ */
+export function isUserInitiatedAbort(reason: unknown): boolean {
+  // Timeouts and other thrown reasons (e.g. DOMException 'TimeoutError' from
+  // the MCP client) are never the user.
+  if (reason instanceof Error) return false
+  if (typeof reason === 'string' && SYSTEM_ABORT_REASONS.has(reason)) {
+    return false
+  }
+  return true
+}
+
+/**
  * Default max listeners for standard operations
  */
 const DEFAULT_MAX_LISTENERS = 50

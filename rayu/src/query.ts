@@ -4,6 +4,7 @@ import type {
   ToolUseBlock,
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
+import { isUserInitiatedAbort } from './utils/abortController.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import {
   calculateTokenWarningState,
@@ -1022,6 +1023,8 @@ async function* queryLoop(
     // executor can generate synthetic tool_result blocks for queued/in-progress tools.
     // Without this, tool_use blocks would lack matching tool_result blocks.
     if (toolUseContext.abortController.signal.aborted) {
+      const abortReason = toolUseContext.abortController.signal.reason
+      const userInitiated = isUserInitiatedAbort(abortReason)
       if (streamingToolExecutor) {
         // Consume remaining results - executor generates synthetic tool_results for
         // aborted tools since it checks the abort signal in executeTool()
@@ -1031,9 +1034,14 @@ async function* queryLoop(
           }
         }
       } else {
+        // Only blame the user when the abort was actually a user interrupt;
+        // system aborts (tool/MCP timeout, sibling-error cascade) get a neutral
+        // label so we don't show a phantom "Interrupted by user".
         yield* yieldMissingToolResultBlocks(
           assistantMessages,
-          'Interrupted by user',
+          userInitiated
+            ? 'Interrupted by user'
+            : 'Tool execution was cancelled (a parallel tool failed or timed out)',
         )
       }
       // chicago MCP: auto-unhide + lock release on interrupt. Same cleanup
@@ -1051,8 +1059,10 @@ async function* queryLoop(
       }
 
       // Skip the interruption message for submit-interrupts — the queued
-      // user message that follows provides sufficient context.
-      if (toolUseContext.abortController.signal.reason !== 'interrupt') {
+      // user message that follows provides sufficient context. Also skip for
+      // system aborts (timeout/sibling-error) — those aren't a user action,
+      // so showing "Interrupted · What should Rayu do instead?" is misleading.
+      if (abortReason !== 'interrupt' && userInitiated) {
         yield createUserInterruptionMessage({
           toolUse: false,
         })
@@ -1554,7 +1564,7 @@ async function* queryLoop(
     })
 
     // Get queued commands snapshot before processing attachments.
-    // These will be sent as attachments so Claude can respond to them in the current turn.
+    // These will be sent as attachments so Rayu can respond to them in the current turn.
     //
     // Drain pending notifications. LocalShellTask completions are 'next'
     // (when MONITOR_TOOL is on) and drain without Sleep. Other task types
@@ -1687,7 +1697,7 @@ async function* queryLoop(
     // Each time we have tool results and are about to recurse, that's a turn
     const nextTurnCount = turnCount + 1
 
-    // Periodic task summary for `claude ps` — fires mid-turn so a
+    // Periodic task summary for `rayu ps` — fires mid-turn so a
     // long-running agent still refreshes what it's working on. Gated
     // only on !agentId so every top-level conversation (REPL, SDK, HFI,
     // remote) generates summaries; subagents/forks don't.

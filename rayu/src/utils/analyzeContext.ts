@@ -74,6 +74,48 @@ const MANUAL_COMPACT_BUFFER_NAME = 'Compact buffer'
  */
 export const TOOL_TOKEN_COUNT_OVERHEAD = 500
 
+/**
+ * Count tokens via the API, falling back to a rough local estimate of
+ * `fallbackText` when the API count is unavailable (null) — which is always
+ * the case for OpenAI-compatible and genai providers. Keeps category counts
+ * non-zero so the breakdown matches the (API-derived) header.
+ */
+async function countOrEstimate(
+  messages: Anthropic.Beta.Messages.BetaMessageParam[],
+  tools: Anthropic.Beta.Messages.BetaToolUnion[],
+  fallbackText: string,
+): Promise<number> {
+  const result = await countTokensWithFallback(messages, tools)
+  return result ?? roughTokenCountEstimation(fallbackText)
+}
+
+/**
+ * Reconcile the "used" total, free space, and header so they share ONE source
+ * across all provider families. When the real API usage is available
+ * (`totalFromAPI`, present for Anthropic / OpenAI-compatible / genai alike) it
+ * is the authoritative "used" total; otherwise we fall back to the estimated
+ * category sum (`actualUsage`). Free space is always derived from that same
+ * number, so the header and the grid can never contradict each other.
+ *
+ * Invariant: `finalTotalTokens + freeTokens + reservedTokens === contextWindow`
+ * (unless free space clamps at 0 when the window is already over budget).
+ */
+export function reconcileContextUsage(opts: {
+  contextWindow: number
+  /** Estimated sum of non-deferred, non-free categories. */
+  actualUsage: number
+  /** Real last-response usage total, or null when unavailable. */
+  totalFromAPI: number | null
+  reservedTokens: number
+}): { usedForGrid: number; freeTokens: number; finalTotalTokens: number } {
+  const used = opts.totalFromAPI ?? opts.actualUsage
+  const freeTokens = Math.max(
+    0,
+    opts.contextWindow - used - opts.reservedTokens,
+  )
+  return { usedForGrid: used, freeTokens, finalTotalTokens: used }
+}
+
 async function countTokensWithFallback(
   messages: Anthropic.Beta.Messages.BetaMessageParam[],
   tools: Anthropic.Beta.Messages.BetaToolUnion[],
@@ -254,7 +296,12 @@ export async function countToolDefinitionTokens(
       `countToolDefinitionTokens returned ${result} for ${tools.length} tools: ${toolNames.slice(0, 100)}${toolNames.length > 100 ? '...' : ''}`,
     )
   }
-  return result ?? 0
+  // null = API count unavailable (OpenAI-compatible / genai) → estimate from
+  // the serialized schemas so the category isn't dropped to 0.
+  if (result === null) {
+    return roughTokenCountEstimation(jsonStringify(toolSchemas))
+  }
+  return result
 }
 
 /** Extract a human-readable name from a system prompt section's content */
@@ -298,7 +345,7 @@ async function countSystemTokens(
 
   const systemTokenCounts = await Promise.all(
     namedEntries.map(({ content }) =>
-      countTokensWithFallback([{ role: 'user', content }], []),
+      countOrEstimate([{ role: 'user', content }], [], content),
     ),
   )
 
@@ -339,9 +386,10 @@ async function countMemoryFileTokens(): Promise<{
 
   const claudeMdTokenCounts = await Promise.all(
     memoryFilesData.map(async file => {
-      const tokens = await countTokensWithFallback(
+      const tokens = await countOrEstimate(
         [{ role: 'user', content: file.content }],
         [],
+        file.content,
       )
 
       return { file, tokens: tokens || 0 }
@@ -743,7 +791,7 @@ async function countCustomAgentTokens(agentDefinitions: {
 
   const tokenCounts = await Promise.all(
     customAgents.map(agent =>
-      countTokensWithFallback(
+      countOrEstimate(
         [
           {
             role: 'user',
@@ -751,6 +799,7 @@ async function countCustomAgentTokens(agentDefinitions: {
           },
         ],
         [],
+        [agent.agentType, agent.whenToUse].join(' '),
       ),
     ),
   )
@@ -911,7 +960,18 @@ async function approximateMessageTokens(
     [],
   )
 
-  breakdown.totalTokens = approximateMessageTokens ?? 0
+  // When the API/Haiku count is unavailable (OpenAI-compatible + genai
+  // providers return null), fall back to the rough per-block sum we already
+  // computed above instead of 0 — otherwise the dominant "Messages" category
+  // collapses to 0 and /context massively undercounts. Anthropic keeps the
+  // accurate API count.
+  const roughMessageSum =
+    breakdown.userMessageTokens +
+    breakdown.assistantMessageTokens +
+    breakdown.toolCallTokens +
+    breakdown.toolResultTokens +
+    breakdown.attachmentTokens
+  breakdown.totalTokens = approximateMessageTokens ?? roughMessageSum
   return breakdown
 }
 
@@ -1146,32 +1206,34 @@ export async function analyzeContextUsage(
     })
   }
 
-  // Calculate free space (subtract both actual usage and reserved buffer)
-  const freeTokens = Math.max(0, contextWindow - actualUsage - reservedTokens)
-
-  cats.push({
-    name: 'Free space',
-    tokens: freeTokens,
-    color: 'promptBorder',
-  })
-
-  // Total for display (everything except free space)
-  const totalIncludingReserved = actualUsage
-
-  // Extract API usage from original messages (if provided) to match status line
-  // This uses the same source of truth as the status line for consistency
+  // Extract API usage (the real last-response usage) — the same source the
+  // status-line/header uses. This is the accurate "used" total for ALL
+  // providers (Anthropic real counts; OpenAI-compatible/genai map their
+  // response usage onto the same shape).
   const apiUsage = getCurrentUsage(originalMessages ?? messages)
-
-  // When API usage is available, use it for total to match status line calculation
-  // Status line uses: input_tokens + cache_creation_input_tokens + cache_read_input_tokens
   const totalFromAPI = apiUsage
     ? apiUsage.input_tokens +
       apiUsage.cache_creation_input_tokens +
       apiUsage.cache_read_input_tokens
     : null
 
-  // Use API total if available, otherwise fall back to estimated total
-  const finalTotalTokens = totalFromAPI ?? totalIncludingReserved
+  // Drive the grid + Free space from the API total when available, otherwise
+  // from the estimated category sum. This keeps the header, the grid fill, and
+  // Free space using ONE "used" source — so they can't contradict each other
+  // (the old bug: header 110k but Free space computed from a collapsed ~20k
+  // estimate). The per-category bars stay best-effort estimates.
+  const { freeTokens, finalTotalTokens } = reconcileContextUsage({
+    contextWindow,
+    actualUsage,
+    totalFromAPI,
+    reservedTokens,
+  })
+
+  cats.push({
+    name: 'Free space',
+    tokens: freeTokens,
+    color: 'promptBorder',
+  })
 
   // Pre-calculate grid based on model context window and terminal width
   // For narrow screens (< 80 cols), use 5x5 for 200k models, 5x10 for 1M+ models

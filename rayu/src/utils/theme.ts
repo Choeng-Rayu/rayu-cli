@@ -418,7 +418,8 @@ const lightDaltonizedTheme: Theme = {
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelClaude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches claude)
   rainbow_red: 'rgb(235,95,87)',
-  rainbow_orange: 'rgb(245,139,87)',
+  // rainbow_red: 'rgb(235,95,87)', //original color
+  rainbow_orange: 'rgb(100, 172, 7)',
   rainbow_yellow: 'rgb(250,195,95)',
   rainbow_green: 'rgb(145,200,130)',
   rainbow_blue: 'rgb(130,170,220)',

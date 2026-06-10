@@ -8,7 +8,7 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { findToolByName, type Tools, type ToolUseContext } from '../../Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
-import { createChildAbortController } from '../../utils/abortController.js'
+import { createChildAbortController, isUserInitiatedAbort } from '../../utils/abortController.js'
 import { runToolUse } from './toolExecution.js'
 
 type MessageUpdate = {
@@ -225,7 +225,12 @@ export class StreamingToolExecutor {
           ? 'user_interrupted'
           : null
       }
-      return 'user_interrupted'
+      // A genuine user cancel (ESC/Ctrl+C) is 'user_interrupted'; a system
+      // abort (tool/MCP timeout, sibling-error cascade) is reported as a
+      // neutral parallel-cancel rather than falsely "user rejected".
+      return isUserInitiatedAbort(this.toolUseContext.abortController.signal.reason)
+        ? 'user_interrupted'
+        : 'sibling_error'
     }
     return null
   }
