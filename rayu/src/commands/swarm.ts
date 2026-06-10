@@ -31,11 +31,12 @@ ${taskLine}
 1. Briefly decompose the work by domain and decide which specialists are needed. Only spawn the ones the task actually requires:
    - PA-AGENT (planner/architecture — run FIRST for new projects/features; its stack & architecture decisions are FINAL)
    - DB-AGENT (schema), BE-AGENT (API), SEC-AGENT (security — its decisions are FINAL), FE-AGENT (web UI), MOB-AGENT (mobile), DO-AGENT (devops, usually LAST)
+   - After PA-AGENT runs, it writes the minimal required set to \`.rayu/swarm/shared.json\` "needs" — spawn exactly that set (PA always included), not all seven by default.
 2. Respect dependencies, but maximize parallelism: dispatch specialists with no unmet dependency TOGETHER, in a SINGLE message with multiple Agent tool calls. Spawn each as a NAMED BACKGROUND agent (run_in_background:true, stable lowercase name pa/db/be/sec/fe/mob/do) so you can resume it later. Typical waves:
    - Wave 1: PA-AGENT (+ Explore for research)
    - Wave 2: DB-AGENT, FE-AGENT
    - Wave 3: BE-AGENT, SEC-AGENT
-   - Wave 4: MOB-AGENT, DO-AGENT
+   - Wave 4: MOB-AGENT (use it if use want to build mobile app), DO-AGENT
    Within each wave, send all the calls in one message so they run concurrently.
 3. Shared context is carried by an artifact, not by you re-typing it: PA-AGENT writes .rayu/swarm/shared.json (goal/stack/flow/constraints) + .rayu/swarm/PA.md; each other specialist automatically receives the shared brief plus only its dependency sections, and writes its own .rayu/swarm/<AGENT>.md. So give each specialist just the task plus any brand-new decision not yet in the artifact — do NOT paste the whole schema/routes/auth into every prompt.
 4. Persistent sessions: keep each specialist alive. For a follow-up or the next task in a domain that already ran, RESUME it with SendMessage (to: its name) carrying only the new task + changed contracts — do NOT spawn a fresh one. Resuming keeps that specialist's full working context and auto-refreshes its shared context; spawn fresh only for an unrelated new domain.
@@ -46,6 +47,7 @@ ${taskLine}
 - If a specialist emits "DRIFT_FLAG: ...", route that item to the right specialist (or handle it yourself) rather than letting the flagging agent do out-of-scope work.
 
 ## Finish
+- Before synthesizing, run a conflict check over the specialists' sections (.rayu/swarm/SEC.md vs BE.md/DB.md): if SEC mandated something (e.g. bcrypt/argon2 hashing, httpOnly-cookie tokens) but BE/DB did the opposite (md5/sha1/plaintext, localStorage), SURFACE the conflict to the user and resolve by authority (SEC wins) — do not silently keep the weaker choice.
 - Synthesize a single coherent result: the integrated plan/implementation, in dependency order, crediting which specialist produced what. Keep it tight.
 
 Begin by stating the decomposition and Wave 1 dispatch.`,

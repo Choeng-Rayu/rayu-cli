@@ -1,6 +1,6 @@
 {
   "name": "@rayu-dev/rayu-cli",
-  "version": "1.2.18",
+  "version": "1.2.19",
   "description": "Rayu-CLI — a multi-provider AI coding CLI",
   "type": "module",
   "bin": {

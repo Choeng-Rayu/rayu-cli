@@ -22,6 +22,11 @@ const message = [
   '',
   '  Docs & issues:  https://github.com/Choeng-Rayu/rayu-cli',
   '',
+  'Whats new?:',
+  '    - Improved conflict resolution in swarm mode',
+  '    - fixed /ide integration',
+  '    - enjoy the new features and improvements!',
+  '',
 ].join('\n') + '\n';
 
 // Write the first-run marker so the binary does not show the message again

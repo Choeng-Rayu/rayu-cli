@@ -106,3 +106,43 @@ test('PA-AGENT Context I/O also mentions the shared brief artifact', async () =>
   expect(p).toContain('shared brief')
   expect(p).toContain('shared.json')
 })
+
+test('selectAgentsByNeeds: declared subset (PA always kept), else all', async () => {
+  const { selectAgentsByNeeds, normalizeAgentType } = await import(
+    '../src/tools/AgentTool/swarmContext.ts'
+  )
+  const all = ['PA-AGENT', 'DB-AGENT', 'BE-AGENT', 'SEC-AGENT', 'FE-AGENT', 'MOB-AGENT', 'DO-AGENT']
+  expect(normalizeAgentType('fe')).toBe('FE-AGENT')
+  expect(normalizeAgentType('BE-AGENT')).toBe('BE-AGENT')
+  // frontend-only task → FE (+PA always)
+  expect(selectAgentsByNeeds(['fe'], all)).toEqual(['PA-AGENT', 'FE-AGENT'])
+  // mixed tokens, dedup, order follows the canonical list
+  expect(selectAgentsByNeeds(['be', 'db'], all)).toEqual([
+    'PA-AGENT',
+    'DB-AGENT',
+    'BE-AGENT',
+  ])
+  // empty / undefined → all (back-compat)
+  expect(selectAgentsByNeeds([], all)).toEqual(all)
+  expect(selectAgentsByNeeds(undefined, all)).toEqual(all)
+})
+
+test('readNeeds reads PA-declared needs from shared.json', async () => {
+  const sw = join(dir, '.rayu', 'swarm')
+  mkdirSync(sw, { recursive: true })
+  writeFileSync(
+    join(sw, 'shared.json'),
+    JSON.stringify({ goal: 'g', stack: 's', flow: 'f', constraints: [], needs: ['fe', 'be'] }),
+  )
+  const { readNeeds, readShared } = await import('../src/tools/AgentTool/swarmContext.ts')
+  expect(readNeeds()).toEqual(['fe', 'be'])
+  // needs surfaces in the formatted brief consumed by specialists
+  expect(readShared()?.needs).toEqual(['fe', 'be'])
+})
+
+test('PA output spec instructs declaring the needed specialist set', async () => {
+  const { PA_AGENT } = await import('../src/tools/AgentTool/built-in/specialists.ts')
+  const p = PA_AGENT.getSystemPrompt({ toolUseContext: { options: {} } } as never)
+  expect(p).toMatch(/needs/)
+  expect(p).toMatch(/Needed Specialists/i)
+})

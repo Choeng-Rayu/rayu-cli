@@ -16,7 +16,8 @@
 // dispatches specialists in parallel (one Agent tool call each), and integrates
 // their outputs. Specialists do the work; they do not spawn sub-agents.
 import type { AgentColorName } from '../agentColorManager.js'
-import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
+import type { AgentMcpServerSpec, BuiltInAgentDefinition } from '../loadAgentsDir.js'
+import type { HooksSettings } from '../../../utils/settings/types.js'
 import { isAutoMemoryEnabled } from '../../../memdir/paths.js'
 import { getCwd } from '../../../utils/cwd.js'
 import { detectStack } from '../../../utils/stackDetector.js'
@@ -39,6 +40,19 @@ type SpecialistSpec = {
    *  right after the role block. Returns null to inject nothing. Kept as a
    *  closure so the dynamic bit stays code-injected after the markdown move. */
   getDynamicFragment?: () => string | null
+  /** Least-privilege tool allowlist. Defaults to ['*'] (all tools). */
+  tools?: string[]
+  /** Tools denied to this specialist (denylist). Preferred over a narrow
+   *  allowlist so capability tools (Skill, ToolSearch, web, MCP, future tools)
+   *  stay available — we only deny the dangerous ones (Edit/Bash) where the
+   *  role shouldn't mutate code or run commands. */
+  disallowedTools?: string[]
+  /** Bundled/user skill names to preload for this specialist. */
+  skills?: string[]
+  /** MCP servers this specialist may use (by name or inline). */
+  mcpServers?: AgentMcpServerSpec[]
+  /** Session-scoped hooks registered when this specialist starts. */
+  hooks?: HooksSettings
 }
 
 const SHARED_AUTHORITY = [
@@ -122,7 +136,8 @@ function contextIO(agentType: string): string {
   ]
   if (agentType === 'PA-AGENT') {
     lines.push(
-      '- You also own the shared brief: write ' + getSharedPath() + ' as JSON {"goal":"…","stack":"…","flow":"…","constraints":["…"]} (one short line each) — this is injected into EVERY specialist, so keep it under ~500 tokens.',
+      '- You also own the shared brief: write ' + getSharedPath() + ' as JSON {"goal":"…","stack":"…","flow":"…","constraints":["…"],"needs":["be","db","sec","fe","mob","do"]} (one short line each) — this is injected into EVERY specialist, so keep it under ~500 tokens.',
+      '- Set "needs" to ONLY the specialist domains this task actually requires (e.g. a frontend tweak → ["fe"]); the orchestrator spawns exactly that set (PA always included). Omit or leave empty only when the task genuinely spans all domains.',
     )
   }
   lines.push('')
@@ -133,7 +148,17 @@ function defineSpecialist(s: SpecialistSpec): BuiltInAgentDefinition {
   return {
     agentType: s.agentType,
     whenToUse: s.whenToUse,
-    tools: ['*'],
+    // Least-privilege: each specialist declares its own allowlist; fall back to
+    // all tools only when a spec doesn't specify one.
+    tools: s.tools ?? ['*'],
+    ...(s.disallowedTools && s.disallowedTools.length > 0
+      ? { disallowedTools: s.disallowedTools }
+      : {}),
+    ...(s.skills && s.skills.length > 0 ? { skills: s.skills } : {}),
+    ...(s.mcpServers && s.mcpServers.length > 0
+      ? { mcpServers: s.mcpServers }
+      : {}),
+    ...(s.hooks ? { hooks: s.hooks } : {}),
     color: s.color,
     source: 'built-in',
     baseDir: 'built-in',
@@ -157,6 +182,9 @@ function defineSpecialist(s: SpecialistSpec): BuiltInAgentDefinition {
 export const PA_AGENT = defineSpecialist({
   agentType: 'PA-AGENT',
   color: 'purple',
+  // Planner: full toolset (incl. Skill / ToolSearch / web) EXCEPT mutating code
+  // or running commands — it decides, specialists implement.
+  disallowedTools: ['Edit', 'Bash'],
   title: 'Planner & Advisor (the swarm queen)',
   whenToUse:
     'Use FIRST on any new project, feature, or architecture decision. Produces the tech-stack decision, phases, task breakdown, and risks that all other specialists build on. Its stack/architecture decisions are authoritative.',
@@ -176,6 +204,7 @@ export const PA_AGENT = defineSpecialist({
     'Tech Stack Decision (one choice per layer, with a one-line reason)',
     'Project Phases (MVP / V1 / V2)',
     'Task Breakdown (by domain -> which specialist)',
+    'Needed Specialists (the minimal set this task requires — also written to shared.json "needs")',
     'Risk Flags',
     'For Other Agents (what BE/FE/DB/SEC/DO/MOB each must know)',
   ],
@@ -281,6 +310,10 @@ export const DB_AGENT = defineSpecialist({
 export const SEC_AGENT = defineSpecialist({
   agentType: 'SEC-AGENT',
   color: 'red',
+  // Audit-only: full toolset (incl. Skill so it can run security-review skills,
+  // ToolSearch, web, and Write for its own review/section & memory) EXCEPT
+  // Edit/Bash — it reviews and specs; BE-AGENT applies the fix.
+  disallowedTools: ['Edit', 'Bash'],
   title: 'Security Specialist (authoritative on security)',
   whenToUse:
     'Use for auth design, authorization (RBAC), input validation, sensitive-data handling, and threat review. Its security decisions are FINAL and override other specialists.',
@@ -312,6 +345,10 @@ export const SEC_AGENT = defineSpecialist({
 export const DO_AGENT = defineSpecialist({
   agentType: 'DO-AGENT',
   color: 'orange',
+  // Demonstrates per-specialist skill preloading (bundled 'verify' skill —
+  // useful for DevOps verification). mcpServers/hooks are wired the same way
+  // via the SpecialistSpec passthrough when a specialist needs them.
+  skills: ['verify'],
   title: 'DevOps Specialist',
   whenToUse:
     'Use LAST, once services are defined: containerization, CI/CD, environment config, deployment target. Needs the full picture from the other specialists.',

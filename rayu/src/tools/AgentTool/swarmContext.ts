@@ -25,6 +25,9 @@ export type SwarmShared = {
   stack: string
   flow: string
   constraints: string[]
+  /** Specialists PA declared this task needs (domain tokens, e.g. ['be','db']).
+   *  Drives which specialists the orchestrator spawns. Empty/absent → all. */
+  needs?: string[]
 }
 
 /**
@@ -83,6 +86,32 @@ function normalizeDomain(domain: string): string {
   return domain.trim().toUpperCase().replace(/-AGENT$/, '')
 }
 
+/** Normalize a domain token/agent type to a full agent type: 'be' -> 'BE-AGENT'. */
+export function normalizeAgentType(token: string): string {
+  return `${normalizeDomain(token)}-AGENT`
+}
+
+/**
+ * Pick which specialists to spawn from PA's declared `needs`. Pure.
+ * - no/empty needs → the full list (back-compat: spawn everything);
+ * - otherwise → the declared subset, intersected with the known agents, with
+ *   PA-AGENT always included (it's the planner and writes the shared brief).
+ */
+export function selectAgentsByNeeds(
+  needs: string[] | undefined,
+  allAgentTypes: string[],
+): string[] {
+  if (!needs || needs.length === 0) return allAgentTypes
+  const wanted = new Set(needs.map(normalizeAgentType))
+  wanted.add('PA-AGENT')
+  return allAgentTypes.filter(t => wanted.has(t))
+}
+
+/** Declared needs from the shared brief (domain tokens), or undefined. */
+export function readNeeds(): string[] | undefined {
+  return readShared()?.needs
+}
+
 /** Read and parse the shared brief; undefined if missing or invalid. */
 export function readShared(): SwarmShared | undefined {
   const p = getSharedPath()
@@ -97,6 +126,13 @@ export function readShared(): SwarmShared | undefined {
       constraints: Array.isArray(parsed.constraints)
         ? parsed.constraints.filter((c): c is string => typeof c === 'string')
         : [],
+      ...(Array.isArray(parsed.needs)
+        ? {
+            needs: parsed.needs.filter(
+              (n): n is string => typeof n === 'string',
+            ),
+          }
+        : {}),
     }
   } catch {
     return undefined
@@ -123,6 +159,8 @@ function formatShared(shared: SwarmShared): string {
   if (shared.flow) lines.push(`- Flow: ${shared.flow}`)
   if (shared.constraints.length > 0)
     lines.push(`- Constraints: ${shared.constraints.join('; ')}`)
+  if (shared.needs && shared.needs.length > 0)
+    lines.push(`- Needed specialists: ${shared.needs.join(', ')}`)
   return lines.join('\n')
 }
 
