@@ -41,3 +41,30 @@ The `/reset-limits` command (with its `resetLimits` / `resetLimitsNonInteractive
 exports) — reset **Anthropic subscription rate-limit** state. Rayu has no
 Anthropic subscription limits, so this is irrelevant. Was a disabled stub
 referenced only by `src/commands.ts`; de-registered and moved here.
+
+## commands/ — retired stub commands (Phase 2)
+
+These were Claude-Code / Anthropic-internal commands that the rayu rebrand had
+already reduced to disabled stubs (`{ isEnabled: () => false, isHidden: true,
+name: 'stub' }`). They were non-functional (registered under name `stub`, hidden
+and disabled), imported only by `src/commands.ts`, and not asserted by any test.
+De-registered from `src/commands.ts` and moved here.
+
+Dev / debug internals:
+- `env` — print environment info
+- `ctx_viz` — context visualization
+- `debug-tool-call` — tool-call debugging
+- `break-cache` — force prompt-cache busting
+- `mock-limits` — fake rate-limits for testing
+- `ant-trace` — Anthropic-internal tracing
+- `perf-issue` — file an internal performance issue
+- `teleport` — Anthropic-internal
+- `bughunter` — Anthropic-internal bug hunting
+
+Claude-Code / Anthropic workflow:
+- `autofix-pr` — auto-fix a GitHub PR
+- `issue` — file a GitHub issue (to Anthropic's repo)
+- `backfill-sessions` — migrate old Claude session files
+- `summary` — conversation summary (superseded in rayu by `/compact` + `/export`)
+- `share` — share a conversation (needed Anthropic's hosted backend; rayu has none)
+- `onboarding` — Claude Code onboarding flow
