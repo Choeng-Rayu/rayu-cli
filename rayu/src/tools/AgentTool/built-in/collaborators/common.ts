@@ -60,7 +60,7 @@ function buildCollaboratorPrompt(s: CollaboratorSpec): string {
     '',
     '## Context I/O (shared swarm context)',
     '- A SWARM CONTEXT block above (if present) holds the shared brief and the sections of collaborators you depend on. Trust it and build on it — do NOT re-derive what is already decided.',
-    '- When you finish, persist YOUR section to ' + getDomainPath(s.agentType) + ' (overwrite; concise + contract-focused) so other collaborators and your own resumed turns can read it.',
+    '- When you finish, persist YOUR section to ' + getDomainPath(s.agentType) + ' (overwrite; concise + contract-focused) so other collaborators and your own resumed turns can read it. Use that EXACT path — the swarm lives under `.rayu/swarm/`, never `.claude/`.',
     '',
     'Be concise and structured — the orchestrator integrates your output. Report back as a normal message (do not create report files).',
   ]

@@ -238,6 +238,8 @@ export function buildMemoryLines(
     '',
     `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`,
     '',
+    `IMPORTANT: use that EXACT directory for all memory. Do NOT write memory anywhere else — in particular, never create or use a \`.claude/\` directory; this tool uses \`.rayu/\`, not \`.claude/\`.`,
+    '',
     "You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.",
     '',
     'If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.',

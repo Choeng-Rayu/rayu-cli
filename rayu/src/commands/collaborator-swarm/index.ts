@@ -43,7 +43,7 @@ ${taskLine}
    Agent(subagent_type:"backend",  run_in_background:true, name:"backend",  prompt:"<task + contracts>")
    Agent(subagent_type:"security", run_in_background:true, name:"security", prompt:"<task + contracts>")
    \`\`\`
-3. **Coordinate via SharedContext, not by re-typing.** Each collaborator reads the shared brief + its dependency sections and writes its own \`.rayu/swarm/<domain>.md\`. Give each collaborator only its task + any brand-new decision not yet in the artifact.
+3. **Coordinate via SharedContext, not by re-typing.** Each collaborator reads the shared brief + its dependency sections and writes its own \`.rayu/swarm/<domain>.md\`. Give each collaborator only its task + any brand-new decision not yet in the artifact. The swarm state lives under \`.rayu/swarm/\` — always use that exact path, NEVER a \`.claude/\` directory.
 4. **Resume, don't respawn.** For a follow-up in a domain that already ran, SendMessage to that collaborator's name with the new task; spawn fresh only for an unrelated new domain.
 5. **Audit & fix.** After a build wave, run the \`review\` subagent (→ Fix List), then \`fix\` (or the owning collaborator) to apply it; re-review if needed.
 6. **Ship.** When fixes are confirmed, the \`deploy\` collaborator runs the production build and deploys.
