@@ -243,6 +243,25 @@ export function getSubagentSelection(
 }
 
 /**
+ * The per-agent subagent override ONLY (ignores the global default). Used by
+ * model resolution to decide whether an explicit /model_subagent or
+ * /collaborator_model selection should override an agent's hardcoded model
+ * (including 'inherit'), while leaving fork/inherit agents untouched when the
+ * user hasn't configured that specific agent type.
+ */
+export function getPerAgentSubagentSelection(
+  agentType?: string,
+): { providerId: string; model: string } | undefined {
+  if (!agentType) return undefined
+  const cfg = loadRayuConfig()
+  const perAgent = cfg.subagentByAgent?.[agentType]
+  if (perAgent?.providerId && perAgent?.model) {
+    return { providerId: perAgent.providerId, model: perAgent.model }
+  }
+  return undefined
+}
+
+/**
  * Persist a subagent model selection (set via /model_subagent). With no
  * agentType, sets the GLOBAL default for all subagents. With an agentType
  * (e.g. 'BE-AGENT'), sets a per-specialist override. Does NOT change the active

@@ -17,7 +17,7 @@ import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
-import swarm from './commands/swarm.js'
+import collaboratorSwarm from './commands/collaborator-swarm/index.js'
 import keybindings from './commands/keybindings/index.js'
 import keep from './commands/keep/index.js'
 import mcp from './commands/mcp/index.js'
@@ -138,6 +138,7 @@ import connect from './commands/connect/index.js'
 import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
 import modelSubagent from './commands/model-subagent/index.js'
+import collaboratorModel from './commands/collaborator-model/index.js'
 import modelImageGeneration from './commands/model-image-generation/index.js'
 import modelVideoGeneration from './commands/model-video-generation/index.js'
 import tag from './commands/tag/index.js'
@@ -184,7 +185,6 @@ export const INTERNAL_ONLY_COMMANDS = [
   commit,
   commitPushPr,
   initVerifiers,
-  swarm,
   ...(forceSnip ? [forceSnip] : []),
   bridgeKick,
   version,
@@ -225,6 +225,7 @@ const COMMANDS = memoize((): Command[] => [
   disconnectTelegram,
   model,
   modelSubagent,
+  collaboratorModel,
   modelImageGeneration,
   modelVideoGeneration,
   connect,
@@ -246,6 +247,7 @@ const COMMANDS = memoize((): Command[] => [
   theme,
   feedback,
   review,
+  collaboratorSwarm,
   ultraplanLocal,
   ultrareviewLocal,
   generateImage,

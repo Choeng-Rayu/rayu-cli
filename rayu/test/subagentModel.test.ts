@@ -117,3 +117,38 @@ test('getAgentModel: explicit tool override wins over subagent selection', async
   const m = getAgentModel('haiku', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0')
   expect(m).toBe('qwen.qwen3-32b-v1:0')
 })
+
+test('getAgentModel: a PER-AGENT selection overrides an agent hardcoded to inherit', async () => {
+  await setActiveOpenAIProvider()
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  // e.g. /collaborator_model frontend → pin just the frontend collaborator
+  cfg.setSubagentSelection('nvidia', 'nvidia/llama-3.1-nemotron-nano-8b-v1', 'frontend')
+  const { getAgentModel } = await import('../src/utils/model/agent.ts')
+  // agent defaults to 'inherit', but the per-agent override must win
+  const m = getAgentModel('inherit', 'meta/llama-3.3-70b-instruct', undefined, 'default', 'frontend')
+  expect(m).toBe('nvidia/llama-3.1-nemotron-nano-8b-v1')
+})
+
+test('getAgentModel: a GLOBAL selection does NOT override an inherit agent (fork-safe)', async () => {
+  await setActiveOpenAIProvider()
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg.setSubagentSelection('bedrock', 'openai.gpt-oss-120b-1:0') // global only
+  const { getAgentModel } = await import('../src/utils/model/agent.ts')
+  // 'inherit' with no per-agent override → keep parent model, not the global pick
+  const m = getAgentModel('inherit', 'meta/llama-3.3-70b-instruct', undefined, 'default', 'fork')
+  expect(m).toBe('meta/llama-3.3-70b-instruct')
+})
+
+test('getPerAgentSubagentSelection: only returns per-agent overrides', async () => {
+  await setActiveOpenAIProvider()
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  expect(cfg.getPerAgentSubagentSelection('frontend')).toBeUndefined()
+  cfg.setSubagentSelection('nvidia', 'some-model', 'frontend')
+  expect(cfg.getPerAgentSubagentSelection('frontend')).toEqual({
+    providerId: 'nvidia',
+    model: 'some-model',
+  })
+  // a global selection is NOT a per-agent override
+  cfg.setSubagentSelection('bedrock', 'global-model')
+  expect(cfg.getPerAgentSubagentSelection('backend')).toBeUndefined()
+})

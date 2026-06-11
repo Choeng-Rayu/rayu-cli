@@ -2,11 +2,11 @@ import { feature } from 'bun:bundle'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { CLAUDE_CODE_GUIDE_AGENT } from './built-in/claudeCodeGuideAgent.js'
+import { RAYU_CODE_GUIDE_AGENT } from './built-in/rayuCodeGuideAgent.js'
 import { EXPLORE_AGENT } from './built-in/exploreAgent.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
-import { SPECIALIST_AGENTS } from './built-in/specialists.js'
-import { PLAN_AGENT } from './built-in/planAgent.js'
+import { SUBAGENTS } from './built-in/subagents/index.js'
+import { COLLABORATORS } from './built-in/collaborators/index.js'
 import { STATUSLINE_SETUP_AGENT } from './built-in/statuslineSetup.js'
 import { VERIFICATION_AGENT } from './built-in/verificationAgent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
@@ -49,7 +49,7 @@ export function getBuiltInAgents(): AgentDefinition[] {
   ]
 
   if (areExplorePlanAgentsEnabled()) {
-    agents.push(EXPLORE_AGENT, PLAN_AGENT)
+    agents.push(EXPLORE_AGENT)
   }
 
   // Include Code Guide agent for non-SDK entrypoints
@@ -59,17 +59,22 @@ export function getBuiltInAgents(): AgentDefinition[] {
     process.env.CLAUDE_CODE_ENTRYPOINT !== 'sdk-cli'
 
   if (isNonSdkEntrypoint) {
-    agents.push(CLAUDE_CODE_GUIDE_AGENT)
+    agents.push(RAYU_CODE_GUIDE_AGENT)
   }
 
-  // Specialist swarm (PA/BE/FE/DB/SEC/DO/MOB). Available for the MAIN agent
-  // to dispatch in parallel; the user does not pick specialists, only their
-  // model via /model_subagent. Opt out with RAYU_DISABLE_SPECIALIST_AGENTS=1.
+  // Tier-3 subagents (PA / design / global-setup / asset-generation / review /
+  // fix / linter): ephemeral one-shot specialists the orchestrator AND
+  // collaborators dispatch. Available for non-SDK entrypoints; per-agent model
+  // via /model_subagent. Opt out with RAYU_DISABLE_SPECIALIST_AGENTS=1.
   if (
     isNonSdkEntrypoint &&
     !isEnvTruthy(process.env.RAYU_DISABLE_SPECIALIST_AGENTS)
   ) {
-    agents.push(...SPECIALIST_AGENTS)
+    agents.push(...SUBAGENTS)
+    // Tier-2 Collaborators (frontend/backend/mobile/security/deploy): semi-
+    // persistent domain implementers the orchestrator delegates to (e.g. via
+    // /collaborator_swarm). Per-collaborator model via /collaborator_model.
+    agents.push(...COLLABORATORS)
   }
 
   if (

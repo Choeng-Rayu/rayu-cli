@@ -43,6 +43,14 @@ export const DOMAIN_DEPENDENCIES: Record<string, string[]> = {
   'FE-AGENT': ['shared', 'PA', 'BE', 'SEC'],
   'MOB-AGENT': ['shared', 'PA', 'BE', 'SEC', 'FE'],
   'DO-AGENT': ['shared', 'PA', 'BE', 'DB'],
+  // Tier-2 Collaborators (keyed by their agentType → <DOMAIN>.md). They read the
+  // shared brief plus the upstream collaborator sections they depend on, and
+  // write their own <DOMAIN>.md section so the swarm stays aligned.
+  backend: ['shared', 'SECURITY'],
+  frontend: ['shared', 'BACKEND', 'SECURITY'],
+  mobile: ['shared', 'BACKEND', 'SECURITY', 'FRONTEND'],
+  security: ['shared', 'BACKEND'],
+  deploy: ['shared', 'BACKEND', 'FRONTEND'],
 }
 
 // Token budgeting. We estimate ~4 chars/token (good enough for a guardrail).

@@ -106,10 +106,28 @@ export function getAgentModel(
   // so fork/inherit agents keep the parent's exact model.
   const usesBuiltinDefault =
     agentModel === undefined || agentModel.toLowerCase() === 'haiku'
+  // A PER-AGENT /model_subagent or /collaborator_model override wins over the
+  // agent's hardcoded default model — including 'inherit'. This lets
+  // collaborators default to 'inherit' (from the orchestrator) yet stay
+  // user-configurable per agent. A purely GLOBAL selection still only overrides
+  // the builtin defaults (undefined / 'haiku'), so fork/inherit agents without
+  // an explicit per-agent override keep the parent's exact model.
+  let hasPerAgentSelection = false
+  if (agentType) {
+    try {
+      /* eslint-disable @typescript-eslint/no-require-imports */
+      const { getPerAgentSubagentSelection } =
+        require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+      /* eslint-enable @typescript-eslint/no-require-imports */
+      hasPerAgentSelection = !!getPerAgentSubagentSelection(agentType)
+    } catch {
+      hasPerAgentSelection = false
+    }
+  }
   if (
     !process.env.CLAUDE_CODE_SUBAGENT_MODEL &&
     !toolSpecifiedModel &&
-    usesBuiltinDefault &&
+    (usesBuiltinDefault || hasPerAgentSelection) &&
     isRayuNonAnthropicActive()
   ) {
     const sub = resolveSubagentExecution(agentType)

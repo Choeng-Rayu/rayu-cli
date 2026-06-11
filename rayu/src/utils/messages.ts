@@ -104,7 +104,7 @@ import type {
   SDKAssistantMessageError,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { EXPLORE_AGENT } from 'src/tools/AgentTool/built-in/exploreAgent.js'
-import { PLAN_AGENT } from 'src/tools/AgentTool/built-in/planAgent.js'
+import { PA_SUBAGENT } from 'src/tools/AgentTool/built-in/subagents/pa.js'
 import { areExplorePlanAgentsEnabled } from 'src/tools/AgentTool/builtInAgents.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
@@ -3272,7 +3272,7 @@ Goal: Gain a comprehensive understanding of the user's request by reading throug
 ### Phase 2: Design
 Goal: Design an implementation approach.
 
-Launch ${PLAN_AGENT.agentType} agent(s) to design the implementation based on the user's intent and your exploration results from Phase 1.
+Launch ${PA_SUBAGENT.agentType} agent(s) to design the implementation based on the user's intent and your exploration results from Phase 1.
 
 You can launch up to ${agentCount} agent(s) in parallel.
 

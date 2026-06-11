@@ -6,7 +6,7 @@ import {
   getSubagentSelection,
   setSubagentSelection,
 } from '../../utils/rayuConfig.js'
-import { SPECIALIST_AGENT_TYPES } from '../../tools/AgentTool/built-in/specialists.js'
+import { SUBAGENT_TYPES } from '../../tools/AgentTool/built-in/subagents/index.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 
 type OnDone = (
@@ -17,18 +17,14 @@ type OnDone = (
 const COST_TIP =
   'Tip: subagents run frequently — a large model here costs more and is usually overkill for small subtasks. Prefer an instant/small model (e.g. Claude Opus 4.8 as a subagent is overkill).'
 
-// Resolve a user-typed agent token to a canonical specialist agent type
-// (case-insensitive; allows "be" -> "BE-AGENT"). Returns undefined if it is not
-// a recognized specialist (then the token is treated as a sub-command/global).
+// Resolve a user-typed agent token to a canonical subagent type
+// (case-insensitive; e.g. "pa" -> "PA", "review" -> "review"). Returns
+// undefined if it is not a recognized subagent (then the token is treated as a
+// sub-command/global).
 function resolveAgentType(token: string): string | undefined {
-  const t = token.trim().toUpperCase()
+  const t = token.trim().toLowerCase()
   if (!t) return undefined
-  const direct = SPECIALIST_AGENT_TYPES.find(a => a.toUpperCase() === t)
-  if (direct) return direct
-  const suffixed = SPECIALIST_AGENT_TYPES.find(
-    a => a.toUpperCase() === `${t}-AGENT`,
-  )
-  return suffixed
+  return SUBAGENT_TYPES.find(a => a.toLowerCase() === t)
 }
 
 const SUBCOMMANDS = new Set([
@@ -99,7 +95,7 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
   // Unknown non-agent token → guidance.
   if (sub && !SUBCOMMANDS.has(sub) && !agentType) {
     onDone(
-      `Unknown argument "${sub}". Usage: /model_subagent [AGENT] [show|default]. Specialists: ${SPECIALIST_AGENT_TYPES.join(', ')}.`,
+      `Unknown argument "${sub}". Usage: /model_subagent [AGENT] [show|default]. Subagents: ${SUBAGENT_TYPES.join(', ')}.`,
       { display: 'system' },
     )
     return
