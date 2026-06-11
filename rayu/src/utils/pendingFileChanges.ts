@@ -163,12 +163,16 @@ export function keepPendingFileChanges(
     ),
   }))
 
+  const fileCount = uniqueDisplayPaths(match.changes).length
+  const editCount = match.changes.length
   if (rawFileArg.trim()) {
     const uniquePaths = uniqueDisplayPaths(match.changes)
-    return `Kept ${match.changes.length} pending ${pluralize('change', match.changes.length)} for ${uniquePaths.join(', ')}.`
+    const edits =
+      editCount > fileCount ? ` (${editCount} ${pluralize('edit', editCount)})` : ''
+    return `Kept changes to ${uniquePaths.join(', ')}${edits}.`
   }
 
-  return `Kept ${match.changes.length} pending file ${pluralize('change', match.changes.length)}.`
+  return `Kept changes to ${describeFilesAndEdits(fileCount, editCount)}.`
 }
 
 export async function undoLatestPendingFileChange(
@@ -192,9 +196,13 @@ export async function undoLatestPendingFileChange(
 
     return undoPendingChanges(context, match.changes, {
       emptyMessage: `No pending file changes match ${fileArg}.`,
-      successMessage: count => {
+      successMessage: (editCount, fileCount) => {
         const uniquePaths = uniqueDisplayPaths(match.changes)
-        return `Undid ${count} pending ${pluralize('change', count)} for ${uniquePaths.join(', ')}.`
+        const edits =
+          editCount > fileCount
+            ? ` (${editCount} ${pluralize('edit', editCount)})`
+            : ''
+        return `Undid changes to ${uniquePaths.join(', ')}${edits}.`
       },
     })
   }
@@ -226,8 +234,8 @@ export async function undoPendingFileChangesByIds(
 
   return undoPendingChanges(context, changes, {
     emptyMessage: 'No pending file changes from this review to undo.',
-    successMessage: count =>
-      `Undid ${count} pending ${pluralize('change', count)} from this review.`,
+    successMessage: (editCount, fileCount) =>
+      `Undid changes to ${describeFilesAndEdits(fileCount, editCount)} from this review.`,
   })
 }
 
@@ -245,8 +253,8 @@ export async function undoAllPendingFileChanges(
 
   return undoPendingChanges(context, changes, {
     emptyMessage: 'No pending file changes to undo.',
-    successMessage: count =>
-      `Undid all ${count} pending ${pluralize('change', count)}.`,
+    successMessage: (editCount, fileCount) =>
+      `Undid all changes to ${describeFilesAndEdits(fileCount, editCount)}.`,
   })
 }
 
@@ -256,55 +264,88 @@ export function buildFileChangeReviewSummary(
   const reviewChanges = changes.filter(change => change.status === 'pending')
   if (reviewChanges.length === 0) return null
 
-  const files = new Map<string, FileChangeReviewFile>()
+  // Group still-pending changes per file, preserving first-seen (chronological)
+  // order. We keep the FIRST change's `before` (the baseline — i.e. the
+  // post-keep / post-undo / session-start state) and the LAST change's `after`
+  // (the current content). This lets us report ONE net diff per file, like
+  // `git diff` of uncommitted work, instead of summing every edit's deltas
+  // across messages (which inflated the counts — e.g. a 300-line file showing
+  // thousands of changed lines after many edits).
+  type FileGroup = {
+    filePath: string
+    displayPath: string
+    changeIds: string[]
+    baselineBefore: PendingFileSnapshot
+    latestAfter: string
+    createdAt: number
+    status: PendingFileChangeStatus | 'mixed'
+  }
+  const groups = new Map<string, FileGroup>()
 
   for (const change of reviewChanges) {
-    const hunks = getReviewHunks(change)
-    const { additions, removals } = countPatchLines(hunks)
-    const existing = files.get(change.filePath)
-    const firstLine = change.after.content.split(/\r?\n/, 1)[0] ?? null
-
+    const existing = groups.get(change.filePath)
     if (!existing) {
-      files.set(change.filePath, {
+      groups.set(change.filePath, {
         filePath: change.filePath,
         displayPath: change.displayPath,
         changeIds: [change.id],
-        additions,
-        removals,
-        hunks,
-        fileContent: change.after.content,
-        firstLine,
-        status: change.status,
+        baselineBefore: change.before,
+        latestAfter: change.after.content,
         createdAt: change.createdAt,
-        isCreated: !change.before.exists,
+        status: change.status,
       })
       continue
     }
-
     existing.changeIds.push(change.id)
-    existing.additions += additions
-    existing.removals += removals
-    existing.hunks.push(...hunks)
-    existing.fileContent = change.after.content
-    existing.firstLine = firstLine
+    existing.latestAfter = change.after.content
     existing.createdAt = Math.max(existing.createdAt, change.createdAt)
     existing.status =
       existing.status === change.status ? existing.status : 'mixed'
   }
 
-  const fileSummaries = [...files.values()]
+  // Compute a single net diff per file (baseline → current). Drop net-zero
+  // files (edited then reverted to the baseline) so the card matches reality,
+  // exactly like `git diff` shows nothing for an unchanged file.
+  const files: FileChangeReviewFile[] = []
+  for (const group of groups.values()) {
+    const oldContent = group.baselineBefore.exists
+      ? normalizeContent(group.baselineBefore.content)
+      : ''
+    const newContent = group.latestAfter
+    const hunks = getPatchFromContents({
+      filePath: group.filePath,
+      oldContent,
+      newContent,
+      singleHunk: true,
+    })
+    const { additions, removals } = countPatchLines(hunks)
+    if (additions === 0 && removals === 0) continue
+
+    files.push({
+      filePath: group.filePath,
+      displayPath: group.displayPath,
+      changeIds: group.changeIds,
+      additions,
+      removals,
+      hunks,
+      fileContent: newContent,
+      firstLine: newContent.split(/\r?\n/, 1)[0] ?? null,
+      status: group.status,
+      createdAt: group.createdAt,
+      isCreated: !group.baselineBefore.exists,
+    })
+  }
+
+  if (files.length === 0) return null
+
   return {
-    changeIds: reviewChanges.map(change => change.id),
-    totalFiles: fileSummaries.length,
-    totalAdditions: fileSummaries.reduce(
-      (total, file) => total + file.additions,
-      0,
-    ),
-    totalRemovals: fileSummaries.reduce(
-      (total, file) => total + file.removals,
-      0,
-    ),
-    files: fileSummaries,
+    // Only the changeIds of files actually shown — so the card's Undo and
+    // /keep-by-id act on exactly what's displayed (net-zero files excluded).
+    changeIds: files.flatMap(file => file.changeIds),
+    totalFiles: files.length,
+    totalAdditions: files.reduce((total, file) => total + file.additions, 0),
+    totalRemovals: files.reduce((total, file) => total + file.removals, 0),
+    files,
     createdAt: Date.now(),
   }
 }
@@ -438,7 +479,7 @@ async function undoPendingChanges(
   changes: readonly PendingFileChange[],
   messages: {
     emptyMessage: string
-    successMessage(count: number): string
+    successMessage(editCount: number, fileCount: number): string
     alreadyAbsentMessage?(change: PendingFileChange): string
   },
 ): Promise<string> {
@@ -471,11 +512,17 @@ async function undoPendingChanges(
   if (pendingChanges.length === 1 && alreadyAbsentChange) {
     return (
       messages.alreadyAbsentMessage?.(alreadyAbsentChange) ??
-      messages.successMessage(pendingChanges.length)
+      messages.successMessage(
+        pendingChanges.length,
+        uniqueDisplayPaths(pendingChanges).length,
+      )
     )
   }
 
-  return messages.successMessage(pendingChanges.length)
+  return messages.successMessage(
+    pendingChanges.length,
+    uniqueDisplayPaths(pendingChanges).length,
+  )
 }
 
 function preflightUndo(
@@ -599,18 +646,6 @@ function normalizeContent(content: string): string {
   return content.replaceAll('\r\n', '\n')
 }
 
-function getReviewHunks(change: PendingFileChange): StructuredPatchHunk[] {
-  if (change.structuredPatch.length > 0) return change.structuredPatch
-  if (change.before.exists) return change.structuredPatch
-
-  return getPatchFromContents({
-    filePath: change.filePath,
-    oldContent: '',
-    newContent: change.after.content,
-    singleHunk: true,
-  })
-}
-
 function countPatchLines(hunks: readonly StructuredPatchHunk[]): {
   additions: number
   removals: number
@@ -687,6 +722,18 @@ function uniqueDisplayPaths(changes: readonly PendingFileChange[]): string[] {
 
 function pluralize(word: string, count: number): string {
   return count === 1 ? word : `${word}s`
+}
+
+/**
+ * Describe a set of changes in FILE terms (matching the review card's
+ * "Edited N files"), with the underlying edit-operation count in parentheses
+ * when it differs — e.g. "3 files (5 edits)" or just "1 file". Keeps /undo and
+ * /keep messages consistent with the card instead of reporting raw edit counts.
+ */
+function describeFilesAndEdits(fileCount: number, editCount: number): string {
+  const filePhrase = `${fileCount} ${pluralize('file', fileCount)}`
+  if (editCount === fileCount) return filePhrase
+  return `${filePhrase} (${editCount} ${pluralize('edit', editCount)})`
 }
 
 function unquote(value: string): string {

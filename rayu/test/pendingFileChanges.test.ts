@@ -23,6 +23,7 @@ import {
   keepPendingFileChanges,
   type PendingFileChange,
   recordPendingFileChange,
+  undoAllPendingFileChanges,
   undoLatestPendingFileChange,
   undoPendingFileChangesByIds,
 } from '../src/utils/pendingFileChanges.ts'
@@ -94,7 +95,7 @@ describe('pending file changes', () => {
       recordUpdate(context, secondPath, 'second-before\n', 'second-after\n')
 
       expect(keepPendingFileChanges(context, 'second.ts')).toBe(
-        'Kept 1 pending change for second.ts.',
+        'Kept changes to second.ts.',
       )
       const message = await undoLatestPendingFileChange(context)
 
@@ -111,7 +112,7 @@ describe('pending file changes', () => {
       recordUpdate(context, join(dir, 'two.ts'), 'two-before\n', 'two-after\n')
 
       expect(keepPendingFileChanges(context, '')).toBe(
-        'Kept 2 pending file changes.',
+        'Kept changes to 2 files.',
       )
       expect(
         context
@@ -128,7 +129,7 @@ describe('pending file changes', () => {
       recordUpdate(context, join(dir, 'two.ts'), 'two-before\n', 'two-after\n')
 
       expect(keepPendingFileChanges(context, 'one.ts')).toBe(
-        'Kept 1 pending change for one.ts.',
+        'Kept changes to one.ts.',
       )
       expect(
         context
@@ -186,7 +187,7 @@ describe('pending file changes', () => {
 
       const message = await undoLatestPendingFileChange(context, 'target.ts')
 
-      expect(message).toBe('Undid 2 pending changes for target.ts.')
+      expect(message).toBe('Undid changes to target.ts (2 edits).')
       expect(readFileSync(targetPath, 'utf8')).toBe('one\n')
       expect(readFileSync(otherPath, 'utf8')).toBe('other-after\n')
       expect(
@@ -258,6 +259,30 @@ describe('pending file changes', () => {
     })
   })
 
+  test('undo all reports file count with edit count (3 files, 5 edits)', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const a = join(dir, 'a.ts')
+      const b = join(dir, 'b.ts')
+      const c = join(dir, 'c.ts')
+      // 3 files, but 5 edit operations (a and b edited twice).
+      recordUpdate(context, a, 'a0\n', 'a1\n')
+      recordUpdate(context, b, 'b0\n', 'b1\n')
+      recordUpdate(context, c, 'c0\n', 'c1\n')
+      recordUpdate(context, a, 'a1\n', 'a2\n')
+      recordUpdate(context, b, 'b1\n', 'b2\n')
+
+      const message = await undoAllPendingFileChanges(context)
+
+      // Reports FILES (matching the review card's "Edited N files"), with the
+      // edit-operation count in parentheses — not the raw "5 pending changes".
+      expect(message).toBe('Undid all changes to 3 files (5 edits).')
+      expect(readFileSync(a, 'utf8')).toBe('a0\n')
+      expect(readFileSync(b, 'utf8')).toBe('b0\n')
+      expect(readFileSync(c, 'utf8')).toBe('c0\n')
+    })
+  })
+
   test('card batch undo by ids reverts pending review changes', async () => {
     await runWithCwdOverride(dir, async () => {
       const context = createContext()
@@ -270,7 +295,7 @@ describe('pending file changes', () => {
         .pendingFileChanges.map((change: { id: string }) => change.id)
 
       expect(await undoPendingFileChangesByIds(context, ids)).toBe(
-        'Undid 2 pending changes from this review.',
+        'Undid changes to 2 files from this review.',
       )
       expect(readFileSync(onePath, 'utf8')).toBe('one-before\n')
       expect(readFileSync(twoPath, 'utf8')).toBe('two-before\n')
@@ -306,6 +331,65 @@ describe('pending file changes', () => {
       expect(summary?.files[1]?.additions).toBe(1)
       expect(summary?.totalAdditions).toBe(3)
       expect(summary?.totalRemovals).toBe(1)
+    })
+  })
+
+  test('review summary reports the NET diff per file, not the sum of every edit', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const p = join(dir, 'net.ts')
+      // edit 1 adds a line; edit 2 rewrites that same line. The per-edit sum
+      // would be +2 -1, but the NET change (baseline -> current) is only +1.
+      recordUpdateWithPatch(context, p, 'L1\n', 'L1\nL2\n')
+      recordUpdateWithPatch(context, p, 'L1\nL2\n', 'L1\nL2_edited\n')
+
+      const summary = buildFileChangeReviewSummary(
+        context.getAppState().pendingFileChanges,
+      )
+
+      expect(summary?.totalFiles).toBe(1)
+      expect(summary?.files[0]?.changeIds).toHaveLength(2)
+      // NET, not the inflated per-edit sum (+2 -1):
+      expect(summary?.files[0]?.additions).toBe(1)
+      expect(summary?.files[0]?.removals).toBe(0)
+      expect(summary?.totalAdditions).toBe(1)
+      expect(summary?.totalRemovals).toBe(0)
+    })
+  })
+
+  test('after keeping changes, the summary shows only the post-keep net diff', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const p = join(dir, 'keep.ts')
+      recordUpdateWithPatch(context, p, 'base\n', 'base\nfirst\n')
+      keepPendingFileChanges(context, '') // /keep all -> baseline resets here
+      recordUpdateWithPatch(context, p, 'base\nfirst\n', 'base\nfirst\nsecond\n')
+
+      const summary = buildFileChangeReviewSummary(
+        context.getAppState().pendingFileChanges,
+      )
+
+      // Only the post-keep edit is pending; baseline is the kept state.
+      expect(summary?.totalFiles).toBe(1)
+      expect(summary?.files[0]?.changeIds).toHaveLength(1)
+      expect(summary?.files[0]?.additions).toBe(1)
+      expect(summary?.files[0]?.removals).toBe(0)
+    })
+  })
+
+  test('a file edited then reverted to its baseline is dropped (net-zero), like git', async () => {
+    await runWithCwdOverride(dir, async () => {
+      const context = createContext()
+      const p = join(dir, 'zero.ts')
+      recordUpdateWithPatch(context, p, 'same\n', 'changed\n')
+      recordUpdateWithPatch(context, p, 'changed\n', 'same\n')
+
+      const summary = buildFileChangeReviewSummary(
+        context.getAppState().pendingFileChanges,
+      )
+
+      // baseline 'same\n' -> current 'same\n' = no net change -> not shown.
+      expect(summary).toBeNull()
     })
   })
 
