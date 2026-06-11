@@ -1,6 +1,6 @@
 {
   "name": "@rayu-dev/rayu-cli",
-  "version": "1.2.20",
+  "version": "1.2.23",
   "description": "Rayu-CLI — a multi-provider AI coding CLI",
   "type": "module",
   "bin": {
@@ -12,6 +12,7 @@
     "scripts/preinstall.cjs",
     "scripts/postinstall.cjs"
   ],
+ 
   "scripts": {
     "preinstall": "node scripts/preinstall.cjs",
     "postinstall": "node scripts/postinstall.cjs",

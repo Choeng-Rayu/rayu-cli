@@ -136,6 +136,7 @@ export function FileChangeReviewCard({
           {pendingChangeIds.length > 0 ? (
             <Box marginTop={1}>
               <Text dimColor>Details: /review_detail, /keep, /undo  [file_name]</Text>
+              <span> </span>
               <Text dimColor>Warning! /undo all (it undo all file changes) </Text>
             </Box>
           ) : null}

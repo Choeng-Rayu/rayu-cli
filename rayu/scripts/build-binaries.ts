@@ -6,7 +6,7 @@
 //   bun run scripts/build-binaries.ts linux-x64  # one or more specific targets
 import { plugin } from 'bun'
 import { resolve } from 'path'
-import { MACRO_VALUES } from './macroValues.ts'
+import { MACRO_VALUES, ENABLED_FEATURES } from './macroValues.ts'
 
 const V = MACRO_VALUES.VERSION
 const ALL_TARGETS: Record<string, { bunTarget: string; outfile: string }> = {
@@ -77,6 +77,7 @@ for (const name of targets) {
     compile: { target: bunTarget, outfile },
     define,
     external: EXTERNAL,
+    features: [...ENABLED_FEATURES],
     plugins: [stubPlugin],
     loader: { '.md': 'text', '.txt': 'text' },
     sourcemap: 'none',

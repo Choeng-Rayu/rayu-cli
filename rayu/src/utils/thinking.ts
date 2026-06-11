@@ -5,7 +5,11 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { getAPIProvider } from './model/providers.js'
+import {
+  getAPIProvider,
+  isOpenAICompatibleActive,
+  isRayuNonAnthropicActive,
+} from './model/providers.js'
 import { getSettingsWithErrors } from './settings/settings.js'
 
 export type ThinkingConfig =
@@ -93,6 +97,13 @@ export function modelSupportsThinking(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
+  // Rayu: any non-Anthropic / OpenAI-compatible provider (NVIDIA, DeepSeek,
+  // Gemini, local servers, etc.) supports extended thinking — mirrors
+  // modelSupportsEffort() in effort.ts so `ultrathink` works on any provider's
+  // reasoning model, not just Claude. (Explicit 3P override above still wins.)
+  if (isOpenAICompatibleActive() || isRayuNonAnthropicActive()) {
+    return true
+  }
   if (process.env.USER_TYPE === 'ant') {
     if (resolveAntModel(model.toLowerCase())) {
       return true
@@ -115,6 +126,12 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'adaptive_thinking')
   if (supported3P !== undefined) {
     return supported3P
+  }
+  // Rayu: non-Anthropic / OpenAI-compatible providers support adaptive thinking
+  // (mirrors modelSupportsThinking / modelSupportsEffort). Explicit 3P override
+  // above still takes precedence.
+  if (isOpenAICompatibleActive() || isRayuNonAnthropicActive()) {
+    return true
   }
   const canonical = getCanonicalName(model)
   // Supported by a subset of Claude 4 models
@@ -145,8 +162,14 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
 }
 
 export function shouldEnableThinkingByDefault(): boolean {
-  if (process.env.MAX_THINKING_TOKENS) {
-    return parseInt(process.env.MAX_THINKING_TOKENS, 10) > 0
+  const rawMaxThinkingTokens = process.env.MAX_THINKING_TOKENS
+  if (rawMaxThinkingTokens) {
+    const parsed = parseInt(rawMaxThinkingTokens, 10)
+    // A malformed (non-numeric) value is treated as unset — fall through to the
+    // settings default rather than silently forcing thinking off.
+    if (!Number.isNaN(parsed)) {
+      return parsed > 0
+    }
   }
 
   const { settings } = getSettingsWithErrors()

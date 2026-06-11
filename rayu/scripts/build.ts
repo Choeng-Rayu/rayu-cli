@@ -2,7 +2,7 @@
 // --define, aliasing unpublished stubs, and externalizing optional native deps.
 import { plugin } from 'bun'
 import { resolve } from 'path'
-import { MACRO_VALUES } from './macroValues.ts'
+import { MACRO_VALUES, ENABLED_FEATURES } from './macroValues.ts'
 
 const define: Record<string, string> = {
   'process.env.USER_TYPE': JSON.stringify(process.env.USER_TYPE ?? 'external'),
@@ -56,6 +56,7 @@ const result = await Bun.build({
   format: 'esm',
   define,
   external: EXTERNAL,
+  features: [...ENABLED_FEATURES],
   plugins: [stubPlugin],
   banner: '#!/usr/bin/env node',
   sourcemap: 'none',

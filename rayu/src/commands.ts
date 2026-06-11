@@ -34,7 +34,9 @@ import pr_comments from './commands/pr_comments/index.js'
 import rename from './commands/rename/index.js'
 import reviewDetial from './commands/review-detial/index.js'
 import resume from './commands/resume/index.js'
-import review, { ultrareview } from './commands/review.js'
+import review from './commands/review.js'
+import ultraplanLocal from './commands/ultraplan-local/index.js'
+import ultrareviewLocal from './commands/ultrareview-local/index.js'
 import generateImage from './commands/generate-image.js'
 import imageEditor from './commands/image-editor.js'
 import generateVideo from './commands/image-video.js'
@@ -280,7 +282,8 @@ const COMMANDS = memoize((): Command[] => [
   theme,
   feedback,
   review,
-  ultrareview,
+  ultraplanLocal,
+  ultrareviewLocal,
   generateImage,
   imageEditor,
   generateVideo,

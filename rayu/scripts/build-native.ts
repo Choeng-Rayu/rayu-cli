@@ -7,7 +7,7 @@
 import { createHash } from 'crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
-import { MACRO_VALUES } from './macroValues.ts'
+import { MACRO_VALUES, ENABLED_FEATURES } from './macroValues.ts'
 
 const OUT_DIR = 'dist-native'
 
@@ -93,6 +93,7 @@ for (const [platform, target] of Object.entries(targets)) {
     compile: { target: target as `bun-${string}`, outfile },
     define,
     external: EXTERNAL,
+    features: [...ENABLED_FEATURES],
     plugins: [stubPlugin],
     loader: { '.md': 'text', '.txt': 'text' },
     sourcemap: 'none',
