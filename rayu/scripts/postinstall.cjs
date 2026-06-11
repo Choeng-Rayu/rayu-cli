@@ -23,9 +23,9 @@ const message = [
   '  Docs & issues:  https://github.com/Choeng-Rayu/rayu-cli',
   '',
   'Whats new?:',
-  '    - Improved conflict resolution in swarm mode',
-  '    - fixed /ide integration',
-  '    - enjoy the new features and improvements!',
+  '    - We Have restructure the rayu subagents, and added a new one for asset generation!',
+  '    - Add new agent callaborator agent that can call other agents as tools, and manage the conversation between them.',
+  '    - Try it by /collaborator_swarm and also /collaborator_model in the agent playground!',
   '',
 ].join('\n') + '\n';
 

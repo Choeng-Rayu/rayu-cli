@@ -16,7 +16,7 @@
     "skipLibCheck": true,
     "strict": true,
     "baseUrl": ".",
-    "types": ["node", "bun"],
+    "types": ["node", "bun", "bun-types"],
     "paths": {
       "src/*": ["./src/*"],
       "@ant/*": ["./stubs/ant/*"],

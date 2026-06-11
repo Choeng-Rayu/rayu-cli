@@ -29,6 +29,10 @@ import type { outputSchema, Progress, RemoteLaunchedOutput } from './AgentTool.j
 import { inputSchema } from './AgentTool.js';
 import { getAgentColor } from './agentColorManager.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
+import { getAgentModel } from '../../utils/model/agent.js';
+import { decodeModelProvider, getActiveProvider } from '../../utils/rayuConfig.js';
+import { getBuiltInAgents } from './builtInAgents.js';
+import { getAgentKind, getCollaboratorDisplayName, getCollaboratorRole } from './built-in/agentDisplayMeta.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 
 /**
@@ -419,6 +423,58 @@ export function renderToolUseMessage({
   }
   return description;
 }
+/**
+ * Kind/role label for an agent tool-use line: collaborators show their role
+ * (e.g. "Frontend Specialist · collaborator"), subagents show "subagent",
+ * everything else is undefined. Shared by the single and grouped renderers.
+ */
+export function getAgentLineKindLabel(subagentType?: string): string | undefined {
+  const kind = getAgentKind(subagentType);
+  if (kind === 'collaborator') {
+    const role = getCollaboratorRole(subagentType);
+    return role ? `${role} · collaborator` : 'collaborator';
+  }
+  if (kind === 'subagent') {
+    return 'subagent';
+  }
+  return undefined;
+}
+
+/**
+ * The effective model + provider display for a sub/collaborator tool-use line,
+ * formatted as "<model> · <provider>". Prefers an explicitly-passed model;
+ * otherwise resolves the built-in agent's effective model (incl. inherited).
+ * The provider is decoded from a cross-provider selection, else the active
+ * provider. Returns undefined for non-swarm agents with no explicit model.
+ */
+export function getAgentLineModel(subagentType?: string, toolModel?: string): string | undefined {
+  let modelStr: string | undefined;
+  if (toolModel) {
+    modelStr = toolModel;
+  } else if (getAgentKind(subagentType) !== undefined) {
+    const agent = getBuiltInAgents().find(a => a.agentType === subagentType);
+    if (agent) {
+      try {
+        modelStr = getAgentModel(agent.model, getMainLoopModel(), undefined, 'default', subagentType);
+      } catch {
+        modelStr = undefined;
+      }
+    }
+  }
+  if (!modelStr) return undefined;
+  // A cross-provider selection encodes the provider into the model string;
+  // otherwise the model runs on the active provider.
+  const decoded = decodeModelProvider(modelStr);
+  let providerId: string | undefined;
+  try {
+    providerId = decoded.providerId ?? getActiveProvider()?.id;
+  } catch {
+    providerId = decoded.providerId;
+  }
+  const modelName = renderModelName(parseUserSpecifiedModel(decoded.model));
+  return providerId ? `${modelName} · ${providerId}` : modelName;
+}
+
 export function renderToolUseTag(input: Partial<{
   description: string;
   prompt: string;
@@ -426,13 +482,26 @@ export function renderToolUseTag(input: Partial<{
   model?: string;
 }>): React.ReactNode {
   const tags: React.ReactNode[] = [];
-  if (input.model) {
-    const mainModel = getMainLoopModel();
-    const agentModel = parseUserSpecifiedModel(input.model);
-    if (agentModel !== mainModel) {
-      tags.push(<Box key="model" flexWrap="nowrap" marginLeft={1}>
-          <Text dimColor>{renderModelName(agentModel)}</Text>
-        </Box>);
+  const kindLabel = getAgentLineKindLabel(input.subagent_type);
+  if (kindLabel) {
+    tags.push(<Box key="kind" flexWrap="nowrap" marginLeft={1}>
+        <Text dimColor>{kindLabel}</Text>
+      </Box>);
+  }
+  // Show the resolved model for swarm agents always; for other agents only when
+  // it differs from the main model (legacy behavior).
+  if (input.model || getAgentKind(input.subagent_type) !== undefined) {
+    const modelName = getAgentLineModel(input.subagent_type, input.model);
+    if (modelName) {
+      const isSwarmAgent = getAgentKind(input.subagent_type) !== undefined;
+      const differsFromMain =
+        input.model !== undefined &&
+        parseUserSpecifiedModel(input.model) !== getMainLoopModel();
+      if (isSwarmAgent || differsFromMain) {
+        tags.push(<Box key="model" flexWrap="nowrap" marginLeft={1}>
+            <Text dimColor>{modelName}</Text>
+          </Box>);
+      }
     }
   }
   if (tags.length === 0) {
@@ -708,6 +777,8 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
     const backgroundedMidExecution = outputStatus === 'async_launched' || outputStatus === 'remote_launched';
     const isAsync = launchedAsAsync || backgroundedMidExecution || isTeammateSpawn;
     const name = parsedInput.success ? parsedInput.data.name : undefined;
+    const rawSubagentType = parsedInput.success ? parsedInput.data.subagent_type : undefined;
+    const rawToolModel = parsedInput.success ? (parsedInput.data as { model?: string }).model : undefined;
     return {
       id: param.id,
       agentType,
@@ -721,7 +792,9 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
       descriptionColor,
       lastToolInfo,
       taskDescription,
-      name
+      name,
+      roleLabel: getAgentLineKindLabel(rawSubagentType),
+      modelLabel: getAgentLineModel(rawSubagentType, rawToolModel)
     };
   });
   const anyUnresolved = toolUses.some(t => !t.isResolved);
@@ -753,7 +826,7 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
         </Text>
         {!allAsync && <CtrlOToExpand />}
       </Box>
-      {agentStats.map((stat, index) => <AgentProgressLine key={stat.id} agentType={stat.agentType} description={stat.description} descriptionColor={stat.descriptionColor} taskDescription={stat.taskDescription} toolUseCount={stat.toolUseCount} tokens={stat.tokens} color={stat.color} isLast={index === agentStats.length - 1} isResolved={stat.isResolved} isError={stat.isError} isAsync={stat.isAsync} shouldAnimate={shouldAnimate} lastToolInfo={stat.lastToolInfo} hideType={allSameType} name={stat.name} />)}
+      {agentStats.map((stat, index) => <AgentProgressLine key={stat.id} agentType={stat.agentType} description={stat.description} descriptionColor={stat.descriptionColor} taskDescription={stat.taskDescription} toolUseCount={stat.toolUseCount} tokens={stat.tokens} color={stat.color} isLast={index === agentStats.length - 1} isResolved={stat.isResolved} isError={stat.isError} isAsync={stat.isAsync} shouldAnimate={shouldAnimate} lastToolInfo={stat.lastToolInfo} hideType={allSameType} name={stat.name} roleLabel={stat.roleLabel} modelLabel={stat.modelLabel} />)}
     </Box>;
 }
 export function userFacingName(input: Partial<{
@@ -768,7 +841,9 @@ export function userFacingName(input: Partial<{
     if (input.subagent_type === 'worker') {
       return 'Agent';
     }
-    return input.subagent_type;
+    // Collaborators get a friendly persona name (e.g. 'Somnang'); subagents keep
+    // their type name.
+    return getCollaboratorDisplayName(input.subagent_type) ?? input.subagent_type;
   }
   return 'Agent';
 }
