@@ -47,6 +47,17 @@ export function createWhatsNewFeed(releaseNotes: string[]): FeedConfig {
     emptyMessage
   };
 }
+export function createUpdateAvailableFeed(currentVersion: string, latestVersion: string): FeedConfig {
+  return {
+    title: 'Update available',
+    lines: [
+      { text: `v${latestVersion} is available (current v${currentVersion})` },
+      { text: 'npm i -g @rayu-dev/rayu-cli@latest' }
+    ],
+    footer: undefined,
+    emptyMessage: ''
+  };
+}
 export function createProjectOnboardingFeed(steps: Step[]): FeedConfig {
   const enabledSteps = steps.filter(({
     isEnabled

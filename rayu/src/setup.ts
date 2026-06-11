@@ -8,6 +8,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { getCwd } from 'src/utils/cwd.js'
 import { checkForReleaseNotes } from 'src/utils/releaseNotes.js'
+import { cacheLatestNpmVersion } from 'src/utils/autoUpdater.js'
 import { setCwd } from 'src/utils/Shell.js'
 import { initSinks } from 'src/utils/sinks.js'
 import {
@@ -389,6 +390,13 @@ export async function setup(
     )
     if (hasReleaseNotes) {
       await getRecentActivity()
+    }
+    // Pre-warm the latest npm version so the welcome box can show an
+    // "Update available" notice. Fire-and-forget — never blocks launch; the
+    // periodic PackageManagerAutoUpdater banner covers the case where this
+    // hasn't resolved by first render.
+    if (!getIsNonInteractiveSession()) {
+      void cacheLatestNpmVersion()
     }
   }
 

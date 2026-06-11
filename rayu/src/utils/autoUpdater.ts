@@ -1,5 +1,6 @@
 import { constants as fsConstants } from 'fs'
 import { access, writeFile } from 'fs/promises'
+import axios from 'axios'
 import { homedir } from 'os'
 import { join } from 'path'
 import { getDynamicConfig_BLOCKS_ON_INIT } from 'src/services/analytics/growthbook.js'
@@ -390,6 +391,62 @@ export async function getLatestVersionFromGcs(
 ): Promise<string | null> {
   void GITHUB_RELEASES_DOC
   return getLatestVersionFromGitHub(channel === 'stable' ? 'stable' : 'latest')
+}
+
+/**
+ * Get the latest published version of @rayu-dev/rayu-cli directly from the npm
+ * registry's JSON API. Unlike getLatestVersion() this needs no `npm` binary, so
+ * it works for every install type (npm global, package manager, native binary).
+ * Returns null on any failure (offline, 404, parse error) so callers degrade
+ * gracefully and treat the current version as up to date.
+ */
+export async function getLatestVersionFromNpm(
+  channel: ReleaseChannel,
+): Promise<string | null> {
+  try {
+    const res = await axios.get<{ 'dist-tags'?: Record<string, string> }>(
+      `https://registry.npmjs.org/${MACRO.PACKAGE_URL}`,
+      {
+        timeout: 5000,
+        headers: { Accept: 'application/vnd.npm.install-v1+json' },
+        validateStatus: s => s === 200,
+      },
+    )
+    const distTags = res.data?.['dist-tags']
+    if (!distTags) return null
+    const tag = channel === 'stable' ? 'stable' : 'latest'
+    const version = distTags[tag] ?? distTags.latest
+    return typeof version === 'string' && version.length > 0 ? version : null
+  } catch (error) {
+    logForDebugging(`npm registry version check failed: ${error}`)
+    return null
+  }
+}
+
+// Module-level cache of the latest npm version, populated once at startup
+// (cacheLatestNpmVersion) so the welcome-box render path can read it
+// synchronously without doing network I/O during render.
+let cachedLatestNpmVersion: string | null = null
+
+/**
+ * Fetch the latest npm version and store it in the module cache. Safe to call
+ * fire-and-forget at startup; never throws.
+ */
+export async function cacheLatestNpmVersion(
+  channel: ReleaseChannel = 'latest',
+): Promise<void> {
+  const version = await getLatestVersionFromNpm(channel)
+  if (version) {
+    cachedLatestNpmVersion = version
+  }
+}
+
+/**
+ * Synchronous accessor for the cached latest npm version (or null if the async
+ * cacheLatestNpmVersion() hasn't completed). Intended for React render paths.
+ */
+export function getCachedLatestNpmVersionSync(): string | null {
+  return cachedLatestNpmVersion
 }
 
 /**

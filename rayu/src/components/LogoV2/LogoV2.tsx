@@ -9,7 +9,9 @@ import { truncate } from '../../utils/format.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { Clawd } from './Clawd.js';
 import { FeedColumn } from './FeedColumn.js';
-import { createRecentActivityFeed, createWhatsNewFeed, createProjectOnboardingFeed, createGuestPassesFeed } from './feedConfigs.js';
+import { createRecentActivityFeed, createWhatsNewFeed, createProjectOnboardingFeed, createGuestPassesFeed, createUpdateAvailableFeed } from './feedConfigs.js';
+import { getCachedLatestNpmVersionSync } from '../../utils/autoUpdater.js';
+import { gt } from '../../utils/semver.js';
 import { getGlobalConfig, saveGlobalConfig } from 'src/utils/config.js';
 import { resolveThemeSetting } from 'src/utils/systemTheme.js';
 import { getInitialSettings } from 'src/utils/settings/settings.js';
@@ -418,7 +420,9 @@ export function LogoV2() {
   } else {
     t24 = $[61];
   }
-  const t25 = layoutMode === "horizontal" && <FeedColumn feeds={showOnboarding ? [createProjectOnboardingFeed(getSteps()), createRecentActivityFeed(activities)] : showGuestPassesUpsell ? [createRecentActivityFeed(activities), createGuestPassesFeed()] : showOverageCreditUpsell ? [createRecentActivityFeed(activities), createOverageCreditFeed()] : [createRecentActivityFeed(activities), createWhatsNewFeed(changelog)]} maxWidth={rightWidth} />;
+  const _latestNpm = getCachedLatestNpmVersionSync();
+  const _updateFeeds = _latestNpm && gt(_latestNpm, MACRO.VERSION) ? [createUpdateAvailableFeed(MACRO.VERSION, _latestNpm)] : [];
+  const t25 = layoutMode === "horizontal" && <FeedColumn feeds={showOnboarding ? [createProjectOnboardingFeed(getSteps()), createRecentActivityFeed(activities)] : showGuestPassesUpsell ? [createRecentActivityFeed(activities), createGuestPassesFeed()] : showOverageCreditUpsell ? [createRecentActivityFeed(activities), createOverageCreditFeed()] : [createRecentActivityFeed(activities), ..._updateFeeds, createWhatsNewFeed(changelog)]} maxWidth={rightWidth} />;
   let t26;
   if ($[62] !== T2 || $[63] !== t15 || $[64] !== t23 || $[65] !== t24 || $[66] !== t25) {
     t26 = <T2 flexDirection={t15} paddingX={t16} gap={t17}>{t23}{t24}{t25}</T2>;

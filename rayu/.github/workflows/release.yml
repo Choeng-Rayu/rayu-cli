@@ -5,8 +5,11 @@
 #
 # Release flow:
 #   1. bump version in package.json (and macroValues VERSION if separate)
-#   2. git tag v<version> && git push origin v<version>
-#   3. this workflow builds dist-native/* + manifest.json and creates the Release
+#   2. add a `## <version> - <YYYY-MM-DD>` section to rayu/CHANGELOG.md with the
+#      user-facing changes (this is what the in-TUI "What's new" panel shows,
+#      fetched from the raw CHANGELOG.md — see src/utils/releaseNotes.ts)
+#   3. git tag v<version> && git push origin v<version>
+#   4. this workflow builds dist-native/* + manifest.json and creates the Release
 name: release
 
 on:

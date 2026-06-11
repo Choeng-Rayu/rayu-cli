@@ -36,8 +36,11 @@ To cut a release:
 
 1. Bump `version` in `package.json` (and `scripts/macroValues.ts` `VERSION` if
    you keep it separate).
-2. `git tag v<version> && git push origin v<version>`.
-3. `.github/workflows/release.yml` builds all platforms on a single Ubuntu
+2. Add a `## <version> - <YYYY-MM-DD>` section to `rayu/CHANGELOG.md` describing
+   the user-facing changes. This is the source for the in-TUI "What's new" panel
+   and the "Update available" notice (fetched from the raw `CHANGELOG.md`).
+3. `git tag v<version> && git push origin v<version>`.
+4. `.github/workflows/release.yml` builds all platforms on a single Ubuntu
    runner (Bun cross-compiles), then creates the GitHub Release and uploads the
    binaries + `manifest.json` as assets.
 

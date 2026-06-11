@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useState } from 'react';
 import { useInterval } from 'usehooks-ts';
 import { Text } from '../ink.js';
-import { type AutoUpdaterResult, getLatestVersionFromGcs, getMaxVersion, shouldSkipVersion } from '../utils/autoUpdater.js';
+import { type AutoUpdaterResult, getLatestVersionFromGcs, getLatestVersionFromNpm, getMaxVersion, shouldSkipVersion } from '../utils/autoUpdater.js';
 import { isAutoUpdaterDisabled } from '../utils/config.js';
 import { logForDebugging } from '../utils/debug.js';
 import { getPackageManager, type PackageManager } from '../utils/nativeInstaller/packageManagers.js';
@@ -33,7 +33,7 @@ export function PackageManagerAutoUpdater(t0) {
       }
       const [channel, pm] = await Promise.all([Promise.resolve(getInitialSettings()?.autoUpdatesChannel ?? "latest"), getPackageManager()]);
       setPackageManager(pm);
-      let latest = await getLatestVersionFromGcs(channel);
+      let latest = await getLatestVersionFromNpm(channel) ?? await getLatestVersionFromGcs(channel);
       const maxVersion = await getMaxVersion();
       if (maxVersion && latest && gt(latest, maxVersion)) {
         logForDebugging(`PackageManagerAutoUpdater: maxVersion ${maxVersion} is set, capping update from ${latest} to ${maxVersion}`);

@@ -3,7 +3,6 @@ import addDir from './commands/add-dir/index.js'
 import autofixPr from './commands/autofix-pr/index.js'
 import backfillSessions from './commands/backfill-sessions/index.js'
 import btw from './commands/btw/index.js'
-import goodClaude from './commands/good-claude/index.js'
 import issue from './commands/issue/index.js'
 import feedback from './commands/feedback/index.js'
 import clear from './commands/clear/index.js'
@@ -123,10 +122,6 @@ import mockLimits from './commands/mock-limits/index.js'
 import bridgeKick from './commands/bridge-kick.js'
 import version from './commands/version.js'
 import summary from './commands/summary/index.js'
-import {
-  resetLimits,
-  resetLimitsNonInteractive,
-} from './commands/reset-limits/index.js'
 import antTrace from './commands/ant-trace/index.js'
 import perfIssue from './commands/perf-issue/index.js'
 import sandboxToggle from './commands/sandbox-toggle/index.js'
@@ -206,7 +201,6 @@ export const INTERNAL_ONLY_COMMANDS = [
   commit,
   commitPushPr,
   ctx_viz,
-  goodClaude,
   issue,
   initVerifiers,
   swarm,
@@ -216,8 +210,6 @@ export const INTERNAL_ONLY_COMMANDS = [
   version,
   ...(ultraplan ? [ultraplan] : []),
   ...(subscribePr ? [subscribePr] : []),
-  resetLimits,
-  resetLimitsNonInteractive,
   onboarding,
   summary,
   teleport,
