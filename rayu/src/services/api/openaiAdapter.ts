@@ -320,18 +320,75 @@ function mapUsage(usage: AnyObj | undefined): AnyObj {
   }
 }
 
+/**
+ * Extract reasoning/"thinking" text from a provider message or streaming delta.
+ * Reasoning models expose it under varying shapes:
+ *   - string: `reasoning_content` (DeepSeek/Kimi), `reasoning` (Qwen/OpenRouter)
+ *   - object: `reasoning: { text | content: string }`
+ *   - array:  `reasoning_details: [{ text | content } | string]` (OpenRouter),
+ *             or `reasoning: [...]`
+ * Returns the joined non-empty text, or undefined when there is none.
+ */
+export function extractReasoningText(o: AnyObj | undefined): string | undefined {
+  if (!o || typeof o !== 'object') return undefined
+  const direct = (o.reasoning_content ?? o.reasoning) as unknown
+  if (typeof direct === 'string') return direct.length ? direct : undefined
+
+  // Object shape: { reasoning: { text | content: string } }
+  if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
+    const obj = direct as AnyObj
+    const t = obj.text ?? obj.content
+    if (typeof t === 'string' && t.length) return t
+  }
+
+  // Array shape: reasoning_details: [...] or reasoning: [...]
+  const arr = Array.isArray((o as AnyObj).reasoning_details)
+    ? ((o as AnyObj).reasoning_details as unknown[])
+    : Array.isArray(direct)
+      ? (direct as unknown[])
+      : undefined
+  if (arr) {
+    const joined = arr
+      .map(d => {
+        if (typeof d === 'string') return d
+        const item = d as AnyObj
+        if (typeof item?.text === 'string') return item.text
+        if (typeof item?.content === 'string') return item.content
+        return ''
+      })
+      .join('')
+    if (joined.length) return joined
+  }
+  return undefined
+}
+
 /** Build a full Anthropic BetaMessage from an OpenAI completion response. */
 export function toBetaMessage(completion: AnyObj, model: string): AnyObj {
   const choice = (completion.choices as AnyObj[])?.[0] ?? {}
   const msg = (choice.message as AnyObj) ?? {}
   const content: AnyObj[] = []
-  // Reasoning models surface hidden reasoning as `reasoning_content` (DeepSeek)
-  // or `reasoning` (Qwen/Doubleword/OpenRouter). Expose it as a thinking block.
-  const reasoning = (msg.reasoning_content ?? msg.reasoning) as string | undefined
+  // Reasoning models surface hidden reasoning under several shapes
+  // (reasoning_content / reasoning / object / array) — normalize to a string.
+  const reasoning = extractReasoningText(msg)
   if (typeof reasoning === 'string' && reasoning.length) {
     content.push({ type: 'thinking', thinking: reasoning, signature: '' })
   }
-  if (msg.content) content.push({ type: 'text', text: msg.content as string })
+  if (typeof msg.content === 'string' && msg.content.length) {
+    let text = msg.content
+    // If there was no separate reasoning field, some open-weight deployments
+    // (e.g. Kimi via Bedrock-Mantle) inline reasoning as a leading
+    // <think>…</think> / ◁think▷…◁/think▷ span — split it into a thinking block.
+    if (!reasoning) {
+      const split = splitInlineThink(text)
+      if (split.thinking) {
+        content.push({ type: 'thinking', thinking: split.thinking, signature: '' })
+        text = split.text
+      }
+    }
+    if (text.length) content.push({ type: 'text', text })
+  } else if (msg.content) {
+    content.push({ type: 'text', text: msg.content as string })
+  }
   let toolCallIdx = 0
   for (const tc of (msg.tool_calls as AnyObj[]) ?? []) {
     const fn = (tc.function as AnyObj) ?? {}
@@ -373,6 +430,97 @@ export function toBetaMessage(completion: AnyObj, model: string): AnyObj {
 
 type StreamEvent = { type: string } & AnyObj
 
+// ---------------------------------------------------------------------------
+// Inline reasoning markers (<think>…</think> / ◁think▷…◁/think▷)
+// ---------------------------------------------------------------------------
+// Some open-weight deployments (e.g. Kimi served through Bedrock-Mantle) don't
+// expose reasoning as a separate field — they inline it in `content` wrapped in
+// think markers. We split that into a thinking block. NOTE: reasoning markers
+// ONLY — tool-call token formats (e.g. <|tool_calls_section_begin|>) are NOT
+// handled here.
+const THINK_OPEN = ['<think>', '\u25C1think\u25B7'] // ◁think▷
+const THINK_CLOSE = ['</think>', '\u25C1/think\u25B7'] // ◁/think▷
+const MAX_THINK_MARKER_LEN = 8 // longest of the four markers
+
+/**
+ * Non-streaming: if `text` begins (after optional whitespace) with a well-formed
+ * think span, return { thinking, text } with the span removed; otherwise leave
+ * `text` unchanged. Handles only a single LEADING span (reasoning precedes the
+ * answer) — a stray/unclosed marker is left untouched.
+ */
+export function splitInlineThink(text: string): { thinking?: string; text: string } {
+  const lead = text.replace(/^\s+/, '')
+  for (let i = 0; i < THINK_OPEN.length; i++) {
+    const open = THINK_OPEN[i]
+    if (lead.startsWith(open)) {
+      const close = THINK_CLOSE[i]
+      const end = lead.indexOf(close, open.length)
+      if (end === -1) return { text } // open but no close → untouched
+      const thinking = lead.slice(open.length, end).trim()
+      const rest = lead.slice(end + close.length).replace(/^\s+/, '')
+      return { thinking, text: rest }
+    }
+  }
+  return { text }
+}
+
+export type ThinkSegment = { kind: 'text' | 'thinking'; text: string }
+
+/**
+ * Streaming: incrementally split a content stream around think markers. Feed the
+ * carry-over buffer + state each time; returns resolved segments and keeps any
+ * trailing partial-marker tail for the next call. `flush:true` (stream end)
+ * forces the remaining buffer out. When no markers ever appear this is a
+ * pass-through (every chunk → a single text segment), so non-reasoning providers
+ * are unaffected.
+ */
+export function consumeInlineThink(
+  buffer: string,
+  insideThink: boolean,
+  flush = false,
+): { segments: ThinkSegment[]; buffer: string; insideThink: boolean } {
+  const segments: ThinkSegment[] = []
+  let buf = buffer
+  let inside = insideThink
+
+  // Resolve as many complete markers as are present.
+  for (;;) {
+    const markers = inside ? THINK_CLOSE : THINK_OPEN
+    let bestIdx = -1
+    let bestMarker = ''
+    for (const m of markers) {
+      const i = buf.indexOf(m)
+      if (i !== -1 && (bestIdx === -1 || i < bestIdx)) {
+        bestIdx = i
+        bestMarker = m
+      }
+    }
+    if (bestIdx === -1) break
+    const before = buf.slice(0, bestIdx)
+    if (before) segments.push({ kind: inside ? 'thinking' : 'text', text: before })
+    buf = buf.slice(bestIdx + bestMarker.length)
+    inside = !inside
+  }
+
+  // No full marker remains. Hold back a tail that could be a partial marker
+  // (so a marker split across chunks is still detected) unless flushing.
+  const markers = inside ? THINK_CLOSE : THINK_OPEN
+  let holdLen = 0
+  if (!flush) {
+    for (let n = Math.min(MAX_THINK_MARKER_LEN - 1, buf.length); n > 0; n--) {
+      const tail = buf.slice(buf.length - n)
+      if (markers.some(m => m.startsWith(tail) && n < m.length)) {
+        holdLen = n
+        break
+      }
+    }
+  }
+  const emit = holdLen ? buf.slice(0, buf.length - holdLen) : buf
+  if (emit) segments.push({ kind: inside ? 'thinking' : 'text', text: emit })
+
+  return { segments, buffer: holdLen ? buf.slice(buf.length - holdLen) : '', insideThink: inside }
+}
+
 export async function* translateStream(
   openaiStream: AsyncIterable<AnyObj>,
   model: string,
@@ -398,6 +546,48 @@ export async function* translateStream(
   let usage: AnyObj | undefined
   const toolIndexByOaIndex = new Map<number, number>()
   let nextIndex = 0
+  // Inline-think streaming state (carry-over buffer for markers split across
+  // chunks + whether we're currently inside a think span).
+  let thinkBuffer = ''
+  let insideThink = false
+
+  const emitThinking = function* (text: string): Generator<StreamEvent> {
+    if (thinkingIndex === null) {
+      thinkingIndex = nextIndex++
+      yield {
+        type: 'content_block_start',
+        index: thinkingIndex,
+        content_block: { type: 'thinking', thinking: '', signature: '' },
+      }
+    }
+    yield {
+      type: 'content_block_delta',
+      index: thinkingIndex,
+      delta: { type: 'thinking_delta', thinking: text },
+    }
+  }
+  const emitText = function* (text: string): Generator<StreamEvent> {
+    if (textIndex === null) {
+      textIndex = nextIndex++
+      yield {
+        type: 'content_block_start',
+        index: textIndex,
+        content_block: { type: 'text', text: '' },
+      }
+    }
+    yield {
+      type: 'content_block_delta',
+      index: textIndex,
+      delta: { type: 'text_delta', text },
+    }
+  }
+  const emitSegments = function* (segs: ThinkSegment[]): Generator<StreamEvent> {
+    for (const s of segs) {
+      if (!s.text.length) continue
+      if (s.kind === 'thinking') yield* emitThinking(s.text)
+      else yield* emitText(s.text)
+    }
+  }
 
   for await (const chunk of openaiStream) {
     const choice = (chunk.choices as AnyObj[])?.[0]
@@ -408,39 +598,21 @@ export async function* translateStream(
     const delta = (choice.delta as AnyObj) ?? {}
 
     // Reasoning (thinking) deltas — emitted before content by reasoning models.
-    const reasoning = (delta.reasoning_content ?? delta.reasoning) as
-      | string
-      | undefined
+    // Normalized across provider shapes (string / object / array).
+    const reasoning = extractReasoningText(delta)
     if (typeof reasoning === 'string' && reasoning.length) {
-      if (thinkingIndex === null) {
-        thinkingIndex = nextIndex++
-        yield {
-          type: 'content_block_start',
-          index: thinkingIndex,
-          content_block: { type: 'thinking', thinking: '', signature: '' },
-        }
-      }
-      yield {
-        type: 'content_block_delta',
-        index: thinkingIndex,
-        delta: { type: 'thinking_delta', thinking: reasoning },
-      }
+      yield* emitThinking(reasoning)
     }
 
     if (typeof delta.content === 'string' && delta.content.length) {
-      if (textIndex === null) {
-        textIndex = nextIndex++
-        yield {
-          type: 'content_block_start',
-          index: textIndex,
-          content_block: { type: 'text', text: '' },
-        }
-      }
-      yield {
-        type: 'content_block_delta',
-        index: textIndex,
-        delta: { type: 'text_delta', text: delta.content },
-      }
+      // Route content through the inline-think parser: when no markers appear
+      // this is a pass-through (one text segment per chunk); when a provider
+      // inlines reasoning as <think>…</think>/◁think▷…◁/think▷ it's split into
+      // thinking vs text segments (markers may straddle chunk boundaries).
+      const r = consumeInlineThink(thinkBuffer + delta.content, insideThink)
+      thinkBuffer = r.buffer
+      insideThink = r.insideThink
+      yield* emitSegments(r.segments)
     }
 
     for (const tc of (delta.tool_calls as AnyObj[]) ?? []) {
@@ -477,6 +649,12 @@ export async function* translateStream(
 
     if (choice.finish_reason) finishReason = choice.finish_reason as string
     if (chunk.usage) usage = chunk.usage as AnyObj
+  }
+
+  // Flush any held inline-think tail at end of stream.
+  if (thinkBuffer.length) {
+    const r = consumeInlineThink(thinkBuffer, insideThink, true)
+    yield* emitSegments(r.segments)
   }
 
   if (thinkingIndex !== null) yield { type: 'content_block_stop', index: thinkingIndex }

@@ -265,7 +265,11 @@ export function toBetaMessageFromGenAI(resp: AnyObj, model: string): AnyObj {
   let idx = 0
   let hadToolUse = false
   for (const part of partsOf(resp)) {
-    if (typeof part.text === 'string' && part.text.length) {
+    // Gemini thinking: a part with thought:true carries reasoning-summary text.
+    // Check BEFORE the plain-text branch (thought parts also have `text`).
+    if (part.thought === true && typeof part.text === 'string' && part.text.length) {
+      content.push({ type: 'thinking', thinking: part.text, signature: '' })
+    } else if (typeof part.text === 'string' && part.text.length) {
       content.push({ type: 'text', text: part.text })
     } else if (part.functionCall) {
       const fc = part.functionCall as AnyObj
@@ -311,33 +315,48 @@ export async function* translateGenAIStream(
     },
   }
 
-  let blockOpen = false
-  let blockIsText = false
+  let openType: 'text' | 'thinking' | 'tool' | null = null
   let usage: AnyObj = { input_tokens: 0, output_tokens: 0 }
   let hadToolUse = false
   let idx = 0
 
   const closeBlock = function* (): Generator<StreamEvent> {
-    if (blockOpen) {
+    if (openType !== null) {
       yield { type: 'content_block_stop', index: idx }
       idx++
-      blockOpen = false
+      openType = null
     }
   }
 
   for await (const chunk of stream) {
     if (chunk.usageMetadata) usage = mapUsage(chunk)
     for (const part of partsOf(chunk)) {
-      if (typeof part.text === 'string' && part.text.length) {
-        if (!blockOpen || !blockIsText) {
+      // Gemini thinking: a part with thought:true carries reasoning-summary text.
+      // Check BEFORE the plain-text branch (thought parts also have `text`).
+      if (part.thought === true && typeof part.text === 'string' && part.text.length) {
+        if (openType !== 'thinking') {
+          yield* closeBlock()
+          yield {
+            type: 'content_block_start',
+            index: idx,
+            content_block: { type: 'thinking', thinking: '', signature: '' },
+          }
+          openType = 'thinking'
+        }
+        yield {
+          type: 'content_block_delta',
+          index: idx,
+          delta: { type: 'thinking_delta', thinking: part.text },
+        }
+      } else if (typeof part.text === 'string' && part.text.length) {
+        if (openType !== 'text') {
           yield* closeBlock()
           yield {
             type: 'content_block_start',
             index: idx,
             content_block: { type: 'text', text: '' },
           }
-          blockOpen = true
-          blockIsText = true
+          openType = 'text'
         }
         yield {
           type: 'content_block_delta',
@@ -368,8 +387,7 @@ export async function* translateGenAIStream(
             partial_json: JSON.stringify(fc.args ?? {}),
           },
         }
-        blockOpen = true
-        blockIsText = false
+        openType = 'tool'
       }
     }
   }
@@ -408,14 +426,35 @@ export function buildGenAIBody(params: BetaParams): {
   }
 }
 
-/** Build a thinkingConfig from env, or undefined to use the model default. */
+/**
+ * Build a Gemini thinkingConfig. We always request thought SUMMARIES
+ * (`includeThoughts: true`) so the UI can stream a "thinking…" status and the
+ * reasoning text — Gemini, unlike Claude, returns thought summaries (not raw
+ * chain-of-thought) and ONLY when this flag is set. The `RAYU_GEMINI_THINKING_*`
+ * env knobs still tune the thinking effort/budget for latency.
+ *
+ * Escape hatch for speed: `RAYU_GEMINI_THINKING_LEVEL=off|none|disabled` (or
+ * `CLAUDE_CODE_DISABLE_THINKING=1`) turns thinking + summaries off entirely.
+ */
 export function geminiThinkingConfig(): AnyObj | undefined {
   const level = process.env.RAYU_GEMINI_THINKING_LEVEL?.trim().toLowerCase()
+  const disable = process.env.CLAUDE_CODE_DISABLE_THINKING
+  if (
+    level === 'off' ||
+    level === 'none' ||
+    level === 'disabled' ||
+    disable === '1' ||
+    disable === 'true'
+  ) {
+    // thinkingBudget: 0 disables thinking on Gemini 2.5; includeThoughts: false
+    // suppresses summaries on Gemini 3 (which can't fully disable thinking).
+    return { thinkingBudget: 0, includeThoughts: false }
+  }
   const budget = parseInt(process.env.RAYU_GEMINI_THINKING_BUDGET || '', 10)
-  const cfg: AnyObj = {}
+  const cfg: AnyObj = { includeThoughts: true }
   if (level === 'low' || level === 'medium' || level === 'high') {
     cfg.thinkingLevel = level
   }
   if (!isNaN(budget) && budget >= 0) cfg.thinkingBudget = budget
-  return Object.keys(cfg).length ? cfg : undefined
+  return cfg
 }

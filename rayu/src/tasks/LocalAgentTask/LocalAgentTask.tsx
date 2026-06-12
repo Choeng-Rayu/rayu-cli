@@ -36,6 +36,9 @@ export type AgentProgress = {
   lastActivity?: ToolActivity;
   recentActivities?: ToolActivity[];
   summary?: string;
+  /** True when the agent's latest turn is a thinking block with no tool call
+   * yet — surfaced as a "thinking…" status in the background task panel. */
+  isThinking?: boolean;
 };
 const MAX_RECENT_ACTIVITIES = 5;
 export type ProgressTracker = {
@@ -46,13 +49,16 @@ export type ProgressTracker = {
   latestInputTokens: number;
   cumulativeOutputTokens: number;
   recentActivities: ToolActivity[];
+  // Whether the most recent assistant turn was thinking-only (no tool call yet).
+  isThinking: boolean;
 };
 export function createProgressTracker(): ProgressTracker {
   return {
     toolUseCount: 0,
     latestInputTokens: 0,
     cumulativeOutputTokens: 0,
-    recentActivities: []
+    recentActivities: [],
+    isThinking: false
   };
 }
 export function getTokenCountFromTracker(tracker: ProgressTracker): number {
@@ -73,6 +79,11 @@ export function updateProgressFromMessage(tracker: ProgressTracker, message: Mes
   // Keep latest input (it's cumulative in the API), sum outputs
   tracker.latestInputTokens = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
   tracker.cumulativeOutputTokens += usage.output_tokens;
+  // The agent is "thinking" when this turn has a thinking block but no tool call
+  // yet. Cleared as soon as a tool_use (or a non-thinking turn) arrives below.
+  tracker.isThinking =
+    message.message.content.some(c => c.type === 'thinking' || c.type === 'redacted_thinking') &&
+    !message.message.content.some(c => c.type === 'tool_use');
   for (const content of message.message.content) {
     if (content.type === 'tool_use') {
       tracker.toolUseCount++;
@@ -99,7 +110,8 @@ export function getProgressUpdate(tracker: ProgressTracker): AgentProgress {
     toolUseCount: tracker.toolUseCount,
     tokenCount: getTokenCountFromTracker(tracker),
     lastActivity: tracker.recentActivities.length > 0 ? tracker.recentActivities[tracker.recentActivities.length - 1] : undefined,
-    recentActivities: [...tracker.recentActivities]
+    recentActivities: [...tracker.recentActivities],
+    isThinking: tracker.isThinking
   };
 }
 

@@ -126,6 +126,27 @@ describe('toBetaMessageFromGenAI', () => {
     expect(beta.stop_reason).toBe('tool_use')
     expect(beta.usage).toEqual({ input_tokens: 5, output_tokens: 7 })
   })
+
+  test('maps thought parts to thinking blocks before text', () => {
+    const beta = toBetaMessageFromGenAI(
+      {
+        candidates: [
+          {
+            content: {
+              parts: [
+                { thought: true, text: 'let me reason' },
+                { text: 'final answer' },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+      },
+      'gemini-3.5-flash',
+    ) as any
+    expect(beta.content[0]).toEqual({ type: 'thinking', thinking: 'let me reason', signature: '' })
+    expect(beta.content[1]).toEqual({ type: 'text', text: 'final answer' })
+  })
 })
 
 describe('translateGenAIStream', () => {
@@ -139,6 +160,38 @@ describe('translateGenAIStream', () => {
     expect(events[0].type).toBe('message_start')
     expect(events.filter(e => e.type === 'content_block_delta').map(e => e.delta.text).join('')).toBe('Hello')
     expect(events.at(-1).type).toBe('message_stop')
+  })
+
+  test('thought parts → thinking block + thinking_delta, separate from text/tool', async () => {
+    async function* chunks() {
+      yield { candidates: [{ content: { parts: [{ thought: true, text: 'reason ' }] } }] }
+      yield { candidates: [{ content: { parts: [{ thought: true, text: 'more' }] } }] }
+      yield { candidates: [{ content: { parts: [{ text: 'answer' }] } }] }
+      yield { candidates: [{ content: { parts: [{ functionCall: { name: 'Read', args: { p: 'x' } } }] } }] }
+    }
+    const events: any[] = []
+    for await (const e of translateGenAIStream(chunks(), 'm')) events.push(e)
+
+    const thinkStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'thinking')
+    const textStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'text')
+    const toolStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'tool_use')
+    expect(thinkStart).toBeDefined()
+    expect(textStart).toBeDefined()
+    expect(toolStart).toBeDefined()
+    // distinct, monotonic indices
+    expect(new Set([thinkStart.index, textStart.index, toolStart.index]).size).toBe(3)
+
+    const think = events
+      .filter(e => e.type === 'content_block_delta' && e.delta?.type === 'thinking_delta')
+      .map(e => e.delta.thinking)
+      .join('')
+    expect(think).toBe('reason more')
+    const text = events
+      .filter(e => e.type === 'content_block_delta' && e.delta?.type === 'text_delta')
+      .map(e => e.delta.text)
+      .join('')
+    expect(text).toBe('answer')
+    expect(events.find(e => e.type === 'message_delta').delta.stop_reason).toBe('tool_use')
   })
 })
 
@@ -157,22 +210,47 @@ describe('buildGenAIBody', () => {
     expect(b.systemInstruction).toBe('sys')
   })
 
-  test('adds thinkingConfig only when RAYU_GEMINI_THINKING_* env is set', () => {
+  test('always requests thought summaries (includeThoughts) + reflects env knobs; off-switch disables', () => {
     const prevL = process.env.RAYU_GEMINI_THINKING_LEVEL
     const prevB = process.env.RAYU_GEMINI_THINKING_BUDGET
+    const prevD = process.env.CLAUDE_CODE_DISABLE_THINKING
     try {
+      // Default (no env): thought summaries always on so the UI can stream them.
       delete process.env.RAYU_GEMINI_THINKING_LEVEL
       delete process.env.RAYU_GEMINI_THINKING_BUDGET
-      expect((buildGenAIBody({ model: 'm', messages: [] }).config as any).thinkingConfig).toBeUndefined()
+      delete process.env.CLAUDE_CODE_DISABLE_THINKING
+      expect((buildGenAIBody({ model: 'm', messages: [] }).config as any).thinkingConfig).toEqual({
+        includeThoughts: true,
+      })
 
+      // Level knob still tunes effort, summaries stay on.
       process.env.RAYU_GEMINI_THINKING_LEVEL = 'low'
-      const cfg = buildGenAIBody({ model: 'm', messages: [] }).config as any
-      expect(cfg.thinkingConfig).toEqual({ thinkingLevel: 'low' })
+      expect((buildGenAIBody({ model: 'm', messages: [] }).config as any).thinkingConfig).toEqual({
+        includeThoughts: true,
+        thinkingLevel: 'low',
+      })
+
+      // Off-switch disables thinking + summaries for speed.
+      process.env.RAYU_GEMINI_THINKING_LEVEL = 'off'
+      expect((buildGenAIBody({ model: 'm', messages: [] }).config as any).thinkingConfig).toEqual({
+        thinkingBudget: 0,
+        includeThoughts: false,
+      })
+
+      // CLAUDE_CODE_DISABLE_THINKING also disables.
+      delete process.env.RAYU_GEMINI_THINKING_LEVEL
+      process.env.CLAUDE_CODE_DISABLE_THINKING = '1'
+      expect((buildGenAIBody({ model: 'm', messages: [] }).config as any).thinkingConfig).toEqual({
+        thinkingBudget: 0,
+        includeThoughts: false,
+      })
     } finally {
       if (prevL === undefined) delete process.env.RAYU_GEMINI_THINKING_LEVEL
       else process.env.RAYU_GEMINI_THINKING_LEVEL = prevL
       if (prevB === undefined) delete process.env.RAYU_GEMINI_THINKING_BUDGET
       else process.env.RAYU_GEMINI_THINKING_BUDGET = prevB
+      if (prevD === undefined) delete process.env.CLAUDE_CODE_DISABLE_THINKING
+      else process.env.CLAUDE_CODE_DISABLE_THINKING = prevD
     }
   })
 })

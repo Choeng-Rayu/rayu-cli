@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   _resetOpenAIAdapterUnsupportedParamCacheForTesting,
   buildOpenAIRequest,
+  consumeInlineThink,
   createOpenAICompatibleClient,
+  extractReasoningText,
+  splitInlineThink,
   toBetaMessage,
   translateStream,
 } from '../src/services/api/openaiAdapter.ts'
@@ -857,5 +860,110 @@ describe('Gemini OpenAI-compat compatibility (no null content, non-empty ids)', 
     const toolUse = beta.content.find((b: any) => b.type === 'tool_use')
     expect(toolUse.id).toBeTruthy()
     expect(toolUse.id.length).toBeGreaterThan(0)
+  })
+})
+
+describe('openaiAdapter reasoning shape variants (T3)', () => {
+  test('extractReasoningText handles string/object/array shapes', () => {
+    expect(extractReasoningText({ reasoning_content: 'a' })).toBe('a')
+    expect(extractReasoningText({ reasoning: 'b' })).toBe('b')
+    expect(extractReasoningText({ reasoning: { text: 'c' } })).toBe('c')
+    expect(extractReasoningText({ reasoning: { content: 'd' } })).toBe('d')
+    expect(extractReasoningText({ reasoning_details: [{ text: 'e' }, { text: 'f' }] })).toBe('ef')
+    expect(extractReasoningText({ reasoning: ['g', { content: 'h' }] })).toBe('gh')
+    expect(extractReasoningText({})).toBeUndefined()
+    expect(extractReasoningText({ reasoning: '' })).toBeUndefined()
+    expect(extractReasoningText(undefined)).toBeUndefined()
+  })
+
+  test('non-streaming: object reasoning → thinking block before text', () => {
+    const msg: any = toBetaMessage(
+      { id: 'c', choices: [{ message: { reasoning: { text: 'deep' }, content: 'ans' }, finish_reason: 'stop' }] },
+      'm',
+    )
+    expect(msg.content[0]).toEqual({ type: 'thinking', thinking: 'deep', signature: '' })
+    expect(msg.content[1]).toEqual({ type: 'text', text: 'ans' })
+  })
+
+  test('streaming: reasoning_details array delta → thinking_delta', async () => {
+    async function* s(): AsyncGenerator<any> {
+      yield { choices: [{ delta: { reasoning_details: [{ text: 'r1' }] } }] }
+      yield { choices: [{ delta: { content: 'hi' } }] }
+      yield { choices: [{ delta: {}, finish_reason: 'stop' }] }
+    }
+    const events: any[] = []
+    for await (const e of translateStream(s(), 'm')) events.push(e)
+    const think = events.filter(e => e.delta?.type === 'thinking_delta').map(e => e.delta.thinking).join('')
+    const text = events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join('')
+    expect(think).toBe('r1')
+    expect(text).toBe('hi')
+  })
+})
+
+describe('openaiAdapter inline <think> extraction (T4)', () => {
+  test('splitInlineThink: leading think span → thinking + text; else untouched', () => {
+    expect(splitInlineThink('<think>reason</think>answer')).toEqual({ thinking: 'reason', text: 'answer' })
+    expect(splitInlineThink('  <think> r </think> a')).toEqual({ thinking: 'r', text: 'a' })
+    expect(splitInlineThink('\u25C1think\u25B7r\u25C1/think\u25B7a')).toEqual({ thinking: 'r', text: 'a' })
+    expect(splitInlineThink('just text')).toEqual({ text: 'just text' })
+    expect(splitInlineThink('<think>unclosed')).toEqual({ text: '<think>unclosed' })
+  })
+
+  test('consumeInlineThink: pass-through when no markers', () => {
+    const r = consumeInlineThink('hello world', false)
+    expect(r.segments).toEqual([{ kind: 'text', text: 'hello world' }])
+    expect(r.insideThink).toBe(false)
+    expect(r.buffer).toBe('')
+  })
+
+  test('non-streaming: inline <think> in content (no reasoning field) → split', () => {
+    const msg: any = toBetaMessage(
+      { id: 'c', choices: [{ message: { content: '<think>let me think</think>the answer' }, finish_reason: 'stop' }] },
+      'm',
+    )
+    expect(msg.content[0]).toEqual({ type: 'thinking', thinking: 'let me think', signature: '' })
+    expect(msg.content[1]).toEqual({ type: 'text', text: 'the answer' })
+  })
+
+  test('non-streaming: no marker → content unchanged (single text block)', () => {
+    const msg: any = toBetaMessage(
+      { id: 'c', choices: [{ message: { content: 'plain answer' }, finish_reason: 'stop' }] },
+      'm',
+    )
+    expect(msg.content).toEqual([{ type: 'text', text: 'plain answer' }])
+  })
+
+  test('streaming: think markers split across deltas route to thinking vs text', async () => {
+    async function* s(): AsyncGenerator<any> {
+      yield { choices: [{ delta: { content: '<thi' } }] }
+      yield { choices: [{ delta: { content: 'nk>rea' } }] }
+      yield { choices: [{ delta: { content: 'son</thi' } }] }
+      yield { choices: [{ delta: { content: 'nk>ans' } }] }
+      yield { choices: [{ delta: { content: 'wer' } }] }
+      yield { choices: [{ delta: {}, finish_reason: 'stop' }] }
+    }
+    const events: any[] = []
+    for await (const e of translateStream(s(), 'm')) events.push(e)
+    const think = events.filter(e => e.delta?.type === 'thinking_delta').map(e => e.delta.thinking).join('')
+    const text = events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join('')
+    expect(think).toBe('reason')
+    expect(text).toBe('answer')
+    const thinkStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'thinking')
+    const textStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'text')
+    expect(thinkStart.index).not.toBe(textStart.index)
+  })
+
+  test('streaming: plain content with no markers passes through unchanged', async () => {
+    async function* s(): AsyncGenerator<any> {
+      yield { choices: [{ delta: { content: 'Hel' } }] }
+      yield { choices: [{ delta: { content: 'lo wor' } }] }
+      yield { choices: [{ delta: { content: 'ld' } }] }
+      yield { choices: [{ delta: {}, finish_reason: 'stop' }] }
+    }
+    const events: any[] = []
+    for await (const e of translateStream(s(), 'm')) events.push(e)
+    const text = events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join('')
+    expect(text).toBe('Hello world')
+    expect(events.find(e => e.delta?.type === 'thinking_delta')).toBeUndefined()
   })
 })
