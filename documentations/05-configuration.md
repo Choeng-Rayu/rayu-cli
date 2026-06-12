@@ -115,12 +115,15 @@ See [Diagnostics & Privacy](./09-diagnostics-privacy.md) for the privacy model.
 
 ## Project settings & memory
 
-Rayu reads Claude Code-compatible project files when present:
+Rayu reads project files when present:
 
-- `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/*.md` — project memory/instructions.
-- `.claude/settings.json`, `.claude/settings.local.json` — project/local settings.
-- `.mcp.json` — project MCP servers.
+- **`RAYU.md`** or **`AGENTS.md`** — project memory/instructions.
+- **`.rayu/rules/*.md`** — conditional and unconditional instruction rules.
+- **`.rayu/settings.json`** — shared project settings (permissions, model mappings, etc.).
+- **`.rayu/settings.local.json`** — gitignored local settings (user override for this project).
+- **`RAYU.local.md`** — private project memory/instructions (gitignored).
+- **`.mcp.json`** — project MCP servers.
 
-(These conventions are unchanged from the upstream layout.)
+*Note: For backwards compatibility, the legacy files `CLAUDE.md`, `.agents/CLAUDE.md`, and `.agents/rules/*.md` are also loaded if present.*
 
 Next: [CLI Reference →](./06-cli-reference.md)

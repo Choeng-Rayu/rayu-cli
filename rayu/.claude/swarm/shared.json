@@ -1,0 +1,16 @@
+{
+  "goal": "Sync the `/help` command output with the actual implemented slash commands in the Rayu CLI codebase. Ensure users see only functional and available commands, and all implemented commands are discoverable with clear status indicators.",
+  "stack": {
+    "primary": "TypeScript",
+    "ui": "Ink (React-based TUI)",
+    "runtime": "Node.js/Bun"
+  },
+  "flow": "The `/help` command fetches all available commands via `getCommands(cwd)` and displays them in a categorized UI. The plan is to auto-generate `/help` content from the `Command[]` array, including disabled/feature-flagged commands with tooltips for context.",
+  "constraints": {
+    "no_manual_sync": "Avoid manual updates to `/help` content to prevent drift.",
+    "backward_compatibility": "Do not break existing command implementations or UI.",
+    "runtime_performance": "Ensure `/help` renders quickly even with many commands.",
+    "transparency": "Show all implemented commands, including disabled/feature-flagged ones."
+  },
+  "needs": ["backend"]
+}

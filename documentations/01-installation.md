@@ -1,6 +1,48 @@
 # 1. Installation
 
-## Requirements
+## Quick Install via NPM (Recommended)
+
+Rayu-CLI is officially published on npm as `@rayu-dev/rayu-cli`. This is the easiest way to install and run Rayu-CLI on any machine with Node.js.
+
+### Option A: Run instantly via NPX (No installation required)
+
+You can run Rayu-CLI instantly without installing it permanently on your system:
+
+```bash
+npx @rayu-dev/rayu-cli
+```
+
+### Option B: Install globally
+
+Install Rayu-CLI globally using your preferred package manager:
+
+```bash
+# Using npm
+npm install -g @rayu-dev/rayu-cli
+
+# Using bun
+bun install -g @rayu-dev/rayu-cli
+
+# Using pnpm
+pnpm add -g @rayu-dev/rayu-cli
+
+# Using yarn
+yarn global add @rayu-dev/rayu-cli
+```
+
+Once installed globally, you can launch Rayu-CLI from any terminal by typing:
+
+```bash
+rayu
+```
+
+---
+
+## Build from Source (For Developers)
+
+If you wish to build Rayu-CLI locally or contribute to its development, follow the guide below.
+
+### Requirements
 
 - **[Bun](https://bun.sh) ≥ 1.3** — used to build (and the recommended runtime).
 - **Node.js ≥ 18** — also works to *run* the built binary.
@@ -14,7 +56,7 @@ export PATH="$HOME/.bun/bin:$PATH"      # add to your shell profile to persist
 bun --version                            # expect ≥ 1.3
 ```
 
-## Build
+### Build
 
 From the project directory (the folder containing `package.json` and `src/`):
 

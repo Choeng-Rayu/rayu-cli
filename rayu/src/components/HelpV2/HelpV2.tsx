@@ -3,6 +3,7 @@ import * as React from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useShortcutDisplay } from 'src/keybindings/useShortcutDisplay.js';
 import { builtInCommandNames, type Command, type CommandResultDisplay, INTERNAL_ONLY_COMMANDS } from '../../commands.js';
+import { isCommandEnabled } from '../../types/command.js';
 import { useIsInsideModal } from '../../context/modalContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Link, Text } from '../../ink.js';
@@ -57,7 +58,7 @@ export function HelpV2(t0) {
   let t3;
   if ($[3] !== commands) {
     const builtinNames = builtInCommandNames();
-    builtinCommands = commands.filter(cmd => builtinNames.has(cmd.name) && !cmd.isHidden);
+    builtinCommands = commands.filter(cmd => builtinNames.has(cmd.name) && !cmd.isHidden && isCommandEnabled(cmd));
     let t4;
     if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
       t4 = [];
@@ -66,7 +67,7 @@ export function HelpV2(t0) {
       t4 = $[7];
     }
     antOnlyCommands = t4;
-    t3 = commands.filter(cmd_2 => !builtinNames.has(cmd_2.name) && !cmd_2.isHidden);
+    t3 = commands.filter(cmd_2 => !builtinNames.has(cmd_2.name) && !cmd_2.isHidden && isCommandEnabled(cmd_2));
     $[3] = commands;
     $[4] = antOnlyCommands;
     $[5] = builtinCommands;

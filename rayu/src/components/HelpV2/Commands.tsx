@@ -36,7 +36,7 @@ export function Commands(t0) {
     let t2;
     if ($[3] !== maxWidth) {
       t2 = cmd_0 => ({
-        label: `/${cmd_0.name}`,
+        label: `/${cmd_0.name}${cmd_0.argumentHint ? ` ${cmd_0.argumentHint}` : ''}`,
         value: cmd_0.name,
         description: truncate(formatDescriptionWithSource(cmd_0), maxWidth, true)
       });
