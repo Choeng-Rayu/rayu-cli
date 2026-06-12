@@ -40,12 +40,15 @@ export type RayuProvider = {
   // --- AWS Bedrock fields (kind: 'bedrock') ---
   /**
    * Which Bedrock API surface this provider uses:
-   * - 'openai' (default): OpenAI-compatible Chat Completions endpoint, for
-   *   open-weight models (openai.gpt-oss, qwen, deepseek, ...).
+   * - 'converse' (default): AWS Converse/ConverseStream API via the AWS SDK.
+   *   Model-agnostic across ALL Bedrock models (Claude, Kimi, DeepSeek, GLM, …)
+   *   and natively separates reasoning (`reasoningContent`) + tool use.
+   * - 'openai': OpenAI-compatible Chat Completions endpoint (bedrock-mantle),
+   *   for open-weight models (openai.gpt-oss, qwen, …).
    * - 'anthropic': Anthropic Messages API (via @anthropic-ai/bedrock-sdk),
    *   for Claude models invoked with cross-region inference-profile ids.
    */
-  bedrockApi?: 'openai' | 'anthropic'
+  bedrockApi?: 'openai' | 'anthropic' | 'converse'
   /** AWS Access Key ID. SECURITY: stored in 0600 config file. */
   awsAccessKeyId?: string
   /** AWS Secret Access Key. SECURITY: stored in 0600 config file. */
@@ -484,12 +487,15 @@ export function getRayuModelContextWindow(model: string): number | null {
  */
 /**
  * Resolve the AWS region for a Bedrock provider: explicit awsRegion, else parse
- * from the bedrock-runtime base URL host, else the us-east-1 default.
+ * from the base URL host (bedrock-mantle.{region}.api.aws or the legacy
+ * bedrock-runtime.{region}.amazonaws.com), else the us-east-1 default.
  */
 function bedrockRegionOf(p: RayuProvider): string {
   if (p.awsRegion) return p.awsRegion
-  const m = p.baseURL?.match(/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i)
-  return m?.[1] ?? 'us-east-1'
+  const m = p.baseURL?.match(
+    /bedrock-mantle\.([a-z0-9-]+)\.api\.aws|bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i,
+  )
+  return m?.[1] ?? m?.[2] ?? 'us-east-1'
 }
 
 type BedrockModelSummary = {

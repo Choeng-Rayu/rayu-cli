@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   _resetOpenAIAdapterUnsupportedParamCacheForTesting,
   buildOpenAIRequest,
-  consumeInlineThink,
   createOpenAICompatibleClient,
   extractReasoningText,
   splitInlineThink,
@@ -909,13 +908,6 @@ describe('openaiAdapter inline <think> extraction (T4)', () => {
     expect(splitInlineThink('<think>unclosed')).toEqual({ text: '<think>unclosed' })
   })
 
-  test('consumeInlineThink: pass-through when no markers', () => {
-    const r = consumeInlineThink('hello world', false)
-    expect(r.segments).toEqual([{ kind: 'text', text: 'hello world' }])
-    expect(r.insideThink).toBe(false)
-    expect(r.buffer).toBe('')
-  })
-
   test('non-streaming: inline <think> in content (no reasoning field) → split', () => {
     const msg: any = toBetaMessage(
       { id: 'c', choices: [{ message: { content: '<think>let me think</think>the answer' }, finish_reason: 'stop' }] },
@@ -931,26 +923,6 @@ describe('openaiAdapter inline <think> extraction (T4)', () => {
       'm',
     )
     expect(msg.content).toEqual([{ type: 'text', text: 'plain answer' }])
-  })
-
-  test('streaming: think markers split across deltas route to thinking vs text', async () => {
-    async function* s(): AsyncGenerator<any> {
-      yield { choices: [{ delta: { content: '<thi' } }] }
-      yield { choices: [{ delta: { content: 'nk>rea' } }] }
-      yield { choices: [{ delta: { content: 'son</thi' } }] }
-      yield { choices: [{ delta: { content: 'nk>ans' } }] }
-      yield { choices: [{ delta: { content: 'wer' } }] }
-      yield { choices: [{ delta: {}, finish_reason: 'stop' }] }
-    }
-    const events: any[] = []
-    for await (const e of translateStream(s(), 'm')) events.push(e)
-    const think = events.filter(e => e.delta?.type === 'thinking_delta').map(e => e.delta.thinking).join('')
-    const text = events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join('')
-    expect(think).toBe('reason')
-    expect(text).toBe('answer')
-    const thinkStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'thinking')
-    const textStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'text')
-    expect(thinkStart.index).not.toBe(textStart.index)
   })
 
   test('streaming: plain content with no markers passes through unchanged', async () => {

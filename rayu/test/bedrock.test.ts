@@ -19,14 +19,14 @@ afterEach(() => {
 })
 
 describe('bedrock provider helpers', () => {
-  test('bedrockBaseURL targets the OpenAI-compatible /openai/v1 path', async () => {
+  test('bedrockBaseURL targets the recommended bedrock-mantle /v1 endpoint', async () => {
     const { bedrockBaseURL } = await import('../src/utils/rayuProviders.ts')
     expect(bedrockBaseURL('us-west-2')).toBe(
-      'https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1',
+      'https://bedrock-mantle.us-west-2.api.aws/v1',
     )
     // empty region falls back to the default
     expect(bedrockBaseURL('')).toBe(
-      'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1',
+      'https://bedrock-mantle.us-east-1.api.aws/v1',
     )
   })
 
@@ -35,9 +35,14 @@ describe('bedrock provider helpers', () => {
     const bedrock = PROVIDER_PRESETS.find(p => p.id === 'bedrock')
     expect(bedrock).toBeDefined()
     expect(bedrock?.kind).toBe('bedrock')
-    expect(bedrock?.bedrockApi).toBe('openai')
+    // Converse is the default Bedrock surface (model-agnostic; reasoning + tools).
+    expect(bedrock?.bedrockApi).toBe('converse')
     expect(bedrock?.envKeys).toContain('AWS_BEARER_TOKEN_BEDROCK')
-    // A second preset for the Anthropic Messages API (Claude).
+    // A secondary OpenAI-compatible (mantle) Bedrock preset.
+    const openai = PROVIDER_PRESETS.find(p => p.id === 'bedrock-openai')
+    expect(openai).toBeDefined()
+    expect(openai?.bedrockApi).toBe('openai')
+    // A third preset for the Anthropic Messages API (Claude).
     const anthropic = PROVIDER_PRESETS.find(p => p.id === 'bedrock-anthropic')
     expect(anthropic).toBeDefined()
     expect(anthropic?.kind).toBe('bedrock')
@@ -120,9 +125,69 @@ describe('env migration for AWS_BEARER_TOKEN_BEDROCK', () => {
     expect(p?.apiKey).toBe('ABSK-env-token')
     expect(p?.awsRegion).toBe('eu-west-1')
     expect(p?.baseURL).toBe(
-      'https://bedrock-runtime.eu-west-1.amazonaws.com/openai/v1',
+      'https://bedrock-mantle.eu-west-1.api.aws/v1',
     )
     delete process.env.AWS_BEARER_TOKEN_BEDROCK
     delete process.env.AWS_REGION
+  })
+})
+
+
+describe('OpenAI-compatible provider presets (OpenCode-style profiles)', () => {
+  test('new presets exist with correct kind/baseURL/envKeys', async () => {
+    const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
+    const expected: Record<string, { baseURL: string; env: string }> = {
+      xai: { baseURL: 'https://api.x.ai/v1', env: 'XAI_API_KEY' },
+      groq: { baseURL: 'https://api.groq.com/openai/v1', env: 'GROQ_API_KEY' },
+      fireworks: { baseURL: 'https://api.fireworks.ai/inference/v1', env: 'FIREWORKS_API_KEY' },
+      togetherai: { baseURL: 'https://api.together.xyz/v1', env: 'TOGETHER_API_KEY' },
+      cerebras: { baseURL: 'https://api.cerebras.ai/v1', env: 'CEREBRAS_API_KEY' },
+      baseten: { baseURL: 'https://inference.baseten.co/v1', env: 'BASETEN_API_KEY' },
+      deepinfra: { baseURL: 'https://api.deepinfra.com/v1/openai', env: 'DEEPINFRA_API_KEY' },
+    }
+    for (const [id, { baseURL, env }] of Object.entries(expected)) {
+      const preset = PROVIDER_PRESETS.find(p => p.id === id)
+      expect(preset, `preset ${id} should exist`).toBeDefined()
+      expect(preset?.kind).toBe('openai-compatible')
+      expect(preset?.baseURL).toBe(baseURL)
+      expect(preset?.envKeys).toContain(env)
+    }
+  })
+
+  test('an openai-compatible preset provider is treated as OpenAI-compatible-active', async () => {
+    const { upsertProvider } = await import('../src/utils/rayuConfig.ts')
+    upsertProvider(
+      {
+        id: 'groq',
+        kind: 'openai-compatible',
+        apiKey: 'gsk-test',
+        baseURL: 'https://api.groq.com/openai/v1',
+      },
+      true,
+    )
+    const { isOpenAICompatibleActive } = await import('../src/utils/model/providers.ts')
+    expect(isOpenAICompatibleActive()).toBe(true)
+  })
+})
+
+describe('bedrock converse routing', () => {
+  test('a converse bedrock provider is NOT OpenAI-compatible-active', async () => {
+    const { upsertProvider } = await import('../src/utils/rayuConfig.ts')
+    upsertProvider(
+      {
+        id: 'bedrock',
+        kind: 'bedrock',
+        bedrockApi: 'converse',
+        apiKey: 'ABSK-test-token',
+        awsRegion: 'us-east-1',
+        // no baseURL — Converse goes through the AWS SDK adapter
+      },
+      true,
+    )
+    const { isOpenAICompatibleActive, getAPIProvider } = await import(
+      '../src/utils/model/providers.ts'
+    )
+    expect(isOpenAICompatibleActive()).toBe(false)
+    expect(getAPIProvider()).toBe('bedrock')
   })
 })

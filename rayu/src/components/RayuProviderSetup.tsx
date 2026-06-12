@@ -116,16 +116,17 @@ export function RayuProviderSetup({
   // does not show its own picker, to avoid a duplicate model-selection step.
   function finishBedrock(chosenModel: string, models: string[]): void {
     const trimmed = chosenModel.trim()
-    const isAnthropic = preset?.bedrockApi === 'anthropic'
+    const api: 'openai' | 'anthropic' | 'converse' = preset?.bedrockApi ?? 'converse'
+    // Converse + Anthropic use the AWS SDK (endpoint derived from region); only
+    // the OpenAI-compatible surface needs a stored base URL.
+    const usesAwsSdk = api === 'anthropic' || api === 'converse'
     const provider: RayuProvider = {
       id: preset?.id ?? 'bedrock',
       kind: 'bedrock',
-      bedrockApi: isAnthropic ? 'anthropic' : 'openai',
+      bedrockApi: api,
       apiKey: apiKey.trim() || undefined,
       awsRegion: region,
-      // OpenAI-style needs the runtime base URL; the Anthropic SDK derives its
-      // own endpoint from awsRegion, so no baseURL is stored for it.
-      ...(isAnthropic ? {} : { baseURL: bedrockBaseURL(region) }),
+      ...(usesAwsSdk ? {} : { baseURL: bedrockBaseURL(region) }),
       ...(trimmed ? { defaultModel: trimmed } : {}),
       ...(models.length ? { fetchedModels: models } : {}),
     }
@@ -135,6 +136,21 @@ export function RayuProviderSetup({
 
   // Prefer a known-good default for the chosen API style.
   function pickBedrockDefault(models: string[]): string {
+    if (preset?.bedrockApi === 'converse') {
+      // Converse spans all Bedrock models; prefer a reasoning model, then Claude.
+      const prefs = [
+        /kimi-k2-thinking/i,
+        /claude-sonnet-4-6/i,
+        /claude-sonnet/i,
+        /deepseek/i,
+        /kimi/i,
+      ]
+      for (const re of prefs) {
+        const hit = models.find(m => re.test(m))
+        if (hit) return hit
+      }
+      return models[0] ?? ''
+    }
     if (preset?.bedrockApi === 'anthropic') {
       // Prefer current Claude Sonnet versions (older ones may be Legacy/locked).
       const prefs = [
@@ -305,13 +321,16 @@ export function RayuProviderSetup({
     if (phase !== 'fetchingModels') return
     let cancelled = false
     void (async () => {
+      const baseApi = preset?.bedrockApi ?? 'converse'
       const models = await fetchProviderModels({
         id: preset?.id ?? 'bedrock',
         kind: 'bedrock',
-        bedrockApi: preset?.bedrockApi === 'anthropic' ? 'anthropic' : 'openai',
+        bedrockApi: baseApi,
         apiKey: apiKey.trim(),
         awsRegion: region,
-        baseURL: bedrockBaseURL(region),
+        // OpenAI surface needs the mantle base URL; Converse/Anthropic derive
+        // their endpoint from the region (AWS SDK), so no baseURL.
+        ...(baseApi === 'openai' ? { baseURL: bedrockBaseURL(region) } : {}),
       }).catch(() => [] as string[])
       if (cancelled) return
       const chat = models.filter(isLikelyChatModel)

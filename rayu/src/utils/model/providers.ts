@@ -70,14 +70,15 @@ export function isOpenAICompatibleActive(): boolean {
     /* eslint-enable @typescript-eslint/no-require-imports */
     const p = getActiveProvider()
     if (p?.kind === 'openai-compatible') return true
-    // Rayu /connect → AWS Bedrock uses the OpenAI-compatible Chat Completions
-    // endpoint (https://bedrock-runtime.{region}.amazonaws.com/openai/v1) with a
-    // Bedrock API key (bearer token). Route it through the same adapter — but
-    // NOT the Anthropic-Messages Bedrock variant (bedrockApi:'anthropic'), which
-    // goes through the AnthropicBedrock SDK instead.
+    // Rayu /connect → AWS Bedrock (bedrock-mantle) OpenAI-compatible Chat
+    // Completions endpoint with a Bedrock API key (bearer token). Route it
+    // through the same adapter — but NOT the Anthropic-Messages variant
+    // (bedrockApi:'anthropic', AnthropicBedrock SDK) nor the Converse variant
+    // (bedrockApi:'converse', AWS-SDK Converse adapter).
     if (
       p?.kind === 'bedrock' &&
       p.bedrockApi !== 'anthropic' &&
+      p.bedrockApi !== 'converse' &&
       !!p.apiKey &&
       !!p.baseURL
     ) {

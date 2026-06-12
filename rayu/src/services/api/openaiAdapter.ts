@@ -440,7 +440,6 @@ type StreamEvent = { type: string } & AnyObj
 // handled here.
 const THINK_OPEN = ['<think>', '\u25C1think\u25B7'] // ◁think▷
 const THINK_CLOSE = ['</think>', '\u25C1/think\u25B7'] // ◁/think▷
-const MAX_THINK_MARKER_LEN = 8 // longest of the four markers
 
 /**
  * Non-streaming: if `text` begins (after optional whitespace) with a well-formed
@@ -462,63 +461,6 @@ export function splitInlineThink(text: string): { thinking?: string; text: strin
     }
   }
   return { text }
-}
-
-export type ThinkSegment = { kind: 'text' | 'thinking'; text: string }
-
-/**
- * Streaming: incrementally split a content stream around think markers. Feed the
- * carry-over buffer + state each time; returns resolved segments and keeps any
- * trailing partial-marker tail for the next call. `flush:true` (stream end)
- * forces the remaining buffer out. When no markers ever appear this is a
- * pass-through (every chunk → a single text segment), so non-reasoning providers
- * are unaffected.
- */
-export function consumeInlineThink(
-  buffer: string,
-  insideThink: boolean,
-  flush = false,
-): { segments: ThinkSegment[]; buffer: string; insideThink: boolean } {
-  const segments: ThinkSegment[] = []
-  let buf = buffer
-  let inside = insideThink
-
-  // Resolve as many complete markers as are present.
-  for (;;) {
-    const markers = inside ? THINK_CLOSE : THINK_OPEN
-    let bestIdx = -1
-    let bestMarker = ''
-    for (const m of markers) {
-      const i = buf.indexOf(m)
-      if (i !== -1 && (bestIdx === -1 || i < bestIdx)) {
-        bestIdx = i
-        bestMarker = m
-      }
-    }
-    if (bestIdx === -1) break
-    const before = buf.slice(0, bestIdx)
-    if (before) segments.push({ kind: inside ? 'thinking' : 'text', text: before })
-    buf = buf.slice(bestIdx + bestMarker.length)
-    inside = !inside
-  }
-
-  // No full marker remains. Hold back a tail that could be a partial marker
-  // (so a marker split across chunks is still detected) unless flushing.
-  const markers = inside ? THINK_CLOSE : THINK_OPEN
-  let holdLen = 0
-  if (!flush) {
-    for (let n = Math.min(MAX_THINK_MARKER_LEN - 1, buf.length); n > 0; n--) {
-      const tail = buf.slice(buf.length - n)
-      if (markers.some(m => m.startsWith(tail) && n < m.length)) {
-        holdLen = n
-        break
-      }
-    }
-  }
-  const emit = holdLen ? buf.slice(0, buf.length - holdLen) : buf
-  if (emit) segments.push({ kind: inside ? 'thinking' : 'text', text: emit })
-
-  return { segments, buffer: holdLen ? buf.slice(buf.length - holdLen) : '', insideThink: inside }
 }
 
 export async function* translateStream(
@@ -546,48 +488,6 @@ export async function* translateStream(
   let usage: AnyObj | undefined
   const toolIndexByOaIndex = new Map<number, number>()
   let nextIndex = 0
-  // Inline-think streaming state (carry-over buffer for markers split across
-  // chunks + whether we're currently inside a think span).
-  let thinkBuffer = ''
-  let insideThink = false
-
-  const emitThinking = function* (text: string): Generator<StreamEvent> {
-    if (thinkingIndex === null) {
-      thinkingIndex = nextIndex++
-      yield {
-        type: 'content_block_start',
-        index: thinkingIndex,
-        content_block: { type: 'thinking', thinking: '', signature: '' },
-      }
-    }
-    yield {
-      type: 'content_block_delta',
-      index: thinkingIndex,
-      delta: { type: 'thinking_delta', thinking: text },
-    }
-  }
-  const emitText = function* (text: string): Generator<StreamEvent> {
-    if (textIndex === null) {
-      textIndex = nextIndex++
-      yield {
-        type: 'content_block_start',
-        index: textIndex,
-        content_block: { type: 'text', text: '' },
-      }
-    }
-    yield {
-      type: 'content_block_delta',
-      index: textIndex,
-      delta: { type: 'text_delta', text },
-    }
-  }
-  const emitSegments = function* (segs: ThinkSegment[]): Generator<StreamEvent> {
-    for (const s of segs) {
-      if (!s.text.length) continue
-      if (s.kind === 'thinking') yield* emitThinking(s.text)
-      else yield* emitText(s.text)
-    }
-  }
 
   for await (const chunk of openaiStream) {
     const choice = (chunk.choices as AnyObj[])?.[0]
@@ -601,18 +501,35 @@ export async function* translateStream(
     // Normalized across provider shapes (string / object / array).
     const reasoning = extractReasoningText(delta)
     if (typeof reasoning === 'string' && reasoning.length) {
-      yield* emitThinking(reasoning)
+      if (thinkingIndex === null) {
+        thinkingIndex = nextIndex++
+        yield {
+          type: 'content_block_start',
+          index: thinkingIndex,
+          content_block: { type: 'thinking', thinking: '', signature: '' },
+        }
+      }
+      yield {
+        type: 'content_block_delta',
+        index: thinkingIndex,
+        delta: { type: 'thinking_delta', thinking: reasoning },
+      }
     }
 
     if (typeof delta.content === 'string' && delta.content.length) {
-      // Route content through the inline-think parser: when no markers appear
-      // this is a pass-through (one text segment per chunk); when a provider
-      // inlines reasoning as <think>…</think>/◁think▷…◁/think▷ it's split into
-      // thinking vs text segments (markers may straddle chunk boundaries).
-      const r = consumeInlineThink(thinkBuffer + delta.content, insideThink)
-      thinkBuffer = r.buffer
-      insideThink = r.insideThink
-      yield* emitSegments(r.segments)
+      if (textIndex === null) {
+        textIndex = nextIndex++
+        yield {
+          type: 'content_block_start',
+          index: textIndex,
+          content_block: { type: 'text', text: '' },
+        }
+      }
+      yield {
+        type: 'content_block_delta',
+        index: textIndex,
+        delta: { type: 'text_delta', text: delta.content },
+      }
     }
 
     for (const tc of (delta.tool_calls as AnyObj[]) ?? []) {
@@ -649,12 +566,6 @@ export async function* translateStream(
 
     if (choice.finish_reason) finishReason = choice.finish_reason as string
     if (chunk.usage) usage = chunk.usage as AnyObj
-  }
-
-  // Flush any held inline-think tail at end of stream.
-  if (thinkBuffer.length) {
-    const r = consumeInlineThink(thinkBuffer, insideThink, true)
-    yield* emitSegments(r.segments)
   }
 
   if (thinkingIndex !== null) yield { type: 'content_block_stop', index: thinkingIndex }

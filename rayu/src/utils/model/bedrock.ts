@@ -127,12 +127,22 @@ async function createBedrockClient() {
   return new BedrockClient(clientConfig)
 }
 
-export async function createBedrockRuntimeClient() {
+export async function createBedrockRuntimeClient(opts?: {
+  region?: string
+  apiKey?: string
+}) {
   const { BedrockRuntimeClient } = await import(
     '@aws-sdk/client-bedrock-runtime'
   )
-  const region = getAWSRegion()
+  const region = opts?.region || getAWSRegion()
   const skipAuth = isEnvTruthy(process.env.RAYU_SKIP_BEDROCK_AUTH)
+
+  // A provider-supplied Bedrock API key authenticates via the bearer-token
+  // scheme. AWS SDK clients read it from AWS_BEARER_TOKEN_BEDROCK, so surface
+  // the provider key there when env isn't already set. SECURITY: never logged.
+  if (opts?.apiKey && !process.env.AWS_BEARER_TOKEN_BEDROCK) {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = opts.apiKey
+  }
 
   const clientConfig: ConstructorParameters<typeof BedrockRuntimeClient>[0] = {
     region,

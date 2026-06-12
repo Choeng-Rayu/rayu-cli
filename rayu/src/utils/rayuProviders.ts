@@ -27,8 +27,8 @@ export type ProviderPreset = {
   envKeys?: string[]
   /** True for endpoints where the user must type the base URL (no fixed host). */
   promptBaseURL?: boolean
-  /** For bedrock presets: which Bedrock API surface to use (default 'openai'). */
-  bedrockApi?: 'openai' | 'anthropic'
+  /** For bedrock presets: which Bedrock API surface to use (default 'converse'). */
+  bedrockApi?: 'openai' | 'anthropic' | 'converse'
   /**
    * True for presets authenticated via Google OAuth / Application Default
    * Credentials rather than a typed API key (e.g. Gemini on Vertex AI). The
@@ -39,11 +39,14 @@ export type ProviderPreset = {
 }
 
 // --- AWS Bedrock (API key / bearer token) -----------------------------------
-// Bedrock exposes an OpenAI-compatible Chat Completions API on the
-// `bedrock-runtime` endpoint. It is region-scoped and authenticated with a
-// Bedrock API key (the AWS_BEARER_TOKEN_BEDROCK bearer token). Both
-// `GET /v1/models` and `POST /v1/chat/completions` work with that token, so
-// Rayu can reuse its OpenAI-compatible adapter + model-catalog fetch verbatim.
+// AWS Bedrock exposes an OpenAI-compatible Chat Completions API on the
+// `bedrock-mantle` endpoint (AWS-recommended). It is region-scoped and
+// authenticated with a Bedrock API key (the AWS_BEARER_TOKEN_BEDROCK bearer
+// token). Both `GET /v1/models` and `POST /v1/chat/completions` work with that
+// token, so Rayu reuses its OpenAI-compatible adapter + model-catalog fetch
+// verbatim. Mantle (unlike the bare bedrock-runtime OpenAI surface) properly
+// separates reasoning models' chain-of-thought into `reasoning_content` and
+// parses native tool calls — required for Kimi K2 Thinking et al.
 
 /** Default AWS region used for Bedrock when none is specified. */
 export const DEFAULT_BEDROCK_REGION = 'us-east-1'
@@ -51,10 +54,10 @@ export const DEFAULT_BEDROCK_REGION = 'us-east-1'
 /** Build the OpenAI-compatible Bedrock base URL for a given AWS region. */
 export function bedrockBaseURL(region: string): string {
   const r = (region || DEFAULT_BEDROCK_REGION).trim()
-  // The bedrock-runtime endpoint serves the OpenAI Chat Completions API under
-  // the /openai/v1 path (POST /openai/v1/chat/completions), authenticated with
-  // a Bedrock API key. (The bare /v1 path returns UnknownOperation.)
-  return `https://bedrock-runtime.${r}.amazonaws.com/openai/v1`
+  // The recommended `bedrock-mantle` endpoint serves the OpenAI Chat Completions
+  // API at /v1/chat/completions and the model catalog at /v1/models. Model IDs
+  // on mantle use the `<vendor>.<model>` form (e.g. moonshotai.kimi-k2-thinking).
+  return `https://bedrock-mantle.${r}.api.aws/v1`
 }
 
 /** AWS regions that commonly support the Bedrock runtime endpoint. */
@@ -225,13 +228,80 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     envKeys: ['OPENROUTER_API_KEY'],
   },
   {
+    id: 'xai',
+    label: 'xAI / Grok (api.x.ai)',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.x.ai/v1',
+    defaultModel: 'grok-4',
+    smallFastModel: 'grok-3-mini',
+    envKeys: ['XAI_API_KEY'],
+  },
+  {
+    id: 'groq',
+    label: 'Groq (api.groq.com)',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.groq.com/openai/v1',
+    defaultModel: 'llama-3.3-70b-versatile',
+    smallFastModel: 'llama-3.1-8b-instant',
+    envKeys: ['GROQ_API_KEY'],
+  },
+  {
+    id: 'fireworks',
+    label: 'Fireworks AI (api.fireworks.ai)',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.fireworks.ai/inference/v1',
+    defaultModel: 'accounts/fireworks/models/llama-v3p3-70b-instruct',
+    envKeys: ['FIREWORKS_API_KEY'],
+  },
+  {
+    id: 'togetherai',
+    label: 'Together AI (api.together.xyz)',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.together.xyz/v1',
+    defaultModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+    envKeys: ['TOGETHER_API_KEY', 'TOGETHERAI_API_KEY'],
+  },
+  {
+    id: 'cerebras',
+    label: 'Cerebras (api.cerebras.ai)',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.cerebras.ai/v1',
+    defaultModel: 'llama-3.3-70b',
+    envKeys: ['CEREBRAS_API_KEY'],
+  },
+  {
+    id: 'baseten',
+    label: 'Baseten (inference.baseten.co)',
+    kind: 'openai-compatible',
+    baseURL: 'https://inference.baseten.co/v1',
+    envKeys: ['BASETEN_API_KEY'],
+  },
+  {
+    id: 'deepinfra',
+    label: 'DeepInfra (api.deepinfra.com)',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.deepinfra.com/v1/openai',
+    defaultModel: 'meta-llama/Llama-3.3-70B-Instruct',
+    envKeys: ['DEEPINFRA_API_KEY'],
+  },
+  {
     id: 'bedrock',
-    label: 'AWS Bedrock — open models (OpenAI-compatible: gpt-oss, qwen, …)',
+    label: 'AWS Bedrock — all models (Converse API: Claude, Kimi, DeepSeek, …)',
+    kind: 'bedrock',
+    bedrockApi: 'converse',
+    // No fixed baseURL: region-scoped, called through the AWS SDK
+    // Converse/ConverseStream API. Models are fetched live. Converse is
+    // model-agnostic and natively separates reasoning + tool use.
+    envKeys: ['AWS_BEARER_TOKEN_BEDROCK'],
+  },
+  {
+    id: 'bedrock-openai',
+    label: 'AWS Bedrock — OpenAI-compatible (bedrock-mantle: gpt-oss, qwen, …)',
     kind: 'bedrock',
     bedrockApi: 'openai',
-    // No fixed baseURL: it is region-scoped and computed from the region the
-    // user selects in /connect (bedrockBaseURL). Models are fetched live.
-    envKeys: ['AWS_BEARER_TOKEN_BEDROCK'],
+    // Region-scoped OpenAI Chat Completions endpoint (bedrockBaseURL → mantle).
+    // No envKeys so AWS_BEARER_TOKEN_BEDROCK maps to the default (converse)
+    // provider during env migration; pick this explicitly via /connect.
   },
   {
     id: 'bedrock-anthropic',
@@ -239,7 +309,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     kind: 'bedrock',
     bedrockApi: 'anthropic',
     // Region-scoped; uses @anthropic-ai/bedrock-sdk with the Bedrock API key.
-    // No envKeys here so AWS_BEARER_TOKEN_BEDROCK maps to a single (openai)
+    // No envKeys here so AWS_BEARER_TOKEN_BEDROCK maps to a single (converse)
     // provider during env migration; pick this explicitly via /connect.
   },
   {

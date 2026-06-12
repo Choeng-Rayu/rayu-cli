@@ -139,6 +139,29 @@ async function getRayuBedrockAnthropicClient(
 }
 
 /**
+ * Rayu: build a Bedrock Converse client for the active provider when it is a
+ * Bedrock provider on the Converse API surface (bedrockApi:'converse', the
+ * default). Model-agnostic across all Bedrock models with native reasoning +
+ * tool use. Returns null otherwise so the caller falls through.
+ * SECURITY: the Bedrock API key is read from the 0600 provider config; never logged.
+ */
+async function getRayuBedrockConverseClient(
+  maxRetries: number,
+): Promise<unknown | null> {
+  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const active = getActiveProvider()
+  if (active?.kind !== 'bedrock' || active.bedrockApi !== 'converse') {
+    return null
+  }
+  const { createBedrockConverseClient } = await import('./bedrockConverseAdapter.js')
+  return createBedrockConverseClient({
+    apiKey: active.apiKey,
+    region: active.awsRegion,
+    maxRetries,
+  })
+}
+
+/**
  * Rayu: build a Gemini-on-Vertex client (OpenAI adapter + OAuth fetch wrapper)
  * for the active provider when it is a kind:'vertex' provider. Returns null
  * otherwise so the caller falls through to the other client paths.
@@ -216,6 +239,18 @@ async function buildClientForProvider(
       maxRetries,
     })
   }
+  // Bedrock Converse API: model-agnostic (Claude, Kimi, DeepSeek, …) via the
+  // AWS SDK; natively separates reasoning + tool use. Default Bedrock surface.
+  if (provider.kind === 'bedrock' && provider.bedrockApi === 'converse') {
+    const { createBedrockConverseClient } = await import(
+      './bedrockConverseAdapter.js'
+    )
+    return createBedrockConverseClient({
+      apiKey: provider.apiKey,
+      region: provider.awsRegion,
+      maxRetries,
+    })
+  }
   // Gemini on Vertex AI: native genai endpoint (reuses genaiTranslate so tool
   // schema sanitization + Gemini-3 thought_signature replay apply).
   if (provider.kind === 'vertex') {
@@ -289,6 +324,14 @@ export async function getAnthropicClient({
   const bedrockAnthropicClient = await getRayuBedrockAnthropicClient(maxRetries)
   if (bedrockAnthropicClient) {
     return bedrockAnthropicClient as unknown as Anthropic
+  }
+
+  // Rayu: route to the Bedrock Converse client (AWS SDK) when the active
+  // provider is a Bedrock provider on the Converse surface (the default). This
+  // is model-agnostic and natively separates reasoning + tool use.
+  const bedrockConverseClient = await getRayuBedrockConverseClient(maxRetries)
+  if (bedrockConverseClient) {
+    return bedrockConverseClient as unknown as Anthropic
   }
 
   // Rayu: route to the GenAI client ("Login with Gemini") when active.
