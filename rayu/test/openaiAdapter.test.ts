@@ -4,6 +4,8 @@ import {
   buildOpenAIRequest,
   createOpenAICompatibleClient,
   extractReasoningText,
+  initialInlineThinkState,
+  processInlineThink,
   splitInlineThink,
   toBetaMessage,
   translateStream,
@@ -937,5 +939,151 @@ describe('openaiAdapter inline <think> extraction (T4)', () => {
     const text = events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join('')
     expect(text).toBe('Hello world')
     expect(events.find(e => e.delta?.type === 'thinking_delta')).toBeUndefined()
+  })
+})
+
+describe('processInlineThink (leading-only inline reasoning splitter)', () => {
+  const TO = '\u25C1think\u25B7' // ◁think▷
+  const TC = '\u25C1/think\u25B7' // ◁/think▷
+  const run = (chunks: string[]) => {
+    let state = initialInlineThinkState()
+    const segs: { kind: string; text: string }[] = []
+    for (const c of chunks) {
+      const r = processInlineThink(state, c)
+      state = r.state
+      segs.push(...r.segments)
+    }
+    const r = processInlineThink(state, '', true)
+    segs.push(...r.segments)
+    const thinking = segs.filter(s => s.kind === 'thinking').map(s => s.text).join('')
+    const text = segs.filter(s => s.kind === 'text').map(s => s.text).join('')
+    return { thinking, text }
+  }
+
+  test('leading ◁think▷ span → thinking + text (single chunk)', () => {
+    expect(run([`${TO}reason${TC}answer`])).toEqual({ thinking: 'reason', text: 'answer' })
+  })
+
+  test('leading <think> span → thinking + text', () => {
+    expect(run(['<think>reason</think>answer'])).toEqual({ thinking: 'reason', text: 'answer' })
+  })
+
+  test('markers split across chunks route correctly', () => {
+    expect(run(['◁th', 'ink▷rea', 'son◁/th', 'ink▷ans', 'wer'])).toEqual({
+      thinking: 'reason',
+      text: 'answer',
+    })
+  })
+
+  test('no marker → pure pass-through text (no thinking)', () => {
+    expect(run(['Hello ', 'world'])).toEqual({ thinking: '', text: 'Hello world' })
+  })
+
+  test('marker mid-answer does NOT flip to thinking (leading-only)', () => {
+    expect(run(['answer with <think> literal'])).toEqual({
+      thinking: '',
+      text: 'answer with <think> literal',
+    })
+  })
+
+  test('leading whitespace before the open marker is tolerated', () => {
+    expect(run(['  \n', '<think>r</think>a'])).toEqual({ thinking: 'r', text: 'a' })
+  })
+
+  test('open marker with no close → emitted as thinking, answer never lost', () => {
+    expect(run(['<think>all reasoning, never closed'])).toEqual({
+      thinking: 'all reasoning, never closed',
+      text: '',
+    })
+  })
+})
+
+describe('translateStream inline reasoning (NVIDIA Kimi-style)', () => {
+  test('inline ◁think▷ content → thinking_delta + text_delta in distinct blocks', async () => {
+    const TO = '\u25C1think\u25B7'
+    const TC = '\u25C1/think\u25B7'
+    async function* s(): AsyncGenerator<any> {
+      yield { choices: [{ delta: { content: `${TO}let me ` } }] }
+      yield { choices: [{ delta: { content: `reason${TC}the ` } }] }
+      yield { choices: [{ delta: { content: 'answer' } }] }
+      yield { choices: [{ delta: {}, finish_reason: 'stop' }] }
+    }
+    const events: any[] = []
+    for await (const e of translateStream(s(), 'moonshotai/kimi-k2.6')) events.push(e)
+    const think = events.filter(e => e.delta?.type === 'thinking_delta').map(e => e.delta.thinking).join('')
+    const text = events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join('')
+    expect(think).toBe('let me reason')
+    expect(text).toBe('the answer')
+    const thinkStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'thinking')
+    const textStart = events.find(e => e.type === 'content_block_start' && e.content_block?.type === 'text')
+    expect(thinkStart).toBeDefined()
+    expect(textStart).toBeDefined()
+    expect(thinkStart.index).not.toBe(textStart.index)
+  })
+
+  test('plain content (no markers) still streams as text only — no regression', async () => {
+    async function* s(): AsyncGenerator<any> {
+      yield { choices: [{ delta: { content: 'Hel' } }] }
+      yield { choices: [{ delta: { content: 'lo world' } }] }
+      yield { choices: [{ delta: {}, finish_reason: 'stop' }] }
+    }
+    const events: any[] = []
+    for await (const e of translateStream(s(), 'm')) events.push(e)
+    const text = events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join('')
+    expect(text).toBe('Hello world')
+    expect(events.find(e => e.delta?.type === 'thinking_delta')).toBeUndefined()
+  })
+})
+
+describe('openaiAdapter Kimi thinking enablement (chat_template_kwargs)', () => {
+  test('Kimi models get chat_template_kwargs.thinking=true; others do not', () => {
+    const kimi = buildOpenAIRequest({
+      model: 'moonshotai/kimi-k2.6',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect((kimi as any).chat_template_kwargs).toEqual({ thinking: true })
+
+    const other = buildOpenAIRequest({
+      model: 'meta/llama-3.3-70b-instruct',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect((other as any).chat_template_kwargs).toBeUndefined()
+  })
+
+  test('a provider that rejects chat_template_kwargs is retried without it, then suppresses it', async () => {
+    let calls = 0
+    const bodies: any[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      calls++
+      const body = JSON.parse(init.body)
+      bodies.push(body)
+      if (body.chat_template_kwargs) {
+        return new Response(
+          JSON.stringify({ error: { message: 'Unrecognized request argument: chat_template_kwargs' } }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(
+        JSON.stringify({ id: 'c', choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k',
+        baseURL: 'http://strict.test/v1',
+        maxRetries: 0,
+      })
+      const msg: any = await client.beta.messages.create({
+        model: 'moonshotai/kimi-k2.6',
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      expect(msg.content[0].text).toBe('ok')
+      expect(calls).toBe(2) // first with chat_template_kwargs (400), retry without
+      expect(bodies.map(b => 'chat_template_kwargs' in b)).toEqual([true, false])
+    } finally {
+      globalThis.fetch = origFetch
+    }
   })
 })

@@ -24,6 +24,33 @@ import type { ProviderFeatureMode } from 'src/utils/rayuConfig.js'
 
 type AnyObj = Record<string, unknown>
 
+// --- Optional raw-stream capture (debugging reasoning/tool formats) ----------
+// When RAYU_DEBUG_REASONING is set, append the first N raw streaming chunks to
+// ~/.rayu/debug-reasoning.jsonl so we can see exactly how a provider/model
+// surfaces reasoning (reasoning_content? inline markers? a different field?).
+// Inert otherwise. SECURITY: logs only the provider RESPONSE (no credentials).
+let debugReasoningCount = 0
+function debugCaptureDelta(model: string, chunk: unknown): void {
+  if (!process.env.RAYU_DEBUG_REASONING || debugReasoningCount >= 60) return
+  debugReasoningCount++
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('path') as typeof import('path')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getRayuConfigHomeDir } = require('src/utils/envUtils.js') as typeof import('src/utils/envUtils.js')
+    const dir = getRayuConfigHomeDir()
+    fs.mkdirSync(dir, { recursive: true })
+    fs.appendFileSync(
+      path.join(dir, 'debug-reasoning.jsonl'),
+      JSON.stringify({ t: Date.now(), model, chunk }) + '\n',
+    )
+  } catch {
+    // best-effort; never throw from the stream path
+  }
+}
+
 /** Minimal shape of the Anthropic beta.messages.create params we consume. */
 type BetaParams = {
   model: string
@@ -292,6 +319,15 @@ export function buildOpenAIRequest(
   if (options.reasoningEffort) {
     req.reasoning_effort = options.reasoningEffort
   }
+  // Kimi (Moonshot) thinking mode: the reasoning trace is gated behind
+  // chat_template_kwargs.thinking on vLLM/SGLang deployments (e.g. NVIDIA NIM,
+  // which serves Kimi via vLLM and does NOT emit reasoning_content unless this
+  // is set explicitly, despite Moonshot's "on by default" docs). Scoped to Kimi
+  // so other models are untouched; sent as an optional param so a provider that
+  // rejects it is retried without it.
+  if (/kimi/i.test(params.model)) {
+    req.chat_template_kwargs = { thinking: true }
+  }
   return req
 }
 
@@ -463,6 +499,97 @@ export function splitInlineThink(text: string): { thinking?: string; text: strin
   return { text }
 }
 
+export type InlineThinkState = { phase: 'detect' | 'thinking' | 'text'; buffer: string }
+export const initialInlineThinkState = (): InlineThinkState => ({ phase: 'detect', buffer: '' })
+export type ThinkSegment = { kind: 'text' | 'thinking'; text: string }
+
+const MAX_THINK_OPEN_LEN = 7 // '<think>' / '◁think▷'
+const MAX_THINK_CLOSE_LEN = 8 // '</think>' / '◁/think▷'
+
+/**
+ * Streaming LEADING-ONLY inline reasoning splitter. Some OpenAI-compatible
+ * providers (e.g. NVIDIA NIM Kimi K2.6) return reasoning INLINE in `content`,
+ * wrapped in <think>…</think> or ◁think▷…◁/think▷ at the START of the message,
+ * then the answer — instead of a separate `reasoning_content` field. Feed each
+ * content delta; it returns resolved segments + carry state.
+ *
+ * SAFE by design:
+ *  - Only a LEADING marker enters "thinking" mode — a stray marker mid-answer
+ *    can NEVER flip it, so normal text is never misclassified.
+ *  - The answer after the close marker goes to text; it never swallows or loses
+ *    content. If no marker appears at all, every chunk passes through as text.
+ * Call once more with flush:true at stream end to drain the carry buffer.
+ */
+export function processInlineThink(
+  state: InlineThinkState,
+  chunk: string,
+  flush = false,
+): { segments: ThinkSegment[]; state: InlineThinkState } {
+  const segments: ThinkSegment[] = []
+  let phase = state.phase
+  let buffer = state.buffer + chunk
+
+  for (;;) {
+    if (phase === 'text') {
+      if (buffer) segments.push({ kind: 'text', text: buffer })
+      buffer = ''
+      break
+    }
+
+    if (phase === 'detect') {
+      const lead = buffer.replace(/^\s+/, '')
+      const open = THINK_OPEN.find(m => lead.startsWith(m))
+      if (open) {
+        phase = 'thinking'
+        buffer = lead.slice(open.length)
+        continue
+      }
+      // Could still become a marker (or only whitespace so far) → wait for more,
+      // unless we're flushing or it's already too long to be a marker prefix.
+      const couldBeMarker =
+        lead.length === 0 || THINK_OPEN.some(m => m.startsWith(lead) && lead.length < m.length)
+      if (!flush && couldBeMarker && lead.length < MAX_THINK_OPEN_LEN) break
+      phase = 'text' // not a leading think marker → plain text from here on
+      continue
+    }
+
+    // phase === 'thinking': stream reasoning until the close marker.
+    let closeIdx = -1
+    let closeLen = 0
+    for (const m of THINK_CLOSE) {
+      const i = buffer.indexOf(m)
+      if (i !== -1 && (closeIdx === -1 || i < closeIdx)) {
+        closeIdx = i
+        closeLen = m.length
+      }
+    }
+    if (closeIdx !== -1) {
+      const before = buffer.slice(0, closeIdx)
+      if (before) segments.push({ kind: 'thinking', text: before })
+      buffer = buffer.slice(closeIdx + closeLen)
+      phase = 'text'
+      continue
+    }
+    // No close yet: emit thinking, holding back a possible partial-close tail.
+    let hold = 0
+    if (!flush) {
+      for (let n = Math.min(MAX_THINK_CLOSE_LEN - 1, buffer.length); n > 0; n--) {
+        const tail = buffer.slice(buffer.length - n)
+        if (THINK_CLOSE.some(m => m.startsWith(tail) && n < m.length)) {
+          hold = n
+          break
+        }
+      }
+    }
+    const emit = hold ? buffer.slice(0, buffer.length - hold) : buffer
+    if (emit) segments.push({ kind: 'thinking', text: emit })
+    buffer = hold ? buffer.slice(buffer.length - hold) : ''
+    break
+  }
+
+  return { segments, state: { phase, buffer } }
+}
+
 export async function* translateStream(
   openaiStream: AsyncIterable<AnyObj>,
   model: string,
@@ -488,8 +615,48 @@ export async function* translateStream(
   let usage: AnyObj | undefined
   const toolIndexByOaIndex = new Map<number, number>()
   let nextIndex = 0
+  let inlineThink = initialInlineThinkState()
+
+  const emitThinking = function* (text: string): Generator<StreamEvent> {
+    if (thinkingIndex === null) {
+      thinkingIndex = nextIndex++
+      yield {
+        type: 'content_block_start',
+        index: thinkingIndex,
+        content_block: { type: 'thinking', thinking: '', signature: '' },
+      }
+    }
+    yield {
+      type: 'content_block_delta',
+      index: thinkingIndex,
+      delta: { type: 'thinking_delta', thinking: text },
+    }
+  }
+  const emitText = function* (text: string): Generator<StreamEvent> {
+    if (textIndex === null) {
+      textIndex = nextIndex++
+      yield {
+        type: 'content_block_start',
+        index: textIndex,
+        content_block: { type: 'text', text: '' },
+      }
+    }
+    yield {
+      type: 'content_block_delta',
+      index: textIndex,
+      delta: { type: 'text_delta', text },
+    }
+  }
+  const emitSegments = function* (segs: ThinkSegment[]): Generator<StreamEvent> {
+    for (const s of segs) {
+      if (!s.text.length) continue
+      if (s.kind === 'thinking') yield* emitThinking(s.text)
+      else yield* emitText(s.text)
+    }
+  }
 
   for await (const chunk of openaiStream) {
+    debugCaptureDelta(model, chunk)
     const choice = (chunk.choices as AnyObj[])?.[0]
     if (!choice) {
       if (chunk.usage) usage = chunk.usage as AnyObj
@@ -497,39 +664,20 @@ export async function* translateStream(
     }
     const delta = (choice.delta as AnyObj) ?? {}
 
-    // Reasoning (thinking) deltas — emitted before content by reasoning models.
-    // Normalized across provider shapes (string / object / array).
+    // Reasoning (thinking) deltas — emitted via a separate field by most
+    // reasoning models. Normalized across provider shapes (string/object/array).
     const reasoning = extractReasoningText(delta)
     if (typeof reasoning === 'string' && reasoning.length) {
-      if (thinkingIndex === null) {
-        thinkingIndex = nextIndex++
-        yield {
-          type: 'content_block_start',
-          index: thinkingIndex,
-          content_block: { type: 'thinking', thinking: '', signature: '' },
-        }
-      }
-      yield {
-        type: 'content_block_delta',
-        index: thinkingIndex,
-        delta: { type: 'thinking_delta', thinking: reasoning },
-      }
+      yield* emitThinking(reasoning)
     }
 
     if (typeof delta.content === 'string' && delta.content.length) {
-      if (textIndex === null) {
-        textIndex = nextIndex++
-        yield {
-          type: 'content_block_start',
-          index: textIndex,
-          content_block: { type: 'text', text: '' },
-        }
-      }
-      yield {
-        type: 'content_block_delta',
-        index: textIndex,
-        delta: { type: 'text_delta', text: delta.content },
-      }
+      // Some providers (NVIDIA NIM Kimi K2.6, …) inline reasoning in `content`
+      // as a leading <think>…</think>/◁think▷…◁/think▷ span. Split it safely;
+      // when no marker is present this is a pass-through (one text segment).
+      const r = processInlineThink(inlineThink, delta.content)
+      inlineThink = r.state
+      yield* emitSegments(r.segments)
     }
 
     for (const tc of (delta.tool_calls as AnyObj[]) ?? []) {
@@ -568,6 +716,13 @@ export async function* translateStream(
     if (chunk.usage) usage = chunk.usage as AnyObj
   }
 
+  // Drain any held inline-think carry buffer at end of stream.
+  {
+    const r = processInlineThink(inlineThink, '', true)
+    inlineThink = r.state
+    yield* emitSegments(r.segments)
+  }
+
   if (thinkingIndex !== null) yield { type: 'content_block_stop', index: thinkingIndex }
   if (textIndex !== null) yield { type: 'content_block_stop', index: textIndex }
   for (const index of toolIndexByOaIndex.values()) {
@@ -604,7 +759,7 @@ export type OpenAICompatibleConfig = {
   fetch?: typeof fetch
 }
 
-type OptionalRequestParam = 'prompt_cache_key' | 'stream_options' | 'reasoning_effort'
+type OptionalRequestParam = 'prompt_cache_key' | 'stream_options' | 'reasoning_effort' | 'chat_template_kwargs'
 
 const unsupportedOptionalParams = new Map<string, Set<OptionalRequestParam>>()
 const clientCache = new Map<
@@ -685,6 +840,7 @@ function optionalParamsIn(req: AnyObj): OptionalRequestParam[] {
   if ('prompt_cache_key' in req) params.push('prompt_cache_key')
   if ('stream_options' in req) params.push('stream_options')
   if ('reasoning_effort' in req) params.push('reasoning_effort')
+  if ('chat_template_kwargs' in req) params.push('chat_template_kwargs')
   return params
 }
 
@@ -730,6 +886,9 @@ function rejectedOptionalParams(
   }
   if (/reasoning_effort/i.test(msg)) {
     if (candidates.includes('reasoning_effort')) rejected.add('reasoning_effort')
+  }
+  if (/chat_template_kwargs|thinking/i.test(msg)) {
+    if (candidates.includes('chat_template_kwargs')) rejected.add('chat_template_kwargs')
   }
   if (rejected.size > 0) return rejected
 

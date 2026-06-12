@@ -1677,11 +1677,18 @@ async function* queryModel(
       )
     }
 
-    // Only send temperature when thinking is disabled — the API requires
-    // temperature: 1 when thinking is enabled, which is already the default.
-    const temperature = !hasThinking
-      ? (options.temperatureOverride ?? 1)
-      : undefined
+    // The native Anthropic Messages API requires (and defaults to) temperature:1
+    // when thinking is enabled, so we omit it there. But OpenAI-compatible
+    // providers (NVIDIA NIM, OpenRouter, …) NEVER receive the Anthropic
+    // `thinking` param — the adapter drops it — so omitting temperature leaves
+    // the model on an unspecified server-default sampling. For some models
+    // (e.g. Kimi K2.x on NVIDIA) that degenerates into multilingual token soup
+    // at high effort (thinking on). Always send an explicit temperature for
+    // those providers; 1.0 matches NVIDIA's recommended thinking-mode value.
+    const temperature =
+      !hasThinking || isOpenAICompatibleActive()
+        ? (options.temperatureOverride ?? 1)
+        : undefined
 
     lastRequestBetas = betasParams
 
