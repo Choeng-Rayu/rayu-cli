@@ -51,7 +51,7 @@ ${grepGuidance}
 
 NOTE: You are meant to be a fast agent that returns output as quickly as possible. In order to achieve this you must:
 - Make efficient use of the tools that you have at your disposal: be smart about how you search for files and implementations
-- Wherever possible you should try to spawn multiple parallel tool calls for grepping and reading files
+- Wherever possible you should try to spawn multiple parallel tool calls for grepping and reading files — plan them upfront and batch them in one message (~3–5 at a time); parallel is ~3–5x faster than one-at-a-time.
 
 Complete the user's search request efficiently and report your findings clearly.`
 }

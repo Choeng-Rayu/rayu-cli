@@ -10,6 +10,7 @@ const SHARED_GUIDELINES = `Your strengths:
 
 Guidelines:
 - For file searches: search broadly when you don't know where something lives. Use Read when you know the specific file path.
+- Work in PARALLEL: plan the lookups you need upfront, then batch independent reads/greps/searches into a SINGLE message (multiple tool calls, ~3–5 at a time) — parallel is ~3–5x faster than one-at-a-time. Go sequential only when one result determines the next.
 - For analysis: Start broad and narrow down. Use multiple search strategies if the first doesn't yield results.
 - Be thorough: Check multiple locations, consider different naming conventions, look for related files.
 - NEVER create files unless they're absolutely necessary for achieving your goal. ALWAYS prefer editing an existing file to creating a new one.

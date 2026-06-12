@@ -265,7 +265,7 @@ const externalTips: Tip[] = [
   {
     id: 'enter-to-steer-in-relatime',
     content: async () =>
-      'Send messages to Claude while it works to steer Claude in real-time',
+      'Send messages to RAYU while it works to steer Rayu in real-time',
     cooldownSessions: 20,
     isRelevant: async () => true,
   },
