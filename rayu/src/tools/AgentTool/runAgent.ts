@@ -80,6 +80,8 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import { COLLABORATOR_AGENT_TYPES } from './built-in/collaborators/index.js'
+import { SUBAGENT_TYPES } from './built-in/subagents/index.js'
 
 /**
  * Initialize agent-specific MCP servers
@@ -678,12 +680,20 @@ export async function* runAgent({
     debug: toolUseContext.options.debug,
     verbose: toolUseContext.options.verbose,
     mainLoopModel: resolvedAgentModel,
-    // For fork children (useExactTools), inherit thinking config to match the
-    // parent's API request prefix for prompt cache hits. For regular
-    // sub-agents, disable thinking to control output token costs.
-    thinkingConfig: useExactTools
-      ? toolUseContext.options.thinkingConfig
-      : { type: 'disabled' as const },
+    // Thinking config:
+    // - Fork children (useExactTools): inherit the parent's config (byte-identical
+    //   prefix for prompt-cache hits).
+    // - Tier-3 subagents (except read-only Explore) + Tier-2 collaborators: inherit
+    //   the parent's thinking so planning/implementation/review/fix can reason
+    //   (only takes effect where the model supports thinking).
+    // - All other agents (Explore, general-purpose, utility): thinking disabled to
+    //   control output token cost — Explore is read-only and never needs it.
+    thinkingConfig:
+      useExactTools ||
+      SUBAGENT_TYPES.includes(agentDefinition.agentType) ||
+      COLLABORATOR_AGENT_TYPES.includes(agentDefinition.agentType)
+        ? toolUseContext.options.thinkingConfig
+        : { type: 'disabled' as const },
     mcpClients: mergedMcpClients,
     mcpResources: toolUseContext.options.mcpResources,
     agentDefinitions: toolUseContext.options.agentDefinitions,
