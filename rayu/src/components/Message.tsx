@@ -431,7 +431,7 @@ function UserMessage(t0) {
   }
 }
 function AssistantMessageBlock(t0) {
-  const $ = _c(45);
+  const $ = _c(46);
   const {
     param,
     addMargin,
@@ -543,14 +543,16 @@ function AssistantMessageBlock(t0) {
         }
         const isLastThinking = !lastThinkingBlockId || thinkingBlockId === lastThinkingBlockId;
         const t1 = isTranscriptMode && !isLastThinking;
+        const isThinkingActive = shouldAnimate && isLastThinking;
         let t2;
-        if ($[31] !== addMargin || $[32] !== isTranscriptMode || $[33] !== param || $[34] !== t1 || $[35] !== verbose) {
-          t2 = <AssistantThinkingMessage addMargin={addMargin} param={param} isTranscriptMode={isTranscriptMode} verbose={verbose} hideInTranscript={t1} />;
+        if ($[31] !== addMargin || $[32] !== isTranscriptMode || $[33] !== param || $[34] !== t1 || $[35] !== verbose || $[45] !== isThinkingActive) {
+          t2 = <AssistantThinkingMessage addMargin={addMargin} param={param} isTranscriptMode={isTranscriptMode} verbose={verbose} hideInTranscript={t1} isThinking={isThinkingActive} />;
           $[31] = addMargin;
           $[32] = isTranscriptMode;
           $[33] = param;
           $[34] = t1;
           $[35] = verbose;
+          $[45] = isThinkingActive;
           $[36] = t2;
         } else {
           t2 = $[36];
