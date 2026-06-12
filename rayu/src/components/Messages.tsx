@@ -704,7 +704,7 @@ const MessagesImpl = ({
           <AssistantThinkingMessage param={{
         type: 'thinking',
         thinking: streamingThinking.thinking
-      }} addMargin={false} isTranscriptMode={true} verbose={verbose} hideInTranscript={false} />
+      }} addMargin={false} isTranscriptMode={true} verbose={verbose} hideInTranscript={false} isThinking={streamingThinking.isStreaming} />
         </Box>}
 
       {streamingText && !isBriefOnly && <Box alignItems="flex-start" flexDirection="row" marginTop={1} width="100%">
