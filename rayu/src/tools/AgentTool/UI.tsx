@@ -48,6 +48,39 @@ function hasProgressMessage(data: Progress): data is AgentToolProgress {
   return msg != null && typeof msg === 'object' && 'type' in msg;
 }
 
+const THINKING_TEXT = 'thinking…';
+
+/** True when the most recent progress message is the agent reasoning (a
+ * thinking block) and it hasn't emitted a tool call yet. Used to show a
+ * lightweight "thinking…" status on a subagent/collaborator progress line. */
+function isAgentCurrentlyThinking(progressMessages: ProgressMessage<Progress>[]): boolean {
+  const last = progressMessages.findLast(m => hasProgressMessage(m.data));
+  if (!last || !hasProgressMessage(last.data)) {
+    return false;
+  }
+  const message = last.data.message;
+  if (message.type !== 'assistant') {
+    return false;
+  }
+  const content = message.message.content;
+  return content.some(c => c.type === 'thinking' || c.type === 'redacted_thinking') && !content.some(c => c.type === 'tool_use');
+}
+
+/** True for an assistant message that is ONLY thinking (no tool_use, no text).
+ * Such mid-reasoning messages are kept out of the condensed progress list so we
+ * surface a "thinking…" status instead of dumping the full reasoning text. */
+function isThinkingOnlyAssistantMessage(m: ProgressMessage<Progress>): boolean {
+  if (!hasProgressMessage(m.data)) {
+    return false;
+  }
+  const message = m.data.message;
+  if (message.type !== 'assistant') {
+    return false;
+  }
+  const content = message.message.content;
+  return content.length > 0 && content.every(c => c.type === 'thinking' || c.type === 'redacted_thinking');
+}
+
 /**
  * Check if a progress message is a search/read/REPL operation (tool use or result).
  * Returns { isSearch, isRead, isREPL } if it's a collapsible operation, null otherwise.
@@ -103,7 +136,7 @@ type ProcessedMessage = {
 function processProgressMessages(messages: ProgressMessage<Progress>[], tools: Tools, isAgentRunning: boolean): ProcessedMessage[] {
   // Only process for ants
   if ("external" !== 'ant') {
-    return messages.filter((m): m is ProgressMessage<AgentToolProgress> => hasProgressMessage(m.data) && m.data.message.type !== 'user').map(m => ({
+    return messages.filter((m): m is ProgressMessage<AgentToolProgress> => hasProgressMessage(m.data) && m.data.message.type !== 'user' && !isThinkingOnlyAssistantMessage(m)).map(m => ({
       type: 'original',
       message: m
     }));
@@ -601,7 +634,7 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
   // initializing text so MessageResponse doesn't render a bare ⎿.
   if (displayedMessages.length === 0 && !(isTranscriptMode && prompt)) {
     return <MessageResponse height={1}>
-        <Text dimColor>{INITIALIZING_TEXT}</Text>
+        <Text dimColor>{isAgentCurrentlyThinking(progressMessages) ? THINKING_TEXT : INITIALIZING_TEXT}</Text>
       </MessageResponse>;
   }
   const {
@@ -860,6 +893,11 @@ export function userFacingNameBackgroundColor(input: Partial<{
   return getAgentColor(input.subagent_type) as keyof Theme | undefined;
 }
 export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tools: Tools): string | null {
+  // If the agent is mid-reasoning (a thinking block, no tool call yet), show a
+  // lightweight "thinking…" status instead of "Initializing…".
+  if (isAgentCurrentlyThinking(progressMessages)) {
+    return THINKING_TEXT;
+  }
   // Build tool_use lookup from all progress messages (needed for reverse iteration)
   const toolUseByID = new Map<string, ToolUseBlockParam>();
   for (const pm of progressMessages) {

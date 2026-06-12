@@ -191,6 +191,16 @@ export type ToolUseContext = {
    */
   setAppStateForTasks?: (f: (prev: AppState) => AppState) => void
   /**
+   * Channel for recording pending file changes (the /undo, /keep,
+   * /review_detail + review-card system). Routes to the ROOT store so that
+   * async/background agents (collaborators, in-process teammates) editing the
+   * MAIN working tree are still tracked — their `setAppState` is a no-op.
+   * Set to a no-op for worktree-isolated agents so their edits don't pollute
+   * the main pending list (they surface via the worktree diff instead).
+   * Falls back to `setAppState` when unset (e.g. the main agent).
+   */
+  recordFileChangeSetAppState?: (f: (prev: AppState) => AppState) => void
+  /**
    * Optional handler for URL elicitations triggered by tool call errors (-32042).
    * In print/SDK mode, this delegates to structuredIO.handleElicitation.
    * In REPL mode, this is undefined and the queue-based UI path is used.

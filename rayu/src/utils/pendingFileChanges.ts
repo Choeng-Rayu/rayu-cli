@@ -84,6 +84,10 @@ export type FileChangeReviewSystemMessage = {
 type PendingFileChangeContext = {
   getAppState(): AppState
   setAppState(updater: (prev: AppState) => AppState): void
+  /** Optional root-store channel for recording pending changes (set for
+   *  subagents/teammates so async/background main-tree edits are tracked).
+   *  Falls back to setAppState when unset. */
+  recordFileChangeSetAppState?: (updater: (prev: AppState) => AppState) => void
 }
 
 type PendingFileUndoContext = PendingFileChangeContext & {
@@ -122,7 +126,12 @@ export function recordPendingFileChange(
     status: 'pending',
   }
 
-  context.setAppState(prev => ({
+  // Record via the dedicated root-store channel when present (so async/
+  // background agents' main-tree edits are tracked); otherwise via setAppState
+  // (main agent / sync agents). Single write — never both — to avoid
+  // double-recording.
+  const applyChange = context.recordFileChangeSetAppState ?? context.setAppState
+  applyChange(prev => ({
     ...prev,
     pendingFileChanges: [...prev.pendingFileChanges, change].slice(
       -MAX_PENDING_FILE_CHANGES,

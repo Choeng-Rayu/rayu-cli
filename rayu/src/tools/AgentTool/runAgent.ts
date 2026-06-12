@@ -246,6 +246,29 @@ function isRecordableMessage(
   )
 }
 
+type FileChangeRecorder = NonNullable<
+  ToolUseContext['recordFileChangeSetAppState']
+>
+
+/**
+ * Decide how a subagent records pending file changes (for /undo, /keep,
+ * /review_detail + the review card). Pure so it can be unit-tested.
+ * - worktree-isolated agent → no-op: its edits live on the worktree branch and
+ *   surface via the worktree diff; they must NOT pollute the main pending list.
+ * - a worktree ANCESTOR already suppressed recording → inherit (keep suppressing).
+ * - otherwise (non-worktree, sync OR async) → record to the ROOT session store
+ *   so the agent's main-tree edits are /undo / /keep / review-controllable.
+ */
+export function resolveFileChangeRecorder(opts: {
+  worktreePath?: string
+  parentRecorder?: FileChangeRecorder
+  rootSetAppState: FileChangeRecorder
+}): FileChangeRecorder {
+  if (opts.worktreePath) return () => {}
+  if (opts.parentRecorder !== undefined) return opts.parentRecorder
+  return opts.rootSetAppState
+}
+
 export async function* runAgent({
   agentDefinition,
   promptMessages,
@@ -729,6 +752,16 @@ export async function* runAgent({
   if (preserveToolUseResults) {
     agentToolUseContext.preserveToolUseResults = true
   }
+
+  // Record this agent's MAIN-TREE file edits into the root session store so the
+  // review card + /undo /keep /review_detail control them — even for async
+  // (background) agents whose setAppState is a no-op (collaborators, teammates).
+  // Worktree-isolated agents are suppressed (their edits surface via the diff).
+  agentToolUseContext.recordFileChangeSetAppState = resolveFileChangeRecorder({
+    worktreePath,
+    parentRecorder: toolUseContext.recordFileChangeSetAppState,
+    rootSetAppState,
+  })
 
   // Expose cache-safe params for background summarization (prompt cache sharing)
   if (onCacheSafeParams) {

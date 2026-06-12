@@ -415,6 +415,11 @@ export function createSubagentContext(
     // are never registered and never killed (PPID=1 zombie).
     setAppStateForTasks:
       parentContext.setAppStateForTasks ?? parentContext.setAppState,
+    // Inherit the parent's pending-file-change recorder so nested children
+    // keep the same recording behavior (runAgent sets it per-agent via
+    // resolveFileChangeRecorder; undefined for the main agent → falls back to
+    // setAppState in recordPendingFileChange).
+    recordFileChangeSetAppState: parentContext.recordFileChangeSetAppState,
     // Async subagents whose setAppState is a no-op need local denial tracking
     // so the denial counter actually accumulates across retries.
     localDenialTracking: overrides?.shareSetAppState
