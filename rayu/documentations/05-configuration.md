@@ -5,23 +5,15 @@
 Rayu resolves a single **config home directory** used for settings, providers,
 sessions, skills, projects, etc. Resolution order:
 
-1. **`RAYU_CONFIG_DIR`** — explicit override (highest priority).
-2. **`CLAUDE_CONFIG_DIR`** — legacy/Claude Code override.
-3. **`~/.rayu`** — if it exists (Rayu's own config).
-4. **`~/.claude`** — if it exists (an existing **Claude Code** install is used
-   automatically).
-5. **`~/.rayu`** — default for fresh installs.
+1. **`RAYU_CONFIG_DIR`** — explicit override.
+2. **`~/.rayu`** — if it exists (Rayu's own config).
+3. **`~/.rayu`** — default for fresh installs.
 
-This means **both `~/.rayu` and `~/.claude` layouts are supported**: a fresh
-install uses `~/.rayu`; an existing Claude Code user (with `~/.claude`) works out
-of the box. If both exist, `~/.rayu` is preferred. Force either with the env var:
+Force a different directory with the env var:
 
 ```bash
-CLAUDE_CONFIG_DIR=~/.claude rayu     # use the Claude Code config dir
 RAYU_CONFIG_DIR=/tmp/rayu-test rayu  # isolated/throwaway config
 ```
-
-> Note: this selects **one** active config home; it does not merge the two.
 
 ## Files & locations
 
@@ -30,19 +22,13 @@ Within the config home (e.g. `~/.rayu/`):
 | Path | Purpose | Notes |
 |------|---------|-------|
 | `providers.json` | Rayu providers: id, kind, apiKey, baseURL, default/fetched models, context overrides | mode `0600` (secrets) |
-| `settings.json` | User settings, incl. the selected `model` | shared schema with Claude Code |
+| `settings.json` | User settings, incl. the selected `model` | |
 | `diagnostics.jsonl` | Recorded bugs/issues/vulnerabilities | append-only JSONL |
 | `projects/` | Per-project session transcripts | |
-| `skills/`, `agents/`, … | Skills/agents/etc. | Claude Code-compatible layout |
+| `skills/`, `agents/`, … | Skills/agents/etc. | |
 
-At the home root (shared with Claude Code, **not** inside the config dir):
-
-| Path | Purpose |
-|------|---------|
-| `~/.claude.json` | Global config incl. **MCP server list** (project-scoped entries) |
-
-When `RAYU_CONFIG_DIR`/`CLAUDE_CONFIG_DIR` is set, the global `.claude.json`
-lives inside that directory instead of the home root.
+When `RAYU_CONFIG_DIR` is set, all config files live inside that directory
+instead of the default `~/.rayu`.
 
 ## `providers.json` schema
 
@@ -88,7 +74,6 @@ You can edit this file by hand; restart Rayu to pick up changes.
 | Variable | Effect |
 |----------|--------|
 | `RAYU_CONFIG_DIR` | Override config home dir |
-| `CLAUDE_CONFIG_DIR` | Legacy override for config home dir |
 | `RAYU_OPENAI_COMPATIBLE=1` | Force the OpenAI-compatible client path |
 | `RAYU_OPENAI_BASE_URL` | Base URL for the OpenAI-compatible endpoint |
 | `RAYU_OPENAI_API_KEY` | API key for the OpenAI-compatible endpoint |
@@ -109,18 +94,15 @@ You can edit this file by hand; restart Rayu to pick up changes.
 | `RAYU_DIAGNOSTICS_NO_FILE=1` | Don't persist diagnostics to disk |
 | `RAYU_TELEMETRY=1` | Opt back into telemetry (off by default) |
 | `DISABLE_TELEMETRY` | Force telemetry off (`no-telemetry`) |
-| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Force `essential-traffic` (no nonessential network) |
 
 See [Diagnostics & Privacy](./09-diagnostics-privacy.md) for the privacy model.
 
 ## Project settings & memory
 
-Rayu reads Claude Code-compatible project files when present:
+Rayu reads project files when present:
 
-- `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/*.md` — project memory/instructions.
-- `.claude/settings.json`, `.claude/settings.local.json` — project/local settings.
+- `RAYU.md`, `.rayu/RAYU.md`, `.rayu/rules/*.md` — project memory/instructions.
+- `.rayu/settings.json`, `.rayu/settings.local.json` — project/local settings.
 - `.mcp.json` — project MCP servers.
-
-(These conventions are unchanged from the upstream layout.)
 
 Next: [CLI Reference →](./06-cli-reference.md)
