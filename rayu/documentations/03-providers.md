@@ -228,10 +228,8 @@ For scripts/CI, you can bypass the saved config entirely using environment varia
 | `RAYU_OPENAI_COMPATIBLE=1` | Force the OpenAI-compatible client path |
 | `RAYU_OPENAI_BASE_URL` | Base URL for the OpenAI-compatible endpoint |
 | `RAYU_OPENAI_API_KEY` | API key for the OpenAI-compatible endpoint |
-| `CLAUDE_CODE_USE_BEDROCK=1` | Force the AWS Bedrock client path |
 | `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock Bearer token override |
 | `BEDROCK_BASE_URL` | Custom Bedrock base URL endpoint |
-| `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` | Skip standard AWS authentication header |
 | `AWS_DEFAULT_REGION` / `AWS_REGION` | AWS Region (default: `us-east-1`) |
 | `ANTHROPIC_API_KEY` | Anthropic key (first-party path) |
 
