@@ -30,7 +30,7 @@ command menu; start typing to filter. Press Enter to run.
 |---------|-------------|
 | `/config` | View/edit settings |
 | `/mcp` | Manage MCP servers (also available as the `rayu mcp` subcommand) |
-| `/memory` | Edit project memory (CLAUDE.md) |
+| `/memory` | Edit project memory (`RAYU.md`) |
 | `/agents` | Manage agents |
 | `/hooks` | Configure hooks |
 | `/effort` | Set effort level |
