@@ -249,6 +249,16 @@ describe('openaiAdapter model-aware params (tokens/temperature)', () => {
       expect(req.temperature).toBe(0.7)
     }
   })
+
+  test('non-reasoning models default temperature to 1 when unset (clean thinking on OpenAI-compat)', () => {
+    for (const model of ['meta/llama-3.3-70b-instruct', 'moonshotai/kimi-k2.6', 'deepseek-chat']) {
+      const req = buildOpenAIRequest({ model, max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] })
+      expect(req.temperature).toBe(1)
+    }
+    // Reasoning models still omit temperature even when unset.
+    const reasoning = buildOpenAIRequest({ model: 'o3', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] })
+    expect(reasoning.temperature).toBeUndefined()
+  })
 })
 
 describe('openaiAdapter tool ordering + tool_choice', () => {

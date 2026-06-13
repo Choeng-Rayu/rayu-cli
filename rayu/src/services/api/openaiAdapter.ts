@@ -300,9 +300,18 @@ export function buildOpenAIRequest(
       req.max_tokens = params.max_tokens
     }
   }
-  // Reasoning models only support the default temperature; sending one 400s.
-  if (typeof params.temperature === 'number' && !isReasoningModel(params.model)) {
-    req.temperature = params.temperature
+  // Reasoning models (o-series/gpt-5) only support the default temperature;
+  // sending one 400s, so leave it off for them. For every other model ALWAYS
+  // send a temperature: claude.ts omits it on the native-Anthropic thinking
+  // path, but OpenAI-compatible providers then fall back to an unspecified
+  // server-default sampling — which makes some models (e.g. Kimi) degenerate
+  // into token soup and emit no clean reasoning. Default to 1.0 when unset so
+  // subagents/collaborators reason cleanly on ANY OpenAI-compatible provider,
+  // even one different from the active main provider. (An explicit override
+  // from claude.ts is respected.)
+  if (!isReasoningModel(params.model)) {
+    req.temperature =
+      typeof params.temperature === 'number' ? params.temperature : 1
   }
   const tools = translateTools(params.tools)
   if (tools) {
