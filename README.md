@@ -1,6 +1,6 @@
 # @rayu-dev/rayu-cli (Rayu-CLI)
 
-> **Rayu-CLI** is a terminal-based AI coding agent. It is a self-branded, multi-provider fork of the Claude Code CLI that lets you **bring your own API key** and use **any OpenAI-compatible provider** (NVIDIA, DeepSeek, Kimi/Moonshot, OpenAI, OpenRouter, local servers) as well as Anthropic and AWS Bedrock — with free model switching, MCP support, and the full built-in tool suite.
+> **Rayu-CLI** is a terminal-based AI coding agent. It lets you **bring your own API key** and use **any OpenAI-compatible provider** (NVIDIA, DeepSeek, Kimi/Moonshot, OpenAI, OpenRouter, local servers) as well as Anthropic and AWS Bedrock — with free model switching, MCP support, and the full built-in tool suite.
 
 ---
 
@@ -104,7 +104,7 @@ rayu --print --permission-mode bypassPermissions "Refactor src/utils/format.ts t
   1. `anthropic` (Anthropic SDK)
   2. `bedrock` (AWS Bedrock SDK integration)
   3. `openai-compatible` (NVIDIA, DeepSeek, OpenAI, OpenRouter, Kimi, local endpoints, etc. via a translation layer)
-* **Configuration Home:** Rayu stores its keys and settings in `~/.rayu`. If you have a legacy configuration in `~/.claude`, Rayu-CLI imports and uses it automatically.
+* **Configuration Home:** Rayu stores its keys and settings in `~/.rayu`.
 * **Diagnostics:** Detailed logs about runtime errors and system events are saved to `~/.rayu/diagnostics.jsonl` for troubleshooting.
 
 ---
