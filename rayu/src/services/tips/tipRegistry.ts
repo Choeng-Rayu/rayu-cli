@@ -468,7 +468,10 @@ const externalTips: Tip[] = [
     content: async () =>
       '/mobile to use RAYU from the Claude app on your phone',
     cooldownSessions: 15,
-    isRelevant: async () => true,
+    // Disabled for now: the mobile companion app isn't available, so this tip
+    // would point users at a feature they can't use. Flip back to `true` to
+    // re-enable.
+    isRelevant: async () => false,
   },
   {
     id: 'opusplan-mode-reminder',
