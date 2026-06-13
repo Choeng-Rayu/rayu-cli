@@ -5,6 +5,7 @@ import {
   createOpenAICompatibleClient,
   extractReasoningText,
   initialInlineThinkState,
+  isToolUnsupported,
   processInlineThink,
   splitInlineThink,
   toBetaMessage,
@@ -258,6 +259,36 @@ describe('openaiAdapter model-aware params (tokens/temperature)', () => {
     // Reasoning models still omit temperature even when unset.
     const reasoning = buildOpenAIRequest({ model: 'o3', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] })
     expect(reasoning.temperature).toBeUndefined()
+  })
+})
+
+describe('openaiAdapter tool-unsupported detection (small local models)', () => {
+  const withTools = { tools: [{ type: 'function', function: { name: 'x' } }] }
+  test('detects Ollama 400 "does not support tools"', () => {
+    // The exact message Ollama returns for a small model like gemma3:1b.
+    const e = {
+      status: 400,
+      message: 'registry.ollama.ai/library/gemma3:1b does not support tools',
+    }
+    expect(isToolUnsupported(e, withTools)).toBe(true)
+  })
+  test('detects common phrasings', () => {
+    for (const m of [
+      "model doesn't support tools",
+      'tool calling is not supported by this model',
+      'function calling is not supported',
+      'this model has no support for tool use',
+    ]) {
+      expect(isToolUnsupported({ status: 400, message: m }, withTools)).toBe(true)
+    }
+  })
+  test('does not fire without tools in the request, on non-400, or unrelated 400s', () => {
+    const msg = 'does not support tools'
+    expect(isToolUnsupported({ status: 400, message: msg }, {})).toBe(false)
+    expect(isToolUnsupported({ status: 500, message: msg }, withTools)).toBe(false)
+    expect(
+      isToolUnsupported({ status: 400, message: 'rate limit exceeded' }, withTools),
+    ).toBe(false)
   })
 })
 

@@ -20,6 +20,7 @@ import {
 } from '@anthropic-ai/sdk/index.js'
 import { reportBug, reportIssue } from 'src/utils/rayuDiagnostics.js'
 import { hashPair } from 'src/utils/hash.js'
+import { PRODUCT_NAME } from 'src/constants/product.js'
 import type { ProviderFeatureMode } from 'src/utils/rayuConfig.js'
 
 type AnyObj = Record<string, unknown>
@@ -949,6 +950,40 @@ function withoutTools(req: AnyObj): AnyObj {
 }
 
 /**
+ * True for a 400 that means the *model itself* can't do tool/function calling
+ * (e.g. small local Ollama models such as gemma3:1b, which report only the
+ * "completion" capability). Distinct from the image+tools conflict above: here
+ * we tell the user plainly rather than silently dropping tools, because an
+ * agent that can't read/edit files or run commands is broken in a way the user
+ * needs to know about (so they can pick a tool-capable model).
+ */
+export function isToolUnsupported(e: unknown, req: AnyObj): boolean {
+  if ((e as AnyObj)?.status !== 400 || !req.tools) return false
+  const msg = String((e as AnyObj)?.message ?? '')
+  return /does(n'?t| not) support tool|tool[\s_-]*(calling|use|s)\b[^.]*\bnot\s+support|function[\s_-]*call(ing)?\b[^.]*\bnot\s+support|no support for tool/i.test(
+    msg,
+  )
+}
+
+/**
+ * A clear, actionable Anthropic-shaped error for a model that lacks tool
+ * support, so the UI shows guidance instead of a raw provider 400.
+ */
+function toolUnsupportedError(e: unknown, model: string): unknown {
+  const message =
+    `Model "${model}" does not support tools (function calling), which ${PRODUCT_NAME} needs ` +
+    `to read/edit files, run commands, and search. Small local LLMs often lack tool support. ` +
+    `Pick a tool-capable model with /model (e.g. qwen2.5-coder, llama3.1, qwen3, mistral-nemo), ` +
+    `pull one with "ollama pull qwen2.5-coder", or use a hosted/Ollama Cloud model.`
+  return AnthropicAPIError.generate(
+    400,
+    (e as AnyObj)?.error as object | undefined,
+    message,
+    (e as AnyObj)?.headers as Headers | undefined,
+  )
+}
+
+/**
  * Re-shape an error thrown by the OpenAI SDK as the equivalent Anthropic SDK
  * error. The shared retry/error layer (withRetry.ts, errors.ts) recognizes
  * provider 429 / 5xx / connection failures only via `instanceof` checks against
@@ -1084,6 +1119,14 @@ function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
           throw normalizeError(e2)
         }
       }
+      if (isToolUnsupported(e, request)) {
+        reportIssue(
+          'openai_adapter.tool_unsupported',
+          'model does not support tool calling',
+          { model, status: 400 },
+        )
+        throw toolUnsupportedError(e, model)
+      }
       reportIssue(
         'openai_adapter.request_failed',
         'OpenAI-compatible request failed',
@@ -1134,6 +1177,13 @@ function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
         } catch (e2) {
           throw normalizeError(e2)
         }
+      } else if (isToolUnsupported(e, request)) {
+        reportIssue(
+          'openai_adapter.tool_unsupported',
+          'model does not support tool calling',
+          { model, status: 400 },
+        )
+        throw toolUnsupportedError(e, model)
       } else {
         reportIssue(
           'openai_adapter.stream_failed',

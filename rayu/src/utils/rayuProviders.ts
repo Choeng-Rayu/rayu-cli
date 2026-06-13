@@ -123,6 +123,25 @@ export const VERTEX_REGIONS: Array<{ id: string; label: string }> = [
 ]
 
 
+// --- Ollama (local) ---------------------------------------------------------
+// Ollama serves an OpenAI-compatible API at http://localhost:11434/v1 (plus its
+// native /api surface). No API key is required. The address can be overridden
+// with the standard OLLAMA_HOST env var (a bare port, host:port, or full URL),
+// matching the Ollama CLI, so Rayu auto-detects a server started elsewhere.
+export const OLLAMA_DEFAULT_BASE_URL = 'http://localhost:11434/v1'
+
+/** OpenAI-compatible base URL for a local Ollama server, honoring OLLAMA_HOST. */
+export function ollamaBaseURL(): string {
+  let raw = (process.env.OLLAMA_HOST || '').trim()
+  if (!raw) return OLLAMA_DEFAULT_BASE_URL
+  if (/^\d+$/.test(raw)) raw = `localhost:${raw}` // bare port, e.g. "11434"
+  if (!/^https?:\/\//i.test(raw)) raw = `http://${raw}` // host or host:port
+  raw = raw.replace(/\/+$/, '')
+  if (!/\/v1(\/.*)?$/.test(raw)) raw = `${raw}/v1` // ensure the OpenAI /v1 base
+  return raw
+}
+
+
 // All confirmed OpenAI-compatible providers (tool calling + /v1/models), plus
 // AWS Bedrock via its OpenAI-compatible bedrock-runtime endpoint (authenticated
 // with a Bedrock API key / bearer token). Rayu connects to OpenAI-compatible
@@ -311,6 +330,14 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     // Region-scoped; uses @anthropic-ai/bedrock-sdk with the Bedrock API key.
     // No envKeys here so AWS_BEARER_TOKEN_BEDROCK maps to a single (converse)
     // provider during env migration; pick this explicitly via /connect.
+  },
+  {
+    id: 'ollama',
+    label: 'Ollama (local · auto-detect)',
+    kind: 'openai-compatible',
+    baseURL: OLLAMA_DEFAULT_BASE_URL,
+    // No envKeys / API key: Ollama needs none. Connected via /connect →
+    // Localhost → Ollama, which probes the server and lists its pulled models.
   },
   {
     id: 'local',

@@ -24,6 +24,7 @@ import {
   BEDROCK_REGIONS,
   DEFAULT_BEDROCK_REGION,
   bedrockBaseURL,
+  ollamaBaseURL,
   GEMINI_VERTEX_PROVIDER_ID,
   DEFAULT_VERTEX_REGION,
   VERTEX_REGIONS,
@@ -34,6 +35,9 @@ const PRESETS = PROVIDER_PRESETS
 
 type Phase =
   | 'pick'
+  | 'localChoice'
+  | 'ollamaDetect'
+  | 'ollamaError'
   | 'baseURL'
   | 'model'
   | 'key'
@@ -82,8 +86,11 @@ export function RayuProviderSetup({
     // Local/custom endpoints need a base URL; otherwise go straight to key.
     // Bedrock also starts at the key step (key → region → fetch models).
     // Vertex (ADC/OAuth) → credential detection; Login-with-Gemini (genai) →
-    // interactive Google sign-in.
-    if (p.kind === 'genai') setPhase('genaiLogin')
+    // interactive Google sign-in. Ollama → auto-detect the local server.
+    if (p.id === 'ollama') {
+      setFetchError(null)
+      setPhase('ollamaDetect')
+    } else if (p.kind === 'genai') setPhase('genaiLogin')
     else if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
     else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
     else setPhase('key')
@@ -349,18 +356,147 @@ export function RayuProviderSetup({
     }
   }, [phase, apiKey, region])
 
+  // Auto-detect a local Ollama server: probe its OpenAI-compatible endpoint,
+  // list the pulled models, persist the provider (no API key needed) and hand
+  // off to the shared model picker. If Ollama isn't reachable, surface a
+  // friendly error with retry / custom-endpoint options.
+  React.useEffect(() => {
+    if (phase !== 'ollamaDetect') return
+    let cancelled = false
+    setFetchError(null)
+    void (async () => {
+      const baseURL = ollamaBaseURL()
+      const base: RayuProvider = {
+        id: 'ollama',
+        kind: 'openai-compatible',
+        baseURL,
+        // Ollama ignores the key, but the OpenAI client requires a non-empty
+        // one. Honor OLLAMA_API_KEY if the user fronts Ollama with a proxy.
+        apiKey: process.env.OLLAMA_API_KEY || 'ollama',
+      }
+      const models = await fetchProviderModels(base).catch(() => [] as string[])
+      if (cancelled) return
+      if (models.length === 0) {
+        setFetchError(
+          `Couldn't reach Ollama at ${baseURL.replace(/\/v1$/, '')}. Make sure it's running ("ollama serve") and you've pulled a model ("ollama pull llama3.2"). Set OLLAMA_HOST to use a different address.`,
+        )
+        setPhase('ollamaError')
+        return
+      }
+      // Ollama ids look like "gemma3:1b" / "qwen2.5-coder:7b"; keep chat models
+      // but fall back to the full list if the heuristic filters everything.
+      const chat = models.filter(isLikelyChatModel)
+      const list = chat.length > 0 ? chat : models
+      const preferred =
+        list.find(m => /coder|code/i.test(m)) ??
+        list.find(m => /qwen|llama|gemma|mistral|deepseek|phi|gpt/i.test(m)) ??
+        list[0]
+      upsertProvider(
+        { ...base, fetchedModels: list, defaultModel: preferred },
+        true,
+      )
+      if (cancelled) return
+      onDone()
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [phase])
+
   if (phase === 'pick') {
+    // Group the two localhost options (Ollama + custom endpoint) under one
+    // "Localhost" entry so the top-level list stays about *who* hosts the model.
+    const localIds = new Set(['ollama', 'local'])
+    const pickOptions = [
+      ...PRESETS.filter(p => !localIds.has(p.id)).map(p => ({
+        label: p.label,
+        value: p.id,
+      })),
+      {
+        label: 'Localhost (Ollama / custom OpenAI-compatible endpoint)',
+        value: '__localhost__',
+      },
+    ]
     return (
       <Box flexDirection="column" gap={1} paddingLeft={1}>
         <Text bold>Set up your {PRODUCT_NAME} provider</Text>
         <Text dimColor>Choose a model provider. You can change or add more later with /model.</Text>
         <Select
-          options={PRESETS.map(p => ({ label: p.label, value: p.id }))}
+          options={pickOptions}
           onChange={(v: string) => {
+            if (v === '__localhost__') {
+              setPhase('localChoice')
+              return
+            }
             const p = PRESETS.find(x => x.id === v)
             if (p) pick(p)
           }}
           onCancel={onDone}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'localChoice') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Localhost provider</Text>
+        <Text dimColor>
+          Run models on your own machine. Ollama is auto-detected; or point Rayu
+          at any local OpenAI-compatible server.
+        </Text>
+        <Select
+          options={[
+            {
+              label: 'Ollama — auto-detect running models (localhost:11434)',
+              value: 'ollama',
+            },
+            {
+              label:
+                'Custom OpenAI-compatible endpoint (LM Studio, llama.cpp, vLLM, …)',
+              value: 'local',
+            },
+          ]}
+          onChange={(v: string) => {
+            const p = PRESETS.find(x => x.id === v)
+            if (p) pick(p)
+          }}
+          onCancel={() => setPhase('pick')}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'ollamaDetect') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Connecting to Ollama…</Text>
+        <Text dimColor>
+          Detecting models from {ollamaBaseURL().replace(/\/v1$/, '')}.
+        </Text>
+      </Box>
+    )
+  }
+
+  if (phase === 'ollamaError') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Ollama not reachable</Text>
+        {fetchError ? <Text color="yellow">{fetchError}</Text> : null}
+        <Select
+          options={[
+            { label: 'Retry detection', value: 'retry' },
+            { label: 'Enter a custom endpoint instead', value: 'local' },
+            { label: 'Cancel', value: 'cancel' },
+          ]}
+          onChange={(v: string) => {
+            if (v === 'retry') setPhase('ollamaDetect')
+            else if (v === 'local') {
+              const p = PRESETS.find(x => x.id === 'local')
+              if (p) pick(p)
+            } else onDone()
+          }}
+          onCancel={() => setPhase('localChoice')}
         />
       </Box>
     )
