@@ -1,7 +1,6 @@
 # Rayu-CLI Documentation
 
-Rayu-CLI is a terminal-based AI coding agent. It is a self-branded, multi-provider
-fork of the Claude Code CLI that lets you **bring your own API key** and use
+Rayu-CLI is a terminal-based AI coding agent. It lets you **bring your own API key** and use
 **any OpenAI-compatible provider** (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword,
 OpenAI, OpenRouter, local servers) as well as Anthropic — with free model
 switching, MCP support, and the full built-in tool suite.
@@ -52,7 +51,6 @@ In a session:
 
 - **Provider** — an API endpoint + key. Two kinds: `anthropic` (Anthropic API)
   and `openai-compatible` (everything else, via an OpenAI ↔ Anthropic translation layer).
-- **Config home** — `~/.rayu` by default; an existing `~/.claude` (Claude Code)
-  is used automatically if `~/.rayu` is absent. See [Configuration](./05-configuration.md).
+- **Config home** — `~/.rayu` by default. See [Configuration](./05-configuration.md).
 - **Diagnostics** — runtime bugs/issues/vulnerabilities are logged to
   `~/.rayu/diagnostics.jsonl`. See [Diagnostics](./09-diagnostics-privacy.md).
