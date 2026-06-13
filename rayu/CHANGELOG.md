@@ -2,6 +2,12 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.3.427 - 2026-06-13
+- Completely updated the documentation to properly reflect Rayu as an independent CLI, removing legacy Claude Code specific references
+- Improved the thinking UI and status displays
+- Fixed a bug with Kimi provider thinking output
+- Fixed a bug causing blocked thinking through the Bedrock provider
+
 ## 1.2.25 - 2026-06-11
 - Extended thinking and effort now work on any provider, not just Claude — type `ultrathink` to trigger deep reasoning on NVIDIA, Gemini, DeepSeek, and other OpenAI-compatible models
 - `/effort max` is no longer labeled "Opus only" and applies to whatever model you have connected
