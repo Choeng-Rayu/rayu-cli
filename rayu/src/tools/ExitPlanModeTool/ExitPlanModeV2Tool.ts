@@ -394,6 +394,9 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
       }
       return {
         ...prev,
+        // Plan confirmed (exiting plan mode → coding) → enter the persistent,
+        // session-wide collaborator-swarm orchestrator mode. /normal exits.
+        swarmMode: true,
         toolPermissionContext: {
           ...baseContext,
           mode: restoreMode,

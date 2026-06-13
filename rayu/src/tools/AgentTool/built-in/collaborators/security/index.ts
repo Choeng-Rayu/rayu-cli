@@ -9,6 +9,14 @@ export const SECURITY_COLLABORATOR = defineCollaborator({
   role: 'You own security end-to-end: design the auth flow and authorization model, then implement and enforce it — guards/middleware, validation, secret handling, security headers, and OWASP Top-10 hardening. You also audit the backend/frontend for vulnerabilities and fix them. Your security decisions are the source of truth and override convenience.',
   skillHint:
     'e.g. a security-review or OWASP skill for systematic threat coverage',
+  allowedSubagents: [
+    'backend-design',
+    'review',
+    'fix',
+    'linter',
+    'Explore',
+    'general-purpose',
+  ],
   owns: [
     'Authentication + authorization (RBAC) design and implementation',
     'Input validation and sensitive-data (hash/encrypt) handling',

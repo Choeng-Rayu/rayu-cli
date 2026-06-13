@@ -10,10 +10,19 @@ export const FRONTEND_COLLABORATOR = defineCollaborator({
   skillHint:
     'e.g. a UI/UX design skill such as ui-ux-pro-max for stronger visual/UX decisions',
   withStackAwareness: true,
+  allowedSubagents: [
+    'design',
+    'asset-generation',
+    'review',
+    'fix',
+    'linter',
+    'Explore',
+    'general-purpose',
+  ],
   owns: [
     'Page/screen architecture and the component tree',
     'State management and data fetching',
-    'Design system tokens (color, typography, spacing) and responsive behavior',
+    'Implements the Design PRD tokens (color, typography, spacing) and responsive behavior',
     'Animations/interactions and accessibility',
     'API integration against the backend collaborator’s routes',
   ],

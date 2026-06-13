@@ -6,6 +6,8 @@ import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import {
   type ProviderKind,
+  type RayuProvider,
+  getActiveProvider,
   loadRayuConfig,
   saveRayuConfig,
 } from './rayuConfig.js'
@@ -414,4 +416,81 @@ export function migrateEnvKeysToConfig(): void {
     cfg.activeProvider ??= cfg.providers[0]?.id
     saveRayuConfig(cfg)
   }
+}
+
+
+// --- Provider display names (header / status line) --------------------------
+// Short, human-friendly names shown next to the model in the logo/header (e.g.
+// "gemini-3.5-flash · Vertex AI") in place of the generic "API Usage Billing".
+
+/** Short, branded names keyed by provider id. */
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  anthropic: 'Anthropic',
+  nvidia: 'NVIDIA',
+  doubleword: 'Doubleword',
+  deepseek: 'DeepSeek',
+  'kimi-moonshot': 'Kimi',
+  'kimi-for-code': 'Kimi for Code',
+  openai: 'OpenAI',
+  gemini: 'Gemini',
+  [GEMINI_VERTEX_PROVIDER_ID]: 'Vertex AI',
+  'gemini-login': 'Gemini',
+  openrouter: 'OpenRouter',
+  xai: 'xAI',
+  groq: 'Groq',
+  fireworks: 'Fireworks AI',
+  togetherai: 'Together AI',
+  cerebras: 'Cerebras',
+  baseten: 'Baseten',
+  deepinfra: 'DeepInfra',
+  bedrock: 'AWS Bedrock',
+  'bedrock-openai': 'AWS Bedrock',
+  'bedrock-anthropic': 'AWS Bedrock',
+  ollama: 'Ollama',
+  local: 'Local',
+}
+
+/** Fallback name derived from the provider kind when the id isn't known. */
+function providerKindName(kind: ProviderKind): string {
+  switch (kind) {
+    case 'vertex':
+      return 'Vertex AI'
+    case 'bedrock':
+      return 'AWS Bedrock'
+    case 'genai':
+      return 'Gemini'
+    case 'anthropic':
+      return 'Anthropic'
+    default:
+      return 'OpenAI-compatible'
+  }
+}
+
+/**
+ * Human-friendly display name for a configured provider — id-aware, with a
+ * kind-based fallback, plus a localhost hint so custom Ollama endpoints still
+ * read as "Ollama".
+ */
+export function providerDisplayName(provider: RayuProvider): string {
+  const known = PROVIDER_DISPLAY_NAMES[provider.id]
+  if (known) return known
+  if (
+    provider.kind === 'openai-compatible' &&
+    provider.baseURL &&
+    /(?:\/\/|@)(?:localhost|127\.0\.0\.1)(?::\d+)?|:11434(?:\/|$)/.test(
+      provider.baseURL,
+    )
+  ) {
+    return 'Ollama'
+  }
+  return providerKindName(provider.kind)
+}
+
+/**
+ * Short display name for the ACTIVE provider (e.g. "Vertex AI", "Ollama",
+ * "NVIDIA"), or undefined when no provider is configured yet.
+ */
+export function getActiveProviderDisplayName(): string | undefined {
+  const p = getActiveProvider()
+  return p ? providerDisplayName(p) : undefined
 }

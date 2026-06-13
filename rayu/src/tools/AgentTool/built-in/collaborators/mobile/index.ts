@@ -10,6 +10,16 @@ export const MOBILE_COLLABORATOR = defineCollaborator({
   skillHint:
     'e.g. a mobile/Flutter UI skill for idiomatic screens and navigation',
   withStackAwareness: true,
+  allowedSubagents: [
+    'design',
+    'asset-generation',
+    'backend-design',
+    'review',
+    'fix',
+    'linter',
+    'Explore',
+    'general-purpose',
+  ],
   owns: [
     'Screen architecture and navigation',
     'State management (Riverpod/Bloc/Provider or RN equivalent)',

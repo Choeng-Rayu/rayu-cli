@@ -250,6 +250,7 @@ function ModeIndicator({
   } = useTerminalSize();
   const modeCycleShortcut = useShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab');
   const tasks = useAppState(s => s.tasks);
+  const swarmMode = useAppState(s_sw => s_sw.swarmMode);
   const teamContext = useAppState(s_0 => s_0.teamContext);
   // Set once in initialState (main.tsx --remote mode) and never mutated — lazy
   // init captures the immutable value without a subscription.
@@ -325,7 +326,7 @@ function ModeIndicator({
   const hasBackgroundTasks = runningTaskCount > 0 || isViewingTeammate;
 
   // Count primary items (permission mode or coordinator mode, background tasks, and teams)
-  const primaryItemCount = (isCoordinator || hasActiveMode ? 1 : 0) + (hasBackgroundTasks ? 1 : 0) + (hasTeams ? 1 : 0);
+  const primaryItemCount = (isCoordinator || hasActiveMode ? 1 : 0) + (hasBackgroundTasks ? 1 : 0) + (hasTeams ? 1 : 0) + (swarmMode ? 1 : 0);
 
   // PR indicator is short (~10 chars) — unlike the old diff indicator the
   // >=100 threshold was tuned for. Now that auto mode is effectively the
@@ -354,9 +355,19 @@ function ModeIndicator({
           </Text>}
       </Text> : null;
 
+  // Collaborator-swarm mode indicator — shown under the input whenever the
+  // session is in swarm mode, plus how to exit. Kept compact so it survives
+  // the truncating footer on narrow terminals.
+  const swarmPart = swarmMode ? <Text color="permission" key="swarm-mode">
+        {'⚡ collaborator_swarm mode'}
+        <Text dimColor>{' · /normal to exit'}</Text>
+      </Text> : null;
+
   // Build parts array - exclude BackgroundTaskStatus when we have teammate pills
   // (teammate pills get their own row)
   const parts = [
+  // Collaborator-swarm mode indicator (first so it stays visible)
+  ...(swarmPart ? [swarmPart] : []),
   // Remote session indicator
   ...(remoteSessionUrl ? [<Link url={remoteSessionUrl} key="remote">
             <Text color="ide">{figures.circleDouble} remote</Text>

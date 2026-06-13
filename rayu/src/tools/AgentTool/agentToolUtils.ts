@@ -159,16 +159,26 @@ export function resolveAgentTools(
     tool => !disallowedToolSet.has(tool.name),
   )
 
-  // If tools is undefined or ['*'], allow all tools (after filtering disallowed)
+  // If tools is undefined or includes '*', allow all tools (after filtering
+  // disallowed). We still honor an explicit Agent(types) spec alongside the
+  // wildcard so a full-toolset agent can scope WHICH subagents it may spawn
+  // (domain-locked collaborators: tools: ['*', 'Agent(design,review,...)']).
   const hasWildcard =
-    agentTools === undefined ||
-    (agentTools.length === 1 && agentTools[0] === '*')
+    agentTools === undefined || agentTools.some(t => t === '*')
   if (hasWildcard) {
+    let wildcardAllowedAgentTypes: string[] | undefined
+    for (const toolSpec of agentTools ?? []) {
+      const { toolName, ruleContent } = permissionRuleValueFromString(toolSpec)
+      if (toolName === AGENT_TOOL_NAME && ruleContent) {
+        wildcardAllowedAgentTypes = ruleContent.split(',').map(s => s.trim())
+      }
+    }
     return {
       hasWildcard: true,
       validTools: [],
       invalidTools: [],
       resolvedTools: allowedAvailableTools,
+      allowedAgentTypes: wildcardAllowedAgentTypes,
     }
   }
 

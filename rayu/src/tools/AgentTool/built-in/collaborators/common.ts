@@ -27,6 +27,14 @@ export type CollaboratorSpec = {
   skillHint: string
   /** Inject the detected-stack awareness fragment (frontend/backend/mobile). */
   withStackAwareness?: boolean
+  /**
+   * Subagent agentTypes this collaborator is allowed to spawn (domain lock).
+   * When set, the collaborator keeps the full toolset but the Agent tool is
+   * scoped to ONLY these subagent types (e.g. backend cannot call `design` or
+   * `asset-generation`; frontend cannot call `backend-design`). Omit for
+   * unrestricted spawning.
+   */
+  allowedSubagents?: string[]
 }
 
 const AUTHORITY = [
@@ -94,8 +102,13 @@ export function defineCollaborator(s: CollaboratorSpec): BuiltInAgentDefinition 
   return {
     agentType: s.agentType,
     whenToUse: s.whenToUse,
-    // Full toolset — collaborators build/iterate like the orchestrator.
-    tools: ['*'],
+    // Full toolset — collaborators build/iterate like the orchestrator. When
+    // allowedSubagents is set, keep the wildcard (all tools) but scope the
+    // Agent tool to only those subagent types (domain lock). The resolver in
+    // agentToolUtils honors an Agent(types) spec alongside '*'.
+    tools: s.allowedSubagents
+      ? ['*', `Agent(${s.allowedSubagents.join(',')})`]
+      : ['*'],
     color: s.color,
     source: 'built-in',
     baseDir: 'built-in',

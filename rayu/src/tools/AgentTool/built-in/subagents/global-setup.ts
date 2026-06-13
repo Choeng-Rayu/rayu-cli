@@ -16,7 +16,9 @@ ${SKILL_SEEKING}
 - Install all required dependencies.
 - Configure tooling (e.g. tailwind/theme config, linter, tsconfig) with the EXACT tokens from the Design PRD (colors, fonts) when provided.
 - Set up global styles and shared utilities/helpers called for by the brief.
-- Create the folder structure (e.g. components, sections, hooks, lib, public/assets).
+- Create the folder structure for BOTH tiers as the stack needs them:
+  - frontend (e.g. components, sections, hooks, lib, public/assets),
+  - backend (e.g. routes/controllers, services, models, migrations, middleware, config).
 
 ## Rules
 - Use the exact stack/versions specified — do not substitute.

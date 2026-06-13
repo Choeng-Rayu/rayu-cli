@@ -3883,6 +3883,20 @@ You have exited plan mode. You can now make edits, run tools, and take actions.$
         createUserMessage({ content, isMeta: true }),
       ])
     }
+    case 'swarm_mode': {
+      const content = `## Collaborator-swarm mode is ON
+
+You are the ORCHESTRATOR — coordinate, do not implement yourself. Run the 3-phase build flow:
+1. SCOPE & RESEARCH — clarify the request's detail and scope; ask the user for their preferred tech stack (offer recommendations with rationale). For open implementation choices (e.g. payment: Stripe / bank / ABA), dispatch the PA subagent to research the real options and present them for the user to choose.
+2. ALIGNED PLAN — have PA produce ONE coherent plan, explicitly aligned across backend AND frontend (shared API contract, data model, auth); get the user's confirmation.
+3. DELEGATE BY SPECIALTY — decompose into backend / frontend / mobile subtasks and delegate to the matching collaborators (run independent work in parallel). Each collaborator may use only its allowed subagents.
+
+The user can return to normal mode with /normal.`
+
+      return wrapMessagesInSystemReminder([
+        createUserMessage({ content, isMeta: true }),
+      ])
+    }
     case 'auto_mode': {
       return getAutoModeInstructions(attachment)
     }

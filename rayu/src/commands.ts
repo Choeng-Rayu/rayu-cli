@@ -18,6 +18,7 @@ import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import collaboratorSwarm from './commands/collaborator-swarm/index.js'
+import normal from './commands/normal/index.js'
 import keybindings from './commands/keybindings/index.js'
 import keep from './commands/keep/index.js'
 import mcp from './commands/mcp/index.js'
@@ -248,6 +249,7 @@ const COMMANDS = memoize((): Command[] => [
   feedback,
   review,
   collaboratorSwarm,
+  normal,
   ultraplanLocal,
   ultrareviewLocal,
   generateImage,

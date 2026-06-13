@@ -2,6 +2,7 @@
 // Collaborators can dispatch for atomic plan/generate/audit/fix/deploy jobs.
 import type { BuiltInAgentDefinition } from '../../loadAgentsDir.js'
 import { ASSET_GENERATION_SUBAGENT } from './asset-generation.js'
+import { BACKEND_DESIGN_SUBAGENT } from './backend-design.js'
 import { DESIGN_SUBAGENT } from './design.js'
 import { FIX_SUBAGENT } from './fix.js'
 import { GLOBAL_SETUP_SUBAGENT } from './global-setup.js'
@@ -13,6 +14,7 @@ import { REVIEW_SUBAGENT } from './review.js'
 export const SUBAGENTS: BuiltInAgentDefinition[] = [
   PA_SUBAGENT,
   DESIGN_SUBAGENT,
+  BACKEND_DESIGN_SUBAGENT,
   GLOBAL_SETUP_SUBAGENT,
   ASSET_GENERATION_SUBAGENT,
   REVIEW_SUBAGENT,

@@ -33,9 +33,12 @@ export type SwarmShared = {
 /**
  * Which sections each specialist reads: always its own shared brief plus the
  * upstream domains it depends on. 'shared' refers to shared.json; the rest are
- * <DOMAIN>.md files keyed by the domain prefix (PA/DB/BE/SEC/FE/MOB/DO).
+ * <DOMAIN>.md files. Two key namespaces coexist: the legacy specialist agent
+ * types (PA/DB/BE/SEC/FE/MOB/DO — consumed by built-in/specialists.ts) and the
+ * Tier-2 collaborator agentTypes (backend/frontend/mobile/security/deploy).
  */
 export const DOMAIN_DEPENDENCIES: Record<string, string[]> = {
+  // Legacy specialist agent types (still consumed by specialists.ts prompts).
   'PA-AGENT': ['shared'],
   'DB-AGENT': ['shared', 'PA'],
   'BE-AGENT': ['shared', 'PA', 'DB', 'SEC'],

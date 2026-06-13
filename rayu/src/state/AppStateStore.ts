@@ -218,6 +218,12 @@ export type AppState = DeepImmutable<{
   agentDefinitions: AgentDefinitionsResult
   fileHistory: FileHistoryState
   pendingFileChanges: PendingFileChangesState
+  /** Session-wide collaborator-swarm mode. When true, the main agent acts as
+   *  the orchestrator (3-phase build flow, delegate to specialist
+   *  collaborators) and an indicator shows under the input. Toggled by
+   *  /collaborator_swarm (on) and /normal (off); auto-enabled on plan confirm.
+   *  Session-scoped: reset on /clear. */
+  swarmMode: boolean
   attribution: AttributionState
   todos: { [agentId: string]: TodoList }
   remoteAgentTaskSuggestions: { summary: string; task: string }[]
@@ -515,6 +521,7 @@ export function getDefaultAppState(): AppState {
       snapshotSequence: 0,
     },
     pendingFileChanges: [],
+    swarmMode: false,
     attribution: createEmptyAttributionState(),
     mcp: {
       clients: [],

@@ -2812,6 +2812,7 @@ async function run(): Promise<CommanderCommand> {
         snapshotSequence: 0
       },
       pendingFileChanges: [],
+      swarmMode: false,
       attribution: createEmptyAttributionState(),
       thinkingEnabled,
       promptSuggestionEnabled: shouldEnablePromptSuggestion(),

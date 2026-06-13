@@ -576,6 +576,9 @@ export type Attachment =
       planExists: boolean
     }
   | {
+      type: 'swarm_mode'
+    }
+  | {
       type: 'auto_mode'
       reminderType: 'full' | 'sparse'
     }
@@ -878,6 +881,7 @@ export async function getAttachments(
     // replaces it; see src/services/skillSearch/prefetch.ts.
     maybe('plan_mode', () => getPlanModeAttachments(messages, toolUseContext)),
     maybe('plan_mode_exit', () => getPlanModeExitAttachment(toolUseContext)),
+    maybe('swarm_mode', () => getSwarmModeAttachment(messages, toolUseContext)),
     ...(feature('TRANSCRIPT_CLASSIFIER')
       ? [
           maybe('auto_mode', () =>
@@ -1237,6 +1241,39 @@ async function getPlanModeAttachments(
   })
 
   return attachments
+}
+
+/**
+ * Returns a swarm_mode reminder while the session is in collaborator-swarm
+ * mode. Fires once per human turn (not on every intermediate tool round) to
+ * keep the orchestrator role active without spamming tokens.
+ */
+async function getSwarmModeAttachment(
+  messages: Message[] | undefined,
+  toolUseContext: ToolUseContext,
+): Promise<Attachment[]> {
+  // Orchestrator-only: never inject the "you are the orchestrator" reminder
+  // into a spawned subagent/collaborator (they have an agentId). swarmMode is a
+  // main-session concept.
+  if (toolUseContext.agentId) {
+    return []
+  }
+  if (!toolUseContext.getAppState().swarmMode) {
+    return []
+  }
+  // Only attach at the start of a genuine human turn — during the tool loop the
+  // last message is a tool_result, so this won't re-fire on every round.
+  if (messages && messages.length > 0) {
+    const last = messages[messages.length - 1]
+    const isHumanTurn =
+      last?.type === 'user' &&
+      !last.isMeta &&
+      !hasToolResultContent(last.message.content)
+    if (!isHumanTurn) {
+      return []
+    }
+  }
+  return [{ type: 'swarm_mode' }]
 }
 
 /**

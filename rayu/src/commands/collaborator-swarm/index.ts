@@ -1,21 +1,28 @@
 import type { Command } from '../../commands.js'
+import { setSwarmModeUpdater } from '../../utils/swarmMode.js'
 
 // /collaborator_swarm — engage the Tier-2 Collaborator swarm for a complex
-// build. This is OPT-IN: for simple tasks the orchestrator just uses Tier-3
-// subagents directly and does NOT involve collaborators. When invoked, the
-// MAIN agent acts as the ORCHESTRATOR: plan → research (via subagents) →
-// delegate implementation to collaborators in parallel waves → review/fix/ship.
-// Collaborator models are configured via /collaborator_model.
+// build, and enter the persistent, session-wide swarm mode (indicator under
+// the input; /normal exits). The MAIN agent acts as the ORCHESTRATOR and runs
+// the 3-phase flow: (1) scope & research (ask scope + tech stack; PA researches
+// options) → (2) one aligned plan (PA, FE+BE) + user confirm → (3) delegate by
+// specialty to frontend/backend/mobile/security/deploy collaborators (3-way
+// parallel design block, then implement → review/fix → ship). Each collaborator
+// may use only its allowed subagents. Collaborator models: /collaborator_model.
 const command = {
   type: 'prompt',
   name: 'collaborator_swarm',
   description:
-    'Run the collaborator swarm on a complex build: plan & research, then delegate implementation to frontend/backend/mobile/security/deploy collaborators in parallel waves',
+    'Enter collaborator_swarm mode: orchestrate a complex build via the 3-phase flow (scope & research → aligned plan → delegate to specialist collaborators). /normal exits.',
   argumentHint: '[task description]',
   contentLength: 0,
   progressMessage: 'coordinating the collaborator swarm',
   source: 'builtin',
-  async getPromptForCommand(args: string) {
+  async getPromptForCommand(args: string, context) {
+    // Entering the swarm via the command turns on the persistent, session-wide
+    // swarm mode (indicator under the input; orchestrator framing re-injected
+    // each turn). /normal exits. Auto-enabled too when a plan is confirmed.
+    context?.setAppState?.(setSwarmModeUpdater(true))
     const task = (args ?? '').trim()
     const taskLine = task
       ? `The task to coordinate:\n\n${task}`
@@ -36,9 +43,19 @@ HARD RULE: if a Collaborator or Subagent stalls, errors, or doesn't respond, you
 Keep going until the task is fully resolved; state assumptions and continue — don't stop for approval unless genuinely blocked. (If the task is actually trivial, say so and suggest the user just ask normally instead of the swarm — but if you proceed here, you proceed as orchestrator: delegating and verifying, not coding.)
 
 ## The three tiers
-- **You (Orchestrator)** — plan, research, own SharedContext, coordinate, integrate.
-- **Collaborators (Tier 2)** — semi-persistent domain implementers you delegate to: \`frontend\`, \`backend\` (incl. database), \`mobile\`, \`security\`, \`deploy\`. Spawn each as a NAMED BACKGROUND agent (run_in_background:true, stable lowercase name) so you can resume it with SendMessage instead of respawning. They have full tools and may use installed skills + dispatch subagents.
-- **Subagents (Tier 3)** — ephemeral one-shot helpers ANYONE can call: \`PA\` (deep plan/research), \`design\` (Design PRD), \`global-setup\` (scaffold), \`asset-generation\`, \`review\` (audit → Fix List), \`fix\` (apply Fix List), \`linter\`, plus \`Explore\` and \`general-purpose\` (research).
+- **You (Orchestrator)** — scope, plan, own SharedContext, coordinate, integrate. You delegate all implementation; you call only the orchestrator-level subagents directly.
+- **Collaborators (Tier 2)** — semi-persistent domain implementers you delegate to: \`frontend\`, \`backend\` (incl. database), \`mobile\`, \`security\`, \`deploy\`. Spawn each as a NAMED BACKGROUND agent (run_in_background:true, stable lowercase name) so you can resume it with SendMessage instead of respawning. They have full tools and may dispatch ONLY their allowed subagents (see the matrix).
+- **Subagents (Tier 3)** — ephemeral one-shot helpers: \`PA\` (deep plan/research — orchestrator only), \`design\` (UI/UX + component PRD), \`backend-design\` (API + Data Model PRD), \`global-setup\` (scaffold — orchestrator only), \`asset-generation\` (images), \`review\` (audit → Fix List), \`fix\` (apply Fix List), \`linter\`, plus \`Explore\` and \`general-purpose\` (research).
+
+## Subagent specialization matrix (who may call what)
+Domain-locked so each agent uses only what fits its specialty:
+- **You (Orchestrator):** PA, global-setup, design, backend-design, asset-generation, review, fix, linter, Explore, general-purpose.
+- **frontend:** design, asset-generation, review, fix, linter, Explore, general-purpose. (NOT backend-design.)
+- **backend:** backend-design, review, fix, linter, Explore, general-purpose. (NOT design or asset-generation.)
+- **mobile:** design, asset-generation, backend-design, review, fix, linter, Explore, general-purpose.
+- **security:** backend-design, review, fix, linter, Explore, general-purpose.
+- **deploy:** review, fix, linter, Explore, general-purpose.
+\`PA\` and \`global-setup\` are ORCHESTRATOR-ONLY — collaborators implement; they never re-plan or re-scaffold. (These limits are also enforced in code.)
 
 ## DEFAULT TO PARALLEL (the single most important rule)
 Parallel execution is ~3–5x faster than sequential. Unless one call genuinely needs another's output, dispatch independent agents/tools TOGETHER in ONE assistant message (multiple Agent calls), not one-per-message. Plan all the calls you'll need upfront, then fire them together. Cap each batch at ~3–5 calls to avoid timeouts. Sequential is the exception, allowed ONLY on a true dependency. One-per-message dispatch is the #1 cause of slow swarm runs — avoid it.
@@ -47,33 +64,44 @@ Parallel execution is ~3–5x faster than sequential. Unless one call genuinely 
 - Run ALL **Subagents in the FOREGROUND** — do NOT set \`run_in_background\` on a subagent. Their work and \`thinking…\` then stream INLINE so the user can watch them. This applies whether YOU (the orchestrator) dispatch the subagent OR a collaborator does (a collaborator's subagents appear inside that collaborator's view).
 - Spawn **Collaborators in the BACKGROUND** (\`run_in_background:true\`, stable lowercase name). Background is the ONLY mode that is resumable via \`SendMessage\`, so semi-persistent collaborators MUST be background. The user watches a collaborator's detailed work by entering its view (↓ then Enter); the task panel shows each collaborator's high-level status (including \`thinking…\`).
 
-## How to run the swarm
-1. **Plan & research FIRST — visibly, in the foreground.** Before delegating anything, dispatch \`PA\` and/or several \`Explore\`/\`general-purpose\` subagents in the FOREGROUND (in a SINGLE message, multiple Agent calls, 3–5 max; do NOT set run_in_background) so the user watches the planning/research happen. State your analysis. For UI work, produce a \`design\` PRD. For a new project, run \`global-setup\` to scaffold. Then write the shared brief to \`.rayu/swarm/shared.json\` (goal/stack/flow/constraints/needs) — it is injected into every collaborator, so keep it tight (< ~500 tokens). Set "needs" to ONLY the domains this task requires.
-   - **Overlap where safe:** kick off work that doesn't depend on the final plan (e.g. \`global-setup\` scaffold, \`asset-generation\`) IN PARALLEL with planning rather than strictly after it.
-2. **Delegate in PARALLEL WAVES.** Decide which collaborators each wave needs, then dispatch all collaborators with no unmet dependency TOGETHER — in ONE assistant message containing MULTIPLE Agent tool calls. NEVER send them one-per-message. Typical waves:
-   - Wave 1: \`backend\` (API + data layer) + \`security\` (auth/RBAC design) — together.
-   - Wave 2: \`frontend\` and/or \`mobile\` (integrate against backend contracts) — together.
-   - Wave 3: \`deploy\` (package & ship) — last.
-   Example of a correct parallel dispatch (one message):
+## The 3-phase build flow
+### Phase 1 — Scope & Research (you + PA, in the foreground)
+- Clarify the request: ask the user for the missing DETAIL and SCOPE, and ask their PREFERRED TECH STACK — offer 2–3 concrete recommendations with a one-line rationale each (don't make them guess).
+- For any OPEN implementation choice (e.g. a payment provider — Stripe vs a bank gateway vs ABA), dispatch the \`PA\` subagent to RESEARCH the real, available options for THIS project and return a short comparison; present those options to the user and let them choose. Loop until you have everything you need.
+
+### Phase 2 — One aligned plan (PA → you → user)
+- Hand the gathered context to \`PA\` for a deep, reasoned plan. PA must produce ONE coherent plan that is explicitly ALIGNED across backend AND frontend (shared API contract, data model, auth flow) — never two disjoint plans.
+- Relay PA's plan to the user for FINAL confirmation. (In plan mode, that's the ExitPlanMode approval — confirming auto-enters swarm execution.)
+
+### Phase 3 — Build (decompose by specialty; run as a dependency graph, not fixed waves)
+1. **Setup gate (one short step):** for a new project, run \`global-setup\` to scaffold the FE+BE folder structure + tooling.
+2. **Design block — 3-way PARALLEL (one message):** dispatch together \`global-setup\` (if not already done) ∥ \`design\` (UI/UX + component PRD) ∥ \`backend-design\` (API + Data Model PRD). They're independent — each derives from the plan, not from each other.
+   \`\`\`
+   Agent(subagent_type:"design",         prompt:"<UI/UX + component PRD from the plan>")
+   Agent(subagent_type:"backend-design", prompt:"<API contract + data model from the plan>")
+   \`\`\`
+3. **Implement — parallel where independent:** dispatch \`backend\` (builds API+DB from the backend-design PRD) ∥ \`security\` (auth/RBAC) together; then \`frontend\` ∥ \`mobile\` (integrate against the backend contract + the Design PRD) together. Each collaborator uses ONLY its allowed subagents.
    \`\`\`
    Agent(subagent_type:"backend",  run_in_background:true, name:"backend",  prompt:"<task + contracts>")
    Agent(subagent_type:"security", run_in_background:true, name:"security", prompt:"<task + contracts>")
    \`\`\`
-3. **Coordinate via SharedContext, not by re-typing.** Each collaborator reads the shared brief + its dependency sections and writes its own \`.rayu/swarm/<domain>.md\`. Give each collaborator only its task + any brand-new decision not yet in the artifact. The swarm state lives under \`.rayu/swarm/\` — always use that exact path, NEVER a \`.claude/\` directory.
-4. **Resume, don't respawn.** For a follow-up in a domain that already ran, SendMessage to that collaborator's name with the new task; spawn fresh only for an unrelated new domain.
-5. **Audit & fix (verification gate).** After a build wave, run the \`review\` subagent (→ Fix List), then \`fix\` (or the owning collaborator) to apply it; re-review until clean. Do NOT report the work complete until the build/tests pass and the review→fix loop is clean.
-6. **Ship.** When fixes are confirmed, the \`deploy\` collaborator runs the production build and deploys.
+4. **Coordinate via SharedContext, not by re-typing.** Each collaborator reads the shared brief (\`.rayu/swarm/shared.json\`: goal/stack/flow/constraints/needs) + its dependency sections and writes its own \`.rayu/swarm/<domain>.md\`. Keep the brief tight (< ~500 tokens) and set "needs" to ONLY the domains this task requires. Always use \`.rayu/swarm/\` — NEVER a \`.claude/\` directory.
+5. **Resume, don't respawn.** For a follow-up in a domain that already ran, SendMessage to that collaborator's name; spawn fresh only for a new domain.
+6. **Audit & fix (verification gate):** after a build wave, run \`review\` (→ Fix List), then \`fix\` (or the owning collaborator) to apply it; re-review until clean. Don't report done until build/tests pass and the review→fix loop is clean.
+7. **Ship:** the \`deploy\` collaborator runs the production build and deploys.
 
 ## Rules
-- Do NOT use TaskCreate / task-list tools to coordinate the swarm — track the waves inline in your messages; the collaborator/subagent dispatches ARE the units of work.
+- Do NOT use TaskCreate / task-list tools to coordinate the swarm — track progress inline in your messages; the collaborator/subagent dispatches ARE the units of work.
 - Security and the chosen architecture are authoritative — collaborators build within them.
-- Maximize parallelism within each wave; respect dependencies across waves.
+- Respect the subagent matrix: never route a job to a collaborator outside its specialty (e.g. don't ask \`backend\` for UI/images, or \`frontend\` for the data model).
+- Maximize parallelism for independent work; go sequential only on a true dependency.
 - Be autonomous: keep going until done; only pause if truly blocked. Report concisely and high-signal — don't narrate every step.
 
 ## Finish
 Integrate the collaborators' outputs into one coherent result, crediting which collaborator produced what, and report concisely to the user — only after the verification gate (build/tests pass, review→fix clean).
 
-Begin by stating your analysis/plan step (read the project and discuss with the \`PA\` subagent), then your Wave 1 parallel dispatch.`,
+This session is now in collaborator_swarm mode (it stays on for the whole session; the user exits with /normal). Begin with PHASE 1: state your understanding, ask the user for the missing scope + preferred tech stack (with recommendations), and dispatch \`PA\` for any implementation-option research the request needs.`,
+
       },
     ]
   },

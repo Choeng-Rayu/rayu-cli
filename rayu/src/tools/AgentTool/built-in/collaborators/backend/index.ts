@@ -10,6 +10,14 @@ export const BACKEND_COLLABORATOR = defineCollaborator({
   skillHint:
     'e.g. an API-design skill for clean, consistent endpoint and schema design',
   withStackAwareness: true,
+  allowedSubagents: [
+    'backend-design',
+    'review',
+    'fix',
+    'linter',
+    'Explore',
+    'general-purpose',
+  ],
   owns: [
     'API routes (method, path, auth, request/response shapes)',
     'Service layer, business logic, middleware, error handling',

@@ -10,6 +10,7 @@ import {
   truncateToWidthNoEllipsis,
 } from './format.js'
 import { getStoredChangelogFromMemory, parseChangelog } from './releaseNotes.js'
+import { getActiveProviderDisplayName } from './rayuProviders.js'
 import { gt } from './semver.js'
 import { loadMessageLogs } from './sessionStorage.js'
 import { getInitialSettings } from './settings/settings.js'
@@ -253,9 +254,13 @@ export function getLogoDisplayData(): {
   const cwd = serverUrl
     ? `${displayPath} in ${serverUrl.replace(/^https?:\/\//, '')}`
     : displayPath
+  // Show the active provider's name (e.g. "Vertex AI", "Ollama", "NVIDIA") next
+  // to the model. Claude AI subscribers keep their subscription/plan name; the
+  // generic "API Usage Billing" only remains as a last-resort fallback when no
+  // provider is configured yet.
   const billingType = isClaudeAISubscriber()
     ? getSubscriptionName()
-    : 'API Usage Billing'
+    : (getActiveProviderDisplayName() ?? 'API Usage Billing')
   const agentName = getInitialSettings().agent
 
   return {

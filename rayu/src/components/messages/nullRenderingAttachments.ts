@@ -26,6 +26,7 @@ const NULL_RENDERING_TYPES = [
   'plan_mode',
   'plan_mode_exit',
   'plan_mode_reentry',
+  'swarm_mode',
   'structured_output',
   'team_context',
   'todo_reminder',
