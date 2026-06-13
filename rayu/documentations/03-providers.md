@@ -22,7 +22,8 @@ A **provider** is an API endpoint plus your credentials. Rayu supports these kin
 | `gemini-vertex` | Google Gemini — Vertex AI (OAuth) | _(per project/region)_ | _(OAuth / ADC)_ |
 | `gemini-login` | Login with Gemini (Google account) | _(Code Assist — free, no project)_ | _(interactive OAuth)_ |
 | `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| `local` | Local / custom | _(you enter it)_ | — |
+| `localhost` | Localhost (Ollama) | `http://localhost:11434/v1` | — |
+| `local` | Custom Endpoint | _(you enter it)_ | — |
 | `bedrock` | AWS Bedrock | _(on-demand AWS Bedrock)_ | `AWS_BEARER_TOKEN_BEDROCK` |
 
 ---
@@ -165,6 +166,16 @@ per-request cost); pick a pro/preview model via `/model` when needed.
 > rate window. Also note Google is **deprecating the consumer Code Assist
 > endpoint for free/Pro/Ultra accounts on ~June 18, 2026** (migrating to
 > "Antigravity"), so Vertex is the more durable choice.
+
+---
+
+## Ollama & Local Models
+
+Rayu seamlessly connects to your local instances and cloud Ollama environments.
+
+- **Localhost:** Run `/connect` → **Localhost**. Ollama auto-detects whatever models you have downloaded and connects automatically. It supports models of any size (there is no forcing you to use massive models if you don't want to).
+- **Ollama Cloud:** Works through the exact same localhost flow. After running `ollama signin` in your terminal, cloud models (e.g., `qwen3-coder:480b-cloud`, `gpt-oss:120b-cloud`) automatically appear in your local Ollama's model list and fully support tools within Rayu.
+- *(Alternative for Ollama Cloud)*: You can also choose the "Custom OpenAI-compatible endpoint" option in `/connect` and point it at `https://ollama.com/v1` with your API key.
 
 ---
 

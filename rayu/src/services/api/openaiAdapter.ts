@@ -971,10 +971,10 @@ export function isToolUnsupported(e: unknown, req: AnyObj): boolean {
  */
 function toolUnsupportedError(e: unknown, model: string): unknown {
   const message =
-    `Model "${model}" does not support tools (function calling), which ${PRODUCT_NAME} needs ` +
-    `to read/edit files, run commands, and search. Small local LLMs often lack tool support. ` +
-    `Pick a tool-capable model with /model (e.g. qwen2.5-coder, llama3.1, qwen3, mistral-nemo), ` +
-    `pull one with "ollama pull qwen2.5-coder", or use a hosted/Ollama Cloud model.`
+    `Model "${model}" is too small to use tools — it doesn't support function calling, ` +
+    `which ${PRODUCT_NAME} needs to read/edit files, run commands, and search. Use a larger ` +
+    `tool-capable model: pull one locally ("ollama pull qwen2.5-coder", or llama3.1 / qwen3 / ` +
+    `mistral-nemo), or use an Ollama Cloud model, then select it with /model.`
   return AnthropicAPIError.generate(
     400,
     (e as AnyObj)?.error as object | undefined,
