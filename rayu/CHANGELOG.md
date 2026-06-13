@@ -2,6 +2,9 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.3.428 - 2026-06-13
+- Added the thinking status display to all agent subagents and the collaborator agent
+
 ## 1.3.427 - 2026-06-13
 - Completely updated the documentation to properly reflect Rayu as an independent CLI, removing legacy Claude Code specific references
 - Improved the thinking UI and status displays
