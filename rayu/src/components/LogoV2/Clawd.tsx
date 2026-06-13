@@ -7,12 +7,12 @@ export type ClawdPose = 'default' | 'arms-up' | 'look-left' | 'look-right'
 
 // "RAYU" in the ANSI Shadow figlet style, with a top-to-bottom green gradient.
 const RAYU_BANNER: ReadonlyArray<readonly [string, string]> = [
-  ['██████╗  █████╗ ██╗   ██╗██╗   ██╗', '#7CFFA0'],
-  ['██╔══██╗██╔══██╗╚██╗ ██╔╝██║   ██║', '#5BF58D'],
+  ['██████╗  █████╗ ██╗   ██╗██╗   ██╗', '#ff7cda'],
+  ['██╔══██╗██╔══██╗╚██╗ ██╔╝██║   ██║', '#a35bf5'],
   ['██████╔╝███████║ ╚████╔╝ ██║   ██║', '#3DE877'],
-  ['██╔══██╗██╔══██║  ╚██╔╝  ██║   ██║', '#22D060'],
-  ['██║  ██║██║  ██║   ██║   ╚██████╔╝', '#15B84C'],
-  ['╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ', '#0E9B3E'],
+  ['██╔══██╗██╔══██║  ╚██╔╝  ██║   ██║', '#2822d0'],
+  ['██║  ██║██║  ██║   ██║   ╚██████╔╝', '#84b815'],
+  ['╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ', '#9b0e84'],
 ]
 
 export function Clawd(_props: { pose?: ClawdPose } = {}): React.ReactNode {
