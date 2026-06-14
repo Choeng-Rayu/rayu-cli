@@ -1,5 +1,7 @@
 import * as React from 'react'
 import { Box, Text } from 'src/ink.js'
+import { AnimatedAsterisk } from './AnimatedAsterisk.js'
+import { UP_ARROW } from '../../constants/figures.js'
 
 // First-launch brand icon: "RAYU" in the ANSI Shadow figlet style with a
 // top-to-bottom green gradient.
@@ -25,6 +27,10 @@ export function WelcomeV2(): React.ReactNode {
           Welcome to Rayu-CLI{' '}
         </Text>
         <Text dimColor>v{MACRO.VERSION}</Text>
+      </Box>
+      <Box paddingLeft={2}>
+        <AnimatedAsterisk char={UP_ARROW} />
+        <Text dimColor={true}>{" "}Welcome!, Thank You For Choosing Rayu!</Text>
       </Box>
     </Box>
   )
