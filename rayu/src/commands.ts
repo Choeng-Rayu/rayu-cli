@@ -115,6 +115,8 @@ import bridgeKick from './commands/bridge-kick.js'
 import version from './commands/version.js'
 import sandboxToggle from './commands/sandbox-toggle/index.js'
 import contactMe from './commands/contactMe/index.js'
+import login from './commands/login/index.js'
+import logout from './commands/logout/index.js'
 import advisor from './commands/advisor.js'
 import { logError } from './utils/log.js'
 import { toError } from './utils/errors.js'
@@ -244,6 +246,8 @@ const COMMANDS = memoize((): Command[] => [
   status,
   statusline,
   contactMe,
+  login,
+  logout,
   tag,
   theme,
   feedback,
