@@ -334,6 +334,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     // provider during env migration; pick this explicitly via /connect.
   },
   {
+    id: 'kiro',
+    label: 'Kiro — Claude via AWS (API key or kiro-cli login)',
+    kind: 'kiro',
+    defaultModel: 'claude-sonnet-4.6',
+    smallFastModel: 'claude-haiku-4.5',
+    envKeys: ['KIRO_API_KEY'],
+    // No fixed baseURL: region-scoped AWS CodeWhisperer endpoint, reached via a
+    // dedicated adapter (src/services/api/kiroAdapter.ts). Auth + the adapter
+    // are lazy-loaded only when the active provider is kind:'kiro'.
+  },
+  {
     id: 'ollama',
     label: 'Ollama (local · auto-detect)',
     kind: 'openai-compatible',
@@ -446,6 +457,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   bedrock: 'AWS Bedrock',
   'bedrock-openai': 'AWS Bedrock',
   'bedrock-anthropic': 'AWS Bedrock',
+  kiro: 'Kiro',
   ollama: 'Ollama',
   local: 'Local',
 }
@@ -459,6 +471,8 @@ function providerKindName(kind: ProviderKind): string {
       return 'AWS Bedrock'
     case 'genai':
       return 'Gemini'
+    case 'kiro':
+      return 'Kiro'
     case 'anthropic':
       return 'Anthropic'
     default:

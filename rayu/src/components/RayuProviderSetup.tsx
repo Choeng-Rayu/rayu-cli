@@ -50,6 +50,9 @@ type Phase =
   | 'vertexFetching'
   | 'genaiLogin'
   | 'genaiFetching'
+  | 'kiroChoice'
+  | 'kiroApiKey'
+  | 'kiroLogin'
 
 export function RayuProviderSetup({
   onDone,
@@ -77,6 +80,12 @@ export function RayuProviderSetup({
   // Login-with-Gemini (genai) state
   const [genaiState, setGenaiState] = useState<'idle' | 'loggingIn'>('idle')
   const [genaiError, setGenaiError] = useState<string | null>(null)
+  // Kiro login flow state
+  const [kiroStep, setKiroStep] = useState<
+    'checking' | 'haveToken' | 'choose' | 'needInstall' | 'installing' | 'loggingIn' | 'error'
+  >('checking')
+  const [kiroError, setKiroError] = useState<string | null>(null)
+  const [kiroLoginOutput, setKiroLoginOutput] = useState('')
 
   function pick(p: Preset): void {
     setPreset(p)
@@ -90,6 +99,9 @@ export function RayuProviderSetup({
     if (p.id === 'ollama') {
       setFetchError(null)
       setPhase('ollamaDetect')
+    } else if (p.kind === 'kiro') {
+      setKiroError(null)
+      setPhase('kiroChoice')
     } else if (p.kind === 'genai') setPhase('genaiLogin')
     else if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
     else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
@@ -403,6 +415,92 @@ export function RayuProviderSetup({
     }
   }, [phase])
 
+  // Persist the Kiro provider (curated Claude models, default claude-sonnet-4.6)
+  // for the chosen auth path, then hand off to the shared model picker.
+  async function finishKiro(authType: 'apikey' | 'oauth', key?: string): Promise<void> {
+    const { listKiroModels } = await import('../services/api/kiro/kiroModels.js')
+    const models = listKiroModels()
+    // API keys require a paid Kiro plan, so claude-sonnet-4.6 is safe there.
+    // "Login with Kiro" can be a FREE plan, where 4.6 is Pro-only — default to
+    // claude-sonnet-4.5 (available on free) so the first turn doesn't fail. The
+    // user can switch to 4.6/Opus via /model if their plan allows.
+    const defaultModel = authType === 'oauth' ? 'claude-sonnet-4.5' : 'claude-sonnet-4.6'
+    const provider: RayuProvider = {
+      id: 'kiro',
+      kind: 'kiro',
+      kiroAuthType: authType,
+      ...(authType === 'apikey' && key?.trim() ? { apiKey: key.trim() } : {}),
+      defaultModel,
+      smallFastModel: 'claude-haiku-4.5',
+      ...(models.length ? { fetchedModels: models } : {}),
+      awsRegion: 'us-east-1',
+    }
+    upsertProvider(provider, true)
+    onDone()
+  }
+
+  // Drive the async steps of the "Login with Kiro CLI" flow. All kiro-cli
+  // detection / install / login is loaded lazily here — never at startup.
+  React.useEffect(() => {
+    if (phase !== 'kiroLogin') return
+    let cancelled = false
+    void (async () => {
+      const kiroCli = await import('../services/api/kiro/kiroCli.js')
+      if (kiroStep === 'checking') {
+        if (await kiroCli.hasKiroToken()) {
+          // Don't silently jump to model selection — let the user reuse the
+          // existing login or sign in again.
+          if (!cancelled) setKiroStep('haveToken')
+          return
+        }
+        const installed = await kiroCli.checkKiroCli()
+        if (cancelled) return
+        setKiroStep(installed ? 'choose' : 'needInstall')
+      } else if (kiroStep === 'installing') {
+        const r = await kiroCli.installKiroCli()
+        if (cancelled) return
+        if (r.ok) {
+          setKiroStep('choose')
+        } else {
+          setKiroError(
+            `Install failed. Install manually:\n  ${kiroCli.KIRO_CLI_INSTALL_CMD}\n${r.output.slice(-200)}`,
+          )
+          setKiroStep('error')
+        }
+      } else if (kiroStep === 'loggingIn') {
+        setKiroLoginOutput('')
+        const r = await kiroCli.launchKiroLogin(chunk => {
+          if (cancelled) return
+          // Strip ANSI escapes + treat \r as newline so the kiro-cli spinner
+          // ("Opening browser… ▰▰▱") doesn't pile up into a garbled blob; keep
+          // the last few meaningful lines (e.g. a device URL/code).
+          const clean = chunk
+            // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI
+            .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '')
+            .replace(/\r/g, '\n')
+          setKiroLoginOutput(prev =>
+            (prev + clean)
+              .split('\n')
+              .map(l => l.trim())
+              .filter(Boolean)
+              .slice(-3)
+              .join('\n'),
+          )
+        })
+        if (cancelled) return
+        if (r.ok && (await kiroCli.hasKiroToken())) {
+          void finishKiro('oauth')
+          return
+        }
+        setKiroError(`Login did not complete.\n${r.output.slice(-200)}`)
+        setKiroStep('error')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [phase, kiroStep])
+
   if (phase === 'pick') {
     // Group the two localhost options (Ollama + custom endpoint) under one
     // "Localhost" entry so the top-level list stays about *who* hosts the model.
@@ -497,6 +595,191 @@ export function RayuProviderSetup({
             } else onDone()
           }}
           onCancel={() => setPhase('localChoice')}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'kiroChoice') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Connect Kiro (Claude via AWS)</Text>
+        <Text dimColor>Use a Kiro API key, sign in with the Kiro CLI, or reuse an existing kiro-cli login.</Text>
+        <Select
+          options={[
+            { label: 'API key — paste your ksk_… key', value: 'apikey' },
+            { label: 'Login with Kiro CLI (browser sign-in)', value: 'login' },
+            { label: 'Use existing kiro-cli login', value: 'existing' },
+          ]}
+          onChange={(v: string) => {
+            if (v === 'apikey') {
+              setApiKey('')
+              setCursor(0)
+              setPhase('kiroApiKey')
+            } else if (v === 'existing') {
+              // Reuse the token kiro-cli already wrote; it's read at request time.
+              void finishKiro('oauth')
+            } else {
+              setKiroError(null)
+              setKiroStep('checking')
+              setPhase('kiroLogin')
+            }
+          }}
+          onCancel={() => setPhase('pick')}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'kiroApiKey') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Kiro API key</Text>
+        <Text dimColor>
+          Paste your ksk_… key (app.kiro.dev → API Keys). Stored locally in
+          ~/.rayu/providers.json (0600).
+        </Text>
+        <TextInput
+          value={apiKey}
+          onChange={setApiKey}
+          onSubmit={() => {
+            if (apiKey.trim()) void finishKiro('apikey', apiKey)
+          }}
+          mask="*"
+          placeholder="ksk_..."
+          columns={80}
+          cursorOffset={cursor}
+          onChangeCursorOffset={setCursor}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'kiroLogin') {
+    if (kiroStep === 'checking') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Checking Kiro CLI…</Text>
+          <Text dimColor>Looking for an existing login or the kiro-cli binary.</Text>
+        </Box>
+      )
+    }
+    if (kiroStep === 'installing') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Installing Kiro CLI…</Text>
+          <Text dimColor>Running: curl -fsSL https://cli.kiro.dev/install | bash</Text>
+        </Box>
+      )
+    }
+    if (kiroStep === 'loggingIn') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Signing in with Kiro CLI…</Text>
+          <Text dimColor>
+            A browser window should open. If a URL/code appears below, open it to
+            finish — this returns automatically.
+          </Text>
+          {kiroLoginOutput ? (
+            <Text dimColor>{kiroLoginOutput.split('\n').slice(-4).join('\n')}</Text>
+          ) : null}
+        </Box>
+      )
+    }
+    if (kiroStep === 'haveToken') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Existing Kiro login found</Text>
+          <Text dimColor>
+            You're already signed in via kiro-cli. Use it, or sign in again in the browser.
+          </Text>
+          <Select
+            options={[
+              { label: 'Use existing Kiro login', value: 'use' },
+              { label: 'Sign in again (browser)', value: 'relogin' },
+              { label: 'Cancel', value: 'cancel' },
+            ]}
+            onChange={(v: string) => {
+              if (v === 'use') void finishKiro('oauth')
+              else if (v === 'relogin') {
+                setKiroError(null)
+                setKiroLoginOutput('')
+                setKiroStep('loggingIn')
+              } else onDone()
+            }}
+            onCancel={() => setPhase('kiroChoice')}
+          />
+        </Box>
+      )
+    }
+    if (kiroStep === 'needInstall') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Kiro CLI not found</Text>
+          <Text dimColor>
+            The kiro-cli binary is needed for browser login. Install it now
+            (official script), or use an API key instead.
+          </Text>
+          <Select
+            options={[
+              { label: 'Install kiro-cli  (curl -fsSL https://cli.kiro.dev/install | bash)', value: 'install' },
+              { label: 'Use an API key instead', value: 'apikey' },
+              { label: 'Cancel', value: 'cancel' },
+            ]}
+            onChange={(v: string) => {
+              if (v === 'install') setKiroStep('installing')
+              else if (v === 'apikey') {
+                setApiKey('')
+                setCursor(0)
+                setPhase('kiroApiKey')
+              } else onDone()
+            }}
+            onCancel={() => setPhase('kiroChoice')}
+          />
+        </Box>
+      )
+    }
+    if (kiroStep === 'choose') {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>Login with Kiro CLI</Text>
+          <Text dimColor>Opens a browser to sign in; Rayu reads the token afterwards.</Text>
+          <Select
+            options={[
+              { label: 'Open Kiro login in browser', value: 'login' },
+              { label: 'Cancel', value: 'cancel' },
+            ]}
+            onChange={(v: string) => {
+              if (v === 'login') setKiroStep('loggingIn')
+              else onDone()
+            }}
+            onCancel={() => setPhase('kiroChoice')}
+          />
+        </Box>
+      )
+    }
+    // error
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Kiro login problem</Text>
+        {kiroError ? <Text color="yellow">{kiroError}</Text> : null}
+        <Select
+          options={[
+            { label: 'Retry', value: 'retry' },
+            { label: 'Use an API key instead', value: 'apikey' },
+            { label: 'Cancel', value: 'cancel' },
+          ]}
+          onChange={(v: string) => {
+            if (v === 'retry') {
+              setKiroError(null)
+              setKiroStep('checking')
+            } else if (v === 'apikey') {
+              setApiKey('')
+              setCursor(0)
+              setPhase('kiroApiKey')
+            } else onDone()
+          }}
+          onCancel={() => setPhase('kiroChoice')}
         />
       </Box>
     )

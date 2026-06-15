@@ -55,6 +55,12 @@ import {
 import { queryCheckpoint } from '../queryProfiler.js'
 import { parseSlashCommand } from '../slashCommandParsing.js'
 import {
+  isUseRayuOAuthEnabled,
+  rayuLoginGateMessage,
+  recordRayuUsageBestEffort,
+} from '../../services/rayuAuth/rayuSession.js'
+import { getActiveProvider } from '../rayuConfig.js'
+import {
   hasUltraplanKeyword,
   replaceUltraplanKeyword,
 } from '../ultraplan/keyword.js'
@@ -144,6 +150,37 @@ export async function processUserInput({
   // should run invisibly.
   if (mode === 'prompt' && inputString !== null && !isMeta) {
     setUserInputOnProcessing?.(inputString)
+  }
+
+  // Rayu account login gate (opt-in via USE_RAYU_OAUTH). When enabled and the
+  // user is not signed in, block real prompts (not slash commands) and ask
+  // them to /login. No-op when the flag is off, so default behavior is
+  // unchanged.
+  if (mode === 'prompt' && inputString !== null && !isMeta && !bridgeOrigin) {
+    const isSlashCommand = inputString.trimStart().startsWith('/')
+    if (!isSlashCommand) {
+      const gate = rayuLoginGateMessage()
+      if (gate) {
+        return {
+          messages: [createSystemMessage(gate, 'warning')],
+          shouldQuery: false,
+        }
+      }
+      // Signed in: record which provider is being used (best-effort).
+      if (isUseRayuOAuthEnabled()) {
+        try {
+          const provider = getActiveProvider()
+          if (provider) {
+            void recordRayuUsageBestEffort(
+              provider.id,
+              provider.defaultModel ?? null,
+            )
+          }
+        } catch {
+          // never let usage tracking affect the prompt
+        }
+      }
+    }
   }
 
   queryCheckpoint('query_process_user_input_base_start')

@@ -215,6 +215,19 @@ async function getRayuGenAIClient(maxRetries: number): Promise<unknown | null> {
 }
 
 /**
+ * Rayu: route the active provider to the Kiro adapter when kind is 'kiro'
+ * (AWS CodeWhisperer backend; apikey or kiro-cli OAuth). Lazy-imported so the
+ * Kiro adapter only loads when Kiro is the active provider.
+ */
+async function getRayuKiroClient(maxRetries: number): Promise<unknown | null> {
+  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const active = getActiveProvider()
+  if (active?.kind !== 'kiro') return null
+  const { createKiroClient } = await import('./kiro/kiroAdapter.js')
+  return createKiroClient(active, maxRetries)
+}
+
+/**
  * Rayu: build an API client for a SPECIFIC provider (not necessarily the active
  * one). Used to route a subagent request to a provider chosen via
  * /model_subagent that differs from the main agent's provider. Mirrors the
@@ -262,6 +275,13 @@ async function buildClientForProvider(
   // Login-with-Gemini: @google/genai adapter (Vertex-global + OAuth).
   if (provider.kind === 'genai') {
     return buildGenAIClientFor(provider, maxRetries)
+  }
+  // Kiro: AWS CodeWhisperer backend (apikey or kiro-cli OAuth). Lazy-imported so
+  // nothing Kiro-related (sqlite read, adapter) loads unless the active provider
+  // is kind:'kiro'.
+  if (provider.kind === 'kiro') {
+    const { createKiroClient } = await import('./kiro/kiroAdapter.js')
+    return createKiroClient(provider, maxRetries)
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
@@ -345,6 +365,13 @@ export async function getAnthropicClient({
   const vertexClient = await getRayuVertexClient(maxRetries)
   if (vertexClient) {
     return vertexClient as unknown as Anthropic
+  }
+
+  // Rayu: route to the Kiro adapter when the active provider is kind:'kiro'
+  // (AWS CodeWhisperer backend; apikey or kiro-cli OAuth — no x-api-key).
+  const kiroClient = await getRayuKiroClient(maxRetries)
+  if (kiroClient) {
+    return kiroClient as unknown as Anthropic
   }
 
   // Rayu: route to the OpenAI-compatible adapter when the active provider is an
