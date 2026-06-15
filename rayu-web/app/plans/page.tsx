@@ -30,10 +30,14 @@ export default async function PlansPage() {
   const plans = sortPlans(await getPlans())
   return (
     <main className="container">
-      <h1>Plans</h1>
-      <p style={{ color: 'var(--muted)' }}>
-        Start free with your own API key. Paid plans are coming soon.
-      </p>
+      <div style={{ textAlign: 'center', marginBottom: '4rem' }}>
+        <span className="section-eyebrow">PRICING</span>
+        <h1 style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>Plans &amp; Pricing</h1>
+        <p style={{ color: 'var(--text)', opacity: 0.6, fontSize: '1.1rem', maxWidth: '600px', margin: '0 auto' }}>
+          Start free with your own API key. Paid hosting and collaborative team options are coming soon.
+        </p>
+      </div>
+
       <div className="grid">
         {plans.map((plan) => {
           const v = toPlanView(plan)
@@ -42,13 +46,31 @@ export default async function PlansPage() {
               key={v.code}
               className={`card${v.highlight ? ' highlight' : ''}`}
               data-testid={`plan-${v.code}`}
+              style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '340px' }}
             >
-              <h3>{v.name}</h3>
-              <span className={`badge${v.available ? ' active' : ''}`}>
-                {v.available ? 'Available' : 'Coming soon'}
-              </span>
-              <div className="price">{v.priceLabel}</div>
-              <button className="btn" disabled={!v.available && v.code !== 'enterprise'}>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+                  <h3 className="card-title">{v.name}</h3>
+                  <span className={`badge${v.available ? ' active' : ''}`}>
+                    {v.available ? 'Available' : 'Coming soon'}
+                  </span>
+                </div>
+                <div className="price" style={{ margin: '1.5rem 0' }}>
+                  {v.priceLabel}
+                </div>
+                <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '0.9rem', lineHeight: '1.5', marginBottom: '1.5rem' }}>
+                  {v.code === 'free' && 'Perfect for individual developers. BYO API keys and run unlimited agents with zero request limits.'}
+                  {v.code === 'pro' && 'More speed, higher rate limits, and hosted orchestration. Ideal for professional keyboard warriors.'}
+                  {v.code === 'pro_plus' && 'Includes persistent cloud context, advanced team features, and shared memory caches.'}
+                  {v.code === 'max' && 'Designed for heavy power users requiring max throughput, dedicated context windows, and SLA guarantees.'}
+                  {v.code === 'enterprise' && 'Tailored security, single-sign-on (SSO), self-hosted options, and custom VPC connections.'}
+                </p>
+              </div>
+              <button
+                className={v.available || v.code === 'enterprise' ? "btn-primary" : "btn-ghost"}
+                disabled={!v.available && v.code !== 'enterprise'}
+                style={{ width: '100%', marginTop: 'auto' }}
+              >
                 {v.ctaLabel}
               </button>
             </div>

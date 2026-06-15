@@ -1,5 +1,7 @@
 # Rayu-CLI Documentation
 
+> **Browse online:** https://rayu-web.vercel.app/docs
+
 Rayu-CLI is a terminal-based AI coding agent. It lets you **bring your own API key** and use
 **any OpenAI-compatible provider** (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword,
 OpenAI, OpenRouter, local servers) as well as Anthropic — with free model

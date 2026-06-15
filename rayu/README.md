@@ -7,6 +7,10 @@ full MCP support, and a complete built-in tool suite.
 
 > Educational / research use. Not affiliated with any AI provider.
 
+**Website:** https://rayu-web.vercel.app  
+**Docs:** https://rayu-web.vercel.app/docs  
+**Changelog:** https://rayu-web.vercel.app/changelog
+
 ---
 
 ## Installation

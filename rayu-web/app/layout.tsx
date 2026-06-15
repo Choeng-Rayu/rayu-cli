@@ -1,10 +1,3 @@
-import {
-  ClerkProvider,
-  Show,
-  SignInButton,
-  SignUpButton,
-  UserButton,
-} from '@clerk/nextjs'
 import Link from 'next/link'
 import type { Metadata } from 'next'
 import './globals.css'
@@ -23,25 +16,23 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <ClerkProvider>
+        <div className="site">
           <header className="nav">
-            <Link href="/" className="brand">
-              Rayu
+            <Link href="/" className="nav-logo">
+              <div className="nav-logo-mark" />
+              RAYU
             </Link>
-            <Link href="/plans">Plans</Link>
-            <Link href="/chatbot">Chatbot</Link>
-            <span className="spacer" />
-            <Show when="signed-out">
-              <SignInButton />
-              <SignUpButton />
-            </Show>
-            <Show when="signed-in">
-              <Link href="/admin">Admin</Link>
-              <UserButton />
-            </Show>
+            <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
+              <li><Link href="/plans">Plans</Link></li>
+              <li><Link href="/docs">Docs</Link></li>
+              <li><Link href="/changelog">Changelog</Link></li>
+            </ul>
+            <div className="nav-actions">
+              <Link href="/plans" className="btn-primary">Get Access →</Link>
+            </div>
           </header>
           {children}
-        </ClerkProvider>
+        </div>
       </body>
     </html>
   )
