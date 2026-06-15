@@ -1,6 +1,6 @@
 # @rayu-dev/rayu-cli (Rayu-CLI)
 
-> **Rayu-CLI** is a terminal-based AI coding agent. It lets you **bring your own API key** and use **any OpenAI-compatible provider** (NVIDIA, DeepSeek, Kimi/Moonshot, OpenAI, OpenRouter, local servers) as well as Anthropic and AWS Bedrock — with free model switching, MCP support, and the full built-in tool suite.
+> **Rayu-CLI** is a terminal-based AI coding agent. It lets you **bring your own API key** and use **any OpenAI-compatible/athropic-compatible and genai provider** (NVIDIA, DeepSeek, Kimi/Moonshot, OpenAI, OpenRouter, local servers) as well as Anthropic and AWS Bedrock — with free model switching, MCP support, and the full built-in tool suite.
 
 ---
 
@@ -55,7 +55,7 @@ In the terminal chat, type `/` to see all available slash commands:
 | `/connect` | Connect a new provider, update keys, or switch active provider |
 | `/model` | Search and switch models across all connected providers |
 | `/context` | Monitor current context-window usage and token count |
-| `/cost` | Display cumulative token usage and costs for the session |
+<!-- | `/cost` | Display cumulative token usage and costs for the session | -->
 | `/clear` | Clear conversation history and start a fresh session |
 | `/help` | Display a complete list of in-session slash commands |
 | `/exit` | Exit the Rayu CLI session safely |
