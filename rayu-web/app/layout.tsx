@@ -24,23 +24,30 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <ClerkProvider>
-          <header className="nav">
-            <Link href="/" className="brand">
-              Rayu
-            </Link>
-            <Link href="/plans">Plans</Link>
-            <Link href="/chatbot">Chatbot</Link>
-            <span className="spacer" />
-            <Show when="signed-out">
-              <SignInButton />
-              <SignUpButton />
-            </Show>
-            <Show when="signed-in">
-              <Link href="/admin">Admin</Link>
-              <UserButton />
-            </Show>
-          </header>
-          {children}
+          <div className="site">
+            <header className="nav">
+              <Link href="/" className="nav-logo">
+                <div className="nav-logo-mark" />
+                RAYU
+              </Link>
+              <ul className="nav-links">
+                <li><Link href="/plans">Plans</Link></li>
+                <li><Link href="/chatbot">Terminal</Link></li>
+                <li><a href="#">Docs</a></li>
+              </ul>
+              <div className="nav-actions">
+                <Show when="signed-out">
+                  <SignInButton><button className="btn-ghost">Sign in</button></SignInButton>
+                  <SignUpButton><button className="btn-primary">Get Access →</button></SignUpButton>
+                </Show>
+                <Show when="signed-in">
+                  <Link href="/admin" className="btn-ghost" style={{ marginRight: '8px' }}>Admin</Link>
+                  <UserButton />
+                </Show>
+              </div>
+            </header>
+            {children}
+          </div>
         </ClerkProvider>
       </body>
     </html>

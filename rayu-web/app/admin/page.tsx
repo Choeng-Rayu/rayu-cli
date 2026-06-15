@@ -90,8 +90,11 @@ export default function AdminPage() {
   if (isLoaded && !isSignedIn) {
     return (
       <main className="container">
-        <h1>Admin</h1>
-        <p style={{ color: 'var(--muted)' }}>Please sign in.</p>
+        <div style={{ marginBottom: '2rem' }}>
+          <span className="section-eyebrow">SYSTEM ACCESS</span>
+          <h1 style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>Admin Area</h1>
+          <p style={{ color: 'var(--text)', opacity: 0.6 }}>Please sign in to proceed.</p>
+        </div>
       </main>
     )
   }
@@ -99,51 +102,65 @@ export default function AdminPage() {
   if (forbidden) {
     return (
       <main className="container">
-        <h1>Admin</h1>
-        <p style={{ color: '#ff6b6b' }}>
-          You do not have permission to view this page.
-        </p>
+        <div style={{ marginBottom: '2rem' }}>
+          <span className="section-eyebrow" style={{ color: 'var(--red)' }}>ACCESS FORBIDDEN</span>
+          <h1 style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>Permission Denied</h1>
+          <p style={{ color: 'var(--red)', opacity: 0.8 }}>
+            You do not have administrative permissions to view this terminal page.
+          </p>
+        </div>
       </main>
     )
   }
 
   return (
     <main className="container">
-      <h1>Admin dashboard</h1>
-      {error && <p style={{ color: '#ff6b6b' }}>{error}</p>}
+      <div style={{ marginBottom: '3rem' }}>
+        <span className="section-eyebrow">CONTROL ROOM</span>
+        <h1 style={{ marginTop: '0.5rem' }}>Admin Dashboard</h1>
+      </div>
+
+      {error && (
+        <div className="card" style={{ borderColor: 'var(--red)', background: 'rgba(255, 51, 102, 0.05)', marginBottom: '2rem' }}>
+          <p style={{ color: 'var(--red)', margin: 0, fontWeight: 600 }}>{error}</p>
+        </div>
+      )}
 
       {stats && (
-        <div className="grid">
-          <div className="card">
-            <h3>{stats.totalUsers}</h3>
-            <span className="badge">Total users</span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.5rem', marginBottom: '3rem' }}>
+          <div className="stat-cell">
+            <div className="stat-num">{stats.totalUsers}</div>
+            <div className="stat-label">Total Users</div>
           </div>
-          <div className="card">
-            <h3>{stats.activeUsers24h}</h3>
-            <span className="badge">Active (24h)</span>
+          <div className="stat-cell">
+            <div className="stat-num">{stats.activeUsers24h}</div>
+            <div className="stat-label">Active (24h)</div>
           </div>
-          <div className="card">
-            <h3>{stats.activeUsers7d}</h3>
-            <span className="badge">Active (7d)</span>
+          <div className="stat-cell">
+            <div className="stat-num">{stats.activeUsers7d}</div>
+            <div className="stat-label">Active (7d)</div>
           </div>
-          <div className="card">
-            <h3>{stats.usageByProvider[0]?.provider ?? '—'}</h3>
-            <span className="badge">Top provider</span>
+          <div className="stat-cell">
+            <div className="stat-num" style={{ fontSize: '1.75rem', textTransform: 'uppercase', height: '54px', display: 'flex', alignItems: 'center' }}>
+              {stats.usageByProvider[0]?.provider ?? '—'}
+            </div>
+            <div className="stat-label">Top Provider</div>
           </div>
         </div>
       )}
 
-      <div style={{ marginTop: '2rem', display: 'flex', gap: '0.5rem' }}>
+      <div style={{ marginTop: '2.5rem', marginBottom: '2rem', display: 'flex', gap: '0.75rem' }}>
         <input
           className="btn secondary"
-          style={{ flex: 1 }}
+          style={{ flex: 1, padding: '12px 16px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text)' }}
           placeholder="Search by email, name, or Clerk id"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
         <button
-          className="btn"
+          className="btn-primary"
           onClick={() => rayuToken && load(rayuToken, search)}
+          style={{ padding: '0 24px' }}
         >
           Search
         </button>
@@ -163,30 +180,43 @@ export default function AdminPage() {
         <tbody>
           {users.map((u) => (
             <tr key={u.id}>
-              <td>{u.id}</td>
+              <td style={{ fontFamily: 'DM Mono, monospace' }}>{u.id}</td>
               <td>{u.email ?? '—'}</td>
               <td>{u.displayName ?? '—'}</td>
-              <td>{u.role}</td>
-              <td>{u.status}</td>
-              <td style={{ display: 'flex', gap: '0.4rem' }}>
-                {u.status !== 'active' && (
-                  <button className="btn secondary" onClick={() => setStatus(u.id, 'active')}>
-                    Activate
-                  </button>
-                )}
-                {u.status !== 'suspended' && (
-                  <button className="btn secondary" onClick={() => setStatus(u.id, 'suspended')}>
-                    Suspend
-                  </button>
-                )}
-                {u.status !== 'banned' && (
-                  <button className="btn secondary" onClick={() => setStatus(u.id, 'banned')}>
-                    Ban
-                  </button>
-                )}
+              <td style={{ textTransform: 'uppercase', fontSize: '0.8rem', fontWeight: 600 }}>{u.role}</td>
+              <td>
+                <span className={`badge ${u.status === 'active' ? 'active' : ''}`} style={u.status !== 'active' ? { color: 'var(--red)', borderColor: 'rgba(255, 51, 102, 0.2)' } : undefined}>
+                  {u.status}
+                </span>
+              </td>
+              <td>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  {u.status !== 'active' && (
+                    <button className="btn-ghost" style={{ padding: '6px 12px', fontSize: '0.8rem' }} onClick={() => setStatus(u.id, 'active')}>
+                      Activate
+                    </button>
+                  )}
+                  {u.status !== 'suspended' && (
+                    <button className="btn-ghost" style={{ padding: '6px 12px', fontSize: '0.8rem', color: '#ffbd2e', borderColor: 'rgba(255,189,46,0.3)' }} onClick={() => setStatus(u.id, 'suspended')}>
+                      Suspend
+                    </button>
+                  )}
+                  {u.status !== 'banned' && (
+                    <button className="btn-ghost" style={{ padding: '6px 12px', fontSize: '0.8rem', color: 'var(--red)', borderColor: 'rgba(255,51,102,0.3)' }} onClick={() => setStatus(u.id, 'banned')}>
+                      Ban
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
+          {users.length === 0 && (
+            <tr>
+              <td colSpan={6} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text)', opacity: 0.5 }}>
+                No database records found. Search above or connect an agent.
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </main>
