@@ -5,7 +5,6 @@ to any provider — Anthropic, OpenAI, NVIDIA, DeepSeek, Kimi/Moonshot, OpenRout
 local servers, or any OpenAI-compatible endpoint — with free model switching,
 full MCP support, and a complete built-in tool suite.
 
-> Educational / research use. Not affiliated with any AI provider.
 
 **Website:** https://rayu-web.vercel.app  
 **Docs:** https://rayu-web.vercel.app/docs  
