@@ -604,17 +604,21 @@ export function RayuProviderSetup({
     return (
       <Box flexDirection="column" gap={1} paddingLeft={1}>
         <Text bold>Connect Kiro (Claude via AWS)</Text>
-        <Text dimColor>Use a Kiro API key, or sign in with the Kiro CLI in your browser.</Text>
+        <Text dimColor>Use a Kiro API key, sign in with the Kiro CLI, or reuse an existing kiro-cli login.</Text>
         <Select
           options={[
             { label: 'API key — paste your ksk_… key', value: 'apikey' },
             { label: 'Login with Kiro CLI (browser sign-in)', value: 'login' },
+            { label: 'Use existing kiro-cli login', value: 'existing' },
           ]}
           onChange={(v: string) => {
             if (v === 'apikey') {
               setApiKey('')
               setCursor(0)
               setPhase('kiroApiKey')
+            } else if (v === 'existing') {
+              // Reuse the token kiro-cli already wrote; it's read at request time.
+              void finishKiro('oauth')
             } else {
               setKiroError(null)
               setKiroStep('checking')

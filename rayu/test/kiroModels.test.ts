@@ -17,10 +17,10 @@ describe('kiroModels.resolveKiroModel', () => {
     expect(resolveKiroModel('claude-haiku-4.5').kiroModel).toBe('claude-haiku-4.5')
   })
 
-  test('[1m] suffix enables thinking + 1M context and routes to the -1m SKU', () => {
+  test('[1m] suffix enables thinking + 1M context (base SKU, no -1m id)', () => {
     const r = resolveKiroModel('claude-sonnet-4-6[1m]')
     expect(r.thinking).toBe(true)
-    expect(r.kiroModel).toBe('claude-sonnet-4.6-1m')
+    expect(r.kiroModel).toBe('claude-sonnet-4.6')
     expect(r.contextWindowSize).toBe(1_000_000)
     expect(r.anthropicModel.endsWith('[1m]')).toBe(true)
   })
@@ -30,6 +30,20 @@ describe('kiroModels.resolveKiroModel', () => {
     expect(r.thinking).toBe(false)
     expect(r.kiroModel).toBe('claude-opus-4.7')
     expect(r.contextWindowSize).toBe(1_000_000)
+  })
+
+  test('opus-4.8 / opus-4.7 / sonnet-4.6 / sonnet-4.5 report a 1M context window', () => {
+    expect(resolveKiroModel('claude-opus-4.8').contextWindowSize).toBe(1_000_000)
+    expect(resolveKiroModel('claude-opus-4.8').kiroModel).toBe('claude-opus-4.8')
+    expect(resolveKiroModel('claude-opus-4.7').contextWindowSize).toBe(1_000_000)
+    expect(resolveKiroModel('claude-sonnet-4.6').contextWindowSize).toBe(1_000_000)
+    expect(resolveKiroModel('claude-sonnet-4.6').kiroModel).toBe('claude-sonnet-4.6')
+    expect(resolveKiroModel('claude-sonnet-4.5').contextWindowSize).toBe(1_000_000)
+  })
+
+  test('haiku / opus-4.5 report the 200k default window', () => {
+    expect(resolveKiroModel('claude-haiku-4.5').contextWindowSize).toBe(200_000)
+    expect(resolveKiroModel('claude-opus-4.5').contextWindowSize).toBe(200_000)
   })
 
   test('context1M flag forces thinking', () => {

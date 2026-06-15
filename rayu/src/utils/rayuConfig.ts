@@ -463,6 +463,23 @@ export function getRayuModelContextWindow(model: string): number | null {
   if (!isNaN(envOverride) && envOverride > 0) return envOverride
 
   const p = getActiveProvider()
+  // Kiro: per-model context from the Kiro catalog (opus-4.7/4.8 are 1M; sonnet/
+  // haiku base are 200k). Per-model config overrides still win.
+  if (p?.kind === 'kiro') {
+    const perModel = p.modelContextWindows?.[model]
+    if (perModel && perModel > 0) return perModel
+    try {
+      /* eslint-disable @typescript-eslint/no-require-imports */
+      const { resolveKiroModel } =
+        require('../services/api/kiro/kiroModels.js') as typeof import('../services/api/kiro/kiroModels.js')
+      /* eslint-enable @typescript-eslint/no-require-imports */
+      const ctx = resolveKiroModel(model).contextWindowSize
+      if (ctx > 0) return ctx
+    } catch {
+      // fall through to default
+    }
+    return null
+  }
   // The known-model table + per-model overrides apply to any non-Anthropic
   // provider that routes through a translated chat client: OpenAI-compatible,
   // Gemini-on-Vertex ('vertex'), and Login-with-Gemini ('genai').
