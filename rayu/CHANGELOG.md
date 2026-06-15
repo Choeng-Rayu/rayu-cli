@@ -2,6 +2,12 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.3.433 - 2026-06-15
+- Implement the doubleword provider to fetch all model
+
+## 1.3.432 - 2026-06-15
+- fixed Bug of thinking
+
 ## 1.3.431 - 2026-06-15
 - fix kiro context base on the original context 1M
 

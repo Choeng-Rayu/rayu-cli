@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs
 import { join } from 'path'
 import { getRayuConfigHomeDir } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
+import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
 export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro'
@@ -877,31 +878,38 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     return listKiroModels()
   }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
+  const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
+  let fetched: string[] = []
   try {
     const res = await fetch(url, {
       headers: p.apiKey ? { Authorization: `Bearer ${p.apiKey}` } : {},
       signal: AbortSignal.timeout(15_000),
     })
-    if (!res.ok) {
+    if (res.ok) {
+      const json = (await res.json()) as { data?: Array<{ id?: string }> }
+      fetched = (json.data ?? [])
+        .map(m => m.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    } else {
       reportIssue('rayu_models.fetch_failed', 'provider /models returned non-OK', {
         provider: p.id,
         status: res.status,
       })
-      return []
     }
-    const json = (await res.json()) as { data?: Array<{ id?: string }> }
-    return (json.data ?? [])
-      .map(m => m.id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0)
-      .sort()
   } catch (e) {
     reportIssue('rayu_models.fetch_error', 'provider /models request failed', {
       provider: p.id,
       error: e instanceof Error ? e.message : String(e),
     })
-    return []
   }
+  // Some OpenAI-compatible providers (e.g. Doubleword — batch-first) return an
+  // EMPTY /models list, so the picker would only show the preset default. Merge
+  // in a curated catalog when one exists for this provider: union, deduped + sorted.
+  if (curated.length) {
+    return [...new Set([...fetched, ...curated])].sort()
+  }
+  return fetched.sort()
 }
 
 /**

@@ -154,4 +154,4 @@ If you want to clone this repository and modify the source code:
 
 ---
 
-*Educational/research purpose. Not affiliated with or endorsed by Anthropic or any other provider.*
+<!-- *Educational/research purpose. Not affiliated with or endorsed by Anthropic or any other provider.* -->
