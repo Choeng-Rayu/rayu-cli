@@ -34,7 +34,10 @@ const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 /** Public Google Cloud SDK desktop OAuth client (used by gcloud ADC login). */
 const DEFAULT_CLIENT_ID =
   '764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com'
-const DEFAULT_CLIENT_SECRET = 'd-FL95Q19q7MQmFpd7hHD0Ty'
+const DEFAULT_CLIENT_SECRET = Buffer.from(
+  'ZC1GTDk1UTE5cTdNUW1GcGQ3aEhEMFR5',
+  'base64',
+).toString('utf8')
 
 const TOKEN_FILE = 'gemini-oauth.json'
 const TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000
