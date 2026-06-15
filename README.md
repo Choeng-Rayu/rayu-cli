@@ -1,11 +1,17 @@
 # @rayu-dev/rayu-cli (Rayu-CLI)
 
+
+
 <p align="center">
   <img src="./demo.png" alt="Rayu-CLI Demo Interface" width="700">
 </p>
 
+
 > **Rayu-CLI** is a terminal-based AI coding agent. It lets you **bring your own API key** and use **any OpenAI-compatible/athropic-compatible and genai provider** (NVIDIA, DeepSeek, Kimi/Moonshot, OpenAI, OpenRouter, local servers) as well as Anthropic and AWS Bedrock — with free model switching, MCP support, and the full built-in tool suite.
 
+**Website:** https://rayu-web.vercel.app  
+**Docs:** https://rayu-web.vercel.app/docs  
+**Changelog:** https://rayu-web.vercel.app/changelog
 ---
 
 ## 🚀 Quick Start
