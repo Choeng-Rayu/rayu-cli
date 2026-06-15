@@ -2,6 +2,15 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.3.430 - 2026-06-15
+- The final update the rayu cli free of use.
+- Added new provider with kiro provider login through api key and the kiro OAuth
+- Add Rayu OAuth for preview first.
+
+## 1.3.429 - 2026-06-14
+- Added FIX thinking to all provider
+- we improve the thinking to for provider and make the speed bettern 10%
+
 ## 1.3.428 - 2026-06-13
 - Added the thinking status display to all agent subagents and the collaborator agent
 
