@@ -2,6 +2,9 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.3.431 - 2026-06-15
+- fix kiro context base on the original context 1M
+
 ## 1.3.430 - 2026-06-15
 - The final update the rayu cli free of use.
 - Added new provider with kiro provider login through api key and the kiro OAuth
