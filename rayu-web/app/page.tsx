@@ -1,6 +1,7 @@
 import { Show, SignUpButton } from '@clerk/nextjs'
 import Link from 'next/link'
 import HeroTerminal from './components/HeroTerminal'
+import HeroCTA from './components/HeroCTA'
 
 export default function HomePage() {
   const tickerItems = [
@@ -33,19 +34,7 @@ export default function HomePage() {
                 Start Building Free →
               </Link>
             </Show>
-            <button className="btn-terminal">$ npm install -g rayu</button>
-          </div>
-          {/* Social Proof */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '3rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center' }}>
-              <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(135deg, #00FF88, #0055ff)', border: '2px solid #030507' }} />
-              <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(135deg, #FF3366, #ff00ff)', border: '2px solid #030507', marginLeft: '-10px' }} />
-              <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(135deg, #00FF88, #ffaa00)', border: '2px solid #030507', marginLeft: '-10px' }} />
-              <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(135deg, #0055ff, #FF3366)', border: '2px solid #030507', marginLeft: '-10px' }} />
-            </div>
-            <span style={{ fontSize: '0.9rem', color: 'var(--text)', opacity: 0.65 }}>
-              Used by <strong style={{ color: '#ffffff', fontWeight: 600 }}>2,400+ engineers</strong> shipping agents today
-            </span>
+            <HeroCTA />
           </div>
         </div>
 

@@ -30,9 +30,8 @@ export default function RootLayout({
                 <div className="nav-logo-mark" />
                 RAYU
               </Link>
-              <ul className="nav-links">
+              <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
                 <li><Link href="/plans">Plans</Link></li>
-                <li><Link href="/chatbot">Terminal</Link></li>
                 <li><a href="#">Docs</a></li>
               </ul>
               <div className="nav-actions">
