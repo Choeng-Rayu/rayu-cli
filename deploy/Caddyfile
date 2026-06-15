@@ -1,0 +1,16 @@
+# Caddy reverse proxy. SITE_ADDRESS is e.g. "rayu.example.com" (auto-HTTPS) or
+# ":80" for local/no-TLS testing.
+{$SITE_ADDRESS} {
+	encode gzip
+
+	# Backend (NestJS) is mounted under /api and expects the /api prefix, so we
+	# do NOT strip the path here.
+	handle /api/* {
+		reverse_proxy backend:4000
+	}
+
+	# Everything else goes to the Next.js website.
+	handle {
+		reverse_proxy web:3000
+	}
+}

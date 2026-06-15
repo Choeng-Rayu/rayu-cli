@@ -1,0 +1,106 @@
+# Single-VPS deployment for Rayu accounts (website + backend + MySQL).
+#
+#   cd deploy
+#   cp .env.example .env   # fill in secrets
+#   docker compose up -d --build
+#
+# Caddy terminates TLS and routes:
+#   /api/*  -> backend:4000  (NestJS, global prefix /api)
+#   /*      -> web:3000      (Next.js)
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # Bind to localhost only so the DB is reachable for host-run migrations and
+    # local tools, without exposing it publicly.
+    ports:
+      - '127.0.0.1:3306:3306'
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost', '-p${MYSQL_ROOT_PASSWORD}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - rayu
+
+  backend:
+    build:
+      context: ../rayu-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: '4000'
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+      RAYU_JWT_SECRET: ${RAYU_JWT_SECRET}
+      RAYU_ACCESS_TTL: '3600'
+      RAYU_REFRESH_TTL: '2592000'
+      WEB_ORIGIN: ${PUBLIC_SITE_URL}
+      # Bakong (phase 2 — unused in phase 1)
+      BAKONG_MERCHANT_ID: ${BAKONG_MERCHANT_ID:-}
+      BAKONG_PHONE_NUMBER: ${BAKONG_PHONE_NUMBER:-}
+      BAKONG_DEVELOPER_TOKEN: ${BAKONG_DEVELOPER_TOKEN:-}
+      BAKONG_API_URL: ${BAKONG_API_URL:-}
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:4000/api/health']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - rayu
+
+  web:
+    build:
+      context: ../rayu-web
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+        # The browser calls the API at the public site under /api.
+        NEXT_PUBLIC_RAYU_API_URL: ${PUBLIC_SITE_URL}/api
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+      NEXT_PUBLIC_RAYU_API_URL: ${PUBLIC_SITE_URL}/api
+    networks:
+      - rayu
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+      - backend
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - rayu
+
+volumes:
+  mysql_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  rayu:
+    driver: bridge
