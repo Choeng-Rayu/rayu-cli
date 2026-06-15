@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "prebuild": "node scripts/copy-docs.js",
+    "predev": "node scripts/copy-docs.js",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -14,7 +16,9 @@
     "@clerk/nextjs": "latest",
     "next": "^15.1.6",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

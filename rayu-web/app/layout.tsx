@@ -1,10 +1,3 @@
-import {
-  ClerkProvider,
-  Show,
-  SignInButton,
-  SignUpButton,
-  UserButton,
-} from '@clerk/nextjs'
 import Link from 'next/link'
 import type { Metadata } from 'next'
 import './globals.css'
@@ -23,31 +16,23 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <ClerkProvider>
-          <div className="site">
-            <header className="nav">
-              <Link href="/" className="nav-logo">
-                <div className="nav-logo-mark" />
-                RAYU
-              </Link>
-              <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
-                <li><Link href="/plans">Plans</Link></li>
-                <li><a href="#">Docs</a></li>
-              </ul>
-              <div className="nav-actions">
-                <Show when="signed-out">
-                  <SignInButton><button className="btn-ghost">Sign in</button></SignInButton>
-                  <SignUpButton><button className="btn-primary">Get Access →</button></SignUpButton>
-                </Show>
-                <Show when="signed-in">
-                  <Link href="/admin" className="btn-ghost" style={{ marginRight: '8px' }}>Admin</Link>
-                  <UserButton />
-                </Show>
-              </div>
-            </header>
-            {children}
-          </div>
-        </ClerkProvider>
+        <div className="site">
+          <header className="nav">
+            <Link href="/" className="nav-logo">
+              <div className="nav-logo-mark" />
+              RAYU
+            </Link>
+            <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
+              <li><Link href="/plans">Plans</Link></li>
+              <li><Link href="/docs">Docs</Link></li>
+              <li><Link href="/changelog">Changelog</Link></li>
+            </ul>
+            <div className="nav-actions">
+              <Link href="/plans" className="btn-primary">Get Access →</Link>
+            </div>
+          </header>
+          {children}
+        </div>
       </body>
     </html>
   )

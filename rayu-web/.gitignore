@@ -9,3 +9,4 @@ coverage
 *.tsbuildinfo
 next-env.d.ts.bak
 rayu-web/.env
+.vercel

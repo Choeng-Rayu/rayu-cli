@@ -1,4 +1,6 @@
+
 'use client'
+export const dynamic = 'force-dynamic'
 
 import { SignInButton, useAuth } from '@clerk/nextjs'
 import { Suspense, useEffect, useRef, useState } from 'react'

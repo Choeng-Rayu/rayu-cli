@@ -1,4 +1,6 @@
+
 'use client'
+export const dynamic = 'force-dynamic'
 
 import { useAuth } from '@clerk/nextjs'
 import { useCallback, useEffect, useState } from 'react'
