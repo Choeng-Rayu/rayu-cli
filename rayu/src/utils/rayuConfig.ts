@@ -9,7 +9,7 @@ import { getRayuConfigHomeDir } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai'
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
@@ -60,6 +60,15 @@ export type RayuProvider = {
   gcpProject?: string
   /** GCP region (location) for Vertex AI requests (default: us-central1). */
   gcpRegion?: string
+  // --- Kiro fields (kind: 'kiro') ---
+  /**
+   * How a Kiro provider authenticates to the AWS CodeWhisperer backend:
+   * - 'apikey': the ksk_ key (stored in apiKey) is sent as a bearer token plus
+   *   a `TokenType: API_KEY` header.
+   * - 'oauth': read/refresh the token written by `kiro-cli login` at
+   *   ~/.local/share/kiro-cli/data.sqlite3 (no apiKey is stored).
+   */
+  kiroAuthType?: 'apikey' | 'oauth'
 }
 
 export type RayuConfig = {
@@ -333,7 +342,11 @@ export function setVideoModelSelection(model: string | undefined): void {
 /** True when at least one provider has credentials configured. */
 export function hasConfiguredProvider(): boolean {
   return loadRayuConfig().providers.some(
-    p => !!p.apiKey || p.kind === 'openai-compatible' || (p.kind === 'bedrock' && !!p.awsAccessKeyId),
+    p =>
+      !!p.apiKey ||
+      p.kind === 'openai-compatible' ||
+      (p.kind === 'bedrock' && !!p.awsAccessKeyId) ||
+      p.kind === 'kiro',
   )
 }
 
@@ -840,6 +853,12 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
   if (p.kind === 'genai') {
     return fetchGenAIGeminiModels(p)
   }
+  // Kiro: curated Claude model list (no live /models endpoint). Lazy import so
+  // kiro modules stay out of startup.
+  if (p.kind === 'kiro') {
+    const { listKiroModels } = await import('../services/api/kiro/kiroModels.js')
+    return listKiroModels()
+  }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
   try {
@@ -880,7 +899,8 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
     (p.kind !== 'openai-compatible' &&
       p.kind !== 'bedrock' &&
       p.kind !== 'vertex' &&
-      p.kind !== 'genai')
+      p.kind !== 'genai' &&
+      p.kind !== 'kiro')
   )
     return []
   const models = await fetchProviderModels(p)
