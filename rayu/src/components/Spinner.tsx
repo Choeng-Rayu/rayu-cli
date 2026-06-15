@@ -30,7 +30,8 @@ import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InP
 import { getEffortSuffix } from '../utils/effort.js';
 import { getMainLoopModel } from '../utils/model/model.js';
 import { getViewedTeammateTask } from '../state/selectors.js';
-import { TEARDROP_ASTERISK } from '../constants/figures.js';
+import { getBrandGlyph } from '../constants/figures.js';
+const TEARDROP_ASTERISK = getBrandGlyph();
 import figures from 'figures';
 import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../bootstrap/state.js';
 import { TeammateSpinnerTree } from './Spinner/TeammateSpinnerTree.js';

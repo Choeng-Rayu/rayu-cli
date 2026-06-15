@@ -3,7 +3,33 @@ import { env } from '../utils/env.js'
 // The former is better vertically aligned, but isn't usually supported on Windows/Linux
 export const BLACK_CIRCLE = env.platform === 'darwin' ? '⏺' : '●'
 export const BULLET_OPERATOR = '∙'
-export const TEARDROP_ASTERISK = '✻'
+/** Default Rayu brand mark. U+25C8 (Geometric Shapes — same block as ●) renders
+ *  reliably. Users override it via the `brandGlyph` setting (the /brand command). */
+export const DEFAULT_BRAND_GLYPH = '◈'
+
+/**
+ * The Rayu brand mark for status/thinking lines, the logo asterisk, etc.
+ * Resolves the user's `brandGlyph` setting (applies on restart), falling back to
+ * the default. Settings are read lazily (require, at call time) so this never
+ * creates a load-order / circular-import dependency on the settings module.
+ */
+export function getBrandGlyph(): string {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getInitialSettings } =
+      require('../utils/settings/settings.js') as typeof import('../utils/settings/settings.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    const g = getInitialSettings()?.brandGlyph
+    if (typeof g === 'string' && g.trim().length > 0) return g
+  } catch {
+    // settings not ready (very early import) — fall back to the default
+  }
+  return DEFAULT_BRAND_GLYPH
+}
+
+// Back-compat alias: the static default. New code should call getBrandGlyph()
+// so the user's /brand choice is honored.
+export const TEARDROP_ASTERISK = DEFAULT_BRAND_GLYPH
 export const UP_ARROW = '\u2191' // ↑ - used for opus 1m merge notice
 export const DOWN_ARROW = '\u2193' // ↓ - used for scroll hint
 export const LIGHTNING_BOLT = '↯' // \u21af - used for fast mode indicator

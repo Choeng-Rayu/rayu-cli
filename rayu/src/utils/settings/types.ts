@@ -940,6 +940,18 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Reduce or disable animations for accessibility (spinner shimmer, flash effects, etc.)',
         ),
+      brandGlyph: z
+        .string()
+        .optional()
+        .describe(
+          'Brand mark glyph shown on status/thinking lines and the logo (default ◈). Set via /brand.',
+        ),
+      spinnerStyle: z
+        .enum(['circles', 'diamonds', 'dots', 'squares', 'classic'])
+        .optional()
+        .describe(
+          'Loading spinner pulse style (default circles). Set via /brand.',
+        ),
       autoMemoryEnabled: z
         .boolean()
         .optional()

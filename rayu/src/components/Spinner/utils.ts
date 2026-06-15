@@ -1,13 +1,35 @@
 import type { RGBColor as RGBColorString } from '../../ink/styles.js'
 import type { RGBColor as RGBColorType } from './types.js'
 
+// Loading-spinner pulse styles, selectable via the `spinnerStyle` setting (/brand).
+// All glyphs are in widely-supported blocks (mostly Geometric Shapes, same as ●)
+// so they render reliably without per-terminal workarounds.
+export const SPINNER_STYLES = {
+  circles: ['·', '◦', '○', '◎', '◉', '●'],
+  diamonds: ['·', '◇', '◈', '◆', '◈', '◇'],
+  dots: ['·', '∙', '•', '●', '•', '∙'],
+  squares: ['·', '▫', '◻', '◼', '◻', '▫'],
+  classic: ['·', '✢', '✳', '✶', '✻', '✽'], // upstream asterisk sweep
+} satisfies Record<string, string[]>
+
+export type SpinnerStyle = keyof typeof SPINNER_STYLES
+export const DEFAULT_SPINNER_STYLE: SpinnerStyle = 'circles'
+
 export function getDefaultCharacters(): string[] {
-  if (process.env.TERM === 'xterm-ghostty') {
-    return ['·', '✢', '✳', '✶', '✻', '*'] // Use * instead of ✽ for Ghostty because the latter renders in a way that's slightly offset
+  let style: string | undefined
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getInitialSettings } =
+      require('../../utils/settings/settings.js') as typeof import('../../utils/settings/settings.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    style = getInitialSettings()?.spinnerStyle
+  } catch {
+    // settings not ready — use the default style
   }
-  return process.platform === 'darwin'
-    ? ['·', '✢', '✳', '✶', '✻', '✽']
-    : ['·', '✢', '*', '✶', '✻', '✽']
+  return (
+    SPINNER_STYLES[(style as SpinnerStyle) || DEFAULT_SPINNER_STYLE] ??
+    SPINNER_STYLES[DEFAULT_SPINNER_STYLE]
+  )
 }
 
 // Interpolate between two RGB colors
