@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+*.log
+.env
+.env.local
+*.sqlite
+*.tsbuildinfo
+rayu-backend/.env
