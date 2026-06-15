@@ -19,6 +19,11 @@ const ALL_TARGETS: Record<string, { bunTarget: string; outfile: string }> = {
 
 const define: Record<string, string> = {
   'process.env.USER_TYPE': JSON.stringify(process.env.USER_TYPE ?? 'external'),
+  // Git commit co-author email; sourced from .env (Bun auto-loads it) and baked
+  // in at build time. Falls back to a neutral placeholder.
+  'process.env.RAYU_COMMIT_EMAIL': JSON.stringify(
+    process.env.RAYU_COMMIT_EMAIL ?? 'noreply@rayu.dev',
+  ),
 }
 for (const [k, v] of Object.entries(MACRO_VALUES)) {
   define[`MACRO.${k}`] = JSON.stringify(v)

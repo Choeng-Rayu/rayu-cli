@@ -10,4 +10,4 @@ generated-image-*
 generated-video-*
 
 # OAuth client secret file (if a user drops one at the project root).
-client_secret.json
+client_secret.json.playwright-cli/

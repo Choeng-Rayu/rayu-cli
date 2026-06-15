@@ -65,7 +65,7 @@ BAD (never write these):
 - "Fix bug found while testing with Claude Capybara"
 - "1-shotted by claude-opus-4-6"
 - "Generated with RAYU"
-- "Co-Authored-By: Claude Opus 4.6 <…>"
+- "Co-Authored-By: Rayu Code Opus 4.6 <…>"
 `
   }
   return ''

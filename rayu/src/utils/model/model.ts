@@ -483,6 +483,40 @@ export function getPublicModelName(model: ModelName): string {
   return `Claude (${model})`
 }
 
+// Trailing channel / date tokens dropped when prettifying an unknown model id.
+const PRETTIFY_DROP_TOKEN =
+  /^(preview|exp|experimental|latest|beta|stable|snapshot)$/i
+
+/**
+ * Turn a raw model id into a readable, vendor-neutral name.
+ * Drops any provider/org prefix ("meta/llama-…" → "llama-…"), a leading
+ * "claude" family token (so it reads like the public display names), and
+ * trailing channel/date suffixes; then title-cases the remaining tokens while
+ * preserving version numbers.
+ *   "gemini-3.1-pro-preview" → "Gemini 3.1 Pro"
+ *   "claude-opus-4.8"        → "Opus 4.8"
+ */
+function prettifyModelId(model: string): string {
+  const base = model.split('/').pop() ?? model
+  const tokens = base
+    .split(/[-_]/)
+    .filter(Boolean)
+    .filter((tok, i) => !(i === 0 && tok.toLowerCase() === 'claude'))
+    .filter(tok => !PRETTIFY_DROP_TOKEN.test(tok) && !/^\d{6,8}$/.test(tok))
+    .map(tok => (/^[a-z]/.test(tok) ? capitalize(tok) : tok))
+  return tokens.length > 0 ? tokens.join(' ') : model
+}
+
+/**
+ * Vendor-neutral model name for git commit attribution: the real model only,
+ * with no provider and no hardcoded "Claude" fallback. Known public Claude
+ * models use their display name ("Opus 4.6"); anything else is prettified from
+ * its id ("gemini-3.1-pro-preview" → "Gemini 3.1 Pro").
+ */
+export function getCommitModelName(model: ModelName): string {
+  return getPublicModelDisplayName(model) ?? prettifyModelId(model)
+}
+
 /**
  * Returns a full model name for use in this session, possibly after resolving
  * a model alias.
