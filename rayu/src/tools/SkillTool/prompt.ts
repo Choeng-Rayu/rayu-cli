@@ -173,7 +173,7 @@ export function formatCommandsWithinBudget(
 export const getPrompt = memoize(async (_cwd: string): Promise<string> => {
   return `Execute a skill within the main conversation
 
-When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge.
+When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge. Any available skill is usable whenever it helps — rayu's bundled skills, any skill the user has installed, and MCP skills — there is no per-task restriction on which you may invoke.
 
 When users reference a "slash command" or "/<something>" (e.g., "/commit", "/review-pr"), they are referring to a skill. Use this tool to invoke it.
 
@@ -187,6 +187,7 @@ How to invoke:
 
 Important:
 - Available skills are listed in system-reminder messages in the conversation
+- Beyond the listed skills, you may install a relevant one on demand from the official Anthropic skills repository (\`anthropics/skills\`) or any other source — via the InstallSkill tool or \`/install-skill anthropics/skills/skills/<name>\` — and then invoke it
 - When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
 - NEVER mention a skill without actually calling this tool
 - Do not invoke a skill that is already running

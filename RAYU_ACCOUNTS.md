@@ -13,17 +13,31 @@ three projects:
 
 - Sign in with Clerk (Google / GitHub / Facebook). Telegram is deferred.
 - New users are auto-assigned the **Free** plan (bring your own provider key
-  via the CLI's `/connect` — unlimited, direct to the provider).
-- Plans page shows all tiers; **Pro / Pro+ / Max / Enterprise** are
-  **"Coming soon"**. The chatbot page is a "Coming soon" placeholder.
-- Super-admin dashboard: list/search users, suspend/ban, view stats
-  (active users, signups, usage by provider).
+  via the CLI's `/connect` — direct to the provider).
+- **Plans (all admin-editable at runtime — see below):**
+  - **Free** — bring your own key; advanced features off by default + a daily
+    turn cap. Admin can open features/limits up.
+  - **Basic — $3/mo (active)** — bring your own key; all features unlocked.
+  - **Pro / Pro+ / Max** — Rayu-hosted tiers, **"Coming soon"** until the model
+    gateway ships.
+  - **Enterprise** — contact sales.
+- **All plan business logic is data-driven and admin-managed** — price,
+  availability, per-feature access (telegram, collaborator swarm, model per
+  subagent, collaborator model, image/video generation) and usage limits
+  (`maxDailyTurns`, per-feature caps) live in MySQL and are edited from the
+  admin dashboard. Nothing is hardcoded or in `.env`. The seed only writes
+  **first-time, non-destructive defaults** (it never overwrites admin edits on
+  restart). `GET /api/me/entitlements` returns a user's resolved plan/features.
+- Super-admin dashboard: list/search users, suspend/ban, change a user's plan,
+  view payments + stats, and **manage Plans & Features** (prices/availability/
+  feature toggles/limits).
 - Per-user provider usage tracking.
 - CLI login gate behind `USE_RAYU_OAUTH` (default **off** = unchanged behavior).
 
-**Deferred to phase 2:** paid-plan billing, the Rayu-hosted model proxy with
-5h/daily/weekly resets, **Bakong** payments (DB tables exist; no integration
-yet), Telegram login, and the real chatbot.
+**Deferred to a later phase:** the Rayu-hosted model proxy/streaming gateway
+(needed only for Rayu-provided keys on the higher tiers) with 5h/daily/weekly
+resets, wiring the CLI to enforce entitlements, Telegram login, and the real
+chatbot. (Bakong payments scaffolding exists in the backend.)
 
 > Security: the CLI ships **no secrets**. Clerk secret key, MySQL credentials,
 > the Rayu JWT signing secret, and (future) Bakong credentials live only in the
