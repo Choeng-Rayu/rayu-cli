@@ -6,10 +6,10 @@
 
 import React from 'react'
 
-const ACCENT = 'var(--accent, #6d7cff)'
-const ACCENT2 = 'var(--accent-2, #00d4aa)'
-const GRID = 'var(--border, #232838)'
-const MUTED = 'var(--text, #e6e9ef)'
+const ACCENT = 'var(--green, #00FF88)'
+const ACCENT2 = 'var(--green-dim, #00cc6e)'
+const GRID = 'var(--border, rgba(255,255,255,0.08))'
+const MUTED = 'var(--text, #e0e8f0)'
 
 function niceMax(max: number): number {
   if (max <= 0) return 1

@@ -19,8 +19,8 @@ type OnDone = (
 ) => void
 
 // Reliable, distinct-from-upstream brand marks (Geometric Shapes / Misc Symbols
-// blocks render where ● renders). `✻`/`*` kept for anyone who wants them back.
-const GLYPH_OPTIONS = ['◈', '◆', '◇', '★', '✦', '❖', '●', '✻', '*']
+// blocks render where ● renders).
+const GLYPH_OPTIONS = ['◈', '◆', '◇', '★', '✦', '❖', '●']
 
 /**
  * /brand — pick the brand mark glyph (status/thinking lines + logo) and the

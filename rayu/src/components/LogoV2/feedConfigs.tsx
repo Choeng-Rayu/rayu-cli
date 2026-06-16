@@ -2,6 +2,7 @@ import figures from 'figures';
 import { homedir } from 'os';
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
+import { getBrandGlyph } from '../../constants/figures.js';
 import type { Step } from '../../projectOnboardingState.js';
 import { formatCreditAmount, getCachedReferrerReward } from '../../services/api/referral.js';
 import type { LogOption } from '../../types/logs.js';
@@ -91,7 +92,7 @@ export function createGuestPassesFeed(): FeedConfig {
     customContent: {
       content: <>
           <Box marginY={1}>
-            <Text color="claude">[◈] [◈] [◈]</Text>
+            <Text color="claude">{`[${getBrandGlyph()}] [${getBrandGlyph()}] [${getBrandGlyph()}]`}</Text>
           </Box>
           <Text dimColor>{subtitle}</Text>
         </>,

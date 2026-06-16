@@ -218,14 +218,60 @@ export class AdminService {
     return { totalUsers, activeUsers24h, activeUsers7d, usageByProvider }
   }
 
+  // --- Feedback inbox ---
+
+  async listFeedback(page: number, pageSize: number, type?: string) {
+    const take = Math.min(Math.max(1, pageSize), 100)
+    const skip = (Math.max(1, page) - 1) * take
+    const where = type ? { type } : {}
+    const [items, total] = await Promise.all([
+      this.prisma.feedback.findMany({
+        where,
+        include: { user: { select: { id: true, email: true, displayName: true } } },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      this.prisma.feedback.count({ where }),
+    ])
+    return {
+      items: items.map((f) => ({
+        id: f.id,
+        type: f.type,
+        message: f.message,
+        rating: f.rating,
+        createdAt: f.createdAt,
+        userId: f.userId,
+        userEmail: f.user?.email ?? null,
+        userName: f.user?.displayName ?? null,
+      })),
+      total,
+      page: Math.max(1, page),
+      pageSize: take,
+    }
+  }
+
+  // --- Bulk user status (multi-select moderation) ---
+
+  async bulkSetStatus(ids: number[], status: UserStatus): Promise<{ updated: number }> {
+    if (!ids.length) return { updated: 0 }
+    const res = await this.prisma.user.updateMany({
+      where: { id: { in: ids } },
+      data: { status },
+    })
+    return { updated: res.count }
+  }
+
   /**
    * Consolidated analytics for the admin dashboard: users, activity, revenue,
    * plan/paid-vs-free distribution, signups & active over time, usage by
    * provider, churn (canceled subs / status), and top users.
    */
-  async analytics(): Promise<AdminAnalytics> {
+  async analytics(days = 30): Promise<AdminAnalytics> {
     const now = new Date()
     const day = 24 * 60 * 60 * 1000
+    // Clamp the requested window for the time-series (7/30/90-day toggle).
+    const win = Math.min(90, Math.max(7, Math.floor(days) || 30))
 
     const [
       totalUsers,
@@ -299,37 +345,39 @@ export class AdminService {
       count: Number(r.count),
     }))
 
-    // New signups per day (last 30 days).
-    const signupRows = await this.prisma.$queryRaw<
+    // New signups per day (windowed).
+    const signupRows = await this.prisma.$queryRawUnsafe<
       Array<{ d: Date | string; count: bigint | number }>
-    >`
-      SELECT DATE(createdAt) AS d, COUNT(*) AS count
-      FROM users
-      WHERE createdAt >= (NOW() - INTERVAL 30 DAY)
-      GROUP BY d ORDER BY d ASC`
+    >(
+      `SELECT DATE(createdAt) AS d, COUNT(*) AS count
+       FROM users
+       WHERE createdAt >= (NOW() - INTERVAL ${win} DAY)
+       GROUP BY d ORDER BY d ASC`,
+    )
     const signupsByDay = this.fillDays(
       signupRows.map((r) => ({
         date: this.toDateStr(r.d),
         count: Number(r.count),
       })),
-      30,
+      win,
       now,
     )
 
-    // Distinct active users per day (last 14 days) from usage events.
-    const activeRows = await this.prisma.$queryRaw<
+    // Distinct active users per day (windowed) from usage events.
+    const activeRows = await this.prisma.$queryRawUnsafe<
       Array<{ d: Date | string; count: bigint | number }>
-    >`
-      SELECT DATE(createdAt) AS d, COUNT(DISTINCT user_id) AS count
-      FROM usage_events
-      WHERE createdAt >= (NOW() - INTERVAL 14 DAY)
-      GROUP BY d ORDER BY d ASC`
+    >(
+      `SELECT DATE(createdAt) AS d, COUNT(DISTINCT user_id) AS count
+       FROM usage_events
+       WHERE createdAt >= (NOW() - INTERVAL ${win} DAY)
+       GROUP BY d ORDER BY d ASC`,
+    )
     const activeByDay = this.fillDays(
       activeRows.map((r) => ({
         date: this.toDateStr(r.d),
         count: Number(r.count),
       })),
-      14,
+      win,
       now,
     )
 

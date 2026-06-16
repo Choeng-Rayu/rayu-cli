@@ -420,13 +420,93 @@ describe('rayu-backend (e2e)', () => {
     expect(a.revenue).toHaveProperty('totalCents')
     expect(Array.isArray(a.revenue.byMonth)).toBe(true)
     expect(a.signupsByDay).toHaveLength(30)
-    expect(a.activeByDay).toHaveLength(14)
+    expect(a.activeByDay).toHaveLength(30)
     expect(Array.isArray(a.usageByProvider)).toBe(true)
     expect(Array.isArray(a.topUsers)).toBe(true)
     expect(typeof a.canceledSubscriptions).toBe('number')
     // The usage we posted shows in provider breakdown + top users.
     expect(a.usageByProvider.map((u: any) => u.provider)).toContain('openai')
     expect(a.topUsers.length).toBeGreaterThan(0)
+  })
+
+  it('analytics ?days= range adjusts the time-series length', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_range_admin',
+      email: 'range@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-range-123456')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_range_admin' },
+      data: { role: 'admin' },
+    })
+    const res = await request(app.getHttpServer())
+      .get('/api/admin/analytics?days=7')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(res.status).toBe(200)
+    expect(res.body.signupsByDay).toHaveLength(7)
+    expect(res.body.activeByDay).toHaveLength(7)
+  })
+
+  it('admin feedback inbox + bulk status (admin only)', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_fbadmin',
+      email: 'fbadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-fbadmin-123456')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_fbadmin' },
+      data: { role: 'superadmin' },
+    })
+
+    // A user submits feedback.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_fbuser',
+      email: 'fbuser@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const userAccess = await login(app, 'state-fbuser-123456')
+    await request(app.getHttpServer())
+      .post('/api/feedback')
+      .set('Authorization', `Bearer ${userAccess}`)
+      .send({ type: 'bug', message: 'something broke', rating: 2 })
+      .expect(201)
+
+    // Non-admin blocked from inbox.
+    await request(app.getHttpServer())
+      .get('/api/admin/feedback')
+      .set('Authorization', `Bearer ${userAccess}`)
+      .expect(403)
+
+    // Admin reads the inbox.
+    const inbox = await request(app.getHttpServer())
+      .get('/api/admin/feedback?type=bug')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(inbox.status).toBe(200)
+    expect(inbox.body.total).toBeGreaterThan(0)
+    expect(inbox.body.items[0].type).toBe('bug')
+    expect(inbox.body.items[0].userEmail).toBe('fbuser@example.com')
+
+    // Bulk-suspend the feedback user.
+    const fbUser = await ctx.prisma.user.findUnique({
+      where: { clerkUserId: 'clerk_fbuser' },
+    })
+    const bulk = await request(app.getHttpServer())
+      .patch('/api/admin/users/bulk-status')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ ids: [fbUser!.id], status: 'suspended' })
+    expect(bulk.status).toBe(200)
+    expect(bulk.body.updated).toBe(1)
+
+    // Suspended user's token now rejected.
+    await request(app.getHttpServer())
+      .get('/api/me')
+      .set('Authorization', `Bearer ${userAccess}`)
+      .expect(401)
   })
 })
 

@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import { chmod, open, rename, stat, unlink } from 'fs/promises'
+import { homedir } from 'os'
 import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import { dirname, join, parse } from 'path'
@@ -1004,6 +1005,75 @@ export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
 }
 
 /**
+ * Read MCP servers from Claude Code's config as a FALLBACK source.
+ *
+ * Reads ONLY the `mcpServers` key(s) — never model, provider, auth, or any
+ * other Claude setting. Gated by settings.claudeMcpEnabled (default on). These
+ * are injected at the LOWEST priority in getRayuMcpConfigs, so any rayu-defined
+ * server of the same name wins (rayu-first; Claude only fills gaps). rayu and
+ * Claude auth/model/provider stay fully separate.
+ *
+ * Sources (mcpServers only): ~/.claude.json (top-level + projects[<cwd>]),
+ * <cwd>/.claude/settings.json, ~/.claude/settings.json.
+ */
+export function getClaudeFallbackMcpServers(): Record<
+  string,
+  ScopedMcpServerConfig
+> {
+  const settings = getInitialSettings() as Record<string, unknown>
+  if (settings.claudeMcpEnabled === false) return {}
+
+  const fs = getFsImplementation()
+  const cwd = getCwd()
+  const home = homedir()
+
+  const readJson = (path: string): Record<string, unknown> | null => {
+    try {
+      const parsed = safeParseJSON(fs.readFileSync(path, { encoding: 'utf8' }))
+      return parsed && typeof parsed === 'object'
+        ? (parsed as Record<string, unknown>)
+        : null
+    } catch {
+      return null
+    }
+  }
+
+  // Collect ONLY the `mcpServers` objects, in Claude-internal precedence
+  // (global < project < settings.json). Every other key in these files
+  // (model, provider, auth, history, …) is deliberately ignored.
+  const rawSources: unknown[] = []
+  const claudeJson = readJson(join(home, '.claude.json'))
+  if (claudeJson) {
+    rawSources.push(claudeJson.mcpServers)
+    const projects = claudeJson.projects as
+      | Record<string, { mcpServers?: unknown }>
+      | undefined
+    rawSources.push(projects?.[cwd]?.mcpServers)
+  }
+  for (const p of [
+    join(cwd, '.claude', 'settings.json'),
+    join(home, '.claude', 'settings.json'),
+  ]) {
+    const s = readJson(p)
+    if (s) rawSources.push(s.mcpServers)
+  }
+
+  // Validate each server against the MCP schema; skip anything invalid.
+  const validated: Record<string, McpServerConfig> = {}
+  for (const raw of rawSources) {
+    if (!raw || typeof raw !== 'object') continue
+    for (const [name, cfg] of Object.entries(raw as Record<string, unknown>)) {
+      const parsed = McpServerConfigSchema().safeParse(cfg)
+      if (parsed.success) {
+        validated[name] = parsed.data as McpServerConfig
+      }
+    }
+  }
+
+  return addScopeToServers(validated, 'user')
+}
+
+/**
  * Get Rayu MCP configurations. This is fast: only local file reads and plugin
  * cache reads, with no Claude-account connector discovery.
  * @returns RAYU server configurations with appropriate scopes
@@ -1047,6 +1117,12 @@ export async function getRayuMcpConfigs(
   const { servers: localServers } = mcpLocked
     ? noServers
     : getMcpConfigsByScope('local')
+  // Claude Code MCP servers (mcpServers ONLY) as a lowest-priority FALLBACK:
+  // any rayu-defined server of the same name overrides them. Skipped when MCP
+  // is policy-locked. Never reads Claude model/provider/auth.
+  const claudeFallbackServers: Record<string, ScopedMcpServerConfig> = mcpLocked
+    ? {}
+    : getClaudeFallbackMcpServers()
 
   // Load plugin MCP servers
   const pluginMcpServers: Record<string, ScopedMcpServerConfig> = {}
@@ -1163,9 +1239,10 @@ export async function getRayuMcpConfigs(
     })
   }
 
-  // Merge in order of precedence: plugin < user < project < local
+  // Merge in order of precedence: claude-fallback < plugin < user < project < local
   const configs = Object.assign(
     {},
+    claudeFallbackServers,
     dedupedPluginServers,
     userServers,
     approvedProjectServers,

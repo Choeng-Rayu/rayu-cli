@@ -11,6 +11,8 @@ import {
   UseGuards,
 } from '@nestjs/common'
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsIn,
   IsInt,
   IsOptional,
@@ -46,6 +48,16 @@ export class UpdateUserStatusDto {
 export class UpdateUserPlanDto {
   @IsIn(PLAN_CODES as unknown as string[])
   planCode!: PlanCode
+}
+
+export class BulkStatusDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsInt({ each: true })
+  ids!: number[]
+
+  @IsIn(USER_STATUSES as unknown as string[])
+  status!: UserStatus
 }
 
 // All fields optional — admin patches only what changes. `features` is a free
@@ -147,8 +159,26 @@ export class AdminController {
   }
 
   @Get('analytics')
-  analytics() {
-    return this.admin.analytics()
+  analytics(@Query('days') days?: string) {
+    return this.admin.analytics(days ? parseInt(days, 10) : undefined)
+  }
+
+  @Get('feedback')
+  listFeedback(
+    @Query('page') page = '1',
+    @Query('pageSize') pageSize = '20',
+    @Query('type') type?: string,
+  ) {
+    return this.admin.listFeedback(
+      parseInt(page, 10) || 1,
+      parseInt(pageSize, 10) || 20,
+      type,
+    )
+  }
+
+  @Patch('users/bulk-status')
+  bulkStatus(@Body() body: BulkStatusDto) {
+    return this.admin.bulkSetStatus(body.ids, body.status)
   }
 
   // --- Plan / feature entitlement management ---
