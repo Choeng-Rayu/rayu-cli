@@ -1,11 +1,12 @@
 import 'reflect-metadata'
-import { ValidationPipe } from '@nestjs/common'
+import { Logger, ValidationPipe } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule)
+  const app = await NestFactory.create(AppModule, { logger: ['log', 'warn', 'error', 'debug', 'verbose'] })
+  const logger = new Logger('HTTP')
   const config = app.get(ConfigService)
 
   // Global input validation: strip unknown props and reject bad payloads.
@@ -25,6 +26,12 @@ async function bootstrap(): Promise<void> {
 
   // The reverse proxy routes /api/* to this service.
   app.setGlobalPrefix('api')
+
+  // Request logging
+  app.use((req: { method: string; url: string }, _res: unknown, next: () => void) => {
+    logger.log(`${req.method} ${req.url}`)
+    next()
+  })
 
   const port = config.get<number>('app.port', 4000)
   await app.listen(port)

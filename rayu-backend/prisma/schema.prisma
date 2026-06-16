@@ -38,6 +38,7 @@ model Plan {
   limits       Json?
 
   subscriptions Subscription[]
+  payments      Payment[]
 
   @@map("plans")
 }
@@ -58,16 +59,21 @@ model Subscription {
 }
 
 model Payment {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @map("user_id")
-  provider    String   @default("bakong") @db.VarChar(64)
-  amountCents Int      @default(0)
-  currency    String   @default("USD") @db.VarChar(8)
-  status      String   @default("pending") @db.VarChar(32)
-  externalRef String?  @db.VarChar(191)
-  createdAt   DateTime @default(now())
+  id          Int       @id @default(autoincrement())
+  userId      Int       @map("user_id")
+  planId      Int?      @map("plan_id")
+  provider    String    @default("bakong") @db.VarChar(64)
+  amountCents Int       @default(0)
+  currency    String    @default("USD") @db.VarChar(8)
+  status      String    @default("pending") @db.VarChar(32)
+  externalRef String?   @db.VarChar(191)
+  md5         String?   @unique @db.VarChar(64)
+  khqr        String?   @db.Text
+  paidAt      DateTime?
+  createdAt   DateTime  @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan? @relation(fields: [planId], references: [id])
 
   @@index([userId])
   @@map("payments")

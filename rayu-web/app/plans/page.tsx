@@ -9,8 +9,8 @@ export const dynamic = 'force-dynamic'
 // API is briefly unavailable.
 const FALLBACK: Plan[] = [
   { id: 1, code: 'free', name: 'Free', priceCents: 0, availability: 'active', limits: null },
-  { id: 2, code: 'pro', name: 'Pro', priceCents: 1000, availability: 'coming_soon', limits: null },
-  { id: 3, code: 'pro_plus', name: 'Pro+', priceCents: 2000, availability: 'coming_soon', limits: null },
+  { id: 2, code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active', limits: null },
+  { id: 3, code: 'pro_plus', name: 'Pro+', priceCents: 2000, availability: 'active', limits: null },
   { id: 4, code: 'max', name: 'Max', priceCents: 5000, availability: 'coming_soon', limits: null },
   { id: 5, code: 'enterprise', name: 'Enterprise', priceCents: 0, availability: 'coming_soon', limits: null },
 ]
@@ -66,13 +66,23 @@ export default async function PlansPage() {
                   {v.code === 'enterprise' && 'Tailored security, single-sign-on (SSO), self-hosted options, and custom VPC connections.'}
                 </p>
               </div>
-              <button
-                className={v.available || v.code === 'enterprise' ? "btn-primary" : "btn-ghost"}
-                disabled={!v.available && v.code !== 'enterprise'}
-                style={{ width: '100%', marginTop: 'auto' }}
-              >
-                {v.ctaLabel}
-              </button>
+              {v.available && !['free', 'enterprise'].includes(v.code) ? (
+                <a
+                  href={`/billing?plan=${v.code}`}
+                  className="btn-primary"
+                  style={{ width: '100%', marginTop: 'auto', display: 'block', textAlign: 'center', textDecoration: 'none' }}
+                >
+                  {v.ctaLabel}
+                </a>
+              ) : (
+                <button
+                  className={v.available || v.code === 'enterprise' ? "btn-primary" : "btn-ghost"}
+                  disabled={!v.available && v.code !== 'enterprise'}
+                  style={{ width: '100%', marginTop: 'auto' }}
+                >
+                  {v.ctaLabel}
+                </button>
+              )}
             </div>
           )
         })}

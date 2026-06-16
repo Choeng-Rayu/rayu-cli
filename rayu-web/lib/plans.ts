@@ -31,6 +31,7 @@ export function toPlanView(plan: Plan): PlanView {
 
   let ctaLabel: string
   if (available && isFree) ctaLabel = 'Get started'
+  else if (available && !isEnterprise) ctaLabel = 'Upgrade'
   else if (isEnterprise) ctaLabel = 'Contact sales'
   else ctaLabel = 'Coming soon'
 

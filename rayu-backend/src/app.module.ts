@@ -5,6 +5,7 @@ import { AuthModule } from './auth/auth.module'
 import configuration from './config/configuration'
 import { FeedbackModule } from './feedback/feedback.module'
 import { HealthModule } from './health/health.module'
+import { PaymentsModule } from './payments/payments.module'
 import { PlansModule } from './plans/plans.module'
 import { PlansService } from './plans/plans.service'
 import { PrismaModule } from './prisma/prisma.module'
@@ -22,6 +23,7 @@ import { UsersModule } from './users/users.module'
     UsageModule,
     FeedbackModule,
     AdminModule,
+    PaymentsModule,
   ],
 })
 export class AppModule implements OnModuleInit {

@@ -1,0 +1,1 @@
+- [rayu-web Next.js build patterns](project_rayu_web_patterns.md) — 'use client' must be line 1; force-dynamic for Clerk pages; auth pattern; qrcode.react v4.2.0 for React 19

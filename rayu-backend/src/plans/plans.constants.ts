@@ -22,14 +22,14 @@ export const PLAN_SEED: PlanSeed[] = [
     code: 'pro',
     name: 'Pro',
     priceCents: 1000,
-    availability: 'coming_soon',
+    availability: 'active',
     limits: null,
   },
   {
     code: 'pro_plus',
     name: 'Pro+',
     priceCents: 2000,
-    availability: 'coming_soon',
+    availability: 'active',
     limits: null,
   },
   {
