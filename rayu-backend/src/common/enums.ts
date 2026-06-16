@@ -10,6 +10,7 @@ export type UserStatus = (typeof USER_STATUSES)[number]
 
 export const PLAN_CODES = [
   'free',
+  'basic',
   'pro',
   'pro_plus',
   'max',

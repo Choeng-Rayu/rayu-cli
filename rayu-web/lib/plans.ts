@@ -19,8 +19,10 @@ export interface PlanView {
 }
 
 // Pure mapping from a backend Plan to the props the Plans page renders.
+// Prices come from the backend (priceCents) — never hardcoded here.
 export function toPlanView(plan: Plan): PlanView {
   const isFree = plan.code === 'free'
+  const isBasic = plan.code === 'basic'
   const isEnterprise = plan.code === 'enterprise'
   const available = plan.availability === 'active'
 
@@ -31,6 +33,7 @@ export function toPlanView(plan: Plan): PlanView {
 
   let ctaLabel: string
   if (available && isFree) ctaLabel = 'Get started'
+  else if (available && isBasic) ctaLabel = 'Subscribe'
   else if (available && !isEnterprise) ctaLabel = 'Upgrade'
   else if (isEnterprise) ctaLabel = 'Contact sales'
   else ctaLabel = 'Coming soon'
@@ -41,12 +44,13 @@ export function toPlanView(plan: Plan): PlanView {
     priceLabel,
     ctaLabel,
     available,
-    highlight: isFree,
+    // Highlight the entry paid tier (Basic) as the recommended plan.
+    highlight: isBasic,
   }
 }
 
 export function sortPlans(plans: Plan[]): Plan[] {
-  const order = ['free', 'pro', 'pro_plus', 'max', 'enterprise']
+  const order = ['free', 'basic', 'pro', 'pro_plus', 'max', 'enterprise']
   return [...plans].sort(
     (a, b) => order.indexOf(a.code) - order.indexOf(b.code),
   )

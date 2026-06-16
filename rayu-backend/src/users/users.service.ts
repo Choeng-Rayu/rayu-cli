@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common'
-import type { User } from '@prisma/client'
+import type { Plan, User } from '@prisma/client'
 import type { UserStatus } from '../common/enums'
 import { PrismaService } from '../prisma/prisma.service'
 import { PlansService } from '../plans/plans.service'
@@ -68,6 +68,22 @@ export class UsersService {
     await this.prisma.subscription.create({
       data: { userId, planId: free.id, status: 'active' },
     })
+  }
+
+  /**
+   * Resolve the user's active plan (most recent active subscription), falling
+   * back to the Free plan when the user has no active subscription.
+   */
+  async getActivePlanForUser(userId: number): Promise<Plan> {
+    const sub = await this.prisma.subscription.findFirst({
+      where: { userId, status: 'active' },
+      include: { plan: true },
+      orderBy: { startedAt: 'desc' },
+    })
+    if (sub?.plan) return sub.plan
+    const free = await this.plansService.findByCode('free')
+    if (free) return free
+    throw new Error('No active plan and no free plan configured')
   }
 
   async touchLastActive(id: number): Promise<void> {

@@ -1,4 +1,5 @@
 import type { PlanAvailability, PlanCode } from '../common/enums'
+import { allDisabled, allEnabled } from '../common/features'
 
 export interface PlanSeed {
   code: PlanCode
@@ -8,42 +9,67 @@ export interface PlanSeed {
   limits: Record<string, unknown> | null
 }
 
-// Canonical plan catalog. Free is active; all paid tiers are "coming soon"
-// in phase 1. Limits are placeholders for the future Rayu-hosted model proxy.
+// Canonical plan catalog used ONLY to create plans the first time they are
+// missing. These are DEFAULTS — every field (price, availability, limits,
+// feature entitlements) is editable by the super-admin at runtime and stored
+// in MySQL. The seed is non-destructive (see PlansService.seedDefaults) so
+// admin changes are never overwritten on restart.
+//
+// - free:  bring-your-own-key, feature-limited (admin can open features up),
+//          with a default daily turn cap (admin-changeable).
+// - basic: $3/mo, all features, bring-your-own-key (no Rayu gateway needed).
+// - pro / pro_plus / max: Rayu-hosted tiers, "coming soon" until the gateway
+//   ships; default to all features on.
+// - enterprise: contact sales.
 export const PLAN_SEED: PlanSeed[] = [
   {
     code: 'free',
     name: 'Free',
     priceCents: 0,
     availability: 'active',
-    limits: { bringYourOwnKey: true, requests: 'unlimited' },
+    limits: {
+      bringYourOwnKey: true,
+      maxDailyTurns: 50,
+      features: allDisabled(),
+    },
+  },
+  {
+    code: 'basic',
+    name: 'Basic',
+    priceCents: 300,
+    availability: 'active',
+    limits: {
+      bringYourOwnKey: true,
+      maxDailyTurns: null,
+      features: allEnabled(),
+    },
   },
   {
     code: 'pro',
     name: 'Pro',
     priceCents: 1000,
-    availability: 'active',
-    limits: null,
+    availability: 'coming_soon',
+    limits: { maxDailyTurns: null, features: allEnabled() },
   },
   {
     code: 'pro_plus',
     name: 'Pro+',
     priceCents: 2000,
-    availability: 'active',
-    limits: null,
+    availability: 'coming_soon',
+    limits: { maxDailyTurns: null, features: allEnabled() },
   },
   {
     code: 'max',
     name: 'Max',
     priceCents: 5000,
     availability: 'coming_soon',
-    limits: null,
+    limits: { maxDailyTurns: null, features: allEnabled() },
   },
   {
     code: 'enterprise',
     name: 'Enterprise',
     priceCents: 0,
     availability: 'coming_soon',
-    limits: { contactSales: true },
+    limits: { contactSales: true, maxDailyTurns: null, features: allEnabled() },
   },
 ]

@@ -5,8 +5,9 @@ export const dynamic = 'force-dynamic'
 import { useAuth } from '@clerk/nextjs'
 import { useCallback, useEffect, useState } from 'react'
 import { apiUrl } from '../../lib/config'
+import { BarChart, Donut, HBar, LineChart } from '../../components/Charts'
 
-const PLAN_CODES = ['free', 'pro', 'pro_plus', 'max', 'enterprise'] as const
+const PLAN_CODES = ['free', 'basic', 'pro', 'pro_plus', 'max', 'enterprise'] as const
 type PlanCode = typeof PLAN_CODES[number]
 
 interface AdminUser {
@@ -200,6 +201,12 @@ export default function AdminPage() {
         </div>
       )}
 
+      {/* Analytics (revenue, users, activity, plans, usage) */}
+      {rayuToken && <Analytics token={rayuToken} />}
+
+      {/* Plans & feature entitlements (admin-managed business logic) */}
+      {rayuToken && <PlansAndFeatures token={rayuToken} />}
+
       {/* User detail panel */}
       {selectedUserId !== null && (
         <div className="card" style={{ marginBottom: '2rem' }}>
@@ -371,5 +378,459 @@ export default function AdminPage() {
         </tbody>
       </table>
     </main>
+  )
+}
+
+
+// ---------------------------------------------------------------------------
+// Plans & Features management.
+//
+// All plan business logic (price, availability, per-feature toggles/limits,
+// daily-turn cap) is stored in the backend DB and edited here at runtime —
+// nothing is hardcoded. Saving PATCHes /admin/plans/:code.
+// ---------------------------------------------------------------------------
+
+interface FeatureCatalogItem {
+  key: string
+  label: string
+  description: string
+  supportsLimit: boolean
+}
+
+interface FeatureEntitlement {
+  enabled: boolean
+  limit?: number | null
+}
+
+interface PlanAdminView {
+  id: number
+  code: string
+  name: string
+  priceCents: number
+  availability: 'active' | 'coming_soon'
+  maxDailyTurns: number | null
+  features: Record<string, FeatureEntitlement>
+}
+
+function PlansAndFeatures({ token }: { token: string }) {
+  const [catalog, setCatalog] = useState<FeatureCatalogItem[]>([])
+  const [plans, setPlans] = useState<PlanAdminView[]>([])
+  const [msg, setMsg] = useState<Record<string, string>>({})
+  const [savingCode, setSavingCode] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
+
+  const reload = useCallback(async () => {
+    const res = await fetch(apiUrl('/admin/plans'), {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return
+    const data = (await res.json()) as {
+      catalog: FeatureCatalogItem[]
+      plans: PlanAdminView[]
+    }
+    setCatalog(data.catalog)
+    setPlans(data.plans)
+    setLoaded(true)
+  }, [token])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  function patchPlan(code: string, patch: Partial<PlanAdminView>) {
+    setPlans((prev) =>
+      prev.map((p) => (p.code === code ? { ...p, ...patch } : p)),
+    )
+  }
+
+  function patchFeature(
+    code: string,
+    key: string,
+    patch: Partial<FeatureEntitlement>,
+  ) {
+    setPlans((prev) =>
+      prev.map((p) =>
+        p.code === code
+          ? {
+              ...p,
+              features: {
+                ...p.features,
+                [key]: { ...p.features[key], ...patch },
+              },
+            }
+          : p,
+      ),
+    )
+  }
+
+  async function save(plan: PlanAdminView) {
+    setSavingCode(plan.code)
+    setMsg((m) => ({ ...m, [plan.code]: '' }))
+    try {
+      const res = await fetch(apiUrl(`/admin/plans/${plan.code}`), {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: plan.name,
+          priceCents: plan.priceCents,
+          availability: plan.availability,
+          maxDailyTurns: plan.maxDailyTurns,
+          features: plan.features,
+        }),
+      })
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { message?: string }
+        setMsg((m) => ({
+          ...m,
+          [plan.code]: `Error: ${err.message ?? res.status}`,
+        }))
+        return
+      }
+      const updated = (await res.json()) as PlanAdminView
+      patchPlan(plan.code, updated)
+      setMsg((m) => ({ ...m, [plan.code]: 'Saved.' }))
+    } catch (e) {
+      setMsg((m) => ({
+        ...m,
+        [plan.code]: e instanceof Error ? e.message : String(e),
+      }))
+    } finally {
+      setSavingCode(null)
+    }
+  }
+
+  if (!loaded) return null
+
+  return (
+    <div className="card" style={{ marginBottom: '2rem' }}>
+      <h2 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Plans &amp; Features</h2>
+      <p style={{ opacity: 0.55, marginTop: 0, fontSize: '0.9rem' }}>
+        All pricing, availability, feature access and usage limits are editable
+        here and stored in the database — no code or env changes needed.
+      </p>
+
+      {plans.map((plan) => (
+        <div
+          key={plan.code}
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: '10px',
+            padding: '1.25rem',
+            marginTop: '1.25rem',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '1rem',
+              flexWrap: 'wrap',
+              marginBottom: '1rem',
+            }}
+          >
+            <strong style={{ fontSize: '1.05rem' }}>
+              {plan.name}{' '}
+              <span style={{ opacity: 0.5, fontWeight: 400 }}>({plan.code})</span>
+            </strong>
+
+            <label style={{ fontSize: '0.85rem', opacity: 0.7 }}>
+              Price&nbsp;$
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={(plan.priceCents / 100).toString()}
+                onChange={(e) =>
+                  patchPlan(plan.code, {
+                    priceCents: Math.max(0, Math.round(Number(e.target.value) * 100)),
+                  })
+                }
+                style={inputStyle(90)}
+              />
+              /mo
+            </label>
+
+            <label style={{ fontSize: '0.85rem', opacity: 0.7 }}>
+              Availability&nbsp;
+              <select
+                value={plan.availability}
+                onChange={(e) =>
+                  patchPlan(plan.code, {
+                    availability: e.target.value as PlanAdminView['availability'],
+                  })
+                }
+                style={inputStyle(140)}
+              >
+                <option value="active">active</option>
+                <option value="coming_soon">coming_soon</option>
+              </select>
+            </label>
+
+            <label style={{ fontSize: '0.85rem', opacity: 0.7 }}>
+              Max daily turns&nbsp;
+              <input
+                type="number"
+                min={0}
+                placeholder="∞"
+                value={plan.maxDailyTurns ?? ''}
+                onChange={(e) =>
+                  patchPlan(plan.code, {
+                    maxDailyTurns:
+                      e.target.value === '' ? null : Math.max(0, Math.round(Number(e.target.value))),
+                  })
+                }
+                style={inputStyle(90)}
+              />
+            </label>
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+              gap: '0.5rem',
+            }}
+          >
+            {catalog.map((feat) => {
+              const ent = plan.features[feat.key] ?? { enabled: false, limit: null }
+              return (
+                <div
+                  key={feat.key}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.6rem',
+                    padding: '0.35rem 0',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={ent.enabled}
+                    onChange={(e) =>
+                      patchFeature(plan.code, feat.key, { enabled: e.target.checked })
+                    }
+                  />
+                  <span style={{ fontSize: '0.9rem' }} title={feat.description}>
+                    {feat.label}
+                  </span>
+                  {feat.supportsLimit && (
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="∞"
+                      value={ent.limit ?? ''}
+                      onChange={(e) =>
+                        patchFeature(plan.code, feat.key, {
+                          limit:
+                            e.target.value === ''
+                              ? null
+                              : Math.max(0, Math.round(Number(e.target.value))),
+                        })
+                      }
+                      style={inputStyle(70)}
+                      title="usage limit (blank = unlimited)"
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <button
+              className="btn-primary"
+              style={{ padding: '8px 20px' }}
+              disabled={savingCode === plan.code}
+              onClick={() => save(plan)}
+            >
+              {savingCode === plan.code ? 'Saving…' : 'Save'}
+            </button>
+            {msg[plan.code] && (
+              <span
+                style={{
+                  fontSize: '0.85rem',
+                  color: msg[plan.code].startsWith('Error') ? 'var(--red)' : 'inherit',
+                  opacity: 0.8,
+                }}
+              >
+                {msg[plan.code]}
+              </span>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function inputStyle(width: number): React.CSSProperties {
+  return {
+    width,
+    marginLeft: 4,
+    padding: '6px 8px',
+    background: 'var(--bg3)',
+    border: '1px solid var(--border)',
+    borderRadius: 6,
+    color: 'var(--text)',
+    fontFamily: 'inherit',
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Analytics dashboard — revenue, users, activity, plan/paid-vs-free
+// distribution, usage by provider, signups & active over time, top users,
+// churn. All data comes from GET /admin/analytics (DB-backed).
+// ---------------------------------------------------------------------------
+
+interface AdminAnalytics {
+  totals: {
+    totalUsers: number
+    activeUsers24h: number
+    activeUsers7d: number
+    activeUsers30d: number
+  }
+  statusBreakdown: { active: number; suspended: number; banned: number }
+  planDistribution: Array<{ code: string; name: string; priceCents: number; users: number }>
+  paidVsFree: { free: number; paid: number }
+  revenue: { totalCents: number; paidCount: number; byMonth: Array<{ month: string; cents: number; count: number }> }
+  signupsByDay: Array<{ date: string; count: number }>
+  activeByDay: Array<{ date: string; count: number }>
+  usageByProvider: Array<{ provider: string; count: number }>
+  topUsers: Array<{ id: number; email: string | null; displayName: string | null; count: number }>
+  canceledSubscriptions: number
+}
+
+const PLAN_COLORS = ['#6d7cff', '#00d4aa', '#ffbd2e', '#ff6b9d', '#9b8cff', '#52d1ff']
+const usd = (cents: number) => `$${(cents / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+
+function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="card" style={{ padding: '1.25rem' }}>
+      <p style={{ margin: '0 0 0.9rem', opacity: 0.55, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        {title}
+      </p>
+      {children}
+    </div>
+  )
+}
+
+function Kpi({ value, label }: { value: string | number; label: string }) {
+  return (
+    <div className="stat-cell">
+      <div className="stat-num">{value}</div>
+      <div className="stat-label">{label}</div>
+    </div>
+  )
+}
+
+function Analytics({ token }: { token: string }) {
+  const [a, setA] = useState<AdminAnalytics | null>(null)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch(apiUrl('/admin/analytics'), {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.status === 403) return // parent renders forbidden
+        if (!res.ok) throw new Error(`Analytics failed (${res.status})`)
+        setA((await res.json()) as AdminAnalytics)
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e))
+      }
+    })()
+  }, [token])
+
+  if (err) {
+    return (
+      <div className="card" style={{ marginBottom: '2rem', borderColor: 'var(--red)' }}>
+        <p style={{ color: 'var(--red)', margin: 0 }}>{err}</p>
+      </div>
+    )
+  }
+  if (!a) return null
+
+  const planSlices = a.planDistribution
+    .filter((p) => p.users > 0)
+    .map((p, i) => ({ label: p.name, value: p.users, color: PLAN_COLORS[i % PLAN_COLORS.length] }))
+
+  return (
+    <div style={{ marginBottom: '3rem' }}>
+      <h2 style={{ margin: '0 0 1rem' }}>Analytics</h2>
+
+      {/* KPI row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1.25rem', marginBottom: '1.5rem' }}>
+        <Kpi value={a.totals.totalUsers} label="Total Users" />
+        <Kpi value={a.totals.activeUsers30d} label="Active (30d)" />
+        <Kpi value={a.paidVsFree.paid} label="Paid Users" />
+        <Kpi value={usd(a.revenue.totalCents)} label="Total Revenue" />
+        <Kpi value={a.canceledSubscriptions} label="Canceled Subs" />
+      </div>
+
+      {/* Charts grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}>
+        <ChartCard title="Revenue by month">
+          {a.revenue.byMonth.length ? (
+            <BarChart
+              data={a.revenue.byMonth.map((m) => ({ label: m.month, value: m.cents }))}
+              color="#00d4aa"
+              valueFormat={usd}
+            />
+          ) : (
+            <p style={{ opacity: 0.4, fontSize: '0.9rem' }}>No paid payments yet.</p>
+          )}
+        </ChartCard>
+
+        <ChartCard title="Plan distribution">
+          <Donut data={planSlices} />
+        </ChartCard>
+
+        <ChartCard title="Signups (last 30 days)">
+          <BarChart data={a.signupsByDay.map((d) => ({ label: d.date.slice(5), value: d.count }))} />
+        </ChartCard>
+
+        <ChartCard title="Active users (last 14 days)">
+          <LineChart data={a.activeByDay.map((d) => ({ label: d.date, value: d.count }))} />
+        </ChartCard>
+
+        <ChartCard title="Paid vs Free">
+          <Donut
+            data={[
+              { label: 'Free', value: a.paidVsFree.free, color: '#6d7cff' },
+              { label: 'Paid', value: a.paidVsFree.paid, color: '#00d4aa' },
+            ]}
+          />
+        </ChartCard>
+
+        <ChartCard title="User status">
+          <Donut
+            data={[
+              { label: 'Active', value: a.statusBreakdown.active, color: '#00d4aa' },
+              { label: 'Suspended', value: a.statusBreakdown.suspended, color: '#ffbd2e' },
+              { label: 'Banned', value: a.statusBreakdown.banned, color: '#ff6b9d' },
+            ]}
+          />
+        </ChartCard>
+
+        <ChartCard title="Usage by provider">
+          <HBar data={a.usageByProvider.map((u) => ({ label: u.provider, value: u.count }))} />
+        </ChartCard>
+
+        <ChartCard title="Top users by usage">
+          <HBar
+            data={a.topUsers.map((u) => ({
+              label: u.email ?? u.displayName ?? `#${u.id}`,
+              value: u.count,
+            }))}
+            color="#9b8cff"
+          />
+        </ChartCard>
+      </div>
+    </div>
   )
 }
