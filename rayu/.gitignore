@@ -11,3 +11,6 @@ generated-video-*
 
 # OAuth client secret file (if a user drops one at the project root).
 client_secret.json.playwright-cli/
+
+# Generated mirror for Rayu-Code/skills (see scripts/sync-rayu-skills.ts)
+rayu-skills-dist/

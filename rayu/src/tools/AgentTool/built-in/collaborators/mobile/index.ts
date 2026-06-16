@@ -8,7 +8,7 @@ export const MOBILE_COLLABORATOR = defineCollaborator({
     'Mobile app implementation (Flutter-first, fallback React Native): screens, navigation, state, the API/auth layer against the backend, and offline strategy. Builds and iterates on real mobile code.',
   role: 'You build the mobile app against the backend contracts and the auth flow: screen architecture and navigation, state management, the API service layer, auth implementation, and offline support. You produce working, production-ready mobile code.',
   skillHint:
-    'e.g. a mobile/Flutter UI skill for idiomatic screens and navigation',
+    'the bundled rayu-frontend-design and rayu-design-system skills for idiomatic UI and a consistent token system',
   withStackAwareness: true,
   allowedSubagents: [
     'design',

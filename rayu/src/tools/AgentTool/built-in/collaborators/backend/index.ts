@@ -8,7 +8,7 @@ export const BACKEND_COLLABORATOR = defineCollaborator({
     'Server-side implementation: API routes/services/business logic, AND the data layer (schema, models, migrations, queries). Implements the security/auth flow. Builds and iterates on real backend + database code.',
   role: 'You build the backend end-to-end: API endpoints, the service layer and business logic, middleware/error handling, env config, and the data layer (schema design, models, relations, indexes, migrations). You implement the auth/security flow that the security collaborator defines.',
   skillHint:
-    'e.g. an API-design skill for clean, consistent endpoint and schema design',
+    'the bundled rayu-api-design skill for clean endpoint/schema contracts, and rayu-mcp-builder when building an MCP server',
   withStackAwareness: true,
   allowedSubagents: [
     'backend-design',

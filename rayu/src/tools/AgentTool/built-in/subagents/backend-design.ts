@@ -13,6 +13,8 @@ ${EPHEMERAL_FRAMING}
 
 ${SKILL_SEEKING}
 
+The bundled \`rayu-api-design\` skill is directly relevant to this work — pull it via the Skill tool before defining the contract.
+
 ## Your job
 Define, precisely and concretely, the backend contract so every downstream agent builds against the SAME shapes:
 
