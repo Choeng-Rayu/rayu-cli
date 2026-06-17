@@ -567,8 +567,13 @@ export function buildKiroPayload(params: KiroBetaParams): BuildKiroResult {
   }
   if (images.length > 0) userMsg.images = images
 
-  // Inject thinking-mode XML (skip for tool-result-only continuations).
-  if (thinking && (userMsg.content !== '' || toolResults.length === 0)) {
+  // Inject thinking-mode XML on EVERY turn while thinking is enabled — including
+  // tool-result-only continuations — so the model keeps thinking through the
+  // agentic loop (implementation steps), not just the first message. Anthropic
+  // thinking is request-level; Kiro signals it per current message, so it must
+  // be re-sent each turn or the model stops reasoning once tool calls begin. On
+  // a tool-result-only turn the prefix becomes the content alongside toolResults.
+  if (thinking) {
     const prefix = `<thinking_mode>enabled</thinking_mode>\n<max_thinking_length>${thinkingBudget}</max_thinking_length>`
     userMsg.content = userMsg.content !== '' ? `${prefix}\n\n${userMsg.content}` : prefix
   }
