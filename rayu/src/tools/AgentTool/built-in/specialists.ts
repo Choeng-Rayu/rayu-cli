@@ -132,7 +132,7 @@ function contextIO(agentType: string): string {
   const lines = [
     '## Context I/O (shared swarm context)',
     '- A SWARM CONTEXT block above holds the shared project brief and the decisions of the specialists you depend on. Trust it and build on it — do NOT re-derive or second-guess what is already decided there.',
-    '- When you finish, persist YOUR section so downstream specialists and your own future (resumed) turns can read it: use the Write tool to write your output to ' + getDomainPath(domain) + ' (overwrite it; keep it concise and contract-focused).',
+    '- REQUIRED FINAL STEP: before reporting done, use the Write tool to persist YOUR section to ' + getDomainPath(domain) + ' (overwrite; concise + contract-focused) so downstream specialists and your own future (resumed) turns can read it.',
   ]
   if (agentType === 'PA-AGENT') {
     lines.push(

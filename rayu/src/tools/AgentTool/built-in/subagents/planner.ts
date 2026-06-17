@@ -3,14 +3,14 @@ import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import type { BuiltInAgentDefinition } from '../../loadAgentsDir.js'
 import { EPHEMERAL_FRAMING, SKILL_SEEKING } from './common.js'
 
-// PA — Plan & Research subagent. Absorbs the former Plan agent. Deep planning
-// and (deep) research for new or existing projects: explores the codebase,
-// weighs approaches, and produces a thorough implementation plan. The
-// Orchestrator and Collaborators call this when a task needs real planning or
-// research before implementation. It does not write or run code (the
-// Collaborators/fix subagent implement) — it decides and reports.
-function getPaSystemPrompt(): string {
-  return `You are the PA subagent — a senior software architect and deep-research planner for RAYU. You turn a goal (a new project or a change to an existing one) into a thorough, well-grounded plan.
+// planner — Plan & Research subagent (formerly "PA"). Absorbs the former Plan
+// agent. Deep planning and (deep) research for new or existing projects:
+// explores the codebase, weighs approaches, and produces a thorough
+// implementation plan. The Orchestrator and Collaborators call this when a task
+// needs real planning or research before implementation. It does not write or
+// run code (the Collaborators/fix subagent implement) — it decides and reports.
+function getPlannerSystemPrompt(): string {
+  return `You are the planner subagent — a senior software architect and deep-research planner for RAYU. You turn a goal (a new project or a change to an existing one) into a thorough, well-grounded plan.
 
 ${EPHEMERAL_FRAMING}
 
@@ -33,8 +33,8 @@ ${SKILL_SEEKING}
 Keep it tight and high-signal — the caller will act on this plan.`
 }
 
-export const PA_SUBAGENT: BuiltInAgentDefinition = {
-  agentType: 'PA',
+export const PLANNER_SUBAGENT: BuiltInAgentDefinition = {
+  agentType: 'planner',
   whenToUse:
     'Plan & research subagent. Use when a task needs real upfront planning or (deep) research before implementation — designing a new project, a non-trivial feature, or a change to an existing codebase. Explores in parallel and returns a chosen approach, a step-by-step implementation plan, critical files, and risks. It plans only; it does not write or run code.',
   // Planner: full toolset (research, Skill, web, Write for plan artifacts) EXCEPT
@@ -45,5 +45,5 @@ export const PA_SUBAGENT: BuiltInAgentDefinition = {
   color: 'purple',
   // model omitted → resolves via /model_subagent (or the provider instant
   // model); use extended thinking for deep planning where the model supports it.
-  getSystemPrompt: getPaSystemPrompt,
+  getSystemPrompt: getPlannerSystemPrompt,
 }

@@ -30,6 +30,9 @@ export const GENERAL_PURPOSE_AGENT: BuiltInAgentDefinition = {
   tools: ['*'],
   source: 'built-in',
   baseDir: 'built-in',
-  // model is intentionally omitted - uses getDefaultSubagentModel().
+  // Defaults to 'inherit' (the parent model — same as getDefaultSubagentModel()),
+  // now overridable via RAYU_GENERAL_AGENT_MODEL (e.g. 'haiku' for the fast
+  // tier), mirroring EXPLORE_AGENT and the other built-in agents.
+  model: process.env.RAYU_GENERAL_AGENT_MODEL || 'inherit',
   getSystemPrompt: getGeneralPurposeSystemPrompt,
 }

@@ -7,12 +7,12 @@ import { DESIGN_SUBAGENT } from './design.js'
 import { FIX_SUBAGENT } from './fix.js'
 import { GLOBAL_SETUP_SUBAGENT } from './global-setup.js'
 import { LINTER_SUBAGENT } from './linter.js'
-import { PA_SUBAGENT } from './pa.js'
+import { PLANNER_SUBAGENT } from './planner.js'
 import { REVIEW_SUBAGENT } from './review.js'
 
 /** All Tier-3 subagents, in rough pipeline order. */
 export const SUBAGENTS: BuiltInAgentDefinition[] = [
-  PA_SUBAGENT,
+  PLANNER_SUBAGENT,
   DESIGN_SUBAGENT,
   BACKEND_DESIGN_SUBAGENT,
   GLOBAL_SETUP_SUBAGENT,

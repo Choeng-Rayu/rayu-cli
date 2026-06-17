@@ -15,8 +15,8 @@
 // Selection is STATIC (DOMAIN_DEPENDENCIES) — deterministic, zero-latency, no
 // embeddings. RAG is intentionally left as an interface seam (ContextRetriever)
 // for the future; the current implementation just reads sections from disk.
-import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import { getCwd } from '../../utils/cwd.js'
 
 /** The small shared brief every specialist receives (kept < ~500 tokens). */
@@ -160,6 +160,36 @@ export function readDomainSection(domain: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Overwrite a domain section file, creating the swarm dir if needed. */
+export function writeDomainSection(domain: string, content: string): void {
+  const p = getDomainPath(domain)
+  try {
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, content.endsWith('\n') ? content : content + '\n', 'utf8')
+  } catch {
+    // Best-effort persistence — never throw into the agent-completion path.
+  }
+}
+
+/**
+ * Persist a domain section ONLY if the owning agent didn't already write one
+ * (non-clobbering fallback). This is the code-level guarantee that the swarm
+ * shared memory is populated even when an agent forgets to Write its section
+ * itself. Token-capped so a verbose final report can't blow the section
+ * budget. Returns true if it wrote.
+ */
+export function persistDomainSectionIfEmpty(
+  agentType: string,
+  content: string,
+): boolean {
+  // Agent already wrote a (concise) section — keep theirs, don't clobber.
+  if (readDomainSection(agentType) !== undefined) return false
+  const trimmed = (content ?? '').trim()
+  if (trimmed.length === 0) return false
+  writeDomainSection(agentType, truncateToTokens(trimmed, PER_SECTION_TOKEN_CAP))
+  return true
 }
 
 /** Format the shared brief as a compact text block. */

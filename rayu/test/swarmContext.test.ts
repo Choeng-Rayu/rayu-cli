@@ -146,3 +146,47 @@ test('PA output spec instructs declaring the needed specialist set', async () =>
   expect(p).toMatch(/needs/)
   expect(p).toMatch(/Needed Specialists/i)
 })
+
+test('writeDomainSection + readDomainSection round-trip', async () => {
+  const { writeDomainSection, readDomainSection } = await import(
+    '../src/tools/AgentTool/swarmContext.ts'
+  )
+  writeDomainSection('BE', 'BE routes: POST /login')
+  expect(readDomainSection('BE')).toContain('POST /login')
+})
+
+test('persistDomainSectionIfEmpty writes when empty and is non-clobbering', async () => {
+  const { persistDomainSectionIfEmpty, readDomainSection } = await import(
+    '../src/tools/AgentTool/swarmContext.ts'
+  )
+  // Empty → the auto-persist fallback writes the agent's final report.
+  expect(persistDomainSectionIfEmpty('BE', 'auto-saved final report')).toBe(
+    true,
+  )
+  expect(readDomainSection('BE')).toContain('auto-saved final report')
+  // Already present → non-clobbering (an agent's own section wins).
+  expect(persistDomainSectionIfEmpty('BE', 'SHOULD NOT OVERWRITE')).toBe(false)
+  expect(readDomainSection('BE')).toContain('auto-saved final report')
+  expect(readDomainSection('BE')).not.toContain('SHOULD NOT OVERWRITE')
+})
+
+test('persistDomainSectionIfEmpty ignores blank content', async () => {
+  const { persistDomainSectionIfEmpty, readDomainSection } = await import(
+    '../src/tools/AgentTool/swarmContext.ts'
+  )
+  expect(persistDomainSectionIfEmpty('FE', '   \n  ')).toBe(false)
+  expect(readDomainSection('FE')).toBeUndefined()
+})
+
+test('assembleContext picks up an auto-persisted dependency section', async () => {
+  seedShared()
+  const { persistDomainSectionIfEmpty, assembleContext } = await import(
+    '../src/tools/AgentTool/swarmContext.ts'
+  )
+  // A backend agent's output is auto-persisted to BACKEND.md…
+  persistDomainSectionIfEmpty('BACKEND', 'BE contract: POST /login -> {token}')
+  // …and the frontend collaborator (deps include BACKEND) now receives it.
+  const ctx = assembleContext('frontend')
+  expect(ctx).toContain('Context from BACKEND-AGENT')
+  expect(ctx).toContain('POST /login')
+})

@@ -104,7 +104,7 @@ import type {
   SDKAssistantMessageError,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { EXPLORE_AGENT } from 'src/tools/AgentTool/built-in/exploreAgent.js'
-import { PA_SUBAGENT } from 'src/tools/AgentTool/built-in/subagents/pa.js'
+import { PLANNER_SUBAGENT } from 'src/tools/AgentTool/built-in/subagents/planner.js'
 import { areExplorePlanAgentsEnabled } from 'src/tools/AgentTool/builtInAgents.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
@@ -3272,7 +3272,7 @@ Goal: Gain a comprehensive understanding of the user's request by reading throug
 ### Phase 2: Design
 Goal: Design an implementation approach.
 
-Launch ${PA_SUBAGENT.agentType} agent(s) to design the implementation based on the user's intent and your exploration results from Phase 1.
+Launch ${PLANNER_SUBAGENT.agentType} agent(s) to design the implementation based on the user's intent and your exploration results from Phase 1.
 
 You can launch up to ${agentCount} agent(s) in parallel.
 
@@ -3887,8 +3887,8 @@ You have exited plan mode. You can now make edits, run tools, and take actions.$
       const content = `## Collaborator-swarm mode is ON
 
 You are the ORCHESTRATOR — coordinate, do not implement yourself. Run the 3-phase build flow:
-1. SCOPE & RESEARCH — clarify the request's detail and scope; ask the user for their preferred tech stack (offer recommendations with rationale). For open implementation choices (e.g. payment: Stripe / bank / ABA), dispatch the PA subagent to research the real options and present them for the user to choose.
-2. ALIGNED PLAN — have PA produce ONE coherent plan, explicitly aligned across backend AND frontend (shared API contract, data model, auth); get the user's confirmation.
+1. SCOPE & RESEARCH — clarify the request's detail and scope; ask the user for their preferred tech stack (offer recommendations with rationale). For open implementation choices (e.g. payment: Stripe / bank / ABA), dispatch the planner subagent to research the real options and present them for the user to choose.
+2. ALIGNED PLAN — have the planner produce ONE coherent plan, explicitly aligned across backend AND frontend (shared API contract, data model, auth); get the user's confirmation.
 3. DELEGATE BY SPECIALTY — decompose into backend / frontend / mobile subtasks and delegate to the matching collaborators (run independent work in parallel). Each collaborator may use only its allowed subagents.
 
 The user can return to normal mode with /normal.`

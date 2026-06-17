@@ -8,7 +8,15 @@ import {
 import { COLLABORATORS } from '../src/tools/AgentTool/built-in/collaborators/index.ts'
 import collaboratorSwarm from '../src/commands/collaborator-swarm/index.ts'
 import { call as normalCall } from '../src/commands/normal/normal.ts'
-import { resolveAgentTools } from '../src/tools/AgentTool/agentToolUtils.ts'
+import {
+  finalizeAgentTool,
+  resolveAgentTools,
+} from '../src/tools/AgentTool/agentToolUtils.ts'
+import { writeDomainSection } from '../src/tools/AgentTool/swarmContext.ts'
+import { runWithCwdOverride } from '../src/utils/cwd.ts'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 // ---- swarmMode state (T4) ----
 test('swarmMode defaults to false and the updater toggles it', () => {
@@ -103,9 +111,9 @@ test('collaborators are domain-locked per the specialization matrix', () => {
     'general-purpose',
   ])
 
-  // PA + global-setup are orchestrator-only — never in any collaborator scope.
+  // planner + global-setup are orchestrator-only — never in any collaborator scope.
   for (const s of Object.values(scope)) {
-    expect(s).not.toContain('PA')
+    expect(s).not.toContain('planner')
     expect(s).not.toContain('global-setup')
   }
 })
@@ -136,4 +144,97 @@ test('resolveAgentTools: plain ["*"] stays unrestricted (no allowedAgentTypes)',
   )
   expect(res.hasWildcard).toBe(true)
   expect(res.allowedAgentTypes).toBeUndefined()
+})
+
+// ---- swarm shared-memory: auto-persist agent output on completion ----
+function assistantMsg(text: string): unknown {
+  return {
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  }
+}
+function meta(agentType: string) {
+  return {
+    prompt: 'p',
+    resolvedAgentModel: 'm',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType,
+    isAsync: false,
+  }
+}
+
+test('finalizeAgentTool auto-persists a collaborator output to .rayu/swarm/<AGENT>.md', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rayu-fin-'))
+  try {
+    runWithCwdOverride(dir, () =>
+      finalizeAgentTool(
+        [assistantMsg('BE contract: POST /login -> {token}')] as never,
+        'id1',
+        meta('backend'),
+      ),
+    )
+    const p = join(dir, '.rayu', 'swarm', 'BACKEND.md')
+    expect(existsSync(p)).toBe(true)
+    expect(readFileSync(p, 'utf8')).toContain('POST /login')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('finalizeAgentTool persists a planner subagent plan to PLANNER.md (all spawned agents covered)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rayu-fin-'))
+  try {
+    runWithCwdOverride(dir, () =>
+      finalizeAgentTool(
+        [assistantMsg('Plan: build X then Y')] as never,
+        'id2',
+        meta('planner'),
+      ),
+    )
+    expect(
+      readFileSync(join(dir, '.rayu', 'swarm', 'PLANNER.md'), 'utf8'),
+    ).toContain('build X then Y')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('finalizeAgentTool skips bulk-research agents (Explore)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rayu-fin-'))
+  try {
+    runWithCwdOverride(dir, () =>
+      finalizeAgentTool(
+        [assistantMsg('explored stuff')] as never,
+        'id3',
+        meta('Explore'),
+      ),
+    )
+    expect(existsSync(join(dir, '.rayu', 'swarm', 'EXPLORE.md'))).toBe(false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('finalizeAgentTool does not clobber an agent-authored section', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rayu-fin-'))
+  try {
+    runWithCwdOverride(dir, () => {
+      writeDomainSection('frontend', 'agent-authored concise section')
+      finalizeAgentTool(
+        [assistantMsg('verbose fallback should NOT overwrite')] as never,
+        'id4',
+        meta('frontend'),
+      )
+    })
+    const body = readFileSync(join(dir, '.rayu', 'swarm', 'FRONTEND.md'), 'utf8')
+    expect(body).toContain('agent-authored concise section')
+    expect(body).not.toContain('should NOT overwrite')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
