@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
+import { getBrandGlyph } from '../constants/figures.js'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { logEvent } from 'src/services/analytics/index.js'
 import { readFileSync } from 'src/utils/fileRead.js'
@@ -60,7 +61,7 @@ export function useDiffInIDE({
 
   const sha = useMemo(() => randomUUID().slice(0, 6), [])
   const tabName = useMemo(
-    () => `✻ [RAYU] ${basename(filePath)} (${sha}) ⧉`,
+    () => `${getBrandGlyph()} [RAYU] ${basename(filePath)} (${sha}) ⧉`,
     [filePath, sha],
   )
 

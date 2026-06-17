@@ -1,0 +1,40 @@
+{
+  "goal": "Add a System Admin surface (manage all users: list, view, change plan free<->paid, view payment history) and a Bakong KHQR payment integration for plan upgrades, on top of the existing Rayu accounts platform.",
+  "stack": {
+    "backend": {
+      "framework": "NestJS 10",
+      "orm": "Prisma 6 (MySQL in prod, validated string-union enums at API layer)",
+      "auth": "Clerk session -> Rayu JWT (access/refresh). RayuAuthGuard + RolesGuard already exist. Roles: user|admin|superadmin.",
+      "apiPrefix": "/api",
+      "validation": "global ValidationPipe (whitelist + forbidNonWhitelisted + transform); DTOs via class-validator",
+      "path": "/home/rayu/rayu-cli/rayu-backend"
+    },
+    "frontend": {
+      "framework": "Next.js (app router, client components use 'use client')",
+      "auth": "Clerk (ClerkProvider). Browser exchanges Clerk token for Rayu access token via POST /api/web/session, then calls API with Bearer.",
+      "apiHelper": "lib/config.ts apiUrl(path); base from NEXT_PUBLIC_RAYU_API_URL",
+      "path": "/home/rayu/rayu-cli/rayu-web"
+    },
+    "payment": {
+      "provider": "Bakong KHQR (NBC Cambodia)",
+      "sdk": "bakong-khqr (npm) wrapped by github.com/Choeng-Rayu/-bakong_js; BakongKHQR + IndividualInfo + khqrData + checkTransactionByMD5",
+      "apiUrl": "https://api-bakong.nbc.gov.kh/v1",
+      "envVars": ["BAKONG_MERCHANT_ID", "BAKONG_PHONE_NUMBER", "BAKONG_DEVELOPER_TOKEN", "BAKONG_API_URL"],
+      "note": "Server-side only. Generate QR+md5, persist Payment(pending), poll/verify by md5, on success activate paid Subscription."
+    }
+  },
+  "flow": {
+    "adminUserMgmt": "Admin opens /admin -> web/session yields Rayu token -> GET /api/admin/users (paginated, roles-gated) -> view user detail incl. plan + payments -> PATCH /api/admin/users/:id/plan to set free|paid plan code.",
+    "userUpgrade": "User on /plans (or /billing) clicks upgrade -> POST /api/payments/khqr {planCode} -> backend creates Payment(pending) + returns {paymentId, qr, md5, amountCents} -> frontend renders QR -> polls GET /api/payments/:id/status -> backend calls Bakong checkTransactionByMD5 -> on PAID: mark Payment paid, switch active Subscription to the paid plan -> frontend shows success."
+  },
+  "constraints": [
+    "Do NOT touch /home/rayu/rayu-cli/rayu/ (the CLI repo).",
+    "All admin endpoints MUST be behind RayuAuthGuard + RolesGuard @Roles('admin','superadmin').",
+    "Bakong secrets are server-side only; never expose BAKONG_DEVELOPER_TOKEN to the browser or in API responses.",
+    "Plan activation MUST be driven by a verified Bakong transaction, never by the client claiming success.",
+    "Reuse existing primitives: User.role, Subscription, Payment table, PLAN_CODES, RolesGuard, AuthService.webSession, apiUrl helper.",
+    "Keep enums as string-unions in src/common/enums.ts (no Prisma native enums) for SQLite-test compatibility.",
+    "Money in integer cents; Bakong amount conversion handled server-side (USD plan price -> KHR/USD KHQR amount)."
+  ],
+  "needs": ["backend", "frontend"]
+}

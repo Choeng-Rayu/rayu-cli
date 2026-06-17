@@ -52,6 +52,24 @@ test('without API usage, falls back to the estimate and still stays consistent',
   expect(r.finalTotalTokens + r.freeTokens + RESERVED).toBe(WINDOW)
 })
 
+// Regression: Kiro (and any provider that doesn't report per-response input
+// tokens) yields a non-null but all-zero usage object, so totalFromAPI is 0.
+// `0 ?? estimate` used to return 0 and collapse the grid to 0/<window>; a zero
+// total must fall back to the estimate exactly like null.
+test('a zero API total falls back to the estimate (Kiro reports no input tokens)', () => {
+  const estimate = 30_400
+  const r = reconcileContextUsage({
+    contextWindow: WINDOW,
+    actualUsage: estimate,
+    totalFromAPI: 0,
+    reservedTokens: RESERVED,
+  })
+  expect(r.finalTotalTokens).toBe(estimate)
+  expect(r.usedForGrid).toBe(estimate)
+  expect(r.freeTokens).toBe(WINDOW - estimate - RESERVED)
+  expect(r.finalTotalTokens + r.freeTokens + RESERVED).toBe(WINDOW)
+})
+
 test('free space clamps to 0 when over budget (never negative)', () => {
   const r = reconcileContextUsage({
     contextWindow: WINDOW,

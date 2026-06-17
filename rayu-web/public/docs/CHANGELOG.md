@@ -3,6 +3,11 @@
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
 ## 1.3.433 - 2026-06-15
+- Fix the bug with the kiro provider context
+- Rebrand form claude icon to rayu draft icon
+- add /brandmark for use to customizable UI
+
+## 1.3.433 - 2026-06-15
 - Implement the doubleword provider to fetch all model
 
 ## 1.3.432 - 2026-06-15

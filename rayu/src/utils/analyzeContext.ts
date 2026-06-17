@@ -104,11 +104,19 @@ export function reconcileContextUsage(opts: {
   contextWindow: number
   /** Estimated sum of non-deferred, non-free categories. */
   actualUsage: number
-  /** Real last-response usage total, or null when unavailable. */
+  /** Real last-response usage total, or null/0 when unavailable. */
   totalFromAPI: number | null
   reservedTokens: number
 }): { usedForGrid: number; freeTokens: number; finalTotalTokens: number } {
-  const used = opts.totalFromAPI ?? opts.actualUsage
+  // Use the real API total only when it's actually present. `??` alone is a
+  // footgun here: a provider that reports no input usage yields 0, and `0 ??
+  // estimate` is 0 — which collapsed the whole grid to 0/<window> (the Kiro
+  // bug). A zero total means "no real usage available", so fall back to the
+  // estimate just like null.
+  const used =
+    opts.totalFromAPI != null && opts.totalFromAPI > 0
+      ? opts.totalFromAPI
+      : opts.actualUsage
   const freeTokens = Math.max(
     0,
     opts.contextWindow - used - opts.reservedTokens,
@@ -1211,11 +1219,17 @@ export async function analyzeContextUsage(
   // providers (Anthropic real counts; OpenAI-compatible/genai map their
   // response usage onto the same shape).
   const apiUsage = getCurrentUsage(originalMessages ?? messages)
-  const totalFromAPI = apiUsage
+  const apiInputTotal = apiUsage
     ? apiUsage.input_tokens +
       apiUsage.cache_creation_input_tokens +
       apiUsage.cache_read_input_tokens
-    : null
+    : 0
+  // A zero input total means the provider didn't report real per-response usage
+  // (e.g. Kiro: its stream carries a contextUsageEvent percentage but no input
+  // token counts, so the assistant message's usage is a non-null all-zero
+  // object). Treat that as "unavailable" (null) so we fall back to the
+  // estimated category sum instead of showing 0/<window>.
+  const totalFromAPI = apiInputTotal > 0 ? apiInputTotal : null
 
   // Drive the grid + Free space from the API total when available, otherwise
   // from the estimated category sum. This keeps the header, the grid fill, and

@@ -93,12 +93,19 @@ export const MAX_MEMORY_CHARACTER_COUNT = 40000
 
 // Project memory filenames + config dirs supported per directory. Missing files
 // are silently skipped by processMemoryFile.
-const PROJECT_MEMORY_FILENAMES = ['RAYU.md', 'AGENTS.md', 'CLAUDE.md'] as const
-const PROJECT_CONFIG_DIRS = ['.rayu', '.agents'] as const
+const PROJECT_MEMORY_FILENAMES = [
+  'RAYU.md',
+  'AGENTS.md',
+  'AGENT.md',
+  'CLAUDE.md',
+] as const
+const PROJECT_CONFIG_DIRS = ['.rayu', '.agents', 'claude'] as const
 
 // File extensions that are allowed for @include directives
 // This prevents binary files (images, PDFs, etc.) from being loaded into memory
 const TEXT_FILE_EXTENSIONS = new Set([
+  // Sensitive config files that may contain secrets or instructions
+  '.env',
   // Markdown and text
   '.md',
   '.txt',

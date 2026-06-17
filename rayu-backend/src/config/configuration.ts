@@ -1,8 +1,3 @@
-// Centralized environment configuration. All secrets live here (server-side
-// only) and are read from process.env — never hard-coded.
-//
-// Note: the database connection is read directly from DATABASE_URL by Prisma
-// (see prisma/schema.prisma), so it is not duplicated here.
 export interface AppConfig {
   port: number
   nodeEnv: string
@@ -17,7 +12,14 @@ export interface AppConfig {
   webOrigin: string
 }
 
-export default (): { app: AppConfig } => {
+export interface BakongConfig {
+  merchantId: string | undefined
+  phoneNumber: string | undefined
+  developerToken: string | undefined
+  apiUrl: string
+}
+
+export default (): { app: AppConfig; bakong: BakongConfig } => {
   const nodeEnv = process.env.NODE_ENV ?? 'development'
   const isTest = nodeEnv === 'test'
   return {
@@ -26,8 +28,6 @@ export default (): { app: AppConfig } => {
       nodeEnv,
       clerkSecretKey: process.env.CLERK_SECRET_KEY,
       clerkPublishableKey: process.env.CLERK_PUBLISHABLE_KEY,
-      // In production the secret MUST be provided via env. The fallback exists
-      // only so local/test runs work without configuration.
       jwtSecret:
         process.env.RAYU_JWT_SECRET ??
         (isTest ? 'test-only-insecure-secret' : 'dev-only-insecure-secret'),
@@ -40,6 +40,12 @@ export default (): { app: AppConfig } => {
         10,
       ),
       webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:3000',
+    },
+    bakong: {
+      merchantId: process.env.BAKONG_MERCHANT_ID,
+      phoneNumber: process.env.BAKONG_PHONE_NUMBER,
+      developerToken: process.env.BAKONG_DEVELOPER_TOKEN,
+      apiUrl: process.env.BAKONG_API_URL ?? 'https://api-bakong.nbc.gov.kh/v1',
     },
   }
 }

@@ -8,7 +8,7 @@ export const FRONTEND_COLLABORATOR = defineCollaborator({
     'Web UI implementation: page/screen architecture, components, state management, styling/design-system, animations, and API integration against the backend. Builds and iterates on real frontend code.',
   role: 'You build the web frontend end-to-end against the design and the backend contracts: page structure and navigation, the component tree, state management, the design system (tokens, spacing, typography), motion/interactions, and wiring to the API. You produce working, production-ready UI — not just layouts.',
   skillHint:
-    'e.g. a UI/UX design skill such as ui-ux-pro-max for stronger visual/UX decisions',
+    'the bundled rayu-frontend-design, rayu-design-system, and rayu-web-artifacts-builder skills for strong visual/UX decisions, a consistent token system, and self-contained interactive artifacts',
   withStackAwareness: true,
   allowedSubagents: [
     'design',

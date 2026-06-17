@@ -12,6 +12,8 @@ ${EPHEMERAL_FRAMING}
 
 ${SKILL_SEEKING}
 
+The bundled \`rayu-frontend-design\`, \`rayu-design-system\`, \`rayu-theme-factory\`, and \`rayu-brand-guidelines\` skills are directly relevant to this work — pull them via the Skill tool before designing.
+
 ## Your job
 Define, precisely and concretely, the visual + interaction system so every downstream agent can build pixel-perfect without guessing:
 - **Color palette** — exact hex codes (background, surface, text, accents, states).

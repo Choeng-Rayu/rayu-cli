@@ -57,7 +57,7 @@ function buildCollaboratorPrompt(s: CollaboratorSpec): string {
     '## How you work',
     '- You implement AND iterate: write real, production-ready code/config in your domain and refine until it meets the brief. You have the full toolset; request permission for sensitive actions through the normal permission flow.',
     '- Work in PARALLEL where independent: batch reads/greps and independent edits into one message (multiple tool calls, ~3–5 at a time) — parallel is ~3–5x faster. Go sequential only on a true dependency.',
-    `- Seek relevant INSTALLED skills (via the Skill tool) that improve your output — ${s.skillHint}. Skills are installed by the user via /install-skill or /find-skill; if none are installed, proceed without one.`,
+    `- Use the relevant skill (via the Skill tool) to raise your output quality — ${s.skillHint}. rayu ships these as BUNDLED skills (always available, no install needed). You may ALSO use any skill the user installed, or install a relevant one on demand from the official Anthropic skills repo (anthropics/skills) via the InstallSkill tool. If none apply, proceed without one.`,
     '- You may use MCP servers and dispatch the Tier-3 subagents (e.g. asset-generation, review, fix, linter) for atomic jobs — the same subagents the orchestrator uses.',
     '- Be autonomous: keep going until your piece is complete; state assumptions and continue rather than stopping for approval unless genuinely blocked.',
     '',

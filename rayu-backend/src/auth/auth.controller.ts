@@ -10,6 +10,7 @@ import {
 import { CurrentUser } from './current-user.decorator'
 import type { User } from '@prisma/client'
 import { PlansService } from '../plans/plans.service'
+import { UsersService } from '../users/users.service'
 import { AuthService, PublicUser, RayuTokens } from './auth.service'
 import { ExchangeDto, RefreshDto, TokenDto } from './dto/auth.dto'
 import { RayuAuthGuard } from './rayu-auth.guard'
@@ -19,6 +20,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly plans: PlansService,
+    private readonly users: UsersService,
   ) {}
 
   /**
@@ -72,6 +74,28 @@ export class AuthController {
     @CurrentUser() user: User,
   ): Promise<{ user: PublicUser; status: string }> {
     return { user: this.auth.toPublicUser(user), status: user.status }
+  }
+
+  /**
+   * Current user's plan entitlements: active plan + resolved feature toggles +
+   * usage limits. The CLI can read this later to gate features/usage. All
+   * values come from the DB (admin-managed), never hardcoded.
+   */
+  @Get('me/entitlements')
+  @UseGuards(RayuAuthGuard)
+  async entitlements(@CurrentUser() user: User) {
+    const plan = await this.users.getActivePlanForUser(user.id)
+    const limits = this.plans.getLimits(plan)
+    return {
+      plan: {
+        code: plan.code,
+        name: plan.name,
+        priceCents: plan.priceCents,
+        availability: plan.availability,
+      },
+      maxDailyTurns: limits.maxDailyTurns ?? null,
+      features: this.plans.getResolvedFeatures(plan),
+    }
   }
 
   private extractBearer(header: string | undefined): string | null {

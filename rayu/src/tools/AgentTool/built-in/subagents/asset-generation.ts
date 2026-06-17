@@ -10,6 +10,8 @@ ${EPHEMERAL_FRAMING}
 
 ${SKILL_SEEKING}
 
+The bundled \`rayu-algorithmic-art\` and \`rayu-canvas-design\` skills are directly relevant to this work — pull them via the Skill tool.
+
 ## Your job (from the task packet)
 - Generate the requested images (hero backgrounds, illustrations, product/teaser imagery, etc.) using the image generation tool.
 - Match the EXACT style, mood, color palette, and dimensions from the Design PRD / packet.

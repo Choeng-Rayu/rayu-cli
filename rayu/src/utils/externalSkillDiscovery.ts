@@ -25,13 +25,14 @@ import { join, resolve } from 'path'
 import { logForDebugging } from './debug.js'
 import { getFsImplementation } from './fsOperations.js'
 import { getInitialSettings } from './settings/settings.js'
+import { getCwd } from './cwd.js'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** All project config dir names Rayu recognises, in priority order. */
-export const RAYU_CONFIG_DIRS = ['.rayu', '.agents'] as const
+export const RAYU_CONFIG_DIRS = ['.rayu', '.agents', '.agent'] as const
 export type RayuConfigDir = (typeof RAYU_CONFIG_DIRS)[number]
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,19 @@ export function getClaudeCodeSkillsDirIfEnabled(): string | undefined {
 }
 
 /**
+ * Returns the PROJECT-level <cwd>/.claude/skills/ if it exists and Claude-skill
+ * loading is enabled. SKILLS ONLY — never reads Claude model/provider/auth or
+ * any other Claude config. Lower priority than rayu-native skills.
+ */
+export function getProjectClaudeSkillsDirIfEnabled(): string | undefined {
+  const settings = getInitialSettings()
+  const enabled =
+    (settings as Record<string, unknown>).claudeSkillsEnabled !== false
+  if (!enabled) return undefined
+  return existingDir(join(getCwd(), '.claude', 'skills'))
+}
+
+/**
  * Returns all extra skill dirs from settings.extraSkillDirs (resolved to absolute paths).
  */
 export function getExtraSkillDirsFromSettings(): string[] {
@@ -152,6 +166,11 @@ export function getExternalSkillDirs(): string[] {
   //    Rayu-native and agent-framework skills). Never reads Claude config/model.
   const claudeDir = getClaudeCodeSkillsDirIfEnabled()
   if (claudeDir) candidates.push(claudeDir)
+
+  // 2b. <cwd>/.claude/skills/ — project-checked-in Claude Code skills (skills
+  //     only; never reads Claude config/model). Lower priority than rayu-native.
+  const projectClaudeDir = getProjectClaudeSkillsDirIfEnabled()
+  if (projectClaudeDir) candidates.push(projectClaudeDir)
 
   // 3. settings.extraSkillDirs
   candidates.push(...getExtraSkillDirsFromSettings())

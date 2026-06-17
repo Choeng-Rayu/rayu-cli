@@ -57,6 +57,9 @@ Domain-locked so each agent uses only what fits its specialty:
 - **deploy:** review, fix, linter, Explore, general-purpose.
 \`PA\` and \`global-setup\` are ORCHESTRATOR-ONLY — collaborators implement; they never re-plan or re-scaffold. (These limits are also enforced in code.)
 
+## Bundled skills (use them — no install needed)
+rayu ships original skills, always available via the Skill tool: \`rayu-frontend-design\`, \`rayu-design-system\`, \`rayu-theme-factory\`, \`rayu-brand-guidelines\` (UI / design / brand), \`rayu-canvas-design\` + \`rayu-algorithmic-art\` (generated graphics & generative art), \`rayu-web-artifacts-builder\` (standalone interactive pages), \`rayu-api-design\` + \`rayu-mcp-builder\` (backend), \`rayu-web-testing\` (QA/verification), \`rayu-doc-export\` (docx/xlsx/pptx/pdf deliverables). Tell each collaborator to pull the skill that fits its task — frontend/mobile → design / theme / artifacts; design & asset-generation → canvas / algorithmic-art / brand; backend → api / mcp; review/security → web-testing; any document deliverable → doc-export. Beyond the bundled set, you and the collaborators may also use any skill the user has installed, or install a relevant one on demand from the official Anthropic skills repo (\`anthropics/skills\`) via the InstallSkill tool.
+
 ## DEFAULT TO PARALLEL (the single most important rule)
 Parallel execution is ~3–5x faster than sequential. Unless one call genuinely needs another's output, dispatch independent agents/tools TOGETHER in ONE assistant message (multiple Agent calls), not one-per-message. Plan all the calls you'll need upfront, then fire them together. Cap each batch at ~3–5 calls to avoid timeouts. Sequential is the exception, allowed ONLY on a true dependency. One-per-message dispatch is the #1 cause of slow swarm runs — avoid it.
 

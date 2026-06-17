@@ -21,18 +21,22 @@ describe('rayu-backend (e2e)', () => {
     expect(res.body.status).toBe('ok')
   })
 
-  it('GET /api/plans -> 5 plans, free active, paid coming_soon', async () => {
+  it('GET /api/plans -> 6 plans, free+basic active, others coming_soon', async () => {
     const res = await request(app.getHttpServer()).get('/api/plans')
     expect(res.status).toBe(200)
-    expect(res.body).toHaveLength(5)
+    expect(res.body).toHaveLength(6)
     const byCode = Object.fromEntries(
       res.body.map((p: any) => [p.code, p.availability]),
     )
     expect(byCode.free).toBe('active')
+    expect(byCode.basic).toBe('active')
     expect(byCode.pro).toBe('coming_soon')
     expect(byCode.pro_plus).toBe('coming_soon')
     expect(byCode.max).toBe('coming_soon')
     expect(byCode.enterprise).toBe('coming_soon')
+    // Basic is the $3/mo tier (price comes from the DB, not hardcoded in UI).
+    const basic = res.body.find((p: any) => p.code === 'basic')
+    expect(basic.priceCents).toBe(300)
   })
 
   it('full CLI bridge: exchange -> token -> /me, replay fails', async () => {
@@ -266,6 +270,243 @@ describe('rayu-backend (e2e)', () => {
       (p) => p.provider,
     )
     expect(providers).toContain('deepseek')
+  })
+
+  it('admin can manage plans (features, price, limits) and changes persist + drive entitlements', async () => {
+    // Promote an admin.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_planadmin',
+      email: 'planadmin@example.com',
+      displayName: 'Plan Admin',
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-planadmin-123456')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_planadmin' },
+      data: { role: 'superadmin' },
+    })
+
+    // A regular free user.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_freeuser',
+      email: 'freeuser@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const freeAccess = await login(app, 'state-freeuser-123456')
+
+    // Non-admin cannot list/patch plans.
+    await request(app.getHttpServer())
+      .get('/api/admin/plans')
+      .set('Authorization', `Bearer ${freeAccess}`)
+      .expect(403)
+    await request(app.getHttpServer())
+      .patch('/api/admin/plans/free')
+      .set('Authorization', `Bearer ${freeAccess}`)
+      .send({ priceCents: 999 })
+      .expect(403)
+
+    // Admin lists plans + feature catalog.
+    const listed = await request(app.getHttpServer())
+      .get('/api/admin/plans')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(listed.status).toBe(200)
+    expect(Array.isArray(listed.body.catalog)).toBe(true)
+    expect(listed.body.plans.length).toBe(6)
+
+    // Free user's entitlements start with telegram disabled (default).
+    const before = await request(app.getHttpServer())
+      .get('/api/me/entitlements')
+      .set('Authorization', `Bearer ${freeAccess}`)
+    expect(before.status).toBe(200)
+    expect(before.body.plan.code).toBe('free')
+    expect(before.body.features.telegram.enabled).toBe(false)
+
+    // Admin enables telegram for free + sets maxDailyTurns + a feature limit.
+    const patched = await request(app.getHttpServer())
+      .patch('/api/admin/plans/free')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({
+        maxDailyTurns: 100,
+        features: {
+          telegram: { enabled: true },
+          image_generation: { enabled: true, limit: 5 },
+        },
+      })
+    expect(patched.status).toBe(200)
+    expect(patched.body.maxDailyTurns).toBe(100)
+    expect(patched.body.features.telegram.enabled).toBe(true)
+    expect(patched.body.features.image_generation.limit).toBe(5)
+
+    // The free user's entitlements now reflect the admin change.
+    const after = await request(app.getHttpServer())
+      .get('/api/me/entitlements')
+      .set('Authorization', `Bearer ${freeAccess}`)
+    expect(after.body.maxDailyTurns).toBe(100)
+    expect(after.body.features.telegram.enabled).toBe(true)
+    expect(after.body.features.image_generation.limit).toBe(5)
+
+    // Admin changes the $3 Basic price -> reflected on the public catalog
+    // (proves price is admin-editable, not hardcoded).
+    const repriced = await request(app.getHttpServer())
+      .patch('/api/admin/plans/basic')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ priceCents: 400 })
+    expect(repriced.status).toBe(200)
+    expect(repriced.body.priceCents).toBe(400)
+
+    const plans = await request(app.getHttpServer()).get('/api/plans')
+    const basic = plans.body.find((p: any) => p.code === 'basic')
+    expect(basic.priceCents).toBe(400)
+
+    // Unknown feature key is rejected.
+    await request(app.getHttpServer())
+      .patch('/api/admin/plans/free')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ features: { not_a_feature: { enabled: true } } })
+      .expect(400)
+  })
+
+  it('GET /api/me/entitlements rejects unauthenticated', async () => {
+    await request(app.getHttpServer()).get('/api/me/entitlements').expect(401)
+  })
+
+  it('GET /api/admin/analytics returns the full analytics payload (admin only)', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_analytics_admin',
+      email: 'analytics@example.com',
+      displayName: 'Analytics Admin',
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-analytics-123456')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_analytics_admin' },
+      data: { role: 'admin' },
+    })
+    // Generate a usage event so series/top-users have data.
+    await request(app.getHttpServer())
+      .post('/api/usage')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ provider: 'openai', model: 'gpt', source: 'cli' })
+      .expect(201)
+
+    // Non-admin is blocked.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_analytics_regular',
+      email: 'areg@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const regularAccess = await login(app, 'state-areg-123456')
+    await request(app.getHttpServer())
+      .get('/api/admin/analytics')
+      .set('Authorization', `Bearer ${regularAccess}`)
+      .expect(403)
+
+    const res = await request(app.getHttpServer())
+      .get('/api/admin/analytics')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(res.status).toBe(200)
+    const a = res.body
+    expect(a.totals.totalUsers).toBeGreaterThan(0)
+    expect(typeof a.totals.activeUsers30d).toBe('number')
+    expect(a.statusBreakdown).toHaveProperty('active')
+    // Plan distribution includes the seeded catalog (free + basic).
+    const codes = a.planDistribution.map((p: any) => p.code)
+    expect(codes).toContain('free')
+    expect(codes).toContain('basic')
+    expect(a.paidVsFree).toHaveProperty('free')
+    expect(a.paidVsFree).toHaveProperty('paid')
+    expect(a.revenue).toHaveProperty('totalCents')
+    expect(Array.isArray(a.revenue.byMonth)).toBe(true)
+    expect(a.signupsByDay).toHaveLength(30)
+    expect(a.activeByDay).toHaveLength(30)
+    expect(Array.isArray(a.usageByProvider)).toBe(true)
+    expect(Array.isArray(a.topUsers)).toBe(true)
+    expect(typeof a.canceledSubscriptions).toBe('number')
+    // The usage we posted shows in provider breakdown + top users.
+    expect(a.usageByProvider.map((u: any) => u.provider)).toContain('openai')
+    expect(a.topUsers.length).toBeGreaterThan(0)
+  })
+
+  it('analytics ?days= range adjusts the time-series length', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_range_admin',
+      email: 'range@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-range-123456')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_range_admin' },
+      data: { role: 'admin' },
+    })
+    const res = await request(app.getHttpServer())
+      .get('/api/admin/analytics?days=7')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(res.status).toBe(200)
+    expect(res.body.signupsByDay).toHaveLength(7)
+    expect(res.body.activeByDay).toHaveLength(7)
+  })
+
+  it('admin feedback inbox + bulk status (admin only)', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_fbadmin',
+      email: 'fbadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-fbadmin-123456')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_fbadmin' },
+      data: { role: 'superadmin' },
+    })
+
+    // A user submits feedback.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_fbuser',
+      email: 'fbuser@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const userAccess = await login(app, 'state-fbuser-123456')
+    await request(app.getHttpServer())
+      .post('/api/feedback')
+      .set('Authorization', `Bearer ${userAccess}`)
+      .send({ type: 'bug', message: 'something broke', rating: 2 })
+      .expect(201)
+
+    // Non-admin blocked from inbox.
+    await request(app.getHttpServer())
+      .get('/api/admin/feedback')
+      .set('Authorization', `Bearer ${userAccess}`)
+      .expect(403)
+
+    // Admin reads the inbox.
+    const inbox = await request(app.getHttpServer())
+      .get('/api/admin/feedback?type=bug')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(inbox.status).toBe(200)
+    expect(inbox.body.total).toBeGreaterThan(0)
+    expect(inbox.body.items[0].type).toBe('bug')
+    expect(inbox.body.items[0].userEmail).toBe('fbuser@example.com')
+
+    // Bulk-suspend the feedback user.
+    const fbUser = await ctx.prisma.user.findUnique({
+      where: { clerkUserId: 'clerk_fbuser' },
+    })
+    const bulk = await request(app.getHttpServer())
+      .patch('/api/admin/users/bulk-status')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ ids: [fbUser!.id], status: 'suspended' })
+    expect(bulk.status).toBe(200)
+    expect(bulk.body.updated).toBe(1)
+
+    // Suspended user's token now rejected.
+    await request(app.getHttpServer())
+      .get('/api/me')
+      .set('Authorization', `Bearer ${userAccess}`)
+      .expect(401)
   })
 })
 
