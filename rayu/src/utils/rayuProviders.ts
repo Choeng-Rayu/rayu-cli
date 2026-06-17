@@ -240,6 +240,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     requiresOAuth: true,
   },
   {
+    // GitHub Copilot — sign in with GitHub (OAuth device flow) and use your
+    // Copilot subscription's models (Claude, GPT, Gemini, …) via Copilot's
+    // OpenAI-compatible endpoint (api.githubcopilot.com). No API key to paste:
+    // the GitHub OAuth token is exchanged for a short-lived Copilot token that
+    // is auto-refreshed. Reuses the OpenAI adapter through a token-injecting
+    // fetch wrapper (handled by kind:'copilot' in client.ts).
+    id: 'copilot',
+    label: 'GitHub Copilot (sign in with GitHub) · uses your Copilot subscription',
+    kind: 'copilot',
+  },
+  {
     id: 'openrouter',
     label: 'OpenRouter (openrouter.ai)',
     kind: 'openai-compatible',
@@ -474,6 +485,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   'bedrock-openai': 'AWS Bedrock',
   'bedrock-anthropic': 'AWS Bedrock',
   kiro: 'Kiro',
+  copilot: 'GitHub Copilot',
   ollama: 'Ollama',
   local: 'Local',
 }
@@ -489,6 +501,8 @@ function providerKindName(kind: ProviderKind): string {
       return 'Gemini'
     case 'kiro':
       return 'Kiro'
+    case 'copilot':
+      return 'GitHub Copilot'
     case 'anthropic':
       return 'Anthropic'
     default:

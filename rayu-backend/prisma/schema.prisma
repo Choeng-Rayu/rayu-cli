@@ -98,11 +98,13 @@ model UsageEvent {
   userId    Int      @map("user_id")
   provider  String   @db.VarChar(64)
   model     String?  @db.VarChar(128)
+  tool      String?  @db.VarChar(64)
   source    String   @default("cli") @db.VarChar(32)
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, provider])
+  @@index([tool])
   @@map("usage_events")
 }

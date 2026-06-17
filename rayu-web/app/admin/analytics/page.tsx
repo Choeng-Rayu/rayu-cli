@@ -107,6 +107,9 @@ export default function AnalyticsPage() {
         <Panel title="Usage by provider">
           <HBar data={a.usageByProvider.map((u) => ({ label: u.provider, value: u.count }))} />
         </Panel>
+        <Panel title="Usage by tool">
+          <HBar data={(a.usageByTool ?? []).map((u) => ({ label: u.tool, value: u.count }))} color="#36c5ff" />
+        </Panel>
         <Panel title="Top users by usage">
           <HBar
             data={a.topUsers.map((u) => ({ label: u.email ?? u.displayName ?? `#${u.id}`, value: u.count }))}

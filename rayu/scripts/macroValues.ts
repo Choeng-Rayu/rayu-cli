@@ -10,6 +10,16 @@ export const MACRO_VALUES = {
   FEEDBACK_CHANNEL: 'https://github.com/Choeng-Rayu/rayu-cli/issues',
   ISSUES_EXPLAINER: 'report the issue at https://github.com/Choeng-Rayu/rayu-cli/issues',
   VERSION_CHANGELOG: '',
+  // --- Rayu account/login baked config (shipped in dist/rayu.js; no .env on
+  // the user's machine). Set these at BUILD time for a release, e.g.:
+  //   RAYU_BUILD_OAUTH=true \
+  //   RAYU_BUILD_API_URL=https://rayu.example.com/api \
+  //   RAYU_BUILD_WEB_URL=https://rayu.example.com bun run build
+  // Runtime env vars (USE_RAYU_OAUTH / RAYU_API_URL / RAYU_WEB_URL) still
+  // override these for local development.
+  RAYU_OAUTH_DEFAULT: process.env.RAYU_BUILD_OAUTH ?? 'false',
+  RAYU_API_URL: process.env.RAYU_BUILD_API_URL ?? '',
+  RAYU_WEB_URL: process.env.RAYU_BUILD_WEB_URL ?? '',
 }
 
 // Rayu-owned allowlist of build-gated `feature('FLAG')` macros to ENABLE.

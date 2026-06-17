@@ -28,6 +28,11 @@ export class RecordUsageDto {
   model?: string
 
   @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  tool?: string
+
+  @IsOptional()
   @IsIn(USAGE_SOURCES as unknown as string[])
   source?: UsageSource
 }
@@ -47,6 +52,7 @@ export class UsageController {
       body.provider,
       body.model ?? null,
       body.source ?? 'cli',
+      body.tool ?? null,
     )
     return { ok: true }
   }

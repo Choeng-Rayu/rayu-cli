@@ -10,7 +10,7 @@ import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro'
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro' | 'copilot'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
@@ -436,6 +436,8 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/qwen[-.]?3[-.]?(coder|next)/i, 256_000],
   [/jamba/i, 256_000],
   [/step[-_.]?3\.7/i, 256_000],
+  // Anthropic Claude served via Copilot / OpenRouter / etc. — 200k standard.
+  [/claude/i, 200_000],
   // 131k / 128k families
   [/deepseek-(chat|reasoner|v3|coder)/i, 131_072],
   [/deepseek-r1/i, 131_072],
@@ -488,7 +490,8 @@ export function getRayuModelContextWindow(model: string): number | null {
     !p ||
     (p.kind !== 'openai-compatible' &&
       p.kind !== 'vertex' &&
-      p.kind !== 'genai')
+      p.kind !== 'genai' &&
+      p.kind !== 'copilot')
   ) {
     return null
   }
@@ -877,6 +880,12 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     const { listKiroModels } = await import('../services/api/kiro/kiroModels.js')
     return listKiroModels()
   }
+  // GitHub Copilot: list models from api.githubcopilot.com/models with a fresh
+  // Copilot token derived from the stored GitHub OAuth token (provider.apiKey).
+  if (p.kind === 'copilot') {
+    const { fetchCopilotModels } = await import('../services/api/copilot/copilotAuth.js')
+    return fetchCopilotModels(p.apiKey)
+  }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
@@ -925,7 +934,8 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
       p.kind !== 'bedrock' &&
       p.kind !== 'vertex' &&
       p.kind !== 'genai' &&
-      p.kind !== 'kiro')
+      p.kind !== 'kiro' &&
+      p.kind !== 'copilot')
   )
     return []
   const models = await fetchProviderModels(p)

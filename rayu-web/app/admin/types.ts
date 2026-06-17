@@ -81,6 +81,7 @@ export interface AdminAnalytics {
   signupsByDay: Array<{ date: string; count: number }>
   activeByDay: Array<{ date: string; count: number }>
   usageByProvider: Array<{ provider: string; count: number }>
+  usageByTool: Array<{ tool: string; count: number }>
   topUsers: Array<{ id: number; email: string | null; displayName: string | null; count: number }>
   canceledSubscriptions: number
 }

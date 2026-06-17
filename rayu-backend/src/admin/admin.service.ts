@@ -42,6 +42,7 @@ export interface AdminAnalytics {
   signupsByDay: Array<{ date: string; count: number }>
   activeByDay: Array<{ date: string; count: number }>
   usageByProvider: Array<{ provider: string; count: number }>
+  usageByTool: Array<{ tool: string; count: number }>
   topUsers: Array<{
     id: number
     email: string | null
@@ -284,6 +285,7 @@ export class AdminService {
       paidAgg,
       canceledSubscriptions,
       usageByProvider,
+      usageByTool,
     ] = await Promise.all([
       this.users.countAll(),
       this.users.countActiveSince(new Date(now.getTime() - day)),
@@ -303,6 +305,7 @@ export class AdminService {
       }),
       this.prisma.subscription.count({ where: { status: 'canceled' } }),
       this.usage.usageByProviderGlobal(),
+      this.usage.usageByToolGlobal(),
     ])
 
     const statusBreakdown = { active: 0, suspended: 0, banned: 0 }
@@ -416,6 +419,7 @@ export class AdminService {
       signupsByDay,
       activeByDay,
       usageByProvider,
+      usageByTool,
       topUsers,
       canceledSubscriptions,
     }

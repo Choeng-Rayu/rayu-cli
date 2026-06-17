@@ -19,6 +19,7 @@ import { randomBytes } from 'crypto'
 import { createServer } from 'http'
 import type { AddressInfo } from 'net'
 import { openBrowser } from '../../utils/browser.js'
+import { refreshRayuEntitlements } from './rayuEntitlements.js'
 import {
   getRayuApiBaseUrl,
   getRayuWebBaseUrl,
@@ -152,6 +153,9 @@ export async function loginRayu(opts?: {
               expiresAt: data.expiresAt,
               user: data.user,
             })
+            // Warm the entitlements cache so feature gating is correct right
+            // after login (best-effort; never blocks login).
+            await refreshRayuEntitlements().catch(() => {})
             finish(null, { user: data.user })
           } catch (e) {
             finish(e instanceof Error ? e : new Error(String(e)))

@@ -22,6 +22,7 @@ import {
 } from './vertexVideoClient.js'
 import { DESCRIPTION, getVideoGenPrompt, VIDEO_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+import { rayuFeatureAllowed } from '../../services/rayuAuth/rayuEntitlements.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -96,7 +97,10 @@ export const VideoGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return isVideoEnabled() || isGeminiVertexVideoAvailable()
+    return (
+      (isVideoEnabled() || isGeminiVertexVideoAvailable()) &&
+      rayuFeatureAllowed('video_generation')
+    )
   },
   isReadOnly() {
     return false

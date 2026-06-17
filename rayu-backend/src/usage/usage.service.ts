@@ -22,9 +22,10 @@ export class UsageService {
     provider: string,
     model: string | null,
     source: UsageSource,
+    tool?: string | null,
   ): Promise<UsageEvent> {
     const event = await this.prisma.usageEvent.create({
-      data: { userId, provider, model, source },
+      data: { userId, provider, model, source, tool: tool ?? null },
     })
     await this.users.touchLastActive(userId)
     return event
@@ -52,6 +53,18 @@ export class UsageService {
     })
     return grouped
       .map((g) => ({ provider: g.provider, count: g._count._all }))
+      .sort((a, b) => b.count - a.count)
+  }
+
+  async usageByToolGlobal(): Promise<Array<{ tool: string; count: number }>> {
+    const grouped = await this.prisma.usageEvent.groupBy({
+      by: ['tool'],
+      where: { tool: { not: null } },
+      _count: { _all: true },
+    })
+    return grouped
+      .filter((g) => g.tool != null)
+      .map((g) => ({ tool: g.tool as string, count: g._count._all }))
       .sort((a, b) => b.count - a.count)
   }
 }

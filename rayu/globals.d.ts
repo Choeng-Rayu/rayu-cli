@@ -12,6 +12,9 @@ declare global {
     FEEDBACK_CHANNEL: string
     ISSUES_EXPLAINER: string
     VERSION_CHANGELOG: string
+    RAYU_OAUTH_DEFAULT: string
+    RAYU_API_URL: string
+    RAYU_WEB_URL: string
   }
 }
 

@@ -387,7 +387,7 @@ describe('rayu-backend (e2e)', () => {
     await request(app.getHttpServer())
       .post('/api/usage')
       .set('Authorization', `Bearer ${adminAccess}`)
-      .send({ provider: 'openai', model: 'gpt', source: 'cli' })
+      .send({ provider: 'openai', model: 'gpt', source: 'cli', tool: 'BashTool' })
       .expect(201)
 
     // Non-admin is blocked.
@@ -426,6 +426,8 @@ describe('rayu-backend (e2e)', () => {
     expect(typeof a.canceledSubscriptions).toBe('number')
     // The usage we posted shows in provider breakdown + top users.
     expect(a.usageByProvider.map((u: any) => u.provider)).toContain('openai')
+    expect(Array.isArray(a.usageByTool)).toBe(true)
+    expect(a.usageByTool.map((u: any) => u.tool)).toContain('BashTool')
     expect(a.topUsers.length).toBeGreaterThan(0)
   })
 

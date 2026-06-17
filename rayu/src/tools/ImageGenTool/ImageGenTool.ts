@@ -23,6 +23,7 @@ import {
 } from './vertexImageClient.js'
 import { DESCRIPTION, getImageGenPrompt, IMAGE_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+import { rayuFeatureAllowed } from '../../services/rayuAuth/rayuEntitlements.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -132,7 +133,10 @@ export const ImageGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return getNvidiaApiKey() != null || isGeminiVertexImageAvailable()
+    return (
+      (getNvidiaApiKey() != null || isGeminiVertexImageAvailable()) &&
+      rayuFeatureAllowed('image_generation')
+    )
   },
   isReadOnly() {
     return false
