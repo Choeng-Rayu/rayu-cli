@@ -34,6 +34,16 @@ describe('provider presets', () => {
     }
     expect(byId['doubleword'].baseURL).toBe('https://api.doubleword.ai/v1')
   })
+
+  test('registry includes Hugging Face Inference Providers (openai-compatible router)', async () => {
+    const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
+    const hf = PROVIDER_PRESETS.find(p => p.id === 'huggingface')
+    expect(hf?.kind).toBe('openai-compatible')
+    expect(hf?.baseURL).toBe('https://router.huggingface.co/v1')
+    expect(hf?.envKeys).toContain('HF_TOKEN')
+    expect(hf?.defaultModel).toBeTruthy()
+    expect(hf?.smallFastModel).toBeTruthy()
+  })
 })
 
 describe('env key migration', () => {

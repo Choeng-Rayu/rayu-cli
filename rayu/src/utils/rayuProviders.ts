@@ -306,6 +306,21 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     envKeys: ['DEEPINFRA_API_KEY'],
   },
   {
+    // Hugging Face Inference Providers — an OpenAI-compatible router
+    // (router.huggingface.co/v1) that fans a single `<org>/<model>` id out to
+    // the available inference providers (novita, together, fireworks, …).
+    // `GET /v1/models` returns the live cross-provider catalog, so Rayu's
+    // generic openai-compatible adapter + model fetch work verbatim. Auth is a
+    // Hugging Face access token (hf_…), read from the standard HF env vars.
+    id: 'huggingface',
+    label: 'Hugging Face — Inference Providers (router.huggingface.co)',
+    kind: 'openai-compatible',
+    baseURL: 'https://router.huggingface.co/v1',
+    defaultModel: 'deepseek-ai/DeepSeek-V4-Pro',
+    smallFastModel: 'deepseek-ai/DeepSeek-V4-Flash',
+    envKeys: ['HF_TOKEN', 'HUGGINGFACE_API_KEY', 'HUGGING_FACE_HUB_TOKEN'],
+  },
+  {
     id: 'bedrock',
     label: 'AWS Bedrock — all models (Converse API: Claude, Kimi, DeepSeek, …)',
     kind: 'bedrock',
@@ -454,6 +469,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   cerebras: 'Cerebras',
   baseten: 'Baseten',
   deepinfra: 'DeepInfra',
+  huggingface: 'Hugging Face',
   bedrock: 'AWS Bedrock',
   'bedrock-openai': 'AWS Bedrock',
   'bedrock-anthropic': 'AWS Bedrock',

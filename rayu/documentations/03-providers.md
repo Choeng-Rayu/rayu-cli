@@ -22,6 +22,7 @@ A **provider** is an API endpoint plus your credentials. Rayu supports these kin
 | `gemini-vertex` | Google Gemini — Vertex AI (OAuth) | _(per project/region)_ | _(OAuth / ADC)_ |
 | `gemini-login` | Login with Gemini (Google account) | _(Code Assist — free, no project)_ | _(interactive OAuth)_ |
 | `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `huggingface` | Hugging Face — Inference Providers | `https://router.huggingface.co/v1` | `HF_TOKEN` |
 | `localhost` | Localhost (Ollama) | `http://localhost:11434/v1` | — |
 | `local` | Custom Endpoint | _(you enter it)_ | — |
 | `bedrock` | AWS Bedrock | _(on-demand AWS Bedrock)_ | `AWS_BEARER_TOKEN_BEDROCK` |
