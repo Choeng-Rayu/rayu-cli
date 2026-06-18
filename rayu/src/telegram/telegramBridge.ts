@@ -5,8 +5,8 @@ import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSyn
 import { join } from 'path'
 import { getRayuConfigHomeDir } from '../utils/envUtils.js'
 import {
+  formatActivitySummary,
   formatFileChangeReview,
-  formatMessage,
   isFileChangeReviewMessage,
   type ToolLabeler,
   type WrappedMessage,
@@ -19,11 +19,14 @@ import {
 import {
   answerCallbackQuery,
   downloadFileAsBase64,
+  editMessageText,
+  escapeHtml,
   getFile,
   getUpdates,
   sendChatAction,
   sendMessage,
   sendPhoto,
+  sendVideo,
   setMyCommands,
   type TelegramUpdate,
 } from './telegramApi.js'
@@ -84,6 +87,12 @@ interface ImageBlock {
   caption?: string
 }
 
+/** Extract video blocks from WrappedMessage tool_result text for Telegram sendVideo. */
+interface VideoBlock {
+  path: string
+  caption?: string
+}
+
 function extractImages(message: WrappedMessage): ImageBlock[] {
   const content = message.message?.content
   if (!Array.isArray(content)) return []
@@ -97,19 +106,44 @@ function extractImages(message: WrappedMessage): ImageBlock[] {
     }
     if (block && typeof block === 'object' && block.type === 'tool_result') {
       const inner = (block as { content?: unknown[] }).content
-      if (Array.isArray(inner)) {
-        for (const sub of inner) {
-          if (sub && typeof sub === 'object' && (sub as { type?: string }).type === 'image') {
-            const src = (sub as { source?: { data?: string; media_type?: string } }).source
-            if (src?.data) {
-              images.push({ base64: src.data, mediaType: src.media_type ?? 'image/png' })
-            }
+      if (!Array.isArray(inner)) continue
+      // Extract caption from the sibling text block in the same tool_result
+      const textBlock = inner.find(
+        b => b && typeof b === 'object' && (b as { type?: string }).type === 'text',
+      ) as { text?: string } | undefined
+      const caption = textBlock?.text?.trim().slice(0, 1024)
+      for (const sub of inner) {
+        if (sub && typeof sub === 'object' && (sub as { type?: string }).type === 'image') {
+          const src = (sub as { source?: { data?: string; media_type?: string } }).source
+          if (src?.data) {
+            images.push({ base64: src.data, mediaType: src.media_type ?? 'image/png', caption })
           }
         }
       }
     }
   }
   return images
+}
+
+/** Scan tool_result text blocks for "Video saved to /path.mp4 (...)" and return VideoBlocks. */
+function extractVideos(message: WrappedMessage): VideoBlock[] {
+  const content = message.message?.content
+  if (!Array.isArray(content)) return []
+  const videos: VideoBlock[] = []
+  for (const block of content) {
+    if (!block || typeof block !== 'object' || block.type !== 'tool_result') continue
+    const inner = (block as { content?: unknown[] }).content
+    if (!Array.isArray(inner)) continue
+    for (const sub of inner) {
+      if (!sub || typeof sub !== 'object' || (sub as { type?: string }).type !== 'text') continue
+      const text = ((sub as { text?: string }).text ?? '').trim()
+      const match = /Video saved to (.+?\.mp4)/.exec(text)
+      if (match?.[1]) {
+        videos.push({ path: match[1], caption: text.slice(0, 1024) })
+      }
+    }
+  }
+  return videos
 }
 
 /**
@@ -560,16 +594,19 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
   // Per-turn streaming mirror — created on startTurn(), finalized on endTurn().
   let mirror: StreamingMirror | null = null
 
-  // Accumulates thinking deltas during a turn; sent as a single message at endTurn.
-  let thinkingBuffer = ''
+  // After endTurn: the message_id and final raw text of the streamed message so
+  // pushActivity can edit it to prepend tool/thinking summary → one final message.
+  let lastTurnMessageId = 0
+  let lastTurnText = '' // raw (pre-escape) final AI text
+
+  // Whether thinking happened in the current turn (shown as 💭 in the activity summary).
+  let turnHadThinking = false
   let thinkingActionSent = false
 
   const mirrorApi = {
     sendMessage: (chatId: number, text: string) => sendMessage(options.token, chatId, text),
-    editMessageText: async (chatId: number, messageId: number, text: string) => {
-      const { editMessageText } = await import('./telegramApi.js')
-      return editMessageText(options.token, chatId, messageId, text)
-    },
+    editMessageText: (chatId: number, messageId: number, text: string, parseMode?: 'HTML') =>
+      editMessageText(options.token, chatId, messageId, text, parseMode),
     sendChatAction: (chatId: number, action?: 'typing') =>
       sendChatAction(options.token, chatId, action ?? 'typing'),
   }
@@ -600,9 +637,11 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
     startTurn(): void {
       const chatId = linkedChatId()
       if (chatId === undefined) return
-      thinkingBuffer = ''
+      lastTurnMessageId = 0
+      lastTurnText = ''
+      turnHadThinking = false
       thinkingActionSent = false
-      mirror = new StreamingMirror(mirrorApi, chatId)
+      mirror = new StreamingMirror(mirrorApi, chatId, undefined, 'HTML')
       void mirror.start().catch(() => {})
     },
 
@@ -611,16 +650,13 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
     },
 
     /**
-     * Called for each thinking token delta.
-     * - Sends a `typing` chat action on the first thinking token so the user
-     *   sees "typing…" in the chat header immediately.
-     * - Accumulates all thinking text; it is sent as a single 💭 message at endTurn.
+     * Track whether thinking happened this turn — shown as 💭 in the activity summary.
+     * We don't send thinking content to Telegram, just the indicator emoji.
      */
     onThinkingDelta(delta: string): void {
       const chatId = linkedChatId()
       if (chatId === undefined) return
-      thinkingBuffer += delta
-      // Send the typing indicator once when thinking starts (non-blocking).
+      if (delta.trim()) turnHadThinking = true
       if (!thinkingActionSent) {
         thinkingActionSent = true
         void sendChatAction(options.token, chatId, 'typing')
@@ -628,23 +664,11 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
     },
 
     async endTurn(): Promise<void> {
-      // If there was thinking content this turn, send it as a compact summary
-      // before finalizing the streaming mirror.
-      if (thinkingBuffer.trim()) {
-        const chatId = linkedChatId()
-        if (chatId !== undefined) {
-          const MAX_THINKING_CHARS = 600
-          const thinking = thinkingBuffer.trim()
-          const preview =
-            thinking.length > MAX_THINKING_CHARS
-              ? `${thinking.slice(0, MAX_THINKING_CHARS)}…`
-              : thinking
-          void sendMessage(options.token, chatId, `💭 ${preview}`).catch(() => {})
-        }
-        thinkingBuffer = ''
-        thinkingActionSent = false
-      }
+      thinkingActionSent = false
       if (mirror) {
+        // Capture message ID and raw text BEFORE finalize so pushActivity can use them
+        lastTurnMessageId = mirror.getMessageId()
+        lastTurnText = mirror.getFinalText()
         await mirror.finalize().catch(() => {})
         mirror = null
       }
@@ -653,19 +677,59 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
     pushActivity(messages: WrappedMessage[]): void {
       const chatId = linkedChatId()
       if (chatId === undefined) return
+
+      // ── Media (always separate messages) ────────────────────────────────────
       for (const message of messages) {
-        // File change review system messages get their own formatter.
-        if (isFileChangeReviewMessage(message)) {
-          const text = formatFileChangeReview(message)
-          void sendMessage(options.token, chatId, text).catch(() => {})
-          continue
-        }
+        if (isFileChangeReviewMessage(message)) continue // handled below
+
         const images = extractImages(message)
         for (const img of images) {
           void sendPhoto(options.token, chatId, img.base64, img.mediaType, img.caption).catch(() => {})
         }
-        const text = formatMessage(message, options.toolLabeler)
-        if (text) void sendMessage(options.token, chatId, text).catch(() => {})
+        const videos = extractVideos(message)
+        for (const vid of videos) {
+          void sendVideo(options.token, chatId, vid.path, vid.caption).catch(() => {})
+        }
+      }
+
+      // ── File change review (own compact message) ─────────────────────────────
+      for (const message of messages) {
+        if (isFileChangeReviewMessage(message)) {
+          void sendMessage(options.token, chatId, formatFileChangeReview(message)).catch(() => {})
+        }
+      }
+
+      // ── ONE combined text message ─────────────────────────────────────────────
+      // Build the activity summary (💭 + tool lines + errors) from all messages.
+      // Inject turnHadThinking so the thinking indicator is included even though
+      // thinking deltas are accumulated separately.
+      const allWithThinking = turnHadThinking
+        ? [{ type: 'assistant', isMeta: false, message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }] } } as WrappedMessage, ...messages]
+        : messages
+      const activitySummary = formatActivitySummary(allWithThinking)
+
+      // The AI text was already streamed live into lastTurnMessageId.
+      // Edit that message to PREPEND the activity summary → one final message.
+      if (lastTurnMessageId && chatId) {
+        const aiText = lastTurnText.trim() ? escapeHtml(lastTurnText) : ''
+        const combined = [activitySummary, aiText].filter(Boolean).join('\n\n')
+        if (combined) {
+          void editMessageText(options.token, chatId, lastTurnMessageId, combined, 'HTML').catch(() => {
+            // Fallback: if edit fails (message too old, etc.), send activity separately
+            if (activitySummary) {
+              void sendMessage(options.token, chatId, activitySummary, 'HTML').catch(() => {})
+            }
+          })
+        }
+        lastTurnMessageId = 0
+        lastTurnText = ''
+        turnHadThinking = false
+      } else if (activitySummary) {
+        // No streaming message this turn (non-streaming path) — send activity as new message
+        void sendMessage(options.token, chatId, activitySummary, 'HTML').catch(() => {})
+        lastTurnMessageId = 0
+        lastTurnText = ''
+        turnHadThinking = false
       }
     },
 

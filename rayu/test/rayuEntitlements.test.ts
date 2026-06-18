@@ -101,3 +101,52 @@ describe('command-level gating (wiring)', () => {
     expect(telegram.isEnabled?.()).toBe(true)
   })
 })
+
+describe('stale cache refresh (plan upgrade)', () => {
+  test('a persisted Free cache refreshes to the upgraded plan (telegram unlocks)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const sess = await import('../src/services/rayuAuth/rayuSession.ts')
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+
+    // Signed in as user #1.
+    sess.writeRayuSession({
+      accessToken: 'at',
+      refreshToken: 'rt',
+      expiresAt: Date.now() + 3600_000,
+      user: { id: 1, email: 'a@b.c', displayName: null, avatarUrl: null, role: 'user' },
+    })
+
+    // Stale FREE cache (telegram disabled) belonging to user #1 — the state of a
+    // user who logged in before upgrading.
+    m._resetRayuEntitlementsForTesting()
+    m._setRayuEntitlementsForTesting({
+      ...ent({ telegram: { enabled: false } }),
+      userId: 1,
+    })
+    expect(m.rayuFeatureAllowed('telegram')).toBe(false) // before refresh
+
+    // Backend now returns the upgraded Basic plan (telegram enabled).
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        plan: { code: 'basic', name: 'Basic', priceCents: 300, availability: 'active' },
+        maxDailyTurns: null,
+        features: { telegram: { enabled: true } },
+      }),
+    })) as unknown as typeof fetch
+
+    try {
+      // Reading the cache must kick a background refresh even though the cache
+      // is non-null (the bug: it only refreshed when empty).
+      m.getCachedEntitlements()
+      await new Promise((r) => setTimeout(r, 50))
+      const updated = m.getCachedEntitlements()
+      expect(updated?.plan.code).toBe('basic')
+      expect(m.rayuFeatureAllowed('telegram')).toBe(true)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})

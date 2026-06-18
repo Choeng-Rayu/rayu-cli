@@ -1,4 +1,18 @@
-/** Render REPL messages into Telegram-friendly plain text mirroring the CLI. */
+/**
+ * Render REPL messages into Telegram-friendly HTML.
+ *
+ * Philosophy: Telegram shows curated, important-only content.
+ * - AI text response → full text (HTML-escaped)
+ * - Tools            → icon + tool name only (no args, no output)
+ * - Bash             → "Running Bash"
+ * - Agent            → role · model · provider
+ * - Tool results     → only shown on error
+ * - Thinking         → skipped entirely
+ *
+ * The terminal UI is unchanged — this only affects Telegram output.
+ */
+
+import { escapeHtml } from './telegramApi.js'
 
 // ---- File change review types (mirrors pendingFileChanges.ts shapes) ----
 export interface FileChangeReviewFile {
@@ -29,6 +43,7 @@ export interface ContentBlock {
   name?: string
   input?: unknown
   content?: unknown
+  is_error?: boolean
 }
 
 export interface WrappedMessage {
@@ -36,11 +51,6 @@ export interface WrappedMessage {
   isMeta?: boolean
   message?: { role?: string; content?: string | ContentBlock[] }
 }
-
-const MAX_ARG_CHARS = 120
-const MAX_RESULT_CHARS = 400
-/** Max lines of bash output to show before summarizing */
-const MAX_BASH_LINES = 5
 
 /** Resolves a tool's user-facing label, matching the CLI spinner text. */
 export type ToolLabeler = (toolName: string, input: unknown) => string
@@ -113,19 +123,110 @@ export function toolIcon(toolName: string): string {
   return TOOL_ICONS[key] ?? TOOL_ICONS[toolName.toLowerCase()] ?? '🔧'
 }
 
-function compactArgs(input: unknown): string {
-  if (input == null) return ''
-  const str = typeof input === 'string' ? input : JSON.stringify(input)
-  return str.length > MAX_ARG_CHARS ? `${str.slice(0, MAX_ARG_CHARS)}…` : str
+const BASH_LIKE_TOOLS = new Set(['bash', 'shell', 'powershell', 'repl'])
+const AGENT_TOOLS = new Set(['agent', 'task'])
+
+/** Override display names for verbose internal tool names. */
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  str_replace_based_edit_tool: 'Edit',
+  multiedit: 'Edit',
+  multi_edit: 'Edit',
+  notebook_edit: 'Notebook Edit',
+  list_mcp_resources: 'MCP Resources',
+  read_mcp_resource: 'MCP Resource',
+}
+
+function isBashLike(name: string): boolean {
+  return BASH_LIKE_TOOLS.has(name.toLowerCase())
+}
+
+function isAgentTool(name: string): boolean {
+  return AGENT_TOOLS.has(name.toLowerCase())
 }
 
 /**
- * Format tool_result content for display.
- * For bash-like results (multi-line output), shows a compact summary.
- * For short results, shows the full text.
+ * Format a single tool_use block into a highlighted HTML line.
+ * Bash       → "🖥️ <b>Running Bash</b>"
+ * Agent      → "🤖 <b>Agent</b> — role: X · model: Y · provider: Z"
+ * Other      → "<icon> <b>ToolName</b>"
  */
-function resultToText(content: unknown, toolName?: string): string {
-  let text: string
+function formatToolUseLine(name: string, input: unknown): string {
+  const nameLower = name.toLowerCase()
+
+  if (isBashLike(nameLower)) {
+    return '🖥️ <b>Running Bash</b>'
+  }
+
+  if (isAgentTool(nameLower)) {
+    const inp = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+    const role = typeof inp['subagent_type'] === 'string' ? inp['subagent_type'] : 'agent'
+    const model = typeof inp['model'] === 'string' ? inp['model'] : ''
+    const provider = typeof inp['provider'] === 'string' ? inp['provider'] : ''
+    const parts = [`🤖 <b>Agent</b> — role: ${escapeHtml(role)}`]
+    if (model) parts.push(`model: ${escapeHtml(model)}`)
+    if (provider) parts.push(`provider: ${escapeHtml(provider)}`)
+    return parts.join(' · ')
+  }
+
+  const icon = toolIcon(name)
+  const key = name.toLowerCase().replace(/-/g, '_')
+  const displayName = TOOL_DISPLAY_NAMES[key] ?? name.replace(/_/g, ' ')
+  return `${icon} <b>${escapeHtml(displayName)}</b>`
+}
+
+/**
+ * Build just the activity summary (tools + thinking indicator + errors) from a batch
+ * of messages, WITHOUT AI text. Used to prepend to the streaming message so the
+ * final Telegram message contains everything in one.
+ *
+ * Format:
+ *   💭                        ← thinking happened (just emoji, once)
+ *   🖥️ <b>Running Bash</b>
+ *   📝 <b>Edit</b>
+ *   ⚠️ <i>error if any</i>
+ */
+export function formatActivitySummary(messages: WrappedMessage[]): string | null {
+  let hasThinking = false
+  const toolLines: string[] = []
+  const errorLines: string[] = []
+
+  for (const message of messages) {
+    if (message.isMeta) continue
+    for (const block of blocksOf(message)) {
+      switch (block.type) {
+        case 'thinking':
+          if (block.thinking?.trim()) hasThinking = true
+          break
+        case 'tool_use': {
+          const line = formatToolUseLine(block.name ?? 'tool', block.input)
+          // Deduplicate adjacent identical tool lines (e.g. repeated Bash calls)
+          if (toolLines[toolLines.length - 1] !== line) toolLines.push(line)
+          break
+        }
+        case 'tool_result':
+          if (isToolResultError(block)) {
+            const err = extractErrorLine(block.content)
+            if (err) errorLines.push(`⚠️ <i>${escapeHtml(err)}</i>`)
+          }
+          break
+      }
+    }
+  }
+
+  const parts: string[] = []
+  if (hasThinking) parts.push('💭')
+  parts.push(...toolLines)
+  parts.push(...errorLines)
+
+  const out = parts.join('\n').trim()
+  return out.length > 0 ? out : null
+}
+
+/**
+ * Extract the first meaningful error line from a tool_result content block.
+ */
+function extractErrorLine(content: unknown): string {
+  let text = ''
   if (typeof content === 'string') {
     text = content
   } else if (Array.isArray(content)) {
@@ -133,24 +234,29 @@ function resultToText(content: unknown, toolName?: string): string {
       .map(b => (b && typeof b === 'object' && 'text' in b ? String((b as ContentBlock).text ?? '') : ''))
       .join('')
   } else {
-    text = JSON.stringify(content)
+    text = String(content ?? '')
   }
-  text = text.trim()
+  // Return first non-empty line, capped at 200 chars
+  const firstLine = text.trim().split('\n').find(l => l.trim()) ?? text.trim()
+  return firstLine.slice(0, 200)
+}
 
-  // For bash/shell tools, show a compact line-count summary instead of full output
-  const isBashLike = toolName
-    ? ['bash', 'shell', 'powershell', 'repl'].includes(toolName.toLowerCase())
-    : false
-
-  if (isBashLike) {
-    const lines = text.split('\n').filter(l => l.trim())
-    if (lines.length > MAX_BASH_LINES) {
-      const preview = lines.slice(0, MAX_BASH_LINES).join('\n')
-      return `${preview}\n… (${lines.length} lines total)`
-    }
+/**
+ * Returns true if a tool_result block represents an error.
+ */
+function isToolResultError(block: ContentBlock): boolean {
+  if (block.is_error) return true
+  // Heuristic: text starting with "Error:" or containing "stderr"
+  let text = ''
+  if (typeof block.content === 'string') {
+    text = block.content
+  } else if (Array.isArray(block.content)) {
+    text = block.content
+      .map(b => (b && typeof b === 'object' && 'text' in b ? String((b as ContentBlock).text ?? '') : ''))
+      .join('')
   }
-
-  return text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}…` : text
+  const lower = text.trim().toLowerCase()
+  return lower.startsWith('error:') || lower.startsWith('error ') || lower.includes('\nstderr:')
 }
 
 function blocksOf(message: WrappedMessage): ContentBlock[] {
@@ -160,48 +266,52 @@ function blocksOf(message: WrappedMessage): ContentBlock[] {
 }
 
 /**
- * Format one REPL message into Telegram text, or null if nothing to show.
- * Mirrors terminal output 1:1: assistant text, thinking, tool calls, tool results.
- * Each tool type gets its own icon.
+ * Format one REPL message into Telegram HTML, or null if nothing to show.
+ *
+ * Rules:
+ * - assistant text → full text, HTML-escaped
+ * - tool_use       → icon + name only ("Running Bash", "🤖 Agent ...", "📖 Read")
+ * - tool_result    → only on error: "⚠️ <first error line>"
+ * - thinking       → skipped
+ * - user messages  → skipped (they already came from the user)
  */
-export function formatMessage(message: WrappedMessage, label?: ToolLabeler): string | null {
+export function formatMessage(message: WrappedMessage, _label?: ToolLabeler): string | null {
   if (message.isMeta) return null
+
+  const isAssistant = message.message?.role === 'assistant'
   const parts: string[] = []
+
   for (const block of blocksOf(message)) {
     switch (block.type) {
       case 'text':
-        if (block.text?.trim()) parts.push(block.text.trim())
+        // Only show AI text from assistant messages — user text blocks are inputs we sent
+        if (isAssistant && block.text?.trim()) parts.push(escapeHtml(block.text.trim()))
         break
       case 'thinking':
-        // Thinking is handled via the streaming mirror — skip in post-turn formatting
-        // to avoid duplication. Only show if not empty (e.g. in non-streaming paths).
-        if (block.thinking?.trim()) parts.push(`💭 ${block.thinking.trim()}`)
+        // Skipped — thinking is internal, not shown in Telegram
         break
       case 'tool_use': {
+        // tool_use only appears in assistant messages
         const name = block.name ?? 'tool'
-        const icon = toolIcon(name)
-        const heading = label ? label(name, block.input) : name
-        const args = compactArgs(block.input)
-        parts.push(args ? `${icon} ${heading}(${args})` : `${icon} ${heading}`)
+        parts.push(formatToolUseLine(name, block.input))
         break
       }
       case 'tool_result': {
-        const text = resultToText(block.content)
-        if (text) parts.push(`↳ ${text}`)
+        // tool_result appears in user messages — only surface errors
+        if (isToolResultError(block)) {
+          const errLine = extractErrorLine(block.content)
+          if (errLine) parts.push(`⚠️ ${escapeHtml(errLine)}`)
+        }
         break
       }
     }
   }
-  const out = parts.join('\n\n').trim()
+  const out = parts.join('\n').trim()
   return out.length > 0 ? out : null
 }
 
-/** Max files to show in a file change review before truncating. */
-const MAX_REVIEW_FILES = 8
-
 /**
  * Returns true if the given message is a file change review system message.
- * Mirrors the shape produced by createFileChangeReviewSystemMessage().
  */
 export function isFileChangeReviewMessage(msg: unknown): msg is FileChangeReviewMessage {
   return (
@@ -214,42 +324,11 @@ export function isFileChangeReviewMessage(msg: unknown): msg is FileChangeReview
 }
 
 /**
- * Format a file change review summary as Telegram-friendly text.
- * Mirrors what FileChangeReviewCard shows in the CLI terminal.
- *
- * Example output:
- *   📁 File changes: 3 files  +12  −5
- *
- *   📝 src/foo.ts  +8  −3
- *   ✏️  src/bar.ts  +4  −2
- *   ✏️  src/baz.ts  (new file)
- *
- *   Reply /undo to revert • /review_detail <file> for diff
+ * Format a file change review as a compact single-line Telegram message.
+ * Example: "📁 3 files  +12  −5"
  */
 export function formatFileChangeReview(msg: FileChangeReviewMessage): string {
   const { review } = msg
   const fileWord = review.totalFiles === 1 ? 'file' : 'files'
-  const lines: string[] = [
-    `📁 File changes: ${review.totalFiles} ${fileWord}  +${review.totalAdditions}  −${review.totalRemovals}`,
-    '',
-  ]
-
-  const visibleFiles = review.files.slice(0, MAX_REVIEW_FILES)
-  for (const file of visibleFiles) {
-    const icon = file.isCreated ? '✨' : toolIcon('FileEdit')
-    const stat = file.isCreated
-      ? '(new file)'
-      : `+${file.additions}  −${file.removals}`
-    lines.push(`${icon} ${file.displayPath}  ${stat}`)
-  }
-
-  const hidden = review.files.length - visibleFiles.length
-  if (hidden > 0) {
-    lines.push(`… and ${hidden} more ${hidden === 1 ? 'file' : 'files'}`)
-  }
-
-  lines.push('')
-  lines.push('Reply /undo to revert • /review_detail <file> for full diff')
-
-  return lines.join('\n')
+  return `📁 ${review.totalFiles} ${fileWord}  +${review.totalAdditions}  −${review.totalRemovals}`
 }

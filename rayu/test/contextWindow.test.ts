@@ -75,3 +75,32 @@ describe('getRayuModelContextWindow — Gemini 1M', () => {
     expect(getContextWindowForModel('gemini-3.5-flash')).toBe(1_048_576)
   })
 })
+
+describe('getRayuModelContextWindow — non-Anthropic providers use the model table', () => {
+  test('deepseek-v4 on rayu-hosted reports the real 1M window, not the 200k default', async () => {
+    const m = await fresh()
+    m.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      baseURL: 'https://hosted.example',
+      models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      defaultModel: 'deepseek-v4-flash',
+    })
+    m._resetRayuConfigCache()
+    expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('deepseek-v4-pro')).toBe(1_000_000)
+  })
+
+  test('per-model context override still wins on a non-allowlisted provider kind', async () => {
+    const m = await fresh()
+    m.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      baseURL: 'https://hosted.example',
+      models: ['deepseek-v4-flash'],
+      modelContextWindows: { 'deepseek-v4-flash': 500_000 },
+    })
+    m._resetRayuConfigCache()
+    expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(500_000)
+  })
+})

@@ -1,8 +1,10 @@
 /** Emulates CLI streaming in a Telegram chat via throttled message edits. */
 
+import { escapeHtml } from './telegramApi.js'
+
 export interface MirrorApi {
   sendMessage: (chatId: number, text: string) => Promise<number>
-  editMessageText: (chatId: number, messageId: number, text: string) => Promise<void>
+  editMessageText: (chatId: number, messageId: number, text: string, parseMode?: 'HTML') => Promise<void>
   sendChatAction: (chatId: number, action?: 'typing') => Promise<void>
 }
 
@@ -22,10 +24,16 @@ export class StreamingMirror {
   private timer: ReturnType<typeof setTimeout> | undefined
   private sent = ''
 
+  /** The Telegram message_id of the placeholder/streaming message. */
+  getMessageId(): number { return this.messageId }
+  /** The raw accumulated text (before HTML-escaping). */
+  getFinalText(): string { return this.buffer }
+
   constructor(
     private readonly api: MirrorApi,
     private readonly chatId: number,
     private readonly intervalMs = EDIT_INTERVAL_MS,
+    private readonly parseMode?: 'HTML',
   ) {}
 
   /** Begin a turn: show typing indicator, then post a placeholder we edit in place. */
@@ -56,11 +64,11 @@ export class StreamingMirror {
 
   private async flush(): Promise<void> {
     if (this.messageId === 0 || this.buffer === this.sent || this.buffer.trim() === '') return
-    const text = this.buffer
+    const text = this.parseMode === 'HTML' ? escapeHtml(this.buffer) : this.buffer
     this.lastEditAt = Date.now()
     try {
-      await this.api.editMessageText(this.chatId, this.messageId, text)
-      this.sent = text
+      await this.api.editMessageText(this.chatId, this.messageId, text, this.parseMode)
+      this.sent = this.buffer
     } catch {
       // transient edit failure — next flush retries with the latest buffer
     }

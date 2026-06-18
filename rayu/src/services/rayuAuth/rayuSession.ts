@@ -72,6 +72,18 @@ export function getRayuWebBaseUrl(): string {
   return base.replace(/\/$/, '')
 }
 
+/**
+ * Base URL of the rayu-gateway (no trailing slash, no /v1 suffix). Resolution:
+ * runtime RAYU_GATEWAY_URL → baked MACRO.RAYU_GATEWAY_URL → localhost:8080.
+ */
+export function getRayuGatewayBaseUrl(): string {
+  const base =
+    process.env.RAYU_GATEWAY_URL ||
+    MACRO.RAYU_GATEWAY_URL ||
+    'http://localhost:8080'
+  return base.replace(/\/$/, '')
+}
+
 function sessionPath(): string {
   return join(getRayuConfigHomeDir(), SESSION_FILE)
 }

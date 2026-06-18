@@ -20,6 +20,7 @@ export const MACRO_VALUES = {
   RAYU_OAUTH_DEFAULT: process.env.RAYU_BUILD_OAUTH ?? 'false',
   RAYU_API_URL: process.env.RAYU_BUILD_API_URL ?? '',
   RAYU_WEB_URL: process.env.RAYU_BUILD_WEB_URL ?? '',
+  RAYU_GATEWAY_URL: process.env.RAYU_BUILD_GATEWAY_URL ?? '',
 }
 
 // Rayu-owned allowlist of build-gated `feature('FLAG')` macros to ENABLE.

@@ -149,6 +149,11 @@ export function ollamaBaseURL(): string {
 // with a Bedrock API key / bearer token). Rayu connects to OpenAI-compatible
 // endpoints; Bedrock is routed through the same adapter once a region + API key
 // are supplied via /connect.
+/** Stable provider id for the Rayu-hosted gateway provider (registered on
+ *  login for paid users; not connected manually via /connect). */
+export const RAYU_HOSTED_PROVIDER_ID = 'rayu-hosted'
+export const RAYU_HOSTED_PROVIDER_LABEL = 'Rayu (hosted)'
+
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     id: 'nvidia',
@@ -486,6 +491,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   'bedrock-anthropic': 'AWS Bedrock',
   kiro: 'Kiro',
   copilot: 'GitHub Copilot',
+  'rayu-hosted': 'Rayu',
   ollama: 'Ollama',
   local: 'Local',
 }

@@ -57,4 +57,16 @@ describe('searchable cross-provider model selection', () => {
     const { RAYU_MODEL_SEP } = await import('../src/utils/rayuConfig.ts')
     expect(decodeModelChoice(`nvidia${RAYU_MODEL_SEP}meta/llama-3.3-70b-instruct`)).toEqual({ providerId: 'nvidia', model: 'meta/llama-3.3-70b-instruct' })
   })
+
+  test('pins the whole rayu-hosted provider to the top, regardless of active provider', async () => {
+    const m = await fresh()
+    m.upsertProvider({ id: 'nvidia', kind: 'openai-compatible', apiKey: 'k', baseURL: 'https://x/v1', fetchedModels: ['meta/llama-3.3-70b-instruct', 'google/codegemma-7b'] })
+    m.upsertProvider({ id: 'rayu-hosted', kind: 'openai-compatible', apiKey: 'k', baseURL: 'https://z/v1', models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'kimi-k2'] })
+    m.setActiveProvider('nvidia') // a DIFFERENT provider is active
+    const all = m.getAllProviderModelOptions()
+    // All rayu-hosted models occupy the top, before any other provider's models.
+    expect(all.slice(0, 3).every(o => o.providerId === 'rayu-hosted')).toBe(true)
+    expect(all.findIndex(o => o.providerId !== 'rayu-hosted')).toBe(3)
+    expect(all.some(o => o.providerId === 'nvidia')).toBe(true)
+  })
 })

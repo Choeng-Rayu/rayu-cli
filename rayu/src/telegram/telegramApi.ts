@@ -1,7 +1,15 @@
 /** Minimal Telegram Bot API client over global fetch. No external deps. */
 
+import { readFile } from 'fs/promises'
+import { existsSync, statSync } from 'fs'
+
 const API_BASE = 'https://api.telegram.org'
 const MAX_MESSAGE_CHARS = 4096
+
+/** Escape special HTML characters for Telegram HTML parse_mode. */
+export function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
 
 /** One button in an inline keyboard row. */
 export interface InlineKeyboardButton {
@@ -96,10 +104,19 @@ export function chunkText(text: string, max = MAX_MESSAGE_CHARS): string[] {
 }
 
 /** Send a message, chunking if needed. Returns the last message_id (for streaming edits). */
-export async function sendMessage(token: string, chatId: number, text: string): Promise<number> {
+export async function sendMessage(
+  token: string,
+  chatId: number,
+  text: string,
+  parseMode?: 'HTML',
+): Promise<number> {
   let lastId = 0
   for (const chunk of chunkText(text)) {
-    const result = await callApi(token, 'sendMessage', { chat_id: chatId, text: chunk })
+    const result = await callApi(token, 'sendMessage', {
+      chat_id: chatId,
+      text: chunk,
+      ...(parseMode ? { parse_mode: parseMode } : {}),
+    })
     lastId = (result as { message_id: number }).message_id
   }
   return lastId
@@ -110,11 +127,13 @@ export async function editMessageText(
   chatId: number,
   messageId: number,
   text: string,
+  parseMode?: 'HTML',
 ): Promise<void> {
   await callApi(token, 'editMessageText', {
     chat_id: chatId,
     message_id: messageId,
     text: text.slice(0, MAX_MESSAGE_CHARS),
+    ...(parseMode ? { parse_mode: parseMode } : {}),
   })
 }
 
@@ -138,6 +157,62 @@ export async function sendPhoto(
   if (!res.ok || !json.ok) {
     // Photo send failed (too large, wrong format, etc.) — send a text fallback
     await sendMessage(token, chatId, caption ?? '🖼 Image generated (could not send as photo)')
+  }
+}
+
+/** Telegram file size limit for bots (50 MB). */
+const MAX_FILE_BYTES = 50 * 1024 * 1024
+
+/**
+ * Send a video file from disk. Falls back to sendDocument on codec issues,
+ * then to a text notice if the file exceeds 50 MB or all uploads fail.
+ */
+export async function sendVideo(
+  token: string,
+  chatId: number,
+  filePath: string,
+  caption?: string,
+): Promise<void> {
+  // Guard: file must exist and be within Telegram's bot upload limit.
+  if (!existsSync(filePath)) {
+    await sendMessage(token, chatId, `🎬 Video generated but file not found: ${filePath}`)
+    return
+  }
+  try {
+    const size = statSync(filePath).size
+    if (size > MAX_FILE_BYTES) {
+      await sendMessage(token, chatId, `🎬 Video generated (${Math.round(size / 1024 / 1024)} MB — too large to send via Telegram)`)
+      return
+    }
+  } catch {
+    // ignore stat errors
+  }
+
+  const buffer = await readFile(filePath).catch(() => null)
+  if (!buffer) {
+    await sendMessage(token, chatId, `🎬 Video generated but could not read: ${filePath}`)
+    return
+  }
+
+  const blob = new Blob([buffer], { type: 'video/mp4' })
+  const form = new FormData()
+  form.append('chat_id', String(chatId))
+  form.append('video', blob, 'video.mp4')
+  if (caption) form.append('caption', caption.slice(0, 1024))
+
+  const res = await fetch(`${API_BASE}/bot${token}/sendVideo`, { method: 'POST', body: form })
+  const json = await res.json().catch(() => ({})) as { ok?: boolean }
+  if (!res.ok || !json.ok) {
+    // Try sendDocument as fallback (works for any file type)
+    const form2 = new FormData()
+    form2.append('chat_id', String(chatId))
+    form2.append('document', new Blob([buffer], { type: 'video/mp4' }), 'video.mp4')
+    if (caption) form2.append('caption', caption.slice(0, 1024))
+    const res2 = await fetch(`${API_BASE}/bot${token}/sendDocument`, { method: 'POST', body: form2 })
+    const json2 = await res2.json().catch(() => ({})) as { ok?: boolean }
+    if (!res2.ok || !json2.ok) {
+      await sendMessage(token, chatId, caption ?? '🎬 Video generated (could not send)')
+    }
   }
 }
 

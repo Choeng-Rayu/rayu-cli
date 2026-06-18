@@ -25,6 +25,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { syncRayuHostedProvider } from './rayuHostedProvider.js'
 import {
   getRayuApiBaseUrl,
   getValidRayuAccessToken,
@@ -38,15 +39,31 @@ export interface FeatureEntitlement {
   limit?: number | null
 }
 
+export interface AllowedModel {
+  code: string
+  label: string
+  provider: string
+  creditMultiplier: number
+}
+
 export interface RayuEntitlements {
   plan: {
     code: string
     name: string
     priceCents: number
     availability: string
+    currentPeriodEnd?: string | null
   }
   maxDailyTurns: number | null
   features: Record<string, FeatureEntitlement>
+  /** Hosted models the user's plan can use (drives the rayu-hosted provider). */
+  allowedModels?: AllowedModel[]
+  creditAllowance?: {
+    creditsPerWeek: number | null
+    creditsPer5h: number | null
+    topUpEnabled: boolean
+  }
+  topupBalance?: number
   /** Bound to the session user this cache belongs to (anti cross-user reuse). */
   userId?: number | null
 }
@@ -108,8 +125,12 @@ export function getCachedEntitlements(): RayuEntitlements | null {
     }
   }
 
+  // Kick a rate-limited background refresh whenever the cooldown has elapsed —
+  // NOT only when the cache is empty. Otherwise a cache minted while the user
+  // was on Free (and persisted to disk) would never refresh after they upgrade,
+  // leaving paid features (e.g. telegram) hidden until the cache is cleared.
+  // The cooldown + `fetching` guard keep this from storming the backend.
   if (
-    !cache &&
     isUseRayuOAuthEnabled() &&
     hasRayuSession() &&
     !fetching &&
@@ -144,6 +165,9 @@ export async function refreshRayuEntitlements(): Promise<RayuEntitlements | null
     cache = data
     loadedFromDisk = true
     persist(data)
+    // Keep the rayu-hosted provider config in sync with entitlements. No
+    // activation here (background refresh must not hijack the user's choice).
+    syncRayuHostedProvider(data)
     return data
   } catch {
     return cache
@@ -158,6 +182,8 @@ export function clearRayuEntitlements(): void {
   loadedFromDisk = true
   lastAttempt = 0
   persist(null)
+  // Drop the rayu-hosted provider so a logged-out user has no hosted models.
+  syncRayuHostedProvider(null)
 }
 
 /**
