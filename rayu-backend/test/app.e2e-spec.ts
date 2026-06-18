@@ -387,7 +387,7 @@ describe('rayu-backend (e2e)', () => {
     await request(app.getHttpServer())
       .post('/api/usage')
       .set('Authorization', `Bearer ${adminAccess}`)
-      .send({ provider: 'openai', model: 'gpt', source: 'cli' })
+      .send({ provider: 'openai', model: 'gpt', source: 'cli', tool: 'BashTool' })
       .expect(201)
 
     // Non-admin is blocked.
@@ -426,6 +426,13 @@ describe('rayu-backend (e2e)', () => {
     expect(typeof a.canceledSubscriptions).toBe('number')
     // The usage we posted shows in provider breakdown + top users.
     expect(a.usageByProvider.map((u: any) => u.provider)).toContain('openai')
+    expect(Array.isArray(a.usageByTool)).toBe(true)
+    expect(a.usageByTool.map((u: any) => u.tool)).toContain('BashTool')
+    expect(a.profit).toBeDefined()
+    expect(typeof a.profit.revenueCents).toBe('number')
+    expect(typeof a.profit.aiCostCents).toBe('number')
+    expect(typeof a.profit.marginCents).toBe('number')
+    expect(Array.isArray(a.creditsByModel)).toBe(true)
     expect(a.topUsers.length).toBeGreaterThan(0)
   })
 
@@ -507,6 +514,333 @@ describe('rayu-backend (e2e)', () => {
       .get('/api/me')
       .set('Authorization', `Bearer ${userAccess}`)
       .expect(401)
+  })
+
+  it('hosted models CRUD + credit settings (admin only)', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_modeladmin',
+      email: 'modeladmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-modeladmin-1234')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_modeladmin' },
+      data: { role: 'superadmin' },
+    })
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_modelreg',
+      email: 'modelreg@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const regAccess = await login(app, 'state-modelreg-1234')
+
+    // Seeded models present.
+    const list = await request(app.getHttpServer())
+      .get('/api/admin/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(list.status).toBe(200)
+    expect(list.body.map((m: any) => m.code)).toEqual(
+      expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro']),
+    )
+
+    // Non-admin blocked.
+    await request(app.getHttpServer())
+      .get('/api/admin/models')
+      .set('Authorization', `Bearer ${regAccess}`)
+      .expect(403)
+
+    // Create a model.
+    const created = await request(app.getHttpServer())
+      .post('/api/admin/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({
+        code: 'qwen-turbo',
+        label: 'Qwen Turbo',
+        provider: 'deepinfra',
+        upstreamBaseUrl: 'https://api.deepinfra.com/v1/openai',
+        upstreamModelId: 'qwen-3.5-turbo',
+        inputPricePer1MCents: 4,
+        outputPricePer1MCents: 20,
+        creditMultiplier: 1,
+        allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+        enabled: true,
+      })
+    expect(created.status).toBe(201)
+
+    // Bad plan code rejected.
+    await request(app.getHttpServer())
+      .post('/api/admin/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ code: 'bad', allowedPlanCodes: ['nope'] })
+      .expect(400)
+
+    // Patch + delete.
+    const patched = await request(app.getHttpServer())
+      .patch('/api/admin/models/qwen-turbo')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ creditMultiplier: 2.5 })
+    expect(patched.status).toBe(200)
+    expect(patched.body.creditMultiplier).toBe(2.5)
+    await request(app.getHttpServer())
+      .delete('/api/admin/models/qwen-turbo')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .expect(200)
+
+    // Credit settings get + patch persists.
+    const s = await request(app.getHttpServer())
+      .get('/api/admin/credit-settings')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(s.status).toBe(200)
+    expect(s.body.baselineCreditsPer1M).toBe(1000)
+    const sp = await request(app.getHttpServer())
+      .patch('/api/admin/credit-settings')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ baselineCreditsPer1M: 1200, maxConcurrentStreams: 5 })
+    expect(sp.status).toBe(200)
+    expect(sp.body.baselineCreditsPer1M).toBe(1200)
+    expect(sp.body.maxConcurrentStreams).toBe(5)
+  })
+
+  it('plan credit allowances drive /me/entitlements (allowed models + credits)', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_credadmin',
+      email: 'credadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-credadmin-1234')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_credadmin' },
+      data: { role: 'admin' },
+    })
+
+    // Admin sets Pro plan credit allowances.
+    const patched = await request(app.getHttpServer())
+      .patch('/api/admin/plans/pro')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ creditsPerWeek: 500000, creditsPer5h: 100000, topUpEnabled: true })
+    expect(patched.status).toBe(200)
+
+    // A free user: no hosted models, null credit allowance.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_creditfree',
+      email: 'creditfree@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const freeAccess = await login(app, 'state-creditfree-1234')
+    const freeEnt = await request(app.getHttpServer())
+      .get('/api/me/entitlements')
+      .set('Authorization', `Bearer ${freeAccess}`)
+    expect(freeEnt.status).toBe(200)
+    expect(freeEnt.body.allowedModels).toEqual([])
+    expect(freeEnt.body.creditAllowance.creditsPerWeek).toBeNull()
+    expect(freeEnt.body.creditConfig.baselineCreditsPer1M).toBeGreaterThan(0)
+
+    // A Pro user: hosted models allowed + credit allowance reflected.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_creditpro',
+      email: 'creditpro@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const proAccess = await login(app, 'state-creditpro-1234')
+    const proUser = await ctx.prisma.user.findUnique({
+      where: { clerkUserId: 'clerk_creditpro' },
+    })
+    const proPlan = await ctx.prisma.plan.findUnique({ where: { code: 'pro' } })
+    await ctx.prisma.subscription.updateMany({
+      where: { userId: proUser!.id, status: 'active' },
+      data: { status: 'canceled' },
+    })
+    await ctx.prisma.subscription.create({
+      data: { userId: proUser!.id, planId: proPlan!.id, status: 'active' },
+    })
+    const proEnt = await request(app.getHttpServer())
+      .get('/api/me/entitlements')
+      .set('Authorization', `Bearer ${proAccess}`)
+    expect(proEnt.status).toBe(200)
+    expect(proEnt.body.plan.code).toBe('pro')
+    expect(proEnt.body.creditAllowance.creditsPerWeek).toBe(500000)
+    expect(proEnt.body.creditAllowance.topUpEnabled).toBe(true)
+    expect(proEnt.body.allowedModels.map((m: any) => m.code)).toEqual(
+      expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro']),
+    )
+  })
+
+  it('credit projection: suggested multiplier from price + plan margin (admin only)', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_projadmin',
+      email: 'projadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-projadmin-1234')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_projadmin' },
+      data: { role: 'superadmin' },
+    })
+    // Give Pro a weekly allowance so the projection has something to cost.
+    await request(app.getHttpServer())
+      .patch('/api/admin/plans/pro')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ creditsPerWeek: 500000 })
+      .expect(200)
+
+    // Set projection knobs + baseline model.
+    const sp = await request(app.getHttpServer())
+      .patch('/api/admin/credit-settings')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({
+        baselineModelCode: 'deepseek-v4-flash',
+        assumedInputRatio: 0.67,
+        assumedUsagePercent: 30,
+        infraCostCentsPerUser: 100,
+      })
+    expect(sp.status).toBe(200)
+    expect(sp.body.assumedUsagePercent).toBe(30)
+    expect(sp.body.baselineModelCode).toBe('deepseek-v4-flash')
+
+    // Non-admin blocked.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_projreg',
+      email: 'projreg@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const regAccess = await login(app, 'state-projreg-1234')
+    await request(app.getHttpServer())
+      .get('/api/admin/credit-projection')
+      .set('Authorization', `Bearer ${regAccess}`)
+      .expect(403)
+
+    const proj = await request(app.getHttpServer())
+      .get('/api/admin/credit-projection')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(proj.status).toBe(200)
+    const flash = proj.body.models.find((m: any) => m.code === 'deepseek-v4-flash')
+    const proM = proj.body.models.find((m: any) => m.code === 'deepseek-v4-pro')
+    // Baseline (flash) suggested ~1; Pro's real price is far higher than its
+    // seeded 3x multiplier → suggested should be much larger than current.
+    expect(flash.suggestedMultiplier).toBeCloseTo(1, 1)
+    expect(proM.suggestedMultiplier).toBeGreaterThan(proM.currentMultiplier)
+    expect(proM.suggestedMultiplier).toBeGreaterThan(5)
+
+    const proPlan = proj.body.plans.find((p: any) => p.code === 'pro')
+    expect(proPlan).toBeDefined()
+    expect(typeof proPlan.worstCaseMonthlyCostCents).toBe('number')
+    expect(typeof proPlan.marginCents).toBe('number')
+    expect(typeof proPlan.marginNegative).toBe('boolean')
+  })
+
+  it('subscription: 30-day period on activation + expiry reverts to free', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_sub',
+      email: 'sub@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const access = await login(app, 'state-sub-1')
+    const auth = (req: request.Test) => req.set('Authorization', `Bearer ${access}`)
+
+    // Purchase the active 'basic' plan via (mocked) Bakong KHQR.
+    const khqr = await auth(
+      request(app.getHttpServer()).post('/api/payments/khqr'),
+    ).send({ planCode: 'basic' })
+    expect(khqr.status).toBe(201)
+    expect(khqr.body.qr).toContain('TESTQR-')
+
+    ctx.setBakongPaid(true, 'ext-sub')
+    const status = await auth(
+      request(app.getHttpServer()).get(`/api/payments/${khqr.body.paymentId}/status`),
+    )
+    expect(status.status).toBe(200)
+    expect(status.body.activated).toBe(true)
+
+    const u = await ctx.prisma.user.findUnique({ where: { clerkUserId: 'clerk_sub' } })
+    const sub = await ctx.prisma.subscription.findFirst({
+      where: { userId: u!.id, status: 'active' },
+      orderBy: { startedAt: 'desc' },
+    })
+    expect(sub?.currentPeriodEnd).toBeTruthy()
+    const days = (sub!.currentPeriodEnd!.getTime() - Date.now()) / 86_400_000
+    expect(days).toBeGreaterThan(29)
+    expect(days).toBeLessThan(31)
+
+    let ent = await auth(request(app.getHttpServer()).get('/api/me/entitlements'))
+    expect(ent.body.plan.code).toBe('basic')
+    expect(ent.body.plan.currentPeriodEnd).toBeTruthy()
+
+    // Expire the period -> entitlements revert to free.
+    await ctx.prisma.subscription.update({
+      where: { id: sub!.id },
+      data: { currentPeriodEnd: new Date(Date.now() - 1000) },
+    })
+    ent = await auth(request(app.getHttpServer()).get('/api/me/entitlements'))
+    expect(ent.body.plan.code).toBe('free')
+    ctx.setBakongPaid(false)
+  })
+
+  it('top-up: KHQR grants credits + exposes balance; guarded when rate is 0', async () => {
+    // Admin enables top-up by setting the per-1k rate.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_topadmin',
+      email: 'topadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-topadmin-1')
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_topadmin' },
+      data: { role: 'superadmin' },
+    })
+    await request(app.getHttpServer())
+      .patch('/api/admin/credit-settings')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ topupCentsPer1kCredits: 100 })
+      .expect(200)
+
+    // User buys 5000 credits -> 5000/1000 * 100¢ = 500¢.
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_topuser',
+      email: 'topuser@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const access = await login(app, 'state-topuser-1')
+    const auth = (req: request.Test) => req.set('Authorization', `Bearer ${access}`)
+
+    const khqr = await auth(
+      request(app.getHttpServer()).post('/api/payments/topup-khqr'),
+    ).send({ credits: 5000 })
+    expect(khqr.status).toBe(201)
+    expect(khqr.body.amountCents).toBe(500)
+    expect(khqr.body.qr).toContain('TESTQR-')
+
+    ctx.setBakongPaid(true, 'ext-top')
+    const status = await auth(
+      request(app.getHttpServer()).get(`/api/payments/${khqr.body.paymentId}/status`),
+    )
+    expect(status.status).toBe(200)
+    expect(status.body.activated).toBe(true)
+    expect(status.body.kind).toBe('topup')
+    expect(status.body.credits).toBe(5000)
+
+    const ent = await auth(request(app.getHttpServer()).get('/api/me/entitlements'))
+    expect(ent.body.topupBalance).toBe(5000)
+    ctx.setBakongPaid(false)
+
+    // Guarded when the rate is 0.
+    await request(app.getHttpServer())
+      .patch('/api/admin/credit-settings')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ topupCentsPer1kCredits: 0 })
+      .expect(200)
+    await auth(request(app.getHttpServer()).post('/api/payments/topup-khqr'))
+      .send({ credits: 5000 })
+      .expect(400)
   })
 })
 

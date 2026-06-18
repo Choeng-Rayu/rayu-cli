@@ -1,10 +1,10 @@
 'use client'
 export const dynamic = 'force-dynamic'
 
-import { useAuth } from '@clerk/nextjs'
 import { useEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { apiUrl } from '../../lib/config'
+import { useRayuToken } from '../../lib/useRayuToken'
 import { Plan, sortPlans } from '../../lib/plans'
 
 const PAID_PLAN_CODES = ['pro', 'pro_plus', 'max'] as const
@@ -37,30 +37,10 @@ interface PaymentHistoryItem {
   paidAt: string | null
 }
 
-function useRayuToken() {
-  const { isLoaded, isSignedIn, getToken } = useAuth()
-  const [token, setToken] = useState<string | null>(null)
-  const [authError, setAuthError] = useState('')
-
-  useEffect(() => {
-    if (!isLoaded || !isSignedIn) return
-    void (async () => {
-      try {
-        const clerkToken = await getToken()
-        const res = await fetch(apiUrl('/web/session'), {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${clerkToken}` },
-        })
-        if (!res.ok) throw new Error(`Session failed (${res.status})`)
-        const data = (await res.json()) as { accessToken: string }
-        setToken(data.accessToken)
-      } catch (err) {
-        setAuthError(err instanceof Error ? err.message : String(err))
-      }
-    })()
-  }, [isLoaded, isSignedIn, getToken])
-
-  return { token, authError, isLoaded, isSignedIn }
+interface Entitlements {
+  plan: { code: string; name: string; priceCents: number; currentPeriodEnd: string | null }
+  creditAllowance: { creditsPerWeek: number | null; creditsPer5h: number | null; topUpEnabled: boolean }
+  topupBalance: number
 }
 
 export default function BillingPage() {
@@ -70,6 +50,7 @@ export default function BillingPage() {
   const [khqr, setKhqr] = useState<KhqrResponse | null>(null)
   const [pollStatus, setPollStatus] = useState<PaymentStatus | null>(null)
   const [history, setHistory] = useState<PaymentHistoryItem[]>([])
+  const [me, setMe] = useState<Entitlements | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -90,6 +71,10 @@ export default function BillingPage() {
         const data = (await historyRes.json()) as { items: PaymentHistoryItem[] }
         setHistory(data.items)
       }
+      const entRes = await fetch(apiUrl('/me/entitlements'), {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (entRes.ok) setMe((await entRes.json()) as Entitlements)
     })()
   }, [token])
 
@@ -193,6 +178,28 @@ export default function BillingPage() {
         <h1 style={{ marginTop: '0.5rem' }}>Upgrade Your Plan</h1>
         <p style={{ opacity: 0.6 }}>Pay securely via Bakong KHQR. Scan the QR code in your Bakong app.</p>
       </div>
+
+      {me && (
+        <div className="card" style={{ marginBottom: '2rem' }}>
+          <p style={{ margin: '0 0 0.75rem', opacity: 0.5, fontSize: '0.8rem', textTransform: 'uppercase' }}>Current plan</p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+            <div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>{me.plan.name}</div>
+              <div style={{ opacity: 0.6, fontSize: '0.85rem' }}>
+                {me.plan.currentPeriodEnd
+                  ? `Active until ${new Date(me.plan.currentPeriodEnd).toLocaleDateString()}`
+                  : 'No active paid period'}
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.9rem' }}>
+                Top-up balance: {me.topupBalance.toLocaleString()} credits
+              </div>
+              <a href="/credits" style={{ fontSize: '0.85rem', color: 'var(--green)' }}>View credits &amp; usage →</a>
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="card" style={{ borderColor: 'var(--red)', background: 'rgba(255,51,102,0.05)', marginBottom: '2rem' }}>

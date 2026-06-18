@@ -3,6 +3,15 @@
 {$SITE_ADDRESS} {
 	encode gzip
 
+	# Rayu streaming gateway (paid hosted models). handle_path strips the
+	# /gateway prefix, so /gateway/v1/* -> gateway:8080/v1/*. flush_interval -1
+	# disables buffering so SSE streams to the CLI in real time.
+	handle_path /gateway/* {
+		reverse_proxy gateway:8080 {
+			flush_interval -1
+		}
+	}
+
 	# Backend (NestJS) is mounted under /api and expects the /api prefix, so we
 	# do NOT strip the path here.
 	handle /api/* {

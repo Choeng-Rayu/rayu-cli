@@ -1,4 +1,5 @@
 import type { LocalCommandResult } from '../../types/command.js'
+import { clearRayuEntitlements } from '../../services/rayuAuth/rayuEntitlements.js'
 import {
   clearRayuSession,
   readRayuSession,
@@ -10,5 +11,6 @@ export async function call(): Promise<LocalCommandResult> {
     return { type: 'text', value: 'You are not signed in to Rayu.' }
   }
   clearRayuSession()
+  clearRayuEntitlements()
   return { type: 'text', value: 'Signed out of Rayu.' }
 }

@@ -62,7 +62,7 @@ export function getBuiltInAgents(): AgentDefinition[] {
     agents.push(RAYU_CODE_GUIDE_AGENT)
   }
 
-  // Tier-3 subagents (PA / design / global-setup / asset-generation / review /
+  // Tier-3 subagents (planner / design / global-setup / asset-generation / review /
   // fix / linter): ephemeral one-shot specialists the orchestrator AND
   // collaborators dispatch. Available for non-SDK entrypoints; per-agent model
   // via /model_subagent. Opt out with RAYU_DISABLE_SPECIALIST_AGENTS=1.

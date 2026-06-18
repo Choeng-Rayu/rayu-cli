@@ -12,6 +12,7 @@ import type { User } from '@prisma/client'
 import { RayuAuthGuard } from '../auth/rayu-auth.guard'
 import { CurrentUser } from '../auth/current-user.decorator'
 import { CreateKhqrDto } from './dto/create-khqr.dto'
+import { CreateTopupDto } from './dto/create-topup.dto'
 import { PaymentsService } from './payments.service'
 
 @Controller('payments')
@@ -22,6 +23,11 @@ export class PaymentsController {
   @Post('khqr')
   createKhqr(@CurrentUser() user: User, @Body() body: CreateKhqrDto) {
     return this.payments.createKhqr(user.id, body.planCode)
+  }
+
+  @Post('topup-khqr')
+  createTopupKhqr(@CurrentUser() user: User, @Body() body: CreateTopupDto) {
+    return this.payments.createTopupKhqr(user.id, body.credits)
   }
 
   @Get('mine')

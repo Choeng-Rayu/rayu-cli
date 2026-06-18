@@ -19,6 +19,8 @@ import { randomBytes } from 'crypto'
 import { createServer } from 'http'
 import type { AddressInfo } from 'net'
 import { openBrowser } from '../../utils/browser.js'
+import { getCachedEntitlements, refreshRayuEntitlements } from './rayuEntitlements.js'
+import { syncRayuHostedProvider } from './rayuHostedProvider.js'
 import {
   getRayuApiBaseUrl,
   getRayuWebBaseUrl,
@@ -152,6 +154,16 @@ export async function loginRayu(opts?: {
               expiresAt: data.expiresAt,
               user: data.user,
             })
+            // Warm the entitlements cache so feature gating is correct right
+            // after login (best-effort; never blocks login).
+            await refreshRayuEntitlements().catch(() => {})
+            // Auto-activate the Rayu-hosted provider when the plan grants hosted
+            // models, so paid users can use them immediately — no /connect, no key.
+            try {
+              syncRayuHostedProvider(getCachedEntitlements(), { activate: true })
+            } catch {
+              // best-effort — never block login on provider sync
+            }
             finish(null, { user: data.user })
           } catch (e) {
             finish(e instanceof Error ? e : new Error(String(e)))

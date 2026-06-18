@@ -470,6 +470,11 @@ export function getAgentLineKindLabel(subagentType?: string): string | undefined
   if (kind === 'subagent') {
     return 'subagent';
   }
+  // Built-in helper agents (Explore, general-purpose, …) are subagents too —
+  // surface the role so their line shows role · model · provider like collaborators.
+  if (subagentType && getBuiltInAgents().some(a => a.agentType === subagentType)) {
+    return 'subagent';
+  }
   return undefined;
 }
 
@@ -484,7 +489,9 @@ export function getAgentLineModel(subagentType?: string, toolModel?: string): st
   let modelStr: string | undefined;
   if (toolModel) {
     modelStr = toolModel;
-  } else if (getAgentKind(subagentType) !== undefined) {
+  } else if (subagentType) {
+    // Resolve the model for ANY built-in agent (Explore, general-purpose, …),
+    // not just swarm collaborators, so each subagent shows its model · provider.
     const agent = getBuiltInAgents().find(a => a.agentType === subagentType);
     if (agent) {
       try {
@@ -521,21 +528,13 @@ export function renderToolUseTag(input: Partial<{
         <Text dimColor>{kindLabel}</Text>
       </Box>);
   }
-  // Show the resolved model for swarm agents always; for other agents only when
-  // it differs from the main model (legacy behavior).
-  if (input.model || getAgentKind(input.subagent_type) !== undefined) {
-    const modelName = getAgentLineModel(input.subagent_type, input.model);
-    if (modelName) {
-      const isSwarmAgent = getAgentKind(input.subagent_type) !== undefined;
-      const differsFromMain =
-        input.model !== undefined &&
-        parseUserSpecifiedModel(input.model) !== getMainLoopModel();
-      if (isSwarmAgent || differsFromMain) {
-        tags.push(<Box key="model" flexWrap="nowrap" marginLeft={1}>
-            <Text dimColor>{modelName}</Text>
-          </Box>);
-      }
-    }
+  // Show the resolved model · provider for swarm + built-in agents (Explore,
+  // general-purpose, …) so the user can see what each subagent runs on.
+  const modelName = getAgentLineModel(input.subagent_type, input.model);
+  if (modelName) {
+    tags.push(<Box key="model" flexWrap="nowrap" marginLeft={1}>
+        <Text dimColor>{modelName}</Text>
+      </Box>);
   }
   if (tags.length === 0) {
     return null;

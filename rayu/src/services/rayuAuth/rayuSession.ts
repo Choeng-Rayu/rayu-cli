@@ -41,25 +41,47 @@ export interface RayuSessionStore {
   user: RayuSessionUser
 }
 
-/** True when the user has opted into Rayu account login (USE_RAYU_OAUTH). */
+/**
+ * True when the user has opted into Rayu account login.
+ *
+ * Resolution order: runtime env var USE_RAYU_OAUTH (dev override) → baked
+ * build-time default (MACRO.RAYU_OAUTH_DEFAULT, set when publishing) → false.
+ * This is why a published binary with no .env can still require login: the
+ * default is compiled into dist/rayu.js at build time (bun --define inlines
+ * MACRO.*; scripts/preload.ts provides it in dev/test).
+ */
 export function isUseRayuOAuthEnabled(): boolean {
-  return isEnvTruthy(process.env.USE_RAYU_OAUTH)
+  const env = process.env.USE_RAYU_OAUTH
+  if (env !== undefined && env !== '') return isEnvTruthy(env)
+  return isEnvTruthy(MACRO.RAYU_OAUTH_DEFAULT || 'false')
 }
 
 /** Base URL of the rayu-backend API (no trailing slash). */
 export function getRayuApiBaseUrl(): string {
-  return (process.env.RAYU_API_URL ?? 'http://localhost:4000/api').replace(
-    /\/$/,
-    '',
-  )
+  const base =
+    process.env.RAYU_API_URL ||
+    MACRO.RAYU_API_URL ||
+    'http://localhost:4000/api'
+  return base.replace(/\/$/, '')
 }
 
 /** Base URL of the rayu-web site (no trailing slash). */
 export function getRayuWebBaseUrl(): string {
-  return (process.env.RAYU_WEB_URL ?? 'http://localhost:3000').replace(
-    /\/$/,
-    '',
-  )
+  const base =
+    process.env.RAYU_WEB_URL || MACRO.RAYU_WEB_URL || 'http://localhost:3000'
+  return base.replace(/\/$/, '')
+}
+
+/**
+ * Base URL of the rayu-gateway (no trailing slash, no /v1 suffix). Resolution:
+ * runtime RAYU_GATEWAY_URL → baked MACRO.RAYU_GATEWAY_URL → localhost:8080.
+ */
+export function getRayuGatewayBaseUrl(): string {
+  const base =
+    process.env.RAYU_GATEWAY_URL ||
+    MACRO.RAYU_GATEWAY_URL ||
+    'http://localhost:8080'
+  return base.replace(/\/$/, '')
 }
 
 function sessionPath(): string {
@@ -99,6 +121,41 @@ export function clearRayuSession(): void {
     rmSync(sessionPath(), { force: true })
   } catch {
     // ignore
+  }
+}
+
+/**
+ * Best-effort per-tool usage ping. Records which tool the signed-in user
+ * invoked (with the active provider/model) so Rayu can track tool usage per
+ * user. Never throws, never blocks, and no-ops when not signed in / flag off.
+ */
+export async function recordRayuToolUsageBestEffort(tool: string): Promise<void> {
+  try {
+    if (!isUseRayuOAuthEnabled()) return
+    const token = await getValidRayuAccessToken()
+    if (!token) return
+    let provider = 'unknown'
+    let model: string | null = null
+    try {
+      const { getActiveProvider } = await import('../../utils/rayuConfig.js')
+      const p = getActiveProvider()
+      if (p) {
+        provider = p.id
+        model = p.defaultModel ?? null
+      }
+    } catch {
+      // active provider unavailable — still record the tool with 'unknown'
+    }
+    await getFetch()(`${getRayuApiBaseUrl()}/usage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ provider, model, tool, source: 'cli' }),
+    })
+  } catch {
+    // swallow — usage tracking must never affect the CLI session
   }
 }
 

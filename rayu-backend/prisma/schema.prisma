@@ -25,6 +25,8 @@ model User {
   payments      Payment[]
   feedback      Feedback[]
   usageEvents   UsageEvent[]
+  creditLedger  CreditLedger[]
+  creditTopups  CreditTopup[]
 
   @@map("users")
 }
@@ -98,11 +100,86 @@ model UsageEvent {
   userId    Int      @map("user_id")
   provider  String   @db.VarChar(64)
   model     String?  @db.VarChar(128)
+  tool      String?  @db.VarChar(64)
   source    String   @default("cli") @db.VarChar(32)
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, provider])
+  @@index([tool])
   @@map("usage_events")
+}
+
+// Catalog of upstream LLM models Rayu resells through the (Phase 2) gateway.
+// All pricing/multiplier/access is admin-editable; not hardcoded.
+model HostedModel {
+  id                   Int      @id @default(autoincrement())
+  code                 String   @unique @db.VarChar(64)
+  label                String   @db.VarChar(128)
+  provider             String   @db.VarChar(32)
+  upstreamBaseUrl      String   @db.VarChar(255)
+  upstreamModelId      String   @db.VarChar(128)
+  inputPricePer1MCents Int      @default(0)
+  outputPricePer1MCents Int     @default(0)
+  creditMultiplier     Float    @default(1)
+  allowedPlanCodes     Json?
+  enabled              Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("hosted_models")
+}
+
+// Singleton global config (row id = 1). Admin-editable credit + abuse settings.
+model AppSettings {
+  id                     Int      @id @default(1)
+  baselineCreditsPer1M   Int      @default(1000)
+  topupCentsPer1kCredits Int      @default(0)
+  maxConcurrentStreams   Int      @default(3)
+  maxTokensPerRequest    Int      @default(0)
+  maxRequestsPer5h       Int      @default(0)
+  baselineModelCode      String?  @db.VarChar(64)
+  assumedInputRatio      Float    @default(0.67)
+  assumedUsagePercent    Int      @default(25)
+  infraCostCentsPerUser  Int      @default(0)
+  updatedAt              DateTime @updatedAt
+
+  @@map("app_settings")
+}
+
+// Durable audit of credit consumption (written by the gateway in Phase 2).
+model CreditLedger {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  modelCode    String   @db.VarChar(64)
+  inTokens     Int      @default(0)
+  outTokens    Int      @default(0)
+  credits      Int      @default(0)
+  realCostCents Int     @default(0)
+  source       String   @default("plan") @db.VarChar(16)
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([modelCode])
+  @@map("credit_ledger")
+}
+
+// Pay-as-you-go credit purchases (schema only this phase; flow ships later).
+model CreditTopup {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  credits   Int      @default(0)
+  amountCents Int    @default(0)
+  status    String   @default("pending") @db.VarChar(16)
+  paymentId Int?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("credit_topups")
 }

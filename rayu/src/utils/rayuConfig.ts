@@ -10,7 +10,7 @@ import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro'
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
@@ -436,6 +436,8 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/qwen[-.]?3[-.]?(coder|next)/i, 256_000],
   [/jamba/i, 256_000],
   [/step[-_.]?3\.7/i, 256_000],
+  // Anthropic Claude served via Copilot / OpenRouter / etc. — 200k standard.
+  [/claude/i, 200_000],
   // 131k / 128k families
   [/deepseek-(chat|reasoner|v3|coder)/i, 131_072],
   [/deepseek-r1/i, 131_072],
@@ -481,15 +483,15 @@ export function getRayuModelContextWindow(model: string): number | null {
     }
     return null
   }
-  // The known-model table + per-model overrides apply to any non-Anthropic
-  // provider that routes through a translated chat client: OpenAI-compatible,
-  // Gemini-on-Vertex ('vertex'), and Login-with-Gemini ('genai').
-  if (
-    !p ||
-    (p.kind !== 'openai-compatible' &&
-      p.kind !== 'vertex' &&
-      p.kind !== 'genai')
-  ) {
+  // The known-model table + per-model overrides apply to EVERY non-Anthropic
+  // provider (OpenAI-compatible, Vertex, Login-with-Gemini, Copilot, rayu-hosted,
+  // Bedrock, and any FUTURE provider kind). This deliberately mirrors the
+  // caller's isRayuNonAnthropicActive() gate — the old explicit allowlist here is
+  // exactly why each newly-added provider (e.g. rayu-hosted) silently fell back
+  // to the 200k default instead of the model's real window (deepseek-v4 = 1M).
+  // Anthropic uses the SDK's own context handling; Kiro is resolved above via its
+  // catalog. Add a provider kind and it inherits correct context automatically.
+  if (!p || p.kind === 'anthropic') {
     return null
   }
 
@@ -877,6 +879,12 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     const { listKiroModels } = await import('../services/api/kiro/kiroModels.js')
     return listKiroModels()
   }
+  // GitHub Copilot: list models from api.githubcopilot.com/models with a fresh
+  // Copilot token derived from the stored GitHub OAuth token (provider.apiKey).
+  if (p.kind === 'copilot') {
+    const { fetchCopilotModels } = await import('../services/api/copilot/copilotAuth.js')
+    return fetchCopilotModels(p.apiKey)
+  }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
@@ -925,7 +933,8 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
       p.kind !== 'bedrock' &&
       p.kind !== 'vertex' &&
       p.kind !== 'genai' &&
-      p.kind !== 'kiro')
+      p.kind !== 'kiro' &&
+      p.kind !== 'copilot')
   )
     return []
   const models = await fetchProviderModels(p)
@@ -1052,6 +1061,18 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
       out.push({ value, providerId: p.id, model })
     }
   }
+
+  // Pin the entire rayu-hosted provider's models to the very top of the picker
+  // so the hosted models are always the first choices, regardless of which
+  // provider is active. (Only has an effect when rayu-hosted is configured.)
+  // The id 'rayu-hosted' (RAYU_HOSTED_PROVIDER_ID) is inlined to avoid a
+  // rayuProviders↔rayuConfig import cycle. Stable sort preserves the existing
+  // order within the rayu-hosted group and among all the other entries.
+  out.sort((a, b) => {
+    const ra = a.providerId === 'rayu-hosted' ? 0 : 1
+    const rb = b.providerId === 'rayu-hosted' ? 0 : 1
+    return ra - rb
+  })
 
   return out
 }

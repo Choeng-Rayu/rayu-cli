@@ -228,6 +228,34 @@ async function getRayuKiroClient(maxRetries: number): Promise<unknown | null> {
 }
 
 /**
+ * Rayu: route the active provider to the GitHub Copilot client when kind is
+ * 'copilot'. Copilot is OpenAI-compatible (api.githubcopilot.com) behind a
+ * short-lived token refreshed from the stored GitHub OAuth token. Lazy-imported
+ * so nothing Copilot-related loads unless Copilot is the active provider.
+ */
+async function getRayuCopilotClient(maxRetries: number): Promise<unknown | null> {
+  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const active = getActiveProvider()
+  if (active?.kind !== 'copilot') return null
+  const { createCopilotClient } = await import('./copilot/copilotClient.js')
+  return createCopilotClient(active, maxRetries)
+}
+
+/**
+ * Rayu: route the active provider to the Rayu-hosted gateway client when kind
+ * is 'rayu-hosted'. The gateway is OpenAI-compatible; auth is the user's Rayu
+ * account JWT (injected by a token-refreshing fetch wrapper). The upstream
+ * provider key never leaves the gateway. Lazy-imported.
+ */
+async function getRayuHostedClient(maxRetries: number): Promise<unknown | null> {
+  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const active = getActiveProvider()
+  if (active?.kind !== 'rayu-hosted') return null
+  const { createRayuHostedClient } = await import('./rayuHosted/rayuHostedClient.js')
+  return createRayuHostedClient(active, maxRetries)
+}
+
+/**
  * Rayu: build an API client for a SPECIFIC provider (not necessarily the active
  * one). Used to route a subagent request to a provider chosen via
  * /model_subagent that differs from the main agent's provider. Mirrors the
@@ -282,6 +310,17 @@ async function buildClientForProvider(
   if (provider.kind === 'kiro') {
     const { createKiroClient } = await import('./kiro/kiroAdapter.js')
     return createKiroClient(provider, maxRetries)
+  }
+  // GitHub Copilot: OpenAI adapter + Copilot OAuth fetch wrapper (refreshes the
+  // short-lived Copilot token from the stored GitHub OAuth token).
+  if (provider.kind === 'copilot') {
+    const { createCopilotClient } = await import('./copilot/copilotClient.js')
+    return createCopilotClient(provider, maxRetries)
+  }
+  // Rayu-hosted gateway: OpenAI adapter + Rayu JWT fetch wrapper.
+  if (provider.kind === 'rayu-hosted') {
+    const { createRayuHostedClient } = await import('./rayuHosted/rayuHostedClient.js')
+    return createRayuHostedClient(provider, maxRetries)
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
@@ -372,6 +411,21 @@ export async function getAnthropicClient({
   const kiroClient = await getRayuKiroClient(maxRetries)
   if (kiroClient) {
     return kiroClient as unknown as Anthropic
+  }
+
+  // Rayu: route to the GitHub Copilot client when the active provider is
+  // kind:'copilot' (OpenAI-compatible api.githubcopilot.com + Copilot OAuth).
+  const copilotClient = await getRayuCopilotClient(maxRetries)
+  if (copilotClient) {
+    return copilotClient as unknown as Anthropic
+  }
+
+  // Rayu: route to the Rayu-hosted gateway client when the active provider is
+  // kind:'rayu-hosted' (paid hosted models via the user's subscription; the
+  // Rayu JWT authenticates and the gateway holds the upstream provider key).
+  const rayuHostedClient = await getRayuHostedClient(maxRetries)
+  if (rayuHostedClient) {
+    return rayuHostedClient as unknown as Anthropic
   }
 
   // Rayu: route to the OpenAI-compatible adapter when the active provider is an

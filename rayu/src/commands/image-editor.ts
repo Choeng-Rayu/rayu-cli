@@ -1,5 +1,6 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../commands.js'
+import { rayuFeatureAllowed } from '../services/rayuAuth/rayuEntitlements.js'
 import { IMAGE_GEN_TOOL_NAME } from '../tools/ImageGenTool/constants.js'
 import { getNvidiaApiKey } from '../tools/ImageGenTool/nvidiaImageClient.js'
 import { isGeminiVertexImageAvailable } from '../tools/ImageGenTool/vertexImageClient.js'
@@ -11,7 +12,9 @@ const imageEditor: Command = {
   progressMessage: 'editing image',
   contentLength: 0,
   source: 'builtin',
-  isEnabled: () => getNvidiaApiKey() != null || isGeminiVertexImageAvailable(),
+  isEnabled: () =>
+    (getNvidiaApiKey() != null || isGeminiVertexImageAvailable()) &&
+    rayuFeatureAllowed('image_generation'),
   async getPromptForCommand(args): Promise<ContentBlockParam[]> {
     const text = args.trim()
     return [

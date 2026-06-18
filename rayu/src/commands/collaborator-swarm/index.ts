@@ -1,11 +1,12 @@
 import type { Command } from '../../commands.js'
+import { rayuFeatureAllowed } from '../../services/rayuAuth/rayuEntitlements.js'
 import { setSwarmModeUpdater } from '../../utils/swarmMode.js'
 
 // /collaborator_swarm — engage the Tier-2 Collaborator swarm for a complex
 // build, and enter the persistent, session-wide swarm mode (indicator under
 // the input; /normal exits). The MAIN agent acts as the ORCHESTRATOR and runs
-// the 3-phase flow: (1) scope & research (ask scope + tech stack; PA researches
-// options) → (2) one aligned plan (PA, FE+BE) + user confirm → (3) delegate by
+// the 3-phase flow: (1) scope & research (ask scope + tech stack; planner
+// researches options) → (2) one aligned plan (planner, FE+BE) + user confirm → (3) delegate by
 // specialty to frontend/backend/mobile/security/deploy collaborators (3-way
 // parallel design block, then implement → review/fix → ship). Each collaborator
 // may use only its allowed subagents. Collaborator models: /collaborator_model.
@@ -18,6 +19,8 @@ const command = {
   contentLength: 0,
   progressMessage: 'coordinating the collaborator swarm',
   source: 'builtin',
+  // Gated by the admin-configured `collaborator_swarm` feature.
+  isEnabled: () => rayuFeatureAllowed('collaborator_swarm'),
   async getPromptForCommand(args: string, context) {
     // Entering the swarm via the command turns on the persistent, session-wide
     // swarm mode (indicator under the input; orchestrator framing re-injected
@@ -36,7 +39,7 @@ ${taskLine}
 
 ## Your role: PURE ORCHESTRATOR — you do NOT write code
 In this mode you NEVER write or edit code, run build/implementation commands, or do domain work yourself. Your job is ONLY to:
-- ANALYZE the real project and requirements — read code to understand it, and discuss & plan WITH the \`PA\` subagent to reach a clear, grounded plan/architecture.
+- ANALYZE the real project and requirements — read code to understand it, and discuss & plan WITH the \`planner\` subagent to reach a clear, grounded plan/architecture.
 - DECOMPOSE and ASSIGN the work to the right Collaborators (implementers) and Subagents (one-shot helpers).
 - CHECK and verify their results (via the \`review\` subagent and by reading their outputs) and integrate them.
 HARD RULE: if a Collaborator or Subagent stalls, errors, or doesn't respond, you RESUME it (SendMessage), re-dispatch it, or escalate to the user — you do NOT take over and implement it yourself. Never silently become the coder, even if it seems faster.
@@ -45,17 +48,17 @@ Keep going until the task is fully resolved; state assumptions and continue — 
 ## The three tiers
 - **You (Orchestrator)** — scope, plan, own SharedContext, coordinate, integrate. You delegate all implementation; you call only the orchestrator-level subagents directly.
 - **Collaborators (Tier 2)** — semi-persistent domain implementers you delegate to: \`frontend\`, \`backend\` (incl. database), \`mobile\`, \`security\`, \`deploy\`. Spawn each as a NAMED BACKGROUND agent (run_in_background:true, stable lowercase name) so you can resume it with SendMessage instead of respawning. They have full tools and may dispatch ONLY their allowed subagents (see the matrix).
-- **Subagents (Tier 3)** — ephemeral one-shot helpers: \`PA\` (deep plan/research — orchestrator only), \`design\` (UI/UX + component PRD), \`backend-design\` (API + Data Model PRD), \`global-setup\` (scaffold — orchestrator only), \`asset-generation\` (images), \`review\` (audit → Fix List), \`fix\` (apply Fix List), \`linter\`, plus \`Explore\` and \`general-purpose\` (research).
+- **Subagents (Tier 3)** — ephemeral one-shot helpers: \`planner\` (deep plan/research — orchestrator only), \`design\` (UI/UX + component PRD), \`backend-design\` (API + Data Model PRD), \`global-setup\` (scaffold — orchestrator only), \`asset-generation\` (images), \`review\` (audit → Fix List), \`fix\` (apply Fix List), \`linter\`, plus \`Explore\` and \`general-purpose\` (research).
 
 ## Subagent specialization matrix (who may call what)
 Domain-locked so each agent uses only what fits its specialty:
-- **You (Orchestrator):** PA, global-setup, design, backend-design, asset-generation, review, fix, linter, Explore, general-purpose.
+- **You (Orchestrator):** planner, global-setup, design, backend-design, asset-generation, review, fix, linter, Explore, general-purpose.
 - **frontend:** design, asset-generation, review, fix, linter, Explore, general-purpose. (NOT backend-design.)
 - **backend:** backend-design, review, fix, linter, Explore, general-purpose. (NOT design or asset-generation.)
 - **mobile:** design, asset-generation, backend-design, review, fix, linter, Explore, general-purpose.
 - **security:** backend-design, review, fix, linter, Explore, general-purpose.
 - **deploy:** review, fix, linter, Explore, general-purpose.
-\`PA\` and \`global-setup\` are ORCHESTRATOR-ONLY — collaborators implement; they never re-plan or re-scaffold. (These limits are also enforced in code.)
+\`planner\` and \`global-setup\` are ORCHESTRATOR-ONLY — collaborators implement; they never re-plan or re-scaffold. (These limits are also enforced in code.)
 
 ## Bundled skills (use them — no install needed)
 rayu ships original skills, always available via the Skill tool: \`rayu-frontend-design\`, \`rayu-design-system\`, \`rayu-theme-factory\`, \`rayu-brand-guidelines\` (UI / design / brand), \`rayu-canvas-design\` + \`rayu-algorithmic-art\` (generated graphics & generative art), \`rayu-web-artifacts-builder\` (standalone interactive pages), \`rayu-api-design\` + \`rayu-mcp-builder\` (backend), \`rayu-web-testing\` (QA/verification), \`rayu-doc-export\` (docx/xlsx/pptx/pdf deliverables). Tell each collaborator to pull the skill that fits its task — frontend/mobile → design / theme / artifacts; design & asset-generation → canvas / algorithmic-art / brand; backend → api / mcp; review/security → web-testing; any document deliverable → doc-export. Beyond the bundled set, you and the collaborators may also use any skill the user has installed, or install a relevant one on demand from the official Anthropic skills repo (\`anthropics/skills\`) via the InstallSkill tool.
@@ -68,13 +71,13 @@ Parallel execution is ~3–5x faster than sequential. Unless one call genuinely 
 - Spawn **Collaborators in the BACKGROUND** (\`run_in_background:true\`, stable lowercase name). Background is the ONLY mode that is resumable via \`SendMessage\`, so semi-persistent collaborators MUST be background. The user watches a collaborator's detailed work by entering its view (↓ then Enter); the task panel shows each collaborator's high-level status (including \`thinking…\`).
 
 ## The 3-phase build flow
-### Phase 1 — Scope & Research (you + PA, in the foreground)
+### Phase 1 — Scope & Research (you + planner, in the foreground)
 - Clarify the request: ask the user for the missing DETAIL and SCOPE, and ask their PREFERRED TECH STACK — offer 2–3 concrete recommendations with a one-line rationale each (don't make them guess).
-- For any OPEN implementation choice (e.g. a payment provider — Stripe vs a bank gateway vs ABA), dispatch the \`PA\` subagent to RESEARCH the real, available options for THIS project and return a short comparison; present those options to the user and let them choose. Loop until you have everything you need.
+- For any OPEN implementation choice (e.g. a payment provider — Stripe vs a bank gateway vs ABA), dispatch the \`planner\` subagent to RESEARCH the real, available options for THIS project and return a short comparison; present those options to the user and let them choose. Loop until you have everything you need.
 
-### Phase 2 — One aligned plan (PA → you → user)
-- Hand the gathered context to \`PA\` for a deep, reasoned plan. PA must produce ONE coherent plan that is explicitly ALIGNED across backend AND frontend (shared API contract, data model, auth flow) — never two disjoint plans.
-- Relay PA's plan to the user for FINAL confirmation. (In plan mode, that's the ExitPlanMode approval — confirming auto-enters swarm execution.)
+### Phase 2 — One aligned plan (planner → you → user)
+- Hand the gathered context to \`planner\` for a deep, reasoned plan. The planner must produce ONE coherent plan that is explicitly ALIGNED across backend AND frontend (shared API contract, data model, auth flow) — never two disjoint plans.
+- Relay the planner's plan to the user for FINAL confirmation. (In plan mode, that's the ExitPlanMode approval — confirming auto-enters swarm execution.) You ALREADY receive the planner's full plan as its returned result — use that directly. Do NOT re-read \`.rayu/swarm/PLANNER.md\`: the swarm \`.md\` files exist so the COLLABORATORS can read each other's contracts, not for you to re-read your own subagents' returns — pulling a large plan back into your own context wastes tokens and can make the request time out.
 
 ### Phase 3 — Build (decompose by specialty; run as a dependency graph, not fixed waves)
 1. **Setup gate (one short step):** for a new project, run \`global-setup\` to scaffold the FE+BE folder structure + tooling.
@@ -103,7 +106,7 @@ Parallel execution is ~3–5x faster than sequential. Unless one call genuinely 
 ## Finish
 Integrate the collaborators' outputs into one coherent result, crediting which collaborator produced what, and report concisely to the user — only after the verification gate (build/tests pass, review→fix clean).
 
-This session is now in collaborator_swarm mode (it stays on for the whole session; the user exits with /normal). Begin with PHASE 1: state your understanding, ask the user for the missing scope + preferred tech stack (with recommendations), and dispatch \`PA\` for any implementation-option research the request needs.`,
+This session is now in collaborator_swarm mode (it stays on for the whole session; the user exits with /normal). Begin with PHASE 1: state your understanding, ask the user for the missing scope + preferred tech stack (with recommendations), and dispatch \`planner\` for any implementation-option research the request needs.`,
 
       },
     ]

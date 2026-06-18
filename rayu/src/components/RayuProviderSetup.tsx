@@ -53,6 +53,7 @@ type Phase =
   | 'kiroChoice'
   | 'kiroApiKey'
   | 'kiroLogin'
+  | 'copilotLogin'
 
 export function RayuProviderSetup({
   onDone,
@@ -86,6 +87,13 @@ export function RayuProviderSetup({
   >('checking')
   const [kiroError, setKiroError] = useState<string | null>(null)
   const [kiroLoginOutput, setKiroLoginOutput] = useState('')
+  // GitHub Copilot device-flow login state
+  const [copilotDevice, setCopilotDevice] = useState<{
+    userCode: string
+    verificationUri: string
+  } | null>(null)
+  const [copilotError, setCopilotError] = useState<string | null>(null)
+  const [copilotAttempt, setCopilotAttempt] = useState(0)
 
   function pick(p: Preset): void {
     setPreset(p)
@@ -102,6 +110,11 @@ export function RayuProviderSetup({
     } else if (p.kind === 'kiro') {
       setKiroError(null)
       setPhase('kiroChoice')
+    } else if (p.kind === 'copilot') {
+      setCopilotError(null)
+      setCopilotDevice(null)
+      setCopilotAttempt(n => n + 1)
+      setPhase('copilotLogin')
     } else if (p.kind === 'genai') setPhase('genaiLogin')
     else if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
     else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
@@ -206,6 +219,61 @@ export function RayuProviderSetup({
   // On entering the vertexAuth phase, detect ADC + pre-fill project/region,
   // then ALWAYS present the auth choice (use detected ADC, or sign in with
   // Google) rather than silently picking one.
+  // GitHub Copilot device-flow login: start the flow (show the user code +
+  // verification URL), poll for the GitHub OAuth token, validate Copilot access,
+  // persist the provider (GitHub token as apiKey), fetch the model catalog, then
+  // finish. Re-runs on each copilotAttempt so "Try again" restarts cleanly.
+  React.useEffect(() => {
+    if (phase !== 'copilotLogin') return
+    let cancelled = false
+    const ac = new AbortController()
+    void (async () => {
+      try {
+        const auth = await import('../services/api/copilot/copilotAuth.js')
+        const device = await auth.startCopilotDeviceFlow()
+        if (cancelled) return
+        setCopilotDevice({
+          userCode: device.user_code,
+          verificationUri: device.verification_uri,
+        })
+        const githubToken = await auth.pollForGitHubToken(device, {
+          signal: ac.signal,
+        })
+        if (cancelled) return
+        // Validate the account actually has Copilot access before persisting.
+        await auth.exchangeForCopilotToken(githubToken)
+        if (cancelled) return
+        const base: RayuProvider = {
+          id: preset?.id ?? 'copilot',
+          kind: 'copilot',
+          apiKey: githubToken,
+        }
+        upsertProvider(base, true)
+        const models = await fetchProviderModels(base).catch(() => [] as string[])
+        if (cancelled) return
+        const chat = models.filter(isLikelyChatModel)
+        const defaultModel =
+          chat.find(m => /claude.*sonnet/i.test(m)) ??
+          chat.find(m => /gpt-4\.1|gpt-4o|gpt-5/i.test(m)) ??
+          chat[0] ??
+          'gpt-4o'
+        upsertProvider(
+          { ...base, ...(chat.length ? { fetchedModels: chat } : {}), defaultModel },
+          true,
+        )
+        if (cancelled) return
+        onDone()
+      } catch (e) {
+        if (cancelled) return
+        setCopilotError(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    return () => {
+      cancelled = true
+      ac.abort()
+    }
+  }, [phase, copilotAttempt])
+
   React.useEffect(() => {
     if (phase !== 'vertexAuth') return
     let cancelled = false
@@ -561,6 +629,63 @@ export function RayuProviderSetup({
           }}
           onCancel={() => setPhase('pick')}
         />
+      </Box>
+    )
+  }
+
+  if (phase === 'copilotLogin') {
+    if (copilotError) {
+      return (
+        <Box flexDirection="column" gap={1} paddingLeft={1}>
+          <Text bold>GitHub Copilot sign-in failed</Text>
+          <Text color="red">{copilotError}</Text>
+          <Select
+            options={[
+              { label: 'Try again', value: 'retry' },
+              { label: 'Back to providers', value: 'back' },
+            ]}
+            onChange={(v: string) => {
+              if (v === 'retry') {
+                setCopilotError(null)
+                setCopilotDevice(null)
+                setCopilotAttempt(n => n + 1)
+              } else {
+                setPhase('pick')
+              }
+            }}
+            onCancel={() => setPhase('pick')}
+          />
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Sign in to GitHub Copilot</Text>
+        {copilotDevice ? (
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection="column">
+              <Text>
+                1. Open{' '}
+                <Text bold color="cyan">
+                  {copilotDevice.verificationUri}
+                </Text>{' '}
+                in your browser
+              </Text>
+              <Text>
+                2. Enter the code:{' '}
+                <Text bold color="green">
+                  {copilotDevice.userCode}
+                </Text>
+              </Text>
+            </Box>
+            <Text dimColor>
+              Waiting for authorization… (requires an active GitHub Copilot
+              subscription)
+            </Text>
+          </Box>
+        ) : (
+          <Text dimColor>Starting GitHub device sign-in…</Text>
+        )}
       </Box>
     )
   }

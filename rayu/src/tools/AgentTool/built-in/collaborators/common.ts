@@ -38,7 +38,7 @@ export type CollaboratorSpec = {
 }
 
 const AUTHORITY = [
-  'The orchestrator owns the plan and the shared brief. Build within the chosen architecture and the PA/research plan — do not silently re-architect.',
+  'The orchestrator owns the plan and the shared brief. Build within the chosen architecture and the planner/research plan — do not silently re-architect.',
   'Security decisions are authoritative — never weaken them for speed.',
   'Coordinate through explicit contracts (API shapes, schema, auth flow), not by second-guessing other collaborators.',
 ]
@@ -77,7 +77,9 @@ function buildCollaboratorPrompt(s: CollaboratorSpec): string {
     '',
     '## Context I/O (shared swarm context)',
     '- A SWARM CONTEXT block above (if present) holds the shared brief and the sections of collaborators you depend on. Trust it and build on it — do NOT re-derive what is already decided.',
-    '- When you finish, persist YOUR section to ' + getDomainPath(s.agentType) + ' (overwrite; concise + contract-focused) so other collaborators and your own resumed turns can read it. Use that EXACT path — the swarm lives under `.rayu/swarm/`, never `.claude/`.',
+    '- REQUIRED FINAL STEP: before you report done, persist YOUR section — use the Write tool to write ' +
+      getDomainPath(s.agentType) +
+      ' (overwrite; concise + contract-focused) so other collaborators and your own resumed turns can read it. Use that EXACT path — the swarm lives under `.rayu/swarm/`, never `.claude/`.',
     '',
     'Be concise and structured — the orchestrator integrates your output. Report back as a normal message (do not create report files).',
   ]

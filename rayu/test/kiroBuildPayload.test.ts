@@ -99,6 +99,24 @@ describe('kiro buildKiroPayload', () => {
     )
   })
 
+  test('thinking is re-injected on tool-result-only continuations (keeps thinking through the agentic loop)', () => {
+    const { payload } = buildKiroPayload({
+      model: 'claude-sonnet-4.6',
+      thinking: { type: 'adaptive' },
+      tools: [{ name: 'Read', description: '', input_schema: { type: 'object' } }],
+      messages: [
+        { role: 'user', content: 'read a.ts' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: { path: 'a.ts' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'file contents' }] },
+      ],
+    })
+    const um = payload.conversationState.currentMessage.userInputMessage
+    // The tool-result continuation must still carry the thinking-mode prefix so
+    // the model keeps reasoning during the implementation loop, not just turn 1.
+    expect(um.content).toContain('<thinking_mode>enabled</thinking_mode>')
+    expect(um.userInputMessageContext!.toolResults![0]!.toolUseId).toBe('tu_1')
+  })
+
   test('never emits a -1m model id even for a [1m] input', () => {
     expect(buildKiroPayload({ model: 'claude-sonnet-4-6[1m]', messages: [{ role: 'user', content: 'x' }] }).kiroModel).toBe('claude-sonnet-4.6')
   })

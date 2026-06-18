@@ -2,7 +2,6 @@ import { join, normalize, sep } from 'path'
 import { getProjectRoot } from '../../bootstrap/state.js'
 import {
   buildMemoryPrompt,
-  ensureMemoryDirExists,
 } from '../../memdir/memdir.js'
 import { getMemoryBaseDir } from '../../memdir/paths.js'
 import { getCwd } from '../../utils/cwd.js'
@@ -157,12 +156,10 @@ export function loadAgentMemoryPrompt(
 
   const memoryDir = getAgentMemoryDir(agentType, scope)
 
-  // Fire-and-forget: this runs at agent-spawn time inside a sync
-  // getSystemPrompt() callback (called from React render in AgentDetail.tsx,
-  // so it cannot be async). The spawned agent won't try to Write until after
-  // a full API round-trip, by which time mkdir will have completed. Even if
-  // it hasn't, FileWriteTool does its own mkdir of the parent directory.
-  void ensureMemoryDirExists(memoryDir)
+  // Do NOT pre-create the memory dir. Pre-creating produced confusing empty
+  // <agent-memory>/<agentType>/ folders that never got a MEMORY.md. FileWriteTool
+  // mkdirs the parent when the agent actually writes its memory, so the folder
+  // now appears only once it has real content.
 
   const coworkExtraGuidelines =
     process.env.CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES

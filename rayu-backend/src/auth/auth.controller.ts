@@ -10,6 +10,8 @@ import {
 import { CurrentUser } from './current-user.decorator'
 import type { User } from '@prisma/client'
 import { PlansService } from '../plans/plans.service'
+import { ModelsService } from '../models/models.service'
+import { AppSettingsService } from '../settings/app-settings.service'
 import { UsersService } from '../users/users.service'
 import { AuthService, PublicUser, RayuTokens } from './auth.service'
 import { ExchangeDto, RefreshDto, TokenDto } from './dto/auth.dto'
@@ -21,6 +23,8 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly plans: PlansService,
     private readonly users: UsersService,
+    private readonly models: ModelsService,
+    private readonly settings: AppSettingsService,
   ) {}
 
   /**
@@ -84,18 +88,48 @@ export class AuthController {
   @Get('me/entitlements')
   @UseGuards(RayuAuthGuard)
   async entitlements(@CurrentUser() user: User) {
-    const plan = await this.users.getActivePlanForUser(user.id)
+    const { plan, currentPeriodEnd } = await this.users.getActiveSubscription(
+      user.id,
+    )
     const limits = this.plans.getLimits(plan)
+    const [allowed, settings, topupBalance] = await Promise.all([
+      this.models.findAllowedForPlan(plan.code),
+      this.settings.get(),
+      this.users.getTopupBalance(user.id),
+    ])
     return {
       plan: {
         code: plan.code,
         name: plan.name,
         priceCents: plan.priceCents,
         availability: plan.availability,
+        currentPeriodEnd: currentPeriodEnd ? currentPeriodEnd.toISOString() : null,
       },
       maxDailyTurns: limits.maxDailyTurns ?? null,
       features: this.plans.getResolvedFeatures(plan),
+      creditAllowance: {
+        creditsPerWeek: limits.creditsPerWeek ?? null,
+        creditsPer5h: limits.creditsPer5h ?? null,
+        topUpEnabled: limits.topUpEnabled ?? false,
+      },
+      creditConfig: {
+        baselineCreditsPer1M: settings.baselineCreditsPer1M,
+      },
+      topupBalance,
+      allowedModels: allowed.map((m) => ({
+        code: m.code,
+        label: m.label,
+        provider: m.provider,
+        creditMultiplier: m.creditMultiplier,
+      })),
     }
+  }
+
+  /** Recent credit consumption history for the signed-in user. */
+  @Get('me/credit-history')
+  @UseGuards(RayuAuthGuard)
+  creditHistory(@CurrentUser() user: User) {
+    return this.users.getCreditHistory(user.id, 50)
   }
 
   private extractBearer(header: string | undefined): string | null {

@@ -37,6 +37,7 @@ command menu; start typing to filter. Press Enter to run.
 | `/diff` | Show pending diffs |
 | `/doctor` | Run environment/health checks |
 | `/theme` (via `/config`) | Change color theme |
+| `/brandmark` | Customize Rayu's brand mark glyph and loading-spinner style |
 
 ## Notes
 

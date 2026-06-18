@@ -67,7 +67,9 @@ export default function AnalyticsPage() {
         <StatCard label="Total Users" value={a.totals.totalUsers} />
         <StatCard label={`Active (${days}d)`} value={a.totals.activeUsers30d} />
         <StatCard label="Paid Users" value={a.paidVsFree.paid} />
-        <StatCard label="Revenue" value={usd(a.revenue.totalCents)} />
+        <StatCard label="Revenue (MRR)" value={usd(a.profit.revenueCents)} />
+        <StatCard label="AI Cost" value={usd(a.profit.aiCostCents)} />
+        <StatCard label="Margin" value={usd(a.profit.marginCents)} hint={`${a.profit.creditsConsumed.toLocaleString()} credits`} />
       </StatGrid>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))', gap: '1.5rem', minWidth: 0 }}>
@@ -106,6 +108,15 @@ export default function AnalyticsPage() {
         </Panel>
         <Panel title="Usage by provider">
           <HBar data={a.usageByProvider.map((u) => ({ label: u.provider, value: u.count }))} />
+        </Panel>
+        <Panel title="Usage by tool">
+          <HBar data={(a.usageByTool ?? []).map((u) => ({ label: u.tool, value: u.count }))} color="#36c5ff" />
+        </Panel>
+        <Panel title="Credits by model">
+          <HBar
+            data={(a.creditsByModel ?? []).map((c) => ({ label: c.modelCode, value: c.credits }))}
+            color="#ffbd2e"
+          />
         </Panel>
         <Panel title="Top users by usage">
           <HBar

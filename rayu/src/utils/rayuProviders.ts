@@ -149,6 +149,11 @@ export function ollamaBaseURL(): string {
 // with a Bedrock API key / bearer token). Rayu connects to OpenAI-compatible
 // endpoints; Bedrock is routed through the same adapter once a region + API key
 // are supplied via /connect.
+/** Stable provider id for the Rayu-hosted gateway provider (registered on
+ *  login for paid users; not connected manually via /connect). */
+export const RAYU_HOSTED_PROVIDER_ID = 'rayu-hosted'
+export const RAYU_HOSTED_PROVIDER_LABEL = 'Rayu (hosted)'
+
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     id: 'nvidia',
@@ -240,6 +245,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     requiresOAuth: true,
   },
   {
+    // GitHub Copilot — sign in with GitHub (OAuth device flow) and use your
+    // Copilot subscription's models (Claude, GPT, Gemini, …) via Copilot's
+    // OpenAI-compatible endpoint (api.githubcopilot.com). No API key to paste:
+    // the GitHub OAuth token is exchanged for a short-lived Copilot token that
+    // is auto-refreshed. Reuses the OpenAI adapter through a token-injecting
+    // fetch wrapper (handled by kind:'copilot' in client.ts).
+    id: 'copilot',
+    label: 'GitHub Copilot (sign in with GitHub) · uses your Copilot subscription',
+    kind: 'copilot',
+  },
+  {
     id: 'openrouter',
     label: 'OpenRouter (openrouter.ai)',
     kind: 'openai-compatible',
@@ -304,6 +320,21 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseURL: 'https://api.deepinfra.com/v1/openai',
     defaultModel: 'meta-llama/Llama-3.3-70B-Instruct',
     envKeys: ['DEEPINFRA_API_KEY'],
+  },
+  {
+    // Hugging Face Inference Providers — an OpenAI-compatible router
+    // (router.huggingface.co/v1) that fans a single `<org>/<model>` id out to
+    // the available inference providers (novita, together, fireworks, …).
+    // `GET /v1/models` returns the live cross-provider catalog, so Rayu's
+    // generic openai-compatible adapter + model fetch work verbatim. Auth is a
+    // Hugging Face access token (hf_…), read from the standard HF env vars.
+    id: 'huggingface',
+    label: 'Hugging Face — Inference Providers (router.huggingface.co)',
+    kind: 'openai-compatible',
+    baseURL: 'https://router.huggingface.co/v1',
+    defaultModel: 'deepseek-ai/DeepSeek-V4-Pro',
+    smallFastModel: 'deepseek-ai/DeepSeek-V4-Flash',
+    envKeys: ['HF_TOKEN', 'HUGGINGFACE_API_KEY', 'HUGGING_FACE_HUB_TOKEN'],
   },
   {
     id: 'bedrock',
@@ -454,10 +485,13 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   cerebras: 'Cerebras',
   baseten: 'Baseten',
   deepinfra: 'DeepInfra',
+  huggingface: 'Hugging Face',
   bedrock: 'AWS Bedrock',
   'bedrock-openai': 'AWS Bedrock',
   'bedrock-anthropic': 'AWS Bedrock',
   kiro: 'Kiro',
+  copilot: 'GitHub Copilot',
+  'rayu-hosted': 'Rayu',
   ollama: 'Ollama',
   local: 'Local',
 }
@@ -473,6 +507,8 @@ function providerKindName(kind: ProviderKind): string {
       return 'Gemini'
     case 'kiro':
       return 'Kiro'
+    case 'copilot':
+      return 'GitHub Copilot'
     case 'anthropic':
       return 'Anthropic'
     default:

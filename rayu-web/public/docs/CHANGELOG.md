@@ -2,10 +2,28 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
-## 1.3.433 - 2026-06-15
+## 1.3.438 - 2026-06-17
+- Added Hugging Face (`huggingface`) provider preset using Hugging Face Inference Providers endpoint (`https://router.huggingface.co/v1`) with `HF_TOKEN`
+- Implemented feature rate limits, entitlements, and Copilot client authentication
+- Added/updated integrations for image-editor, video-generation, and image-generation tools
+- Implemented and improved Admin Dashboard features (analytics, payments, plans, users) in `rayu-web` and `rayu-backend`
+
+## 1.3.437 - 2026-06-17
+- Fixed Kiro provider thinking payload construction and context base
+
+## 1.3.436 - 2026-06-17
+- Reworked and renamed the Planning & Research subagent from "PA-AGENT" to "planner"
+- Optimized parallel exploration of codebase in planner subagent (concurrent dispatch of Explore subagents)
+- Improved collaborator swarm and persistent agent memory syncing/loading
+- Added UI spinner and status display improvements for agent tasks
+
+## 1.3.435 - 2026-06-17
+- Published new stable CLI version with package improvements
+
+## 1.3.434 - 2026-06-16
 - Fix the bug with the kiro provider context
-- Rebrand form claude icon to rayu draft icon
-- add /brandmark for use to customizable UI
+- Rebrand from Claude icon to Rayu draft icon
+- Add `/brandmark` slash command to customize brand mark glyph and loading-spinner style
 
 ## 1.3.433 - 2026-06-15
 - Implement the doubleword provider to fetch all model

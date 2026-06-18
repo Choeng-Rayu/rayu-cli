@@ -14,6 +14,10 @@ export interface PlanLimits {
   contactSales?: boolean
   maxDailyTurns?: number | null
   features?: Record<string, { enabled: boolean; limit?: number | null }>
+  // Paid-plan credit allowances (consumed by the Phase 2 gateway).
+  creditsPerWeek?: number | null
+  creditsPer5h?: number | null
+  topUpEnabled?: boolean
   [key: string]: unknown
 }
 
@@ -23,6 +27,9 @@ export interface PlanPatch {
   availability?: PlanAvailability
   maxDailyTurns?: number | null
   features?: FeatureEntitlements
+  creditsPerWeek?: number | null
+  creditsPer5h?: number | null
+  topUpEnabled?: boolean
 }
 
 @Injectable()
@@ -93,6 +100,15 @@ export class PlansService {
     const limits = this.getLimits(existing)
     if (patch.maxDailyTurns !== undefined) {
       limits.maxDailyTurns = patch.maxDailyTurns
+    }
+    if (patch.creditsPerWeek !== undefined) {
+      limits.creditsPerWeek = patch.creditsPerWeek
+    }
+    if (patch.creditsPer5h !== undefined) {
+      limits.creditsPer5h = patch.creditsPer5h
+    }
+    if (patch.topUpEnabled !== undefined) {
+      limits.topUpEnabled = patch.topUpEnabled
     }
     if (patch.features !== undefined) {
       const current = (limits.features ?? {}) as Record<

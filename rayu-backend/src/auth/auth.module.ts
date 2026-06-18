@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { JwtModule } from '@nestjs/jwt'
+import { ModelsModule } from '../models/models.module'
 import { PlansModule } from '../plans/plans.module'
+import { AppSettingsModule } from '../settings/app-settings.module'
 import { UsersModule } from '../users/users.module'
 import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
@@ -14,6 +16,8 @@ import { RolesGuard } from './roles.guard'
   imports: [
     UsersModule,
     PlansModule,
+    ModelsModule,
+    AppSettingsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

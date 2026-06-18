@@ -53,6 +53,9 @@ export interface PlanAdminView {
   priceCents: number
   availability: 'active' | 'coming_soon'
   maxDailyTurns: number | null
+  creditsPerWeek: number | null
+  creditsPer5h: number | null
+  topUpEnabled: boolean
   features: Record<string, FeatureEntitlement>
 }
 
@@ -81,6 +84,14 @@ export interface AdminAnalytics {
   signupsByDay: Array<{ date: string; count: number }>
   activeByDay: Array<{ date: string; count: number }>
   usageByProvider: Array<{ provider: string; count: number }>
+  usageByTool: Array<{ tool: string; count: number }>
+  profit: {
+    revenueCents: number
+    aiCostCents: number
+    marginCents: number
+    creditsConsumed: number
+  }
+  creditsByModel: Array<{ modelCode: string; credits: number; costCents: number }>
   topUsers: Array<{ id: number; email: string | null; displayName: string | null; count: number }>
   canceledSubscriptions: number
 }
@@ -98,3 +109,70 @@ export interface FeedbackItem {
 
 // Green-forward chart palette aligned to the site theme.
 export const CHART_PALETTE = ['#00FF88', '#00cc6e', '#36c5ff', '#ffbd2e', '#FF3366', '#9b8cff']
+
+export interface HostedModel {
+  id: number
+  code: string
+  label: string
+  provider: string
+  upstreamBaseUrl: string
+  upstreamModelId: string
+  inputPricePer1MCents: number
+  outputPricePer1MCents: number
+  creditMultiplier: number
+  allowedPlanCodes: string[] | null
+  enabled: boolean
+}
+
+export interface AppSettings {
+  id: number
+  baselineCreditsPer1M: number
+  topupCentsPer1kCredits: number
+  maxConcurrentStreams: number
+  maxTokensPerRequest: number
+  maxRequestsPer5h: number
+  baselineModelCode: string | null
+  assumedInputRatio: number
+  assumedUsagePercent: number
+  infraCostCentsPerUser: number
+}
+
+export interface ProjectionModel {
+  code: string
+  label: string
+  enabled: boolean
+  inputPricePer1MCents: number
+  outputPricePer1MCents: number
+  blendedCentsPer1M: number
+  currentMultiplier: number
+  suggestedMultiplier: number
+  costPerCreditCents: number
+}
+
+export interface ProjectionPlan {
+  code: string
+  name: string
+  priceCents: number
+  creditsPerWeek: number | null
+  creditsPer5h: number | null
+  unlimited: boolean
+  worstModelCode: string | null
+  worstCostPerCreditCents: number
+  worstCaseMonthlyCostCents: number | null
+  expectedMonthlyCostCents: number | null
+  marginCents: number | null
+  worstCaseMarginCents: number | null
+  marginNegative: boolean
+}
+
+export interface CreditProjection {
+  settings: {
+    baselineCreditsPer1M: number
+    assumedInputRatio: number
+    assumedUsagePercent: number
+    infraCostCentsPerUser: number
+    baselineModelCode: string | null
+  }
+  models: ProjectionModel[]
+  plans: ProjectionPlan[]
+}

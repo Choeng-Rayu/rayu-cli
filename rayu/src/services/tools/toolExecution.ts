@@ -8,6 +8,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from 'src/services/analytics/index.js'
+import { recordRayuToolUsageBestEffort } from '../rayuAuth/rayuSession.js'
 import {
   extractMcpToolDetails,
   extractSkillName,
@@ -1221,6 +1222,10 @@ async function checkPermissionsAndCallTool(
     )
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
+
+    // Best-effort per-tool usage tracking for Rayu accounts (no-op unless
+    // USE_RAYU_OAUTH is on and the user is signed in). Fire-and-forget.
+    void recordRayuToolUsageBestEffort(tool.name)
 
     // Log tool content/output as span event if enabled
     if (result.data && typeof result.data === 'object') {
