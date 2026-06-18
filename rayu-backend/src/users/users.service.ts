@@ -71,19 +71,73 @@ export class UsersService {
   }
 
   /**
-   * Resolve the user's active plan (most recent active subscription), falling
-   * back to the Free plan when the user has no active subscription.
+   * Resolve the user's active subscription (most recent active), honoring the
+   * 30-day period: an active subscription whose currentPeriodEnd has passed is
+   * treated as expired and falls back to the Free plan. Returns the resolved
+   * plan and the period end (null for free/no-expiry).
    */
-  async getActivePlanForUser(userId: number): Promise<Plan> {
+  async getActiveSubscription(
+    userId: number,
+  ): Promise<{ plan: Plan; currentPeriodEnd: Date | null }> {
     const sub = await this.prisma.subscription.findFirst({
       where: { userId, status: 'active' },
       include: { plan: true },
       orderBy: { startedAt: 'desc' },
     })
-    if (sub?.plan) return sub.plan
+    const now = new Date()
+    if (sub?.plan && (!sub.currentPeriodEnd || sub.currentPeriodEnd >= now)) {
+      return { plan: sub.plan, currentPeriodEnd: sub.currentPeriodEnd ?? null }
+    }
     const free = await this.plansService.findByCode('free')
-    if (free) return free
+    if (free) return { plan: free, currentPeriodEnd: null }
     throw new Error('No active plan and no free plan configured')
+  }
+
+  /**
+   * Resolve the user's active plan (most recent active subscription), falling
+   * back to the Free plan when the user has no active (non-expired) subscription.
+   */
+  async getActivePlanForUser(userId: number): Promise<Plan> {
+    return (await this.getActiveSubscription(userId)).plan
+  }
+
+  /**
+   * Remaining pay-as-you-go top-up credits: granted (paid top-ups) minus
+   * consumed (credit_ledger rows with source 'topup'). Never negative.
+   */
+  async getTopupBalance(userId: number): Promise<number> {
+    const [granted, consumed] = await Promise.all([
+      this.prisma.creditTopup.aggregate({
+        _sum: { credits: true },
+        where: { userId, status: 'paid' },
+      }),
+      this.prisma.creditLedger.aggregate({
+        _sum: { credits: true },
+        where: { userId, source: 'topup' },
+      }),
+    ])
+    const bal = (granted._sum.credits ?? 0) - (consumed._sum.credits ?? 0)
+    return Math.max(0, bal)
+  }
+
+  /** Recent credit consumption rows for the user (newest first). */
+  async getCreditHistory(userId: number, limit = 50) {
+    const take = Math.min(Math.max(limit, 1), 200)
+    const rows = await this.prisma.creditLedger.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take,
+    })
+    return rows.map((r) => ({
+      id: r.id,
+      modelCode: r.modelCode,
+      inTokens: r.inTokens,
+      outTokens: r.outTokens,
+      credits: r.credits,
+      realCostCents: r.realCostCents,
+      source: r.source,
+      createdAt: r.createdAt,
+    }))
   }
 
   async touchLastActive(id: number): Promise<void> {

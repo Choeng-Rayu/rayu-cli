@@ -9,6 +9,8 @@ import { PLAN_CODES } from '../common/enums'
 import { FEATURE_CATALOG } from '../common/features'
 import { PrismaService } from '../prisma/prisma.service'
 import { PlansService, type PlanPatch } from '../plans/plans.service'
+import { ModelsService } from '../models/models.service'
+import { AppSettingsService } from '../settings/app-settings.service'
 import { UsageService } from '../usage/usage.service'
 import { UsersService } from '../users/users.service'
 
@@ -43,6 +45,13 @@ export interface AdminAnalytics {
   activeByDay: Array<{ date: string; count: number }>
   usageByProvider: Array<{ provider: string; count: number }>
   usageByTool: Array<{ tool: string; count: number }>
+  profit: {
+    revenueCents: number
+    aiCostCents: number
+    marginCents: number
+    creditsConsumed: number
+  }
+  creditsByModel: Array<{ modelCode: string; credits: number; costCents: number }>
   topUsers: Array<{
     id: number
     email: string | null
@@ -59,6 +68,8 @@ export class AdminService {
     private readonly usage: UsageService,
     private readonly prisma: PrismaService,
     private readonly plans: PlansService,
+    private readonly models: ModelsService,
+    private readonly settings: AppSettingsService,
   ) {}
 
   listUsers(page: number, pageSize: number, search?: string) {
@@ -190,6 +201,9 @@ export class AdminService {
       priceCents: plan.priceCents,
       availability: plan.availability,
       maxDailyTurns: limits.maxDailyTurns ?? null,
+      creditsPerWeek: limits.creditsPerWeek ?? null,
+      creditsPer5h: limits.creditsPer5h ?? null,
+      topUpEnabled: limits.topUpEnabled ?? false,
       features: this.plans.getResolvedFeatures(plan),
     }
   }
@@ -199,6 +213,127 @@ export class AdminService {
     return {
       catalog: FEATURE_CATALOG,
       plans: plans.map((p) => this.toPlanAdminView(p)),
+    }
+  }
+
+  /**
+   * Forward-looking profit/cost projection (USD). Derives, from current model
+   * prices + plan credit allowances, the suggested per-model multiplier and the
+   * worst-case / expected monthly AI cost + margin per plan. Advisory only.
+   */
+  async creditProjection() {
+    const [settings, models, plans] = await Promise.all([
+      this.settings.get(),
+      this.models.findAll(),
+      this.plans.findAll(),
+    ])
+    const ratio = settings.assumedInputRatio ?? 0.67
+    const baseCredits = settings.baselineCreditsPer1M || 1000
+    const blended = (m: { inputPricePer1MCents: number; outputPricePer1MCents: number }) =>
+      ratio * m.inputPricePer1MCents + (1 - ratio) * m.outputPricePer1MCents
+
+    const enabled = models.filter((m) => m.enabled)
+    let baseline = settings.baselineModelCode
+      ? models.find((m) => m.code === settings.baselineModelCode)
+      : undefined
+    if (!baseline) {
+      baseline = [...enabled].sort((a, b) => blended(a) - blended(b))[0]
+    }
+    const baselineBlended = baseline ? blended(baseline) : 0
+    const round = (n: number, p = 6) => Math.round(n * 10 ** p) / 10 ** p
+
+    const modelViews = models.map((m) => {
+      const b = blended(m)
+      const suggestedMultiplier =
+        baselineBlended > 0 ? Math.max(0.1, round(b / baselineBlended, 2)) : 1
+      const costPerCreditCents =
+        baseCredits > 0 && m.creditMultiplier > 0
+          ? b / (baseCredits * m.creditMultiplier)
+          : 0
+      return {
+        code: m.code,
+        label: m.label,
+        enabled: m.enabled,
+        inputPricePer1MCents: m.inputPricePer1MCents,
+        outputPricePer1MCents: m.outputPricePer1MCents,
+        blendedCentsPer1M: round(b, 2),
+        currentMultiplier: m.creditMultiplier,
+        suggestedMultiplier,
+        costPerCreditCents: round(costPerCreditCents, 6),
+      }
+    })
+    const costByCode = new Map(modelViews.map((v) => [v.code, v.costPerCreditCents]))
+
+    const planViews = plans
+      .filter(
+        (p) =>
+          p.priceCents > 0 || this.plans.getLimits(p).creditsPerWeek != null,
+      )
+      .map((p) => {
+        const limits = this.plans.getLimits(p)
+        const cpw = limits.creditsPerWeek ?? null
+        const allowed = enabled.filter((m) =>
+          this.models.allowedCodes(m).includes(p.code),
+        )
+        let worst = 0
+        let worstModelCode: string | null = null
+        for (const m of allowed) {
+          const c = costByCode.get(m.code) ?? 0
+          if (c >= worst) {
+            worst = c
+            worstModelCode = m.code
+          }
+        }
+        const unlimited = cpw == null
+        const monthlyCredits = cpw == null ? null : cpw * 4.33
+        const worstCaseMonthlyCostCents =
+          monthlyCredits == null ? null : Math.round(monthlyCredits * worst)
+        const expectedMonthlyCostCents =
+          worstCaseMonthlyCostCents == null
+            ? null
+            : Math.round(
+                (worstCaseMonthlyCostCents * (settings.assumedUsagePercent ?? 25)) /
+                  100,
+              )
+        const infra = settings.infraCostCentsPerUser ?? 0
+        const marginCents =
+          expectedMonthlyCostCents == null
+            ? null
+            : p.priceCents - expectedMonthlyCostCents - infra
+        const worstCaseMarginCents =
+          worstCaseMonthlyCostCents == null
+            ? null
+            : p.priceCents - worstCaseMonthlyCostCents - infra
+        return {
+          code: p.code,
+          name: p.name,
+          priceCents: p.priceCents,
+          creditsPerWeek: cpw,
+          creditsPer5h: limits.creditsPer5h ?? null,
+          unlimited,
+          worstModelCode,
+          worstCostPerCreditCents: round(worst, 6),
+          worstCaseMonthlyCostCents,
+          expectedMonthlyCostCents,
+          marginCents,
+          worstCaseMarginCents,
+          marginNegative:
+            worstCaseMarginCents != null
+              ? worstCaseMarginCents < 0
+              : unlimited && allowed.length > 0,
+        }
+      })
+
+    return {
+      settings: {
+        baselineCreditsPer1M: baseCredits,
+        assumedInputRatio: ratio,
+        assumedUsagePercent: settings.assumedUsagePercent ?? 25,
+        infraCostCentsPerUser: settings.infraCostCentsPerUser ?? 0,
+        baselineModelCode: baseline?.code ?? null,
+      },
+      models: modelViews,
+      plans: planViews,
     }
   }
 
@@ -406,6 +541,34 @@ export class AdminService {
       count: g._count._all,
     }))
 
+    // Profit: MRR-ish revenue (active paid subscriptions' plan price) vs real
+    // AI cost (credit ledger). Ledger is empty until the gateway ships — zero
+    // is handled gracefully.
+    const [creditAgg, revenueRows, creditModelRows] = await Promise.all([
+      this.prisma.creditLedger.aggregate({
+        _sum: { credits: true, realCostCents: true },
+      }),
+      this.prisma.$queryRaw<Array<{ cents: bigint | number }>>`
+        SELECT COALESCE(SUM(p.priceCents), 0) AS cents
+        FROM subscriptions s
+        JOIN plans p ON p.id = s.plan_id
+        WHERE s.status = 'active'`,
+      this.prisma.creditLedger.groupBy({
+        by: ['modelCode'],
+        _sum: { credits: true, realCostCents: true },
+      }),
+    ])
+    const aiCostCents = creditAgg._sum.realCostCents ?? 0
+    const creditsConsumed = creditAgg._sum.credits ?? 0
+    const revenueCents = Number(revenueRows[0]?.cents ?? 0)
+    const creditsByModel = creditModelRows
+      .map((r) => ({
+        modelCode: r.modelCode,
+        credits: r._sum.credits ?? 0,
+        costCents: r._sum.realCostCents ?? 0,
+      }))
+      .sort((a, b) => b.credits - a.credits)
+
     return {
       totals: { totalUsers, activeUsers24h, activeUsers7d, activeUsers30d },
       statusBreakdown,
@@ -420,6 +583,13 @@ export class AdminService {
       activeByDay,
       usageByProvider,
       usageByTool,
+      profit: {
+        revenueCents,
+        aiCostCents,
+        marginCents: revenueCents - aiCostCents,
+        creditsConsumed,
+      },
+      creditsByModel,
       topUsers,
       canceledSubscriptions,
     }

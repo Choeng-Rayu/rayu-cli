@@ -5,10 +5,14 @@ import { AuthModule } from './auth/auth.module'
 import configuration from './config/configuration'
 import { FeedbackModule } from './feedback/feedback.module'
 import { HealthModule } from './health/health.module'
+import { ModelsModule } from './models/models.module'
+import { ModelsService } from './models/models.service'
 import { PaymentsModule } from './payments/payments.module'
 import { PlansModule } from './plans/plans.module'
 import { PlansService } from './plans/plans.service'
 import { PrismaModule } from './prisma/prisma.module'
+import { AppSettingsModule } from './settings/app-settings.module'
+import { AppSettingsService } from './settings/app-settings.service'
 import { UsageModule } from './usage/usage.module'
 import { UsersModule } from './users/users.module'
 
@@ -18,6 +22,8 @@ import { UsersModule } from './users/users.module'
     PrismaModule,
     HealthModule,
     PlansModule,
+    ModelsModule,
+    AppSettingsModule,
     UsersModule,
     AuthModule,
     UsageModule,
@@ -27,11 +33,18 @@ import { UsersModule } from './users/users.module'
   ],
 })
 export class AppModule implements OnModuleInit {
-  constructor(private readonly plans: PlansService) {}
+  constructor(
+    private readonly plans: PlansService,
+    private readonly models: ModelsService,
+    private readonly settings: AppSettingsService,
+  ) {}
 
-  // Idempotently ensure the plan catalog exists on every boot.
+  // Idempotently ensure the plan catalog, hosted models, and global settings
+  // exist on every boot (non-destructive; never overwrites admin edits).
   async onModuleInit(): Promise<void> {
     if (process.env.SKIP_PLAN_SEED === 'true') return
     await this.plans.seedDefaults()
+    await this.models.seedDefaults()
+    await this.settings.seedDefaults()
   }
 }

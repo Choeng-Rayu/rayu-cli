@@ -2,21 +2,26 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Module,
   Param,
   ParseIntPipe,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from '@nestjs/common'
 import {
   ArrayNotEmpty,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
   ValidateIf,
@@ -34,8 +39,12 @@ import { AuthModule } from '../auth/auth.module'
 import { RayuAuthGuard } from '../auth/rayu-auth.guard'
 import { Roles } from '../auth/roles.decorator'
 import { RolesGuard } from '../auth/roles.guard'
+import { ModelsModule } from '../models/models.module'
+import { ModelsService } from '../models/models.service'
 import { PlansModule } from '../plans/plans.module'
 import { PrismaModule } from '../prisma/prisma.module'
+import { AppSettingsModule } from '../settings/app-settings.module'
+import { AppSettingsService } from '../settings/app-settings.service'
 import { UsageModule } from '../usage/usage.module'
 import { UsersModule } from '../users/users.module'
 import { AdminService, AdminStats } from './admin.service'
@@ -85,7 +94,126 @@ export class UpdatePlanDto {
   maxDailyTurns?: number | null
 
   @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsInt()
+  @Min(0)
+  creditsPerWeek?: number | null
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsInt()
+  @Min(0)
+  creditsPer5h?: number | null
+
+  @IsOptional()
+  @IsBoolean()
+  topUpEnabled?: boolean
+
+  @IsOptional()
   features?: Record<string, unknown>
+}
+
+class ModelFieldsDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  label?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  provider?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  upstreamBaseUrl?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  upstreamModelId?: string
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  inputPricePer1MCents?: number
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  outputPricePer1MCents?: number
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  creditMultiplier?: number
+
+  @IsOptional()
+  @IsArray()
+  @IsIn(PLAN_CODES as unknown as string[], { each: true })
+  allowedPlanCodes?: string[]
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean
+}
+
+export class CreateModelDto extends ModelFieldsDto {
+  @IsString()
+  @MaxLength(64)
+  code!: string
+}
+
+export class UpdateModelDto extends ModelFieldsDto {}
+
+export class UpdateSettingsDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  baselineCreditsPer1M?: number
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  topupCentsPer1kCredits?: number
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxConcurrentStreams?: number
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxTokensPerRequest?: number
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxRequestsPer5h?: number
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  baselineModelCode?: string
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  assumedInputRatio?: number
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  assumedUsagePercent?: number
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  infraCostCentsPerUser?: number
 }
 
 // All admin routes require an active admin/superadmin session.
@@ -93,7 +221,11 @@ export class UpdatePlanDto {
 @UseGuards(RayuAuthGuard, RolesGuard)
 @Roles('admin', 'superadmin')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly models: ModelsService,
+    private readonly settings: AppSettingsService,
+  ) {}
 
   @Get('users')
   listUsers(
@@ -188,6 +320,11 @@ export class AdminController {
     return this.admin.listPlans()
   }
 
+  @Get('credit-projection')
+  creditProjection() {
+    return this.admin.creditProjection()
+  }
+
   @Patch('plans/:code')
   async updatePlan(
     @Param('code') code: string,
@@ -210,13 +347,58 @@ export class AdminController {
       priceCents: body.priceCents,
       availability: body.availability,
       maxDailyTurns: body.maxDailyTurns,
+      creditsPerWeek: body.creditsPerWeek,
+      creditsPer5h: body.creditsPer5h,
+      topUpEnabled: body.topUpEnabled,
       features,
     })
+  }
+
+  // --- Hosted models (reseller catalog) ---
+
+  @Get('models')
+  listModels() {
+    return this.models.findAll()
+  }
+
+  @Post('models')
+  createModel(@Body() body: CreateModelDto) {
+    return this.models.create(body)
+  }
+
+  @Patch('models/:code')
+  updateModel(@Param('code') code: string, @Body() body: UpdateModelDto) {
+    return this.models.update(code, body)
+  }
+
+  @Delete('models/:code')
+  deleteModel(@Param('code') code: string) {
+    return this.models.remove(code)
+  }
+
+  // --- Global credit settings ---
+
+  @Get('credit-settings')
+  getCreditSettings() {
+    return this.settings.get()
+  }
+
+  @Patch('credit-settings')
+  updateCreditSettings(@Body() body: UpdateSettingsDto) {
+    return this.settings.update(body)
   }
 }
 
 @Module({
-  imports: [UsersModule, UsageModule, AuthModule, PrismaModule, PlansModule],
+  imports: [
+    UsersModule,
+    UsageModule,
+    AuthModule,
+    PrismaModule,
+    PlansModule,
+    ModelsModule,
+    AppSettingsModule,
+  ],
   controllers: [AdminController],
   providers: [AdminService],
 })

@@ -18,7 +18,7 @@ from the ruflo / agent-swarm patterns (no external harness, no HNSW/SONA infra).
 
 Each specialist has: a tight role prompt, **anti-drift guardrails** (a
 `DRIFT_FLAG:` protocol re-injected every turn), **native persistent memory**
-(`memory: project` → `.claude/agent-memory/<AGENT>/MEMORY.md`, the
+(`memory: project` → `.rayu/agent-memory/<AGENT>/MEMORY.md`, the
 "search-before / store-after" pattern), and no hard-coded model.
 
 ## How it runs (orchestrator / executor split)
