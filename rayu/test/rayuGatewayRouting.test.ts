@@ -177,6 +177,23 @@ describe('makeGatewayRoutingFetch', () => {
     expect(await res.text()).toBe('gw-ok')
   })
 
+  test('surfaces a daily-limit 429 (X-Rayu-Limit) instead of falling back to direct', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    await signIn()
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner(
+      () =>
+        new Response('{"reason":"daily_turn_limit"}', {
+          status: 429,
+          headers: { 'x-rayu-limit': 'daily_turn_limit' }, // no x-rayu-proxied
+        }),
+    )
+    const res = await m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, { method: 'POST' })
+    expect(calls.length).toBe(1) // MUST NOT fall back to a direct provider call
+    expect(res.status).toBe(429)
+    expect(await res.text()).toContain('daily_turn_limit')
+  })
+
   test('fail-safe to DIRECT when the response lacks the proxied marker (old gateway 404 / redirect)', async () => {
     process.env.USE_RAYU_OAUTH = 'true'
     await signIn()

@@ -32,6 +32,11 @@ import { isEnvTruthy } from '../../../utils/envUtils.js'
  * fail safe to a direct provider call. */
 const PROXIED_HEADER = 'x-rayu-proxied'
 
+/** Header the gateway sets on an INTENTIONAL block (e.g. the per-day turn cap).
+ * Such a response must be surfaced to the user, NOT failed-safe to a direct call
+ * — otherwise the cap is trivially bypassed. */
+const LIMIT_HEADER = 'x-rayu-limit'
+
 /**
  * Opt-out switch for gateway routing, independent of USE_RAYU_OAUTH. Set
  * RAYU_ROUTE_VIA_GATEWAY=false to send API-key providers STRAIGHT to the
@@ -161,6 +166,12 @@ export function makeGatewayRoutingFetch(
 
     try {
       const res = await inner(gatewayUrl, { ...init, headers })
+      // An intentional gateway block (e.g. the per-day turn cap) must be
+      // surfaced to the user, not bypassed — return it as-is even though it is
+      // not a "proxied" upstream response.
+      if (res.headers.get(LIMIT_HEADER)) {
+        return res
+      }
       // The gateway tags every response it actually proxied with X-Rayu-Proxied.
       // If that marker is absent — an older gateway without /v1/proxy (404), a
       // redirect, a proxy error, an HTML error page, etc. — fall back to a

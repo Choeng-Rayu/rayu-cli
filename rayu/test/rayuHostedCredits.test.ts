@@ -70,6 +70,41 @@ describe('rayu usage formatter', () => {
   test('compact line format', () => {
     expect(formatRayuUsageLine(status())).toBe('Rayu: 49 / 50 credits left')
   })
+
+  test('shows the daily turn cap when set', () => {
+    const s = formatRayuUsageSummary(
+      status({
+        plan: 'free',
+        planName: 'Free',
+        priceCents: 0,
+        creditsPerPeriod: null,
+        remainingCredits: null,
+        allowanceTokens: null,
+        usedTokens: null,
+        remainingTokens: null,
+        topUpEnabled: false,
+        maxDailyTurns: 50,
+        turnsUsedToday: 12,
+        turnsRemaining: 38,
+        turnsResetSeconds: 7200,
+      }),
+    )
+    expect(s).toContain('Daily turns: 12 / 50 used')
+    expect(s).toContain('38 left')
+  })
+
+  test('compact line shows turns left when there is no credit allowance', () => {
+    expect(
+      formatRayuUsageLine(
+        status({
+          creditsPerPeriod: null,
+          maxDailyTurns: 50,
+          turnsUsedToday: 12,
+          turnsRemaining: 38,
+        }),
+      ),
+    ).toBe('Rayu: 38 / 50 turns left today')
+  })
 })
 
 const entWith = (codes: string[], planCode = 'pro'): RayuEntitlements => ({

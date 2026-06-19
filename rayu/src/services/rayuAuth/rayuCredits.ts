@@ -22,6 +22,11 @@ export interface RayuCreditStatus {
   periodEnd: string | null
   topupBalance: number
   topUpEnabled: boolean
+  // Per-day turn cap (maxDailyTurns). Optional so an older gateway still parses.
+  maxDailyTurns?: number | null
+  turnsUsedToday?: number
+  turnsRemaining?: number | null
+  turnsResetSeconds?: number
 }
 
 /** Fetch live usage from the gateway. Returns null when signed out, the gateway
@@ -79,11 +84,24 @@ export function formatRayuUsageSummary(c: RayuCreditStatus): string {
   if (c.topUpEnabled) {
     lines.push(`Top-up balance: ${c.topupBalance.toLocaleString()} credits`)
   }
+  if (c.maxDailyTurns != null && c.maxDailyTurns > 0) {
+    const used = c.turnsUsedToday ?? 0
+    const left = c.turnsRemaining ?? Math.max(0, c.maxDailyTurns - used)
+    lines.push(
+      `Daily turns: ${used.toLocaleString()} / ${c.maxDailyTurns.toLocaleString()} used · ${left.toLocaleString()} left (resets in ${fmtReset(c.turnsResetSeconds ?? 0)})`,
+    )
+  }
   return lines.join('\n')
 }
 
 /** Compact one-line summary (e.g. for a status segment). */
 export function formatRayuUsageLine(c: RayuCreditStatus): string {
-  if (c.creditsPerPeriod == null) return `Rayu: ${c.planName || c.plan}`
+  if (c.creditsPerPeriod == null) {
+    if (c.maxDailyTurns != null && c.maxDailyTurns > 0) {
+      const left = c.turnsRemaining ?? Math.max(0, c.maxDailyTurns - (c.turnsUsedToday ?? 0))
+      return `Rayu: ${left.toLocaleString()} / ${c.maxDailyTurns.toLocaleString()} turns left today`
+    }
+    return `Rayu: ${c.planName || c.plan}`
+  }
   return `Rayu: ${(c.remainingCredits ?? 0).toLocaleString()} / ${c.creditsPerPeriod.toLocaleString()} credits left`
 }

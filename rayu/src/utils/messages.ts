@@ -3757,7 +3757,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       }
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `The following skills are available for use with the Skill tool:\n\n${attachment.content}`,
+          content: `The following skills are available via the Skill tool. Before you start the user's task, you MUST first scan this list and decide whether any skill matches what is being asked. A skill is a pre-built, validated procedure for that kind of task — if one clearly matches, invoke it with the Skill tool BEFORE doing any work or writing any other response, and follow the skill's procedure instead of improvising your own. Pick the single most relevant skill (if several could apply, choose the most specific). Only skip this when no listed skill genuinely fits the task — do not force a skill that does not match, and do not claim to use a skill without actually calling the tool.\n\n${attachment.content}`,
           isMeta: true,
         }),
       ])
