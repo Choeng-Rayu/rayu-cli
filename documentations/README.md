@@ -1,7 +1,8 @@
 # Rayu-CLI Documentation
 
-Rayu-CLI is a terminal-based AI coding agent. It is a self-branded, multi-provider
-fork of the Claude Code CLI that lets you **bring your own API key** and use
+> **Browse online:** https://rayu-web.vercel.app/docs
+
+Rayu-CLI is a terminal-based AI coding agent. It lets you **bring your own API key** and use
 **any OpenAI-compatible provider** (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword,
 OpenAI, OpenRouter, local servers) as well as Anthropic — with free model
 switching, MCP support, and the full built-in tool suite.
@@ -23,8 +24,10 @@ switching, MCP support, and the full built-in tool suite.
 | 9 | [Diagnostics & Privacy](./09-diagnostics-privacy.md) | Bug/issue logging, telemetry, network posture |
 | 10 | [Troubleshooting](./10-troubleshooting.md) | Common errors and fixes |
 | 11 | [Codebase Knowledge Graph](./11-knowledge-graph.md) | Local indexing, querying, and tracing using `/graphify` |
-| 12 | [Image Generation](./12-image-generation.md) | Built-in `GenerateImage` tool (NVIDIA), save/inline/terminal display |
-| 13 | [Building binaries](./13-binaries.md) | Cross-platform standalone executables, versioning, install |
+| 12 | [Specialist Swarm](./12-specialist-swarm.md) | Orchestrating parallel specialist agents (`/collaborator_swarm`) |
+| 13 | [Image Generation](./12-image-generation.md) | Built-in `GenerateImage` tool (NVIDIA), save/inline/terminal display |
+| 14 | [Building binaries](./13-binaries.md) | Cross-platform standalone executables, versioning, install |
+| 15 | [Telegram Bot](./15-telegram-bot.md) | Linking a Telegram bot to drive the CLI remotely |
 
 ## 30-second tour
 
@@ -52,7 +55,6 @@ In a session:
 
 - **Provider** — an API endpoint + key. Two kinds: `anthropic` (Anthropic API)
   and `openai-compatible` (everything else, via an OpenAI ↔ Anthropic translation layer).
-- **Config home** — `~/.rayu` by default; an existing `~/.claude` (Claude Code)
-  is used automatically if `~/.rayu` is absent. See [Configuration](./05-configuration.md).
+- **Config home** — `~/.rayu` by default. See [Configuration](./05-configuration.md).
 - **Diagnostics** — runtime bugs/issues/vulnerabilities are logged to
   `~/.rayu/diagnostics.jsonl`. See [Diagnostics](./09-diagnostics-privacy.md).

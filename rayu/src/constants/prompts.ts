@@ -396,6 +396,9 @@ function getSessionSpecificGuidanceSection(
         ]
       : []),
     hasSkills
+      ? `Skills are pre-built, validated procedures for specific tasks. At the START of every task, FIRST review the available skills (listed via the ${SKILL_TOOL_NAME} tool and in system-reminder messages) and decide whether one matches the user's request. If a skill clearly matches, invoke it with the ${SKILL_TOOL_NAME} tool BEFORE doing the work and follow its procedure rather than improvising — prefer a matching skill over an ad-hoc approach. Choose the single most relevant skill; if none clearly fits, proceed normally without forcing one.`
+      : null,
+    hasSkills
       ? `/<skill-name> (e.g., /commit) is shorthand for users to invoke a user-invocable skill. When executed, the skill gets expanded to a full prompt. Use the ${SKILL_TOOL_NAME} tool to execute them. IMPORTANT: Only use ${SKILL_TOOL_NAME} for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.`
       : null,
     DISCOVER_SKILLS_TOOL_NAME !== null &&

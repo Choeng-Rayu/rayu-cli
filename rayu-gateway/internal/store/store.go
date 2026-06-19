@@ -38,13 +38,13 @@ type AppSettings struct {
 
 // Plan mirrors a plan, with the credit fields decoded from its limits JSON.
 type Plan struct {
-	ID             int64  `json:"-"`
-	Code           string `json:"code"`
-	Name           string `json:"name"`
-	PriceCents     int    `json:"priceCents"`
-	CreditsPerWeek *int64 `json:"creditsPerWeek"` // nil = unlimited
-	CreditsPer5h   *int64 `json:"creditsPer5h"`
-	TopUpEnabled   bool   `json:"topUpEnabled"`
+	ID               int64  `json:"-"`
+	Code             string `json:"code"`
+	Name             string `json:"name"`
+	PriceCents       int    `json:"priceCents"`
+	CreditsPerPeriod *int64 `json:"creditsPerPeriod"` // per-billing-period balance; nil = none
+	TopUpEnabled     bool   `json:"topUpEnabled"`
+	MaxDailyTurns    *int64 `json:"maxDailyTurns"` // per-day turn cap; nil = unlimited
 }
 
 // Store wraps the database handle.
@@ -71,27 +71,39 @@ func (s *Store) Close() error { return s.db.Close() }
 // DB exposes the underlying handle (used by the ledger writer).
 func (s *Store) DB() *sql.DB { return s.db }
 
-// parseLimits decodes the credit fields from a plan's limits JSON.
-func parseLimits(raw []byte) (cpw, cp5h *int64, topup bool) {
+// planLimits holds the gateway-relevant fields decoded from a plan's limits JSON.
+type planLimits struct {
+	creditsPerPeriod *int64
+	maxDailyTurns    *int64
+	topUpEnabled     bool
+}
+
+// parseLimits decodes the gateway-relevant fields from a plan's limits JSON.
+// All fields are optional; a missing/invalid blob yields the zero value
+// (nil caps = unlimited, top-up disabled).
+func parseLimits(raw []byte) planLimits {
+	out := planLimits{}
 	if len(raw) == 0 {
-		return nil, nil, false
+		return out
 	}
 	var l struct {
-		CreditsPerWeek *float64 `json:"creditsPerWeek"`
-		CreditsPer5h   *float64 `json:"creditsPer5h"`
-		TopUpEnabled   bool     `json:"topUpEnabled"`
+		CreditsPerPeriod *float64 `json:"creditsPerPeriod"`
+		MaxDailyTurns    *float64 `json:"maxDailyTurns"`
+		TopUpEnabled     bool     `json:"topUpEnabled"`
 	}
 	if json.Unmarshal(raw, &l) != nil {
-		return nil, nil, false
+		return out
 	}
-	toI := func(f *float64) *int64 {
-		if f == nil {
-			return nil
-		}
-		v := int64(*f)
-		return &v
+	out.topUpEnabled = l.TopUpEnabled
+	if l.CreditsPerPeriod != nil {
+		v := int64(*l.CreditsPerPeriod)
+		out.creditsPerPeriod = &v
 	}
-	return toI(l.CreditsPerWeek), toI(l.CreditsPer5h), l.TopUpEnabled
+	if l.MaxDailyTurns != nil {
+		v := int64(*l.MaxDailyTurns)
+		out.maxDailyTurns = &v
+	}
+	return out
 }
 
 // LoadModels returns all hosted_models rows.
@@ -150,30 +162,40 @@ func (s *Store) PlanByCode(ctx context.Context, code string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.CreditsPerWeek, p.CreditsPer5h, p.TopUpEnabled = parseLimits(limits)
+	lim := parseLimits(limits)
+	p.CreditsPerPeriod, p.TopUpEnabled, p.MaxDailyTurns = lim.creditsPerPeriod, lim.topUpEnabled, lim.maxDailyTurns
 	return &p, nil
 }
 
-// ActivePlan returns the user's active, non-expired plan, falling back to the
-// free plan when there is no active subscription or it has expired.
-func (s *Store) ActivePlan(ctx context.Context, userID int64, now time.Time) (*Plan, error) {
+// ActivePlan returns the user's active, non-expired plan plus the period end,
+// falling back to the free plan (periodEnd nil) when there is no active
+// subscription or it has expired.
+func (s *Store) ActivePlan(ctx context.Context, userID int64, now time.Time) (*Plan, *time.Time, error) {
 	var p Plan
 	var limits []byte
 	var periodEnd sql.NullTime
 	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.code,p.name,p.priceCents,p.limits,s.currentPeriodEnd FROM subscriptions s JOIN plans p ON p.id=s.plan_id WHERE s.user_id=? AND s.status='active' ORDER BY s.startedAt DESC LIMIT 1`, userID).
 		Scan(&p.ID, &p.Code, &p.Name, &p.PriceCents, &limits, &periodEnd)
 	if err == sql.ErrNoRows {
-		return s.PlanByCode(ctx, "free")
+		pl, e := s.PlanByCode(ctx, "free")
+		return pl, nil, e
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// 30-day expiry: a paid period that has lapsed reverts to free.
 	if periodEnd.Valid && periodEnd.Time.Before(now) {
-		return s.PlanByCode(ctx, "free")
+		pl, e := s.PlanByCode(ctx, "free")
+		return pl, nil, e
 	}
-	p.CreditsPerWeek, p.CreditsPer5h, p.TopUpEnabled = parseLimits(limits)
-	return &p, nil
+	lim := parseLimits(limits)
+	p.CreditsPerPeriod, p.TopUpEnabled, p.MaxDailyTurns = lim.creditsPerPeriod, lim.topUpEnabled, lim.maxDailyTurns
+	var pe *time.Time
+	if periodEnd.Valid {
+		t := periodEnd.Time
+		pe = &t
+	}
+	return &p, pe, nil
 }
 
 // TopupBalance returns remaining pay-as-you-go credits: granted (paid topups)
@@ -191,6 +213,26 @@ func (s *Store) TopupBalance(ctx context.Context, userID int64) (int64, error) {
 		bal = 0
 	}
 	return bal, nil
+}
+
+// InsertUsageEvent records a tracking row for a BYO-key request routed through
+// the gateway proxy and bumps the user's lastActiveAt. This mirrors the backend
+// /usage endpoint (table usage_events) but is written server-side so it cannot
+// be skipped by the client. No credits are charged on this path. source is
+// typically "gateway"; model may be empty (stored as NULL).
+func (s *Store) InsertUsageEvent(ctx context.Context, userID int64, provider, model, source string) error {
+	var modelArg any
+	if model != "" {
+		modelArg = model
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO usage_events (user_id, provider, model, source) VALUES (?,?,?,?)`,
+		userID, provider, modelArg, source,
+	); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET lastActiveAt=NOW(3) WHERE id=?`, userID)
+	return err
 }
 
 // InsertLedger writes a durable credit consumption row (source = "plan"|"topup").

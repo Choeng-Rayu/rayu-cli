@@ -12,11 +12,11 @@ export const BACKEND_COLLABORATOR = defineCollaborator({
   withStackAwareness: true,
   allowedSubagents: [
     'backend-design',
+    'builder',
     'review',
     'fix',
     'linter',
     'Explore',
-    'general-purpose',
   ],
   owns: [
     'API routes (method, path, auth, request/response shapes)',

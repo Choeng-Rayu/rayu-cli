@@ -1,16 +1,16 @@
 // Tiered swarm context — the shared "project brief" + per-domain artifact that
-// lets each specialist receive a small shared header plus ONLY its dependency
+// lets each collaborator receive a small shared header plus ONLY its dependency
 // sections, instead of the orchestrator hand-copying everything into every
-// prompt. Cuts tokens, keeps specialists aligned on one goal, and (because the
+// prompt. Cuts tokens, keeps collaborators aligned on one goal, and (because the
 // injected block is deterministic) is friendly to per-agent prompt caching.
 //
 // Storage (.rayu/swarm/, project-local):
-//   shared.json     — written ONCE by PA-AGENT (goal/stack/flow/constraints).
-//                     Read-only afterward; injected into ALL specialists.
-//   <AGENT>.md      — one file per domain (PA/DB/BE/SEC/FE/MOB/DO), each written
-//                     ONLY by its owning specialist. Per-file ownership avoids
-//                     the concurrent-write race a single shared file would have
-//                     when a parallel wave runs multiple specialists at once.
+//   shared.json     — written ONCE by the planner (goal/stack/flow/constraints/needs).
+//                     Read-only afterward; injected into ALL collaborators.
+//   <DOMAIN>.md     — one file per collaborator (FRONTEND/BACKEND/SECURITY/
+//                     DEPLOY/MOBILE), each written ONLY by its owning collaborator.
+//                     Per-file ownership avoids the concurrent-write race a single
+//                     shared file would have when a parallel wave runs at once.
 //
 // Selection is STATIC (DOMAIN_DEPENDENCIES) — deterministic, zero-latency, no
 // embeddings. RAG is intentionally left as an interface seam (ContextRetriever)
@@ -19,36 +19,47 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { getCwd } from '../../utils/cwd.js'
 
-/** The small shared brief every specialist receives (kept < ~500 tokens). */
+/** A disjoint unit of work within a domain that ONE `builder` owns and builds in
+ *  parallel with the others. `area` is the non-overlapping file area it may touch
+ *  (glob(s)/paths) — disjoint areas are what make parallel writes safe. */
+export type SwarmSlice = {
+  name: string
+  task?: string
+  area?: string
+}
+
+/** The small shared brief every collaborator receives (kept < ~500 tokens). */
 export type SwarmShared = {
   goal: string
   stack: string
   flow: string
   constraints: string[]
-  /** Specialists PA declared this task needs (domain tokens, e.g. ['be','db']).
-   *  Drives which specialists the orchestrator spawns. Empty/absent → all. */
+  /** Collaborators the planner declared this task needs (collaborator agentTypes,
+   *  e.g. ['frontend','backend','security']; legacy short tokens fe/be/db/sec/
+   *  mob/do also accepted). Drives which collaborators the orchestrator spawns.
+   *  Empty/absent → all. */
   needs?: string[]
+  /** Per-domain parallel work breakdown: collaborator agentType → the disjoint
+   *  slices it should fan out as parallel `builder`s. Planner-decided. */
+  slices?: Record<string, SwarmSlice[]>
+  /** Soft cap on concurrent builders per wave (planner hint). The resolved cap
+   *  also honors RAYU_SWARM_MAX_PARALLEL — see getSwarmMaxParallel(). */
+  cap?: number
 }
 
 /**
- * Which sections each specialist reads: always its own shared brief plus the
- * upstream domains it depends on. 'shared' refers to shared.json; the rest are
- * <DOMAIN>.md files. Two key namespaces coexist: the legacy specialist agent
- * types (PA/DB/BE/SEC/FE/MOB/DO — consumed by built-in/specialists.ts) and the
- * Tier-2 collaborator agentTypes (backend/frontend/mobile/security/deploy).
+ * Which sections each agent reads: always the shared brief plus the upstream
+ * domains it depends on. 'shared' refers to shared.json; the rest are
+ * <DOMAIN>.md files (the uppercase domain of the owning collaborator's
+ * agentType). Keyed by the planner + the Tier-2 collaborator agentTypes
+ * (frontend/backend/mobile/security/deploy). The data layer is part of backend.
  */
 export const DOMAIN_DEPENDENCIES: Record<string, string[]> = {
-  // Legacy specialist agent types (still consumed by specialists.ts prompts).
-  'PA-AGENT': ['shared'],
-  'DB-AGENT': ['shared', 'PA'],
-  'BE-AGENT': ['shared', 'PA', 'DB', 'SEC'],
-  'SEC-AGENT': ['shared', 'PA', 'DB'],
-  'FE-AGENT': ['shared', 'PA', 'BE', 'SEC'],
-  'MOB-AGENT': ['shared', 'PA', 'BE', 'SEC', 'FE'],
-  'DO-AGENT': ['shared', 'PA', 'BE', 'DB'],
-  // Tier-2 Collaborators (keyed by their agentType → <DOMAIN>.md). They read the
-  // shared brief plus the upstream collaborator sections they depend on, and
-  // write their own <DOMAIN>.md section so the swarm stays aligned.
+  // The planner writes the shared brief and reads only the brief.
+  planner: ['shared'],
+  // Tier-2 Collaborators (keyed by agentType → <DOMAIN>.md). Each reads the
+  // shared brief plus the upstream collaborator sections it depends on, and
+  // writes its own <DOMAIN>.md section so the swarm stays aligned.
   backend: ['shared', 'SECURITY'],
   frontend: ['shared', 'BACKEND', 'SECURITY'],
   mobile: ['shared', 'BACKEND', 'SECURITY', 'FRONTEND'],
@@ -97,30 +108,103 @@ function normalizeDomain(domain: string): string {
   return domain.trim().toUpperCase().replace(/-AGENT$/, '')
 }
 
-/** Normalize a domain token/agent type to a full agent type: 'be' -> 'BE-AGENT'. */
-export function normalizeAgentType(token: string): string {
-  return `${normalizeDomain(token)}-AGENT`
+/**
+ * Map a `needs` token to a collaborator agentType. Accepts the collaborator
+ * names directly (frontend/backend/security/deploy/mobile) and the legacy short
+ * tokens (fe/be/db/sec/mob/do) for back-compat. The data layer folds into
+ * backend (db → backend); there is no separate database collaborator.
+ */
+const NEED_TO_COLLABORATOR: Record<string, string> = {
+  fe: 'frontend',
+  frontend: 'frontend',
+  be: 'backend',
+  backend: 'backend',
+  db: 'backend',
+  data: 'backend',
+  sec: 'security',
+  security: 'security',
+  mob: 'mobile',
+  mobile: 'mobile',
+  do: 'deploy',
+  devops: 'deploy',
+  deploy: 'deploy',
+}
+
+/** Normalize a `needs` token to a collaborator agentType (see NEED_TO_COLLABORATOR). */
+export function normalizeNeed(token: string): string {
+  const t = token.trim().toLowerCase().replace(/-agent$/, '')
+  return NEED_TO_COLLABORATOR[t] ?? t
 }
 
 /**
- * Pick which specialists to spawn from PA's declared `needs`. Pure.
+ * Pick which collaborators to spawn from the planner's declared `needs`. Pure.
  * - no/empty needs → the full list (back-compat: spawn everything);
- * - otherwise → the declared subset, intersected with the known agents, with
- *   PA-AGENT always included (it's the planner and writes the shared brief).
+ * - otherwise → the declared subset mapped to collaborator agentTypes,
+ *   intersected with the known collaborators (order follows allAgentTypes).
+ * The planner runs first as a subagent (not a collaborator), so it is not part
+ * of this selection.
  */
 export function selectAgentsByNeeds(
   needs: string[] | undefined,
   allAgentTypes: string[],
 ): string[] {
   if (!needs || needs.length === 0) return allAgentTypes
-  const wanted = new Set(needs.map(normalizeAgentType))
-  wanted.add('PA-AGENT')
+  const wanted = new Set(needs.map(normalizeNeed))
   return allAgentTypes.filter(t => wanted.has(t))
 }
 
 /** Declared needs from the shared brief (domain tokens), or undefined. */
 export function readNeeds(): string[] | undefined {
   return readShared()?.needs
+}
+
+/** Default soft cap on concurrent builders per wave (overridable). */
+export const DEFAULT_SWARM_MAX_PARALLEL = 5
+
+/**
+ * The resolved soft cap on concurrent WRITERS (builders) per wave:
+ * RAYU_SWARM_MAX_PARALLEL env → the planner's shared.json "cap" → default (5).
+ * Read-only research is unbounded; this governs parallel writers only, to avoid
+ * file-area conflicts and provider rate limits. >cap slices ⇒ successive waves.
+ */
+export function getSwarmMaxParallel(): number {
+  const env = parseInt(process.env.RAYU_SWARM_MAX_PARALLEL || '', 10)
+  if (!isNaN(env) && env > 0) return env
+  const cap = readShared()?.cap
+  return cap && cap > 0 ? cap : DEFAULT_SWARM_MAX_PARALLEL
+}
+
+/** The planner's parallel slice plan for a collaborator domain (agentType), or []. */
+export function getSlicesForDomain(domain: string): SwarmSlice[] {
+  const slices = readShared()?.slices
+  if (!slices) return []
+  return slices[domain] ?? slices[normalizeNeed(domain)] ?? []
+}
+
+/** Parse the planner's per-domain slice plan defensively (drops malformed entries). */
+function parseSlices(raw: unknown): Record<string, SwarmSlice[]> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out: Record<string, SwarmSlice[]> = {}
+  for (const [domain, list] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(list)) continue
+    const slices: SwarmSlice[] = []
+    for (const item of list) {
+      if (
+        item &&
+        typeof item === 'object' &&
+        typeof (item as { name?: unknown }).name === 'string'
+      ) {
+        const s = item as { name: string; task?: unknown; area?: unknown }
+        slices.push({
+          name: s.name,
+          ...(typeof s.task === 'string' ? { task: s.task } : {}),
+          ...(typeof s.area === 'string' ? { area: s.area } : {}),
+        })
+      }
+    }
+    if (slices.length > 0) out[domain] = slices
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 /** Read and parse the shared brief; undefined if missing or invalid. */
@@ -130,6 +214,7 @@ export function readShared(): SwarmShared | undefined {
   try {
     const parsed = JSON.parse(readFileSync(p, 'utf8')) as Partial<SwarmShared>
     if (!parsed || typeof parsed !== 'object') return undefined
+    const slices = parseSlices((parsed as { slices?: unknown }).slices)
     return {
       goal: typeof parsed.goal === 'string' ? parsed.goal : '',
       stack: typeof parsed.stack === 'string' ? parsed.stack : '',
@@ -143,6 +228,10 @@ export function readShared(): SwarmShared | undefined {
               (n): n is string => typeof n === 'string',
             ),
           }
+        : {}),
+      ...(slices ? { slices } : {}),
+      ...(typeof parsed.cap === 'number' && parsed.cap > 0
+        ? { cap: parsed.cap }
         : {}),
     }
   } catch {
@@ -201,7 +290,15 @@ function formatShared(shared: SwarmShared): string {
   if (shared.constraints.length > 0)
     lines.push(`- Constraints: ${shared.constraints.join('; ')}`)
   if (shared.needs && shared.needs.length > 0)
-    lines.push(`- Needed specialists: ${shared.needs.join(', ')}`)
+    lines.push(`- Needed collaborators: ${shared.needs.join(', ')}`)
+  if (shared.slices) {
+    const overview = Object.entries(shared.slices)
+      .map(([d, s]) => `${d}×${s.length}`)
+      .join(', ')
+    if (overview) lines.push(`- Parallel slices: ${overview}`)
+  }
+  if (shared.cap && shared.cap > 0)
+    lines.push(`- Max parallel builders/wave: ${shared.cap}`)
   return lines.join('\n')
 }
 
@@ -209,7 +306,7 @@ function formatShared(shared: SwarmShared): string {
  * Assemble the SWARM CONTEXT block for a given agent type: the shared brief
  * plus ONLY the dependency domain sections in DOMAIN_DEPENDENCIES, each
  * token-budgeted, with an overall cap. Returns '' when nothing exists yet
- * (e.g. the very first PA-AGENT spawn) so callers can inject nothing.
+ * (e.g. the very first planner spawn) so callers can inject nothing.
  */
 export function assembleContext(agentType: string): string {
   const deps = DOMAIN_DEPENDENCIES[agentType] ?? ['shared']

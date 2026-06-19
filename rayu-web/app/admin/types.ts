@@ -53,8 +53,7 @@ export interface PlanAdminView {
   priceCents: number
   availability: 'active' | 'coming_soon'
   maxDailyTurns: number | null
-  creditsPerWeek: number | null
-  creditsPer5h: number | null
+  creditsPerPeriod: number | null
   topUpEnabled: boolean
   features: Record<string, FeatureEntitlement>
 }
@@ -153,8 +152,7 @@ export interface ProjectionPlan {
   code: string
   name: string
   priceCents: number
-  creditsPerWeek: number | null
-  creditsPer5h: number | null
+  creditsPerPeriod: number | null
   unlimited: boolean
   worstModelCode: string | null
   worstCostPerCreditCents: number

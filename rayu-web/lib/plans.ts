@@ -55,3 +55,12 @@ export function sortPlans(plans: Plan[]): Plan[] {
     (a, b) => order.indexOf(a.code) - order.indexOf(b.code),
   )
 }
+
+// Plans a signed-in user can actually buy: active + a real price (excludes free
+// and any "coming soon" tier). Used by the /billing plan picker. Returned in
+// canonical order.
+export function purchasablePlans(plans: Plan[]): Plan[] {
+  return sortPlans(plans).filter(
+    (p) => p.availability === 'active' && p.priceCents > 0,
+  )
+}

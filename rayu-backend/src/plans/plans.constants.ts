@@ -18,8 +18,8 @@ export interface PlanSeed {
 // - free:  bring-your-own-key, feature-limited (admin can open features up),
 //          with a default daily turn cap (admin-changeable).
 // - basic: $3/mo, all features, bring-your-own-key (no Rayu gateway needed).
-// - pro / pro_plus / max: Rayu-hosted tiers, "coming soon" until the gateway
-//   ships; default to all features on.
+// - pro / pro_plus / max: Rayu-hosted credit tiers, purchasable (active) by
+//   default; all features on, with a per-period credit allowance + top-up.
 // - enterprise: contact sales.
 export const PLAN_SEED: PlanSeed[] = [
   {
@@ -48,12 +48,11 @@ export const PLAN_SEED: PlanSeed[] = [
     code: 'pro',
     name: 'Pro',
     priceCents: 1000,
-    availability: 'coming_soon',
+    availability: 'active',
     limits: {
       maxDailyTurns: null,
       features: allEnabled(),
-      creditsPerWeek: 500000,
-      creditsPer5h: 100000,
+      creditsPerPeriod: 50,
       topUpEnabled: true,
     },
   },
@@ -61,25 +60,23 @@ export const PLAN_SEED: PlanSeed[] = [
     code: 'pro_plus',
     name: 'Ultra',
     priceCents: 2000,
-    availability: 'coming_soon',
+    availability: 'active',
     limits: {
       maxDailyTurns: null,
       features: allEnabled(),
-      creditsPerWeek: 1500000,
-      creditsPer5h: null,
+      creditsPerPeriod: 115,
       topUpEnabled: true,
     },
   },
   {
     code: 'max',
     name: 'Max',
-    priceCents: 3000,
-    availability: 'coming_soon',
+    priceCents: 5000,
+    availability: 'active',
     limits: {
       maxDailyTurns: null,
       features: allEnabled(),
-      creditsPerWeek: 3000000,
-      creditsPer5h: null,
+      creditsPerPeriod: 300,
       topUpEnabled: true,
     },
   },

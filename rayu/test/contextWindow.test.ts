@@ -104,3 +104,40 @@ describe('getRayuModelContextWindow — non-Anthropic providers use the model ta
     expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(500_000)
   })
 })
+
+describe('getRayuModelContextWindow — Kimi K2 context windows', () => {
+  function nvidia(m: Awaited<ReturnType<typeof fresh>>, defaultModel?: string) {
+    m.upsertProvider({
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'k',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      ...(defaultModel ? { defaultModel } : {}),
+    })
+    m._resetRayuConfigCache()
+  }
+
+  test('newer Kimi K2 releases (K2.6 / K2.5 / Thinking / dated) report 256k', async () => {
+    const m = await fresh()
+    nvidia(m)
+    expect(m.getRayuModelContextWindow('moonshotai/kimi-k2.6')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('moonshotai/Kimi-K2.6')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('moonshotai/kimi-k2.5')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('moonshot.kimi-k2-thinking')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('moonshotai/kimi-k2-0905')).toBe(256_000)
+  })
+
+  test('original Kimi K2 (0711) / generic Moonshot stays on the 128k fallback', async () => {
+    const m = await fresh()
+    nvidia(m)
+    expect(m.getRayuModelContextWindow('moonshotai/kimi-k2-instruct')).toBe(131_072)
+    expect(m.getRayuModelContextWindow('kimi-k2')).toBe(131_072)
+  })
+
+  test('/context display path resolves Kimi K2.6 to 256k (not the 128k default)', async () => {
+    const m = await fresh()
+    nvidia(m, 'moonshotai/kimi-k2.6')
+    const { getContextWindowForModel } = await import('../src/utils/context.ts')
+    expect(getContextWindowForModel('moonshotai/kimi-k2.6')).toBe(256_000)
+  })
+})

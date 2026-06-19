@@ -11,11 +11,11 @@ export const SECURITY_COLLABORATOR = defineCollaborator({
     'the bundled rayu-web-testing skill to verify behavior, plus any installed OWASP/security-review skill for systematic threat coverage',
   allowedSubagents: [
     'backend-design',
+    'builder',
     'review',
     'fix',
     'linter',
     'Explore',
-    'general-purpose',
   ],
   owns: [
     'Authentication + authorization (RBAC) design and implementation',

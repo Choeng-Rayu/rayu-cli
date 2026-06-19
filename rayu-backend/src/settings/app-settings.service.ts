@@ -26,7 +26,12 @@ export class AppSettingsService {
       where: { id: SINGLETON_ID },
     })
     if (existing) return existing
-    return this.prisma.appSettings.create({ data: { id: SINGLETON_ID } })
+    // First-time default for the credit model: baselineCreditsPer1M=1 means
+    // 1 credit = 1e6/1 = 1,000,000 tokens at the reference model (×1). Cheaper
+    // models use a <1 creditMultiplier. All admin-editable afterwards.
+    return this.prisma.appSettings.create({
+      data: { id: SINGLETON_ID, baselineCreditsPer1M: 1 },
+    })
   }
 
   async update(patch: SettingsPatch): Promise<AppSettings> {

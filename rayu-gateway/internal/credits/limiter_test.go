@@ -15,12 +15,12 @@ func TestForTokens(t *testing.T) {
 		mult     float64
 		want     int64
 	}{
-		{0, 1000, 1, 0},
-		{1_000_000, 1000, 1, 1000},   // exactly 1M -> baseline credits
-		{1_000_000, 1000, 3, 3000},   // 3x multiplier
-		{18, 1000, 1, 1},             // tiny usage rounds up to 1
-		{500_000, 1000, 1, 500},      // half a million tokens
-		{1_500_000, 1000, 1, 1500},   // 1.5M
+		{0, 10, 1, 0},
+		{1_000_000, 10, 1, 10},  // 1M tokens @ baseline 10 = 10 credits
+		{100_000, 10, 1, 1},     // 100k tokens = 1 credit
+		{5_000_000, 10, 1, 50},  // 5M tokens = 50 credits ($10 Pro)
+		{100_000, 10, 3, 3},     // pro model multiplier 3x
+		{18, 10, 1, 1},          // tiny usage rounds up to 1
 	}
 	for _, c := range cases {
 		if got := ForTokens(c.tokens, c.baseline, c.mult); got != c.want {
@@ -37,7 +37,6 @@ func TestEstimateTokens(t *testing.T) {
 	if got := EstimateTokens(req, 2048); got != 102 {
 		t.Fatalf("EstimateTokens=%d want 102", got)
 	}
-	// default max tokens when unset
 	if got := EstimateTokens(map[string]any{}, 2048); got != 2048 {
 		t.Fatalf("EstimateTokens default=%d want 2048", got)
 	}
@@ -53,22 +52,22 @@ func newLimiter(t *testing.T) (*Limiter, *miniredis.Miniredis) {
 	return NewLimiter(rdb), mr
 }
 
-func TestReserveWeeklyLimit(t *testing.T) {
+func TestReservePeriodLimit(t *testing.T) {
 	lim, mr := newLimiter(t)
 	defer mr.Close()
 	ctx := context.Background()
 
-	r, err := lim.Reserve(ctx, ReserveParams{UserID: 1, EstCredits: 100, Cap5h: Unlimited, CapWeek: 500})
-	if err != nil || !r.OK {
-		t.Fatalf("first reserve: ok=%v err=%v", r.OK, err)
+	r, err := lim.Reserve(ctx, ReserveParams{UserID: 1, EstCredits: 30, CapPeriod: 50, PeriodTTLSec: 3600})
+	if err != nil || !r.OK || r.Source != "plan" {
+		t.Fatalf("first reserve: ok=%v source=%s err=%v", r.OK, r.Source, err)
 	}
-	if r.UsedWeek != 100 {
-		t.Fatalf("usedWeek=%d want 100", r.UsedWeek)
+	if r.UsedPeriod != 30 {
+		t.Fatalf("usedPeriod=%d want 30", r.UsedPeriod)
 	}
-	// 100 + 450 > 500 -> deny weekly
-	r2, _ := lim.Reserve(ctx, ReserveParams{UserID: 1, EstCredits: 450, Cap5h: Unlimited, CapWeek: 500})
-	if r2.OK || r2.Reason != "weekly_limit" {
-		t.Fatalf("expected weekly_limit deny, got ok=%v reason=%s", r2.OK, r2.Reason)
+	// 30 + 25 > 50 -> deny period_limit (no weekly reset; it's a period balance)
+	r2, _ := lim.Reserve(ctx, ReserveParams{UserID: 1, EstCredits: 25, CapPeriod: 50, PeriodTTLSec: 3600})
+	if r2.OK || r2.Reason != "period_limit" {
+		t.Fatalf("expected period_limit deny, got ok=%v reason=%s", r2.OK, r2.Reason)
 	}
 }
 
@@ -77,15 +76,12 @@ func TestSettleRefunds(t *testing.T) {
 	defer mr.Close()
 	ctx := context.Background()
 
-	// reserve 1000 estimate
-	_, _ = lim.Reserve(ctx, ReserveParams{UserID: 7, EstCredits: 1000, Cap5h: Unlimited, CapWeek: 5000})
-	// settle to actual 30 -> usedWeek should drop to 30
-	if err := lim.Settle(ctx, 7, "plan", 1000, 30); err != nil {
+	_, _ = lim.Reserve(ctx, ReserveParams{UserID: 7, EstCredits: 40, CapPeriod: 5000, PeriodTTLSec: 3600})
+	if err := lim.Settle(ctx, 7, "plan", 40, 10); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
-	v, _ := mr.Get("cwwk:7")
-	if v != "30" {
-		t.Fatalf("cwwk after settle=%q want 30", v)
+	if v, _ := mr.Get("cwperiod:7"); v != "10" {
+		t.Fatalf("cwperiod after settle=%q want 10", v)
 	}
 }
 
@@ -94,32 +90,26 @@ func TestTopupFallback(t *testing.T) {
 	defer mr.Close()
 	ctx := context.Background()
 
-	// Seed a 500-credit top-up balance from "MySQL".
 	if err := lim.EnsureTopup(ctx, 3, 500); err != nil {
 		t.Fatalf("ensure topup: %v", err)
 	}
-	// Plan weekly cap is 10; an est of 100 exceeds it, so with top-up enabled
-	// the charge falls back to the top-up balance.
-	r, err := lim.Reserve(ctx, ReserveParams{UserID: 3, EstCredits: 100, Cap5h: Unlimited, CapWeek: 10, TopUpEnabled: true})
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	if !r.OK || r.Source != "topup" {
-		t.Fatalf("expected ok via topup, got ok=%v source=%s reason=%s", r.OK, r.Source, r.Reason)
+	// Period cap 10; est 100 exceeds it -> with top-up enabled, falls back to top-up.
+	r, err := lim.Reserve(ctx, ReserveParams{UserID: 3, EstCredits: 100, CapPeriod: 10, PeriodTTLSec: 3600, TopUpEnabled: true})
+	if err != nil || !r.OK || r.Source != "topup" {
+		t.Fatalf("expected topup, got ok=%v source=%s reason=%s", r.OK, r.Source, r.Reason)
 	}
 	if v, _ := mr.Get("topup:3"); v != "400" {
-		t.Fatalf("topup balance after reserve=%q want 400", v)
+		t.Fatalf("topup after reserve=%q want 400", v)
 	}
-	// settle to actual 60 -> refund 40 to topup -> 440
 	_ = lim.Settle(ctx, 3, "topup", 100, 60)
 	if v, _ := mr.Get("topup:3"); v != "440" {
 		t.Fatalf("topup after settle=%q want 440", v)
 	}
 
-	// Without top-up enabled, the same over-cap request is denied.
-	r2, _ := lim.Reserve(ctx, ReserveParams{UserID: 4, EstCredits: 100, Cap5h: Unlimited, CapWeek: 10, TopUpEnabled: false})
-	if r2.OK || r2.Reason != "weekly_limit" {
-		t.Fatalf("expected weekly_limit deny, got ok=%v reason=%s", r2.OK, r2.Reason)
+	// Without top-up enabled, the over-cap request is denied.
+	r2, _ := lim.Reserve(ctx, ReserveParams{UserID: 4, EstCredits: 100, CapPeriod: 10, PeriodTTLSec: 3600})
+	if r2.OK || r2.Reason != "period_limit" {
+		t.Fatalf("expected period_limit deny, got ok=%v reason=%s", r2.OK, r2.Reason)
 	}
 }
 
@@ -128,17 +118,16 @@ func TestConcurrencyCap(t *testing.T) {
 	defer mr.Close()
 	ctx := context.Background()
 
-	r1, _ := lim.Reserve(ctx, ReserveParams{UserID: 9, EstCredits: 1, Cap5h: Unlimited, CapWeek: Unlimited, MaxConcurrent: 1})
+	r1, _ := lim.Reserve(ctx, ReserveParams{UserID: 9, EstCredits: 1, CapPeriod: Unlimited, PeriodTTLSec: 3600, MaxConcurrent: 1})
 	if !r1.OK {
 		t.Fatal("first concurrent reserve should pass")
 	}
-	r2, _ := lim.Reserve(ctx, ReserveParams{UserID: 9, EstCredits: 1, Cap5h: Unlimited, CapWeek: Unlimited, MaxConcurrent: 1})
+	r2, _ := lim.Reserve(ctx, ReserveParams{UserID: 9, EstCredits: 1, CapPeriod: Unlimited, PeriodTTLSec: 3600, MaxConcurrent: 1})
 	if r2.OK || r2.Reason != "concurrency" {
 		t.Fatalf("expected concurrency deny, got ok=%v reason=%s", r2.OK, r2.Reason)
 	}
-	// settle one -> slot frees -> next passes
 	_ = lim.Settle(ctx, 9, "plan", 1, 1)
-	r3, _ := lim.Reserve(ctx, ReserveParams{UserID: 9, EstCredits: 1, Cap5h: Unlimited, CapWeek: Unlimited, MaxConcurrent: 1})
+	r3, _ := lim.Reserve(ctx, ReserveParams{UserID: 9, EstCredits: 1, CapPeriod: Unlimited, PeriodTTLSec: 3600, MaxConcurrent: 1})
 	if !r3.OK {
 		t.Fatalf("after settle, reserve should pass; reason=%s", r3.Reason)
 	}
@@ -148,16 +137,95 @@ func TestRequestsCap(t *testing.T) {
 	lim, mr := newLimiter(t)
 	defer mr.Close()
 	ctx := context.Background()
-	// allow 2 requests / 5h
 	for i := 0; i < 2; i++ {
-		r, _ := lim.Reserve(ctx, ReserveParams{UserID: 5, EstCredits: 1, Cap5h: Unlimited, CapWeek: Unlimited, MaxReq5h: 2})
-		_ = lim.Settle(ctx, 5, "plan", 1, 1) // free concurrency, keep req counter
+		r, _ := lim.Reserve(ctx, ReserveParams{UserID: 5, EstCredits: 1, CapPeriod: Unlimited, PeriodTTLSec: 3600, MaxReq5h: 2})
+		_ = lim.Settle(ctx, 5, "plan", 1, 1)
 		if !r.OK {
 			t.Fatalf("req %d should pass", i)
 		}
 	}
-	r, _ := lim.Reserve(ctx, ReserveParams{UserID: 5, EstCredits: 1, Cap5h: Unlimited, CapWeek: Unlimited, MaxReq5h: 2})
+	r, _ := lim.Reserve(ctx, ReserveParams{UserID: 5, EstCredits: 1, CapPeriod: Unlimited, PeriodTTLSec: 3600, MaxReq5h: 2})
 	if r.OK || r.Reason != "requests" {
 		t.Fatalf("expected requests deny, got ok=%v reason=%s", r.OK, r.Reason)
+	}
+}
+
+func TestReserveTurnUnlimited(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	for i := int64(1); i <= 5; i++ {
+		r, err := lim.ReserveTurn(ctx, 1, 0) // cap 0 = unlimited
+		if err != nil || !r.OK {
+			t.Fatalf("turn %d should pass: ok=%v err=%v", i, r.OK, err)
+		}
+		if r.UsedToday != i {
+			t.Fatalf("usedToday=%d want %d", r.UsedToday, i)
+		}
+	}
+}
+
+func TestReserveTurnCap(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	// cap 2: two pass, third denied.
+	r1, _ := lim.ReserveTurn(ctx, 2, 2)
+	r2, _ := lim.ReserveTurn(ctx, 2, 2)
+	if !r1.OK || !r2.OK {
+		t.Fatalf("first two turns should pass: %v %v", r1.OK, r2.OK)
+	}
+	r3, _ := lim.ReserveTurn(ctx, 2, 2)
+	if r3.OK {
+		t.Fatal("third turn should be denied at cap 2")
+	}
+	if r3.UsedToday != 2 {
+		t.Fatalf("usedToday at deny=%d want 2", r3.UsedToday)
+	}
+	// A daily TTL must be set (end-of-day, so within (0, 86400]).
+	if r3.ResetSeconds <= 0 || r3.ResetSeconds > 86400 {
+		t.Fatalf("resetSeconds=%d want (0,86400]", r3.ResetSeconds)
+	}
+}
+
+func TestReleaseTurnRefund(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	_, _ = lim.ReserveTurn(ctx, 3, 5)
+	_, _ = lim.ReserveTurn(ctx, 3, 5) // used=2
+	if err := lim.ReleaseTurn(ctx, 3); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	used, reset, _ := lim.TurnsToday(ctx, 3)
+	if used != 1 {
+		t.Fatalf("used after release=%d want 1", used)
+	}
+	if reset <= 0 {
+		t.Fatalf("resetSeconds=%d want >0", reset)
+	}
+	// Release floors at 0 and is safe when nothing is counted.
+	_ = lim.ReleaseTurn(ctx, 3)
+	_ = lim.ReleaseTurn(ctx, 3) // would go negative -> no-op
+	used, _, _ = lim.TurnsToday(ctx, 3)
+	if used != 0 {
+		t.Fatalf("used after over-release=%d want 0", used)
+	}
+}
+
+func TestTurnsTodayEmpty(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	used, reset, err := lim.TurnsToday(ctx, 42)
+	if err != nil {
+		t.Fatalf("TurnsToday: %v", err)
+	}
+	if used != 0 || reset != -1 {
+		t.Fatalf("empty TurnsToday used=%d reset=%d want 0/-1", used, reset)
 	}
 }

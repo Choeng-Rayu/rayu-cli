@@ -58,6 +58,12 @@ async function callApi(token: string, method: string, body: object): Promise<unk
   })
   const json: unknown = await res.json()
   if (!res.ok || !(json as { ok?: boolean }).ok) {
+    // On rate-limit (429), honour the retry_after delay and retry once
+    const retryAfter = (json as { parameters?: { retry_after?: number } }).parameters?.retry_after
+    if (res.status === 429 && retryAfter) {
+      await new Promise(r => setTimeout(r, retryAfter * 1000 + 200))
+      return callApi(token, method, body)
+    }
     throw new Error(`Telegram ${method} failed: ${JSON.stringify(json)}`)
   }
   return (json as { result?: unknown }).result
@@ -129,12 +135,18 @@ export async function editMessageText(
   text: string,
   parseMode?: 'HTML',
 ): Promise<void> {
-  await callApi(token, 'editMessageText', {
-    chat_id: chatId,
-    message_id: messageId,
-    text: text.slice(0, MAX_MESSAGE_CHARS),
-    ...(parseMode ? { parse_mode: parseMode } : {}),
-  })
+  try {
+    await callApi(token, 'editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: text.slice(0, MAX_MESSAGE_CHARS),
+      ...(parseMode ? { parse_mode: parseMode } : {}),
+    })
+  } catch (e) {
+    // "message is not modified" is not a real error — content was identical, ignore it
+    if (e instanceof Error && e.message.includes('not modified')) return
+    throw e
+  }
 }
 
 /** Send a base64-encoded image as a photo. Falls back to text on failure. */

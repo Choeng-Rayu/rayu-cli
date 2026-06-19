@@ -1,10 +1,11 @@
 # 3. Providers
 
-A **provider** is an API endpoint plus your credentials. Rayu supports three kinds:
+A **provider** is an API endpoint plus your credentials. Rayu supports these kinds:
 
 - **`anthropic`** — the Anthropic API (Claude models), via the Anthropic SDK.
-- **`openai-compatible`** — any endpoint that implements OpenAI's `/v1/chat/completions` (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword, OpenAI, OpenRouter, vLLM/Ollama/local, …). Requests are translated between the Anthropic message shape used internally and the OpenAI shape.
+- **`openai-compatible`** — any endpoint that implements OpenAI's `/v1/chat/completions` (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword, OpenAI, OpenRouter, Google Gemini API, vLLM/Ollama/local, …). Requests are translated between the Anthropic message shape used internally and the OpenAI shape.
 - **`bedrock`** — the AWS Bedrock API, via the `@anthropic-ai/bedrock-sdk` client.
+- **`vertex`** — Google **Gemini on Vertex AI**, authenticated with Google OAuth / Application Default Credentials. Served through the OpenAI-compatible adapter with a per-request OAuth bearer token.
 
 ## Built-in provider presets
 
@@ -17,8 +18,13 @@ A **provider** is an API endpoint plus your credentials. Rayu supports three kin
 | `kimi-moonshot` | Kimi / Moonshot | `https://api.moonshot.ai/v1` | `KIMI_API_KEY` / `MOONSHOT_API_KEY` |
 | `kimi-for-code` | Kimi for Code | `https://api.kimi.com/coding/v1` | `KIMI_FOR_CODE_API_KEY` |
 | `openai` | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `gemini` | Google Gemini — API key | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
+| `gemini-vertex` | Google Gemini — Vertex AI (OAuth) | _(per project/region)_ | _(OAuth / ADC)_ |
+| `gemini-login` | Login with Gemini (Google account) | _(Code Assist — free, no project)_ | _(interactive OAuth)_ |
 | `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| `local` | Local / custom | _(you enter it)_ | — |
+| `huggingface` | Hugging Face — Inference Providers | `https://router.huggingface.co/v1` | `HF_TOKEN` |
+| `localhost` | Localhost (Ollama) | `http://localhost:11434/v1` | — |
+| `local` | Custom Endpoint | _(you enter it)_ | — |
 | `bedrock` | AWS Bedrock | _(on-demand AWS Bedrock)_ | `AWS_BEARER_TOKEN_BEDROCK` |
 
 ---
@@ -50,6 +56,142 @@ When you connect to AWS Bedrock, Rayu queries your AWS account for available mod
 2. **Inference Profiles:** Calls `ListInferenceProfiles` (returns cross-region Claude inference profiles).
 
 These are merged and cached in `~/.rayu/providers.json`. This allows the `/model` command to list and switch between all available Bedrock models in your account.
+
+---
+
+## Google Gemini
+
+Rayu supports Gemini two ways — pick whichever matches how you access Google's models.
+
+### Gemini API key (`gemini`)
+
+The simplest path. Google's Gemini API exposes an **OpenAI-compatible** surface at
+`https://generativelanguage.googleapis.com/v1beta/openai`, so Rayu reuses its
+OpenAI-compatible adapter and live `/models` catalog.
+
+- Run `/connect` → **Google Gemini — API key**, paste your key (from Google AI Studio).
+- Or set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) and let auto-import pick it up.
+- `/model` lists the live Gemini catalog (e.g. `gemini-2.5-flash`, `gemini-2.5-pro`, newer `gemini-3.x` models as they ship).
+
+### Gemini on Vertex AI (`gemini-vertex`, OAuth / ADC)
+
+For Google Cloud users. Authenticated with a Google Cloud OAuth bearer token
+(cloud-platform scope) rather than a static key, scoped to a **project + region**.
+The token is minted per request and refreshed automatically (~1h lifetime).
+
+> **Recommended for heavy use.** Unlike the consumer "Login with Gemini" path
+> (which has a tight per-request rate window), Vertex uses **quota-based limits
+> on your own GCP project**, so large codebase reads / many requests don't trip
+> the ~40–60s consumer throttle. It's also the durable option given the consumer
+> endpoint's planned deprecation.
+
+**Project prerequisites** (one-time): the project must have the **Vertex AI API
+enabled** (console.cloud.google.com/apis/library/aiplatform.googleapis.com) with
+**billing active**, and your account needs the **Vertex AI User** role
+(`roles/aiplatform.user`). If these are missing you'll get a `403
+PERMISSION_DENIED` ("Vertex AI API has not been used in project …") — Rayu
+surfaces these exact steps when that happens.
+
+Run `/connect` → **Google Gemini — Vertex AI (OAuth / ADC)**:
+
+1. Rayu checks for **Application Default Credentials** (e.g. from
+   `gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`).
+2. If none are found, it offers an in-terminal **"Sign in with Google"** loopback
+   OAuth flow (opens your browser, captures the redirect on `localhost`, and
+   stores a refresh token in `~/.rayu/gemini-oauth.json`, mode `0600`).
+3. It pre-fills and confirms the **GCP project** and **region** (detected from
+   env / ADC where possible), then fetches the Gemini model catalog from the
+   Vertex publisher API.
+
+Relevant environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `GOOGLE_CLOUD_PROJECT` / `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project id for Vertex |
+| `GOOGLE_CLOUD_LOCATION` / `CLOUD_ML_REGION` | Vertex region (default `us-central1`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to a service-account key (ADC) |
+| `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` | Override the OAuth client used for the loopback login (defaults to the public Google Cloud SDK desktop client) |
+
+Vertex chat requests are sent to
+`https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{region}/endpoints/openapi/chat/completions`
+with the model id namespaced as `google/<model>` automatically.
+
+The same OAuth/ADC credentials also power **Imagen 4** image generation and
+**Veo 3.1** video generation — see [Image Generation](./12-image-generation.md).
+
+### Login with Gemini (`gemini-login`, Google account)
+
+The simplest path, with **gemini-cli parity**: sign in with a Google account in
+your browser and use Gemini 3.x for **free — no GCP project, no billing, no
+`gcloud`**. It uses the **Gemini Code Assist** backend
+(`cloudcode-pa.googleapis.com`, the same one the Gemini CLI uses), which gives a
+free tier tied to your Google account (a Google-managed project is onboarded
+automatically on first use).
+
+Setup — nothing to configure:
+
+1. Run `/connect` → **Login with Gemini (Google account)** → *Sign in with
+   Google*. The browser opens; approve access; control returns to the terminal.
+   Rayu onboards the Code Assist free tier and lists Gemini models (defaulting
+   to the newest flash).
+
+That's it — **no Google Cloud project, API enablement, billing, OAuth client, or
+consent test users.** Rayu uses gemini-cli's built-in public installed-app OAuth
+client (the secret is intentionally non-confidential for installed apps), whose
+Google project already has the Code Assist API enabled.
+
+Advanced (optional): to use your **own** OAuth client instead, set
+`GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` in `.env` (or drop a
+Desktop `client_secret.json` at the project root). Your client's project must
+then have the **Cloud Code / Cloud AI Companion API enabled**, and your account
+added as a **Test user** on its consent screen — otherwise you'll get a 403
+("Cloud Code Private API has not been used in project …"). For most users, the
+default (no config) is the right choice.
+
+Tokens are cached at `~/.rayu/gemini-login.json` (mode `0600`) and refreshed
+automatically. **Note:** the Code Assist endpoint is a semi-internal API (not an
+officially published REST surface); it powers the free Gemini CLI experience and
+may change.
+
+**Rate limits & heavy use.** Consumer Gemini plans (free / AI Pro / Ultra) meter
+by *request complexity* — a single heavy agentic turn (large file reads, image
+generation, long context) can consume a whole ~40–60s rate-limit window, after
+which you get `RESOURCE_EXHAUSTED (429)`. Rayu waits out and retries that window
+automatically (like the Gemini CLI), so heavy tasks still complete — just more
+slowly. Tune with `RAYU_GEMINI_MAX_WAIT_S` (seconds to wait before surfacing a
+429; set `0` to fail fast). The default model is **`gemini-2.5-flash`** (lowest
+per-request cost); pick a pro/preview model via `/model` when needed.
+
+> **For sustained heavy use, prefer the Vertex AI provider** (next section) —
+> it uses quota-based limits on your own GCP project instead of the consumer
+> rate window. Also note Google is **deprecating the consumer Code Assist
+> endpoint for free/Pro/Ultra accounts on ~June 18, 2026** (migrating to
+> "Antigravity"), so Vertex is the more durable choice.
+
+---
+
+## Ollama & Local Models
+
+Rayu seamlessly connects to your local instances and cloud Ollama environments.
+
+- **Localhost:** Run `/connect` → **Localhost**. Ollama auto-detects whatever models you have downloaded and connects automatically. It supports models of any size (there is no forcing you to use massive models if you don't want to).
+- **Ollama Cloud:** Works through the exact same localhost flow. After running `ollama signin` in your terminal, cloud models (e.g., `qwen3-coder:480b-cloud`, `gpt-oss:120b-cloud`) automatically appear in your local Ollama's model list and fully support tools within Rayu.
+- *(Alternative for Ollama Cloud)*: You can also choose the "Custom OpenAI-compatible endpoint" option in `/connect` and point it at `https://ollama.com/v1` with your API key.
+
+---
+
+## Image / video generation models
+
+The built-in image/video tools default to NVIDIA but can be pointed at Vertex
+Imagen / Veo (or any registered model):
+
+- `/model_image_generation` — choose the model for `/generate-image` and
+  `/image-editor` (NVIDIA FLUX/SD or Vertex `imagen-*`).
+- `/model_video_generation` — choose the model for `/image-video` (NVIDIA
+  Cosmos / fal.ai or Vertex `veo-*`).
+
+Selecting "Default" reverts to NVIDIA (or Vertex when it's the only configured
+backend). Selections are stored in `~/.rayu/providers.json`.
 
 ---
 
@@ -98,10 +240,8 @@ For scripts/CI, you can bypass the saved config entirely using environment varia
 | `RAYU_OPENAI_COMPATIBLE=1` | Force the OpenAI-compatible client path |
 | `RAYU_OPENAI_BASE_URL` | Base URL for the OpenAI-compatible endpoint |
 | `RAYU_OPENAI_API_KEY` | API key for the OpenAI-compatible endpoint |
-| `CLAUDE_CODE_USE_BEDROCK=1` | Force the AWS Bedrock client path |
 | `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock Bearer token override |
 | `BEDROCK_BASE_URL` | Custom Bedrock base URL endpoint |
-| `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` | Skip standard AWS authentication header |
 | `AWS_DEFAULT_REGION` / `AWS_REGION` | AWS Region (default: `us-east-1`) |
 | `ANTHROPIC_API_KEY` | Anthropic key (first-party path) |
 

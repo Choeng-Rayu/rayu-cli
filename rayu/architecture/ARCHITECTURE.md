@@ -186,11 +186,12 @@ graph TD
 
     C1 -.->|"may dispatch (matrix-limited)"| S1
 
-    S1 --> PA["PA"]
+    S1 --> PL["planner"]
     S1 --> DSN["design"]
     S1 --> BDS["backend-design"]
     S1 --> GS["global-setup"]
     S1 --> ASSET["asset-generation"]
+    S1 --> BLD["builder"]
     S1 --> REV["review"]
     S1 --> FIX["fix"]
     S1 --> LINT["linter"]
@@ -203,7 +204,7 @@ graph TD
 |------|------|----------|-----------|----------|
 | **1 — Orchestrator** | Plan, decompose, verify, integrate; never writes code in swarm mode | Whole session | Main thread | the main agent |
 | **2 — Collaborators** | Semi-persistent domain implementers | Resumable | **Background**, named | `frontend`, `backend`, `mobile`, `security`, `deploy` |
-| **3 — Subagents** | Atomic plan / generate / audit / fix jobs | One-shot | **Foreground** | `PA`, `design`, `backend-design`, `global-setup`, `asset-generation`, `review`, `fix`, `linter`, plus `Explore` / `general-purpose` |
+| **3 — Subagents** | Atomic plan / generate / build / audit / fix jobs | One-shot | **Foreground** | `planner`, `design`, `backend-design`, `global-setup`, `asset-generation`, `builder`, `review`, `fix`, `linter`, plus `Explore`; `general-purpose` (non-web/mobile only) |
 
 <details>
 <summary><b>📋 Built-in agent registry & gating (<code>tools/AgentTool/builtInAgents.ts</code>)</b></summary>
@@ -211,15 +212,16 @@ graph TD
 `getBuiltInAgents()` assembles the available agents:
 
 - Always: `GENERAL_PURPOSE_AGENT`, `STATUSLINE_SETUP_AGENT`.
-- Non-SDK entrypoints: `RAYU_CODE_GUIDE_AGENT`, the **8 Tier-3 subagents**
-  (`built-in/subagents/index.ts` → `SUBAGENTS[]`), and the **5 Tier-2 collaborators**
+- Non-SDK entrypoints: `RAYU_CODE_GUIDE_AGENT`, the **9 Tier-3 subagents**
+  (`built-in/subagents/index.ts` → `SUBAGENTS[]`, incl. `planner` + `builder`), and the **5 Tier-2 collaborators**
   (`built-in/collaborators/index.ts` → `COLLABORATORS[]`).
 - Gated: `EXPLORE_AGENT` (GrowthBook A/B), `VERIFICATION_AGENT` (feature + gate).
 - **Coordinator mode** swaps the whole set for `getCoordinatorAgents()`.
 
 Opt-outs: `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS` (SDK), `RAYU_DISABLE_SPECIALIST_AGENTS`
-(specialists + collaborators). Per-agent models via `/model_subagent` and
-`/collaborator_model`.
+(disables the whole swarm: Tier-3 subagents + Tier-2 collaborators). Per-agent models via
+`/model_subagent` and `/collaborator_model`. Parallel-builder cap per wave:
+`RAYU_SWARM_MAX_PARALLEL` (default 5).
 
 Swarm/teammate features are gated by `isAgentSwarmsEnabled()`: always on for
 `USER_TYPE=ant`; otherwise requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` (or

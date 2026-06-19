@@ -28,4 +28,11 @@ func TestAllowedModels(t *testing.T) {
 	if len(max) != 3 {
 		t.Fatalf("max should see 3 models (flash, pro, ultra-only), got %d", len(max))
 	}
+
+	// All three paid plan codes (matching MODEL_SEED.allowedPlanCodes) must see
+	// the shared hosted models.
+	proPlus := AllowedModels(models, "pro_plus")
+	if len(proPlus) != 2 {
+		t.Fatalf("pro_plus should see 2 models (flash, pro), got %d", len(proPlus))
+	}
 }

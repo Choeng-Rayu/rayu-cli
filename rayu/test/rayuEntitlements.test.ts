@@ -150,3 +150,20 @@ describe('stale cache refresh (plan upgrade)', () => {
     }
   })
 })
+
+describe('credit allowance shape', () => {
+  test('creditAllowance round-trips with creditsPerPeriod (no legacy weekly fields)', async () => {
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    m._setRayuEntitlementsForTesting({
+      ...ent({ telegram: { enabled: true } }),
+      creditAllowance: { creditsPerPeriod: 50, topUpEnabled: true },
+      creditConfig: { baselineCreditsPer1M: 1000, tokensPerCredit: 1000 },
+    })
+    const cached = m.getCachedEntitlements()
+    expect(cached?.creditAllowance?.creditsPerPeriod).toBe(50)
+    expect(cached?.creditAllowance?.topUpEnabled).toBe(true)
+    expect(cached?.creditConfig?.tokensPerCredit).toBe(1000)
+    // Legacy windowed fields must not exist on the typed shape.
+    expect((cached?.creditAllowance as Record<string, unknown>)?.creditsPerWeek).toBeUndefined()
+  })
+})

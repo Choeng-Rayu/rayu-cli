@@ -36,29 +36,25 @@ function seedShared() {
 
 test('assembleContext returns shared + ONLY dependency sections', async () => {
   const sw = seedShared()
-  writeFileSync(join(sw, 'PA.md'), 'PA decisions: use Next 15')
-  writeFileSync(join(sw, 'DB.md'), 'DB schema: users(id, email)')
-  writeFileSync(join(sw, 'SEC.md'), 'SEC: JWT in httpOnly cookie')
-  writeFileSync(join(sw, 'BE.md'), 'BE routes: POST /login')
-  writeFileSync(join(sw, 'FE.md'), 'FE: should NOT leak into BE context')
+  writeFileSync(join(sw, 'BACKEND.md'), 'BE routes: POST /login')
+  writeFileSync(join(sw, 'SECURITY.md'), 'SEC: JWT in httpOnly cookie')
+  writeFileSync(join(sw, 'MOBILE.md'), 'MOB: should NOT leak into frontend context')
 
   const { assembleContext } = await import('../src/tools/AgentTool/swarmContext.ts')
-  // BE-AGENT deps: shared, PA, DB, SEC  (NOT FE, NOT BE itself)
-  const ctx = assembleContext('BE-AGENT')
+  // frontend deps: shared, BACKEND, SECURITY  (NOT MOBILE, NOT frontend itself)
+  const ctx = assembleContext('frontend')
   expect(ctx).toContain('Shared Project Brief')
   expect(ctx).toContain('Build invoices')
-  expect(ctx).toContain('Context from PA-AGENT')
-  expect(ctx).toContain('Context from DB-AGENT')
-  expect(ctx).toContain('Context from SEC-AGENT')
-  // FE is not a BE dependency -> must be excluded
+  expect(ctx).toContain('Context from BACKEND-AGENT')
+  expect(ctx).toContain('Context from SECURITY-AGENT')
+  expect(ctx).toContain('POST /login')
+  // MOBILE is not a frontend dependency -> must be excluded
   expect(ctx).not.toContain('should NOT leak')
-  // BE does not inject its own section
-  expect(ctx).not.toContain('POST /login')
 })
 
 test('assembleContext is empty when nothing exists yet (graceful)', async () => {
   const { assembleContext } = await import('../src/tools/AgentTool/swarmContext.ts')
-  expect(assembleContext('PA-AGENT')).toBe('')
+  expect(assembleContext('planner')).toBe('')
 })
 
 test('truncateToTokens caps section length', async () => {
@@ -72,79 +68,57 @@ test('truncateToTokens caps section length', async () => {
   expect(out).toContain('[truncated]')
 })
 
-test('per-domain file isolation: writing FE does not change BE section', async () => {
+test('per-domain file isolation: writing FRONTEND does not change BACKEND section', async () => {
   const sw = seedShared()
-  writeFileSync(join(sw, 'FE.md'), 'FE content only')
+  writeFileSync(join(sw, 'FRONTEND.md'), 'FE content only')
   const { readDomainSection } = await import('../src/tools/AgentTool/swarmContext.ts')
-  expect(readDomainSection('FE')).toBe('FE content only')
-  expect(readDomainSection('FE-AGENT')).toBe('FE content only')
-  expect(readDomainSection('BE')).toBeUndefined()
+  expect(readDomainSection('FRONTEND')).toBe('FE content only')
+  expect(readDomainSection('frontend')).toBe('FE content only')
+  expect(readDomainSection('BACKEND')).toBeUndefined()
 })
 
-test('BE_AGENT prompt includes shared brief + DB/SEC + write-back; graceful without files', async () => {
-  const { BE_AGENT } = await import('../src/tools/AgentTool/built-in/specialists.ts')
-  // No swarm files yet -> no SWARM CONTEXT block, but Context I/O instruction present
-  const cold = BE_AGENT.getSystemPrompt({ toolUseContext: { options: {} } } as never)
-  expect(cold).not.toContain('# SWARM CONTEXT (read this')
-  expect(cold).toContain('Context I/O')
-  expect(cold).toContain('BE.md')
-
-  // Seed files -> SWARM CONTEXT block appears with shared + DB + SEC
-  const sw = seedShared()
-  writeFileSync(join(sw, 'DB.md'), 'DB schema: invoices table')
-  writeFileSync(join(sw, 'SEC.md'), 'SEC: bcrypt for passwords')
-  const warm = BE_AGENT.getSystemPrompt({ toolUseContext: { options: {} } } as never)
-  expect(warm).toContain('# SWARM CONTEXT (read this')
-  expect(warm).toContain('Build invoices')
-  expect(warm).toContain('invoices table')
-  expect(warm).toContain('bcrypt for passwords')
-})
-
-test('PA-AGENT Context I/O also mentions the shared brief artifact', async () => {
-  const { PA_AGENT } = await import('../src/tools/AgentTool/built-in/specialists.ts')
-  const p = PA_AGENT.getSystemPrompt({ toolUseContext: { options: {} } } as never)
-  expect(p).toContain('shared brief')
+test('planner prompt: stack decision + writes the shared brief with collaborator needs', async () => {
+  const { PLANNER_SUBAGENT } = await import(
+    '../src/tools/AgentTool/built-in/subagents/planner.ts'
+  )
+  const p = (PLANNER_SUBAGENT.getSystemPrompt as (x?: unknown) => string)({})
   expect(p).toContain('shared.json')
+  expect(p).toContain('shared brief')
+  expect(p).toContain('Stack Decision')
+  expect(p).toMatch(/needs/)
+  // Collaborator domains, not the retired legacy specialist tokens.
+  expect(p).toContain('frontend')
+  expect(p).toContain('backend')
 })
 
-test('selectAgentsByNeeds: declared subset (PA always kept), else all', async () => {
-  const { selectAgentsByNeeds, normalizeAgentType } = await import(
+test('selectAgentsByNeeds: declared subset (collaborator tokens + legacy), else all', async () => {
+  const { selectAgentsByNeeds, normalizeNeed } = await import(
     '../src/tools/AgentTool/swarmContext.ts'
   )
-  const all = ['PA-AGENT', 'DB-AGENT', 'BE-AGENT', 'SEC-AGENT', 'FE-AGENT', 'MOB-AGENT', 'DO-AGENT']
-  expect(normalizeAgentType('fe')).toBe('FE-AGENT')
-  expect(normalizeAgentType('BE-AGENT')).toBe('BE-AGENT')
-  // frontend-only task → FE (+PA always)
-  expect(selectAgentsByNeeds(['fe'], all)).toEqual(['PA-AGENT', 'FE-AGENT'])
-  // mixed tokens, dedup, order follows the canonical list
-  expect(selectAgentsByNeeds(['be', 'db'], all)).toEqual([
-    'PA-AGENT',
-    'DB-AGENT',
-    'BE-AGENT',
-  ])
+  const all = ['frontend', 'backend', 'mobile', 'security', 'deploy']
+  // legacy short tokens + collaborator names both map to collaborator agentTypes
+  expect(normalizeNeed('fe')).toBe('frontend')
+  expect(normalizeNeed('db')).toBe('backend') // data layer folds into backend
+  expect(normalizeNeed('backend')).toBe('backend')
+  // frontend-only task → just frontend
+  expect(selectAgentsByNeeds(['frontend'], all)).toEqual(['frontend'])
+  // mixed tokens (be + db both → backend), dedup, order follows the canonical list
+  expect(selectAgentsByNeeds(['be', 'db', 'sec'], all)).toEqual(['backend', 'security'])
   // empty / undefined → all (back-compat)
   expect(selectAgentsByNeeds([], all)).toEqual(all)
   expect(selectAgentsByNeeds(undefined, all)).toEqual(all)
 })
 
-test('readNeeds reads PA-declared needs from shared.json', async () => {
+test('readNeeds reads the planner-declared needs from shared.json', async () => {
   const sw = join(dir, '.rayu', 'swarm')
   mkdirSync(sw, { recursive: true })
   writeFileSync(
     join(sw, 'shared.json'),
-    JSON.stringify({ goal: 'g', stack: 's', flow: 'f', constraints: [], needs: ['fe', 'be'] }),
+    JSON.stringify({ goal: 'g', stack: 's', flow: 'f', constraints: [], needs: ['frontend', 'backend'] }),
   )
   const { readNeeds, readShared } = await import('../src/tools/AgentTool/swarmContext.ts')
-  expect(readNeeds()).toEqual(['fe', 'be'])
-  // needs surfaces in the formatted brief consumed by specialists
-  expect(readShared()?.needs).toEqual(['fe', 'be'])
-})
-
-test('PA output spec instructs declaring the needed specialist set', async () => {
-  const { PA_AGENT } = await import('../src/tools/AgentTool/built-in/specialists.ts')
-  const p = PA_AGENT.getSystemPrompt({ toolUseContext: { options: {} } } as never)
-  expect(p).toMatch(/needs/)
-  expect(p).toMatch(/Needed Specialists/i)
+  expect(readNeeds()).toEqual(['frontend', 'backend'])
+  expect(readShared()?.needs).toEqual(['frontend', 'backend'])
 })
 
 test('writeDomainSection + readDomainSection round-trip', async () => {
@@ -189,4 +163,51 @@ test('assembleContext picks up an auto-persisted dependency section', async () =
   const ctx = assembleContext('frontend')
   expect(ctx).toContain('Context from BACKEND-AGENT')
   expect(ctx).toContain('POST /login')
+})
+
+test('readShared round-trips slices + cap; getSlicesForDomain returns per-domain slices', async () => {
+  const sw = join(dir, '.rayu', 'swarm')
+  mkdirSync(sw, { recursive: true })
+  writeFileSync(
+    join(sw, 'shared.json'),
+    JSON.stringify({
+      goal: 'g',
+      stack: 's',
+      flow: 'f',
+      constraints: [],
+      needs: ['frontend', 'backend'],
+      cap: 3,
+      slices: {
+        frontend: [
+          { name: 'auth', task: 'login', area: 'src/auth/**' },
+          { name: 'dash', area: 'src/dash/**' },
+        ],
+        backend: [{ name: 'users', task: 'CRUD', area: 'src/users/**' }],
+      },
+    }),
+  )
+  const m = await import('../src/tools/AgentTool/swarmContext.ts')
+  const shared = m.readShared()
+  expect(shared?.cap).toBe(3)
+  expect(shared?.slices?.frontend).toHaveLength(2)
+  expect(m.getSlicesForDomain('frontend').map(s => s.name)).toEqual(['auth', 'dash'])
+  expect(m.getSlicesForDomain('backend')[0]?.area).toBe('src/users/**')
+  expect(m.getSlicesForDomain('mobile')).toEqual([]) // not planned → empty
+  expect(m.getSwarmMaxParallel()).toBe(3) // resolves from shared.cap
+})
+
+test('getSwarmMaxParallel honors RAYU_SWARM_MAX_PARALLEL, else default 5', async () => {
+  const m = await import('../src/tools/AgentTool/swarmContext.ts')
+  const saved = process.env.RAYU_SWARM_MAX_PARALLEL
+  try {
+    process.env.RAYU_SWARM_MAX_PARALLEL = '9'
+    expect(m.getSwarmMaxParallel()).toBe(9) // env wins over shared.cap + default
+    delete process.env.RAYU_SWARM_MAX_PARALLEL
+    // no env + no shared.json in this fresh temp dir → the default
+    expect(m.getSwarmMaxParallel()).toBe(m.DEFAULT_SWARM_MAX_PARALLEL)
+    expect(m.DEFAULT_SWARM_MAX_PARALLEL).toBe(5)
+  } finally {
+    if (saved === undefined) delete process.env.RAYU_SWARM_MAX_PARALLEL
+    else process.env.RAYU_SWARM_MAX_PARALLEL = saved
+  }
 })

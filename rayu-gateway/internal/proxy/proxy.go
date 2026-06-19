@@ -142,3 +142,65 @@ func Complete(ctx context.Context, upstreamURL, apiKey string, body []byte) (usa
 	}
 	return usage, resp.StatusCode, respBody, nil
 }
+
+// Forward is a transparent reverse-proxy for BYO-key provider requests routed
+// through the gateway purely for usage tracking. It replays the caller's
+// method/body/headers to upstreamURL — the provider's own auth header (e.g.
+// "Authorization: Bearer <userKey>" or "x-api-key") is among the forwarded
+// headers, so the gateway never needs its own key for this path — then streams
+// the upstream response back verbatim.
+//
+// `wrote` reports whether any response status/bytes were sent to the client. It
+// is false only on a pre-flight failure (bad request build or the upstream
+// being unreachable), which lets the caller emit a gateway-origin error the CLI
+// can use to fail safe to a direct call. Once the upstream responds (even with
+// a 4xx/5xx), the response is forwarded as-is and `wrote` is true.
+func Forward(ctx context.Context, w http.ResponseWriter, method, upstreamURL string, reqHeaders http.Header, body []byte) (wrote bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, method, upstreamURL, bytes.NewReader(body))
+	if err != nil {
+		return false, err
+	}
+	for k, vs := range reqHeaders {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+
+	resp, err := Client.Do(req)
+	if err != nil {
+		return false, err // upstream unreachable: caller writes a gateway error
+	}
+	defer resp.Body.Close()
+
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	wrote = true
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return true, werr // client disconnected
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if rerr != nil {
+			if rerr != io.EOF {
+				return true, rerr
+			}
+			break
+		}
+	}
+	return true, nil
+}

@@ -116,24 +116,42 @@ export function classifySource(rawSource: string, localExists: boolean): SourceK
   return { type: 'local', path: source }
 }
 
-/** Find the directory containing SKILL.md: prefer the root, else exactly one child. */
+/** Find the directory containing SKILL.md: check root, then walk subdirectories
+ * recursively (up to 5 levels) to support nested repo layouts. Returns the
+ * shallowest match so the skill name derives from the most relevant directory. */
 async function locateSkillDir(root: string): Promise<string> {
   if (await fileExists(join(root, 'SKILL.md'))) return root
-  let entries
-  try {
-    entries = await readdir(root, { withFileTypes: true })
-  } catch {
-    throw new InstallSkillError(`Source directory not found: ${root}`)
-  }
-  const dirs = entries.filter(e => e.isDirectory())
-  // Single top-level dir (typical of a cloned repo or unzipped archive).
-  for (const d of dirs) {
-    const candidate = join(root, d.name)
-    if (await fileExists(join(candidate, 'SKILL.md'))) return candidate
-  }
+
+  const found = await findSkillDirRecursive(root, 0, 5)
+  if (found) return found
+
   throw new InstallSkillError(
-    'No SKILL.md found at the source root or one level below it.',
+    'No SKILL.md found. Check that the source has a SKILL.md file at the root, or ' +
+    'specify a subdirectory: owner/repo/tree/main/path/to/skill',
   )
+}
+
+/** Walk up to `maxDepth` levels looking for a SKILL.md. */
+async function findSkillDirRecursive(
+  dir: string,
+  depth: number,
+  maxDepth: number,
+): Promise<string | null> {
+  if (depth >= maxDepth) return null
+  let entries: import('fs').Dirent[]
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return null
+  }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue
+    const candidate = join(dir, e.name)
+    if (await fileExists(join(candidate, 'SKILL.md'))) return candidate
+    const deeper = await findSkillDirRecursive(candidate, depth + 1, maxDepth)
+    if (deeper) return deeper
+  }
+  return null
 }
 
 async function fileExists(p: string): Promise<boolean> {

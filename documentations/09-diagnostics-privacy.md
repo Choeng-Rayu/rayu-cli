@@ -67,7 +67,6 @@ Rayu is **telemetry-off by default**. Privacy levels:
 |----------|--------|
 | `RAYU_TELEMETRY=1` | Opt back in to default telemetry behavior |
 | `DISABLE_TELEMETRY` | Force `no-telemetry` |
-| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Force `essential-traffic` |
 
 The only outbound calls during normal use go to the **provider endpoint you
 configured** (and any MCP servers you add). Project code/secrets are not sent

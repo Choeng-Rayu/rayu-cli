@@ -17,6 +17,7 @@ import { useAdmin } from '../AdminProvider'
 import { AdminUser, UserList } from '../types'
 
 const STATUSES = ['all', 'active', 'suspended', 'banned'] as const
+const ACTIVITY = ['all', 'active', 'inactive'] as const
 
 export default function UsersPage() {
   const { apiFetch, token } = useAdmin()
@@ -24,15 +25,19 @@ export default function UsersPage() {
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<(typeof STATUSES)[number]>('all')
+  const [activity, setActivity] = useState<(typeof ACTIVITY)[number]>('all')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [bulk, setBulk] = useState<{ status: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
-    const res = await apiFetch(`/admin/users?page=${page}&pageSize=20&search=${encodeURIComponent(query)}`)
+    const actParam = activity === 'all' ? '' : `&activity=${activity}`
+    const res = await apiFetch(
+      `/admin/users?page=${page}&pageSize=20&search=${encodeURIComponent(query)}${actParam}`,
+    )
     if (res.ok) setData((await res.json()) as UserList)
-  }, [apiFetch, page, query])
+  }, [apiFetch, page, query, activity])
 
   useEffect(() => {
     if (token) void load()
@@ -76,12 +81,28 @@ export default function UsersPage() {
         title="Users"
         subtitle="Search, moderate, and inspect accounts."
         actions={
-          <div className="seg">
-            {STATUSES.map((s) => (
-              <button key={s} className={status === s ? 'active' : ''} onClick={() => setStatus(s)}>
-                {s}
-              </button>
-            ))}
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <div className="seg">
+              {STATUSES.map((s) => (
+                <button key={s} className={status === s ? 'active' : ''} onClick={() => setStatus(s)}>
+                  {s}
+                </button>
+              ))}
+            </div>
+            <div className="seg" title="Activity in the last 30 days (from last-active time)">
+              {ACTIVITY.map((a) => (
+                <button
+                  key={a}
+                  className={activity === a ? 'active' : ''}
+                  onClick={() => {
+                    setPage(1)
+                    setActivity(a)
+                  }}
+                >
+                  {a === 'inactive' ? 'non-active' : a}
+                </button>
+              ))}
+            </div>
           </div>
         }
       />
@@ -134,6 +155,7 @@ export default function UsersPage() {
                 <th>Role</th>
                 <th>Status</th>
                 <th>Joined</th>
+                <th>Last active</th>
                 <th></th>
               </tr>
             </thead>
@@ -148,6 +170,13 @@ export default function UsersPage() {
                   <td style={{ textTransform: 'uppercase', fontSize: '0.8rem' }}>{u.role}</td>
                   <td><Badge tone={statusTone(u.status)}>{u.status}</Badge></td>
                   <td style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.8rem' }}>{fmtDate(u.createdAt)}</td>
+                  <td style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.8rem' }}>
+                    {u.lastActiveAt ? (
+                      fmtDate(u.lastActiveAt)
+                    ) : (
+                      <span style={{ opacity: 0.5 }}>Never</span>
+                    )}
+                  </td>
                   <td><Link href={`/admin/users/${u.id}`} className="btn-ghost" style={{ padding: '4px 12px', fontSize: '0.8rem' }}>View</Link></td>
                 </tr>
               ))}

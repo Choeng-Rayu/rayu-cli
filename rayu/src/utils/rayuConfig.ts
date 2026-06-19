@@ -91,7 +91,7 @@ export type RayuConfig = {
     model: string
   }
   /**
-   * Per-specialist overrides keyed by agent type (e.g. 'BE-AGENT'). Takes
+   * Per-agent overrides keyed by agent type (e.g. 'backend'). Takes
    * precedence over the global `subagent` selection for that agent. Lets each
    * specialist run on its own provider/model (set via /model_subagent <AGENT>).
    */
@@ -277,7 +277,7 @@ export function getPerAgentSubagentSelection(
 /**
  * Persist a subagent model selection (set via /model_subagent). With no
  * agentType, sets the GLOBAL default for all subagents. With an agentType
- * (e.g. 'BE-AGENT'), sets a per-specialist override. Does NOT change the active
+ * (e.g. 'backend'), sets a per-agent override. Does NOT change the active
  * (main) provider — subagents can run on a different provider concurrently.
  */
 export function setSubagentSelection(
@@ -432,7 +432,11 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/minimax/i, 1_000_000],
   // 256k
   [/kimi-k1|kimi.*long/i, 200_000],                           // Kimi K1.5 long-context
-  [/kimi|moonshot/i, 131_072],                                 // Kimi K2 / Moonshot standard (128k)
+  // Newer Kimi K2 releases — K2.5 / K2.6 / K2 Thinking / dated K2-<NNNN> (e.g.
+  // K2-0905) — ship a 256k window. Match these BEFORE the generic Kimi rule
+  // (first match wins); the original K2 (0711) stays on the 128k fallback below.
+  [/kimi[-_.]?k2[-_.]?(thinking|\d{4}|[5-9])/i, 256_000],     // Kimi K2.5 / K2.6 / Thinking (256k)
+  [/kimi|moonshot/i, 131_072],                                 // Kimi K2 (0711) / Moonshot standard (128k)
   [/qwen[-.]?3[-.]?(coder|next)/i, 256_000],
   [/jamba/i, 256_000],
   [/step[-_.]?3\.7/i, 256_000],

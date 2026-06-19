@@ -26,7 +26,7 @@ ${SHARED_GUIDELINES}`
 export const GENERAL_PURPOSE_AGENT: BuiltInAgentDefinition = {
   agentType: 'general-purpose',
   whenToUse:
-    'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you.',
+    'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks on NON-web/mobile work (CLI tools, scripts, libraries, data pipelines, infra). For web or mobile app implementation, use the collaborator swarm (frontend/backend/security/deploy/mobile + their builder subagents) instead of this agent. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you.',
   tools: ['*'],
   source: 'built-in',
   baseDir: 'built-in',

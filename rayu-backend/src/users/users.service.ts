@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common'
+import { Prisma } from '@prisma/client'
 import type { Plan, User } from '@prisma/client'
 import type { UserStatus } from '../common/enums'
 import { PrismaService } from '../prisma/prisma.service'
@@ -157,18 +158,38 @@ export class UsersService {
     page: number
     pageSize: number
     search?: string
+    /** Filter by recent activity (derived from lastActiveAt). */
+    activity?: 'active' | 'inactive'
+    /** Window that defines "active"; defaults to 30 days. */
+    activeWindowDays?: number
   }): Promise<{ items: User[]; total: number; page: number; pageSize: number }> {
     const page = Math.max(1, opts.page)
     const pageSize = Math.min(100, Math.max(1, opts.pageSize))
-    const where = opts.search
-      ? {
-          OR: [
-            { email: { contains: opts.search } },
-            { displayName: { contains: opts.search } },
-            { clerkUserId: { contains: opts.search } },
-          ],
-        }
-      : {}
+    const and: Prisma.UserWhereInput[] = []
+    if (opts.search) {
+      and.push({
+        OR: [
+          { email: { contains: opts.search } },
+          { displayName: { contains: opts.search } },
+          { clerkUserId: { contains: opts.search } },
+        ],
+      })
+    }
+    if (opts.activity) {
+      const windowDays =
+        opts.activeWindowDays && opts.activeWindowDays > 0
+          ? opts.activeWindowDays
+          : 30
+      const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000)
+      if (opts.activity === 'active') {
+        // Active: seen within the window.
+        and.push({ lastActiveAt: { gte: since } })
+      } else {
+        // Non-active: stale OR never active (lastActiveAt null).
+        and.push({ OR: [{ lastActiveAt: { lt: since } }, { lastActiveAt: null }] })
+      }
+    }
+    const where: Prisma.UserWhereInput = and.length ? { AND: and } : {}
     const [items, total] = await Promise.all([
       this.prisma.user.findMany({
         where,

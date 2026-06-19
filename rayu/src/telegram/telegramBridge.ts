@@ -700,37 +700,33 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
       }
 
       // ── ONE combined text message ─────────────────────────────────────────────
-      // Build the activity summary (💭 + tool lines + errors) from all messages.
-      // Inject turnHadThinking so the thinking indicator is included even though
-      // thinking deltas are accumulated separately.
-      const allWithThinking = turnHadThinking
-        ? [{ type: 'assistant', isMeta: false, message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }] } } as WrappedMessage, ...messages]
-        : messages
-      const activitySummary = formatActivitySummary(allWithThinking)
-
-      // The AI text was already streamed live into lastTurnMessageId.
-      // Edit that message to PREPEND the activity summary → one final message.
-      if (lastTurnMessageId && chatId) {
+      if (lastTurnMessageId) {
+        // STREAMING PATH: AI text was already streamed into lastTurnMessageId.
+        // Build activity summary (💭 + tool lines + errors), then EDIT that message
+        // to prepend the summary → one final message with everything.
+        const activitySummary = formatActivitySummary(messages, turnHadThinking, false)
         const aiText = lastTurnText.trim() ? escapeHtml(lastTurnText) : ''
         const combined = [activitySummary, aiText].filter(Boolean).join('\n\n')
         if (combined) {
           void editMessageText(options.token, chatId, lastTurnMessageId, combined, 'HTML').catch(() => {
-            // Fallback: if edit fails (message too old, etc.), send activity separately
+            // Edit failed (message too old, etc.) — send activity as separate message
             if (activitySummary) {
               void sendMessage(options.token, chatId, activitySummary, 'HTML').catch(() => {})
             }
           })
         }
-        lastTurnMessageId = 0
-        lastTurnText = ''
-        turnHadThinking = false
-      } else if (activitySummary) {
-        // No streaming message this turn (non-streaming path) — send activity as new message
-        void sendMessage(options.token, chatId, activitySummary, 'HTML').catch(() => {})
-        lastTurnMessageId = 0
-        lastTurnText = ''
-        turnHadThinking = false
+      } else {
+        // NON-STREAMING PATH: no streaming message exists.
+        // Send ONE message with activity + AI text combined.
+        const fullMessage = formatActivitySummary(messages, turnHadThinking, true)
+        if (fullMessage) {
+          void sendMessage(options.token, chatId, fullMessage, 'HTML').catch(() => {})
+        }
       }
+
+      lastTurnMessageId = 0
+      lastTurnText = ''
+      turnHadThinking = false
     },
 
     stop(): void {

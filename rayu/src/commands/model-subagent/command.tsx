@@ -42,11 +42,11 @@ const SUBCOMMANDS = new Set([
  * DIFFERENT provider than the main agent.
  *
  *   /model_subagent                 → set the GLOBAL subagent model (picker)
- *   /model_subagent BE-AGENT        → set the model for one specialist (picker)
+ *   /model_subagent backend         → set the model for one agent (picker)
  *   /model_subagent show            → show current global selection
- *   /model_subagent BE-AGENT show   → show one specialist's selection
+ *   /model_subagent backend show    → show one agent's selection
  *   /model_subagent default         → clear global (back to instant default)
- *   /model_subagent BE-AGENT default→ clear one specialist's override
+ *   /model_subagent backend default → clear one agent's override
  *
  * Persists in ~/.rayu/providers.json. Same searchable picker card as /model.
  */

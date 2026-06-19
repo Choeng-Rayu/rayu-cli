@@ -3,25 +3,34 @@ package store
 import "testing"
 
 func TestParseLimits(t *testing.T) {
-	cpw, cp5h, topup := parseLimits([]byte(`{"creditsPerWeek":500000,"creditsPer5h":100000,"topUpEnabled":true}`))
-	if cpw == nil || *cpw != 500000 {
-		t.Fatalf("creditsPerWeek=%v", cpw)
+	l := parseLimits([]byte(`{"creditsPerPeriod":50,"maxDailyTurns":100,"topUpEnabled":true}`))
+	if l.creditsPerPeriod == nil || *l.creditsPerPeriod != 50 {
+		t.Fatalf("creditsPerPeriod=%v", l.creditsPerPeriod)
 	}
-	if cp5h == nil || *cp5h != 100000 {
-		t.Fatalf("creditsPer5h=%v", cp5h)
+	if l.maxDailyTurns == nil || *l.maxDailyTurns != 100 {
+		t.Fatalf("maxDailyTurns=%v", l.maxDailyTurns)
 	}
-	if !topup {
+	if !l.topUpEnabled {
 		t.Fatal("topUpEnabled should be true")
 	}
 
-	// Missing credit fields => unlimited (nil) + topup false.
-	cpw, cp5h, topup = parseLimits([]byte(`{"features":{}}`))
-	if cpw != nil || cp5h != nil || topup {
-		t.Fatalf("expected nil/nil/false, got %v %v %v", cpw, cp5h, topup)
+	// maxDailyTurns can be set independently of credits (e.g. free plan).
+	l = parseLimits([]byte(`{"maxDailyTurns":50,"features":{}}`))
+	if l.creditsPerPeriod != nil {
+		t.Fatalf("expected nil creditsPerPeriod, got %v", l.creditsPerPeriod)
+	}
+	if l.maxDailyTurns == nil || *l.maxDailyTurns != 50 {
+		t.Fatalf("maxDailyTurns=%v", l.maxDailyTurns)
+	}
+
+	// Missing fields => nil caps + topup false.
+	l = parseLimits([]byte(`{"features":{}}`))
+	if l.creditsPerPeriod != nil || l.maxDailyTurns != nil || l.topUpEnabled {
+		t.Fatalf("expected all empty, got %v %v %v", l.creditsPerPeriod, l.maxDailyTurns, l.topUpEnabled)
 	}
 
 	// Empty/invalid JSON is safe.
-	if cpw, _, _ := parseLimits(nil); cpw != nil {
-		t.Fatal("nil limits should yield nil creditsPerWeek")
+	if l := parseLimits(nil); l.creditsPerPeriod != nil || l.maxDailyTurns != nil {
+		t.Fatal("nil limits should yield nil caps")
 	}
 }

@@ -21,7 +21,7 @@ describe('rayu-backend (e2e)', () => {
     expect(res.body.status).toBe('ok')
   })
 
-  it('GET /api/plans -> 6 plans, free+basic active, others coming_soon', async () => {
+  it('GET /api/plans -> 6 plans; free/basic + hosted tiers active, enterprise coming_soon', async () => {
     const res = await request(app.getHttpServer()).get('/api/plans')
     expect(res.status).toBe(200)
     expect(res.body).toHaveLength(6)
@@ -30,13 +30,42 @@ describe('rayu-backend (e2e)', () => {
     )
     expect(byCode.free).toBe('active')
     expect(byCode.basic).toBe('active')
-    expect(byCode.pro).toBe('coming_soon')
-    expect(byCode.pro_plus).toBe('coming_soon')
-    expect(byCode.max).toBe('coming_soon')
+    expect(byCode.pro).toBe('active')
+    expect(byCode.pro_plus).toBe('active')
+    expect(byCode.max).toBe('active')
     expect(byCode.enterprise).toBe('coming_soon')
     // Basic is the $3/mo tier (price comes from the DB, not hardcoded in UI).
     const basic = res.body.find((p: any) => p.code === 'basic')
     expect(basic.priceCents).toBe(300)
+  })
+
+  it('POST /api/payments/khqr issues KHQR for an active hosted plan, rejects coming_soon', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_buyer',
+      email: 'buyer@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const access = await login(app, 'state-buyer-1234')
+
+    // Pro is now purchasable -> a QR + pending payment are created.
+    const ok = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'pro' })
+    expect(ok.status).toBe(201)
+    expect(ok.body.planCode).toBe('pro')
+    expect(ok.body.amountCents).toBe(1000)
+    expect(typeof ok.body.qr).toBe('string')
+    expect(ok.body.qr.length).toBeGreaterThan(0)
+    expect(typeof ok.body.paymentId).toBe('number')
+
+    // Enterprise is coming_soon (and $0) -> not purchasable.
+    const bad = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'enterprise' })
+    expect(bad.status).toBe(400)
   })
 
   it('full CLI bridge: exchange -> token -> /me, replay fails', async () => {
@@ -207,6 +236,35 @@ describe('rayu-backend (e2e)', () => {
       .set('Authorization', `Bearer ${adminAccess}`)
     expect(list.status).toBe(200)
     expect(list.body.total).toBeGreaterThan(0)
+
+    // Active vs non-active filter (derived from lastActiveAt).
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_admin' },
+      data: { lastActiveAt: new Date() },
+    })
+    await ctx.prisma.user.update({
+      where: { clerkUserId: 'clerk_regular' },
+      data: { lastActiveAt: null },
+    })
+    const activeList = await request(app.getHttpServer())
+      .get('/api/admin/users?activity=active')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(activeList.status).toBe(200)
+    const activeIds = activeList.body.items.map(
+      (u: { clerkUserId: string }) => u.clerkUserId,
+    )
+    expect(activeIds).toContain('clerk_admin')
+    expect(activeIds).not.toContain('clerk_regular')
+
+    const inactiveList = await request(app.getHttpServer())
+      .get('/api/admin/users?activity=inactive')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(inactiveList.status).toBe(200)
+    const inactiveIds = inactiveList.body.items.map(
+      (u: { clerkUserId: string }) => u.clerkUserId,
+    )
+    expect(inactiveIds).toContain('clerk_regular')
+    expect(inactiveIds).not.toContain('clerk_admin')
 
     // Find the regular user id and suspend it.
     const regular = await ctx.prisma.user.findUnique({
@@ -593,7 +651,7 @@ describe('rayu-backend (e2e)', () => {
       .get('/api/admin/credit-settings')
       .set('Authorization', `Bearer ${adminAccess}`)
     expect(s.status).toBe(200)
-    expect(s.body.baselineCreditsPer1M).toBe(1000)
+    expect(s.body.baselineCreditsPer1M).toBe(1)
     const sp = await request(app.getHttpServer())
       .patch('/api/admin/credit-settings')
       .set('Authorization', `Bearer ${adminAccess}`)
@@ -620,7 +678,7 @@ describe('rayu-backend (e2e)', () => {
     const patched = await request(app.getHttpServer())
       .patch('/api/admin/plans/pro')
       .set('Authorization', `Bearer ${adminAccess}`)
-      .send({ creditsPerWeek: 500000, creditsPer5h: 100000, topUpEnabled: true })
+      .send({ creditsPerPeriod: 50, topUpEnabled: true })
     expect(patched.status).toBe(200)
 
     // A free user: no hosted models, null credit allowance.
@@ -636,7 +694,7 @@ describe('rayu-backend (e2e)', () => {
       .set('Authorization', `Bearer ${freeAccess}`)
     expect(freeEnt.status).toBe(200)
     expect(freeEnt.body.allowedModels).toEqual([])
-    expect(freeEnt.body.creditAllowance.creditsPerWeek).toBeNull()
+    expect(freeEnt.body.creditAllowance.creditsPerPeriod).toBeNull()
     expect(freeEnt.body.creditConfig.baselineCreditsPer1M).toBeGreaterThan(0)
 
     // A Pro user: hosted models allowed + credit allowance reflected.
@@ -663,7 +721,7 @@ describe('rayu-backend (e2e)', () => {
       .set('Authorization', `Bearer ${proAccess}`)
     expect(proEnt.status).toBe(200)
     expect(proEnt.body.plan.code).toBe('pro')
-    expect(proEnt.body.creditAllowance.creditsPerWeek).toBe(500000)
+    expect(proEnt.body.creditAllowance.creditsPerPeriod).toBe(50)
     expect(proEnt.body.creditAllowance.topUpEnabled).toBe(true)
     expect(proEnt.body.allowedModels.map((m: any) => m.code)).toEqual(
       expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro']),
@@ -686,7 +744,7 @@ describe('rayu-backend (e2e)', () => {
     await request(app.getHttpServer())
       .patch('/api/admin/plans/pro')
       .set('Authorization', `Bearer ${adminAccess}`)
-      .send({ creditsPerWeek: 500000 })
+      .send({ creditsPerPeriod: 50 })
       .expect(200)
 
     // Set projection knobs + baseline model.

@@ -1,15 +1,15 @@
-// Stack-awareness prompt fragment for PA-AGENT.
+// Stack-awareness prompt fragment for the planner (and stack-aware collaborators).
 //
 // PURE CONTENT: a function of a DetectedStack → instructional text. The
 // ASSEMBLY (running detectStack(getCwd()) and splicing this into the prompt)
-// lives in the specialist's getDynamicFragment closure. Keeping content
-// separate keeps Task-5 (markdown migration) a pure move — the dynamic bit
-// stays a code-injected fragment, the static body moves to agent.md.
+// lives in the planner's getSystemPrompt assembly (and collaborators'
+// buildCollaboratorPrompt). Keeping content separate keeps a future markdown
+// migration a pure move — the dynamic bit stays a code-injected fragment.
 import type { DetectedStack } from '../../../utils/stackDetector.js'
 import { summarizeStack } from '../../../utils/stackDetector.js'
 
 /**
- * The role-shaping fragment for PA-AGENT:
+ * The role-shaping fragment for the planner:
  * - existing stack  → DETECT + RESPECT (document, don't redesign)
  * - greenfield      → CHOOSE the stack (the original behavior)
  */

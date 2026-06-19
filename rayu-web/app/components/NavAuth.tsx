@@ -8,6 +8,7 @@ export default function NavAuth() {
   if (isSignedIn) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <Link href="/dashboard">Dashboard</Link>
         <Link href="/billing" className="btn-primary">Billing</Link>
         <UserButton />
       </div>
