@@ -101,7 +101,6 @@ const TOOL_ICONS: Record<string, string> = {
   // Planning / todos
   todowrite: '📋',
   todo_write: '📋',
-  entertplanmode: '🗺️',
   enterplanmode: '🗺️',
   exitplanmode: '✅',
   // MCP / tools
