@@ -24,7 +24,7 @@ switching, MCP support, and the full built-in tool suite.
 | 9 | [Diagnostics & Privacy](./09-diagnostics-privacy.md) | Bug/issue logging, telemetry, network posture |
 | 10 | [Troubleshooting](./10-troubleshooting.md) | Common errors and fixes |
 | 11 | [Codebase Knowledge Graph](./11-knowledge-graph.md) | Local indexing, querying, and tracing using `/graphify` |
-| 12 | [Specialist Swarm](./12-specialist-swarm.md) | Orchestrating parallel specialist agents (`/swarm`) |
+| 12 | [Specialist Swarm](./12-specialist-swarm.md) | Orchestrating parallel specialist agents (`/collaborator_swarm`) |
 | 13 | [Image Generation](./12-image-generation.md) | Built-in `GenerateImage` tool (NVIDIA), save/inline/terminal display |
 | 14 | [Building binaries](./13-binaries.md) | Cross-platform standalone executables, versioning, install |
 | 15 | [Telegram Bot](./15-telegram-bot.md) | Linking a Telegram bot to drive the CLI remotely |

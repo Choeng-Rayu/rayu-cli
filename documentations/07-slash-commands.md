@@ -9,6 +9,10 @@ command menu; start typing to filter. Press Enter to run.
 |---------|-------------|
 | `/connect` | Add or switch a provider: pick type → enter API key → choose a model. See [Providers](./03-providers.md). |
 | `/model` | Searchable model picker across all connected providers. `/model <id>` sets a model directly. See [Models](./04-models.md). |
+| `/collaborator_model` | Pick the model used for collaborator agents during swarm builds. |
+| `/model_subagent` | Pick the model used for one-shot subagents. |
+| `/model_image_generation` | Pick the model used for image generation. |
+| `/model_video_generation` | Pick the model used for video generation. |
 
 ## Session & context
 
@@ -23,6 +27,14 @@ command menu; start typing to filter. Press Enter to run.
 | `/copy` | Copy the last response |
 | `/resume` | Resume a previous session |
 | `/exit` | Quit Rayu |
+
+## Collaboration & planning
+
+| Command | Description |
+|---------|-------------|
+| `/collaborator_swarm` | Enter collaborator swarm mode: orchestrate a complex build via the 3-phase flow (scope → plan → delegate). `/normal` exits. |
+| `/ultraplan` | Deep multi-agent planning: explore in parallel, weigh approaches, produce a step-by-step plan for approval |
+| `/ultrareview` | Deep bug-hunt on your branch: parallel review subagents find and verify bugs |
 
 ## Configuration & tools
 
@@ -40,6 +52,14 @@ command menu; start typing to filter. Press Enter to run.
 | `/brandmark` | Customize Rayu's brand mark glyph and loading-spinner style |
 | `/telegram-bot` | Link a Telegram bot to drive this CLI remotely |
 | `/disconnect-telegram` | Unlink the Telegram bot from this CLI session |
+
+## Generative media
+
+| Command | Description |
+|---------|-------------|
+| `/generate-image` | Generate an image from a text prompt (NVIDIA / Vertex Imagen) |
+| `/image-editor` | Edit an existing image with a text prompt |
+| `/image-video` | Generate a video from a text prompt (fal.ai / NVIDIA / Vertex Veo) |
 
 ## Notes
 
