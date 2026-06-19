@@ -1,7 +1,7 @@
-// Opt-in locale/stack profiles for the specialist swarm.
+// Opt-in locale/stack profiles for the collaborator swarm.
 //
 // Previously, Cambodia-specific rules (Bakong/KHQR, KHR/USD, Khmer) were
-// HARDCODED into PA/DB/MOB prompts — biasing every project. They now live here
+// HARDCODED into planner/backend/mobile prompts — biasing every project. They now live here
 // as an opt-in profile, so the default swarm carries no locale bias.
 //
 // CONTENT (PROFILES map) is kept separate from ASSEMBLY (selectProfile /
@@ -24,16 +24,16 @@ const CAMBODIA: Profile = {
   name: 'cambodia',
   appliesWhen: /\b(cambodia|khmer|bakong|khqr|\bKH\b|riel|KHR)\b/i,
   fragmentsByAgent: {
-    'PA-AGENT': [
+    planner: [
       '## Locale profile: Cambodia',
       '- Prefer locally-relevant choices: Bakong / KHQR for payments, KHR + USD dual currency, Khmer + English bilingual UI.',
     ].join('\n'),
-    'DB-AGENT': [
+    backend: [
       '## Locale profile: Cambodia',
       '- KHR/USD decimal precision (KHR: 0 decimals, USD: 2). Store money as integer minor units where possible.',
       '- Use utf8mb4 (or equivalent) so Khmer Unicode is stored correctly.',
     ].join('\n'),
-    'MOB-AGENT': [
+    mobile: [
       '## Locale profile: Cambodia',
       '- Handle KHR/USD display and Khmer + English localization in the mobile UI.',
     ].join('\n'),

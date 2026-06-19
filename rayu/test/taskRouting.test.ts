@@ -20,7 +20,7 @@ test('routing content classifies TRIVIAL / SINGLE-DOMAIN / MULTI-DOMAIN', () => 
   expect(TASK_ROUTING_SECTION).toContain('MULTI-DOMAIN')
   // Multi-domain must dispatch the swarm; trivial must not.
   expect(TASK_ROUTING_SECTION).toMatch(/MULTI-DOMAIN[\s\S]*swarm/)
-  expect(TASK_ROUTING_SECTION).toMatch(/Never spawn specialists for trivial/i)
+  expect(TASK_ROUTING_SECTION).toMatch(/Never spawn the swarm for trivial/i)
   // Ask-on-borderline escape.
   expect(TASK_ROUTING_SECTION).toMatch(/cannot tell|ask the user/i)
 })

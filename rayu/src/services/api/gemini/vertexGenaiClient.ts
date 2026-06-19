@@ -74,6 +74,8 @@ export type VertexGenaiConfig = {
   providerId?: string
   /** Token source (defaults to the shared Vertex OAuth/ADC resolver). */
   getToken?: () => Promise<string>
+  /** Optional fetch (e.g. the Rayu gateway-routing fetch). Defaults to global. */
+  fetchImpl?: typeof fetch
 }
 
 function modelUrl(cfg: VertexGenaiConfig, model: string, method: string, query?: string): string {
@@ -95,8 +97,12 @@ async function callVertex(
 ): Promise<Response> {
   const getToken = cfg.getToken ?? getVertexAccessToken
   const token = await getToken()
+  // Route through the Rayu gateway when enabled (cfg.fetchImpl); otherwise use
+  // the native fetch. The gateway forwards the OAuth bearer + project header
+  // verbatim to the Vertex host.
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-  return globalThis.fetch(modelUrl(cfg, model, method, query), {
+  const doFetch = cfg.fetchImpl ?? globalThis.fetch
+  return doFetch(modelUrl(cfg, model, method, query), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -116,6 +122,7 @@ async function callVertex(
 export function createVertexGenaiClient(
   provider: Pick<RayuProvider, 'id' | 'gcpProject' | 'gcpRegion'>,
   maxRetries: number,
+  routeFetch?: typeof fetch,
 ): unknown {
   const project = provider.gcpProject || process.env.GOOGLE_CLOUD_PROJECT || ''
   const cfg: VertexGenaiConfig = {
@@ -123,6 +130,7 @@ export function createVertexGenaiClient(
     region: provider.gcpRegion || DEFAULT_VERTEX_REGION,
     maxRetries,
     providerId: provider.id,
+    fetchImpl: routeFetch,
   }
 
   function ensureProject(): void {

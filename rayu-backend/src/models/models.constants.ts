@@ -25,7 +25,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
     upstreamModelId: 'deepseek-v4-flash',
     inputPricePer1MCents: 14, // $0.14 / 1M
     outputPricePer1MCents: 28, // $0.28 / 1M
-    creditMultiplier: 1,
+    creditMultiplier: 0.33, // cheaper model — ~1/3 the credit cost of Pro
     allowedPlanCodes: ['pro', 'pro_plus', 'max'],
     enabled: true,
   },
@@ -37,7 +37,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
     upstreamModelId: 'deepseek-v4-pro',
     inputPricePer1MCents: 174, // $1.74 / 1M
     outputPricePer1MCents: 348, // $3.48 / 1M
-    creditMultiplier: 3,
+    creditMultiplier: 1, // reference model (1 credit = 1e6/baselineCreditsPer1M tokens)
     allowedPlanCodes: ['pro', 'pro_plus', 'max'],
     enabled: true,
   },

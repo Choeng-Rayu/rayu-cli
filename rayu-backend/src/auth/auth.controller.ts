@@ -108,12 +108,15 @@ export class AuthController {
       maxDailyTurns: limits.maxDailyTurns ?? null,
       features: this.plans.getResolvedFeatures(plan),
       creditAllowance: {
-        creditsPerWeek: limits.creditsPerWeek ?? null,
-        creditsPer5h: limits.creditsPer5h ?? null,
+        creditsPerPeriod: limits.creditsPerPeriod ?? null,
         topUpEnabled: limits.topUpEnabled ?? false,
       },
       creditConfig: {
         baselineCreditsPer1M: settings.baselineCreditsPer1M,
+        tokensPerCredit:
+          settings.baselineCreditsPer1M > 0
+            ? Math.round(1_000_000 / settings.baselineCreditsPer1M)
+            : 0,
       },
       topupBalance,
       allowedModels: allowed.map((m) => ({

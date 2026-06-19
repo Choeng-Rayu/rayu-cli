@@ -72,8 +72,13 @@ export class AdminService {
     private readonly settings: AppSettingsService,
   ) {}
 
-  listUsers(page: number, pageSize: number, search?: string) {
-    return this.users.listUsers({ page, pageSize, search })
+  listUsers(
+    page: number,
+    pageSize: number,
+    search?: string,
+    activity?: 'active' | 'inactive',
+  ) {
+    return this.users.listUsers({ page, pageSize, search, activity })
   }
 
   async setUserStatus(id: number, status: UserStatus): Promise<User> {
@@ -201,8 +206,7 @@ export class AdminService {
       priceCents: plan.priceCents,
       availability: plan.availability,
       maxDailyTurns: limits.maxDailyTurns ?? null,
-      creditsPerWeek: limits.creditsPerWeek ?? null,
-      creditsPer5h: limits.creditsPer5h ?? null,
+      creditsPerPeriod: limits.creditsPerPeriod ?? null,
       topUpEnabled: limits.topUpEnabled ?? false,
       features: this.plans.getResolvedFeatures(plan),
     }
@@ -267,11 +271,11 @@ export class AdminService {
     const planViews = plans
       .filter(
         (p) =>
-          p.priceCents > 0 || this.plans.getLimits(p).creditsPerWeek != null,
+          p.priceCents > 0 || this.plans.getLimits(p).creditsPerPeriod != null,
       )
       .map((p) => {
         const limits = this.plans.getLimits(p)
-        const cpw = limits.creditsPerWeek ?? null
+        const cpp = limits.creditsPerPeriod ?? null
         const allowed = enabled.filter((m) =>
           this.models.allowedCodes(m).includes(p.code),
         )
@@ -284,8 +288,8 @@ export class AdminService {
             worstModelCode = m.code
           }
         }
-        const unlimited = cpw == null
-        const monthlyCredits = cpw == null ? null : cpw * 4.33
+        const unlimited = cpp == null
+        const monthlyCredits = cpp == null ? null : cpp // per-period == monthly
         const worstCaseMonthlyCostCents =
           monthlyCredits == null ? null : Math.round(monthlyCredits * worst)
         const expectedMonthlyCostCents =
@@ -308,8 +312,7 @@ export class AdminService {
           code: p.code,
           name: p.name,
           priceCents: p.priceCents,
-          creditsPerWeek: cpw,
-          creditsPer5h: limits.creditsPer5h ?? null,
+          creditsPerPeriod: cpp,
           unlimited,
           worstModelCode,
           worstCostPerCreditCents: round(worst, 6),

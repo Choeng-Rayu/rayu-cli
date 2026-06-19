@@ -126,14 +126,39 @@ export function toolIcon(toolName: string): string {
 const BASH_LIKE_TOOLS = new Set(['bash', 'shell', 'powershell', 'repl'])
 const AGENT_TOOLS = new Set(['agent', 'task'])
 
-/** Override display names for verbose internal tool names. */
+/** Override display names for verbose or CamelCase internal tool names. */
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  // Internal verbose names
   str_replace_based_edit_tool: 'Edit',
   multiedit: 'Edit',
   multi_edit: 'Edit',
   notebook_edit: 'Notebook Edit',
   list_mcp_resources: 'MCP Resources',
   read_mcp_resource: 'MCP Resource',
+  // CamelCase tool names → readable display
+  generateimage: 'Generate Image',
+  generate_image: 'Generate Image',
+  imagegen: 'Generate Image',
+  generatevideo: 'Generate Video',
+  generate_video: 'Generate Video',
+  videogen: 'Generate Video',
+  websearch: 'Web Search',
+  web_search: 'Web Search',
+  webfetch: 'Web Fetch',
+  web_fetch: 'Web Fetch',
+  todowrite: 'Todo',
+  todo_write: 'Todo',
+  enterplanmode: 'Enter Plan Mode',
+  exitplanmode: 'Exit Plan Mode',
+  askuserquestion: 'Ask Question',
+  ask_user_question: 'Ask Question',
+  notebookedit: 'Notebook Edit',
+  fileread: 'Read',
+  file_read: 'Read',
+  filewrite: 'Write',
+  file_write: 'Write',
+  fileedit: 'Edit',
+  file_edit: 'Edit',
 }
 
 function isBashLike(name: string): boolean {
@@ -175,27 +200,42 @@ function formatToolUseLine(name: string, input: unknown): string {
 }
 
 /**
- * Build just the activity summary (tools + thinking indicator + errors) from a batch
- * of messages, WITHOUT AI text. Used to prepend to the streaming message so the
- * final Telegram message contains everything in one.
+ * Build the activity summary from a batch of messages.
  *
- * Format:
- *   💭                        ← thinking happened (just emoji, once)
+ * @param messages      The WrappedMessages from the completed turn.
+ * @param hasThinking   True when thinking deltas were received this turn
+ *                      (the 💭 indicator). Passed separately because thinking
+ *                      tokens arrive via onThinkingDelta, not always as blocks
+ *                      in the messages array.
+ * @param includeText   When true, also appends AI text blocks (for non-streaming
+ *                      turns where there is no pre-existing streamed message).
+ *
+ * Output format:
+ *   💭                         ← thinking happened (just emoji)
  *   🖥️ <b>Running Bash</b>
  *   📝 <b>Edit</b>
  *   ⚠️ <i>error if any</i>
+ *
+ *   Full AI response text...   ← only when includeText = true
  */
-export function formatActivitySummary(messages: WrappedMessage[]): string | null {
-  let hasThinking = false
+export function formatActivitySummary(
+  messages: WrappedMessage[],
+  hasThinking = false,
+  includeText = false,
+): string | null {
+  // Also detect thinking from message blocks in case they're stored in history
+  let thinkingFound = hasThinking
   const toolLines: string[] = []
   const errorLines: string[] = []
+  const textLines: string[] = []
 
   for (const message of messages) {
     if (message.isMeta) continue
+    const isAssistant = message.message?.role === 'assistant'
     for (const block of blocksOf(message)) {
       switch (block.type) {
         case 'thinking':
-          if (block.thinking?.trim()) hasThinking = true
+          if (block.thinking?.trim()) thinkingFound = true
           break
         case 'tool_use': {
           const line = formatToolUseLine(block.name ?? 'tool', block.input)
@@ -209,16 +249,26 @@ export function formatActivitySummary(messages: WrappedMessage[]): string | null
             if (err) errorLines.push(`⚠️ <i>${escapeHtml(err)}</i>`)
           }
           break
+        case 'text':
+          if (includeText && isAssistant && block.text?.trim()) {
+            textLines.push(escapeHtml(block.text.trim()))
+          }
+          break
       }
     }
   }
 
-  const parts: string[] = []
-  if (hasThinking) parts.push('💭')
-  parts.push(...toolLines)
-  parts.push(...errorLines)
+  const activityParts: string[] = []
+  if (thinkingFound) activityParts.push('💭')
+  activityParts.push(...toolLines)
+  activityParts.push(...errorLines)
 
-  const out = parts.join('\n').trim()
+  const parts: string[] = []
+  const activity = activityParts.join('\n').trim()
+  if (activity) parts.push(activity)
+  if (textLines.length > 0) parts.push(textLines.join('\n\n'))
+
+  const out = parts.join('\n\n').trim()
   return out.length > 0 ? out : null
 }
 

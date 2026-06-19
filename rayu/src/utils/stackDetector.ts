@@ -1,7 +1,7 @@
 // Deterministic project stack detection from manifest files.
 //
 // Pure + synchronous: no network, no model calls, no side effects. Reads only
-// well-known manifest/lockfile names from `cwd`. Used to make PA-AGENT (and the
+// well-known manifest/lockfile names from `cwd`. Used to make the planner (and the
 // swarm) respect an existing codebase instead of redesigning it.
 //
 // This replaces the ad-hoc, model-driven manifest reading scattered across

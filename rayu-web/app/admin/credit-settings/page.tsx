@@ -84,7 +84,13 @@ export default function CreditSettingsPage() {
 
       <Panel title="Credit model">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem' }}>
-          <Field label="Baseline credits / 1M tokens">{numInput('baselineCreditsPer1M', 1)}</Field>
+          <Field label="Baseline credits / 1M tokens">
+            {numInput('baselineCreditsPer1M', 1)}
+            <div style={{ fontSize: '0.72rem', opacity: 0.5, marginTop: 2 }}>
+              1 credit = {s.baselineCreditsPer1M > 0 ? Math.round(1_000_000 / s.baselineCreditsPer1M).toLocaleString() : '—'} tokens
+              {' '}(e.g. 50 credits = {s.baselineCreditsPer1M > 0 ? (50 * Math.round(1_000_000 / s.baselineCreditsPer1M)).toLocaleString() : '—'} tokens)
+            </div>
+          </Field>
           <Field label="Baseline model (= 1×)">
             <select className="admin-select" style={{ width: 200 }} value={s.baselineModelCode ?? ''} onChange={(e) => patch({ baselineModelCode: e.target.value || null })}>
               <option value="">(cheapest enabled)</option>
@@ -123,7 +129,7 @@ export default function CreditSettingsPage() {
                 <tr>
                   <th>Plan</th>
                   <th>Revenue</th>
-                  <th>Credits/wk</th>
+                  <th>Credits/mo</th>
                   <th>Worst cost/mo</th>
                   <th>Expected cost/mo</th>
                   <th>Margin (exp.)</th>
@@ -135,7 +141,7 @@ export default function CreditSettingsPage() {
                   <tr key={p.code}>
                     <td>{p.name} <span style={{ opacity: 0.4 }}>({p.code})</span></td>
                     <td style={{ fontFamily: 'DM Mono, monospace' }}>{usd(p.priceCents)}</td>
-                    <td style={{ fontFamily: 'DM Mono, monospace' }}>{p.creditsPerWeek?.toLocaleString() ?? '∞'}</td>
+                    <td style={{ fontFamily: 'DM Mono, monospace' }}>{p.creditsPerPeriod?.toLocaleString() ?? '∞'}</td>
                     <td style={{ fontFamily: 'DM Mono, monospace' }}>{p.worstCaseMonthlyCostCents == null ? '—' : usd(p.worstCaseMonthlyCostCents)}</td>
                     <td style={{ fontFamily: 'DM Mono, monospace' }}>{p.expectedMonthlyCostCents == null ? '—' : usd(p.expectedMonthlyCostCents)}</td>
                     <td style={{ fontFamily: 'DM Mono, monospace', color: (p.marginCents ?? 0) < 0 ? 'var(--red)' : 'inherit' }}>{p.marginCents == null ? '—' : usd(p.marginCents)}</td>

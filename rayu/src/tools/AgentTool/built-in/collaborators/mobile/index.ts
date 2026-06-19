@@ -14,11 +14,11 @@ export const MOBILE_COLLABORATOR = defineCollaborator({
     'design',
     'asset-generation',
     'backend-design',
+    'builder',
     'review',
     'fix',
     'linter',
     'Explore',
-    'general-purpose',
   ],
   owns: [
     'Screen architecture and navigation',

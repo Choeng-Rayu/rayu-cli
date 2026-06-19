@@ -12,7 +12,13 @@ import { isAutoMemoryEnabled } from '../../../../memdir/paths.js'
 import { getCwd } from '../../../../utils/cwd.js'
 import { detectStack } from '../../../../utils/stackDetector.js'
 import { loadAgentMemoryPrompt } from '../../agentMemory.js'
-import { assembleContext, getDomainPath, getSharedPath } from '../../swarmContext.js'
+import {
+  assembleContext,
+  getDomainPath,
+  getSharedPath,
+  getSlicesForDomain,
+  getSwarmMaxParallel,
+} from '../../swarmContext.js'
 import { buildStackAwarenessFragment } from '../stackAwareness.js'
 import { getProfileFragment } from '../profiles.js'
 
@@ -43,6 +49,69 @@ const AUTHORITY = [
   'Coordinate through explicit contracts (API shapes, schema, auth flow), not by second-guessing other collaborators.',
 ]
 
+/** The blocking foundation step a collaborator runs BEFORE fanning out builders. */
+function foundationStep(agentType: string): string {
+  switch (agentType) {
+    case 'frontend':
+      return 'run the `design` subagent FIRST for the Design PRD (tokens, layout system, component inventory, responsive + a11y baseline) — every builder builds on it'
+    case 'mobile':
+      return 'run the `design` subagent FIRST for the Design PRD (tokens, navigation, screen inventory) — every builder builds on it'
+    case 'backend':
+      return 'run the `backend-design` subagent FIRST for the data schema + API contract (integrating the auth flow from the security collaborator) — every builder builds on it'
+    case 'security':
+      return 'define the auth/authz flow, validation rules, and sensitive-data handling FIRST — this feeds the backend contract and is authoritative'
+    case 'deploy':
+      return 'wait until the app builds cleanly, then package and ship it'
+    default:
+      return 'lay the shared foundation FIRST, then fan out'
+  }
+}
+
+/** Cross-domain alignment note (FE/MOB build to the BE contract; BE publishes it). */
+function integrationNote(agentType: string): string {
+  switch (agentType) {
+    case 'frontend':
+    case 'mobile':
+      return 'Build against the backend contract in .rayu/swarm/BACKEND.md; after the wave, VERIFY your API calls match the published routes/shapes — if one is missing or mismatched, flag it for the backend collaborator instead of inventing it.'
+    case 'backend':
+      return 'Publish your API contract (routes: method, path, auth, request/response shapes) in your .rayu/swarm/BACKEND.md section so the frontend/mobile collaborators build against it.'
+    default:
+      return ''
+  }
+}
+
+/** The "fan out parallel builders" section, tailored per domain with the slice plan. */
+function buildFanoutSection(agentType: string): string {
+  const cap = getSwarmMaxParallel()
+  const slices = getSlicesForDomain(agentType)
+  const lines = [
+    '## Parallel build plan (fan out for speed)',
+    `1. Foundation (do NOT parallelize): ${foundationStep(agentType)}.`,
+    `2. FAN OUT: dispatch ONE \`builder\` subagent PER disjoint slice IN PARALLEL — a SINGLE message with multiple Agent calls — each owning a NON-overlapping file area. Run at most ${cap} builders at once; if there are more slices, do successive waves. Read-only research can be unbounded; only the parallel WRITERS are capped.`,
+    "3. Give each builder a self-contained packet: its slice task, its EXACT file area, and which contract section(s) to read under `.rayu/swarm/`. Builders must NOT touch each other's files.",
+    '4. After each wave: integrate the slices, run the `review` subagent against the spec, then `fix` any issues, and re-run the build/lint/tests.',
+  ]
+  const note = integrationNote(agentType)
+  if (note) lines.push(`5. ${note}`)
+  if (slices.length > 0) {
+    lines.push(
+      '',
+      'Planner-assigned slices for you (own each with its own builder, in parallel):',
+    )
+    for (const sl of slices) {
+      const task = sl.task ? `: ${sl.task}` : ''
+      const area = sl.area ? ` — area: ${sl.area}` : ''
+      lines.push(`- ${sl.name}${task}${area}`)
+    }
+  } else {
+    lines.push(
+      '',
+      "If the planner did not pre-assign slices, split your domain into disjoint slices yourself (by route group / resource / concern) and keep each builder's file area non-overlapping.",
+    )
+  }
+  return lines.join('\n')
+}
+
 function buildCollaboratorPrompt(s: CollaboratorSpec): string {
   const owns = s.owns.map(o => '- ' + o).join('\n')
   const authority = AUTHORITY.map(a => '- ' + a).join('\n')
@@ -58,8 +127,10 @@ function buildCollaboratorPrompt(s: CollaboratorSpec): string {
     '- You implement AND iterate: write real, production-ready code/config in your domain and refine until it meets the brief. You have the full toolset; request permission for sensitive actions through the normal permission flow.',
     '- Work in PARALLEL where independent: batch reads/greps and independent edits into one message (multiple tool calls, ~3–5 at a time) — parallel is ~3–5x faster. Go sequential only on a true dependency.',
     `- Use the relevant skill (via the Skill tool) to raise your output quality — ${s.skillHint}. rayu ships these as BUNDLED skills (always available, no install needed). You may ALSO use any skill the user installed, or install a relevant one on demand from the official Anthropic skills repo (anthropics/skills) via the InstallSkill tool. If none apply, proceed without one.`,
-    '- You may use MCP servers and dispatch the Tier-3 subagents (e.g. asset-generation, review, fix, linter) for atomic jobs — the same subagents the orchestrator uses.',
+    '- Fan out for speed: implement disjoint slices in PARALLEL by dispatching `builder` subagents (see the build plan below), and dispatch the other Tier-3 subagents (design, backend-design, asset-generation, review, fix, linter) for atomic jobs — the same subagents the orchestrator uses.',
     '- Be autonomous: keep going until your piece is complete; state assumptions and continue rather than stopping for approval unless genuinely blocked.',
+    '',
+    buildFanoutSection(s.agentType),
     '',
     '## Quality bar',
     '- Code must run immediately: include all imports, dependencies, and wiring. Use clear, descriptive names and explicit types on public APIs; prefer guard clauses/early returns; match the existing project style and conventions.',

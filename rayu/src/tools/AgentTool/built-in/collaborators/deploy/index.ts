@@ -9,7 +9,7 @@ export const DEPLOY_COLLABORATOR = defineCollaborator({
   role: 'You package and ship what the other collaborators built: Dockerfile/compose, CI/CD pipeline, environment and secrets configuration, health checks, and deployment to the target platform. You run the production build, resolve build errors, and iterate until deployment succeeds, then report the result/URL.',
   skillHint:
     'the bundled rayu-web-testing skill for post-deploy smoke checks, plus any deployment/CI skill for the target platform (Docker, Vercel, etc.)',
-  allowedSubagents: ['review', 'fix', 'linter', 'Explore', 'general-purpose'],
+  allowedSubagents: ['builder', 'review', 'fix', 'linter', 'Explore'],
   owns: [
     'Dockerfile (multi-stage) and docker-compose',
     'CI/CD pipeline and build configuration',

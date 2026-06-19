@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,5 +80,68 @@ func TestComplete(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "hi") {
 		t.Fatalf("body=%s", body)
+	}
+}
+
+// TestForward verifies the transparent forwarder replays method/body/headers to
+// the upstream and streams the response (status + headers + body) back.
+func TestForward(t *testing.T) {
+	var gotAuth, gotBody, gotMethod string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotMethod = r.Method
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("X-Upstream", "yes")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("hello-from-upstream"))
+	}))
+	defer upstream.Close()
+
+	rec := httptest.NewRecorder()
+	hdrs := http.Header{}
+	hdrs.Set("Authorization", "Bearer user-provider-key")
+	hdrs.Set("Content-Type", "application/json")
+	wrote, err := Forward(context.Background(), rec, http.MethodPost, upstream.URL, hdrs, []byte(`{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("Forward err: %v", err)
+	}
+	if !wrote {
+		t.Fatal("wrote=false, want true")
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("upstream method=%q", gotMethod)
+	}
+	if gotAuth != "Bearer user-provider-key" {
+		t.Fatalf("upstream did not receive forwarded auth: %q", gotAuth)
+	}
+	if gotBody != `{"model":"m"}` {
+		t.Fatalf("upstream body=%q", gotBody)
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d, want 201", rec.Code)
+	}
+	if rec.Header().Get("X-Upstream") != "yes" {
+		t.Fatal("upstream response header not copied back")
+	}
+	if rec.Body.String() != "hello-from-upstream" {
+		t.Fatalf("body=%q", rec.Body.String())
+	}
+}
+
+// TestForwardUpstreamUnreachable reports wrote=false + err when the upstream
+// cannot be dialed, so the caller can emit a fail-safe error.
+func TestForwardUpstreamUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // now nothing is listening at url
+
+	rec := httptest.NewRecorder()
+	wrote, err := Forward(context.Background(), rec, http.MethodPost, url, http.Header{}, []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error for unreachable upstream")
+	}
+	if wrote {
+		t.Fatal("wrote=true, want false (nothing should be written on dial failure)")
 	}
 }

@@ -97,6 +97,15 @@ async function getRayuOpenAICompatibleClient(
   if (!baseURL) {
     return null
   }
+  // Rayu: when opted-in + signed in, route this BYO-key provider through the
+  // gateway proxy for active-user tracking (fail-safe falls back to direct).
+  const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
+    './rayuHosted/gatewayRouting.js'
+  )
+  const routeFetch =
+    active && shouldRouteViaGateway(active)
+      ? makeGatewayRoutingFetch(active)
+      : undefined
   return createOpenAICompatibleClient({
     apiKey,
     baseURL,
@@ -105,6 +114,7 @@ async function getRayuOpenAICompatibleClient(
     promptCacheKey: active?.promptCacheKey,
     reasoningEffort: active?.reasoningEffort,
     streamOptions: active?.streamOptions,
+    ...(routeFetch ? { fetch: routeFetch } : {}),
   })
 }
 
@@ -131,10 +141,13 @@ async function getRayuBedrockAnthropicClient(
     return null
   }
   const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
+  // Rayu: route bedrock-anthropic (bearer token) through the gateway when enabled.
+  const rf = await rayuRouteFetch(active)
   return new AnthropicBedrock({
     apiKey: active.apiKey,
     awsRegion: active.awsRegion || process.env.AWS_REGION || 'us-east-1',
     maxRetries,
+    ...(rf ? { fetch: rf as ClientOptions['fetch'] } : {}),
   })
 }
 
@@ -167,6 +180,23 @@ async function getRayuBedrockConverseClient(
  * otherwise so the caller falls through to the other client paths.
  * SECURITY: the OAuth token is minted per request and never logged.
  */
+/**
+ * Rayu: build the gateway-routing fetch for a provider when routing is enabled
+ * (USE_RAYU_OAUTH + signed in + a routable kind). Returns undefined to leave the
+ * client on its normal direct fetch. Used by the vertex + bedrock-anthropic
+ * paths (the openai-compatible paths inline the same check).
+ */
+async function rayuRouteFetch(
+  provider: import('src/utils/rayuConfig.js').RayuProvider,
+): Promise<typeof fetch | undefined> {
+  const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
+    './rayuHosted/gatewayRouting.js'
+  )
+  return shouldRouteViaGateway(provider)
+    ? makeGatewayRoutingFetch(provider)
+    : undefined
+}
+
 async function getRayuVertexClient(
   maxRetries: number,
 ): Promise<unknown | null> {
@@ -176,7 +206,8 @@ async function getRayuVertexClient(
     return null
   }
   const { createVertexGenaiClient } = await import('./gemini/vertexGenaiClient.js')
-  return createVertexGenaiClient(active, maxRetries)
+  // Rayu: route Vertex (Google OAuth bearer) through the gateway when enabled.
+  return createVertexGenaiClient(active, maxRetries, await rayuRouteFetch(active))
 }
 
 /**
@@ -274,10 +305,12 @@ async function buildClientForProvider(
     provider.apiKey
   ) {
     const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
+    const rf = await rayuRouteFetch(provider)
     return new AnthropicBedrock({
       apiKey: provider.apiKey,
       awsRegion: provider.awsRegion || process.env.AWS_REGION || 'us-east-1',
       maxRetries,
+      ...(rf ? { fetch: rf as ClientOptions['fetch'] } : {}),
     })
   }
   // Bedrock Converse API: model-agnostic (Claude, Kimi, DeepSeek, …) via the
@@ -298,7 +331,7 @@ async function buildClientForProvider(
     const { createVertexGenaiClient } = await import(
       './gemini/vertexGenaiClient.js'
     )
-    return createVertexGenaiClient(provider, maxRetries)
+    return createVertexGenaiClient(provider, maxRetries, await rayuRouteFetch(provider))
   }
   // Login-with-Gemini: @google/genai adapter (Vertex-global + OAuth).
   if (provider.kind === 'genai') {
@@ -329,6 +362,14 @@ async function buildClientForProvider(
     provider.baseURL
   ) {
     const { createOpenAICompatibleClient } = await import('./openaiAdapter.js')
+    // Rayu gateway routing applies only to openai-compatible (shouldRoute is
+    // false for bedrock), so this leaves Bedrock direct.
+    const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
+      './rayuHosted/gatewayRouting.js'
+    )
+    const routeFetch = shouldRouteViaGateway(provider)
+      ? makeGatewayRoutingFetch(provider)
+      : undefined
     return createOpenAICompatibleClient({
       apiKey: provider.apiKey ?? '',
       baseURL: provider.baseURL,
@@ -337,6 +378,7 @@ async function buildClientForProvider(
       promptCacheKey: provider.promptCacheKey,
       reasoningEffort: provider.reasoningEffort,
       streamOptions: provider.streamOptions,
+      ...(routeFetch ? { fetch: routeFetch } : {}),
     })
   }
   return null
@@ -479,6 +521,32 @@ export async function getAnthropicClient({
 
   const resolvedFetch = buildFetch(fetchOverride, source)
 
+  // Rayu: when opted-in + signed in and the active provider is first-party
+  // Anthropic (an API-key provider), route its requests through the gateway
+  // proxy for active-user tracking. The wrapper fails safe to `resolvedFetch`
+  // (a direct call) if the gateway is down. OAuth/Bedrock providers returned
+  // earlier, so they are never affected.
+  let routedFetch = resolvedFetch
+  try {
+    const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+    const active = getActiveProvider()
+    if (active?.kind === 'anthropic') {
+      const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
+        './rayuHosted/gatewayRouting.js'
+      )
+      if (shouldRouteViaGateway(active)) {
+        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+        const inner = (resolvedFetch ?? globalThis.fetch) as typeof fetch
+        routedFetch = makeGatewayRoutingFetch(
+          active,
+          inner,
+        ) as typeof resolvedFetch
+      }
+    }
+  } catch {
+    // never let routing setup break Anthropic client creation
+  }
+
   const ARGS = {
     defaultHeaders,
     maxRetries,
@@ -487,8 +555,8 @@ export async function getAnthropicClient({
     fetchOptions: getProxyFetchOptions({
       forAnthropicAPI: true,
     }) as ClientOptions['fetchOptions'],
-    ...(resolvedFetch && {
-      fetch: resolvedFetch,
+    ...(routedFetch && {
+      fetch: routedFetch,
     }),
   }
 

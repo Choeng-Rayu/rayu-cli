@@ -14,10 +14,15 @@ export interface PlanLimits {
   contactSales?: boolean
   maxDailyTurns?: number | null
   features?: Record<string, { enabled: boolean; limit?: number | null }>
-  // Paid-plan credit allowances (consumed by the Phase 2 gateway).
+  // Paid-plan credit allowance: a per-billing-period balance (credits) consumed
+  // by the gateway. 1 credit = (1e6 / baselineCreditsPer1M) tokens. Depletes
+  // over the 30-day period and refills on renewal/top-up — no weekly reset.
+  creditsPerPeriod?: number | null
+  topUpEnabled?: boolean
+  // Legacy windowed fields (superseded by creditsPerPeriod; kept optional so
+  // older limits JSON still parses). No longer enforced.
   creditsPerWeek?: number | null
   creditsPer5h?: number | null
-  topUpEnabled?: boolean
   [key: string]: unknown
 }
 
@@ -27,8 +32,7 @@ export interface PlanPatch {
   availability?: PlanAvailability
   maxDailyTurns?: number | null
   features?: FeatureEntitlements
-  creditsPerWeek?: number | null
-  creditsPer5h?: number | null
+  creditsPerPeriod?: number | null
   topUpEnabled?: boolean
 }
 
@@ -101,11 +105,8 @@ export class PlansService {
     if (patch.maxDailyTurns !== undefined) {
       limits.maxDailyTurns = patch.maxDailyTurns
     }
-    if (patch.creditsPerWeek !== undefined) {
-      limits.creditsPerWeek = patch.creditsPerWeek
-    }
-    if (patch.creditsPer5h !== undefined) {
-      limits.creditsPer5h = patch.creditsPer5h
+    if (patch.creditsPerPeriod !== undefined) {
+      limits.creditsPerPeriod = patch.creditsPerPeriod
     }
     if (patch.topUpEnabled !== undefined) {
       limits.topUpEnabled = patch.topUpEnabled

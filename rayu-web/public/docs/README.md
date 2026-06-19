@@ -27,6 +27,7 @@ switching, MCP support, and the full built-in tool suite.
 | 12 | [Specialist Swarm](./12-specialist-swarm.md) | Orchestrating parallel specialist agents (`/swarm`) |
 | 13 | [Image Generation](./12-image-generation.md) | Built-in `GenerateImage` tool (NVIDIA), save/inline/terminal display |
 | 14 | [Building binaries](./13-binaries.md) | Cross-platform standalone executables, versioning, install |
+| 15 | [Telegram Bot](./15-telegram-bot.md) | Linking a Telegram bot to drive the CLI remotely |
 
 ## 30-second tour
 

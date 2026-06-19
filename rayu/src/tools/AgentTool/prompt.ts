@@ -248,23 +248,26 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
 - Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
       : ''
 
-  // Specialist-swarm orchestration guidance. The specialists (PA/BE/FE/DB/
-  // SEC/DO/MOB) are in the agent list above; this tells the main agent HOW to
-  // run them as a coordinated swarm. Omitted when specialists are disabled.
+  // Collaborator-swarm orchestration guidance. The collaborators (frontend/
+  // backend/security/deploy/mobile) + the planner are in the agent list above;
+  // this tells the main agent HOW to run them as a coordinated swarm. Omitted
+  // when the swarm is disabled.
   const swarmSection = isEnvTruthy(process.env.RAYU_DISABLE_SPECIALIST_AGENTS)
     ? ''
     : `
 
-## Specialist swarm (orchestration)
-For multi-domain build/implementation work, act as the orchestrator and dispatch specialists instead of doing every domain yourself:
-- PA-AGENT (architecture/stack — run FIRST on new projects/features; its decisions are FINAL), DB-AGENT (schema), BE-AGENT (API), SEC-AGENT (security — FINAL), FE-AGENT (web UI), MOB-AGENT (mobile), DO-AGENT (devops, usually LAST).
-- Maximize parallelism: dispatch specialists with no unmet dependency in a SINGLE message with multiple ${AGENT_TOOL_NAME} tool calls. Spawn each as a NAMED BACKGROUND agent (run_in_background:true) with a stable lowercase name (pa/db/be/sec/fe/mob/do) so you can track and resume it.
-- Spawn only the specialists the task needs: run PA-AGENT first, then spawn exactly the set PA declares in \`.rayu/swarm/shared.json\` "needs" (PA is always included). If PA didn't declare a set, fall back to the domains the task clearly involves — don't spawn all seven by reflex.
-- Shared context (token-saver): specialists share context through a project-local artifact, NOT by you re-typing it. PA-AGENT writes the shared brief (.rayu/swarm/shared.json: goal/stack/flow/constraints) and its own .rayu/swarm/PA.md; every other specialist reads the shared brief plus only its dependency sections (auto-injected into its prompt) and writes its own .rayu/swarm/<AGENT>.md. So you do NOT need to hand-copy schema/routes/auth into each prompt — just give the task plus any brand-new decision not yet in the artifact.
-- Persistent sessions: keep specialists alive. For a follow-up or next task in a domain that already ran, RESUME the same session with ${SEND_MESSAGE_TOOL_NAME} (to: the agent's name or id) carrying just the new task + any changed contracts — do NOT spawn a fresh specialist. Resuming preserves that specialist's full working context and auto-refreshes its shared/dependency context; a fresh spawn only gets the shared artifact and loses its prior work. Spawn fresh only for a genuinely unrelated new domain.
+## Collaborator swarm (orchestration)
+For multi-domain build/implementation work (especially full-stack web/mobile apps), act as the orchestrator and dispatch the planner + collaborators instead of building every domain yourself:
+- planner (architecture/stack — run FIRST on new projects/features; its stack decisions are FINAL and it writes the shared brief), then the Tier-2 collaborators: backend (API + data layer: schema/migrations), security (auth/authz — FINAL), frontend (web UI), mobile (app), deploy (devops/ship — usually LAST). Each collaborator implements its domain and fans out parallel \`builder\` subagents for disjoint slices.
+- Maximize parallelism: dispatch collaborators with no unmet dependency in a SINGLE message with multiple ${AGENT_TOOL_NAME} tool calls. Spawn each as a NAMED BACKGROUND agent (run_in_background:true) with a stable lowercase name (planner/backend/security/frontend/mobile/deploy) so you can track and resume it.
+- Spawn only what the task needs: run the planner FIRST, then spawn exactly the collaborators it declares in \`.rayu/swarm/shared.json\` "needs". If the planner didn't declare a set, fall back to the domains the task clearly involves — don't spawn all five by reflex.
+- Typical full-stack order: planner → { security (auth spec) ∥ backend } → frontend (after the backend contract lands) → deploy LAST; mobile after backend+frontend. Run independent collaborators concurrently.
+- Shared context (token-saver): collaborators share context through a project-local artifact, NOT by you re-typing it. The planner writes the shared brief (.rayu/swarm/shared.json: goal/stack/flow/constraints/needs); every collaborator reads the shared brief plus only its dependency sections (auto-injected into its prompt) and writes its own .rayu/swarm/<DOMAIN>.md (e.g. BACKEND.md, FRONTEND.md). So you do NOT need to hand-copy schema/routes/auth into each prompt — just give the task plus any brand-new decision not yet in the artifact.
+- Persistent sessions: keep collaborators alive. For a follow-up or next task in a domain that already ran, RESUME the same session with ${SEND_MESSAGE_TOOL_NAME} (to: the collaborator's name or id) carrying just the new task + any changed contracts — do NOT spawn a fresh collaborator. Resuming preserves its full working context and auto-refreshes its shared/dependency context; a fresh spawn only gets the shared artifact and loses prior work. Spawn fresh only for a genuinely unrelated new domain.
 - After finishing a plan (e.g. leaving plan mode) for a multi-domain project, proactively run the swarm to implement it — you don't need the user to ask. Apply the task-routing classification (TRIVIAL / SINGLE-DOMAIN / MULTI-DOMAIN): dispatch the swarm for multi-domain work, and handle trivial or single-domain work directly.
-- Resolve conflicts by authority (SEC > PA > DB-naming > BE-contract > FE/MOB/DO). If a specialist emits a DRIFT_FLAG, route that item to the right specialist rather than letting it drift.
-- Then synthesize the specialists' outputs into one coherent result. The /swarm command frames a request for this flow.`
+- general-purpose is for NON-web/mobile work only (CLI tools, scripts, libraries, data pipelines). For web/mobile, use the collaborators and their builder/Explore subagents — not general-purpose.
+- Resolve conflicts by authority (security > planner/stack > backend-contract > frontend/mobile/deploy). If a collaborator flags a cross-domain need, route that item to the right collaborator rather than letting it drift.
+- Then synthesize the collaborators' outputs into one coherent result, and verify the frontend↔backend contracts line up (FE calls match BE routes). The /swarm command frames a request for this flow.`
 
   // Non-coordinator gets the full prompt with all sections
   return `${shared}

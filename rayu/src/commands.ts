@@ -118,7 +118,7 @@ import sandboxToggle from './commands/sandbox-toggle/index.js'
 import contactMe from './commands/contactMe/index.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
-import credits from './commands/credits/index.js'
+import usage from './commands/usage/index.js'
 import advisor from './commands/advisor.js'
 import { logError } from './utils/log.js'
 import { toError } from './utils/errors.js'
@@ -250,7 +250,7 @@ const COMMANDS = memoize((): Command[] => [
   contactMe,
   login,
   logout,
-  credits,
+  usage,
   tag,
   theme,
   brand,

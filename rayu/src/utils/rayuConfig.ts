@@ -91,7 +91,7 @@ export type RayuConfig = {
     model: string
   }
   /**
-   * Per-specialist overrides keyed by agent type (e.g. 'BE-AGENT'). Takes
+   * Per-agent overrides keyed by agent type (e.g. 'backend'). Takes
    * precedence over the global `subagent` selection for that agent. Lets each
    * specialist run on its own provider/model (set via /model_subagent <AGENT>).
    */
@@ -277,7 +277,7 @@ export function getPerAgentSubagentSelection(
 /**
  * Persist a subagent model selection (set via /model_subagent). With no
  * agentType, sets the GLOBAL default for all subagents. With an agentType
- * (e.g. 'BE-AGENT'), sets a per-specialist override. Does NOT change the active
+ * (e.g. 'backend'), sets a per-agent override. Does NOT change the active
  * (main) provider — subagents can run on a different provider concurrently.
  */
 export function setSubagentSelection(

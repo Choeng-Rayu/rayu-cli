@@ -21,20 +21,20 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('flags SEC bcrypt vs BE md5 (password hashing)', () => {
+test('flags SECURITY bcrypt vs BACKEND md5 (password hashing)', () => {
   const conflicts = detectSwarmConflicts({
-    SEC: 'Passwords MUST be hashed with bcrypt (cost 12).',
-    BE: 'Hash the password with md5 before storing.',
+    SECURITY: 'Passwords MUST be hashed with bcrypt (cost 12).',
+    BACKEND: 'Hash the password with md5 before storing.',
   })
   expect(conflicts).toHaveLength(1)
   expect(conflicts[0].topic).toBe('password hashing')
-  expect(conflicts[0].between).toEqual(['SEC', 'BE'])
+  expect(conflicts[0].between).toEqual(['SECURITY', 'BACKEND'])
 })
 
-test('flags SEC httpOnly cookie vs BE localStorage (token storage)', () => {
+test('flags SECURITY httpOnly cookie vs FRONTEND localStorage (token storage)', () => {
   const conflicts = detectSwarmConflicts({
-    SEC: 'Store the JWT in an httpOnly cookie.',
-    BE: 'Save the token to localStorage on login.',
+    SECURITY: 'Store the JWT in an httpOnly cookie.',
+    FRONTEND: 'Save the token to localStorage on login.',
   })
   expect(conflicts.map(c => c.topic)).toContain('auth token storage')
 })
@@ -42,21 +42,21 @@ test('flags SEC httpOnly cookie vs BE localStorage (token storage)', () => {
 test('no conflict when both agree', () => {
   expect(
     detectSwarmConflicts({
-      SEC: 'Use argon2 for password hashing; tokens in httpOnly cookies.',
-      BE: 'Hash with argon2; set an httpOnly cookie for the session.',
+      SECURITY: 'Use argon2 for password hashing; tokens in httpOnly cookies.',
+      BACKEND: 'Hash with argon2; set an httpOnly cookie for the session.',
     }),
   ).toHaveLength(0)
 })
 
-test('no conflict when SEC said nothing on the topic', () => {
-  expect(detectSwarmConflicts({ BE: 'uses md5 somewhere' })).toHaveLength(0)
+test('no conflict when SECURITY said nothing on the topic', () => {
+  expect(detectSwarmConflicts({ BACKEND: 'uses md5 somewhere' })).toHaveLength(0)
 })
 
 test('findSwarmConflicts reads the swarm section files', () => {
   const sw = join(dir, '.rayu', 'swarm')
   mkdirSync(sw, { recursive: true })
-  writeFileSync(join(sw, 'SEC.md'), 'Passwords hashed with bcrypt only.')
-  writeFileSync(join(sw, 'BE.md'), 'Stores password as md5 hash.')
+  writeFileSync(join(sw, 'SECURITY.md'), 'Passwords hashed with bcrypt only.')
+  writeFileSync(join(sw, 'BACKEND.md'), 'Stores password as md5 hash.')
   const conflicts = findSwarmConflicts()
   expect(conflicts).toHaveLength(1)
   const text = formatConflicts(conflicts)

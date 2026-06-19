@@ -16,6 +16,7 @@ type Entitlement struct {
 	UserID        int64
 	Status        string
 	Plan          store.Plan
+	PeriodEnd     *time.Time // subscription period end (nil for free/no-expiry)
 	AllowedModels []store.HostedModel
 	TopupBalance  int64
 }
@@ -141,7 +142,7 @@ func (c *Cache) Resolve(ctx context.Context, userID int64) (Entitlement, error) 
 	if err != nil {
 		return Entitlement{}, err
 	}
-	plan, err := c.st.ActivePlan(ctx, userID, now)
+	plan, periodEnd, err := c.st.ActivePlan(ctx, userID, now)
 	if err != nil {
 		return Entitlement{}, err
 	}
@@ -157,6 +158,7 @@ func (c *Cache) Resolve(ctx context.Context, userID int64) (Entitlement, error) 
 		UserID:        userID,
 		Status:        status,
 		Plan:          *plan,
+		PeriodEnd:     periodEnd,
 		AllowedModels: AllowedModels(c.Models(), plan.Code),
 		TopupBalance:  topup,
 	}

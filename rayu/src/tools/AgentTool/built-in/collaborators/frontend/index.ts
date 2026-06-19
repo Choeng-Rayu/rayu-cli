@@ -13,11 +13,11 @@ export const FRONTEND_COLLABORATOR = defineCollaborator({
   allowedSubagents: [
     'design',
     'asset-generation',
+    'builder',
     'review',
     'fix',
     'linter',
     'Explore',
-    'general-purpose',
   ],
   owns: [
     'Page/screen architecture and the component tree',

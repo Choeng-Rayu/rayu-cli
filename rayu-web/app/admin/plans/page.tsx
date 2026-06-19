@@ -49,8 +49,7 @@ export default function PlansPage() {
           priceCents: plan.priceCents,
           availability: plan.availability,
           maxDailyTurns: plan.maxDailyTurns,
-          creditsPerWeek: plan.creditsPerWeek,
-          creditsPer5h: plan.creditsPer5h,
+          creditsPerPeriod: plan.creditsPerPeriod,
           topUpEnabled: plan.topUpEnabled,
           features: plan.features,
         }),
@@ -119,27 +118,15 @@ export default function PlansPage() {
                 />
               </Field>
 
-              <Field label="Credits / week">
+              <Field label="Credits / period (30d)">
                 <input
                   type="number"
                   min={0}
                   placeholder="—"
                   className="admin-input"
-                  style={{ width: 130 }}
-                  value={plan.creditsPerWeek ?? ''}
-                  onChange={(e) => patchPlan(plan.code, { creditsPerWeek: e.target.value === '' ? null : Math.max(0, Math.round(Number(e.target.value))) })}
-                />
-              </Field>
-
-              <Field label="Credits / 5h">
-                <input
-                  type="number"
-                  min={0}
-                  placeholder="—"
-                  className="admin-input"
-                  style={{ width: 130 }}
-                  value={plan.creditsPer5h ?? ''}
-                  onChange={(e) => patchPlan(plan.code, { creditsPer5h: e.target.value === '' ? null : Math.max(0, Math.round(Number(e.target.value))) })}
+                  style={{ width: 150 }}
+                  value={plan.creditsPerPeriod ?? ''}
+                  onChange={(e) => patchPlan(plan.code, { creditsPerPeriod: e.target.value === '' ? null : Math.max(0, Math.round(Number(e.target.value))) })}
                 />
               </Field>
 

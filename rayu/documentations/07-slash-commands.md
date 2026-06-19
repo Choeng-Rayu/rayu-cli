@@ -38,6 +38,8 @@ command menu; start typing to filter. Press Enter to run.
 | `/doctor` | Run environment/health checks |
 | `/theme` (via `/config`) | Change color theme |
 | `/brandmark` | Customize Rayu's brand mark glyph and loading-spinner style |
+| `/telegram-bot` | Link a Telegram bot to drive this CLI remotely |
+| `/disconnect-telegram` | Unlink the Telegram bot from this CLI session |
 
 ## Notes
 

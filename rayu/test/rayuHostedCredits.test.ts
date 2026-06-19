@@ -4,8 +4,8 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 
 import {
-  formatRayuCreditsLine,
-  formatRayuCreditsSummary,
+  formatRayuUsageLine,
+  formatRayuUsageSummary,
   type RayuCreditStatus,
 } from '../src/services/rayuAuth/rayuCredits.ts'
 import { syncRayuHostedProvider } from '../src/services/rayuAuth/rayuHostedProvider.ts'
@@ -24,36 +24,43 @@ afterEach(() => {
 
 const status = (over: Partial<RayuCreditStatus> = {}): RayuCreditStatus => ({
   plan: 'pro',
-  creditsPerWeek: 500000,
-  creditsPer5h: 100000,
-  used5h: 1000,
-  usedWeek: 5000,
-  remaining5h: 99000,
-  remainingWeek: 495000,
-  reset5hSeconds: 3600,
-  resetWeekSeconds: 7200,
+  planName: 'Pro',
+  priceCents: 1000,
+  creditsPerPeriod: 50,
+  usedCredits: 1,
+  remainingCredits: 49,
+  tokensPerCredit: 100000,
+  allowanceTokens: 5000000,
+  usedTokens: 100000,
+  remainingTokens: 4900000,
+  resetSeconds: 3600,
+  periodEnd: '2026-07-18T00:00:00Z',
   topupBalance: 0,
   topUpEnabled: true,
   ...over,
 })
 
-describe('rayu credits formatter', () => {
-  test('paid plan summary shows weekly/5h remaining + topup', () => {
-    const s = formatRayuCreditsSummary(status())
-    expect(s).toContain('Plan: pro')
-    expect(s).toContain('495,000 / 500,000')
-    expect(s).toContain('resets in 2h 0m')
+describe('rayu usage formatter', () => {
+  test('paid plan summary shows plan/price + credits + tokens + topup', () => {
+    const s = formatRayuUsageSummary(status())
+    expect(s).toContain('Plan: Pro ($10/mo)')
+    expect(s).toContain('1 / 50 used')
+    expect(s).toContain('49 left')
+    expect(s).toContain('5,000,000')
     expect(s).toContain('Top-up balance: 0')
   })
 
   test('free plan summary notes no allowance', () => {
-    const s = formatRayuCreditsSummary(
+    const s = formatRayuUsageSummary(
       status({
         plan: 'free',
-        creditsPerWeek: null,
-        creditsPer5h: null,
-        remainingWeek: null,
-        remaining5h: null,
+        planName: 'Free',
+        priceCents: 0,
+        creditsPerPeriod: null,
+        remainingCredits: null,
+        allowanceTokens: null,
+        usedTokens: null,
+        remainingTokens: null,
         topUpEnabled: false,
       }),
     )
@@ -61,9 +68,7 @@ describe('rayu credits formatter', () => {
   })
 
   test('compact line format', () => {
-    expect(formatRayuCreditsLine(status())).toBe(
-      'Rayu: 495,000 credits left this week',
-    )
+    expect(formatRayuUsageLine(status())).toBe('Rayu: 49 / 50 credits left')
   })
 })
 

@@ -39,7 +39,7 @@ interface PaymentHistoryItem {
 
 interface Entitlements {
   plan: { code: string; name: string; priceCents: number; currentPeriodEnd: string | null }
-  creditAllowance: { creditsPerWeek: number | null; creditsPer5h: number | null; topUpEnabled: boolean }
+  creditAllowance: { creditsPerPeriod: number | null; topUpEnabled: boolean }
   topupBalance: number
 }
 

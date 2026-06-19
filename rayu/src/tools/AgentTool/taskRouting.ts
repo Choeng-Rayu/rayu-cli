@@ -15,9 +15,9 @@ export const TASK_ROUTING_SECTION = `# Task routing (decide before you act)
 
 Before you start an implementation request, silently classify its scope and route accordingly:
 
-- **TRIVIAL** — a single-file edit, a rename, or a bug fix in one location. Do it directly. Never spawn specialists for trivial work.
-- **SINGLE-DOMAIN** — touches only one layer (just frontend, just the database, just an API route). Do it yourself, or spawn one specialist when it benefits from focused expertise.
-- **MULTI-DOMAIN** — touches two or more layers (e.g. a new feature that needs an API endpoint + a DB migration + a frontend page). Dispatch the specialist swarm: run PA-AGENT first, then the specialists it declares needed, in parallel. Do not attempt multi-domain work end-to-end by yourself.
+- **TRIVIAL** — a single-file edit, a rename, or a bug fix in one location. Do it directly. Never spawn the swarm for trivial work.
+- **SINGLE-DOMAIN** — touches only one layer (just frontend, just the data layer, just an API route). Do it yourself, or spawn one collaborator when it benefits from focused expertise.
+- **MULTI-DOMAIN** — touches two or more layers (e.g. a new feature that needs an API endpoint + a DB migration + a frontend page). Dispatch the collaborator swarm: run the planner FIRST (it writes the shared brief and declares the needed collaborators), then spawn exactly those collaborators (frontend / backend / security / deploy / mobile) in parallel; each fans out parallel builders for its disjoint slices. Do not attempt multi-domain work end-to-end by yourself.
 
 When you genuinely cannot tell whether a request is SINGLE- or MULTI-domain, ask the user: "Should I dispatch the swarm for this, or handle it directly?" — do not guess.`
 

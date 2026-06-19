@@ -102,17 +102,21 @@ test('collaborators are domain-locked per the specialization matrix', () => {
   expect(scope.security).toContain('backend-design')
   expect(scope.security).not.toContain('design')
 
-  // deploy: QA/research only
+  // deploy: builder + QA/research only
   expect(scope.deploy).toEqual([
+    'builder',
     'review',
     'fix',
     'linter',
     'Explore',
-    'general-purpose',
   ])
 
-  // planner + global-setup are orchestrator-only — never in any collaborator scope.
+  // Every collaborator fans out via the builder subagent, and general-purpose is
+  // reserved for non-web/mobile work (so it must NOT be in any collaborator scope).
   for (const s of Object.values(scope)) {
+    expect(s).toContain('builder')
+    expect(s).not.toContain('general-purpose')
+    // planner + global-setup are orchestrator-only — never in a collaborator scope.
     expect(s).not.toContain('planner')
     expect(s).not.toContain('global-setup')
   }

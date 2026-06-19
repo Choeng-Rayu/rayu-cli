@@ -4,10 +4,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +65,11 @@ func New(cfg *config.Config, ent *entitlements.Cache, lim *credits.Limiter, st *
 		pr.Get("/v1/_entitlements", s.handleEntitlements)
 	})
 
+	// Transparent tracking proxy for BYO-key providers. Identity comes from the
+	// X-Rayu-Token header (NOT Authorization, which carries the user's upstream
+	// provider key to be forwarded), so it lives outside the Bearer-auth group.
+	r.HandleFunc("/v1/proxy", s.handleProxy)
+
 	return r
 }
 
@@ -104,8 +112,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
-// handleCredits returns the caller's live credit usage, remaining allowance,
-// top-up balance, and window reset times (for the dashboard + CLI display).
+// handleCredits returns the caller's live per-period credit usage, remaining
+// allowance (credits + token equivalents), top-up balance, and reset time.
 func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
@@ -122,18 +130,36 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 	if topup < 0 {
 		topup = ent.TopupBalance
 	}
-	capWk := capOrUnlimited(ent.Plan.CreditsPerWeek)
-	cap5 := capOrUnlimited(ent.Plan.CreditsPer5h)
+	settings := s.ent.Settings()
+	var tokensPerCredit int64
+	if settings.BaselineCreditsPer1M > 0 {
+		tokensPerCredit = int64(math.Round(1_000_000 / float64(settings.BaselineCreditsPer1M)))
+	}
+	used := st.UsedPeriod
+	remainingCredits := remaining(capOrUnlimited(ent.Plan.CreditsPerPeriod), used)
+	var allowanceTokens, usedTokens, remainingTokens *int64
+	if ent.Plan.CreditsPerPeriod != nil {
+		at := *ent.Plan.CreditsPerPeriod * tokensPerCredit
+		ut := used * tokensPerCredit
+		rt := at - ut
+		if rt < 0 {
+			rt = 0
+		}
+		allowanceTokens, usedTokens, remainingTokens = &at, &ut, &rt
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"plan":             ent.Plan.Code,
-		"creditsPerWeek":   ent.Plan.CreditsPerWeek,
-		"creditsPer5h":     ent.Plan.CreditsPer5h,
-		"used5h":           st.Used5h,
-		"usedWeek":         st.UsedWeek,
-		"remaining5h":      remaining(cap5, st.Used5h),
-		"remainingWeek":    remaining(capWk, st.UsedWeek),
-		"reset5hSeconds":   st.Reset5h,
-		"resetWeekSeconds": st.ResetWeek,
+		"planName":         ent.Plan.Name,
+		"priceCents":       ent.Plan.PriceCents,
+		"creditsPerPeriod": ent.Plan.CreditsPerPeriod,
+		"usedCredits":      used,
+		"remainingCredits": remainingCredits,
+		"tokensPerCredit":  tokensPerCredit,
+		"allowanceTokens":  allowanceTokens,
+		"usedTokens":       usedTokens,
+		"remainingTokens":  remainingTokens,
+		"resetSeconds":     st.ResetPeriod,
+		"periodEnd":        isoTime(ent.PeriodEnd),
 		"topupBalance":     topup,
 		"topUpEnabled":     ent.Plan.TopUpEnabled,
 	})
@@ -196,7 +222,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// --- Credit reserve (pre-flight) ---
 	baseline := settings.BaselineCreditsPer1M
 	mult := hm.CreditMultiplier
-	capWeek := capOrUnlimited(ent.Plan.CreditsPerWeek)
+	capPeriod := capOrUnlimited(ent.Plan.CreditsPerPeriod)
 	estCredits := credits.ForTokens(credits.EstimateTokens(req, defaultMaxTokens), baseline, mult)
 	if estCredits < 1 {
 		estCredits = 1
@@ -208,8 +234,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	rr, rerr := s.lim.Reserve(r.Context(), credits.ReserveParams{
 		UserID:        claims.UserID,
 		EstCredits:    estCredits,
-		Cap5h:         capOrUnlimited(ent.Plan.CreditsPer5h),
-		CapWeek:       capWeek,
+		CapPeriod:     capPeriod,
+		PeriodTTLSec:  periodTTLSeconds(ent.PeriodEnd),
 		MaxConcurrent: settings.MaxConcurrentStreams,
 		MaxReq5h:      settings.MaxRequestsPer5h,
 		TopUpEnabled:  topUpAvailable,
@@ -219,10 +245,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !rr.OK {
-		reset := rr.ResetWeek
-		if rr.Reason != "weekly_limit" {
-			reset = rr.Reset5h
-		}
+		reset := rr.ResetPeriod
 		if reset > 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(reset, 10))
 		}
@@ -265,7 +288,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if stream {
 		// Best-effort headers before the stream starts (exact figures via /v1/credits).
-		setCreditHeaders(w, rr.UsedWeek, capWeek, ent.TopupBalance)
+		setCreditHeaders(w, rr.UsedPeriod, capPeriod, ent.TopupBalance)
 		usage, wrote, serr := proxy.Stream(r.Context(), w, upstreamURL, apiKey, newBody)
 		settle(usage)
 		if serr != nil && !wrote {
@@ -281,7 +304,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actual := settle(usage)
-	setCreditHeaders(w, rr.UsedWeek-estCredits+actual, capWeek, ent.TopupBalance)
+	setCreditHeaders(w, rr.UsedPeriod-estCredits+actual, capPeriod, ent.TopupBalance)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
@@ -297,6 +320,166 @@ func (s *Server) recordLedger(userID int64, m store.HostedModel, u *proxy.Usage,
 		defer cancel()
 		_ = s.st.InsertLedger(bg, userID, m.Code, u.PromptTokens, u.CompletionTokens, creditsConsumed, realCostCents, source)
 	}()
+}
+
+// handleProxy is a transparent, authenticated reverse proxy for BYO-key
+// providers (openai-compatible + anthropic) when the CLI has USE_RAYU_OAUTH on.
+// It verifies the Rayu identity (X-Rayu-Token), guards against SSRF, forwards
+// the request to the user-supplied upstream (X-Rayu-Upstream-URL) with the
+// caller's own provider auth headers, streams the response back, and records a
+// best-effort usage event. No credits are charged (the user pays their own
+// provider). Any gateway-origin failure carries an X-Rayu-Proxy-Error header so
+// the CLI can fail safe to a direct call.
+func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	tok := strings.TrimSpace(r.Header.Get("X-Rayu-Token"))
+	if tok == "" {
+		proxyError(w, http.StatusUnauthorized, "missing X-Rayu-Token")
+		return
+	}
+	claims, err := auth.VerifyAccessToken(tok, s.cfg.JWTSecret)
+	if err != nil {
+		proxyError(w, http.StatusUnauthorized, "invalid X-Rayu-Token")
+		return
+	}
+	upstream := strings.TrimSpace(r.Header.Get("X-Rayu-Upstream-URL"))
+	if upstream == "" {
+		proxyError(w, http.StatusBadRequest, "missing X-Rayu-Upstream-URL")
+		return
+	}
+	if verr := validateUpstreamURL(upstream); verr != nil {
+		proxyError(w, http.StatusForbidden, verr.Error())
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+	if err != nil {
+		proxyError(w, http.StatusBadRequest, "request body too large or unreadable")
+		return
+	}
+	provider := headerOr(r, "X-Rayu-Provider", "unknown")
+	model := bestEffortModel(body)
+
+	// Positive marker so the CLI can distinguish a genuinely-proxied response
+	// from anything else — an older gateway without this route (404), a redirect,
+	// an error page — and fail safe to a direct call when it is absent.
+	w.Header().Set("X-Rayu-Proxied", "1")
+	wrote, ferr := proxy.Forward(r.Context(), w, r.Method, upstream, forwardableHeaders(r.Header), body)
+	if ferr != nil && !wrote {
+		// Upstream unreachable / gateway-side failure before any bytes were sent.
+		w.Header().Del("X-Rayu-Proxied")
+		proxyError(w, http.StatusBadGateway, "upstream unreachable")
+		return
+	}
+
+	// Best-effort, fire-and-forget tracking. Never affects the proxied response.
+	if s.st != nil {
+		go func() {
+			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if e := s.st.InsertUsageEvent(bg, claims.UserID, provider, model, "gateway"); e != nil {
+				log.Printf("proxy: usage record failed user=%d provider=%s: %v", claims.UserID, provider, e)
+			}
+		}()
+	}
+	log.Printf("proxy: user=%d provider=%s model=%q -> %s", claims.UserID, provider, model, upstream)
+}
+
+// proxyError writes a gateway-origin error tagged with X-Rayu-Proxy-Error so the
+// CLI can distinguish it from a forwarded upstream response and fall back to a
+// direct provider call.
+func proxyError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("X-Rayu-Proxy-Error", msg)
+	httpx.WriteError(w, status, msg)
+}
+
+func headerOr(r *http.Request, key, def string) string {
+	if v := strings.TrimSpace(r.Header.Get(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+// bestEffortModel pulls the "model" field from a JSON request body for tracking.
+func bestEffortModel(body []byte) string {
+	var m struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &m) == nil {
+		return m.Model
+	}
+	return ""
+}
+
+// hopByHopHeaders are per-connection headers that must not be forwarded.
+var hopByHopHeaders = map[string]bool{
+	"Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,
+	"Proxy-Authorization": true, "Te": true, "Trailer": true,
+	"Transfer-Encoding": true, "Upgrade": true,
+}
+
+// forwardableHeaders returns the headers to replay to the upstream: everything
+// except the gateway's own control headers (X-Rayu-*), Host/Content-Length
+// (set from the new request/body), and hop-by-hop headers. The provider's auth
+// header (Authorization / x-api-key) is preserved so the upstream authenticates.
+func forwardableHeaders(h http.Header) http.Header {
+	out := http.Header{}
+	for k, vs := range h {
+		ck := http.CanonicalHeaderKey(k)
+		if strings.HasPrefix(ck, "X-Rayu-") || ck == "Host" || ck == "Content-Length" || hopByHopHeaders[ck] {
+			continue
+		}
+		for _, v := range vs {
+			out.Add(ck, v)
+		}
+	}
+	return out
+}
+
+// validateUpstreamURL enforces https and blocks SSRF to private/loopback/
+// link-local hosts (so the authenticated proxy can't be used to reach internal
+// services or the cloud metadata endpoint). It is a var so tests can relax the
+// guard to reach a loopback httptest upstream.
+var validateUpstreamURL = func(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("invalid upstream url")
+	}
+	if u.Scheme != "https" {
+		return errors.New("upstream must be https")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("upstream host required")
+	}
+	if isPrivateHost(host) {
+		return errors.New("upstream host not allowed")
+	}
+	return nil
+}
+
+func isPrivateHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isPrivateIP(ip)
+	}
+	// Hostname: resolve and reject if any A/AAAA record is private.
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return false // let the forward attempt fail naturally if it won't resolve
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPrivateIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 func setCreditHeaders(w http.ResponseWriter, usedWeek, capWeek, topup int64) {
@@ -344,6 +527,27 @@ func statusOrUnknown(s string) string {
 		return "unknown"
 	}
 	return s
+}
+
+// periodTTLSeconds is the Redis TTL for the period balance: time until the
+// subscription renews. 0 lets the limiter fall back to its 30-day default.
+func periodTTLSeconds(pe *time.Time) int {
+	if pe == nil {
+		return 0
+	}
+	s := int(time.Until(*pe).Seconds())
+	if s < 60 {
+		s = 60
+	}
+	return s
+}
+
+// isoTime renders a *time.Time as RFC3339, or null.
+func isoTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Format(time.RFC3339)
 }
 
 // corsMiddleware allows the configured browser origins (default "*") to call the

@@ -97,13 +97,7 @@ export class UpdatePlanDto {
   @ValidateIf((_o, v) => v !== null)
   @IsInt()
   @Min(0)
-  creditsPerWeek?: number | null
-
-  @IsOptional()
-  @ValidateIf((_o, v) => v !== null)
-  @IsInt()
-  @Min(0)
-  creditsPer5h?: number | null
+  creditsPerPeriod?: number | null
 
   @IsOptional()
   @IsBoolean()
@@ -232,11 +226,15 @@ export class AdminController {
     @Query('page') page = '1',
     @Query('pageSize') pageSize = '20',
     @Query('search') search?: string,
+    @Query('activity') activity?: string,
   ) {
+    const act =
+      activity === 'active' || activity === 'inactive' ? activity : undefined
     return this.admin.listUsers(
       parseInt(page, 10) || 1,
       parseInt(pageSize, 10) || 20,
       search,
+      act,
     )
   }
 
@@ -347,8 +345,7 @@ export class AdminController {
       priceCents: body.priceCents,
       availability: body.availability,
       maxDailyTurns: body.maxDailyTurns,
-      creditsPerWeek: body.creditsPerWeek,
-      creditsPer5h: body.creditsPer5h,
+      creditsPerPeriod: body.creditsPerPeriod,
       topUpEnabled: body.topUpEnabled,
       features,
     })
