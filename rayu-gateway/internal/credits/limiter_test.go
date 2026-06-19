@@ -149,3 +149,83 @@ func TestRequestsCap(t *testing.T) {
 		t.Fatalf("expected requests deny, got ok=%v reason=%s", r.OK, r.Reason)
 	}
 }
+
+func TestReserveTurnUnlimited(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	for i := int64(1); i <= 5; i++ {
+		r, err := lim.ReserveTurn(ctx, 1, 0) // cap 0 = unlimited
+		if err != nil || !r.OK {
+			t.Fatalf("turn %d should pass: ok=%v err=%v", i, r.OK, err)
+		}
+		if r.UsedToday != i {
+			t.Fatalf("usedToday=%d want %d", r.UsedToday, i)
+		}
+	}
+}
+
+func TestReserveTurnCap(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	// cap 2: two pass, third denied.
+	r1, _ := lim.ReserveTurn(ctx, 2, 2)
+	r2, _ := lim.ReserveTurn(ctx, 2, 2)
+	if !r1.OK || !r2.OK {
+		t.Fatalf("first two turns should pass: %v %v", r1.OK, r2.OK)
+	}
+	r3, _ := lim.ReserveTurn(ctx, 2, 2)
+	if r3.OK {
+		t.Fatal("third turn should be denied at cap 2")
+	}
+	if r3.UsedToday != 2 {
+		t.Fatalf("usedToday at deny=%d want 2", r3.UsedToday)
+	}
+	// A daily TTL must be set (end-of-day, so within (0, 86400]).
+	if r3.ResetSeconds <= 0 || r3.ResetSeconds > 86400 {
+		t.Fatalf("resetSeconds=%d want (0,86400]", r3.ResetSeconds)
+	}
+}
+
+func TestReleaseTurnRefund(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	_, _ = lim.ReserveTurn(ctx, 3, 5)
+	_, _ = lim.ReserveTurn(ctx, 3, 5) // used=2
+	if err := lim.ReleaseTurn(ctx, 3); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	used, reset, _ := lim.TurnsToday(ctx, 3)
+	if used != 1 {
+		t.Fatalf("used after release=%d want 1", used)
+	}
+	if reset <= 0 {
+		t.Fatalf("resetSeconds=%d want >0", reset)
+	}
+	// Release floors at 0 and is safe when nothing is counted.
+	_ = lim.ReleaseTurn(ctx, 3)
+	_ = lim.ReleaseTurn(ctx, 3) // would go negative -> no-op
+	used, _, _ = lim.TurnsToday(ctx, 3)
+	if used != 0 {
+		t.Fatalf("used after over-release=%d want 0", used)
+	}
+}
+
+func TestTurnsTodayEmpty(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	used, reset, err := lim.TurnsToday(ctx, 42)
+	if err != nil {
+		t.Fatalf("TurnsToday: %v", err)
+	}
+	if used != 0 || reset != -1 {
+		t.Fatalf("empty TurnsToday used=%d reset=%d want 0/-1", used, reset)
+	}
+}

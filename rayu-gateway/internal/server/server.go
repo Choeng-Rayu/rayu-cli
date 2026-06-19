@@ -32,17 +32,26 @@ const (
 	defaultMaxTokens = 2048    // estimate fallback when max_tokens is unset
 )
 
+// entSource resolves per-user entitlements and exposes cached app settings. It
+// is backed by *entitlements.Cache in production and a fake in tests (so the
+// chat/proxy handlers can be exercised without a live MySQL).
+type entSource interface {
+	Resolve(ctx context.Context, userID int64) (entitlements.Entitlement, error)
+	Settings() store.AppSettings
+	Invalidate(userID int64)
+}
+
 // Server holds the gateway dependencies shared across handlers.
 type Server struct {
 	cfg *config.Config
-	ent *entitlements.Cache
+	ent entSource
 	lim *credits.Limiter
 	st  *store.Store
 }
 
 // New builds the gateway HTTP handler. /healthz is public; everything under
 // /v1 requires a valid Rayu access token.
-func New(cfg *config.Config, ent *entitlements.Cache, lim *credits.Limiter, st *store.Store) http.Handler {
+func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Store) http.Handler {
 	s := &Server{cfg: cfg, ent: ent, lim: lim, st: st}
 
 	r := chi.NewRouter()
@@ -147,6 +156,15 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 		}
 		allowanceTokens, usedTokens, remainingTokens = &at, &ut, &rt
 	}
+	turnsUsed, turnsReset, _ := s.lim.TurnsToday(r.Context(), claims.UserID)
+	var turnsRemaining *int64
+	if ent.Plan.MaxDailyTurns != nil && *ent.Plan.MaxDailyTurns > 0 {
+		rem := *ent.Plan.MaxDailyTurns - turnsUsed
+		if rem < 0 {
+			rem = 0
+		}
+		turnsRemaining = &rem
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"plan":             ent.Plan.Code,
 		"planName":         ent.Plan.Name,
@@ -162,6 +180,11 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 		"periodEnd":        isoTime(ent.PeriodEnd),
 		"topupBalance":     topup,
 		"topUpEnabled":     ent.Plan.TopUpEnabled,
+		// Per-day turn cap (maxDailyTurns). turnsRemaining is null when unlimited.
+		"maxDailyTurns":     ent.Plan.MaxDailyTurns,
+		"turnsUsedToday":    turnsUsed,
+		"turnsRemaining":    turnsRemaining,
+		"turnsResetSeconds": turnsReset,
 	})
 }
 
@@ -219,6 +242,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Daily turn cap (maxDailyTurns) — HARD limit on the hosted path ---
+	// Counted per user per UTC day; nil/0 cap = unlimited. Checked before the
+	// credit reserve so a denial neither charges credits nor calls upstream.
+	turnCap := dailyTurnCap(ent.Plan.MaxDailyTurns)
+	tr, terr := s.lim.ReserveTurn(r.Context(), claims.UserID, turnCap)
+	if terr != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "rate limiter unavailable")
+		return
+	}
+	if !tr.OK {
+		if tr.ResetSeconds > 0 {
+			w.Header().Set("Retry-After", strconv.FormatInt(tr.ResetSeconds, 10))
+		}
+		log.Printf("reject: user=%d daily turn limit reached (%d/%d)", claims.UserID, tr.UsedToday, turnCap)
+		httpx.WriteJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error":        map[string]any{"message": "daily turn limit reached", "type": "rate_limit_exceeded"},
+			"reason":       "daily_turn_limit",
+			"resetSeconds": tr.ResetSeconds,
+		})
+		return
+	}
+
 	// --- Credit reserve (pre-flight) ---
 	baseline := settings.BaselineCreditsPer1M
 	mult := hm.CreditMultiplier
@@ -241,10 +286,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		TopUpEnabled:  topUpAvailable,
 	})
 	if rerr != nil {
+		s.releaseTurnBG(claims.UserID) // refund the turn; the request didn't proceed
 		httpx.WriteError(w, http.StatusInternalServerError, "rate limiter unavailable")
 		return
 	}
 	if !rr.OK {
+		s.releaseTurnBG(claims.UserID) // credit denial: don't also burn a daily turn
 		reset := rr.ResetPeriod
 		if reset > 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(reset, 10))
@@ -312,6 +359,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 // recordLedger writes the durable consumption row asynchronously.
 func (s *Server) recordLedger(userID int64, m store.HostedModel, u *proxy.Usage, creditsConsumed int64, source string) {
+	if s.st == nil {
+		return
+	}
 	cost := float64(u.PromptTokens)/1e6*float64(m.InputPricePer1MCents) +
 		float64(u.CompletionTokens)/1e6*float64(m.OutputPricePer1MCents)
 	realCostCents := int(math.Round(cost))
@@ -351,8 +401,46 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Daily turn cap (maxDailyTurns) — BEST-EFFORT on the BYO-key path ---
+	// Enforced only when entitlements + limiter are available (nil in some unit
+	// tests). On deny we return a plain 429 that is intentionally NOT tagged with
+	// X-Rayu-Proxy-Error, so the CLI surfaces "daily limit reached" instead of
+	// failing safe to a direct provider call (which would bypass the cap). Any
+	// infra hiccup fails open — a BYO-key user is never blocked by gateway issues.
+	reservedTurn := false
+	if s.ent != nil && s.lim != nil {
+		if ent, eerr := s.ent.Resolve(r.Context(), claims.UserID); eerr == nil {
+			tr, terr := s.lim.ReserveTurn(r.Context(), claims.UserID, dailyTurnCap(ent.Plan.MaxDailyTurns))
+			switch {
+			case terr != nil:
+				// limiter unavailable → fail open (don't block BYO-key traffic)
+			case !tr.OK:
+				if tr.ResetSeconds > 0 {
+					w.Header().Set("Retry-After", strconv.FormatInt(tr.ResetSeconds, 10))
+				}
+				// Mark this as an intentional gateway limit (NOT an X-Rayu-Proxy-Error):
+				// the CLI must surface it to the user rather than failing safe to a
+				// direct provider call (which would bypass the cap).
+				w.Header().Set("X-Rayu-Limit", "daily_turn_limit")
+				log.Printf("proxy reject: user=%d daily turn limit reached (%d/%d)",
+					claims.UserID, tr.UsedToday, tr.Limit)
+				httpx.WriteJSON(w, http.StatusTooManyRequests, map[string]any{
+					"error":        map[string]any{"message": "daily turn limit reached", "type": "rate_limit_exceeded"},
+					"reason":       "daily_turn_limit",
+					"resetSeconds": tr.ResetSeconds,
+				})
+				return
+			default:
+				reservedTurn = true
+			}
+		}
+	}
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
+		if reservedTurn {
+			s.releaseTurnBG(claims.UserID)
+		}
 		proxyError(w, http.StatusBadRequest, "request body too large or unreadable")
 		return
 	}
@@ -366,6 +454,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	wrote, ferr := proxy.Forward(r.Context(), w, r.Method, upstream, forwardableHeaders(r.Header), body)
 	if ferr != nil && !wrote {
 		// Upstream unreachable / gateway-side failure before any bytes were sent.
+		if reservedTurn {
+			s.releaseTurnBG(claims.UserID) // CLI will fail safe to direct; don't burn a turn
+		}
 		w.Header().Del("X-Rayu-Proxied")
 		proxyError(w, http.StatusBadGateway, "upstream unreachable")
 		return
@@ -520,6 +611,24 @@ func capOrUnlimited(v *int64) int64 {
 		return credits.Unlimited
 	}
 	return *v
+}
+
+// dailyTurnCap returns the per-day turn cap for a plan: 0 (unlimited) when the
+// limit is unset or non-positive, else the configured value. Treating 0/negative
+// as unlimited fails open, so an accidental 0 never locks every user out.
+func dailyTurnCap(v *int64) int64 {
+	if v == nil || *v <= 0 {
+		return 0
+	}
+	return *v
+}
+
+// releaseTurnBG refunds one daily turn out-of-band (the response is already
+// being written, so the request context may be cancelling).
+func (s *Server) releaseTurnBG(userID int64) {
+	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.lim.ReleaseTurn(bg, userID)
 }
 
 func statusOrUnknown(s string) string {

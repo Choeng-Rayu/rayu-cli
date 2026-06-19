@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { apiUrl } from '../../lib/config'
 import { useRayuToken } from '../../lib/useRayuToken'
-import { Plan, sortPlans } from '../../lib/plans'
+import { Plan, purchasablePlans } from '../../lib/plans'
 
 const PAID_PLAN_CODES = ['pro', 'pro_plus', 'max'] as const
 type PaidPlanCode = typeof PAID_PLAN_CODES[number]
@@ -65,7 +65,7 @@ export default function BillingPage() {
       ])
       if (plansRes.ok) {
         const data = (await plansRes.json()) as Plan[]
-        setPlans(sortPlans(data).filter((p) => p.availability === 'active' && p.priceCents > 0))
+        setPlans(purchasablePlans(data))
       }
       if (historyRes.ok) {
         const data = (await historyRes.json()) as { items: PaymentHistoryItem[] }

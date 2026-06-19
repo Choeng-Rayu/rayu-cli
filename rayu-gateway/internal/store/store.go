@@ -44,6 +44,7 @@ type Plan struct {
 	PriceCents       int    `json:"priceCents"`
 	CreditsPerPeriod *int64 `json:"creditsPerPeriod"` // per-billing-period balance; nil = none
 	TopUpEnabled     bool   `json:"topUpEnabled"`
+	MaxDailyTurns    *int64 `json:"maxDailyTurns"` // per-day turn cap; nil = unlimited
 }
 
 // Store wraps the database handle.
@@ -70,23 +71,39 @@ func (s *Store) Close() error { return s.db.Close() }
 // DB exposes the underlying handle (used by the ledger writer).
 func (s *Store) DB() *sql.DB { return s.db }
 
-// parseLimits decodes the credit fields from a plan's limits JSON.
-func parseLimits(raw []byte) (cpp *int64, topup bool) {
+// planLimits holds the gateway-relevant fields decoded from a plan's limits JSON.
+type planLimits struct {
+	creditsPerPeriod *int64
+	maxDailyTurns    *int64
+	topUpEnabled     bool
+}
+
+// parseLimits decodes the gateway-relevant fields from a plan's limits JSON.
+// All fields are optional; a missing/invalid blob yields the zero value
+// (nil caps = unlimited, top-up disabled).
+func parseLimits(raw []byte) planLimits {
+	out := planLimits{}
 	if len(raw) == 0 {
-		return nil, false
+		return out
 	}
 	var l struct {
 		CreditsPerPeriod *float64 `json:"creditsPerPeriod"`
+		MaxDailyTurns    *float64 `json:"maxDailyTurns"`
 		TopUpEnabled     bool     `json:"topUpEnabled"`
 	}
 	if json.Unmarshal(raw, &l) != nil {
-		return nil, false
+		return out
 	}
-	if l.CreditsPerPeriod == nil {
-		return nil, l.TopUpEnabled
+	out.topUpEnabled = l.TopUpEnabled
+	if l.CreditsPerPeriod != nil {
+		v := int64(*l.CreditsPerPeriod)
+		out.creditsPerPeriod = &v
 	}
-	v := int64(*l.CreditsPerPeriod)
-	return &v, l.TopUpEnabled
+	if l.MaxDailyTurns != nil {
+		v := int64(*l.MaxDailyTurns)
+		out.maxDailyTurns = &v
+	}
+	return out
 }
 
 // LoadModels returns all hosted_models rows.
@@ -145,7 +162,8 @@ func (s *Store) PlanByCode(ctx context.Context, code string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.CreditsPerPeriod, p.TopUpEnabled = parseLimits(limits)
+	lim := parseLimits(limits)
+	p.CreditsPerPeriod, p.TopUpEnabled, p.MaxDailyTurns = lim.creditsPerPeriod, lim.topUpEnabled, lim.maxDailyTurns
 	return &p, nil
 }
 
@@ -170,7 +188,8 @@ func (s *Store) ActivePlan(ctx context.Context, userID int64, now time.Time) (*P
 		pl, e := s.PlanByCode(ctx, "free")
 		return pl, nil, e
 	}
-	p.CreditsPerPeriod, p.TopUpEnabled = parseLimits(limits)
+	lim := parseLimits(limits)
+	p.CreditsPerPeriod, p.TopUpEnabled, p.MaxDailyTurns = lim.creditsPerPeriod, lim.topUpEnabled, lim.maxDailyTurns
 	var pe *time.Time
 	if periodEnd.Valid {
 		t := periodEnd.Time

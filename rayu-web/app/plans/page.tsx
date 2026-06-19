@@ -10,9 +10,9 @@ export const dynamic = 'force-dynamic'
 const FALLBACK: Plan[] = [
   { id: 1, code: 'free', name: 'Free', priceCents: 0, availability: 'active', limits: null },
   { id: 2, code: 'basic', name: 'Basic', priceCents: 300, availability: 'active', limits: null },
-  { id: 3, code: 'pro', name: 'Pro', priceCents: 1000, availability: 'coming_soon', limits: null },
-  { id: 4, code: 'pro_plus', name: 'Pro+', priceCents: 2000, availability: 'coming_soon', limits: null },
-  { id: 5, code: 'max', name: 'Max', priceCents: 5000, availability: 'coming_soon', limits: null },
+  { id: 3, code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active', limits: null },
+  { id: 4, code: 'pro_plus', name: 'Ultra', priceCents: 2000, availability: 'active', limits: null },
+  { id: 5, code: 'max', name: 'Max', priceCents: 5000, availability: 'active', limits: null },
   { id: 6, code: 'enterprise', name: 'Enterprise', priceCents: 0, availability: 'coming_soon', limits: null },
 ]
 
@@ -35,7 +35,7 @@ export default async function PlansPage() {
         <span className="section-eyebrow">PRICING</span>
         <h1 style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>Plans &amp; Pricing</h1>
         <p style={{ color: 'var(--text)', opacity: 0.6, fontSize: '1.1rem', maxWidth: '600px', margin: '0 auto' }}>
-          Start free with your own API key. Paid hosting and collaborative team options are coming soon.
+          Start free with your own API key, or upgrade to a Rayu-hosted plan with credits — no API key needed.
         </p>
       </div>
 

@@ -21,7 +21,7 @@ describe('rayu-backend (e2e)', () => {
     expect(res.body.status).toBe('ok')
   })
 
-  it('GET /api/plans -> 6 plans, free+basic active, others coming_soon', async () => {
+  it('GET /api/plans -> 6 plans; free/basic + hosted tiers active, enterprise coming_soon', async () => {
     const res = await request(app.getHttpServer()).get('/api/plans')
     expect(res.status).toBe(200)
     expect(res.body).toHaveLength(6)
@@ -30,13 +30,42 @@ describe('rayu-backend (e2e)', () => {
     )
     expect(byCode.free).toBe('active')
     expect(byCode.basic).toBe('active')
-    expect(byCode.pro).toBe('coming_soon')
-    expect(byCode.pro_plus).toBe('coming_soon')
-    expect(byCode.max).toBe('coming_soon')
+    expect(byCode.pro).toBe('active')
+    expect(byCode.pro_plus).toBe('active')
+    expect(byCode.max).toBe('active')
     expect(byCode.enterprise).toBe('coming_soon')
     // Basic is the $3/mo tier (price comes from the DB, not hardcoded in UI).
     const basic = res.body.find((p: any) => p.code === 'basic')
     expect(basic.priceCents).toBe(300)
+  })
+
+  it('POST /api/payments/khqr issues KHQR for an active hosted plan, rejects coming_soon', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_buyer',
+      email: 'buyer@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const access = await login(app, 'state-buyer-1234')
+
+    // Pro is now purchasable -> a QR + pending payment are created.
+    const ok = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'pro' })
+    expect(ok.status).toBe(201)
+    expect(ok.body.planCode).toBe('pro')
+    expect(ok.body.amountCents).toBe(1000)
+    expect(typeof ok.body.qr).toBe('string')
+    expect(ok.body.qr.length).toBeGreaterThan(0)
+    expect(typeof ok.body.paymentId).toBe('number')
+
+    // Enterprise is coming_soon (and $0) -> not purchasable.
+    const bad = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'enterprise' })
+    expect(bad.status).toBe(400)
   })
 
   it('full CLI bridge: exchange -> token -> /me, replay fails', async () => {

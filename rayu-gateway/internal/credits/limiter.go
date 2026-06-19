@@ -200,3 +200,105 @@ func (l *Limiter) Status(ctx context.Context, userID int64) (Status, error) {
 	}
 	return Status{UsedPeriod: used, TopupBalance: topup, ResetPeriod: reset}, nil
 }
+
+
+// --- Per-day turn cap (maxDailyTurns) -------------------------------------
+//
+// A separate, simpler limiter than the credit balance: it counts "turns"
+// (chat/proxy requests) per user per UTC day and denies once the plan's
+// maxDailyTurns cap is reached. The counter key expires at 00:00 UTC so it
+// resets daily without a cron. A cap <= 0 means unlimited (turns are still
+// counted so usage can be displayed).
+
+// turnKey is the per-user per-day counter key (UTC calendar day).
+func turnKey(uid int64, now time.Time) string {
+	return "turns:" + strconv.FormatInt(uid, 10) + ":" + now.UTC().Format("20060102")
+}
+
+// secondsUntilEndOfUTCDay returns seconds remaining until 00:00 UTC tomorrow
+// (always >= 1) — used as the daily counter's TTL.
+func secondsUntilEndOfUTCDay(now time.Time) int {
+	n := now.UTC()
+	tomorrow := time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC).Add(24 * time.Hour)
+	s := int(tomorrow.Sub(n).Seconds())
+	if s < 1 {
+		s = 1
+	}
+	return s
+}
+
+// TurnResult reports a daily-turn reservation decision.
+type TurnResult struct {
+	OK           bool
+	UsedToday    int64
+	Limit        int64 // the cap applied (<= 0 means unlimited)
+	ResetSeconds int64 // seconds until the daily counter resets (00:00 UTC)
+}
+
+// reserveTurnScript: when cap > 0, deny if used >= cap; otherwise INCR and set
+// the end-of-day TTL on first write. Returns {ok, used, ttl}.
+var reserveTurnScript = redis.NewScript(`
+local cap=tonumber(ARGV[1]); local ttl=tonumber(ARGV[2])
+local used=tonumber(redis.call('GET',KEYS[1]) or '0')
+if cap>0 and used>=cap then
+  return {0, used, redis.call('TTL',KEYS[1])}
+end
+local n=redis.call('INCR',KEYS[1])
+if n==1 then redis.call('EXPIRE',KEYS[1],ttl) end
+return {1, n, redis.call('TTL',KEYS[1])}
+`)
+
+// ReserveTurn atomically counts one turn against the per-day cap. cap <= 0 is
+// unlimited (still counted). Denies (OK=false) once the cap is reached.
+func (l *Limiter) ReserveTurn(ctx context.Context, userID, cap int64) (TurnResult, error) {
+	now := time.Now()
+	ttl := secondsUntilEndOfUTCDay(now)
+	raw, err := reserveTurnScript.Run(ctx, l.rdb, []string{turnKey(userID, now)}, cap, ttl).Result()
+	if err != nil {
+		return TurnResult{}, err
+	}
+	arr, ok := raw.([]any)
+	if !ok || len(arr) < 3 {
+		return TurnResult{}, fmt.Errorf("unexpected reserveTurn reply: %v", raw)
+	}
+	return TurnResult{
+		OK:           toInt(arr[0]) == 1,
+		UsedToday:    toInt(arr[1]),
+		Limit:        cap,
+		ResetSeconds: toInt(arr[2]),
+	}, nil
+}
+
+// releaseTurnScript decrements the day counter, flooring at 0. A missing key
+// (new day) is a no-op.
+var releaseTurnScript = redis.NewScript(`
+local n=tonumber(redis.call('GET',KEYS[1]) or '0')
+if n<=0 then return 0 end
+return redis.call('DECR',KEYS[1])
+`)
+
+// ReleaseTurn refunds a previously reserved turn (used when the request did not
+// actually proceed, e.g. a credit denial). Floors at 0; safe across day rollover.
+func (l *Limiter) ReleaseTurn(ctx context.Context, userID int64) error {
+	now := time.Now()
+	return releaseTurnScript.Run(ctx, l.rdb, []string{turnKey(userID, now)}).Err()
+}
+
+// TurnsToday returns the current per-day turn count and seconds-until-reset for
+// display (GET /v1/credits). resetSeconds is -1 when no turns have been used today.
+func (l *Limiter) TurnsToday(ctx context.Context, userID int64) (used, resetSeconds int64, err error) {
+	now := time.Now()
+	k := turnKey(userID, now)
+	pipe := l.rdb.Pipeline()
+	g := pipe.Get(ctx, k)
+	tp := pipe.TTL(ctx, k)
+	_, _ = pipe.Exec(ctx) // redis.Nil for a missing key is expected
+	resetSeconds = -1
+	if v, e := g.Int64(); e == nil {
+		used = v
+	}
+	if d, e := tp.Result(); e == nil && d > 0 {
+		resetSeconds = int64(d.Seconds())
+	}
+	return used, resetSeconds, nil
+}

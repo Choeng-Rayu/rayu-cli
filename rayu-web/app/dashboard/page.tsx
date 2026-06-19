@@ -10,6 +10,7 @@ interface Entitlements {
   plan: { code: string; name: string; priceCents: number; currentPeriodEnd: string | null }
   creditAllowance: { creditsPerPeriod: number | null; topUpEnabled: boolean }
   creditConfig: { baselineCreditsPer1M: number; tokensPerCredit: number }
+  maxDailyTurns: number | null
   topupBalance: number
 }
 
@@ -28,6 +29,10 @@ interface GatewayCredits {
   periodEnd: string | null
   topupBalance: number
   topUpEnabled: boolean
+  maxDailyTurns: number | null
+  turnsUsedToday: number
+  turnsRemaining: number | null
+  turnsResetSeconds: number
 }
 
 interface LedgerRow {
@@ -177,6 +182,10 @@ export default function DashboardPage() {
   const usedTokens = usage?.usedTokens ?? usedCredits * tokensPerCredit
   const topUpEnabled = usage?.topUpEnabled ?? ent?.creditAllowance.topUpEnabled ?? false
   const topupBalance = usage?.topupBalance ?? ent?.topupBalance ?? 0
+  const maxDailyTurns = usage?.maxDailyTurns ?? ent?.maxDailyTurns ?? null
+  const turnsUsedToday = usage?.turnsUsedToday ?? 0
+  const turnsRemaining =
+    usage?.turnsRemaining ?? (maxDailyTurns != null ? Math.max(0, maxDailyTurns - turnsUsedToday) : null)
 
   return (
     <main className="container">
@@ -224,6 +233,17 @@ export default function DashboardPage() {
             <div>
               <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: 6 }}>Tokens (1 credit = {tokensPerCredit.toLocaleString()})</div>
               <Bar used={usedTokens} cap={allowanceTokens} />
+            </div>
+          </div>
+        )}
+        {maxDailyTurns != null && maxDailyTurns > 0 && (
+          <div style={{ marginTop: '1.25rem' }}>
+            <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: 6 }}>
+              Daily turns{usage ? ` · resets in ${fmtReset(usage.turnsResetSeconds)}` : ''}
+            </div>
+            <Bar used={turnsUsedToday} cap={maxDailyTurns} />
+            <div style={{ fontSize: '0.8rem', opacity: 0.6, marginTop: 6 }}>
+              {(turnsRemaining ?? 0).toLocaleString()} turns left today
             </div>
           </div>
         )}

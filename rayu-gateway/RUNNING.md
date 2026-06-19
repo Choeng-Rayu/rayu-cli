@@ -173,6 +173,41 @@ rayu
 Inside: `/login` → the `rayu-hosted` provider auto‑activates for a paid plan →
 `/model` → pick `deepseek-v4-flash` → chat. `/credits` shows live usage.
 
+## Verify credits & the daily turn cap (end-to-end)
+
+This confirms the admin-editable business logic is actually enforced. See
+`documentations/credits-and-limits.md` for the model.
+
+1. **Pick a paid account.** Hosted plans (`pro`/`pro_plus`/`max`) are purchasable
+   by default. Either buy one from `/billing`, or (admin) assign it directly:
+   `PATCH /api/admin/users/:id/plan { "planCode": "pro" }`.
+2. **Confirm entitlements** (backend): the plan + credit allowance + turn cap.
+   ```bash
+   curl -s localhost:4000/api/me/entitlements -H "Authorization: Bearer $TOK" | jq \
+     '{plan:.plan.code, credits:.creditAllowance.creditsPerPeriod, maxDailyTurns}'
+   ```
+3. **Check live usage** (gateway): credits + today's turns.
+   ```bash
+   curl -s localhost:8080/v1/credits -H "Authorization: Bearer $TOK" | jq \
+     '{usedCredits, remainingCredits, maxDailyTurns, turnsUsedToday, turnsRemaining}'
+   ```
+4. **Send a hosted request** (step 7 above) and re-check `/v1/credits`:
+   `usedCredits` and `turnsUsedToday` should both increase; the dashboard
+   `/dashboard` shows the same bars.
+5. **Trip the daily cap.** Admin sets a low cap to test:
+   `PATCH /api/admin/plans/pro { "maxDailyTurns": 1 }` (propagates within
+   ~10–30s). The next hosted request after the cap returns:
+   ```
+   HTTP 429  { "reason": "daily_turn_limit", "resetSeconds": <to 00:00 UTC> }
+   ```
+   For a BYO-key (`/v1/proxy`) request over the cap, the 429 carries
+   `X-Rayu-Limit: daily_turn_limit` (and NOT `X-Rayu-Proxy-Error`), so the CLI
+   surfaces "daily limit reached" instead of silently calling the provider direct.
+6. **Reset for normal use:** `PATCH /api/admin/plans/pro { "maxDailyTurns": null }`.
+
+> The per-day counter lives in Redis (`turns:<userId>:<YYYYMMDD>`, TTL to end of
+> UTC day). Credits live in `cwperiod:<userId>` and the durable `credit_ledger`.
+
 ## Troubleshooting
 - **401 from the gateway** → `RAYU_JWT_SECRET` doesn't match the backend's, or the
   token expired (mint a new one).
