@@ -58,10 +58,21 @@ export interface RayuEntitlements {
   features: Record<string, FeatureEntitlement>
   /** Hosted models the user's plan can use (drives the rayu-hosted provider). */
   allowedModels?: AllowedModel[]
+  /**
+   * Paid-plan credit allowance from the backend (`/me/entitlements`). This is a
+   * per-billing-period balance consumed by the gateway — 1 credit =
+   * (1e6 / baselineCreditsPer1M) tokens. The legacy windowed fields
+   * (creditsPerWeek/creditsPer5h) are gone; the gateway is the billing source of
+   * truth and reports live usage via GET /v1/credits.
+   */
   creditAllowance?: {
-    creditsPerWeek: number | null
-    creditsPer5h: number | null
+    creditsPerPeriod: number | null
     topUpEnabled: boolean
+  }
+  /** Credit model config (mirrors the admin Credit Settings). */
+  creditConfig?: {
+    baselineCreditsPer1M: number
+    tokensPerCredit: number
   }
   topupBalance?: number
   /** Bound to the session user this cache belongs to (anti cross-user reuse). */
