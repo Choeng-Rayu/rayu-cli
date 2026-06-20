@@ -22,7 +22,16 @@ import {
 } from './vertexVideoClient.js'
 import { DESCRIPTION, getVideoGenPrompt, VIDEO_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
-import { rayuFeatureAllowed } from '../../services/rayuAuth/rayuEntitlements.js'
+import {
+  isPaidFeatureLocked,
+  paidFeatureBlockedMessage,
+  paidFeatureDescriptionSuffix,
+  paidFeatureUpgradeNote,
+} from '../../services/rayuAuth/paidFeatureGate.js'
+
+/** Feature key + label for the soft paid-gate (see paidFeatureGate.ts). */
+const VIDEO_GEN_FEATURE = 'video_generation'
+const VIDEO_GEN_LABEL = 'video generation'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -97,10 +106,10 @@ export const VideoGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return (
-      (isVideoEnabled() || isGeminiVertexVideoAvailable()) &&
-      rayuFeatureAllowed('video_generation')
-    )
+    // Visibility is capability-only; plan entitlement is enforced SOFTLY in
+    // prompt()/call() so a Free user sees the tool + an upgrade prompt instead
+    // of it silently vanishing.
+    return isVideoEnabled() || isGeminiVertexVideoAvailable()
   },
   isReadOnly() {
     return false
@@ -112,7 +121,9 @@ export const VideoGenTool = buildTool({
     return `GenerateVideo: ${input.prompt}`
   },
   async description() {
-    return DESCRIPTION
+    return isPaidFeatureLocked(VIDEO_GEN_FEATURE)
+      ? DESCRIPTION + paidFeatureDescriptionSuffix()
+      : DESCRIPTION
   },
   userFacingName() {
     return 'Generate Video'
@@ -123,7 +134,10 @@ export const VideoGenTool = buildTool({
       : 'Generating video — please wait, this takes ~1-2 minutes'
   },
   async prompt() {
-    return getVideoGenPrompt()
+    const base = getVideoGenPrompt()
+    return isPaidFeatureLocked(VIDEO_GEN_FEATURE)
+      ? base + paidFeatureUpgradeNote(VIDEO_GEN_LABEL)
+      : base
   },
   async validateInput(input) {
     const { ok } = resolveOutputPath(input.output_path)
@@ -151,6 +165,12 @@ export const VideoGenTool = buildTool({
     }
   },
   async call(input, context: ToolUseContext) {
+    // Soft paid-gate: a Free user can SEE and attempt this tool, but execution
+    // is refused with an upgrade ask. Paid users (and the OAuth-off BYOK path)
+    // are not locked and pass straight through.
+    if (isPaidFeatureLocked(VIDEO_GEN_FEATURE)) {
+      throw new Error(paidFeatureBlockedMessage(VIDEO_GEN_LABEL))
+    }
     const { ok, path } = resolveOutputPath(input.output_path)
     if (!ok) {
       throw new Error('output_path must be a file inside the working directory.')

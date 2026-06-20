@@ -200,17 +200,33 @@ export function clearRayuEntitlements(): void {
 /**
  * Whether a gated feature is allowed for the current user.
  *
- * Fails OPEN: returns true when Rayu OAuth is disabled, or when entitlements
- * are not (yet) available. Only returns false when the admin-configured
- * entitlements explicitly disable the feature.
+ * Resolution:
+ * - Rayu OAuth OFF              -> allowed (feature gating not in effect).
+ * - Entitlements present        -> the admin-configured `enabled` flag decides;
+ *                                  an unknown/missing feature key stays allowed.
+ * - No entitlements + signed in -> DENY gated features. We have a session, so we
+ *                                  should know the plan; failing open here is
+ *                                  what let free users use paid features before
+ *                                  the first fetch. getCachedEntitlements() also
+ *                                  schedules a rate-limited background refresh.
+ * - No entitlements + signed out -> allowed (the login gate governs access;
+ *                                  don't double-block pre-login).
+ *
+ * Still resilient: a transient refresh failure leaves the LAST good cache in
+ * place, so we only deny when there is genuinely no cache for a signed-in user.
  */
 export function rayuFeatureAllowed(featureKey: string): boolean {
   if (!isUseRayuOAuthEnabled()) return true
   const ent = getCachedEntitlements()
-  if (!ent || !ent.features) return true
-  const f = ent.features[featureKey]
-  if (!f) return true
-  return f.enabled !== false
+  if (ent && ent.features) {
+    const f = ent.features[featureKey]
+    if (!f) return true
+    return f.enabled !== false
+  }
+  // No entitlements cached. If the user is signed in we should know their plan,
+  // so DENY gated features to close the cold-start window that previously let
+  // free users through. If not signed in, the login gate governs access.
+  return !hasRayuSession()
 }
 
 // --- Test hooks -------------------------------------------------------------

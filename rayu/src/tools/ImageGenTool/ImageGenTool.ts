@@ -23,7 +23,16 @@ import {
 } from './vertexImageClient.js'
 import { DESCRIPTION, getImageGenPrompt, IMAGE_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
-import { rayuFeatureAllowed } from '../../services/rayuAuth/rayuEntitlements.js'
+import {
+  isPaidFeatureLocked,
+  paidFeatureBlockedMessage,
+  paidFeatureDescriptionSuffix,
+  paidFeatureUpgradeNote,
+} from '../../services/rayuAuth/paidFeatureGate.js'
+
+/** Feature key + label for the soft paid-gate (see paidFeatureGate.ts). */
+const IMAGE_GEN_FEATURE = 'image_generation'
+const IMAGE_GEN_LABEL = 'image generation'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -133,10 +142,11 @@ export const ImageGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return (
-      (getNvidiaApiKey() != null || isGeminiVertexImageAvailable()) &&
-      rayuFeatureAllowed('image_generation')
-    )
+    // Visibility is capability-only: show the tool whenever an image backend is
+    // configured. Plan entitlement is enforced SOFTLY (see prompt()/call()), so
+    // a Free user still SEES the tool and gets an upgrade prompt instead of it
+    // silently vanishing.
+    return getNvidiaApiKey() != null || isGeminiVertexImageAvailable()
   },
   isReadOnly() {
     return false
@@ -148,7 +158,9 @@ export const ImageGenTool = buildTool({
     return `GenerateImage: ${input.prompt}`
   },
   async description() {
-    return DESCRIPTION
+    return isPaidFeatureLocked(IMAGE_GEN_FEATURE)
+      ? DESCRIPTION + paidFeatureDescriptionSuffix()
+      : DESCRIPTION
   },
   userFacingName() {
     return 'Generate Image'
@@ -157,7 +169,10 @@ export const ImageGenTool = buildTool({
     return input?.prompt ? `Generating image: ${input.prompt}` : 'Generating image'
   },
   async prompt() {
-    return getImageGenPrompt()
+    const base = getImageGenPrompt()
+    return isPaidFeatureLocked(IMAGE_GEN_FEATURE)
+      ? base + paidFeatureUpgradeNote(IMAGE_GEN_LABEL)
+      : base
   },
   async validateInput(input) {
     const { ok } = resolveOutputPath(input.output_path)
@@ -185,6 +200,12 @@ export const ImageGenTool = buildTool({
     }
   },
   async call(input, context: ToolUseContext) {
+    // Soft paid-gate: a Free user can SEE and attempt this tool, but execution
+    // is refused with an upgrade ask. Paid users (and the OAuth-off BYOK path)
+    // are not locked and pass straight through.
+    if (isPaidFeatureLocked(IMAGE_GEN_FEATURE)) {
+      throw new Error(paidFeatureBlockedMessage(IMAGE_GEN_LABEL))
+    }
     // Fail fast if the caller's explicit path escapes the working directory.
     if (input.output_path && !resolveOutputPath(input.output_path).ok) {
       throw new Error('output_path must be a file inside the working directory.')

@@ -17,10 +17,23 @@ export const MACRO_VALUES = {
   //   RAYU_BUILD_WEB_URL=https://rayu.example.com bun run build
   // Runtime env vars (USE_RAYU_OAUTH / RAYU_API_URL / RAYU_WEB_URL) still
   // override these for local development.
-  RAYU_OAUTH_DEFAULT: process.env.RAYU_BUILD_OAUTH ?? 'false',
-  RAYU_API_URL: process.env.RAYU_BUILD_API_URL ?? '',
-  RAYU_WEB_URL: process.env.RAYU_BUILD_WEB_URL ?? '',
-  RAYU_GATEWAY_URL: process.env.RAYU_BUILD_GATEWAY_URL ?? '',
+  //
+  // IMPORTANT (feature-gating correctness): the baked default is what the CLI
+  // uses when no runtime env var is present. Since loadDotEnv() only reads the
+  // .env in the user's CURRENT working directory, a binary run from any other
+  // folder would otherwise fall back to this default. We therefore fall back to
+  // the BUILD-TIME .env values (Bun auto-loads .env before this runs):
+  // RAYU_BUILD_* takes precedence, then the plain USE_RAYU_OAUTH / RAYU_API_URL
+  // / RAYU_WEB_URL / RAYU_GATEWAY_URL from .env, then a safe literal. This makes
+  // `bun run build` bake the operator's intended config so entitlement gating
+  // is active regardless of the directory the CLI is launched from. The runtime
+  // env var still overrides (e.g. USE_RAYU_OAUTH=false disables it locally).
+  RAYU_OAUTH_DEFAULT:
+    process.env.RAYU_BUILD_OAUTH ?? process.env.USE_RAYU_OAUTH ?? 'false',
+  RAYU_API_URL: process.env.RAYU_BUILD_API_URL ?? process.env.RAYU_API_URL ?? '',
+  RAYU_WEB_URL: process.env.RAYU_BUILD_WEB_URL ?? process.env.RAYU_WEB_URL ?? '',
+  RAYU_GATEWAY_URL:
+    process.env.RAYU_BUILD_GATEWAY_URL ?? process.env.RAYU_GATEWAY_URL ?? '',
 }
 
 // Rayu-owned allowlist of build-gated `feature('FLAG')` macros to ENABLE.
