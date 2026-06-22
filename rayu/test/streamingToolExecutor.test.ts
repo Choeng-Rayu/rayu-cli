@@ -48,7 +48,7 @@ describe('StreamingToolExecutor fallback discard', () => {
 
     expect([...discarded.getCompletedResults()]).toEqual([])
 
-    const remaining = []
+    const remaining: unknown[] = []
     for await (const update of discarded.getRemainingResults()) {
       remaining.push(update)
     }

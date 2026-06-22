@@ -1,0 +1,26 @@
+{
+  // Typecheck-only config. Extends the base tsconfig but adds a `paths` mapping
+  // for `react/compiler-runtime` → a local type stub. This mapping is kept OUT
+  // of the base tsconfig.json on purpose: Bun's bundler (scripts/build.ts) also
+  // reads tsconfig `paths`, and pointing it at a type-only `.d.ts` would break
+  // the real runtime import. `tsc` uses this file (via `bun run typecheck`);
+  // Bun keeps using the base config and the real react/compiler-runtime module.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The committed source is React-Compiler OUTPUT: every component is emitted
+    // as `function X(t0) { ... $[i] ... }` with generated, intentionally-untyped
+    // param/temp names (`t0`, `l`, `s_0`, …). The ORIGINAL pre-compiler source
+    // carried the types; this artifact does not. `noImplicitAny` therefore fires
+    // ~2000× on generated temps across ~469 files — noise, not real bugs. We turn
+    // it off for typechecking ONLY (this file; the base tsconfig + Bun build keep
+    // full strictness) so `tsc` still enforces the checks that catch real defects
+    // (module resolution, missing exports, property access, assignability).
+    "noImplicitAny": false,
+    "paths": {
+      "src/*": ["./src/*"],
+      "@ant/*": ["./stubs/ant/*"],
+      "color-diff-napi": ["./stubs/color-diff-napi/index.ts"],
+      "react/compiler-runtime": ["./stubs/react-compiler-runtime.d.ts"]
+    }
+  }
+}

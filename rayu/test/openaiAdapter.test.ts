@@ -859,7 +859,7 @@ describe('openaiAdapter dynamic-credential (Vertex OAuth) client', () => {
       max_tokens: 16,
       messages: [{ role: 'user', content: 'hi' }],
     })
-    expect(seenAuth).toBe('Bearer fresh-token')
+    expect(seenAuth as unknown).toBe('Bearer fresh-token')
   })
 })
 
