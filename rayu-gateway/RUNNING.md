@@ -17,7 +17,7 @@ the `rayu` DB) — it does **not** touch your data.
 ```bash
 docker run -d --name rayu-redis -p 6379:6379 redis:7-alpine
 ```
-
+  
 ## 2. Build the gateway image
 ```bash
 cd ~/rayu-cli/rayu-gateway

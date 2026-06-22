@@ -23,11 +23,16 @@ import {
 import { DESCRIPTION, getVideoGenPrompt, VIDEO_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 import {
+  featureLimitDescriptionSuffix,
+  featureLimitReached,
+  featureLimitReachedMessage,
+  featureLimitReachedNote,
   isPaidFeatureLocked,
   paidFeatureBlockedMessage,
   paidFeatureDescriptionSuffix,
   paidFeatureUpgradeNote,
 } from '../../services/rayuAuth/paidFeatureGate.js'
+import { bumpFeatureUsage } from '../../services/rayuAuth/rayuFeatureUsage.js'
 
 /** Feature key + label for the soft paid-gate (see paidFeatureGate.ts). */
 const VIDEO_GEN_FEATURE = 'video_generation'
@@ -121,9 +126,13 @@ export const VideoGenTool = buildTool({
     return `GenerateVideo: ${input.prompt}`
   },
   async description() {
-    return isPaidFeatureLocked(VIDEO_GEN_FEATURE)
-      ? DESCRIPTION + paidFeatureDescriptionSuffix()
-      : DESCRIPTION
+    if (isPaidFeatureLocked(VIDEO_GEN_FEATURE)) {
+      return DESCRIPTION + paidFeatureDescriptionSuffix()
+    }
+    if (featureLimitReached(VIDEO_GEN_FEATURE)) {
+      return DESCRIPTION + featureLimitDescriptionSuffix(VIDEO_GEN_FEATURE)
+    }
+    return DESCRIPTION
   },
   userFacingName() {
     return 'Generate Video'
@@ -135,9 +144,13 @@ export const VideoGenTool = buildTool({
   },
   async prompt() {
     const base = getVideoGenPrompt()
-    return isPaidFeatureLocked(VIDEO_GEN_FEATURE)
-      ? base + paidFeatureUpgradeNote(VIDEO_GEN_LABEL)
-      : base
+    if (isPaidFeatureLocked(VIDEO_GEN_FEATURE)) {
+      return base + paidFeatureUpgradeNote(VIDEO_GEN_LABEL)
+    }
+    if (featureLimitReached(VIDEO_GEN_FEATURE)) {
+      return base + featureLimitReachedNote(VIDEO_GEN_FEATURE, VIDEO_GEN_LABEL)
+    }
+    return base
   },
   async validateInput(input) {
     const { ok } = resolveOutputPath(input.output_path)
@@ -170,6 +183,10 @@ export const VideoGenTool = buildTool({
     // are not locked and pass straight through.
     if (isPaidFeatureLocked(VIDEO_GEN_FEATURE)) {
       throw new Error(paidFeatureBlockedMessage(VIDEO_GEN_LABEL))
+    }
+    // Enabled, but the admin-configured monthly numeric limit is reached.
+    if (featureLimitReached(VIDEO_GEN_FEATURE)) {
+      throw new Error(featureLimitReachedMessage(VIDEO_GEN_FEATURE, VIDEO_GEN_LABEL))
     }
     const { ok, path } = resolveOutputPath(input.output_path)
     if (!ok) {
@@ -239,6 +256,10 @@ export const VideoGenTool = buildTool({
 
     // Best-effort first-frame preview so the model can see a still.
     const preview = await extractPreviewFrame(path)
+
+    // Count this successful generation toward the monthly soft cap immediately
+    // (the durable usage_events row is written by the per-tool usage ping).
+    bumpFeatureUsage(VIDEO_GEN_FEATURE)
 
     return {
       data: {

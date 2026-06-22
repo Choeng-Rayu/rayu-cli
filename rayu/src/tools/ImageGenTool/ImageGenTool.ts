@@ -24,11 +24,16 @@ import {
 import { DESCRIPTION, getImageGenPrompt, IMAGE_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 import {
+  featureLimitDescriptionSuffix,
+  featureLimitReached,
+  featureLimitReachedMessage,
+  featureLimitReachedNote,
   isPaidFeatureLocked,
   paidFeatureBlockedMessage,
   paidFeatureDescriptionSuffix,
   paidFeatureUpgradeNote,
 } from '../../services/rayuAuth/paidFeatureGate.js'
+import { bumpFeatureUsage } from '../../services/rayuAuth/rayuFeatureUsage.js'
 
 /** Feature key + label for the soft paid-gate (see paidFeatureGate.ts). */
 const IMAGE_GEN_FEATURE = 'image_generation'
@@ -158,9 +163,13 @@ export const ImageGenTool = buildTool({
     return `GenerateImage: ${input.prompt}`
   },
   async description() {
-    return isPaidFeatureLocked(IMAGE_GEN_FEATURE)
-      ? DESCRIPTION + paidFeatureDescriptionSuffix()
-      : DESCRIPTION
+    if (isPaidFeatureLocked(IMAGE_GEN_FEATURE)) {
+      return DESCRIPTION + paidFeatureDescriptionSuffix()
+    }
+    if (featureLimitReached(IMAGE_GEN_FEATURE)) {
+      return DESCRIPTION + featureLimitDescriptionSuffix(IMAGE_GEN_FEATURE)
+    }
+    return DESCRIPTION
   },
   userFacingName() {
     return 'Generate Image'
@@ -170,9 +179,13 @@ export const ImageGenTool = buildTool({
   },
   async prompt() {
     const base = getImageGenPrompt()
-    return isPaidFeatureLocked(IMAGE_GEN_FEATURE)
-      ? base + paidFeatureUpgradeNote(IMAGE_GEN_LABEL)
-      : base
+    if (isPaidFeatureLocked(IMAGE_GEN_FEATURE)) {
+      return base + paidFeatureUpgradeNote(IMAGE_GEN_LABEL)
+    }
+    if (featureLimitReached(IMAGE_GEN_FEATURE)) {
+      return base + featureLimitReachedNote(IMAGE_GEN_FEATURE, IMAGE_GEN_LABEL)
+    }
+    return base
   },
   async validateInput(input) {
     const { ok } = resolveOutputPath(input.output_path)
@@ -205,6 +218,10 @@ export const ImageGenTool = buildTool({
     // are not locked and pass straight through.
     if (isPaidFeatureLocked(IMAGE_GEN_FEATURE)) {
       throw new Error(paidFeatureBlockedMessage(IMAGE_GEN_LABEL))
+    }
+    // Enabled, but the admin-configured monthly numeric limit is reached.
+    if (featureLimitReached(IMAGE_GEN_FEATURE)) {
+      throw new Error(featureLimitReachedMessage(IMAGE_GEN_FEATURE, IMAGE_GEN_LABEL))
     }
     // Fail fast if the caller's explicit path escapes the working directory.
     if (input.output_path && !resolveOutputPath(input.output_path).ok) {
@@ -300,6 +317,10 @@ export const ImageGenTool = buildTool({
     }
 
     const dims = imageDimensions(buffer)
+
+    // Count this successful generation toward the monthly soft cap immediately
+    // (the durable usage_events row is written by the per-tool usage ping).
+    bumpFeatureUsage(IMAGE_GEN_FEATURE)
 
     return {
       data: {

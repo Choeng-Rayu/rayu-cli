@@ -24,7 +24,9 @@
 // returns true, so behaviour there is unchanged as well.
 
 import { rayuFeatureAllowed } from './rayuEntitlements.js'
+import { getFeatureUsage } from './rayuFeatureUsage.js'
 import { getEntryPaidPlan } from './rayuPlansCatalog.js'
+import { isUseRayuOAuthEnabled } from './rayuSession.js'
 
 /**
  * Whether a gated feature is currently LOCKED for the signed-in user, i.e. the
@@ -112,4 +114,65 @@ export function paidFeatureDescriptionSuffix(): string {
  */
 export function paidFeatureBlockedMessage(featureLabel: string): string {
   return `🔒 ${capitalize(featureLabel)} requires ${upgradeTargetLabel()}. The signed-in user is on the Free plan, so this tool is locked. Tell the user: "${upgradePromptForUser(featureLabel)}" Do not retry this tool until they upgrade.`
+}
+
+// --- Per-feature monthly numeric limits (e.g. image generation = 10/month) ---
+//
+// Separate from the enabled/disabled lock above: a feature can be ENABLED but
+// have an admin-configured numeric cap. The count comes from rayuFeatureUsage
+// (GET /usage/features, current UTC month). Fails open: unknown usage or no
+// numeric limit => not reached, so a backend hiccup never blocks the user.
+
+/**
+ * Whether an ENABLED feature has hit its admin-configured monthly numeric limit
+ * for the signed-in user. False when the feature is disabled (that's the
+ * isPaidFeatureLocked path), when there is no numeric limit (unlimited), or when
+ * usage isn't known yet.
+ */
+export function featureLimitReached(featureKey: string): boolean {
+  if (!isUseRayuOAuthEnabled()) return false // gating only applies under Rayu OAuth
+  if (!rayuFeatureAllowed(featureKey)) return false // disabled -> lock path handles it
+  const u = getFeatureUsage(featureKey)
+  if (!u || u.limit == null) return false
+  return u.used >= u.limit
+}
+
+/** "(N/limit used this month)" detail when usage is known, else "". */
+function usageSuffix(featureKey: string): string {
+  const u = getFeatureUsage(featureKey)
+  if (!u || u.limit == null) return ''
+  return ` (${u.used}/${u.limit} used this month)`
+}
+
+/** The friendly line shown to a user who has hit a monthly feature limit. */
+export function featureLimitUpgradePrompt(featureLabel: string): string {
+  return `You've reached this month's ${featureLabel} limit. Upgrade to ${upgradeTargetLabel()} for unlimited ${featureLabel}, or wait until it resets next month.`
+}
+
+/** Markdown note for a gated tool's prompt() when its monthly limit is reached. */
+export function featureLimitReachedNote(
+  featureKey: string,
+  featureLabel: string,
+): string {
+  return `
+
+---
+> 🔒 **Monthly ${featureLabel} limit reached${usageSuffix(featureKey)}.**
+>
+> The signed-in user has used their ${featureLabel} allowance for this month on their current plan. This tool will refuse to run until the limit resets next month (UTC) or they upgrade.
+>
+> If the user asks for ${featureLabel}, do **not** call this tool — it will fail. Instead, tell the user: "${featureLimitUpgradePrompt(featureLabel)}"`
+}
+
+/** Short description() suffix when a feature's monthly limit is reached. */
+export function featureLimitDescriptionSuffix(featureKey: string): string {
+  return ` (Monthly limit reached${usageSuffix(featureKey)} — upgrade for unlimited.)`
+}
+
+/** The error a gated tool throws from call() when its monthly limit is reached. */
+export function featureLimitReachedMessage(
+  featureKey: string,
+  featureLabel: string,
+): string {
+  return `🔒 Monthly ${featureLabel} limit reached${usageSuffix(featureKey)}. Tell the user: "${featureLimitUpgradePrompt(featureLabel)}" Do not retry this tool until the limit resets next month or they upgrade.`
 }
