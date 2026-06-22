@@ -22,7 +22,21 @@ import {
 } from './vertexVideoClient.js'
 import { DESCRIPTION, getVideoGenPrompt, VIDEO_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
-import { rayuFeatureAllowed } from '../../services/rayuAuth/rayuEntitlements.js'
+import {
+  featureLimitDescriptionSuffix,
+  featureLimitReached,
+  featureLimitReachedMessage,
+  featureLimitReachedNote,
+  isPaidFeatureLocked,
+  paidFeatureBlockedMessage,
+  paidFeatureDescriptionSuffix,
+  paidFeatureUpgradeNote,
+} from '../../services/rayuAuth/paidFeatureGate.js'
+import { bumpFeatureUsage } from '../../services/rayuAuth/rayuFeatureUsage.js'
+
+/** Feature key + label for the soft paid-gate (see paidFeatureGate.ts). */
+const VIDEO_GEN_FEATURE = 'video_generation'
+const VIDEO_GEN_LABEL = 'video generation'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -97,10 +111,10 @@ export const VideoGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return (
-      (isVideoEnabled() || isGeminiVertexVideoAvailable()) &&
-      rayuFeatureAllowed('video_generation')
-    )
+    // Visibility is capability-only; plan entitlement is enforced SOFTLY in
+    // prompt()/call() so a Free user sees the tool + an upgrade prompt instead
+    // of it silently vanishing.
+    return isVideoEnabled() || isGeminiVertexVideoAvailable()
   },
   isReadOnly() {
     return false
@@ -112,6 +126,12 @@ export const VideoGenTool = buildTool({
     return `GenerateVideo: ${input.prompt}`
   },
   async description() {
+    if (isPaidFeatureLocked(VIDEO_GEN_FEATURE)) {
+      return DESCRIPTION + paidFeatureDescriptionSuffix()
+    }
+    if (featureLimitReached(VIDEO_GEN_FEATURE)) {
+      return DESCRIPTION + featureLimitDescriptionSuffix(VIDEO_GEN_FEATURE)
+    }
     return DESCRIPTION
   },
   userFacingName() {
@@ -123,7 +143,14 @@ export const VideoGenTool = buildTool({
       : 'Generating video — please wait, this takes ~1-2 minutes'
   },
   async prompt() {
-    return getVideoGenPrompt()
+    const base = getVideoGenPrompt()
+    if (isPaidFeatureLocked(VIDEO_GEN_FEATURE)) {
+      return base + paidFeatureUpgradeNote(VIDEO_GEN_LABEL)
+    }
+    if (featureLimitReached(VIDEO_GEN_FEATURE)) {
+      return base + featureLimitReachedNote(VIDEO_GEN_FEATURE, VIDEO_GEN_LABEL)
+    }
+    return base
   },
   async validateInput(input) {
     const { ok } = resolveOutputPath(input.output_path)
@@ -151,6 +178,16 @@ export const VideoGenTool = buildTool({
     }
   },
   async call(input, context: ToolUseContext) {
+    // Soft paid-gate: a Free user can SEE and attempt this tool, but execution
+    // is refused with an upgrade ask. Paid users (and the OAuth-off BYOK path)
+    // are not locked and pass straight through.
+    if (isPaidFeatureLocked(VIDEO_GEN_FEATURE)) {
+      throw new Error(paidFeatureBlockedMessage(VIDEO_GEN_LABEL))
+    }
+    // Enabled, but the admin-configured monthly numeric limit is reached.
+    if (featureLimitReached(VIDEO_GEN_FEATURE)) {
+      throw new Error(featureLimitReachedMessage(VIDEO_GEN_FEATURE, VIDEO_GEN_LABEL))
+    }
     const { ok, path } = resolveOutputPath(input.output_path)
     if (!ok) {
       throw new Error('output_path must be a file inside the working directory.')
@@ -219,6 +256,10 @@ export const VideoGenTool = buildTool({
 
     // Best-effort first-frame preview so the model can see a still.
     const preview = await extractPreviewFrame(path)
+
+    // Count this successful generation toward the monthly soft cap immediately
+    // (the durable usage_events row is written by the per-tool usage ping).
+    bumpFeatureUsage(VIDEO_GEN_FEATURE)
 
     return {
       data: {

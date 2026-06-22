@@ -23,7 +23,21 @@ import {
 } from './vertexImageClient.js'
 import { DESCRIPTION, getImageGenPrompt, IMAGE_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
-import { rayuFeatureAllowed } from '../../services/rayuAuth/rayuEntitlements.js'
+import {
+  featureLimitDescriptionSuffix,
+  featureLimitReached,
+  featureLimitReachedMessage,
+  featureLimitReachedNote,
+  isPaidFeatureLocked,
+  paidFeatureBlockedMessage,
+  paidFeatureDescriptionSuffix,
+  paidFeatureUpgradeNote,
+} from '../../services/rayuAuth/paidFeatureGate.js'
+import { bumpFeatureUsage } from '../../services/rayuAuth/rayuFeatureUsage.js'
+
+/** Feature key + label for the soft paid-gate (see paidFeatureGate.ts). */
+const IMAGE_GEN_FEATURE = 'image_generation'
+const IMAGE_GEN_LABEL = 'image generation'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -133,10 +147,11 @@ export const ImageGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return (
-      (getNvidiaApiKey() != null || isGeminiVertexImageAvailable()) &&
-      rayuFeatureAllowed('image_generation')
-    )
+    // Visibility is capability-only: show the tool whenever an image backend is
+    // configured. Plan entitlement is enforced SOFTLY (see prompt()/call()), so
+    // a Free user still SEES the tool and gets an upgrade prompt instead of it
+    // silently vanishing.
+    return getNvidiaApiKey() != null || isGeminiVertexImageAvailable()
   },
   isReadOnly() {
     return false
@@ -148,6 +163,12 @@ export const ImageGenTool = buildTool({
     return `GenerateImage: ${input.prompt}`
   },
   async description() {
+    if (isPaidFeatureLocked(IMAGE_GEN_FEATURE)) {
+      return DESCRIPTION + paidFeatureDescriptionSuffix()
+    }
+    if (featureLimitReached(IMAGE_GEN_FEATURE)) {
+      return DESCRIPTION + featureLimitDescriptionSuffix(IMAGE_GEN_FEATURE)
+    }
     return DESCRIPTION
   },
   userFacingName() {
@@ -157,7 +178,14 @@ export const ImageGenTool = buildTool({
     return input?.prompt ? `Generating image: ${input.prompt}` : 'Generating image'
   },
   async prompt() {
-    return getImageGenPrompt()
+    const base = getImageGenPrompt()
+    if (isPaidFeatureLocked(IMAGE_GEN_FEATURE)) {
+      return base + paidFeatureUpgradeNote(IMAGE_GEN_LABEL)
+    }
+    if (featureLimitReached(IMAGE_GEN_FEATURE)) {
+      return base + featureLimitReachedNote(IMAGE_GEN_FEATURE, IMAGE_GEN_LABEL)
+    }
+    return base
   },
   async validateInput(input) {
     const { ok } = resolveOutputPath(input.output_path)
@@ -185,6 +213,16 @@ export const ImageGenTool = buildTool({
     }
   },
   async call(input, context: ToolUseContext) {
+    // Soft paid-gate: a Free user can SEE and attempt this tool, but execution
+    // is refused with an upgrade ask. Paid users (and the OAuth-off BYOK path)
+    // are not locked and pass straight through.
+    if (isPaidFeatureLocked(IMAGE_GEN_FEATURE)) {
+      throw new Error(paidFeatureBlockedMessage(IMAGE_GEN_LABEL))
+    }
+    // Enabled, but the admin-configured monthly numeric limit is reached.
+    if (featureLimitReached(IMAGE_GEN_FEATURE)) {
+      throw new Error(featureLimitReachedMessage(IMAGE_GEN_FEATURE, IMAGE_GEN_LABEL))
+    }
     // Fail fast if the caller's explicit path escapes the working directory.
     if (input.output_path && !resolveOutputPath(input.output_path).ok) {
       throw new Error('output_path must be a file inside the working directory.')
@@ -279,6 +317,10 @@ export const ImageGenTool = buildTool({
     }
 
     const dims = imageDimensions(buffer)
+
+    // Count this successful generation toward the monthly soft cap immediately
+    // (the durable usage_events row is written by the per-tool usage ping).
+    bumpFeatureUsage(IMAGE_GEN_FEATURE)
 
     return {
       data: {

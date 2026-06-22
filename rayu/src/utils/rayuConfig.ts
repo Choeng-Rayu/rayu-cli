@@ -430,6 +430,7 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/gemini/i, 1_048_576],
   [/deepseek[-/]?v4[-/]?(flash|pro)/i, 1_000_000],
   [/minimax/i, 1_000_000],
+  [/fugu/i, 1_000_000],                                       // Sakana AI Fugu / Fugu Ultra (1M)
   // 256k
   [/kimi-k1|kimi.*long/i, 200_000],                           // Kimi K1.5 long-context
   // Newer Kimi K2 releases — K2.5 / K2.6 / K2 Thinking / dated K2-<NNNN> (e.g.

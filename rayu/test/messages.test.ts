@@ -9,7 +9,7 @@ describe('message normalization robustness', () => {
       { type: 'weird-unhandled-type', foo: 1 },
       { type: 'progress' },
     ]
-    const out = normalizeMessages(input as any)
+    const out = (normalizeMessages as (m: unknown[]) => Array<{ type?: string } | null>)(input as any)
     expect(out.every(m => m != null)).toBe(true)
     expect(out.length).toBe(1)
     expect(out[0]?.type).toBe('progress')

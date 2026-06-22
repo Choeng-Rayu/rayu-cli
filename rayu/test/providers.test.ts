@@ -44,6 +44,39 @@ describe('provider presets', () => {
     expect(hf?.defaultModel).toBeTruthy()
     expect(hf?.smallFastModel).toBeTruthy()
   })
+
+  test('registry includes Fugu (Sakana AI) as an openai-compatible provider', async () => {
+    const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
+    const fugu = PROVIDER_PRESETS.find(p => p.id === 'fugu')
+    expect(fugu?.kind).toBe('openai-compatible')
+    expect(fugu?.baseURL).toBe('https://api.sakana.ai/v1')
+    expect(fugu?.baseURL?.endsWith('/v1')).toBe(true)
+    expect(fugu?.defaultModel).toBe('fugu')
+    expect(fugu?.smallFastModel).toBe('fugu')
+    expect(fugu?.envKeys).toContain('SAKANA_API_KEY')
+  })
+
+  test('Fugu ships a curated catalog (fugu + fugu-ultra) and a 1M context window', async () => {
+    const { CURATED_PROVIDER_MODELS } = await import('../src/utils/curatedProviderModels.ts')
+    expect(CURATED_PROVIDER_MODELS.fugu).toEqual(['fugu', 'fugu-ultra'])
+
+    // Fugu's 1M window must resolve via the known-model table for an active
+    // openai-compatible Fugu provider (not the generic 200k fallback).
+    const cfg = await fresh()
+    cfg.upsertProvider(
+      {
+        id: 'fugu',
+        kind: 'openai-compatible',
+        apiKey: 'sk-test',
+        baseURL: 'https://api.sakana.ai/v1',
+        defaultModel: 'fugu',
+      },
+      true,
+    )
+    cfg._resetRayuConfigCache()
+    expect(cfg.getRayuModelContextWindow('fugu')).toBe(1_000_000)
+    expect(cfg.getRayuModelContextWindow('fugu-ultra')).toBe(1_000_000)
+  })
 })
 
 describe('env key migration', () => {

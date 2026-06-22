@@ -31,7 +31,7 @@ describe('copilot token exchange + cache', () => {
     globalThis.fetch = (async () => {
       calls++
       return jsonResponse({ token: `tok-${calls}`, expires_at: now + 3600 })
-    }) as typeof fetch
+    }) as unknown as typeof fetch
     expect(await getCopilotToken(gh)).toBe('tok-1')
     expect(await getCopilotToken(gh)).toBe('tok-1')
     expect(calls).toBe(1)
@@ -45,7 +45,7 @@ describe('copilot token exchange + cache', () => {
     globalThis.fetch = (async () => {
       calls++
       return jsonResponse({ token: `tok-${calls}`, expires_at: now + 10 })
-    }) as typeof fetch
+    }) as unknown as typeof fetch
     expect(await getCopilotToken(gh)).toBe('tok-1')
     expect(await getCopilotToken(gh)).toBe('tok-2') // near-expiry → re-exchange
     expect(calls).toBe(2)
@@ -54,7 +54,7 @@ describe('copilot token exchange + cache', () => {
 
   test('throws a helpful error when the account lacks Copilot access', async () => {
     globalThis.fetch = (async () =>
-      jsonResponse({ message: 'no copilot' }, 403)) as typeof fetch
+      jsonResponse({ message: 'no copilot' }, 403)) as unknown as typeof fetch
     await expect(exchangeForCopilotToken('gh-bad')).rejects.toThrow(
       /Copilot token exchange failed/,
     )
@@ -78,7 +78,7 @@ describe('makeCopilotFetch', () => {
         return new Response('{}', { status: apiCalls === 1 ? 401 : 200 })
       }
       throw new Error(`unexpected url ${String(url)}`)
-    }) as typeof fetch
+    }) as unknown as typeof fetch
 
     const res = await makeCopilotFetch(gh)(apiUrl, { headers: {} })
     expect(res.status).toBe(200)
@@ -110,7 +110,7 @@ describe('fetchCopilotModels', () => {
         })
       }
       throw new Error(`unexpected url ${String(url)}`)
-    }) as typeof fetch
+    }) as unknown as typeof fetch
     expect(await fetchCopilotModels(gh)).toEqual(['gpt-4.1', 'gpt-4o'])
     invalidateCopilotToken(gh)
   })

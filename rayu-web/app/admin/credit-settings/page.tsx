@@ -118,6 +118,27 @@ export default function CreditSettingsPage() {
         </div>
       </Panel>
 
+      {/* Abuse limits — persisted here, enforced by the hosted gateway. */}
+      <Panel title="Abuse limits (hosted gateway)" style={{ marginTop: '1.25rem' }}>
+        <p style={{ opacity: 0.5, fontSize: '0.8rem', marginTop: 0, marginBottom: '0.75rem' }}>
+          Enforced by the hosted gateway on <code>/v1/chat/completions</code>. 0 = unlimited.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem' }}>
+          <Field label="Max concurrent streams">
+            {numInput('maxConcurrentStreams')}
+            <div style={{ fontSize: '0.72rem', opacity: 0.45, marginTop: 2 }}>Simultaneous in-flight hosted requests per user. 0 = unlimited.</div>
+          </Field>
+          <Field label="Max tokens / request">
+            {numInput('maxTokensPerRequest')}
+            <div style={{ fontSize: '0.72rem', opacity: 0.45, marginTop: 2 }}>Rejects a hosted request whose max_tokens exceeds this. 0 = unlimited.</div>
+          </Field>
+          <Field label="Max requests / 5h">
+            {numInput('maxRequestsPer5h')}
+            <div style={{ fontSize: '0.72rem', opacity: 0.45, marginTop: 2 }}>Rolling 5-hour request cap per user. 0 = unlimited.</div>
+          </Field>
+        </div>
+      </Panel>
+
       {/* Profit projection (forward-looking, from current model prices) */}
       <Panel title="Profit projection (from current prices)" style={{ marginTop: '1.25rem' }}>
         {!proj || proj.plans.length === 0 ? (

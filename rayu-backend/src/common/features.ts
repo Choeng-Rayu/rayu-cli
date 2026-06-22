@@ -69,6 +69,23 @@ export const FEATURE_CATALOG: FeatureCatalogItem[] = [
   },
 ]
 
+/**
+ * Maps a limited feature to the CLI tool name(s) whose usage_events count toward
+ * its numeric monthly limit. Tool names match the CLI tool identifiers (see each
+ * tool's constants.ts). A feature with no mapping (e.g. collaborator_swarm) is
+ * NOT numerically enforced — its usage is reported as 0, so a numeric limit on
+ * it is effectively unlimited.
+ */
+export const FEATURE_TOOL_MAP: Partial<Record<FeatureKey, string[]>> = {
+  image_generation: ['GenerateImage'],
+  video_generation: ['GenerateVideo'],
+}
+
+/** The tool names whose usage counts toward a feature's limit ([] if none). */
+export function toolsForFeature(key: FeatureKey): string[] {
+  return FEATURE_TOOL_MAP[key] ?? []
+}
+
 export interface FeatureEntitlement {
   enabled: boolean
   /** Optional numeric cap; null = unlimited when enabled. */

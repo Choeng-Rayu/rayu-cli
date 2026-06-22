@@ -201,6 +201,24 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     envKeys: ['KIMI_FOR_CODE_API_KEY'],
   },
   {
+    // Fugu — Sakana AI's multi-agent system (Japan). Although it's an agentic
+    // multi-agent system under the hood, it's exposed like a standard LLM
+    // through the OpenAI-compatible Sakana API: `POST /v1/chat/completions`
+    // (and the Responses API) at https://api.sakana.ai/v1, authenticated with a
+    // Bearer SAKANA_API_KEY. Rayu reuses its OpenAI-compatible adapter + live
+    // `GET /v1/models` catalog verbatim. Two models ship: `fugu` (default;
+    // routes across providers) and `fugu-ultra` (premium). Both have a 1M-token
+    // context window — see KNOWN_MODEL_CONTEXT in rayuConfig.ts. Docs:
+    // https://console.sakana.ai/get-started
+    id: 'fugu',
+    label: 'Fugu — Sakana AI (api.sakana.ai)',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.sakana.ai/v1',
+    defaultModel: 'fugu',
+    smallFastModel: 'fugu',
+    envKeys: ['SAKANA_API_KEY'],
+  },
+  {
     id: 'openai',
     label: 'OpenAI (api.openai.com)',
     kind: 'openai-compatible',
@@ -473,6 +491,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   deepseek: 'DeepSeek',
   'kimi-moonshot': 'Kimi',
   'kimi-for-code': 'Kimi for Code',
+  fugu: 'Fugu',
   openai: 'OpenAI',
   gemini: 'Gemini',
   [GEMINI_VERTEX_PROVIDER_ID]: 'Vertex AI',

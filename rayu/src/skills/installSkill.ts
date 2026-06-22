@@ -27,6 +27,8 @@ export type InstalledSkill = {
   name: string
   description: string
   path: string
+  /** True when a skill of the same name already existed and was overwritten. */
+  replaced: boolean
 }
 
 export class InstallSkillError extends Error {}
@@ -116,42 +118,62 @@ export function classifySource(rawSource: string, localExists: boolean): SourceK
   return { type: 'local', path: source }
 }
 
-/** Find the directory containing SKILL.md: check root, then walk subdirectories
- * recursively (up to 5 levels) to support nested repo layouts. Returns the
- * shallowest match so the skill name derives from the most relevant directory. */
-async function locateSkillDir(root: string): Promise<string> {
-  if (await fileExists(join(root, 'SKILL.md'))) return root
+/** Find ALL skill directories (each directly containing a SKILL.md) reachable
+ * from `root`. Priority:
+ *   1. root/SKILL.md             → the source is itself one skill
+ *   2. root/skills/<x>/SKILL.md  → a skills collection: install every skill
+ *   3. recursive scan            → any SKILL.md dirs found (junk dirs skipped)
+ * Throws InstallSkillError if none found. */
+async function locateSkillDirs(root: string): Promise<string[]> {
+  // 1. The source is itself a single skill.
+  if (await fileExists(join(root, 'SKILL.md'))) return [root]
 
-  const found = await findSkillDirRecursive(root, 0, 5)
-  if (found) return found
+  // 2. Conventional collection layout: a top-level `skills/` directory holding
+  //    one subdirectory per skill (e.g. ponytail). Install all of them.
+  const skillsContainer = join(root, 'skills')
+  if (await fileExists(skillsContainer)) {
+    const collected = await collectSkillDirs(skillsContainer, 0, 4, [])
+    if (collected.length > 0) return collected
+  }
+
+  // 3. Fallback: scan the whole tree for any SKILL.md dirs.
+  const found = await collectSkillDirs(root, 0, 5, [])
+  if (found.length > 0) return found
 
   throw new InstallSkillError(
-    'No SKILL.md found. Check that the source has a SKILL.md file at the root, or ' +
-    'specify a subdirectory: owner/repo/tree/main/path/to/skill',
+    'No SKILL.md found. The source should contain a SKILL.md (a single skill), ' +
+    'a "skills/" directory of skills, or you can point at a subdirectory: ' +
+    'owner/repo/tree/main/path/to/skill',
   )
 }
 
-/** Walk up to `maxDepth` levels looking for a SKILL.md. */
-async function findSkillDirRecursive(
+/** Collect every directory that DIRECTLY contains a SKILL.md, walking up to
+ * `maxDepth` levels. A skill dir is treated as a leaf (its nested folders are
+ * the skill's own assets, not separate skills). Hidden dirs (.git, .github,
+ * agent-config dirs like .claude-plugin) and node_modules are skipped. */
+async function collectSkillDirs(
   dir: string,
   depth: number,
   maxDepth: number,
-): Promise<string | null> {
-  if (depth >= maxDepth) return null
+  out: string[],
+): Promise<string[]> {
+  if (depth > maxDepth) return out
+  if (await fileExists(join(dir, 'SKILL.md'))) {
+    out.push(dir)
+    return out
+  }
   let entries: import('fs').Dirent[]
   try {
     entries = await readdir(dir, { withFileTypes: true })
   } catch {
-    return null
+    return out
   }
   for (const e of entries) {
     if (!e.isDirectory()) continue
-    const candidate = join(dir, e.name)
-    if (await fileExists(join(candidate, 'SKILL.md'))) return candidate
-    const deeper = await findSkillDirRecursive(candidate, depth + 1, maxDepth)
-    if (deeper) return deeper
+    if (e.name.startsWith('.') || e.name === 'node_modules') continue
+    await collectSkillDirs(join(dir, e.name), depth + 1, maxDepth, out)
   }
-  return null
+  return out
 }
 
 async function fileExists(p: string): Promise<boolean> {
@@ -186,13 +208,15 @@ async function cloneGitHub(
 }
 
 /**
- * Install a skill from the given source. Idempotency: if the target name
- * already exists, requires `overwrite: true`.
+ * Install all skills from the given source. A source may be a single skill or a
+ * collection (e.g. a repo with a `skills/` directory). Returns one entry per
+ * installed skill. Idempotency: if any target name already exists, requires
+ * `overwrite: true` — checked up front so a batch never installs partially.
  */
 export async function installSkillFromSource(
   rawSource: string,
   options: { overwrite?: boolean } = {},
-): Promise<InstalledSkill> {
+): Promise<InstalledSkill[]> {
   const source = rawSource.trim()
   if (!source) throw new InstallSkillError('No skill source provided.')
 
@@ -203,10 +227,10 @@ export async function installSkillFromSource(
   // touches ~/.rayu/skills. Cleaned up in finally.
   const staging = await mkdtemp(join(tmpdir(), 'rayu-skill-'))
   try {
-    let skillDir: string
+    let scanRoot: string
 
     if (kind.type === 'local') {
-      skillDir = await locateSkillDir(expandHome(kind.path))
+      scanRoot = expandHome(kind.path)
     } else if (kind.type === 'github') {
       const cloneDir = join(staging, 'repo')
       await cloneGitHub(kind.owner, kind.repo, cloneDir)
@@ -215,62 +239,86 @@ export async function installSkillFromSource(
       if (!resolve(root).startsWith(resolve(cloneDir))) {
         throw new InstallSkillError('Invalid subdir in GitHub source.')
       }
-      skillDir = await locateSkillDir(root)
+      scanRoot = root
     } else {
       // Direct SKILL.md URL: download into a temp skill dir.
       const dlDir = join(staging, 'dl')
       await mkdir(dlDir, { recursive: true })
       const md = await downloadText(kind.url)
       await writeFile(join(dlDir, 'SKILL.md'), md, 'utf-8')
-      skillDir = dlDir
+      scanRoot = dlDir
     }
 
-    // Validate SKILL.md parses and extract identity for the install target.
-    const skillFile = join(skillDir, 'SKILL.md')
-    let content: string
-    try {
-      content = await readFile(skillFile, { encoding: 'utf-8' })
-    } catch {
-      throw new InstallSkillError(`SKILL.md not readable at ${skillFile}.`)
-    }
-    const { frontmatter, content: markdown } = parseFrontmatter(content, skillFile)
-
-    const nameSource =
-      (frontmatter.name != null ? String(frontmatter.name) : '') ||
-      basename(skillDir)
-    const name = sanitizeSkillName(nameSource)
-    const description =
-      (frontmatter.description != null ? String(frontmatter.description) : '') ||
-      firstLine(markdown) ||
-      'Installed skill'
-
-    // Resolve the final destination inside ~/.rayu/skills and verify it
-    // cannot escape that root (defense in depth on top of sanitizeSkillName).
+    const skillDirs = await locateSkillDirs(scanRoot)
     const skillsRoot = getUserSkillsDir()
-    const dest = join(skillsRoot, name)
-    if (!resolve(dest).startsWith(resolve(skillsRoot) + sep)) {
-      throw new InstallSkillError(`Refusing to install outside ${skillsRoot}.`)
-    }
 
-    if ((await fileExists(dest)) && !options.overwrite) {
-      throw new InstallSkillError(
-        `A skill named "${name}" is already installed. Re-run with overwrite to replace it.`,
+    // Plan every install: validate SKILL.md, derive a safe name + description,
+    // resolve the destination and verify it cannot escape the skills root.
+    type Planned = {
+      skillDir: string
+      name: string
+      description: string
+      dest: string
+    }
+    const planned: Planned[] = []
+    const seenNames = new Set<string>()
+    for (const skillDir of skillDirs) {
+      const skillFile = join(skillDir, 'SKILL.md')
+      let content: string
+      try {
+        content = await readFile(skillFile, { encoding: 'utf-8' })
+      } catch {
+        throw new InstallSkillError(`SKILL.md not readable at ${skillFile}.`)
+      }
+      const { frontmatter, content: markdown } = parseFrontmatter(
+        content,
+        skillFile,
       )
+      const nameSource =
+        (frontmatter.name != null ? String(frontmatter.name) : '') ||
+        basename(skillDir)
+      const name = sanitizeSkillName(nameSource)
+      if (seenNames.has(name)) continue // de-dup within a single source
+      seenNames.add(name)
+      const description =
+        (frontmatter.description != null
+          ? String(frontmatter.description)
+          : '') ||
+        firstLine(markdown) ||
+        'Installed skill'
+      const dest = join(skillsRoot, name)
+      if (!resolve(dest).startsWith(resolve(skillsRoot) + sep)) {
+        throw new InstallSkillError(`Refusing to install outside ${skillsRoot}.`)
+      }
+      planned.push({ skillDir, name, description, dest })
     }
 
-    // Copy the skill tree into a temp sibling, then atomically swap into place.
+    // Reinstalling is always allowed: an existing skill of the same name is
+    // overwritten in place and reported back via `replaced` so the caller can
+    // tell the user. Each swap is atomic (copy to a temp sibling, then rename),
+    // so a failure never leaves a half-written skill.
     await mkdir(skillsRoot, { recursive: true, mode: 0o700 })
-    const tmpDest = join(skillsRoot, `.${name}.installing-${randomUUID()}`)
-    await cp(skillDir, tmpDest, { recursive: true })
-    await rm(dest, { recursive: true, force: true })
-    await rename(tmpDest, dest)
+    const installed: InstalledSkill[] = []
+    for (const p of planned) {
+      const replaced = await fileExists(p.dest)
+      const tmpDest = join(skillsRoot, `.${p.name}.installing-${randomUUID()}`)
+      await cp(p.skillDir, tmpDest, { recursive: true })
+      await rm(p.dest, { recursive: true, force: true })
+      await rename(tmpDest, p.dest)
+      installed.push({
+        name: p.name,
+        description: p.description,
+        path: p.dest,
+        replaced,
+      })
+    }
 
-    // Invalidate the memoized skill/command loaders so the new skill is
+    // Invalidate the memoized skill/command loaders so the new skills are
     // available immediately without restarting Rayu.
     clearSkillCaches()
     clearCommandMemoizationCaches()
 
-    return { name, description, path: dest }
+    return installed
   } finally {
     await rm(staging, { recursive: true, force: true }).catch(e => logError(e))
   }

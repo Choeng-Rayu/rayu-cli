@@ -30,12 +30,29 @@ describe('rayuFeatureAllowed', () => {
     expect(m.rayuFeatureAllowed('telegram')).toBe(true)
   })
 
-  test('flag ON + no entitlements -> fail-open (allowed)', async () => {
+  test('flag ON + signed out + no entitlements -> allowed (login gate governs)', async () => {
     process.env.USE_RAYU_OAUTH = 'true'
     const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
     m._resetRayuEntitlementsForTesting()
-    // no session in temp dir -> getCachedEntitlements stays null, no refresh
+    // no session in temp dir -> not signed in -> gating doesn't double-block
     expect(m.rayuFeatureAllowed('telegram')).toBe(true)
+  })
+
+  test('flag ON + signed in + NO entitlements -> DENIED (closes cold-start hole)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const sess = await import('../src/services/rayuAuth/rayuSession.ts')
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    sess.writeRayuSession({
+      accessToken: 'at',
+      refreshToken: 'rt',
+      expiresAt: Date.now() + 3600_000,
+      user: { id: 1, email: 'a@b.c', displayName: null, avatarUrl: null, role: 'user' },
+    })
+    m._resetRayuEntitlementsForTesting()
+    // Signed in but entitlements not yet known: a free user must NOT slip
+    // through before the first fetch. Gated features are denied.
+    expect(m.rayuFeatureAllowed('telegram')).toBe(false)
+    expect(m.rayuFeatureAllowed('image_generation')).toBe(false)
   })
 
   test('flag ON + feature disabled by admin -> blocked', async () => {

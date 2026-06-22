@@ -11,7 +11,7 @@ import {
 
 type State =
   | { status: 'installing' }
-  | { status: 'done'; skill: InstalledSkill }
+  | { status: 'done'; skills: InstalledSkill[] }
   | { status: 'error'; message: string }
 
 function InstallSkillFlow({
@@ -29,10 +29,16 @@ function InstallSkillFlow({
     let cancelled = false
     void (async () => {
       try {
-        const skill = await installSkillFromSource(source, { overwrite })
+        const skills = await installSkillFromSource(source, { overwrite })
         if (cancelled) return
-        setState({ status: 'done', skill })
-        onDone(`Installed skill "${skill.name}" → ${skill.path}`)
+        setState({ status: 'done', skills })
+        const replaced = skills.filter(s => s.replaced).map(s => s.name)
+        const fresh = skills.filter(s => !s.replaced).map(s => s.name)
+        const parts: string[] = []
+        if (fresh.length) parts.push(`installed ${fresh.join(', ')}`)
+        if (replaced.length)
+          parts.push(`overwrote already-installed ${replaced.join(', ')}`)
+        onDone(`Skill install complete — ${parts.join('; ')}.`)
       } catch (e: unknown) {
         if (cancelled) return
         const message = e instanceof Error ? e.message : String(e)
@@ -62,15 +68,32 @@ function InstallSkillFlow({
     )
   }
 
+  const { skills } = state
+  const replacedCount = skills.filter(s => s.replaced).length
   return (
     <Box flexDirection="column" paddingLeft={1}>
-      <Text color="green">Installed skill: </Text>
-      <Text bold>
-        /{state.skill.name}
+      <Text color="green">
+        Installed {skills.length} skill{skills.length === 1 ? '' : 's'}
+        {replacedCount > 0
+          ? ` (${replacedCount} already existed and ${replacedCount === 1 ? 'was' : 'were'} overwritten)`
+          : ''}
+        :
       </Text>
-      <Text dimColor>{state.skill.description}</Text>
-      <Text dimColor>Location: {state.skill.path}</Text>
-      <Text>It is available now as /{state.skill.name} or via the Skill tool.</Text>
+      {skills.map(s => (
+        <Box key={s.name} flexDirection="column" marginTop={1}>
+          <Text bold>
+            /{s.name}
+            {s.replaced ? <Text color="yellow"> (overwritten)</Text> : null}
+          </Text>
+          {s.description ? <Text dimColor>{s.description}</Text> : null}
+          <Text dimColor>Location: {s.path}</Text>
+        </Box>
+      ))}
+      <Text>
+        {skills.length === 1
+          ? `It is available now as /${skills[0]!.name} or via the Skill tool.`
+          : 'They are available now via /<name> or the Skill tool.'}
+      </Text>
     </Box>
   )
 }

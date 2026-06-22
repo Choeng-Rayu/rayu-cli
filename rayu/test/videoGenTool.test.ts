@@ -25,6 +25,24 @@ afterEach(() => {
   globalThis.fetch = realFetch
 })
 
+// These tests exercise video generation mechanics + capability (API-key) gating,
+// NOT paid-plan gating. The dev's real ~/.rayu may hold a signed-in Free account
+// (with USE_RAYU_OAUTH=true from .env), which would otherwise trip VideoGenTool's
+// soft paid-gate and make call() refuse. Turn OAuth gating off + clear cached
+// entitlements so rayuFeatureAllowed() fails open (BYOK semantics) and the gate
+// stays open regardless of the dev's login state.
+let savedUseRayuOAuth: string | undefined
+beforeEach(async () => {
+  savedUseRayuOAuth = process.env.USE_RAYU_OAUTH
+  delete process.env.USE_RAYU_OAUTH
+  const ents = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+  ents._resetRayuEntitlementsForTesting()
+})
+afterEach(() => {
+  if (savedUseRayuOAuth === undefined) delete process.env.USE_RAYU_OAUTH
+  else process.env.USE_RAYU_OAUTH = savedUseRayuOAuth
+})
+
 // Minimal valid MP4 header (ftyp box)
 const TINY_MP4 = Buffer.from([
   0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70,

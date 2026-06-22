@@ -67,4 +67,27 @@ export class UsageService {
       .map((g) => ({ tool: g.tool as string, count: g._count._all }))
       .sort((a, b) => b.count - a.count)
   }
+
+  /**
+   * Count a user's usage_events for the given tool names since the start of the
+   * current UTC calendar month (resets on the 1st). Drives per-feature monthly
+   * limit enforcement (e.g. image generation = 10/month). Empty toolNames -> 0.
+   */
+  async featureUsageThisMonth(
+    userId: number,
+    toolNames: string[],
+  ): Promise<number> {
+    if (toolNames.length === 0) return 0
+    const now = new Date()
+    const monthStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+    )
+    return this.prisma.usageEvent.count({
+      where: {
+        userId,
+        tool: { in: toolNames },
+        createdAt: { gte: monthStart },
+      },
+    })
+  }
 }
