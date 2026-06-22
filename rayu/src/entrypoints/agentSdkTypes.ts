@@ -20,6 +20,10 @@ export type {
   SDKControlRequest,
   SDKControlResponse,
 } from './sdk/controlTypes.js'
+// Re-export the full set of reconstructed control/protocol/hook/status types
+// (absent from the leaked source) so consumers importing them from this barrel
+// resolve. Type-only; erased at build.
+export * from './sdk/controlTypes.js'
 // Re-export core types (common serializable types)
 export * from './sdk/coreTypes.js'
 // Re-export runtime types (callbacks, interfaces with methods)

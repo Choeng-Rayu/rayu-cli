@@ -60,3 +60,13 @@ export const EXIT_REASONS = [
   'other',
   'bypass_permissions_disabled',
 ] as const
+
+// --- Reconstructed core SDK message types (absent from the leaked source) ---
+// Type-only, erased at build; reconstructed permissively. Imported by
+// agentSdkTypes.ts and re-exported to consumers.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type SDKMessage = any
+export type SDKResultMessage = any
+export type SDKResultSuccess = any
+export type SDKSessionInfo = any
+export type SDKUserMessage = any

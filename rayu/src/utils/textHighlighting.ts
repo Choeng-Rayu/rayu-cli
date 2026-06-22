@@ -127,15 +127,19 @@ class HighlightSegmenter {
         this.stringPos += token.code.length
         this.tokenIdx++
       } else {
+        // Non-ANSI token is a Char, which carries the visible text in `value`.
+        // The library's Token union isn't narrowed by `type` here, so assert the
+        // value-bearing shape (safe: the else branch is always a Char at runtime).
+        const charValue = (token as { value: string }).value
         const charsNeeded = targetVisiblePos - this.visiblePos
-        const charsAvailable = token.value.length - this.charIdx
+        const charsAvailable = charValue.length - this.charIdx
         const charsToTake = Math.min(charsNeeded, charsAvailable)
 
         this.stringPos += charsToTake
         this.visiblePos += charsToTake
         this.charIdx += charsToTake
 
-        if (this.charIdx >= token.value.length) {
+        if (this.charIdx >= charValue.length) {
           this.tokenIdx++
           this.charIdx = 0
         }

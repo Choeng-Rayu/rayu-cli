@@ -36,10 +36,21 @@ export const DOUBLEWORD_MODELS: readonly string[] = [
   'zai-org/GLM-5.1-FP8',
 ]
 
+// Fugu (Sakana AI · api.sakana.ai) exposes the OpenAI-style `GET /v1/models`,
+// but it requires the API key and the live catalog can be sparse, so this
+// curated list guarantees both shipped models stay selectable in the /model
+// picker (merged + deduped with the live fetch). Source: Sakana console
+// (https://console.sakana.ai/get-started, /models, /pricing):
+//   • fugu       — default model; routes across the supported provider pool.
+//   • fugu-ultra — premium model (dated alias: fugu-ultra-20260615).
+// Both ship a 1M-token context window (see KNOWN_MODEL_CONTEXT in rayuConfig.ts).
+export const FUGU_MODELS: readonly string[] = ['fugu', 'fugu-ultra']
+
 /**
  * Provider ids that ship a curated model catalog, merged with (and used as a
  * fallback for) the live `GET {baseURL}/models` fetch. Keyed by config provider id.
  */
 export const CURATED_PROVIDER_MODELS: Record<string, readonly string[]> = {
   doubleword: DOUBLEWORD_MODELS,
+  fugu: FUGU_MODELS,
 }
