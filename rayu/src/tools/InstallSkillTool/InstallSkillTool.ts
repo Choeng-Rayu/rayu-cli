@@ -20,8 +20,11 @@ The "source" can be:
 - a direct URL to a SKILL.md file
 - a local directory path containing a SKILL.md
 
+If the source is a collection — a repo with a "skills/" directory, or any tree
+containing multiple SKILL.md files — every skill it contains is installed.
+
 Skills are installed into the Rayu user skills directory (~/.rayu/skills/<name>/).
-Set "overwrite" to true to replace a skill that is already installed.`
+Reinstalling overwrites an existing skill of the same name and reports it as replaced.`
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -42,9 +45,14 @@ export type Input = z.infer<InputSchema>
 
 const outputSchema = lazySchema(() =>
   z.object({
-    name: z.string(),
-    description: z.string(),
-    path: z.string(),
+    skills: z.array(
+      z.object({
+        name: z.string(),
+        description: z.string(),
+        path: z.string(),
+        replaced: z.boolean(),
+      }),
+    ),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -99,16 +107,35 @@ export const InstallSkillTool = buildTool({
     }
   },
   async call(input, _context: ToolUseContext) {
-    const skill: InstalledSkill = await installSkillFromSource(input.source, {
+    const skills: InstalledSkill[] = await installSkillFromSource(input.source, {
       overwrite: input.overwrite,
     })
-    return { data: skill }
+    return { data: { skills } }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
+    const replaced = output.skills.filter(s => s.replaced)
+    const header =
+      output.skills.length === 1
+        ? `Installed skill "${output.skills[0]!.name}"${
+            output.skills[0]!.replaced
+              ? ' (a skill of the same name already existed and was overwritten)'
+              : ''
+          }.`
+        : `Installed ${output.skills.length} skills` +
+          (replaced.length
+            ? ` (${replaced.length} already existed and ${
+                replaced.length === 1 ? 'was' : 'were'
+              } overwritten: ${replaced.map(s => s.name).join(', ')})`
+            : '') +
+          '.'
+    const lines = output.skills.map(
+      s =>
+        `- /${s.name}${s.replaced ? ' [overwritten]' : ''} (${s.path}): ${s.description}`,
+    )
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: `Installed skill "${output.name}" into ${output.path}. It is now invocable as /${output.name} or via the Skill tool.\nDescription: ${output.description}`,
+      content: `${header} Each is now invocable as /<name> or via the Skill tool.\n${lines.join('\n')}`,
     }
   },
 } satisfies ToolDef<InputSchema, Output>)

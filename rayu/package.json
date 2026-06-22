@@ -1,6 +1,6 @@
 {
   "name": "@rayu-dev/rayu-cli",
-"version": "1.3.440",
+"version": "1.3.441",
   "description": "Rayu-CLI — a multi-provider AI coding CLI",
   "type": "module",
   "bin": {
@@ -23,6 +23,8 @@
     "build:packages": "bun run scripts/build-packages.ts",
     "package": "bun run scripts/build-binaries.ts",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "typecheck:ci": "bun run scripts/typecheck-baseline.ts",
+    "typecheck:update": "bun run scripts/typecheck-baseline.ts --update",
     "test": "bun test"
   },
   "engines": {

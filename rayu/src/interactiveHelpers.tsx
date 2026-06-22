@@ -22,6 +22,8 @@ import { checkHasTrustDialogAccepted, getGlobalConfig, saveGlobalConfig } from '
 import { updateDeepLinkTerminalPreference } from './utils/deepLink/terminalPreference.js';
 import { isEnvTruthy } from './utils/envUtils.js';
 import { type FpsMetrics, FpsTracker } from './utils/fpsTracker.js';
+import { setMemProbeFpsTracker, startMemProbeIfEnabled } from './utils/memProbe.js';
+import { startInteractiveHeapDumpMonitor } from './utils/interactiveHeapDumpMonitor.js';
 import { updateGithubRepoPathMapping } from './utils/githubRepoPathMapping.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import type { PermissionMode } from './utils/permissions/PermissionMode.js';
@@ -288,6 +290,16 @@ export function getRenderContext(exitOnCtrlC: boolean): {
   const fpsTracker = new FpsTracker();
   const stats = createStatsStore();
   setStatsStore(stats);
+
+  // Env-gated memory-growth probe (RAYU_MEM_PROBE). No-op unless the env var
+  // is set; surfaces which accumulator climbs during long interactive sessions.
+  setMemProbeFpsTracker(fpsTracker);
+  startMemProbeIfEnabled();
+
+  // Graceful-degradation guardrail: auto-capture one heap snapshot if the heap
+  // crosses 1.5GB (well below the ~2GB crash ceiling), so a future slow leak
+  // self-diagnoses instead of hard-crashing. Opt out with RAYU_AUTO_HEAPDUMP=0.
+  startInteractiveHeapDumpMonitor();
 
   // Bench mode: when set, append per-frame phase timings as JSONL for
   // offline analysis by bench/repl-scroll.ts. Captures the full TUI

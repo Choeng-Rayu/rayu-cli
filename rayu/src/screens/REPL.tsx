@@ -176,6 +176,8 @@ import type { ProcessUserInputContext } from '../utils/processUserInput/processU
 import type { PastedContent } from '../utils/config.js';
 import { copyPlanForFork, copyPlanForResume, getPlanSlug, setPlanSlug } from '../utils/plans.js';
 import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile, removeTranscriptMessage, restoreSessionMetadata, getCurrentSessionTitle, isEphemeralToolProgress, isLoggableMessage, saveWorktreeState, getAgentTranscript } from '../utils/sessionStorage.js';
+import { coalesceEphemeralProgressMessages } from '../utils/progressCoalescing.js';
+import { isMemProbeEnabled, reportMemProbeValue } from '../utils/memProbe.js';
 import { deserializeMessages } from '../utils/conversationRecovery.js';
 import { extractReadFilesFromMessages, extractBashToolsFromMessages } from '../utils/queryHelpers.js';
 import { resetMicrocompactState } from '../services/compact/microCompact.js';
@@ -2625,14 +2627,17 @@ export function REPL({
         // — each carries distinct state the UI needs (e.g. subagent tool
         // history). Replacing those leaves the AgentTool UI stuck at
         // "Initializing…" because it renders the full progress trail.
+        // coalesceEphemeralProgressMessages enforces "at most one tick per
+        // (tool, type)" even when other messages interleave between ticks
+        // (concurrent tool streams / proactive ticks) — the at(-1)-only check
+        // used previously leaked unbounded under interleaving (heap OOM).
         setMessages(oldMessages => {
-          const last = oldMessages.at(-1);
-          if (last?.type === 'progress' && last.parentToolUseID === newMessage.parentToolUseID && last.data.type === newMessage.data.type) {
-            const copy = oldMessages.slice();
-            copy[copy.length - 1] = newMessage;
-            return copy;
+          const next = coalesceEphemeralProgressMessages(oldMessages, newMessage);
+          if (isMemProbeEnabled()) {
+            reportMemProbeValue('messages', next.length);
+            reportMemProbeValue('ephemeralProgress', next.reduce((n, m) => n + (m.type === 'progress' ? 1 : 0), 0));
           }
-          return [...oldMessages, newMessage];
+          return next;
         });
       } else {
         setMessages(oldMessages => [...oldMessages, newMessage]);
