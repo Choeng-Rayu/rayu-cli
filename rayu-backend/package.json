@@ -18,6 +18,7 @@
     "migrate:deploy": "prisma migrate deploy",
     "db:push": "prisma db push",
     "seed": "ts-node src/seed.ts",
+    "telegram:login": "ts-node scripts/telegram-login.ts",
     "test": "jest --config jest.config.json",
     "test:e2e": "prisma generate && jest --config test/jest-e2e.json"
   },
@@ -34,7 +35,8 @@
     "class-validator": "^0.14.1",
     "prisma": "^6.1.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "telegram": "^2.26.22"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",

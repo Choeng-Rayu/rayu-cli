@@ -22,12 +22,12 @@ export class PaymentsController {
 
   @Post('khqr')
   createKhqr(@CurrentUser() user: User, @Body() body: CreateKhqrDto) {
-    return this.payments.createKhqr(user.id, body.planCode)
+    return this.payments.createKhqr(user.id, body.planCode, body.method)
   }
 
   @Post('topup-khqr')
   createTopupKhqr(@CurrentUser() user: User, @Body() body: CreateTopupDto) {
-    return this.payments.createTopupKhqr(user.id, body.credits)
+    return this.payments.createTopupKhqr(user.id, body.credits, body.method)
   }
 
   @Get('mine')

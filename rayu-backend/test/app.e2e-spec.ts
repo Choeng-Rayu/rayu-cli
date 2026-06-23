@@ -52,7 +52,7 @@ describe('rayu-backend (e2e)', () => {
     const ok = await request(app.getHttpServer())
       .post('/api/payments/khqr')
       .set('Authorization', `Bearer ${access}`)
-      .send({ planCode: 'pro' })
+      .send({ planCode: 'pro', method: 'bakong' })
     expect(ok.status).toBe(201)
     expect(ok.body.planCode).toBe('pro')
     expect(ok.body.amountCents).toBe(1000)
@@ -806,7 +806,7 @@ describe('rayu-backend (e2e)', () => {
     // Purchase the active 'basic' plan via (mocked) Bakong KHQR.
     const khqr = await auth(
       request(app.getHttpServer()).post('/api/payments/khqr'),
-    ).send({ planCode: 'basic' })
+    ).send({ planCode: 'basic', method: 'bakong' })
     expect(khqr.status).toBe(201)
     expect(khqr.body.qr).toContain('TESTQR-')
 
@@ -872,7 +872,7 @@ describe('rayu-backend (e2e)', () => {
 
     const khqr = await auth(
       request(app.getHttpServer()).post('/api/payments/topup-khqr'),
-    ).send({ credits: 5000 })
+    ).send({ credits: 5000, method: 'bakong' })
     expect(khqr.status).toBe(201)
     expect(khqr.body.amountCents).toBe(500)
     expect(khqr.body.qr).toContain('TESTQR-')
