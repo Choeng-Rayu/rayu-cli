@@ -39,6 +39,9 @@ type Options = {
 
 const CARRIAGE_RETURN = { type: 'carriageReturn' } as const
 const NEWLINE = { type: 'stdout', content: '\n' } as const
+// CSI 0 K — erase from the cursor to the end of the line (cursor unchanged).
+// Used by the main-screen drift guard to clear stale trailing cells.
+const ERASE_TO_LINE_END = '\u001b[0K'
 
 export class LogUpdate {
   private state: State
@@ -305,6 +308,12 @@ export class LogUpdate {
     // First pass: render changes to existing rows (rows < prev.screen.height)
     let needsFullReset = false
     let resetTriggerY = -1
+    // Existing rows we actually rewrote this frame. After the diff we clear
+    // each one's stale trailing cells (see the drift guard below): the sparse
+    // diff skips cells it believes are unchanged, but after a live-region
+    // reorganization the physical terminal can still hold leftover glyphs on a
+    // row the model now treats as blank past its content — the ghost defect.
+    const modifiedRows = new Set<number>()
     diffEach(prev.screen, next.screen, (x, y, removed, added) => {
       // Skip new rows - we'll render them directly after
       if (growing && y >= prev.screen.height) {
@@ -349,6 +358,7 @@ export class LogUpdate {
       }
 
       moveCursorTo(screen, x, y)
+      modifiedRows.add(y)
 
       if (added) {
         const targetHyperlink = added.hyperlink
@@ -387,7 +397,11 @@ export class LogUpdate {
       })
     }
 
-    // Reset styles before rendering new rows (they'll set their own styles)
+    // Reset styles before rendering new rows (they'll set their own styles).
+    // This also runs *before* the drift-guard erase below, so its CSI 0K is
+    // emitted with default SGR and cannot paint the cleared cells with a
+    // leftover background color (BCE) — mirroring how the removed-cell branch
+    // resets style before writing its clearing space.
     currentStyleId = transitionStyle(
       screen.diff,
       stylePool,
@@ -399,6 +413,63 @@ export class LogUpdate {
       currentHyperlink,
       undefined,
     )
+
+    // In-place row shrinks are invisible to the damage-scoped diff: when a live
+    // row's content gets shorter (e.g. a bash status line "… · Thinking" → "…"),
+    // the vacated trailing cells are never WRITTEN this frame, so screen.damage
+    // (which only covers written cells) excludes them, diffEach never visits
+    // them, and the row never enters modifiedRows — the leftover survives as the
+    // ghost ('T'). prev.screen is the model of what is physically on the
+    // terminal, so a row whose prev content-end exceeds its next content-end has
+    // stale trailing cells; mark it modified so the drift guard below erases
+    // them with the SAME cursor-accurate path the diff uses. We only add rows
+    // that genuinely shrank (never stable or growing rows), so the cursor stays
+    // near rows the live region actually touched — unlike erasing every row,
+    // which jumps the cursor to untouched rows and can mis-position the erase.
+    if (!altScreen && prev.screen.height > 0) {
+      const w = next.screen.width
+      const lastExistingRow = Math.min(prev.screen.height, next.screen.height)
+      for (let y = Math.max(0, viewportY); y < lastExistingRow; y++) {
+        if (
+          !modifiedRows.has(y) &&
+          rowContentEnd(prev.screen, y, w) > rowContentEnd(next.screen, y, w)
+        ) {
+          modifiedRows.add(y)
+        }
+      }
+    }
+
+    // Drift guard (main screen): clear stale trailing cells on every existing
+    // row we rewrote. The incremental diff only compares same-row prev↔next and
+    // skips cells it believes are unchanged. After a live-region reorganization
+    // (e.g. a status/"thinking" line replaced by a different block) the model's
+    // prev for a row no longer matches what is physically on that terminal row,
+    // so leftover glyphs past the new content are never cleared — the ghost.
+    // Erasing to end-of-line (CSI 0K) at each rewritten row's content-end
+    // removes them. This only ever touches cells the NEXT model considers empty,
+    // so it cannot erase intended content; it emits no trailing spaces (no
+    // edge-wrap) and never touches scrollback. Alt-screen re-anchors via CSI H
+    // every frame and is left unchanged. Runs before the growth pass below;
+    // renderFrameSlice advances the cursor with a relative LF count from
+    // wherever it is, so moving the cursor here is safe.
+    if (!altScreen && modifiedRows.size > 0) {
+      const w = next.screen.width
+      for (const y of modifiedRows) {
+        if (y < viewportY || y >= next.screen.height) continue
+        let end = -1
+        for (let x = w - 1; x >= 0; x--) {
+          if (!isEmptyCellAt(next.screen, x, y)) {
+            end = x
+            break
+          }
+        }
+        const clearFrom = end + 1
+        if (clearFrom < w) {
+          moveCursorTo(screen, clearFrom, y)
+          screen.diff.push({ type: 'stdout', content: ERASE_TO_LINE_END })
+        }
+      }
+    }
 
     // Handle growth: render new rows directly (they naturally scroll the terminal)
     if (growing) {
@@ -498,6 +569,21 @@ function readLine(screen: Screen, y: number): string {
     line += charInCellAt(screen, x, y) ?? ' '
   }
   return line.trimEnd()
+}
+
+/**
+ * Column index of the last non-empty cell on row `y`, or -1 if blank. Scans
+ * from the right so blank/short rows return quickly. Used to detect in-place
+ * row shrinks (prev content extends past next content) that the damage-scoped
+ * diff misses because the vacated cells were never written this frame.
+ */
+function rowContentEnd(screen: Screen, y: number, width: number): number {
+  for (let x = width - 1; x >= 0; x--) {
+    if (!isEmptyCellAt(screen, x, y)) {
+      return x
+    }
+  }
+  return -1
 }
 
 function fullResetSequence_CAUSES_FLICKER(

@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle';
-import { loadDotEnv } from '../utils/envUtils.js';
+import { loadDotEnv, isEnvTruthy } from '../utils/envUtils.js';
 
 // Load .env variables before anything else runs
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
@@ -10,14 +10,10 @@ loadDotEnv();
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';
 
 
-// Set max heap size for child processes in CCR environments (containers have 16GB)
-// eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level, custom-rules/safe-env-boolean-check
-if (process.env.CLAUDE_CODE_REMOTE === 'true') {
-  // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
-  const existing = process.env.NODE_OPTIONS || '';
-  // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
-  process.env.NODE_OPTIONS = existing ? `${existing} --max-old-space-size=8192` : '--max-old-space-size=8192';
-}
+// V8's --max-old-space-size only applies at startup; mutating process.env.NODE_OPTIONS
+// here (as this block used to, gated on CLAUDE_CODE_REMOTE) is inert for the running
+// process. The effective, RAM-aware heap limit is applied via a guarded one-time
+// re-exec in main() — see maybeReexecForHeapLimit() / src/utils/heapLimitReexec.ts.
 
 // Harness-science L0 ablation baseline. Inlined here (not init.ts) because
 // BashTool/AgentTool/PowerShellTool capture DISABLE_BACKGROUND_TASKS into
@@ -46,6 +42,33 @@ async function main(): Promise<void> {
     console.log(`${MACRO.VERSION} (Rayu-CLI)`);
     return;
   }
+
+  // Set the process name so the OS/terminal shows "rayu" instead of the full
+  // "node …/bin/rayu" command in the title bar and process list. Set BEFORE
+  // the heap re-exec below: maybeReexecForHeapLimit() spawns a child and never
+  // returns in the parent, so the parent — the process the shell/terminal
+  // tracks directly — must be named here too, not only the re-exec'd child
+  // (which re-runs this same entry and sets it again). The Commander preAction
+  // hook also sets this, but doesn't run on the interactive default-command
+  // path. Honors CLAUDE_CODE_DISABLE_TERMINAL_TITLE.
+  if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE)) {
+    try {
+      process.title = 'rayu';
+    } catch {
+      // process.title can throw on exotic platforms; non-fatal.
+    }
+  }
+
+  // Apply the effective, RAM-aware V8 heap limit before any heavy module
+  // evaluation. For interactive (TTY) / remote sessions this re-execs the
+  // process ONCE with a computed --max-old-space-size and forwards the child's
+  // exit status (so the call below never returns in the parent). No-op for
+  // one-shot/headless runs, under Bun, when a flag is already set, or after the
+  // re-exec sentinel is present. See src/utils/heapLimitReexec.ts.
+  const { maybeReexecForHeapLimit } = await import(
+    '../utils/heapLimitReexec.js'
+  );
+  maybeReexecForHeapLimit();
 
   // For all other paths, load the startup profiler
   const {

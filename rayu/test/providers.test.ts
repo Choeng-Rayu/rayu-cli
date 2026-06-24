@@ -35,6 +35,85 @@ describe('provider presets', () => {
     expect(byId['doubleword'].baseURL).toBe('https://api.doubleword.ai/v1')
   })
 
+  test('registry includes the first-party Anthropic Console (native) provider', async () => {
+    const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
+    const anthropic = PROVIDER_PRESETS.find(p => p.id === 'anthropic')
+    // kind:'anthropic' routes through getAnthropicClient() (the native
+    // Anthropic Messages API) → native extended thinking + full context window.
+    expect(anthropic?.kind).toBe('anthropic')
+    // First-party endpoint: no baseURL (the Anthropic SDK default api.anthropic.com).
+    expect(anthropic?.baseURL).toBeUndefined()
+    expect(anthropic?.envKeys).toContain('ANTHROPIC_API_KEY')
+    expect(anthropic?.defaultModel).toBe('claude-sonnet-4-6')
+    expect(anthropic?.smallFastModel).toBe('claude-haiku-4-5-20251001')
+    // Surfaced first in /connect (the flagship native provider).
+    expect(PROVIDER_PRESETS[0]?.id).toBe('anthropic')
+  })
+
+  test('an active anthropic provider routes to the native (non-OpenAI) API path', async () => {
+    const cfg = await fresh()
+    const providers = await import('../src/utils/model/providers.ts')
+    cfg.upsertProvider(
+      {
+        id: 'anthropic',
+        kind: 'anthropic',
+        apiKey: 'sk-ant-test',
+        defaultModel: 'claude-sonnet-4-6',
+      },
+      true,
+    )
+    expect(cfg.getActiveProvider()?.kind).toBe('anthropic')
+    expect(providers.getAPIProvider()).toBe('anthropic')
+    expect(providers.isOpenAICompatibleActive()).toBe(false)
+    expect(providers.isRayuNonAnthropicActive()).toBe(false)
+  })
+
+  test('registry includes GLM (Z.ai) and MiniMax as openai-compatible providers', async () => {
+    const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
+    const glm = PROVIDER_PRESETS.find(p => p.id === 'glm')
+    expect(glm?.kind).toBe('openai-compatible')
+    expect(glm?.baseURL).toBe('https://api.z.ai/api/paas/v4')
+    expect(glm?.defaultModel).toBe('glm-5.2')
+    expect(glm?.smallFastModel).toBe('glm-4.5-air')
+    expect(glm?.envKeys).toEqual(expect.arrayContaining(['ZAI_API_KEY', 'GLM_API_KEY']))
+
+    const mm = PROVIDER_PRESETS.find(p => p.id === 'minimax')
+    expect(mm?.kind).toBe('openai-compatible')
+    expect(mm?.baseURL).toBe('https://api.minimax.io/v1')
+    expect(mm?.defaultModel).toBe('MiniMax-M2')
+    expect(mm?.envKeys).toContain('MINIMAX_API_KEY')
+
+    // Curated catalogs keep the full lineup selectable in /model even when the
+    // provider's /models endpoint isn't usable (merged with the live fetch).
+    const { CURATED_PROVIDER_MODELS } = await import('../src/utils/curatedProviderModels.ts')
+    expect(CURATED_PROVIDER_MODELS.glm).toEqual(expect.arrayContaining(['glm-4.6', 'glm-4.5-air']))
+    expect(CURATED_PROVIDER_MODELS.minimax).toEqual(
+      expect.arrayContaining(['MiniMax-M3', 'MiniMax-M2']),
+    )
+  })
+
+  test('GLM and MiniMax resolve native per-model context windows', async () => {
+    const cfg = await fresh()
+    // GLM-5.2 = 1M (flagship); GLM-4.6/4.7/5.x = 200K; GLM-4.5 family = 128K.
+    cfg.upsertProvider(
+      { id: 'glm', kind: 'openai-compatible', apiKey: 'k', baseURL: 'https://api.z.ai/api/paas/v4' },
+      true,
+    )
+    expect(cfg.getRayuModelContextWindow('glm-5.2')).toBe(1_000_000)
+    expect(cfg.getRayuModelContextWindow('glm-4.6')).toBe(200_000)
+    expect(cfg.getRayuModelContextWindow('glm-5.1')).toBe(200_000)
+    expect(cfg.getRayuModelContextWindow('glm-4.5')).toBe(131_072)
+    expect(cfg.getRayuModelContextWindow('glm-4.5-air')).toBe(131_072)
+    // MiniMax-M3 = 1M; M2 / M2.x = 204,800 (the generic /minimax/ → 1M bug is fixed).
+    cfg.upsertProvider(
+      { id: 'minimax', kind: 'openai-compatible', apiKey: 'k', baseURL: 'https://api.minimax.io/v1' },
+      true,
+    )
+    expect(cfg.getRayuModelContextWindow('MiniMax-M3')).toBe(1_000_000)
+    expect(cfg.getRayuModelContextWindow('MiniMax-M2')).toBe(204_800)
+    expect(cfg.getRayuModelContextWindow('MiniMax-M2.5-highspeed')).toBe(204_800)
+  })
+
   test('registry includes Hugging Face Inference Providers (openai-compatible router)', async () => {
     const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
     const hf = PROVIDER_PRESETS.find(p => p.id === 'huggingface')

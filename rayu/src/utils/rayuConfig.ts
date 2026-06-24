@@ -429,7 +429,8 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/gemini[-.]?(1\.5|2|2\.5|3)/i, 1_048_576],
   [/gemini/i, 1_048_576],
   [/deepseek[-/]?v4[-/]?(flash|pro)/i, 1_000_000],
-  [/minimax/i, 1_000_000],
+  [/minimax[-_.]?m3/i, 1_000_000],                            // MiniMax-M3 (1M agentic/long-context)
+  [/glm-5\.2/i, 1_000_000],                                   // GLM-5.2 (1M context — up from GLM-5.1's 200K)
   [/fugu/i, 1_000_000],                                       // Sakana AI Fugu / Fugu Ultra (1M)
   // 256k
   [/kimi-k1|kimi.*long/i, 200_000],                           // Kimi K1.5 long-context
@@ -443,6 +444,7 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/step[-_.]?3\.7/i, 256_000],
   // Anthropic Claude served via Copilot / OpenRouter / etc. — 200k standard.
   [/claude/i, 200_000],
+  [/minimax/i, 204_800],                                       // MiniMax-M2 / M2.x (204,800)
   // 131k / 128k families
   [/deepseek-(chat|reasoner|v3|coder)/i, 131_072],
   [/deepseek-r1/i, 131_072],
@@ -450,7 +452,9 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/qwen[-_.]?[23]|qwq/i, 131_072],
   [/gemma-[234]/i, 131_072],
   [/mixtral|mistral|ministral|codestral|devstral/i, 131_072],
-  [/glm-[45]/i, 131_072],
+  [/glm-(4\.[56]v|5v)/i, 65_536],                              // GLM vision models (GLM-4.5V / 4.6V / 5V — 64K, conservative)
+  [/glm-4\.[67]|glm-5/i, 200_000],                             // GLM-4.6 / 4.7 / 5 / 5.1 / 5-turbo (200K context)
+  [/glm-4/i, 131_072],                                         // GLM-4.5 / 4.5-Air / 4-32B (128K)
   [/gpt-oss/i, 131_072],
   [/phi-[34]/i, 131_072],
   [/command-r|c4ai/i, 131_072],

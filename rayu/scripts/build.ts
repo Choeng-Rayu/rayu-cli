@@ -5,6 +5,13 @@ import { resolve } from 'path'
 import { MACRO_VALUES, ENABLED_FEATURES } from './macroValues.ts'
 
 const define: Record<string, string> = {
+  // Force the production builds of React / react-reconciler. Without this, Bun
+  // resolves react-reconciler's index.js NODE_ENV conditional to the DEVELOPMENT
+  // build, which emits performance.measure() on every commit. Node's User Timing
+  // buffer is never cleared, so a long interactive session accumulates millions
+  // of PerformanceMeasure entries and OOMs at the ~2.35GB old-space ceiling. The
+  // production reconciler makes zero such calls. (interactive-session heap OOM fix)
+  'process.env.NODE_ENV': JSON.stringify('production'),
   'process.env.USER_TYPE': JSON.stringify(process.env.USER_TYPE ?? 'external'),
   // Git commit co-author email; sourced from .env (Bun auto-loads it) and baked
   // in at build time. Falls back to a neutral placeholder.
