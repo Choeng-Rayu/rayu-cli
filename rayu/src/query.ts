@@ -12,6 +12,7 @@ import {
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
 import { buildPostCompactMessages } from './services/compact/compact.js'
+import { isUserAbortRenderedMessage } from './query/interruptMessage.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const reactiveCompact = feature('REACTIVE_COMPACT')
   ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
@@ -1062,7 +1063,16 @@ async function* queryLoop(
       // user message that follows provides sufficient context. Also skip for
       // system aborts (timeout/sibling-error) — those aren't a user action,
       // so showing "Interrupted · What should Rayu do instead?" is misleading.
-      if (abortReason !== 'interrupt' && userInitiated) {
+      //
+      // Also skip when the model stream was aborted mid-request: the streaming
+      // layer already yielded a synthetic assistant message whose content is
+      // ERROR_MESSAGE_USER_ABORT, which AssistantTextMessage renders as the
+      // SAME "Interrupted · What should Rayu do instead?" line. Emitting the
+      // user interruption message too produces two identical lines (the
+      // duplicate seen when pressing Esc early, during the API request).
+      const lastAssistant = assistantMessages.at(-1)
+      const abortAlreadyRendered = isUserAbortRenderedMessage(lastAssistant)
+      if (abortReason !== 'interrupt' && userInitiated && !abortAlreadyRendered) {
         yield createUserInterruptionMessage({
           toolUse: false,
         })

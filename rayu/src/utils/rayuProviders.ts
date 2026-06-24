@@ -156,6 +156,22 @@ export const RAYU_HOSTED_PROVIDER_LABEL = 'Rayu (hosted)'
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
+    // First-party Anthropic API (the Console — console.anthropic.com). Uses the
+    // native Anthropic Messages API via getAnthropicClient() (kind:'anthropic'
+    // → getAPIProvider() === 'anthropic'), the SAME path the app uses for
+    // first-party Claude. That means extended THINKING and the full CONTEXT
+    // window (incl. the 1M-token context beta) are supported NATIVELY — not
+    // emulated through the OpenAI-compatible adapter. Authenticated with a
+    // Console API key (sk-ant-…) sent as x-api-key directly to
+    // api.anthropic.com. No baseURL: first-party endpoint is the SDK default.
+    id: 'anthropic',
+    label: 'Anthropic — Claude (console.anthropic.com API key) · native thinking + context',
+    kind: 'anthropic',
+    defaultModel: 'claude-sonnet-4-6',
+    smallFastModel: 'claude-haiku-4-5-20251001',
+    envKeys: ['ANTHROPIC_API_KEY'],
+  },
+  {
     id: 'nvidia',
     label: 'NVIDIA NIM (integrate.api.nvidia.com)',
     kind: 'openai-compatible',
@@ -181,6 +197,44 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModel: 'deepseek-chat',
     smallFastModel: 'deepseek-v4-flash',
     envKeys: ['DEEPSEEK_API_KEY'],
+  },
+  {
+    // Z.ai — GLM family (Zhipu AI). OpenAI-compatible Chat Completions at
+    // https://api.z.ai/api/paas/v4/chat/completions, authenticated with a Bearer
+    // API key. GLM-5.2 is the current flagship coding/agent model with a 1M-token
+    // context window; GLM-4.6 is 200K; GLM-4.5 / 4.5-Air are 128K. Thinking is
+    // NATIVE: GLM-4.5+ emit chain-of-thought in the `reasoning_content` field,
+    // which the OpenAI adapter surfaces as a thinking block. Z.ai has NO
+    // OpenAI-style `GET /models`, so the full lineup comes from the curated
+    // catalog in curatedProviderModels.ts (merged with any live fetch). Per-model
+    // context windows live in KNOWN_MODEL_CONTEXT (rayuConfig.ts). Docs:
+    // https://docs.z.ai/api-reference/llm/chat-completion
+    id: 'glm',
+    label: 'GLM — Z.ai (api.z.ai) · GLM-5.2 1M ctx / GLM-4.6 200K · native thinking',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.z.ai/api/paas/v4',
+    defaultModel: 'glm-5.2',
+    smallFastModel: 'glm-4.5-air',
+    envKeys: ['ZAI_API_KEY', 'ZHIPUAI_API_KEY', 'GLM_API_KEY'],
+  },
+  {
+    // MiniMax — M-series language models. OpenAI-compatible Chat Completions at
+    // https://api.minimax.io/v1/chat/completions (Bearer MINIMAX_API_KEY).
+    // MiniMax-M3 is the frontier coding/agent model with a 1M-token context;
+    // MiniMax-M2 / M2.x are 204,800. Thinking is NATIVE and ON by default
+    // (M2.x always think; M3 thinks unless disabled): reasoning is returned
+    // either as `reasoning_content` (reasoning_split) or inline <think>…</think>
+    // at the start of the message — the OpenAI adapter surfaces BOTH as a
+    // thinking block (processInlineThink). Per-model context lives in
+    // KNOWN_MODEL_CONTEXT (rayuConfig.ts). Docs:
+    // https://platform.minimax.io/docs/api-reference/text-openai-api
+    id: 'minimax',
+    label: 'MiniMax (api.minimax.io) · M3 1M ctx / M2 reasoning · native thinking',
+    kind: 'openai-compatible',
+    baseURL: 'https://api.minimax.io/v1',
+    defaultModel: 'MiniMax-M2',
+    smallFastModel: 'MiniMax-M2',
+    envKeys: ['MINIMAX_API_KEY'],
   },
   {
     id: 'kimi-moonshot',
@@ -489,6 +543,8 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   nvidia: 'NVIDIA',
   doubleword: 'Doubleword',
   deepseek: 'DeepSeek',
+  glm: 'GLM',
+  minimax: 'MiniMax',
   'kimi-moonshot': 'Kimi',
   'kimi-for-code': 'Kimi for Code',
   fugu: 'Fugu',

@@ -24,6 +24,7 @@ import { isEnvTruthy } from './utils/envUtils.js';
 import { type FpsMetrics, FpsTracker } from './utils/fpsTracker.js';
 import { setMemProbeFpsTracker, startMemProbeIfEnabled } from './utils/memProbe.js';
 import { startInteractiveHeapDumpMonitor } from './utils/interactiveHeapDumpMonitor.js';
+import { startMemoryPressureGuard } from './utils/memoryPressureGuard.js';
 import { updateGithubRepoPathMapping } from './utils/githubRepoPathMapping.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import type { PermissionMode } from './utils/permissions/PermissionMode.js';
@@ -300,6 +301,11 @@ export function getRenderContext(exitOnCtrlC: boolean): {
   // crosses 1.5GB (well below the ~2GB crash ceiling), so a future slow leak
   // self-diagnoses instead of hard-crashing. Opt out with RAYU_AUTO_HEAPDUMP=0.
   startInteractiveHeapDumpMonitor();
+
+  // Memory-pressure guardrail: periodically clears Node's User Timing buffer
+  // (the perf-measure leak class) and, at ~80% of the heap limit, runs cleanup
+  // + GC to degrade gracefully instead of OOM-crashing. Opt out RAYU_MEM_GUARD=0.
+  startMemoryPressureGuard();
 
   // Bench mode: when set, append per-frame phase timings as JSONL for
   // offline analysis by bench/repl-scroll.ts. Captures the full TUI

@@ -46,6 +46,56 @@ export const DOUBLEWORD_MODELS: readonly string[] = [
 // Both ship a 1M-token context window (see KNOWN_MODEL_CONTEXT in rayuConfig.ts).
 export const FUGU_MODELS: readonly string[] = ['fugu', 'fugu-ultra']
 
+// GLM — Z.ai (api.z.ai). The OpenAI-compatible base is /api/paas/v4, which does
+// NOT serve an OpenAI-style `GET /models`, so this curated list IS the catalog
+// for the /model picker (merged with any live fetch). IDs are the exact model
+// codes the Chat Completion API accepts (https://docs.z.ai/api-reference/llm/
+// chat-completion + the pricing page). GLM-5.2 is the flagship coding/agent
+// model with a 1M-token context; GLM-4.6 is 200K; GLM-4.5 family is 128K; the
+// `…v` entries are vision models (image input). All GLM-4.5+ models emit native
+// chain-of-thought via `reasoning_content`. Context windows: KNOWN_MODEL_CONTEXT
+// (rayuConfig.ts).
+export const GLM_MODELS: readonly string[] = [
+  // Text models
+  'glm-5.2',
+  'glm-5.1',
+  'glm-5',
+  'glm-5-turbo',
+  'glm-4.7',
+  'glm-4.7-flash',
+  'glm-4.7-flashx',
+  'glm-4.6',
+  'glm-4.5',
+  'glm-4.5-air',
+  'glm-4.5-x',
+  'glm-4.5-airx',
+  'glm-4.5-flash',
+  'glm-4-32b-0414-128k',
+  // Vision models (image input)
+  'glm-5v-turbo',
+  'glm-4.6v',
+  'glm-4.6v-flashx',
+  'glm-4.6v-flash',
+  'glm-4.5v',
+]
+
+// MiniMax (api.minimax.io) — OpenAI-compatible /v1. The platform does not expose
+// an OpenAI-style `GET /v1/models`, so this curated list keeps the M-series
+// lineup selectable in /model. IDs are exactly as the OpenAI-SDK docs list them
+// (https://platform.minimax.io/docs/api-reference/text-openai-api → Supported
+// Models). MiniMax-M3 is the frontier coding/agent model (1M context); the M2.x
+// models are 204,800 (see KNOWN_MODEL_CONTEXT). All think natively by default.
+export const MINIMAX_MODELS: readonly string[] = [
+  'MiniMax-M3',
+  'MiniMax-M2.7',
+  'MiniMax-M2.7-highspeed',
+  'MiniMax-M2.5',
+  'MiniMax-M2.5-highspeed',
+  'MiniMax-M2.1',
+  'MiniMax-M2.1-highspeed',
+  'MiniMax-M2',
+]
+
 /**
  * Provider ids that ship a curated model catalog, merged with (and used as a
  * fallback for) the live `GET {baseURL}/models` fetch. Keyed by config provider id.
@@ -53,4 +103,6 @@ export const FUGU_MODELS: readonly string[] = ['fugu', 'fugu-ultra']
 export const CURATED_PROVIDER_MODELS: Record<string, readonly string[]> = {
   doubleword: DOUBLEWORD_MODELS,
   fugu: FUGU_MODELS,
+  glm: GLM_MODELS,
+  minimax: MINIMAX_MODELS,
 }
