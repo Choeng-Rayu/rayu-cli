@@ -28,8 +28,13 @@ export const MACRO_VALUES = {
   // `bun run build` bake the operator's intended config so entitlement gating
   // is active regardless of the directory the CLI is launched from. The runtime
   // env var still overrides (e.g. USE_RAYU_OAUTH=false disables it locally).
+  //
+  // DEFAULT: on. With no RAYU_BUILD_OAUTH / USE_RAYU_OAUTH present at build, the
+  // baked default is 'true' — a fresh build requires Rayu login and shows the
+  // hosted provider. Set RAYU_BUILD_OAUTH=false (build) or USE_RAYU_OAUTH=false
+  // (runtime) to opt out.
   RAYU_OAUTH_DEFAULT:
-    process.env.RAYU_BUILD_OAUTH ?? process.env.USE_RAYU_OAUTH ?? 'false',
+    process.env.RAYU_BUILD_OAUTH ?? process.env.USE_RAYU_OAUTH ?? 'true',
   RAYU_API_URL: process.env.RAYU_BUILD_API_URL ?? process.env.RAYU_API_URL ?? '',
   RAYU_WEB_URL: process.env.RAYU_BUILD_WEB_URL ?? process.env.RAYU_WEB_URL ?? '',
   RAYU_GATEWAY_URL:

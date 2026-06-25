@@ -694,6 +694,11 @@ describe('rayu-backend (e2e)', () => {
       .set('Authorization', `Bearer ${freeAccess}`)
     expect(freeEnt.status).toBe(200)
     expect(freeEnt.body.allowedModels).toEqual([])
+    // Free still SEES the hosted catalog (so the provider is visible) — it just
+    // can't use it. Visibility (hostedModels) is decoupled from entitlement.
+    expect(freeEnt.body.hostedModels.map((m: any) => m.code)).toEqual(
+      expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro']),
+    )
     expect(freeEnt.body.creditAllowance.creditsPerPeriod).toBeNull()
     expect(freeEnt.body.creditConfig.baselineCreditsPer1M).toBeGreaterThan(0)
 

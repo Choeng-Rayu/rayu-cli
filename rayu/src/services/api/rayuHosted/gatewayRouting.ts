@@ -49,6 +49,21 @@ function isGatewayRoutingEnabled(): boolean {
   return true
 }
 
+/**
+ * Whether to "call back" to a DIRECT provider request when the gateway is
+ * unreachable or returns a non-proxied response. Controlled by
+ * RAYU_GATEWAY_CALLBACK (bool), DEFAULT TRUE — a gateway outage never blocks the
+ * user. Set RAYU_GATEWAY_CALLBACK=false for strict gateway-only routing (fail
+ * closed): the request surfaces the gateway error instead of silently leaving
+ * the gateway. The user's provider key is still only ever sent to the upstream
+ * the user configured, never logged.
+ */
+function isGatewayCallbackEnabled(): boolean {
+  const v = process.env.RAYU_GATEWAY_CALLBACK
+  if (v !== undefined && v !== '') return isEnvTruthy(v)
+  return true
+}
+
 /** Provider kinds whose final (authenticated) HTTP request we can transparently
  * forward through the gateway, because each uses a fetch-based client:
  *  - openai-compatible / anthropic : API key in Authorization / x-api-key
@@ -164,6 +179,7 @@ export function makeGatewayRoutingFetch(
     headers.set('X-Rayu-Upstream-URL', originalUrl)
     headers.set('X-Rayu-Provider', provider.id)
 
+    const callbackToDirect = isGatewayCallbackEnabled()
     try {
       const res = await inner(gatewayUrl, { ...init, headers })
       // An intentional gateway block (e.g. the per-day turn cap) must be
@@ -175,14 +191,18 @@ export function makeGatewayRoutingFetch(
       // The gateway tags every response it actually proxied with X-Rayu-Proxied.
       // If that marker is absent — an older gateway without /v1/proxy (404), a
       // redirect, a proxy error, an HTML error page, etc. — fall back to a
-      // direct provider call so the user is never blocked by gateway issues.
+      // direct provider call so the user is never blocked by gateway issues
+      // (unless RAYU_GATEWAY_CALLBACK=false, i.e. strict gateway-only).
       if (!res.headers.get(PROXIED_HEADER)) {
-        return inner(input, init)
+        return callbackToDirect ? inner(input, init) : res
       }
       return res
-    } catch {
-      // Gateway unreachable / network error → fail safe to a direct call.
-      return inner(input, init)
+    } catch (err) {
+      // Gateway unreachable / network error. By default fail safe to a direct
+      // call; with callback disabled, fail closed and surface the error so
+      // traffic never silently leaves the gateway.
+      if (callbackToDirect) return inner(input, init)
+      throw err
     }
   }
   return wrapped as typeof fetch

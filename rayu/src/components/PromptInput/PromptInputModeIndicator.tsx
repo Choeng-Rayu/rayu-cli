@@ -48,7 +48,9 @@ function PromptChar(t0) {
     themeColor
   } = t0;
   const teammateColor = themeColor;
-  const color = teammateColor ?? (false ? "subtle" : undefined);
+  // Prompt chevron (❯) color: green rgb(0,255,136)=#00ff88 by default; a teammate
+  // color (swarm mode) still overrides it when set.
+  const color = teammateColor ?? "#00ff88";
   let t1;
   if ($[0] !== color || $[1] !== isLoading) {
     t1 = <Text color={color} dimColor={isLoading}>{figures.pointer} </Text>;

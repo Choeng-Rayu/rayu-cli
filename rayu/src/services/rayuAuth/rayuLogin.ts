@@ -62,7 +62,8 @@ function parseCallback(reqUrl: string): {
 
 const RAYU_SUCCESS_HTML =
   '<html><body style="font-family:sans-serif"><h3>Signed in to Rayu.</h3>' +
-  '<p>You can close this tab and return to your terminal.</p></body></html>'
+  '<p>You can close this tab and return to your terminal.</p></body></html>' +
+  '<p>View Your dashboard: <a href="' + getRayuWebBaseUrl() + '/dashboard" target="_blank">here</a></p></body></html>'
 
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 

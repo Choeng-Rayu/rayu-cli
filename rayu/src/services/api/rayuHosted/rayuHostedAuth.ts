@@ -27,6 +27,46 @@ export function makeRayuHostedFetch(): typeof fetch {
     input: FetchParams[0],
     init: FetchParams[1] = {},
   ): Promise<Response> => {
+    // Block-on-use for Free users: if this is a chat request for a hosted model
+    // the signed-in user is NOT entitled to, return a friendly 403 with the
+    // upgrade link instead of calling the gateway (saves a round-trip; the
+    // gateway also enforces server-side). Fails open when entitlement is unknown.
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+            (input as Request).url
+    if (
+      (init?.method ?? 'GET').toUpperCase() === 'POST' &&
+      url.includes('/chat/completions') &&
+      typeof init?.body === 'string'
+    ) {
+      const model = ((): string | undefined => {
+        try {
+          return (JSON.parse(init.body as string) as { model?: string }).model
+        } catch {
+          return undefined
+        }
+      })()
+      if (model) {
+        const { isHostedModelEntitled, hostedModelUpgradeMessage } = await import(
+          '../../rayuAuth/rayuEntitlements.js'
+        )
+        if (!isHostedModelEntitled(model)) {
+          const message = hostedModelUpgradeMessage()
+          // 403 (not retried by the OpenAI adapter); message surfaces to the user.
+          return new Response(
+            JSON.stringify({
+              error: { message, type: 'upgrade_required', code: 'plan_upgrade_required' },
+            }),
+            { status: 403, headers: { 'content-type': 'application/json' } },
+          )
+        }
+      }
+    }
+
     const token = await getValidRayuAccessToken()
     if (!token) {
       throw new Error('Not signed in to Rayu. Run /login to use Rayu-hosted models.')

@@ -28,6 +28,7 @@ import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
 import { syncRayuHostedProvider } from './rayuHostedProvider.js'
 import {
   getRayuApiBaseUrl,
+  getRayuWebBaseUrl,
   getValidRayuAccessToken,
   hasRayuSession,
   isUseRayuOAuthEnabled,
@@ -56,8 +57,15 @@ export interface RayuEntitlements {
   }
   maxDailyTurns: number | null
   features: Record<string, FeatureEntitlement>
-  /** Hosted models the user's plan can use (drives the rayu-hosted provider). */
+  /** Hosted models the user's plan can USE (drives entitlement/gating). */
   allowedModels?: AllowedModel[]
+  /**
+   * Full enabled hosted catalog — shown to EVERY signed-in user so the
+   * rayu-hosted provider is always visible. A model is usable iff it also
+   * appears in allowedModels. Falls back to allowedModels when absent (older
+   * backend).
+   */
+  hostedModels?: AllowedModel[]
   /**
    * Paid-plan credit allowance from the backend (`/me/entitlements`). This is a
    * per-billing-period balance consumed by the gateway — 1 credit =
@@ -227,6 +235,32 @@ export function rayuFeatureAllowed(featureKey: string): boolean {
   // so DENY gated features to close the cold-start window that previously let
   // free users through. If not signed in, the login gate governs access.
   return !hasRayuSession()
+}
+
+/**
+ * Whether the signed-in user may USE a given Rayu-hosted model. Visibility (the
+ * provider/model list) is decoupled from usability: every signed-in user sees
+ * the hosted catalog, but only models in `allowedModels` are usable.
+ *
+ * Fails OPEN: when OAuth is off or entitlements aren't loaded yet, returns true
+ * so the gateway stays the authoritative gate and a backend hiccup never blocks
+ * a paid user.
+ */
+export function isHostedModelEntitled(modelCode: string): boolean {
+  if (!isUseRayuOAuthEnabled()) return true
+  const ent = getCachedEntitlements()
+  if (!ent) return true // unknown → let the gateway decide
+  const allowed = ent.allowedModels ?? []
+  return allowed.some((m) => m.code === modelCode)
+}
+
+/**
+ * Friendly message shown to a Free user who tries to USE a hosted model,
+ * including the upgrade link. Self-contained (no plan-catalog import).
+ */
+export function hostedModelUpgradeMessage(): string {
+  const url = `${getRayuWebBaseUrl()}/plans`
+  return `🔒 Rayu-hosted models are a paid feature. Please upgrade your plan to use them: ${url}`
 }
 
 // --- Test hooks -------------------------------------------------------------

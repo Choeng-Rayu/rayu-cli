@@ -5,13 +5,19 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { apiUrl, gatewayUrl } from '../../lib/config'
 import { useRayuToken } from '../../lib/useRayuToken'
+import { HBar, LineChart } from '../../components/Charts'
 import {
   aggregateByModel,
+  avgCreditsPerRequest,
+  busiestDay,
+  dailyCreditSeries,
   isPremiumPlan,
   type LedgerRow,
   pct,
   periodProgress,
   projectPeriodUsage,
+  providerBreakdown,
+  totals,
 } from '../../lib/dashboard'
 
 interface AllowedModel {
@@ -80,7 +86,7 @@ function compact(n: number): string {
   return n.toLocaleString()
 }
 
-function Bar({ used, cap, height = 8 }: { used: number; cap: number | null; height?: number }) {
+function Bar({ used, cap }: { used: number; cap: number | null }) {
   if (cap == null) {
     return <div style={{ opacity: 0.6, fontFamily: 'DM Mono, monospace' }}>{used.toLocaleString()} used · no allowance</div>
   }
@@ -93,7 +99,7 @@ function Bar({ used, cap, height = 8 }: { used: number; cap: number | null; heig
         <span>{used.toLocaleString()} / {cap.toLocaleString()}</span>
         <span style={{ opacity: 0.6 }}>{p.toFixed(0)}%</span>
       </div>
-      <div style={{ height, background: 'var(--bg3)', borderRadius: 4, overflow: 'hidden' }}>
+      <div style={{ height: 8, background: 'var(--bg3)', borderRadius: 4, overflow: 'hidden' }}>
         <div style={{ width: `${p}%`, height: '100%', background: danger ? 'var(--red)' : warn ? '#f5a623' : 'var(--green)', transition: 'width .3s ease' }} />
       </div>
     </div>
@@ -110,8 +116,22 @@ function StatCard({ label, value, sub, accent }: { label: string; value: ReactNo
   )
 }
 
-function SectionTitle({ children }: { children: ReactNode }) {
-  return <div style={{ fontFamily: 'Orbitron, sans-serif', fontSize: '0.95rem', letterSpacing: '0.04em', marginBottom: '0.9rem' }}>{children}</div>
+function SectionTitle({ children, hint }: { children: ReactNode; hint?: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.9rem' }}>
+      <span style={{ fontFamily: 'Orbitron, sans-serif', fontSize: '0.95rem', letterSpacing: '0.04em' }}>{children}</span>
+      {hint && <span style={{ fontSize: '0.72rem', opacity: 0.4 }}>{hint}</span>}
+    </div>
+  )
+}
+
+function DefRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', padding: '0.45rem 0', borderBottom: '1px solid var(--border)', fontSize: '0.85rem' }}>
+      <span style={{ opacity: 0.6 }}>{label}</span>
+      <span style={{ fontFamily: 'DM Mono, monospace' }}>{value}</span>
+    </div>
+  )
 }
 
 export default function DashboardPage() {
@@ -132,7 +152,7 @@ export default function DashboardPage() {
     const auth = { headers: { Authorization: `Bearer ${token}` } }
     const [entRes, histRes] = await Promise.all([
       fetch(apiUrl('/me/entitlements'), auth),
-      fetch(apiUrl('/me/credit-history'), auth),
+      fetch(apiUrl('/me/credit-history?limit=200'), auth),
     ])
     if (entRes.ok) setEnt((await entRes.json()) as Entitlements)
     if (histRes.ok) setHistory((await histRes.json()) as LedgerRow[])
@@ -201,7 +221,7 @@ export default function DashboardPage() {
     )
   }
 
-  // Prefer the gateway's live figures; fall back to entitlements for allowances.
+  // Prefer the gateway's live (period-accurate) figures; fall back to entitlements.
   const planCode = usage?.plan ?? ent?.plan.code
   const planName = usage?.planName ?? ent?.plan.name ?? '—'
   const priceCents = usage?.priceCents ?? ent?.plan.priceCents ?? 0
@@ -223,10 +243,22 @@ export default function DashboardPage() {
   const period = periodProgress(periodEnd)
   const projection = projectPeriodUsage(usedCredits, period?.fractionElapsed ?? 0, creditsPerPeriod)
   const allowedModels = ent?.allowedModels ?? []
-  const byModel = aggregateByModel(history)
-  const hasUsage = usedCredits > 0 || history.length > 0
   const resetLabel = usage ? fmtReset(usage.resetSeconds) : period ? `${period.daysLeft}d` : '—'
   const cappedTurns = maxDailyTurns != null && maxDailyTurns > 0
+
+  // History-derived analytics (recent activity; window = last up-to-200 events).
+  const hist = history
+  const hasUsage = usedCredits > 0 || hist.length > 0
+  const series = dailyCreditSeries(hist, 14)
+  const tot = totals(hist)
+  const avgCr = avgCreditsPerRequest(hist)
+  const byModel = aggregateByModel(hist)
+  const codeToProvider: Record<string, string> = Object.fromEntries(allowedModels.map((m) => [m.code, m.provider]))
+  const byProvider = providerBreakdown(hist, codeToProvider)
+  const busiest = busiestDay(series)
+  const lastActiveAt = hist[0]?.createdAt ?? null
+
+  const GRID2 = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' } as const
 
   return (
     <main className="container">
@@ -275,32 +307,20 @@ export default function DashboardPage() {
             <div style={{ height: 6, background: 'var(--bg3)', borderRadius: 3, overflow: 'hidden' }}>
               <div style={{ width: `${Math.min(100, period.fractionElapsed * 100)}%`, height: '100%', background: 'var(--green-dim)' }} />
             </div>
-            <div style={{ fontSize: '0.72rem', opacity: 0.45, marginTop: 5 }}>
-              Day {period.daysElapsed} of {period.periodDays} in this billing period
-            </div>
+            <div style={{ fontSize: '0.72rem', opacity: 0.45, marginTop: 5 }}>Day {period.daysElapsed} of {period.periodDays} in this billing period</div>
           </div>
         )}
       </div>
 
-      {loading && !ent && !usage && (
-        <p style={{ opacity: 0.5 }}>Loading your usage…</p>
-      )}
+      {loading && !ent && !usage && <p style={{ opacity: 0.5 }}>Loading your usage…</p>}
 
       {premium ? (
         <>
           {/* AT-A-GLANCE STAT CARDS */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-            <StatCard
-              accent
-              label="Credits left"
-              value={(remainingCredits ?? 0).toLocaleString()}
-              sub={`of ${(creditsPerPeriod ?? 0).toLocaleString()} · resets in ${resetLabel}`}
-            />
-            <StatCard
-              label="Tokens left"
-              value={remainingTokens != null ? compact(remainingTokens) : '—'}
-              sub={tokensPerCredit > 0 ? `1 credit = ${compact(tokensPerCredit)} tokens` : undefined}
-            />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+            <StatCard accent label="Credits left" value={(remainingCredits ?? 0).toLocaleString()} sub={`of ${(creditsPerPeriod ?? 0).toLocaleString()} · resets in ${resetLabel}`} />
+            <StatCard label="Used this period" value={usedCredits.toLocaleString()} sub={`${remainingTokens != null ? compact(remainingTokens) : '—'} tokens left`} />
+            <StatCard label="Requests (recent)" value={tot.requests.toLocaleString()} sub={`avg ${avgCr.toFixed(2)} cr / request`} />
             {topUpEnabled ? (
               <StatCard label="Top-up balance" value={topupBalance.toLocaleString()} sub="pay-as-you-go credits" />
             ) : cappedTurns ? (
@@ -310,11 +330,23 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* CREDIT USAGE */}
-          <div className="card" style={{ marginBottom: '1.5rem' }}>
-            <SectionTitle>Credit usage</SectionTitle>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1.5rem' }}>
-              <div>
+          {/* DAILY USAGE TREND */}
+          {hasUsage && (
+            <div className="card" style={{ marginBottom: '1.5rem' }}>
+              <SectionTitle hint="last 14 days">Daily credit usage</SectionTitle>
+              <LineChart data={series} />
+              <div style={{ fontSize: '0.78rem', opacity: 0.5, marginTop: '0.5rem' }}>
+                {tot.credits.toLocaleString()} credits across {tot.requests.toLocaleString()} requests in recent activity
+                {busiest ? ` · busiest day ${busiest.label.slice(5)} (${busiest.value.toLocaleString()} cr)` : ''}
+              </div>
+            </div>
+          )}
+
+          {/* USAGE BARS + INSIGHTS */}
+          <div style={GRID2}>
+            <div className="card">
+              <SectionTitle>Credit usage</SectionTitle>
+              <div style={{ marginBottom: '1.25rem' }}>
                 <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: 6 }}>Credits{usage ? ` · resets in ${fmtReset(usage.resetSeconds)}` : ''}</div>
                 <Bar used={usedCredits} cap={creditsPerPeriod} />
                 <div style={{ fontSize: '0.8rem', opacity: 0.6, marginTop: 6 }}>{(remainingCredits ?? 0).toLocaleString()} credits left</div>
@@ -323,22 +355,58 @@ export default function DashboardPage() {
                 <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: 6 }}>Tokens (1 credit = {compact(tokensPerCredit)})</div>
                 <Bar used={usedTokens} cap={allowanceTokens} />
               </div>
+              {projection && (
+                <p style={{ fontSize: '0.82rem', marginTop: '1rem', marginBottom: 0, color: projection.willExceed ? 'var(--red)' : 'inherit', opacity: projection.willExceed ? 1 : 0.6 }}>
+                  At your current pace you&apos;ll use about <strong>{projection.projectedCredits.toLocaleString()}</strong> credits by renewal
+                  {projection.willExceed ? ` — above your ${(creditsPerPeriod ?? 0).toLocaleString()}-credit allowance. Consider a top-up.` : ' — within your allowance.'}
+                </p>
+              )}
+              {cappedTurns && (
+                <div style={{ marginTop: '1.25rem' }}>
+                  <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: 6 }}>Daily turns{usage ? ` · resets in ${fmtReset(usage.turnsResetSeconds)}` : ''}</div>
+                  <Bar used={turnsUsedToday} cap={maxDailyTurns} />
+                </div>
+              )}
+              {gatewayDown && <p style={{ opacity: 0.45, fontSize: '0.8rem', marginTop: '1rem', marginBottom: 0 }}>Live usage temporarily unavailable; showing your allowance only.</p>}
             </div>
-            {projection && (
-              <p style={{ fontSize: '0.82rem', marginTop: '1rem', marginBottom: 0, color: projection.willExceed ? 'var(--red)' : 'inherit', opacity: projection.willExceed ? 1 : 0.6 }}>
-                At your current pace you'll use about <strong>{projection.projectedCredits.toLocaleString()}</strong> credits by renewal
-                {projection.willExceed ? ` — above your ${(creditsPerPeriod ?? 0).toLocaleString()}-credit allowance. Consider a top-up.` : ' — within your allowance.'}
-              </p>
-            )}
-            {cappedTurns && (
-              <div style={{ marginTop: '1.25rem' }}>
-                <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: 6 }}>Daily turns{usage ? ` · resets in ${fmtReset(usage.turnsResetSeconds)}` : ''}</div>
-                <Bar used={turnsUsedToday} cap={maxDailyTurns} />
-                <div style={{ fontSize: '0.8rem', opacity: 0.6, marginTop: 6 }}>{(turnsRemaining ?? 0).toLocaleString()} turns left today</div>
+
+            <div className="card">
+              <SectionTitle hint="recent">At a glance</SectionTitle>
+              <DefRow label="Tokens in" value={compact(tot.inTokens)} />
+              <DefRow label="Tokens out" value={compact(tot.outTokens)} />
+              <DefRow label="Avg credits / request" value={avgCr.toFixed(2)} />
+              <DefRow label="Busiest day" value={busiest ? `${busiest.label.slice(5)} · ${busiest.value.toLocaleString()} cr` : '—'} />
+              <DefRow label="Last activity" value={lastActiveAt ? new Date(lastActiveAt).toLocaleString() : '—'} />
+              <div style={{ marginTop: '0.9rem' }}>
+                <div style={{ fontSize: '0.75rem', opacity: 0.5, marginBottom: 8 }}>Token split (recent)</div>
+                <HBar
+                  data={[{ label: 'Input', value: tot.inTokens }, { label: 'Output', value: tot.outTokens }]}
+                  valueFormat={(n) => compact(n)}
+                />
               </div>
-            )}
-            {gatewayDown && <p style={{ opacity: 0.45, fontSize: '0.8rem', marginTop: '1rem', marginBottom: 0 }}>Live usage temporarily unavailable; showing your allowance only.</p>}
+            </div>
           </div>
+
+          {/* BREAKDOWNS BY MODEL + PROVIDER */}
+          {hasUsage && (
+            <div style={GRID2}>
+              <div className="card">
+                <SectionTitle hint="recent">Credits by model</SectionTitle>
+                <HBar
+                  data={byModel.slice(0, 8).map((m) => ({ label: m.modelCode, value: m.credits }))}
+                  valueFormat={(n) => `${n.toLocaleString()} cr`}
+                />
+              </div>
+              <div className="card">
+                <SectionTitle hint="recent">Credits by provider</SectionTitle>
+                <HBar
+                  data={byProvider.map((p) => ({ label: p.label, value: p.value }))}
+                  color="var(--green-dim)"
+                  valueFormat={(n) => `${n.toLocaleString()} cr`}
+                />
+              </div>
+            </div>
+          )}
 
           {/* GET STARTED (no usage yet) */}
           {!hasUsage && (
@@ -347,56 +415,34 @@ export default function DashboardPage() {
               <p style={{ opacity: 0.6, fontSize: '0.88rem', marginTop: 0 }}>You haven&apos;t used any credits yet. Connect the CLI to start using Rayu-hosted models — no API key needed.</p>
               <ol style={{ margin: '0.5rem 0 0', paddingLeft: '1.2rem', lineHeight: 2, fontSize: '0.9rem' }}>
                 <li>Install / update the CLI: <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>npm i -g @rayu-dev/rayu-cli</code></li>
-                <li>Start it with hosted access: <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>USE_RAYU_OAUTH=true rayu</code>, then <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>/login</code></li>
+                <li>Start with hosted access: <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>USE_RAYU_OAUTH=true rayu</code>, then <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>/login</code></li>
                 <li>Pick a hosted model with <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>/model</code> and start chatting</li>
               </ol>
-              <p style={{ opacity: 0.45, fontSize: '0.8rem', marginBottom: 0, marginTop: '0.75rem' }}>Your credits and usage will appear here automatically.</p>
             </div>
           )}
 
-          {/* MODELS + USAGE BY MODEL */}
-          <div style={{ display: 'grid', gridTemplateColumns: hasUsage ? 'repeat(auto-fit, minmax(300px, 1fr))' : '1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
-            <div className="card">
-              <SectionTitle>Models on your plan</SectionTitle>
-              {allowedModels.length === 0 ? (
-                <p style={{ opacity: 0.5, fontSize: '0.88rem', margin: 0 }}>Your plan&apos;s hosted models will appear here.</p>
-              ) : (
-                <>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                    {allowedModels.map((m) => (
-                      <div key={m.code} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
-                        <div>
-                          <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{m.label}</div>
-                          <div style={{ opacity: 0.45, fontSize: '0.75rem' }}>{m.provider}</div>
-                        </div>
-                        <span className="badge" style={{ fontFamily: 'DM Mono, monospace' }}>{m.creditMultiplier}× credits</span>
+          {/* MODELS ON PLAN */}
+          <div className="card" style={{ marginBottom: '1.5rem' }}>
+            <SectionTitle>Models on your plan</SectionTitle>
+            {allowedModels.length === 0 ? (
+              <p style={{ opacity: 0.5, fontSize: '0.88rem', margin: 0 }}>Your plan&apos;s hosted models will appear here.</p>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.5rem 1.5rem' }}>
+                  {allowedModels.map((m) => (
+                    <div key={m.code} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{m.label}</div>
+                        <div style={{ opacity: 0.45, fontSize: '0.75rem' }}>{m.provider}</div>
                       </div>
-                    ))}
-                  </div>
-                  <p style={{ opacity: 0.45, fontSize: '0.76rem', marginTop: '0.75rem', marginBottom: 0 }}>
-                    1 credit ≈ {compact(tokensPerCredit)} tokens at 1×. Cheaper models spend credits more slowly.
-                  </p>
-                </>
-              )}
-            </div>
-
-            {hasUsage && (
-              <div className="card">
-                <SectionTitle>Usage by model</SectionTitle>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                  {byModel.slice(0, 6).map((m) => (
-                    <div key={m.modelCode}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: 4 }}>
-                        <span>{m.modelCode}</span>
-                        <span style={{ fontFamily: 'DM Mono, monospace', opacity: 0.7 }}>{m.credits.toLocaleString()} cr · {m.count}×</span>
-                      </div>
-                      <div style={{ height: 6, background: 'var(--bg3)', borderRadius: 3, overflow: 'hidden' }}>
-                        <div style={{ width: `${pct(m.credits, byModel[0]?.credits ?? 0)}%`, height: '100%', background: 'var(--green-dim)' }} />
-                      </div>
+                      <span className="badge" style={{ fontFamily: 'DM Mono, monospace' }}>{m.creditMultiplier}× credits</span>
                     </div>
                   ))}
                 </div>
-              </div>
+                <p style={{ opacity: 0.45, fontSize: '0.76rem', marginTop: '0.75rem', marginBottom: 0 }}>
+                  1 credit ≈ {compact(tokensPerCredit)} tokens at 1×. Cheaper models spend credits more slowly.
+                </p>
+              </>
             )}
           </div>
 
@@ -418,7 +464,7 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <select className="admin-select" value={amount} onChange={(e) => setAmount(Number(e.target.value))} style={{ width: 220 }}>
+                  <select className="admin-select" value={amount} onChange={(e) => setAmount(Number(e.target.value))} style={{ width: 240 }}>
                     <option value={50}>50 credits ({compact(50 * tokensPerCredit)} tokens)</option>
                     <option value={115}>115 credits</option>
                     <option value={300}>300 credits</option>
@@ -431,8 +477,8 @@ export default function DashboardPage() {
 
           {/* USAGE HISTORY */}
           <div>
-            <SectionTitle>Usage history</SectionTitle>
-            {history.length === 0 ? (
+            <SectionTitle hint={hist.length ? `${hist.length} recent` : undefined}>Usage history</SectionTitle>
+            {hist.length === 0 ? (
               <p style={{ opacity: 0.5 }}>No hosted usage yet.</p>
             ) : (
               <table>
@@ -440,7 +486,7 @@ export default function DashboardPage() {
                   <tr><th>Date</th><th>Model</th><th>In</th><th>Out</th><th>Credits</th><th>Source</th></tr>
                 </thead>
                 <tbody>
-                  {history.map((r) => (
+                  {hist.slice(0, 50).map((r) => (
                     <tr key={r.id}>
                       <td style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.8rem' }}>{new Date(r.createdAt).toLocaleString()}</td>
                       <td>{r.modelCode}</td>
@@ -466,7 +512,7 @@ export default function DashboardPage() {
           <ul style={{ opacity: 0.7, fontSize: '0.9rem', lineHeight: 1.9, margin: '0.5rem 0 1.25rem', paddingLeft: '1.2rem' }}>
             <li>A monthly credit allowance for hosted models</li>
             <li>Pay-as-you-go top-ups when you need more</li>
-            <li>Live usage tracking right here on your dashboard</li>
+            <li>Daily usage trends, per-model and per-provider breakdowns</li>
           </ul>
           <a href="/billing" className="btn-primary" style={{ display: 'inline-block', padding: '10px 22px' }}>View plans</a>
         </div>

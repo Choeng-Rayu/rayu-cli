@@ -1,10 +1,15 @@
 import {
   aggregateByModel,
+  avgCreditsPerRequest,
+  busiestDay,
+  dailyCreditSeries,
   isPremiumPlan,
   type LedgerRow,
   pct,
   periodProgress,
   projectPeriodUsage,
+  providerBreakdown,
+  totals,
 } from './dashboard'
 
 const row = (over: Partial<LedgerRow> = {}): LedgerRow => ({
@@ -101,5 +106,77 @@ describe('isPremiumPlan', () => {
     expect(isPremiumPlan(null, 'max')).toBe(true)
     expect(isPremiumPlan(null, 'free')).toBe(false)
     expect(isPremiumPlan(null, 'basic')).toBe(false)
+  })
+})
+
+describe('dailyCreditSeries', () => {
+  const now = Date.parse('2026-06-20T12:00:00Z')
+
+  it('buckets credits by UTC day and fills missing days with 0', () => {
+    const rows: LedgerRow[] = [
+      row({ id: 1, credits: 3, createdAt: '2026-06-20T01:00:00Z' }),
+      row({ id: 2, credits: 2, createdAt: '2026-06-20T09:00:00Z' }),
+      row({ id: 3, credits: 5, createdAt: '2026-06-18T09:00:00Z' }),
+    ]
+    const series = dailyCreditSeries(rows, 7, now)
+    expect(series).toHaveLength(7)
+    // last entry = today (2026-06-20) = 3 + 2 = 5
+    expect(series[series.length - 1]).toEqual({ label: '2026-06-20', value: 5 })
+    // 2026-06-18 had 5
+    expect(series.find((p) => p.label === '2026-06-18')?.value).toBe(5)
+    // a day with no usage is 0
+    expect(series.find((p) => p.label === '2026-06-19')?.value).toBe(0)
+  })
+
+  it('returns all-zero series when there are no rows', () => {
+    const series = dailyCreditSeries([], 5, now)
+    expect(series).toHaveLength(5)
+    expect(series.every((p) => p.value === 0)).toBe(true)
+  })
+})
+
+describe('totals & averages', () => {
+  const rows: LedgerRow[] = [
+    row({ id: 1, credits: 2, inTokens: 100, outTokens: 50 }),
+    row({ id: 2, credits: 4, inTokens: 200, outTokens: 100 }),
+  ]
+  it('sums credits, tokens, and requests', () => {
+    expect(totals(rows)).toEqual({ credits: 6, inTokens: 300, outTokens: 150, requests: 2 })
+  })
+  it('computes average credits per request', () => {
+    expect(avgCreditsPerRequest(rows)).toBe(3)
+    expect(avgCreditsPerRequest([])).toBe(0)
+  })
+})
+
+describe('providerBreakdown', () => {
+  it('maps model codes to providers, sums credits, sorts desc, handles unknown', () => {
+    const rows: LedgerRow[] = [
+      row({ id: 1, modelCode: 'deepseek-v4-flash', credits: 2 }),
+      row({ id: 2, modelCode: 'deepseek-v4-pro', credits: 5 }),
+      row({ id: 3, modelCode: 'mystery-model', credits: 1 }),
+    ]
+    const codeToProvider = {
+      'deepseek-v4-flash': 'deepseek',
+      'deepseek-v4-pro': 'deepseek',
+    }
+    const bd = providerBreakdown(rows, codeToProvider)
+    expect(bd).toEqual([
+      { label: 'deepseek', value: 7 },
+      { label: 'unknown', value: 1 },
+    ])
+  })
+})
+
+describe('busiestDay', () => {
+  it('returns the max-usage day, or null when all zero', () => {
+    expect(
+      busiestDay([
+        { label: '2026-06-18', value: 1 },
+        { label: '2026-06-19', value: 9 },
+        { label: '2026-06-20', value: 4 },
+      ]),
+    ).toEqual({ label: '2026-06-19', value: 9 })
+    expect(busiestDay([{ label: '2026-06-20', value: 0 }])).toBeNull()
   })
 })
