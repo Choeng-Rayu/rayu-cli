@@ -15,10 +15,14 @@ import type { RayuEntitlements } from './rayuEntitlements.js'
 
 /**
  * Reconcile the rayu-hosted provider with the given entitlements.
- * - With hosted models: upsert the provider (baseURL + model list). When
- *   opts.activate is set (i.e. just logged in), make it the active provider.
- * - Without hosted models: remove the provider and de-activate it if it was
- *   active. Best-effort — never throws (must not break login/refresh).
+ * - With a hosted CATALOG (hostedModels, else allowedModels): upsert the
+ *   provider so it is ALWAYS visible (Free + Paid). The default model prefers an
+ *   ENTITLED model so paid users land on something usable. On login
+ *   (opts.activate) it is made the active provider ONLY when the user is
+ *   entitled to at least one hosted model — Free users keep their own active
+ *   provider but still SEE the hosted provider pinned at the top.
+ * - With no catalog at all (signed out / OAuth off / no hosted models): remove
+ *   the provider. Best-effort — never throws (must not break login/refresh).
  */
 export function syncRayuHostedProvider(
   ent: RayuEntitlements | null,
@@ -26,13 +30,17 @@ export function syncRayuHostedProvider(
 ): void {
   try {
     const cfg = loadRayuConfig()
-    const allowed = ent?.allowedModels ?? []
-    const models = allowed.map((m) => m.code)
+    // Visibility uses the full catalog; usability uses the entitled subset.
+    const catalog = ent?.hostedModels ?? ent?.allowedModels ?? []
+    const entitled = ent?.allowedModels ?? []
+    const models = catalog.map((m) => m.code)
     const idx = cfg.providers.findIndex((p) => p.id === RAYU_HOSTED_PROVIDER_ID)
 
     if (models.length > 0) {
       const existing = idx >= 0 ? cfg.providers[idx] : undefined
-      const firstCode = allowed[0]?.code
+      // Prefer an entitled model as the default so paid users land on a usable
+      // one; fall back to the first catalog model (Free — gated on use).
+      const preferredCode = entitled[0]?.code ?? catalog[0]?.code
       const provider: RayuProvider = {
         ...existing,
         id: RAYU_HOSTED_PROVIDER_ID,
@@ -40,17 +48,21 @@ export function syncRayuHostedProvider(
         baseURL: rayuHostedBaseURL(),
         models,
         fetchedModels: models,
-        defaultModel: existing?.defaultModel ?? firstCode,
-        smallFastModel: existing?.smallFastModel ?? firstCode,
+        defaultModel: existing?.defaultModel ?? preferredCode,
+        smallFastModel: existing?.smallFastModel ?? preferredCode,
       }
       if (idx >= 0) cfg.providers[idx] = provider
       else cfg.providers.push(provider)
-      if (opts?.activate) cfg.activeProvider = RAYU_HOSTED_PROVIDER_ID
+      // Auto-activate on login ONLY when entitled — never hijack a Free user's
+      // own provider (they can still pick a hosted model and get the upgrade ask).
+      if (opts?.activate && entitled.length > 0) {
+        cfg.activeProvider = RAYU_HOSTED_PROVIDER_ID
+      }
       saveRayuConfig(cfg)
       return
     }
 
-    // No hosted entitlement — drop a previously-registered hosted provider.
+    // No hosted catalog at all — drop a previously-registered hosted provider.
     if (idx >= 0) {
       cfg.providers.splice(idx, 1)
       if (cfg.activeProvider === RAYU_HOSTED_PROVIDER_ID) {

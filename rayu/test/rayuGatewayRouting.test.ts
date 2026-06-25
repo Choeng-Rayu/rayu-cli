@@ -10,6 +10,7 @@ beforeEach(() => {
   delete process.env.USE_RAYU_OAUTH
   delete process.env.RAYU_GATEWAY_URL
   delete process.env.RAYU_ROUTE_VIA_GATEWAY
+  delete process.env.RAYU_GATEWAY_CALLBACK
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
@@ -17,6 +18,7 @@ afterEach(() => {
   delete process.env.USE_RAYU_OAUTH
   delete process.env.RAYU_GATEWAY_URL
   delete process.env.RAYU_ROUTE_VIA_GATEWAY
+  delete process.env.RAYU_GATEWAY_CALLBACK
 })
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -231,5 +233,35 @@ describe('makeGatewayRoutingFetch', () => {
     await m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, { method: 'POST' })
     expect(calls.length).toBe(1)
     expect(calls[0].url).toBe(ORIGINAL)
+  })
+
+  test('RAYU_GATEWAY_CALLBACK=false: NO direct fallback on a non-proxied gateway response (fail closed)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_GATEWAY_CALLBACK = 'false'
+    await signIn()
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner((url) =>
+      url.endsWith('/v1/proxy')
+        ? new Response('404 page not found', { status: 404 }) // no x-rayu-proxied
+        : new Response('direct-ok', { status: 200 }),
+    )
+    const res = await m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, { method: 'POST' })
+    expect(calls.length).toBe(1) // did NOT fall back to a direct provider call
+    expect(res.status).toBe(404) // surfaced the gateway response instead
+  })
+
+  test('RAYU_GATEWAY_CALLBACK=false: gateway unreachable rethrows (no direct fallback)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_GATEWAY_CALLBACK = 'false'
+    await signIn()
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner((url) => {
+      if (url.endsWith('/v1/proxy')) throw new Error('ECONNREFUSED')
+      return new Response('direct-ok', { status: 200 })
+    })
+    await expect(
+      m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, { method: 'POST' }),
+    ).rejects.toThrow('ECONNREFUSED')
+    expect(calls.length).toBe(1) // no direct fallback
   })
 })

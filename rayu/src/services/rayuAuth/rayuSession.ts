@@ -45,15 +45,18 @@ export interface RayuSessionStore {
  * True when the user has opted into Rayu account login.
  *
  * Resolution order: runtime env var USE_RAYU_OAUTH (dev override) → baked
- * build-time default (MACRO.RAYU_OAUTH_DEFAULT, set when publishing) → false.
- * This is why a published binary with no .env can still require login: the
- * default is compiled into dist/rayu.js at build time (bun --define inlines
- * MACRO.*; scripts/preload.ts provides it in dev/test).
+ * build-time default (MACRO.RAYU_OAUTH_DEFAULT, set when publishing) → true.
+ * The default is ON: a published binary with no .env still requires login and
+ * shows the hosted provider, because RAYU_OAUTH_DEFAULT is baked into
+ * dist/rayu.js at build time ('true' unless the operator sets
+ * RAYU_BUILD_OAUTH=false). Set USE_RAYU_OAUTH=false at runtime to opt out.
+ * (Tests force the baked default to 'false' via scripts/preload.test.ts so they
+ * depend only on what each test sets explicitly.)
  */
 export function isUseRayuOAuthEnabled(): boolean {
   const env = process.env.USE_RAYU_OAUTH
   if (env !== undefined && env !== '') return isEnvTruthy(env)
-  return isEnvTruthy(MACRO.RAYU_OAUTH_DEFAULT || 'false')
+  return isEnvTruthy(MACRO.RAYU_OAUTH_DEFAULT || 'true')
 }
 
 /** Base URL of the rayu-backend API (no trailing slash). */

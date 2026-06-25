@@ -27,6 +27,14 @@ export class ModelsService {
     return this.prisma.hostedModel.findMany({ orderBy: { id: 'asc' } })
   }
 
+  /** All ENABLED hosted models (the catalog shown to every signed-in user). */
+  findEnabled(): Promise<HostedModel[]> {
+    return this.prisma.hostedModel.findMany({
+      where: { enabled: true },
+      orderBy: { id: 'asc' },
+    })
+  }
+
   findByCode(code: string): Promise<HostedModel | null> {
     return this.prisma.hostedModel.findUnique({ where: { code } })
   }

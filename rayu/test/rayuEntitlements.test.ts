@@ -184,3 +184,52 @@ describe('credit allowance shape', () => {
     expect((cached?.creditAllowance as Record<string, unknown>)?.creditsPerWeek).toBeUndefined()
   })
 })
+
+describe('hosted model entitlement', () => {
+  const hostedEnt = (allowedCodes: string[]) => ({
+    plan: { code: allowedCodes.length ? 'pro' : 'free', name: 'P', priceCents: 0, availability: 'active' },
+    maxDailyTurns: null,
+    features: {},
+    allowedModels: allowedCodes.map((c) => ({ code: c, label: c, provider: 'deepseek', creditMultiplier: 1 })),
+    hostedModels: [
+      { code: 'deepseek-v4-flash', label: 'f', provider: 'deepseek', creditMultiplier: 0.33 },
+      { code: 'deepseek-v4-pro', label: 'p', provider: 'deepseek', creditMultiplier: 1 },
+    ],
+  })
+
+  test('flag OFF -> entitled (gating off)', async () => {
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    m._setRayuEntitlementsForTesting(hostedEnt([]))
+    expect(m.isHostedModelEntitled('deepseek-v4-pro')).toBe(true)
+  })
+
+  test('flag ON + free (no allowed models) -> NOT entitled', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    m._setRayuEntitlementsForTesting(hostedEnt([]))
+    expect(m.isHostedModelEntitled('deepseek-v4-pro')).toBe(false)
+  })
+
+  test('flag ON + paid (model in allowed) -> entitled; other model -> not', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    m._setRayuEntitlementsForTesting(hostedEnt(['deepseek-v4-pro']))
+    expect(m.isHostedModelEntitled('deepseek-v4-pro')).toBe(true)
+    expect(m.isHostedModelEntitled('deepseek-v4-flash')).toBe(false)
+  })
+
+  test('flag ON + no entitlements cached -> fail open (entitled)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    m._resetRayuEntitlementsForTesting()
+    expect(m.isHostedModelEntitled('deepseek-v4-pro')).toBe(true)
+  })
+
+  test('upgrade message includes the /plans link', async () => {
+    process.env.RAYU_WEB_URL = 'https://web.example.test'
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    const msg = m.hostedModelUpgradeMessage()
+    expect(msg).toContain('https://web.example.test/plans')
+    delete process.env.RAYU_WEB_URL
+  })
+})

@@ -10,6 +10,11 @@ import {
 } from '../src/services/rayuAuth/rayuCredits.ts'
 import { syncRayuHostedProvider } from '../src/services/rayuAuth/rayuHostedProvider.ts'
 import type { RayuEntitlements } from '../src/services/rayuAuth/rayuEntitlements.ts'
+import {
+  _resetRayuEntitlementsForTesting,
+  _setRayuEntitlementsForTesting,
+} from '../src/services/rayuAuth/rayuEntitlements.ts'
+import { makeRayuHostedFetch } from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
 import { loadRayuConfig } from '../src/utils/rayuConfig.ts'
 
 let dir: string
@@ -139,5 +144,48 @@ describe('syncRayuHostedProvider', () => {
     const cfg = loadRayuConfig()
     expect(cfg.providers.find((x) => x.id === 'rayu-hosted')).toBeFalsy()
     expect(cfg.activeProvider).not.toBe('rayu-hosted')
+  })
+})
+
+describe('rayu-hosted visibility (free sees it, blocked on use)', () => {
+  const freeCatalogEnt = (): RayuEntitlements => ({
+    plan: { code: 'free', name: 'Free', priceCents: 0, availability: 'active' },
+    maxDailyTurns: 50,
+    features: {},
+    allowedModels: [], // not entitled to use
+    hostedModels: [
+      { code: 'deepseek-v4-flash', label: 'f', provider: 'deepseek', creditMultiplier: 0.33 },
+      { code: 'deepseek-v4-pro', label: 'p', provider: 'deepseek', creditMultiplier: 1 },
+    ],
+  })
+
+  test('free: provider is registered (visible) from the catalog but NOT auto-activated', () => {
+    syncRayuHostedProvider(freeCatalogEnt(), { activate: true })
+    const cfg = loadRayuConfig()
+    const p = cfg.providers.find((x) => x.id === 'rayu-hosted')
+    expect(p).toBeTruthy()
+    expect(p?.models).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
+    expect(cfg.activeProvider).not.toBe('rayu-hosted') // free keeps their own active provider
+  })
+
+  test('free: using a hosted model returns a 403 with the /plans upgrade link', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_WEB_URL = 'https://web.example.test'
+    _setRayuEntitlementsForTesting(freeCatalogEnt())
+    try {
+      const f = makeRayuHostedFetch()
+      const res = await f('https://gw.example/v1/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({ model: 'deepseek-v4-pro', messages: [] }),
+      })
+      expect(res.status).toBe(403)
+      const body = (await res.json()) as { error?: { message?: string; code?: string } }
+      expect(body.error?.code).toBe('plan_upgrade_required')
+      expect(body.error?.message).toContain('https://web.example.test/plans')
+    } finally {
+      _resetRayuEntitlementsForTesting()
+      delete process.env.USE_RAYU_OAUTH
+      delete process.env.RAYU_WEB_URL
+    }
   })
 })

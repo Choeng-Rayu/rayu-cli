@@ -4,6 +4,7 @@ import {
   Get,
   Headers,
   Post,
+  Query,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common'
@@ -92,8 +93,9 @@ export class AuthController {
       user.id,
     )
     const limits = this.plans.getLimits(plan)
-    const [allowed, settings, topupBalance] = await Promise.all([
+    const [allowed, hostedAll, settings, topupBalance] = await Promise.all([
       this.models.findAllowedForPlan(plan.code),
+      this.models.findEnabled(),
       this.settings.get(),
       this.users.getTopupBalance(user.id),
     ])
@@ -119,7 +121,17 @@ export class AuthController {
             : 0,
       },
       topupBalance,
+      // The plan-allowed subset the user may actually USE (drives entitlement).
       allowedModels: allowed.map((m) => ({
+        code: m.code,
+        label: m.label,
+        provider: m.provider,
+        creditMultiplier: m.creditMultiplier,
+      })),
+      // The full enabled hosted catalog — shown to EVERY signed-in user so the
+      // rayu-hosted provider is always visible (Free sees it but is gated on use;
+      // a model is usable iff it also appears in allowedModels above).
+      hostedModels: hostedAll.map((m) => ({
         code: m.code,
         label: m.label,
         provider: m.provider,
@@ -131,8 +143,10 @@ export class AuthController {
   /** Recent credit consumption history for the signed-in user. */
   @Get('me/credit-history')
   @UseGuards(RayuAuthGuard)
-  creditHistory(@CurrentUser() user: User) {
-    return this.users.getCreditHistory(user.id, 50)
+  creditHistory(@CurrentUser() user: User, @Query('limit') limit?: string) {
+    const n = limit ? parseInt(limit, 10) : 50
+    // getCreditHistory clamps to [1, 200]; fall back to 50 on a bad value.
+    return this.users.getCreditHistory(user.id, Number.isFinite(n) ? n : 50)
   }
 
   private extractBearer(header: string | undefined): string | null {
