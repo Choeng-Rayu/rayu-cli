@@ -5,7 +5,7 @@ import {
 } from '@alcalzone/ansi-tokenize'
 import { logForDebugging } from '../utils/debug.js'
 import type { Diff, FlickerReason, Frame } from './frame.js'
-import type { Point } from './layout/geometry.js'
+import { type Point, unionRect } from './layout/geometry.js'
 import {
   type Cell,
   CellWidth,
@@ -304,6 +304,55 @@ export class LogUpdate {
 
     let currentStyleId = stylePool.none
     let currentHyperlink: Hyperlink = undefined
+
+    // Leading-ghost guard. screen.damage is the bounding box of cells the
+    // layout WROTE/cleared/blitted. The blit+shift fast paths (output.shift →
+    // shiftRows) explicitly do NOT update damage, and a content node at an
+    // indent (e.g. col 5, with a "⎿" connector / "✔ Thought" / spinner glyph at
+    // col 2) does not damage its leading padding columns. So when a live row
+    // REORGANIZES — its leading glyph column changes (a 'T'/glyph → a
+    // continuation space because lines shifted above it) — that change falls
+    // OUTSIDE damage, diffEach never visits it, and the stale glyph (the
+    // reported leading 'T' during subagent streaming) survives until a full
+    // repaint (resize/done). Mirror of the trailing in-place detector below:
+    // extend next.damage to cover any LEADING span [0, nextStart) where prev
+    // had content but next is empty, so diffEach visits those cells and the
+    // existing removed-cell branch clears them with cursor-tracked writes. The
+    // span is on the left edge (never near the wrap column) so it emits no
+    // edge-wrapping spaces, and it compares prev-model vs next-model so it can
+    // never erase intended content.
+    if (!altScreen && next.screen.damage && prev.screen.height > 0) {
+      const w = next.screen.width
+      const lastExistingRow = Math.min(prev.screen.height, next.screen.height)
+      for (let y = Math.max(0, viewportY); y < lastExistingRow; y++) {
+        // Leftmost non-empty column in the new row.
+        let nextStart = 0
+        while (nextStart < w && isEmptyCellAt(next.screen, nextStart, y)) {
+          nextStart++
+        }
+        // Only handle a genuine leading indent (content starts at col >0 and
+        // the row is not fully blank — fully-removed rows are handled
+        // elsewhere and would risk edge-wrap if space-filled).
+        if (nextStart === 0 || nextStart >= w) {
+          continue
+        }
+        let prevHasLeading = false
+        for (let x = 0; x < nextStart; x++) {
+          if (!isEmptyCellAt(prev.screen, x, y)) {
+            prevHasLeading = true
+            break
+          }
+        }
+        if (prevHasLeading) {
+          next.screen.damage = unionRect(next.screen.damage, {
+            x: 0,
+            y,
+            width: nextStart,
+            height: 1,
+          })
+        }
+      }
+    }
 
     // First pass: render changes to existing rows (rows < prev.screen.height)
     let needsFullReset = false
