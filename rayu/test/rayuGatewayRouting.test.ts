@@ -196,8 +196,9 @@ describe('makeGatewayRoutingFetch', () => {
     expect(await res.text()).toContain('daily_turn_limit')
   })
 
-  test('fail-safe to DIRECT when the response lacks the proxied marker (old gateway 404 / redirect)', async () => {
+  test('RAYU_GATEWAY_CALLBACK=true: fail-safe to DIRECT when the response lacks the proxied marker (old gateway 404 / redirect)', async () => {
     process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_GATEWAY_CALLBACK = 'true'
     await signIn()
     const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
     const { fn, calls } = makeInner((url) =>
@@ -211,8 +212,9 @@ describe('makeGatewayRoutingFetch', () => {
     expect(await res.text()).toBe('direct-ok')
   })
 
-  test('fail-safe to DIRECT when the gateway is unreachable', async () => {
+  test('RAYU_GATEWAY_CALLBACK=true: fail-safe to DIRECT when the gateway is unreachable', async () => {
     process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_GATEWAY_CALLBACK = 'true'
     await signIn()
     const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
     const { fn, calls } = makeInner((url, _i, n) => {
@@ -253,6 +255,36 @@ describe('makeGatewayRoutingFetch', () => {
   test('RAYU_GATEWAY_CALLBACK=false: gateway unreachable rethrows (no direct fallback)', async () => {
     process.env.USE_RAYU_OAUTH = 'true'
     process.env.RAYU_GATEWAY_CALLBACK = 'false'
+    await signIn()
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner((url) => {
+      if (url.endsWith('/v1/proxy')) throw new Error('ECONNREFUSED')
+      return new Response('direct-ok', { status: 200 })
+    })
+    await expect(
+      m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, { method: 'POST' }),
+    ).rejects.toThrow('ECONNREFUSED')
+    expect(calls.length).toBe(1) // no direct fallback
+  })
+
+  test('DEFAULT (no RAYU_GATEWAY_CALLBACK): NO direct fallback on a non-proxied gateway response (fail closed by default)', async () => {
+    // No RAYU_GATEWAY_CALLBACK set -> the new default is fail closed.
+    process.env.USE_RAYU_OAUTH = 'true'
+    await signIn()
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner((url) =>
+      url.endsWith('/v1/proxy')
+        ? new Response('404 page not found', { status: 404 }) // no x-rayu-proxied
+        : new Response('direct-ok', { status: 200 }),
+    )
+    const res = await m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, { method: 'POST' })
+    expect(calls.length).toBe(1) // did NOT fall back to a direct provider call
+    expect(res.status).toBe(404) // surfaced the gateway response instead
+  })
+
+  test('DEFAULT (no RAYU_GATEWAY_CALLBACK): gateway unreachable rethrows (fail closed by default)', async () => {
+    // No RAYU_GATEWAY_CALLBACK set -> the new default is fail closed.
+    process.env.USE_RAYU_OAUTH = 'true'
     await signIn()
     const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
     const { fn, calls } = makeInner((url) => {

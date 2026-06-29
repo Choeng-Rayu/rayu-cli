@@ -10,10 +10,12 @@
 // OAuth providers (Kiro, Login-with-Gemini, Vertex, Copilot) and AWS Bedrock are
 // NOT routed — they stay direct. When the flag is off, nothing here engages.
 //
-// FAIL-SAFE: if the gateway is unreachable (connection error) or returns a
-// gateway-origin error (tagged with the X-Rayu-Proxy-Error header), the wrapper
-// transparently falls back to calling the provider DIRECTLY, so a gateway
-// outage never blocks the user.
+// FAIL-CLOSED (default): if the gateway is unreachable (connection error) or
+// returns a non-proxied response (no X-Rayu-Proxied marker), the wrapper
+// surfaces the gateway error so traffic never silently leaves the gateway and
+// its limits cannot be bypassed. Set RAYU_GATEWAY_CALLBACK=true to opt into the
+// fail-safe behavior instead, where the wrapper transparently falls back to
+// calling the provider DIRECTLY so a gateway outage never blocks the user.
 //
 // SECURITY: the Rayu JWT is sent only to the gateway (X-Rayu-Token); the
 // provider key rides the request's existing Authorization/x-api-key header and
@@ -52,16 +54,18 @@ function isGatewayRoutingEnabled(): boolean {
 /**
  * Whether to "call back" to a DIRECT provider request when the gateway is
  * unreachable or returns a non-proxied response. Controlled by
- * RAYU_GATEWAY_CALLBACK (bool), DEFAULT TRUE — a gateway outage never blocks the
- * user. Set RAYU_GATEWAY_CALLBACK=false for strict gateway-only routing (fail
- * closed): the request surfaces the gateway error instead of silently leaving
- * the gateway. The user's provider key is still only ever sent to the upstream
- * the user configured, never logged.
+ * RAYU_GATEWAY_CALLBACK (bool), DEFAULT FALSE — strict gateway-only routing
+ * (fail closed): the request surfaces the gateway error instead of silently
+ * leaving the gateway, so traffic never bypasses the gateway (and its limits)
+ * on an outage. Set RAYU_GATEWAY_CALLBACK=true to opt into the fail-safe
+ * behavior, where a gateway outage transparently falls back to a direct
+ * provider call so the user is never blocked. The user's provider key is still
+ * only ever sent to the upstream the user configured, never logged.
  */
 function isGatewayCallbackEnabled(): boolean {
   const v = process.env.RAYU_GATEWAY_CALLBACK
   if (v !== undefined && v !== '') return isEnvTruthy(v)
-  return true
+  return false
 }
 
 /** Provider kinds whose final (authenticated) HTTP request we can transparently
@@ -190,17 +194,19 @@ export function makeGatewayRoutingFetch(
       }
       // The gateway tags every response it actually proxied with X-Rayu-Proxied.
       // If that marker is absent — an older gateway without /v1/proxy (404), a
-      // redirect, a proxy error, an HTML error page, etc. — fall back to a
-      // direct provider call so the user is never blocked by gateway issues
-      // (unless RAYU_GATEWAY_CALLBACK=false, i.e. strict gateway-only).
+      // redirect, a proxy error, an HTML error page, etc. — fail closed and
+      // surface the gateway response by default, so traffic never silently
+      // leaves the gateway (unless RAYU_GATEWAY_CALLBACK=true, which falls back
+      // to a direct provider call so the user is never blocked).
       if (!res.headers.get(PROXIED_HEADER)) {
         return callbackToDirect ? inner(input, init) : res
       }
       return res
     } catch (err) {
-      // Gateway unreachable / network error. By default fail safe to a direct
-      // call; with callback disabled, fail closed and surface the error so
-      // traffic never silently leaves the gateway.
+      // Gateway unreachable / network error. By default fail closed and surface
+      // the error so traffic never silently leaves the gateway; with callback
+      // enabled (RAYU_GATEWAY_CALLBACK=true) fail safe to a direct call so the
+      // user is never blocked by a gateway outage.
       if (callbackToDirect) return inner(input, init)
       throw err
     }
