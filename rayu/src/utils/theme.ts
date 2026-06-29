@@ -24,6 +24,9 @@ export type Theme = {
   background: string
   // Semantic colors
   success: string
+  /** Prompt input chevron (❯) color. Theme-adjustable: each theme defines its
+   *  own value (green/accent), independent of `success`-message styling. */
+  promptChar: string
   error: string
   warning: string
   merged: string
@@ -134,6 +137,7 @@ const lightTheme: Theme = {
   remember: 'rgb(0,0,255)', // Blue
   background: 'rgb(0,153,153)', // Cyan
   success: 'rgb(44,122,57)', // Green
+  promptChar: 'rgb(44,122,57)', // Prompt chevron (❯) — green
   error: 'rgb(171,43,63)', // Red
   warning: 'rgb(150,108,30)', // Amber
   merged: 'rgb(135,0,255)', // Electric violet (matches autoAccept)
@@ -216,6 +220,7 @@ const lightAnsiTheme: Theme = {
   remember: 'ansi:blue',
   background: 'ansi:cyan',
   success: 'ansi:green',
+  promptChar: 'ansi:green', // Prompt chevron (❯)
   error: 'ansi:red',
   warning: 'ansi:yellow',
   merged: 'ansi:magenta',
@@ -297,6 +302,7 @@ const darkAnsiTheme: Theme = {
   remember: 'ansi:blueBright',
   background: 'ansi:cyanBright',
   success: 'ansi:greenBright',
+  promptChar: 'ansi:greenBright', // Prompt chevron (❯)
   error: 'ansi:redBright',
   warning: 'ansi:yellowBright',
   merged: 'ansi:magentaBright',
@@ -378,6 +384,7 @@ const lightDaltonizedTheme: Theme = {
   remember: 'rgb(51,102,255)', // Bright blue
   background: 'rgb(0,153,153)', // Cyan (color-blind friendly)
   success: 'rgb(0,102,153)', // Blue instead of green for deuteranopia
+  promptChar: 'rgb(0,102,153)', // Prompt chevron (❯) — blue (color-blind safe)
   error: 'rgb(204,0,0)', // Pure red for better distinction
   warning: 'rgb(255,153,0)', // Orange adjusted for deuteranopia
   merged: 'rgb(135,0,255)', // Electric violet (matches autoAccept)
@@ -460,6 +467,7 @@ const darkTheme: Theme = {
   remember: 'rgb(177,185,249)', // Light blue-purple
   background: 'rgb(0,204,204)', // Bright cyan
   success: 'rgb(78,186,101)', // Bright green
+  promptChar: 'rgb(0,255,136)', // Prompt chevron (❯) — bright green
   error: 'rgb(255,107,128)', // Bright red
   warning: 'rgb(255,193,7)', // Bright amber
   merged: 'rgb(175,135,255)', // Electric violet (matches autoAccept)
@@ -541,6 +549,7 @@ const darkDaltonizedTheme: Theme = {
   remember: 'rgb(153,204,255)', // Light blue
   background: 'rgb(0,204,204)', // Bright cyan (color-blind friendly)
   success: 'rgb(51,153,255)', // Blue instead of green
+  promptChar: 'rgb(51,153,255)', // Prompt chevron (❯) — blue (color-blind safe)
   error: 'rgb(255,102,102)', // Bright red
   warning: 'rgb(255,204,0)', // Yellow-orange for deuteranopia
   merged: 'rgb(175,135,255)', // Electric violet (matches autoAccept)

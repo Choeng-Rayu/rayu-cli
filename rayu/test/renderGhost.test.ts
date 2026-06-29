@@ -461,4 +461,50 @@ describe('renderer ghost — diff replay verification', () => {
     }
     expect(row1).toBe(longRow.replace(/\s+$/, '')) // stable row intact, NOT truncated
   })
+
+  // The LEADING 'T' ghost seen during subagent streaming (col 2, the indent /
+  // connector column). The content node sits at an indent (col 5); its leading
+  // padding cells are never written, so when a live row reorganizes and its
+  // connector glyph ('T'/'⎿'/'✔') at col 2 becomes empty, that change is
+  // OUTSIDE screen.damage. The damage-scoped diff never visits col 2, so the
+  // stale glyph survives. The leading-ghost guard must extend damage so the
+  // existing clear path wipes it. (Mirror of trailing tests D/F.)
+  test('H. leading-edge ghost: vacated indent glyph outside damage is cleared', () => {
+    const pools = makePools()
+    const content = '+5 more tool uses (ctrl+o to expand)'
+    const CONTENT_X = 5
+    // damage covers ONLY the content (col 5+) — col 2 is excluded (the bug).
+    const dmg = { x: CONTENT_X, y: 0, width: content.length, height: 1 }
+
+    // prev model: a connector glyph 'T' at col 2 + content at col 5; the
+    // indent cells 0,1,3,4 are empty (unwritten padding).
+    const prev = createScreen(WIDTH, 1, pools.style, pools.char, pools.link)
+    prev.cells[2 * 2] = pools.char.intern('T')
+    for (let i = 0; i < content.length; i++) {
+      prev.cells[(CONTENT_X + i) * 2] = pools.char.intern(content[i]!)
+    }
+    prev.damage = { ...dmg }
+
+    // next model: same content at col 5; col 2 is now EMPTY (glyph vacated).
+    const next = createScreen(WIDTH, 1, pools.style, pools.char, pools.link)
+    for (let i = 0; i < content.length; i++) {
+      next.cells[(CONTENT_X + i) * 2] = pools.char.intern(content[i]!)
+    }
+    next.damage = { ...dmg }
+
+    const lu = new LogUpdate({ isTTY: true, stylePool: pools.style })
+    const diff = lu.render(makeFrame(prev, VH), makeFrame(next, VH))
+
+    // Physical terminal shows prev: a 'T' at col 2, spaces elsewhere in indent.
+    const sim = new TermSim(WIDTH, VH)
+    sim.seed([`  T  ${content}`], 0, 1)
+    sim.apply(diff)
+
+    const expected = `     ${content}` // col 2 cleared to a space
+    const got = sim.line(0)
+    if (got !== expected.replace(/\s+$/, '')) {
+      console.log('H mismatch: got', JSON.stringify(got))
+    }
+    expect(got).toBe(expected.replace(/\s+$/, ''))
+  })
 })

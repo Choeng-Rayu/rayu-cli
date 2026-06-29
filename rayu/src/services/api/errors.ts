@@ -30,6 +30,8 @@ import {
 } from 'src/utils/model/model.js'
 import { getModelStrings } from 'src/utils/model/modelStrings.js'
 import { getAPIProvider, isRayuNonAnthropicActive } from 'src/utils/model/providers.js'
+import { getActiveProvider } from 'src/utils/rayuConfig.js'
+import { getRayuWebBaseUrl } from 'src/services/rayuAuth/rayuSession.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {
   API_PDF_MAX_PAGES,
@@ -841,6 +843,34 @@ export function getAssistantMessageFromError(
       error: 'authentication_failed',
       content: getOauthOrgNotAllowedErrorMessage(),
     })
+  }
+
+  // Rayu-hosted plan gating: a 403 on a Rayu-hosted model means the signed-in
+  // user's plan does not include it (e.g. Free). Show a clear upgrade prompt
+  // with the plans link INSTEAD of the generic "API key may be invalid / use
+  // /connect" message — it is a plan permission issue, not a credential issue.
+  // Covers both the gateway 403 ("model not available on your plan") and the
+  // CLI's pre-flight gate (code 'plan_upgrade_required' / "paid feature").
+  if (error instanceof APIError && error.status === 403) {
+    const onHosted = (() => {
+      try {
+        return getActiveProvider()?.kind === 'rayu-hosted'
+      } catch {
+        return false
+      }
+    })()
+    const planGated =
+      error.message.includes('model not available on your plan') ||
+      error.message.toLowerCase().includes('paid feature') ||
+      error.message.includes('plan_upgrade_required')
+    if (onHosted || planGated) {
+      const plansUrl = `${getRayuWebBaseUrl()}/plans`
+      const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'
+      return createAssistantAPIErrorMessage({
+        error: 'invalid_request',
+        content: `🔒 "${model}" is a Rayu-hosted model, available on paid plans (Pro and up). Please upgrade your plan to use it: ${plansUrl} — or run ${switchCmd} to switch to a model included in your current plan.`,
+      })
+    }
   }
 
   // Generic handler for other 401/403 authentication errors

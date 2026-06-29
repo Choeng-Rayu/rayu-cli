@@ -229,7 +229,7 @@ export function AssistantTextMessage(t0) {
         const t3 = isSelected ? "messageActionsBackground" : undefined;
         let t4;
         if ($[22] !== isSelected || $[23] !== shouldShowDot) {
-          t4 = shouldShowDot && <NoSelect fromLeftEdge={true} minWidth={2}><Text color={isSelected ? "suggestion" : "text"}>{BLACK_CIRCLE}</Text></NoSelect>;
+          t4 = shouldShowDot && <NoSelect fromLeftEdge={true} minWidth={2}><Text color={isSelected ? "suggestion" : "claude"}>{BLACK_CIRCLE}</Text></NoSelect>;
           $[22] = isSelected;
           $[23] = shouldShowDot;
           $[24] = t4;

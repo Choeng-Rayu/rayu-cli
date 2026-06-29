@@ -124,6 +124,37 @@ export function reconcileContextUsage(opts: {
   return { usedForGrid: used, freeTokens, finalTotalTokens: used }
 }
 
+/**
+ * Derive the "Messages" bucket token count for the /context breakdown.
+ *
+ * Messages is the dominant, hardest-to-estimate category. When the real
+ * last-response API usage is available (`totalFromAPI`), it is the
+ * authoritative "used" total, so we make Messages the *remainder* of that
+ * total after the small, accurately-measured categories (system prompt,
+ * tools, memory, skills, agents). This guarantees the per-category breakdown
+ * sums to the same number shown in the header — the independent local
+ * estimate could otherwise balloon past 100% of the window (the bug this
+ * fixes).
+ *
+ * When no real usage is reported (e.g. Kiro reports an all-zero usage object,
+ * OpenAI-compatible providers can't use countTokens), `totalFromAPI` is null
+ * or 0 and we keep the local estimate — that path is already self-consistent
+ * because the header also falls back to the estimated category sum.
+ *
+ * Clamps at 0 for the edge case where the measured overhead categories already
+ * exceed the real total (the header still reflects `totalFromAPI`).
+ */
+export function deriveMessagesBucketTokens(opts: {
+  totalFromAPI: number | null
+  otherCategoriesTokens: number
+  estimatedMessageTokens: number
+}): number {
+  if (opts.totalFromAPI != null && opts.totalFromAPI > 0) {
+    return Math.max(0, opts.totalFromAPI - opts.otherCategoriesTokens)
+  }
+  return opts.estimatedMessageTokens
+}
+
 async function countTokensWithFallback(
   messages: Anthropic.Beta.Messages.BetaMessageParam[],
   tools: Anthropic.Beta.Messages.BetaToolUnion[],
@@ -983,6 +1014,177 @@ async function approximateMessageTokens(
   return breakdown
 }
 
+/**
+ * Build the /context grid rows from the reconciled token split.
+ *
+ * The reconciled Free space and reserved buffer get their share of squares
+ * FIRST; the usage categories then fill only the remaining budget. If the
+ * usage categories want more squares than that budget (an inflated local
+ * estimate, or a genuinely over-budget context), they are scaled down
+ * proportionally so Free space can never be squeezed out of the grid — the
+ * bug where an over-100% "Messages" estimate filled every square and the grid
+ * showed no free space while the legend said 57.8% free.
+ *
+ * Behavior is unchanged when the usage categories already fit within their
+ * budget: usage squares are placed first, then Free space fills the remainder
+ * up to (total − reserved), then the reserved buffer caps the grid — exactly
+ * as before.
+ */
+export function buildContextGridRows(opts: {
+  categories: ContextCategory[]
+  contextWindow: number
+  reservedTokens: number
+  freeTokens: number
+  terminalWidth?: number
+}): GridSquare[][] {
+  const {
+    categories,
+    contextWindow,
+    reservedTokens,
+    freeTokens,
+    terminalWidth,
+  } = opts
+
+  // Grid dimensions: narrow screens (< 80 cols) use 5x5 (200k) / 5x10 (1M+);
+  // normal screens use 10x10 (200k) / 20x10 (1M+).
+  const isNarrowScreen = terminalWidth !== undefined && terminalWidth < 80
+  const GRID_WIDTH =
+    contextWindow >= 1000000
+      ? isNarrowScreen
+        ? 5
+        : 20
+      : isNarrowScreen
+        ? 5
+        : 10
+  const GRID_HEIGHT = contextWindow >= 1000000 ? 10 : isNarrowScreen ? 5 : 10
+  const TOTAL_SQUARES = GRID_WIDTH * GRID_HEIGHT
+
+  const squaresFor = (tokens: number): number =>
+    Math.round((tokens / contextWindow) * TOTAL_SQUARES)
+
+  const nonDeferred = categories.filter(cat => !cat.isDeferred)
+  const reservedCategory = nonDeferred.find(
+    cat =>
+      cat.name === RESERVED_CATEGORY_NAME ||
+      cat.name === MANUAL_COMPACT_BUFFER_NAME,
+  )
+  const freeSpaceCat = nonDeferred.find(cat => cat.name === 'Free space')
+  const usageCats = nonDeferred.filter(
+    cat =>
+      cat.name !== RESERVED_CATEGORY_NAME &&
+      cat.name !== MANUAL_COMPACT_BUFFER_NAME &&
+      cat.name !== 'Free space',
+  )
+
+  // Reserve buffer + Free space squares up front from the reconciled token
+  // values so the grid can never contradict the legend. The buffer only claims
+  // squares when a reserved category is actually present — matches the
+  // analyzeContextUsage call site, where reservedTokens > 0 ⟺ a buffer
+  // category was pushed, and keeps the grid full when it isn't.
+  const reservedSquares =
+    reservedCategory && reservedTokens > 0
+      ? Math.min(TOTAL_SQUARES, Math.max(1, squaresFor(reservedTokens)))
+      : 0
+  const freeSquares = Math.max(
+    0,
+    Math.min(TOTAL_SQUARES - reservedSquares, squaresFor(freeTokens)),
+  )
+  // Squares left for the actual (non-free, non-reserved) usage categories.
+  const usageBudget = Math.max(0, TOTAL_SQUARES - reservedSquares - freeSquares)
+
+  // Desired squares per usage category (≥1 so small categories stay visible).
+  const desired = usageCats.map(cat => ({
+    cat,
+    squares: Math.max(1, squaresFor(cat.tokens)),
+  }))
+  const desiredTotal = desired.reduce((sum, d) => sum + d.squares, 0)
+  // Overflow guard: scale usage squares down to the budget. No-op when fitting.
+  const scale =
+    desiredTotal > usageBudget && desiredTotal > 0
+      ? usageBudget / desiredTotal
+      : 1
+
+  const makeSquares = (cat: ContextCategory, count: number): GridSquare[] => {
+    const exactSquares = (cat.tokens / contextWindow) * TOTAL_SQUARES
+    const wholeSquares = Math.floor(exactSquares)
+    const fractionalPart = exactSquares - wholeSquares
+    const percentageOfTotal = Math.round((cat.tokens / contextWindow) * 100)
+    const out: GridSquare[] = []
+    for (let i = 0; i < count; i++) {
+      // Full squares get 1.0; the boundary square gets the fractional amount.
+      let squareFullness = 1.0
+      if (i === wholeSquares && fractionalPart > 0) {
+        squareFullness = fractionalPart
+      }
+      out.push({
+        color: cat.color,
+        isFilled: true,
+        categoryName: cat.name,
+        tokens: cat.tokens,
+        percentage: percentageOfTotal,
+        squareFullness,
+      })
+    }
+    return out
+  }
+
+  const gridSquares: GridSquare[] = []
+
+  // 1) Usage categories first, capped at the usage budget so Free space and
+  //    the reserved buffer always keep their reconciled slots.
+  for (const d of desired) {
+    const count = scale < 1 ? Math.floor(d.squares * scale) : d.squares
+    for (const square of makeSquares(d.cat, count)) {
+      if (gridSquares.length < usageBudget) {
+        gridSquares.push(square)
+      }
+    }
+  }
+
+  // 2) Free space fills the remainder up to (total − reserved).
+  const freeTokensForSquare = freeSpaceCat?.tokens ?? freeTokens
+  const freeTarget = TOTAL_SQUARES - reservedSquares
+  while (gridSquares.length < freeTarget) {
+    gridSquares.push({
+      color: 'promptBorder',
+      isFilled: true,
+      categoryName: 'Free space',
+      tokens: freeTokensForSquare,
+      percentage: Math.round((freeTokensForSquare / contextWindow) * 100),
+      squareFullness: 1.0,
+    })
+  }
+
+  // 3) Reserved buffer at the end.
+  if (reservedCategory && reservedSquares > 0) {
+    for (const square of makeSquares(reservedCategory, reservedSquares)) {
+      if (gridSquares.length < TOTAL_SQUARES) {
+        gridSquares.push(square)
+      }
+    }
+  }
+
+  // Defensive: pad any rounding leftover with Free space so the grid is always
+  // exactly GRID_WIDTH × GRID_HEIGHT and rows never come out short.
+  while (gridSquares.length < TOTAL_SQUARES) {
+    gridSquares.push({
+      color: 'promptBorder',
+      isFilled: true,
+      categoryName: 'Free space',
+      tokens: freeTokensForSquare,
+      percentage: Math.round((freeTokensForSquare / contextWindow) * 100),
+      squareFullness: 1.0,
+    })
+  }
+
+  // Convert to rows for rendering.
+  const gridRows: GridSquare[][] = []
+  for (let i = 0; i < GRID_HEIGHT; i++) {
+    gridRows.push(gridSquares.slice(i * GRID_WIDTH, (i + 1) * GRID_WIDTH))
+  }
+  return gridRows
+}
+
 export async function analyzeContextUsage(
   messages: Message[],
   model: string,
@@ -1155,10 +1357,47 @@ export async function analyzeContextUsage(
     })
   }
 
-  if (messageTokens !== null && messageTokens > 0) {
+  // Extract the real last-response API usage BEFORE building the Messages
+  // bucket, so Messages can be derived as the remainder of the real total.
+  // This is the same source the status-line/header uses and is the accurate
+  // "used" total for ALL providers (Anthropic real counts; OpenAI-compatible/
+  // genai map their response usage onto the same shape).
+  const apiUsage = getCurrentUsage(originalMessages ?? messages)
+  const apiInputTotal = apiUsage
+    ? apiUsage.input_tokens +
+      apiUsage.cache_creation_input_tokens +
+      apiUsage.cache_read_input_tokens
+    : 0
+  // A zero input total means the provider didn't report real per-response usage
+  // (e.g. Kiro: its stream carries a contextUsageEvent percentage but no input
+  // token counts, so the assistant message's usage is a non-null all-zero
+  // object). Treat that as "unavailable" (null) so we fall back to the
+  // estimated category sum instead of showing 0/<window>.
+  const totalFromAPI = apiInputTotal > 0 ? apiInputTotal : null
+
+  // Sum of the other measured (non-deferred) categories pushed so far —
+  // System prompt, System tools, MCP tools, Custom agents, Memory files,
+  // Skills. Messages is derived against this so the breakdown sums to the
+  // authoritative header total. Deferred categories don't occupy context.
+  const otherCategoriesTokens = cats.reduce(
+    (sum, cat) => sum + (cat.isDeferred ? 0 : cat.tokens),
+    0,
+  )
+
+  // Messages bucket: real-total remainder when API usage is present, else the
+  // local estimate (see deriveMessagesBucketTokens). This stops the dominant
+  // Messages estimate from ballooning past 100% of the window while leaving
+  // the header total unchanged.
+  const messagesBucketTokens = deriveMessagesBucketTokens({
+    totalFromAPI,
+    otherCategoriesTokens,
+    estimatedMessageTokens: messageTokens,
+  })
+
+  if (messagesBucketTokens > 0) {
     cats.push({
       name: 'Messages',
-      tokens: messageTokens,
+      tokens: messagesBucketTokens,
       color: 'purple_FOR_SUBAGENTS_ONLY',
     })
   }
@@ -1214,28 +1453,11 @@ export async function analyzeContextUsage(
     })
   }
 
-  // Extract API usage (the real last-response usage) — the same source the
-  // status-line/header uses. This is the accurate "used" total for ALL
-  // providers (Anthropic real counts; OpenAI-compatible/genai map their
-  // response usage onto the same shape).
-  const apiUsage = getCurrentUsage(originalMessages ?? messages)
-  const apiInputTotal = apiUsage
-    ? apiUsage.input_tokens +
-      apiUsage.cache_creation_input_tokens +
-      apiUsage.cache_read_input_tokens
-    : 0
-  // A zero input total means the provider didn't report real per-response usage
-  // (e.g. Kiro: its stream carries a contextUsageEvent percentage but no input
-  // token counts, so the assistant message's usage is a non-null all-zero
-  // object). Treat that as "unavailable" (null) so we fall back to the
-  // estimated category sum instead of showing 0/<window>.
-  const totalFromAPI = apiInputTotal > 0 ? apiInputTotal : null
-
   // Drive the grid + Free space from the API total when available, otherwise
   // from the estimated category sum. This keeps the header, the grid fill, and
   // Free space using ONE "used" source — so they can't contradict each other
   // (the old bug: header 110k but Free space computed from a collapsed ~20k
-  // estimate). The per-category bars stay best-effort estimates.
+  // estimate). totalFromAPI / apiUsage were computed above (before Messages).
   const { freeTokens, finalTotalTokens } = reconcileContextUsage({
     contextWindow,
     actualUsage,
@@ -1249,126 +1471,17 @@ export async function analyzeContextUsage(
     color: 'promptBorder',
   })
 
-  // Pre-calculate grid based on model context window and terminal width
-  // For narrow screens (< 80 cols), use 5x5 for 200k models, 5x10 for 1M+ models
-  // For normal screens, use 10x10 for 200k models, 20x10 for 1M+ models
-  const isNarrowScreen = terminalWidth && terminalWidth < 80
-  const GRID_WIDTH =
-    contextWindow >= 1000000
-      ? isNarrowScreen
-        ? 5
-        : 20
-      : isNarrowScreen
-        ? 5
-        : 10
-  const GRID_HEIGHT = contextWindow >= 1000000 ? 10 : isNarrowScreen ? 5 : 10
-  const TOTAL_SQUARES = GRID_WIDTH * GRID_HEIGHT
-
-  // Filter out deferred categories - they don't take up actual context space
-  // (e.g., MCP tools when tool search is enabled)
-  const nonDeferredCats = cats.filter(cat => !cat.isDeferred)
-
-  // Calculate squares per category (use rawEffectiveMax for visualization to show full context)
-  const categorySquares = nonDeferredCats.map(cat => ({
-    ...cat,
-    squares:
-      cat.name === 'Free space'
-        ? Math.round((cat.tokens / contextWindow) * TOTAL_SQUARES)
-        : Math.max(1, Math.round((cat.tokens / contextWindow) * TOTAL_SQUARES)),
-    percentageOfTotal: Math.round((cat.tokens / contextWindow) * 100),
-  }))
-
-  // Helper function to create grid squares for a category
-  function createCategorySquares(
-    category: (typeof categorySquares)[0],
-  ): GridSquare[] {
-    const squares: GridSquare[] = []
-    const exactSquares = (category.tokens / contextWindow) * TOTAL_SQUARES
-    const wholeSquares = Math.floor(exactSquares)
-    const fractionalPart = exactSquares - wholeSquares
-
-    for (let i = 0; i < category.squares; i++) {
-      // Determine fullness: full squares get 1.0, partial square gets fractional amount
-      let squareFullness = 1.0
-      if (i === wholeSquares && fractionalPart > 0) {
-        // This is the partial square
-        squareFullness = fractionalPart
-      }
-
-      squares.push({
-        color: category.color,
-        isFilled: true,
-        categoryName: category.name,
-        tokens: category.tokens,
-        percentage: category.percentageOfTotal,
-        squareFullness,
-      })
-    }
-
-    return squares
-  }
-
-  // Build the grid as an array of squares with full metadata
-  const gridSquares: GridSquare[] = []
-
-  // Separate reserved category for end placement (either autocompact or manual compact buffer)
-  const reservedCategory = categorySquares.find(
-    cat =>
-      cat.name === RESERVED_CATEGORY_NAME ||
-      cat.name === MANUAL_COMPACT_BUFFER_NAME,
-  )
-  const nonReservedCategories = categorySquares.filter(
-    cat =>
-      cat.name !== RESERVED_CATEGORY_NAME &&
-      cat.name !== MANUAL_COMPACT_BUFFER_NAME &&
-      cat.name !== 'Free space',
-  )
-
-  // Add all non-reserved, non-free-space squares first
-  for (const cat of nonReservedCategories) {
-    const squares = createCategorySquares(cat)
-    for (const square of squares) {
-      if (gridSquares.length < TOTAL_SQUARES) {
-        gridSquares.push(square)
-      }
-    }
-  }
-
-  // Calculate how many squares are needed for reserved
-  const reservedSquareCount = reservedCategory ? reservedCategory.squares : 0
-
-  // Fill with free space, leaving room for reserved at the end
-  const freeSpaceCat = cats.find(c => c.name === 'Free space')
-  const freeSpaceTarget = TOTAL_SQUARES - reservedSquareCount
-
-  while (gridSquares.length < freeSpaceTarget) {
-    gridSquares.push({
-      color: 'promptBorder',
-      isFilled: true,
-      categoryName: 'Free space',
-      tokens: freeSpaceCat?.tokens || 0,
-      percentage: freeSpaceCat
-        ? Math.round((freeSpaceCat.tokens / contextWindow) * 100)
-        : 0,
-      squareFullness: 1.0, // Free space is always "full"
-    })
-  }
-
-  // Add reserved squares at the end
-  if (reservedCategory) {
-    const squares = createCategorySquares(reservedCategory)
-    for (const square of squares) {
-      if (gridSquares.length < TOTAL_SQUARES) {
-        gridSquares.push(square)
-      }
-    }
-  }
-
-  // Convert to rows for rendering
-  const gridRows: GridSquare[][] = []
-  for (let i = 0; i < GRID_HEIGHT; i++) {
-    gridRows.push(gridSquares.slice(i * GRID_WIDTH, (i + 1) * GRID_WIDTH))
-  }
+  // Build the visual grid from the reconciled token split. Free space and the
+  // reserved buffer always keep their squares; usage categories fill only the
+  // remaining budget (scaled down if they'd overflow), so the grid can never
+  // contradict the header/legend.
+  const gridRows = buildContextGridRows({
+    categories: cats,
+    contextWindow,
+    reservedTokens,
+    freeTokens,
+    terminalWidth,
+  })
 
   // Format message breakdown (used by context suggestions for all users)
   // Combine tool calls and results, then get top 5

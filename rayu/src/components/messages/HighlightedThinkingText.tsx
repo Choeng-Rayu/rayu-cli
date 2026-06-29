@@ -21,7 +21,7 @@ export function HighlightedThinkingText(t0) {
   } = t0;
   const isQueued = useQueuedMessage()?.isQueued ?? false;
   const isSelected = useContext(MessageActionsSelectedContext);
-  const pointerColor = isSelected ? "suggestion" : "subtle";
+  const pointerColor = isSelected ? "suggestion" : "promptChar";
   if (useBriefLayout) {
     let t1;
     if ($[0] !== timestamp) {
@@ -96,7 +96,7 @@ export function HighlightedThinkingText(t0) {
         }
         let t3;
         if ($[21] !== text) {
-          t3 = <Text color="text">{text}</Text>;
+          t3 = <Text color="promptChar">{text}</Text>;
           $[21] = text;
           $[22] = t3;
         } else {
