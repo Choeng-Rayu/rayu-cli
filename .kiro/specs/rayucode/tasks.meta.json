@@ -1,0 +1,17 @@
+{
+  "pbtResults": {
+    "2.2 Write property test for NDJSON round-trip": {
+      "status": "passed",
+      "lastRunTimestamp": 1782780271028
+    },
+    "2.3 Write property test for decoder robustness and continuation": {
+      "status": "passed",
+      "lastRunTimestamp": 1782780282952
+    },
+    "2.4 Write property test for chunk-boundary invariance": {
+      "status": "passed",
+      "lastRunTimestamp": 1782780295962
+    }
+  },
+  "executionHistory": {}
+}
