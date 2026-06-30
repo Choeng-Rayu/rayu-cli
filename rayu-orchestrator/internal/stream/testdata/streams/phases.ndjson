@@ -1,0 +1,6 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"/workspace/.rayu/swarm/shared.json","content":"{\"goal\":\"x\"}"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Write","input":{"file_path":"/workspace/.rayu/swarm/PA.md","content":"# PA Plan"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Edit","input":{"file_path":"/workspace/.rayu/swarm/FRONTEND.md"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Write","input":{"file_path":"/workspace/.rayu/swarm/REVIEW.md","content":"reviewing"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t5","name":"Write","input":{"file_path":"/workspace/.rayu/swarm/DEPLOY.md","content":"deploying"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t6","name":"Write","input":{"file_path":"/workspace/.rayu/swarm/shared.json","content":"{\"phase\":\"build\"}"}}]}}

@@ -1,0 +1,3 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"f1","name":"Write","input":{"file_path":"/workspace/src/index.ts","content":"export {}"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"f2","name":"Edit","input":{"file_path":"/workspace/app/api/bookings/route.ts","old_string":"a","new_string":"b"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"f3","name":"MultiEdit","input":{"file_path":"/workspace/package.json","edits":[]}}]}}
