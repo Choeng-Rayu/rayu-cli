@@ -78,13 +78,14 @@ order for an OpenAI-compatible model:
 1. **`RAYU_CONTEXT_TOKENS`** env var (overrides everything).
 2. **Per-model config** override — `providers[].modelContextWindows["model-id"]`.
 3. **Known-model table** — built-in defaults, e.g.:
-   - `deepseek-v4-flash` / `deepseek-v4-pro` / `minimax` → 1,000,000
-   - `kimi`/`moonshot`, `qwen3-coder`/`qwen3-next`, `jamba` → 256,000
-   - `deepseek-chat` / `deepseek-reasoner` / `deepseek-v3` → 131,072
+   - Gemini 1.5/2/2.5/3.x, GPT-4.1, Nemotron Ultra, GLM-5.2, MiniMax-M3, Fugu → 1,000,000
+   - Kimi K2.5/K2.6/Thinking, Qwen3-coder/next, Jamba, Step-3.7 → 256,000
+   - Claude (any), MiniMax-M2.x, GLM-4.6/4.7/5 → 200,000
+   - `deepseek-chat` / `deepseek-reasoner` / `deepseek-v3` / `kimi-k2` (K2 0711) / `moonshot` → 131,072
    - `llama-3.x`/`llama-4`, `nemotron`, `qwen2/3`, `gemma-2/3/4` → 131,072
    - `mistral`/`mixtral`/`ministral`/`codestral`/`devstral` → 131,072
-   - `glm-4/5`, `gpt-oss`, `phi-3/4`, `command-r` → 131,072
-   - `gpt-4o` / `gpt-4.1` / `o1` / `o3` / `o4` / `gpt-5` → 128,000
+   - `glm-4.5`, `gpt-oss`, `phi-3/4`, `command-r` → 131,072
+   - `gpt-4o`, `gpt-5`, `o1`/`o3`/`o4` → 128,000
 4. **Per-provider default** — `providers[].contextWindow`.
 5. Otherwise falls back to 200,000 **and logs an `issue` diagnostic**
    (`rayu_context.unknown_model`) so you can see which models need a value.

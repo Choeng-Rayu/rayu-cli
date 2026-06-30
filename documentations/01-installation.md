@@ -27,7 +27,7 @@ bun run build      # bundle → dist/rayu.js (a single Node-runnable file)
 Verify:
 
 ```bash
-node dist/rayu.js --version      # → 0.1.0 (Rayu-CLI)
+node dist/rayu.js --version      # → 1.3.x (Rayu-CLI)
 node dist/rayu.js --help         # usage + all flags
 ```
 

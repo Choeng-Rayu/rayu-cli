@@ -21,9 +21,13 @@ Within the config home (e.g. `~/.rayu/`):
 
 | Path | Purpose | Notes |
 |------|---------|-------|
-| `providers.json` | Rayu providers: id, kind, apiKey, baseURL, default/fetched models, context overrides | mode `0600` (secrets) |
+| `providers.json` | Rayu providers: id, kind, apiKey, baseURL, default/fetched models, context overrides, subagent/image/video selections | mode `0600` (secrets) |
 | `settings.json` | User settings, incl. the selected `model` | |
 | `diagnostics.jsonl` | Recorded bugs/issues/vulnerabilities | append-only JSONL |
+| `rayu-auth.json` | Rayu OAuth session token (when using Rayu hosted login) | mode `0600` |
+| `rayu-entitlements.json` | Cached plan entitlements for the signed-in user | mode `0600`; refreshed every 30s |
+| `gemini-oauth.json` | Vertex AI OAuth refresh token | mode `0600` |
+| `gemini-login.json` | Login-with-Gemini (Code Assist) OAuth token | mode `0600` |
 | `projects/` | Per-project session transcripts | |
 | `skills/`, `agents/`, … | Skills/agents/etc. | |
 
@@ -35,6 +39,11 @@ instead of the default `~/.rayu`.
 ```json
 {
   "activeProvider": "nvidia",
+  "subagent": { "providerId": "nvidia", "model": "meta/llama-3.3-70b-instruct" },
+  "subagentByAgent": { "backend": { "providerId": "deepseek", "model": "deepseek-chat" } },
+  "imageModel": "imagen-4.0-generate-001",
+  "videoModel": "veo-3.1-generate-001",
+  "projectProfile": "default",
   "providers": [
     {
       "id": "nvidia",
@@ -42,13 +51,16 @@ instead of the default `~/.rayu`.
       "apiKey": "nvapi-xxxxx",
       "baseURL": "https://integrate.api.nvidia.com/v1",
       "defaultModel": "meta/llama-3.3-70b-instruct",
-      "smallFastModel": "meta/llama-3.3-70b-instruct",
+      "smallFastModel": "nvidia/llama-3.1-nemotron-nano-8b-v1",
       "models": ["my/custom-model"],
       "fetchedModels": ["...catalog from /v1/models..."],
       "contextWindow": 131072,
       "modelContextWindows": { "deepseek-ai/deepseek-v4-flash": 1000000 }
     },
-    { "id": "anthropic", "kind": "anthropic", "apiKey": "sk-ant-xxxxx" }
+    { "id": "anthropic", "kind": "anthropic", "apiKey": "sk-ant-xxxxx" },
+    { "id": "bedrock", "kind": "bedrock", "bedrockApi": "converse", "apiKey": "aws-xxxxx", "awsRegion": "us-east-1" },
+    { "id": "gemini-vertex", "kind": "vertex", "gcpProject": "my-project", "gcpRegion": "global" },
+    { "id": "kiro", "kind": "kiro", "kiroAuthType": "oauth" }
   ]
 }
 ```
@@ -56,7 +68,7 @@ instead of the default `~/.rayu`.
 | Field | Meaning |
 |-------|---------|
 | `activeProvider` | id of the provider currently in use |
-| `kind` | `anthropic` or `openai-compatible` |
+| `kind` | `anthropic`, `openai-compatible`, `bedrock`, `vertex`, `genai`, `kiro`, `copilot`, or `rayu-hosted` |
 | `apiKey` | provider API key (secret) |
 | `baseURL` | endpoint base (openai-compatible) |
 | `defaultModel` | model used until you switch / fallback |
@@ -65,6 +77,11 @@ instead of the default `~/.rayu`.
 | `fetchedModels` | cached catalog from `GET {baseURL}/models` |
 | `contextWindow` | provider-wide context default (tokens) |
 | `modelContextWindows` | per-model context overrides (tokens) |
+| `awsRegion` | AWS region for Bedrock (default `us-east-1`) |
+| `bedrockApi` | `converse`, `openai`, or `anthropic` for Bedrock presets |
+| `gcpProject` | GCP project id for Vertex AI |
+| `gcpRegion` | GCP region for Vertex AI (default `global`) |
+| `kiroAuthType` | `apikey` or `oauth` for Kiro providers |
 
 You can edit this file by hand; restart Rayu to pick up changes.
 
@@ -77,8 +94,30 @@ You can edit this file by hand; restart Rayu to pick up changes.
 | `RAYU_OPENAI_COMPATIBLE=1` | Force the OpenAI-compatible client path |
 | `RAYU_OPENAI_BASE_URL` | Base URL for the OpenAI-compatible endpoint |
 | `RAYU_OPENAI_API_KEY` | API key for the OpenAI-compatible endpoint |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `NVIDIA_API_KEY`, `DEEPSEEK_API_KEY`, `KIMI_FOR_CODE_API_KEY`, `DOUBLE_WORD_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` | Auto-imported into `providers.json` on startup |
+| `ANTHROPIC_API_KEY` | Anthropic API key (auto-imported) |
+| `NVIDIA_API_KEY` | NVIDIA NIM (auto-imported) |
+| `DEEPSEEK_API_KEY` | DeepSeek (auto-imported) |
+| `DOUBLE_WORD_API_KEY` / `DOUBLEWORD_API_KEY` | Doubleword (auto-imported) |
+| `ZAI_API_KEY` / `ZHIPUAI_API_KEY` / `GLM_API_KEY` | GLM — Z.ai (auto-imported) |
+| `MINIMAX_API_KEY` | MiniMax (auto-imported) |
+| `KIMI_API_KEY` / `MOONSHOT_API_KEY` | Kimi / Moonshot (auto-imported) |
+| `KIMI_FOR_CODE_API_KEY` | Kimi for Code (auto-imported) |
+| `SAKANA_API_KEY` | Fugu — Sakana AI (auto-imported) |
+| `OPENAI_API_KEY` | OpenAI (auto-imported) |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key (auto-imported) |
+| `OPENROUTER_API_KEY` | OpenRouter (auto-imported) |
+| `XAI_API_KEY` | xAI / Grok (auto-imported) |
+| `GROQ_API_KEY` | Groq (auto-imported) |
+| `FIREWORKS_API_KEY` | Fireworks AI (auto-imported) |
+| `TOGETHER_API_KEY` / `TOGETHERAI_API_KEY` | Together AI (auto-imported) |
+| `CEREBRAS_API_KEY` | Cerebras (auto-imported) |
+| `BASETEN_API_KEY` | Baseten (auto-imported) |
+| `DEEPINFRA_API_KEY` | DeepInfra (auto-imported) |
+| `HF_TOKEN` / `HUGGINGFACE_API_KEY` / `HUGGING_FACE_HUB_TOKEN` | Hugging Face (auto-imported) |
+| `KIRO_API_KEY` | Kiro (auto-imported) |
+| `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock bearer token (auto-imported into `bedrock` preset) |
+| `AWS_REGION` / `AWS_DEFAULT_REGION` | AWS region for Bedrock (default `us-east-1`) |
+| `OLLAMA_HOST` | Override Ollama server address (bare port, `host:port`, or full URL) |
 
 ### Models & context
 | Variable | Effect |
