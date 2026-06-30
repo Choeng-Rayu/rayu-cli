@@ -1,0 +1,30 @@
+{
+  "name": "rayucode",
+  "displayName": "rayucode",
+  "version": "0.1.0",
+  "description": "rayucode VSCode_Host — VS Code extension that surfaces the Rayu CLI agent. Depends on @rayucode/core (R13.2).",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "./dist/extension.js",
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@rayucode/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.8"
+  }
+}

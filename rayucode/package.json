@@ -1,0 +1,23 @@
+{
+  "name": "rayucode-monorepo",
+  "version": "0.1.0",
+  "description": "rayucode — VS Code extension that surfaces the Rayu CLI agent. Two-package monorepo (editor-agnostic core + VS Code host).",
+  "license": "UNLICENSED",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build:core": "npm run build --workspace packages/core",
+    "test:core": "npm run test --workspace packages/core"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
