@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -41,6 +42,94 @@ func newReq(ctx context.Context, url, apiKey string, body []byte) (*http.Request
 	return req, nil
 }
 
+// --- Transient-upstream retry -----------------------------------------------
+//
+// Providers (DeepSeek, DeepInfra, AWS Bedrock, ...) occasionally answer a
+// pre-flight request with a brief capacity blip — 502/503/504 — that is
+// unrelated to the request's content, so a same-provider retry a moment later
+// commonly succeeds (this is AWS's own documented advice for Bedrock's
+// "ServiceUnavailableException"/"too many connections" responses, and
+// DeepSeek's documented behavior for 503 "server overloaded"). This is safe to
+// do transparently here because Stream/Complete/Forward all inspect the
+// upstream's status line before writing anything to the client — nothing has
+// been sent yet, so a retry is invisible to the caller either way.
+//
+// This is intentionally small: it smooths over sub-second blips so one flaky
+// upstream reply doesn't fail an entire agent turn. A sustained outage still
+// surfaces to the caller (and from there to the CLI's own, more patient
+// retry-with-backoff) after maxUpstreamRetries attempts.
+const (
+	maxUpstreamRetries = 2
+	retryBaseDelay     = 250 * time.Millisecond
+	retryMaxDelay      = 2 * time.Second
+)
+
+// isRetryableStatus reports whether an upstream status is worth an automatic
+// same-request retry. 429 is deliberately excluded: it usually reflects a real
+// per-key/account rate limit that a couple of sub-second retries won't clear,
+// and the response's Retry-After is forwarded to the client, which has its own
+// (longer) backoff loop for exactly that case.
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// retryDelay computes the backoff before the next attempt, honoring an
+// integer-seconds Retry-After header when present (capped at retryMaxDelay so
+// a large provider-suggested wait doesn't stall the gateway request itself —
+// the CLI's own retry loop is the right place for longer backoffs).
+func retryDelay(attempt int, header http.Header) time.Duration {
+	if ra := header.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
+			d := time.Duration(secs) * time.Second
+			if d > retryMaxDelay {
+				return retryMaxDelay
+			}
+			return d
+		}
+	}
+	d := retryBaseDelay * time.Duration(uint(1)<<uint(attempt))
+	if d > retryMaxDelay {
+		return retryMaxDelay
+	}
+	return d
+}
+
+// doWithRetry sends the request built by buildReq — called fresh for every
+// attempt, since an *http.Request's body can only be read once — retrying up
+// to maxUpstreamRetries times when the upstream responds with a transient
+// status. A transport-level error (dial/TLS/timeout failure — no response at
+// all) is returned immediately without retrying: Stream/Complete/Forward all
+// treat that as "upstream unreachable", which is the caller's cue to fail the
+// request rather than keep the client waiting on a dead upstream.
+func doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		req, err := buildReq()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := Client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if attempt >= maxUpstreamRetries || !isRetryableStatus(resp.StatusCode) {
+			return resp, nil
+		}
+		delay := retryDelay(attempt, resp.Header)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
 // parseUsageLine extracts a non-empty usage object from a single SSE `data:` line.
 func parseUsageLine(line []byte) *Usage {
 	s := bytes.TrimSpace(line)
@@ -63,17 +152,28 @@ func parseUsageLine(line []byte) *Usage {
 	return nil
 }
 
+// errSnippet caps an upstream error body for safe/readable logging.
+func errSnippet(b []byte) string {
+	const max = 300
+	s := bytes.TrimSpace(b)
+	if len(s) > max {
+		return string(s[:max]) + "…"
+	}
+	return string(s)
+}
+
 // Stream proxies a streaming completion. It owns the response once it starts
 // writing; `wrote` reports whether any bytes/headers were sent to the client.
 // On a pre-flight failure (wrote=false) the caller should write an error.
 func Stream(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey string, body []byte) (usage *Usage, wrote bool, err error) {
-	req, err := newReq(ctx, upstreamURL, apiKey, body)
-	if err != nil {
-		return nil, false, err
-	}
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := Client.Do(req)
+	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
+		req, err := newReq(ctx, upstreamURL, apiKey, body)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "text/event-stream")
+		return req, nil
+	})
 	if err != nil {
 		return nil, false, err
 	}
@@ -87,7 +187,7 @@ func Stream(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey stri
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(b)
-		return nil, true, fmt.Errorf("upstream status %d", resp.StatusCode)
+		return nil, true, fmt.Errorf("upstream status %d: %s", resp.StatusCode, errSnippet(b))
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -122,11 +222,9 @@ func Stream(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey stri
 // Complete proxies a non-streaming completion, returning the upstream status,
 // raw body, and parsed usage for the caller to write + meter.
 func Complete(ctx context.Context, upstreamURL, apiKey string, body []byte) (usage *Usage, status int, respBody []byte, err error) {
-	req, err := newReq(ctx, upstreamURL, apiKey, body)
-	if err != nil {
-		return nil, 0, nil, err
-	}
-	resp, err := Client.Do(req)
+	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
+		return newReq(ctx, upstreamURL, apiKey, body)
+	})
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -150,25 +248,29 @@ func Complete(ctx context.Context, upstreamURL, apiKey string, body []byte) (usa
 // headers, so the gateway never needs its own key for this path — then streams
 // the upstream response back verbatim.
 //
-// `wrote` reports whether any response status/bytes were sent to the client. It
-// is false only on a pre-flight failure (bad request build or the upstream
-// being unreachable), which lets the caller emit a gateway-origin error the CLI
-// can use to fail safe to a direct call. Once the upstream responds (even with
-// a 4xx/5xx), the response is forwarded as-is and `wrote` is true.
-func Forward(ctx context.Context, w http.ResponseWriter, method, upstreamURL string, reqHeaders http.Header, body []byte) (wrote bool, err error) {
-	req, err := http.NewRequestWithContext(ctx, method, upstreamURL, bytes.NewReader(body))
-	if err != nil {
-		return false, err
-	}
-	for k, vs := range reqHeaders {
-		for _, v := range vs {
-			req.Header.Add(k, v)
+// `status` is the upstream's HTTP status (0 if the upstream was never reached)
+// so the caller can log/observe what was actually relayed. `wrote` reports
+// whether any response status/bytes were sent to the client. It is false only
+// on a pre-flight failure (bad request build or the upstream being
+// unreachable after retries), which lets the caller emit a gateway-origin
+// error the CLI can use to fail safe to a direct call. Once the upstream
+// responds (even with a 4xx/5xx that retries didn't resolve), the response is
+// forwarded as-is and `wrote` is true.
+func Forward(ctx context.Context, w http.ResponseWriter, method, upstreamURL string, reqHeaders http.Header, body []byte) (status int, wrote bool, err error) {
+	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, method, upstreamURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
 		}
-	}
-
-	resp, err := Client.Do(req)
+		for k, vs := range reqHeaders {
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
+		}
+		return req, nil
+	})
 	if err != nil {
-		return false, err // upstream unreachable: caller writes a gateway error
+		return 0, false, err // upstream unreachable: caller writes a gateway error
 	}
 	defer resp.Body.Close()
 
@@ -189,7 +291,7 @@ func Forward(ctx context.Context, w http.ResponseWriter, method, upstreamURL str
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				return true, werr // client disconnected
+				return resp.StatusCode, true, werr // client disconnected
 			}
 			if flusher != nil {
 				flusher.Flush()
@@ -197,10 +299,10 @@ func Forward(ctx context.Context, w http.ResponseWriter, method, upstreamURL str
 		}
 		if rerr != nil {
 			if rerr != io.EOF {
-				return true, rerr
+				return resp.StatusCode, true, rerr
 			}
 			break
 		}
 	}
-	return true, nil
+	return resp.StatusCode, true, nil
 }

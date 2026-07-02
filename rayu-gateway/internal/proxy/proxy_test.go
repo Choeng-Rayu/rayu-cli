@@ -61,6 +61,36 @@ func TestStreamPassesUpstreamError(t *testing.T) {
 	}
 }
 
+// TestStreamRetriesTransientUpstreamError mirrors TestForwardRetriesTransientUpstreamError
+// for the hosted-model streaming path (DeepSeek/DeepInfra via handleChat).
+func TestStreamRetriesTransientUpstreamError(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":"no available server"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	rec := httptest.NewRecorder()
+	_, wrote, err := Stream(context.Background(), rec, upstream.URL, "sk-test", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !wrote || rec.Code != http.StatusOK {
+		t.Fatalf("wrote=%v code=%d, want wrote=true code=200", wrote, rec.Code)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls=%d, want 2 (initial + 1 retry)", calls)
+	}
+}
+
 func TestComplete(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -102,12 +132,15 @@ func TestForward(t *testing.T) {
 	hdrs := http.Header{}
 	hdrs.Set("Authorization", "Bearer user-provider-key")
 	hdrs.Set("Content-Type", "application/json")
-	wrote, err := Forward(context.Background(), rec, http.MethodPost, upstream.URL, hdrs, []byte(`{"model":"m"}`))
+	status, wrote, err := Forward(context.Background(), rec, http.MethodPost, upstream.URL, hdrs, []byte(`{"model":"m"}`))
 	if err != nil {
 		t.Fatalf("Forward err: %v", err)
 	}
 	if !wrote {
 		t.Fatal("wrote=false, want true")
+	}
+	if status != http.StatusCreated {
+		t.Fatalf("status=%d, want 201", status)
 	}
 	if gotMethod != http.MethodPost {
 		t.Fatalf("upstream method=%q", gotMethod)
@@ -137,11 +170,94 @@ func TestForwardUpstreamUnreachable(t *testing.T) {
 	srv.Close() // now nothing is listening at url
 
 	rec := httptest.NewRecorder()
-	wrote, err := Forward(context.Background(), rec, http.MethodPost, url, http.Header{}, []byte(`{}`))
+	_, wrote, err := Forward(context.Background(), rec, http.MethodPost, url, http.Header{}, []byte(`{}`))
 	if err == nil {
 		t.Fatal("expected error for unreachable upstream")
 	}
 	if wrote {
 		t.Fatal("wrote=true, want false (nothing should be written on dial failure)")
+	}
+}
+
+// TestForwardRetriesTransientUpstreamError verifies a 503 on the first attempt
+// is retried transparently (before anything is written to the client) and a
+// subsequent 200 is what actually reaches the caller.
+func TestForwardRetriesTransientUpstreamError(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":"no available server"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok-on-retry"))
+	}))
+	defer upstream.Close()
+
+	rec := httptest.NewRecorder()
+	status, wrote, err := Forward(context.Background(), rec, http.MethodPost, upstream.URL, http.Header{}, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Forward err: %v", err)
+	}
+	if !wrote || status != http.StatusOK {
+		t.Fatalf("wrote=%v status=%d, want wrote=true status=200", wrote, status)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls=%d, want 2 (initial + 1 retry)", calls)
+	}
+	if rec.Body.String() != "ok-on-retry" {
+		t.Fatalf("body=%q, want the retried response's body", rec.Body.String())
+	}
+}
+
+// TestForwardGivesUpAfterMaxRetries verifies a persistently-503 upstream is
+// eventually relayed to the client as-is rather than retried forever.
+func TestForwardGivesUpAfterMaxRetries(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"error":"no available server"}`)
+	}))
+	defer upstream.Close()
+
+	rec := httptest.NewRecorder()
+	status, wrote, err := Forward(context.Background(), rec, http.MethodPost, upstream.URL, http.Header{}, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Forward err: %v", err)
+	}
+	if !wrote || status != http.StatusServiceUnavailable {
+		t.Fatalf("wrote=%v status=%d, want wrote=true status=503", wrote, status)
+	}
+	if calls != maxUpstreamRetries+1 {
+		t.Fatalf("upstream calls=%d, want %d (initial + %d retries)", calls, maxUpstreamRetries+1, maxUpstreamRetries)
+	}
+	if !strings.Contains(rec.Body.String(), "no available server") {
+		t.Fatalf("final error body not passed through: %q", rec.Body.String())
+	}
+}
+
+// TestForwardDoesNotRetryClientErrors verifies a 4xx (the caller's fault, not
+// a capacity blip) is relayed immediately without wasting retries.
+func TestForwardDoesNotRetryClientErrors(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	rec := httptest.NewRecorder()
+	status, wrote, err := Forward(context.Background(), rec, http.MethodPost, upstream.URL, http.Header{}, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Forward err: %v", err)
+	}
+	if !wrote || status != http.StatusUnauthorized {
+		t.Fatalf("wrote=%v status=%d, want wrote=true status=401", wrote, status)
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls=%d, want 1 (no retry on 4xx)", calls)
 	}
 }

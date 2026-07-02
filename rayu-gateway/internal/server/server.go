@@ -338,6 +338,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		setCreditHeaders(w, rr.UsedPeriod, capPeriod, ent.TopupBalance)
 		usage, wrote, serr := proxy.Stream(r.Context(), w, upstreamURL, apiKey, newBody)
 		settle(usage)
+		if serr != nil {
+			// Always log, even when wrote=true (an upstream 4xx/5xx passed through
+			// verbatim to the client) — otherwise the gateway logs never show what
+			// the upstream actually returned, making "why did I get a 503" reports
+			// impossible to diagnose from gateway logs alone.
+			log.Printf("chat: upstream error user=%d model=%s wrote=%v: %v", claims.UserID, hm.Code, wrote, serr)
+		}
 		if serr != nil && !wrote {
 			httpx.WriteError(w, http.StatusBadGateway, "upstream error")
 		}
@@ -347,14 +354,38 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	usage, status, respBody, cerr := proxy.Complete(r.Context(), upstreamURL, apiKey, newBody)
 	if cerr != nil {
 		settle(nil)
+		log.Printf("chat: upstream unreachable user=%d model=%s: %v", claims.UserID, hm.Code, cerr)
 		httpx.WriteError(w, http.StatusBadGateway, "upstream error")
 		return
+	}
+	if status != http.StatusOK {
+		log.Printf("chat: upstream non-200 user=%d model=%s status=%d", claims.UserID, hm.Code, status)
 	}
 	actual := settle(usage)
 	setCreditHeaders(w, rr.UsedPeriod-estCredits+actual, capPeriod, ent.TopupBalance)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
+}
+
+// safeGo runs fn in its own goroutine, recovering and logging any panic
+// instead of letting it crash the whole process. A goroutine's panic is NOT
+// caught by the per-request chi.Recoverer middleware (that only guards the
+// goroutine an HTTP handler runs on) — an unhandled panic in a detached
+// background goroutine terminates the entire Go process immediately, taking
+// down every in-flight request/stream on the gateway, not just the
+// best-effort write that scheduled it. Every fire-and-forget
+// `go func(){...}()` outside of a request's own handler goroutine MUST go
+// through this.
+func safeGo(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("panic in background task %q: %v", name, r)
+			}
+		}()
+		fn()
+	}()
 }
 
 // recordLedger writes the durable consumption row asynchronously.
@@ -365,11 +396,11 @@ func (s *Server) recordLedger(userID int64, m store.HostedModel, u *proxy.Usage,
 	cost := float64(u.PromptTokens)/1e6*float64(m.InputPricePer1MCents) +
 		float64(u.CompletionTokens)/1e6*float64(m.OutputPricePer1MCents)
 	realCostCents := int(math.Round(cost))
-	go func() {
+	safeGo("record_ledger", func() {
 		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = s.st.InsertLedger(bg, userID, m.Code, u.PromptTokens, u.CompletionTokens, creditsConsumed, realCostCents, source)
-	}()
+	})
 }
 
 // handleProxy is a transparent, authenticated reverse proxy for BYO-key
@@ -451,28 +482,38 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// from anything else — an older gateway without this route (404), a redirect,
 	// an error page — and fail safe to a direct call when it is absent.
 	w.Header().Set("X-Rayu-Proxied", "1")
-	wrote, ferr := proxy.Forward(r.Context(), w, r.Method, upstream, forwardableHeaders(r.Header), body)
+	status, wrote, ferr := proxy.Forward(r.Context(), w, r.Method, upstream, forwardableHeaders(r.Header), body)
 	if ferr != nil && !wrote {
 		// Upstream unreachable / gateway-side failure before any bytes were sent.
 		if reservedTurn {
 			s.releaseTurnBG(claims.UserID) // CLI will fail safe to direct; don't burn a turn
 		}
 		w.Header().Del("X-Rayu-Proxied")
+		log.Printf("proxy: upstream unreachable user=%d provider=%s model=%q upstream=%s: %v",
+			claims.UserID, provider, model, upstream, ferr)
 		proxyError(w, http.StatusBadGateway, "upstream unreachable")
 		return
+	}
+	if status != http.StatusOK {
+		// The gateway is a transparent pass-through here, so a non-200 (e.g. the
+		// upstream's own 503/429) is expected sometimes — but it MUST show up in
+		// gateway logs, or every "why did I get a 503 from the gateway" report
+		// requires cross-referencing the provider's own dashboard to answer.
+		log.Printf("proxy: upstream non-200 user=%d provider=%s model=%q upstream=%s status=%d",
+			claims.UserID, provider, model, upstream, status)
 	}
 
 	// Best-effort, fire-and-forget tracking. Never affects the proxied response.
 	if s.st != nil {
-		go func() {
+		safeGo("proxy_usage_event", func() {
 			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if e := s.st.InsertUsageEvent(bg, claims.UserID, provider, model, "gateway"); e != nil {
 				log.Printf("proxy: usage record failed user=%d provider=%s: %v", claims.UserID, provider, e)
 			}
-		}()
+		})
 	}
-	log.Printf("proxy: user=%d provider=%s model=%q -> %s", claims.UserID, provider, model, upstream)
+	log.Printf("proxy: user=%d provider=%s model=%q -> %s (status=%d)", claims.UserID, provider, model, upstream, status)
 }
 
 // proxyError writes a gateway-origin error tagged with X-Rayu-Proxy-Error so the

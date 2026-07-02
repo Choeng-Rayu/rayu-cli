@@ -1,167 +1,184 @@
-# @rayu-dev/rayu-cli (Rayu-CLI)
-
-
-
-<p align="center">
-  <img src="./demo.png" alt="Rayu-CLI Demo Interface" width="700">
-</p>
-
-
-> **Rayu-CLI** is a terminal-based AI coding agent. It lets you **bring your own API key** and use **any OpenAI-compatible/athropic-compatible and genai provider** (NVIDIA, DeepSeek, Kimi/Moonshot, OpenAI, OpenRouter, local servers) as well as Anthropic and AWS Bedrock — with free model switching, MCP support, and the full built-in tool suite.
+# Rayu — AI Coding Agent Suite
 
 **Website:** https://rayu-web.vercel.app  
 **Docs:** https://rayu-web.vercel.app/docs  
 **Changelog:** https://rayu-web.vercel.app/changelog
+
+Rayu is a terminal-based AI coding agent ecosystem. It consists of four independent
+services that work together — or standalone with your own API keys.
+
 ---
 
-## 🚀 Quick Start
+## Quick Start (CLI)
 
-You don't even need to clone the repository to use Rayu-CLI. Since it is published on npm as `@rayu-dev/rayu-cli`, you can run or install it instantly.
+```bash
+npm install -g @rayu-dev/rayu-cli
+rayu
+```
 
-### Method 1: Run instantly with NPX (No installation required)
+Or run instantly without installing:
+
 ```bash
 npx @rayu-dev/rayu-cli
 ```
 
-### Method 2: Global Installation
-Install Rayu-CLI globally on your machine using your favorite package manager:
+On first launch, Rayu will guide you through connecting a provider (Anthropic, NVIDIA,
+DeepSeek, OpenAI, Google Gemini, AWS Bedrock, or any OpenAI-compatible endpoint).
+
+---
+
+## Monorepo Services
+
+| Directory | Language | Role |
+|-----------|----------|------|
+| [`rayu/`](./rayu/) | TypeScript + Bun + React/Ink | **The CLI** — the AI coding agent itself |
+| [`rayu-backend/`](./rayu-backend/) | NestJS + Prisma + MySQL | **Accounts API** — users, auth, plans, billing |
+| [`rayu-gateway/`](./rayu-gateway/) | Go + chi + Redis | **AI Gateway** — streaming proxy, rate limiting, credit tracking |
+| [`rayu-web/`](./rayu-web/) | Next.js 15 + Clerk | **Website** — marketing site + user dashboard |
+| [`deploy/`](./deploy/) | Docker Compose + Caddy | **Production stack** — single-VPS deployment |
+
+---
+
+## rayu/ — The CLI
+
+The core AI coding agent. Bring your own API key and connect to any provider.
+
+### Features
+
+- **Multi-provider BYOK** — Anthropic, AWS Bedrock, OpenAI-compatible (NVIDIA, DeepSeek, Kimi, OpenRouter, Ollama, LM Studio), Google Vertex AI, or Rayu-hosted
+- **Interactive TUI** — Full-screen terminal UI built on a custom React renderer with Flexbox layout, frame diffing, and zero-GC cell buffers
+- **~70+ slash commands** — `/connect`, `/model`, `/help`, `/plan`, `/swarm`, `/mcp`, `/skill`, `/config`, and more
+- **~45+ built-in tools** — Read, Write, Edit, Bash, Glob, Grep, WebFetch, Image/Video generation, MCP, LSP, task management, agent spawning, planning
+- **MCP support** — Model Context Protocol for connecting external tools and data sources
+- **Skill system** — Packaged, reusable procedures installable from GitHub or URL
+- **Multi-agent swarms** — Orchestrate parallel agent teams with tmux/iTerm2/in-process backends
+- **Voice mode** — Speech-to-text streaming input
+- **Vim mode** — Vim-style keybindings for the prompt
+- **Headless mode** — `--print` for automation, CI/CD, and scripting
+
+### Quick commands
 
 ```bash
-# Using npm
-npm install -g @rayu-dev/rayu-cli
-
-# Using bun
-bun install -g @rayu-dev/rayu-cli
-
-# Using pnpm
-pnpm add -g @rayu-dev/rayu-cli
-
-# Using yarn
-yarn global add @rayu-dev/rayu-cli
-```
-
-Once installed, simply start the interactive TUI from any folder:
-```bash
-rayu
+cd rayu
+bun install          # install dependencies
+bun run dev          # run from source
+bun run build        # bundle → dist/rayu.js
+bun test             # run tests
+bun run typecheck    # TypeScript checking
 ```
 
 ---
 
-## 🛠️ Interactive TUI Mode
+## rayu-backend/ — Accounts API
 
-When you start Rayu-CLI without any arguments, it drops you into a beautiful, full-screen Terminal User Interface (TUI) powered by React & Ink. 
+NestJS backend handling user accounts, authentication, subscription plans, and billing.
 
-### First-Time Setup
-On your very first run, Rayu will guide you through:
-1. **Theme selection:** Choose a color theme matching your terminal.
-2. **Provider configuration:** Select a provider and paste your **API Key**.
-3. **Workspace trust:** Confirm you trust the current directory so Rayu can safely use tools to read and edit code.
+### Key modules
 
-### Useful In-Session Commands
-In the terminal chat, type `/` to see all available slash commands:
+- **Auth** — Clerk webhook → Rayu JWT (access + refresh tokens)
+- **Users** — User profiles and preferences
+- **Plans** — Subscription plan catalog (Free, Pro, Max)
+- **Subscriptions** — Stripe-integrated subscription management
+- **Payments** — Payment processing and invoicing
+- **Usage** — Usage tracking and credit ledger
+- **Credits** — Credit top-ups and consumption
+- **Admin** — Admin panel for managing users and plans
 
-| Command | Action / Description |
-|:---|:---|
-| `/connect` | Connect a new provider, update keys, or switch active provider |
-| `/model` | Search and switch models across all connected providers |
-| `/context` | Monitor current context-window usage and token count |
-<!-- | `/cost` | Display cumulative token usage and costs for the session | -->
-| `/clear` | Clear conversation history and start a fresh session |
-| `/help` | Display a complete list of in-session slash commands |
-| `/exit` | Exit the Rayu CLI session safely |
+### Quick commands
 
----
-
-## 🤖 Headless & Scripted Mode (Print Mode)
-
-For automation, CI/CD pipelines, or quick scripting, use the `--print` (or `-p`) option to execute a single prompt and output the results directly without entering the interactive TUI.
-
-### Basic CLI Usage:
 ```bash
-rayu --print "Analyze package.json and write a one-sentence summary"
-```
-
-### Run on the fly with NPX:
-```bash
-npx @rayu-dev/rayu-cli --print "Check if there are any linting issues in src/"
-```
-
-### Pass credentials via Environment Variables:
-No saved configuration is needed. Prepend the API keys and endpoints directly:
-```bash
-RAYU_OPENAI_COMPATIBLE=1 \
-RAYU_OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1 \
-RAYU_OPENAI_API_KEY=nvapi-xxxxx \
-rayu --print --model meta/llama-3.3-70b-instruct "explain this repo"
-```
-
-### JSON Outputs for Pipelines:
-```bash
-rayu --print --output-format json "list top-level folders" | jq .result
-```
-
-### Automatic Permissions (Safe/Sandboxed Environments):
-By default, Rayu asks for user approval before modifying files or executing terminal commands. If you are running in a sandbox, Docker container, or CI/CD runner, you can auto-approve all operations:
-```bash
-rayu --print --permission-mode bypassPermissions "Refactor src/utils/format.ts to use snake_case"
+cd rayu-backend
+npm install
+npm run start:dev        # NestJS watch mode (port 4000, /api prefix)
+npm run migrate:dev      # Prisma migrations
+npm run test             # Jest unit tests
 ```
 
 ---
 
-## 🔌 Core Concepts & Architecture
+## rayu-gateway/ — AI Gateway
 
-* **Multi-Provider BYOK (Bring Your Own Key):** Supports three main provider categories:
-  1. `anthropic` (Anthropic SDK)
-  2. `bedrock` (AWS Bedrock SDK integration)
-  3. `openai-compatible` (NVIDIA, DeepSeek, OpenAI, OpenRouter, Kimi, local endpoints, etc. via a translation layer)
-* **Configuration Home:** Rayu stores its keys and settings in `~/.rayu`.
-* **Diagnostics:** Detailed logs about runtime errors and system events are saved to `~/.rayu/diagnostics.jsonl` for troubleshooting.
+High-performance Go proxy that sits between the CLI and AI providers. Handles
+authentication, rate limiting, credit tracking, and request routing.
 
----
+### Routes
 
-## 📚 Detailed Documentation Map
+- `GET /healthz` — Health check
+- `GET /v1/models` — Available models
+- `POST /v1/chat/completions` — Streaming chat completions
+- `GET /v1/credits` — Credit balance check
+- `GET /v1/proxy` — Transparent BYO-key proxy
 
-| Document | Description |
-|:---|:---|
-| 📦 **[Installation](./documentations/01-installation.md)** | Requirements, build scripts, native binaries, and global NPM instructions. |
-| 🚀 **[Quickstart](./documentations/02-quickstart.md)** | Step-by-step interactive setup, chat commands, and headless print examples. |
-| 🔑 **[Providers](./documentations/03-providers.md)** | Detailed setup for DeepSeek, NVIDIA, OpenAI, Bedrock, and custom APIs. |
-| 🧠 **[Models](./documentations/04-models.md)** | Supported models, context limits, and searchable model selector info. |
-| ⚙️ **[Configuration](./documentations/05-configuration.md)** | Structure of `~/.rayu/`, environment variables, and system settings. |
-| 📋 **[CLI Reference](./documentations/06-cli-reference.md)** | Comprehensive list of commands, flags, permission modes, and exit codes. |
-| 💬 **[Slash Commands](./documentations/07-slash-commands.md)** | Descriptions of all interactive terminal slash commands. |
-| 🔗 **[MCP Servers](./documentations/08-mcp.md)** | Model Context Protocol integration and remote service configuration. |
-| 🛡️ **[Diagnostics & Privacy](./documentations/09-diagnostics-privacy.md)** | Privacy configurations, telemetry sinks, and local logging policies. |
-| 🔧 **[Troubleshooting](./documentations/10-troubleshooting.md)** | Common issues, API errors (e.g. 404, rate limits) and quick fixes. |
-| 📊 **[Codebase Knowledge Graph](./documentations/11-knowledge-graph.md)** | Local indexing, querying, and code tracing using `/graphify`. |
-| 🎨 **[Image Generation](./documentations/12-image-generation.md)** | Using NVIDIA flux models to generate and preview image assets inline. |
-| 🛠️ **[Building Binaries](./documentations/13-binaries.md)** | Cross-compiling single-file native executables and building `.deb`/`.rpm` Linux packages. |
+### Quick commands
+
+```bash
+cd rayu-gateway
+go run ./cmd/gateway     # dev mode
+go test ./...            # run all tests
+go build ./cmd/gateway   # compile binary
+```
 
 ---
 
-## 🧪 Development & Local Setup
+## rayu-web/ — Website & Dashboard
 
-If you want to clone this repository and modify the source code:
+Next.js 15 App Router site with marketing pages, user dashboard, billing, and docs.
 
-1. **Clone the Repo:**
-   ```bash
-   git clone https://github.com/rayu-dev/rayu-cli.git
-   cd rayu-cli
-   ```
-2. **Install Dependencies:**
-   ```bash
-   cd rayu
-   bun install
-   ```
-3. **Build the Bundle:**
-   ```bash
-   bun run build
-   ```
-4. **Run from the Source directly:**
-   ```bash
-   bun run dev
-   ```
+### Pages
+
+- Marketing landing, features, pricing
+- User dashboard with usage stats
+- Billing and subscription management
+- CLI login with QR code
+- Documentation hub
+- Admin panel
+- AI chatbot
+
+### Quick commands
+
+```bash
+cd rayu-web
+npm install
+npm run dev          # Next.js dev server (port 3000)
+npm run build        # Production build
+npm run test         # Jest tests
+```
 
 ---
 
-<!-- *Educational/research purpose. Not affiliated with or endorsed by Anthropic or any other provider.* -->
+## deploy/ — Production Stack
+
+Single-VPS Docker Compose deployment with Caddy for TLS termination.
+
+```bash
+cd deploy
+cp .env.example .env     # fill in secrets
+docker compose up -d --build
+```
+
+**Caddy routing:**
+- `/api/*` → backend (port 4000)
+- `/gateway/*` → gateway (port 8080)
+- `/*` → web (port 3000)
+
+---
+
+## Development
+
+```bash
+# Clone
+git clone https://github.com/Choeng-Rayu/rayu-cli.git
+cd rayu-cli
+
+# Each service has its own dependencies — see the respective directories
+```
+
+---
+
+## Project Links
+
+- **Website:** https://rayu-web.vercel.app
+- **Docs:** https://rayu-web.vercel.app/docs
+- **Changelog:** https://rayu-web.vercel.app/changelog
+- **Issues:** https://github.com/Choeng-Rayu/rayu-cli/issues
+- **NPM:** https://www.npmjs.com/package/@rayu-dev/rayu-cli
