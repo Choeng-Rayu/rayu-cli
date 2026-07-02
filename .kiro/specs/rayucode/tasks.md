@@ -178,64 +178,64 @@ Property tests use fast-check, run a minimum of 100 iterations, and each is tagg
 - [ ] 11. Checkpoint - core integration complete and builds with no vscode dependency
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 12. Scaffold `packages/vscode` and the VS Code adapter
+- [x] 12. Scaffold `packages/vscode` and the VS Code adapter
   - [x] 12.1 Scaffold `packages/vscode`
     - Create `packages/vscode` with a `package.json` depending on both `packages/core` and `vscode`, build/bundle scripts, and a `tsconfig.json`
     - _Requirements: 13.2_
 
-  - [ ] 12.2 Implement `VSCodeAdapter` non-edit operations
+  - [x] 12.2 Implement `VSCodeAdapter` non-edit operations
     - Implement `showAgentPanel` (via `createWebviewPanel`), `getWorkspaceContext`/`isPathIgnored` (via `vscode.workspace`), `registerCommand`, `getSecret`/`storeSecret` (via `context.secrets`), `log` (via `OutputChannel`), `showActionableMessage` (via `window.showX` with action buttons), and `getSetting` (via `getConfiguration`)
     - _Requirements: 1.2, 2.5, 8.4, 9.1, 9.3, 9.4, 9.6, 13.2, 13.3, 15.1, 15.3_
 
-  - [ ]* 12.3 Write integration tests for `VSCodeAdapter` non-edit operations
+  - [x]* 12.3 Write integration tests for `VSCodeAdapter` non-edit operations
     - In the extension host against a temp workspace: secret storage round-trip, command registration, workspace-context queries, and ignore-aware path checks
     - _Requirements: 8.4, 9.6, 13.2_
 
-  - [ ] 12.4 Implement `VSCodeAdapter.applyFileEdits` and `readFileSnapshot`
+  - [x] 12.4 Implement `VSCodeAdapter.applyFileEdits` and `readFileSnapshot`
     - Read the current on-disk snapshot per change, compare hash to `baseContentHash`, and report mismatches as `conflicts` without applying; apply each file via a single `WorkspaceEdit` (open-buffer aware) and create new files with `WorkspaceEdit.createFile` at the workspace-relative path
     - Apply each file independently so a failure records in `failed` and leaves other files untouched
     - _Requirements: 6.2, 6.3, 6.4, 6.5, 6.6_
 
-  - [ ]* 12.5 Write integration tests for edit application
+  - [x]* 12.5 Write integration tests for edit application
     - In the extension host against a temp workspace: modify an open buffer, create a new file, detect a conflict on a stale base, and verify partial-failure isolation across multiple files
     - _Requirements: 6.2, 6.3, 6.4, 6.5, 6.6_
 
-- [ ] 13. Implement the Agent_Panel webview
-  - [ ] 13.1 Build the webview view and message-passing contract
+- [x] 13. Implement the Agent_Panel webview
+  - [x] 13.1 Build the webview view and message-passing contract
     - Implement the bundled webview with strict `postMessage` contracts — host→webview (`appendPartial`, `addMessage`, `completeMessage`, `showPermissionRequest`, `showToolAction`, `updateToolStatus`, `showUsage`, `setModelInfo`, `setMcpStatus`, `showError`, `restoreHistory`) and webview→host (`submitPrompt`, `interrupt`, `approvePermission`, `denyPermission`, `approveEdit`, `confirmConflict`, `selectModel`, `openModelList`, `newSession`)
     - Render assistant text as sanitized Markdown with monospaced fenced code blocks and File_Edit_Proposals as per-file before/after diffs, under a strict CSP that loads no remote content; render strictly in host-assigned receive order
     - Show in-progress indicator + interrupt while a turn is active; render permission requests (with exact bash command), tool-action output + running indicator, usage, current provider/model, MCP status/failures, and errors
     - _Requirements: 3.1, 3.3, 3.4, 3.5, 3.7, 4.1, 4.2, 4.4, 5.1, 5.6, 6.1, 7.1, 7.2, 7.4, 10.1, 10.2, 10.3, 11.2, 11.5, 12.2, 15.2_
 
-  - [ ]* 13.2 Write unit tests for the webview message contract
+  - [x]* 13.2 Write unit tests for the webview message contract
     - Test serialization/handling of each host→webview and webview→host message type and that render order follows the host-assigned sequence
     - _Requirements: 3.4, 5.1, 7.2_
 
-- [ ] 14. Implement extension activation, manifest, and command wiring
-  - [ ] 14.1 Author the extension manifest contributions
+- [x] 14. Implement extension activation, manifest, and command wiring
+  - [x] 14.1 Author the extension manifest contributions
     - Declare commands `rayucode.openPanel` and `rayucode.addSelectionToPrompt`; settings `rayucode.cliPath`, `rayucode.includeActiveFile`, `rayucode.includeSelection`, `rayucode.permissionMode`, `rayucode.diagnosticLogging`, `rayucode.unresponsiveTimeoutMs`; `engines.vscode` minimum version; and lazy `activationEvents` (`onCommand:rayucode.openPanel`, `onCommand:rayucode.addSelectionToPrompt`)
     - _Requirements: 14.1, 14.3, 14.6_
 
-  - [ ] 14.2 Implement `extension.ts` activate/deactivate
+  - [x] 14.2 Implement `extension.ts` activate/deactivate
     - On activate, construct `VSCodeAdapter`, inject it into `SessionManager`, and register commands so `rayucode.openPanel` is invocable from the command palette; catch and log a command-registration failure and continue activation
     - Implement `rayucode.addSelectionToPrompt` to insert a reference to the selected text and its file path into the panel input
     - On `deactivate` (window close), terminate every `AgentProcess` the extension started
     - _Requirements: 2.7, 9.5, 14.4, 14.5_
 
-  - [ ]* 14.3 Write integration tests for activation and commands
+  - [x]* 14.3 Write integration tests for activation and commands
     - In the extension host: open-panel command registers and is invocable, registration-failure path logs and continues, add-selection inserts a reference, and deactivate terminates spawned processes
     - _Requirements: 2.7, 14.4, 14.5_
 
-- [ ] 15. Integration smoke test and packaging
-  - [ ] 15.1 Implement an end-to-end smoke test with a stub rayu
+- [x] 15. Integration smoke test and packaging
+  - [x] 15.1 Implement an end-to-end smoke test with a stub rayu
     - Spawn a stub `rayu` that emits canned NDJSON (`system/init`, `stream_event` deltas, `result`, a `can_use_tool` control_request) and verify end-to-end rendering, permission round-trip, and usage display through the real Core_Integration + `VSCodeAdapter`
     - _Requirements: 3.2, 3.3, 4.1, 4.2, 5.1, 5.2_
 
-  - [ ]* 15.2 Write config/packaging smoke tests and produce the `.vsix`
+  - [x]* 15.2 Write config/packaging smoke tests and produce the `.vsix`
     - Assert the manifest declares the required commands, settings, and `engines.vscode`; verify `vsce package` produces a single installable `.vsix` artifact
     - _Requirements: 14.1, 14.2, 14.3_
 
-- [ ] 16. Final checkpoint - ensure all tests pass
+- [x] 16. Final checkpoint - ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
