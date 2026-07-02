@@ -204,7 +204,11 @@ export type PanelOutboundMessage =
   | { type: "setMcpStatus"; servers: { name: string; status: string }[] }
   | { type: "showError"; message: string }
   | { type: "editApplied"; path: string }
-  | { type: "editConflict"; paths: string[]; requestId: string };
+  | { type: "editConflict"; paths: string[]; requestId: string }
+  // R9.5: stage a reference (e.g. a fenced block citing a file path + selected
+  // text) into the prompt input. The webview appends it to the textarea WITHOUT
+  // submitting; it is not a conversation item.
+  | { type: "insertPrompt"; text: string };
 
 // ----------------------------------------------------------------------------
 // Internal per-session runtime
@@ -415,6 +419,25 @@ export class SessionManager {
     session.promptPending = true;
     this.postToPanel(session, { type: "setGenerating", generating: true });
     this.armUnresponsiveTimer(session);
+  }
+
+  /**
+   * Insert a reference into the Agent_Panel's prompt input (R9.5). The host side
+   * of the add-selection-to-prompt command: the Editor_Host builds the reference
+   * (e.g. a fenced block citing a file path + the selected text) and calls this;
+   * the panel is opened first if needed, then the reference is posted as an
+   * `insertPrompt` message which the webview appends to the prompt textarea
+   * WITHOUT submitting. The text is redacted on its way to the panel (R15.5).
+   */
+  async addSelectionToPrompt(
+    sessionKey: string,
+    reference: string,
+  ): Promise<void> {
+    // "Open the panel first if needed": ensure the session + panel exist so
+    // there is an input to insert into. Reusing an open panel is idempotent.
+    await this.openSession(sessionKey);
+    const session = this.requireSession(sessionKey);
+    this.postToPanel(session, { type: "insertPrompt", text: reference });
   }
 
   /** Interrupt the in-progress turn (R3.6). */

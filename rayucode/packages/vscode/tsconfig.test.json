@@ -1,0 +1,17 @@
+{
+  // Type-checks the extension-host integration suite (src/test), which the
+  // production tsconfig.json deliberately excludes. esbuild (esbuild.test.mjs)
+  // does the actual compilation but does NOT type-check, so use this config:
+  //
+  //     tsc -p tsconfig.test.json --noEmit
+  //
+  // It requires @types/mocha (declared in package.json devDependencies) for the
+  // injected TDD globals (suite/test/suiteSetup/...).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vscode", "mocha"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "out", "src/webview"]
+}

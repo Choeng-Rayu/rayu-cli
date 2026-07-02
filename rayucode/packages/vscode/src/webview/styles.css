@@ -1,0 +1,382 @@
+/* Agent_Panel webview styles (task 13.1).
+ *
+ * Loaded as an external stylesheet (dist/webview.css) via the webview's
+ * `cspSource`, so the panel needs no inline styles and the CSP can keep
+ * `style-src` locked to the host origin (no 'unsafe-inline'). All colors come
+ * from VS Code theme variables so the panel matches the active theme. */
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+.rc-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  box-sizing: border-box;
+}
+
+/* Header --------------------------------------------------------------- */
+.rc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  flex: 0 0 auto;
+}
+
+.rc-model-info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rc-model-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rc-mode {
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+
+.rc-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+/* MCP strip ------------------------------------------------------------ */
+.rc-mcp {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  font-size: 0.85em;
+  flex: 0 0 auto;
+}
+
+.rc-mcp-label {
+  opacity: 0.7;
+}
+
+.rc-mcp-chip {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.rc-mcp-failed {
+  background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+  color: var(--vscode-errorForeground, #f48771);
+}
+
+/* Conversation --------------------------------------------------------- */
+.rc-conversation {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rc-msg {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+
+.rc-role {
+  font-size: 0.8em;
+  font-weight: 600;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.rc-user {
+  background: var(--vscode-input-background, rgba(128, 128, 128, 0.12));
+}
+
+.rc-user-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Markdown ------------------------------------------------------------- */
+.rc-md {
+  word-break: break-word;
+}
+
+.rc-md p {
+  margin: 0.4em 0;
+}
+
+.rc-md h1,
+.rc-md h2,
+.rc-md h3,
+.rc-md h4,
+.rc-md h5,
+.rc-md h6 {
+  margin: 0.6em 0 0.3em;
+  line-height: 1.2;
+}
+
+.rc-md code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+
+.rc-md pre,
+.rc-code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
+  margin: 0.4em 0;
+}
+
+.rc-md pre code,
+.rc-code code {
+  background: none;
+  padding: 0;
+}
+
+.rc-md a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.rc-cursor {
+  animation: rc-blink 1s steps(2, start) infinite;
+  opacity: 0.7;
+}
+
+@keyframes rc-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* Tool actions --------------------------------------------------------- */
+.rc-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9em;
+}
+
+.rc-tool-name {
+  font-weight: 600;
+}
+
+.rc-tool-status {
+  font-size: 0.8em;
+  opacity: 0.8;
+  text-transform: uppercase;
+}
+
+.rc-status-failed {
+  color: var(--vscode-errorForeground, #f48771);
+}
+
+.rc-status-running,
+.rc-status-pending {
+  color: var(--vscode-charts-yellow, #cca700);
+}
+
+.rc-status-complete {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.rc-spinner {
+  animation: rc-blink 0.8s linear infinite;
+}
+
+/* Permission requests -------------------------------------------------- */
+.rc-perm {
+  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.4));
+}
+
+.rc-perm-head {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.rc-perm-label {
+  font-size: 0.8em;
+  opacity: 0.7;
+  margin-top: 4px;
+}
+
+.rc-perm-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.rc-perm-resolved {
+  margin-top: 6px;
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+/* Diffs ---------------------------------------------------------------- */
+.rc-diff-file {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.rc-diff-label {
+  font-size: 0.75em;
+  opacity: 0.7;
+  margin-top: 4px;
+}
+
+.rc-diff-before {
+  border-left: 3px solid var(--vscode-errorForeground, #f48771);
+}
+
+.rc-diff-after {
+  border-left: 3px solid var(--vscode-charts-green, #89d185);
+}
+
+/* Usage / error / notice ----------------------------------------------- */
+.rc-usage {
+  font-size: 0.8em;
+  opacity: 0.75;
+  background: none;
+  border: none;
+  padding: 2px 10px;
+}
+
+.rc-error {
+  background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+  border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+  color: var(--vscode-errorForeground, #f48771);
+}
+
+.rc-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.9em;
+}
+
+.rc-notice-info {
+  background: var(--vscode-editorInfo-background, rgba(100, 148, 237, 0.1));
+}
+
+.rc-notice-warn {
+  background: var(--vscode-inputValidation-warningBackground, #5d4d1a);
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+/* Footer / input ------------------------------------------------------- */
+.rc-footer {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.rc-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
+.rc-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.rc-input {
+  flex: 1 1 auto;
+  resize: vertical;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.4));
+  border-radius: 4px;
+  padding: 6px 8px;
+  box-sizing: border-box;
+}
+
+.rc-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+/* Buttons -------------------------------------------------------------- */
+.rc-btn {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.rc-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.rc-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rc-deny,
+.rc-model-btn,
+.rc-new-btn,
+.rc-interrupt-btn {
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+}
+
+.rc-deny:hover,
+.rc-model-btn:hover,
+.rc-new-btn:hover,
+.rc-interrupt-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+}
+
+.rc-model-select {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-dropdown-foreground);
+  background: var(--vscode-dropdown-background);
+  border: 1px solid var(--vscode-dropdown-border, rgba(128, 128, 128, 0.4));
+  border-radius: 4px;
+  padding: 4px 6px;
+}

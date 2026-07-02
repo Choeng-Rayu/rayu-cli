@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { SessionManager } from "../src/index.js";
+import { Redactor, SessionManager } from "../src/index.js";
 import type {
   AgentExitInfo,
   AgentPanelHandle,
@@ -602,5 +602,65 @@ describe("SessionManager composition", () => {
     await Promise.resolve();
 
     expect(lastPromptContent(h.current())).toContain("via webview");
+  });
+});
+
+// ===========================================================================
+// Add-selection-to-prompt — host posts an insertPrompt to the panel (R9.5)
+// ===========================================================================
+
+describe("SessionManager addSelectionToPrompt (R9.5)", () => {
+  it("opens the panel and posts an insertPrompt carrying the reference", async () => {
+    const adapter = new FakeEditorAdapter();
+    const h = makeHarness(adapter);
+
+    // No panel/session yet — the method must open one ("first if needed").
+    await h.manager.addSelectionToPrompt(KEY, "REFERENCE-TEXT");
+
+    const panel = adapter.panels[0]!;
+    expect(panel).toBeDefined();
+    const insert = panel.posted.find(
+      (m) => (m as { type?: string }).type === "insertPrompt",
+    ) as { type: string; text: string } | undefined;
+    expect(insert).toBeDefined();
+    expect(insert?.text).toBe("REFERENCE-TEXT");
+  });
+
+  it("reuses an already-open panel rather than opening a second one", async () => {
+    const adapter = new FakeEditorAdapter();
+    const h = makeHarness(adapter);
+
+    await h.manager.openSession(KEY);
+    await h.manager.addSelectionToPrompt(KEY, "ref-2");
+
+    // The same panel is reused (no second panel was created).
+    expect(adapter.panels).toHaveLength(1);
+    expect(
+      adapter.panels[0]!.posted.some(
+        (m) =>
+          (m as { type?: string }).type === "insertPrompt" &&
+          (m as { text?: string }).text === "ref-2",
+      ),
+    ).toBe(true);
+  });
+
+  it("redacts a configured credential before it reaches the panel (R15.5)", async () => {
+    const adapter = new FakeEditorAdapter();
+    const manager = new SessionManager({
+      adapter,
+      redactor: new Redactor(["sk-SECRET"]),
+      agentProcessFactory: () => new FakeAgentProcess(),
+      cliLocator: { resolve: async () => fakeResolution() },
+      timers: noopTimers,
+    });
+
+    await manager.addSelectionToPrompt(KEY, "token is sk-SECRET here");
+
+    const panel = adapter.panels[0]!;
+    const insert = panel.posted.find(
+      (m) => (m as { type?: string }).type === "insertPrompt",
+    ) as { text: string } | undefined;
+    expect(insert).toBeDefined();
+    expect(insert?.text).not.toContain("sk-SECRET");
   });
 });

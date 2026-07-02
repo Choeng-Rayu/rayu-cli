@@ -15,3 +15,8 @@ coverage/
 
 # VS Code extension packaging artifact (produced by packages/vscode later)
 *.vsix
+
+
+# Extension-host integration suite (packages/vscode)
+out/              # esbuild.test.mjs compile output (compile-tests)
+.vscode-test/     # @vscode/test-cli downloaded VS Code + user-data dir

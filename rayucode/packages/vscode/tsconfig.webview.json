@@ -1,0 +1,19 @@
+{
+  // Type-checks the Agent_Panel webview module graph (src/webview), which runs
+  // in the webview's browser-like context — NOT Node. So, unlike the extension
+  // host config (tsconfig.json), this one:
+  //   - adds the DOM libs (the webview uses `window`, `document`, …),
+  //   - declares NO ambient types (`types: []`) so neither `node` nor `vscode`
+  //     globals leak in — the webview must never touch them (it talks to the
+  //     host only via `acquireVsCodeApi()` and `postMessage`).
+  //
+  // esbuild (esbuild.mjs) does the actual bundling to dist/webview.js; this
+  // config is type-check-only:  tsc -p tsconfig.webview.json --noEmit
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src/webview/**/*.ts"]
+}

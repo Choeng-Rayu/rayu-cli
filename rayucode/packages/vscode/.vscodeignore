@@ -1,0 +1,29 @@
+# Only the bundled output (dist/) plus the manifest, README, and LICENSE ship in
+# the .vsix. Everything below is build-time or test-only and is excluded.
+# @rayucode/core and all other runtime code are bundled into dist/extension.js
+# by esbuild, so node_modules are not needed in the package (`vsce package
+# --no-dependencies`).
+
+# TypeScript sources (bundled into dist/ by esbuild) and the webview sources
+src/**
+
+# Unit tests (vitest) and extension-host integration tests
+test/**
+out/**
+.vscode-test/**
+.vscode-test.mjs
+
+# Build / tooling config
+esbuild.mjs
+esbuild.test.mjs
+vitest.config.ts
+tsconfig.json
+tsconfig.test.json
+tsconfig.webview.json
+.gitignore
+
+# Source maps (not needed in the shipped package)
+**/*.map
+
+# Never ship dependencies — everything is bundled
+node_modules/**
