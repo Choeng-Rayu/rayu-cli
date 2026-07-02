@@ -27,6 +27,10 @@ export class UsersService {
     return this.prisma.user.findUnique({ where: { clerkUserId } })
   }
 
+  findByEmail(email: string): Promise<User | null> {
+    return this.prisma.user.findFirst({ where: { email } })
+  }
+
   /**
    * Upsert a user from a verified Clerk profile. New users are auto-assigned
    * the Free plan. Returns the persisted user.

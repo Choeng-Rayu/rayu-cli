@@ -18,6 +18,7 @@ model User {
   avatarUrl    String?   @db.VarChar(1024)
   role         String    @default("user") @db.VarChar(32)
   status       String    @default("active") @db.VarChar(32)
+  passwordHash String?   @db.VarChar(512)
   createdAt    DateTime  @default(now())
   lastActiveAt DateTime?
 

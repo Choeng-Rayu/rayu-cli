@@ -5,10 +5,14 @@ import {
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
 import type { User } from '@prisma/client'
+import * as crypto from 'crypto'
+import { promisify } from 'util'
 import type { UserRole } from '../common/enums'
 import { UsersService } from '../users/users.service'
 import { ClerkService } from './clerk.service'
 import { CodeStoreService } from './code-store.service'
+
+const scrypt = promisify(crypto.scrypt)
 
 export interface RayuTokens {
   accessToken: string
@@ -142,6 +146,47 @@ export class AuthService {
       throw new UnauthorizedException(`Account is ${user.status}`)
     }
     return user
+  }
+
+  /** Hash a plaintext password. Returns `salt:hash` hex string. */
+  async hashPassword(password: string): Promise<string> {
+    const salt = crypto.randomBytes(16).toString('hex')
+    const hash = (await scrypt(password, salt, 64)) as Buffer
+    return `${salt}:${hash.toString('hex')}`
+  }
+
+  /** Verify a plaintext password against a stored `salt:hash` string. */
+  async verifyPassword(password: string, stored: string): Promise<boolean> {
+    const [salt, expected] = stored.split(':')
+    if (!salt || !expected) return false
+    const hash = (await scrypt(password, salt, 64)) as Buffer
+    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), hash)
+  }
+
+  /**
+   * Local admin login: email + password, no Clerk required.
+   * Only works for users that have a passwordHash set (local accounts).
+   */
+  async localAdminLogin(
+    email: string,
+    password: string,
+  ): Promise<RayuTokens & { user: PublicUser }> {
+    const user = await this.users.findByEmail(email)
+    if (!user || !user.passwordHash) {
+      throw new UnauthorizedException('Invalid credentials')
+    }
+    const valid = await this.verifyPassword(password, user.passwordHash)
+    if (!valid) {
+      throw new UnauthorizedException('Invalid credentials')
+    }
+    if (user.status !== 'active') {
+      throw new UnauthorizedException(`Account is ${user.status}`)
+    }
+    if (user.role !== 'admin' && user.role !== 'superadmin') {
+      throw new UnauthorizedException('Not an admin account')
+    }
+    const tokens = this.mintTokens(user)
+    return { ...tokens, user: this.toPublicUser(user) }
   }
 
   mintTokens(user: User): RayuTokens {
