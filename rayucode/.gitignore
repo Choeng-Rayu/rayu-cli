@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+.tsbuildinfo
+
+# Test / coverage
+coverage/
+
+# Editor / OS
+.DS_Store
+*.log
+
+# VS Code extension packaging artifact (produced by packages/vscode later)
+*.vsix
+
+
+# Extension-host integration suite (packages/vscode)
+out/              # esbuild.test.mjs compile output (compile-tests)
+.vscode-test/     # @vscode/test-cli downloaded VS Code + user-data dir

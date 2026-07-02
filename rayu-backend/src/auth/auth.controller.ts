@@ -15,7 +15,7 @@ import { ModelsService } from '../models/models.service'
 import { AppSettingsService } from '../settings/app-settings.service'
 import { UsersService } from '../users/users.service'
 import { AuthService, PublicUser, RayuTokens } from './auth.service'
-import { ExchangeDto, RefreshDto, TokenDto } from './dto/auth.dto'
+import { ExchangeDto, LocalLoginDto, RefreshDto, TokenDto } from './dto/auth.dto'
 import { RayuAuthGuard } from './rayu-auth.guard'
 
 @Controller()
@@ -70,6 +70,17 @@ export class AuthController {
   @Post('cli/refresh')
   refresh(@Body() body: RefreshDto): Promise<RayuTokens> {
     return this.auth.refresh(body.refreshToken)
+  }
+
+  /**
+   * Local admin login: email + password, no Clerk required.
+   * Only works for accounts that have a passwordHash (local admin accounts).
+   */
+  @Post('admin-login')
+  adminLogin(
+    @Body() body: LocalLoginDto,
+  ): Promise<RayuTokens & { user: PublicUser }> {
+    return this.auth.localAdminLogin(body.email, body.password)
   }
 
   /** Current user profile + active plan. */

@@ -3,6 +3,7 @@
 import { useAuth, SignInButton } from '@clerk/nextjs'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useState } from 'react'
 import { useAdmin } from './AdminProvider'
 
 const NAV = [
@@ -30,12 +31,60 @@ function Centered({ children }: { children: React.ReactNode }) {
   )
 }
 
+function LocalLoginForm() {
+  const { localLogin } = useAdmin()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState('')
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setErr('')
+    setLoading(true)
+    try {
+      await localLogin(email, password)
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : 'Login failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <input
+        type="email"
+        placeholder="Admin email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        required
+        style={{ padding: '0.6rem 0.8rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'inherit', fontSize: '0.95rem' }}
+      />
+      <input
+        type="password"
+        placeholder="Password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        required
+        style={{ padding: '0.6rem 0.8rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'inherit', fontSize: '0.95rem' }}
+      />
+      {err && <p style={{ color: 'var(--red)', margin: 0, fontSize: '0.85rem' }}>{err}</p>}
+      <button className="btn-primary" type="submit" disabled={loading}>
+        {loading ? 'Signing in…' : 'Sign in as Admin'}
+      </button>
+    </form>
+  )
+}
+
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const { isLoaded, isSignedIn } = useAuth()
-  const { ready, forbidden, error, me, token } = useAdmin()
+  const { ready, forbidden, error, me, token, localLogout } = useAdmin()
   const pathname = usePathname()
 
-  if (!isLoaded || (isSignedIn && !ready)) {
+  // Show local login form while Clerk is loading or when not signed in via Clerk.
+  // If a valid local admin token is present, AdminProvider sets ready+token directly.
+  if (!isLoaded || (!isSignedIn && !ready)) {
     return (
       <Centered>
         <h1>Loading…</h1>
@@ -44,16 +93,74 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     )
   }
 
+  // Local admin token is present and valid — skip Clerk flow entirely.
+  if (token && me && (me.role === 'admin' || me.role === 'superadmin')) {
+    const active = NAV.find((n) => isActive(pathname, n.href, n.exact))
+    return (
+      <div className="admin-shell">
+        <aside className="admin-sidebar">
+          <div className="admin-sidebar-title">Control Room</div>
+          <ul className="admin-nav">
+            {NAV.map((n) => (
+              <li key={n.href}>
+                <Link
+                  href={n.href}
+                  className={`admin-nav-link${isActive(pathname, n.href, n.exact) ? ' active' : ''}`}
+                >
+                  <span className="admin-nav-ico">{n.icon}</span>
+                  {n.label}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </aside>
+        <div className="admin-main">
+          <div className="admin-topbar">
+            <h1>{active?.label ?? 'Admin'}</h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              <span style={{ opacity: 0.6, fontSize: '0.85rem' }}>{me.email ?? ''}</span>
+              <button
+                onClick={localLogout}
+                className="admin-nav-link"
+                style={{ opacity: 0.7, background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Logout
+              </button>
+              <Link href="/" className="admin-nav-link" style={{ opacity: 0.7 }}>
+                ↩ Site
+              </Link>
+            </div>
+          </div>
+          <div className="admin-content">{children}</div>
+        </div>
+      </div>
+    )
+  }
+
+  // Not signed in via Clerk — show both local login and Clerk sign-in.
   if (!isSignedIn) {
     return (
       <Centered>
         <h1>Admin Area</h1>
         <p style={{ opacity: 0.6, marginBottom: '1.5rem' }}>
-          Please sign in with an administrator account.
+          Sign in with your admin credentials.
         </p>
-        <SignInButton>
-          <button className="btn-primary">Sign in</button>
-        </SignInButton>
+        <LocalLoginForm />
+        <div style={{ marginTop: '1.25rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem', opacity: 0.7 }}>
+          <p style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>Or sign in with Clerk:</p>
+          <SignInButton>
+            <button className="btn-ghost">Sign in with Clerk</button>
+          </SignInButton>
+        </div>
+      </Centered>
+    )
+  }
+
+  if (isSignedIn && !ready) {
+    return (
+      <Centered>
+        <h1>Loading…</h1>
+        <p style={{ opacity: 0.6 }}>Authorizing your admin session.</p>
       </Centered>
     )
   }
@@ -68,9 +175,15 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         <p style={{ color: 'var(--red)', opacity: 0.85 }}>
           Your account does not have administrator access.
         </p>
-        <Link href="/" className="btn-ghost" style={{ marginTop: '1rem' }}>
-          Back to site
-        </Link>
+        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+          <Link href="/" className="btn-ghost">Back to site</Link>
+        </div>
+        <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border)', paddingTop: '1.5rem' }}>
+          <p style={{ opacity: 0.6, fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+            Try the admin account instead:
+          </p>
+          <LocalLoginForm />
+        </div>
       </Centered>
     )
   }
@@ -80,6 +193,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       <Centered>
         <h1>Connection error</h1>
         <p style={{ color: 'var(--red)' }}>{error}</p>
+        <div style={{ marginTop: '1.5rem' }}>
+          <LocalLoginForm />
+        </div>
       </Centered>
     )
   }

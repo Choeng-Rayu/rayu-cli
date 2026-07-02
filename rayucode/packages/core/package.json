@@ -1,0 +1,32 @@
+{
+  "name": "@rayucode/core",
+  "version": "0.1.0",
+  "description": "rayucode Core_Integration — editor-agnostic process lifecycle, NDJSON protocol, session state. Contains zero vscode imports (R13.1, R13.5).",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "tsc -p tsconfig.json --build --clean",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "fast-check": "^3.23.1",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.8"
+  }
+}

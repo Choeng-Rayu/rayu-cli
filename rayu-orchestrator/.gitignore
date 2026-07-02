@@ -1,0 +1,11 @@
+# Local environment
+.env
+
+# Build output
+/orchestrator
+/bin/
+*.out
+
+# Test artifacts
+*.test
+coverage.txt

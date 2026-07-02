@@ -2,6 +2,46 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.3.445 - 2026-06-29
+- Fixed bugs in gateway routing logic for `rayu-hosted` provider
+- Added tests for gateway routing edge cases
+
+## 1.3.444 - 2026-06-29
+- Implemented prompt input color theming via `theme.ts`
+- Improved thinking message display and highlighted thinking text rendering
+- Added structured API error handling in `errors.ts`
+- Improved context analysis and consistency checks
+- Fixed renderer ghost-character edge cases in `log-update.ts`
+
+## 1.3.443 - 2026-06-26
+- Production stability improvements: entitlements, auth session, and gateway routing
+- Fixed preload script and macro values for production launch
+- Improved dashboard page and first-time launch flow in `rayu-web`
+
+## 1.3.442 - 2026-06-24
+- Improved interrupt message handling during streaming queries
+- Added memory pressure guard to prevent OOM crashes
+- Added heap limit re-exec mechanism for large sessions
+- Improved curated provider model list and provider configuration
+
+## 1.3.441 - 2026-06-24
+- Refactored backend payment integration to support Bakong (KHQR) payments
+- Added Telegram listener for ABA payment notifications
+- Updated payment DTOs and controller for new payment flow
+
+## 1.3.440 - 2026-06-22
+- Fixed missing TypeScript type modules across SDK and component types
+- Added FPS tracker, memory probe, and progress coalescing utilities
+- Added interactive heap dump monitor
+- Fixed copilot auth, message handling, and OpenAI adapter test coverage
+
+## 1.3.439 - 2026-06-21
+- Implemented basic subscription plan catalog and entitlements enforcement
+- Added paid feature gating for image generation and video generation tools
+- Added usage limits for free plan users (`rayuFeatureUsage.ts`, `paidFeatureGate.ts`)
+- Refactored thinking message display in assistant responses
+- Improved gateway credit limiter, entitlements cache, and admin panel in `rayu-web`
+
 ## 1.3.438 - 2026-06-17
 - Added Hugging Face (`huggingface`) provider preset using Hugging Face Inference Providers endpoint (`https://router.huggingface.co/v1`) with `HF_TOKEN`
 - Implemented feature rate limits, entitlements, and Copilot client authentication
