@@ -22,6 +22,8 @@ const BLANK: Draft = {
   inputPricePer1MCents: 0,
   outputPricePer1MCents: 0,
   creditMultiplier: 1,
+  cacheReadCreditMultiplier: null,
+  cacheWriteCreditMultiplier: null,
   allowedPlanCodes: [],
   enabled: true,
 }
@@ -76,6 +78,8 @@ export default function ModelsPage() {
         inputPricePer1MCents: m.inputPricePer1MCents,
         outputPricePer1MCents: m.outputPricePer1MCents,
         creditMultiplier: m.creditMultiplier,
+        cacheReadCreditMultiplier: m.cacheReadCreditMultiplier,
+        cacheWriteCreditMultiplier: m.cacheWriteCreditMultiplier,
         allowedPlanCodes: m.allowedPlanCodes ?? [],
         enabled: m.enabled,
       }),
@@ -138,6 +142,37 @@ export default function ModelsPage() {
               <Field label="Input ¢/1M"><input type="number" min={0} className="admin-input" style={{ width: '100%' }} value={m.inputPricePer1MCents} onChange={(e) => patchModel(m.code, { inputPricePer1MCents: Math.max(0, Math.round(Number(e.target.value))) })} /></Field>
               <Field label="Output ¢/1M"><input type="number" min={0} className="admin-input" style={{ width: '100%' }} value={m.outputPricePer1MCents} onChange={(e) => patchModel(m.code, { outputPricePer1MCents: Math.max(0, Math.round(Number(e.target.value))) })} /></Field>
               <Field label="Credit multiplier"><input type="number" min={0} step={0.1} className="admin-input" style={{ width: '100%' }} value={m.creditMultiplier} onChange={(e) => patchModel(m.code, { creditMultiplier: Math.max(0, Number(e.target.value)) })} /></Field>
+              <Field label="Cache-read multiplier">
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  className="admin-input"
+                  style={{ width: '100%' }}
+                  value={m.cacheReadCreditMultiplier ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    patchModel(m.code, { cacheReadCreditMultiplier: v === '' ? null : Math.max(0, Number(v)) })
+                  }}
+                />
+              </Field>
+              <Field label="Cache-write multiplier">
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  className="admin-input"
+                  style={{ width: '100%' }}
+                  value={m.cacheWriteCreditMultiplier ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    patchModel(m.code, { cacheWriteCreditMultiplier: v === '' ? null : Math.max(0, Number(v)) })
+                  }}
+                />
+              </Field>
+            </div>
+            <div style={{ marginTop: '0.35rem', fontSize: '0.8rem', opacity: 0.4 }}>
+              Blank = inherit gateway default (~10% of input rate for cache-read; same as input rate for cache-write).
             </div>
             {proj[m.code] && (
               <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', opacity: 0.8, display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
@@ -177,6 +212,37 @@ export default function ModelsPage() {
             <Field label="Input ¢/1M"><input type="number" min={0} className="admin-input" style={{ width: '100%' }} value={draft.inputPricePer1MCents} onChange={(e) => setDraft({ ...draft, inputPricePer1MCents: Math.max(0, Math.round(Number(e.target.value))) })} /></Field>
             <Field label="Output ¢/1M"><input type="number" min={0} className="admin-input" style={{ width: '100%' }} value={draft.outputPricePer1MCents} onChange={(e) => setDraft({ ...draft, outputPricePer1MCents: Math.max(0, Math.round(Number(e.target.value))) })} /></Field>
             <Field label="Credit multiplier"><input type="number" min={0} step={0.1} className="admin-input" style={{ width: '100%' }} value={draft.creditMultiplier} onChange={(e) => setDraft({ ...draft, creditMultiplier: Math.max(0, Number(e.target.value)) })} /></Field>
+            <Field label="Cache-read multiplier">
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                className="admin-input"
+                style={{ width: '100%' }}
+                value={draft.cacheReadCreditMultiplier ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setDraft({ ...draft, cacheReadCreditMultiplier: v === '' ? null : Math.max(0, Number(v)) })
+                }}
+              />
+            </Field>
+            <Field label="Cache-write multiplier">
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                className="admin-input"
+                style={{ width: '100%' }}
+                value={draft.cacheWriteCreditMultiplier ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setDraft({ ...draft, cacheWriteCreditMultiplier: v === '' ? null : Math.max(0, Number(v)) })
+                }}
+              />
+            </Field>
+          </div>
+          <div style={{ marginTop: '0.35rem', fontSize: '0.8rem', opacity: 0.4 }}>
+            Blank = inherit gateway default (~10% of input rate for cache-read; same as input rate for cache-write).
           </div>
           <div style={{ marginTop: '0.75rem' }}>
             <span className="admin-field-label">Allowed plans</span>
