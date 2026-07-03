@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/choeng-rayu/rayu-gateway/internal/circuitbreaker"
 )
 
 // Client is the shared HTTP client. No overall timeout — long streams rely on
@@ -20,16 +22,49 @@ import (
 var Client = &http.Client{
 	Transport: &http.Transport{
 		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 	},
 }
 
-// Usage is the token accounting returned by the provider.
+// Breakers is a per-upstream-host circuit breaker shared by Stream, Complete,
+// and Forward (via doWithRetry). Under a sustained outage at one provider
+// (DeepSeek, DeepInfra, or a BYO-key upstream on the /v1/proxy path), this
+// stops every concurrent in-flight request from independently paying the
+// full request timeout + maxUpstreamRetries against a host that is not
+// recovering — after FailureThreshold consecutive failures the breaker opens
+// and subsequent calls fail immediately with circuitbreaker.ErrOpen for the
+// Cooldown window, instead of queuing behind a doomed upstream call. This is
+// deliberately package-level (not per-Server) since the underlying problem —
+// an upstream host being down — is process-wide, not per-request-instance.
+var Breakers = circuitbreaker.New(circuitbreaker.Config{})
+
+// CompletionTokensDetails breaks CompletionTokens down further. ReasoningTokens
+// (DeepSeek "thinking mode", OpenAI o1-style models, ...) is a SUBSET of
+// CompletionTokens, not additional to it — providers that report it are just
+// showing how much of the completion was chain-of-thought vs. the final
+// answer. It exists here purely for observability (so "why did this cost so
+// much" can distinguish a huge-context call from a long-reasoning call); it
+// does not change billing, since CompletionTokens already includes it.
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+// Usage is the token accounting returned by the provider. PromptCacheHitTokens/
+// PromptCacheMissTokens are DeepSeek's (and DeepSeek-compatible providers')
+// context-cache breakdown of PromptTokens: a cache hit is billed by the
+// provider at a small fraction of a cache miss (DeepSeek: ~1-8% depending on
+// model) because it reuses a previously-processed prefix instead of
+// reprocessing it. They are 0 for providers that don't report caching, and
+// PromptCacheHitTokens+PromptCacheMissTokens == PromptTokens when they do.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                     `json:"prompt_tokens"`
+	CompletionTokens        int                     `json:"completion_tokens"`
+	TotalTokens             int                     `json:"total_tokens"`
+	PromptCacheHitTokens    int                     `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens   int                     `json:"prompt_cache_miss_tokens"`
+	CompletionTokensDetails CompletionTokensDetails `json:"completion_tokens_details"`
 }
 
 func newReq(ctx context.Context, url, apiKey string, body []byte) (*http.Request, error) {
@@ -106,7 +141,30 @@ func retryDelay(attempt int, header http.Header) time.Duration {
 // all) is returned immediately without retrying: Stream/Complete/Forward all
 // treat that as "upstream unreachable", which is the caller's cue to fail the
 // request rather than keep the client waiting on a dead upstream.
+//
+// Before dialing, checks Breakers for the target host: if the breaker is
+// open (host has failed repeatedly and is in its cooldown), returns
+// circuitbreaker.ErrOpen immediately instead of paying a dial/TLS/read
+// timeout against a host that recent history says is down. A transport
+// error or exhausting all retries against a still-retryable status reports a
+// breaker Failure; a response that didn't need every retry (success, or a
+// non-retryable 4xx that isn't the breaker's concern) reports Success — a
+// clean 4xx is the upstream working correctly and rejecting the request, not
+// the upstream being down.
 func doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) (*http.Response, error) {
+	// Build once up front purely to learn the target host for the breaker
+	// check; buildReq is cheap (no I/O) and is called again fresh per
+	// attempt below since a request body can only be read once.
+	probe, err := buildReq()
+	if err != nil {
+		return nil, err
+	}
+	host := probe.URL.Host
+
+	if !Breakers.Allow(host) {
+		return nil, circuitbreaker.ErrOpen
+	}
+
 	for attempt := 0; ; attempt++ {
 		req, err := buildReq()
 		if err != nil {
@@ -114,9 +172,18 @@ func doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) (*
 		}
 		resp, err := Client.Do(req)
 		if err != nil {
+			Breakers.Failure(host)
 			return nil, err
 		}
 		if attempt >= maxUpstreamRetries || !isRetryableStatus(resp.StatusCode) {
+			if attempt >= maxUpstreamRetries && isRetryableStatus(resp.StatusCode) {
+				// Retries exhausted and the upstream is STILL answering
+				// 502/503/504 — that's the breaker's signal, distinct from a
+				// single blip the retry already absorbed.
+				Breakers.Failure(host)
+			} else {
+				Breakers.Success(host)
+			}
 			return resp, nil
 		}
 		delay := retryDelay(attempt, resp.Header)

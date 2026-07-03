@@ -9,6 +9,8 @@ export interface HostedModelSeed {
   inputPricePer1MCents: number
   outputPricePer1MCents: number
   creditMultiplier: number
+  cacheReadCreditMultiplier?: number
+  cacheWriteCreditMultiplier?: number
   allowedPlanCodes: PlanCode[]
   enabled: boolean
 }

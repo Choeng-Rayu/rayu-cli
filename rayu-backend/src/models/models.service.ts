@@ -11,6 +11,11 @@ export interface ModelPatch {
   inputPricePer1MCents?: number
   outputPricePer1MCents?: number
   creditMultiplier?: number
+  // Allow explicit null (= "not configured", the gateway falls back to its
+  // own default) so the admin UI can clear the field back to inherited
+  // behavior — matches ModelFieldsDto's cacheRead/cacheWriteCreditMultiplier.
+  cacheReadCreditMultiplier?: number | null
+  cacheWriteCreditMultiplier?: number | null
   allowedPlanCodes?: string[]
   enabled?: boolean
 }
@@ -65,6 +70,8 @@ export class ModelsService {
         inputPricePer1MCents: data.inputPricePer1MCents ?? 0,
         outputPricePer1MCents: data.outputPricePer1MCents ?? 0,
         creditMultiplier: data.creditMultiplier ?? 1,
+        cacheReadCreditMultiplier: data.cacheReadCreditMultiplier ?? null,
+        cacheWriteCreditMultiplier: data.cacheWriteCreditMultiplier ?? null,
         allowedPlanCodes: (data.allowedPlanCodes ?? []) as Prisma.InputJsonValue,
         enabled: data.enabled ?? true,
       },
@@ -87,6 +94,10 @@ export class ModelsService {
       data.outputPricePer1MCents = patch.outputPricePer1MCents
     if (patch.creditMultiplier !== undefined)
       data.creditMultiplier = patch.creditMultiplier
+    if (patch.cacheReadCreditMultiplier !== undefined)
+      data.cacheReadCreditMultiplier = patch.cacheReadCreditMultiplier
+    if (patch.cacheWriteCreditMultiplier !== undefined)
+      data.cacheWriteCreditMultiplier = patch.cacheWriteCreditMultiplier
     if (patch.allowedPlanCodes !== undefined)
       data.allowedPlanCodes = patch.allowedPlanCodes as Prisma.InputJsonValue
     if (patch.enabled !== undefined) data.enabled = patch.enabled
@@ -115,6 +126,8 @@ export class ModelsService {
           inputPricePer1MCents: m.inputPricePer1MCents,
           outputPricePer1MCents: m.outputPricePer1MCents,
           creditMultiplier: m.creditMultiplier,
+          cacheReadCreditMultiplier: m.cacheReadCreditMultiplier ?? null,
+          cacheWriteCreditMultiplier: m.cacheWriteCreditMultiplier ?? null,
           allowedPlanCodes: m.allowedPlanCodes as Prisma.InputJsonValue,
           enabled: m.enabled,
         },

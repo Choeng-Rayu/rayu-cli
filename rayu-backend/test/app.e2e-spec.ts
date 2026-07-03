@@ -622,10 +622,12 @@ describe('rayu-backend (e2e)', () => {
         inputPricePer1MCents: 4,
         outputPricePer1MCents: 20,
         creditMultiplier: 1,
+        cacheReadCreditMultiplier: 0.08,
         allowedPlanCodes: ['pro', 'pro_plus', 'max'],
         enabled: true,
       })
     expect(created.status).toBe(201)
+    expect(created.body.cacheReadCreditMultiplier).toBe(0.08)
 
     // Bad plan code rejected.
     await request(app.getHttpServer())
@@ -638,9 +640,10 @@ describe('rayu-backend (e2e)', () => {
     const patched = await request(app.getHttpServer())
       .patch('/api/admin/models/qwen-turbo')
       .set('Authorization', `Bearer ${adminAccess}`)
-      .send({ creditMultiplier: 2.5 })
+      .send({ creditMultiplier: 2.5, cacheReadCreditMultiplier: 0.12 })
     expect(patched.status).toBe(200)
     expect(patched.body.creditMultiplier).toBe(2.5)
+    expect(patched.body.cacheReadCreditMultiplier).toBe(0.12)
     await request(app.getHttpServer())
       .delete('/api/admin/models/qwen-turbo')
       .set('Authorization', `Bearer ${adminAccess}`)

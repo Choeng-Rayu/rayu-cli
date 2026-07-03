@@ -119,6 +119,8 @@ export interface HostedModel {
   inputPricePer1MCents: number
   outputPricePer1MCents: number
   creditMultiplier: number
+  cacheReadCreditMultiplier: number | null
+  cacheWriteCreditMultiplier: number | null
   allowedPlanCodes: string[] | null
   enabled: boolean
 }

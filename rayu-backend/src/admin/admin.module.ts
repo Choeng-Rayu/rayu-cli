@@ -143,6 +143,22 @@ class ModelFieldsDto {
   @Min(0)
   creditMultiplier?: number
 
+  // Allow explicit null (= "not configured", the gateway falls back to its
+  // own default) so the admin UI can clear the field back to inherited
+  // behavior; @IsOptional() alone only skips validation for `undefined`, not
+  // `null` (same pattern as maxDailyTurns/creditsPerPeriod above).
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsNumber()
+  @Min(0)
+  cacheReadCreditMultiplier?: number | null
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsNumber()
+  @Min(0)
+  cacheWriteCreditMultiplier?: number | null
+
   @IsOptional()
   @IsArray()
   @IsIn(PLAN_CODES as unknown as string[], { each: true })
@@ -324,10 +340,7 @@ export class AdminController {
   }
 
   @Patch('plans/:code')
-  async updatePlan(
-    @Param('code') code: string,
-    @Body() body: UpdatePlanDto,
-  ) {
+  async updatePlan(@Param('code') code: string, @Body() body: UpdatePlanDto) {
     // Sanitize the feature entitlements patch against the catalog (400 on bad
     // keys/limits) before handing to the service.
     let features
