@@ -33,11 +33,11 @@ model User {
 }
 
 model Plan {
-  id           Int     @id @default(autoincrement())
-  code         String  @unique @db.VarChar(32)
-  name         String  @db.VarChar(191)
-  priceCents   Int     @default(0)
-  availability String  @default("coming_soon") @db.VarChar(32)
+  id           Int    @id @default(autoincrement())
+  code         String @unique @db.VarChar(32)
+  name         String @db.VarChar(191)
+  priceCents   Int    @default(0)
+  availability String @default("coming_soon") @db.VarChar(32)
   limits       Json?
 
   subscriptions Subscription[]
@@ -115,19 +115,30 @@ model UsageEvent {
 // Catalog of upstream LLM models Rayu resells through the (Phase 2) gateway.
 // All pricing/multiplier/access is admin-editable; not hardcoded.
 model HostedModel {
-  id                   Int      @id @default(autoincrement())
-  code                 String   @unique @db.VarChar(64)
-  label                String   @db.VarChar(128)
-  provider             String   @db.VarChar(32)
-  upstreamBaseUrl      String   @db.VarChar(255)
-  upstreamModelId      String   @db.VarChar(128)
-  inputPricePer1MCents Int      @default(0)
-  outputPricePer1MCents Int     @default(0)
-  creditMultiplier     Float    @default(1)
-  allowedPlanCodes     Json?
-  enabled              Boolean  @default(true)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                         Int      @id @default(autoincrement())
+  code                       String   @unique @db.VarChar(64)
+  label                      String   @db.VarChar(128)
+  provider                   String   @db.VarChar(32)
+  upstreamBaseUrl            String   @db.VarChar(255)
+  upstreamModelId            String   @db.VarChar(128)
+  inputPricePer1MCents       Int      @default(0)
+  outputPricePer1MCents      Int      @default(0)
+  creditMultiplier           Float    @default(1)
+  // Credit multiplier for cache-HIT prompt tokens (tokens the provider reused
+  // from its own cache instead of reprocessing — e.g. DeepSeek's reported
+  // `prompt_cache_hit_tokens`). NULL = gateway uses its own global default
+  // (currently ~10% of the input rate). Typical override: 0.05-0.15.
+  cacheReadCreditMultiplier  Float?
+  // Credit multiplier for cache-WRITE/cache-creation prompt tokens (some
+  // providers charge a premium the first time a prefix is cached — e.g.
+  // Anthropic charges ~1.25x; DeepSeek has no such concept, so this stays
+  // null for DeepSeek models). NULL = gateway falls back to the model's
+  // normal input rate (creditMultiplier), i.e. no premium/discount.
+  cacheWriteCreditMultiplier Float?
+  allowedPlanCodes           Json?
+  enabled                    Boolean  @default(true)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
 
   @@map("hosted_models")
 }
@@ -151,15 +162,15 @@ model AppSettings {
 
 // Durable audit of credit consumption (written by the gateway in Phase 2).
 model CreditLedger {
-  id           Int      @id @default(autoincrement())
-  userId       Int      @map("user_id")
-  modelCode    String   @db.VarChar(64)
-  inTokens     Int      @default(0)
-  outTokens    Int      @default(0)
-  credits      Int      @default(0)
-  realCostCents Int     @default(0)
-  source       String   @default("plan") @db.VarChar(16)
-  createdAt    DateTime @default(now())
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  modelCode     String   @db.VarChar(64)
+  inTokens      Int      @default(0)
+  outTokens     Int      @default(0)
+  credits       Int      @default(0)
+  realCostCents Int      @default(0)
+  source        String   @default("plan") @db.VarChar(16)
+  createdAt     DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -171,13 +182,13 @@ model CreditLedger {
 
 // Pay-as-you-go credit purchases (schema only this phase; flow ships later).
 model CreditTopup {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
-  credits   Int      @default(0)
-  amountCents Int    @default(0)
-  status    String   @default("pending") @db.VarChar(16)
-  paymentId Int?
-  createdAt DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  credits     Int      @default(0)
+  amountCents Int      @default(0)
+  status      String   @default("pending") @db.VarChar(16)
+  paymentId   Int?
+  createdAt   DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

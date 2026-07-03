@@ -13,18 +13,24 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// HostedModel mirrors a row in hosted_models.
+// HostedModel mirrors a row in hosted_models. CacheReadCreditMultiplier/
+// CacheWriteCreditMultiplier are nil when the admin hasn't configured a
+// model-specific override; the gateway then falls back to its own defaults
+// (see credits.DeriveModelRates) so every model that predates these columns
+// bills identically to before they existed.
 type HostedModel struct {
-	Code                  string   `json:"code"`
-	Label                 string   `json:"label"`
-	Provider              string   `json:"provider"`
-	UpstreamBaseURL       string   `json:"-"`
-	UpstreamModelID       string   `json:"-"`
-	InputPricePer1MCents  int      `json:"-"`
-	OutputPricePer1MCents int      `json:"-"`
-	CreditMultiplier      float64  `json:"creditMultiplier"`
-	AllowedPlanCodes      []string `json:"-"`
-	Enabled               bool     `json:"-"`
+	Code                       string   `json:"code"`
+	Label                      string   `json:"label"`
+	Provider                   string   `json:"provider"`
+	UpstreamBaseURL            string   `json:"-"`
+	UpstreamModelID            string   `json:"-"`
+	InputPricePer1MCents       int      `json:"-"`
+	OutputPricePer1MCents      int      `json:"-"`
+	CreditMultiplier           float64  `json:"creditMultiplier"`
+	CacheReadCreditMultiplier  *float64 `json:"-"`
+	CacheWriteCreditMultiplier *float64 `json:"-"`
+	AllowedPlanCodes           []string `json:"-"`
+	Enabled                    bool     `json:"-"`
 }
 
 // AppSettings mirrors the singleton app_settings row.
@@ -50,15 +56,39 @@ type Plan struct {
 // Store wraps the database handle.
 type Store struct{ db *sql.DB }
 
-// Open connects to MySQL with a small pool and verifies connectivity.
+// Pool sizing for a gateway that serves concurrent streaming chat/proxy
+// traffic. The prior defaults (10 open / 5 idle) starved under load: once
+// concurrent requests exceeded 10, QueryContext/ExecContext calls queued
+// waiting for a free connection with no explicit acquire timeout, so the
+// gateway appeared to hang instead of failing fast — which is what turns
+// into a client-visible 502 once the reverse proxy in front of it times out.
+//
+// 64 open / 16 idle gives the gateway headroom for concurrent entitlement
+// lookups (cache-miss path: 3 sequential queries) plus the async ledger/
+// usage-event writer, while staying well under MySQL's default
+// max_connections (151) even with the backend's own Prisma pool sharing the
+// same instance. Tune via env if a deployment's MySQL is sized differently.
+const (
+	defaultMaxOpenConns    = 64
+	defaultMaxIdleConns    = 16
+	defaultConnMaxLifetime = 3 * time.Minute
+	// Idle connections older than this are closed even if MaxIdleConns has
+	// room, so a load spike's connections get reaped afterward instead of
+	// sitting open indefinitely.
+	defaultConnMaxIdleTime = 90 * time.Second
+)
+
+// Open connects to MySQL with a pool sized for concurrent gateway traffic and
+// verifies connectivity.
 func Open(dsn string) (*Store, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetConnMaxLifetime(3 * time.Minute)
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
+	db.SetMaxOpenConns(defaultMaxOpenConns)
+	db.SetMaxIdleConns(defaultMaxIdleConns)
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
@@ -108,7 +138,7 @@ func parseLimits(raw []byte) planLimits {
 
 // LoadModels returns all hosted_models rows.
 func (s *Store) LoadModels(ctx context.Context) ([]HostedModel, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT code,label,provider,upstreamBaseUrl,upstreamModelId,inputPricePer1MCents,outputPricePer1MCents,creditMultiplier,allowedPlanCodes,enabled FROM hosted_models`)
+	rows, err := s.db.QueryContext(ctx, `SELECT code,label,provider,upstreamBaseUrl,upstreamModelId,inputPricePer1MCents,outputPricePer1MCents,creditMultiplier,cacheReadCreditMultiplier,cacheWriteCreditMultiplier,allowedPlanCodes,enabled FROM hosted_models`)
 	if err != nil {
 		return nil, err
 	}
@@ -117,8 +147,17 @@ func (s *Store) LoadModels(ctx context.Context) ([]HostedModel, error) {
 	for rows.Next() {
 		var m HostedModel
 		var allowed []byte
-		if err := rows.Scan(&m.Code, &m.Label, &m.Provider, &m.UpstreamBaseURL, &m.UpstreamModelID, &m.InputPricePer1MCents, &m.OutputPricePer1MCents, &m.CreditMultiplier, &allowed, &m.Enabled); err != nil {
+		var cacheRead, cacheWrite sql.NullFloat64
+		if err := rows.Scan(&m.Code, &m.Label, &m.Provider, &m.UpstreamBaseURL, &m.UpstreamModelID, &m.InputPricePer1MCents, &m.OutputPricePer1MCents, &m.CreditMultiplier, &cacheRead, &cacheWrite, &allowed, &m.Enabled); err != nil {
 			return nil, err
+		}
+		if cacheRead.Valid {
+			v := cacheRead.Float64
+			m.CacheReadCreditMultiplier = &v
+		}
+		if cacheWrite.Valid {
+			v := cacheWrite.Float64
+			m.CacheWriteCreditMultiplier = &v
 		}
 		if len(allowed) > 0 {
 			_ = json.Unmarshal(allowed, &m.AllowedPlanCodes)

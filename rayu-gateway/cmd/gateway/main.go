@@ -68,9 +68,11 @@ func main() {
 	defer rdb.Close()
 	lim := credits.NewLimiter(rdb)
 
+	handler := server.New(cfg, cache, lim, st)
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           server.New(cfg, cache, lim, st),
+		Handler:           handler,
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 
@@ -88,5 +90,14 @@ func main() {
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutCancel()
 	_ = srv.Shutdown(shutCtx)
+
+	// Drain the credit-ledger/usage-event write queue after the HTTP server
+	// has stopped accepting new requests, so a restart doesn't silently lose
+	// whatever writes were still pending. Discovered via type assertion:
+	// server.New's public contract stays plain http.Handler (see server.go's
+	// Shutdown doc comment) so this is optional/best-effort by design.
+	if drainer, ok := handler.(interface{ Shutdown(time.Duration) }); ok {
+		drainer.Shutdown(5 * time.Second)
+	}
 	log.Println("rayu-gateway stopped")
 }

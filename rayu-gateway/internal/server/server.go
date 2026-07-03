@@ -19,9 +19,11 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/auth"
+	"github.com/choeng-rayu/rayu-gateway/internal/circuitbreaker"
 	"github.com/choeng-rayu/rayu-gateway/internal/config"
 	"github.com/choeng-rayu/rayu-gateway/internal/credits"
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
+	"github.com/choeng-rayu/rayu-gateway/internal/eventqueue"
 	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 	"github.com/choeng-rayu/rayu-gateway/internal/proxy"
 	"github.com/choeng-rayu/rayu-gateway/internal/store"
@@ -47,12 +49,24 @@ type Server struct {
 	ent entSource
 	lim *credits.Limiter
 	st  *store.Store
+	wq  *eventqueue.Queue
 }
 
 // New builds the gateway HTTP handler. /healthz is public; everything under
 // /v1 requires a valid Rayu access token.
 func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Store) http.Handler {
-	s := &Server{cfg: cfg, ent: ent, lim: lim, st: st}
+	// wq replaces the old per-write safeGo(...) goroutines for the credit
+	// ledger + usage-event writes: a single bounded, serialized queue so
+	// those best-effort durable writes can never open more MySQL
+	// connections than eventqueue.DefaultWorkers, regardless of how many
+	// concurrent chat/proxy requests are scheduling them. See
+	// internal/eventqueue for why (pool starvation under concurrent load).
+	wq := eventqueue.New(eventqueue.Config{
+		OnDrop: func(item eventqueue.Item, reason string, err error) {
+			log.Printf("eventqueue: dropped item %q (reason=%s): %v", item.Name, reason, err)
+		},
+	})
+	s := &Server{cfg: cfg, ent: ent, lim: lim, st: st, wq: wq}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP)
@@ -87,11 +101,51 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"userId": claims.UserID, "role": claims.Role})
 }
 
+// Shutdown drains the background write queue (credit ledger + usage-event
+// writes) so a process restart doesn't silently lose whatever was still
+// pending. It waits up to timeout for the queue to empty, then closes it
+// regardless — a slow/stuck MySQL at shutdown must not hang the process
+// past its own termination deadline. Callers (main.go) discover this via a
+// type assertion on the http.Handler returned by New, since New's public
+// contract deliberately stays http.Handler for callers (including tests)
+// that only need to serve requests.
+func (s *Server) Shutdown(timeout time.Duration) {
+	if s.wq == nil {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for s.wq.Pending() > 0 && time.Now().Before(deadline) {
+		<-ticker.C
+	}
+	if pending := s.wq.Pending(); pending > 0 {
+		log.Printf("eventqueue: shutdown timeout with %d item(s) still pending", pending)
+	}
+	s.wq.Close()
+}
+
+// writeEntitlementError classifies an entitlements.Resolve failure. A
+// context.DeadlineExceeded means the resolveDeadline guard tripped — almost
+// always the MySQL pool is saturated under load — so it is reported as a
+// fast, retryable 503 (with Retry-After) rather than an opaque 500. This is
+// the fail-fast behavior: the gateway answers in ~resolveDeadline instead of
+// hanging until the reverse proxy in front of it times out and the client
+// sees a 502 with no indication of why.
+func writeEntitlementError(w http.ResponseWriter, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		w.Header().Set("Retry-After", "1")
+		httpx.WriteError(w, http.StatusServiceUnavailable, "gateway busy, please retry")
+		return
+	}
+	httpx.WriteError(w, http.StatusInternalServerError, "entitlement lookup failed")
+}
+
 func (s *Server) handleEntitlements(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "entitlement lookup failed")
+		writeEntitlementError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -105,7 +159,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "entitlement lookup failed")
+		writeEntitlementError(w, err)
 		return
 	}
 	if !ent.Active() {
@@ -127,7 +181,7 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "entitlement lookup failed")
+		writeEntitlementError(w, err)
 		return
 	}
 	st, err := s.lim.Status(r.Context(), claims.UserID)
@@ -194,7 +248,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "entitlement lookup failed")
+		writeEntitlementError(w, err)
 		return
 	}
 	if !ent.Active() {
@@ -267,6 +321,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// --- Credit reserve (pre-flight) ---
 	baseline := settings.BaselineCreditsPer1M
 	mult := hm.CreditMultiplier
+	// rates prices each usage bucket (input/output/cache-read/cache-write)
+	// independently for the ACTUAL charge (see credits.DeriveModelRates); the
+	// pre-flight estimate above still uses the flat mult since the real
+	// input/output/cache split isn't known until the upstream responds.
+	rates := credits.DeriveModelRates(hm.CreditMultiplier, hm.InputPricePer1MCents, hm.OutputPricePer1MCents, hm.CacheReadCreditMultiplier, hm.CacheWriteCreditMultiplier)
 	capPeriod := capOrUnlimited(ent.Plan.CreditsPerPeriod)
 	estCredits := credits.ForTokens(credits.EstimateTokens(req, defaultMaxTokens), baseline, mult)
 	if estCredits < 1 {
@@ -307,17 +366,27 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	source := rr.Source
 	settled := false
 	settle := func(usage *proxy.Usage) int64 {
-		actual := actualCredits(usage, baseline, mult)
+		actual := actualCredits(usage, baseline, rates)
 		if !settled {
 			settled = true
 			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = s.lim.Settle(bg, claims.UserID, source, estCredits, actual)
 			s.ent.Invalidate(claims.UserID)
-			log.Printf("chat done: user=%d model=%s charged=%d (est %d) via=%s",
-				claims.UserID, hm.Code, actual, estCredits, source)
 			if usage != nil {
-				s.recordLedger(claims.UserID, *hm, usage, actual, source)
+				// Token/cache/reasoning breakdown logged on every hosted request
+				// so a "why did this cost so much" report can be answered from
+				// gateway logs alone instead of guessing — cacheHit tokens are
+				// billed at rates.CacheRead, output at rates.Output, everything
+				// else (including reasoning, a subset of completion) at rates.Input.
+				log.Printf("chat done: user=%d model=%s charged=%d (est %d) via=%s tokens(total=%d prompt=%d completion=%d reasoning=%d cacheHit=%d cacheMiss=%d)",
+					claims.UserID, hm.Code, actual, estCredits, source,
+					usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens, usage.CompletionTokensDetails.ReasoningTokens,
+					usage.PromptCacheHitTokens, usage.PromptCacheMissTokens)
+				s.recordLedger(claims.UserID, *hm, usage, actual, source, rates)
+			} else {
+				log.Printf("chat done: user=%d model=%s charged=%d (est %d) via=%s (no usage reported)",
+					claims.UserID, hm.Code, actual, estCredits, source)
 			}
 		}
 		return actual
@@ -346,7 +415,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("chat: upstream error user=%d model=%s wrote=%v: %v", claims.UserID, hm.Code, wrote, serr)
 		}
 		if serr != nil && !wrote {
-			httpx.WriteError(w, http.StatusBadGateway, "upstream error")
+			writeUpstreamError(w, serr, "upstream error")
 		}
 		return
 	}
@@ -355,7 +424,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if cerr != nil {
 		settle(nil)
 		log.Printf("chat: upstream unreachable user=%d model=%s: %v", claims.UserID, hm.Code, cerr)
-		httpx.WriteError(w, http.StatusBadGateway, "upstream error")
+		writeUpstreamError(w, cerr, "upstream error")
 		return
 	}
 	if status != http.StatusOK {
@@ -368,38 +437,34 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(respBody)
 }
 
-// safeGo runs fn in its own goroutine, recovering and logging any panic
-// instead of letting it crash the whole process. A goroutine's panic is NOT
-// caught by the per-request chi.Recoverer middleware (that only guards the
-// goroutine an HTTP handler runs on) — an unhandled panic in a detached
-// background goroutine terminates the entire Go process immediately, taking
-// down every in-flight request/stream on the gateway, not just the
-// best-effort write that scheduled it. Every fire-and-forget
-// `go func(){...}()` outside of a request's own handler goroutine MUST go
-// through this.
-func safeGo(name string, fn func()) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("panic in background task %q: %v", name, r)
-			}
-		}()
-		fn()
-	}()
-}
-
-// recordLedger writes the durable consumption row asynchronously.
-func (s *Server) recordLedger(userID int64, m store.HostedModel, u *proxy.Usage, creditsConsumed int64, source string) {
+// recordLedger writes the durable consumption row via the bounded write
+// the SAME per-bucket ModelRates used to charge the user's credits, reused
+// here purely as a discount RATIO (rates.CacheRead/rates.Input) so the
+// internal cost ledger tracks what the provider actually charged Rayu — not
+// the full sticker price for every prompt token — for whatever cache-read
+// rate this specific model is configured with (global default or an
+// admin-set per-model override), instead of a hardcoded constant that could
+// drift from what the user was actually billed.
+func (s *Server) recordLedger(userID int64, m store.HostedModel, u *proxy.Usage, creditsConsumed int64, source string, rates credits.ModelRates) {
 	if s.st == nil {
 		return
 	}
-	cost := float64(u.PromptTokens)/1e6*float64(m.InputPricePer1MCents) +
+	cacheReadFraction := 1.0
+	if rates.Input > 0 {
+		cacheReadFraction = rates.CacheRead / rates.Input
+	}
+	billableInputTokens := float64(u.PromptTokens)
+	if u.PromptCacheHitTokens > 0 || u.PromptCacheMissTokens > 0 {
+		billableInputTokens = float64(u.PromptCacheMissTokens) + float64(u.PromptCacheHitTokens)*cacheReadFraction
+	}
+	cost := billableInputTokens/1e6*float64(m.InputPricePer1MCents) +
 		float64(u.CompletionTokens)/1e6*float64(m.OutputPricePer1MCents)
 	realCostCents := int(math.Round(cost))
-	safeGo("record_ledger", func() {
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.st.InsertLedger(bg, userID, m.Code, u.PromptTokens, u.CompletionTokens, creditsConsumed, realCostCents, source)
+	s.wq.Enqueue(eventqueue.Item{
+		Name: "record_ledger",
+		Run: func(ctx context.Context) error {
+			return s.st.InsertLedger(ctx, userID, m.Code, u.PromptTokens, u.CompletionTokens, creditsConsumed, realCostCents, source)
+		},
 	})
 }
 
@@ -491,7 +556,12 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		w.Header().Del("X-Rayu-Proxied")
 		log.Printf("proxy: upstream unreachable user=%d provider=%s model=%q upstream=%s: %v",
 			claims.UserID, provider, model, upstream, ferr)
-		proxyError(w, http.StatusBadGateway, "upstream unreachable")
+		if errors.Is(ferr, circuitbreaker.ErrOpen) {
+			w.Header().Set("Retry-After", "5")
+			proxyError(w, http.StatusServiceUnavailable, "upstream temporarily unavailable")
+		} else {
+			proxyError(w, http.StatusBadGateway, "upstream unreachable")
+		}
 		return
 	}
 	if status != http.StatusOK {
@@ -503,14 +573,15 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			claims.UserID, provider, model, upstream, status)
 	}
 
-	// Best-effort, fire-and-forget tracking. Never affects the proxied response.
+	// Best-effort tracking via the bounded write queue. Never affects the
+	// proxied response — Enqueue is non-blocking and the write happens on a
+	// shared worker pool instead of one untracked goroutine per request.
 	if s.st != nil {
-		safeGo("proxy_usage_event", func() {
-			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if e := s.st.InsertUsageEvent(bg, claims.UserID, provider, model, "gateway"); e != nil {
-				log.Printf("proxy: usage record failed user=%d provider=%s: %v", claims.UserID, provider, e)
-			}
+		s.wq.Enqueue(eventqueue.Item{
+			Name: "proxy_usage_event",
+			Run: func(ctx context.Context) error {
+				return s.st.InsertUsageEvent(ctx, claims.UserID, provider, model, "gateway")
+			},
 		})
 	}
 	log.Printf("proxy: user=%d provider=%s model=%q -> %s (status=%d)", claims.UserID, provider, model, upstream, status)
@@ -522,6 +593,21 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 func proxyError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("X-Rayu-Proxy-Error", msg)
 	httpx.WriteError(w, status, msg)
+}
+
+// writeUpstreamError classifies an upstream call failure from proxy.Stream/
+// Complete/Forward. circuitbreaker.ErrOpen means the breaker for that host is
+// already open from recent consecutive failures — the gateway didn't even
+// attempt to dial, so this returns fast as a 503 (with Retry-After) rather
+// than the 502 used for "we tried and the upstream didn't answer". Any other
+// error keeps the existing 502 semantics via defaultMsg.
+func writeUpstreamError(w http.ResponseWriter, err error, defaultMsg string) {
+	if errors.Is(err, circuitbreaker.ErrOpen) {
+		w.Header().Set("Retry-After", "5")
+		httpx.WriteError(w, http.StatusServiceUnavailable, "upstream temporarily unavailable")
+		return
+	}
+	httpx.WriteError(w, http.StatusBadGateway, defaultMsg)
 }
 
 func headerOr(r *http.Request, key, def string) string {
@@ -628,11 +714,18 @@ func setCreditHeaders(w http.ResponseWriter, usedWeek, capWeek, topup int64) {
 	w.Header().Set("x-rayu-topup-balance", strconv.FormatInt(topup, 10))
 }
 
-func actualCredits(u *proxy.Usage, baseline int, mult float64) int64 {
+func actualCredits(u *proxy.Usage, baseline int, rates credits.ModelRates) int64 {
 	if u == nil {
 		return 0
 	}
-	return credits.ForTokens(int64(u.TotalTokens), baseline, mult)
+	return credits.ForUsage(credits.Usage{
+		PromptTokens:           int64(u.PromptTokens),
+		CompletionTokens:       int64(u.CompletionTokens),
+		TotalTokens:            int64(u.TotalTokens),
+		PromptCacheHitTokens:   int64(u.PromptCacheHitTokens),
+		PromptCacheMissTokens:  int64(u.PromptCacheMissTokens),
+		PromptCacheWriteTokens: 0, // DeepSeek/DeepInfra don't report a cache-write count today
+	}, baseline, rates)
 }
 
 // remaining returns the remaining credits for a cap, or nil when unlimited.

@@ -128,6 +128,15 @@ func AllowedModels(models []store.HostedModel, planCode string) []store.HostedMo
 	return out
 }
 
+// resolveDeadline bounds the cache-miss path (3 sequential MySQL round-trips:
+// UserStatus, ActivePlan, TopupBalance). Without this, a saturated connection
+// pool under load queues the request indefinitely — the caller (and its
+// client) sees a hang until the reverse proxy in front of the gateway times
+// out and returns a 502, instead of the gateway itself returning a fast,
+// diagnosable error. This must stay comfortably under any upstream proxy
+// timeout so the gateway is always the one that answers first.
+const resolveDeadline = 3 * time.Second
+
 // Resolve returns the user's entitlement using a short-TTL per-user cache.
 func (c *Cache) Resolve(ctx context.Context, userID int64) (Entitlement, error) {
 	now := time.Now()
@@ -137,6 +146,9 @@ func (c *Cache) Resolve(ctx context.Context, userID int64) (Entitlement, error) 
 		return e.ent, nil
 	}
 	c.umu.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, resolveDeadline)
+	defer cancel()
 
 	status, err := c.st.UserStatus(ctx, userID)
 	if err != nil {

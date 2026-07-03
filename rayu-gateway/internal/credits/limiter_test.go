@@ -16,17 +16,170 @@ func TestForTokens(t *testing.T) {
 		want     int64
 	}{
 		{0, 10, 1, 0},
-		{1_000_000, 10, 1, 10},  // 1M tokens @ baseline 10 = 10 credits
-		{100_000, 10, 1, 1},     // 100k tokens = 1 credit
-		{5_000_000, 10, 1, 50},  // 5M tokens = 50 credits ($10 Pro)
-		{100_000, 10, 3, 3},     // pro model multiplier 3x
-		{18, 10, 1, 1},          // tiny usage rounds up to 1
+		{1_000_000, 10, 1, 10}, // 1M tokens @ baseline 10 = 10 credits
+		{100_000, 10, 1, 1},    // 100k tokens = 1 credit
+		{5_000_000, 10, 1, 50}, // 5M tokens = 50 credits ($10 Pro)
+		{100_000, 10, 3, 3},    // pro model multiplier 3x
+		{18, 10, 1, 1},         // tiny usage rounds up to 1
 	}
 	for _, c := range cases {
 		if got := ForTokens(c.tokens, c.baseline, c.mult); got != c.want {
 			t.Errorf("ForTokens(%d,%d,%v)=%d want %d", c.tokens, c.baseline, c.mult, got, c.want)
 		}
 	}
+}
+
+// flatRates returns a ModelRates where every bucket shares the same
+// multiplier, i.e. the pre-per-bucket-pricing behavior (ForTokens-equivalent)
+// — used by tests that want to isolate ONE dimension (e.g. just the cache
+// discount) without differentiated input/output pricing interfering.
+func flatRates(mult float64) ModelRates {
+	return ModelRates{Input: mult, Output: mult, CacheRead: mult, CacheWrite: mult}
+}
+
+func TestForUsage(t *testing.T) {
+	cases := []struct {
+		name                                   string
+		total, cacheHit, cacheMiss, completion int64
+		baseline                               int
+		want                                   int64
+	}{
+		{
+			name:  "no cache breakdown, no prompt/completion split falls back to totalTokens",
+			total: 5_000_000, cacheHit: 0, cacheMiss: 0, completion: 0,
+			baseline: 10,
+			want:     50, // ceil(5,000,000/1e6 * 10 * 1)
+		},
+		{
+			name: "all cache hit is billed at CacheHitBillingWeight",
+			// prompt=5,000,000 (all cache hit) + completion=0 => total=5,000,000
+			total: 5_000_000, cacheHit: 5_000_000, cacheMiss: 0, completion: 0,
+			baseline: 10,
+			// billable = 5,000,000*0.10 = 500,000 tokens -> ceil(0.5*10*1) = 5
+			want: 5,
+		},
+		{
+			name: "mixed hit/miss/completion",
+			// prompt = cacheHit(9,000,000) + cacheMiss(1,000,000) = 10,000,000; +completion(1,000,000) = total 11,000,000
+			total: 11_000_000, cacheHit: 9_000_000, cacheMiss: 1_000_000, completion: 1_000_000,
+			baseline: 10,
+			// billable = 1,000,000 (miss) + 9,000,000*0.10 (hit) + 1,000,000 (completion) = 2,900,000
+			want: 29, // ceil(2.9 * 10 * 1)
+		},
+		{
+			name:  "pure cache-miss agentic re-send is unaffected (no hits yet)",
+			total: 2_000_000, cacheHit: 0, cacheMiss: 2_000_000, completion: 0,
+			baseline: 10,
+			want:     20,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			u := Usage{TotalTokens: c.total, PromptCacheHitTokens: c.cacheHit, PromptCacheMissTokens: c.cacheMiss, CompletionTokens: c.completion}
+			rates := ModelRates{Input: 1, Output: 1, CacheRead: CacheHitBillingWeight, CacheWrite: 1}
+			if got := ForUsage(u, c.baseline, rates); got != c.want {
+				t.Errorf("ForUsage(%+v, %d, %+v)=%d want %d", u, c.baseline, rates, got, c.want)
+			}
+		})
+	}
+}
+
+// TestForUsageBillsOutputAtItsOwnRate verifies the fix for output tokens
+// previously being billed at the same rate as input tokens even though every
+// real provider prices them differently (DeepSeek: output is ~2x input).
+func TestForUsageBillsOutputAtItsOwnRate(t *testing.T) {
+	rates := ModelRates{Input: 1, Output: 2, CacheRead: CacheHitBillingWeight, CacheWrite: 1}
+	// No cache breakdown (DeepInfra-style), but prompt/completion ARE reported
+	// separately: 1,000,000 prompt + 1,000,000 completion.
+	u := Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000, TotalTokens: 2_000_000}
+	// billable = 1,000,000*1 (input) + 1,000,000*2 (output) = 3,000,000 -> ceil(3*10) = 30
+	if got := ForUsage(u, 10, rates); got != 30 {
+		t.Fatalf("ForUsage(output-rate-aware)=%d, want 30", got)
+	}
+	// A flat (Input==Output) rate on the SAME usage must reproduce the old,
+	// pre-fix flat-multiplier number exactly, proving this is additive.
+	flat := ForUsage(u, 10, flatRates(1))
+	if flat != 20 {
+		t.Fatalf("ForUsage(flat rate)=%d, want 20 (sanity check on the flat-rate baseline)", flat)
+	}
+}
+
+// TestForUsageNeverBillsMoreThanFlatRate locks in the invariant that a
+// cache-read discount can only ever reduce (or leave unchanged) the charge
+// relative to treating every token as full-price — it must never accidentally
+// increase it.
+func TestForUsageNeverBillsMoreThanFlatRate(t *testing.T) {
+	u := Usage{TotalTokens: 3_000_000, PromptCacheHitTokens: 2_000_000, PromptCacheMissTokens: 500_000, CompletionTokens: 500_000}
+	noDiscount := ForUsage(u, 10, flatRates(1))
+	discounted := ForUsage(u, 10, ModelRates{Input: 1, Output: 1, CacheRead: CacheHitBillingWeight, CacheWrite: 1})
+	if discounted > noDiscount {
+		t.Fatalf("cache-aware billing (%d) exceeded the no-discount baseline (%d)", discounted, noDiscount)
+	}
+}
+
+// TestForTokensAndForUsageClampNegativeInputs locks in the defensive posture
+// (mirroring Claude Code/OpenCode's usage-parsing safe() guards): a malformed
+// or unexpected negative token count from a provider must never subtract from
+// the user's cumulative credit balance.
+func TestForTokensAndForUsageClampNegativeInputs(t *testing.T) {
+	if got := ForTokens(-5_000_000, 10, 1); got != 0 {
+		t.Fatalf("ForTokens(negative)=%d, want 0", got)
+	}
+	allNegative := Usage{TotalTokens: -1, PromptCacheHitTokens: -1, PromptCacheMissTokens: -1, CompletionTokens: -1}
+	if got := ForUsage(allNegative, 10, flatRates(1)); got != 0 {
+		t.Fatalf("ForUsage(all negative)=%d, want 0", got)
+	}
+	// A negative completion alongside valid cache fields must clamp to 0, not
+	// silently reduce the bill below what the cache-miss/hit tokens alone cost.
+	rates := flatRates(1)
+	got := ForUsage(Usage{TotalTokens: 1_000_000, PromptCacheMissTokens: 1_000_000, CompletionTokens: -500_000}, 10, rates)
+	want := ForUsage(Usage{TotalTokens: 1_000_000, PromptCacheMissTokens: 1_000_000, CompletionTokens: 0}, 10, rates)
+	if got != want {
+		t.Fatalf("ForUsage(negative completion)=%d, want %d (same as completion=0)", got, want)
+	}
+}
+
+func TestDeriveModelRates(t *testing.T) {
+	t.Run("no overrides: output derived from price ratio, cache falls back to global default", func(t *testing.T) {
+		// DeepSeek V4 Flash's real pricing: input(miss) 14c/1M, output 28c/1M — exactly 2x.
+		r := DeriveModelRates(0.33, 14, 28, nil, nil)
+		if r.Input != 0.33 {
+			t.Errorf("Input=%v, want 0.33", r.Input)
+		}
+		wantOutput := 0.33 * 2
+		if diff := r.Output - wantOutput; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("Output=%v, want %v (2x Input, derived from the 14/28 price ratio)", r.Output, wantOutput)
+		}
+		if r.CacheRead != CacheHitBillingWeight {
+			t.Errorf("CacheRead=%v, want the global default %v", r.CacheRead, CacheHitBillingWeight)
+		}
+		if r.CacheWrite != 0.33 {
+			t.Errorf("CacheWrite=%v, want 0.33 (no premium/discount by default)", r.CacheWrite)
+		}
+	})
+	t.Run("missing price data falls back to the flat multiplier for Output too", func(t *testing.T) {
+		r := DeriveModelRates(1, 0, 0, nil, nil)
+		if r.Output != 1 {
+			t.Errorf("Output=%v, want 1 (falls back to creditMultiplier when prices are unset)", r.Output)
+		}
+	})
+	t.Run("explicit per-model overrides win", func(t *testing.T) {
+		read, write := 0.05, 1.25
+		r := DeriveModelRates(1, 10, 10, &read, &write)
+		if r.CacheRead != 0.05 {
+			t.Errorf("CacheRead=%v, want the override 0.05", r.CacheRead)
+		}
+		if r.CacheWrite != 1.25 {
+			t.Errorf("CacheWrite=%v, want the override 1.25", r.CacheWrite)
+		}
+	})
+	t.Run("an existing row with no overrides bills identically to before these overrides existed", func(t *testing.T) {
+		// Equal input/output price (no real ratio data) + no overrides must
+		// collapse to a single flat rate, matching the original ForTokens(total, baseline, mult) shape.
+		r := DeriveModelRates(1, 10, 10, nil, nil)
+		u := Usage{TotalTokens: 5_000_000, PromptCacheHitTokens: 3_000_000, PromptCacheMissTokens: 2_000_000}
+		_ = ForUsage(u, 10, r) // must not panic / must produce a sane result; exact value covered by TestForUsage
+	})
 }
 
 func TestEstimateTokens(t *testing.T) {

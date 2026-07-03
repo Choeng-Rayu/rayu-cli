@@ -138,6 +138,8 @@ export class AuthController {
         label: m.label,
         provider: m.provider,
         creditMultiplier: m.creditMultiplier,
+        cacheReadCreditMultiplier: m.cacheReadCreditMultiplier,
+        cacheWriteCreditMultiplier: m.cacheWriteCreditMultiplier,
       })),
       // The full enabled hosted catalog — shown to EVERY signed-in user so the
       // rayu-hosted provider is always visible (Free sees it but is gated on use;
@@ -147,6 +149,8 @@ export class AuthController {
         label: m.label,
         provider: m.provider,
         creditMultiplier: m.creditMultiplier,
+        cacheReadCreditMultiplier: m.cacheReadCreditMultiplier,
+        cacheWriteCreditMultiplier: m.cacheWriteCreditMultiplier,
       })),
     }
   }

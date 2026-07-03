@@ -126,6 +126,55 @@ func TestHandleChatUnderCapCountsTurn(t *testing.T) {
 	}
 }
 
+// TestHandleChatBillsCacheHitTokensAtDiscount is a regression test for the
+// "two prompts, 24M of 50M tokens" class of report: a DeepSeek-style response
+// reporting mostly prompt_cache_hit_tokens (typical of an agentic follow-up
+// call that resends a huge, already-billed conversation history) must be
+// charged at credits.CacheHitBillingWeight, not at full price.
+func TestHandleChatBillsCacheHitTokensAtDiscount(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":10000000,"completion_tokens":0,"total_tokens":10000000,"prompt_cache_hit_tokens":10000000,"prompt_cache_miss_tokens":0}}`))
+	}))
+	defer upstream.Close()
+
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 42,
+			Status: "active",
+			Plan:   store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				{Code: "m1", Provider: "deepseek", Enabled: true, CreditMultiplier: 1,
+					UpstreamBaseURL: upstream.URL, UpstreamModelID: "real-model"},
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 10},
+	}
+	h, lim := chatHarness(t, fe)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"m1"}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 42))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	st, err := lim.Status(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("lim.Status: %v", err)
+	}
+	// Naive (pre-fix) billing would have charged ForTokens(10_000_000, 10, 1) = 100
+	// credits — double the entire 50-credit Pro allowance from ONE request. With
+	// the cache-hit discount, 10,000,000 all-cache-hit tokens bill as if they
+	// were 1,000,000 tokens: ceil(1 * 10 * 1) = 10 credits.
+	if st.UsedPeriod != 10 {
+		t.Fatalf("usedPeriod=%d, want 10 (cache-hit-discounted), naive-bug value would be 100", st.UsedPeriod)
+	}
+}
+
 func TestHandleCreditsReportsDailyTurns(t *testing.T) {
 	fe := &fakeEnt{
 		ent: entitlements.Entitlement{
