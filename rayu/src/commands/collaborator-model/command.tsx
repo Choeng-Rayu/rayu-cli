@@ -47,6 +47,16 @@ const SUBCOMMANDS = new Set([
  *   /collaborator_model frontend show → show one collaborator's selection
  *   /collaborator_model default       → clear ALL (back to inherit)
  *   /collaborator_model frontend default → clear one collaborator's override
+ *
+ * Callback-to-inherit: a saved override here is not permanent immunity from
+ * inherit. If the admin's availableModels allowlist is later tightened to
+ * exclude the saved model, getAgentModel() (src/utils/model/agent.ts) detects
+ * that at resolution time and silently falls back to the same result 'inherit'
+ * would produce — it does NOT forward the disallowed model string to the API,
+ * and it does NOT clear the saved selection (it can become valid again if the
+ * allowlist changes back). This command's `show` output still reports the
+ * saved override, not the runtime fallback — /doctor or a failed spawn is
+ * where an allowlist mismatch would actually surface.
  */
 export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
   const tokens = (args ?? '').trim().split(/\s+/).filter(Boolean)

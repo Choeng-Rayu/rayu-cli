@@ -1,13 +1,20 @@
-// Regression coverage for the DeepSeek Web duplicate-response bug: the SSE
-// parser used to emit a separate `thinking` content block ahead of the final
-// `text` block, and claude.ts's generic (and otherwise correct) streaming
-// consumer turns EACH content_block_stop into its own rendered assistant
-// message — so every DeepSeek Web turn appeared as two chat bubbles (one for
-// the reasoning trace, one for the actual answer) instead of one. DeepSeek Web
-// is a chatbot-only provider with no way for the user to toggle a visible
-// reasoning trace, so the fix is to never stream the thinking block out at all
-// (it is still requested server-side via thinking_enabled:true for answer
-// quality — just never surfaced as its own message).
+// Regression coverage for the DeepSeek Web provider adapter.
+//
+// DESIGN (per explicit product direction): forward ONLY the user's current,
+// literal message to DeepSeek Web — no client-side history flattening, no
+// tools, no system prompt, no instructions. Continuity across turns is
+// DeepSeek's OWN job: its session (chat_session_id) plus server-side thread
+// linking (parent_message_id, chained from the previous turn's
+// response_message_id) carry context — not this client reconstructing a
+// transcript. This file covers three concerns:
+//   1. No duplicate response (thinking suppressed, no doubled closing tail).
+//   2. extractUserPrompt sends ONLY the latest user message, stripped of any
+//      harness-injected scaffolding riding inside that single message's text
+//      (<available-deferred-tools>, <system-reminder> — tool lists, skill
+//      catalogs, IDE/RAYU.md context, etc.), and nothing else.
+//   3. parent_message_id chaining: the response_message_id DeepSeek reports
+//      via the `event: ready` SSE frame is persisted and sent back as the
+//      NEXT turn's parent_message_id, instead of always null.
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -41,11 +48,15 @@ afterEach(() => {
 })
 
 /**
- * A realistic chat.deepseek.com SSE payload: a thinking_content trace
- * followed by the final content, then FINISHED — exactly the shape that
- * triggered the duplicate-bubble bug before the fix.
+ * A realistic chat.deepseek.com SSE payload: an `event: ready` frame (with
+ * response_message_id, needed for the next turn's parent_message_id), a
+ * thinking_content trace, the final content, then FINISHED.
  */
-function deepseekSSE(): string {
+function deepseekSSE(opts?: { responseMessageId?: number }): string {
+  const readyLine =
+    opts?.responseMessageId !== undefined
+      ? `event: ready\ndata: ${JSON.stringify({ request_message_id: 1, response_message_id: opts.responseMessageId })}\n\n`
+      : ''
   const lines = [
     { p: 'response/thinking_content', v: 'Let me ' },
     { v: 'think about this...' },
@@ -54,6 +65,7 @@ function deepseekSSE(): string {
     { p: 'response/status', v: 'FINISHED' },
   ]
   return (
+    readyLine +
     lines.map((l) => `data: ${JSON.stringify(l)}\n\n`).join('') +
     'data: [DONE]\n\n'
   )
@@ -71,7 +83,7 @@ function fakeChallenge() {
   }
 }
 
-function installFetchMock(sse: string) {
+function installFetchMock(sse: string | (() => string)) {
   const calls: string[] = []
   const bodies: unknown[] = []
   globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
@@ -91,7 +103,8 @@ function installFetchMock(sse: string) {
       )
     }
     if (u.endsWith('/chat/completion')) {
-      return new Response(sse, {
+      const body = typeof sse === 'function' ? sse() : sse
+      return new Response(body, {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
       })
@@ -99,6 +112,17 @@ function installFetchMock(sse: string) {
     throw new Error(`unexpected fetch: ${u}`)
   }) as unknown as typeof fetch
   return { calls, bodies }
+}
+
+function completionBodies(bodies: unknown[]): Array<{
+  chat_session_id?: string
+  parent_message_id?: number | null
+  prompt?: string
+}> {
+  return bodies.filter(
+    (b): b is { chat_session_id?: string; parent_message_id?: number | null; prompt?: string } =>
+      !!b && typeof (b as { prompt?: unknown }).prompt === 'string',
+  )
 }
 
 describe('DeepSeek Web: no duplicate response (thinking is swallowed, not streamed)', () => {
@@ -236,97 +260,38 @@ describe('DeepSeek Web: no duplicate response (thinking is swallowed, not stream
       'message_stop',
     ])
   })
+
+  test('the internal __ready bookkeeping event never reaches the Anthropic-shaped surface claude.ts consumes', async () => {
+    installFetchMock(deepseekSSE({ responseMessageId: 42 }))
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    const { data: stream } = await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'hi' }],
+      stream: true,
+    }).withResponse()
+
+    const types: string[] = []
+    for await (const event of stream) types.push(event.type)
+    expect(types).not.toContain('__ready')
+  })
 })
 
-describe('DeepSeek Web: multi-turn context is preserved (regression: second turn forgot the first)', () => {
-  test('the outgoing prompt for turn 2 includes turn 1, not just the latest message', async () => {
-    const sse =
-      [
-        { p: 'response/content', v: "Since this is the very first message..." },
-        { p: 'response/status', v: 'FINISHED' },
-      ]
-        .map((l) => `data: ${JSON.stringify(l)}\n\n`)
-        .join('') + 'data: [DONE]\n\n'
-    const { bodies } = installFetchMock(sse)
-    const { createDeepseekWebClient } = await import(
-      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
-    )
-    const client = createDeepseekWebClient(
-      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
-      3,
-    )
-
-    // Reproduces the exact reported bug: the caller (the CLI's own history)
-    // hands the client the FULL conversation on every turn — this is turn 2,
-    // so `messages` already contains turn 1's user line + the assistant's
-    // reply, exactly like claude.ts assembles messages for every provider.
-    await client.beta.messages.create({
-      model: 'deepseek-v4-pro-1m',
-      messages: [
-        { role: 'user', content: "hello bro I'm rayu and you" },
-        {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'Hey Rayu! 👋 Good to meet you!' }],
-        },
-        { role: 'user', content: 'now tell me again what is my name?' },
-      ],
-    })
-
-    const completionBody = bodies.find(
-      (b): b is { prompt: string } =>
-        !!b && typeof (b as { prompt?: unknown }).prompt === 'string',
-    )
-    expect(completionBody).toBeDefined()
-    const prompt = completionBody!.prompt
-
-    // The flattened prompt must carry the EARLIER turn (the user's name and
-    // the assistant's greeting), not just the latest question — this is what
-    // was missing before the fix, causing "you haven't told me [your name]".
-    expect(prompt).toContain("rayu")
-    expect(prompt).toContain('Good to meet you')
-    expect(prompt).toContain('what is my name')
-    // Turns appear in order: turn 1 before turn 2.
-    expect(prompt.indexOf('rayu')).toBeLessThan(
-      prompt.indexOf('what is my name'),
-    )
-  })
-
-  test('still requests exactly one completion call per turn (history flattening is not re-sent as separate requests)', async () => {
-    const sse =
-      [
-        { p: 'response/content', v: 'ok' },
-        { p: 'response/status', v: 'FINISHED' },
-      ]
-        .map((l) => `data: ${JSON.stringify(l)}\n\n`)
-        .join('') + 'data: [DONE]\n\n'
-    const { calls } = installFetchMock(sse)
-    const { createDeepseekWebClient } = await import(
-      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
-    )
-    const client = createDeepseekWebClient(
-      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
-      3,
-    )
-    await client.beta.messages.create({
-      model: 'deepseek-v4-pro-1m',
-      messages: [
-        { role: 'user', content: 'turn one' },
-        { role: 'assistant', content: [{ type: 'text', text: 'reply one' }] },
-        { role: 'user', content: 'turn two' },
-      ],
-    })
-    expect(calls.filter((u) => u.endsWith('/chat/completion')).length).toBe(1)
-  })
-
-  test('single-turn conversation (no history yet) still sends just that message, unprefixed by empty turns', async () => {
-    const sse =
+describe('DeepSeek Web: forward ONLY the current user message (no history, no tools, no instructions)', () => {
+  test('single message: sends exactly the raw text, no Role prefix, no wrapping', async () => {
+    const { bodies } = installFetchMock(
       [
         { p: 'response/content', v: 'hi there' },
         { p: 'response/status', v: 'FINISHED' },
       ]
         .map((l) => `data: ${JSON.stringify(l)}\n\n`)
-        .join('') + 'data: [DONE]\n\n'
-    const { bodies } = installFetchMock(sse)
+        .join('') + 'data: [DONE]\n\n',
+    )
     const { createDeepseekWebClient } = await import(
       '../src/services/api/deepseekWeb/deepseekWebClient.ts'
     )
@@ -338,10 +303,234 @@ describe('DeepSeek Web: multi-turn context is preserved (regression: second turn
       model: 'deepseek-v4-pro-1m',
       messages: [{ role: 'user', content: 'hello bro' }],
     })
-    const completionBody = bodies.find(
-      (b): b is { prompt: string } =>
-        !!b && typeof (b as { prompt?: unknown }).prompt === 'string',
+    const [body] = completionBodies(bodies)
+    expect(body!.prompt).toBe('hello bro')
+  })
+
+  // Regression: this used to flatten the ENTIRE conversation (all prior
+  // user/assistant turns) into one big "Role: text" blob. Per explicit
+  // product direction, DeepSeek Web must see ONLY the current message —
+  // continuity across turns is DeepSeek's own session/thread job, not this
+  // client's.
+  test('multi-turn conversation history: only the LATEST user message is sent, prior turns are ignored entirely', async () => {
+    const { bodies } = installFetchMock(
+      [
+        { p: 'response/content', v: 'ok' },
+        { p: 'response/status', v: 'FINISHED' },
+      ]
+        .map((l) => `data: ${JSON.stringify(l)}\n\n`)
+        .join('') + 'data: [DONE]\n\n',
     )
-    expect(completionBody!.prompt).toBe('User: hello bro')
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [
+        { role: 'user', content: "hello bro I'm rayu and you" },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hey Rayu! 👋 Good to meet you!' }],
+        },
+        { role: 'user', content: 'now tell me again what is my name?' },
+      ],
+    })
+    const [body] = completionBodies(bodies)
+    // Only the CURRENT message — no "rayu", no assistant reply, no Role
+    // prefixes, no earlier turn at all.
+    expect(body!.prompt).toBe('now tell me again what is my name?')
+  })
+
+  // Regression: the harness (claude.ts / messages.ts) injects
+  // <available-deferred-tools> and <system-reminder> blocks as literal text
+  // inside otherwise-real user-message content (tool/skill catalogs, RAYU.md
+  // contents, IDE file-open notices, etc.) — normal and expected for
+  // Anthropic/OpenAI-shaped providers. DeepSeek Web has no such concept, so
+  // even the ONE message actually forwarded must have this scaffolding
+  // stripped out of its own text.
+  test('strips <available-deferred-tools> and <system-reminder> noise embedded in the current message, forwarding only the human text', async () => {
+    const { bodies } = installFetchMock(
+      [
+        { p: 'response/content', v: 'ok' },
+        { p: 'response/status', v: 'FINISHED' },
+      ]
+        .map((l) => `data: ${JSON.stringify(l)}\n\n`)
+        .join('') + 'data: [DONE]\n\n',
+    )
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+
+    const injectedMessage =
+      '<available-deferred-tools>\nAskUserQuestion\nWebFetch\nWebSearch\nmcp__Canva__export-design\n</available-deferred-tools>\n\n' +
+      '<system-reminder>\nThe following skills are available via the Skill tool...\n- update-config: ...\n- simplify: ...\n</system-reminder>\n\n' +
+      'hello bro I\'m rayu and you\n\n' +
+      '<system-reminder>\nAs you answer the user\'s questions, you can use the following context:\n# claudeMd\n...(RAYU.md contents)...\n</system-reminder>'
+
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: injectedMessage }],
+    })
+
+    const [body] = completionBodies(bodies)
+    const prompt = body!.prompt!
+
+    expect(prompt).toContain("hello bro I'm rayu and you")
+    expect(prompt).not.toContain('available-deferred-tools')
+    expect(prompt).not.toContain('AskUserQuestion')
+    expect(prompt).not.toContain('mcp__Canva__export-design')
+    expect(prompt).not.toContain('system-reminder')
+    expect(prompt).not.toContain('update-config')
+    expect(prompt).not.toContain('claudeMd')
+    // Only the real human text remains — no Role prefix (single-message mode).
+    expect(prompt).toBe("hello bro I'm rayu and you")
+  })
+
+  test('no tools/tool_choice/system fields are ever sent to DeepSeek Web, even if the caller supplied them', async () => {
+    const { bodies } = installFetchMock(
+      [
+        { p: 'response/content', v: 'ok' },
+        { p: 'response/status', v: 'FINISHED' },
+      ]
+        .map((l) => `data: ${JSON.stringify(l)}\n\n`)
+        .join('') + 'data: [DONE]\n\n',
+    )
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      system: 'You are a helpful coding assistant with access to tools.',
+      tools: [{ name: 'BashTool', description: 'run shell commands' }],
+      tool_choice: { type: 'auto' },
+      messages: [{ role: 'user', content: 'explain this code' }],
+    })
+    const [body] = completionBodies(bodies)
+    expect(body).not.toHaveProperty('tools')
+    expect(body).not.toHaveProperty('tool_choice')
+    expect(body).not.toHaveProperty('system')
+    expect(body!.prompt).toBe('explain this code')
+  })
+})
+
+describe('DeepSeek Web: session continuity via parent_message_id (DeepSeek carries context, not the client)', () => {
+  test('the FIRST turn of a fresh session sends parent_message_id: null', async () => {
+    const { bodies } = installFetchMock(deepseekSSE({ responseMessageId: 100 }))
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn one' }],
+    })
+    const [body] = completionBodies(bodies)
+    expect(body!.parent_message_id).toBeNull()
+  })
+
+  test("the SECOND turn sends the FIRST turn's response_message_id as parent_message_id", async () => {
+    let turn = 0
+    const { bodies } = installFetchMock(() => {
+      turn++
+      return deepseekSSE({ responseMessageId: turn === 1 ? 100 : 200 })
+    })
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn one' }],
+    })
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn two' }],
+    })
+
+    const [firstBody, secondBody] = completionBodies(bodies)
+    expect(firstBody!.parent_message_id).toBeNull()
+    expect(secondBody!.parent_message_id).toBe(100) // chained from turn 1's ready frame
+    expect(secondBody!.prompt).toBe('turn two') // and STILL only the current message
+  })
+
+  test('reuses the same chat_session_id across turns', async () => {
+    let turn = 0
+    const { bodies } = installFetchMock(() => {
+      turn++
+      return deepseekSSE({ responseMessageId: turn * 100 })
+    })
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn one' }],
+    })
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn two' }],
+    })
+    const [firstBody, secondBody] = completionBodies(bodies)
+    expect(firstBody!.chat_session_id).toBe('sess-1')
+    expect(secondBody!.chat_session_id).toBe('sess-1')
+  })
+
+  test('a ready frame with no response_message_id (malformed/missing) does not crash — next turn falls back to null', async () => {
+    let turn = 0
+    const { bodies } = installFetchMock(() => {
+      turn++
+      // Turn 1: no `event: ready` frame at all (older/odd server behavior).
+      if (turn === 1) {
+        return [
+          { p: 'response/content', v: 'ok' },
+          { p: 'response/status', v: 'FINISHED' },
+        ]
+          .map((l) => `data: ${JSON.stringify(l)}\n\n`)
+          .join('') + 'data: [DONE]\n\n'
+      }
+      return deepseekSSE({ responseMessageId: 999 })
+    })
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn one' }],
+    })
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn two' }],
+    })
+    const [firstBody, secondBody] = completionBodies(bodies)
+    expect(firstBody!.parent_message_id).toBeNull()
+    // No ready frame on turn 1 → nothing to chain from → turn 2 still null.
+    expect(secondBody!.parent_message_id).toBeNull()
   })
 })

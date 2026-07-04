@@ -80,29 +80,67 @@ function getAuthHeaders(
 // Chat session cache — persisted to disk so it survives process restarts.
 // Maps 1:1 to a chat.deepseek.com tab; reuse across turns so DeepSeek sees
 // a real conversation thread instead of isolated single-turn prompts.
+//
+// Also carries `lastResponseMessageId`: DeepSeek's own thread-linking field.
+// The completion stream's `event: ready` frame reports
+// {request_message_id, response_message_id} for the turn about to run; the
+// NEXT turn sends that response_message_id back as `parent_message_id`
+// (instead of always null) so DeepSeek's server links the two turns into one
+// thread. This — not client-side prompt reconstruction — is how continuity
+// across turns is meant to work for this endpoint.
 // ---------------------------------------------------------------------------
 
 const SESSION_FILE = 'deepseek-web-session.json'
+
+type SessionCache = {
+  sessionId: string
+  lastResponseMessageId?: number | null
+}
 
 function sessionPath(): string {
   return join(getRayuConfigHomeDir(), SESSION_FILE)
 }
 
-function readCachedSessionId(): string | null {
+function readSessionCache(): SessionCache | null {
   try {
     const p = sessionPath()
     if (!existsSync(p)) return null
-    const data = JSON.parse(readFileSync(p, 'utf8')) as { sessionId: string }
-    return data.sessionId || null
+    const data = JSON.parse(readFileSync(p, 'utf8')) as SessionCache
+    return data.sessionId ? data : null
   } catch {
     return null
   }
 }
 
+function readCachedSessionId(): string | null {
+  return readSessionCache()?.sessionId ?? null
+}
+
 function writeCachedSessionId(id: string): void {
   const dir = getRayuConfigHomeDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(sessionPath(), JSON.stringify({ sessionId: id }), { mode: 0o600 })
+  writeFileSync(
+    sessionPath(),
+    JSON.stringify({ sessionId: id, lastResponseMessageId: null }),
+    { mode: 0o600 },
+  )
+}
+
+/** Persist the response_message_id this turn returned, for the next turn's
+ * parent_message_id. Best-effort: a write failure just means the next turn
+ * starts a fresh sub-thread (parent_message_id: null) instead of erroring. */
+function writeLastResponseMessageId(id: number | null): void {
+  try {
+    const cur = readSessionCache()
+    if (!cur) return
+    writeFileSync(
+      sessionPath(),
+      JSON.stringify({ ...cur, lastResponseMessageId: id }),
+      { mode: 0o600 },
+    )
+  } catch {
+    // best-effort
+  }
 }
 
 /** Forget the cached session — the next call creates a fresh chat tab. */
@@ -183,6 +221,7 @@ async function postCompletion(
   userToken: string,
   cookie: string | undefined,
   chatSessionId: string,
+  parentMessageId: number | null,
   prompt: string,
   powResponse: string,
   signal?: AbortSignal,
@@ -195,7 +234,7 @@ async function postCompletion(
     headers,
     body: JSON.stringify({
       chat_session_id: chatSessionId,
-      parent_message_id: null,
+      parent_message_id: parentMessageId,
       prompt,
       ref_file_ids: [],
       thinking_enabled: true,
@@ -215,55 +254,67 @@ type AnthropicMessage = {
 }
 
 /**
- * Flatten the Anthropic-shaped conversation into the single plain-text prompt
- * the DeepSeek web endpoint accepts (it has no roles array — just `prompt`).
+ * Strip harness-injected scaffolding that claude.ts/messages.ts attach to
+ * message content for every provider — tool-availability listings and
+ * system reminders (skill catalogs, file-read warnings, IDE context, RAYU.md,
+ * etc.). These are meant for the model's internal bookkeeping, not visible
+ * chat content, and DeepSeek Web has no tools/skills/system-prompt concept at
+ * all (see the CHATBOT-ONLY note at the top of this file). Without this, the
+ * single message actually forwarded could still be prefixed/suffixed with
+ * hundreds of lines of tool/skill catalog text riding inside the same
+ * content string as the real human text.
  *
- * FIXES a context-loss bug: this used to extract ONLY the last user message,
- * discarding all prior turns. Each request also always sends
- * `parent_message_id: null` (postCompletion), so DeepSeek's own server never
- * saw these as replies in a thread either — every turn arrived looking like a
- * brand-new, unrelated conversation. The visible symptom: asking "what's my
- * name?" right after stating it got "you haven't told me" — the model
- * genuinely never received the earlier turn. DeepSeek's own official API docs
- * describe their /chat/completions endpoint as stateless for exactly this
- * reason ("the user must concatenate all previous conversation history and
- * pass it to the chat API with each request"); the internal web endpoint used
- * here behaves the same way per-request, and this is the client-side fix.
+ * Mirrors the existing `<system-reminder>` strip in queryHelpers.ts (same
+ * regex) and extends it to `<available-deferred-tools>` (injected by
+ * claude.ts) — the two tag-wrapped injection points that can appear inside
+ * plain user-message text for this harness.
+ */
+function stripHarnessInjections(text: string): string {
+  return text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+    .replace(/<available-deferred-tools>[\s\S]*?<\/available-deferred-tools>/g, '')
+    .trim()
+}
+
+/**
+ * Extract ONLY the latest user message's text — nothing else. No history,
+ * no tools, no system prompt, no assistant turns.
  *
- * CHATBOT-ONLY SCOPE UNCHANGED: still no tools, no function calling, no
- * system-prompt injection — only `user`/`assistant` text/thinking turns are
- * rendered, using a plain "Role: text" convention (blank-line separated) so
- * the model can follow the thread. Tool schemas remain discarded entirely, as
- * documented at the top of this file — multi-turn context is the only gap
- * this closes.
+ * DESIGN: DeepSeek Web is a plain chatbot with its own session
+ * (chat_session_id) and its own server-side thread (parent_message_id,
+ * chained via getOrCreateChatSession/getResponseMessageId below). Continuity
+ * across turns is DeepSeek's job, not this client's: the client's only
+ * responsibility is to forward the human's current message as-is and let
+ * DeepSeek's own session/thread carry context. Reconstructing history
+ * client-side (an earlier version of this function did that) fights the
+ * grain of the actual API and reintroduces exactly the kind of
+ * harness-shaped complexity (tool lists, system reminders, multi-turn
+ * flattening) DeepSeek Web was never meant to see — it is explicitly a
+ * "chat with the user's literal message" endpoint, nothing more.
+ *
+ * Still strips <available-deferred-tools>/<system-reminder> noise (see
+ * stripHarnessInjections) since even the single forwarded message can carry
+ * that scaffolding embedded in its own text.
  */
 function extractUserPrompt(messages: AnthropicMessage[]): string {
   const blockText = (
     content: AnthropicMessage['content'],
   ): string => {
-    if (typeof content === 'string') return content
+    if (typeof content === 'string') return stripHarnessInjections(content)
     return content
-      .map((c) => {
-        if (c.type === 'text' && typeof c.text === 'string') return c.text
-        if (c.type === 'thinking' && typeof c.thinking === 'string') {
-          return c.thinking as string
-        }
-        return ''
-      })
+      .filter((c) => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => stripHarnessInjections(c.text as string))
       .filter(Boolean)
       .join('\n')
   }
 
-  const lines: string[] = []
-  for (const msg of messages) {
-    if (msg.role !== 'user' && msg.role !== 'assistant') continue
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role !== 'user') continue
     const text = blockText(msg.content)
-    if (!text) continue
-    const role = msg.role === 'assistant' ? 'Assistant' : 'User'
-    lines.push(`${role}: ${text}`)
+    if (text) return text
   }
-  if (lines.length === 0) return 'Hello'
-  return lines.join('\n\n')
+  return 'Hello'
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +328,18 @@ type StreamEvent =
   | { type: 'content_block_stop'; index: number }
   | { type: 'message_delta'; delta: { stop_reason: string | null }; usage: { output_tokens: number } }
   | { type: 'message_stop' }
+  // Internal-only (not Anthropic-shaped): carries the response_message_id
+  // DeepSeek assigned to this turn's assistant reply, from the `event: ready`
+  // SSE frame. doCompletion() consumes and strips this before the stream
+  // reaches claude.ts, persisting it as the NEXT turn's parent_message_id so
+  // DeepSeek's own server links the two turns into one thread — this is what
+  // carries continuity across turns, not client-side history reconstruction.
+  | { type: '__ready'; responseMessageId: number | null }
+
+/** The Anthropic-shaped subset actually exposed to callers (claude.ts) — the
+ * internal-only `__ready` bookkeeping event is consumed and stripped inside
+ * doCompletion()'s teeStream before anything is yielded or buffered. */
+type PublicStreamEvent = Exclude<StreamEvent, { type: '__ready' }>
 
 async function* parseSSEStream(
   response: Response,
@@ -316,10 +379,38 @@ async function* parseSSEStream(
         const block = buffer.slice(0, doubleNewline)
         buffer = buffer.slice(doubleNewline + 2)
 
+        // SSE blocks may carry a named `event:` line alongside `data:`. Only
+        // the `ready` event matters here — it reports
+        // {request_message_id, response_message_id} for the turn that is
+        // about to run, which we need for the NEXT turn's parent_message_id.
+        let eventName: string | null = null
         for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim()
+            continue
+          }
           if (!line.startsWith('data:')) continue
           const raw = line.slice(5).trim()
           if (!raw || raw === '[DONE]') continue
+
+          if (eventName === 'ready') {
+            try {
+              const readyPayload = JSON.parse(raw) as {
+                response_message_id?: number
+              }
+              yield {
+                type: '__ready',
+                responseMessageId:
+                  typeof readyPayload.response_message_id === 'number'
+                    ? readyPayload.response_message_id
+                    : null,
+              }
+            } catch {
+              // skip malformed ready frame — parent_message_id chaining is
+              // best-effort; a miss just means the next turn starts fresh.
+            }
+            continue
+          }
 
           try {
             const parsed = JSON.parse(raw) as { p?: string; v?: string }
@@ -459,11 +550,11 @@ export function createDeepseekWebClient(
   let _inFlight: Promise<void> | null = null
   let _lastPrompt = ''
   let _lastBufferedAt = 0
-  let _lastEvents: StreamEvent[] | null = null
+  let _lastEvents: PublicStreamEvent[] | null = null
   let _lastModel = ''
   const DEDUP_WINDOW_MS = 5000
 
-  function replayedStream(events: StreamEvent[]): AsyncGenerator<StreamEvent> {
+  function replayedStream(events: PublicStreamEvent[]): AsyncGenerator<PublicStreamEvent> {
     let i = 0
     return (async function* () {
       for (; i < events.length; i++) yield events[i]
@@ -473,7 +564,7 @@ export function createDeepseekWebClient(
   async function doCompletion(
     params: BetaParams,
     signal?: AbortSignal,
-  ): Promise<{ stream: AsyncGenerator<StreamEvent>; model: string }> {
+  ): Promise<{ stream: AsyncGenerator<PublicStreamEvent>; model: string }> {
     const model = params.model || defaultModel
     const prompt = extractUserPrompt(params.messages)
 
@@ -502,11 +593,18 @@ export function createDeepseekWebClient(
     try {
       // Make the API call (session + PoW + completion).
       const sessionId = await getOrCreateChatSession(userToken, cookie)
+      // DeepSeek's own thread-linking field: the response_message_id the
+      // PREVIOUS turn's `event: ready` frame reported becomes THIS turn's
+      // parent_message_id, so DeepSeek's server links the two into one
+      // thread. null on the very first turn of a session (or if a previous
+      // turn's ready frame was missed) — DeepSeek treats that as a new
+      // sub-thread root, same as before this feature existed.
+      const parentMessageId = readSessionCache()?.lastResponseMessageId ?? null
       const challenge = await fetchPowChallenge(userToken, cookie)
       const powResponse = await solvePowChallenge(challenge)
 
       const response = await postCompletion(
-        userToken, cookie, sessionId, prompt, powResponse, signal,
+        userToken, cookie, sessionId, parentMessageId, prompt, powResponse, signal,
       )
 
       if (!response.ok) {
@@ -525,12 +623,19 @@ export function createDeepseekWebClient(
       }
 
       // Tee: live stream to the first consumer + buffer for dedup replays.
+      // __ready events are consumed HERE (persisted as the next turn's
+      // parent_message_id) and never forwarded — they are not part of the
+      // Anthropic-shaped surface claude.ts expects.
       const rawStream = parseSSEStream(response, model)
-      const events: StreamEvent[] = []
+      const events: PublicStreamEvent[] = []
 
-      async function* teeStream(): AsyncGenerator<StreamEvent> {
+      async function* teeStream(): AsyncGenerator<PublicStreamEvent> {
         try {
           for await (const event of rawStream) {
+            if (event.type === '__ready') {
+              writeLastResponseMessageId(event.responseMessageId)
+              continue
+            }
             events.push(event)
             yield event
           }
@@ -638,7 +743,7 @@ export function createDeepseekWebClient(
         return ensurePromise(() =>
           runStreaming(params, signal),
         ) as Promise<{
-          data: AsyncGenerator<StreamEvent>
+          data: AsyncGenerator<PublicStreamEvent>
           request_id: null
           response: Response
         }>
