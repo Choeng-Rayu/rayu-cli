@@ -147,6 +147,11 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
           <Text color="error">File not found</Text>
         </MessageResponse>;
     }
+    if (errorMessage?.includes('File has been modified since read')) {
+      return <MessageResponse>
+          <Text color="error">File changed since it was last read — reading it again before retrying</Text>
+        </MessageResponse>;
+    }
     return <MessageResponse>
         <Text color="error">Error editing file</Text>
       </MessageResponse>;
