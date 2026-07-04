@@ -7,16 +7,14 @@
 //   3. Completion + SSE stream parsing (POST /api/v0/chat/completion)
 //
 // CHATBOT-ONLY: The DeepSeek web API takes a plain prompt string — no tools, no
-// function calling, no system prompt, no roles array. We flatten the
-// user/assistant conversation history into that single prompt string (see
-// extractUserPrompt) so multi-turn context survives even though the endpoint
-// itself has no notion of a role-based message list. Tool schemas and system
-// instructions are still fully discarded to avoid account flagging by
-// DeepSeek's audit systems. The chat session (chat_session_id) is reused
-// across turns purely so DeepSeek groups them under the same tab in its own
-// UI/history — every request still always sends parent_message_id: null, so
-// thread-linking on DeepSeek's side is NOT what carries context between turns;
-// the flattened history in the prompt text is.
+// function calling, no system prompt, no roles array. We forward ONLY the
+// user's current, literal message (see extractUserPrompt) — no client-side
+// history reconstruction. Continuity across turns is DeepSeek's OWN job: its
+// chat_session_id plus server-side thread linking (parent_message_id,
+// chained from the previous turn's response_message_id — see the session
+// cache below) carry context, not this client replaying a transcript. Tool
+// schemas and system instructions are fully discarded to avoid account
+// flagging by DeepSeek's audit systems.
 //
 // GATED: requires USE_RAYU_OAUTH=true (Rayu account login enabled) AND
 // USE_DEEPSEEK_OAUTH=true. Both must be on. Also requires a paid Rayu plan.
@@ -599,12 +597,12 @@ export function createDeepseekWebClient(
       // thread. null on the very first turn of a session (or if a previous
       // turn's ready frame was missed) — DeepSeek treats that as a new
       // sub-thread root, same as before this feature existed.
-      const parentMessageId = readSessionCache()?.lastResponseMessageId ?? null
+      const cachedParentMessageId = readSessionCache()?.lastResponseMessageId ?? null
       const challenge = await fetchPowChallenge(userToken, cookie)
       const powResponse = await solvePowChallenge(challenge)
 
       const response = await postCompletion(
-        userToken, cookie, sessionId, parentMessageId, prompt, powResponse, signal,
+        userToken, cookie, sessionId, cachedParentMessageId, prompt, powResponse, signal,
       )
 
       if (!response.ok) {
@@ -619,6 +617,60 @@ export function createDeepseekWebClient(
         const errText = await response.text().catch(() => 'unknown')
         throw new Error(
           `DeepSeek Web: completion failed (${response.status}): ${errText.slice(0, 500)}`,
+        )
+      }
+
+      // FIXES a silent-hang bug: DeepSeek sometimes answers a completion
+      // request with HTTP 200 but a plain JSON ERROR object instead of an
+      // SSE stream — e.g. {"biz_code":26,"biz_msg":"invalid message id",...}
+      // when the cached parent_message_id (from a previous `event: ready`
+      // frame) is no longer valid on DeepSeek's side (observed after a large
+      // pasted message; likely a TTL/staleness on the server's thread head).
+      // response.ok is true (200), so the old code fell through straight
+      // into parseSSEStream, which correctly found ZERO "\n\n"-delimited SSE
+      // blocks in a flat JSON body and yielded nothing — no thrown error, no
+      // visible message, nothing: the turn looked "stuck" with no feedback.
+      // Detect this shape up front (by content-type OR by peeking the body)
+      // and — since it's cheap to know it was caused by a bad
+      // parent_message_id — retry ONCE with parent_message_id reset to null
+      // (a fresh sub-thread) rather than surfacing a confusing error for
+      // something the client can just recover from transparently.
+      const contentType = response.headers.get('content-type') ?? ''
+      if (!contentType.includes('text/event-stream')) {
+        const bodyText = await response.text()
+        let bizError: { biz_code?: number; biz_msg?: string } | null = null
+        try {
+          const parsed = JSON.parse(bodyText) as {
+            data?: { biz_code?: number; biz_msg?: string }
+          }
+          if (parsed?.data && typeof parsed.data.biz_code === 'number') {
+            bizError = parsed.data
+          }
+        } catch {
+          // not JSON either — fall through to the generic error below
+        }
+        if (bizError) {
+          if (cachedParentMessageId !== null) {
+            // Invalidate the stale thread head so the retry (and every turn
+            // after it, until a fresh `event: ready` arrives) starts a new
+            // sub-thread instead of repeating the same failure forever.
+            writeLastResponseMessageId(null)
+            _inFlight = null
+            release!()
+            signal?.removeEventListener('abort', onAbort)
+            return doCompletion(params, signal)
+          }
+          // Already null and still erroring — a real, non-recoverable
+          // server-side rejection (bad prompt, moderation, quota, etc.).
+          throw new Error(
+            `DeepSeek Web: completion rejected (biz_code ${bizError.biz_code}): ${bizError.biz_msg ?? 'unknown'}`,
+          )
+        }
+        // Not the known error shape either — surface it plainly rather than
+        // silently handing non-SSE text to parseSSEStream, which would once
+        // again just yield nothing.
+        throw new Error(
+          `DeepSeek Web: expected an SSE stream but got "${contentType || 'unknown content-type'}": ${bodyText.slice(0, 300)}`,
         )
       }
 

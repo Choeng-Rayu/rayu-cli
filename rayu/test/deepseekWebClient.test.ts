@@ -125,6 +125,62 @@ function completionBodies(bodies: unknown[]): Array<{
   )
 }
 
+/**
+ * Mocks the exact real-world failure this suite regression-tests: DeepSeek
+ * answers a /chat/completion request with HTTP 200 but a plain JSON error
+ * body (content-type: application/json, NOT text/event-stream) instead of an
+ * SSE stream — {"code":0,"msg":"","data":{"biz_code":26,"biz_msg":"invalid
+ * message id","biz_data":null}} — captured live when a cached
+ * parent_message_id from a prior turn's `event: ready` frame was no longer
+ * valid on DeepSeek's server. `errorOnceThenSSE` controls whether subsequent
+ * completion calls (the retry) get a real SSE stream instead.
+ */
+function installBizErrorFetchMock(opts: {
+  errorOnceThenSSE?: string
+  alwaysError?: boolean
+}) {
+  const calls: string[] = []
+  const bodies: unknown[] = []
+  let completionCallCount = 0
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const u = String(url)
+    calls.push(u)
+    bodies.push(init?.body ? JSON.parse(String(init.body)) : undefined)
+    if (u.endsWith('/chat_session/create')) {
+      return new Response(
+        JSON.stringify({ data: { biz_data: { id: 'sess-1' } } }),
+        { status: 200 },
+      )
+    }
+    if (u.endsWith('/chat/create_pow_challenge')) {
+      return new Response(
+        JSON.stringify({ data: { biz_data: { challenge: fakeChallenge() } } }),
+        { status: 200 },
+      )
+    }
+    if (u.endsWith('/chat/completion')) {
+      completionCallCount++
+      const isFirstCall = completionCallCount === 1
+      if (opts.alwaysError || (isFirstCall && opts.errorOnceThenSSE !== undefined)) {
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            msg: '',
+            data: { biz_code: 26, biz_msg: 'invalid message id', biz_data: null },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(opts.errorOnceThenSSE ?? deepseekSSE(), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }) as unknown as typeof fetch
+  return { calls, bodies, completionCallCount: () => completionCallCount }
+}
+
 describe('DeepSeek Web: no duplicate response (thinking is swallowed, not streamed)', () => {
   test('streaming surface yields exactly ONE content_block_start/stop pair (text), never a thinking block', async () => {
     const { calls } = installFetchMock(deepseekSSE())
@@ -532,5 +588,127 @@ describe('DeepSeek Web: session continuity via parent_message_id (DeepSeek carri
     expect(firstBody!.parent_message_id).toBeNull()
     // No ready frame on turn 1 → nothing to chain from → turn 2 still null.
     expect(secondBody!.parent_message_id).toBeNull()
+  })
+})
+
+describe('DeepSeek Web: recovers from a stale parent_message_id instead of hanging silently (regression)', () => {
+  // Root cause of the reported "paste a big file and it just doesn't
+  // respond" bug: DeepSeek sometimes answers /chat/completion with HTTP 200
+  // but a plain JSON error body — {"data":{"biz_code":26,"biz_msg":"invalid
+  // message id"}} — content-type application/json, NOT text/event-stream —
+  // when the cached parent_message_id from a PREVIOUS turn's `event: ready`
+  // frame is no longer valid on DeepSeek's server (captured live after a
+  // large pasted message). response.ok is true (200), so the request
+  // reached parseSSEStream, which correctly found zero "\n\n"-delimited SSE
+  // blocks in the flat JSON body and yielded NOTHING — no thrown error, no
+  // visible message: the turn looked frozen with zero feedback.
+  test('detects the biz_code error shape and retries ONCE with parent_message_id reset to null — yields a real answer instead of an empty stream', async () => {
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+
+    // Turn 1: succeeds normally and persists response_message_id=100.
+    installFetchMock(deepseekSSE({ responseMessageId: 100 }))
+    const m1 = (await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn one' }],
+    })) as { content: Array<{ type: string; text?: string }> }
+    expect(m1.content).toEqual([{ type: 'text', text: 'Hey Rayu! 👋' }])
+
+    // Turn 2: the cached parent_message_id (100) is now "stale" on
+    // DeepSeek's side — first completion call errors, the retry (with
+    // parent_message_id forced to null) succeeds.
+    const { bodies, completionCallCount } = installBizErrorFetchMock({
+      errorOnceThenSSE: deepseekSSE({ responseMessageId: 200 }),
+    })
+    const m2 = (await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'turn two (this used to hang)' }],
+    })) as { content: Array<{ type: string; text?: string }> }
+
+    // The turn recovered and produced a real answer — NOT an empty stream.
+    expect(m2.content).toEqual([{ type: 'text', text: 'Hey Rayu! 👋' }])
+    expect(completionCallCount()).toBe(2) // 1 failed attempt + 1 successful retry
+
+    const attempts = completionBodies(bodies)
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]!.parent_message_id).toBe(100) // the stale value that failed
+    expect(attempts[1]!.parent_message_id).toBeNull() // the retry that succeeded
+    // The retry still forwards the SAME single message, nothing else.
+    expect(attempts[1]!.prompt).toBe('turn two (this used to hang)')
+  })
+
+  test('a biz_code error on a FRESH session (parent_message_id already null) is a real failure, not a retry loop — throws with a clear message', async () => {
+    const { completionCallCount } = installBizErrorFetchMock({ alwaysError: true })
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    let thrown: unknown
+    try {
+      await client.beta.messages.create({
+        model: 'deepseek-v4-pro-1m',
+        messages: [{ role: 'user', content: 'first ever turn' }],
+      })
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toMatch(/biz_code 26.*invalid message id/)
+    // Exactly one attempt — parent_message_id was already null, so there is
+    // nothing to reset and retry; retrying again would loop forever against
+    // a server that keeps rejecting the same way.
+    expect(completionCallCount()).toBe(1)
+  })
+
+  test('a non-SSE, non-biz_code response (unexpected shape) surfaces a clear error instead of silently yielding nothing', async () => {
+    let completionCalls = 0
+    globalThis.fetch = (async (url: unknown) => {
+      const u = String(url)
+      if (u.endsWith('/chat_session/create')) {
+        return new Response(JSON.stringify({ data: { biz_data: { id: 'sess-1' } } }), { status: 200 })
+      }
+      if (u.endsWith('/chat/create_pow_challenge')) {
+        return new Response(
+          JSON.stringify({ data: { biz_data: { challenge: fakeChallenge() } } }),
+          { status: 200 },
+        )
+      }
+      if (u.endsWith('/chat/completion')) {
+        completionCalls++
+        return new Response('<html>upstream WAF block page</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }) as unknown as typeof fetch
+
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    let thrown: unknown
+    try {
+      await client.beta.messages.create({
+        model: 'deepseek-v4-pro-1m',
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toMatch(/expected an SSE stream/)
+    expect(completionCalls).toBe(1) // no retry for an unrecognized shape
   })
 })
