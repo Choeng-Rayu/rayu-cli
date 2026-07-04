@@ -2,10 +2,10 @@
 export const dynamic = 'force-dynamic'
 
 import { useEffect, useRef, useState } from 'react'
-import { QRCodeSVG } from 'qrcode.react'
 import { apiUrl } from '../../lib/config'
 import { useRayuToken } from '../../lib/useRayuToken'
 import { Plan, purchasablePlans } from '../../lib/plans'
+import KhqrCard from '../../components/KhqrCard'
 
 const PAID_PLAN_CODES = ['pro', 'pro_plus', 'max'] as const
 type PaidPlanCode = typeof PAID_PLAN_CODES[number]
@@ -230,29 +230,30 @@ export default function BillingPage() {
 
       {/* QR state */}
       {khqr && !pollStatus?.status && (
-        <div className="card" style={{ marginBottom: '2rem', textAlign: 'center', padding: '2rem' }}>
-          <p style={{ opacity: 0.5, fontSize: '0.8rem', textTransform: 'uppercase', marginBottom: '1rem' }}>
-            Scan to pay — {khqr.planCode} — ${(khqr.amountCents / 100).toFixed(2)} {khqr.currency}
-          </p>
-          <div style={{ display: 'inline-block', padding: '1.5rem', background: '#fff', borderRadius: '12px', marginBottom: '1.5rem' }}>
-            <QRCodeSVG value={khqr.qr} size={220} />
-          </div>
-          <p style={{ opacity: 0.4, fontSize: '0.85rem', marginBottom: '1rem' }}>Waiting for payment confirmation...</p>
-          <button className="btn-ghost" style={{ padding: '8px 20px', fontSize: '0.85rem' }} onClick={retry}>Cancel</button>
+        <div style={{ maxWidth: 420, margin: '0 auto 2rem' }}>
+          <KhqrCard
+            merchant="CHOENG RAYU"
+            amount={(khqr.amountCents / 100).toFixed(2)}
+            currency={khqr.currency}
+            qrValue={khqr.qr}
+            onCancel={retry}
+            status="pending"
+          />
         </div>
       )}
 
-      {/* QR state with pending poll */}
+      {/* QR state with pending poll */
+      }
       {khqr && pollStatus?.status === 'pending' && (
-        <div className="card" style={{ marginBottom: '2rem', textAlign: 'center', padding: '2rem' }}>
-          <p style={{ opacity: 0.5, fontSize: '0.8rem', textTransform: 'uppercase', marginBottom: '1rem' }}>
-            Scan to pay — {khqr.planCode} — ${(khqr.amountCents / 100).toFixed(2)} {khqr.currency}
-          </p>
-          <div style={{ display: 'inline-block', padding: '1.5rem', background: '#fff', borderRadius: '12px', marginBottom: '1.5rem' }}>
-            <QRCodeSVG value={khqr.qr} size={220} />
-          </div>
-          <p style={{ opacity: 0.4, fontSize: '0.85rem', marginBottom: '1rem' }}>Waiting for payment confirmation...</p>
-          <button className="btn-ghost" style={{ padding: '8px 20px', fontSize: '0.85rem' }} onClick={retry}>Cancel</button>
+        <div style={{ maxWidth: 420, margin: '0 auto 2rem' }}>
+          <KhqrCard
+            merchant="CHOENG RAYU"
+            amount={(khqr.amountCents / 100).toFixed(2)}
+            currency={khqr.currency}
+            qrValue={khqr.qr}
+            onCancel={retry}
+            status="pending"
+          />
         </div>
       )}
 
