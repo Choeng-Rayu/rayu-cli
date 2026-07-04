@@ -68,4 +68,49 @@ describe('provider/model registry', () => {
     const { getMainLoopModel } = await import('../src/utils/model/model.ts')
     expect(getMainLoopModel()).toBe('stepfun-ai/step-3.7-flash')
   })
+
+  // Regression: selecting deepseek-v4-pro-1m via --model (or the /model
+  // keybinding fallback) failed with "model is not available on your
+  // provider" because getModelOptions()'s gate for surfacing a provider's own
+  // models only checked isOpenAICompatibleActive() || bedrock — excluding
+  // kind:'deepseek-web' (and every other non-openai-compatible/non-bedrock
+  // Rayu kind) — even though getActiveProviderModelOptions() already listed
+  // it correctly. Fixed by widening the gate with isRayuNonAnthropicActive().
+  test('getModelOptions surfaces deepseek-web models (regression: was excluded, causing "model not available")', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'deepseek-web',
+      kind: 'deepseek-web',
+      apiKey: 'user-token',
+      defaultModel: 'deepseek-v4-pro-1m',
+      smallFastModel: 'deepseek-v4-pro-1m',
+      models: ['deepseek-v4-pro-1m'],
+      fetchedModels: ['deepseek-v4-pro-1m'],
+    })
+    cfg.setActiveProvider('deepseek-web')
+
+    const { isRayuNonAnthropicActive } = await import('../src/utils/model/providers.ts')
+    expect(isRayuNonAnthropicActive()).toBe(true)
+
+    const { getModelOptions } = await import('../src/utils/model/modelOptions.ts')
+    const opts = getModelOptions()
+    expect(opts.map(o => o.value)).toContain('deepseek-v4-pro-1m')
+    // The provider's own model is surfaced FIRST (mirrors the openai-compatible
+    // behavior already covered above), before the stock Anthropic aliases.
+    expect(opts[0]!.value).toBe('deepseek-v4-pro-1m')
+  })
+
+  test('getActiveProviderModelOptions (the underlying data source) also lists deepseek-web models directly', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'deepseek-web',
+      kind: 'deepseek-web',
+      apiKey: 'user-token',
+      defaultModel: 'deepseek-v4-pro-1m',
+      models: ['deepseek-v4-pro-1m'],
+      fetchedModels: ['deepseek-v4-pro-1m'],
+    })
+    const opts = cfg.getActiveProviderModelOptions()
+    expect(opts.map(o => o.value)).toContain('deepseek-v4-pro-1m')
+  })
 })

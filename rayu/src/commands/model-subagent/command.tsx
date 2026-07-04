@@ -49,6 +49,13 @@ const SUBCOMMANDS = new Set([
  *   /model_subagent backend default → clear one agent's override
  *
  * Persists in ~/.rayu/providers.json. Same searchable picker card as /model.
+ *
+ * Callback-to-inherit: same fallback as /collaborator_model (see its
+ * command.tsx docstring) — getAgentModel() falls back to the equivalent of
+ * 'inherit' if a saved per-agent selection is later excluded by the admin's
+ * availableModels allowlist, rather than sending a disallowed model to the API.
+ * The saved override is left in place and is honored again if the allowlist
+ * changes back.
  */
 export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
   const tokens = (args ?? '').trim().split(/\s+/).filter(Boolean)

@@ -16,6 +16,7 @@ declare global {
     RAYU_API_URL: string
     RAYU_WEB_URL: string
     RAYU_GATEWAY_URL: string
+    DEEPSEEK_OAUTH_DEFAULT: string
   }
 }
 

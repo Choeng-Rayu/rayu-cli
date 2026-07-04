@@ -11,6 +11,7 @@ beforeEach(() => {
   delete process.env.RAYU_GATEWAY_URL
   delete process.env.RAYU_ROUTE_VIA_GATEWAY
   delete process.env.RAYU_GATEWAY_CALLBACK
+  delete process.env.RAYU_PAID_PLAN_P2P
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
@@ -19,6 +20,7 @@ afterEach(() => {
   delete process.env.RAYU_GATEWAY_URL
   delete process.env.RAYU_ROUTE_VIA_GATEWAY
   delete process.env.RAYU_GATEWAY_CALLBACK
+  delete process.env.RAYU_PAID_PLAN_P2P
 })
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -140,6 +142,165 @@ describe('shouldRouteViaGateway', () => {
     expect(m.shouldRouteViaGateway(provider({ baseURL: 'http://localhost:11434/v1' }))).toBe(false)
     expect(m.shouldRouteViaGateway(provider({ baseURL: 'http://127.0.0.1:1234/v1' }))).toBe(false)
     expect(m.shouldRouteViaGateway(provider({ baseURL: 'http://192.168.1.5:8000/v1' }))).toBe(false)
+  })
+})
+
+describe('shouldRouteViaGateway: paid-plan peer-to-peer bypass (RAYU_PAID_PLAN_P2P)', () => {
+  afterEach(async () => {
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    ent._resetRayuEntitlementsForTesting()
+  })
+
+  const entitlementsWithPlan = (code: string) => ({
+    plan: { code, name: code, priceCents: 0, availability: 'active' },
+    maxDailyTurns: null,
+    features: {},
+  })
+
+  test('DEFAULT (RAYU_PAID_PLAN_P2P unset): Basic plan still routes through the gateway', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('basic') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    expect(m.shouldRouteViaGateway(provider())).toBe(true)
+  })
+
+  test('DEFAULT (RAYU_PAID_PLAN_P2P unset): pro/pro_plus/max also still route through the gateway', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    for (const code of ['pro', 'pro_plus', 'max', 'enterprise']) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ent._setRayuEntitlementsForTesting(entitlementsWithPlan(code) as any)
+      expect(m.shouldRouteViaGateway(provider())).toBe(true)
+    }
+  })
+
+  test('RAYU_PAID_PLAN_P2P=false explicitly: same as default, Basic routes through the gateway', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_PAID_PLAN_P2P = 'false'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('basic') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    expect(m.shouldRouteViaGateway(provider())).toBe(true)
+  })
+
+  test('RAYU_PAID_PLAN_P2P=true + Basic plan cached -> false (direct, peer-to-peer)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_PAID_PLAN_P2P = 'true'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('basic') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    expect(m.shouldRouteViaGateway(provider())).toBe(false)
+  })
+
+  test('RAYU_PAID_PLAN_P2P=true + pro/pro_plus/max cached -> false (direct)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_PAID_PLAN_P2P = 'true'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    for (const code of ['pro', 'pro_plus', 'max', 'enterprise']) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ent._setRayuEntitlementsForTesting(entitlementsWithPlan(code) as any)
+      expect(m.shouldRouteViaGateway(provider())).toBe(false)
+    }
+  })
+
+  test('RAYU_PAID_PLAN_P2P=true + Free plan cached -> true (Free ALWAYS routes through the gateway)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_PAID_PLAN_P2P = 'true'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('free') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    expect(m.shouldRouteViaGateway(provider())).toBe(true)
+  })
+
+  test('RAYU_PAID_PLAN_P2P=true + no entitlements cached yet -> true (fails closed, keeps the gateway hop)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_PAID_PLAN_P2P = 'true'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    ent._setRayuEntitlementsForTesting(null)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    expect(m.shouldRouteViaGateway(provider())).toBe(true)
+  })
+
+  test('RAYU_PAID_PLAN_P2P=true + rayu-hosted provider kind stays on the gateway (never P2P — it needs the gateway for its own billing)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_PAID_PLAN_P2P = 'true'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('basic') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    expect(
+      m.shouldRouteViaGateway(provider({ kind: 'rayu-hosted', baseURL: undefined })),
+    ).toBe(false)
+  })
+
+  test('RAYU_ROUTE_VIA_GATEWAY=false takes precedence over the plan flag (direct regardless)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_ROUTE_VIA_GATEWAY = 'false'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('free') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    expect(m.shouldRouteViaGateway(provider())).toBe(false)
+  })
+
+  test('RAYU_PAID_PLAN_P2P=true: Basic bypass respects other preconditions (local upstream stays direct anyway; OAuth-only kind still excluded)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_PAID_PLAN_P2P = 'true'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('basic') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    expect(m.shouldRouteViaGateway(provider({ kind: 'kiro', baseURL: undefined }))).toBe(false)
+  })
+
+  test('end-to-end: DEFAULT (flag unset) still sends a Basic user through the gateway proxy', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_GATEWAY_URL = 'https://gw.example.com'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('basic') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner(
+      () => new Response('{}', { status: 200, headers: { 'x-rayu-proxied': '1' } }),
+    )
+    const res = await m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, { method: 'POST' })
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe('https://gw.example.com/v1/proxy') // still went via the gateway
+    expect(await res.text()).toBe('{}')
+  })
+
+  test('end-to-end: RAYU_PAID_PLAN_P2P=true sends the request straight to the provider for a Basic user', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.RAYU_PAID_PLAN_P2P = 'true'
+    process.env.RAYU_GATEWAY_URL = 'https://gw.example.com'
+    await signIn()
+    const ent = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ent._setRayuEntitlementsForTesting(entitlementsWithPlan('basic') as any)
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner(() => new Response('direct-ok', { status: 200 }))
+    const res = await m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, { method: 'POST' })
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe(ORIGINAL) // never touched the gateway
+    expect(await res.text()).toBe('direct-ok')
   })
 })
 

@@ -2,6 +2,7 @@ import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES, isClaudeModelOrAlias } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
+import { isModelAllowed } from './modelAllowlist.js'
 import {
   getCanonicalName,
   getRuntimeMainLoopModel,
@@ -194,6 +195,24 @@ export function getAgentModel(
   if (agentModelWithExp === 'inherit') {
     // Apply runtime model resolution for inherit to get the effective model
     // This ensures agents using 'inherit' get opusplan→Opus resolution in plan mode
+    return getRuntimeMainLoopModel({
+      permissionMode: permissionMode ?? 'default',
+      mainLoopModel: parentModel,
+      exceeds200kTokens: false,
+    })
+  }
+
+  // Callback-to-inherit: a per-agent model choice (set via /model_subagent or
+  // /collaborator_model, or a hardcoded agent default) that the admin-configured
+  // availableModels allowlist no longer permits — e.g. the allowlist was
+  // tightened after the selection was saved — must NOT be sent to the API.
+  // Silently resolve as 'inherit' instead of forwarding a disallowed model
+  // string, so the subagent/collaborator falls back to the orchestrator's
+  // own (already-allowed) model rather than failing the whole spawn.
+  // toolSpecifiedModel is handled above this point and is intentionally not
+  // covered by this fallback — it's an explicit, single-call override the
+  // caller just made and is expected to already be a valid choice.
+  if (!isModelAllowed(agentModelWithExp)) {
     return getRuntimeMainLoopModel({
       permissionMode: permissionMode ?? 'default',
       mainLoopModel: parentModel,
