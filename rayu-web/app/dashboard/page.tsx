@@ -2,10 +2,10 @@
 export const dynamic = 'force-dynamic'
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { QRCodeSVG } from 'qrcode.react'
 import { apiUrl, gatewayUrl } from '../../lib/config'
 import { useRayuToken } from '../../lib/useRayuToken'
 import { HBar, LineChart } from '../../components/Charts'
+import KhqrCard from '../../components/KhqrCard'
 import {
   aggregateByModel,
   avgCreditsPerRequest,
@@ -452,15 +452,15 @@ export default function DashboardPage() {
               <SectionTitle>Pay-as-you-go top-up</SectionTitle>
               <p style={{ fontFamily: 'DM Mono, monospace', marginTop: 0, marginBottom: '1rem' }}>Balance: {topupBalance.toLocaleString()} credits</p>
               {khqr ? (
-                <div style={{ textAlign: 'center', padding: '1rem' }}>
-                  <p style={{ opacity: 0.5, fontSize: '0.8rem', textTransform: 'uppercase', marginBottom: '1rem' }}>
-                    Scan to pay — {khqr.credits.toLocaleString()} credits — ${(khqr.amountCents / 100).toFixed(2)} {khqr.currency}
-                  </p>
-                  <div style={{ display: 'inline-block', padding: '1.25rem', background: '#fff', borderRadius: 12, marginBottom: '1rem' }}>
-                    <QRCodeSVG value={khqr.qr} size={200} />
-                  </div>
-                  <p style={{ opacity: 0.4, fontSize: '0.85rem' }}>Waiting for payment confirmation…</p>
-                  <button className="btn-ghost" style={{ padding: '6px 16px', fontSize: '0.85rem' }} onClick={() => { setKhqr(null); stopPolling() }}>Cancel</button>
+                <div style={{ maxWidth: 400, margin: '0 auto' }}>
+                  <KhqrCard
+                    merchant="CHOENG RAYU"
+                    amount={(khqr.amountCents / 100).toFixed(2)}
+                    currency={khqr.currency}
+                    qrValue={khqr.qr}
+                    onCancel={() => { setKhqr(null); stopPolling() }}
+                    status="pending"
+                  />
                 </div>
               ) : (
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>

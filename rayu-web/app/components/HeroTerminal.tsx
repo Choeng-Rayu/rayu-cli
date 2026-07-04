@@ -276,7 +276,7 @@ export default function HeroTerminal() {
           </div>
           <span style={{ color: 'var(--muted)', fontSize: '0.78rem' }}>rayu — ~/my-project</span>
           <span style={{ color: 'var(--green)', fontSize: '0.72rem', border: '1px solid rgba(0,255,136,0.2)', padding: '2px 8px', borderRadius: 4, background: 'rgba(0,255,136,0.05)' }}>
-            claude-sonnet-4-6
+            claude-sonnet-5
           </span>
         </div>
 
