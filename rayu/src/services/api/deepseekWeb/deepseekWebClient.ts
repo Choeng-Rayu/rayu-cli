@@ -7,10 +7,16 @@
 //   3. Completion + SSE stream parsing (POST /api/v0/chat/completion)
 //
 // CHATBOT-ONLY: The DeepSeek web API takes a plain prompt string — no tools, no
-// function calling, no system prompt. We extract ONLY the last user message and
-// send it as-is. All tool schemas and system instructions are discarded to avoid
-// account flagging by DeepSeek's audit systems. The chat session is reused across
-// turns so the conversation thread stays intact on DeepSeek's side.
+// function calling, no system prompt, no roles array. We flatten the
+// user/assistant conversation history into that single prompt string (see
+// extractUserPrompt) so multi-turn context survives even though the endpoint
+// itself has no notion of a role-based message list. Tool schemas and system
+// instructions are still fully discarded to avoid account flagging by
+// DeepSeek's audit systems. The chat session (chat_session_id) is reused
+// across turns purely so DeepSeek groups them under the same tab in its own
+// UI/history — every request still always sends parent_message_id: null, so
+// thread-linking on DeepSeek's side is NOT what carries context between turns;
+// the flattened history in the prompt text is.
 //
 // GATED: requires USE_RAYU_OAUTH=true (Rayu account login enabled) AND
 // USE_DEEPSEEK_OAUTH=true. Both must be on. Also requires a paid Rayu plan.
@@ -200,7 +206,7 @@ async function postCompletion(
 }
 
 // ---------------------------------------------------------------------------
-// Message extraction: only the user's latest message, nothing else
+// Message extraction: flatten the conversation into one prompt string
 // ---------------------------------------------------------------------------
 
 type AnthropicMessage = {
@@ -209,25 +215,55 @@ type AnthropicMessage = {
 }
 
 /**
- * Extract ONLY the last user message text. System prompts, tool schemas,
- * conversation history, and all agentic instructions are discarded.
- * This is a plain chatbot — no tools, no system context, no multi-turn.
+ * Flatten the Anthropic-shaped conversation into the single plain-text prompt
+ * the DeepSeek web endpoint accepts (it has no roles array — just `prompt`).
+ *
+ * FIXES a context-loss bug: this used to extract ONLY the last user message,
+ * discarding all prior turns. Each request also always sends
+ * `parent_message_id: null` (postCompletion), so DeepSeek's own server never
+ * saw these as replies in a thread either — every turn arrived looking like a
+ * brand-new, unrelated conversation. The visible symptom: asking "what's my
+ * name?" right after stating it got "you haven't told me" — the model
+ * genuinely never received the earlier turn. DeepSeek's own official API docs
+ * describe their /chat/completions endpoint as stateless for exactly this
+ * reason ("the user must concatenate all previous conversation history and
+ * pass it to the chat API with each request"); the internal web endpoint used
+ * here behaves the same way per-request, and this is the client-side fix.
+ *
+ * CHATBOT-ONLY SCOPE UNCHANGED: still no tools, no function calling, no
+ * system-prompt injection — only `user`/`assistant` text/thinking turns are
+ * rendered, using a plain "Role: text" convention (blank-line separated) so
+ * the model can follow the thread. Tool schemas remain discarded entirely, as
+ * documented at the top of this file — multi-turn context is the only gap
+ * this closes.
  */
 function extractUserPrompt(messages: AnthropicMessage[]): string {
-  // Walk backwards to find the last user message
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
-    if (msg.role !== 'user') continue
-    const content =
-      typeof msg.content === 'string'
-        ? msg.content
-        : msg.content
-            .filter((c) => c.type === 'text' && c.text)
-            .map((c) => c.text!)
-            .join('\n')
-    if (content) return content
+  const blockText = (
+    content: AnthropicMessage['content'],
+  ): string => {
+    if (typeof content === 'string') return content
+    return content
+      .map((c) => {
+        if (c.type === 'text' && typeof c.text === 'string') return c.text
+        if (c.type === 'thinking' && typeof c.thinking === 'string') {
+          return c.thinking as string
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
   }
-  return 'Hello'
+
+  const lines: string[] = []
+  for (const msg of messages) {
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue
+    const text = blockText(msg.content)
+    if (!text) continue
+    const role = msg.role === 'assistant' ? 'Assistant' : 'User'
+    lines.push(`${role}: ${text}`)
+  }
+  if (lines.length === 0) return 'Hello'
+  return lines.join('\n\n')
 }
 
 // ---------------------------------------------------------------------------
