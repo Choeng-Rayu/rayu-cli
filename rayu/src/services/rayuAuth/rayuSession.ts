@@ -42,14 +42,13 @@ export interface RayuSessionStore {
 }
 
 /**
- * True when the user has opted into DeepSeek Web OAuth (chat.deepseek.com
- * browser-auth flow). Default OFF — set USE_DEEPSEEK_OAUTH=true to enable.
- * Only available for paid-plan users (gated separately via entitlements).
- *
- * Resolution order: runtime USE_DEEPSEEK_OAUTH → baked build-time default
- * (MACRO.DEEPSEEK_OAUTH_DEFAULT) → false.
+ * True when DeepSeek Web OAuth is enabled. Requires BOTH:
+ *   USE_RAYU_OAUTH=true (Rayu account login enabled) AND
+ *   USE_DEEPSEEK_OAUTH=true (DeepSeek Web opt-in)
+ * When USE_RAYU_OAUTH=false the deepseek-web provider is hidden entirely.
  */
 export function isUseDeepseekOAuthEnabled(): boolean {
+  if (!isUseRayuOAuthEnabled()) return false
   const env = process.env.USE_DEEPSEEK_OAUTH
   if (env !== undefined && env !== '') return isEnvTruthy(env)
   return isEnvTruthy(MACRO.DEEPSEEK_OAUTH_DEFAULT || 'false')

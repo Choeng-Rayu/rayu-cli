@@ -10,6 +10,36 @@
 // OAuth providers (Kiro, Login-with-Gemini, Vertex, Copilot) and AWS Bedrock are
 // NOT routed — they stay direct. When the flag is off, nothing here engages.
 //
+// PAID-PLAN PEER-TO-PEER (Basic and above) — OPT-IN, default OFF: the gateway
+// hop on this path exists to enforce the Free plan's daily-turn cap and to
+// record usage; Basic (and any plan at/above it) has no BYO-key turn cap
+// (`maxDailyTurns: null` in the plan catalog) and is billed independently of
+// Rayu-hosted credits, so the extra round-trip buys a paid user nothing once
+// this is turned on. Set RAYU_PAID_PLAN_P2P=true in the .env used to launch
+// this build to enable it: once on, and once the signed-in user's cached
+// entitlements report a plan at/above Basic, requests for every BYO-key
+// provider (openai-compatible, anthropic, vertex, bedrock-bearer) go STRAIGHT
+// to the provider — true peer-to-peer, same as USE_RAYU_OAUTH being off. The
+// ONE exception is the `rayu-hosted` provider (Rayu's own hosted models): that
+// path is never routed by this module at all (isRoutableKind() excludes it,
+// same as every other OAuth-only/hosted kind) because it must always go
+// through the gateway, which owns billing/credits for Rayu's own models — this
+// flag cannot and does not affect it either way.
+//
+// Default is OFF (RAYU_PAID_PLAN_P2P unset/false): every plan — Free AND
+// Basic+ — routes through the gateway as usual, i.e. today's behavior is
+// unchanged until an operator opts in.
+//
+// This is a pure latency optimization when enabled, NOT a new security
+// boundary: a Free user cannot gain this by lying to the CLI, because the
+// decision is driven by getCachedEntitlements(), which is populated from the
+// backend's /me/entitlements response, not by anything the client can set
+// locally. FAILS CLOSED toward keeping the gateway hop: an unknown plan (no
+// cache yet, offline, pre-fetch) keeps routing through the gateway rather than
+// assuming paid, so a Free user's traffic is never briefly untracked during
+// cold start. (RAYU_ROUTE_VIA_GATEWAY=false still forces DIRECT for everyone,
+// independent of plan, and takes precedence over this flag.)
+//
 // FAIL-CLOSED (default): if the gateway is unreachable (connection error) or
 // returns a non-proxied response (no X-Rayu-Proxied marker), the wrapper
 // surfaces the gateway error so traffic never silently leaves the gateway and
@@ -27,7 +57,59 @@ import {
   hasRayuSession,
   isUseRayuOAuthEnabled,
 } from '../../rayuAuth/rayuSession.js'
+import { getCachedEntitlements } from '../../rayuAuth/rayuEntitlements.js'
 import { isEnvTruthy } from '../../../utils/envUtils.js'
+
+/**
+ * Plan codes (from the admin-configured plan catalog) that have NO BYO-key
+ * daily-turn cap and therefore gain nothing from the gateway hop on this path
+ * once RAYU_PAID_PLAN_P2P=true. `basic` is the entry paid tier (bring-your-
+ * own-key, `maxDailyTurns: null`, all features on); `pro`/`pro_plus`/`max` are
+ * Rayu-hosted credit tiers that don't normally take this BYO-key path at all,
+ * but are included so a paid user who ALSO configures a BYO-key provider gets
+ * the same peer-to-peer treatment instead of an inconsistent gateway hop.
+ * Never applies to the `rayu-hosted` provider kind — see isRoutableKind().
+ */
+const P2P_ELIGIBLE_PLAN_CODES: ReadonlySet<string> = new Set([
+  'basic',
+  'pro',
+  'pro_plus',
+  'max',
+  'enterprise',
+])
+
+/**
+ * Opt-IN switch for the paid-plan peer-to-peer bypass, independent of
+ * RAYU_ROUTE_VIA_GATEWAY. Set RAYU_PAID_PLAN_P2P=true in the .env used to
+ * launch this build to send Basic+ BYO-key traffic straight to the provider
+ * instead of through the gateway. DEFAULT FALSE: every plan routes through the
+ * gateway as usual (today's behavior) unless explicitly opted in. Never
+ * affects the `rayu-hosted` provider, which always needs the gateway for its
+ * own billing/credits regardless of this flag.
+ */
+function isPaidPlanP2PEnabled(): boolean {
+  const v = process.env.RAYU_PAID_PLAN_P2P
+  if (v !== undefined && v !== '') return isEnvTruthy(v)
+  return false
+}
+
+/**
+ * Whether the signed-in user's CACHED plan is known to be at/above Basic (no
+ * BYO-key turn cap). Sync + cheap (reads the in-memory/disk entitlements
+ * cache the same way rayuFeatureAllowed()/isHostedModelEntitled() do — it does
+ * not make a network call itself, though reading it may kick a rate-limited
+ * background refresh).
+ *
+ * Returns false (i.e. "keep the gateway hop") when entitlements are not yet
+ * known, so a cold-start window never lets Free-tier traffic skip tracking —
+ * mirroring rayuFeatureAllowed()'s "no cache + signed in -> deny" reasoning,
+ * just applied to a bypass instead of a lock.
+ */
+function isOnP2PEligiblePlan(): boolean {
+  const ent = getCachedEntitlements()
+  const code = ent?.plan?.code
+  return !!code && P2P_ELIGIBLE_PLAN_CODES.has(code)
+}
 
 /** Header the gateway sets ONLY on responses it actually proxied. Its absence
  * (old gateway without /v1/proxy, a redirect, an error page, …) tells the CLI to
@@ -127,6 +209,11 @@ function isLocalBaseUrl(base: string): boolean {
  * Decide whether requests for this provider should be routed through the Rayu
  * gateway. Requires the opt-in flag, a signed-in session, an API-key provider
  * kind, and a non-local upstream. Cheap + synchronous: safe on the hot path.
+ *
+ * When RAYU_PAID_PLAN_P2P=true (default OFF), Basic-and-above plans bypass the
+ * gateway once entitlements confirm the plan (see isOnP2PEligiblePlan()) —
+ * checked LAST so every other precondition (opt-in flag, session, routable
+ * kind, non-local URL) still applies before we consider bypassing.
  */
 export function shouldRouteViaGateway(provider: RayuProvider | null | undefined): boolean {
   if (!provider) return false
@@ -141,6 +228,7 @@ export function shouldRouteViaGateway(provider: RayuProvider | null | undefined)
     const base = providerUpstreamBase(provider)
     if (!base || isLocalBaseUrl(base)) return false
   }
+  if (isPaidPlanP2PEnabled() && isOnP2PEligiblePlan()) return false
   return true
 }
 

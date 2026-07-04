@@ -896,9 +896,9 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     return fetchCopilotModels(p.apiKey)
   }
   // DeepSeek Web: no live catalog endpoint. Return the hardcoded model list
-  // (deepseek-v4-pro) from the preset defaults.
+  // (deepseek-v4-pro-1m) from the preset defaults.
   if (p.kind === 'deepseek-web') {
-    return [p.defaultModel || 'deepseek-v4-pro']
+    return [p.defaultModel || 'deepseek-v4-pro-1m']
   }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
