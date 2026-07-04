@@ -86,6 +86,47 @@ describe('kiro buildKiroPayload', () => {
     expect(content).toContain('solve it')
   })
 
+  test('sonnet-5 builds a correct payload, identical in shape to sonnet-4-6', () => {
+    const base = { messages: [{ role: 'user', content: 'hello' }] }
+    const r46 = buildKiroPayload({ ...base, model: 'claude-sonnet-4-6' })
+    const r5 = buildKiroPayload({ ...base, model: 'claude-sonnet-5' })
+
+    // The upstream modelId is sonnet-5's own SKU (not remapped/defaulted to
+    // 4.6) — this is the field that actually determines which model Kiro runs.
+    expect(r5.kiroModel).toBe('claude-sonnet-5')
+    expect(r5.payload.conversationState.currentMessage.userInputMessage.modelId).toBe('claude-sonnet-5')
+
+    // Everything else about the request shape is identical to sonnet-4-6.
+    expect(r5.payload.conversationState.chatTriggerType).toBe(r46.payload.conversationState.chatTriggerType)
+    expect(r5.payload.conversationState.agentTaskType).toBe(r46.payload.conversationState.agentTaskType)
+    expect(r5.payload.conversationState.currentMessage.userInputMessage.origin).toBe(
+      r46.payload.conversationState.currentMessage.userInputMessage.origin,
+    )
+    expect(r5.payload.conversationState.currentMessage.userInputMessage.content).toBe('hello')
+  })
+
+  test('sonnet-5 with thinking enabled injects the same thinking-mode prefix as sonnet-4-6', () => {
+    const withThinking = (model: string) =>
+      buildKiroPayload({
+        model,
+        messages: [{ role: 'user', content: 'reason about this' }],
+        thinking: { type: 'adaptive', budget_tokens: 8000 },
+      })
+    const r46 = withThinking('claude-sonnet-4-6')
+    const r5 = withThinking('claude-sonnet-5')
+
+    // modelId stays sonnet-5's own SKU — thinking never remaps the model id.
+    expect(r5.kiroModel).toBe('claude-sonnet-5')
+    const content5 = r5.payload.conversationState.currentMessage.userInputMessage.content
+    const content46 = r46.payload.conversationState.currentMessage.userInputMessage.content
+    expect(content5).toContain('<thinking_mode>enabled</thinking_mode>')
+    expect(content5).toContain('<max_thinking_length>8000</max_thinking_length>')
+    // Same XML prefix shape as sonnet-4-6, just wrapping the different model's message.
+    expect(content5.startsWith('<thinking_mode>enabled</thinking_mode>')).toBe(
+      content46.startsWith('<thinking_mode>enabled</thinking_mode>'),
+    )
+  })
+
   test('thinking keeps the base SKU (current Kiro rejects -1m ids) + still injects the prefix', () => {
     const { payload, kiroModel } = buildKiroPayload({
       model: 'claude-sonnet-4.6',

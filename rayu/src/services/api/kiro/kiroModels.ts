@@ -29,6 +29,18 @@ export const KIRO_DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6'
 // (first match wins). Order matters: specific entries precede legacy aliases
 // that share the same Kiro value.
 const MODEL_MAP_ORDERED: KiroModelMapping[] = [
+  // Sonnet 5 (released 2026-06-30): 1M context is the DEFAULT and only
+  // context size — there is no smaller variant, so contextWindowSize is set
+  // directly here rather than via the kiro1m field. Verified against
+  // sonnet-4-6 (same kiro1m===kiroModel path) by direct execution: both
+  // report contextWindowSize=1_000_000 and echo back an `[1m]`-suffixed
+  // anthropicModel with thinking=false by default. The `[1m]` opt-in suffix
+  // still works as a THINKING toggle here (Tier 2 lookup strips it and sets
+  // thinking=true) — it just has no additional context-window effect since
+  // the window is already always 1M. No dash-suffixed minor version in the
+  // upstream Anthropic/Bedrock id (claude-sonnet-5, not claude-sonnet-5-0),
+  // so the Kiro dot-notation id is identical to the Anthropic id.
+  { anthropic: 'claude-sonnet-5', kiro: 'claude-sonnet-5', contextWindowSize: KIRO_THINKING_CONTEXT_WINDOW },
   { anthropic: 'claude-opus-4-8[1m]', kiro: 'claude-opus-4.8', kiro1m: 'claude-opus-4.8' },
   { anthropic: 'claude-opus-4-8', kiro: 'claude-opus-4.8', kiro1m: 'claude-opus-4.8' },
   { anthropic: 'claude-opus-4-7[1m]', kiro: 'claude-opus-4.7', kiro1m: 'claude-opus-4.7' },
