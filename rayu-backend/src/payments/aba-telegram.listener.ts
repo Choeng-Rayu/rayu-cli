@@ -65,12 +65,24 @@ export class AbaTelegramListener implements OnModuleInit, OnApplicationShutdown 
       const { TelegramClient } = await import('telegram')
       const { StringSession } = await import('telegram/sessions')
       const { NewMessage } = await import('telegram/events')
+      const { Logger, LogLevel } = await import('telegram/extensions/Logger')
 
       const client = new TelegramClient(
         new StringSession(this.cfg.session!),
         this.cfg.apiId!,
         this.cfg.apiHash!,
-        { connectionRetries: 5 },
+        {
+          connectionRetries: 5,
+          // Telegram's data centers close idle MTProto connections roughly
+          // every ~90s when no traffic is flowing; GramJS's own reconnect
+          // loop (reconnectRetries defaults to Infinity — intentionally NOT
+          // overridden here, so a long-lived userbot always recovers) then
+          // logs a WARN/INFO pair + a raw stack trace on every single cycle.
+          // That is expected, self-healing behavior, not an actionable
+          // error — silencing it below ERROR keeps logs readable without
+          // hiding a genuine failure to reconnect.
+          baseLogger: new Logger(LogLevel.ERROR),
+        },
       )
       // A user session needs no interactive prompts; the string session carries
       // the auth. connect() is enough (start() would prompt).
