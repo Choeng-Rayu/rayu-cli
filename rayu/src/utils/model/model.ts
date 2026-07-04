@@ -675,6 +675,12 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (canonical.includes('claude-opus-4')) {
     return 'Opus 4'
   }
+  if (canonical.includes('claude-sonnet-5')) {
+    // Sonnet 5 ships with 1M context as the default (and only) context
+    // size — unlike 4.6/4.5, there is no smaller variant, so no
+    // "(with 1M context)" suffix is needed here.
+    return 'Sonnet 5'
+  }
   if (canonical.includes('claude-sonnet-4-6')) {
     return has1m ? 'Sonnet 4.6 (with 1M context)' : 'Sonnet 4.6'
   }
