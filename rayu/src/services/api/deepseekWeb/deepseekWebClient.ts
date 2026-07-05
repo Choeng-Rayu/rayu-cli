@@ -275,6 +275,41 @@ function stripHarnessInjections(text: string): string {
 }
 
 /**
+ * True when a message's ENTIRE text is a harness-internal fork prompt rather
+ * than something the human typed — e.g. the IDE/TUI "prompt suggestion"
+ * feature (predicting what the user might type next) forks a SEPARATE agent
+ * call whose message list is [...real conversation so far, ONE internal
+ * instruction message], and that instruction message becomes the "last user
+ * message" extractUserPrompt would otherwise forward verbatim. Unlike
+ * <system-reminder>/<available-deferred-tools> (embedded INSIDE a real
+ * message's text — see stripHarnessInjections), this is the message's ENTIRE
+ * content, so it can't be stripped down to remaining human text — it must be
+ * skipped so extractUserPrompt keeps walking backward to the real turn.
+ *
+ * Detected structurally (the prompt's own distinctive framing), not by
+ * hardcoding the exact wording, since these internal prompts are authored/
+ * maintained elsewhere in the harness and could be reworded over time:
+ *   - starts with the "[SUGGESTION MODE:" marker (its defining, load-bearing
+ *     prefix — every other file in the harness that touches this feature
+ *     keys off this exact bracketed tag), OR
+ *   - carries multiple internal-meta-instruction phrases together (the kind
+ *     of imperative self-referential language ("NEVER SUGGEST", "Reply with
+ *     ONLY the suggestion", "Format: 2-12 words") a human chatting would not
+ *     plausibly type as their own message).
+ */
+function isHarnessInternalForkPrompt(text: string): boolean {
+  const trimmed = text.trim()
+  if (trimmed.startsWith('[SUGGESTION MODE:')) return true
+  const metaMarkers = [
+    /never suggest/i,
+    /reply with only the suggestion/i,
+    /stay silent if the next step/i,
+  ]
+  const hits = metaMarkers.reduce((n, re) => (re.test(trimmed) ? n + 1 : n), 0)
+  return hits >= 2
+}
+
+/**
  * Extract ONLY the latest user message's text — nothing else. No history,
  * no tools, no system prompt, no assistant turns.
  *
@@ -292,7 +327,12 @@ function stripHarnessInjections(text: string): string {
  *
  * Still strips <available-deferred-tools>/<system-reminder> noise (see
  * stripHarnessInjections) since even the single forwarded message can carry
- * that scaffolding embedded in its own text.
+ * that scaffolding embedded in its own text, and SKIPS whole messages that
+ * are themselves a harness-internal fork prompt (see
+ * isHarnessInternalForkPrompt) rather than something the human typed — e.g.
+ * the IDE's prompt-suggestion feature appends its own instruction message as
+ * the "last user message" of a background fork call; that message must never
+ * be sent to DeepSeek as if it were the human's chat input.
  */
 function extractUserPrompt(messages: AnthropicMessage[]): string {
   const blockText = (
@@ -310,7 +350,9 @@ function extractUserPrompt(messages: AnthropicMessage[]): string {
     const msg = messages[i]
     if (msg.role !== 'user') continue
     const text = blockText(msg.content)
-    if (text) return text
+    if (!text) continue
+    if (isHarnessInternalForkPrompt(text)) continue
+    return text
   }
   return 'Hello'
 }
@@ -541,24 +583,6 @@ export function createDeepseekWebClient(
 
   void _maxRetries
 
-  // Dedup with lock-first ordering: set _inFlight BEFORE any async work so
-  // concurrent callers serialize rather than both entering the API call.
-  // The first caller streams live; subsequent callers within the window get
-  // a buffered replay.
-  let _inFlight: Promise<void> | null = null
-  let _lastPrompt = ''
-  let _lastBufferedAt = 0
-  let _lastEvents: PublicStreamEvent[] | null = null
-  let _lastModel = ''
-  const DEDUP_WINDOW_MS = 5000
-
-  function replayedStream(events: PublicStreamEvent[]): AsyncGenerator<PublicStreamEvent> {
-    let i = 0
-    return (async function* () {
-      for (; i < events.length; i++) yield events[i]
-    })()
-  }
-
   async function doCompletion(
     params: BetaParams,
     signal?: AbortSignal,
@@ -566,148 +590,101 @@ export function createDeepseekWebClient(
     const model = params.model || defaultModel
     const prompt = extractUserPrompt(params.messages)
 
-    // 1. Dedup hit: same prompt within window → replay buffered events.
-    if (prompt === _lastPrompt && _lastEvents && Date.now() - _lastBufferedAt < DEDUP_WINDOW_MS) {
-      return { stream: replayedStream(_lastEvents), model: _lastModel }
-    }
+    // Make the API call (session + PoW + completion).
+    const sessionId = await getOrCreateChatSession(userToken, cookie)
+    // DeepSeek's own thread-linking field: the response_message_id the
+    // PREVIOUS turn's `event: ready` frame reported becomes THIS turn's
+    // parent_message_id, so DeepSeek's server links the two into one
+    // thread. null on the very first turn of a session (or if a previous
+    // turn's ready frame was missed) — DeepSeek treats that as a new
+    // sub-thread root, same as before this feature existed.
+    const cachedParentMessageId = readSessionCache()?.lastResponseMessageId ?? null
+    const challenge = await fetchPowChallenge(userToken, cookie)
+    const powResponse = await solvePowChallenge(challenge)
 
-    // 2. If a call is in flight, wait for it, then re-check (will hit dedup).
-    if (_inFlight) {
-      await _inFlight
-      return doCompletion(params, signal)
-    }
+    const response = await postCompletion(
+      userToken, cookie, sessionId, cachedParentMessageId, prompt, powResponse, signal,
+    )
 
-    // 3. Lock FIRST, then execute. This is the critical fix: setting _inFlight
-    //    before any await means the second caller sees it and waits at step 2.
-    let release: () => void
-    _inFlight = new Promise<void>(r => { release = r! })
-
-    // Safety: release lock on abort so the next caller doesn't hang forever.
-    const onAbort = () => {
-      if (_inFlight) { _inFlight = null; release!() }
-    }
-    signal?.addEventListener('abort', onAbort, { once: true })
-
-    try {
-      // Make the API call (session + PoW + completion).
-      const sessionId = await getOrCreateChatSession(userToken, cookie)
-      // DeepSeek's own thread-linking field: the response_message_id the
-      // PREVIOUS turn's `event: ready` frame reported becomes THIS turn's
-      // parent_message_id, so DeepSeek's server links the two into one
-      // thread. null on the very first turn of a session (or if a previous
-      // turn's ready frame was missed) — DeepSeek treats that as a new
-      // sub-thread root, same as before this feature existed.
-      const cachedParentMessageId = readSessionCache()?.lastResponseMessageId ?? null
-      const challenge = await fetchPowChallenge(userToken, cookie)
-      const powResponse = await solvePowChallenge(challenge)
-
-      const response = await postCompletion(
-        userToken, cookie, sessionId, cachedParentMessageId, prompt, powResponse, signal,
+    if (!response.ok) {
+      // Session stale? Clear and retry once.
+      if (response.status === 400 || response.status === 401 || response.status === 403) {
+        clearDeepseekWebSession()
+        return doCompletion(params, signal)
+      }
+      const errText = await response.text().catch(() => 'unknown')
+      throw new Error(
+        `DeepSeek Web: completion failed (${response.status}): ${errText.slice(0, 500)}`,
       )
+    }
 
-      if (!response.ok) {
-        // Session stale? Clear and retry once.
-        if (response.status === 400 || response.status === 401 || response.status === 403) {
-          clearDeepseekWebSession()
-          _inFlight = null
-          release!()
-          signal?.removeEventListener('abort', onAbort)
+    // FIXES a silent-hang bug: DeepSeek sometimes answers a completion
+    // request with HTTP 200 but a plain JSON ERROR object instead of an
+    // SSE stream — e.g. {"biz_code":26,"biz_msg":"invalid message id",...}
+    // when the cached parent_message_id (from a previous `event: ready`
+    // frame) is no longer valid on DeepSeek's side (observed after a large
+    // pasted message; likely a TTL/staleness on the server's thread head).
+    // response.ok is true (200), so the old code fell through straight
+    // into parseSSEStream, which correctly found ZERO "\n\n"-delimited SSE
+    // blocks in a flat JSON body and yielded nothing — no thrown error, no
+    // visible message, nothing: the turn looked "stuck" with no feedback.
+    // Detect this shape up front (by content-type OR by peeking the body)
+    // and — since it's cheap to know it was caused by a bad
+    // parent_message_id — retry ONCE with parent_message_id reset to null
+    // (a fresh sub-thread) rather than surfacing a confusing error for
+    // something the client can just recover from transparently.
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.includes('text/event-stream')) {
+      const bodyText = await response.text()
+      let bizError: { biz_code?: number; biz_msg?: string } | null = null
+      try {
+        const parsed = JSON.parse(bodyText) as {
+          data?: { biz_code?: number; biz_msg?: string }
+        }
+        if (parsed?.data && typeof parsed.data.biz_code === 'number') {
+          bizError = parsed.data
+        }
+      } catch {
+        // not JSON either — fall through to the generic error below
+      }
+      if (bizError) {
+        if (cachedParentMessageId !== null) {
+          // Invalidate the stale thread head so the retry (and every turn
+          // after it, until a fresh `event: ready` arrives) starts a new
+          // sub-thread instead of repeating the same failure forever.
+          writeLastResponseMessageId(null)
           return doCompletion(params, signal)
         }
-        const errText = await response.text().catch(() => 'unknown')
+        // Already null and still erroring — a real, non-recoverable
+        // server-side rejection (bad prompt, moderation, quota, etc.).
         throw new Error(
-          `DeepSeek Web: completion failed (${response.status}): ${errText.slice(0, 500)}`,
+          `DeepSeek Web: completion rejected (biz_code ${bizError.biz_code}): ${bizError.biz_msg ?? 'unknown'}`,
         )
       }
-
-      // FIXES a silent-hang bug: DeepSeek sometimes answers a completion
-      // request with HTTP 200 but a plain JSON ERROR object instead of an
-      // SSE stream — e.g. {"biz_code":26,"biz_msg":"invalid message id",...}
-      // when the cached parent_message_id (from a previous `event: ready`
-      // frame) is no longer valid on DeepSeek's side (observed after a large
-      // pasted message; likely a TTL/staleness on the server's thread head).
-      // response.ok is true (200), so the old code fell through straight
-      // into parseSSEStream, which correctly found ZERO "\n\n"-delimited SSE
-      // blocks in a flat JSON body and yielded nothing — no thrown error, no
-      // visible message, nothing: the turn looked "stuck" with no feedback.
-      // Detect this shape up front (by content-type OR by peeking the body)
-      // and — since it's cheap to know it was caused by a bad
-      // parent_message_id — retry ONCE with parent_message_id reset to null
-      // (a fresh sub-thread) rather than surfacing a confusing error for
-      // something the client can just recover from transparently.
-      const contentType = response.headers.get('content-type') ?? ''
-      if (!contentType.includes('text/event-stream')) {
-        const bodyText = await response.text()
-        let bizError: { biz_code?: number; biz_msg?: string } | null = null
-        try {
-          const parsed = JSON.parse(bodyText) as {
-            data?: { biz_code?: number; biz_msg?: string }
-          }
-          if (parsed?.data && typeof parsed.data.biz_code === 'number') {
-            bizError = parsed.data
-          }
-        } catch {
-          // not JSON either — fall through to the generic error below
-        }
-        if (bizError) {
-          if (cachedParentMessageId !== null) {
-            // Invalidate the stale thread head so the retry (and every turn
-            // after it, until a fresh `event: ready` arrives) starts a new
-            // sub-thread instead of repeating the same failure forever.
-            writeLastResponseMessageId(null)
-            _inFlight = null
-            release!()
-            signal?.removeEventListener('abort', onAbort)
-            return doCompletion(params, signal)
-          }
-          // Already null and still erroring — a real, non-recoverable
-          // server-side rejection (bad prompt, moderation, quota, etc.).
-          throw new Error(
-            `DeepSeek Web: completion rejected (biz_code ${bizError.biz_code}): ${bizError.biz_msg ?? 'unknown'}`,
-          )
-        }
-        // Not the known error shape either — surface it plainly rather than
-        // silently handing non-SSE text to parseSSEStream, which would once
-        // again just yield nothing.
-        throw new Error(
-          `DeepSeek Web: expected an SSE stream but got "${contentType || 'unknown content-type'}": ${bodyText.slice(0, 300)}`,
-        )
-      }
-
-      // Tee: live stream to the first consumer + buffer for dedup replays.
-      // __ready events are consumed HERE (persisted as the next turn's
-      // parent_message_id) and never forwarded — they are not part of the
-      // Anthropic-shaped surface claude.ts expects.
-      const rawStream = parseSSEStream(response, model)
-      const events: PublicStreamEvent[] = []
-
-      async function* teeStream(): AsyncGenerator<PublicStreamEvent> {
-        try {
-          for await (const event of rawStream) {
-            if (event.type === '__ready') {
-              writeLastResponseMessageId(event.responseMessageId)
-              continue
-            }
-            events.push(event)
-            yield event
-          }
-        } finally {
-          _lastPrompt = prompt
-          _lastBufferedAt = Date.now()
-          _lastEvents = events
-          _lastModel = model
-          if (_inFlight) { _inFlight = null; release!() }
-          signal?.removeEventListener('abort', onAbort)
-        }
-      }
-
-      return { stream: teeStream(), model }
-    } catch (err) {
-      _inFlight = null
-      release!()
-      signal?.removeEventListener('abort', onAbort)
-      throw err
+      // Not the known error shape either — surface it plainly rather than
+      // silently handing non-SSE text to parseSSEStream, which would once
+      // again just yield nothing.
+      throw new Error(
+        `DeepSeek Web: expected an SSE stream but got "${contentType || 'unknown content-type'}": ${bodyText.slice(0, 300)}`,
+      )
     }
+
+    // __ready events are consumed HERE (persisted as the next turn's
+    // parent_message_id) and never forwarded — they are not part of the
+    // Anthropic-shaped surface claude.ts expects.
+    const rawStream = parseSSEStream(response, model)
+
+    async function* teeStream(): AsyncGenerator<PublicStreamEvent> {
+      for await (const event of rawStream) {
+        if (event.type === '__ready') {
+          writeLastResponseMessageId(event.responseMessageId)
+          continue
+        }
+        yield event
+      }
+    }
+
+    return { stream: teeStream(), model }
   }
 
   async function runNonStreaming(

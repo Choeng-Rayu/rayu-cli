@@ -377,6 +377,11 @@ export function getRayuApiKey(providerId?: string): string | null {
  * /model picker fallback path (keybinding shortcut). Active provider first,
  * then other providers. Any new provider kind (vertex, etc.) is included
  * automatically as long as kind !== 'anthropic'.
+ *
+ * deepseek-web is additionally excluded whenever USE_DEEPSEEK_OAUTH is off —
+ * see the matching dispatch-time gate in client.ts's getRayuDeepseekWebClient
+ * for why this needs to be an ACTIVE, per-call check rather than relying on
+ * the background entitlements sync to have already purged a stale entry.
  */
 export function getActiveProviderModelOptions(): Array<{
   value: string
@@ -386,6 +391,24 @@ export function getActiveProviderModelOptions(): Array<{
   const cfg = loadRayuConfig()
   const active = getActiveProvider()
   if (!active || active.kind === 'anthropic') return []
+
+  // Lazy require (leaf module, no imports of its own — safe, avoids a new
+  // static import edge into rayuAuth/ from this low-level config file).
+  let deepseekOAuthEnabled = true
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { isUseDeepseekOAuthEnabled } =
+      require('../services/rayuAuth/rayuSession.js') as typeof import('../services/rayuAuth/rayuSession.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    deepseekOAuthEnabled = isUseDeepseekOAuthEnabled()
+  } catch {
+    // fail open on the require itself; the per-provider filter below still
+    // applies correctly either way
+  }
+  const isHiddenProvider = (p: RayuProvider): boolean =>
+    p.kind === 'deepseek-web' && !deepseekOAuthEnabled
+
+  if (isHiddenProvider(active)) return []
 
   const result: Array<{ value: string; label: string; description: string }> = []
   const seen = new Set<string>()
@@ -410,6 +433,7 @@ export function getActiveProviderModelOptions(): Array<{
   for (const p of cfg.providers) {
     if (p.id === active.id) continue
     if (p.kind === 'anthropic') continue
+    if (isHiddenProvider(p)) continue
     addProvider(p)
   }
 

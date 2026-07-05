@@ -8,12 +8,20 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'rayu-model-'))
   process.env.RAYU_CONFIG_DIR = dir
   process.env.RAYU_DIAGNOSTICS_NO_FILE = '1'
+  // isUseDeepseekOAuthEnabled() requires USE_RAYU_OAUTH=true too (AND, not
+  // independent) — delete rather than rely on the ambient shell/.env value,
+  // so these tests are deterministic regardless of what's set outside the
+  // test process (mirrors the convention in rayuAuth.test.ts /
+  // rayuEntitlements.test.ts / rayuGatewayRouting.test.ts / etc.).
+  delete process.env.USE_RAYU_OAUTH
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
   delete process.env.RAYU_CONFIG_DIR
   delete process.env.RAYU_OPENAI_COMPATIBLE
   delete process.env.ANTHROPIC_MODEL
+  delete process.env.USE_DEEPSEEK_OAUTH
+  delete process.env.USE_RAYU_OAUTH
 })
 
 async function fresh() {
@@ -77,6 +85,8 @@ describe('provider/model registry', () => {
   // Rayu kind) — even though getActiveProviderModelOptions() already listed
   // it correctly. Fixed by widening the gate with isRayuNonAnthropicActive().
   test('getModelOptions surfaces deepseek-web models (regression: was excluded, causing "model not available")', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.USE_DEEPSEEK_OAUTH = 'true'
     const cfg = await fresh()
     cfg.upsertProvider({
       id: 'deepseek-web',
@@ -101,6 +111,8 @@ describe('provider/model registry', () => {
   })
 
   test('getActiveProviderModelOptions (the underlying data source) also lists deepseek-web models directly', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.USE_DEEPSEEK_OAUTH = 'true'
     const cfg = await fresh()
     cfg.upsertProvider({
       id: 'deepseek-web',
@@ -112,5 +124,75 @@ describe('provider/model registry', () => {
     })
     const opts = cfg.getActiveProviderModelOptions()
     expect(opts.map(o => o.value)).toContain('deepseek-v4-pro-1m')
+  })
+
+  // Regression: USE_DEEPSEEK_OAUTH=false did NOT hide an already-persisted
+  // deepseek-web provider entry, because the flag was previously consulted
+  // ONLY inside the background entitlements sync (syncDeepseekWebProvider),
+  // which runs at most every 30s and only when USE_RAYU_OAUTH is on AND the
+  // user is signed in. A provider registered while the flag was true stayed
+  // fully usable/listed after flipping it to false in .env, since nothing
+  // else in the dispatch or listing path ever re-checked the flag. Fixed by
+  // making the flag an ACTIVE, per-call gate in both
+  // getActiveProviderModelOptions (listing) and client.ts's
+  // getRayuDeepseekWebClient (dispatch), instead of a one-shot registration
+  // guard.
+  test('getActiveProviderModelOptions hides an already-persisted deepseek-web provider when USE_DEEPSEEK_OAUTH=false (regression: flag was only checked at registration time, never again)', async () => {
+    // USE_RAYU_OAUTH=true so this test isolates the USE_DEEPSEEK_OAUTH check
+    // specifically, rather than passing incidentally because
+    // isUseDeepseekOAuthEnabled() also short-circuits false when
+    // USE_RAYU_OAUTH is off.
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.USE_DEEPSEEK_OAUTH = 'false'
+    const cfg = await fresh()
+    // Simulate a provider that was persisted to disk while the flag was
+    // previously true (e.g. an earlier session, or the user just flipped
+    // .env) — the entry exists on disk regardless of the CURRENT flag value.
+    cfg.upsertProvider({
+      id: 'deepseek-web',
+      kind: 'deepseek-web',
+      apiKey: 'user-token',
+      defaultModel: 'deepseek-v4-pro-1m',
+      models: ['deepseek-v4-pro-1m'],
+      fetchedModels: ['deepseek-v4-pro-1m'],
+    })
+    cfg.setActiveProvider('deepseek-web')
+
+    const opts = cfg.getActiveProviderModelOptions()
+    expect(opts).toEqual([])
+    expect(opts.map(o => o.value)).not.toContain('deepseek-v4-pro-1m')
+  })
+
+  test('getModelOptions falls back to the stock Anthropic aliases when the active deepseek-web provider is hidden by the flag', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    process.env.USE_DEEPSEEK_OAUTH = 'false'
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'deepseek-web',
+      kind: 'deepseek-web',
+      apiKey: 'user-token',
+      defaultModel: 'deepseek-v4-pro-1m',
+      models: ['deepseek-v4-pro-1m'],
+      fetchedModels: ['deepseek-v4-pro-1m'],
+    })
+    cfg.setActiveProvider('deepseek-web')
+
+    const { getModelOptions } = await import('../src/utils/model/modelOptions.ts')
+    const opts = getModelOptions()
+    expect(opts.map(o => o.value)).not.toContain('deepseek-v4-pro-1m')
+  })
+
+  test('a non-deepseek-web provider (e.g. openai-compatible) is completely unaffected by USE_DEEPSEEK_OAUTH', async () => {
+    process.env.USE_DEEPSEEK_OAUTH = 'false'
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'k',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'meta/llama-3.3-70b-instruct',
+    })
+    const opts = cfg.getActiveProviderModelOptions()
+    expect(opts.map(o => o.value)).toContain('meta/llama-3.3-70b-instruct')
   })
 })

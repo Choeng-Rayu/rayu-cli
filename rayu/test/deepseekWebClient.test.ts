@@ -712,3 +712,255 @@ describe('DeepSeek Web: recovers from a stale parent_message_id instead of hangi
     expect(completionCalls).toBe(1) // no retry for an unrecognized shape
   })
 })
+
+describe('DeepSeek Web: repeated identical messages are NOT silently deduped (regression: user retyping "hello bro" got a stale replayed reply instead of a fresh answer)', () => {
+  // Root cause: a cross-CALL text-based dedup ("same prompt within 5s ->
+  // replay the previous buffered reply instead of contacting DeepSeek")
+  // existed to guard against the SDK/harness touching both .then() and
+  // .withResponse() on the SAME logical call object — but that scenario is
+  // already fully handled by create()'s own per-object ensurePromise()
+  // cache. The cross-call dedup instead silently broke the ordinary case of
+  // a user typing the same short message twice in a row (e.g. "hello bro"
+  // three times, testing or just chatting): the SECOND identical message,
+  // sent within 5 seconds, never reached DeepSeek at all — it silently
+  // replayed the FIRST message's buffered reply. In the interactive TUI this
+  // presented as replies appearing/disappearing seemingly at random for
+  // repeated short messages. Fixed by removing the cross-call dedup/replay
+  // mechanism entirely: every real create() call now always makes its own
+  // network request.
+  test('two separate turns with IDENTICAL text, seconds apart, each independently call DeepSeek and get their own answer', async () => {
+    let completionCallCount = 0
+    globalThis.fetch = (async (url: unknown) => {
+      const u = String(url)
+      if (u.endsWith('/chat_session/create')) {
+        return new Response(JSON.stringify({ data: { biz_data: { id: 'sess-1' } } }), { status: 200 })
+      }
+      if (u.endsWith('/chat/create_pow_challenge')) {
+        return new Response(
+          JSON.stringify({ data: { biz_data: { challenge: fakeChallenge() } } }),
+          { status: 200 },
+        )
+      }
+      if (u.endsWith('/chat/completion')) {
+        completionCallCount++
+        const n = completionCallCount
+        const sse =
+          [
+            { p: 'response/content', v: `Reply number ${n}` },
+            { p: 'response/status', v: 'FINISHED' },
+          ]
+            .map((l) => `data: ${JSON.stringify(l)}\n\n`)
+            .join('') + 'data: [DONE]\n\n'
+        return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }) as unknown as typeof fetch
+
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+
+    // Turn 1: the user types "hello bro" and the turn fully completes.
+    const m1 = (await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'hello bro' }],
+    })) as { content: Array<{ type: string; text?: string }> }
+    expect(m1.content).toEqual([{ type: 'text', text: 'Reply number 1' }])
+
+    // Turn 2: ~1s later (well inside the OLD 5s dedup window), the SAME
+    // literal text is sent again as a genuinely separate, new turn — this is
+    // exactly what happened in the reported bug (retyping "hello bro").
+    await new Promise((r) => setTimeout(r, 50))
+    const m2 = (await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: 'hello bro' }],
+    })) as { content: Array<{ type: string; text?: string }> }
+
+    // MUST be a fresh answer from a real second network call — NOT a replay
+    // of turn 1's reply.
+    expect(completionCallCount).toBe(2)
+    expect(m2.content).toEqual([{ type: 'text', text: 'Reply number 2' }])
+    expect(m2.content).not.toEqual(m1.content)
+  })
+
+  test('three rapid identical messages ("hello bro" x3) each get their own independent reply, none silently dropped', async () => {
+    let completionCallCount = 0
+    globalThis.fetch = (async (url: unknown) => {
+      const u = String(url)
+      if (u.endsWith('/chat_session/create')) {
+        return new Response(JSON.stringify({ data: { biz_data: { id: 'sess-1' } } }), { status: 200 })
+      }
+      if (u.endsWith('/chat/create_pow_challenge')) {
+        return new Response(
+          JSON.stringify({ data: { biz_data: { challenge: fakeChallenge() } } }),
+          { status: 200 },
+        )
+      }
+      if (u.endsWith('/chat/completion')) {
+        completionCallCount++
+        const n = completionCallCount
+        const sse =
+          [
+            { p: 'response/content', v: `Yo #${n}` },
+            { p: 'response/status', v: 'FINISHED' },
+          ]
+            .map((l) => `data: ${JSON.stringify(l)}\n\n`)
+            .join('') + 'data: [DONE]\n\n'
+        return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }) as unknown as typeof fetch
+
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+
+    const replies: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const m = (await client.beta.messages.create({
+        model: 'deepseek-v4-pro-1m',
+        messages: [{ role: 'user', content: 'hello bro' }],
+      })) as { content: Array<{ type: string; text?: string }> }
+      replies.push(m.content[0]?.text ?? '')
+    }
+
+    expect(completionCallCount).toBe(3)
+    expect(replies).toEqual(['Yo #1', 'Yo #2', 'Yo #3'])
+  })
+})
+
+describe('DeepSeek Web: IDE/harness internal fork prompts are never forwarded as if the human typed them (regression)', () => {
+  // Root cause: the IDE/TUI "prompt suggestion" feature (predicting the
+  // user's likely next message) runs as a SEPARATE background agent fork
+  // whose message list is [...the real conversation so far, ONE internal
+  // instruction message ("[SUGGESTION MODE: ...]  ... Reply with ONLY the
+  // suggestion, no quotes or explanation.")]. extractUserPrompt's "walk
+  // backward for the last user message" picked up that internal instruction
+  // as if it were the human's real chat input and forwarded it verbatim to
+  // DeepSeek Web — which then tried to answer/comply with harness-internal
+  // meta-instructions instead of anything the user actually asked. Fixed by
+  // detecting this structurally-distinct whole-message pattern and skipping
+  // it, falling back to the real human message earlier in the conversation.
+  const SUGGESTION_MODE_PROMPT = `[SUGGESTION MODE: Suggest what the user might naturally type next into RAYU.]
+
+FIRST: Look at the user's recent messages and original request.
+
+Your job is to predict what THEY would type - not what you think they should do.
+
+THE TEST: Would they think "I was just about to type that"?
+
+EXAMPLES:
+User asked "fix the bug and run tests", bug is fixed → "run the tests"
+After code written → "try it out"
+Claude offers options → suggest the one the user would likely pick, based on conversation
+Claude asks to continue → "yes" or "go ahead"
+Task complete, obvious follow-up → "commit this" or "push it"
+After error or misunderstanding → silence (let them assess/correct)
+
+Be specific: "run the tests" beats "continue".
+
+NEVER SUGGEST:
+- Evaluative ("looks good", "thanks")
+- Questions ("what about...?")
+- Claude-voice ("Let me...", "I'll...", "Here's...")
+- New ideas they didn't ask about
+- Multiple sentences
+
+Stay silent if the next step isn't obvious from what the user said.
+
+Format: 2-12 words, match the user's style. Or nothing.
+
+Reply with ONLY the suggestion, no quotes or explanation.`
+
+  test('skips the whole suggestion-mode fork prompt and forwards the real human message from earlier in the conversation instead', async () => {
+    const { bodies } = installFetchMock(deepseekSSE())
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+
+    // Reproduces the exact fork shape: real conversation so far, PLUS the
+    // internal suggestion-mode instruction appended as the final "user"
+    // message (this is what promptSuggestion.ts's runForkedAgent actually
+    // sends: forkContextMessages + [createUserMessage({ content: prompt })]).
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [
+        { role: 'user', content: 'hello bro how are you?' },
+        { role: 'assistant', content: [{ type: 'text', text: 'Doing great!' }] },
+        { role: 'user', content: 'can you read my codebase?' },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: "I can't directly access your files." }],
+        },
+        { role: 'user', content: SUGGESTION_MODE_PROMPT },
+      ],
+    })
+
+    const [body] = completionBodies(bodies)
+    const prompt = body!.prompt!
+    // The internal instruction must NEVER be forwarded...
+    expect(prompt).not.toContain('SUGGESTION MODE')
+    expect(prompt).not.toContain('NEVER SUGGEST')
+    expect(prompt).not.toContain('Reply with ONLY the suggestion')
+    // ...instead the real, most recent HUMAN message is sent.
+    expect(prompt).toBe('can you read my codebase?')
+  })
+
+  test('if EVERY user message is an internal fork prompt (no real human turn at all), falls back to the default greeting rather than forwarding the instruction', async () => {
+    const { bodies } = installFetchMock(deepseekSSE())
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    await client.beta.messages.create({
+      model: 'deepseek-v4-pro-1m',
+      messages: [{ role: 'user', content: SUGGESTION_MODE_PROMPT }],
+    })
+    const [body] = completionBodies(bodies)
+    expect(body!.prompt).toBe('Hello')
+  })
+
+  test('a legitimate short human message is NEVER mistaken for an internal fork prompt (no false positives)', async () => {
+    const { bodies } = installFetchMock(deepseekSSE())
+    const { createDeepseekWebClient } = await import(
+      '../src/services/api/deepseekWeb/deepseekWebClient.ts'
+    )
+    const client = createDeepseekWebClient(
+      { apiKey: 'user-token', defaultModel: 'deepseek-v4-pro-1m' },
+      3,
+    )
+    // A real user genuinely typing about suggestions/formatting must still
+    // go through — the detector requires the exact "[SUGGESTION MODE:"
+    // prefix OR 2+ of the specific internal meta-phrases together, not any
+    // single overlapping word.
+    const realMessages = [
+      'can you suggest a better variable name?',
+      'never suggest using var in this codebase please',
+      'what format should I use for dates here?',
+    ]
+    for (const text of realMessages) {
+      const { bodies: b } = installFetchMock(deepseekSSE())
+      await client.beta.messages.create({
+        model: 'deepseek-v4-pro-1m',
+        messages: [{ role: 'user', content: text }],
+      })
+      const [body] = completionBodies(b)
+      expect(body!.prompt).toBe(text)
+    }
+  })
+})
