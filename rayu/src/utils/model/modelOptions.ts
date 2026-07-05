@@ -451,21 +451,14 @@ function getKnownModelOption(model: string): ModelOption | null {
 
 export function getModelOptions(fastMode = false): ModelOption[] {
   // Rayu: when a non-Anthropic provider is active — OpenAI-compatible,
-  // Bedrock, OR any other Rayu provider kind (deepseek-web, kiro, copilot,
-  // vertex, genai, rayu-hosted, ...) — surface its configured models at the
-  // top of the picker so users can freely switch models per provider.
+  // Bedrock, OR any other Rayu provider kind (kiro, copilot, vertex, genai,
+  // rayu-hosted, ...) — surface its configured models at the top of the
+  // picker so users can freely switch models per provider.
   //
   // isRayuNonAnthropicActive() is the general OR term (kind !== 'anthropic');
   // isOpenAICompatibleActive()/getAPIProvider()==='bedrock' are kept too since
   // they also cover the RAYU_USE_BEDROCK/VERTEX/FOUNDRY env-var override paths
   // that isRayuNonAnthropicActive() does not know about.
-  //
-  // FIXES: a Rayu deepseek-web user selecting a model via --model (or the
-  // /model keybinding fallback) got "model is not available on your
-  // provider" because this gate excluded kind:'deepseek-web' (and every other
-  // non-openai-compatible/non-bedrock kind), so getActiveProviderModelOptions()
-  // — which DOES already list deepseek-v4-pro-1m — was never even consulted;
-  // execution fell through to the stock Anthropic alias list instead.
   if (
     isOpenAICompatibleActive() ||
     getAPIProvider() === 'bedrock' ||

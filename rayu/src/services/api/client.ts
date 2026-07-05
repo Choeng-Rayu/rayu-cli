@@ -273,59 +273,6 @@ async function getRayuCopilotClient(maxRetries: number): Promise<unknown | null>
 }
 
 /**
- * Rayu: route the active provider to the DeepSeek Web client when kind
- * is 'deepseek-web'. The DeepSeek web API (chat.deepseek.com) requires
- * browser-sourced auth (userToken) + PoW solving per request. Lazy-imported
- * so the WASM and DeepSeek web modules only load when this provider is active.
- *
- * FIXES: USE_DEEPSEEK_OAUTH previously only gated whether the BACKGROUND
- * entitlements sync (syncDeepseekWebProvider, only reachable when
- * USE_RAYU_OAUTH is on + the user is signed in + that 30s-cooldown refresh
- * happens to fire) would ADD or REMOVE the deepseek-web provider entry in
- * providers.json — it was never re-checked once the entry existed. So a
- * provider registered while the flag was true stayed fully usable
- * indefinitely after flipping the flag to false, since nothing else in the
- * dispatch/listing path ever consulted the flag again. This is now an
- * ACTIVE, SYNCHRONOUS gate checked on every single dispatch: even a stale
- * persisted entry is refused (falls through to the next provider kind, same
- * as if deepseek-web were never configured) whenever the flag is off, and
- * the stale entry is proactively purged from disk so /connect and /model
- * stop listing it too — not just this dispatch path.
- */
-async function getRayuDeepseekWebClient(maxRetries: number): Promise<unknown | null> {
-  const { getActiveProvider, loadRayuConfig, saveRayuConfig } = await import(
-    'src/utils/rayuConfig.js'
-  )
-  const active = getActiveProvider()
-  if (active?.kind !== 'deepseek-web') return null
-
-  const { isUseDeepseekOAuthEnabled } = await import(
-    '../rayuAuth/rayuSession.js'
-  )
-  if (!isUseDeepseekOAuthEnabled()) {
-    // Purge the stale entry now rather than waiting for the next background
-    // entitlements sync (which may never run in this session — e.g.
-    // headless/offline, or USE_RAYU_OAUTH off) to incidentally clean it up.
-    try {
-      const cfg = loadRayuConfig()
-      const idx = cfg.providers.findIndex((p) => p.id === active.id)
-      if (idx >= 0) {
-        cfg.providers.splice(idx, 1)
-        if (cfg.activeProvider === active.id) {
-          cfg.activeProvider = cfg.providers[0]?.id
-        }
-        saveRayuConfig(cfg)
-      }
-    } catch {
-      // best-effort: a failed cleanup must not block falling through below
-    }
-    return null
-  }
-
-  const { createDeepseekWebClient } = await import('./deepseekWeb/deepseekWebClient.js')
-  return createDeepseekWebClient(active, maxRetries)
-}
-
 /**
  * Rayu: route the active provider to the Rayu-hosted gateway client when kind
  * is 'rayu-hosted'. The gateway is OpenAI-compatible; auth is the user's Rayu
@@ -408,11 +355,6 @@ async function buildClientForProvider(
   if (provider.kind === 'rayu-hosted') {
     const { createRayuHostedClient } = await import('./rayuHosted/rayuHostedClient.js')
     return createRayuHostedClient(provider, maxRetries)
-  }
-  // DeepSeek Web: chat.deepseek.com browser-auth flow (userToken + PoW).
-  if (provider.kind === 'deepseek-web') {
-    const { createDeepseekWebClient } = await import('./deepseekWeb/deepseekWebClient.js')
-    return createDeepseekWebClient(provider, maxRetries)
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
@@ -527,14 +469,6 @@ export async function getAnthropicClient({
   const rayuHostedClient = await getRayuHostedClient(maxRetries)
   if (rayuHostedClient) {
     return rayuHostedClient as unknown as Anthropic
-  }
-
-  // Rayu: route to the DeepSeek Web client when the active provider is
-  // kind:'deepseek-web' (chat.deepseek.com browser-auth flow; requires
-  // USE_DEEPSEEK_OAUTH=true and a paid plan).
-  const deepseekWebClient = await getRayuDeepseekWebClient(maxRetries)
-  if (deepseekWebClient) {
-    return deepseekWebClient as unknown as Anthropic
   }
 
   // Rayu: route to the OpenAI-compatible adapter when the active provider is an

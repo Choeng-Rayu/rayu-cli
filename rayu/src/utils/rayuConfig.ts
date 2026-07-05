@@ -10,7 +10,7 @@ import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted' | 'deepseek-web'
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
@@ -347,8 +347,7 @@ export function hasConfiguredProvider(): boolean {
       !!p.apiKey ||
       p.kind === 'openai-compatible' ||
       (p.kind === 'bedrock' && !!p.awsAccessKeyId) ||
-      p.kind === 'kiro' ||
-      p.kind === 'deepseek-web',
+      p.kind === 'kiro',
   )
 }
 
@@ -378,10 +377,8 @@ export function getRayuApiKey(providerId?: string): string | null {
  * then other providers. Any new provider kind (vertex, etc.) is included
  * automatically as long as kind !== 'anthropic'.
  *
- * deepseek-web is additionally excluded whenever USE_DEEPSEEK_OAUTH is off —
- * see the matching dispatch-time gate in client.ts's getRayuDeepseekWebClient
- * for why this needs to be an ACTIVE, per-call check rather than relying on
- * the background entitlements sync to have already purged a stale entry.
+ * Any new provider kind (vertex, etc.) is included automatically as long as
+ * kind !== 'anthropic'.
  */
 export function getActiveProviderModelOptions(): Array<{
   value: string
@@ -391,24 +388,6 @@ export function getActiveProviderModelOptions(): Array<{
   const cfg = loadRayuConfig()
   const active = getActiveProvider()
   if (!active || active.kind === 'anthropic') return []
-
-  // Lazy require (leaf module, no imports of its own — safe, avoids a new
-  // static import edge into rayuAuth/ from this low-level config file).
-  let deepseekOAuthEnabled = true
-  try {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { isUseDeepseekOAuthEnabled } =
-      require('../services/rayuAuth/rayuSession.js') as typeof import('../services/rayuAuth/rayuSession.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    deepseekOAuthEnabled = isUseDeepseekOAuthEnabled()
-  } catch {
-    // fail open on the require itself; the per-provider filter below still
-    // applies correctly either way
-  }
-  const isHiddenProvider = (p: RayuProvider): boolean =>
-    p.kind === 'deepseek-web' && !deepseekOAuthEnabled
-
-  if (isHiddenProvider(active)) return []
 
   const result: Array<{ value: string; label: string; description: string }> = []
   const seen = new Set<string>()
@@ -433,7 +412,6 @@ export function getActiveProviderModelOptions(): Array<{
   for (const p of cfg.providers) {
     if (p.id === active.id) continue
     if (p.kind === 'anthropic') continue
-    if (isHiddenProvider(p)) continue
     addProvider(p)
   }
 
@@ -919,11 +897,6 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     const { fetchCopilotModels } = await import('../services/api/copilot/copilotAuth.js')
     return fetchCopilotModels(p.apiKey)
   }
-  // DeepSeek Web: no live catalog endpoint. Return the hardcoded model list
-  // (deepseek-v4-pro-1m) from the preset defaults.
-  if (p.kind === 'deepseek-web') {
-    return [p.defaultModel || 'deepseek-v4-pro-1m']
-  }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
@@ -973,8 +946,7 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
       p.kind !== 'vertex' &&
       p.kind !== 'genai' &&
       p.kind !== 'kiro' &&
-      p.kind !== 'copilot' &&
-      p.kind !== 'deepseek-web')
+      p.kind !== 'copilot')
   )
     return []
   const models = await fetchProviderModels(p)
@@ -1001,13 +973,12 @@ export async function refreshAllProviderModels(): Promise<void> {
   const promises = cfg.providers
     .filter(
       p =>
-        // Vertex/genai/copilot/kiro/deepseek-web have no stored baseURL (computed);
+        // Vertex/genai/copilot/kiro have no stored baseURL (computed);
         // the others need one.
         (p.kind === 'vertex' ||
           p.kind === 'genai' ||
           p.kind === 'copilot' ||
           p.kind === 'kiro' ||
-          p.kind === 'deepseek-web' ||
           ((p.kind === 'openai-compatible' || p.kind === 'bedrock') &&
             p.baseURL)) &&
         !(p.fetchedModels?.length),

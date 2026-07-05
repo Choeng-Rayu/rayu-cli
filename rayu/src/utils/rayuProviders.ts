@@ -199,21 +199,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     envKeys: ['DEEPSEEK_API_KEY'],
   },
   {
-    // DeepSeek Web (chat.deepseek.com) — browser-authenticated access to
-    // deepseek-v4-pro-1m with a 1M-token context window. Uses the web app's
-    // internal API (POST /api/v0/chat/completion) with PoW solving, not the
-    // standard OpenAI-compatible API. Authenticated with a userToken from the
-    // browser's localStorage. Requires a paid Rayu plan (Basic and up).
-    // Use DEEPSEEK_OAUTH_WEB_TOKEN (userToken) + DEEPSEEK_OAUTH_WEB_COOKIE
-    // (browser cookies for WAF bypass). Set USE_DEEPSEEK_OAUTH=true to enable.
-    id: 'deepseek-web',
-    label: 'DeepSeek Web (chat.deepseek.com) · browser auth · deepseek-v4-pro-1m 1M ctx',
-    kind: 'deepseek-web',
-    defaultModel: 'deepseek-v4-pro-1m',
-    smallFastModel: 'deepseek-v4-pro-1m',
-    envKeys: ['DEEPSEEK_OAUTH_WEB_TOKEN'],
-  },
-  {
     // Z.ai — GLM family (Zhipu AI). OpenAI-compatible Chat Completions at
     // https://api.z.ai/api/paas/v4/chat/completions, authenticated with a Bearer
     // API key. GLM-5.2 is the current flagship coding/agent model with a 1M-token
@@ -582,7 +567,6 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   kiro: 'Kiro',
   copilot: 'GitHub Copilot',
   'rayu-hosted': 'Rayu',
-  'deepseek-web': 'DeepSeek Web',
   ollama: 'Ollama',
   local: 'Local',
 }

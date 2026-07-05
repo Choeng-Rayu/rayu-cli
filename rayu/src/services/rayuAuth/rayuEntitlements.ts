@@ -26,7 +26,6 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
 import { syncRayuHostedProvider } from './rayuHostedProvider.js'
-import { syncDeepseekWebProvider } from './deepseekWebProvider.js'
 import {
   getRayuApiBaseUrl,
   getRayuWebBaseUrl,
@@ -185,11 +184,9 @@ export async function refreshRayuEntitlements(): Promise<RayuEntitlements | null
     cache = data
     loadedFromDisk = true
     persist(data)
-    // Keep the rayu-hosted and deepseek-web provider configs in sync with
-    // entitlements. No activation here (background refresh must not hijack
-    // the user's choice).
+    // Keep the rayu-hosted provider config in sync with entitlements. No
+    // activation here (background refresh must not hijack the user's choice).
     syncRayuHostedProvider(data)
-    syncDeepseekWebProvider(data)
     return data
   } catch {
     return cache
@@ -204,10 +201,8 @@ export function clearRayuEntitlements(): void {
   loadedFromDisk = true
   lastAttempt = 0
   persist(null)
-  // Drop the rayu-hosted + deepseek-web providers so a logged-out user has no
-  // hosted models.
+  // Drop the rayu-hosted provider so a logged-out user has no hosted models.
   syncRayuHostedProvider(null)
-  syncDeepseekWebProvider(null)
 }
 
 /**

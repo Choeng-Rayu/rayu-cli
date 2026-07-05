@@ -117,7 +117,6 @@ export function RayuProviderSetup({
       setPhase('copilotLogin')
     } else if (p.kind === 'genai') setPhase('genaiLogin')
     else if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
-    else if (p.kind === 'deepseek-web') setPhase('key')
     else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
     else setPhase('key')
   }
@@ -1155,24 +1154,18 @@ export function RayuProviderSetup({
     )
   }
 
-  // key phase (openai-compatible + bedrock + deepseek-web). For bedrock, the
-  // key is the Bedrock API key (bearer token); submitting advances to region
-  // selection. For deepseek-web, the key is the userToken from the browser.
+  // key phase (openai-compatible + bedrock). For bedrock, the key is the
+  // Bedrock API key (bearer token); submitting advances to region selection.
   const isBedrock = preset?.kind === 'bedrock'
-  const isDeepseekWeb = preset?.kind === 'deepseek-web'
   return (
     <Box flexDirection="column" gap={1} paddingLeft={1}>
       <Text bold>
-        {isDeepseekWeb
-          ? 'DeepSeek Web auth token'
-          : `API key for ${preset?.label}`}
+        {`API key for ${preset?.label}`}
       </Text>
       <Text dimColor>
-        {isDeepseekWeb
-          ? 'Paste your userToken from chat.deepseek.com → DevTools (F12) → Application → Local Storage → userToken. Stored locally in ~/.rayu/providers.json (0600).'
-          : isBedrock
-            ? 'Bedrock API key (bearer token). Stored locally in ~/.rayu/providers.json (0600).'
-            : 'Stored locally in ~/.rayu/providers.json (0600). Leave blank to skip.'}
+        {isBedrock
+          ? 'Bedrock API key (bearer token). Stored locally in ~/.rayu/providers.json (0600).'
+          : 'Stored locally in ~/.rayu/providers.json (0600). Leave blank to skip.'}
       </Text>
       <TextInput
         value={apiKey}
@@ -1181,7 +1174,7 @@ export function RayuProviderSetup({
           isBedrock ? setPhase('region') : finish(apiKey)
         }
         mask="*"
-        placeholder={isDeepseekWeb ? 'eyJ...' : isBedrock ? 'ABSK...' : 'sk-...'}
+        placeholder={isBedrock ? 'ABSK...' : 'sk-...'}
         columns={80}
         cursorOffset={cursor}
         onChangeCursorOffset={setCursor}
