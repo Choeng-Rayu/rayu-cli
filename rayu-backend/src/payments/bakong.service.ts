@@ -16,6 +16,7 @@ export class BakongService {
   generateKhqr(
     amountUsd: number,
     billNumber: string,
+    ttlMs = 30 * 60 * 1000,
   ): { qr: string; md5: string } {
     const info = new IndividualInfo(
       this.cfg.merchantId,
@@ -27,7 +28,7 @@ export class BakongService {
         mobileNumber: this.cfg.phoneNumber,
         billNumber,
         storeLabel: 'Rayu Plan',
-        expirationTimestamp: Date.now() + 30 * 60 * 1000, // 30 min from now (ms)
+        expirationTimestamp: Date.now() + ttlMs, // QR valid for ttlMs (default 30 min)
       },
     )
     const result = new BakongKHQR().generateIndividual(info)

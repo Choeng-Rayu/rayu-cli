@@ -36,7 +36,7 @@ export class AbaService {
     this.cfg = this.config.get<AbaConfig>('aba')!
   }
 
-  generateAbaQR(amountUsd: number, ttlMinutes = 10): string {
+  generateAbaQR(amountUsd: number, ttlMinutes = 30): string {
     const staticQr = this.cfg.staticQr?.trim()
     if (!staticQr) {
       throw new InternalServerErrorException('ABA_STATIC_QR is not configured')

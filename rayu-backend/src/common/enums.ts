@@ -24,7 +24,7 @@ export type PlanAvailability = (typeof PLAN_AVAILABILITY)[number]
 export const SUBSCRIPTION_STATUSES = ['active', 'canceled'] as const
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number]
 
-export const PAYMENT_STATUSES = ['pending', 'paid', 'failed'] as const
+export const PAYMENT_STATUSES = ['pending', 'paid', 'failed', 'expired', 'canceled'] as const
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number]
 
 export const FEEDBACK_TYPES = ['bug', 'idea', 'other'] as const

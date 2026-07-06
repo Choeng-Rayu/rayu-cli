@@ -50,4 +50,20 @@ export class PaymentsController {
   ) {
     return this.payments.checkStatus(id, user.id)
   }
+
+  @Post(':id/renew')
+  renew(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: User,
+  ) {
+    return this.payments.renewPayment(id, user.id)
+  }
+
+  @Post(':id/cancel')
+  cancel(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: User,
+  ) {
+    return this.payments.cancelPayment(id, user.id)
+  }
 }
