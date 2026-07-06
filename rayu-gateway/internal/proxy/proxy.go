@@ -64,7 +64,52 @@ type Usage struct {
 	TotalTokens             int                     `json:"total_tokens"`
 	PromptCacheHitTokens    int                     `json:"prompt_cache_hit_tokens"`
 	PromptCacheMissTokens   int                     `json:"prompt_cache_miss_tokens"`
+	PromptTokensDetails     PromptTokensDetails     `json:"prompt_tokens_details"`
 	CompletionTokensDetails CompletionTokensDetails `json:"completion_tokens_details"`
+}
+
+// PromptTokensDetails is the OpenAI-style prompt-token breakdown. `cached_tokens`
+// is how OpenAI (and some DeepSeek-compatible upstreams / proxies) report the
+// cached prefix — the alternative to DeepSeek's native prompt_cache_hit_tokens.
+// Capturing both conventions is what keeps billing aligned with the provider
+// regardless of which shape a given upstream uses.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// CacheReadTokens is the cached (cache-hit) prompt-token count, normalized
+// across the two provider conventions: DeepSeek's explicit
+// `prompt_cache_hit_tokens` and OpenAI's `prompt_tokens_details.cached_tokens`.
+// 0 when the provider reports no caching. Priced at the cheap cache-read rate.
+func (u *Usage) CacheReadTokens() int {
+	if u.PromptCacheHitTokens > 0 {
+		return u.PromptCacheHitTokens
+	}
+	if u.PromptTokensDetails.CachedTokens > 0 {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	return 0
+}
+
+// FreshInputTokens is the uncached (cache-miss) prompt-token count — the tokens
+// the provider actually re-processed and charges full price for. It prefers the
+// provider's explicit `prompt_cache_miss_tokens`, else derives it as
+// prompt_tokens - CacheReadTokens so fresh + cached ALWAYS reconciles to the
+// provider's authoritative `prompt_tokens` (never billing more or fewer input
+// tokens than the provider reported). Falls back to the full prompt when no
+// cache is reported at all — correct, since the provider gave no discount.
+func (u *Usage) FreshInputTokens() int {
+	if u.PromptCacheMissTokens > 0 {
+		return u.PromptCacheMissTokens
+	}
+	read := u.CacheReadTokens()
+	if fresh := u.PromptTokens - read; fresh > 0 {
+		return fresh
+	}
+	if read > 0 {
+		return 0
+	}
+	return u.PromptTokens
 }
 
 func newReq(ctx context.Context, url, apiKey string, body []byte) (*http.Request, error) {

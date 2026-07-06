@@ -1128,3 +1128,304 @@ describe('openaiAdapter Kimi thinking enablement (chat_template_kwargs)', () => 
     }
   })
 })
+
+
+describe('openaiAdapter cache-aware usage mapping (rayu-hosted / DeepSeek)', () => {
+  type MappedUsage = {
+    input_tokens: number
+    output_tokens: number
+    cache_read_input_tokens: number
+    cache_creation_input_tokens: number
+  }
+  const usageOf = (m: unknown): MappedUsage => (m as { usage: MappedUsage }).usage
+
+  const completionWith = (usage: Record<string, unknown>) => ({
+    id: 'cmpl_1',
+    choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }],
+    usage,
+  })
+
+  test('DeepSeek hit/miss split: input_tokens = miss, cache_read = hit (no double count)', () => {
+    const u = usageOf(
+      toBetaMessage(
+        completionWith({
+          prompt_tokens: 2000,
+          completion_tokens: 100,
+          total_tokens: 2100,
+          prompt_cache_hit_tokens: 1536,
+          prompt_cache_miss_tokens: 464,
+        }),
+        'deepseek-v4-pro',
+      ),
+    )
+    expect(u.input_tokens).toBe(464)
+    expect(u.cache_read_input_tokens).toBe(1536)
+    expect(u.cache_creation_input_tokens).toBe(0)
+    expect(u.output_tokens).toBe(100)
+    // fresh + cached must still equal the provider's total prompt_tokens
+    expect(u.input_tokens + u.cache_read_input_tokens).toBe(2000)
+  })
+
+  test('OpenAI-style prompt_tokens_details.cached_tokens is attributed as cache_read', () => {
+    const u = usageOf(
+      toBetaMessage(
+        completionWith({
+          prompt_tokens: 2000,
+          completion_tokens: 50,
+          prompt_tokens_details: { cached_tokens: 1500 },
+        }),
+        'gpt-x',
+      ),
+    )
+    expect(u.cache_read_input_tokens).toBe(1500)
+    expect(u.input_tokens).toBe(500)
+    expect(u.input_tokens + u.cache_read_input_tokens).toBe(2000)
+  })
+
+  test('no cache info: whole prompt is input, cache buckets zero (unchanged behavior)', () => {
+    const u = usageOf(
+      toBetaMessage(
+        completionWith({ prompt_tokens: 800, completion_tokens: 40, total_tokens: 840 }),
+        'meta/llama-3.3-70b-instruct',
+      ),
+    )
+    expect(u.input_tokens).toBe(800)
+    expect(u.cache_read_input_tokens).toBe(0)
+    expect(u.cache_creation_input_tokens).toBe(0)
+  })
+
+  test('streaming final message_delta carries the same cache-aware split', async () => {
+    async function* chunks(): AsyncGenerator<Record<string, unknown>> {
+      yield { choices: [{ delta: { content: 'hello' }, finish_reason: null }] }
+      yield {
+        choices: [],
+        usage: {
+          prompt_tokens: 5000,
+          completion_tokens: 200,
+          prompt_cache_hit_tokens: 4800,
+          prompt_cache_miss_tokens: 200,
+        },
+      }
+    }
+    const events: Array<{ type: string }> = []
+    for await (const e of translateStream(chunks(), 'deepseek-v4-pro')) events.push(e)
+    const delta = events.find((e) => e.type === 'message_delta')
+    expect(delta).toBeTruthy()
+    const u = usageOf(delta)
+    expect(u.input_tokens).toBe(200)
+    expect(u.cache_read_input_tokens).toBe(4800)
+    expect(u.output_tokens).toBe(200)
+  })
+})
+
+describe('openaiAdapter multi-key rotation (rate-limit failover)', () => {
+  // The OpenAI SDK sends `Authorization: Bearer <apiKey>`, so the mock can tell
+  // which stored key a request used and drive per-key behavior from that.
+  const keyOf = (init: any): string =>
+    (new Headers(init?.headers).get('Authorization') ?? '').replace(/^Bearer /, '')
+  const ok = (text: string) =>
+    new Response(
+      JSON.stringify({
+        id: 'c',
+        choices: [{ message: { content: text }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  const errResp = (status: number, msg: string) =>
+    new Response(JSON.stringify({ error: { message: msg } }), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+  const sseOk = (text: string) =>
+    new Response(
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: text } }] }) + '\n\n' + 'data: [DONE]\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    )
+
+  test('429 on the first key rotates to the second key and succeeds', async () => {
+    const used: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const k = keyOf(init)
+      used.push(k)
+      return k === 'key1' ? errResp(429, 'rate limited') : ok('from ' + k)
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'key1',
+        apiKeys: ['key1', 'key2'],
+        baseURL: 'http://x/v1',
+        maxRetries: 0,
+      })
+      const msg: any = await client.beta.messages.create({
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      expect(msg.content[0].text).toBe('from key2')
+      expect(used).toEqual(['key1', 'key2'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('402 (out of credits) also rotates to the next key', async () => {
+    const used: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const k = keyOf(init)
+      used.push(k)
+      return k === 'k1' ? errResp(402, 'Insufficient credits') : ok('ok ' + k)
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k1',
+        apiKeys: ['k1', 'k2'],
+        baseURL: 'http://x/v1',
+        maxRetries: 0,
+      })
+      const msg: any = await client.beta.messages.create({
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      expect(msg.content[0].text).toBe('ok k2')
+      expect(used).toEqual(['k1', 'k2'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('all keys rate-limited: throws the last 429 (APIError) after trying every key', async () => {
+    const { APIError } = await import('@anthropic-ai/sdk/index.js')
+    const used: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      used.push(keyOf(init))
+      return errResp(429, 'rate limited')
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k1',
+        apiKeys: ['k1', 'k2', 'k3'],
+        baseURL: 'http://x/v1',
+        maxRetries: 0,
+      })
+      let caught: any
+      try {
+        await client.beta.messages.create({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      } catch (e) {
+        caught = e
+      }
+      expect(caught).toBeInstanceOf(APIError)
+      expect(caught.status).toBe(429)
+      // Every stored key was attempted once, in order.
+      expect(used).toEqual(['k1', 'k2', 'k3'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('a non-key error (400) does NOT rotate — fails on the first key only', async () => {
+    const used: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      used.push(keyOf(init))
+      return errResp(400, 'bad request')
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k1',
+        apiKeys: ['k1', 'k2'],
+        baseURL: 'http://x/v1',
+        maxRetries: 0,
+      })
+      let threw = false
+      try {
+        await client.beta.messages.create({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      } catch {
+        threw = true
+      }
+      expect(threw).toBe(true)
+      expect(used).toEqual(['k1']) // no rotation on a 400
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('sticky key: after rotating once, later requests start from the working key', async () => {
+    const used: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const k = keyOf(init)
+      used.push(k)
+      return k === 'k1' ? errResp(429, 'rl') : ok('ok ' + k) // k1 always limited
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k1',
+        apiKeys: ['k1', 'k2'],
+        baseURL: 'http://x/v1',
+        maxRetries: 0,
+      })
+      await client.beta.messages.create({ model: 'm', messages: [{ role: 'user', content: '1' }] })
+      await client.beta.messages.create({ model: 'm', messages: [{ role: 'user', content: '2' }] })
+      // req1: k1(429) -> k2(ok); req2 should start straight at k2 (no k1 retry).
+      expect(used).toEqual(['k1', 'k2', 'k2'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('single key (no apiKeys): a 429 surfaces immediately with no rotation', async () => {
+    const used: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      used.push(keyOf(init))
+      return errResp(429, 'rl')
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'solo',
+        baseURL: 'http://x/v1',
+        maxRetries: 0,
+      })
+      let threw = false
+      try {
+        await client.beta.messages.create({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      } catch {
+        threw = true
+      }
+      expect(threw).toBe(true)
+      expect(used).toEqual(['solo'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  test('streaming: 429 on stream creation rotates to the next key', async () => {
+    const used: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const k = keyOf(init)
+      used.push(k)
+      return k === 'k1' ? errResp(429, 'rl') : sseOk('yo')
+    }) as unknown as typeof fetch
+    try {
+      const client: any = createOpenAICompatibleClient({
+        apiKey: 'k1',
+        apiKeys: ['k1', 'k2'],
+        baseURL: 'http://x/v1',
+        maxRetries: 0,
+      })
+      const result: any = await client.beta.messages
+        .create({ model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true })
+        .withResponse()
+      const types: string[] = []
+      for await (const e of result.data as AsyncIterable<any>) types.push(e.type)
+      expect(types).toContain('message_stop')
+      expect(used).toEqual(['k1', 'k2'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})

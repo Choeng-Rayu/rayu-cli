@@ -154,6 +154,23 @@ export function ollamaBaseURL(): string {
 export const RAYU_HOSTED_PROVIDER_ID = 'rayu-hosted'
 export const RAYU_HOSTED_PROVIDER_LABEL = 'Rayu (hosted)'
 
+/**
+ * Providers that support storing MULTIPLE API keys with automatic rate-limit
+ * key rotation (see openaiAdapter withKeyRotation). Scoped to NVIDIA and
+ * OpenRouter as requested; the rotation mechanism itself is generic, so adding
+ * an id here is all that's needed to extend the multi-key UI to another
+ * openai-compatible provider. Gated to Basic-plan users via isMultiApiKeyAllowed().
+ */
+export const MULTI_KEY_PROVIDER_IDS: ReadonlySet<string> = new Set([
+  'nvidia',
+  'openrouter',
+])
+
+/** True when a provider id supports the multi-API-key manager + rotation. */
+export function supportsMultiApiKey(providerId: string | undefined): boolean {
+  return !!providerId && MULTI_KEY_PROVIDER_IDS.has(providerId)
+}
+
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     // First-party Anthropic API (the Console — console.anthropic.com). Uses the

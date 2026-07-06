@@ -12,7 +12,9 @@ import { PRODUCT_NAME } from '../constants/product.js'
 import {
   type RayuProvider,
   fetchProviderModels,
+  getProviderApiKeys,
   isLikelyChatModel,
+  loadRayuConfig,
   pickPreferredGeminiModel,
   pickPreferredCodeAssistModel,
   refreshActiveProviderModels,
@@ -25,10 +27,15 @@ import {
   DEFAULT_BEDROCK_REGION,
   bedrockBaseURL,
   ollamaBaseURL,
+  supportsMultiApiKey,
   GEMINI_VERTEX_PROVIDER_ID,
   DEFAULT_VERTEX_REGION,
   VERTEX_REGIONS,
 } from '../utils/rayuProviders.js'
+import { getMaxStoredApiKeys } from '../utils/envUtils.js'
+import { isMultiApiKeyAllowed } from '../services/rayuAuth/multiApiKeyFeature.js'
+import { upgradeTargetLabel } from '../services/rayuAuth/paidFeatureGate.js'
+import { MultiApiKeyManager } from './MultiApiKeyManager.js'
 
 type Preset = ProviderPreset
 const PRESETS = PROVIDER_PRESETS
@@ -41,6 +48,7 @@ type Phase =
   | 'baseURL'
   | 'model'
   | 'key'
+  | 'keyManager'
   | 'region'
   | 'fetchingModels'
   | 'pickModel'
@@ -118,6 +126,11 @@ export function RayuProviderSetup({
     } else if (p.kind === 'genai') setPhase('genaiLogin')
     else if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
     else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
+    // NVIDIA / OpenRouter with the Basic-plan multi-key entitlement: open the
+    // add/remove/delete key manager. Everyone else (and locked Free users) get
+    // the single-key input below.
+    else if (supportsMultiApiKey(p.id) && isMultiApiKeyAllowed())
+      setPhase('keyManager')
     else setPhase('key')
   }
 
@@ -135,6 +148,30 @@ export function RayuProviderSetup({
     }
     upsertProvider(provider, true)
     // Populate /model opportunistically, but do not block the first chat turn.
+    if (provider.kind === 'openai-compatible' && provider.baseURL) {
+      void refreshActiveProviderModels().catch(() => [])
+    }
+    onDone()
+  }
+
+  // Persist a multi-key provider (NVIDIA / OpenRouter). Stores the full key
+  // list in apiKeys and mirrors keys[0] into apiKey for single-key readers.
+  // With zero keys the provider is saved key-less (the user removed them all).
+  function finishMultiKey(keys: string[]): void {
+    if (!preset) return onDone()
+    const cleaned = keys.map(k => k.trim()).filter(Boolean)
+    const provider: RayuProvider = {
+      id: preset.id,
+      kind: preset.kind,
+      apiKey: cleaned[0],
+      ...(cleaned.length ? { apiKeys: cleaned } : {}),
+      ...(preset.kind === 'openai-compatible'
+        ? { baseURL: (baseURL || preset.baseURL || '').trim() }
+        : {}),
+      ...(model.trim() ? { defaultModel: model.trim() } : {}),
+      ...(preset.smallFastModel ? { smallFastModel: preset.smallFastModel } : {}),
+    }
+    upsertProvider(provider, true)
     if (provider.kind === 'openai-compatible' && provider.baseURL) {
       void refreshActiveProviderModels().catch(() => [])
     }
@@ -1154,9 +1191,30 @@ export function RayuProviderSetup({
     )
   }
 
+  if (phase === 'keyManager' && preset) {
+    // Load any keys already stored for this provider so the manager doubles as
+    // an editor when /connect is re-run for an existing provider.
+    const existing = getProviderApiKeys(
+      loadRayuConfig().providers.find(p => p.id === preset.id),
+    )
+    return (
+      <MultiApiKeyManager
+        providerLabel={preset.label}
+        maxKeys={getMaxStoredApiKeys()}
+        initialKeys={existing}
+        onDone={finishMultiKey}
+        onCancel={onDone}
+      />
+    )
+  }
+
   // key phase (openai-compatible + bedrock). For bedrock, the key is the
   // Bedrock API key (bearer token); submitting advances to region selection.
   const isBedrock = preset?.kind === 'bedrock'
+  // Multi-key provider (NVIDIA / OpenRouter) but the Basic-plan entitlement is
+  // NOT granted → single-key input + an upgrade hint (we only reach here when
+  // isMultiApiKeyAllowed() was false; otherwise pick() routed to 'keyManager').
+  const showMultiKeyUpsell = supportsMultiApiKey(preset?.id)
   return (
     <Box flexDirection="column" gap={1} paddingLeft={1}>
       <Text bold>
@@ -1167,6 +1225,12 @@ export function RayuProviderSetup({
           ? 'Bedrock API key (bearer token). Stored locally in ~/.rayu/providers.json (0600).'
           : 'Stored locally in ~/.rayu/providers.json (0600). Leave blank to skip.'}
       </Text>
+      {showMultiKeyUpsell ? (
+        <Text dimColor>
+          Storing multiple API keys with automatic rate-limit failover is
+          available on {upgradeTargetLabel()}.
+        </Text>
+      ) : null}
       <TextInput
         value={apiKey}
         onChange={setApiKey}

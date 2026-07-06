@@ -357,12 +357,57 @@ function mapFinishReason(reason: string | null | undefined): string {
   }
 }
 
+/**
+ * Map an OpenAI-compatible `usage` object to the Anthropic usage shape the CLI's
+ * cost/context/token accounting expects, where `input_tokens` is the
+ * GENUINELY-NEW (uncached) prompt and cache-read tokens are reported separately.
+ *
+ * Providers with prompt caching (DeepSeek "context caching", OpenAI, …) report
+ * `prompt_tokens` as the TOTAL prompt INCLUDING the cached prefix, plus a
+ * breakdown of how much hit the cache:
+ *   - DeepSeek:     prompt_cache_hit_tokens / prompt_cache_miss_tokens
+ *                   (prompt_tokens === hit + miss)
+ *   - OpenAI-style: prompt_tokens_details.cached_tokens (cached portion only)
+ *
+ * Collapsing ALL of `prompt_tokens` into `input_tokens` (and leaving cache_read
+ * at 0 — the previous behavior) counts the whole resent conversation prefix at
+ * the full input rate on every agentic turn — the "one prompt ate 24M tokens" /
+ * fast plan-drain bug — and hides caching entirely. We split it so cache reads
+ * are attributed (and priced) as cache reads. `input_tokens +
+ * cache_read_input_tokens` still equals `prompt_tokens`, so no token is
+ * double-counted or lost. Mirrors bedrockConverseAdapter.mapUsage.
+ */
 function mapUsage(usage: AnyObj | undefined): AnyObj {
+  const promptTokens = Math.max(0, (usage?.prompt_tokens as number) ?? 0)
+  const completionTokens = Math.max(0, (usage?.completion_tokens as number) ?? 0)
+
+  const hit = usage?.prompt_cache_hit_tokens as number | undefined
+  const miss = usage?.prompt_cache_miss_tokens as number | undefined
+  const cachedFromDetails = (usage?.prompt_tokens_details as AnyObj | undefined)
+    ?.cached_tokens as number | undefined
+
+  let cacheReadInputTokens = 0
+  let inputTokens = promptTokens
+  if (typeof hit === 'number' || typeof miss === 'number') {
+    // DeepSeek: explicit hit/miss split (prompt_tokens === hit + miss).
+    cacheReadInputTokens = Math.max(0, hit ?? 0)
+    inputTokens =
+      typeof miss === 'number'
+        ? Math.max(0, miss)
+        : Math.max(0, promptTokens - cacheReadInputTokens)
+  } else if (typeof cachedFromDetails === 'number' && cachedFromDetails > 0) {
+    // OpenAI-style: only the cached portion is reported; the rest is fresh.
+    cacheReadInputTokens = Math.min(promptTokens, Math.max(0, cachedFromDetails))
+    inputTokens = Math.max(0, promptTokens - cacheReadInputTokens)
+  }
+
   return {
-    input_tokens: (usage?.prompt_tokens as number) ?? 0,
-    output_tokens: (usage?.completion_tokens as number) ?? 0,
+    input_tokens: inputTokens,
+    output_tokens: completionTokens,
+    // DeepSeek/OpenAI report cache READS, not a separate cache-write/creation
+    // bucket, so cache_creation stays 0 (kept for the Anthropic usage shape).
     cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0,
+    cache_read_input_tokens: cacheReadInputTokens,
   }
 }
 
@@ -753,6 +798,14 @@ export async function* translateStream(
 
 export type OpenAICompatibleConfig = {
   apiKey: string
+  /**
+   * Multiple API keys for rate-limit key rotation (NVIDIA / OpenRouter). When
+   * two or more are present (and no custom `fetch` is set), the adapter builds
+   * one OpenAI client per key and rotates to the next key on a rate-limit /
+   * quota error — see withKeyRotation. `apiKey` is used as the single-key
+   * fallback when this is absent/empty.
+   */
+  apiKeys?: string[]
   baseURL: string
   headers?: Record<string, string>
   maxRetries?: number
@@ -767,6 +820,41 @@ export type OpenAICompatibleConfig = {
    * (not by apiKey) since the credential is dynamic.
    */
   fetch?: typeof fetch
+}
+
+// HTTP statuses that mean "this API key can't serve the request right now, but
+// a DIFFERENT key might" — so the adapter rotates to the next stored key:
+//   429 Too Many Requests  — rate limit / quota exceeded (the main trigger)
+//   402 Payment Required   — out of credits (e.g. OpenRouter)
+//   401 Unauthorized       — invalid / expired / revoked key
+//   403 Forbidden          — key-scoped quota/permission exhaustion
+// Note: 404 (Not Found) is intentionally NOT here — it means the model/endpoint
+// doesn't exist, which no key can fix, so rotating would just burn every key.
+const ROTATABLE_KEY_STATUSES: ReadonlySet<number> = new Set([429, 402, 401, 403])
+
+function isRotatableKeyError(status: number | undefined): boolean {
+  return typeof status === 'number' && ROTATABLE_KEY_STATUSES.has(status)
+}
+
+/**
+ * Resolve the ordered key list the adapter rotates through. A custom fetch
+ * (dynamic credential, e.g. Vertex OAuth) has no static key to rotate, so it
+ * always resolves to a single synthetic entry.
+ */
+function resolveAdapterKeys(config: OpenAICompatibleConfig): string[] {
+  if (config.fetch) return [config.apiKey || 'unset']
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of config.apiKeys ?? []) {
+    const k = raw?.trim()
+    if (k && !seen.has(k)) {
+      seen.add(k)
+      out.push(k)
+    }
+  }
+  const single = config.apiKey?.trim()
+  if (single && !seen.has(single)) out.push(single)
+  return out.length ? out : [config.apiKey || 'unset']
 }
 
 type OptionalRequestParam = 'prompt_cache_key' | 'stream_options' | 'reasoning_effort' | 'chat_template_kwargs'
@@ -1044,10 +1132,11 @@ function openAIClientCacheKey(config: OpenAICompatibleConfig): string {
     baseURL: config.baseURL.replace(/\/+$/, ''),
     // Dynamic-credential clients (custom fetch, e.g. Vertex OAuth) have no
     // stable apiKey to hash, so key them on providerId+baseURL only. Static
-    // providers continue to key on the apiKey hash so a key change rebuilds.
+    // providers key on the hash of the FULL key list so adding/removing/
+    // reordering a key rebuilds the (per-key) client set.
     keyHash: config.fetch
       ? 'dynamic'
-      : hashPair(config.apiKey || 'unset', 'openai-compatible-client'),
+      : hashPair(resolveAdapterKeys(config).join('\u0000'), 'openai-compatible-client'),
     headers: stableHeaders(config.headers),
     maxRetries: config.maxRetries ?? 2,
     promptCacheKey: config.promptCacheKey ?? 'auto',
@@ -1057,20 +1146,89 @@ function openAIClientCacheKey(config: OpenAICompatibleConfig): string {
 }
 
 function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
-  const client = new OpenAI({
-    apiKey: config.apiKey || 'unset',
-    baseURL: config.baseURL,
-    // Retry transient 408/409/429/5xx at the SDK level by default. The main
-    // query path passes 0 here and retries via withRetry.ts instead (which now
-    // recognizes our normalized Anthropic-shaped errors).
-    maxRetries: config.maxRetries ?? 2,
-    defaultHeaders: config.headers,
-    // Dynamic-credential providers (e.g. Vertex OAuth) inject a fresh bearer
-    // token via a custom fetch wrapper instead of a static apiKey.
-    ...(config.fetch ? { fetch: config.fetch } : {}),
-  })
+  // One OpenAI client per stored key, built lazily. For rate-limit rotation
+  // (NVIDIA / OpenRouter) `keys` has 2+ entries; every other provider has one.
+  const keys = resolveAdapterKeys(config)
+  const clientsByIndex = new Map<number, OpenAI>()
+  const clientForIndex = (i: number): OpenAI => {
+    let c = clientsByIndex.get(i)
+    if (!c) {
+      c = new OpenAI({
+        apiKey: keys[i] || 'unset',
+        baseURL: config.baseURL,
+        // Retry transient 408/409/429/5xx at the SDK level by default. The main
+        // query path passes 0 here and retries via withRetry.ts instead (which
+        // now recognizes our normalized Anthropic-shaped errors). With 0, a 429
+        // surfaces immediately so key rotation is prompt rather than waiting on
+        // the SDK to re-hit the same exhausted key.
+        maxRetries: config.maxRetries ?? 2,
+        defaultHeaders: config.headers,
+        // Dynamic-credential providers (e.g. Vertex OAuth) inject a fresh bearer
+        // token via a custom fetch wrapper instead of a static apiKey.
+        ...(config.fetch ? { fetch: config.fetch } : {}),
+      })
+      clientsByIndex.set(i, c)
+    }
+    return c
+  }
+
+  // Sticky pointer: after a key succeeds (or we rotate onto a working one),
+  // later requests start from THAT key so we don't re-hit an exhausted key on
+  // every request.
+  let currentKeyIndex = 0
+
+  /**
+   * Run `run` against each stored key, starting at the current sticky key and
+   * wrapping around the list. On a rotatable key error (429/402/401/403) move
+   * to the NEXT key and retry; on any other error — or after the LAST key —
+   * rethrow. A key that succeeds becomes the new sticky start.
+   *
+   * This is the fallback loop the user asked for: when one key hits its rate
+   * limit, the request transparently rolls over to the next key, looping
+   * through all of them. When every key is exhausted the final error propagates
+   * to withRetry.ts, which backs off and later re-enters here (starting the
+   * loop again), so rotation continues across retries too.
+   */
+  async function withKeyRotation<T>(
+    run: (client: OpenAI) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const n = keys.length
+    let lastErr: unknown
+    for (let attempt = 0; attempt < n; attempt++) {
+      const idx = (currentKeyIndex + attempt) % n
+      try {
+        const result = await run(clientForIndex(idx))
+        currentKeyIndex = idx
+        return result
+      } catch (e) {
+        lastErr = e
+        const status = (e as { status?: number } | undefined)?.status
+        const hasNextKey = attempt < n - 1
+        if (hasNextKey && !signal?.aborted && isRotatableKeyError(status)) {
+          reportIssue(
+            'openai_adapter.key_rotation',
+            'API key rate-limited/exhausted; rotating to next stored key',
+            {
+              providerId: config.providerId,
+              status,
+              fromKeyIndex: idx,
+              totalKeys: n,
+            },
+            'low',
+          )
+          continue
+        }
+        throw e
+      }
+    }
+    // Unreachable for n >= 1 (the loop returns or throws), but satisfies the
+    // type checker and defends against an empty key list.
+    throw lastErr
+  }
 
   async function runNonStreaming(
+    client: OpenAI,
     req: AnyObj,
     model: string,
     signal?: AbortSignal,
@@ -1137,6 +1295,7 @@ function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
   }
 
   async function runStreamingWithResponse(
+    client: OpenAI,
     req: AnyObj,
     model: string,
     signal?: AbortSignal,
@@ -1232,21 +1391,29 @@ function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
     // Lazy hybrid: a thenable whose non-streaming request only fires if the
     // caller actually awaits it, plus a withResponse() that runs the streaming
     // path. This avoids firing a wasted non-streaming request on the streaming
-    // call site (which only calls .withResponse()).
+    // call site (which only calls .withResponse()). Both paths go through
+    // withKeyRotation so a rate-limited key rolls over to the next stored key.
     return {
       then(
         onFulfilled?: (v: unknown) => unknown,
         onRejected?: (e: unknown) => unknown,
       ) {
-        return runNonStreaming(req, params.model, signal).then(
-          onFulfilled,
-          onRejected,
-        )
+        return withKeyRotation(
+          c => runNonStreaming(c, req, params.model, signal),
+          signal,
+        ).then(onFulfilled, onRejected)
       },
       catch(onRejected?: (e: unknown) => unknown) {
-        return runNonStreaming(req, params.model, signal).catch(onRejected)
+        return withKeyRotation(
+          c => runNonStreaming(c, req, params.model, signal),
+          signal,
+        ).catch(onRejected)
       },
-      withResponse: () => runStreamingWithResponse(req, params.model, signal),
+      withResponse: () =>
+        withKeyRotation(
+          c => runStreamingWithResponse(c, req, params.model, signal),
+          signal,
+        ),
     }
   }
 
