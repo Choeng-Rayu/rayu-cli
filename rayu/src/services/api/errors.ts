@@ -422,6 +422,68 @@ export function extractUnknownErrorFormat(value: unknown): string | undefined {
   return undefined
 }
 
+/**
+ * True for a Rayu-hosted credit / period limit denial (gateway 429 with
+ * reason:"period_limit"). This is a TERMINAL billing state for the current
+ * billing period: the credit balance does not refill by retrying — the user
+ * must renew/upgrade their plan or buy more credits, or wait for the period to
+ * reset. The gateway sets Retry-After to seconds-until-period-reset (which can
+ * be weeks away), so the generic 429 retry path would otherwise sleep for that
+ * whole duration up to maxRetries times ("Retrying in 2452241 seconds…").
+ *
+ * Detected structurally via the parsed body `reason` (survives the OpenAI→
+ * Anthropic error translation as APIError.error), with a message-string
+ * fallback so a wording/shape change still classifies correctly.
+ */
+export function isRayuCreditLimitError(error: unknown): boolean {
+  if (!(error instanceof APIError) || error.status !== 429) {
+    return false
+  }
+  const body = (error as { error?: unknown }).error
+  if (body && typeof body === 'object') {
+    // Primary: the gateway's machine-readable discriminator.
+    if ('reason' in body && String((body as { reason?: unknown }).reason ?? '') === 'period_limit') {
+      return true
+    }
+    // Fallback: the nested provider error body { error: { message } }.
+    const nested = (body as { error?: unknown }).error
+    if (nested && typeof nested === 'object' && 'message' in nested) {
+      const nestedMsg = String((nested as { message?: unknown }).message ?? '')
+      if (/credit limit reached|period_limit/i.test(nestedMsg)) return true
+    }
+  }
+  // Last resort: the composed error message (SDK embeds the JSON body here).
+  return /credit limit reached|period_limit/i.test(error.message ?? '')
+}
+
+/**
+ * Seconds until the credit period resets, from the gateway body (`resetSeconds`)
+ * or the Retry-After header, whichever is present and positive. null if unknown.
+ */
+function getRayuCreditResetSeconds(error: APIError): number | null {
+  const body = (error as { error?: unknown }).error
+  if (body && typeof body === 'object' && 'resetSeconds' in body) {
+    const n = Number((body as { resetSeconds?: unknown }).resetSeconds)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  const ra = error.headers?.get?.('retry-after')
+  if (ra) {
+    const n = parseInt(ra, 10)
+    if (!isNaN(n) && n > 0) return n
+  }
+  return null
+}
+
+/** Human phrase like "in about 28 days" / "in about 5 hours" for a reset ETA. */
+function formatCreditResetHint(seconds: number): string {
+  const days = Math.round(seconds / 86400)
+  if (days >= 1) return `in about ${days} day${days === 1 ? '' : 's'}`
+  const hours = Math.round(seconds / 3600)
+  if (hours >= 1) return `in about ${hours} hour${hours === 1 ? '' : 's'}`
+  const mins = Math.max(1, Math.round(seconds / 60))
+  return `in about ${mins} minute${mins === 1 ? '' : 's'}`
+}
+
 export function getAssistantMessageFromError(
   error: unknown,
   model: string,
@@ -459,6 +521,25 @@ export function getAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       content: CUSTOM_OFF_SWITCH_MESSAGE,
       error: 'rate_limit',
+    })
+  }
+
+  // Rayu-hosted credit / period limit (429 reason:"period_limit"). Terminal
+  // billing state for this period — surface a clear "renew / buy credits"
+  // prompt with the plans link, NOT a generic "Request rejected (429)" or the
+  // (now-suppressed in withRetry) multi-week retry spinner.
+  if (isRayuCreditLimitError(error)) {
+    const plansUrl = `${getRayuWebBaseUrl()}/plans`
+    const resetSeconds = getRayuCreditResetSeconds(error as APIError)
+    const resetHint = resetSeconds
+      ? ` Your credits renew ${formatCreditResetHint(resetSeconds)}.`
+      : ''
+    const switchHint = getIsNonInteractiveSession()
+      ? ''
+      : ' — or run /model to switch to a model on another provider (e.g. your own API key).'
+    return createAssistantAPIErrorMessage({
+      error: 'billing_error',
+      content: `💳 You've reached your plan's credit limit for this billing period.${resetHint} Renew or upgrade your plan, or add more credits, to keep using Rayu-hosted models: ${plansUrl}${switchHint}`,
     })
   }
 

@@ -16,6 +16,13 @@ import {
 } from '../src/services/rayuAuth/rayuEntitlements.ts'
 import { makeRayuHostedFetch } from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
 import { loadRayuConfig } from '../src/utils/rayuConfig.ts'
+import { APIError } from '@anthropic-ai/sdk/index.js'
+import type Anthropic from '@anthropic-ai/sdk/index.js'
+import {
+  getAssistantMessageFromError,
+  isRayuCreditLimitError,
+} from '../src/services/api/errors.ts'
+import { CannotRetryError, withRetry } from '../src/services/api/withRetry.ts'
 
 let dir: string
 beforeEach(() => {
@@ -187,5 +194,123 @@ describe('rayu-hosted visibility (free sees it, blocked on use)', () => {
       delete process.env.USE_RAYU_OAUTH
       delete process.env.RAYU_WEB_URL
     }
+  })
+})
+
+
+// --- Credit / period limit (429) is TERMINAL: no retry, clear renew message ---
+
+/** Build the exact Anthropic-shaped error the OpenAI adapter produces for the
+ *  gateway's credit-limit 429 (reason:"period_limit", Retry-After = period reset). */
+function creditLimitError(retryAfterSeconds = 2_452_241): APIError {
+  const headers = new Headers({ 'retry-after': String(retryAfterSeconds) })
+  return APIError.generate(
+    429,
+    {
+      error: { message: 'credit limit reached: period_limit', type: 'rate_limit_exceeded' },
+      reason: 'period_limit',
+      resetSeconds: retryAfterSeconds,
+    },
+    'credit limit reached: period_limit',
+    headers,
+  ) as APIError
+}
+
+function textOf(m: { message: { content: unknown } }): string {
+  const c = m.message.content
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) {
+    return (c as Array<{ type?: string; text?: string }>)
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text ?? '')
+      .join('\n')
+  }
+  return ''
+}
+
+describe('isRayuCreditLimitError', () => {
+  test('true for a period_limit 429 (structured body reason)', () => {
+    expect(isRayuCreditLimitError(creditLimitError())).toBe(true)
+  })
+
+  test('true via nested-body message when the discriminator reason differs', () => {
+    // Full gateway-shaped body (so APIError preserves .error) but with a
+    // non-"period_limit" reason — exercises the nested-message fallback.
+    // NB: a Headers object is required for APIError.generate to produce a
+    // status-bearing error (undefined headers degrades to APIConnectionError).
+    const e = APIError.generate(
+      429,
+      {
+        error: { message: 'credit limit reached: period_limit', type: 'rate_limit_exceeded' },
+        reason: 'other',
+        resetSeconds: 10,
+      },
+      'credit limit reached',
+      new Headers({ 'retry-after': '10' }),
+    )
+    expect(isRayuCreditLimitError(e)).toBe(true)
+  })
+
+  test('false for a transient 429 (concurrency / plain rate limit)', () => {
+    const h = new Headers({ 'retry-after': '5' })
+    const conc = APIError.generate(429, { error: { message: 'too many concurrent requests' }, reason: 'concurrency' }, 'too many concurrent requests', h)
+    expect(isRayuCreditLimitError(conc)).toBe(false)
+    const plain = APIError.generate(429, { error: { message: 'Rate limit exceeded, slow down' } }, 'Rate limit exceeded, slow down', h)
+    expect(isRayuCreditLimitError(plain)).toBe(false)
+  })
+
+  test('false for non-429 errors and non-APIError values', () => {
+    const h = new Headers()
+    expect(isRayuCreditLimitError(APIError.generate(500, { error: { message: 'server error' } }, 'server error', h))).toBe(false)
+    expect(isRayuCreditLimitError(new Error('period_limit'))).toBe(false)
+  })
+})
+
+describe('getAssistantMessageFromError · credit limit', () => {
+  test('renders a billing message with the /plans link and a reset ETA', () => {
+    process.env.RAYU_WEB_URL = 'https://web.example.test'
+    try {
+      const msg = getAssistantMessageFromError(creditLimitError(), 'deepseek-v4-pro')
+      const text = textOf(msg)
+      expect(text.toLowerCase()).toContain('credit limit')
+      expect(text).toContain('https://web.example.test/plans')
+      // 2_452_241s ≈ 28 days → the human reset hint is included.
+      expect(text).toContain('28 days')
+      expect(msg.isApiErrorMessage).toBe(true)
+    } finally {
+      delete process.env.RAYU_WEB_URL
+    }
+  })
+})
+
+describe('withRetry · credit limit is not retried', () => {
+  test('bails after a single attempt with CannotRetryError (no 10× / no multi-week sleep)', async () => {
+    let calls = 0
+    const err = creditLimitError()
+    const getClient = async (): Promise<Anthropic> => ({}) as unknown as Anthropic
+    const operation = async (): Promise<{ ok: true }> => {
+      calls++
+      throw err
+    }
+    const gen = withRetry<{ ok: true }>(getClient, operation, {
+      model: 'deepseek-v4-pro',
+      thinkingConfig: { type: 'disabled' },
+      maxRetries: 10,
+    })
+
+    let threw: unknown
+    try {
+      // Drain the generator; a credit-limit error must throw before any
+      // system 'retrying…' message is yielded and before any sleep.
+      for await (const _m of gen) {
+        void _m
+      }
+    } catch (e) {
+      threw = e
+    }
+
+    expect(calls).toBe(1)
+    expect(threw).toBeInstanceOf(CannotRetryError)
+    expect((threw as CannotRetryError).originalError).toBe(err)
   })
 })

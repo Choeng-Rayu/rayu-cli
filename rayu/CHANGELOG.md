@@ -2,6 +2,13 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.3.462 - 2026-07-06
+- Removed DeepSeek Web reverse-scraping provider
+- Added cache read/write credit multipliers for usage tracking
+- Improved gateway graceful shutdown and added related tests
+- Updated Kiro provider to Sonnet 5
+- Improved ABA/QrCode payment flow and Telegram listener reliability
+
 ## 1.3.445 - 2026-06-29
 - Fixed bugs in gateway routing logic for `rayu-hosted` provider
 - Added tests for gateway routing edge cases

@@ -42,7 +42,7 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
+import { isRayuCreditLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -255,6 +255,20 @@ export async function* withRetry<T>(
         `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
         { level: 'error' },
       )
+
+      // Rayu-hosted credit / period limit is TERMINAL for this billing period:
+      // retrying cannot succeed until the user buys credits or the period
+      // renews, and the gateway's Retry-After is seconds-until-reset (often
+      // weeks). Bail immediately with a clear message instead of the up-to-10×
+      // "Retrying in <weeks> seconds" loop. Placed at the top of the catch so
+      // it wins over the fast-mode and persistent-retry branches below, which
+      // all treat a 429 as a transient capacity error.
+      if (isRayuCreditLimitError(error)) {
+        logEvent('tengu_api_rayu_credit_limit_reached', {
+          provider: getAPIProviderForStatsig(),
+        })
+        throw new CannotRetryError(error, retryContext)
+      }
 
       // Fast mode fallback: on 429/529, either wait and retry (short delays)
       // or fall back to standard speed (long delays) to avoid cache thrashing.
