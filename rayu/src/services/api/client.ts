@@ -273,19 +273,6 @@ async function getRayuCopilotClient(maxRetries: number): Promise<unknown | null>
 }
 
 /**
- * Rayu: route the active provider to the DeepSeek Web client when kind
- * is 'deepseek-web'. The DeepSeek web API (chat.deepseek.com) requires
- * browser-sourced auth (userToken) + PoW solving per request. Lazy-imported
- * so the WASM and DeepSeek web modules only load when this provider is active.
- */
-async function getRayuDeepseekWebClient(maxRetries: number): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (active?.kind !== 'deepseek-web') return null
-  const { createDeepseekWebClient } = await import('./deepseekWeb/deepseekWebClient.js')
-  return createDeepseekWebClient(active, maxRetries)
-}
-
 /**
  * Rayu: route the active provider to the Rayu-hosted gateway client when kind
  * is 'rayu-hosted'. The gateway is OpenAI-compatible; auth is the user's Rayu
@@ -368,11 +355,6 @@ async function buildClientForProvider(
   if (provider.kind === 'rayu-hosted') {
     const { createRayuHostedClient } = await import('./rayuHosted/rayuHostedClient.js')
     return createRayuHostedClient(provider, maxRetries)
-  }
-  // DeepSeek Web: chat.deepseek.com browser-auth flow (userToken + PoW).
-  if (provider.kind === 'deepseek-web') {
-    const { createDeepseekWebClient } = await import('./deepseekWeb/deepseekWebClient.js')
-    return createDeepseekWebClient(provider, maxRetries)
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
@@ -487,14 +469,6 @@ export async function getAnthropicClient({
   const rayuHostedClient = await getRayuHostedClient(maxRetries)
   if (rayuHostedClient) {
     return rayuHostedClient as unknown as Anthropic
-  }
-
-  // Rayu: route to the DeepSeek Web client when the active provider is
-  // kind:'deepseek-web' (chat.deepseek.com browser-auth flow; requires
-  // USE_DEEPSEEK_OAUTH=true and a paid plan).
-  const deepseekWebClient = await getRayuDeepseekWebClient(maxRetries)
-  if (deepseekWebClient) {
-    return deepseekWebClient as unknown as Anthropic
   }
 
   // Rayu: route to the OpenAI-compatible adapter when the active provider is an

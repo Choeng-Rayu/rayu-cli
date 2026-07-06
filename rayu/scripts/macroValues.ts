@@ -39,10 +39,6 @@ export const MACRO_VALUES = {
   RAYU_WEB_URL: process.env.RAYU_BUILD_WEB_URL ?? process.env.RAYU_WEB_URL ?? '',
   RAYU_GATEWAY_URL:
     process.env.RAYU_BUILD_GATEWAY_URL ?? process.env.RAYU_GATEWAY_URL ?? '',
-  // DeepSeek Web OAuth — default OFF. Set USE_DEEPSEEK_OAUTH=true at runtime to
-  // enable the deepseek-web provider (chat.deepseek.com browser-auth flow).
-  DEEPSEEK_OAUTH_DEFAULT:
-    process.env.RAYU_BUILD_DEEPSEEK_OAUTH ?? process.env.USE_DEEPSEEK_OAUTH ?? 'false',
 }
 
 // Rayu-owned allowlist of build-gated `feature('FLAG')` macros to ENABLE.

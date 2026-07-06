@@ -9,10 +9,25 @@ import type { Payment, Plan } from '@prisma/client'
 import type { PlanCode } from '../common/enums'
 import { PrismaService } from '../prisma/prisma.service'
 import { AppSettingsService } from '../settings/app-settings.service'
+import { UsersService } from '../users/users.service'
 import { AbaService } from './aba.service'
 import { BakongService } from './bakong.service'
 
 export type PaymentMethod = 'aba' | 'bakong'
+
+/**
+ * KHQR / pending-payment lifetime. After this the QR is treated as expired and
+ * the payment row is transitioned to 'expired'; the user must generate a fresh
+ * QR (POST /payments/:id/renew or a new create call).
+ */
+const KHQR_TTL_MINUTES = 30
+const KHQR_TTL_MS = KHQR_TTL_MINUTES * 60 * 1000
+/**
+ * Extra window (beyond expiry) during which an out-of-band ABA credit alert is
+ * still matched to a pending payment — covers the lag between the customer
+ * actually paying (before the deadline) and ABA's Telegram alert posting.
+ */
+const ABA_MATCH_GRACE_MS = 10 * 60 * 1000
 
 @Injectable()
 export class PaymentsService {
@@ -21,7 +36,16 @@ export class PaymentsService {
     private readonly bakong: BakongService,
     private readonly aba: AbaService,
     private readonly settings: AppSettingsService,
+    private readonly users: UsersService,
   ) {}
+
+  /** A plan is credit-based when it grants a per-period credit allowance. */
+  private isCreditPlan(plan: Plan): boolean {
+    const limits = (plan.limits ?? {}) as { creditsPerPeriod?: number | null }
+    return (
+      typeof limits.creditsPerPeriod === 'number' && limits.creditsPerPeriod > 0
+    )
+  }
 
   async createKhqr(
     userId: number,
@@ -32,6 +56,47 @@ export class PaymentsService {
     if (!plan) throw new NotFoundException('Plan not found')
     if (plan.availability !== 'active' || plan.priceCents <= 0) {
       throw new BadRequestException('Plan is not purchasable')
+    }
+
+    // Block a duplicate purchase of a non-credit (feature-unlock) plan the user
+    // already actively holds. getActiveSubscription resolves the EFFECTIVE plan
+    // (an expired period auto-falls back to Free), so a same-code match here
+    // means the subscription is active AND not expired. Credit plans
+    // (creditsPerPeriod > 0) are exempt — re-buying renews their period/credits.
+    if (!this.isCreditPlan(plan)) {
+      const { plan: current } = await this.users.getActiveSubscription(userId)
+      if (current.code === plan.code) {
+        throw new BadRequestException(
+          `You're already on the ${plan.name} plan. It unlocks all features and has no credits to add, so there's nothing to purchase again until it expires.`,
+        )
+      }
+    }
+
+    // Reuse a still-valid pending QR so refreshing the checkout page keeps the
+    // SAME QR until it is paid, canceled, or expires (30 min) — instead of
+    // minting a brand-new QR on every page load.
+    const reusable = await this.prisma.payment.findFirst({
+      where: {
+        userId,
+        planId: plan.id,
+        provider: method,
+        status: 'pending',
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    if (reusable?.khqr && reusable.md5) {
+      return {
+        paymentId: reusable.id,
+        planCode,
+        amountCents: reusable.amountCents,
+        currency: reusable.currency,
+        method,
+        qr: reusable.khqr,
+        md5: reusable.md5,
+        expiresAt: reusable.expiresAt,
+        reused: true,
+      }
     }
 
     const amountUsd = plan.priceCents / 100
@@ -48,6 +113,7 @@ export class PaymentsService {
         status: 'pending',
         md5,
         khqr: qr,
+        expiresAt: new Date(Date.now() + KHQR_TTL_MS),
       },
     })
 
@@ -59,6 +125,8 @@ export class PaymentsService {
       method,
       qr,
       md5,
+      expiresAt: payment.expiresAt,
+      reused: false,
     }
   }
 
@@ -83,6 +151,36 @@ export class PaymentsService {
       throw new BadRequestException('Top-up amount too small')
     }
 
+    // Reuse a still-valid pending top-up QR on refresh (same intent = same
+    // credit amount + method), mirroring the plan-checkout behavior.
+    const existingTopup = await this.prisma.creditTopup.findFirst({
+      where: { userId, credits, status: 'pending' },
+      orderBy: { createdAt: 'desc' },
+    })
+    if (existingTopup?.paymentId) {
+      const reusable = await this.prisma.payment.findFirst({
+        where: {
+          id: existingTopup.paymentId,
+          provider: method,
+          status: 'pending',
+          expiresAt: { gt: new Date() },
+        },
+      })
+      if (reusable?.khqr && reusable.md5) {
+        return {
+          paymentId: reusable.id,
+          credits,
+          amountCents: reusable.amountCents,
+          currency: reusable.currency,
+          method,
+          qr: reusable.khqr,
+          md5: reusable.md5,
+          expiresAt: reusable.expiresAt,
+          reused: true,
+        }
+      }
+    }
+
     const billNumber = `RAYU-TOPUP-${userId}-${Date.now()}`
     const { qr, md5, provider } = this.buildQr(
       method,
@@ -99,13 +197,14 @@ export class PaymentsService {
         status: 'pending',
         md5,
         khqr: qr,
+        expiresAt: new Date(Date.now() + KHQR_TTL_MS),
       },
     })
     await this.prisma.creditTopup.create({
       data: { userId, credits, amountCents, status: 'pending', paymentId: payment.id },
     })
 
-    return { paymentId: payment.id, credits, amountCents, currency: 'USD', method, qr, md5 }
+    return { paymentId: payment.id, credits, amountCents, currency: 'USD', method, qr, md5, expiresAt: payment.expiresAt, reused: false }
   }
 
   /**
@@ -121,10 +220,10 @@ export class PaymentsService {
     billNumber: string,
   ): { qr: string; md5: string; provider: PaymentMethod } {
     if (method === 'aba') {
-      const qr = this.aba.generateAbaQR(amountUsd)
+      const qr = this.aba.generateAbaQR(amountUsd, KHQR_TTL_MINUTES)
       return { qr, md5: `ABA-${randomUUID()}`, provider: 'aba' }
     }
-    const { qr, md5 } = this.bakong.generateKhqr(amountUsd, billNumber)
+    const { qr, md5 } = this.bakong.generateKhqr(amountUsd, billNumber, KHQR_TTL_MS)
     return { qr, md5, provider: 'bakong' }
   }
 
@@ -142,32 +241,68 @@ export class PaymentsService {
         status: payment.status,
         planCode: payment.plan?.code ?? null,
         activated: payment.status === 'paid',
+        expiresAt: payment.expiresAt,
       }
     }
 
-    // ABA has no API to poll — the Telegram credit-alert listener flips the row
-    // when the alert arrives. The frontend just polls the DB until then.
-    if (this.isAba(payment)) {
-      return {
-        paymentId: payment.id,
-        status: 'pending',
-        planCode: payment.plan?.code ?? null,
-        activated: false,
-      }
+    // Bakong can be polled: give a just-in-time payment a final chance to land
+    // before we expire the row, so a payment made right at the deadline still
+    // activates instead of being lost. (ABA has no poll API — the Telegram
+    // credit-alert listener flips the row; here we just report pending/expired.)
+    if (!this.isAba(payment)) {
+      const { paid, ref } = await this.bakong.checkPaidByMd5(payment.md5!)
+      if (paid) return this.activatePaid(payment, ref ?? null)
     }
 
-    const { paid, ref } = await this.bakong.checkPaidByMd5(payment.md5!)
-    if (!paid) {
-      return { paymentId: payment.id, status: 'pending', planCode: payment.plan?.code ?? null, activated: false }
+    // Past the 30-minute deadline and still unpaid → transition to 'expired' so
+    // the client can prompt the user to generate a fresh QR (renew).
+    if (this.isExpired(payment)) {
+      return this.expirePayment(payment)
     }
 
-    return this.activatePaid(payment, ref ?? null)
+    return {
+      paymentId: payment.id,
+      status: 'pending',
+      planCode: payment.plan?.code ?? null,
+      activated: false,
+      expiresAt: payment.expiresAt,
+    }
+  }
+
+  /** True once the payment's 30-minute QR deadline has passed. */
+  private isExpired(payment: Payment): boolean {
+    return payment.expiresAt != null && payment.expiresAt.getTime() <= Date.now()
+  }
+
+  /**
+   * Transition a stale pending payment (and any linked pending top-up) to
+   * 'expired'. Shares the checkStatus response shape.
+   */
+  private async expirePayment(payment: Payment & { plan: Plan | null }) {
+    await this.prisma.$transaction([
+      this.prisma.payment.update({
+        where: { id: payment.id },
+        data: { status: 'expired' },
+      }),
+      this.prisma.creditTopup.updateMany({
+        where: { paymentId: payment.id, status: 'pending' },
+        data: { status: 'expired' },
+      }),
+    ])
+    return {
+      paymentId: payment.id,
+      status: 'expired' as const,
+      planCode: payment.plan?.code ?? null,
+      activated: false,
+      expiresAt: payment.expiresAt,
+    }
   }
 
   /**
    * Confirm an ABA payment from a Telegram credit alert. ABA's alert carries the
    * amount + trx id but not our payment id, so we match the most recent pending
-   * ABA payment with the exact amount (created within the QR's lifetime window).
+   * ABA payment with the exact amount that has not expired beyond the grace
+   * window (QR lifetime + a short lag allowance for the alert to post).
    * Returns true if a matching payment was found and activated.
    */
   async confirmAbaPaymentByAmount(
@@ -180,7 +315,7 @@ export class PaymentsService {
         provider: 'aba',
         status: 'pending',
         amountCents,
-        createdAt: { gte: new Date(Date.now() - 15 * 60 * 1000) },
+        expiresAt: { gte: new Date(Date.now() - ABA_MATCH_GRACE_MS) },
       },
       include: { plan: true },
       orderBy: { createdAt: 'desc' },
@@ -249,6 +384,93 @@ export class PaymentsService {
       planCode: payment.plan?.code ?? null,
       activated: true,
     }
+  }
+
+  /**
+   * User-initiated cancel of a pending payment (the "Cancel" button on the
+   * checkout screen). Marks it — and any linked pending top-up — 'canceled' so
+   * it is no longer reused on refresh, polled, or ABA-alert matched, freeing the
+   * user to start a fresh purchase. Rejects canceling an already-paid payment.
+   */
+  async cancelPayment(paymentId: number, userId: number) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      include: { plan: true },
+    })
+    if (!payment) throw new NotFoundException('Payment not found')
+    if (payment.userId !== userId) throw new ForbiddenException()
+    if (payment.status === 'paid') {
+      throw new BadRequestException('Payment already completed')
+    }
+    if (payment.status === 'pending') {
+      await this.prisma.$transaction([
+        this.prisma.payment.update({
+          where: { id: payment.id },
+          data: { status: 'canceled' },
+        }),
+        this.prisma.creditTopup.updateMany({
+          where: { paymentId: payment.id, status: 'pending' },
+          data: { status: 'canceled' },
+        }),
+      ])
+    }
+    return {
+      paymentId: payment.id,
+      status:
+        payment.status === 'pending' ? ('canceled' as const) : payment.status,
+      planCode: payment.plan?.code ?? null,
+      activated: false,
+      expiresAt: payment.expiresAt,
+    }
+  }
+
+  /**
+   * Regenerate a fresh KHQR for an unpaid payment whose QR has expired (or is
+   * still pending). The old row (and any linked pending top-up) is marked
+   * 'expired', and a brand-new payment for the SAME intent — same plan or same
+   * top-up credit amount, same provider — is created with a new QR and a fresh
+   * 30-minute deadline. Rejects a payment that is already paid.
+   */
+  async renewPayment(paymentId: number, userId: number) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      include: { plan: true },
+    })
+    if (!payment) throw new NotFoundException('Payment not found')
+    if (payment.userId !== userId) throw new ForbiddenException()
+    if (payment.status === 'paid') {
+      throw new BadRequestException('Payment already completed')
+    }
+
+    const topup = await this.prisma.creditTopup.findFirst({
+      where: { paymentId: payment.id },
+    })
+
+    // Expire the old row (+ its pending top-up) so it can no longer be polled
+    // or alert-matched to 'paid'. Idempotent when it is already 'expired'.
+    if (payment.status === 'pending') {
+      await this.prisma.$transaction([
+        this.prisma.payment.update({
+          where: { id: payment.id },
+          data: { status: 'expired' },
+        }),
+        this.prisma.creditTopup.updateMany({
+          where: { paymentId: payment.id, status: 'pending' },
+          data: { status: 'expired' },
+        }),
+      ])
+    }
+
+    const method: PaymentMethod =
+      payment.provider === 'bakong' ? 'bakong' : 'aba'
+
+    if (topup) {
+      return this.createTopupKhqr(userId, topup.credits, method)
+    }
+    if (payment.plan) {
+      return this.createKhqr(userId, payment.plan.code as PlanCode, method)
+    }
+    throw new BadRequestException('Cannot renew this payment')
   }
 
   async getUserPayments(userId: number, page: number, pageSize: number) {

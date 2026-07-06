@@ -10,7 +10,7 @@ import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted' | 'deepseek-web'
+export type ProviderKind = 'anthropic' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 export type RayuProvider = {
@@ -347,8 +347,7 @@ export function hasConfiguredProvider(): boolean {
       !!p.apiKey ||
       p.kind === 'openai-compatible' ||
       (p.kind === 'bedrock' && !!p.awsAccessKeyId) ||
-      p.kind === 'kiro' ||
-      p.kind === 'deepseek-web',
+      p.kind === 'kiro',
   )
 }
 
@@ -377,6 +376,9 @@ export function getRayuApiKey(providerId?: string): string | null {
  * /model picker fallback path (keybinding shortcut). Active provider first,
  * then other providers. Any new provider kind (vertex, etc.) is included
  * automatically as long as kind !== 'anthropic'.
+ *
+ * Any new provider kind (vertex, etc.) is included automatically as long as
+ * kind !== 'anthropic'.
  */
 export function getActiveProviderModelOptions(): Array<{
   value: string
@@ -895,11 +897,6 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     const { fetchCopilotModels } = await import('../services/api/copilot/copilotAuth.js')
     return fetchCopilotModels(p.apiKey)
   }
-  // DeepSeek Web: no live catalog endpoint. Return the hardcoded model list
-  // (deepseek-v4-pro-1m) from the preset defaults.
-  if (p.kind === 'deepseek-web') {
-    return [p.defaultModel || 'deepseek-v4-pro-1m']
-  }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
@@ -949,8 +946,7 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
       p.kind !== 'vertex' &&
       p.kind !== 'genai' &&
       p.kind !== 'kiro' &&
-      p.kind !== 'copilot' &&
-      p.kind !== 'deepseek-web')
+      p.kind !== 'copilot')
   )
     return []
   const models = await fetchProviderModels(p)
@@ -977,13 +973,12 @@ export async function refreshAllProviderModels(): Promise<void> {
   const promises = cfg.providers
     .filter(
       p =>
-        // Vertex/genai/copilot/kiro/deepseek-web have no stored baseURL (computed);
+        // Vertex/genai/copilot/kiro have no stored baseURL (computed);
         // the others need one.
         (p.kind === 'vertex' ||
           p.kind === 'genai' ||
           p.kind === 'copilot' ||
           p.kind === 'kiro' ||
-          p.kind === 'deepseek-web' ||
           ((p.kind === 'openai-compatible' || p.kind === 'bedrock') &&
             p.baseURL)) &&
         !(p.fetchedModels?.length),

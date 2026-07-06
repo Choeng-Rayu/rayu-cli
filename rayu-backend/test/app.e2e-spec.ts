@@ -68,6 +68,85 @@ describe('rayu-backend (e2e)', () => {
     expect(bad.status).toBe(400)
   })
 
+  it('reuses the same pending QR on repeat create (page refresh); cancel frees a new one', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_refresh',
+      email: 'refresh@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const access = await login(app, 'state-refresh-1')
+
+    const first = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'pro', method: 'bakong' })
+    expect(first.status).toBe(201)
+    expect(first.body.reused).toBe(false)
+    const id1 = first.body.paymentId
+
+    // "Refresh the page" → the same QR/payment is returned, not a new one.
+    const again = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'pro', method: 'bakong' })
+    expect(again.body.paymentId).toBe(id1)
+    expect(again.body.reused).toBe(true)
+    expect(again.body.qr).toBe(first.body.qr)
+
+    // Cancel → the next create issues a fresh QR.
+    const cancel = await request(app.getHttpServer())
+      .post(`/api/payments/${id1}/cancel`)
+      .set('Authorization', `Bearer ${access}`)
+    expect(cancel.status).toBe(201)
+    expect(cancel.body.status).toBe('canceled')
+
+    const fresh = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'pro', method: 'bakong' })
+    expect(fresh.body.paymentId).not.toBe(id1)
+    expect(fresh.body.reused).toBe(false)
+  })
+
+  it('blocks re-buying an already-active non-credit plan (basic), still allows credit plans', async () => {
+    ctx.setClerkUser({
+      clerkUserId: 'clerk_dup',
+      email: 'dup@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const access = await login(app, 'state-dup-1')
+
+    // Buy Basic (feature-unlock, no credits) and activate it.
+    const buy = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'basic', method: 'bakong' })
+    expect(buy.status).toBe(201)
+
+    ctx.setBakongPaid(true, 'TRX-BASIC')
+    const status = await request(app.getHttpServer())
+      .get(`/api/payments/${buy.body.paymentId}/status`)
+      .set('Authorization', `Bearer ${access}`)
+    expect(status.body.status).toBe('paid')
+    ctx.setBakongPaid(false)
+
+    // Now actively on Basic → re-buying Basic is rejected (nothing to add).
+    const dup = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'basic', method: 'bakong' })
+    expect(dup.status).toBe(400)
+
+    // A credit plan (Pro) is still purchasable while on Basic.
+    const pro = await request(app.getHttpServer())
+      .post('/api/payments/khqr')
+      .set('Authorization', `Bearer ${access}`)
+      .send({ planCode: 'pro', method: 'bakong' })
+    expect(pro.status).toBe(201)
+  })
+
   it('full CLI bridge: exchange -> token -> /me, replay fails', async () => {
     ctx.setClerkUser({
       clerkUserId: 'clerk_user_1',

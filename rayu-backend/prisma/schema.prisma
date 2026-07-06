@@ -73,6 +73,7 @@ model Payment {
   md5         String?   @unique @db.VarChar(64)
   khqr        String?   @db.Text
   paidAt      DateTime?
+  expiresAt   DateTime?
   createdAt   DateTime  @default(now())
 
   user User  @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -282,7 +282,7 @@ export default function BillingPage() {
             style={{ padding: '12px 28px' }}
             onClick={() => void initiatePayment()}
           >
-            {loading ? 'Generating QR...' : 'Pay with Bakong KHQR'}
+            {loading ? 'Generating QR...' : 'Pay with ABA KHQR'}
           </button>
         </div>
       )}
