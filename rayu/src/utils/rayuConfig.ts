@@ -18,6 +18,15 @@ export type RayuProvider = {
   id: string
   kind: ProviderKind
   apiKey?: string
+  /**
+   * Multiple API keys for openai-compatible multi-key providers (NVIDIA /
+   * OpenRouter). When present, the request path rotates to the next key on a
+   * rate-limit/quota error (429/402/401/403). `apiKey` is kept in sync as
+   * apiKeys[0] so every single-key reader (image/video gen, fastMode, env
+   * migration) keeps working unchanged. Gated to Basic-plan users — see
+   * isMultiApiKeyAllowed().
+   */
+  apiKeys?: string[]
   /** Base URL for openai-compatible providers (ignored for first-party anthropic). */
   baseURL?: string
   /** Default model id for this provider. */
@@ -368,7 +377,65 @@ export function getRayuApiKey(providerId?: string): string | null {
   const p = providerId
     ? cfg.providers.find(x => x.id === providerId)
     : getActiveProvider()
-  return p?.apiKey ?? null
+  // Prefer the explicit apiKey (kept in sync as apiKeys[0]); fall back to the
+  // first stored multi-key so callers still resolve a key if only apiKeys is set.
+  return p?.apiKey ?? p?.apiKeys?.find(k => !!k?.trim()) ?? null
+}
+
+/**
+ * Resolve the ordered, de-duplicated list of non-empty API keys for a provider.
+ * Prefers the multi-key `apiKeys` list; falls back to the single `apiKey`.
+ * Returns [] when the provider has no key configured. This is the source of
+ * truth the request path uses to build per-key clients for rate-limit rotation.
+ */
+export function getProviderApiKeys(p: RayuProvider | undefined): string[] {
+  if (!p) return []
+  const out: string[] = []
+  const seen = new Set<string>()
+  const push = (raw: string | undefined) => {
+    const k = raw?.trim()
+    if (k && !seen.has(k)) {
+      seen.add(k)
+      out.push(k)
+    }
+  }
+  for (const k of p.apiKeys ?? []) push(k)
+  push(p.apiKey)
+  return out
+}
+
+/**
+ * Persist the full API-key list for a provider (multi-key providers). Trims +
+ * de-dupes, keeps `apiKey` in sync as keys[0] for single-key readers, and
+ * removes both fields when the list is empty. Marks the provider active.
+ * SECURITY: keys are secrets — written to the 0600 config file, never logged.
+ */
+export function setProviderApiKeys(
+  providerId: string,
+  keys: string[],
+  setActive = true,
+): void {
+  const cfg = loadRayuConfig()
+  const provider = cfg.providers.find(p => p.id === providerId)
+  if (!provider) return
+  const cleaned: string[] = []
+  const seen = new Set<string>()
+  for (const raw of keys) {
+    const k = raw?.trim()
+    if (k && !seen.has(k)) {
+      seen.add(k)
+      cleaned.push(k)
+    }
+  }
+  if (cleaned.length > 0) {
+    provider.apiKeys = cleaned
+    provider.apiKey = cleaned[0]
+  } else {
+    delete provider.apiKeys
+    delete provider.apiKey
+  }
+  if (setActive) cfg.activeProvider = providerId
+  saveRayuConfig(cfg)
 }
 
 /**

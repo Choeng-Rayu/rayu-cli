@@ -199,6 +199,24 @@ export function getTeamsDir(): string {
   return join(getRayuConfigHomeDir(), 'teams')
 }
 
+/** Default number of API keys stored per multi-key provider when unset. */
+export const DEFAULT_MAX_STORED_API_KEYS = 10
+/** Hard ceiling so a stray/huge NUMBER_API_KEYS_STORE can't bloat the config. */
+export const HARD_MAX_STORED_API_KEYS = 50
+
+/**
+ * Max number of API keys the CLI will STORE per multi-key provider (NVIDIA /
+ * OpenRouter). Configurable via the NUMBER_API_KEYS_STORE env var (default 10).
+ * Floored at 1 and hard-capped at HARD_MAX_STORED_API_KEYS. This bounds how
+ * many keys the /connect multi-key manager lets the user add; the rate-limit
+ * rotation then loops across whatever keys are stored.
+ */
+export function getMaxStoredApiKeys(): number {
+  const raw = parseInt(process.env.NUMBER_API_KEYS_STORE ?? '', 10)
+  if (!Number.isFinite(raw) || raw < 1) return DEFAULT_MAX_STORED_API_KEYS
+  return Math.min(raw, HARD_MAX_STORED_API_KEYS)
+}
+
 /**
  * Check if NODE_OPTIONS contains a specific flag.
  * Splits on whitespace and checks for exact match to avoid false positives.

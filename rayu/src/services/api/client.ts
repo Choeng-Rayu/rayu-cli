@@ -87,13 +87,33 @@ function createStderrLogger(): ClientOptions['logger'] {
 async function getRayuOpenAICompatibleClient(
   maxRetries: number,
 ): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const { getActiveProvider, getProviderApiKeys } = await import(
+    'src/utils/rayuConfig.js'
+  )
   const { createOpenAICompatibleClient } = await import('./openaiAdapter.js')
   const active = getActiveProvider()
   const baseURL =
     process.env.RAYU_OPENAI_BASE_URL ?? active?.baseURL ?? ''
-  const apiKey =
-    process.env.RAYU_OPENAI_API_KEY ?? active?.apiKey ?? ''
+  // Resolve the API key list. RAYU_OPENAI_API_KEY (env) takes precedence and is
+  // always a single key. Otherwise use the provider's stored keys, capping to
+  // the FIRST key unless this is a multi-key provider (NVIDIA / OpenRouter) AND
+  // the Basic-plan multi-key entitlement is granted — so Free users effectively
+  // use one key even if several are stored.
+  const envKey = process.env.RAYU_OPENAI_API_KEY
+  let apiKeys: string[]
+  if (envKey) {
+    apiKeys = [envKey]
+  } else {
+    apiKeys = getProviderApiKeys(active)
+    const { supportsMultiApiKey } = await import('src/utils/rayuProviders.js')
+    const { isMultiApiKeyAllowed } = await import(
+      '../rayuAuth/multiApiKeyFeature.js'
+    )
+    if (!supportsMultiApiKey(active?.id) || !isMultiApiKeyAllowed()) {
+      apiKeys = apiKeys.slice(0, 1)
+    }
+  }
+  const apiKey = apiKeys[0] ?? ''
   if (!baseURL) {
     return null
   }
@@ -108,6 +128,7 @@ async function getRayuOpenAICompatibleClient(
       : undefined
   return createOpenAICompatibleClient({
     apiKey,
+    apiKeys,
     baseURL,
     maxRetries,
     providerId: active?.id,
@@ -275,9 +296,10 @@ async function getRayuCopilotClient(maxRetries: number): Promise<unknown | null>
 /**
 /**
  * Rayu: route the active provider to the Rayu-hosted gateway client when kind
- * is 'rayu-hosted'. The gateway is OpenAI-compatible; auth is the user's Rayu
- * account JWT (injected by a token-refreshing fetch wrapper). The upstream
- * provider key never leaves the gateway. Lazy-imported.
+ * is 'rayu-hosted'. The gateway serves these via DeepSeek's Anthropic-compatible
+ * API, so this is a native Anthropic SDK client; auth is the user's Rayu account
+ * JWT (injected by a token-refreshing fetch wrapper). The upstream provider key
+ * never leaves the gateway. Lazy-imported.
  */
 async function getRayuHostedClient(maxRetries: number): Promise<unknown | null> {
   const { getActiveProvider } = await import('src/utils/rayuConfig.js')
@@ -363,6 +385,18 @@ async function buildClientForProvider(
     provider.baseURL
   ) {
     const { createOpenAICompatibleClient } = await import('./openaiAdapter.js')
+    // Resolve the key list for this specific provider, capped to one key unless
+    // it's a multi-key provider (NVIDIA / OpenRouter) and the Basic-plan
+    // entitlement is granted. Bedrock/other providers keep their single key.
+    const { getProviderApiKeys } = await import('src/utils/rayuConfig.js')
+    const { supportsMultiApiKey } = await import('src/utils/rayuProviders.js')
+    const { isMultiApiKeyAllowed } = await import(
+      '../rayuAuth/multiApiKeyFeature.js'
+    )
+    let apiKeys = getProviderApiKeys(provider)
+    if (!supportsMultiApiKey(provider.id) || !isMultiApiKeyAllowed()) {
+      apiKeys = apiKeys.slice(0, 1)
+    }
     // Rayu gateway routing applies only to openai-compatible (shouldRoute is
     // false for bedrock), so this leaves Bedrock direct.
     const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
@@ -372,7 +406,8 @@ async function buildClientForProvider(
       ? makeGatewayRoutingFetch(provider)
       : undefined
     return createOpenAICompatibleClient({
-      apiKey: provider.apiKey ?? '',
+      apiKey: apiKeys[0] ?? provider.apiKey ?? '',
+      apiKeys,
       baseURL: provider.baseURL,
       maxRetries,
       providerId: provider.id,

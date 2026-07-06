@@ -4,6 +4,43 @@ import { homedir } from 'os'
 import { isInBundledMode } from 'src/utils/bundledMode.js'
 import { writeToStdout } from 'src/utils/process.js'
 
+// On Windows, npm is installed as npm.cmd (a shell shim), not a directly
+// executable PE binary. execFileSync spawns the file directly and cannot
+// resolve/exec .cmd shims without going through a shell — without shell:true
+// this throws "spawn npm ENOENT" on every Windows machine. shell:true routes
+// the spawn through cmd.exe, which resolves npm.cmd via PATH correctly.
+//
+// Node deprecates (DEP0190) passing an `args` array together with
+// `shell: true` to execFileSync/execFile/spawn, because the args are just
+// concatenated into the shell command line, not escaped — the exact pattern
+// this codebase's own win32 spawns avoid (see src/utils/editor.ts). So on
+// win32 we build a single, manually-quoted command string instead of an args
+// array. All npmArgs here are internal literals (never raw user/network
+// input), so quoting each with double quotes is sufficient and safe.
+const IS_WINDOWS = process.platform === 'win32'
+
+function execNpmSync(
+  npmArgs: string[],
+  options: { timeout?: number; stdio: 'pipe' | 'inherit' | Array<'pipe' | 'ignore'> },
+): string {
+  if (IS_WINDOWS) {
+    const commandStr = `npm ${npmArgs.map(a => `"${a}"`).join(' ')}`
+    return execFileSync(commandStr, [], {
+      encoding: 'utf8',
+      cwd: homedir(),
+      shell: true,
+      ...(options.timeout ? { timeout: options.timeout } : {}),
+      stdio: options.stdio as never,
+    }) as unknown as string
+  }
+  return execFileSync('npm', npmArgs, {
+    encoding: 'utf8',
+    cwd: homedir(),
+    ...(options.timeout ? { timeout: options.timeout } : {}),
+    stdio: options.stdio as never,
+  }) as unknown as string
+}
+
 export async function update() {
   writeToStdout(`Current version: ${MACRO.VERSION}\n`)
 
@@ -22,10 +59,9 @@ async function updateNpmPackage() {
   // Check latest version from npm registry
   let latestVersion: string
   try {
-    latestVersion = execFileSync(
-      'npm',
+    latestVersion = execNpmSync(
       ['view', `${MACRO.PACKAGE_URL}@latest`, 'version', '--prefer-online'],
-      { encoding: 'utf8', timeout: 15000, cwd: homedir(), stdio: ['pipe', 'pipe', 'pipe'] },
+      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] },
     ).trim()
   } catch {
     process.stderr.write(chalk.red('Failed to check for updates\n'))
@@ -49,10 +85,9 @@ async function updateNpmPackage() {
 
   // Always update via npm install -g
   try {
-    execFileSync(
-      'npm',
+    execNpmSync(
       ['install', '-g', `${MACRO.PACKAGE_URL}@latest`],
-      { encoding: 'utf8', cwd: homedir(), stdio: 'inherit' },
+      { stdio: 'inherit' },
     )
   } catch {
     process.stderr.write(chalk.red('\nFailed to install update\n'))
@@ -89,10 +124,9 @@ async function updateNativeBinary() {
   // First check the latest version to inform the user
   let latestVersion: string
   try {
-    latestVersion = execFileSync(
-      'npm',
+    latestVersion = execNpmSync(
       ['view', `${MACRO.PACKAGE_URL}@latest`, 'version', '--prefer-online'],
-      { encoding: 'utf8', timeout: 15000, cwd: homedir(), stdio: ['pipe', 'pipe', 'pipe'] },
+      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] },
     ).trim()
   } catch {
     // If npm check fails, proceed anyway — installLatest will resolve the version itself

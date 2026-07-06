@@ -14,6 +14,16 @@ export function rayuHostedBaseURL(): string {
   return `${getRayuGatewayBaseUrl()}/v1`
 }
 
+/**
+ * Anthropic Messages base URL of the Rayu gateway (gateway base + /anthropic).
+ * rayu-hosted models are served via DeepSeek's Anthropic-compatible API, so the
+ * CLI talks to the gateway's /anthropic/v1/messages endpoint natively (the
+ * Anthropic SDK appends /v1/messages).
+ */
+export function rayuHostedAnthropicBaseURL(): string {
+  return `${getRayuGatewayBaseUrl()}/anthropic`
+}
+
 type FetchParams = Parameters<typeof fetch>
 
 /**
@@ -40,7 +50,7 @@ export function makeRayuHostedFetch(): typeof fetch {
             (input as Request).url
     if (
       (init?.method ?? 'GET').toUpperCase() === 'POST' &&
-      url.includes('/chat/completions') &&
+      (url.includes('/chat/completions') || url.includes('/v1/messages')) &&
       typeof init?.body === 'string'
     ) {
       const model = ((): string | undefined => {

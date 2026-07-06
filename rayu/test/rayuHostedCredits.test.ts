@@ -17,12 +17,13 @@ import {
 import { makeRayuHostedFetch } from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
 import { loadRayuConfig } from '../src/utils/rayuConfig.ts'
 import { APIError } from '@anthropic-ai/sdk/index.js'
-import type Anthropic from '@anthropic-ai/sdk/index.js'
+import Anthropic from '@anthropic-ai/sdk'
 import {
   getAssistantMessageFromError,
   isRayuCreditLimitError,
 } from '../src/services/api/errors.ts'
 import { CannotRetryError, withRetry } from '../src/services/api/withRetry.ts'
+import { createRayuHostedClient } from '../src/services/api/rayuHosted/rayuHostedClient.ts'
 
 let dir: string
 beforeEach(() => {
@@ -287,7 +288,7 @@ describe('withRetry · credit limit is not retried', () => {
   test('bails after a single attempt with CannotRetryError (no 10× / no multi-week sleep)', async () => {
     let calls = 0
     const err = creditLimitError()
-    const getClient = async (): Promise<Anthropic> => ({}) as unknown as Anthropic
+    const getClient = async () => ({}) as never
     const operation = async (): Promise<{ ok: true }> => {
       calls++
       throw err
@@ -312,5 +313,30 @@ describe('withRetry · credit limit is not retried', () => {
     expect(calls).toBe(1)
     expect(threw).toBeInstanceOf(CannotRetryError)
     expect((threw as CannotRetryError).originalError).toBe(err)
+  })
+})
+
+
+describe('createRayuHostedClient · native Anthropic (DeepSeek Anthropic API)', () => {
+  test('returns a native @anthropic-ai/sdk client pointed at the gateway /anthropic base', () => {
+    process.env.RAYU_GATEWAY_URL = 'https://gw.example.test'
+    try {
+      const client = createRayuHostedClient(
+        { id: 'rayu-hosted', kind: 'rayu-hosted' } as never,
+        2,
+      )
+      // It's the real Anthropic SDK client — not the OpenAI adapter shim — so
+      // claude.ts drives it natively (thinking/tools/usage map 1:1, no
+      // translation), and usage comes back in Anthropic's native shape.
+      expect(client).toBeInstanceOf(Anthropic)
+      expect(typeof (client as unknown as { messages?: { create?: unknown } }).messages?.create).toBe('function')
+      expect(
+        typeof (client as unknown as { beta?: { messages?: { create?: unknown } } }).beta?.messages?.create,
+      ).toBe('function')
+      // Targets the gateway's Anthropic endpoint (SDK appends /v1/messages).
+      expect(String((client as unknown as { baseURL?: string }).baseURL)).toContain('/anthropic')
+    } finally {
+      delete process.env.RAYU_GATEWAY_URL
+    }
   })
 })

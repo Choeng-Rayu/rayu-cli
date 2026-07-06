@@ -82,6 +82,7 @@ func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Stor
 		pr.Use(auth.Middleware(cfg.JWTSecret))
 		pr.Get("/v1/models", s.handleModels)
 		pr.Post("/v1/chat/completions", s.handleChat)
+		pr.Post("/anthropic/v1/messages", s.handleAnthropicMessages)
 		pr.Get("/v1/credits", s.handleCredits)
 
 		pr.Get("/v1/_whoami", s.handleWhoami)
@@ -242,29 +243,49 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleChat reserves credits, proxies the (streaming) completion to the model's
-// upstream provider, settles to actual usage, and records the ledger.
-func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+// hostedReserve carries everything the shared preamble produced for a hosted
+// request: the parsed body, resolved model + provider key, the reserved-credit
+// bookkeeping, and a settle closure that reconciles credits to actual usage and
+// records the ledger. Built by reserveHosted; consumed by both hosted endpoints.
+type hostedReserve struct {
+	userID     int64
+	req        map[string]any
+	hm         *store.HostedModel
+	apiKey     string
+	estCredits int64
+	usedPeriod int64
+	capPeriod  int64
+	topupBal   int64
+	settle     func(usage *proxy.Usage) int64
+}
+
+// reserveHosted runs the shared hosted-request preamble — auth, entitlement,
+// model lookup, max_tokens guard, provider key, daily-turn cap, and the credit
+// reserve — identically for the OpenAI (/v1/chat/completions) and Anthropic
+// (/anthropic/v1/messages) endpoints. On success it returns a *hostedReserve
+// (whose settle closure reconciles credits + records the ledger) and ok=true; on
+// any failure it writes the HTTP error itself and returns ok=false.
+func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedReserve, bool) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
 	if err != nil {
 		writeEntitlementError(w, err)
-		return
+		return nil, false
 	}
 	if !ent.Active() {
 		httpx.WriteError(w, http.StatusForbidden, "account is "+statusOrUnknown(ent.Status))
-		return
+		return nil, false
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "request body too large or unreadable")
-		return
+		return nil, false
 	}
 	var req map[string]any
 	if json.Unmarshal(body, &req) != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
-		return
+		return nil, false
 	}
 
 	modelCode, _ := req["model"].(string)
@@ -279,21 +300,21 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("reject: user=%d model=%q not allowed for plan=%s (allowed=%d)",
 			claims.UserID, modelCode, ent.Plan.Code, len(ent.AllowedModels))
 		httpx.WriteError(w, http.StatusForbidden, "model not available on your plan: "+modelCode)
-		return
+		return nil, false
 	}
 
 	settings := s.ent.Settings()
 	if settings.MaxTokensPerRequest > 0 {
 		if mt, ok := req["max_tokens"].(float64); ok && int(mt) > settings.MaxTokensPerRequest {
 			httpx.WriteError(w, http.StatusBadRequest, "max_tokens exceeds the per-request limit")
-			return
+			return nil, false
 		}
 	}
 
 	apiKey := s.cfg.KeyForProvider(hm.Provider)
 	if apiKey == "" {
 		httpx.WriteError(w, http.StatusInternalServerError, "provider key not configured")
-		return
+		return nil, false
 	}
 
 	// --- Daily turn cap (maxDailyTurns) — HARD limit on the hosted path ---
@@ -303,7 +324,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	tr, terr := s.lim.ReserveTurn(r.Context(), claims.UserID, turnCap)
 	if terr != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "rate limiter unavailable")
-		return
+		return nil, false
 	}
 	if !tr.OK {
 		if tr.ResetSeconds > 0 {
@@ -315,7 +336,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"reason":       "daily_turn_limit",
 			"resetSeconds": tr.ResetSeconds,
 		})
-		return
+		return nil, false
 	}
 
 	// --- Credit reserve (pre-flight) ---
@@ -347,7 +368,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if rerr != nil {
 		s.releaseTurnBG(claims.UserID) // refund the turn; the request didn't proceed
 		httpx.WriteError(w, http.StatusInternalServerError, "rate limiter unavailable")
-		return
+		return nil, false
 	}
 	if !rr.OK {
 		s.releaseTurnBG(claims.UserID) // credit denial: don't also burn a daily turn
@@ -360,7 +381,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"reason":       rr.Reason,
 			"resetSeconds": reset,
 		})
-		return
+		return nil, false
 	}
 
 	source := rr.Source
@@ -379,40 +400,57 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				// gateway logs alone instead of guessing — cacheHit tokens are
 				// billed at rates.CacheRead, output at rates.Output, everything
 				// else (including reasoning, a subset of completion) at rates.Input.
-				log.Printf("chat done: user=%d model=%s charged=%d (est %d) via=%s tokens(total=%d prompt=%d completion=%d reasoning=%d cacheHit=%d cacheMiss=%d)",
+				log.Printf("hosted done: user=%d model=%s charged=%d (est %d) via=%s tokens(total=%d prompt=%d completion=%d reasoning=%d cacheHit=%d cacheMiss=%d)",
 					claims.UserID, hm.Code, actual, estCredits, source,
 					usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens, usage.CompletionTokensDetails.ReasoningTokens,
 					usage.PromptCacheHitTokens, usage.PromptCacheMissTokens)
 				s.recordLedger(claims.UserID, *hm, usage, actual, source, rates)
 			} else {
-				log.Printf("chat done: user=%d model=%s charged=%d (est %d) via=%s (no usage reported)",
+				log.Printf("hosted done: user=%d model=%s charged=%d (est %d) via=%s (no usage reported)",
 					claims.UserID, hm.Code, actual, estCredits, source)
 			}
 		}
 		return actual
 	}
 
+	return &hostedReserve{
+		userID:     claims.UserID,
+		req:        req,
+		hm:         hm,
+		apiKey:     apiKey,
+		estCredits: estCredits,
+		usedPeriod: rr.UsedPeriod,
+		capPeriod:  capPeriod,
+		topupBal:   ent.TopupBalance,
+		settle:     settle,
+	}, true
+}
+
+// handleChat reserves credits (via reserveHosted), proxies the (streaming)
+// OpenAI-compatible completion to the model's upstream, settles to actual usage,
+// and records the ledger.
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	hr, ok := s.reserveHosted(w, r)
+	if !ok {
+		return
+	}
+	req := hr.req
 	stream, _ := req["stream"].(bool)
-	log.Printf("chat: user=%d model=%s stream=%v reserved=%d via=%s",
-		claims.UserID, hm.Code, stream, estCredits, source)
-	req["model"] = hm.UpstreamModelID
+	log.Printf("chat: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estCredits)
+	req["model"] = hr.hm.UpstreamModelID
 	if stream {
 		req["stream_options"] = map[string]any{"include_usage": true}
 	}
 	newBody, _ := json.Marshal(req)
-	upstreamURL := strings.TrimRight(hm.UpstreamBaseURL, "/") + "/chat/completions"
+	upstreamURL := strings.TrimRight(hr.hm.UpstreamBaseURL, "/") + "/chat/completions"
 
 	if stream {
 		// Best-effort headers before the stream starts (exact figures via /v1/credits).
-		setCreditHeaders(w, rr.UsedPeriod, capPeriod, ent.TopupBalance)
-		usage, wrote, serr := proxy.Stream(r.Context(), w, upstreamURL, apiKey, newBody)
-		settle(usage)
+		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.topupBal)
+		usage, wrote, serr := proxy.Stream(r.Context(), w, upstreamURL, hr.apiKey, newBody)
+		hr.settle(usage)
 		if serr != nil {
-			// Always log, even when wrote=true (an upstream 4xx/5xx passed through
-			// verbatim to the client) — otherwise the gateway logs never show what
-			// the upstream actually returned, making "why did I get a 503" reports
-			// impossible to diagnose from gateway logs alone.
-			log.Printf("chat: upstream error user=%d model=%s wrote=%v: %v", claims.UserID, hm.Code, wrote, serr)
+			log.Printf("chat: upstream error user=%d model=%s wrote=%v: %v", hr.userID, hr.hm.Code, wrote, serr)
 		}
 		if serr != nil && !wrote {
 			writeUpstreamError(w, serr, "upstream error")
@@ -420,21 +458,80 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	usage, status, respBody, cerr := proxy.Complete(r.Context(), upstreamURL, apiKey, newBody)
+	usage, status, respBody, cerr := proxy.Complete(r.Context(), upstreamURL, hr.apiKey, newBody)
 	if cerr != nil {
-		settle(nil)
-		log.Printf("chat: upstream unreachable user=%d model=%s: %v", claims.UserID, hm.Code, cerr)
+		hr.settle(nil)
+		log.Printf("chat: upstream unreachable user=%d model=%s: %v", hr.userID, hr.hm.Code, cerr)
 		writeUpstreamError(w, cerr, "upstream error")
 		return
 	}
 	if status != http.StatusOK {
-		log.Printf("chat: upstream non-200 user=%d model=%s status=%d", claims.UserID, hm.Code, status)
+		log.Printf("chat: upstream non-200 user=%d model=%s status=%d", hr.userID, hr.hm.Code, status)
 	}
-	actual := settle(usage)
-	setCreditHeaders(w, rr.UsedPeriod-estCredits+actual, capPeriod, ent.TopupBalance)
+	actual := hr.settle(usage)
+	setCreditHeaders(w, hr.usedPeriod-hr.estCredits+actual, hr.capPeriod, hr.topupBal)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
+}
+
+// handleAnthropicMessages is the rayu-hosted Anthropic Messages endpoint. It
+// shares reserveHosted with handleChat, then forwards to the model's Anthropic-
+// compatible upstream (DeepSeek: https://api.deepseek.com/anthropic/v1/messages)
+// with x-api-key, relaying the native Anthropic stream and metering off the
+// Anthropic usage (input_tokens = fresh input, cache_read_input_tokens = cached).
+func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
+	hr, ok := s.reserveHosted(w, r)
+	if !ok {
+		return
+	}
+	req := hr.req
+	stream, _ := req["stream"].(bool)
+	log.Printf("anthropic: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estCredits)
+	req["model"] = hr.hm.UpstreamModelID
+	newBody, _ := json.Marshal(req)
+	upstreamURL := anthropicUpstream(hr.hm.UpstreamBaseURL)
+
+	if stream {
+		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.topupBal)
+		usage, wrote, serr := proxy.StreamAnthropic(r.Context(), w, upstreamURL, hr.apiKey, newBody)
+		hr.settle(usage)
+		if serr != nil {
+			log.Printf("anthropic: upstream error user=%d model=%s wrote=%v: %v", hr.userID, hr.hm.Code, wrote, serr)
+		}
+		if serr != nil && !wrote {
+			writeUpstreamError(w, serr, "upstream error")
+		}
+		return
+	}
+
+	usage, status, respBody, cerr := proxy.CompleteAnthropic(r.Context(), upstreamURL, hr.apiKey, newBody)
+	if cerr != nil {
+		hr.settle(nil)
+		log.Printf("anthropic: upstream unreachable user=%d model=%s: %v", hr.userID, hr.hm.Code, cerr)
+		writeUpstreamError(w, cerr, "upstream error")
+		return
+	}
+	if status != http.StatusOK {
+		log.Printf("anthropic: upstream non-200 user=%d model=%s status=%d", hr.userID, hr.hm.Code, status)
+	}
+	actual := hr.settle(usage)
+	setCreditHeaders(w, hr.usedPeriod-hr.estCredits+actual, hr.capPeriod, hr.topupBal)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(respBody)
+}
+
+// anthropicUpstream derives DeepSeek's Anthropic Messages endpoint from a model's
+// configured (OpenAI-style) upstream base URL by keeping the origin and appending
+// /anthropic/v1/messages (DeepSeek exposes the Anthropic-compatible API at
+// https://api.deepseek.com/anthropic).
+func anthropicUpstream(base string) string {
+	trimmed := strings.TrimRight(base, "/")
+	if u, err := url.Parse(trimmed); err == nil && u.Scheme != "" && u.Host != "" {
+		return u.Scheme + "://" + u.Host + "/anthropic/v1/messages"
+	}
+	return strings.TrimSuffix(trimmed, "/v1") + "/anthropic/v1/messages"
 }
 
 // recordLedger writes the durable consumption row via the bounded write
@@ -453,10 +550,11 @@ func (s *Server) recordLedger(userID int64, m store.HostedModel, u *proxy.Usage,
 	if rates.Input > 0 {
 		cacheReadFraction = rates.CacheRead / rates.Input
 	}
-	billableInputTokens := float64(u.PromptTokens)
-	if u.PromptCacheHitTokens > 0 || u.PromptCacheMissTokens > 0 {
-		billableInputTokens = float64(u.PromptCacheMissTokens) + float64(u.PromptCacheHitTokens)*cacheReadFraction
-	}
+	// Reconciled cache split (DeepSeek native + OpenAI cached_tokens + none):
+	// fresh tokens at full price, cache reads at the discounted fraction. This
+	// mirrors what the user's credits were charged and what the provider bills
+	// Rayu. fresh + read always == PromptTokens, so no input token is missed.
+	billableInputTokens := float64(u.FreshInputTokens()) + float64(u.CacheReadTokens())*cacheReadFraction
 	cost := billableInputTokens/1e6*float64(m.InputPricePer1MCents) +
 		float64(u.CompletionTokens)/1e6*float64(m.OutputPricePer1MCents)
 	realCostCents := int(math.Round(cost))
@@ -722,8 +820,8 @@ func actualCredits(u *proxy.Usage, baseline int, rates credits.ModelRates) int64
 		PromptTokens:           int64(u.PromptTokens),
 		CompletionTokens:       int64(u.CompletionTokens),
 		TotalTokens:            int64(u.TotalTokens),
-		PromptCacheHitTokens:   int64(u.PromptCacheHitTokens),
-		PromptCacheMissTokens:  int64(u.PromptCacheMissTokens),
+		PromptCacheHitTokens:   int64(u.CacheReadTokens()),
+		PromptCacheMissTokens:  int64(u.FreshInputTokens()),
 		PromptCacheWriteTokens: 0, // DeepSeek/DeepInfra don't report a cache-write count today
 	}, baseline, rates)
 }
