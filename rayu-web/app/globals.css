@@ -1,5 +1,10 @@
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Inter:wght@300;400;500;600&display=swap');
 
+/* Tailwind CSS layers — must come after @import statements */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
   --green:       #00FF88;
   --green-dim:   #00cc6e;
