@@ -305,15 +305,17 @@ async function main(): Promise<void> {
   }
 
   // Fast-path for update/uninstall: skip full CLI initialization
-  // These commands only need npm access, not the full agent runtime
-  if (args.length === 1 && (args[0] === 'update' || args[0] === 'upgrade')) {
+  // These commands only need npm access, not the full agent runtime.
+  // Accept trailing flags (e.g. `uninstall --yes`, `uninstall --keep-data`)
+  // by matching on the subcommand alone rather than requiring args.length===1.
+  if (args[0] === 'update' || args[0] === 'upgrade') {
     const { update } = await import('../cli/update.js');
     await update();
     return;
   }
-  if (args.length === 1 && (args[0] === 'uninstall' || args[0] === 'remove')) {
+  if (args[0] === 'uninstall' || args[0] === 'remove') {
     const { uninstall } = await import('../cli/uninstall.js');
-    await uninstall();
+    await uninstall(args.slice(1));
     return;
   }
 
