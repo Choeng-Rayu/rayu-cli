@@ -18,6 +18,7 @@ export const FEATURE_KEYS = [
   'collaborator_model',
   'image_generation',
   'video_generation',
+  'multi_api_keys',
 ] as const
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number]
@@ -66,6 +67,15 @@ export const FEATURE_CATALOG: FeatureCatalogItem[] = [
     label: 'Video generation',
     description: 'Generate videos',
     supportsLimit: true,
+  },
+  {
+    key: 'multi_api_keys',
+    label: 'Multiple API keys',
+    description:
+      'Store several API keys per provider (NVIDIA / OpenRouter) with automatic rate-limit failover between them',
+    // Boolean capability, not a per-invocation usage-counted tool, so no numeric
+    // monthly cap (the per-deployment key count is set via NUMBER_API_KEYS_STORE).
+    supportsLimit: false,
   },
 ]
 
