@@ -2,6 +2,15 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+# Tolerate a flaky/slow build-host network: retry transient npm-registry fetch
+# failures (ECONNRESET/ETIMEDOUT/socket hang up) with backoff instead of failing
+# the whole image build on a single blip. Applies to every npm call in this stage.
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_factor=2 \
+    npm_config_fetch_retry_mintimeout=20000 \
+    npm_config_fetch_retry_maxtimeout=120000 \
+    npm_config_fetch_timeout=600000
+
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
@@ -13,7 +22,12 @@ RUN npm run build
 # ---- Runner: production deps + generated Prisma client ----
 FROM node:20-alpine AS runner
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_factor=2 \
+    npm_config_fetch_retry_mintimeout=20000 \
+    npm_config_fetch_retry_maxtimeout=120000 \
+    npm_config_fetch_timeout=600000
 
 COPY package.json package-lock.json* ./
 # Production deps include `prisma` (CLI) + `@prisma/client` so we can run
