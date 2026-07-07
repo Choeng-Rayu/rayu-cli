@@ -1,6 +1,5 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../commands.js'
-import { rayuFeatureAllowed } from '../services/rayuAuth/rayuEntitlements.js'
 import { IMAGE_GEN_TOOL_NAME } from '../tools/ImageGenTool/constants.js'
 import { getNvidiaApiKey } from '../tools/ImageGenTool/nvidiaImageClient.js'
 import { isGeminiVertexImageAvailable } from '../tools/ImageGenTool/vertexImageClient.js'
@@ -12,9 +11,12 @@ const generateImage: Command = {
   progressMessage: 'generating image',
   contentLength: 0,
   source: 'builtin',
+  // Capability gate only (hide when no image backend is configured). The paid
+  // entitlement is a SOFT gate (paidFeature) so the command stays visible and
+  // Free users get an upgrade notice instead of it disappearing.
   isEnabled: () =>
-    (getNvidiaApiKey() != null || isGeminiVertexImageAvailable()) &&
-    rayuFeatureAllowed('image_generation'),
+    getNvidiaApiKey() != null || isGeminiVertexImageAvailable(),
+  paidFeature: 'image_generation',
   async getPromptForCommand(args): Promise<ContentBlockParam[]> {
     const prompt = args.trim()
     return [
