@@ -1,6 +1,5 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../commands.js'
-import { rayuFeatureAllowed } from '../services/rayuAuth/rayuEntitlements.js'
 import { VIDEO_GEN_TOOL_NAME } from '../tools/VideoGenTool/constants.js'
 import { isVideoEnabled } from '../tools/VideoGenTool/nvidiaVideoClient.js'
 import { isGeminiVertexVideoAvailable } from '../tools/VideoGenTool/vertexVideoClient.js'
@@ -12,9 +11,9 @@ const generateVideo: Command = {
   progressMessage: 'generating video',
   contentLength: 0,
   source: 'builtin',
-  isEnabled: () =>
-    (isVideoEnabled() || isGeminiVertexVideoAvailable()) &&
-    rayuFeatureAllowed('video_generation'),
+  // Capability gate only; paid entitlement is a soft gate (paidFeature).
+  isEnabled: () => isVideoEnabled() || isGeminiVertexVideoAvailable(),
+  paidFeature: 'video_generation',
   async getPromptForCommand(args): Promise<ContentBlockParam[]> {
     const prompt = args.trim()
     return [

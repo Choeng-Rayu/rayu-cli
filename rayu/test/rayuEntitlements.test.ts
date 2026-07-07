@@ -99,23 +99,30 @@ describe('rayuFeatureAllowed', () => {
 })
 
 describe('command-level gating (wiring)', () => {
-  test('telegram-bot command isEnabled follows admin entitlements', async () => {
+  test('telegram-bot command soft-gates via paidFeature (stays visible, dispatcher enforces)', async () => {
     const ents = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    const gate = await import('../src/services/rayuAuth/paidFeatureGate.ts')
+    const { isCommandEnabled } = await import('../src/types/command.ts')
     const telegram = (await import('../src/commands/telegram-bot/index.ts')).default
 
-    // Flag off -> command enabled regardless of entitlements.
+    // The command is ALWAYS visible now (no entitlement-based isEnabled) — it
+    // declares the paid feature and the slash dispatcher soft-gates execution.
+    expect(telegram.paidFeature).toBe('telegram')
+    expect(isCommandEnabled(telegram)).toBe(true)
+
+    // Flag off (BYOK/OSS) -> not locked, runs as usual.
     delete process.env.USE_RAYU_OAUTH
     ents._resetRayuEntitlementsForTesting()
-    expect(telegram.isEnabled?.()).toBe(true)
+    expect(gate.isPaidFeatureLocked('telegram')).toBe(false)
 
-    // Flag on + admin disabled telegram -> command hidden.
+    // Flag on + admin disabled telegram (Free plan) -> locked -> upgrade notice.
     process.env.USE_RAYU_OAUTH = 'true'
     ents._setRayuEntitlementsForTesting(ent({ telegram: { enabled: false } }))
-    expect(telegram.isEnabled?.()).toBe(false)
+    expect(gate.isPaidFeatureLocked('telegram')).toBe(true)
 
-    // Flag on + admin enabled telegram -> command visible.
+    // Flag on + admin enabled telegram (paid plan) -> not locked -> runs.
     ents._setRayuEntitlementsForTesting(ent({ telegram: { enabled: true } }))
-    expect(telegram.isEnabled?.()).toBe(true)
+    expect(gate.isPaidFeatureLocked('telegram')).toBe(false)
   })
 })
 

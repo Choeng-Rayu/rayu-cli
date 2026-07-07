@@ -1,5 +1,4 @@
 import type { Command } from '../../commands.js'
-import { rayuFeatureAllowed } from '../../services/rayuAuth/rayuEntitlements.js'
 import { setSwarmModeUpdater } from '../../utils/swarmMode.js'
 
 // /collaborator_swarm — engage the Tier-2 Collaborator swarm for a complex
@@ -19,8 +18,9 @@ const command = {
   contentLength: 0,
   progressMessage: 'coordinating the collaborator swarm',
   source: 'builtin',
-  // Gated by the admin-configured `collaborator_swarm` feature.
-  isEnabled: () => rayuFeatureAllowed('collaborator_swarm'),
+  // Admin-configured paid feature: stays visible; the dispatcher soft-gates
+  // execution (Free users get an upgrade notice; paid users run it as usual).
+  paidFeature: 'collaborator_swarm',
   async getPromptForCommand(args: string, context) {
     // Entering the swarm via the command turns on the persistent, session-wide
     // swarm mode (indicator under the input; orchestrator framing re-injected

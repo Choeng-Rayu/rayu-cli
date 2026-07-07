@@ -35,6 +35,7 @@ import { createCommandInputMessage, createSyntheticUserCaveatMessage, createSyst
 import type { ModelAlias } from '../model/aliases.js';
 import { parseToolListFromCLI } from '../permissions/permissionSetup.js';
 import { hasPermissionsToUseTool } from '../permissions/permissions.js';
+import { isPaidFeatureLocked, upgradeTargetLabel } from '../../services/rayuAuth/paidFeatureGate.js';
 import { isOfficialMarketplaceName, parsePluginIdentifier } from '../plugins/pluginIdentifier.js';
 import { isRestrictedToPluginOnly, isSourceAdminTrusted } from '../settings/pluginOnlyPolicy.js';
 import { parseSlashCommand } from '../slashCommandParsing.js';
@@ -543,6 +544,34 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
         content: `This skill can only be invoked by RAYU, not directly by users. Ask RAYU to use the "${commandName}" skill for you.`
       })],
       shouldQuery: false,
+      command
+    };
+  }
+
+  // Soft paid-gate (admin-configured entitlements). The command stays VISIBLE
+  // to everyone; here, at EXECUTION time, we re-check the CURRENT plan live. A
+  // user whose plan does not include this feature is told to upgrade instead of
+  // running it — while entitled/paid users (and the BYOK / Rayu-OAuth-off path)
+  // fall through and run it as usual. Checked live so switching accounts
+  // (/logout → /login) takes effect immediately without rebuilding the command
+  // list, and so a command can never be executed by an unentitled Free user.
+  if (command.paidFeature && isPaidFeatureLocked(command.paidFeature)) {
+    const notice =
+      `🔒 /${commandName} isn't included in your current Rayu plan. ` +
+      `Upgrade to ${upgradeTargetLabel()} to unlock this and all other paid features (run /login after upgrading).`;
+    return {
+      messages: [
+        createUserMessage({
+          content: prepareUserContent({
+            inputString: `/${commandName}${args ? ` ${args}` : ''}`,
+            precedingInputBlocks
+          })
+        }),
+        // UI-only warning (filtered before the API); does not query the model.
+        createSystemMessage(notice, 'warning')
+      ],
+      shouldQuery: false,
+      resultText: notice,
       command
     };
   }

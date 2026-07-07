@@ -177,6 +177,17 @@ export type CommandBase = {
   hasUserSpecifiedDescription?: boolean
   /** Defaults to true. Only set when the command has conditional enablement (feature flags, env checks, etc). */
   isEnabled?: () => boolean
+  /**
+   * Admin-configurable paid-feature entitlement key (e.g. 'subagent_model').
+   * When set, the command stays VISIBLE to everyone, but the slash dispatcher
+   * SOFT-GATES execution: a user whose plan does not grant this feature gets an
+   * "upgrade" notice instead of running it, while entitled/paid users — and the
+   * BYOK / Rayu-OAuth-off path — run it normally. This mirrors the image/video
+   * tool soft-gate (isPaidFeatureLocked) but for slash commands, so the command
+   * is discoverable and the Free user is told how to unlock it rather than the
+   * command silently vanishing.
+   */
+  paidFeature?: string
   /** Defaults to false. Only set when the command should be hidden from typeahead/help. */
   isHidden?: boolean
   name: string
