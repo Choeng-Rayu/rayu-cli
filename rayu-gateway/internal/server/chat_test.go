@@ -166,12 +166,12 @@ func TestHandleChatBillsCacheHitTokensAtDiscount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lim.Status: %v", err)
 	}
-	// Naive (pre-fix) billing would have charged ForTokens(10_000_000, 10, 1) = 100
-	// credits — double the entire 50-credit Pro allowance from ONE request. With
-	// the cache-hit discount, 10,000,000 all-cache-hit tokens bill as if they
-	// were 1,000,000 tokens: ceil(1 * 10 * 1) = 10 credits.
-	if st.UsedPeriod != 10 {
-		t.Fatalf("usedPeriod=%d, want 10 (cache-hit-discounted), naive-bug value would be 100", st.UsedPeriod)
+	// Fine-grained billable tokens: 10,000,000 all-cache-hit tokens ×
+	// CacheHitBillingWeight(0.10) = 1,000,000 billable tokens (≈10 credits at
+	// baseline 10). Naive no-cache billing would be 10,000,000 billable (~100
+	// credits — 2× the whole 50-credit allowance from one request).
+	if st.UsedPeriod != 1_000_000 {
+		t.Fatalf("usedPeriod=%d billable tokens, want 1_000_000 (cache-discounted)", st.UsedPeriod)
 	}
 }
 

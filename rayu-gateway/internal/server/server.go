@@ -195,16 +195,21 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 		topup = ent.TopupBalance
 	}
 	settings := s.ent.Settings()
-	var tokensPerCredit int64
-	if settings.BaselineCreditsPer1M > 0 {
-		tokensPerCredit = int64(math.Round(1_000_000 / float64(settings.BaselineCreditsPer1M)))
-	}
-	used := st.UsedPeriod
-	remainingCredits := remaining(capOrUnlimited(ent.Plan.CreditsPerPeriod), used)
+	tokensPerCredit := credits.TokensPerCredit(settings.BaselineCreditsPer1M)
+	usedBillable := st.UsedPeriod // billable tokens used this period (fine-grained)
+	// Derive credits from billable tokens (fractional — the coarse whole-credit
+	// ceil is gone), rounded to 2 dp for display.
+	usedCredits := math.Round(float64(usedBillable)/float64(tokensPerCredit)*100) / 100
+	var remainingCredits *float64
 	var allowanceTokens, usedTokens, remainingTokens *int64
 	if ent.Plan.CreditsPerPeriod != nil {
-		at := *ent.Plan.CreditsPerPeriod * tokensPerCredit
-		ut := used * tokensPerCredit
+		rc := float64(*ent.Plan.CreditsPerPeriod) - usedCredits
+		if rc < 0 {
+			rc = 0
+		}
+		remainingCredits = &rc
+		at := *ent.Plan.CreditsPerPeriod * tokensPerCredit // allowance in billable tokens
+		ut := usedBillable                                 // real billable tokens used
 		rt := at - ut
 		if rt < 0 {
 			rt = 0
@@ -225,7 +230,7 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 		"planName":         ent.Plan.Name,
 		"priceCents":       ent.Plan.PriceCents,
 		"creditsPerPeriod": ent.Plan.CreditsPerPeriod,
-		"usedCredits":      used,
+		"usedCredits":      usedCredits,
 		"remainingCredits": remainingCredits,
 		"tokensPerCredit":  tokensPerCredit,
 		"allowanceTokens":  allowanceTokens,
@@ -248,15 +253,16 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 // bookkeeping, and a settle closure that reconciles credits to actual usage and
 // records the ledger. Built by reserveHosted; consumed by both hosted endpoints.
 type hostedReserve struct {
-	userID     int64
-	req        map[string]any
-	hm         *store.HostedModel
-	apiKey     string
-	estCredits int64
-	usedPeriod int64
-	capPeriod  int64
-	topupBal   int64
-	settle     func(usage *proxy.Usage) int64
+	userID          int64
+	req             map[string]any
+	hm              *store.HostedModel
+	apiKey          string
+	estBillable     int64 // pre-flight billable-token reservation
+	usedPeriod      int64 // billable tokens used this period (from the limiter)
+	capPeriod       int64 // billable-token allowance (or credits.Unlimited)
+	topupBal        int64
+	tokensPerCredit int64 // billable tokens per credit (for display/headers)
+	settle          func(usage *proxy.Usage) int64
 }
 
 // reserveHosted runs the shared hosted-request preamble — auth, entitlement,
@@ -341,25 +347,28 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 
 	// --- Credit reserve (pre-flight) ---
 	baseline := settings.BaselineCreditsPer1M
+	tpc := credits.TokensPerCredit(baseline)
 	mult := hm.CreditMultiplier
 	// rates prices each usage bucket (input/output/cache-read/cache-write)
-	// independently for the ACTUAL charge (see credits.DeriveModelRates); the
-	// pre-flight estimate above still uses the flat mult since the real
-	// input/output/cache split isn't known until the upstream responds.
+	// independently for the ACTUAL charge (see credits.DeriveModelRates).
 	rates := credits.DeriveModelRates(hm.CreditMultiplier, hm.InputPricePer1MCents, hm.OutputPricePer1MCents, hm.CacheReadCreditMultiplier, hm.CacheWriteCreditMultiplier)
-	capPeriod := capOrUnlimited(ent.Plan.CreditsPerPeriod)
-	estCredits := credits.ForTokens(credits.EstimateTokens(req, defaultMaxTokens), baseline, mult)
-	if estCredits < 1 {
-		estCredits = 1
+	// Track usage + allowance in FINE-GRAINED billable tokens (not whole ceil'd
+	// credits): a tiny turn then costs its true fraction instead of a full 1M-
+	// token credit. Cap = the plan's credit allowance × tokensPerCredit.
+	capBillable := credits.Unlimited
+	if ent.Plan.CreditsPerPeriod != nil {
+		capBillable = *ent.Plan.CreditsPerPeriod * tpc
 	}
+	// Pre-flight hold: rough billable estimate; settle reconciles to actual.
+	estBillable := credits.EstimateBillableTokens(credits.EstimateTokens(req, defaultMaxTokens), mult)
 	topUpAvailable := ent.Plan.TopUpEnabled && ent.TopupBalance > 0
 	if topUpAvailable {
 		_ = s.lim.EnsureTopup(r.Context(), claims.UserID, ent.TopupBalance)
 	}
 	rr, rerr := s.lim.Reserve(r.Context(), credits.ReserveParams{
 		UserID:        claims.UserID,
-		EstCredits:    estCredits,
-		CapPeriod:     capPeriod,
+		EstCredits:    estBillable,
+		CapPeriod:     capBillable,
 		PeriodTTLSec:  periodTTLSeconds(ent.PeriodEnd),
 		PeriodID:      periodID(ent.PeriodEnd),
 		MaxConcurrent: settings.MaxConcurrentStreams,
@@ -388,42 +397,40 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	source := rr.Source
 	settled := false
 	settle := func(usage *proxy.Usage) int64 {
-		actual := actualCredits(usage, baseline, rates)
+		actual := actualBillable(usage, rates) // billable tokens (fine-grained)
 		if !settled {
 			settled = true
 			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = s.lim.Settle(bg, claims.UserID, source, estCredits, actual)
+			_ = s.lim.Settle(bg, claims.UserID, source, estBillable, actual)
 			s.ent.Invalidate(claims.UserID)
 			if usage != nil {
-				// Token/cache/reasoning breakdown logged on every hosted request
-				// so a "why did this cost so much" report can be answered from
-				// gateway logs alone instead of guessing — cacheHit tokens are
-				// billed at rates.CacheRead, output at rates.Output, everything
-				// else (including reasoning, a subset of completion) at rates.Input.
-				log.Printf("hosted done: user=%d model=%s charged=%d (est %d) via=%s tokens(total=%d prompt=%d completion=%d reasoning=%d cacheHit=%d cacheMiss=%d)",
-					claims.UserID, hm.Code, actual, estCredits, source,
+				// billable = credit-weighted tokens actually charged; ~credits is
+				// billable/tokensPerCredit (no coarse whole-credit rounding).
+				log.Printf("hosted done: user=%d model=%s billable=%d (~%.4f credits, est %d) via=%s tokens(total=%d prompt=%d completion=%d reasoning=%d cacheHit=%d cacheMiss=%d)",
+					claims.UserID, hm.Code, actual, float64(actual)/float64(tpc), estBillable, source,
 					usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens, usage.CompletionTokensDetails.ReasoningTokens,
 					usage.PromptCacheHitTokens, usage.PromptCacheMissTokens)
-				s.recordLedger(claims.UserID, *hm, usage, actual, source, rates)
+				s.recordLedger(claims.UserID, *hm, usage, creditsFromBillable(actual, tpc), source, rates)
 			} else {
-				log.Printf("hosted done: user=%d model=%s charged=%d (est %d) via=%s (no usage reported)",
-					claims.UserID, hm.Code, actual, estCredits, source)
+				log.Printf("hosted done: user=%d model=%s billable=%d (est %d) via=%s (no usage reported)",
+					claims.UserID, hm.Code, actual, estBillable, source)
 			}
 		}
 		return actual
 	}
 
 	return &hostedReserve{
-		userID:     claims.UserID,
-		req:        req,
-		hm:         hm,
-		apiKey:     apiKey,
-		estCredits: estCredits,
-		usedPeriod: rr.UsedPeriod,
-		capPeriod:  capPeriod,
-		topupBal:   ent.TopupBalance,
-		settle:     settle,
+		userID:          claims.UserID,
+		req:             req,
+		hm:              hm,
+		apiKey:          apiKey,
+		estBillable:     estBillable,
+		usedPeriod:      rr.UsedPeriod,
+		capPeriod:       capBillable,
+		topupBal:        ent.TopupBalance,
+		tokensPerCredit: tpc,
+		settle:          settle,
 	}, true
 }
 
@@ -437,7 +444,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	req := hr.req
 	stream, _ := req["stream"].(bool)
-	log.Printf("chat: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estCredits)
+	log.Printf("chat: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estBillable)
 	req["model"] = hr.hm.UpstreamModelID
 	if stream {
 		req["stream_options"] = map[string]any{"include_usage": true}
@@ -447,7 +454,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if stream {
 		// Best-effort headers before the stream starts (exact figures via /v1/credits).
-		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.topupBal)
+		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
 		usage, wrote, serr := proxy.Stream(r.Context(), w, upstreamURL, hr.apiKey, newBody)
 		hr.settle(usage)
 		if serr != nil {
@@ -470,7 +477,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("chat: upstream non-200 user=%d model=%s status=%d", hr.userID, hr.hm.Code, status)
 	}
 	actual := hr.settle(usage)
-	setCreditHeaders(w, hr.usedPeriod-hr.estCredits+actual, hr.capPeriod, hr.topupBal)
+	setCreditHeaders(w, hr.usedPeriod-hr.estBillable+actual, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
@@ -488,14 +495,14 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	req := hr.req
 	stream, _ := req["stream"].(bool)
-	log.Printf("anthropic: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estCredits)
+	log.Printf("anthropic: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estBillable)
 	req["model"] = hr.hm.UpstreamModelID
 	newBody, _ := json.Marshal(req)
 	upstreamURL := anthropicUpstream(hr.hm.UpstreamBaseURL)
 	bearer := anthropicUsesBearerAuth(hr.hm.Provider)
 
 	if stream {
-		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.topupBal)
+		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
 		usage, wrote, serr := proxy.StreamAnthropic(r.Context(), w, upstreamURL, hr.apiKey, bearer, newBody)
 		hr.settle(usage)
 		if serr != nil {
@@ -518,7 +525,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		log.Printf("anthropic: upstream non-200 user=%d model=%s status=%d", hr.userID, hr.hm.Code, status)
 	}
 	actual := hr.settle(usage)
-	setCreditHeaders(w, hr.usedPeriod-hr.estCredits+actual, hr.capPeriod, hr.topupBal)
+	setCreditHeaders(w, hr.usedPeriod-hr.estBillable+actual, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
@@ -808,12 +815,15 @@ func isPrivateIP(ip net.IP) bool {
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
-func setCreditHeaders(w http.ResponseWriter, usedWeek, capWeek, topup int64) {
-	w.Header().Set("x-rayu-credits-used", strconv.FormatInt(usedWeek, 10))
-	if capWeek < 0 {
+func setCreditHeaders(w http.ResponseWriter, usedBillable, capBillable, tokensPerCredit, topup int64) {
+	if tokensPerCredit <= 0 {
+		tokensPerCredit = 1
+	}
+	w.Header().Set("x-rayu-credits-used", strconv.FormatInt(usedBillable/tokensPerCredit, 10))
+	if capBillable < 0 {
 		w.Header().Set("x-rayu-credits-remaining", "unlimited")
 	} else {
-		rem := capWeek - usedWeek
+		rem := (capBillable - usedBillable) / tokensPerCredit
 		if rem < 0 {
 			rem = 0
 		}
@@ -822,18 +832,30 @@ func setCreditHeaders(w http.ResponseWriter, usedWeek, capWeek, topup int64) {
 	w.Header().Set("x-rayu-topup-balance", strconv.FormatInt(topup, 10))
 }
 
-func actualCredits(u *proxy.Usage, baseline int, rates credits.ModelRates) int64 {
+// actualBillable is the settled fine-grained billable-token count for a request's
+// usage (0 for nil/failed usage). Fresh input → cache-miss bucket, cache reads →
+// cache-hit bucket (see proxy.Usage helpers); each bucket priced by its rate.
+func actualBillable(u *proxy.Usage, rates credits.ModelRates) int64 {
 	if u == nil {
 		return 0
 	}
-	return credits.ForUsage(credits.Usage{
+	return credits.BillableTokens(credits.Usage{
 		PromptTokens:           int64(u.PromptTokens),
 		CompletionTokens:       int64(u.CompletionTokens),
 		TotalTokens:            int64(u.TotalTokens),
 		PromptCacheHitTokens:   int64(u.CacheReadTokens()),
 		PromptCacheMissTokens:  int64(u.FreshInputTokens()),
 		PromptCacheWriteTokens: 0, // DeepSeek/DeepInfra don't report a cache-write count today
-	}, baseline, rates)
+	}, rates)
+}
+
+// creditsFromBillable converts billable tokens to whole credits for the audit
+// ledger (rounded; tokensPerCredit<=0 → passthrough).
+func creditsFromBillable(billable, tokensPerCredit int64) int64 {
+	if tokensPerCredit <= 0 {
+		return billable
+	}
+	return int64(math.Round(float64(billable) / float64(tokensPerCredit)))
 }
 
 // remaining returns the remaining credits for a cap, or nil when unlimited.

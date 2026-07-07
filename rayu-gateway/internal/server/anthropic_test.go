@@ -80,11 +80,10 @@ func TestHandleAnthropicMessagesCacheAwareBilling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lim.Status: %v", err)
 	}
-	// Full-price (naive/pre-fix) billing = ForTokens(10,000,000, 10, 1) = 100
-	// credits — 2× the whole 50-credit Pro allowance from ONE request. Cache-aware:
-	// 10,000,000 * 0.10 = 1,000,000 billable → ceil(1e6/1e6*10) = 10 credits.
-	if st.UsedPeriod != 10 {
-		t.Fatalf("usedPeriod=%d, want 10 (cache-discounted); naive bug value = 100", st.UsedPeriod)
+	// 10,000,000 all-cache-read tokens × 0.10 = 1,000,000 billable tokens
+	// (≈10 credits at baseline 10). Full-price (no cache) would be 10,000,000.
+	if st.UsedPeriod != 1_000_000 {
+		t.Fatalf("usedPeriod=%d billable tokens, want 1_000_000 (cache-discounted)", st.UsedPeriod)
 	}
 }
 
@@ -135,10 +134,10 @@ func TestHandleAnthropicMessagesStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lim.Status: %v", err)
 	}
-	// fresh 100,000 *1 + cache_read 9,000,000 *0.10 + output 1,000 *1 = 1,001,000
-	// billable → ceil(1,001,000/1e6*10) = 11. Full price would be ~92.
-	if st.UsedPeriod != 11 {
-		t.Fatalf("usedPeriod=%d, want 11 (cache-discounted streamed usage); full price ≈ 92", st.UsedPeriod)
+	// fresh 100,000×1 + cache_read 9,000,000×0.10 + output 1,000×1 = 1,001,000
+	// billable tokens (≈11 credits at baseline 10). Full price ≈ 9,101,000 billable.
+	if st.UsedPeriod != 1_001_000 {
+		t.Fatalf("usedPeriod=%d billable tokens, want 1_001_000 (cache-discounted streamed usage)", st.UsedPeriod)
 	}
 }
 
@@ -190,5 +189,51 @@ func TestHandleAnthropicMessagesLongCatBearerAuth(t *testing.T) {
 	}
 	if gotKey != "" {
 		t.Errorf("x-api-key must be empty for LongCat (Bearer scheme), got %q", gotKey)
+	}
+}
+
+
+// TestHandleAnthropicMessagesTinyTurnCostsLittle is the regression test for the
+// reported "a 'hi' burned a whole credit / showed millions of tokens" bug: a
+// trivial turn must cost only its true handful of BILLABLE TOKENS, not round up
+// to a full 1M-token credit. Uses baseline=1 (1 credit = 1,000,000 tokens), the
+// reported setup — where the old ceil-to-whole-credit charged 1,000,000 for a "hi".
+func TestHandleAnthropicMessagesTinyTurnCostsLittle(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":20,"output_tokens":8}}`)
+	}))
+	defer upstream.Close()
+
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 71, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				{Code: "deepseek-v4-flash", Provider: "deepseek", Enabled: true, CreditMultiplier: 1,
+					UpstreamBaseURL: upstream.URL, UpstreamModelID: "deepseek-v4-flash"},
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1}, // 1 credit = 1,000,000 tokens
+	}
+	h, lim := chatHarness(t, fe)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+		strings.NewReader(`{"model":"deepseek-v4-flash","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 71))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	st, err := lim.Status(context.Background(), 71)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// input 20 ×1 + output 8 ×1 = 28 billable tokens (≈0.000028 credit). The
+	// pre-fix whole-credit ceil charged 1 credit = 1,000,000 tokens for this "hi".
+	if st.UsedPeriod != 28 {
+		t.Fatalf("usedPeriod=%d billable tokens, want 28 (a 'hi' must NOT cost a whole 1M-token credit)", st.UsedPeriod)
 	}
 }
