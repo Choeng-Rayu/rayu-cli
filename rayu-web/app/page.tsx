@@ -9,6 +9,28 @@ export default function HomePage() {
 
   return (
     <main className="container">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            '@context': 'https://schema.org',
+            '@type': 'SoftwareApplication',
+            name: 'Rayu CLI',
+            applicationCategory: 'DeveloperApplication',
+            operatingSystem: 'Cross-platform',
+            offers: {
+              '@type': 'Offer',
+              price: '0',
+              priceCurrency: 'USD',
+            },
+            aggregateRating: {
+              '@type': 'AggregateRating',
+              ratingValue: '5',
+              ratingCount: '1',
+            },
+          }),
+        }}
+      />
       {/* Hero Section */}
       <section className="grid-2-col" style={{ margin: '2rem 0 6rem 0' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
