@@ -42,6 +42,10 @@ type ReserveParams struct {
 	MaxConcurrent int  // 0 = unlimited
 	MaxReq5h      int  // 0 = unlimited
 	TopUpEnabled bool  // allow drawing from the top-up balance when the period is exhausted
+	// PeriodID identifies the current billing period (currentPeriodEnd). When it
+	// changes (a renewal/upgrade), the used-credit counter is reset so the new
+	// period starts with a full allowance. Empty = no period (free/no-expiry).
+	PeriodID string
 }
 
 // ReserveResult reports the decision, the charge source, and period state.
@@ -53,10 +57,10 @@ type ReserveResult struct {
 	ResetPeriod int64 // seconds until the period resets; <0 if none
 }
 
-// keysFor returns [cwperiod, conc, req5h, topup] for a user.
+// keysFor returns [cwperiod, conc, req5h, topup, cwperiodid] for a user.
 func keysFor(uid int64) []string {
 	u := strconv.FormatInt(uid, 10)
-	return []string{"cwperiod:" + u, "conc:" + u, "req5h:" + u, "topup:" + u}
+	return []string{"cwperiod:" + u, "conc:" + u, "req5h:" + u, "topup:" + u, "cwperiodid:" + u}
 }
 
 // reserveScript: enforce concurrency/request caps, then charge the per-period
@@ -67,6 +71,24 @@ local est=tonumber(ARGV[1]); local capp=tonumber(ARGV[2])
 local maxc=tonumber(ARGV[3]); local maxr=tonumber(ARGV[4])
 local win5=tonumber(ARGV[5]); local cttl=tonumber(ARGV[6]); local pttl=tonumber(ARGV[7])
 local topup=tonumber(ARGV[8])
+local pid=ARGV[9]
+
+-- Reset the per-period usage counter when the billing period changed. A plan
+-- renewal/upgrade sets a new currentPeriodEnd → a new period id in
+-- KEYS[5]=cwperiodid:<uid>. On change we ZERO the used counter so the renewed
+-- plan starts with a FULL allowance instead of inheriting the exhausted count.
+-- (The key's natural TTL still resets it at period end for auto-rollovers; this
+-- handles MANUAL early renewal, where the old counter would otherwise stay
+-- maxed out until the original period expired.) Skipped when pid is empty
+-- (free/no-expiry) to preserve prior behavior.
+if pid ~= '' and redis.call('GET',KEYS[5]) ~= pid then
+  redis.call('SET',KEYS[1],'0')
+  redis.call('SET',KEYS[5],pid)
+  if pttl>0 then
+    redis.call('EXPIRE',KEYS[1],pttl)
+    redis.call('EXPIRE',KEYS[5],pttl)
+  end
+end
 
 local usedp=tonumber(redis.call('GET',KEYS[1]) or '0')
 local conc=tonumber(redis.call('GET',KEYS[2]) or '0')
@@ -138,7 +160,7 @@ func (l *Limiter) Reserve(ctx context.Context, p ReserveParams) (ReserveResult, 
 	}
 	raw, err := reserveScript.Run(ctx, l.rdb, keysFor(p.UserID),
 		p.EstCredits, p.CapPeriod, p.MaxConcurrent, p.MaxReq5h,
-		int(l.win5h.Seconds()), int(l.concTTL.Seconds()), pttl, topup,
+		int(l.win5h.Seconds()), int(l.concTTL.Seconds()), pttl, topup, p.PeriodID,
 	).Result()
 	if err != nil {
 		return ReserveResult{}, err

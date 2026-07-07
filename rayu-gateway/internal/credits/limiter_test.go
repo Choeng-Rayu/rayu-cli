@@ -382,3 +382,39 @@ func TestTurnsTodayEmpty(t *testing.T) {
 		t.Fatalf("empty TurnsToday used=%d reset=%d want 0/-1", used, reset)
 	}
 }
+
+
+// TestReserveResetsOnPeriodRenewal is the regression test for "I renewed my $10
+// plan but my credits stayed maxed out and I still can't use it": exhausting the
+// allowance on one billing period (P1) must NOT carry over after a renewal sets
+// a new period id (P2) — the counter resets so the renewed plan is usable, while
+// staying accumulative within the same period.
+func TestReserveResetsOnPeriodRenewal(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	// Exhaust the 50-credit allowance on period "P1".
+	r, err := lim.Reserve(ctx, ReserveParams{UserID: 20, EstCredits: 50, CapPeriod: 50, PeriodTTLSec: 3600, PeriodID: "P1"})
+	if err != nil || !r.OK || r.UsedPeriod != 50 {
+		t.Fatalf("exhaust P1: ok=%v used=%d err=%v", r.OK, r.UsedPeriod, err)
+	}
+	// Still P1 → denied (counter maxed) — the pre-renewal state.
+	d, _ := lim.Reserve(ctx, ReserveParams{UserID: 20, EstCredits: 1, CapPeriod: 50, PeriodTTLSec: 3600, PeriodID: "P1"})
+	if d.OK || d.Reason != "period_limit" {
+		t.Fatalf("still P1: expected period_limit deny, got ok=%v reason=%s", d.OK, d.Reason)
+	}
+	// Renewal → new period id "P2" → counter resets → usable again, used=1.
+	r2, err := lim.Reserve(ctx, ReserveParams{UserID: 20, EstCredits: 1, CapPeriod: 50, PeriodTTLSec: 3600, PeriodID: "P2"})
+	if err != nil || !r2.OK {
+		t.Fatalf("after renewal: expected OK, got ok=%v reason=%s err=%v", r2.OK, r2.Reason, err)
+	}
+	if r2.UsedPeriod != 1 {
+		t.Fatalf("after renewal usedPeriod=%d, want 1 (counter reset)", r2.UsedPeriod)
+	}
+	// Within the SAME new period, usage keeps accumulating (no spurious reset).
+	r3, _ := lim.Reserve(ctx, ReserveParams{UserID: 20, EstCredits: 1, CapPeriod: 50, PeriodTTLSec: 3600, PeriodID: "P2"})
+	if !r3.OK || r3.UsedPeriod != 2 {
+		t.Fatalf("same-period accumulate: ok=%v used=%d, want ok=true used=2", r3.OK, r3.UsedPeriod)
+	}
+}

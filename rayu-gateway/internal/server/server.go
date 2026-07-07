@@ -361,6 +361,7 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		EstCredits:    estCredits,
 		CapPeriod:     capPeriod,
 		PeriodTTLSec:  periodTTLSeconds(ent.PeriodEnd),
+		PeriodID:      periodID(ent.PeriodEnd),
 		MaxConcurrent: settings.MaxConcurrentStreams,
 		MaxReq5h:      settings.MaxRequestsPer5h,
 		TopUpEnabled:  topUpAvailable,
@@ -890,6 +891,18 @@ func periodTTLSeconds(pe *time.Time) int {
 		s = 60
 	}
 	return s
+}
+
+// periodID is a stable identifier for the current billing period (its end
+// instant, as unix seconds). When it changes — a plan renewal/upgrade sets a new
+// currentPeriodEnd — the limiter resets the used-credit counter so the renewed
+// plan starts fresh instead of inheriting the exhausted count. Empty when there
+// is no period (free / no-expiry).
+func periodID(pe *time.Time) string {
+	if pe == nil {
+		return ""
+	}
+	return strconv.FormatInt(pe.Unix(), 10)
 }
 
 // isoTime renders a *time.Time as RFC3339, or null.
