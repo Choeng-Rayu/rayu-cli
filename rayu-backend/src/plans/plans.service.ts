@@ -4,6 +4,7 @@ import type { PlanAvailability, PlanCode } from '../common/enums'
 import {
   type FeatureEntitlements,
   type FeatureKey,
+  backfillMissingFeatures,
   resolveEntitlements,
 } from '../common/features'
 import { PrismaService } from '../prisma/prisma.service'
@@ -62,20 +63,27 @@ export class PlansService {
   }
 
   /**
-   * Idempotently ensure each canonical plan EXISTS — create-if-missing ONLY.
+   * Idempotently ensure each canonical plan EXISTS — create-if-missing — and
+   * backfill any newly-added catalog features onto plans that already exist.
    *
-   * This is intentionally NON-DESTRUCTIVE: if a plan already exists we leave it
-   * untouched so that super-admin edits (price, availability, features, usage
-   * limits) made in production are never overwritten on restart/redeploy. The
-   * DB is the source of truth for all plan business logic; PLAN_SEED only
-   * provides first-time defaults.
+   * Creation is unchanged. The backfill is NON-DESTRUCTIVE: for a pre-existing
+   * plan it only fills feature keys that are ABSENT from its stored
+   * `limits.features` (using that plan's seed defaults), so super-admin edits
+   * (price, availability, feature toggles, limits) are never overwritten. This
+   * is what lets a feature added to the catalog AFTER launch (e.g.
+   * `multi_api_keys`) reach existing paid plans with its intended default
+   * (paid → enabled, free → disabled) instead of resolving to disabled forever.
+   * The DB remains the source of truth; PLAN_SEED only provides defaults.
    */
   async seedDefaults(): Promise<Plan[]> {
     for (const seed of PLAN_SEED) {
       const existing = await this.prisma.plan.findUnique({
         where: { code: seed.code },
       })
-      if (existing) continue
+      if (existing) {
+        await this.backfillPlanFeatures(existing, seed)
+        continue
+      }
       const limits: Prisma.InputJsonValue | typeof Prisma.JsonNull =
         seed.limits == null
           ? Prisma.JsonNull
@@ -91,6 +99,30 @@ export class PlansService {
       })
     }
     return this.findAll()
+  }
+
+  /**
+   * Backfill catalog features missing from an existing plan's stored
+   * entitlements, using the plan's seed defaults. Writes only when a key was
+   * actually added, so it's a no-op on every boot after the first.
+   */
+  private async backfillPlanFeatures(
+    plan: Plan,
+    seed: (typeof PLAN_SEED)[number],
+  ): Promise<void> {
+    const seedFeatures = ((seed.limits?.features as FeatureEntitlements | undefined) ??
+      {}) as FeatureEntitlements
+    const limits = this.getLimits(plan)
+    const { features, added } = backfillMissingFeatures(
+      limits.features,
+      seedFeatures,
+    )
+    if (added.length === 0) return
+    limits.features = features
+    await this.prisma.plan.update({
+      where: { code: plan.code },
+      data: { limits: limits as Prisma.InputJsonValue },
+    })
   }
 
   /**

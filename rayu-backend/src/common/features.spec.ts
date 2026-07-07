@@ -3,6 +3,7 @@ import {
   FEATURE_KEYS,
   allDisabled,
   allEnabled,
+  backfillMissingFeatures,
   resolveEntitlements,
   sanitizeEntitlementsPatch,
 } from './features'
@@ -56,5 +57,56 @@ describe('feature catalog: multi_api_keys', () => {
     expect(() =>
       sanitizeEntitlementsPatch({ not_a_feature: { enabled: true } }),
     ).toThrow()
+  })
+})
+
+// The seed backfill is what actually lets a Pro/Basic account receive a
+// newly-added catalog feature: existing plan rows predate the feature, so their
+// stored limits.features lacks it and it would resolve to disabled forever.
+describe('backfillMissingFeatures (roll new catalog features onto existing plans)', () => {
+  it('adds a missing feature from the plan seed default (paid plan → enabled)', () => {
+    // A paid plan created before multi_api_keys existed: everything else on,
+    // but the key is simply absent.
+    const stored = {
+      telegram: { enabled: true, limit: null },
+      collaborator_swarm: { enabled: true, limit: null },
+      subagent_model: { enabled: true, limit: null },
+      collaborator_model: { enabled: true, limit: null },
+      image_generation: { enabled: true, limit: null },
+      video_generation: { enabled: true, limit: null },
+    }
+    const { features, added } = backfillMissingFeatures(stored, allEnabled())
+    expect(added).toEqual(['multi_api_keys'])
+    expect(features.multi_api_keys).toEqual({ enabled: true, limit: null })
+  })
+
+  it('fills the free plan default as disabled', () => {
+    const { features, added } = backfillMissingFeatures(
+      { telegram: { enabled: false, limit: null } },
+      allDisabled(),
+    )
+    expect(added).toContain('multi_api_keys')
+    expect(features.multi_api_keys).toEqual({ enabled: false, limit: null })
+  })
+
+  it('is non-destructive: never overwrites an existing admin toggle', () => {
+    // Admin already disabled multi_api_keys on this (otherwise paid) plan.
+    const stored = { ...allEnabled(), multi_api_keys: { enabled: false, limit: null } }
+    const { features, added } = backfillMissingFeatures(stored, allEnabled())
+    expect(added).toEqual([]) // nothing missing → no writes
+    expect(features.multi_api_keys).toEqual({ enabled: false, limit: null })
+  })
+
+  it('falls back to disabled when the seed default omits the key', () => {
+    const { features } = backfillMissingFeatures({}, {})
+    expect(features.multi_api_keys).toEqual({ enabled: false, limit: null })
+    // every catalog key is present after backfill
+    expect(Object.keys(features).sort()).toEqual([...FEATURE_KEYS].sort())
+  })
+
+  it('handles null/absent stored features (older plan with no features JSON)', () => {
+    const { features, added } = backfillMissingFeatures(null, allEnabled())
+    expect(added).toEqual([...FEATURE_KEYS]) // all keys added
+    expect(features.multi_api_keys).toEqual({ enabled: true, limit: null })
   })
 })

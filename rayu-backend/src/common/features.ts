@@ -144,6 +144,42 @@ export function resolveEntitlements(
 }
 
 /**
+ * Non-destructively fill in catalog feature keys that are MISSING from a plan's
+ * stored entitlements, using per-plan defaults (falls back to disabled when the
+ * default omits a key). Existing keys are NEVER changed, so admin toggles are
+ * preserved — this only rolls a newly-added catalog feature onto pre-existing
+ * plans with its intended default.
+ *
+ * Used by the seed on boot: when a feature (e.g. `multi_api_keys`) is added to
+ * the catalog AFTER plans were first created, their stored `limits.features`
+ * lacks the key and would otherwise resolve to disabled forever. This backfills
+ * it (paid plans → enabled, free → disabled) from the plan's seed defaults.
+ *
+ * Returns the merged feature map and the list of keys that were added (empty =
+ * nothing to persist).
+ */
+export function backfillMissingFeatures(
+  stored: unknown,
+  defaults: FeatureEntitlements,
+): { features: Record<string, FeatureEntitlement>; added: FeatureKey[] } {
+  const current: Record<string, FeatureEntitlement> =
+    stored && typeof stored === 'object'
+      ? { ...(stored as Record<string, FeatureEntitlement>) }
+      : {}
+  const added: FeatureKey[] = []
+  for (const key of FEATURE_KEYS) {
+    if (!(key in current)) {
+      const d = defaults[key]
+      current[key] = d
+        ? { enabled: Boolean(d.enabled), limit: d.limit ?? null }
+        : { enabled: false, limit: null }
+      added.push(key)
+    }
+  }
+  return { features: current, added }
+}
+
+/**
  * Validate an incoming partial entitlements patch from the admin dashboard.
  * Returns a sanitized map containing only known keys. Throws on malformed
  * input so the controller can return 400.
