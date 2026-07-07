@@ -173,6 +173,61 @@ func ForUsage(u Usage, baselineCreditsPer1M int, rates ModelRates) int64 {
 	return int64(math.Ceil(billable / 1_000_000.0 * float64(baselineCreditsPer1M)))
 }
 
+// BillableTokens is the FINE-GRAINED billing unit: the credit-weighted token
+// count for one request's usage — the sum of each bucket's tokens times its
+// per-bucket rate (cache-miss/input, cache-hit/read, cache-write, output).
+//
+// Unlike ForUsage it does NOT divide by 1M or round up to a whole credit, so a
+// tiny turn costs its TRUE fractional share instead of a full (coarse) credit.
+// The gateway accumulates this; credits are derived by dividing by
+// TokensPerCredit(baseline). This is the fix for "a 'hi' turn burned a whole
+// 1M-token credit": with 1 credit = 1M tokens, ceil-to-whole-credit charged 1M
+// tokens for a ~10k-token turn (and again for each per-turn side query).
+func BillableTokens(u Usage, rates ModelRates) int64 {
+	u = u.clamp()
+	var billable float64
+	switch {
+	case u.PromptCacheHitTokens > 0 || u.PromptCacheMissTokens > 0 || u.PromptCacheWriteTokens > 0:
+		billable = float64(u.PromptCacheMissTokens)*rates.Input +
+			float64(u.PromptCacheHitTokens)*rates.CacheRead +
+			float64(u.PromptCacheWriteTokens)*rates.CacheWrite +
+			float64(u.CompletionTokens)*rates.Output
+	case u.PromptTokens > 0 || u.CompletionTokens > 0:
+		billable = float64(u.PromptTokens)*rates.Input + float64(u.CompletionTokens)*rates.Output
+	default:
+		billable = float64(u.TotalTokens) * rates.Input
+	}
+	if billable <= 0 {
+		return 0
+	}
+	return int64(math.Round(billable))
+}
+
+// EstimateBillableTokens is the pre-flight billable-token hold: the raw token
+// estimate weighted by the model's input multiplier (the real input/output/cache
+// split isn't known until the upstream responds — settle then reconciles to
+// BillableTokens). At least 1 so a reservation always claims a slot.
+func EstimateBillableTokens(estTokens int64, inputMultiplier float64) int64 {
+	if estTokens < 0 {
+		estTokens = 0
+	}
+	b := int64(math.Round(float64(estTokens) * inputMultiplier))
+	if b < 1 {
+		b = 1
+	}
+	return b
+}
+
+// TokensPerCredit is how many billable tokens equal one credit, from the admin's
+// baselineCreditsPer1M (credits charged per 1M tokens at multiplier 1). Defaults
+// to 1M when unset. credits = billableTokens / TokensPerCredit.
+func TokensPerCredit(baselineCreditsPer1M int) int64 {
+	if baselineCreditsPer1M <= 0 {
+		return 1_000_000
+	}
+	return int64(math.Round(1_000_000.0 / float64(baselineCreditsPer1M)))
+}
+
 // EstimateTokens makes a conservative upper-ish token estimate for the pre-flight
 // reserve, from the prompt size (~4 chars/token) plus the requested max_tokens
 // (or defaultMaxTokens when unset). The settle step later corrects to actuals.

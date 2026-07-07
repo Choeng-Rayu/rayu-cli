@@ -125,7 +125,7 @@ Write a minimal RAYU.md at the project root. Every line must pass this test: "Wo
 **Consume \`note\` entries from the Phase 3 preference queue whose target is RAYU.md** (team-level notes) — add each as a concise line in the most relevant section. These are the behaviors the user wants RAYU to follow but didn't need guaranteed (e.g., "propose a plan before implementing", "explain the tradeoffs when refactoring"). Leave personal-targeted notes for Phase 5.
 
 Include:
-- Build/test/lint commands Claude can't guess (non-standard scripts, flags, or sequences)
+- Build/test/lint commands Rayu can't guess (non-standard scripts, flags, or sequences)
 - Code style rules that DIFFER from language defaults (e.g., "prefer type over interface")
 - Testing instructions and quirks (e.g., "run single test with: pytest -k 'test_name'")
 - Repo etiquette (branch naming, PR conventions, commit style)
@@ -134,11 +134,11 @@ Include:
 - Important parts from existing AI coding tool configs if they exist (AGENTS.md, .cursor/rules, .cursorrules, .github/copilot-instructions.md, .windsurfrules, .clinerules)
 
 Exclude:
-- File-by-file structure or component lists (Claude can discover these by reading the codebase)
-- Standard language conventions Claude already knows
+- File-by-file structure or component lists (Rayu can discover these by reading the codebase)
+- Standard language conventions Rayu already knows
 - Generic advice ("write clean code", "handle errors")
 - Detailed API docs or long references — use \`@path/to/import\` syntax instead (e.g., \`@docs/api-reference.md\`) to inline content on demand without bloating RAYU.md
-- Information that changes frequently — reference the source with \`@path/to/import\` so Claude always reads the current version
+- Information that changes frequently — reference the source with \`@path/to/import\` so Rayu always reads the current version
 - Long tutorials or walkthroughs (move to a separate file and reference with \`@path/to/import\`, or put in a skill)
 - Commands obvious from manifest files (e.g., standard "npm test", "cargo test", "pytest")
 
@@ -167,11 +167,11 @@ Write a minimal RAYU.local.md at the project root. This file is automatically lo
 **Consume \`note\` entries from the Phase 3 preference queue whose target is RAYU.local.md** (personal-level notes) — add each as a concise line. If the user chose personal-only in Phase 1, this is the sole consumer of note entries.
 
 Include:
-- The user's role and familiarity with the codebase (so Claude can calibrate explanations)
+- The user's role and familiarity with the codebase (so Rayu can calibrate explanations)
 - Personal sandbox URLs, test accounts, or local setup details
 - Personal workflow or communication preferences
 
-Keep it short — only include what would make Claude's responses noticeably better for this user.
+Keep it short — only include what would make Rayu's responses noticeably better for this user.
 
 If Phase 2 found multiple git worktrees and the user confirmed they use sibling/external worktrees (not nested inside the main repo): the upward file walk won't find a single RAYU.local.md from all worktrees. Write the actual personal content to \`~/.rayu/<project-name>-instructions.md\` and make RAYU.local.md a one-line stub that imports it: \`@~/.rayu/<project-name>-instructions.md\`. The user can copy this one-line stub to each sibling worktree. Never put this import in the project RAYU.md. If worktrees are nested inside the main repo (e.g., \`.rayu/worktrees/\`), no special handling is needed — the main repo's RAYU.local.md is found automatically.
 
@@ -179,7 +179,7 @@ If RAYU.local.md already exists: read it, propose specific additions, and do not
 
 ## Phase 6: Suggest and create skills (if user chose "Skills + hooks" or "Skills only")
 
-Skills add capabilities Claude can use on demand without bloating every session.
+Skills add capabilities Rayu can use on demand without bloating every session.
 
 **First, consume \`skill\` entries from the Phase 3 preference queue.** Each queued skill preference becomes a SKILL.md tailored to what the user described. For each:
 - Name it from the preference (e.g., "verify-deep", "session-report", "deploy-sandbox")
@@ -202,10 +202,10 @@ name: <skill-name>
 description: <what the skill does and when to use it>
 ---
 
-<Instructions for Claude>
+<Instructions for rayu>
 \`\`\`
 
-Both the user (\`/<skill-name>\`) and Claude can invoke skills by default. For workflows with side effects (e.g., \`/deploy\`, \`/fix-issue 123\`), add \`disable-model-invocation: true\` so only the user can trigger it, and use \`$ARGUMENTS\` to accept input.
+Both the user (\`/<skill-name>\`) and Rayu can invoke skills by default. For workflows with side effects (e.g., \`/deploy\`, \`/fix-issue 123\`), add \`disable-model-invocation: true\` so only the user can trigger it, and use \`$ARGUMENTS\` to accept input.
 
 ## Phase 7: Suggest additional optimizations
 
