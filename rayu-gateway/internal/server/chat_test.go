@@ -41,7 +41,7 @@ func chatHarness(t *testing.T, fe *fakeEnt) (http.Handler, *credits.Limiter) {
 	t.Cleanup(mr.Close)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	lim := credits.NewLimiter(rdb)
-	cfg := &config.Config{JWTSecret: testSecret, ProviderKeys: map[string]string{"deepseek": "sk-test"}}
+	cfg := &config.Config{JWTSecret: testSecret, ProviderKeys: map[string]string{"deepseek": "sk-test", "longcat": "sk-longcat"}}
 	return New(cfg, fe, lim, nil), lim
 }
 

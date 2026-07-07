@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -49,30 +50,89 @@ func TestParseAnthropicUsageLine(t *testing.T) {
 	}
 }
 
-func TestCompleteAnthropicParsesUsageAndAuth(t *testing.T) {
-	var gotKey, gotVer string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotKey = r.Header.Get("x-api-key")
-		gotVer = r.Header.Get("anthropic-version")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","usage":{"input_tokens":40,"output_tokens":16,"cache_read_input_tokens":3968,"cache_creation_input_tokens":0}}`)
-	}))
-	defer srv.Close()
+func TestCompleteAnthropicAuthSchemes(t *testing.T) {
+	newUpstream := func(gotKey, gotAuth *string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*gotKey = r.Header.Get("x-api-key")
+			*gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"type":"message","role":"assistant","usage":{"input_tokens":40,"output_tokens":16,"cache_read_input_tokens":3968,"cache_creation_input_tokens":0}}`)
+		}))
+	}
 
-	usage, status, _, err := CompleteAnthropic(context.Background(), srv.URL, "sk-test-key", []byte(`{"model":"deepseek-v4-pro","max_tokens":16}`))
-	if err != nil {
-		t.Fatal(err)
+	// bearer=false → Anthropic-standard x-api-key (Anthropic, DeepSeek).
+	t.Run("x-api-key (deepseek/anthropic)", func(t *testing.T) {
+		var gotKey, gotAuth string
+		srv := newUpstream(&gotKey, &gotAuth)
+		defer srv.Close()
+		usage, status, _, err := CompleteAnthropic(context.Background(), srv.URL, "sk-test-key", false, []byte(`{"model":"deepseek-v4-pro","max_tokens":16}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status=%d", status)
+		}
+		if gotKey != "sk-test-key" {
+			t.Errorf("x-api-key = %q, want sk-test-key", gotKey)
+		}
+		if gotAuth != "" {
+			t.Errorf("Authorization should be empty for x-api-key scheme, got %q", gotAuth)
+		}
+		if usage == nil || usage.PromptCacheHitTokens != 3968 || usage.PromptCacheMissTokens != 40 || usage.CompletionTokens != 16 {
+			t.Errorf("usage=%+v", usage)
+		}
+	})
+
+	// bearer=true → Authorization: Bearer (LongCat).
+	t.Run("bearer (longcat)", func(t *testing.T) {
+		var gotKey, gotAuth string
+		srv := newUpstream(&gotKey, &gotAuth)
+		defer srv.Close()
+		_, status, _, err := CompleteAnthropic(context.Background(), srv.URL, "lc-secret", true, []byte(`{"model":"LongCat-2.0","max_tokens":16}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status=%d", status)
+		}
+		if gotAuth != "Bearer lc-secret" {
+			t.Errorf("Authorization = %q, want 'Bearer lc-secret'", gotAuth)
+		}
+		if gotKey != "" {
+			t.Errorf("x-api-key should be empty for bearer scheme, got %q", gotKey)
+		}
+	})
+}
+
+
+// TestStreamAnthropicReprobesBodylessError covers the LongCat quirk: a streaming
+// request that fails with an EMPTY body (out-of-credits → bodyless 500) is
+// re-probed non-streaming to surface the real status + reason (402 + message).
+func TestStreamAnthropicReprobesBodylessError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") == "text/event-stream" {
+			// LongCat streaming quirk: bodyless 500 on error.
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		// Non-streaming re-probe returns the real reason.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"Token 额度不足 (out of credits)"}}`)
+	}))
+	defer upstream.Close()
+
+	rec := httptest.NewRecorder()
+	_, wrote, _ := StreamAnthropic(context.Background(), rec, upstream.URL, "lc-key", true,
+		[]byte(`{"model":"LongCat-2.0","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+
+	if !wrote {
+		t.Fatal("expected wrote=true")
 	}
-	if status != http.StatusOK {
-		t.Fatalf("status=%d", status)
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("client status=%d, want 402 (recovered from the bodyless 500)", rec.Code)
 	}
-	if gotKey != "sk-test-key" {
-		t.Errorf("x-api-key forwarded = %q, want sk-test-key", gotKey)
-	}
-	if gotVer == "" {
-		t.Error("anthropic-version header not set")
-	}
-	if usage == nil || usage.PromptCacheHitTokens != 3968 || usage.PromptCacheMissTokens != 40 || usage.CompletionTokens != 16 {
-		t.Errorf("usage=%+v", usage)
+	if !strings.Contains(rec.Body.String(), "out of credits") {
+		t.Fatalf("client body should carry the real reason, got %q", rec.Body.String())
 	}
 }

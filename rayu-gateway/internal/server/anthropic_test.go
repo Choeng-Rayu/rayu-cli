@@ -141,3 +141,54 @@ func TestHandleAnthropicMessagesStreaming(t *testing.T) {
 		t.Fatalf("usedPeriod=%d, want 11 (cache-discounted streamed usage); full price ≈ 92", st.UsedPeriod)
 	}
 }
+
+
+// TestHandleAnthropicMessagesLongCatBearerAuth verifies the LongCat provider is
+// forwarded to its Anthropic endpoint with `Authorization: Bearer <key>` (NOT
+// x-api-key), that the gateway swaps in its own provider key (not the caller's
+// JWT), and that usage is metered.
+func TestHandleAnthropicMessagesLongCatBearerAuth(t *testing.T) {
+	var gotAuth, gotKey, gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotKey = r.Header.Get("x-api-key")
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[],"usage":{"input_tokens":1000,"output_tokens":200}}`)
+	}))
+	defer upstream.Close()
+
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 61, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				{Code: "longcat-2", Provider: "longcat", Enabled: true, CreditMultiplier: 0.5,
+					UpstreamBaseURL: upstream.URL, UpstreamModelID: "LongCat-2.0"},
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 10},
+	}
+	h, _ := chatHarness(t, fe)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+		strings.NewReader(`{"model":"longcat-2","max_tokens":16}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 61))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/anthropic/v1/messages" {
+		t.Errorf("upstream path=%q want /anthropic/v1/messages", gotPath)
+	}
+	// LongCat auth is Bearer with the gateway's own provider key — never the
+	// caller's Rayu JWT, and never x-api-key.
+	if gotAuth != "Bearer sk-longcat" {
+		t.Errorf("upstream Authorization=%q want 'Bearer sk-longcat'", gotAuth)
+	}
+	if gotKey != "" {
+		t.Errorf("x-api-key must be empty for LongCat (Bearer scheme), got %q", gotKey)
+	}
+}

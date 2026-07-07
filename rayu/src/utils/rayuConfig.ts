@@ -499,6 +499,7 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/gemini[-.]?(1\.5|2|2\.5|3)/i, 1_048_576],
   [/gemini/i, 1_048_576],
   [/deepseek[-/]?v4[-/]?(flash|pro)/i, 1_000_000],
+  [/longcat/i, 1_000_000],                                    // LongCat 2.0 (Meituan, 1M context)
   [/minimax[-_.]?m3/i, 1_000_000],                            // MiniMax-M3 (1M agentic/long-context)
   [/glm-5\.2/i, 1_000_000],                                   // GLM-5.2 (1M context — up from GLM-5.1's 200K)
   [/fugu/i, 1_000_000],                                       // Sakana AI Fugu / Fugu Ultra (1M)
