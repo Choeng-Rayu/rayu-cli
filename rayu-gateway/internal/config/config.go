@@ -65,6 +65,9 @@ func Load() (*Config, error) {
 	if k := os.Getenv("DEEPINFRA_API_KEY"); k != "" {
 		c.ProviderKeys["deepinfra"] = k
 	}
+	if k := os.Getenv("LONGCAT_API_KEY"); k != "" {
+		c.ProviderKeys["longcat"] = k
+	}
 
 	if c.DatabaseURL != "" {
 		dsn, err := MySQLDSN(c.DatabaseURL)
@@ -99,8 +102,8 @@ func (c *Config) ProviderKeySummary() string {
 			return fmt.Sprintf("%s…%s(%d)", k[:6], k[len(k)-4:], len(k))
 		}
 	}
-	return fmt.Sprintf("deepseek=%s deepinfra=%s",
-		mask(c.ProviderKeys["deepseek"]), mask(c.ProviderKeys["deepinfra"]))
+	return fmt.Sprintf("deepseek=%s deepinfra=%s longcat=%s",
+		mask(c.ProviderKeys["deepseek"]), mask(c.ProviderKeys["deepinfra"]), mask(c.ProviderKeys["longcat"]))
 }
 
 // MySQLDSN converts a prisma-style "mysql://user:pass@host:port/db?params" URL

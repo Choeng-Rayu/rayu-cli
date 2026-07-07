@@ -491,10 +491,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	req["model"] = hr.hm.UpstreamModelID
 	newBody, _ := json.Marshal(req)
 	upstreamURL := anthropicUpstream(hr.hm.UpstreamBaseURL)
+	bearer := anthropicUsesBearerAuth(hr.hm.Provider)
 
 	if stream {
 		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.topupBal)
-		usage, wrote, serr := proxy.StreamAnthropic(r.Context(), w, upstreamURL, hr.apiKey, newBody)
+		usage, wrote, serr := proxy.StreamAnthropic(r.Context(), w, upstreamURL, hr.apiKey, bearer, newBody)
 		hr.settle(usage)
 		if serr != nil {
 			log.Printf("anthropic: upstream error user=%d model=%s wrote=%v: %v", hr.userID, hr.hm.Code, wrote, serr)
@@ -505,7 +506,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	usage, status, respBody, cerr := proxy.CompleteAnthropic(r.Context(), upstreamURL, hr.apiKey, newBody)
+	usage, status, respBody, cerr := proxy.CompleteAnthropic(r.Context(), upstreamURL, hr.apiKey, bearer, newBody)
 	if cerr != nil {
 		hr.settle(nil)
 		log.Printf("anthropic: upstream unreachable user=%d model=%s: %v", hr.userID, hr.hm.Code, cerr)
@@ -532,6 +533,14 @@ func anthropicUpstream(base string) string {
 		return u.Scheme + "://" + u.Host + "/anthropic/v1/messages"
 	}
 	return strings.TrimSuffix(trimmed, "/v1") + "/anthropic/v1/messages"
+}
+
+// anthropicUsesBearerAuth reports whether a provider's Anthropic-compatible
+// endpoint authenticates with `Authorization: Bearer <key>` (LongCat) instead of
+// the Anthropic-standard `x-api-key` header (Anthropic, DeepSeek). Keyed on the
+// provider name so adding another Bearer-auth provider is a one-line change.
+func anthropicUsesBearerAuth(provider string) bool {
+	return provider == "longcat"
 }
 
 // recordLedger writes the durable consumption row via the bounded write

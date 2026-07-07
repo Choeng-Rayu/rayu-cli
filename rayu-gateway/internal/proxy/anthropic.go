@@ -17,14 +17,20 @@ import (
 // with no OpenAI translation, and the gateway meters straight off the Anthropic
 // usage. Auth is `x-api-key` (the docs mark it Fully Supported).
 
-// newAnthropicReq builds an upstream request authenticated the Anthropic way.
-func newAnthropicReq(ctx context.Context, url, apiKey string, body []byte) (*http.Request, error) {
+// newAnthropicReq builds an upstream request authenticated per the provider's
+// scheme: bearer=true → `Authorization: Bearer <key>` (LongCat); bearer=false →
+// `x-api-key: <key>` (Anthropic-standard / DeepSeek).
+func newAnthropicReq(ctx context.Context, url, apiKey string, bearer bool, body []byte) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
+	if bearer {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	} else {
+		req.Header.Set("x-api-key", apiKey)
+	}
 	req.Header.Set("anthropic-version", "2023-06-01")
 	return req, nil
 }
@@ -95,9 +101,9 @@ func parseAnthropicUsageLine(line []byte) (u anthropicUsageJSON, hasInput, hasOu
 // StreamAnthropic proxies a streaming Anthropic Messages completion, relaying the
 // SSE bytes verbatim while capturing usage for billing. Mirrors Stream but for
 // the Anthropic wire format + x-api-key auth.
-func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey string, body []byte) (usage *Usage, wrote bool, err error) {
+func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey string, bearer bool, body []byte) (usage *Usage, wrote bool, err error) {
 	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
-		req, err := newAnthropicReq(ctx, upstreamURL, apiKey, body)
+		req, err := newAnthropicReq(ctx, upstreamURL, apiKey, bearer, body)
 		if err != nil {
 			return nil, err
 		}
@@ -112,10 +118,22 @@ func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL, ap
 	flusher, _ := w.(http.Flusher)
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
+		status := resp.StatusCode
+		// Some providers (e.g. LongCat) return a BODYLESS error on the streaming
+		// endpoint for conditions the non-streaming endpoint reports properly
+		// (out-of-credits → an empty HTTP 500 when streaming, but a clean HTTP
+		// 402 + message non-streaming). Re-probe in non-streaming mode to recover
+		// the real status + reason so the client sees "402 out of credits" instead
+		// of an opaque empty 500. Best-effort; keeps the original on any failure.
+		if len(bytes.TrimSpace(b)) == 0 {
+			if pb, ps := probeNonStreamError(ctx, upstreamURL, apiKey, bearer, body); len(pb) > 0 {
+				b, status = pb, ps
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
+		w.WriteHeader(status)
 		_, _ = w.Write(b)
-		return nil, true, fmt.Errorf("upstream status %d: %s", resp.StatusCode, errSnippet(b))
+		return nil, true, fmt.Errorf("upstream status %d: %s", status, errSnippet(b))
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -165,9 +183,9 @@ func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL, ap
 
 // CompleteAnthropic proxies a non-streaming Anthropic Messages completion,
 // returning the upstream status, raw body, and parsed usage for the caller.
-func CompleteAnthropic(ctx context.Context, upstreamURL, apiKey string, body []byte) (usage *Usage, status int, respBody []byte, err error) {
+func CompleteAnthropic(ctx context.Context, upstreamURL, apiKey string, bearer bool, body []byte) (usage *Usage, status int, respBody []byte, err error) {
 	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
-		return newAnthropicReq(ctx, upstreamURL, apiKey, body)
+		return newAnthropicReq(ctx, upstreamURL, apiKey, bearer, body)
 	})
 	if err != nil {
 		return nil, 0, nil, err
@@ -183,4 +201,38 @@ func CompleteAnthropic(ctx context.Context, upstreamURL, apiKey string, body []b
 		}
 	}
 	return usage, resp.StatusCode, respBody, nil
+}
+
+
+// probeNonStreamError re-issues an errored request in NON-streaming mode to
+// recover a real error body. Some providers return a bodyless error on their
+// streaming endpoint for conditions their non-streaming endpoint reports
+// properly (e.g. LongCat: out-of-credits → an empty HTTP 500 when streaming, but
+// HTTP 402 + a clear message non-streaming). Best-effort: returns (nil, 0) on any
+// failure so the caller keeps the original response. Only invoked on a pre-flight
+// streaming error (nothing written to the client yet), so the extra request is safe.
+func probeNonStreamError(ctx context.Context, url, apiKey string, bearer bool, streamBody []byte) ([]byte, int) {
+	var m map[string]any
+	if json.Unmarshal(streamBody, &m) != nil {
+		return nil, 0
+	}
+	m["stream"] = false
+	nb, err := json.Marshal(m)
+	if err != nil {
+		return nil, 0
+	}
+	req, err := newAnthropicReq(ctx, url, apiKey, bearer, nb)
+	if err != nil {
+		return nil, 0
+	}
+	resp, err := Client.Do(req)
+	if err != nil {
+		return nil, 0
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, 0
+	}
+	return b, resp.StatusCode
 }

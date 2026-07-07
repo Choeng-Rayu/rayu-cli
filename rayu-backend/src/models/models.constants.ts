@@ -43,4 +43,24 @@ export const MODEL_SEED: HostedModelSeed[] = [
     allowedPlanCodes: ['pro', 'pro_plus', 'max'],
     enabled: true,
   },
+  {
+    // LongCat 2.0 (Meituan) — 1M-context, Anthropic-compatible API at
+    // https://api.longcat.chat/anthropic/v1/messages (auth: Authorization:
+    // Bearer, handled per-provider in the gateway). Real provider pricing:
+    // uncached input $0.75/1M, cached input $0.015/1M (≈0.02× input), output
+    // $2.95/1M. creditMultiplier is the USER-FACING credit charge and is only a
+    // sensible starting default here — the admin tunes it (and every price) in
+    // the dashboard; nothing about the charge is hardcoded downstream.
+    code: 'longcat-2',
+    label: 'LongCat 2.0',
+    provider: 'longcat',
+    upstreamBaseUrl: 'https://api.longcat.chat',
+    upstreamModelId: 'LongCat-2.0',
+    inputPricePer1MCents: 75, // $0.75 / 1M (uncached input)
+    outputPricePer1MCents: 295, // $2.95 / 1M
+    cacheReadCreditMultiplier: 0.02, // cached $0.015 / uncached $0.75 ≈ 0.02
+    creditMultiplier: 0.5, // starting default — admin-tunable
+    allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+    enabled: true,
+  },
 ]
