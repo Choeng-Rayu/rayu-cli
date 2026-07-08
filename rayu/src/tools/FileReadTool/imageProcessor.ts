@@ -2,7 +2,11 @@ import type { Buffer } from 'buffer'
 import { isInBundledMode } from '../../utils/bundledMode.js'
 
 export type SharpInstance = {
-  metadata(): Promise<{ width: number; height: number; format: string }>
+  metadata(): Promise<{
+    width?: number
+    height?: number
+    format?: string
+  }>
   resize(
     width: number,
     height: number,
@@ -15,7 +19,18 @@ export type SharpInstance = {
     colors?: number
   }): SharpInstance
   webp(options?: { quality?: number }): SharpInstance
+  /** Ensures the output has an alpha channel, adding one at full opacity if
+   *  the source lacks it. Used by the Unicode block-art renderer, which
+   *  needs a consistent per-pixel alpha value to detect transparency. */
+  ensureAlpha(): SharpInstance
+  /** Switches output to raw, decoded pixel data instead of an encoded
+   *  image format — used to sample pixels for Unicode block-art. */
+  raw(): SharpInstance
   toBuffer(): Promise<Buffer>
+  toBuffer(options: { resolveWithObject: true }): Promise<{
+    data: Buffer
+    info: { width: number; height: number; channels: number }
+  }>
 }
 
 export type SharpFunction = (input: Buffer) => SharpInstance

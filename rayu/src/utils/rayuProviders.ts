@@ -189,6 +189,25 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     envKeys: ['ANTHROPIC_API_KEY'],
   },
   {
+    // LongCat — Meituan's LongCat-2.0, exposed via an Anthropic-compatible
+    // Messages API at https://api.longcat.chat/anthropic/v1/messages,
+    // authenticated with `Authorization: Bearer <key>` (NOT x-api-key). Rayu
+    // talks to it with the NATIVE Anthropic SDK (kind:'anthropic-compatible')
+    // pointed at that baseURL, with the key sent as a Bearer authToken — so
+    // extended THINKING and the full 1M-token CONTEXT work NATIVELY, not
+    // emulated through the OpenAI-compatible adapter (the same reasoning as the
+    // first-party 'anthropic' preset above). One model today: LongCat-2.0 (1M
+    // context — see KNOWN_MODEL_CONTEXT in rayuConfig.ts). LongCat also offers an
+    // OpenAI-compatible surface, but the Anthropic path maps 1:1 with claude.ts.
+    // Docs: https://longcat.chat/platform/docs/APIDocs.html
+    id: 'longcat',
+    label: 'LongCat — Meituan (api.longcat.chat) · LongCat-2.0 1M ctx · native thinking',
+    kind: 'anthropic-compatible',
+    baseURL: 'https://api.longcat.chat/anthropic',
+    defaultModel: 'LongCat-2.0',
+    envKeys: ['LONGCAT_API_KEY'],
+  },
+  {
     id: 'nvidia',
     label: 'NVIDIA NIM (integrate.api.nvidia.com)',
     kind: 'openai-compatible',
@@ -557,6 +576,7 @@ export function migrateEnvKeysToConfig(): void {
 /** Short, branded names keyed by provider id. */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   anthropic: 'Anthropic',
+  longcat: 'LongCat',
   nvidia: 'NVIDIA',
   doubleword: 'Doubleword',
   deepseek: 'DeepSeek',
@@ -603,6 +623,8 @@ function providerKindName(kind: ProviderKind): string {
       return 'GitHub Copilot'
     case 'anthropic':
       return 'Anthropic'
+    case 'anthropic-compatible':
+      return 'Anthropic-compatible'
     default:
       return 'OpenAI-compatible'
   }

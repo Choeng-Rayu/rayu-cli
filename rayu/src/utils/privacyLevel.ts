@@ -18,7 +18,10 @@
 type PrivacyLevel = 'default' | 'no-telemetry' | 'essential-traffic'
 
 export function getPrivacyLevel(): PrivacyLevel {
-  if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
+  if (
+    process.env.RAYU_DISABLE_NONESSENTIAL_TRAFFIC ||
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  ) {
     return 'essential-traffic'
   }
   if (process.env.DISABLE_TELEMETRY) {
@@ -76,6 +79,9 @@ export function isTelemetryDisabled(): boolean {
  * or null if unrestricted. Used for user-facing "unset X to re-enable" messages.
  */
 export function getEssentialTrafficOnlyReason(): string | null {
+  if (process.env.RAYU_DISABLE_NONESSENTIAL_TRAFFIC) {
+    return 'RAYU_DISABLE_NONESSENTIAL_TRAFFIC'
+  }
   if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
     return 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'
   }

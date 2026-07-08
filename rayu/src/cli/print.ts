@@ -248,10 +248,6 @@ import {
 import { setupVscodeSdkMcp } from 'src/services/mcp/vscodeSdkMcp.js'
 import { getAllMcpConfigs } from 'src/services/mcp/config.js'
 import {
-  isQualifiedForGrove,
-  checkGroveForNonInteractive,
-} from 'src/services/api/grove.js'
-import {
   toInternalMessages,
   toSDKRateLimitInfo,
 } from 'src/utils/messages/mappers.js'
@@ -552,10 +548,8 @@ export async function runHeadless(
   headlessProfilerStartTurn()
   headlessProfilerCheckpoint('runHeadless_entry')
 
-  // Check Grove requirements for non-interactive consumer subscribers
-  if (await isQualifiedForGrove()) {
-    await checkGroveForNonInteractive()
-  }
+  // (Anthropic "Grove" data-training consent check removed — it applied only to
+  // claude.ai consumer subscribers; Rayu is BYO-key / multi-provider.)
   headlessProfilerCheckpoint('after_grove_check')
 
   // Initialize GrowthBook so feature flags take effect in headless mode.

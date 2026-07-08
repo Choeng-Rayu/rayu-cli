@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 let dir: string
-const ENV_KEYS = ['NVIDIA_API_KEY', 'DOUBLE_WORD_API_KEY', 'DEEPSEEK_API_KEY', 'KIMI_FOR_CODE_API_KEY']
+const ENV_KEYS = ['NVIDIA_API_KEY', 'DOUBLE_WORD_API_KEY', 'DEEPSEEK_API_KEY', 'KIMI_FOR_CODE_API_KEY', 'LONGCAT_API_KEY']
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'rayu-prov-'))
   process.env.RAYU_CONFIG_DIR = dir
@@ -155,6 +155,73 @@ describe('provider presets', () => {
     cfg._resetRayuConfigCache()
     expect(cfg.getRayuModelContextWindow('fugu')).toBe(1_000_000)
     expect(cfg.getRayuModelContextWindow('fugu-ultra')).toBe(1_000_000)
+  })
+})
+
+describe('LongCat (anthropic-compatible)', () => {
+  test('registry includes LongCat as an anthropic-compatible provider (native Anthropic Messages API)', async () => {
+    const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
+    const lc = PROVIDER_PRESETS.find(p => p.id === 'longcat')
+    // kind:'anthropic-compatible' → native Anthropic SDK at a custom baseURL +
+    // Bearer auth (NOT the OpenAI adapter, NOT first-party x-api-key).
+    expect(lc?.kind).toBe('anthropic-compatible')
+    expect(lc?.baseURL).toBe('https://api.longcat.chat/anthropic')
+    expect(lc?.defaultModel).toBe('LongCat-2.0')
+    expect(lc?.envKeys).toContain('LONGCAT_API_KEY')
+  })
+
+  test('an active LongCat provider routes to the native Anthropic API path (not the OpenAI adapter)', async () => {
+    const cfg = await fresh()
+    const providers = await import('../src/utils/model/providers.ts')
+    cfg.upsertProvider(
+      {
+        id: 'longcat',
+        kind: 'anthropic-compatible',
+        apiKey: 'lc-test',
+        baseURL: 'https://api.longcat.chat/anthropic',
+        defaultModel: 'LongCat-2.0',
+      },
+      true,
+    )
+    // getAPIProvider() === 'anthropic' → requests use the Anthropic Messages
+    // format; isOpenAICompatibleActive() false → the native SDK client, not the
+    // OpenAI adapter; isRayuNonAnthropicActive() true → third-party gates apply
+    // (known-model context table, skipping first-party-only policy calls).
+    expect(providers.getAPIProvider()).toBe('anthropic')
+    expect(providers.isOpenAICompatibleActive()).toBe(false)
+    expect(providers.isRayuNonAnthropicActive()).toBe(true)
+  })
+
+  test('LongCat-2.0 resolves a 1M context window + surfaces in the model picker', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider(
+      {
+        id: 'longcat',
+        kind: 'anthropic-compatible',
+        apiKey: 'lc-test',
+        baseURL: 'https://api.longcat.chat/anthropic',
+        defaultModel: 'LongCat-2.0',
+      },
+      true,
+    )
+    cfg._resetRayuConfigCache()
+    expect(cfg.getRayuModelContextWindow('LongCat-2.0')).toBe(1_000_000)
+    // The picker surfaces the provider's default model even without a live catalog.
+    const opts = cfg.getActiveProviderModelOptions()
+    expect(opts.some(o => o.value === 'LongCat-2.0')).toBe(true)
+  })
+
+  test('env migration imports LONGCAT_API_KEY with the preset baseURL + model', async () => {
+    process.env.LONGCAT_API_KEY = 'lc-env-1'
+    await fresh()
+    const { migrateEnvKeysToConfig } = await import('../src/utils/rayuProviders.ts')
+    migrateEnvKeysToConfig()
+    const cfg = await fresh()
+    const lc = cfg.loadRayuConfig().providers.find(p => p.id === 'longcat')
+    expect(lc?.apiKey).toBe('lc-env-1')
+    expect(lc?.kind).toBe('anthropic-compatible')
+    expect(lc?.baseURL).toBe('https://api.longcat.chat/anthropic')
+    expect(lc?.defaultModel).toBe('LongCat-2.0')
   })
 })
 

@@ -1,23 +1,16 @@
 import * as React from 'react'
 import { Box, Text } from 'src/ink.js'
 import { AnimatedAsterisk } from './AnimatedAsterisk.js'
+import { getActiveWelcomeBanner } from './bannerConfig.js'
 import { UP_ARROW } from '../../constants/figures.js'
 
-// First-launch brand icon: "RAYU" in the ANSI Shadow figlet style with a
-// top-to-bottom green gradient.
-const RAYU_BANNER: ReadonlyArray<readonly [string, string]> = [
-  ['██████╗  █████╗ ██╗   ██╗██╗   ██╗', '#cfff7c'],
-  ['██╔══██╗██╔══██╗╚██╗ ██╔╝██║   ██║', '#5BF58D'],
-  ['██████╔╝███████║ ╚████╔╝ ██║   ██║', '#ea1ddc'],
-  ['██╔══██╗██╔══██║  ╚██╔╝  ██║   ██║', '#592af2'],
-  ['██║  ██║██║  ██║   ██║   ╚██████╔╝', '#64b815'],
-  ['╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ', '#001495'],
-]
-
+// First-launch brand icon: banner is data-driven (see bannerConfig.ts) so a
+// future letters/design swap doesn't require touching this component.
 export function WelcomeV2(): React.ReactNode {
+  const { lines } = getActiveWelcomeBanner()
   return (
     <Box flexDirection="column" marginY={1}>
-      {RAYU_BANNER.map(([line, color], i) => (
+      {lines.map(([line, color], i) => (
         <Text key={i} bold color={color}>
           {line}
         </Text>

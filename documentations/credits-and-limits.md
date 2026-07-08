@@ -46,7 +46,7 @@ Admin panel (rayu-web)  --PATCH /api/admin/*-->  MySQL  <--reads--  rayu-gateway
 
 | Admin control | Stored in | Enforced / consumed by |
 |---|---|---|
-| Plan `creditsPerPeriod` | `plans.limits` | Gateway `handleChat` → Redis reserve/settle (hosted models only) |
+| Plan `creditsPerPeriod` | `plans.limits` | Gateway `reserveHosted` → Redis reserve/settle in billable tokens (hosted `/v1/chat/completions` + `/anthropic/v1/messages`) |
 | Plan `topUpEnabled` | `plans.limits` | Gateway (fallback to top-up balance); backend top-up checkout |
 | Plan **`maxDailyTurns`** | `plans.limits` | Gateway: **hard** on `/v1/chat/completions`, **best-effort** on `/v1/proxy` |
 | Plan `features` | `plans.limits` | CLI `rayuFeatureAllowed()` — client-side UX gating, **fails open** |
@@ -58,11 +58,85 @@ Admin panel (rayu-web)  --PATCH /api/admin/*-->  MySQL  <--reads--  rayu-gateway
 
 ## Credits
 
-- **Definition:** `1 credit = (1e6 / baselineCreditsPer1M)` tokens at the reference model (`creditMultiplier = 1`). Cheaper models use a `<1` multiplier.
-- **Charge math:** `credits = ceil(totalTokens / 1e6 * baselineCreditsPer1M * multiplier)` (any positive usage ≥ 1 credit).
-- **Where credits move:** only on the **hosted path** (`POST {gateway}/v1/chat/completions`, used by the CLI's `rayu-hosted` provider). The BYO-key transparent proxy (`POST {gateway}/v1/proxy`) **tracks usage but never charges credits** — the user pays their own provider.
-- **Period balance:** depletes over the billing period and resets at renewal (Redis key TTL = time to `currentPeriodEnd`); no weekly reset. Top-up is the durable fallback when `topUpEnabled`.
+- **Definition:** `1 credit = tokensPerCredit = round(1e6 / baselineCreditsPer1M)` billable tokens at the reference model (`creditMultiplier = 1`). With the seeded `baselineCreditsPer1M` (e.g. `1`), one credit = 1,000,000 tokens. Cheaper models bill at a `<1` multiplier, so they consume proportionally fewer credits per token.
+- **Charge math (fine-grained):** the gateway accumulates **billable tokens** — a credit-weighted token count priced per bucket (see [How tokens are counted](#how-tokens-are-counted-hosted-credit-path)) — and derives credits by dividing:
+
+  ```
+  billableTokens = Σ (bucketTokens × bucketRate)     # per request; rounded, NOT ceil'd
+  credits        = billableTokens / tokensPerCredit   # fractional
+  ```
+
+  A turn costs its **true proportional share** — it is **not** rounded up to a whole credit. A trivial "hi" (~12 billable tokens on deepseek-v4-flash) costs ~0.00001 credit, not a full 1M-token credit.
+- **Where credits move:** only on the **hosted path** — `POST {gateway}/v1/chat/completions` (OpenAI-compatible) and `POST {gateway}/anthropic/v1/messages` (native Anthropic, used by the current `rayu-hosted` provider). The BYO-key transparent proxy (`POST {gateway}/v1/proxy`) **tracks usage but never charges credits** — the user pays their own provider.
+- **Period balance:** the Redis period counter (`cwperiod:<userId>`) stores **billable tokens** and depletes over the billing period. It resets at renewal (key TTL = time to `currentPeriodEnd`, plus a period-id guard that zeroes the counter when the billing period rolls over); no weekly reset. Top-up is the durable fallback when `topUpEnabled`.
 - **Field naming:** the canonical field is **`creditsPerPeriod`**. Legacy `creditsPerWeek` / `creditsPer5h` are removed from the CLI type and are no longer enforced (kept only as optional parse-compat in the backend `PlanLimits`).
+
+## How tokens are counted (hosted credit path)
+
+Rayu meters the **rayu-hosted** provider the same way first-class agent CLIs do —
+Claude Code (`utils/modelCost.ts`: `inputTokens` / `outputTokens` /
+`promptCacheWriteTokens` / `promptCacheReadTokens`) and OpenCode (models.dev's
+`Cost` schema: `input` / `output` / `cache_read` / `cache_write`) — from the
+provider's **actual per-bucket token usage**, priced by a 5-bucket rate table.
+It never applies one flat rate, and (since the fine-grained fix) never rounds a
+request up to a whole coarse credit.
+
+> The implementation lives in `rayu-gateway/internal/credits/credits.go`
+> (`Usage`, `ModelRates`, `DeriveModelRates`, `BillableTokens`,
+> `EstimateBillableTokens`, `TokensPerCredit`) and is driven from
+> `internal/server/server.go` (`reserveHosted` → `settle`).
+
+### 1. Usage buckets and their rates
+
+Every hosted response's `usage` is normalized into `credits.Usage` and split into
+buckets priced independently by `credits.ModelRates` (built by `DeriveModelRates`):
+
+| Bucket | Source field(s) | Rate |
+|---|---|---|
+| **Input** (cache-miss / fresh prompt) | `prompt_tokens` − cache-read, or Anthropic `input_tokens` | `creditMultiplier` |
+| **Output** (completion) | `completion_tokens` / `output_tokens` | `creditMultiplier × outputPricePer1MCents / inputPricePer1MCents` (falls back to `creditMultiplier` when prices unset) |
+| **Cache read** (prompt prefix served from the provider's cache) | `prompt_cache_hit_tokens` / `cache_read_input_tokens` | `CacheHitBillingWeight` = **0.10** (a 90% discount) unless the model sets `cacheReadCreditMultiplier` |
+| **Cache write** (cache creation) | `cache_creation_input_tokens` | `creditMultiplier` unless `cacheWriteCreditMultiplier` is set (DeepSeek reports 0 here today) |
+
+Provider shapes are reconciled first: OpenAI-compatible DeepSeek reports
+`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`; the Anthropic Messages
+shape reports `input_tokens` (already cache-excluded) + `cache_read_input_tokens`
++ `cache_creation_input_tokens`. Both collapse to the same buckets via
+`proxy.Usage.CacheReadTokens()` / `FreshInputTokens()`.
+
+### 2. Billable tokens (the accumulated unit)
+
+```
+billableTokens = miss×Input + cacheHit×CacheRead + cacheWrite×CacheWrite + output×Output
+```
+
+Rounded to the nearest integer (`credits.BillableTokens`) — **no `/1e6`, no
+`ceil`**. Graceful fallbacks: if a provider reports no cache breakdown,
+prompt/completion are billed at Input/Output; if only `total_tokens` is present,
+it is billed at Input.
+
+**Why cache-aware:** in an agentic tool-use loop the CLI resends the whole growing
+conversation on every turn (chat APIs are stateless), so all but the newest
+increment is a byte-for-byte repeat the provider serves from its on-disk cache at
+~2–8% of full price. Billing cache hits at `0.10×` mirrors that instead of
+charging full price for context the provider barely charged Rayu for.
+
+### 3. Estimate → settle (reserve reconciliation)
+
+The real input/output/cache split isn't known until the upstream responds, so
+each request is a two-step reserve/settle:
+
+1. **Pre-flight reserve** — `EstimateBillableTokens(EstimateTokens(req), creditMultiplier)`, where `EstimateTokens ≈ promptChars/4 + max_tokens`. Holds a rough billable-token slot against the period allowance (and top-up when enabled). Minimum 1 so a reservation always claims a slot.
+2. **Settle** — after the response the estimate is reconciled to the exact `BillableTokens(usage)`; the Redis counter is adjusted by `(actual − estimate)`. Streaming and non-streaming both settle from the parsed `usage` block (SSE `message_start` + `message_delta` on the Anthropic path).
+
+The **allowance is enforced in billable tokens**: `capBillable = creditsPerPeriod × tokensPerCredit`. Over cap → `429 {"reason":"period_limit"}` (with top-up fallback when enabled).
+
+### 4. Worked example — deepseek-v4-flash (`creditMultiplier = 0.33`, baseline = 1)
+
+- Rates: Input = `0.33`, Output = `0.33 × 28/14 = 0.66`, CacheRead = `0.10`.
+- A "hi" using 20 fresh-input + 8 output tokens → `20×0.33 + 8×0.66 ≈ 12` billable tokens.
+- `tokensPerCredit = 1,000,000` ⇒ the turn costs **≈ 0.000012 credit** (and `/usage` shows `usedTokens += 12`).
+- The pre-fix `ceil(billable / 1e6 × baseline)` path charged **1 whole credit (1,000,000 tokens)** for that same "hi" — and again for each per-turn side query (e.g. memory retrieval / classifiers routed through the hosted provider) — which is the over-billing this model replaced.
 
 ## Daily turn cap (`maxDailyTurns`)
 
@@ -77,7 +151,7 @@ A per-user, per-UTC-day counter (Redis key `turns:<userId>:<YYYYMMDD>`, TTL = en
 
 - **CLI:** `/credits` (or `/usage`) → `GET {gateway}/v1/credits`. Shows credits used/remaining and, when a cap is set, `Daily turns: X / Y used · Z left`.
 - **Dashboard (`/dashboard`):** reads `GET {gateway}/v1/credits` (falls back to `/api/me/entitlements` allowance if the gateway is unavailable). Renders credit + daily-turn bars.
-- **`/v1/credits` fields:** `creditsPerPeriod`, `usedCredits`, `remainingCredits`, `tokensPerCredit`, `maxDailyTurns`, `turnsUsedToday`, `turnsRemaining` (null when unlimited), `turnsResetSeconds`, `topupBalance`.
+- **`/v1/credits` fields:** `creditsPerPeriod`, `usedCredits` (fractional — derived from billable tokens), `remainingCredits`, `tokensPerCredit`, `allowanceTokens` (= `creditsPerPeriod × tokensPerCredit`), `usedTokens` (real billable tokens used this period), `remainingTokens`, `maxDailyTurns`, `turnsUsedToday`, `turnsRemaining` (null when unlimited), `resetSeconds`, `topupBalance`, `topUpEnabled`, `periodEnd`.
 
 ## Propagation latency (why a change isn't instant)
 

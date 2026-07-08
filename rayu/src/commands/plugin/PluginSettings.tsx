@@ -548,7 +548,7 @@ function ErrorsTabContent(t0) {
   const t12 = rows.map(t11);
   let t13;
   if ($[13] !== actionMessage) {
-    t13 = actionMessage && <Box marginTop={1} marginLeft={1}><Text color="claude">{actionMessage}</Text></Box>;
+    t13 = actionMessage && <Box marginTop={1} marginLeft={1}><Text color="brand">{actionMessage}</Text></Box>;
     $[13] = actionMessage;
     $[14] = t13;
   } else {

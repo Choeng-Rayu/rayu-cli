@@ -1,7 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import addDir from './commands/add-dir/index.js'
 import btw from './commands/btw/index.js'
-import feedback from './commands/feedback/index.js'
 import clear from './commands/clear/index.js'
 import color from './commands/color/index.js'
 import commit from './commands/commit.js'
@@ -48,6 +47,8 @@ import securityReview from './commands/security-review.js'
 import terminalSetup from './commands/terminalSetup/index.js'
 import undo from './commands/undo/index.js'
 import theme from './commands/theme/index.js'
+import banner from './commands/banner/index.js'
+import mascot from './commands/mascot/index.js'
 import brand from './commands/brand/index.js'
 import vim from './commands/vim/index.js'
 import { feature } from 'bun:bundle'
@@ -204,6 +205,7 @@ const COMMANDS = memoize((): Command[] => [
   addDir,
   advisor,
   agents,
+  banner,
   branch,
   btw,
   clear,
@@ -253,8 +255,8 @@ const COMMANDS = memoize((): Command[] => [
   usage,
   tag,
   theme,
+  mascot,
   brand,
-  feedback,
   review,
   collaboratorSwarm,
   normal,
@@ -547,7 +549,6 @@ export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set([
   vim, // Toggle vim mode
   copy, // Copy last message
   btw, // Quick note
-  feedback, // Send feedback
   plan, // Plan mode toggle
   keybindings, // Keybinding management
   statusline, // Status line toggle
