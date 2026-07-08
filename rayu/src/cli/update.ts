@@ -1,45 +1,7 @@
 import chalk from 'chalk'
-import { execFileSync } from 'node:child_process'
-import { homedir } from 'os'
 import { isInBundledMode } from 'src/utils/bundledMode.js'
+import { describeNpmError, execNpmSync, isLikelyEacces } from 'src/utils/npmExec.js'
 import { writeToStdout } from 'src/utils/process.js'
-
-// On Windows, npm is installed as npm.cmd (a shell shim), not a directly
-// executable PE binary. execFileSync spawns the file directly and cannot
-// resolve/exec .cmd shims without going through a shell — without shell:true
-// this throws "spawn npm ENOENT" on every Windows machine. shell:true routes
-// the spawn through cmd.exe, which resolves npm.cmd via PATH correctly.
-//
-// Node deprecates (DEP0190) passing an `args` array together with
-// `shell: true` to execFileSync/execFile/spawn, because the args are just
-// concatenated into the shell command line, not escaped — the exact pattern
-// this codebase's own win32 spawns avoid (see src/utils/editor.ts). So on
-// win32 we build a single, manually-quoted command string instead of an args
-// array. All npmArgs here are internal literals (never raw user/network
-// input), so quoting each with double quotes is sufficient and safe.
-const IS_WINDOWS = process.platform === 'win32'
-
-function execNpmSync(
-  npmArgs: string[],
-  options: { timeout?: number; stdio: 'pipe' | 'inherit' | Array<'pipe' | 'ignore'> },
-): string {
-  if (IS_WINDOWS) {
-    const commandStr = `npm ${npmArgs.map(a => `"${a}"`).join(' ')}`
-    return execFileSync(commandStr, [], {
-      encoding: 'utf8',
-      cwd: homedir(),
-      shell: true,
-      ...(options.timeout ? { timeout: options.timeout } : {}),
-      stdio: options.stdio as never,
-    }) as unknown as string
-  }
-  return execFileSync('npm', npmArgs, {
-    encoding: 'utf8',
-    cwd: homedir(),
-    ...(options.timeout ? { timeout: options.timeout } : {}),
-    stdio: options.stdio as never,
-  }) as unknown as string
-}
 
 export async function update() {
   writeToStdout(`Current version: ${MACRO.VERSION}\n`)
@@ -63,9 +25,11 @@ async function updateNpmPackage() {
       ['view', `${MACRO.PACKAGE_URL}@latest`, 'version', '--prefer-online'],
       { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] },
     ).trim()
-  } catch {
+  } catch (err) {
     process.stderr.write(chalk.red('Failed to check for updates\n'))
     process.stderr.write('Unable to reach npm registry. Check your network.\n')
+    const detail = describeNpmError(err)
+    if (detail) process.stderr.write(`\n${detail}\n`)
     process.stderr.write(
       `\nManual check: npm view ${MACRO.PACKAGE_URL} version\n`,
     )
@@ -89,28 +53,69 @@ async function updateNpmPackage() {
       ['install', '-g', `${MACRO.PACKAGE_URL}@latest`],
       { stdio: 'inherit' },
     )
-  } catch {
+  } catch (err) {
     process.stderr.write(chalk.red('\nFailed to install update\n'))
+    const detail = describeNpmError(err)
+    if (detail) process.stderr.write(`${detail}\n`)
     process.stderr.write('\nTry manually:\n')
     process.stderr.write(
       chalk.bold(`  npm install -g ${MACRO.PACKAGE_URL}@latest\n`),
     )
-    process.stderr.write(
-      'Or with sudo if you have permission issues:\n',
-    )
-    process.stderr.write(
-      chalk.bold(`  sudo npm install -g ${MACRO.PACKAGE_URL}@latest\n`),
-    )
+    if (isLikelyEacces(err)) {
+      process.stderr.write(
+        '\nThis looks like a permissions error on npm\'s global install\n' +
+          'directory. If Node was installed via nvm, Homebrew, Volta, or fnm,\n' +
+          'do NOT use sudo — it installs into a root-owned path that will\n' +
+          'conflict with your user-owned Node version. Instead fix npm\'s\n' +
+          'global prefix, e.g.:\n' +
+          '  mkdir -p ~/.npm-global\n' +
+          '  npm config set prefix ~/.npm-global\n' +
+          '  export PATH=~/.npm-global/bin:$PATH   # add to your shell rc file\n' +
+          'Only use sudo if Node was installed system-wide (e.g. via apt/yum\n' +
+          'or the nodejs.org installer):\n' +
+          `  sudo npm install -g ${MACRO.PACKAGE_URL}@latest\n`,
+      )
+    } else {
+      process.stderr.write(
+        'Or with sudo if you have permission issues:\n',
+      )
+      process.stderr.write(
+        chalk.bold(`  sudo npm install -g ${MACRO.PACKAGE_URL}@latest\n`),
+      )
+    }
     process.exit(1)
     return
   }
 
   writeToStdout(
     chalk.green(
-      `\nSuccessfully updated from ${MACRO.VERSION} to ${latestVersion}\n`,
+      `\nSuccessfully updated to ${getInstalledVersion() ?? latestVersion}\n`,
     ),
   )
   process.exit(0)
+}
+
+/**
+ * Reads the version actually on disk after `npm install -g` completes,
+ * rather than trusting the `npm view ...@latest` result captured before
+ * the install ran. A newer version can publish in the window between the
+ * two calls, in which case the pre-install snapshot no longer matches what
+ * was actually installed. Returns null if it can't be determined (e.g. npm
+ * list output format changes) — callers fall back to the pre-install value.
+ */
+function getInstalledVersion(): string | null {
+  try {
+    const output = execNpmSync(
+      ['list', '-g', MACRO.PACKAGE_URL, '--depth=0', '--json'],
+      { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
+    )
+    const parsed = JSON.parse(output) as {
+      dependencies?: Record<string, { version?: string }>
+    }
+    return parsed.dependencies?.[MACRO.PACKAGE_URL]?.version ?? null
+  } catch {
+    return null
+  }
 }
 
 async function updateNativeBinary() {

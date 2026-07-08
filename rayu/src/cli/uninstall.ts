@@ -1,41 +1,13 @@
 import chalk from 'chalk'
-import { execFileSync } from 'node:child_process'
 import { rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { homedir } from 'os'
 import { getRayuConfigHomeDir } from 'src/utils/envUtils.js'
+import { execNpmSync, isLikelyEacces } from 'src/utils/npmExec.js'
 import { writeToStdout } from 'src/utils/process.js'
 
-// On Windows, npm is installed as npm.cmd (a shell shim), not a directly
-// executable PE binary. execFileSync spawns the file directly and cannot
-// resolve/exec .cmd shims without going through a shell — without shell:true
-// this throws "spawn npm ENOENT" on every Windows machine. shell:true routes
-// the spawn through cmd.exe, which resolves npm.cmd via PATH correctly.
-//
-// Node deprecates (DEP0190) passing an `args` array together with
-// `shell: true`, since the args are concatenated (not escaped) into the shell
-// command line. Matching this codebase's own win32 spawn convention (see
-// src/utils/editor.ts), we build a single quoted command string on win32
-// instead. The uninstall args here are fixed internal literals, never raw
-// user/network input, so quoting is sufficient and safe.
-const IS_WINDOWS = process.platform === 'win32'
-
 function execNpmUninstallSync(): void {
-  if (IS_WINDOWS) {
-    execFileSync(`npm uninstall -g "${MACRO.PACKAGE_URL}"`, [], {
-      encoding: 'utf8',
-      cwd: homedir(),
-      stdio: 'inherit',
-      shell: true,
-    })
-    return
-  }
-  execFileSync('npm', ['uninstall', '-g', MACRO.PACKAGE_URL], {
-    encoding: 'utf8',
-    cwd: homedir(),
-    stdio: 'inherit',
-  })
+  execNpmSync(['uninstall', '-g', MACRO.PACKAGE_URL], { stdio: 'inherit' })
 }
 
 /** Prompt the user with a y/n question on stdin/stdout. Returns true for yes. */
@@ -77,7 +49,7 @@ export async function uninstall(args: string[] = []) {
 
   try {
     execNpmUninstallSync()
-  } catch {
+  } catch (err) {
     process.stderr.write(
       chalk.red(`\nFailed to uninstall ${MACRO.PACKAGE_URL}\n`),
     )
@@ -85,12 +57,22 @@ export async function uninstall(args: string[] = []) {
     process.stderr.write(
       chalk.bold(`  npm uninstall -g ${MACRO.PACKAGE_URL}\n`),
     )
-    process.stderr.write(
-      'Or with sudo if you installed with elevated permissions:\n',
-    )
-    process.stderr.write(
-      chalk.bold(`  sudo npm uninstall -g ${MACRO.PACKAGE_URL}\n`),
-    )
+    if (isLikelyEacces(err)) {
+      process.stderr.write(
+        '\nThis looks like a permissions error on npm\'s global install\n' +
+          'directory. If Node was installed via nvm, Homebrew, Volta, or fnm,\n' +
+          'do NOT use sudo. Only use sudo if Node was installed system-wide\n' +
+          '(e.g. via apt/yum or the nodejs.org installer):\n' +
+          `  sudo npm uninstall -g ${MACRO.PACKAGE_URL}\n`,
+      )
+    } else {
+      process.stderr.write(
+        'Or with sudo if you installed with elevated permissions:\n',
+      )
+      process.stderr.write(
+        chalk.bold(`  sudo npm uninstall -g ${MACRO.PACKAGE_URL}\n`),
+      )
+    }
     process.exit(1)
     return
   }
