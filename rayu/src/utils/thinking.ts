@@ -8,6 +8,7 @@ import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
   getAPIProvider,
   isOpenAICompatibleActive,
+  isRayuAnthropicCompatibleActive,
   isRayuNonAnthropicActive,
 } from './model/providers.js'
 import { getSettingsWithErrors } from './settings/settings.js'
@@ -127,10 +128,23 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  // Rayu: non-Anthropic / OpenAI-compatible providers support adaptive thinking
-  // (mirrors modelSupportsThinking / modelSupportsEffort). Explicit 3P override
-  // above still takes precedence.
-  if (isOpenAICompatibleActive() || isRayuNonAnthropicActive()) {
+  // Rayu: OpenAI-compatible providers support adaptive thinking — the OpenAI
+  // adapter translates the thinking param into the provider's own reasoning
+  // field, so adaptive is fine. Explicit 3P override above still takes precedence.
+  if (isOpenAICompatibleActive()) {
+    return true
+  }
+  // Rayu: third-party Anthropic-compatible endpoints (LongCat, Ollama Cloud) send
+  // the NATIVE Anthropic wire format, but `thinking:{type:'adaptive'}` is a
+  // Claude-only extension they don't understand — sending it produces NO thinking
+  // output (no live thinking stream). They DO support the standard
+  // `{type:'enabled',budget_tokens}` form, so return false here to take that path.
+  if (isRayuAnthropicCompatibleActive()) {
+    return false
+  }
+  // Rayu: other non-Anthropic kinds (Bedrock/Vertex/Kiro/Copilot/rayu-hosted)
+  // keep adaptive thinking (mirrors modelSupportsThinking / modelSupportsEffort).
+  if (isRayuNonAnthropicActive()) {
     return true
   }
   const canonical = getCanonicalName(model)

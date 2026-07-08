@@ -498,17 +498,19 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   // bare ids (gemini-3.5-flash) and the catalog's models/ prefix.
   [/gemini[-.]?(1\.5|2|2\.5|3)/i, 1_048_576],
   [/gemini/i, 1_048_576],
-  [/deepseek[-/]?v4[-/]?(flash|pro)/i, 1_000_000],
+  [/deepseek[-_/.]?v4/i, 1_000_000],                          // DeepSeek V4 — flash & pro (1M context)
   [/longcat/i, 1_000_000],                                    // LongCat 2.0 (Meituan, 1M context)
   [/minimax[-_.]?m3/i, 1_000_000],                            // MiniMax-M3 (1M agentic/long-context)
-  [/glm-5\.2/i, 1_000_000],                                   // GLM-5.2 (1M context — up from GLM-5.1's 200K)
+  [/glm-?5\.2/i, 1_000_000],                                  // GLM-5.2 (1M context — up from GLM-5.1's 200K)
   [/fugu/i, 1_000_000],                                       // Sakana AI Fugu / Fugu Ultra (1M)
+  [/llama[-_.]?4/i, 1_000_000],                               // Meta Llama 4 (Scout/Maverick — 1M+ context)
   // 256k
   [/kimi-k1|kimi.*long/i, 200_000],                           // Kimi K1.5 long-context
   // Newer Kimi K2 releases — K2.5 / K2.6 / K2 Thinking / dated K2-<NNNN> (e.g.
   // K2-0905) — ship a 256k window. Match these BEFORE the generic Kimi rule
   // (first match wins); the original K2 (0711) stays on the 128k fallback below.
   [/kimi[-_.]?k2[-_.]?(thinking|\d{4}|[5-9])/i, 256_000],     // Kimi K2.5 / K2.6 / Thinking (256k)
+  [/kimi[-_.\s]?cod(e|ing)|kimi[-_.]?k?2[.\-_]?7/i, 256_000], // Kimi Code 2.7 / Kimi coding models (256k)
   [/kimi|moonshot/i, 131_072],                                 // Kimi K2 (0711) / Moonshot standard (128k)
   [/qwen[-.]?3[-.]?(coder|next)/i, 256_000],
   [/jamba/i, 256_000],
@@ -519,7 +521,7 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   // 131k / 128k families
   [/deepseek-(chat|reasoner|v3|coder)/i, 131_072],
   [/deepseek-r1/i, 131_072],
-  [/llama-3\.[1-3]|llama-3-70b|llama-4|nemotron/i, 131_072],
+  [/llama-3\.[1-3]|llama-3-70b|nemotron/i, 131_072],
   [/qwen[-_.]?[23]|qwq/i, 131_072],
   [/gemma-[234]/i, 131_072],
   [/mixtral|mistral|ministral|codestral|devstral/i, 131_072],
@@ -965,6 +967,14 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     const { fetchCopilotModels } = await import('../services/api/copilot/copilotAuth.js')
     return fetchCopilotModels(p.apiKey)
   }
+  // Ollama Cloud is kind:'anthropic-compatible' for CHAT, but lists the account's
+  // models via Ollama's own endpoints (GET /v1/models, /api/tags fallback) with
+  // the user's Bearer key. Context windows are fetched separately at connect time
+  // (fetchOllamaCloudModelContexts) with the known-model table as the fallback.
+  if (p.id === 'ollama-cloud') {
+    const { fetchOllamaCloudModels } = await import('../services/api/ollamaCloud.js')
+    return fetchOllamaCloudModels(p.apiKey, p.baseURL)
+  }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
@@ -1014,7 +1024,8 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
       p.kind !== 'vertex' &&
       p.kind !== 'genai' &&
       p.kind !== 'kiro' &&
-      p.kind !== 'copilot')
+      p.kind !== 'copilot' &&
+      p.kind !== 'anthropic-compatible')
   )
     return []
   const models = await fetchProviderModels(p)

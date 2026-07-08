@@ -12,6 +12,7 @@ import {
   saveRayuConfig,
 } from './rayuConfig.js'
 import { loadDotEnv } from './envUtils.js'
+import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_PROVIDER_ID } from '../services/api/ollamaCloud.js'
 
 
 export type ProviderPreset = {
@@ -206,6 +207,26 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseURL: 'https://api.longcat.chat/anthropic',
     defaultModel: 'LongCat-2.0',
     envKeys: ['LONGCAT_API_KEY'],
+  },
+  {
+    // Ollama Cloud — Ollama's HOSTED models (ollama.com), a SEPARATE connector
+    // from the local `ollama` preset (localhost, no key). Exposed via an
+    // Anthropic-compatible Messages API at https://ollama.com/v1/messages,
+    // authenticated with `Authorization: Bearer <ollama.com API key>`. Rayu uses
+    // the NATIVE Anthropic SDK (kind:'anthropic-compatible' → the key is sent as
+    // a Bearer authToken) so thinking + tools map 1:1 with claude.ts. Unlike a
+    // single-model preset, the /connect flow FETCHES the user's account models
+    // (fetchOllamaCloudModels → GET /v1/models, /api/tags fallback) and their
+    // real context windows (POST /api/show → model_info.<arch>.context_length;
+    // the KNOWN_MODEL_CONTEXT table is the fallback). Cloud model ids carry a
+    // `-cloud`/`:cloud` tag, e.g. gpt-oss:120b-cloud, qwen3-coder:cloud.
+    // Docs: https://docs.ollama.com/api/anthropic-compatibility
+    id: OLLAMA_CLOUD_PROVIDER_ID,
+    label: 'Ollama Cloud (ollama.com) · hosted models · fetches your account models',
+    kind: 'anthropic-compatible',
+    baseURL: OLLAMA_CLOUD_BASE_URL,
+    defaultModel: 'gpt-oss:120b-cloud',
+    envKeys: ['OLLAMA_CLOUD_API_KEY'],
   },
   {
     id: 'nvidia',
@@ -605,6 +626,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   copilot: 'GitHub Copilot',
   'rayu-hosted': 'Rayu',
   ollama: 'Ollama',
+  'ollama-cloud': 'Ollama Cloud',
   local: 'Local',
 }
 

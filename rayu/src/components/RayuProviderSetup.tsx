@@ -45,6 +45,7 @@ type Phase =
   | 'localChoice'
   | 'ollamaDetect'
   | 'ollamaError'
+  | 'ollamaCloudFetching'
   | 'baseURL'
   | 'model'
   | 'key'
@@ -606,6 +607,62 @@ export function RayuProviderSetup({
     }
   }, [phase, kiroStep])
 
+  // Ollama Cloud: after the API key is entered, fetch the account's models +
+  // their REAL context windows, pick a sensible default, persist, then hand off
+  // to the shared model picker. Mirrors the Bedrock/Vertex fetch-before-finish
+  // flow. Context comes from Ollama's /api/show; getRayuModelContextWindow's
+  // known-model table is the fallback for anything /api/show didn't report.
+  React.useEffect(() => {
+    if (phase !== 'ollamaCloudFetching') return
+    let cancelled = false
+    void (async () => {
+      const { fetchOllamaCloudModelContexts, OLLAMA_CLOUD_BASE_URL } = await import(
+        '../services/api/ollamaCloud.js'
+      )
+      const base: RayuProvider = {
+        id: preset?.id ?? 'ollama-cloud',
+        kind: 'anthropic-compatible',
+        apiKey: apiKey.trim() || undefined,
+        baseURL: (baseURL || preset?.baseURL || OLLAMA_CLOUD_BASE_URL).trim(),
+      }
+      // Persist first so fetchProviderModels + the context calls read the key/baseURL.
+      upsertProvider(base, true)
+      const models = await fetchProviderModels(base).catch(() => [] as string[])
+      if (cancelled) return
+      const chat = models.filter(isLikelyChatModel)
+      const list = chat.length ? chat : models
+      const contexts = list.length
+        ? await fetchOllamaCloudModelContexts(base.apiKey, base.baseURL, list).catch(
+            () => ({}) as Record<string, number>,
+          )
+        : {}
+      if (cancelled) return
+      // Prefer a strong coding cloud model as the default; fall back to the
+      // preset default so the picker is never empty (e.g. if the key is wrong).
+      const preferred =
+        list.find(m => /qwen3-coder/i.test(m)) ??
+        list.find(m => /glm-4\.[67]|glm-5/i.test(m)) ??
+        list.find(m => /gpt-oss/i.test(m)) ??
+        list.find(m => /cloud/i.test(m)) ??
+        list[0] ??
+        'gpt-oss:120b-cloud'
+      upsertProvider(
+        {
+          ...base,
+          ...(list.length ? { fetchedModels: list } : {}),
+          ...(Object.keys(contexts).length ? { modelContextWindows: contexts } : {}),
+          defaultModel: preferred,
+        },
+        true,
+      )
+      if (cancelled) return
+      onDone()
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [phase])
+
   if (phase === 'pick') {
     // Group the two localhost options (Ollama + custom endpoint) under one
     // "Localhost" entry so the top-level list stays about *who* hosts the model.
@@ -758,6 +815,18 @@ export function RayuProviderSetup({
           }}
           onCancel={() => setPhase('localChoice')}
         />
+      </Box>
+    )
+  }
+
+  if (phase === 'ollamaCloudFetching') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Fetching your Ollama Cloud models…</Text>
+        <Text dimColor>
+          Listing the models available to your ollama.com account and their
+          context sizes.
+        </Text>
       </Box>
     )
   }
@@ -1211,6 +1280,7 @@ export function RayuProviderSetup({
   // key phase (openai-compatible + bedrock). For bedrock, the key is the
   // Bedrock API key (bearer token); submitting advances to region selection.
   const isBedrock = preset?.kind === 'bedrock'
+  const isOllamaCloud = preset?.id === 'ollama-cloud'
   // Multi-key provider (NVIDIA / OpenRouter) but the Basic-plan entitlement is
   // NOT granted → single-key input + an upgrade hint (we only reach here when
   // isMultiApiKeyAllowed() was false; otherwise pick() routed to 'keyManager').
@@ -1223,7 +1293,9 @@ export function RayuProviderSetup({
       <Text dimColor>
         {isBedrock
           ? 'Bedrock API key (bearer token). Stored locally in ~/.rayu/providers.json (0600).'
-          : 'Stored locally in ~/.rayu/providers.json (0600). Leave blank to skip.'}
+          : isOllamaCloud
+            ? 'Ollama Cloud API key (ollama.com → Settings → Keys). Stored locally in ~/.rayu/providers.json (0600).'
+            : 'Stored locally in ~/.rayu/providers.json (0600). Leave blank to skip.'}
       </Text>
       {showMultiKeyUpsell ? (
         <Text dimColor>
@@ -1235,10 +1307,14 @@ export function RayuProviderSetup({
         value={apiKey}
         onChange={setApiKey}
         onSubmit={() =>
-          isBedrock ? setPhase('region') : finish(apiKey)
+          isBedrock
+            ? setPhase('region')
+            : isOllamaCloud
+              ? setPhase('ollamaCloudFetching')
+              : finish(apiKey)
         }
         mask="*"
-        placeholder={isBedrock ? 'ABSK...' : 'sk-...'}
+        placeholder={isBedrock ? 'ABSK...' : isOllamaCloud ? 'your ollama.com API key' : 'sk-...'}
         columns={80}
         cursorOffset={cursor}
         onChangeCursorOffset={setCursor}

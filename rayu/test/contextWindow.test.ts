@@ -141,3 +141,57 @@ describe('getRayuModelContextWindow — Kimi K2 context windows', () => {
     expect(getContextWindowForModel('moonshotai/kimi-k2.6')).toBe(256_000)
   })
 })
+
+describe('getRayuModelContextWindow — steering-requested LLM windows', () => {
+  function nvidia(m: Awaited<ReturnType<typeof fresh>>) {
+    m.upsertProvider({
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'k',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+    })
+    m._resetRayuConfigCache()
+  }
+
+  test('DeepSeek V4 flash & pro = 1M', async () => {
+    const m = await fresh()
+    nvidia(m)
+    expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('deepseek-v4-pro')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('deepseek-ai/deepseek-v4-flash')).toBe(1_000_000)
+  })
+
+  test('GLM-5.2 = 1M while GLM-5.1 stays 200K', async () => {
+    const m = await fresh()
+    nvidia(m)
+    expect(m.getRayuModelContextWindow('glm-5.2')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('glm5.2')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('glm-5.1')).toBe(200_000)
+  })
+
+  test('MiniMax-M3 = 1M while MiniMax-M2 stays 204,800', async () => {
+    const m = await fresh()
+    nvidia(m)
+    expect(m.getRayuModelContextWindow('MiniMax-M3')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('minimax-m3')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('MiniMax-M2')).toBe(204_800)
+  })
+
+  test('Kimi Code 2.7 = 256K while plain Kimi K2 stays 128K', async () => {
+    const m = await fresh()
+    nvidia(m)
+    expect(m.getRayuModelContextWindow('kimi-code-2.7')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('kimicode-2.7')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('kimi-k2.7')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('kimi-k2')).toBe(131_072)
+    expect(m.getRayuModelContextWindow('moonshotai/kimi-k2-instruct')).toBe(131_072)
+  })
+
+  test('Llama 4 = 1M while Llama 3.x stays 128K', async () => {
+    const m = await fresh()
+    nvidia(m)
+    expect(m.getRayuModelContextWindow('llama-4-scout')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('meta-llama/Llama-4-Maverick-17B')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('meta/llama-3.3-70b-instruct')).toBe(131_072)
+  })
+})

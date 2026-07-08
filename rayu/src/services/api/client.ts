@@ -316,12 +316,53 @@ async function getRayuHostedClient(maxRetries: number): Promise<unknown | null> 
  * 'anthropic' (no baseURL, x-api-key) and from 'rayu-hosted' (JWT, gateway).
  * Lazy-imported so nothing loads unless it's the active provider.
  */
-async function getRayuAnthropicCompatibleClient(maxRetries: number): Promise<unknown | null> {
+/**
+ * Build the SAME Anthropic transport the first-party 'anthropic' client uses (see
+ * getAnthropicClient below): default headers (x-app, User-Agent, session id, and
+ * ANTHROPIC_CUSTOM_HEADERS), the 600s default timeout, proxy fetch options, an
+ * optional debug logger, and any fetch override. Reused for
+ * kind:'anthropic-compatible' providers (LongCat, Ollama Cloud) so they hit the
+ * ORIGINAL Anthropic API call path — only the baseURL + Bearer auth differ.
+ * First-party-only concerns (OAuth refresh, x-api-key / configureApiKeyHeaders,
+ * rayu-gateway active-user routing) are intentionally omitted.
+ */
+function anthropicCompatibleTransport(
+  source?: string,
+  fetchOverride?: ClientOptions['fetch'],
+): Partial<ClientOptions> {
+  const customHeaders = getCustomHeaders()
+  const defaultHeaders: { [key: string]: string } = {
+    'x-app': 'cli',
+    'User-Agent': getUserAgent(),
+    'X-Claude-Code-Session-Id': getSessionId(),
+    ...customHeaders,
+  }
+  const resolvedFetch = buildFetch(fetchOverride, source)
+  return {
+    defaultHeaders,
+    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+    fetchOptions: getProxyFetchOptions({
+      forAnthropicAPI: true,
+    }) as ClientOptions['fetchOptions'],
+    ...(resolvedFetch ? { fetch: resolvedFetch } : {}),
+    ...(isDebugToStdErr() ? { logger: createStderrLogger() } : {}),
+  }
+}
+
+async function getRayuAnthropicCompatibleClient(
+  maxRetries: number,
+  source?: string,
+  fetchOverride?: ClientOptions['fetch'],
+): Promise<unknown | null> {
   const { getActiveProvider } = await import('src/utils/rayuConfig.js')
   const active = getActiveProvider()
   if (active?.kind !== 'anthropic-compatible') return null
   const { createAnthropicCompatibleClient } = await import('./anthropicCompatibleClient.js')
-  return createAnthropicCompatibleClient(active, maxRetries)
+  return createAnthropicCompatibleClient(
+    active,
+    maxRetries,
+    anthropicCompatibleTransport(source, fetchOverride),
+  )
 }
 
 /**
@@ -397,7 +438,7 @@ async function buildClientForProvider(
   // pointed at a custom baseURL with Bearer auth (authToken).
   if (provider.kind === 'anthropic-compatible') {
     const { createAnthropicCompatibleClient } = await import('./anthropicCompatibleClient.js')
-    return createAnthropicCompatibleClient(provider, maxRetries)
+    return createAnthropicCompatibleClient(provider, maxRetries, anthropicCompatibleTransport())
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
@@ -530,7 +571,11 @@ export async function getAnthropicClient({
   // Rayu: route to a native Anthropic SDK client when the active provider is
   // kind:'anthropic-compatible' (BYO-key third-party Anthropic Messages endpoint
   // at a custom baseURL + Bearer auth, e.g. LongCat).
-  const anthropicCompatibleClient = await getRayuAnthropicCompatibleClient(maxRetries)
+  const anthropicCompatibleClient = await getRayuAnthropicCompatibleClient(
+    maxRetries,
+    source,
+    fetchOverride,
+  )
   if (anthropicCompatibleClient) {
     return anthropicCompatibleClient as unknown as Anthropic
   }

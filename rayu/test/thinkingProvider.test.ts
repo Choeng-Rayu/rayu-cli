@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   modelSupportsThinking,
   modelSupportsAdaptiveThinking,
@@ -67,4 +70,38 @@ test('malformed MAX_THINKING_TOKENS is treated as unset (falls through to defaul
   process.env.MAX_THINKING_TOKENS = 'not-a-number'
   // Must not force-disable on garbage input — same result as if unset.
   expect(shouldEnableThinkingByDefault()).toBe(whenUnset)
+})
+
+// Regression: an anthropic-compatible provider (LongCat / Ollama Cloud) speaks
+// the NATIVE Anthropic wire format, so it must use {type:'enabled',budget_tokens}
+// thinking — NOT the Claude-only {type:'adaptive'} form, which those endpoints
+// ignore (producing no live thinking stream, the reported bug).
+test('anthropic-compatible providers support thinking but NOT Claude-only adaptive thinking', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rayu-think-'))
+  const prev = process.env.RAYU_CONFIG_DIR
+  process.env.RAYU_CONFIG_DIR = dir
+  try {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    cfg._resetRayuConfigCache()
+    cfg.upsertProvider(
+      {
+        id: 'ollama-cloud',
+        kind: 'anthropic-compatible',
+        apiKey: 'k',
+        baseURL: 'https://ollama.com',
+        defaultModel: 'ollama-thinking-test',
+      },
+      true,
+    )
+    cfg._resetRayuConfigCache()
+    // Thinking IS supported (Ollama/LongCat emit native Anthropic thinking blocks)…
+    expect(modelSupportsThinking('ollama-thinking-test')).toBe(true)
+    // …but adaptive must be false so claude.ts sends {type:'enabled',budget_tokens}
+    // and the native stream actually emits thinking_delta events.
+    expect(modelSupportsAdaptiveThinking('ollama-thinking-test')).toBe(false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    if (prev === undefined) delete process.env.RAYU_CONFIG_DIR
+    else process.env.RAYU_CONFIG_DIR = prev
+  }
 })
