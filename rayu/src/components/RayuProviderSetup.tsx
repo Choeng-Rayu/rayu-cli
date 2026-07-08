@@ -74,6 +74,9 @@ export function RayuProviderSetup({
   const [baseURL, setBaseURL] = useState('')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
+  // Multi-key providers (NVIDIA / OpenRouter / Ollama Cloud): the full key list
+  // collected by the MultiApiKeyManager, used by the Ollama Cloud fetch phase.
+  const [multiKeys, setMultiKeys] = useState<string[]>([])
   const [cursor, setCursor] = useState(0)
   // Bedrock-specific state
   const [region, setRegion] = useState(DEFAULT_BEDROCK_REGION)
@@ -619,10 +622,18 @@ export function RayuProviderSetup({
       const { fetchOllamaCloudModelContexts, OLLAMA_CLOUD_BASE_URL } = await import(
         '../services/api/ollamaCloud.js'
       )
+      // Resolve the key list: the multi-key manager's list when present
+      // (paid users), else the single typed key (Free / single-key path).
+      const keys = (multiKeys.length ? multiKeys : [apiKey])
+        .map(k => k.trim())
+        .filter(Boolean)
       const base: RayuProvider = {
         id: preset?.id ?? 'ollama-cloud',
         kind: 'anthropic-compatible',
-        apiKey: apiKey.trim() || undefined,
+        apiKey: keys[0],
+        // Only store apiKeys when there's more than one (keeps single-key
+        // configs clean); rotation reads getProviderApiKeys either way.
+        ...(keys.length > 1 ? { apiKeys: keys } : {}),
         baseURL: (baseURL || preset?.baseURL || OLLAMA_CLOUD_BASE_URL).trim(),
       }
       // Persist first so fetchProviderModels + the context calls read the key/baseURL.
@@ -1271,7 +1282,19 @@ export function RayuProviderSetup({
         providerLabel={preset.label}
         maxKeys={getMaxStoredApiKeys()}
         initialKeys={existing}
-        onDone={finishMultiKey}
+        onDone={keys => {
+          const cleaned = keys.map(k => k.trim()).filter(Boolean)
+          // Ollama Cloud needs its model + context-window fetch phase; stash
+          // the keys and route there. Other multi-key providers (NVIDIA /
+          // OpenRouter) finish generically.
+          if (preset.id === 'ollama-cloud') {
+            setMultiKeys(cleaned)
+            setApiKey(cleaned[0] ?? '')
+            setPhase('ollamaCloudFetching')
+            return
+          }
+          finishMultiKey(cleaned)
+        }}
         onCancel={onDone}
       />
     )

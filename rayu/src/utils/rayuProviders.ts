@@ -156,20 +156,47 @@ export const RAYU_HOSTED_PROVIDER_ID = 'rayu-hosted'
 export const RAYU_HOSTED_PROVIDER_LABEL = 'Rayu (hosted)'
 
 /**
- * Providers that support storing MULTIPLE API keys with automatic rate-limit
- * key rotation (see openaiAdapter withKeyRotation). Scoped to NVIDIA and
- * OpenRouter as requested; the rotation mechanism itself is generic, so adding
- * an id here is all that's needed to extend the multi-key UI to another
- * openai-compatible provider. Gated to Basic-plan users via isMultiApiKeyAllowed().
+ * Built-in providers that support storing MULTIPLE API keys with automatic
+ * rate-limit key rotation:
+ *   • NVIDIA / OpenRouter — openai-compatible → rotation in openaiAdapter
+ *     (withKeyRotation).
+ *   • Ollama Cloud — anthropic-compatible → rotation in anthropicCompatibleClient
+ *     (makeKeyRotatingFetch), since it uses the native Anthropic SDK path.
+ * The rotation mechanism is generic per client kind, so enabling another
+ * provider is just adding its id here — or, with no code change, via the
+ * RAYU_MULTI_KEY_PROVIDERS env var (see envMultiKeyProviderIds below). Always
+ * Basic-plan gated via isMultiApiKeyAllowed().
  */
 export const MULTI_KEY_PROVIDER_IDS: ReadonlySet<string> = new Set([
   'nvidia',
   'openrouter',
+  'ollama-cloud',
 ])
+
+/**
+ * Extra multi-key provider ids from the RAYU_MULTI_KEY_PROVIDERS env var
+ * (comma- or space-separated), unioned with the built-in set above. This is the
+ * self-serve knob: to give ANOTHER provider multi-API-key rotation you just add
+ * its id in .env — no code change, no new release. e.g.
+ *   RAYU_MULTI_KEY_PROVIDERS=deepseek,groq
+ * (Still Basic-plan gated via isMultiApiKeyAllowed(), same as the built-ins.)
+ */
+function envMultiKeyProviderIds(): string[] {
+  const raw = process.env.RAYU_MULTI_KEY_PROVIDERS
+  if (!raw) return []
+  return raw
+    .split(/[\s,]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+}
 
 /** True when a provider id supports the multi-API-key manager + rotation. */
 export function supportsMultiApiKey(providerId: string | undefined): boolean {
-  return !!providerId && MULTI_KEY_PROVIDER_IDS.has(providerId)
+  if (!providerId) return false
+  return (
+    MULTI_KEY_PROVIDER_IDS.has(providerId) ||
+    envMultiKeyProviderIds().includes(providerId)
+  )
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [

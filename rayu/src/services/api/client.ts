@@ -354,14 +354,24 @@ async function getRayuAnthropicCompatibleClient(
   source?: string,
   fetchOverride?: ClientOptions['fetch'],
 ): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const { getActiveProvider, getProviderApiKeys } = await import('src/utils/rayuConfig.js')
   const active = getActiveProvider()
   if (active?.kind !== 'anthropic-compatible') return null
   const { createAnthropicCompatibleClient } = await import('./anthropicCompatibleClient.js')
+  // Resolve the key list; cap to the first key unless this is a multi-key
+  // provider (e.g. Ollama Cloud) AND the Basic-plan multi-key entitlement is
+  // granted. This is the anthropic-compatible analogue of the openai path.
+  let apiKeys = getProviderApiKeys(active)
+  const { supportsMultiApiKey } = await import('src/utils/rayuProviders.js')
+  const { isMultiApiKeyAllowed } = await import('../rayuAuth/multiApiKeyFeature.js')
+  if (!supportsMultiApiKey(active.id) || !isMultiApiKeyAllowed()) {
+    apiKeys = apiKeys.slice(0, 1)
+  }
   return createAnthropicCompatibleClient(
     active,
     maxRetries,
     anthropicCompatibleTransport(source, fetchOverride),
+    apiKeys,
   )
 }
 
@@ -438,7 +448,22 @@ async function buildClientForProvider(
   // pointed at a custom baseURL with Bearer auth (authToken).
   if (provider.kind === 'anthropic-compatible') {
     const { createAnthropicCompatibleClient } = await import('./anthropicCompatibleClient.js')
-    return createAnthropicCompatibleClient(provider, maxRetries, anthropicCompatibleTransport())
+    // Same key resolution + paid-plan gate as the active-provider path, so a
+    // subagent routed to a multi-key anthropic-compatible provider (Ollama
+    // Cloud) also rotates keys — capped to one key otherwise.
+    const { getProviderApiKeys } = await import('src/utils/rayuConfig.js')
+    const { supportsMultiApiKey } = await import('src/utils/rayuProviders.js')
+    const { isMultiApiKeyAllowed } = await import('../rayuAuth/multiApiKeyFeature.js')
+    let apiKeys = getProviderApiKeys(provider)
+    if (!supportsMultiApiKey(provider.id) || !isMultiApiKeyAllowed()) {
+      apiKeys = apiKeys.slice(0, 1)
+    }
+    return createAnthropicCompatibleClient(
+      provider,
+      maxRetries,
+      anthropicCompatibleTransport(),
+      apiKeys,
+    )
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.

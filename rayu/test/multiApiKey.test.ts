@@ -205,3 +205,38 @@ describe('isMultiApiKeyAllowed (Basic-plan gate)', () => {
     expect(g.isMultiApiKeyAllowed()).toBe(false)
   })
 })
+
+
+describe('supportsMultiApiKey (built-in set + RAYU_MULTI_KEY_PROVIDERS)', () => {
+  let saved: string | undefined
+  beforeEach(() => {
+    saved = process.env.RAYU_MULTI_KEY_PROVIDERS
+    delete process.env.RAYU_MULTI_KEY_PROVIDERS
+  })
+  afterEach(() => {
+    if (saved === undefined) delete process.env.RAYU_MULTI_KEY_PROVIDERS
+    else process.env.RAYU_MULTI_KEY_PROVIDERS = saved
+  })
+
+  test('built-in providers include nvidia, openrouter, and ollama-cloud', async () => {
+    const { supportsMultiApiKey } = await import('../src/utils/rayuProviders.ts')
+    expect(supportsMultiApiKey('nvidia')).toBe(true)
+    expect(supportsMultiApiKey('openrouter')).toBe(true)
+    expect(supportsMultiApiKey('ollama-cloud')).toBe(true)
+    // Not a multi-key provider by default.
+    expect(supportsMultiApiKey('deepseek')).toBe(false)
+    expect(supportsMultiApiKey(undefined)).toBe(false)
+  })
+
+  test('RAYU_MULTI_KEY_PROVIDERS adds more provider ids (self-serve, no code change)', async () => {
+    const { supportsMultiApiKey } = await import('../src/utils/rayuProviders.ts')
+    process.env.RAYU_MULTI_KEY_PROVIDERS = 'deepseek, groq  xai'
+    expect(supportsMultiApiKey('deepseek')).toBe(true)
+    expect(supportsMultiApiKey('groq')).toBe(true)
+    expect(supportsMultiApiKey('xai')).toBe(true)
+    // built-ins still work
+    expect(supportsMultiApiKey('ollama-cloud')).toBe(true)
+    // still false for an id not listed anywhere
+    expect(supportsMultiApiKey('cohere')).toBe(false)
+  })
+})
