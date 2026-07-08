@@ -98,7 +98,7 @@ type ListItemProps = {
  * @example
  * // Custom children styling (styled=false)
  * <ListItem isFocused styled={false}>
- *   <Text color="claude">Custom styled content</Text>
+ *   <Text color="brand">Custom styled content</Text>
  * </ListItem>
  */
 export function ListItem(t0) {

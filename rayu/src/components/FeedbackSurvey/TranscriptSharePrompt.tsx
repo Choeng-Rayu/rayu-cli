@@ -57,7 +57,7 @@ export function TranscriptSharePrompt(t0) {
   }
   let t4;
   if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-    t4 = <Box marginLeft={2}><Text dimColor={true}>Learn more: https://code.claude.com/docs/en/data-usage#session-quality-surveys</Text></Box>;
+    t4 = <Box marginLeft={2}><Text dimColor={true}>Learn more: https://rayu-web.vercel.app/docs</Text></Box>;
     $[7] = t4;
   } else {
     t4 = $[7];

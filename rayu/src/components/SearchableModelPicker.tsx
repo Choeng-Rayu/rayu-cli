@@ -101,7 +101,7 @@ export function SearchableModelPicker({
       <Text bold>{title ?? 'Select a model'}</Text>
       {headerTip ? <Text dimColor>{headerTip}</Text> : null}
       <Text>
-        Search: <Text color="claude">{query}</Text>
+        Search: <Text color="brand">{query}</Text>
         <Text dimColor>
           {query
             ? `  (${filtered.length} match${filtered.length === 1 ? '' : 'es'})`

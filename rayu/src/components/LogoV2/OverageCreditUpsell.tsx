@@ -121,13 +121,13 @@ export function OverageCreditUpsell(t0) {
         } else {
           t4 = $[7];
         }
-        t2 = <><Text color="claude">{maxWidth ? truncate(title, maxWidth) : title}</Text>{t4}</>;
+        t2 = <><Text color="brand">{maxWidth ? truncate(title, maxWidth) : title}</Text>{t4}</>;
         break bb0;
       }
       const text = getUsageText(amount);
       const display = maxWidth ? truncate(text, maxWidth) : text;
       const highlightLen = Math.min(getFeedTitle(amount).length, display.length);
-      t1 = <Text dimColor={true}><Text color="claude">{display.slice(0, highlightLen)}</Text>{display.slice(highlightLen)}</Text>;
+      t1 = <Text dimColor={true}><Text color="brand">{display.slice(0, highlightLen)}</Text>{display.slice(highlightLen)}</Text>;
     }
     $[0] = maxWidth;
     $[1] = twoLine;

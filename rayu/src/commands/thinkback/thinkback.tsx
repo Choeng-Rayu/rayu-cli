@@ -372,7 +372,7 @@ function ThinkbackMenu(t0) {
   }
   let t7;
   if ($[16] !== handleCancel || $[17] !== t6) {
-    t7 = <Dialog title="Think Back on 2025 with RAYU" subtitle="Generate your 2025 RAYU Think Back (takes a few minutes to run)" onCancel={handleCancel} color="claude">{t6}</Dialog>;
+    t7 = <Dialog title="Think Back on 2025 with RAYU" subtitle="Generate your 2025 RAYU Think Back (takes a few minutes to run)" onCancel={handleCancel} color="brand">{t6}</Dialog>;
     $[16] = handleCancel;
     $[17] = t6;
     $[18] = t7;

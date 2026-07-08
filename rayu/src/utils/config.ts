@@ -42,6 +42,7 @@ const ccrAutoConnect = feature('CCR_AUTO_CONNECT')
 
 /* eslint-enable @typescript-eslint/no-require-imports */
 import type { ImageDimensions } from './imageResizer.js'
+import type { MascotId } from './mascotBanner.js'
 import type { ModelOption } from './model/modelOptions.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 
@@ -195,6 +196,11 @@ export type GlobalConfig = {
   doctorShownAtSession?: number
   userID?: string
   theme: ThemeSetting
+  /** Whether the startup mascot banner is shown. Defaults to true. */
+  mascotBannerEnabled: boolean
+  /** Which mascot the startup banner renders. Currently only 'goose' is
+   *  available; the type is a union so future mascots type-check cleanly. */
+  mascot: MascotId
   hasCompletedOnboarding?: boolean
   // Tracks the last version that reset onboarding, used with MIN_VERSION_REQUIRING_ONBOARDING_RESET
   lastOnboardingVersion?: string
@@ -588,6 +594,8 @@ function createDefaultGlobalConfig(): GlobalConfig {
     installMethod: undefined,
     autoUpdates: undefined,
     theme: 'dark',
+    mascotBannerEnabled: true,
+    mascot: 'goose',
     preferredNotifChannel: 'auto',
     verbose: false,
     editorMode: 'normal',
@@ -630,6 +638,8 @@ export const GLOBAL_CONFIG_KEYS = [
   'autoUpdates',
   'autoUpdatesProtectedForNative',
   'theme',
+  'mascotBannerEnabled',
+  'mascot',
   'verbose',
   'preferredNotifChannel',
   'shiftEnterKeyBindingInstalled',

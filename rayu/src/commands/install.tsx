@@ -221,15 +221,15 @@ function Install({
     }
   }, [state, onDone]);
   return <Box flexDirection="column" marginTop={1}>
-      {state.type === 'checking' && <Text color="claude">Checking installation status...</Text>}
+      {state.type === 'checking' && <Text color="brand">Checking installation status...</Text>}
 
       {state.type === 'cleaning-npm' && <Text color="warning">Cleaning up old npm installations...</Text>}
 
-      {state.type === 'installing' && <Text color="claude">
+      {state.type === 'installing' && <Text color="brand">
           Installing RAYU native build {state.version}...
         </Text>}
 
-      {state.type === 'setting-up' && <Text color="claude">Setting up launcher and shell integration...</Text>}
+      {state.type === 'setting-up' && <Text color="brand">Setting up launcher and shell integration...</Text>}
 
       {state.type === 'set-up' && <SetupNotes messages={state.messages} />}
 
@@ -243,7 +243,7 @@ function Install({
           <Box marginLeft={2} flexDirection="column" gap={1}>
             {state.version !== 'current' && <Box>
                 <Text dimColor>Version: </Text>
-                <Text color="claude">{state.version}</Text>
+                <Text color="brand">{state.version}</Text>
               </Box>}
             <Box>
               <Text dimColor>Location: </Text>
@@ -253,7 +253,7 @@ function Install({
           <Box marginLeft={2} flexDirection="column" gap={1}>
             <Box marginTop={1}>
               <Text dimColor>Next: Run </Text>
-              <Text color="claude" bold>
+              <Text color="brand" bold>
                 claude --help
               </Text>
               <Text dimColor> to get started</Text>

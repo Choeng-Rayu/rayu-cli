@@ -156,3 +156,30 @@ by main/bridge/attribution/ultraplan/print) keeps its signature. The remote-sess
 bridge under `src/bridge/*` stays in place but is inert: it is gated on the
 claude.ai OAuth login, which is disabled (see Task 7), and no longer points at
 any Anthropic host.
+
+## commands/feedback/ + components/Feedback.tsx
+
+The `/feedback` (alias `/bug`) command and its UI. It summarized the user's
+feedback with an Anthropic Haiku call, **POSTed it to
+`https://api.anthropic.com/api/claude_cli_feedback`**, and opened a GitHub issue
+against **`anthropics/claude-code`**. All three are Anthropic-specific and Rayu
+has no feedback backend, so the command was de-registered from `src/commands.ts`
+and moved here. The shared `redactSensitiveInfo()` helper it exported was
+extracted to `src/utils/redactSensitiveInfo.ts` (still used by the feedback
+survey's transcript-share path). Rayu users report issues at
+`https://github.com/Choeng-Rayu/rayu-cli/issues` (shown in the first-run banner).
+
+## components/grove/Grove.tsx + services/api/grove.ts
+
+The Anthropic "Grove" data-training **consent screen** ("Help improve Claude —
+allow the use of your chats and coding sessions to train and improve Anthropic
+AI models", 5-year data-retention notice, links to `claude.ai/settings/...` and
+`anthropic.com/legal/...`) and its API service (which GET/PATCHed
+`${BASE_API_URL}/api/oauth/account/settings` and posted `grove_notice_viewed`).
+
+It applied only to claude.ai consumer subscribers — irrelevant to a BYO-key /
+multi-provider CLI, and unreachable now that the claude.ai OAuth login is
+disabled. Both the interactive onboarding step (`interactiveHelpers.tsx`) and the
+headless check (`cli/print.ts`) were unwired, and both modules moved here.
+(`theme.ts` still defines "Grove colors" — harmless color values — and
+`config.ts` keeps an inert grove cache field.)

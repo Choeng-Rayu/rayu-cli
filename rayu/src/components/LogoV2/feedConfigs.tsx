@@ -92,7 +92,7 @@ export function createGuestPassesFeed(): FeedConfig {
     customContent: {
       content: <>
           <Box marginY={1}>
-            <Text color="claude">{`[${getBrandGlyph()}] [${getBrandGlyph()}] [${getBrandGlyph()}]`}</Text>
+            <Text color="brand">{`[${getBrandGlyph()}] [${getBrandGlyph()}] [${getBrandGlyph()}]`}</Text>
           </Box>
           <Text dimColor>{subtitle}</Text>
         </>,

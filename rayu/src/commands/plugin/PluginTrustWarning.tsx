@@ -15,7 +15,7 @@ export function PluginTrustWarning() {
   const customMessage = t0;
   let t1;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = <Text color="claude">{figures.warning} </Text>;
+    t1 = <Text color="brand">{figures.warning} </Text>;
     $[1] = t1;
   } else {
     t1 = $[1];

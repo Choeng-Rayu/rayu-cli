@@ -4,10 +4,10 @@ import { env } from './env.js'
 export type Theme = {
   autoAccept: string
   bashBorder: string
-  claude: string
-  claudeShimmer: string // Lighter version of claude color for shimmer effect
-  claudeBlue_FOR_SYSTEM_SPINNER: string
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: string
+  brand: string
+  brandShimmer: string // Lighter version of claude color for shimmer effect
+  brandBlue_FOR_SYSTEM_SPINNER: string
+  brandBlueShimmer_FOR_SYSTEM_SPINNER: string
   permission: string
   permissionShimmer: string // Lighter version of permission color for shimmer effect
   planMode: string
@@ -73,7 +73,7 @@ export type Theme = {
   fastModeShimmer: string
   // Brief/assistant mode label colors
   briefLabelYou: string
-  briefLabelClaude: string
+  briefLabelBrand: string
   // Rainbow colors for ultrathink keyword highlighting
   rainbow_red: string
   rainbow_orange: string
@@ -118,10 +118,10 @@ export type ThemeSetting = (typeof THEME_SETTINGS)[number]
 const lightTheme: Theme = {
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(255,0,135)', // Vibrant pink
-  claude: 'rgb(45,140,80)', // Rayu green
-  claudeShimmer: 'rgb(90,180,120)', // Lighter Rayu green for shimmer effect
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(87,105,247)', // Medium blue for system spinner
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(117,135,255)', // Lighter blue for system spinner shimmer
+  brand: 'rgb(45,140,80)', // Rayu green
+  brandShimmer: 'rgb(90,180,120)', // Lighter Rayu green for shimmer effect
+  brandBlue_FOR_SYSTEM_SPINNER: 'rgb(87,105,247)', // Medium blue for system spinner
+  brandBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(117,135,255)', // Lighter blue for system spinner shimmer
   permission: 'rgb(87,105,247)', // Medium blue
   permissionShimmer: 'rgb(137,155,255)', // Lighter blue for shimmer effect
   planMode: 'rgb(0,102,102)', // Muted teal
@@ -177,7 +177,7 @@ const lightTheme: Theme = {
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   // Brief/assistant mode
   briefLabelYou: 'rgb(37,99,235)', // Blue
-  briefLabelClaude: 'rgb(45,140,80)', // Rayu green (brand)
+  briefLabelBrand: 'rgb(45,140,80)', // Rayu green (brand)
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',
@@ -201,10 +201,10 @@ const lightTheme: Theme = {
 const lightAnsiTheme: Theme = {
   autoAccept: 'ansi:magenta',
   bashBorder: 'ansi:magenta',
-  claude: 'ansi:greenBright',
-  claudeShimmer: 'ansi:green',
-  claudeBlue_FOR_SYSTEM_SPINNER: 'ansi:blue',
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
+  brand: 'ansi:greenBright',
+  brandShimmer: 'ansi:green',
+  brandBlue_FOR_SYSTEM_SPINNER: 'ansi:blue',
+  brandBlueShimmer_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
   permission: 'ansi:blue',
   permissionShimmer: 'ansi:blueBright',
   planMode: 'ansi:cyan',
@@ -259,7 +259,7 @@ const lightAnsiTheme: Theme = {
   fastMode: 'ansi:red',
   fastModeShimmer: 'ansi:redBright',
   briefLabelYou: 'ansi:blue',
-  briefLabelClaude: 'ansi:greenBright',
+  briefLabelBrand: 'ansi:greenBright',
   rainbow_red: 'ansi:red',
   rainbow_orange: 'ansi:redBright',
   rainbow_yellow: 'ansi:yellow',
@@ -283,10 +283,10 @@ const lightAnsiTheme: Theme = {
 const darkAnsiTheme: Theme = {
   autoAccept: 'ansi:magentaBright',
   bashBorder: 'ansi:magentaBright',
-  claude: 'ansi:greenBright',
-  claudeShimmer: 'ansi:green',
-  claudeBlue_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
+  brand: 'ansi:greenBright',
+  brandShimmer: 'ansi:green',
+  brandBlue_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
+  brandBlueShimmer_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
   permission: 'ansi:blueBright',
   permissionShimmer: 'ansi:blueBright',
   planMode: 'ansi:cyanBright',
@@ -341,7 +341,7 @@ const darkAnsiTheme: Theme = {
   fastMode: 'ansi:redBright',
   fastModeShimmer: 'ansi:redBright',
   briefLabelYou: 'ansi:blueBright',
-  briefLabelClaude: 'ansi:greenBright',
+  briefLabelBrand: 'ansi:greenBright',
   rainbow_red: 'ansi:red',
   rainbow_orange: 'ansi:redBright',
   rainbow_yellow: 'ansi:yellow',
@@ -365,10 +365,10 @@ const darkAnsiTheme: Theme = {
 const lightDaltonizedTheme: Theme = {
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(0,102,204)', // Blue instead of pink
-  claude: 'rgb(0,153,136)', // Teal-green adjusted for deuteranopia (distinguishable from red)
-  claudeShimmer: 'rgb(70,190,175)', // Lighter teal-green for shimmer effect
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(51,102,255)', // Bright blue for system spinner
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(101,152,255)', // Lighter bright blue for system spinner shimmer
+  brand: 'rgb(0,153,136)', // Teal-green adjusted for deuteranopia (distinguishable from red)
+  brandShimmer: 'rgb(70,190,175)', // Lighter teal-green for shimmer effect
+  brandBlue_FOR_SYSTEM_SPINNER: 'rgb(51,102,255)', // Bright blue for system spinner
+  brandBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(101,152,255)', // Lighter bright blue for system spinner shimmer
   permission: 'rgb(51,102,255)', // Bright blue
   permissionShimmer: 'rgb(101,152,255)', // Lighter bright blue for shimmer
   planMode: 'rgb(51,102,102)', // Muted blue-gray (works for color-blind)
@@ -423,7 +423,7 @@ const lightDaltonizedTheme: Theme = {
   fastMode: 'rgb(255,106,0)', // Electric orange (color-blind safe)
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(37,99,235)', // Blue
-  briefLabelClaude: 'rgb(0,153,136)', // Teal-green adjusted for deuteranopia (matches claude)
+  briefLabelBrand: 'rgb(0,153,136)', // Teal-green adjusted for deuteranopia (matches claude)
   rainbow_red: 'rgb(235,95,87)',
   // rainbow_red: 'rgb(235,95,87)', //original color
   rainbow_orange: 'rgb(100, 172, 7)',
@@ -448,10 +448,10 @@ const lightDaltonizedTheme: Theme = {
 const darkTheme: Theme = {
   autoAccept: 'rgb(175,135,255)', // Electric violet
   bashBorder: 'rgb(253,93,177)', // Bright pink
-  claude: 'rgb(70,190,130)', // Rayu green (dark bg)
-  claudeShimmer: 'rgb(120,220,165)', // Lighter Rayu green for shimmer effect
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(147,165,255)', // Blue for system spinner
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(177,195,255)', // Lighter blue for system spinner shimmer
+  brand: 'rgb(70,190,130)', // Rayu green (dark bg)
+  brandShimmer: 'rgb(120,220,165)', // Lighter Rayu green for shimmer effect
+  brandBlue_FOR_SYSTEM_SPINNER: 'rgb(147,165,255)', // Blue for system spinner
+  brandBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(177,195,255)', // Lighter blue for system spinner shimmer
   permission: 'rgb(177,185,249)', // Light blue-purple
   permissionShimmer: 'rgb(207,215,255)', // Lighter blue-purple for shimmer
   planMode: 'rgb(72,150,140)', // Muted sage green
@@ -506,7 +506,7 @@ const darkTheme: Theme = {
   fastMode: 'rgb(255,120,20)', // Electric orange for dark bg
   fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue
-  briefLabelClaude: 'rgb(70,190,130)', // Rayu green (brand)
+  briefLabelBrand: 'rgb(70,190,130)', // Rayu green (brand)
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',
@@ -530,10 +530,10 @@ const darkTheme: Theme = {
 const darkDaltonizedTheme: Theme = {
   autoAccept: 'rgb(175,135,255)', // Electric violet
   bashBorder: 'rgb(51,153,255)', // Bright blue
-  claude: 'rgb(0,180,150)', // Teal-green adjusted for deuteranopia (dark bg)
-  claudeShimmer: 'rgb(70,210,180)', // Lighter teal-green for shimmer effect
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(153,204,255)', // Light blue for system spinner
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(183,224,255)', // Lighter blue for system spinner shimmer
+  brand: 'rgb(0,180,150)', // Teal-green adjusted for deuteranopia (dark bg)
+  brandShimmer: 'rgb(70,210,180)', // Lighter teal-green for shimmer effect
+  brandBlue_FOR_SYSTEM_SPINNER: 'rgb(153,204,255)', // Light blue for system spinner
+  brandBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(183,224,255)', // Lighter blue for system spinner shimmer
   permission: 'rgb(153,204,255)', // Light blue
   permissionShimmer: 'rgb(183,224,255)', // Lighter blue for shimmer
   planMode: 'rgb(102,153,153)', // Muted gray-teal (works for color-blind)
@@ -588,7 +588,7 @@ const darkDaltonizedTheme: Theme = {
   fastMode: 'rgb(255,120,20)', // Electric orange for dark bg (color-blind safe)
   fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue
-  briefLabelClaude: 'rgb(0,180,150)', // Teal-green adjusted for deuteranopia (matches claude)
+  briefLabelBrand: 'rgb(0,180,150)', // Teal-green adjusted for deuteranopia (matches claude)
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',
