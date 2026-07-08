@@ -512,6 +512,7 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
   [/kimi[-_.]?k2[-_.]?(thinking|\d{4}|[5-9])/i, 256_000],     // Kimi K2.5 / K2.6 / Thinking (256k)
   [/kimi[-_.\s]?cod(e|ing)|kimi[-_.]?k?2[.\-_]?7/i, 256_000], // Kimi Code 2.7 / Kimi coding models (256k)
   [/kimi|moonshot/i, 131_072],                                 // Kimi K2 (0711) / Moonshot standard (128k)
+  [/qwen[-.]?3\.5/i, 256_000],                                // Qwen3.5 (Ollama Cloud 397b/122b — 256K)
   [/qwen[-.]?3[-.]?(coder|next)/i, 256_000],
   [/jamba/i, 256_000],
   [/step[-_.]?3\.7/i, 256_000],

@@ -103,6 +103,34 @@ describe('getRayuModelContextWindow — non-Anthropic providers use the model ta
     m._resetRayuConfigCache()
     expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(500_000)
   })
+
+  test('rayu-ollama-cloud hosted model codes resolve their curated context windows', async () => {
+    const m = await fresh()
+    m.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      baseURL: 'https://hosted.example',
+      models: [
+        'glm-5.2',
+        'llama-4',
+        'kimi-k2.7',
+        'minimax-m3',
+        'gpt-oss-120b',
+        'qwen3.5-397b',
+        'qwen3.5-122b',
+      ],
+      defaultModel: 'glm-5.2',
+    })
+    m._resetRayuConfigCache()
+    expect(m.getRayuModelContextWindow('glm-5.2')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('llama-4')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('minimax-m3')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('kimi-k2.7')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('qwen3.5-397b')).toBe(256_000)
+    expect(m.getRayuModelContextWindow('qwen3.5-122b')).toBe(256_000)
+    // GPT-OSS 120B is 128K, not 1M (per spec).
+    expect(m.getRayuModelContextWindow('gpt-oss-120b')).toBe(131_072)
+  })
 })
 
 describe('getRayuModelContextWindow — Kimi K2 context windows', () => {

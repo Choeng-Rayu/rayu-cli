@@ -190,13 +190,63 @@ function envMultiKeyProviderIds(): string[] {
     .filter(Boolean)
 }
 
-/** True when a provider id supports the multi-API-key manager + rotation. */
+/**
+ * Provider kinds whose auth is a ROTATABLE user-supplied API key sent as a
+ * request header. Multi-key rotation is ONLY wired for these two client paths
+ * (openaiAdapter.withKeyRotation + anthropicCompatibleClient.makeKeyRotatingFetch).
+ *
+ * Every other kind is intentionally excluded, because their credential is NOT a
+ * rotatable user API key:
+ *   • 'anthropic'   — first-party Console key (single x-api-key)
+ *   • 'kiro'        — Kiro/CodeWhisperer (an apikey OR kiro-cli OAuth token)
+ *   • 'vertex'      — Google OAuth / ADC
+ *   • 'genai'       — Login-with-Gemini OAuth
+ *   • 'copilot'     — GitHub OAuth device flow
+ *   • 'bedrock'     — AWS creds / bearer token
+ *   • 'rayu-hosted' — Rayu account JWT via the gateway
+ * This is the HARD guard behind the user requirement: multi-key is for BYO
+ * API-key providers only — never Kiro, never an Auth/managed-credential provider.
+ */
+const MULTI_KEY_PROVIDER_KINDS: ReadonlySet<ProviderKind> = new Set<ProviderKind>([
+  'openai-compatible',
+  'anthropic-compatible',
+])
+
+/**
+ * Resolve a provider's kind by id: the configured provider first (covers custom
+ * / local ids the user added), then the built-in preset. Undefined only for a
+ * brand-new id that is neither configured nor a preset.
+ */
+function providerKindForId(providerId: string): ProviderKind | undefined {
+  const configured = loadRayuConfig().providers.find(p => p.id === providerId)
+  if (configured) return configured.kind
+  return PROVIDER_PRESETS.find(p => p.id === providerId)?.kind
+}
+
+/**
+ * True when a provider supports the multi-API-key manager + rotation.
+ *
+ * Two conditions, BOTH required:
+ *  1. the id is explicitly allowed — a built-in (nvidia/openrouter/ollama-cloud)
+ *     or opted-in via RAYU_MULTI_KEY_PROVIDERS; AND
+ *  2. its kind authenticates with a rotatable user API key (openai-compatible or
+ *     anthropic-compatible).
+ *
+ * Condition 2 is the safety net: even if someone mistakenly adds `kiro` or an
+ * OAuth provider id to RAYU_MULTI_KEY_PROVIDERS, it can NEVER become multi-key,
+ * because rotation only exists for — and only makes sense for — user-API-key
+ * providers. An id whose kind can't be resolved (neither configured nor a known
+ * preset) is DENIED — we only enable multi-key once we can confirm the provider
+ * authenticates with a rotatable user API key.
+ */
 export function supportsMultiApiKey(providerId: string | undefined): boolean {
   if (!providerId) return false
-  return (
+  const listed =
     MULTI_KEY_PROVIDER_IDS.has(providerId) ||
     envMultiKeyProviderIds().includes(providerId)
-  )
+  if (!listed) return false
+  const kind = providerKindForId(providerId)
+  return kind !== undefined && MULTI_KEY_PROVIDER_KINDS.has(kind)
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [

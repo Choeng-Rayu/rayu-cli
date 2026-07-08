@@ -68,6 +68,12 @@ func Load() (*Config, error) {
 	if k := os.Getenv("LONGCAT_API_KEY"); k != "" {
 		c.ProviderKeys["longcat"] = k
 	}
+	// Ollama Cloud (provider 'rayu-ollama-cloud'): resold hosted models via
+	// Rayu's own ollama.com key. KeyForProvider can't derive it from the provider
+	// name (it has dashes), so map it explicitly here.
+	if k := os.Getenv("OLLAMA_API_KEY"); k != "" {
+		c.ProviderKeys["rayu-ollama-cloud"] = k
+	}
 
 	if c.DatabaseURL != "" {
 		dsn, err := MySQLDSN(c.DatabaseURL)
@@ -102,8 +108,8 @@ func (c *Config) ProviderKeySummary() string {
 			return fmt.Sprintf("%s…%s(%d)", k[:6], k[len(k)-4:], len(k))
 		}
 	}
-	return fmt.Sprintf("deepseek=%s deepinfra=%s longcat=%s",
-		mask(c.ProviderKeys["deepseek"]), mask(c.ProviderKeys["deepinfra"]), mask(c.ProviderKeys["longcat"]))
+	return fmt.Sprintf("deepseek=%s deepinfra=%s longcat=%s rayu-ollama-cloud=%s",
+		mask(c.ProviderKeys["deepseek"]), mask(c.ProviderKeys["deepinfra"]), mask(c.ProviderKeys["longcat"]), mask(c.ProviderKeys["rayu-ollama-cloud"]))
 }
 
 // MySQLDSN converts a prisma-style "mysql://user:pass@host:port/db?params" URL

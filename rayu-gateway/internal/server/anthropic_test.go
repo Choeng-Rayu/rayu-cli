@@ -13,16 +13,22 @@ import (
 )
 
 func TestAnthropicUpstream(t *testing.T) {
-	cases := map[string]string{
-		"https://api.deepseek.com":        "https://api.deepseek.com/anthropic/v1/messages",
-		"https://api.deepseek.com/":       "https://api.deepseek.com/anthropic/v1/messages",
-		"https://api.deepseek.com/v1":     "https://api.deepseek.com/anthropic/v1/messages",
-		"https://api.deepseek.com/v1/":    "https://api.deepseek.com/anthropic/v1/messages",
-		"https://gw.example.test:8443/v1": "https://gw.example.test:8443/anthropic/v1/messages",
+	type tc struct{ base, provider, want string }
+	cases := []tc{
+		// DeepSeek / LongCat / first-party Anthropic → /anthropic/v1/messages
+		{"https://api.deepseek.com", "deepseek", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://api.deepseek.com/", "deepseek", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://api.deepseek.com/v1", "deepseek", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://api.deepseek.com/v1/", "deepseek", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://gw.example.test:8443/v1", "deepseek", "https://gw.example.test:8443/anthropic/v1/messages"},
+		{"https://api.longcat.chat", "longcat", "https://api.longcat.chat/anthropic/v1/messages"},
+		// Ollama Cloud → {host}/v1/messages (NO /anthropic segment)
+		{"https://ollama.com", "rayu-ollama-cloud", "https://ollama.com/v1/messages"},
+		{"https://ollama.com/", "rayu-ollama-cloud", "https://ollama.com/v1/messages"},
 	}
-	for in, want := range cases {
-		if got := anthropicUpstream(in); got != want {
-			t.Errorf("anthropicUpstream(%q)=%q want %q", in, got, want)
+	for _, c := range cases {
+		if got := anthropicUpstream(c.base, c.provider); got != c.want {
+			t.Errorf("anthropicUpstream(%q, %q)=%q want %q", c.base, c.provider, got, c.want)
 		}
 	}
 }
@@ -189,6 +195,68 @@ func TestHandleAnthropicMessagesLongCatBearerAuth(t *testing.T) {
 	}
 	if gotKey != "" {
 		t.Errorf("x-api-key must be empty for LongCat (Bearer scheme), got %q", gotKey)
+	}
+}
+
+// TestHandleAnthropicMessagesOllamaCloudRouting proves the rayu-ollama-cloud
+// provider: (1) forwards to Ollama's Anthropic endpoint at {host}/v1/messages
+// (NO /anthropic segment, unlike DeepSeek/LongCat), (2) authenticates with
+// `Authorization: Bearer <gateway key>` (never the caller JWT, never x-api-key),
+// and (3) bills FLAT at the model's creditMultiplier credits per 1M tokens —
+// input and output alike (Ollama does no prompt caching). 1,000,000 tokens at
+// multiplier 2.5 = 2,500,000 billable tokens = 2.5 credits (baseline 1), i.e.
+// the "GLM 1M tokens = 2.5 credits" spec.
+func TestHandleAnthropicMessagesOllamaCloudRouting(t *testing.T) {
+	var gotAuth, gotKey, gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotKey = r.Header.Get("x-api-key")
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		// 800k input + 200k output = 1,000,000 tokens; Ollama reports no cache.
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[],"usage":{"input_tokens":800000,"output_tokens":200000}}`)
+	}))
+	defer upstream.Close()
+
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 62, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				{Code: "glm-5.2", Provider: "rayu-ollama-cloud", Enabled: true, CreditMultiplier: 2.5,
+					UpstreamBaseURL: upstream.URL, UpstreamModelID: "glm-5.2:cloud"},
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1}, // 1 credit = 1,000,000 tokens
+	}
+	h, lim := chatHarness(t, fe)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+		strings.NewReader(`{"model":"glm-5.2","max_tokens":16}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 62))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/messages" {
+		t.Errorf("upstream path=%q want /v1/messages (Ollama has no /anthropic segment)", gotPath)
+	}
+	if gotAuth != "Bearer sk-ollama" {
+		t.Errorf("upstream Authorization=%q want 'Bearer sk-ollama'", gotAuth)
+	}
+	if gotKey != "" {
+		t.Errorf("x-api-key must be empty for Ollama (Bearer scheme), got %q", gotKey)
+	}
+	st, err := lim.Status(context.Background(), 62)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// FLAT billing: (800,000 + 200,000) × 2.5 = 2,500,000 billable tokens = 2.5
+	// credits at baseline 1. Output bills at the same rate as input.
+	if st.UsedPeriod != 2_500_000 {
+		t.Fatalf("usedPeriod=%d billable tokens, want 2_500_000 (1M tokens × 2.5)", st.UsedPeriod)
 	}
 }
 
