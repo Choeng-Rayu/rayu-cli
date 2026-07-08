@@ -1,59 +1,29 @@
 'use strict';
 
-const { execSync } = require('child_process');
-const fs = require('fs');
-
-// Check if rayu is already installed
-let currentVersion = null;
-try {
-  const output = execSync('rayu --version', {
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 5000,
-  });
-  const match = output.match(/(\d+\.\d+\.\d+)/);
-  if (match) currentVersion = match[1];
-} catch (_) {
-  // rayu not installed — fresh install, proceed silently
-}
-
-if (!currentVersion) {
-  process.exit(0);
-}
-
-// npm redirects stdin away from the terminal when running lifecycle scripts,
-// so process.stdin.isTTY is always false. Open /dev/tty directly to get
-// real interactive input from the user.
-let ttyFd;
-try {
-  ttyFd = fs.openSync('/dev/tty', 'r+');
-} catch (_) {
-  // Non-interactive environment (CI, pipes, Windows) — proceed with install
-  process.exit(0);
-}
-
-process.stdout.write(
-  '\n  Rayu CLI v' + currentVersion + ' is already installed.\n' +
-  '  Replace with the latest version? Your config will not be changed. [y/N] '
-);
-
-// Read answer synchronously directly from the terminal
-const buf = Buffer.alloc(256);
-let bytesRead = 0;
-try {
-  bytesRead = fs.readSync(ttyFd, buf, 0, buf.length, null);
-} catch (_) {
-  fs.closeSync(ttyFd);
-  process.exit(0);
-}
-fs.closeSync(ttyFd);
-
-const answer = buf.slice(0, bytesRead).toString().trim();
-
-if (answer.toLowerCase() === 'y') {
-  process.stdout.write('  Installing latest version...\n\n');
-  process.exit(0);
-} else {
-  process.stdout.write('  Keeping current version. No changes made.\n\n');
-  process.exit(1);
-}
+// This script intentionally does nothing interactive.
+//
+// It previously prompted "Replace with the latest version? [y/N]" via a
+// blocking fs.readSync() on /dev/tty, and exited 1 (aborting the whole
+// `npm install` per npm's lifecycle-script contract) on any answer other
+// than "y".
+//
+// That was broken in two independent ways:
+//   1. The prompt's answer never actually controlled anything — npm always
+//      overwrites the previous global install once preinstall exits 0,
+//      regardless of what the script printed. The y/N choice was purely
+//      cosmetic.
+//   2. When `npm install -g` is spawned as a child process (e.g. from
+//      `rayu update`) or run inside another tool's spinner/output, this
+//      prompt's text can be interleaved with or overwritten by the parent
+//      process's own terminal output, making the prompt invisible. Users
+//      would see a stalled spinner while the script silently blocked on
+//      readSync waiting for a keypress that was never visibly requested —
+//      indistinguishable from a hang, forcing a Ctrl-C. Any non-"y" answer
+//      (including "no answer available", e.g. non-interactive CI/pipes)
+//      then aborted the install with a non-zero exit, breaking automated
+//      and headless updates entirely.
+//
+// Always exit 0 so `npm install -g @rayu-dev/rayu-cli[@latest]` completes
+// deterministically and non-interactively on every OS and in every
+// environment (interactive terminal, CI, piped, Windows).
+process.exit(0);

@@ -43,6 +43,27 @@ export function isRayuNonAnthropicActive(): boolean {
 }
 
 /**
+ * Rayu: true when the active provider is a third-party Anthropic-compatible
+ * endpoint (kind:'anthropic-compatible' — LongCat, Ollama Cloud). These speak
+ * the NATIVE Anthropic Messages wire format at a custom baseURL + Bearer auth
+ * (no OpenAI-adapter translation), but do NOT support Claude-only request
+ * extensions such as adaptive thinking (`thinking:{type:'adaptive'}`) — they use
+ * the standard `{type:'enabled',budget_tokens}` form instead. Distinct from
+ * first-party 'anthropic' and from the OpenAI-compatible providers.
+ */
+export function isRayuAnthropicCompatibleActive(): boolean {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getActiveProvider } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return getActiveProvider()?.kind === 'anthropic-compatible'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Rayu: true when the active provider is an OpenAI-compatible endpoint
  * (OpenAI / NVIDIA / OpenRouter / local). Kept separate from the APIProvider
  * union so the Record<APIProvider, ModelName> model-config contract is

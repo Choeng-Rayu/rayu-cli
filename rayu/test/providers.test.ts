@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 let dir: string
-const ENV_KEYS = ['NVIDIA_API_KEY', 'DOUBLE_WORD_API_KEY', 'DEEPSEEK_API_KEY', 'KIMI_FOR_CODE_API_KEY', 'LONGCAT_API_KEY']
+const ENV_KEYS = ['NVIDIA_API_KEY', 'DOUBLE_WORD_API_KEY', 'DEEPSEEK_API_KEY', 'KIMI_FOR_CODE_API_KEY', 'LONGCAT_API_KEY', 'OLLAMA_CLOUD_API_KEY']
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'rayu-prov-'))
   process.env.RAYU_CONFIG_DIR = dir
@@ -222,6 +222,66 @@ describe('LongCat (anthropic-compatible)', () => {
     expect(lc?.kind).toBe('anthropic-compatible')
     expect(lc?.baseURL).toBe('https://api.longcat.chat/anthropic')
     expect(lc?.defaultModel).toBe('LongCat-2.0')
+  })
+})
+
+describe('Ollama Cloud (anthropic-compatible)', () => {
+  test('registry includes Ollama Cloud as a SEPARATE connector from local ollama', async () => {
+    const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
+    const oc = PROVIDER_PRESETS.find(p => p.id === 'ollama-cloud')
+    // Cloud: native Anthropic SDK at https://ollama.com + Bearer key (fetched models).
+    expect(oc?.kind).toBe('anthropic-compatible')
+    expect(oc?.baseURL).toBe('https://ollama.com')
+    expect(oc?.envKeys).toContain('OLLAMA_CLOUD_API_KEY')
+    expect(oc?.defaultModel).toBe('gpt-oss:120b-cloud')
+    // Distinct from the LOCAL ollama preset (localhost, openai-compatible, no key).
+    const local = PROVIDER_PRESETS.find(p => p.id === 'ollama')
+    expect(local?.kind).toBe('openai-compatible')
+    expect(local?.baseURL).toContain('localhost')
+    expect(local?.id).not.toBe(oc?.id)
+  })
+
+  test('an active Ollama Cloud provider routes to the native Anthropic API path', async () => {
+    const cfg = await fresh()
+    const providers = await import('../src/utils/model/providers.ts')
+    cfg.upsertProvider(
+      {
+        id: 'ollama-cloud',
+        kind: 'anthropic-compatible',
+        apiKey: 'oc-test',
+        baseURL: 'https://ollama.com',
+        defaultModel: 'gpt-oss:120b-cloud',
+      },
+      true,
+    )
+    // getAPIProvider() 'anthropic' → Anthropic Messages format;
+    // isOpenAICompatibleActive() false → native SDK (createAnthropicCompatibleClient);
+    // isRayuNonAnthropicActive() true → third-party context/thinking gates apply.
+    expect(providers.getAPIProvider()).toBe('anthropic')
+    expect(providers.isOpenAICompatibleActive()).toBe(false)
+    expect(providers.isRayuNonAnthropicActive()).toBe(true)
+  })
+
+  test('cloud models resolve the right context — fetched /api/show override wins over the table', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider(
+      {
+        id: 'ollama-cloud',
+        kind: 'anthropic-compatible',
+        apiKey: 'oc-test',
+        baseURL: 'https://ollama.com',
+        // Simulates fetchOllamaCloudModelContexts populating a real window.
+        modelContextWindows: { 'qwen3-coder:cloud': 262144 },
+      },
+      true,
+    )
+    cfg._resetRayuConfigCache()
+    // Fetched per-model context wins.
+    expect(cfg.getRayuModelContextWindow('qwen3-coder:cloud')).toBe(262144)
+    // Not fetched → known-model table (substring match ignores the :cloud tag).
+    expect(cfg.getRayuModelContextWindow('glm-4.7:cloud')).toBe(200_000)
+    expect(cfg.getRayuModelContextWindow('minimax-m2.1:cloud')).toBe(204_800)
+    expect(cfg.getRayuModelContextWindow('gpt-oss:120b-cloud')).toBe(131_072)
   })
 })
 

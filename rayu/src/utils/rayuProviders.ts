@@ -12,6 +12,7 @@ import {
   saveRayuConfig,
 } from './rayuConfig.js'
 import { loadDotEnv } from './envUtils.js'
+import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_PROVIDER_ID } from '../services/api/ollamaCloud.js'
 
 
 export type ProviderPreset = {
@@ -155,20 +156,97 @@ export const RAYU_HOSTED_PROVIDER_ID = 'rayu-hosted'
 export const RAYU_HOSTED_PROVIDER_LABEL = 'Rayu (hosted)'
 
 /**
- * Providers that support storing MULTIPLE API keys with automatic rate-limit
- * key rotation (see openaiAdapter withKeyRotation). Scoped to NVIDIA and
- * OpenRouter as requested; the rotation mechanism itself is generic, so adding
- * an id here is all that's needed to extend the multi-key UI to another
- * openai-compatible provider. Gated to Basic-plan users via isMultiApiKeyAllowed().
+ * Built-in providers that support storing MULTIPLE API keys with automatic
+ * rate-limit key rotation:
+ *   • NVIDIA / OpenRouter — openai-compatible → rotation in openaiAdapter
+ *     (withKeyRotation).
+ *   • Ollama Cloud — anthropic-compatible → rotation in anthropicCompatibleClient
+ *     (makeKeyRotatingFetch), since it uses the native Anthropic SDK path.
+ * The rotation mechanism is generic per client kind, so enabling another
+ * provider is just adding its id here — or, with no code change, via the
+ * RAYU_MULTI_KEY_PROVIDERS env var (see envMultiKeyProviderIds below). Always
+ * Basic-plan gated via isMultiApiKeyAllowed().
  */
 export const MULTI_KEY_PROVIDER_IDS: ReadonlySet<string> = new Set([
   'nvidia',
   'openrouter',
+  'ollama-cloud',
 ])
 
-/** True when a provider id supports the multi-API-key manager + rotation. */
+/**
+ * Extra multi-key provider ids from the RAYU_MULTI_KEY_PROVIDERS env var
+ * (comma- or space-separated), unioned with the built-in set above. This is the
+ * self-serve knob: to give ANOTHER provider multi-API-key rotation you just add
+ * its id in .env — no code change, no new release. e.g.
+ *   RAYU_MULTI_KEY_PROVIDERS=deepseek,groq
+ * (Still Basic-plan gated via isMultiApiKeyAllowed(), same as the built-ins.)
+ */
+function envMultiKeyProviderIds(): string[] {
+  const raw = process.env.RAYU_MULTI_KEY_PROVIDERS
+  if (!raw) return []
+  return raw
+    .split(/[\s,]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+/**
+ * Provider kinds whose auth is a ROTATABLE user-supplied API key sent as a
+ * request header. Multi-key rotation is ONLY wired for these two client paths
+ * (openaiAdapter.withKeyRotation + anthropicCompatibleClient.makeKeyRotatingFetch).
+ *
+ * Every other kind is intentionally excluded, because their credential is NOT a
+ * rotatable user API key:
+ *   • 'anthropic'   — first-party Console key (single x-api-key)
+ *   • 'kiro'        — Kiro/CodeWhisperer (an apikey OR kiro-cli OAuth token)
+ *   • 'vertex'      — Google OAuth / ADC
+ *   • 'genai'       — Login-with-Gemini OAuth
+ *   • 'copilot'     — GitHub OAuth device flow
+ *   • 'bedrock'     — AWS creds / bearer token
+ *   • 'rayu-hosted' — Rayu account JWT via the gateway
+ * This is the HARD guard behind the user requirement: multi-key is for BYO
+ * API-key providers only — never Kiro, never an Auth/managed-credential provider.
+ */
+const MULTI_KEY_PROVIDER_KINDS: ReadonlySet<ProviderKind> = new Set<ProviderKind>([
+  'openai-compatible',
+  'anthropic-compatible',
+])
+
+/**
+ * Resolve a provider's kind by id: the configured provider first (covers custom
+ * / local ids the user added), then the built-in preset. Undefined only for a
+ * brand-new id that is neither configured nor a preset.
+ */
+function providerKindForId(providerId: string): ProviderKind | undefined {
+  const configured = loadRayuConfig().providers.find(p => p.id === providerId)
+  if (configured) return configured.kind
+  return PROVIDER_PRESETS.find(p => p.id === providerId)?.kind
+}
+
+/**
+ * True when a provider supports the multi-API-key manager + rotation.
+ *
+ * Two conditions, BOTH required:
+ *  1. the id is explicitly allowed — a built-in (nvidia/openrouter/ollama-cloud)
+ *     or opted-in via RAYU_MULTI_KEY_PROVIDERS; AND
+ *  2. its kind authenticates with a rotatable user API key (openai-compatible or
+ *     anthropic-compatible).
+ *
+ * Condition 2 is the safety net: even if someone mistakenly adds `kiro` or an
+ * OAuth provider id to RAYU_MULTI_KEY_PROVIDERS, it can NEVER become multi-key,
+ * because rotation only exists for — and only makes sense for — user-API-key
+ * providers. An id whose kind can't be resolved (neither configured nor a known
+ * preset) is DENIED — we only enable multi-key once we can confirm the provider
+ * authenticates with a rotatable user API key.
+ */
 export function supportsMultiApiKey(providerId: string | undefined): boolean {
-  return !!providerId && MULTI_KEY_PROVIDER_IDS.has(providerId)
+  if (!providerId) return false
+  const listed =
+    MULTI_KEY_PROVIDER_IDS.has(providerId) ||
+    envMultiKeyProviderIds().includes(providerId)
+  if (!listed) return false
+  const kind = providerKindForId(providerId)
+  return kind !== undefined && MULTI_KEY_PROVIDER_KINDS.has(kind)
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -206,6 +284,26 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseURL: 'https://api.longcat.chat/anthropic',
     defaultModel: 'LongCat-2.0',
     envKeys: ['LONGCAT_API_KEY'],
+  },
+  {
+    // Ollama Cloud — Ollama's HOSTED models (ollama.com), a SEPARATE connector
+    // from the local `ollama` preset (localhost, no key). Exposed via an
+    // Anthropic-compatible Messages API at https://ollama.com/v1/messages,
+    // authenticated with `Authorization: Bearer <ollama.com API key>`. Rayu uses
+    // the NATIVE Anthropic SDK (kind:'anthropic-compatible' → the key is sent as
+    // a Bearer authToken) so thinking + tools map 1:1 with claude.ts. Unlike a
+    // single-model preset, the /connect flow FETCHES the user's account models
+    // (fetchOllamaCloudModels → GET /v1/models, /api/tags fallback) and their
+    // real context windows (POST /api/show → model_info.<arch>.context_length;
+    // the KNOWN_MODEL_CONTEXT table is the fallback). Cloud model ids carry a
+    // `-cloud`/`:cloud` tag, e.g. gpt-oss:120b-cloud, qwen3-coder:cloud.
+    // Docs: https://docs.ollama.com/api/anthropic-compatibility
+    id: OLLAMA_CLOUD_PROVIDER_ID,
+    label: 'Ollama Cloud (ollama.com) · hosted models · fetches your account models',
+    kind: 'anthropic-compatible',
+    baseURL: OLLAMA_CLOUD_BASE_URL,
+    defaultModel: 'gpt-oss:120b-cloud',
+    envKeys: ['OLLAMA_CLOUD_API_KEY'],
   },
   {
     id: 'nvidia',
@@ -605,6 +703,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   copilot: 'GitHub Copilot',
   'rayu-hosted': 'Rayu',
   ollama: 'Ollama',
+  'ollama-cloud': 'Ollama Cloud',
   local: 'Local',
 }
 

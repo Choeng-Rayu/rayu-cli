@@ -205,3 +205,75 @@ describe('isMultiApiKeyAllowed (Basic-plan gate)', () => {
     expect(g.isMultiApiKeyAllowed()).toBe(false)
   })
 })
+
+
+describe('supportsMultiApiKey (allowlist + kind guard + RAYU_MULTI_KEY_PROVIDERS)', () => {
+  let dir: string
+  let savedEnv: string | undefined
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'rayu-mkset-'))
+    process.env.RAYU_CONFIG_DIR = dir // empty config → kind resolves from presets
+    savedEnv = process.env.RAYU_MULTI_KEY_PROVIDERS
+    delete process.env.RAYU_MULTI_KEY_PROVIDERS
+    ;(await import('../src/utils/rayuConfig.ts'))._resetRayuConfigCache()
+  })
+  afterEach(async () => {
+    rmSync(dir, { recursive: true, force: true })
+    delete process.env.RAYU_CONFIG_DIR
+    if (savedEnv === undefined) delete process.env.RAYU_MULTI_KEY_PROVIDERS
+    else process.env.RAYU_MULTI_KEY_PROVIDERS = savedEnv
+    ;(await import('../src/utils/rayuConfig.ts'))._resetRayuConfigCache()
+  })
+
+  async function supports() {
+    return (await import('../src/utils/rayuProviders.ts')).supportsMultiApiKey
+  }
+
+  test('multi-key ENABLED only for the intended BYO-key providers (nvidia/openrouter/ollama-cloud)', async () => {
+    const s = await supports()
+    expect(s('nvidia')).toBe(true)
+    expect(s('openrouter')).toBe(true)
+    expect(s('ollama-cloud')).toBe(true)
+    // Off by default for every other provider.
+    expect(s('deepseek')).toBe(false)
+    expect(s(undefined)).toBe(false)
+  })
+
+  // CORE QA REQUIREMENT: Kiro and every OAuth/Auth/managed-credential provider
+  // must NEVER be multi-key — not even when explicitly (mistakenly) listed in
+  // RAYU_MULTI_KEY_PROVIDERS. The kind guard enforces this.
+  test('Kiro + OAuth/Auth providers are NEVER multi-key, even via RAYU_MULTI_KEY_PROVIDERS', async () => {
+    process.env.RAYU_MULTI_KEY_PROVIDERS =
+      'kiro gemini-vertex gemini-login copilot bedrock bedrock-anthropic bedrock-openai anthropic rayu-hosted ollama'
+    const s = await supports()
+    for (const id of [
+      'kiro', // apikey OR kiro-cli OAuth
+      'gemini-vertex', // vertex — Google OAuth/ADC
+      'gemini-login', // genai — Login-with-Gemini OAuth
+      'copilot', // GitHub OAuth device flow
+      'bedrock', // AWS creds / bearer token
+      'bedrock-anthropic',
+      'bedrock-openai',
+      'anthropic', // first-party single x-api-key
+      'rayu-hosted', // Rayu account JWT via gateway
+    ]) {
+      expect(s(id)).toBe(false)
+    }
+    // ...and the intended BYO-key built-ins are unaffected.
+    expect(s('ollama-cloud')).toBe(true)
+    expect(s('nvidia')).toBe(true)
+    expect(s('openrouter')).toBe(true)
+  })
+
+  test('RAYU_MULTI_KEY_PROVIDERS opts in ONLY user-API-key (openai/anthropic-compatible) providers', async () => {
+    // deepseek/groq/xai are openai-compatible presets (user API key) → allowed.
+    // kiro is listed too but the kind guard rejects it.
+    process.env.RAYU_MULTI_KEY_PROVIDERS = 'deepseek, groq  xai kiro'
+    const s = await supports()
+    expect(s('deepseek')).toBe(true)
+    expect(s('groq')).toBe(true)
+    expect(s('xai')).toBe(true)
+    expect(s('kiro')).toBe(false) // listed, but excluded by the kind guard
+    expect(s('cohere')).toBe(false) // not listed anywhere
+  })
+})

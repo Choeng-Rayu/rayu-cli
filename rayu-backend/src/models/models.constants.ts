@@ -63,4 +63,108 @@ export const MODEL_SEED: HostedModelSeed[] = [
     allowedPlanCodes: ['pro', 'pro_plus', 'max'],
     enabled: true,
   },
+
+  // --- Ollama Cloud (provider 'rayu-ollama') ---------------------------
+  // Ollama's HOSTED models (ollama.com), resold via the gateway with Rayu's own
+  // OLLAMA_API_KEY. They speak Ollama's NATIVE Anthropic Messages API — but at
+  // `{host}/v1/messages` (NO /anthropic path segment, unlike DeepSeek/LongCat)
+  // with `Authorization: Bearer` — both handled per-provider in the gateway
+  // (anthropicUpstream + anthropicUsesBearerAuth). Ollama does NOT do prompt
+  // caching, so every prompt token bills at the input rate.
+  //
+  // creditMultiplier is the USER-FACING charge = CREDITS PER 1M TOKENS (baseline
+  // is 1 credit / 1M tokens): 2.5 → 2.5 credits/1M, 0.75 → 0.75 credits/1M, etc.
+  // input==output price keeps the charge FLAT (output tokens bill at the same
+  // rate as input), matching the spec ("1M tokens = N credits"). Prices here are
+  // internal cost-ledger placeholders (advisory) and, like every field, are
+  // admin-editable in the dashboard — nothing is hardcoded downstream.
+  //
+  // NOTE: upstreamModelId must match the EXACT id in the Rayu Ollama Cloud
+  // account (verify with `ollama list` / the Ollama dashboard); adjust per model
+  // in the admin panel if a tag differs. Llama-4 and MiniMax-M3 credit rates were
+  // not specified — defaulted (1.0 / 2.5) and are admin-tunable.
+  {
+    code: 'glm-5.2',
+    label: 'GLM-5.2 (Ollama Cloud)',
+    provider: 'rayu-ollama',
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'glm-5.2:cloud',
+    inputPricePer1MCents: 60,
+    outputPricePer1MCents: 60,
+    creditMultiplier: 2.5, // 2.5 credits / 1M tokens
+    allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+    enabled: true,
+  },
+  {
+    code: 'kimi-k2.7',
+    label: 'Kimi K2.7 (Ollama Cloud)',
+    provider: 'rayu-ollama',
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'kimi-k2.7:cloud',
+    inputPricePer1MCents: 60,
+    outputPricePer1MCents: 60,
+    creditMultiplier: 2.5, // 2.5 credits / 1M tokens
+    allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+    enabled: true,
+  },
+  {
+    code: 'minimax-m3',
+    label: 'MiniMax M3 (Ollama Cloud)',
+    provider: 'rayu-ollama',
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'minimax-m3:cloud',
+    inputPricePer1MCents: 60,
+    outputPricePer1MCents: 60,
+    creditMultiplier: 2.5, // default (rate unspecified) — admin-tunable
+    allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+    enabled: true,
+  },
+  {
+    code: 'llama-4',
+    label: 'Llama 4 (Ollama Cloud)',
+    provider: 'rayu-ollama',
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'llama4:cloud',
+    inputPricePer1MCents: 40,
+    outputPricePer1MCents: 40,
+    creditMultiplier: 1, // default (rate unspecified) — admin-tunable
+    allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+    enabled: true,
+  },
+  {
+    code: 'gpt-oss-120b',
+    label: 'GPT-OSS 120B (Ollama Cloud)',
+    provider: 'rayu-ollama',
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'gpt-oss:120b-cloud',
+    inputPricePer1MCents: 30,
+    outputPricePer1MCents: 30,
+    creditMultiplier: 0.75, // 0.75 credits / 1M tokens
+    allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+    enabled: true,
+  },
+  {
+    code: 'qwen3.5-397b',
+    label: 'Qwen3.5 397B (Ollama Cloud)',
+    provider: 'rayu-ollama',
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'qwen3.5:397b-cloud',
+    inputPricePer1MCents: 30,
+    outputPricePer1MCents: 30,
+    creditMultiplier: 0.75, // 0.75 credits / 1M tokens
+    allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+    enabled: true,
+  },
+  {
+    code: 'qwen3.5-122b',
+    label: 'Qwen3.5 122B (Ollama Cloud)',
+    provider: 'rayu-ollama',
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'qwen3.5:122b',
+    inputPricePer1MCents: 30,
+    outputPricePer1MCents: 30,
+    creditMultiplier: 0.75, // 0.75 credits / 1M tokens
+    allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+    enabled: true,
+  },
 ]

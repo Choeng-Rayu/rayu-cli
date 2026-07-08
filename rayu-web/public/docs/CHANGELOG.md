@@ -2,6 +2,16 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.4.466 - 2026-07-08
+- Rebranded from Claude theme to Rayu branding theme with new Goose mascot identity
+- Added `/banner` and `/mascot` slash commands for displaying Rayu branding in the terminal
+- Introduced `LogoV2` components with animated goose mascot and configurable banner system
+- Migrated legacy Claude-specific modules (feedback, grove, analytics, OAuth) to `un-use-code/` archive
+- Removed Telegram payment notification listener and Claude subscription integrations
+- Added mascot image encoding, Unicode rendering, and caching utilities for terminal display
+- Implemented clean posture verification scripts and origin manifest for independent branding audit
+- Added `anthropicCompatibleClient` for provider-agnostic Anthropic-compatible API consumption
+
 ## 1.3.462 - 2026-07-06
 - Removed DeepSeek Web reverse-scraping provider
 - Added cache read/write credit multipliers for usage tracking

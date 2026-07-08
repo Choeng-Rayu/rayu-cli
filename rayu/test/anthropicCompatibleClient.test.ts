@@ -44,4 +44,28 @@ describe('anthropic-compatible client (LongCat)', () => {
       else process.env.ANTHROPIC_API_KEY = prev
     }
   })
+
+  test('applies the shared first-party transport (timeout) but keeps auth + baseURL authoritative', () => {
+    const client = createAnthropicCompatibleClient(
+      {
+        id: 'longcat',
+        kind: 'anthropic-compatible',
+        apiKey: 'lc-secret',
+        baseURL: 'https://api.longcat.chat/anthropic',
+      },
+      3,
+      {
+        // Mirrors what client.ts passes (the first-party Anthropic transport). A
+        // transport apiKey/baseURL must NOT override the authoritative auth/endpoint.
+        timeout: 123456,
+        defaultHeaders: { 'User-Agent': 'rayu-test/1' },
+        apiKey: 'should-be-ignored',
+        baseURL: 'https://evil.example',
+      },
+    )
+    expect(client.timeout).toBe(123456)
+    expect(client.apiKey).toBeNull()
+    expect(client.authToken).toBe('lc-secret')
+    expect(client.baseURL).toBe('https://api.longcat.chat/anthropic')
+  })
 })
