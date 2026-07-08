@@ -247,6 +247,39 @@ export function isEnvDefinedFalsy(
 }
 
 /**
+ * Read an env var by its canonical `RAYU_` name, falling back to one or more
+ * legacy aliases (typically the upstream `CLAUDE_CODE_*` / `CLAUDE_*` names)
+ * for backward compatibility. The canonical name always wins when set to a
+ * non-empty value, so `RAYU_FOO=0` deliberately overrides a legacy `CLAUDE_FOO=1`.
+ *
+ * Legacy aliases are treated as READ-ONLY: Rayu reads them for compatibility
+ * and interop but never writes them.
+ */
+export function getEnvWithLegacyAlias(
+  canonical: string,
+  ...legacyAliases: string[]
+): string | undefined {
+  const canonicalVal = process.env[canonical]
+  if (canonicalVal !== undefined && canonicalVal !== '') return canonicalVal
+  for (const legacy of legacyAliases) {
+    const v = process.env[legacy]
+    if (v !== undefined && v !== '') return v
+  }
+  return undefined
+}
+
+/**
+ * Boolean form of {@link getEnvWithLegacyAlias}: true when the canonical `RAYU_`
+ * var is truthy, otherwise when any legacy alias is truthy.
+ */
+export function isEnvTruthyWithLegacyAlias(
+  canonical: string,
+  ...legacyAliases: string[]
+): boolean {
+  return isEnvTruthy(getEnvWithLegacyAlias(canonical, ...legacyAliases))
+}
+
+/**
  * --bare / CLAUDE_CODE_SIMPLE — skip hooks, LSP, plugin sync, skill dir-walk,
  * attribution, background prefetches, and ALL keychain/credential reads.
  * Auth is strictly ANTHROPIC_API_KEY env or apiKeyHelper from --settings.
@@ -259,7 +292,7 @@ export function isEnvDefinedFalsy(
  */
 export function isBareMode(): boolean {
   return (
-    isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE) ||
+    isEnvTruthyWithLegacyAlias('RAYU_SIMPLE', 'CLAUDE_CODE_SIMPLE') ||
     process.argv.includes('--bare')
   )
 }
@@ -309,7 +342,10 @@ export function getDefaultVertexRegion(): string {
  * @returns true if CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR is set to a truthy value
  */
 export function shouldMaintainProjectWorkingDir(): boolean {
-  return isEnvTruthy(process.env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR)
+  return isEnvTruthyWithLegacyAlias(
+    'RAYU_BASH_MAINTAIN_PROJECT_WORKING_DIR',
+    'CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR',
+  )
 }
 
 /**

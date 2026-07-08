@@ -310,6 +310,21 @@ async function getRayuHostedClient(maxRetries: number): Promise<unknown | null> 
 }
 
 /**
+ * Rayu: route the active provider to a native Anthropic SDK client when kind is
+ * 'anthropic-compatible' — a BYO-key third-party Anthropic Messages endpoint at
+ * a custom baseURL with Bearer auth (e.g. LongCat). Distinct from first-party
+ * 'anthropic' (no baseURL, x-api-key) and from 'rayu-hosted' (JWT, gateway).
+ * Lazy-imported so nothing loads unless it's the active provider.
+ */
+async function getRayuAnthropicCompatibleClient(maxRetries: number): Promise<unknown | null> {
+  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
+  const active = getActiveProvider()
+  if (active?.kind !== 'anthropic-compatible') return null
+  const { createAnthropicCompatibleClient } = await import('./anthropicCompatibleClient.js')
+  return createAnthropicCompatibleClient(active, maxRetries)
+}
+
+/**
  * Rayu: build an API client for a SPECIFIC provider (not necessarily the active
  * one). Used to route a subagent request to a provider chosen via
  * /model_subagent that differs from the main agent's provider. Mirrors the
@@ -377,6 +392,12 @@ async function buildClientForProvider(
   if (provider.kind === 'rayu-hosted') {
     const { createRayuHostedClient } = await import('./rayuHosted/rayuHostedClient.js')
     return createRayuHostedClient(provider, maxRetries)
+  }
+  // Anthropic-compatible BYO-key endpoints (LongCat, …): native Anthropic SDK
+  // pointed at a custom baseURL with Bearer auth (authToken).
+  if (provider.kind === 'anthropic-compatible') {
+    const { createAnthropicCompatibleClient } = await import('./anthropicCompatibleClient.js')
+    return createAnthropicCompatibleClient(provider, maxRetries)
   }
   // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
   // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
@@ -504,6 +525,14 @@ export async function getAnthropicClient({
   const rayuHostedClient = await getRayuHostedClient(maxRetries)
   if (rayuHostedClient) {
     return rayuHostedClient as unknown as Anthropic
+  }
+
+  // Rayu: route to a native Anthropic SDK client when the active provider is
+  // kind:'anthropic-compatible' (BYO-key third-party Anthropic Messages endpoint
+  // at a custom baseURL + Bearer auth, e.g. LongCat).
+  const anthropicCompatibleClient = await getRayuAnthropicCompatibleClient(maxRetries)
+  if (anthropicCompatibleClient) {
+    return anthropicCompatibleClient as unknown as Anthropic
   }
 
   // Rayu: route to the OpenAI-compatible adapter when the active provider is an

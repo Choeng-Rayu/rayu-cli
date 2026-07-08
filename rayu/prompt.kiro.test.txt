@@ -1,0 +1,3 @@
+Good Now it work perfectly, but you know about the available feature that you know
+when you read the admin configuration you see it all the top features available for
+pay basic plan up but you know if the user just sigin 

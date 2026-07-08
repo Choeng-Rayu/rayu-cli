@@ -140,7 +140,7 @@ export function RayuProviderSetup({
       id: preset.id,
       kind: preset.kind,
       apiKey: key.trim() || undefined,
-      ...(preset.kind === 'openai-compatible'
+      ...(preset.kind === 'openai-compatible' || preset.kind === 'anthropic-compatible'
         ? { baseURL: (baseURL || preset.baseURL || '').trim() }
         : {}),
       ...(model.trim() ? { defaultModel: model.trim() } : {}),
@@ -165,7 +165,7 @@ export function RayuProviderSetup({
       kind: preset.kind,
       apiKey: cleaned[0],
       ...(cleaned.length ? { apiKeys: cleaned } : {}),
-      ...(preset.kind === 'openai-compatible'
+      ...(preset.kind === 'openai-compatible' || preset.kind === 'anthropic-compatible'
         ? { baseURL: (baseURL || preset.baseURL || '').trim() }
         : {}),
       ...(model.trim() ? { defaultModel: model.trim() } : {}),

@@ -7,10 +7,12 @@ export const PRODUCT_CONFIG_DIRNAME = '.rayu'
 
 export const PRODUCT_URL = 'https://github.com/rayu-cli/rayu-cli'
 
-// RAYU Remote session URLs
-export const CLAUDE_AI_BASE_URL = 'https://claude.ai'
-export const CLAUDE_AI_STAGING_BASE_URL = 'https://claude-ai.staging.ant.dev'
-export const CLAUDE_AI_LOCAL_BASE_URL = 'http://localhost:4000'
+// RAYU remote-session base URL. Rayu hardcodes no third-party remote-session
+// host: the production base is sourced from RAYU_REMOTE_SESSION_URL (falling
+// back to RAYU_WEB_URL) and is empty when neither is set. Remote-session
+// viewing is a hosted add-on and is inert without a configured host — the
+// remote bridge also requires an account login, which is disabled in Rayu.
+export const REMOTE_SESSION_LOCAL_BASE_URL = 'http://localhost:4000'
 
 /**
  * Determine if we're in a staging environment for remote sessions.
@@ -41,33 +43,27 @@ export function isRemoteSessionLocal(
 }
 
 /**
- * Get the base URL for Claude AI based on environment.
+ * Base URL for viewing a remote session. Local-dev sessions use localhost;
+ * every other environment resolves to the Rayu-configured remote-session host
+ * (empty when unset — Rayu hardcodes no third-party host).
  */
-export function getClaudeAiBaseUrl(
+export function getRemoteSessionBaseUrl(
   sessionId?: string,
   ingressUrl?: string,
 ): string {
   if (isRemoteSessionLocal(sessionId, ingressUrl)) {
-    return CLAUDE_AI_LOCAL_BASE_URL
+    return REMOTE_SESSION_LOCAL_BASE_URL
   }
-  if (isRemoteSessionStaging(sessionId, ingressUrl)) {
-    return CLAUDE_AI_STAGING_BASE_URL
-  }
-  return CLAUDE_AI_BASE_URL
+  return process.env.RAYU_REMOTE_SESSION_URL || process.env.RAYU_WEB_URL || ''
 }
 
 /**
- * Get the full session URL for a remote session.
+ * Get the full session URL for a remote session (base + `/code/{id}`).
  *
- * The cse_→session_ translation is a temporary shim gated by
- * tengu_bridge_repl_v2_cse_shim_enabled (see isCseShimEnabled). Worker
- * endpoints (/v1/code/sessions/{id}/worker/*) want `cse_*` but the claude.ai
- * frontend currently routes on `session_*` (compat/convert.go:27 validates
- * TagSession). Same UUID body, different tag prefix. Once the server tags by
- * environment_kind and the frontend accepts `cse_*` directly, flip the gate
- * off. No-op for IDs already in `session_*` form. See toCompatSessionId in
- * src/bridge/sessionIdCompat.ts for the canonical helper (lazy-required here
- * to keep constants/ leaf-of-DAG at module-load time).
+ * The cse_→session_ translation is a prefix-shim handled by toCompatSessionId
+ * (see src/bridge/sessionIdCompat.ts), lazy-required here to keep constants/ a
+ * leaf of the module DAG at load time. When no remote-session host is
+ * configured the base is empty and the result is a relative `/code/{id}` path.
  */
 export function getRemoteSessionUrl(
   sessionId: string,
@@ -78,6 +74,6 @@ export function getRemoteSessionUrl(
     require('../bridge/sessionIdCompat.js') as typeof import('../bridge/sessionIdCompat.js')
   /* eslint-enable @typescript-eslint/no-require-imports */
   const compatId = toCompatSessionId(sessionId)
-  const baseUrl = getClaudeAiBaseUrl(compatId, ingressUrl)
+  const baseUrl = getRemoteSessionBaseUrl(compatId, ingressUrl)
   return `${baseUrl}/code/${compatId}`
 }

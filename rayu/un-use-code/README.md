@@ -68,3 +68,91 @@ Claude-Code / Anthropic workflow:
 - `summary` — conversation summary (superseded in rayu by `/compact` + `/export`)
 - `share` — share a conversation (needed Anthropic's hosted backend; rayu has none)
 - `onboarding` — Claude Code onboarding flow
+
+## services/analytics/growthbook.original.ts
+
+The original GrowthBook + Statsig feature-flag / experiment-exposure client
+(Anthropic internal telemetry infrastructure). It constructed a GrowthBook SDK
+client, fetched remote-eval feature payloads from Anthropic's flag service over
+the network, cached them in the user config, and logged experiment exposures to
+the first-party event pipeline.
+
+Rayu does not use Anthropic's feature-flag service. `src/services/analytics/growthbook.ts`
+was replaced with a self-contained **neutralized stub** that preserves the exact
+public API (every export + signature) — so the ~250 call sites keep compiling —
+but imports no `@growthbook/growthbook` SDK, makes no network calls, starts no
+timers, and returns each caller's own default for feature values (and `false`
+for gates). This file is the pre-stub reference, kept for future re-implementation
+of a first-party flag service if ever needed. Not compiled into the build.
+
+## services/analytics/firstPartyEventLogger.original.ts + firstPartyEventLoggingExporter.ts
+
+Anthropic's first-party ("1P") internal event-logging pipeline. The logger
+batched internal analytics events via OpenTelemetry and the exporter shipped
+them over HTTP (`axios.post` to `RAYU_EVENT_LOGGING_URL` + `/api/event_logging/batch`),
+plus GrowthBook experiment-exposure events.
+
+De-risk actions:
+- `firstPartyEventLoggingExporter.ts` (the network egress) was **moved here** —
+  it is no longer present in `src/` and is excluded from the build.
+- `src/services/analytics/firstPartyEventLogger.ts` was replaced with a
+  **neutralized stub** (no OTEL, no exporter import, no network; every export
+  preserved as a no-op / disabled). `is1PEventLoggingEnabled()` now always
+  returns `false`. `firstPartyEventLogger.original.ts` here is the pre-stub
+  reference.
+
+## types/generated/events_mono/growthbook/v1/growthbook_experiment_event.ts
+
+Generated protobuf schema for GrowthBook experiment-assignment events. Used only
+by the moved exporter, so it became orphaned and was **moved here**. (The
+`rayu/v1/rayu_internal_event`, `claude_code/v1/claude_code_internal_event`, and
+`common/v1/auth` proto schemas remain in `src/` — they are pure type/serialization
+definitions with no network behavior, still referenced by the kept
+`services/analytics/metadata.ts` tool-name sanitizer used across ~30 files.)
+
+## services/oauth/{index,crypto,auth-code-listener}.ts
+
+The claude.ai subscription OAuth login flow ("Login with Claude Pro/Max"):
+- `index.ts` — `OAuthService`, the browser authorization-code (PKCE) flow
+  orchestrator that opened claude.ai / console.anthropic.com to obtain a
+  subscription access token.
+- `crypto.ts` — PKCE code-verifier/challenge/state generation.
+- `auth-code-listener.ts` — the localhost HTTP listener that captured the
+  OAuth redirect callback.
+
+Rayu keeps **BYO `ANTHROPIC_API_KEY`** (and every other provider) auth via
+`/connect` and `~/.rayu/providers.json`, but does not support logging in with a
+claude.ai subscription. These three modules had no remaining importers
+(`OAuthService` was already unwired; `client.ts`'s `buildAuthUrl` throws
+"OAuth login is not supported in Rayu"), so they were moved here.
+
+Retained in `src/services/oauth/`: `client.ts` (its `getOrganizationUUID()` —
+now returns null — and `isOAuthTokenExpired()` are still imported by other
+modules; `buildAuthUrl()` throws), `types.ts`, `getOauthProfile.ts`, and the
+Google/Gemini OAuth files (a different, supported provider).
+
+## upstreamproxy/ (upstreamproxy.ts + relay.ts)
+
+Anthropic's CCR ("Claude Code Remote") container-side MITM CONNECT proxy. Inside
+a CCR session container it read `/run/ccr/session_token`, downloaded the
+proxy CA, started a local CONNECT→WebSocket relay, and forced agent-subprocess
+traffic (curl/gh/python) through the proxy with credential injection, allow-listing
+`*.anthropic.com`. It was gated on `CLAUDE_CODE_REMOTE` and dynamically imported
+from `src/entrypoints/init.ts`.
+
+Rayu runs no CCR containers. The dynamic import in `init.ts` was removed and both
+modules were **moved here**. Rayu now spawns subprocesses with the ambient
+environment (`src/utils/subprocessEnv.ts`; its inert `registerUpstreamProxyEnvFn`
+hook is never called).
+
+## constants/product.ts — remote-session URLs de-pointed from claude.ai (not moved)
+
+`src/constants/product.ts` previously hardcoded the remote-session host as
+`https://claude.ai` (prod) and `https://claude-ai.staging.ant.dev` (staging).
+Those constants had no external importers and were removed; `getClaudeAiBaseUrl`
+was renamed to `getRemoteSessionBaseUrl` and now returns a Rayu-configured host
+(`RAYU_REMOTE_SESSION_URL` → `RAYU_WEB_URL` → empty). `getRemoteSessionUrl` (used
+by main/bridge/attribution/ultraplan/print) keeps its signature. The remote-session
+bridge under `src/bridge/*` stays in place but is inert: it is gated on the
+claude.ai OAuth login, which is disabled (see Task 7), and no longer points at
+any Anthropic host.
