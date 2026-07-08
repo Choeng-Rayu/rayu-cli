@@ -104,7 +104,7 @@ describe('getRayuModelContextWindow — non-Anthropic providers use the model ta
     expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(500_000)
   })
 
-  test('rayu-ollama-cloud hosted model codes resolve their curated context windows', async () => {
+  test('rayu-ollama hosted model codes resolve their curated context windows', async () => {
     const m = await fresh()
     m.upsertProvider({
       id: 'rayu-hosted',

@@ -540,7 +540,7 @@ func anthropicUpstream(base, provider string) string {
 	// Ollama Cloud's Anthropic-compatible endpoint is {host}/v1/messages — it has
 	// NO /anthropic path segment (unlike DeepSeek/LongCat/first-party Anthropic).
 	path := "/anthropic/v1/messages"
-	if provider == "rayu-ollama-cloud" {
+	if provider == "rayu-ollama" {
 		path = "/v1/messages"
 	}
 	if u, err := url.Parse(trimmed); err == nil && u.Scheme != "" && u.Host != "" {
@@ -555,7 +555,7 @@ func anthropicUpstream(base, provider string) string {
 // DeepSeek). Keyed on the provider name so adding another Bearer-auth provider
 // is a one-line change.
 func anthropicUsesBearerAuth(provider string) bool {
-	return provider == "longcat" || provider == "rayu-ollama-cloud"
+	return provider == "longcat" || provider == "rayu-ollama"
 }
 
 // recordLedger writes the durable consumption row via the bounded write

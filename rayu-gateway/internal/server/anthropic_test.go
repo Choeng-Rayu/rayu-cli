@@ -23,8 +23,8 @@ func TestAnthropicUpstream(t *testing.T) {
 		{"https://gw.example.test:8443/v1", "deepseek", "https://gw.example.test:8443/anthropic/v1/messages"},
 		{"https://api.longcat.chat", "longcat", "https://api.longcat.chat/anthropic/v1/messages"},
 		// Ollama Cloud → {host}/v1/messages (NO /anthropic segment)
-		{"https://ollama.com", "rayu-ollama-cloud", "https://ollama.com/v1/messages"},
-		{"https://ollama.com/", "rayu-ollama-cloud", "https://ollama.com/v1/messages"},
+		{"https://ollama.com", "rayu-ollama", "https://ollama.com/v1/messages"},
+		{"https://ollama.com/", "rayu-ollama", "https://ollama.com/v1/messages"},
 	}
 	for _, c := range cases {
 		if got := anthropicUpstream(c.base, c.provider); got != c.want {
@@ -198,7 +198,7 @@ func TestHandleAnthropicMessagesLongCatBearerAuth(t *testing.T) {
 	}
 }
 
-// TestHandleAnthropicMessagesOllamaCloudRouting proves the rayu-ollama-cloud
+// TestHandleAnthropicMessagesOllamaCloudRouting proves the rayu-ollama
 // provider: (1) forwards to Ollama's Anthropic endpoint at {host}/v1/messages
 // (NO /anthropic segment, unlike DeepSeek/LongCat), (2) authenticates with
 // `Authorization: Bearer <gateway key>` (never the caller JWT, never x-api-key),
@@ -223,7 +223,7 @@ func TestHandleAnthropicMessagesOllamaCloudRouting(t *testing.T) {
 			UserID: 62, Status: "active",
 			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
 			AllowedModels: []store.HostedModel{
-				{Code: "glm-5.2", Provider: "rayu-ollama-cloud", Enabled: true, CreditMultiplier: 2.5,
+				{Code: "glm-5.2", Provider: "rayu-ollama", Enabled: true, CreditMultiplier: 2.5,
 					UpstreamBaseURL: upstream.URL, UpstreamModelID: "glm-5.2:cloud"},
 			},
 		},

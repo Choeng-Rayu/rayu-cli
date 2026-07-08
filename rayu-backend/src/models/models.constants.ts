@@ -64,7 +64,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
     enabled: true,
   },
 
-  // --- Ollama Cloud (provider 'rayu-ollama-cloud') ---------------------------
+  // --- Ollama Cloud (provider 'rayu-ollama') ---------------------------
   // Ollama's HOSTED models (ollama.com), resold via the gateway with Rayu's own
   // OLLAMA_API_KEY. They speak Ollama's NATIVE Anthropic Messages API — but at
   // `{host}/v1/messages` (NO /anthropic path segment, unlike DeepSeek/LongCat)
@@ -86,7 +86,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'glm-5.2',
     label: 'GLM-5.2 (Ollama Cloud)',
-    provider: 'rayu-ollama-cloud',
+    provider: 'rayu-ollama',
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'glm-5.2:cloud',
     inputPricePer1MCents: 60,
@@ -98,7 +98,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'kimi-k2.7',
     label: 'Kimi K2.7 (Ollama Cloud)',
-    provider: 'rayu-ollama-cloud',
+    provider: 'rayu-ollama',
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'kimi-k2.7:cloud',
     inputPricePer1MCents: 60,
@@ -110,7 +110,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'minimax-m3',
     label: 'MiniMax M3 (Ollama Cloud)',
-    provider: 'rayu-ollama-cloud',
+    provider: 'rayu-ollama',
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'minimax-m3:cloud',
     inputPricePer1MCents: 60,
@@ -122,7 +122,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'llama-4',
     label: 'Llama 4 (Ollama Cloud)',
-    provider: 'rayu-ollama-cloud',
+    provider: 'rayu-ollama',
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'llama4:cloud',
     inputPricePer1MCents: 40,
@@ -134,7 +134,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'gpt-oss-120b',
     label: 'GPT-OSS 120B (Ollama Cloud)',
-    provider: 'rayu-ollama-cloud',
+    provider: 'rayu-ollama',
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'gpt-oss:120b-cloud',
     inputPricePer1MCents: 30,
@@ -146,7 +146,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'qwen3.5-397b',
     label: 'Qwen3.5 397B (Ollama Cloud)',
-    provider: 'rayu-ollama-cloud',
+    provider: 'rayu-ollama',
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'qwen3.5:397b-cloud',
     inputPricePer1MCents: 30,
@@ -158,7 +158,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'qwen3.5-122b',
     label: 'Qwen3.5 122B (Ollama Cloud)',
-    provider: 'rayu-ollama-cloud',
+    provider: 'rayu-ollama',
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'qwen3.5:122b',
     inputPricePer1MCents: 30,
