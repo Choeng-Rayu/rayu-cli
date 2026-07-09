@@ -11,6 +11,18 @@ import (
 	"strings"
 )
 
+// ProviderMeta is the wire config for an upstream provider on the Anthropic
+// Messages path: how to authenticate and how to build the URL. Populated from
+// built-in defaults + the RAYU_PROVIDERS env registry, so a NEW provider is added
+// entirely via .env with ZERO gateway code.
+//   - Auth:     "bearer" (Authorization: Bearer) | "x-api-key" (Anthropic-standard)
+//   - Endpoint: "anthropic" ({origin}/anthropic/v1/messages, e.g. DeepSeek/LongCat)
+//               | "messages"  ({origin}/v1/messages, e.g. Ollama Cloud)
+type ProviderMeta struct {
+	Auth     string
+	Endpoint string
+}
+
 // Config holds all runtime configuration for the gateway.
 type Config struct {
 	Port          string
@@ -20,6 +32,8 @@ type Config struct {
 	RedisURL      string
 	DeepSeekKey   string
 	ProviderKeys  map[string]string // provider name -> api key (env-sourced)
+	OllamaProvider string           // Ollama Cloud hosted-model provider name (OLLAMA_PROVIDER_NAME; default 'rayu-ollama')
+	ProviderMeta  map[string]ProviderMeta // per-provider auth + endpoint (built-ins + RAYU_PROVIDERS registry)
 	ConfigRefresh int               // seconds between in-memory config refreshes
 	UserCacheTTL  int               // seconds to cache per-user entitlements
 	CorsOrigins   []string          // allowed browser origins for the dashboard
@@ -68,12 +82,25 @@ func Load() (*Config, error) {
 	if k := os.Getenv("LONGCAT_API_KEY"); k != "" {
 		c.ProviderKeys["longcat"] = k
 	}
-	// Ollama Cloud (provider 'rayu-ollama'): resold hosted models via
-	// Rayu's own ollama.com key. KeyForProvider can't derive it from the provider
-	// name (it has dashes), so map it explicitly here.
+	// Ollama Cloud's hosted-model provider name is configurable via
+	// OLLAMA_PROVIDER_NAME (default 'rayu-ollama') so it can be renamed without a
+	// code change — the backend seed reads the SAME env for hosted_models.provider,
+	// and the gateway keys its Ollama routing (Bearer + {host}/v1/messages) off it.
+	// OLLAMA_API_KEY is mapped onto that name (it has dashes, so KeyForProvider's
+	// <PROVIDER>_API_KEY fallback can't derive it).
+	c.OllamaProvider = strings.TrimSpace(os.Getenv("OLLAMA_PROVIDER_NAME"))
 	if k := os.Getenv("OLLAMA_API_KEY"); k != "" {
-		c.ProviderKeys["rayu-ollama"] = k
+		c.ProviderKeys[c.OllamaProviderName()] = k
 	}
+
+	// RAYU_PROVIDERS is a zero-code registry for ADDITIONAL upstream providers:
+	// add an entry + set its key env var and the gateway can route a new provider
+	// with NO code change (the backend just seeds models with that provider name).
+	// Format: 'name:keyEnv:auth:endpoint' entries separated by ';'
+	//   auth     default 'x-api-key'  (or 'bearer')
+	//   endpoint default 'anthropic'  (or 'messages' for {host}/v1/messages)
+	// e.g. RAYU_PROVIDERS=openrouter:OPENROUTER_API_KEY:bearer:anthropic
+	c.ProviderMeta = parseProviderRegistry(os.Getenv("RAYU_PROVIDERS"), c.ProviderKeys)
 
 	if c.DatabaseURL != "" {
 		dsn, err := MySQLDSN(c.DatabaseURL)
@@ -110,6 +137,95 @@ func (c *Config) KeysForProvider(provider string) []string {
 	return keys
 }
 
+// defaultOllamaProvider is the fallback Ollama Cloud provider name when
+// OLLAMA_PROVIDER_NAME is unset. It is only a default — the env var overrides it.
+const defaultOllamaProvider = "rayu-ollama"
+
+// OllamaProviderName returns the hosted-model provider name for Ollama Cloud,
+// from OLLAMA_PROVIDER_NAME (default 'rayu-ollama'). It drives the gateway's
+// Ollama routing (Bearer auth + {host}/v1/messages) + key lookup, and MUST match
+// the hosted_models.provider value the backend seeds (which reads the same env),
+// so the two stay in sync when the name changes.
+func (c *Config) OllamaProviderName() string {
+	if c.OllamaProvider != "" {
+		return c.OllamaProvider
+	}
+	return defaultOllamaProvider
+}
+
+// parseProviderRegistry parses RAYU_PROVIDERS ('name:keyEnv:auth:endpoint'
+// entries, ';'-separated) into per-provider metadata, and pulls each entry's key
+// from its keyEnv into providerKeys (comma-separated key lists are supported by
+// KeysForProvider). Missing auth/endpoint default to x-api-key/anthropic. This is
+// the zero-code path for adding a new upstream provider via .env.
+func parseProviderRegistry(raw string, providerKeys map[string]string) map[string]ProviderMeta {
+	meta := map[string]ProviderMeta{}
+	for _, entry := range strings.Split(raw, ";") {
+		fields := strings.Split(strings.TrimSpace(entry), ":")
+		name := strings.TrimSpace(fields[0])
+		if name == "" {
+			continue
+		}
+		m := ProviderMeta{Auth: "x-api-key", Endpoint: "anthropic"}
+		if len(fields) > 2 {
+			if a := strings.TrimSpace(fields[2]); a != "" {
+				m.Auth = a
+			}
+		}
+		if len(fields) > 3 {
+			if e := strings.TrimSpace(fields[3]); e != "" {
+				m.Endpoint = e
+			}
+		}
+		meta[name] = m
+		if len(fields) > 1 {
+			if keyEnv := strings.TrimSpace(fields[1]); keyEnv != "" {
+				if k := os.Getenv(keyEnv); k != "" && providerKeys != nil {
+					providerKeys[name] = k
+				}
+			}
+		}
+	}
+	return meta
+}
+
+// knownProviderDefaults returns the built-in auth/endpoint for the shipped
+// providers, used when a provider isn't declared in the RAYU_PROVIDERS registry.
+// New providers should be added via the registry (zero code); these are just the
+// batteries-included defaults for deepseek/longcat/ollama.
+func knownProviderDefaults(name, ollamaName string) ProviderMeta {
+	switch {
+	case name == "longcat":
+		return ProviderMeta{Auth: "bearer", Endpoint: "anthropic"}
+	case name != "" && name == ollamaName:
+		return ProviderMeta{Auth: "bearer", Endpoint: "messages"}
+	default: // deepseek, deepinfra, first-party anthropic, or unknown
+		return ProviderMeta{Auth: "x-api-key", Endpoint: "anthropic"}
+	}
+}
+
+// providerMeta resolves a provider's wire config: an explicit RAYU_PROVIDERS
+// registry entry wins; otherwise the built-in defaults apply.
+func (c *Config) providerMeta(name string) ProviderMeta {
+	if m, ok := c.ProviderMeta[name]; ok {
+		return m
+	}
+	return knownProviderDefaults(name, c.OllamaProviderName())
+}
+
+// ProviderUsesBearer reports whether the provider authenticates with
+// `Authorization: Bearer` (vs the Anthropic-standard `x-api-key`).
+func (c *Config) ProviderUsesBearer(name string) bool {
+	return c.providerMeta(name).Auth == "bearer"
+}
+
+// ProviderEndpointStyle returns how to build the provider's Anthropic Messages
+// URL: "messages" ({host}/v1/messages, Ollama) or "anthropic"
+// ({host}/anthropic/v1/messages, DeepSeek/LongCat/first-party).
+func (c *Config) ProviderEndpointStyle(name string) string {
+	return c.providerMeta(name).Endpoint
+}
+
 // ProviderKeySummary returns a masked, log-safe summary of the loaded upstream
 // keys (e.g. "deepseek=sk-e2…71c8(35) deepinfra=<unset>") so key mix-ups are
 // obvious at boot without ever logging the secret.
@@ -124,8 +240,9 @@ func (c *Config) ProviderKeySummary() string {
 			return fmt.Sprintf("%s…%s(%d)", k[:6], k[len(k)-4:], len(k))
 		}
 	}
-	return fmt.Sprintf("deepseek=%s deepinfra=%s longcat=%s rayu-ollama=%d key(s)",
-		mask(c.ProviderKeys["deepseek"]), mask(c.ProviderKeys["deepinfra"]), mask(c.ProviderKeys["longcat"]), len(c.KeysForProvider("rayu-ollama")))
+	return fmt.Sprintf("deepseek=%s deepinfra=%s longcat=%s %s=%d key(s)",
+		mask(c.ProviderKeys["deepseek"]), mask(c.ProviderKeys["deepinfra"]), mask(c.ProviderKeys["longcat"]),
+		c.OllamaProviderName(), len(c.KeysForProvider(c.OllamaProviderName())))
 }
 
 // MySQLDSN converts a prisma-style "mysql://user:pass@host:port/db?params" URL

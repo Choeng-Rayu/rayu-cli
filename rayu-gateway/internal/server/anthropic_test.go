@@ -13,22 +13,23 @@ import (
 )
 
 func TestAnthropicUpstream(t *testing.T) {
-	type tc struct{ base, provider, want string }
+	type tc struct{ base, endpoint, want string }
 	cases := []tc{
-		// DeepSeek / LongCat / first-party Anthropic → /anthropic/v1/messages
-		{"https://api.deepseek.com", "deepseek", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://api.deepseek.com/", "deepseek", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://api.deepseek.com/v1", "deepseek", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://api.deepseek.com/v1/", "deepseek", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://gw.example.test:8443/v1", "deepseek", "https://gw.example.test:8443/anthropic/v1/messages"},
-		{"https://api.longcat.chat", "longcat", "https://api.longcat.chat/anthropic/v1/messages"},
-		// Ollama Cloud → {host}/v1/messages (NO /anthropic segment)
-		{"https://ollama.com", "rayu-ollama", "https://ollama.com/v1/messages"},
-		{"https://ollama.com/", "rayu-ollama", "https://ollama.com/v1/messages"},
+		// endpoint "anthropic" → {origin}/anthropic/v1/messages (DeepSeek/LongCat/first-party)
+		{"https://api.deepseek.com", "anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://api.deepseek.com/", "anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://api.deepseek.com/v1", "anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://api.deepseek.com/v1/", "anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://gw.example.test:8443/v1", "anthropic", "https://gw.example.test:8443/anthropic/v1/messages"},
+		// endpoint "messages" → {origin}/v1/messages (Ollama Cloud — no /anthropic)
+		{"https://ollama.com", "messages", "https://ollama.com/v1/messages"},
+		{"https://ollama.com/", "messages", "https://ollama.com/v1/messages"},
+		// empty/unknown endpoint defaults to the anthropic style
+		{"https://api.deepseek.com", "", "https://api.deepseek.com/anthropic/v1/messages"},
 	}
 	for _, c := range cases {
-		if got := anthropicUpstream(c.base, c.provider); got != c.want {
-			t.Errorf("anthropicUpstream(%q, %q)=%q want %q", c.base, c.provider, got, c.want)
+		if got := anthropicUpstream(c.base, c.endpoint); got != c.want {
+			t.Errorf("anthropicUpstream(%q, %q)=%q want %q", c.base, c.endpoint, got, c.want)
 		}
 	}
 }
