@@ -94,6 +94,22 @@ func (c *Config) KeyForProvider(provider string) string {
 	return os.Getenv(strings.ToUpper(provider) + "_API_KEY")
 }
 
+// KeysForProvider returns the upstream API keys for a provider, split from the
+// (comma-separated) key string so a provider can rotate across MANY keys — e.g.
+// OLLAMA_API_KEY="key1,key2,key3". Whitespace is trimmed and empty entries are
+// dropped; a single key (no comma) yields a one-element slice unchanged, so
+// single-key providers (deepseek/longcat) are entirely unaffected.
+func (c *Config) KeysForProvider(provider string) []string {
+	parts := strings.Split(c.KeyForProvider(provider), ",")
+	keys := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if k := strings.TrimSpace(p); k != "" {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
 // ProviderKeySummary returns a masked, log-safe summary of the loaded upstream
 // keys (e.g. "deepseek=sk-e2…71c8(35) deepinfra=<unset>") so key mix-ups are
 // obvious at boot without ever logging the secret.
@@ -108,8 +124,8 @@ func (c *Config) ProviderKeySummary() string {
 			return fmt.Sprintf("%s…%s(%d)", k[:6], k[len(k)-4:], len(k))
 		}
 	}
-	return fmt.Sprintf("deepseek=%s deepinfra=%s longcat=%s rayu-ollama=%s",
-		mask(c.ProviderKeys["deepseek"]), mask(c.ProviderKeys["deepinfra"]), mask(c.ProviderKeys["longcat"]), mask(c.ProviderKeys["rayu-ollama"]))
+	return fmt.Sprintf("deepseek=%s deepinfra=%s longcat=%s rayu-ollama=%d key(s)",
+		mask(c.ProviderKeys["deepseek"]), mask(c.ProviderKeys["deepinfra"]), mask(c.ProviderKeys["longcat"]), len(c.KeysForProvider("rayu-ollama")))
 }
 
 // MySQLDSN converts a prisma-style "mysql://user:pass@host:port/db?params" URL

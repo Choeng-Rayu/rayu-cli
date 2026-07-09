@@ -305,3 +305,28 @@ func TestHandleAnthropicMessagesTinyTurnCostsLittle(t *testing.T) {
 		t.Fatalf("usedPeriod=%d billable tokens, want 28 (a 'hi' must NOT cost a whole 1M-token credit)", st.UsedPeriod)
 	}
 }
+
+// TestRotateKeysRoundRobin proves the per-provider round-robin: consecutive
+// requests lead with the next key (wrapping), each provider has an independent
+// cursor, and single/empty key sets are returned unchanged (no rotation).
+func TestRotateKeysRoundRobin(t *testing.T) {
+	s := &Server{}
+	keys := []string{"a", "b", "c"}
+	for i, want := range []string{"a", "b", "c", "a", "b"} {
+		got := s.rotateKeys("rayu-ollama", keys)
+		if len(got) != 3 || got[0] != want {
+			t.Fatalf("call %d: rotateKeys leads with %v, want first=%q", i, got, want)
+		}
+	}
+	// Independent cursor per provider.
+	if got := s.rotateKeys("other", keys); got[0] != "a" {
+		t.Fatalf("independent provider: leads with %q, want a", got[0])
+	}
+	// Single / empty key sets are unchanged.
+	if got := s.rotateKeys("p", []string{"solo"}); len(got) != 1 || got[0] != "solo" {
+		t.Fatalf("single key rotated: %v", got)
+	}
+	if got := s.rotateKeys("p", nil); got != nil {
+		t.Fatalf("nil keys not passed through: %v", got)
+	}
+}

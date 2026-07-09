@@ -98,20 +98,66 @@ func parseAnthropicUsageLine(line []byte) (u anthropicUsageJSON, hasInput, hasOu
 	return
 }
 
+// isRotatableStatus reports whether an upstream status means "try the next API
+// key": rate-limit (429), quota exhausted (402), or auth/permission (401/403) —
+// the per-key failure classes multi-key rotation is meant to route around.
+func isRotatableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, // 429 — rate limit
+		http.StatusPaymentRequired, // 402 — quota exhausted
+		http.StatusUnauthorized,    // 401 — invalid/expired key
+		http.StatusForbidden:       // 403 — permission / quota
+		return true
+	}
+	return false
+}
+
 // StreamAnthropic proxies a streaming Anthropic Messages completion, relaying the
 // SSE bytes verbatim while capturing usage for billing. Mirrors Stream but for
-// the Anthropic wire format + x-api-key auth.
-func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey string, bearer bool, body []byte) (usage *Usage, wrote bool, err error) {
-	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
-		req, err := newAnthropicReq(ctx, upstreamURL, apiKey, bearer, body)
-		if err != nil {
-			return nil, err
+// the Anthropic wire format + x-api-key/Bearer auth.
+//
+// apiKeys may hold MULTIPLE keys (e.g. a comma-separated OLLAMA_API_KEY): they
+// are tried IN ORDER and, if a key returns a rotatable status (rate-limit/quota/
+// auth), the gateway fails over to the next key — all before any bytes are
+// written to the client, so failover is invisible. The final response (a success
+// or the last key's error) is what gets relayed.
+func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL string, apiKeys []string, bearer bool, body []byte) (usage *Usage, wrote bool, err error) {
+	if len(apiKeys) == 0 {
+		apiKeys = []string{""}
+	}
+	var resp *http.Response
+	var usedKey string
+	var lastErr error
+	for i, apiKey := range apiKeys {
+		r, e := doWithRetry(ctx, func() (*http.Request, error) {
+			req, err := newAnthropicReq(ctx, upstreamURL, apiKey, bearer, body)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Accept", "text/event-stream")
+			return req, nil
+		})
+		if e != nil {
+			lastErr = e
+			if i < len(apiKeys)-1 {
+				continue // network error — try the next key
+			}
+			return nil, false, e
 		}
-		req.Header.Set("Accept", "text/event-stream")
-		return req, nil
-	})
-	if err != nil {
-		return nil, false, err
+		// Rate-limited / quota / auth failure AND another key remains → close and
+		// fail over to it. Nothing has been written to the client yet.
+		if isRotatableStatus(r.StatusCode) && i < len(apiKeys)-1 {
+			_ = r.Body.Close()
+			continue
+		}
+		resp, usedKey = r, apiKey
+		break
+	}
+	if resp == nil {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no api keys configured")
+		}
+		return nil, false, lastErr
 	}
 	defer resp.Body.Close()
 
@@ -126,7 +172,7 @@ func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL, ap
 		// the real status + reason so the client sees "402 out of credits" instead
 		// of an opaque empty 500. Best-effort; keeps the original on any failure.
 		if len(bytes.TrimSpace(b)) == 0 {
-			if pb, ps := probeNonStreamError(ctx, upstreamURL, apiKey, bearer, body); len(pb) > 0 {
+			if pb, ps := probeNonStreamError(ctx, upstreamURL, usedKey, bearer, body); len(pb) > 0 {
 				b, status = pb, ps
 			}
 		}
@@ -183,24 +229,46 @@ func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL, ap
 
 // CompleteAnthropic proxies a non-streaming Anthropic Messages completion,
 // returning the upstream status, raw body, and parsed usage for the caller.
-func CompleteAnthropic(ctx context.Context, upstreamURL, apiKey string, bearer bool, body []byte) (usage *Usage, status int, respBody []byte, err error) {
-	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
-		return newAnthropicReq(ctx, upstreamURL, apiKey, bearer, body)
-	})
-	if err != nil {
-		return nil, 0, nil, err
+//
+// apiKeys may hold MULTIPLE keys: they are tried in order, failing over to the
+// next on a rotatable status (rate-limit/quota/auth). The returned status/body
+// is the final response (a success, or the last key's error).
+func CompleteAnthropic(ctx context.Context, upstreamURL string, apiKeys []string, bearer bool, body []byte) (usage *Usage, status int, respBody []byte, err error) {
+	if len(apiKeys) == 0 {
+		apiKeys = []string{""}
 	}
-	defer resp.Body.Close()
-	respBody, _ = io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusOK {
-		var parsed struct {
-			Usage *anthropicUsageJSON `json:"usage"`
+	var lastErr error
+	for i, apiKey := range apiKeys {
+		resp, e := doWithRetry(ctx, func() (*http.Request, error) {
+			return newAnthropicReq(ctx, upstreamURL, apiKey, bearer, body)
+		})
+		if e != nil {
+			lastErr = e
+			if i < len(apiKeys)-1 {
+				continue // network error — try the next key
+			}
+			return nil, 0, nil, e
 		}
-		if json.Unmarshal(respBody, &parsed) == nil && parsed.Usage != nil {
-			usage = parsed.Usage.toUsage()
+		respBody, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		// Rate-limited / quota / auth failure AND another key remains → fail over.
+		if isRotatableStatus(resp.StatusCode) && i < len(apiKeys)-1 {
+			continue
 		}
+		if resp.StatusCode == http.StatusOK {
+			var parsed struct {
+				Usage *anthropicUsageJSON `json:"usage"`
+			}
+			if json.Unmarshal(respBody, &parsed) == nil && parsed.Usage != nil {
+				usage = parsed.Usage.toUsage()
+			}
+		}
+		return usage, resp.StatusCode, respBody, nil
 	}
-	return usage, resp.StatusCode, respBody, nil
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no api keys configured")
+	}
+	return nil, 0, nil, lastErr
 }
 
 
