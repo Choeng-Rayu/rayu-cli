@@ -37,6 +37,8 @@ import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isOpenAICompatibleActive,
+  isRayuAnthropicCompatibleActive,
 } from './model/providers.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
@@ -274,6 +276,33 @@ export function isToolSearchEnabledOptimistic(): boolean {
       loggedOptimistic = true
       logForDebugging(
         `[ToolSearch:optimistic] mode=${mode}, ENABLE_TOOL_SEARCH=${process.env.ENABLE_TOOL_SEARCH}, result=false`,
+      )
+    }
+    return false
+  }
+
+  // Rayu third-party providers never accept the tool_reference / defer_loading
+  // beta, and getAPIProvider()+isFirstPartyAnthropicBaseUrl() below CANNOT catch
+  // them: for kind:'anthropic-compatible' (LongCat, Ollama Cloud, rayu-hosted
+  // gateway) getAPIProvider() falls through to 'anthropic' while the custom
+  // baseURL is set on the SDK client — NOT via ANTHROPIC_BASE_URL — so the
+  // first-party check wrongly returns true; kind:'openai-compatible' routes
+  // through the OpenAI adapter, which has no notion of these beta blocks.
+  // With tool search ON for such a provider, deferred tools are sent with
+  // defer_loading:true but the upstream ignores it, so their schemas are never
+  // delivered and ToolSearch can't discover them — the model then calls tools
+  // like WebFetch/TaskUpdate blind, guesses parameters (e.g. task_id vs taskId),
+  // and the client-side validator rejects the call. Force-disable so ALL tool
+  // schemas are sent inline. Only when ENABLE_TOOL_SEARCH is unset — an explicit
+  // value means the user asserts their endpoint forwards the beta.
+  if (
+    !process.env.ENABLE_TOOL_SEARCH &&
+    (isRayuAnthropicCompatibleActive() || isOpenAICompatibleActive())
+  ) {
+    if (!loggedOptimistic) {
+      loggedOptimistic = true
+      logForDebugging(
+        `[ToolSearch:optimistic] disabled: the active Rayu provider is a third-party (anthropic-compatible / openai-compatible) endpoint that does not accept tool_reference/defer_loading. All tool schemas are sent inline. Set ENABLE_TOOL_SEARCH=true only if your endpoint forwards the beta.`,
       )
     }
     return false
