@@ -504,8 +504,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	log.Printf("anthropic: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estBillable)
 	req["model"] = hr.hm.UpstreamModelID
 	newBody, _ := json.Marshal(req)
-	upstreamURL := anthropicUpstream(hr.hm.UpstreamBaseURL, hr.hm.Provider)
-	bearer := anthropicUsesBearerAuth(hr.hm.Provider)
+	upstreamURL := anthropicUpstream(hr.hm.UpstreamBaseURL, s.cfg.ProviderEndpointStyle(hr.hm.Provider))
+	bearer := s.cfg.ProviderUsesBearer(hr.hm.Provider)
 	// Multi-key rotation: round-robin the starting key; the proxy fails over to
 	// the next on a rate-limit/quota/auth status. OLLAMA_API_KEY may be a
 	// comma-separated list; single-key providers get a one-element slice.
@@ -563,27 +563,20 @@ func (s *Server) rotateKeys(provider string, keys []string) []string {
 // configured (OpenAI-style) upstream base URL by keeping the origin and appending
 // /anthropic/v1/messages (DeepSeek exposes the Anthropic-compatible API at
 // https://api.deepseek.com/anthropic).
-func anthropicUpstream(base, provider string) string {
+func anthropicUpstream(base, endpoint string) string {
 	trimmed := strings.TrimRight(base, "/")
-	// Ollama Cloud's Anthropic-compatible endpoint is {host}/v1/messages — it has
-	// NO /anthropic path segment (unlike DeepSeek/LongCat/first-party Anthropic).
+	// endpoint "messages" → {host}/v1/messages (Ollama Cloud — NO /anthropic
+	// segment); anything else → {host}/anthropic/v1/messages (DeepSeek/LongCat/
+	// first-party Anthropic). The style is per-provider config, resolved by
+	// Config.ProviderEndpointStyle (built-in defaults + the RAYU_PROVIDERS registry).
 	path := "/anthropic/v1/messages"
-	if provider == "rayu-ollama" {
+	if endpoint == "messages" {
 		path = "/v1/messages"
 	}
 	if u, err := url.Parse(trimmed); err == nil && u.Scheme != "" && u.Host != "" {
 		return u.Scheme + "://" + u.Host + path
 	}
 	return strings.TrimSuffix(trimmed, "/v1") + path
-}
-
-// anthropicUsesBearerAuth reports whether a provider's Anthropic-compatible
-// endpoint authenticates with `Authorization: Bearer <key>` (LongCat, Ollama
-// Cloud) instead of the Anthropic-standard `x-api-key` header (Anthropic,
-// DeepSeek). Keyed on the provider name so adding another Bearer-auth provider
-// is a one-line change.
-func anthropicUsesBearerAuth(provider string) bool {
-	return provider == "longcat" || provider == "rayu-ollama"
 }
 
 // recordLedger writes the durable consumption row via the bounded write

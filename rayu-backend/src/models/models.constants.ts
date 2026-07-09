@@ -15,31 +15,44 @@ export interface HostedModelSeed {
   enabled: boolean
 }
 
+// Ollama Cloud's provider name is configurable via OLLAMA_PROVIDER_NAME (default
+// 'rayu-ollama') so it can be renamed without a code change. It MUST match the
+// gateway's OLLAMA_PROVIDER_NAME env (the gateway keys its Ollama routing +
+// OLLAMA_API_KEY off the same value); read once here at module load.
+const OLLAMA_PROVIDER = process.env.OLLAMA_PROVIDER_NAME?.trim() || 'rayu-ollama'
+
 // First-time defaults only. Prices/multipliers/access are all admin-editable in
 // the dashboard afterwards; the seed is non-destructive (create-if-missing).
 // Rayu resells these via the (Phase 2) gateway using its own purchased keys.
 export const MODEL_SEED: HostedModelSeed[] = [
+  // DeepSeek V4 routed through OLLAMA CLOUD (provider OLLAMA_PROVIDER, Rayu's
+  // OLLAMA_API_KEY) — the official DeepSeek route is dropped. ONLY the routing
+  // changed; prices/multipliers are the prior admin-editable defaults (tune for
+  // Ollama's real cost in the dashboard). NOTE: set upstreamModelId to the EXACT
+  // deepseek id in your Ollama account (Ollama serves deepseek as e.g.
+  // deepseek-v3.1:671b-cloud). The CLI resolves the deepseek-v4 codes to 1M
+  // context — add a per-model override if the Ollama model's window is smaller.
   {
     code: 'deepseek-v4-flash',
     label: 'DeepSeek V4 Flash',
-    provider: 'deepseek',
-    upstreamBaseUrl: 'https://api.deepseek.com/v1',
-    upstreamModelId: 'deepseek-v4-flash',
-    inputPricePer1MCents: 14, // $0.14 / 1M
-    outputPricePer1MCents: 28, // $0.28 / 1M
-    creditMultiplier: 0.33, // cheaper model — ~1/3 the credit cost of Pro
+    provider: OLLAMA_PROVIDER,
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'deepseek-v3.1:671b-cloud', // verify/set exact Ollama id
+    inputPricePer1MCents: 14,
+    outputPricePer1MCents: 28,
+    creditMultiplier: 0.33, // cheaper tier — ~1/3 the credit cost of Pro
     allowedPlanCodes: ['pro', 'pro_plus', 'max'],
     enabled: true,
   },
   {
     code: 'deepseek-v4-pro',
     label: 'DeepSeek V4 Pro',
-    provider: 'deepseek',
-    upstreamBaseUrl: 'https://api.deepseek.com/v1',
-    upstreamModelId: 'deepseek-v4-pro',
-    inputPricePer1MCents: 174, // $1.74 / 1M
-    outputPricePer1MCents: 348, // $3.48 / 1M
-    creditMultiplier: 1, // reference model (1 credit = 1e6/baselineCreditsPer1M tokens)
+    provider: OLLAMA_PROVIDER,
+    upstreamBaseUrl: 'https://ollama.com',
+    upstreamModelId: 'deepseek-v3.1:671b-cloud', // verify/set exact Ollama id
+    inputPricePer1MCents: 174,
+    outputPricePer1MCents: 348,
+    creditMultiplier: 1, // reference tier (1 credit / 1M tokens at baseline)
     allowedPlanCodes: ['pro', 'pro_plus', 'max'],
     enabled: true,
   },
@@ -64,7 +77,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
     enabled: true,
   },
 
-  // --- Ollama Cloud (provider 'rayu-ollama') ---------------------------
+  // --- Ollama Cloud (provider = OLLAMA_PROVIDER, default 'rayu-ollama') -------
   // Ollama's HOSTED models (ollama.com), resold via the gateway with Rayu's own
   // OLLAMA_API_KEY. They speak Ollama's NATIVE Anthropic Messages API — but at
   // `{host}/v1/messages` (NO /anthropic path segment, unlike DeepSeek/LongCat)
@@ -86,7 +99,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'glm-5.2',
     label: 'GLM-5.2 (Ollama Cloud)',
-    provider: 'rayu-ollama',
+    provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'glm-5.2:cloud',
     inputPricePer1MCents: 60,
@@ -98,7 +111,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'kimi-k2.7',
     label: 'Kimi K2.7 (Ollama Cloud)',
-    provider: 'rayu-ollama',
+    provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'kimi-k2.7:cloud',
     inputPricePer1MCents: 60,
@@ -110,7 +123,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'minimax-m3',
     label: 'MiniMax M3 (Ollama Cloud)',
-    provider: 'rayu-ollama',
+    provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'minimax-m3:cloud',
     inputPricePer1MCents: 60,
@@ -122,7 +135,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'llama-4',
     label: 'Llama 4 (Ollama Cloud)',
-    provider: 'rayu-ollama',
+    provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'llama4:cloud',
     inputPricePer1MCents: 40,
@@ -134,7 +147,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'gpt-oss-120b',
     label: 'GPT-OSS 120B (Ollama Cloud)',
-    provider: 'rayu-ollama',
+    provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'gpt-oss:120b-cloud',
     inputPricePer1MCents: 30,
@@ -146,7 +159,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'qwen3.5-397b',
     label: 'Qwen3.5 397B (Ollama Cloud)',
-    provider: 'rayu-ollama',
+    provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'qwen3.5:397b-cloud',
     inputPricePer1MCents: 30,
@@ -158,7 +171,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
   {
     code: 'qwen3.5-122b',
     label: 'Qwen3.5 122B (Ollama Cloud)',
-    provider: 'rayu-ollama',
+    provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'qwen3.5:122b',
     inputPricePer1MCents: 30,
