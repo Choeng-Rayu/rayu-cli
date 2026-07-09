@@ -56,11 +56,12 @@ const status = (over: Partial<RayuCreditStatus> = {}): RayuCreditStatus => ({
 describe('rayu usage formatter', () => {
   test('paid plan summary shows plan/price + credits + tokens + topup', () => {
     const s = formatRayuUsageSummary(status())
-    expect(s).toContain('Plan: Pro ($10/mo)')
+    expect(s).toContain('Rayu Plan Usage')
+    expect(s).toContain('Pro ($10/mo)')
     expect(s).toContain('1 / 50 used')
     expect(s).toContain('49 left')
     expect(s).toContain('5,000,000')
-    expect(s).toContain('Top-up balance: 0')
+    expect(s).toContain('Top-up')
   })
 
   test('free plan summary notes no allowance', () => {
@@ -102,7 +103,7 @@ describe('rayu usage formatter', () => {
         turnsResetSeconds: 7200,
       }),
     )
-    expect(s).toContain('Daily turns: 12 / 50 used')
+    expect(s).toContain('12 / 50 turns used')
     expect(s).toContain('38 left')
   })
 
@@ -194,6 +195,44 @@ describe('rayu-hosted visibility (free sees it, blocked on use)', () => {
       _resetRayuEntitlementsForTesting()
       delete process.env.USE_RAYU_OAUTH
       delete process.env.RAYU_WEB_URL
+    }
+  })
+
+  test('paid: a hosted request with a NON-exact model id is NOT blocked client-side', async () => {
+    // Regression: a paid user (has allowedModels) whose request carries a model
+    // string that isn't an exact allowed-code — e.g. a subagent/side-query or an
+    // upstream/variant id like "kimi-k2.7-code:cloud" — must NOT get the client
+    // "upgrade your plan" 403. The gateway is the authoritative per-model gate.
+    process.env.USE_RAYU_OAUTH = 'true'
+    _setRayuEntitlementsForTesting({
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [
+        { code: 'kimi-k2.7', label: 'k', provider: 'rayu-ollama', creditMultiplier: 2.5 },
+      ],
+    })
+    try {
+      const f = makeRayuHostedFetch()
+      let blockedWithUpgrade403 = false
+      try {
+        const res = await f('https://gw.example/v1/messages', {
+          method: 'POST',
+          body: JSON.stringify({ model: 'kimi-k2.7-code:cloud', messages: [] }),
+        })
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: { code?: string }
+        }
+        blockedWithUpgrade403 =
+          res.status === 403 && body.error?.code === 'plan_upgrade_required'
+      } catch {
+        // Gate passed → proceeded to the token/inner-fetch step (no session in
+        // tests), which is NOT the gate's upgrade 403. That's the success path.
+      }
+      expect(blockedWithUpgrade403).toBe(false)
+    } finally {
+      _resetRayuEntitlementsForTesting()
+      delete process.env.USE_RAYU_OAUTH
     }
   })
 })

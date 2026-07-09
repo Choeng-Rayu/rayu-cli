@@ -319,6 +319,11 @@ export async function exec(
         SHELL: shellType === 'bash' ? binShell : undefined,
         GIT_EDITOR: 'true',
         CLAUDECODE: '1',
+        // Identify as Rayu (not Claude) to agent-aware CLIs such as `skills`.
+        // @vercel/detect-agent reads AI_AGENT before CLAUDECODE, so this makes
+        // `npx skills add …` report "rayu Agent detected" and install
+        // non-interactively. CLAUDECODE stays for the hint protocol.
+        AI_AGENT: 'rayu',
         ...envOverrides,
         ...(process.env.USER_TYPE === 'ant'
           ? {

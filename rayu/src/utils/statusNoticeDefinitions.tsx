@@ -78,7 +78,7 @@ const jetbrainsPluginNotice: StatusNoticeDefinition = {
       return false;
     }
     // Don't show if auto-install is disabled
-    const shouldAutoInstall = context.config.autoInstallIdeExtension ?? true;
+    const shouldAutoInstall = context.config.autoInstallIdeExtension ?? false;
     if (!shouldAutoInstall) {
       return false;
     }

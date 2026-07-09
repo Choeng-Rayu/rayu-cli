@@ -20,6 +20,9 @@ function resetIfPassesRefreshed(): void {
   }
 }
 function shouldShowGuestPassesUpsell(): boolean {
+  // Rayu de-brand: the guest-passes referral upsell is an Anthropic
+  // consumer-plan feature and is never shown in Rayu.
+  return false
   const {
     eligible,
     hasCache

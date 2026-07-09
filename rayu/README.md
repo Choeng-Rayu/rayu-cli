@@ -5,9 +5,9 @@ to any provider — Anthropic, OpenAI, NVIDIA, DeepSeek, Kimi/Moonshot, OpenRout
 Google Gemini, AWS Bedrock, local servers, or any OpenAI-compatible endpoint —
 with free model switching, full MCP support, and a complete built-in tool suite.
 
-**Website:** https://rayu-web.vercel.app  
-**Docs:** https://rayu-web.vercel.app/docs  
-**Changelog:** https://rayu-web.vercel.app/changelog
+**Website:** https://rayucode.com  
+**Docs:** https://rayucode.com/docs  
+**Changelog:** https://rayucode.com/changelog
 
 ---
 

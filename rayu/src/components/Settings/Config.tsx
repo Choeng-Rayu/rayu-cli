@@ -855,7 +855,7 @@ export function Config({
   }] : []), ...(isSupportedTerminal() ? [{
     id: 'autoInstallIdeExtension',
     label: 'Auto-install IDE extension',
-    value: globalConfig.autoInstallIdeExtension ?? true,
+    value: globalConfig.autoInstallIdeExtension ?? false,
     type: 'boolean' as const,
     onChange(autoInstallIdeExtension: boolean) {
       saveGlobalConfig(current_17 => ({

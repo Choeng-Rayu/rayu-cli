@@ -23,6 +23,8 @@ function isSupportedPlatform(): boolean {
   return process.platform === 'darwin' || process.platform === 'win32' && process.arch === 'x64';
 }
 export function shouldShowDesktopUpsellStartup(): boolean {
+  // Rayu de-brand: the Claude Desktop app upsell is removed in Rayu.
+  return false;
   if (!isSupportedPlatform()) return false;
   if (!getDesktopUpsellConfig().enable_startup_dialog) return false;
   const config = getGlobalConfig();

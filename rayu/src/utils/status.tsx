@@ -11,7 +11,8 @@ import { getDisplayPath } from './file.js';
 import { formatNumber } from './format.js';
 import { getIdeClientName, type IDEExtensionInstallationStatus, isJetBrainsIde, toIDEDisplayName } from './ide.js';
 import { getClaudeAiUserDefaultModelDescription, modelDisplayString } from './model/model.js';
-import { getAPIProvider } from './model/providers.js';
+import { getAPIProvider, isOpenAICompatibleActive } from './model/providers.js';
+import { getActiveProvider } from './rayuConfig.js';
 import { getMTLSConfig } from './mtls.js';
 import { checkInstall } from './nativeInstaller/index.js';
 import { getProxyUrl } from './proxy.js';
@@ -238,8 +239,25 @@ export function buildAccountProperties(): Property[] {
   return properties;
 }
 export function buildAPIProviderProperties(): Property[] {
-  const apiProvider = getAPIProvider();
   const properties: Property[] = [];
+
+  // OpenAI-compatible providers (NVIDIA, DeepSeek, Kimi/Moonshot, OpenRouter,
+  // Ollama Cloud, local servers, …): show the ACTIVE provider and its real
+  // endpoint. The Anthropic base URL is irrelevant when the model runs through
+  // another provider (e.g. `ministral-3:14b` via Ollama Cloud).
+  if (isOpenAICompatibleActive()) {
+    const active = getActiveProvider();
+    const baseURL = process.env.RAYU_OPENAI_BASE_URL ?? active?.baseURL;
+    if (active?.id) {
+      properties.push({ label: 'API provider', value: active.id });
+    }
+    if (baseURL) {
+      properties.push({ label: 'API base URL', value: baseURL });
+    }
+    return properties;
+  }
+
+  const apiProvider = getAPIProvider();
   if (apiProvider !== 'anthropic') {
     const providerLabel = {
       bedrock: 'AWS Bedrock',

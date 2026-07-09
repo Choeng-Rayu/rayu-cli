@@ -23,7 +23,7 @@ type TipMatcher = {
   tip: ValidationTip
 }
 
-const DOCUMENTATION_BASE = 'https://rayu-web.vercel.app/docs'
+const DOCUMENTATION_BASE = 'https://rayucode.com/docs'
 
 const TIP_MATCHERS: TipMatcher[] = [
   {
