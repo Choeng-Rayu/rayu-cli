@@ -313,6 +313,15 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		return nil, false
 	}
 
+	// Zero-code provider disable (RAYU_DISABLED_PROVIDERS): refuse a disabled
+	// provider's models BEFORE the daily-turn count or credit reserve, so a
+	// disabled provider never charges credits or burns a turn.
+	if s.cfg.ProviderDisabled(hm.Provider) {
+		log.Printf("reject: user=%d model=%q provider=%q is disabled", claims.UserID, modelCode, hm.Provider)
+		httpx.WriteError(w, http.StatusServiceUnavailable, "model temporarily unavailable: "+modelCode)
+		return nil, false
+	}
+
 	settings := s.ent.Settings()
 	if settings.MaxTokensPerRequest > 0 {
 		if mt, ok := req["max_tokens"].(float64); ok && int(mt) > settings.MaxTokensPerRequest {

@@ -2,6 +2,12 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.4.470 - 2026-07-09
+- All supported providers now route through Rayu-hosted gateway with full multi-provider compatibility
+- Improved handling of disabled providers — long-running stale provider connections are now properly cleaned up
+- UI polish: refined several terminal components for better readability and consistency
+- Added native context window support for Rayu-hosted models
+
 ## 1.4.466 - 2026-07-08
 - Rebranded from Claude theme to Rayu branding theme with new Goose mascot identity
 - Added `/banner` and `/mascot` slash commands for displaying Rayu branding in the terminal

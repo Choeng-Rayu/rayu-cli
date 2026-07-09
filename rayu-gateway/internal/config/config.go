@@ -34,6 +34,7 @@ type Config struct {
 	ProviderKeys  map[string]string // provider name -> api key (env-sourced)
 	OllamaProvider string           // Ollama Cloud hosted-model provider name (OLLAMA_PROVIDER_NAME; default 'rayu-ollama')
 	ProviderMeta  map[string]ProviderMeta // per-provider auth + endpoint (built-ins + RAYU_PROVIDERS registry)
+	DisabledProviders map[string]bool     // providers turned OFF via RAYU_DISABLED_PROVIDERS (zero-code enable/disable)
 	ConfigRefresh int               // seconds between in-memory config refreshes
 	UserCacheTTL  int               // seconds to cache per-user entitlements
 	CorsOrigins   []string          // allowed browser origins for the dashboard
@@ -101,6 +102,17 @@ func Load() (*Config, error) {
 	//   endpoint default 'anthropic'  (or 'messages' for {host}/v1/messages)
 	// e.g. RAYU_PROVIDERS=openrouter:OPENROUTER_API_KEY:bearer:anthropic
 	c.ProviderMeta = parseProviderRegistry(os.Getenv("RAYU_PROVIDERS"), c.ProviderKeys)
+
+	// RAYU_DISABLED_PROVIDERS turns providers OFF with zero code: a comma-separated
+	// list of provider names (built-in or registry) whose models the gateway
+	// refuses to route (and the backend hides from users). Add a name to disable
+	// that whole provider; remove it to re-enable. e.g. RAYU_DISABLED_PROVIDERS=longcat,deepinfra
+	c.DisabledProviders = map[string]bool{}
+	for _, p := range strings.Split(os.Getenv("RAYU_DISABLED_PROVIDERS"), ",") {
+		if name := strings.TrimSpace(p); name != "" {
+			c.DisabledProviders[name] = true
+		}
+	}
 
 	if c.DatabaseURL != "" {
 		dsn, err := MySQLDSN(c.DatabaseURL)
@@ -224,6 +236,13 @@ func (c *Config) ProviderUsesBearer(name string) bool {
 // ({host}/anthropic/v1/messages, DeepSeek/LongCat/first-party).
 func (c *Config) ProviderEndpointStyle(name string) string {
 	return c.providerMeta(name).Endpoint
+}
+
+// ProviderDisabled reports whether a provider was turned OFF via
+// RAYU_DISABLED_PROVIDERS. Disabled providers' models are refused by the gateway
+// (before any credit charge) and hidden from users by the backend.
+func (c *Config) ProviderDisabled(name string) bool {
+	return c.DisabledProviders[name]
 }
 
 // ProviderKeySummary returns a masked, log-safe summary of the loaded upstream

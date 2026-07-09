@@ -118,7 +118,8 @@ describe('getRayuModelContextWindow — non-Anthropic providers use the model ta
         'gpt-oss-120b',
         'qwen3.5-397b',
         'qwen3.5-122b',
-        'deepseek-v3.1',
+        'deepseek-v4-flash',
+        'deepseek-v4-pro',
       ],
       defaultModel: 'glm-5.2',
     })
@@ -131,8 +132,9 @@ describe('getRayuModelContextWindow — non-Anthropic providers use the model ta
     expect(m.getRayuModelContextWindow('qwen3.5-122b')).toBe(256_000)
     // GPT-OSS 120B is 128K, not 1M (per spec).
     expect(m.getRayuModelContextWindow('gpt-oss-120b')).toBe(131_072)
-    // DeepSeek V3.1 via Ollama = 128K (distinct from the official deepseek-v4 = 1M).
-    expect(m.getRayuModelContextWindow('deepseek-v3.1')).toBe(131_072)
+    // deepseek-v4 flash/pro (now served via Ollama) resolve to 1M in the CLI table.
+    expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('deepseek-v4-pro')).toBe(1_000_000)
   })
 })
 
