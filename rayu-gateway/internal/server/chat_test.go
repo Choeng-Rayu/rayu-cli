@@ -33,6 +33,12 @@ func (f *fakeEnt) Invalidate(int64)            {}
 
 // chatHarness builds the full router with a fake entSource + miniredis limiter.
 func chatHarness(t *testing.T, fe *fakeEnt) (http.Handler, *credits.Limiter) {
+	return chatHarnessCfg(t, fe, &config.Config{JWTSecret: testSecret, ProviderKeys: map[string]string{"deepseek": "sk-test", "longcat": "sk-longcat", "rayu-ollama": "sk-ollama"}})
+}
+
+// chatHarnessCfg is chatHarness with a caller-supplied config (e.g. to set
+// DisabledProviders). JWTSecret defaults to testSecret when unset.
+func chatHarnessCfg(t *testing.T, fe *fakeEnt, cfg *config.Config) (http.Handler, *credits.Limiter) {
 	t.Helper()
 	mr, err := miniredis.Run()
 	if err != nil {
@@ -41,7 +47,9 @@ func chatHarness(t *testing.T, fe *fakeEnt) (http.Handler, *credits.Limiter) {
 	t.Cleanup(mr.Close)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	lim := credits.NewLimiter(rdb)
-	cfg := &config.Config{JWTSecret: testSecret, ProviderKeys: map[string]string{"deepseek": "sk-test", "longcat": "sk-longcat", "rayu-ollama": "sk-ollama"}}
+	if cfg.JWTSecret == "" {
+		cfg.JWTSecret = testSecret
+	}
 	return New(cfg, fe, lim, nil), lim
 }
 

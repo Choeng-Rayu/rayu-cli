@@ -848,6 +848,20 @@ describe('rayu-backend (e2e)', () => {
     expect(sp.body.assumedUsagePercent).toBe(30)
     expect(sp.body.baselineModelCode).toBe('deepseek-v4-flash')
 
+    // The projection reads model PRICES; the seed now bills DeepSeek flat
+    // (input==output), so set a deterministic spread here (Flash cheap, Pro ~12x)
+    // to exercise the suggested-multiplier math independent of seed pricing.
+    await request(app.getHttpServer())
+      .patch('/api/admin/models/deepseek-v4-flash')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ inputPricePer1MCents: 14, outputPricePer1MCents: 28 })
+      .expect(200)
+    await request(app.getHttpServer())
+      .patch('/api/admin/models/deepseek-v4-pro')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ inputPricePer1MCents: 174, outputPricePer1MCents: 348 })
+      .expect(200)
+
     // Non-admin blocked.
     ctx.setClerkUser({
       clerkUserId: 'clerk_projreg',

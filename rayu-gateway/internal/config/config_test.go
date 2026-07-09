@@ -134,3 +134,31 @@ func TestLoadReadsProviderRegistry(t *testing.T) {
 		t.Errorf("myprov keys=%v, want [mp-1]", keys)
 	}
 }
+
+func TestDisabledProviders(t *testing.T) {
+	c := &Config{DisabledProviders: map[string]bool{"longcat": true}}
+	if !c.ProviderDisabled("longcat") {
+		t.Error("longcat should be disabled")
+	}
+	if c.ProviderDisabled("rayu-ollama") {
+		t.Error("rayu-ollama should be enabled (not in the set)")
+	}
+	if (&Config{}).ProviderDisabled("anything") {
+		t.Error("no providers disabled by default")
+	}
+}
+
+func TestLoadReadsDisabledProviders(t *testing.T) {
+	t.Setenv("RAYU_JWT_SECRET", "s")
+	t.Setenv("RAYU_DISABLED_PROVIDERS", "longcat, deepinfra ,") // messy spacing + trailing comma
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.ProviderDisabled("longcat") || !c.ProviderDisabled("deepinfra") {
+		t.Errorf("longcat + deepinfra should be disabled, got %v", c.DisabledProviders)
+	}
+	if c.ProviderDisabled("rayu-ollama") {
+		t.Error("rayu-ollama must NOT be disabled")
+	}
+}

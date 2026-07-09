@@ -3,6 +3,17 @@ import { Prisma, type HostedModel } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { MODEL_SEED } from './models.constants'
 
+// Providers turned OFF via RAYU_DISABLED_PROVIDERS (comma-separated) are hidden
+// from USERS — the entitlement + user catalog exclude their models — mirroring
+// the gateway's zero-code provider disable (both read the same env). The admin
+// catalog (findAll) still shows everything so it stays manageable. Read once.
+const DISABLED_PROVIDERS = new Set(
+  (process.env.RAYU_DISABLED_PROVIDERS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+)
+
 export interface ModelPatch {
   label?: string
   provider?: string
@@ -33,11 +44,12 @@ export class ModelsService {
   }
 
   /** All ENABLED hosted models (the catalog shown to every signed-in user). */
-  findEnabled(): Promise<HostedModel[]> {
-    return this.prisma.hostedModel.findMany({
+  async findEnabled(): Promise<HostedModel[]> {
+    const models = await this.prisma.hostedModel.findMany({
       where: { enabled: true },
       orderBy: { id: 'asc' },
     })
+    return models.filter((m) => !DISABLED_PROVIDERS.has(m.provider))
   }
 
   findByCode(code: string): Promise<HostedModel | null> {
@@ -50,7 +62,11 @@ export class ModelsService {
       where: { enabled: true },
       orderBy: { id: 'asc' },
     })
-    return all.filter((m) => this.allowedCodes(m).includes(planCode))
+    return all.filter(
+      (m) =>
+        !DISABLED_PROVIDERS.has(m.provider) &&
+        this.allowedCodes(m).includes(planCode),
+    )
   }
 
   /** Parse the allowedPlanCodes JSON into a string[]. */

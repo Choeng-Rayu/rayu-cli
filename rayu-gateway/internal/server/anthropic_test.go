@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/choeng-rayu/rayu-gateway/internal/config"
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
 	"github.com/choeng-rayu/rayu-gateway/internal/store"
 )
@@ -329,5 +330,110 @@ func TestRotateKeysRoundRobin(t *testing.T) {
 	}
 	if got := s.rotateKeys("p", nil); got != nil {
 		t.Fatalf("nil keys not passed through: %v", got)
+	}
+}
+
+
+// TestHandleAnthropicMessagesDisabledProviderRejected proves the zero-code
+// provider disable (RAYU_DISABLED_PROVIDERS): a disabled provider's model is
+// refused with 503 BEFORE any upstream call, credit charge, or daily-turn burn.
+func TestHandleAnthropicMessagesDisabledProviderRejected(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream must NOT be called for a disabled provider")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 91, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				{Code: "longcat-2", Provider: "longcat", Enabled: true, CreditMultiplier: 0.5,
+					UpstreamBaseURL: upstream.URL, UpstreamModelID: "LongCat-2.0"},
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1},
+	}
+	cfg := &config.Config{
+		JWTSecret:         testSecret,
+		ProviderKeys:      map[string]string{"longcat": "sk-longcat"},
+		DisabledProviders: map[string]bool{"longcat": true}, // zero-code disable
+	}
+	h, lim := chatHarnessCfg(t, fe, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+		strings.NewReader(`{"model":"longcat-2","max_tokens":16}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 91))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503 (provider disabled)", rec.Code)
+	}
+	st, err := lim.Status(context.Background(), 91)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.UsedPeriod != 0 {
+		t.Fatalf("usedPeriod=%d, want 0 (a disabled provider must never charge credits)", st.UsedPeriod)
+	}
+}
+
+// TestHostedTokenBillingPerMultiplier proves the paid-path token count:
+// credits = creditMultiplier × (tokens / 1M) at baseline 1. Flat billing (no
+// per-bucket price → output rate == input rate == multiplier), matching the
+// Ollama seed, so 1,000,000 tokens cost exactly `multiplier` credits.
+func TestHostedTokenBillingPerMultiplier(t *testing.T) {
+	cases := []struct {
+		code string
+		mult float64
+		want int64 // billable tokens for 1,000,000 total (credits = want / 1e6)
+	}{
+		{"deepseek-v4-pro", 1.0, 1_000_000}, // 1 credit / 1M
+		{"glm-5.2", 2.5, 2_500_000},         // 2.5 credits / 1M
+		{"gpt-oss-120b", 0.75, 750_000},     // 0.75 credits / 1M
+		{"deepseek-v4-flash", 0.33, 330_000},// 0.33 credits / 1M
+	}
+	for _, c := range cases {
+		t.Run(c.code, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				// 600k input + 400k output = 1,000,000 tokens (Ollama reports no cache).
+				_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[],"usage":{"input_tokens":600000,"output_tokens":400000}}`)
+			}))
+			defer upstream.Close()
+
+			fe := &fakeEnt{
+				ent: entitlements.Entitlement{
+					UserID: 90, Status: "active",
+					Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(1000)},
+					AllowedModels: []store.HostedModel{
+						{Code: c.code, Provider: "rayu-ollama", Enabled: true, CreditMultiplier: c.mult,
+							UpstreamBaseURL: upstream.URL, UpstreamModelID: "x"},
+					},
+				},
+				settings: store.AppSettings{BaselineCreditsPer1M: 1}, // 1 credit = 1,000,000 tokens
+			}
+			h, lim := chatHarness(t, fe)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+				strings.NewReader(`{"model":"`+c.code+`","max_tokens":16}`))
+			req.Header.Set("Authorization", "Bearer "+accessToken(t, 90))
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			st, err := lim.Status(context.Background(), 90)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.UsedPeriod != c.want {
+				t.Fatalf("%s: usedPeriod=%d billable, want %d (mult %.2f × 1M tokens = %.2f credits)",
+					c.code, st.UsedPeriod, c.want, c.mult, float64(c.want)/1e6)
+			}
+		})
 	}
 }

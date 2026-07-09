@@ -26,10 +26,10 @@ const OLLAMA_PROVIDER = process.env.OLLAMA_PROVIDER_NAME?.trim() || 'rayu-ollama
 // Rayu resells these via the (Phase 2) gateway using its own purchased keys.
 export const MODEL_SEED: HostedModelSeed[] = [
   // DeepSeek V4 routed through OLLAMA CLOUD (provider OLLAMA_PROVIDER, Rayu's
-  // OLLAMA_API_KEY) — the official DeepSeek route is dropped. ONLY the routing
-  // changed; prices/multipliers are the prior admin-editable defaults (tune for
-  // Ollama's real cost in the dashboard). NOTE: set upstreamModelId to the EXACT
-  // deepseek id in your Ollama account (Ollama serves deepseek as e.g.
+  // OLLAMA_API_KEY) — the official DeepSeek route is dropped. input==output price
+  // → FLAT billing, so creditMultiplier is exactly credits per 1M tokens
+  // (pro = 1.0 → 1 credit/1M; flash = 0.33). NOTE: set upstreamModelId to the
+  // EXACT deepseek id in your Ollama account (Ollama serves deepseek as e.g.
   // deepseek-v3.1:671b-cloud). The CLI resolves the deepseek-v4 codes to 1M
   // context — add a per-model override if the Ollama model's window is smaller.
   {
@@ -38,8 +38,8 @@ export const MODEL_SEED: HostedModelSeed[] = [
     provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'deepseek-v3.1:671b-cloud', // verify/set exact Ollama id
-    inputPricePer1MCents: 14,
-    outputPricePer1MCents: 28,
+    inputPricePer1MCents: 40,
+    outputPricePer1MCents: 40, // input==output → flat 0.33 credits / 1M tokens
     creditMultiplier: 0.33, // cheaper tier — ~1/3 the credit cost of Pro
     allowedPlanCodes: ['pro', 'pro_plus', 'max'],
     enabled: true,
@@ -50,8 +50,8 @@ export const MODEL_SEED: HostedModelSeed[] = [
     provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
     upstreamModelId: 'deepseek-v3.1:671b-cloud', // verify/set exact Ollama id
-    inputPricePer1MCents: 174,
-    outputPricePer1MCents: 348,
+    inputPricePer1MCents: 40,
+    outputPricePer1MCents: 40, // input==output → flat, exactly 1 credit / 1M tokens
     creditMultiplier: 1, // reference tier (1 credit / 1M tokens at baseline)
     allowedPlanCodes: ['pro', 'pro_plus', 'max'],
     enabled: true,
@@ -110,10 +110,13 @@ export const MODEL_SEED: HostedModelSeed[] = [
   },
   {
     code: 'kimi-k2.7',
-    label: 'Kimi K2.7 (Ollama Cloud)',
+    label: 'Kimi K2.7 Code (Ollama Cloud)',
     provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
-    upstreamModelId: 'kimi-k2.7:cloud',
+    // Ollama's real id is 'kimi-k2.7-code' (NOT 'kimi-k2.7:cloud' — that 404s).
+    // Verified against ollama.com/api/tags. NOTE: this model is subscription-gated
+    // on Ollama (403 "requires a subscription") until the account's plan includes it.
+    upstreamModelId: 'kimi-k2.7-code',
     inputPricePer1MCents: 60,
     outputPricePer1MCents: 60,
     creditMultiplier: 2.5, // 2.5 credits / 1M tokens
