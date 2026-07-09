@@ -43,6 +43,16 @@ interface Entitlements {
   topupBalance: number
 }
 
+// Result of POST /payments/promo/preview — the discounted price for a plan.
+interface PromoPreview {
+  code: string
+  originalCents: number
+  discountCents: number
+  finalCents: number
+  isFree: boolean
+  currency: string
+}
+
 export default function BillingPage() {
   const { token, authError, isLoaded, isSignedIn } = useRayuToken()
   const [plans, setPlans] = useState<Plan[]>([])
@@ -53,6 +63,11 @@ export default function BillingPage() {
   const [me, setMe] = useState<Entitlements | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  // Promo code state.
+  const [promoInput, setPromoInput] = useState('')
+  const [promo, setPromo] = useState<PromoPreview | null>(null)
+  const [promoBusy, setPromoBusy] = useState(false)
+  const [promoError, setPromoError] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Load plans and payment history once token is ready
@@ -128,7 +143,11 @@ export default function BillingPage() {
       const res = await fetch(apiUrl('/payments/khqr'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ planCode: selectedPlan }),
+        body: JSON.stringify({
+          planCode: selectedPlan,
+          // Apply a validated, non-free promo so the QR is for the discounted amount.
+          ...(promo && !promo.isFree ? { promoCode: promo.code } : {}),
+        }),
       })
       if (!res.ok) {
         const err = (await res.json()) as { message?: string }
@@ -142,6 +161,66 @@ export default function BillingPage() {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Validate a promo code for the selected plan and show its discounted price.
+  async function applyPromo() {
+    if (!token || !selectedPlan || !promoInput.trim()) return
+    setPromoBusy(true)
+    setPromoError('')
+    setPromo(null)
+    try {
+      const res = await fetch(apiUrl('/payments/promo/preview'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ planCode: selectedPlan, code: promoInput.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setPromoError((data as { message?: string }).message ?? `Error ${res.status}`)
+        return
+      }
+      setPromo(data as PromoPreview)
+    } catch (e) {
+      setPromoError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPromoBusy(false)
+    }
+  }
+
+  // Claim a $0 (100%-off) plan — activates immediately, no QR/payment.
+  async function claimFree() {
+    if (!token || !selectedPlan || !promo?.isFree) return
+    setPromoBusy(true)
+    setPromoError('')
+    setError('')
+    try {
+      const res = await fetch(apiUrl('/payments/promo/claim'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ planCode: selectedPlan, code: promo.code }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setPromoError((data as { message?: string }).message ?? `Error ${res.status}`)
+        return
+      }
+      // Reuse the paid-success UI.
+      setPollStatus({
+        paymentId: (data as { paymentId: number }).paymentId,
+        status: 'paid',
+        planCode: selectedPlan,
+        activated: true,
+      })
+      const histRes = await fetch(apiUrl('/payments/mine'), { headers: { Authorization: `Bearer ${token}` } })
+      if (histRes.ok) {
+        setHistory(((await histRes.json()) as { items: PaymentHistoryItem[] }).items)
+      }
+    } catch (e) {
+      setPromoError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPromoBusy(false)
     }
   }
 
@@ -269,21 +348,76 @@ export default function BillingPage() {
                 key={p.code}
                 className={selectedPlan === p.code ? 'btn-primary' : 'btn-ghost'}
                 style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.25rem', textAlign: 'left' }}
-                onClick={() => setSelectedPlan(p.code as PaidPlanCode)}
+                onClick={() => { setSelectedPlan(p.code as PaidPlanCode); setPromo(null); setPromoError('') }}
               >
                 <span style={{ fontWeight: 700 }}>{p.name}</span>
                 <span style={{ fontSize: '0.85rem', opacity: 0.7 }}>${(p.priceCents / 100).toFixed(0)}/mo</span>
               </button>
             ))}
           </div>
-          <button
-            className="btn-primary"
-            disabled={!selectedPlan || loading}
-            style={{ padding: '12px 28px' }}
-            onClick={() => void initiatePayment()}
-          >
-            {loading ? 'Generating QR...' : 'Pay with ABA KHQR'}
-          </button>
+          {/* Promo / discount code */}
+          <div style={{ marginBottom: '1.5rem' }}>
+            <p style={{ margin: '0 0 0.5rem', opacity: 0.5, fontSize: '0.8rem', textTransform: 'uppercase' }}>Promo code (optional)</p>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <input
+                value={promoInput}
+                onChange={(e) => { setPromoInput(e.target.value); setPromo(null); setPromoError('') }}
+                placeholder="e.g. rayu-cli"
+                style={{ flex: 1, minWidth: 160, padding: '0.6rem 0.8rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'inherit', fontSize: '0.95rem' }}
+              />
+              <button
+                className="btn-ghost"
+                disabled={!selectedPlan || !promoInput.trim() || promoBusy}
+                style={{ padding: '0 1.4rem' }}
+                onClick={() => void applyPromo()}
+              >
+                {promoBusy ? 'Checking…' : 'Apply'}
+              </button>
+            </div>
+            {!selectedPlan && <p style={{ opacity: 0.4, fontSize: '0.8rem', marginTop: 6 }}>Select a plan first.</p>}
+            {promoError && <p style={{ color: 'var(--red)', fontSize: '0.85rem', marginTop: 6 }}>{promoError}</p>}
+            {promo && (
+              <div style={{ marginTop: 12, fontSize: '0.9rem', maxWidth: 320 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ opacity: 0.6 }}>Original</span>
+                  <span style={{ fontFamily: 'DM Mono, monospace' }}>${(promo.originalCents / 100).toFixed(2)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--green)' }}>
+                  <span>Discount ({promo.code})</span>
+                  <span style={{ fontFamily: 'DM Mono, monospace' }}>−${(promo.discountCents / 100).toFixed(2)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, borderTop: '1px solid var(--border)', marginTop: 6, paddingTop: 6 }}>
+                  <span>You pay</span>
+                  <span style={{ fontFamily: 'DM Mono, monospace' }}>{promo.isFree ? 'FREE' : `$${(promo.finalCents / 100).toFixed(2)}`}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Action: claim for $0 (100%-off) or pay the (discounted) amount. */}
+          {promo?.isFree ? (
+            <button
+              className="btn-primary"
+              disabled={promoBusy}
+              style={{ padding: '12px 28px' }}
+              onClick={() => void claimFree()}
+            >
+              {promoBusy ? 'Claiming…' : 'Claim for $0 & activate →'}
+            </button>
+          ) : (
+            <button
+              className="btn-primary"
+              disabled={!selectedPlan || loading}
+              style={{ padding: '12px 28px' }}
+              onClick={() => void initiatePayment()}
+            >
+              {loading
+                ? 'Generating QR...'
+                : promo
+                  ? `Pay $${(promo.finalCents / 100).toFixed(2)} with ABA KHQR`
+                  : 'Pay with ABA KHQR'}
+            </button>
+          )}
         </div>
       )}
 

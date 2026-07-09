@@ -42,6 +42,12 @@ import { RolesGuard } from '../auth/roles.guard'
 import { ModelsModule } from '../models/models.module'
 import { ModelsService } from '../models/models.service'
 import { PlansModule } from '../plans/plans.module'
+import { PromoModule } from '../promo/promo.module'
+import {
+  DISCOUNT_TYPES,
+  type DiscountType,
+  PromoService,
+} from '../promo/promo.service'
 import { PrismaModule } from '../prisma/prisma.module'
 import { AppSettingsModule } from '../settings/app-settings.module'
 import { AppSettingsService } from '../settings/app-settings.service'
@@ -226,6 +232,103 @@ export class UpdateSettingsDto {
   infraCostCentsPerUser?: number
 }
 
+// Promo/discount code CRUD. discountType percent (0-100) or fixed (cents off);
+// appliesToPlans null/[] = all plans; maxRedemptions null = unlimited. Dates are
+// ISO strings (or null); the service validates + parses them.
+export class CreatePromoDto {
+  @IsString()
+  @MaxLength(64)
+  code!: string
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @MaxLength(255)
+  description?: string | null
+
+  @IsIn(DISCOUNT_TYPES as unknown as string[])
+  discountType!: DiscountType
+
+  @IsInt()
+  @Min(0)
+  discountValue!: number
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsArray()
+  @IsString({ each: true })
+  appliesToPlans?: string[] | null
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsInt()
+  @Min(1)
+  maxRedemptions?: number | null
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  startsAt?: string | null
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  endsAt?: string | null
+
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean
+}
+
+// All fields optional for PATCH (includes `active` for apply/end).
+export class UpdatePromoDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  code?: string
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @MaxLength(255)
+  description?: string | null
+
+  @IsOptional()
+  @IsIn(DISCOUNT_TYPES as unknown as string[])
+  discountType?: DiscountType
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  discountValue?: number
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsArray()
+  @IsString({ each: true })
+  appliesToPlans?: string[] | null
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsInt()
+  @Min(1)
+  maxRedemptions?: number | null
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  startsAt?: string | null
+
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  endsAt?: string | null
+
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean
+}
+
 // All admin routes require an active admin/superadmin session.
 @Controller('admin')
 @UseGuards(RayuAuthGuard, RolesGuard)
@@ -235,6 +338,7 @@ export class AdminController {
     private readonly admin: AdminService,
     private readonly models: ModelsService,
     private readonly settings: AppSettingsService,
+    private readonly promo: PromoService,
   ) {}
 
   @Get('users')
@@ -386,6 +490,31 @@ export class AdminController {
     return this.models.remove(code)
   }
 
+  // --- Promo / discount codes ---
+
+  @Get('promo-codes')
+  listPromoCodes() {
+    return this.promo.findAll()
+  }
+
+  @Post('promo-codes')
+  createPromoCode(@Body() body: CreatePromoDto) {
+    return this.promo.create(body)
+  }
+
+  @Patch('promo-codes/:id')
+  updatePromoCode(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdatePromoDto,
+  ) {
+    return this.promo.update(id, body)
+  }
+
+  @Delete('promo-codes/:id')
+  deletePromoCode(@Param('id', ParseIntPipe) id: number) {
+    return this.promo.remove(id)
+  }
+
   // --- Global credit settings ---
 
   @Get('credit-settings')
@@ -408,6 +537,7 @@ export class AdminController {
     PlansModule,
     ModelsModule,
     AppSettingsModule,
+    PromoModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

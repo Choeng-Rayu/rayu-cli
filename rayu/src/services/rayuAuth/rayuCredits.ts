@@ -60,36 +60,67 @@ function usd(cents: number): string {
   return `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`
 }
 
-/** Multi-line summary for the /usage command. */
+/** A fixed-width usage bar, e.g. `[████░░░░░░░░]`. */
+function usageBar(used: number, total: number | null, width = 22): string {
+  if (!total || total <= 0) return ''
+  const ratio = Math.max(0, Math.min(1, used / total))
+  const filled = Math.round(ratio * width)
+  return `[${'█'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))}]`
+}
+
+/** Whole-percent string for a used/total pair, e.g. `2%`. */
+function usagePct(used: number, total: number | null): string {
+  if (!total || total <= 0) return ''
+  return `${Math.round((used / total) * 100)}%`
+}
+
+/** Multi-line summary for the /usage command — Rayu plan, with usage bars. */
 export function formatRayuUsageSummary(c: RayuCreditStatus): string {
   const lines: string[] = []
   const price = c.priceCents > 0 ? ` (${usd(c.priceCents)}/mo)` : ''
-  lines.push(`Plan: ${c.planName || c.plan}${price}`)
+  lines.push('Rayu Plan Usage')
+  lines.push('')
+  lines.push(`  Plan     ${c.planName || c.plan}${price}`)
   if (c.periodEnd) {
-    lines.push(`Renews: ${new Date(c.periodEnd).toLocaleDateString()}`)
+    lines.push(`  Renews   ${new Date(c.periodEnd).toLocaleDateString()}`)
   }
   if (c.creditsPerPeriod == null) {
-    lines.push('No hosted credit allowance on this plan — upgrade at /billing.')
+    lines.push('')
+    lines.push('  No hosted credit allowance on this plan — upgrade at /billing.')
   } else {
     const remC = c.remainingCredits ?? 0
+    lines.push('')
     lines.push(
-      `Credits: ${c.usedCredits.toLocaleString()} / ${c.creditsPerPeriod.toLocaleString()} used · ${remC.toLocaleString()} left (resets in ${fmtReset(c.resetSeconds)})`,
+      `  Credits  ${usageBar(c.usedCredits, c.creditsPerPeriod)} ${usagePct(c.usedCredits, c.creditsPerPeriod)}`,
+    )
+    lines.push(
+      `           ${c.usedCredits.toLocaleString()} / ${c.creditsPerPeriod.toLocaleString()} used · ${remC.toLocaleString()} left · resets in ${fmtReset(c.resetSeconds)}`,
     )
     if (c.allowanceTokens != null) {
+      const usedT = c.usedTokens ?? 0
+      lines.push('')
       lines.push(
-        `Tokens:  ${(c.usedTokens ?? 0).toLocaleString()} / ${c.allowanceTokens.toLocaleString()}`,
+        `  Tokens   ${usageBar(usedT, c.allowanceTokens)} ${usagePct(usedT, c.allowanceTokens)}`,
+      )
+      lines.push(
+        `           ${usedT.toLocaleString()} / ${c.allowanceTokens.toLocaleString()}`,
       )
     }
-  }
-  if (c.topUpEnabled) {
-    lines.push(`Top-up balance: ${c.topupBalance.toLocaleString()} credits`)
   }
   if (c.maxDailyTurns != null && c.maxDailyTurns > 0) {
     const used = c.turnsUsedToday ?? 0
     const left = c.turnsRemaining ?? Math.max(0, c.maxDailyTurns - used)
+    lines.push('')
     lines.push(
-      `Daily turns: ${used.toLocaleString()} / ${c.maxDailyTurns.toLocaleString()} used · ${left.toLocaleString()} left (resets in ${fmtReset(c.turnsResetSeconds ?? 0)})`,
+      `  Daily    ${usageBar(used, c.maxDailyTurns)} ${usagePct(used, c.maxDailyTurns)}`,
     )
+    lines.push(
+      `           ${used.toLocaleString()} / ${c.maxDailyTurns.toLocaleString()} turns used · ${left.toLocaleString()} left · resets in ${fmtReset(c.turnsResetSeconds ?? 0)}`,
+    )
+  }
+  if (c.topUpEnabled) {
+    lines.push('')
+    lines.push(`  Top-up   ${c.topupBalance.toLocaleString()} credits`)
   }
   return lines.join('\n')
 }

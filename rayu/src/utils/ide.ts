@@ -1305,7 +1305,9 @@ export async function initializeIdeIntegration(
   // Don't await so we don't block startup, but return a promise that resolves with the status
   void findAvailableIDE().then(onIdeDetected)
 
-  const shouldAutoInstall = getGlobalConfig().autoInstallIdeExtension ?? true
+  // Rayu has no first-party VS Code extension; do NOT auto-install Anthropic's
+  // `anthropic.claude-code` extension. Default OFF (opt in via config).
+  const shouldAutoInstall = getGlobalConfig().autoInstallIdeExtension ?? false
   if (
     !isEnvTruthy(process.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) &&
     shouldAutoInstall

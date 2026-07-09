@@ -255,6 +255,28 @@ export function isHostedModelEntitled(modelCode: string): boolean {
 }
 
 /**
+ * Whether the signed-in user's plan can use ANY Rayu-hosted model — i.e. their
+ * `allowedModels` is non-empty. Used by the client-side block-on-use gate to
+ * decide whether to short-circuit with the upgrade message.
+ *
+ * IMPORTANT: this is deliberately COARSE (plan has hosted access at all), NOT a
+ * per-model exact-code match. A paid user's request can legitimately carry a
+ * model string that isn't an exact allowedModels code — subagent/side-query
+ * models, provider-prefixed or variant ids, etc. Blocking those client-side with
+ * "upgrade your plan" is both wrong (they ARE a paid user) and misleading. The
+ * gateway is the authoritative per-model + billing gate and returns accurate
+ * errors ("model not available on your plan", credit limits, upstream 403/404),
+ * so the client only needs to catch the clear case: a user with NO hosted access
+ * (e.g. Free) trying to use hosted models. Fails OPEN (unknown → allow).
+ */
+export function hasHostedModelAccess(): boolean {
+  if (!isUseRayuOAuthEnabled()) return true
+  const ent = getCachedEntitlements()
+  if (!ent) return true // unknown → let the gateway decide
+  return (ent.allowedModels ?? []).length > 0
+}
+
+/**
  * Friendly message shown to a Free user who tries to USE a hosted model,
  * including the upgrade link. Self-contained (no plan-catalog import).
  */

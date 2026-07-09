@@ -1,7 +1,37 @@
 # un-use-code
 
-Code that has been removed from the active Rayu build but preserved for future
-re-implementation.
+Code **removed from the active Rayu build but preserved** for reference and
+possible future re-implementation.
+
+Nothing in this directory ships. It is excluded from type-checking
+(`tsconfig.json` → `"exclude": ["…","un-use-code"]`) and is never reachable from
+the `src/entrypoints/cli.tsx` import graph, so `bun run build` cannot bundle it.
+Most of it is Anthropic / Claude-Code-specific infrastructure that does not
+belong in a bring-your-own-key, multi-provider CLI (internal telemetry, the
+claude.ai OAuth login and remote-session bridge, the Anthropic feedback
+endpoint, the data-training consent screen, dead staging config, and retired
+Anthropic-internal commands).
+
+## How to restore an item
+
+1. Move the file(s) back to the original `src/` path noted in its section below.
+2. Re-add any removed import / command registration (usually in
+   `src/commands.ts`) or call site.
+3. Verify with `bun run build && bun run typecheck:ci && bun test`.
+
+## What's here (index)
+
+- **Telemetry / analytics** — `services/analytics/*` (GrowthBook/Statsig gate
+  original, first-party event logger + network exporter), `types/generated/events_mono/*`.
+- **claude.ai auth + remote** — `services/oauth/{index,crypto,auth-code-listener}.ts`
+  (browser OAuth login flow), `upstreamproxy/` (CCR MITM proxy).
+- **Feedback + consent** — `commands/feedback/` + `components/Feedback.tsx`
+  (Anthropic feedback endpoint), `components/grove/Grove.tsx` +
+  `services/api/grove.ts` (data-training consent).
+- **Chrome bridge** — `claudeInChrome/` and related.
+- **Retired Anthropic-internal commands** — see `commands/` sections.
+
+Full details for each item follow.
 
 ## claudeInChrome/
 
@@ -183,3 +213,17 @@ disabled. Both the interactive onboarding step (`interactiveHelpers.tsx`) and th
 headless check (`cli/print.ts`) were unwired, and both modules moved here.
 (`theme.ts` still defines "Grove colors" — harmless color values — and
 `config.ts` keeps an inert grove cache field.)
+
+## commands/passes/ + components/Passes/
+
+The `/passes` command and its UI — the Anthropic "guest passes" referral upsell
+(share passes / earn referral credits). It was already de-registered from
+`src/commands.ts` (orphaned) and is a consumer-plan upsell irrelevant to Rayu,
+so both were moved here.
+
+Related usage-upsell gates were **hard-disabled in `src/`** (not moved, because
+they're woven into the `LogoV2`/`REPL` feed): `shouldShowGuestPassesUpsell`,
+`shouldShowOverageCreditUpsell`, and `shouldShowDesktopUpsellStartup` now return
+`false`, so the "request more usage / buy credits / install Claude Desktop"
+upsells never render. `/extra-usage` remains a disabled stub (its full
+implementation is under `commands/extra-usage/`).

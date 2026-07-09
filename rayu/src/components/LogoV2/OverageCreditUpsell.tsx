@@ -30,6 +30,9 @@ export function isEligibleForOverageCreditGrant(): boolean {
   return formatGrantAmount(info) !== null;
 }
 export function shouldShowOverageCreditUpsell(): boolean {
+  // Rayu de-brand: the "buy overage credits / request more usage" upsell is an
+  // Anthropic consumer-plan feature and is never shown in Rayu.
+  return false;
   if (!isEligibleForOverageCreditGrant()) return false;
   const config = getGlobalConfig();
   if (config.hasVisitedExtraUsage) return false;

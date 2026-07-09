@@ -113,7 +113,7 @@ function generateReservedShortcuts(): string {
 
 const FILE_FORMAT_EXAMPLE: KeybindingsSchemaType = {
   $schema: 'https://www.schemastore.org/claude-code-keybindings.json',
-  $docs: 'https://rayu-web.vercel.app/docs',
+  $docs: 'https://rayucode.com/docs',
   bindings: [
     {
       context: 'Chat',

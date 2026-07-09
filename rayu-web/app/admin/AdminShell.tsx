@@ -11,6 +11,7 @@ const NAV = [
   { href: '/admin/analytics', label: 'Analytics', icon: '📈' },
   { href: '/admin/users', label: 'Users', icon: '👥' },
   { href: '/admin/plans', label: 'Plans & Features', icon: '🎚' },
+  { href: '/admin/promo-codes', label: 'Promo Codes', icon: '🏷' },
   { href: '/admin/models', label: 'Models', icon: '🧠' },
   { href: '/admin/credit-settings', label: 'Credit Settings', icon: '⚙' },
   { href: '/admin/payments', label: 'Payments', icon: '💰' },

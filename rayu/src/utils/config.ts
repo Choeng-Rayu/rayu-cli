@@ -619,7 +619,7 @@ function createDefaultGlobalConfig(): GlobalConfig {
     showExpandedTodos: false,
     messageIdleNotifThresholdMs: 60000,
     autoConnectIde: false,
-    autoInstallIdeExtension: true,
+    autoInstallIdeExtension: false,
     fileCheckpointingEnabled: true,
     terminalProgressBarEnabled: true,
     cachedStatsigGates: {},
@@ -1753,9 +1753,12 @@ export function getAutoUpdaterDisabledReason(): AutoUpdaterDisabledReason | null
   if (essentialTrafficEnvVar) {
     return { type: 'env', envVar: essentialTrafficEnvVar }
   }
+  // Rayu: auto-updates are OFF by default (opt in with `autoUpdates: true` in
+  // config). A fork's release feed may not be configured, so silent update
+  // checks ("Failed to fetch versions") should not run unless explicitly asked.
   const config = getGlobalConfig()
   if (
-    config.autoUpdates === false &&
+    config.autoUpdates !== true &&
     (config.installMethod !== 'native' ||
       config.autoUpdatesProtectedForNative !== true)
   ) {

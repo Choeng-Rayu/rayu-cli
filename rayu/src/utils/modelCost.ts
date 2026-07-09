@@ -22,7 +22,7 @@ import {
   type ModelShortName,
 } from './model/model.js'
 
-// @see https://rayu-web.vercel.app/docs
+// @see https://rayucode.com/docs
 export type ModelCosts = {
   inputTokens: number
   outputTokens: number
@@ -107,7 +107,7 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
 }
 
 // @[MODEL LAUNCH]: Add a pricing entry for the new model below.
-// Costs from https://rayu-web.vercel.app/docs
+// Costs from https://rayucode.com/docs
 // Web search cost: $10 per 1000 requests = $0.01 per request
 export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   [anthropicNameToCanonical(CLAUDE_3_5_HAIKU_CONFIG.anthropic)]:

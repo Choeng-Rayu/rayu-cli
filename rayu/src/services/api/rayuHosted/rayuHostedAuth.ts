@@ -37,10 +37,14 @@ export function makeRayuHostedFetch(): typeof fetch {
     input: FetchParams[0],
     init: FetchParams[1] = {},
   ): Promise<Response> => {
-    // Block-on-use for Free users: if this is a chat request for a hosted model
-    // the signed-in user is NOT entitled to, return a friendly 403 with the
-    // upgrade link instead of calling the gateway (saves a round-trip; the
-    // gateway also enforces server-side). Fails open when entitlement is unknown.
+    // Block-on-use for users with NO hosted access (e.g. Free plans): return a
+    // friendly 403 with the upgrade link instead of calling the gateway. We do
+    // NOT gate on the exact model string here — a PAID user's request may carry a
+    // model id that isn't an exact allowedModels code (subagent/side-query models,
+    // variant/upstream ids like "kimi-k2.7-code:cloud", provider-prefixed ids),
+    // and blocking those with "upgrade your plan" is wrong + confusing. The
+    // gateway is the authoritative per-model + billing gate and returns accurate
+    // errors. Fails open when entitlement is unknown.
     const url =
       typeof input === 'string'
         ? input
@@ -50,30 +54,20 @@ export function makeRayuHostedFetch(): typeof fetch {
             (input as Request).url
     if (
       (init?.method ?? 'GET').toUpperCase() === 'POST' &&
-      (url.includes('/chat/completions') || url.includes('/v1/messages')) &&
-      typeof init?.body === 'string'
+      (url.includes('/chat/completions') || url.includes('/v1/messages'))
     ) {
-      const model = ((): string | undefined => {
-        try {
-          return (JSON.parse(init.body as string) as { model?: string }).model
-        } catch {
-          return undefined
-        }
-      })()
-      if (model) {
-        const { isHostedModelEntitled, hostedModelUpgradeMessage } = await import(
-          '../../rayuAuth/rayuEntitlements.js'
+      const { hasHostedModelAccess, hostedModelUpgradeMessage } = await import(
+        '../../rayuAuth/rayuEntitlements.js'
+      )
+      if (!hasHostedModelAccess()) {
+        const message = hostedModelUpgradeMessage()
+        // 403 (not retried by the OpenAI adapter); message surfaces to the user.
+        return new Response(
+          JSON.stringify({
+            error: { message, type: 'upgrade_required', code: 'plan_upgrade_required' },
+          }),
+          { status: 403, headers: { 'content-type': 'application/json' } },
         )
-        if (!isHostedModelEntitled(model)) {
-          const message = hostedModelUpgradeMessage()
-          // 403 (not retried by the OpenAI adapter); message surfaces to the user.
-          return new Response(
-            JSON.stringify({
-              error: { message, type: 'upgrade_required', code: 'plan_upgrade_required' },
-            }),
-            { status: 403, headers: { 'content-type': 'application/json' } },
-          )
-        }
       }
     }
 

@@ -1,0 +1,22 @@
+fixed: 
+the feature is allow free plan user to use all unlimited except only these features: 
+- Collaborator swarms
+- Collaborator model
+- subagent models
+- Native Image & Video generation tools
+- Telegram bot remote control
+- P2P Direct Connect
+- Absolute Privacy: No Training Data
+but it show the bug is my account is also the pro (10$) but it still said like below is require paid plan since I have the credit so I think the issue is because the mutiple api key rotate but it return 403 from the rayu-gateway but the model is will response so I don't the root case so please find the root cause and fix it. 
+this si the proof: 
+● Fetch(url: "https://docs.flutter.dev/ai/agent-skills", prompt: "Extract the complete guidance for Flutter AI agent skills. Include: how agents should work with Flutter
+       code, what conventions to follow, how to handle widgets/state/navigation, any example prompts or rules, and how to apply these guidelines in a real project.")
+  ⎿  Received 62.9KB (200 OK)
+API Error: 403 {"error":{"message":"🔒 Rayu-hosted models are a paid feature. Please upgrade your plan to use them:
+https://rayucode.com/plans","type":"upgrade_required","code":"plan_upgrade_required"}}
+
+                                                                                                                                       11:33 AM kimi-k2.7-code:cloud
+● I cannot fetch that URL — WebFetch is returning a paid-feature error on this plan. I also don't have a general web search tool available right now.
+
+this is not happen in this case it happen in when I use this model doing sometime I can't defined or tell you the exact isue but I tell current it have in above one case and the second is is when i use the subagent planner and it write to the file it said like issue in that writing the file "API Error: 403 {"error":{"message":"🔒 Rayu-hosted models are a paid feature. Please upgrade your plan to use them: https://rayucode.com/plans","type":"upgrade_required","code":"plan_upgrade_required"}}
+"

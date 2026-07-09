@@ -58,6 +58,13 @@ function makeService(): Mocks {
       Promise.resolve({ plan: { code: 'free' }, currentPeriodEnd: null }),
     ),
   }
+  // Promo service mock — no-op by default (tests that exercise promo override).
+  const promo = {
+    validateForPurchase: jest.fn(),
+    recordPendingRedemption: jest.fn(() => Promise.resolve()),
+    finalizeRedemption: jest.fn(() => Promise.resolve()),
+    cancelPendingRedemption: jest.fn(() => Promise.resolve()),
+  }
 
   const service = new PaymentsService(
     prisma as unknown as PrismaService,
@@ -65,8 +72,9 @@ function makeService(): Mocks {
     aba as unknown as AbaService,
     settings as unknown as AppSettingsService,
     users as unknown as import('../users/users.service').UsersService,
+    promo as unknown as import('../promo/promo.service').PromoService,
   )
-  return { service, prisma, bakong, aba, settings, users } as unknown as Mocks
+  return { service, prisma, bakong, aba, settings, users, promo } as unknown as Mocks
 }
 
 describe('PaymentsService · KHQR expiry lifecycle', () => {

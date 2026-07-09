@@ -528,6 +528,13 @@ function initializeEntrypoint(isNonInteractive: boolean): void {
 
   // Set based on interactive status
   process.env.CLAUDE_CODE_ENTRYPOINT = isNonInteractive ? 'sdk-cli' : 'cli';
+
+  // Identify as Rayu (not Claude) to agent-aware external CLIs that inherit our
+  // environment — e.g. `skills` (@vercel/detect-agent reads AI_AGENT before
+  // CLAUDECODE). Don't override an explicitly-set value.
+  if (!process.env.AI_AGENT) {
+    process.env.AI_AGENT = 'rayu';
+  }
 }
 
 // Set by early argv processing when `claude open <url>` is detected (interactive mode only)

@@ -36,7 +36,10 @@ export const MACRO_VALUES = {
   RAYU_OAUTH_DEFAULT:
     process.env.RAYU_BUILD_OAUTH ?? process.env.USE_RAYU_OAUTH ?? 'true',
   RAYU_API_URL: process.env.RAYU_BUILD_API_URL ?? process.env.RAYU_API_URL ?? '',
-  RAYU_WEB_URL: process.env.RAYU_BUILD_WEB_URL ?? process.env.RAYU_WEB_URL ?? '',
+  RAYU_WEB_URL:
+    process.env.RAYU_BUILD_WEB_URL ??
+    process.env.RAYU_WEB_URL ??
+    'https://rayucode.com',
   RAYU_GATEWAY_URL:
     process.env.RAYU_BUILD_GATEWAY_URL ?? process.env.RAYU_GATEWAY_URL ?? '',
 }

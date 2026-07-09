@@ -74,7 +74,7 @@ function MemoryCommand({
 
         <Box marginTop={1}>
           <Text dimColor>
-            Learn more: <Link url="https://rayu-web.vercel.app/docs" />
+            Learn more: <Link url="https://rayucode.com/docs" />
           </Text>
         </Box>
       </Box>

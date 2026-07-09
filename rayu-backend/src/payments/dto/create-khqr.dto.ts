@@ -1,4 +1,4 @@
-import { IsIn, IsNotEmpty, IsOptional } from 'class-validator'
+import { IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator'
 import { PLAN_CODES, type PlanCode } from '../../common/enums'
 import type { PaymentMethod } from '../payments.service'
 
@@ -10,4 +10,10 @@ export class CreateKhqrDto {
   @IsOptional()
   @IsIn(['aba', 'bakong'])
   method?: PaymentMethod
+
+  /** Optional promo/discount code applied to the plan price. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  promoCode?: string
 }
