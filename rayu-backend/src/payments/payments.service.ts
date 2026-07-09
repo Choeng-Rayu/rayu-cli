@@ -8,6 +8,7 @@ import {
 import type { Payment, Plan } from '@prisma/client'
 import type { PlanCode } from '../common/enums'
 import { PrismaService } from '../prisma/prisma.service'
+import { PromoService } from '../promo/promo.service'
 import { AppSettingsService } from '../settings/app-settings.service'
 import { UsersService } from '../users/users.service'
 import { AbaService } from './aba.service'
@@ -37,6 +38,7 @@ export class PaymentsService {
     private readonly aba: AbaService,
     private readonly settings: AppSettingsService,
     private readonly users: UsersService,
+    private readonly promo: PromoService,
   ) {}
 
   /** A plan is credit-based when it grants a per-period credit allowance. */
@@ -51,6 +53,7 @@ export class PaymentsService {
     userId: number,
     planCode: PlanCode,
     method: PaymentMethod = 'aba',
+    promoCode?: string,
   ) {
     const plan = await this.prisma.plan.findUnique({ where: { code: planCode } })
     if (!plan) throw new NotFoundException('Plan not found')
@@ -72,15 +75,36 @@ export class PaymentsService {
       }
     }
 
-    // Reuse a still-valid pending QR so refreshing the checkout page keeps the
-    // SAME QR until it is paid, canceled, or expires (30 min) — instead of
-    // minting a brand-new QR on every page load.
+    // Optional promo code. A code that drops the price to $0 must go through the
+    // free-claim path (no QR to pay), so reject it here with guidance to claim.
+    const quote = promoCode
+      ? await this.promo.validateForPurchase(
+          promoCode,
+          planCode,
+          userId,
+          plan.priceCents,
+        )
+      : null
+    if (quote?.isFree) {
+      throw new BadRequestException(
+        'This promo code makes the plan free — claim it instead of paying.',
+      )
+    }
+    const amountCents = quote ? quote.finalCents : plan.priceCents
+    const discountCents = quote ? quote.discountCents : 0
+    const promoCodeId = quote ? quote.promo.id : null
+
+    // Reuse a still-valid pending QR for the SAME intent (plan + provider +
+    // promo/amount) so refreshing checkout keeps the same QR until it is paid,
+    // canceled, or expires (30 min).
     const reusable = await this.prisma.payment.findFirst({
       where: {
         userId,
         planId: plan.id,
         provider: method,
         status: 'pending',
+        amountCents,
+        promoCodeId,
         expiresAt: { gt: new Date() },
       },
       orderBy: { createdAt: 'desc' },
@@ -90,6 +114,8 @@ export class PaymentsService {
         paymentId: reusable.id,
         planCode,
         amountCents: reusable.amountCents,
+        originalCents: plan.priceCents,
+        discountCents: reusable.discountCents,
         currency: reusable.currency,
         method,
         qr: reusable.khqr,
@@ -99,34 +125,154 @@ export class PaymentsService {
       }
     }
 
-    const amountUsd = plan.priceCents / 100
     const billNumber = `RAYU-${userId}-${Date.now()}`
-    const { qr, md5, provider } = this.buildQr(method, amountUsd, billNumber)
+    const { qr, md5, provider } = this.buildQr(method, amountCents / 100, billNumber)
 
     const payment = await this.prisma.payment.create({
       data: {
         userId,
         planId: plan.id,
         provider,
-        amountCents: plan.priceCents,
+        amountCents,
         currency: 'USD',
         status: 'pending',
         md5,
         khqr: qr,
+        promoCodeId,
+        discountCents,
         expiresAt: new Date(Date.now() + KHQR_TTL_MS),
       },
     })
 
+    // Reserve the promo slot (pending) linked to this payment; finalized on pay.
+    if (quote) {
+      await this.promo.recordPendingRedemption({
+        promoCodeId: quote.promo.id,
+        userId,
+        planCode,
+        originalCents: quote.originalCents,
+        discountCents: quote.discountCents,
+        finalCents: quote.finalCents,
+        paymentId: payment.id,
+      })
+    }
+
     return {
       paymentId: payment.id,
       planCode,
-      amountCents: plan.priceCents,
+      amountCents,
+      originalCents: plan.priceCents,
+      discountCents,
       currency: 'USD',
       method,
       qr,
       md5,
       expiresAt: payment.expiresAt,
       reused: false,
+    }
+  }
+
+  /**
+   * Price a plan with an optional promo code WITHOUT creating a payment. Used by
+   * the checkout UI to show the discounted total (and whether it becomes free,
+   * so it can show a "Claim" button instead of a QR). Throws a clear reason when
+   * the code is invalid for this user/plan.
+   */
+  async previewPromo(userId: number, planCode: PlanCode, code: string) {
+    const plan = await this.prisma.plan.findUnique({ where: { code: planCode } })
+    if (!plan) throw new NotFoundException('Plan not found')
+    if (plan.availability !== 'active' || plan.priceCents <= 0) {
+      throw new BadRequestException('Plan is not purchasable')
+    }
+    const quote = await this.promo.validateForPurchase(
+      code,
+      planCode,
+      userId,
+      plan.priceCents,
+    )
+    return {
+      planCode,
+      planName: plan.name,
+      code: quote.promo.code,
+      discountType: quote.promo.discountType,
+      discountValue: quote.promo.discountValue,
+      originalCents: quote.originalCents,
+      discountCents: quote.discountCents,
+      finalCents: quote.finalCents,
+      currency: 'USD',
+      isFree: quote.isFree,
+    }
+  }
+
+  /**
+   * Claim a plan for $0 with a 100%-off (or ≥ price) promo code — no payment.
+   * Validates the code makes the plan free, records a $0 'paid' payment, applies
+   * the promo redemption, and switches the user's subscription (30-day period),
+   * all atomically. Rejects a code that leaves a non-zero balance (must pay via
+   * KHQR instead).
+   */
+  async claimFreePromo(userId: number, planCode: PlanCode, code: string) {
+    const plan = await this.prisma.plan.findUnique({ where: { code: planCode } })
+    if (!plan) throw new NotFoundException('Plan not found')
+    if (plan.availability !== 'active' || plan.priceCents <= 0) {
+      throw new BadRequestException('Plan is not purchasable')
+    }
+    const quote = await this.promo.validateForPurchase(
+      code,
+      planCode,
+      userId,
+      plan.priceCents,
+    )
+    if (!quote.isFree) {
+      throw new BadRequestException(
+        `This promo code leaves a balance of $${(quote.finalCents / 100).toFixed(2)} — pay with KHQR instead of claiming.`,
+      )
+    }
+
+    const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+    const payment = await this.prisma.payment.create({
+      data: {
+        userId,
+        planId: plan.id,
+        provider: 'promo',
+        amountCents: 0,
+        currency: 'USD',
+        status: 'paid',
+        promoCodeId: quote.promo.id,
+        discountCents: quote.discountCents,
+        paidAt: new Date(),
+        externalRef: `PROMO-${quote.promo.code}`,
+      },
+    })
+    await this.promo.recordPendingRedemption({
+      promoCodeId: quote.promo.id,
+      userId,
+      planCode,
+      originalCents: quote.originalCents,
+      discountCents: quote.discountCents,
+      finalCents: quote.finalCents,
+      paymentId: payment.id,
+    })
+    await this.prisma.$transaction([
+      this.prisma.subscription.updateMany({
+        where: { userId, status: 'active' },
+        data: { status: 'canceled' },
+      }),
+      this.prisma.subscription.create({
+        data: { userId, planId: plan.id, status: 'active', currentPeriodEnd: periodEnd },
+      }),
+    ])
+    // Increment usedCount + mark the redemption applied (atomic cap re-check).
+    await this.promo.finalizeRedemption(quote.promo.id, userId, payment.id)
+
+    return {
+      paymentId: payment.id,
+      status: 'paid' as const,
+      planCode,
+      amountCents: 0,
+      discountCents: quote.discountCents,
+      activated: true,
+      claimed: true,
     }
   }
 
@@ -289,6 +435,10 @@ export class PaymentsService {
         data: { status: 'expired' },
       }),
     ])
+    // Free the reserved promo slot so the code can be used again.
+    if (payment.promoCodeId) {
+      await this.promo.cancelPendingRedemption(payment.promoCodeId, payment.userId)
+    }
     return {
       paymentId: payment.id,
       status: 'expired' as const,
@@ -378,6 +528,16 @@ export class PaymentsService {
       }),
     ])
 
+    // Finalize a promo redemption (increment usedCount, mark applied) when this
+    // purchase used a discount code.
+    if (payment.promoCodeId) {
+      await this.promo.finalizeRedemption(
+        payment.promoCodeId,
+        payment.userId,
+        payment.id,
+      )
+    }
+
     return {
       paymentId: payment.id,
       status: 'paid' as const,
@@ -413,6 +573,13 @@ export class PaymentsService {
           data: { status: 'canceled' },
         }),
       ])
+      // Free the reserved promo slot so the code can be used again.
+      if (payment.promoCodeId) {
+        await this.promo.cancelPendingRedemption(
+          payment.promoCodeId,
+          payment.userId,
+        )
+      }
     }
     return {
       paymentId: payment.id,

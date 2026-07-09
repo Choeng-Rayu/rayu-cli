@@ -13,6 +13,7 @@ import { RayuAuthGuard } from '../auth/rayu-auth.guard'
 import { CurrentUser } from '../auth/current-user.decorator'
 import { CreateKhqrDto } from './dto/create-khqr.dto'
 import { CreateTopupDto } from './dto/create-topup.dto'
+import { PromoActionDto } from './dto/promo-action.dto'
 import { PaymentsService } from './payments.service'
 
 @Controller('payments')
@@ -22,7 +23,25 @@ export class PaymentsController {
 
   @Post('khqr')
   createKhqr(@CurrentUser() user: User, @Body() body: CreateKhqrDto) {
-    return this.payments.createKhqr(user.id, body.planCode, body.method)
+    return this.payments.createKhqr(
+      user.id,
+      body.planCode,
+      body.method,
+      body.promoCode,
+    )
+  }
+
+  // Preview a plan's price with a promo code (does not create a payment). The
+  // response's `isFree` tells the UI to show a Claim button instead of a QR.
+  @Post('promo/preview')
+  previewPromo(@CurrentUser() user: User, @Body() body: PromoActionDto) {
+    return this.payments.previewPromo(user.id, body.planCode, body.code)
+  }
+
+  // Claim a $0 (100%-off) plan with a promo code — activates immediately, no QR.
+  @Post('promo/claim')
+  claimPromo(@CurrentUser() user: User, @Body() body: PromoActionDto) {
+    return this.payments.claimFreePromo(user.id, body.planCode, body.code)
   }
 
   @Post('topup-khqr')

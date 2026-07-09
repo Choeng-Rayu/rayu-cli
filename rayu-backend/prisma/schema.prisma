@@ -28,6 +28,7 @@ model User {
   usageEvents   UsageEvent[]
   creditLedger  CreditLedger[]
   creditTopups  CreditTopup[]
+  promoRedemptions PromoRedemption[]
 
   @@map("users")
 }
@@ -72,6 +73,10 @@ model Payment {
   externalRef String?   @db.VarChar(191)
   md5         String?   @unique @db.VarChar(64)
   khqr        String?   @db.Text
+  // Promo/discount applied at checkout (optional). promoCodeId references a
+  // PromoCode row; discountCents is how much was taken off the plan price.
+  promoCodeId   Int?    @map("promo_code_id")
+  discountCents Int     @default(0) @map("discount_cents")
   paidAt      DateTime?
   expiresAt   DateTime?
   createdAt   DateTime  @default(now())
@@ -195,4 +200,59 @@ model CreditTopup {
 
   @@index([userId])
   @@map("credit_topups")
+}
+
+// Admin-created promo/discount codes applied when buying a paid plan.
+// - discountType 'percent' (discountValue 0-100) or 'fixed' (discountValue =
+//   cents off). Final price is clamped at 0 (a 100%-off / large fixed code
+//   yields a $0 claim, no payment).
+// - appliesToPlans: null/empty JSON array = ALL plans; else the list of plan
+//   codes it is valid for.
+// - maxRedemptions: null = unlimited; else the cap (e.g. "first 100 accounts").
+//   usedCount is incremented per successful redemption.
+// - startsAt/endsAt: optional active window. active: admin apply/end toggle.
+// All fields are admin-editable at runtime (CRUD); nothing hardcoded.
+model PromoCode {
+  id             Int       @id @default(autoincrement())
+  code           String    @unique @db.VarChar(64)
+  description    String?   @db.VarChar(255)
+  discountType   String    @default("percent") @db.VarChar(16)
+  discountValue  Int       @default(0)
+  appliesToPlans Json?
+  maxRedemptions Int?
+  usedCount      Int       @default(0)
+  startsAt       DateTime?
+  endsAt         DateTime?
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  redemptions PromoRedemption[]
+
+  @@map("promo_codes")
+}
+
+// One row per (promo code, user) redemption. Enforces one use per user per code
+// and is the source of truth for usedCount / the "first N accounts" cap.
+model PromoRedemption {
+  id            Int      @id @default(autoincrement())
+  promoCodeId   Int      @map("promo_code_id")
+  userId        Int      @map("user_id")
+  planCode      String?  @db.VarChar(32)
+  paymentId     Int?     @map("payment_id")
+  originalCents Int      @default(0)
+  discountCents Int      @default(0)
+  finalCents    Int      @default(0)
+  // 'pending' (QR issued, awaiting payment) | 'applied' (paid or $0 claimed) |
+  // 'canceled' (payment canceled/expired, frees the slot).
+  status        String   @default("pending") @db.VarChar(16)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  promoCode PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([promoCodeId, userId])
+  @@index([userId])
+  @@map("promo_redemptions")
 }

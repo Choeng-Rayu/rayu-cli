@@ -65,6 +65,23 @@ export interface FeatureCatalogItem {
   supportsLimit: boolean
 }
 
+// Admin promo/discount code (mirrors the backend PromoCode model).
+export interface PromoCode {
+  id: number
+  code: string
+  description: string | null
+  discountType: 'percent' | 'fixed'
+  discountValue: number
+  appliesToPlans: string[] | null // null/[] = all plans
+  maxRedemptions: number | null // null = unlimited
+  usedCount: number
+  startsAt: string | null
+  endsAt: string | null
+  active: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export interface AdminAnalytics {
   totals: {
     totalUsers: number
