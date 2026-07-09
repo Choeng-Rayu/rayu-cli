@@ -76,18 +76,25 @@ export function calculateLayoutDimensions(
 }
 
 /**
- * Calculates optimal left panel width based on content
+ * Calculates optimal left panel width based on content.
+ *
+ * `bannerWidth` is the actual rendered width of the ASCII banner (e.g. the
+ * RAYU figlet art) — passed in rather than hardcoded, so the left panel
+ * never ends up narrower than the banner and forces mid-glyph wrapping
+ * (see the two-column "Recent activity" layout, where a too-narrow left
+ * column breaks each banner line across two rows).
  */
 export function calculateOptimalLeftWidth(
   welcomeMessage: string,
   truncatedCwd: string,
   modelLine: string,
+  bannerWidth: number,
 ): number {
   const contentWidth = Math.max(
     stringWidth(welcomeMessage),
     stringWidth(truncatedCwd),
     stringWidth(modelLine),
-    20, // Minimum for clawd art
+    bannerWidth,
   )
   return Math.min(contentWidth + 4, MAX_LEFT_WIDTH) // +4 for padding
 }

@@ -65,7 +65,7 @@ func TestCompleteAnthropicAuthSchemes(t *testing.T) {
 		var gotKey, gotAuth string
 		srv := newUpstream(&gotKey, &gotAuth)
 		defer srv.Close()
-		usage, status, _, err := CompleteAnthropic(context.Background(), srv.URL, "sk-test-key", false, []byte(`{"model":"deepseek-v4-pro","max_tokens":16}`))
+		usage, status, _, err := CompleteAnthropic(context.Background(), srv.URL, []string{"sk-test-key"}, false, []byte(`{"model":"deepseek-v4-pro","max_tokens":16}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -88,7 +88,7 @@ func TestCompleteAnthropicAuthSchemes(t *testing.T) {
 		var gotKey, gotAuth string
 		srv := newUpstream(&gotKey, &gotAuth)
 		defer srv.Close()
-		_, status, _, err := CompleteAnthropic(context.Background(), srv.URL, "lc-secret", true, []byte(`{"model":"LongCat-2.0","max_tokens":16}`))
+		_, status, _, err := CompleteAnthropic(context.Background(), srv.URL, []string{"lc-secret"}, true, []byte(`{"model":"LongCat-2.0","max_tokens":16}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,7 +123,7 @@ func TestStreamAnthropicReprobesBodylessError(t *testing.T) {
 	defer upstream.Close()
 
 	rec := httptest.NewRecorder()
-	_, wrote, _ := StreamAnthropic(context.Background(), rec, upstream.URL, "lc-key", true,
+	_, wrote, _ := StreamAnthropic(context.Background(), rec, upstream.URL, []string{"lc-key"}, true,
 		[]byte(`{"model":"LongCat-2.0","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 
 	if !wrote {
@@ -134,5 +134,99 @@ func TestStreamAnthropicReprobesBodylessError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "out of credits") {
 		t.Fatalf("client body should carry the real reason, got %q", rec.Body.String())
+	}
+}
+
+// TestCompleteAnthropicKeyFailover proves multi-key rotation: a rate-limited
+// (429) first key fails over to the second, which succeeds — and the caller
+// sees the SUCCESS (200 + usage), not the 429.
+func TestCompleteAnthropicKeyFailover(t *testing.T) {
+	var tried []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		tried = append(tried, key)
+		if key == "key1" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message","usage":{"input_tokens":10,"output_tokens":5}}`)
+	}))
+	defer upstream.Close()
+
+	usage, status, _, err := CompleteAnthropic(context.Background(), upstream.URL, []string{"key1", "key2"}, true, []byte(`{"model":"m","max_tokens":16}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status=%d, want 200 (failed over from key1's 429 to key2)", status)
+	}
+	if len(tried) != 2 || tried[0] != "key1" || tried[1] != "key2" {
+		t.Fatalf("tried=%v, want [key1 key2]", tried)
+	}
+	if usage == nil || usage.CompletionTokens != 5 {
+		t.Fatalf("usage=%+v, want the successful key2 response", usage)
+	}
+}
+
+// TestCompleteAnthropicAllKeysRateLimited: when EVERY key is rate-limited, the
+// final 429 is surfaced (rotation doesn't mask a genuine exhaustion).
+func TestCompleteAnthropicAllKeysRateLimited(t *testing.T) {
+	var n int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
+	}))
+	defer upstream.Close()
+
+	_, status, _, err := CompleteAnthropic(context.Background(), upstream.URL, []string{"k1", "k2"}, true, []byte(`{"model":"m","max_tokens":16}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429 (all keys exhausted)", status)
+	}
+	if n != 2 {
+		t.Fatalf("upstream calls=%d, want 2 (tried both keys)", n)
+	}
+}
+
+// TestStreamAnthropicKeyFailover proves STREAMING failover: key1 → 429, key2 →
+// 200 SSE, and the client receives the stream (never the 429), with usage
+// captured from key2's response.
+func TestStreamAnthropicKeyFailover(t *testing.T) {
+	var tried []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		tried = append(tried, key)
+		if key == "key1" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n")
+	}))
+	defer upstream.Close()
+
+	rec := httptest.NewRecorder()
+	usage, wrote, err := StreamAnthropic(context.Background(), rec, upstream.URL, []string{"key1", "key2"}, true, []byte(`{"model":"m","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Fatal("expected wrote=true")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("client status=%d, want 200 (failed over to key2)", rec.Code)
+	}
+	if len(tried) != 2 || tried[1] != "key2" {
+		t.Fatalf("tried=%v, want failover to key2", tried)
+	}
+	if usage == nil || usage.CompletionTokens != 7 {
+		t.Fatalf("usage=%+v, want key2's streamed usage", usage)
 	}
 }

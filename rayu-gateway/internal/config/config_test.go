@@ -34,3 +34,23 @@ func TestKeyForProvider(t *testing.T) {
 		t.Fatalf("KeyForProvider(foo) fallback=%q", got)
 	}
 }
+
+func TestKeysForProvider(t *testing.T) {
+	c := &Config{ProviderKeys: map[string]string{
+		"deepseek":    "sk-single",
+		"rayu-ollama": " key1 , key2 ,, key3 ", // comma-separated, messy spacing + empties
+	}}
+	// Single key (no comma) → one-element slice, unchanged.
+	if got := c.KeysForProvider("deepseek"); len(got) != 1 || got[0] != "sk-single" {
+		t.Fatalf("KeysForProvider(deepseek)=%v, want [sk-single]", got)
+	}
+	// Comma-separated → trimmed, empties dropped, order preserved.
+	got := c.KeysForProvider("rayu-ollama")
+	if len(got) != 3 || got[0] != "key1" || got[1] != "key2" || got[2] != "key3" {
+		t.Fatalf("KeysForProvider(rayu-ollama)=%v, want [key1 key2 key3]", got)
+	}
+	// Unset provider → empty slice.
+	if got := c.KeysForProvider("nope"); len(got) != 0 {
+		t.Fatalf("KeysForProvider(nope)=%v, want []", got)
+	}
+}

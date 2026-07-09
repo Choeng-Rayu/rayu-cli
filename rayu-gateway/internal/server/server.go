@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -45,11 +47,12 @@ type entSource interface {
 
 // Server holds the gateway dependencies shared across handlers.
 type Server struct {
-	cfg *config.Config
-	ent entSource
-	lim *credits.Limiter
-	st  *store.Store
-	wq  *eventqueue.Queue
+	cfg   *config.Config
+	ent   entSource
+	lim   *credits.Limiter
+	st    *store.Store
+	wq    *eventqueue.Queue
+	keyRR sync.Map // provider(string) → *atomic.Uint64: round-robin cursor for multi-key rotation
 }
 
 // New builds the gateway HTTP handler. /healthz is public; everything under
@@ -257,6 +260,7 @@ type hostedReserve struct {
 	req             map[string]any
 	hm              *store.HostedModel
 	apiKey          string
+	apiKeys         []string // all provider keys — multi-key failover on the Anthropic path
 	estBillable     int64 // pre-flight billable-token reservation
 	usedPeriod      int64 // billable tokens used this period (from the limiter)
 	capPeriod       int64 // billable-token allowance (or credits.Unlimited)
@@ -317,11 +321,12 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		}
 	}
 
-	apiKey := s.cfg.KeyForProvider(hm.Provider)
-	if apiKey == "" {
+	apiKeys := s.cfg.KeysForProvider(hm.Provider)
+	if len(apiKeys) == 0 {
 		httpx.WriteError(w, http.StatusInternalServerError, "provider key not configured")
 		return nil, false
 	}
+	apiKey := apiKeys[0] // first key powers the single-key OpenAI path
 
 	// --- Daily turn cap (maxDailyTurns) — HARD limit on the hosted path ---
 	// Counted per user per UTC day; nil/0 cap = unlimited. Checked before the
@@ -425,6 +430,7 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		req:             req,
 		hm:              hm,
 		apiKey:          apiKey,
+		apiKeys:         apiKeys,
 		estBillable:     estBillable,
 		usedPeriod:      rr.UsedPeriod,
 		capPeriod:       capBillable,
@@ -500,10 +506,14 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	newBody, _ := json.Marshal(req)
 	upstreamURL := anthropicUpstream(hr.hm.UpstreamBaseURL, hr.hm.Provider)
 	bearer := anthropicUsesBearerAuth(hr.hm.Provider)
+	// Multi-key rotation: round-robin the starting key; the proxy fails over to
+	// the next on a rate-limit/quota/auth status. OLLAMA_API_KEY may be a
+	// comma-separated list; single-key providers get a one-element slice.
+	keys := s.rotateKeys(hr.hm.Provider, hr.apiKeys)
 
 	if stream {
 		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
-		usage, wrote, serr := proxy.StreamAnthropic(r.Context(), w, upstreamURL, hr.apiKey, bearer, newBody)
+		usage, wrote, serr := proxy.StreamAnthropic(r.Context(), w, upstreamURL, keys, bearer, newBody)
 		hr.settle(usage)
 		if serr != nil {
 			log.Printf("anthropic: upstream error user=%d model=%s wrote=%v: %v", hr.userID, hr.hm.Code, wrote, serr)
@@ -514,7 +524,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	usage, status, respBody, cerr := proxy.CompleteAnthropic(r.Context(), upstreamURL, hr.apiKey, bearer, newBody)
+	usage, status, respBody, cerr := proxy.CompleteAnthropic(r.Context(), upstreamURL, keys, bearer, newBody)
 	if cerr != nil {
 		hr.settle(nil)
 		log.Printf("anthropic: upstream unreachable user=%d model=%s: %v", hr.userID, hr.hm.Code, cerr)
@@ -529,6 +539,24 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
+}
+
+// rotateKeys returns the provider's API keys rotated so a different key leads
+// each request (round-robin), spreading load across a multi-key provider (e.g.
+// OLLAMA_API_KEY="k1,k2,..."). Combined with the proxy's in-request failover it
+// uses every key and skips a rate-limited one. A 0/1-key slice is returned
+// unchanged. Safe for concurrent use.
+func (s *Server) rotateKeys(provider string, keys []string) []string {
+	n := len(keys)
+	if n <= 1 {
+		return keys
+	}
+	v, _ := s.keyRR.LoadOrStore(provider, new(atomic.Uint64))
+	start := int((v.(*atomic.Uint64).Add(1) - 1) % uint64(n))
+	out := make([]string, 0, n)
+	out = append(out, keys[start:]...)
+	out = append(out, keys[:start]...)
+	return out
 }
 
 // anthropicUpstream derives DeepSeek's Anthropic Messages endpoint from a model's
