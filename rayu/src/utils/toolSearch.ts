@@ -38,7 +38,7 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
   isOpenAICompatibleActive,
-  isRayuAnthropicCompatibleActive,
+  isRayuNonAnthropicActive,
 } from './model/providers.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
@@ -281,59 +281,41 @@ export function isToolSearchEnabledOptimistic(): boolean {
     return false
   }
 
-  // Rayu third-party providers never accept the tool_reference / defer_loading
-  // beta, and getAPIProvider()+isFirstPartyAnthropicBaseUrl() below CANNOT catch
-  // them: for kind:'anthropic-compatible' (LongCat, Ollama Cloud, rayu-hosted
-  // gateway) getAPIProvider() falls through to 'anthropic' while the custom
-  // baseURL is set on the SDK client — NOT via ANTHROPIC_BASE_URL — so the
-  // first-party check wrongly returns true; kind:'openai-compatible' routes
-  // through the OpenAI adapter, which has no notion of these beta blocks.
-  // With tool search ON for such a provider, deferred tools are sent with
-  // defer_loading:true but the upstream ignores it, so their schemas are never
-  // delivered and ToolSearch can't discover them — the model then calls tools
-  // like WebFetch/TaskUpdate blind, guesses parameters (e.g. task_id vs taskId),
-  // and the client-side validator rejects the call. Force-disable so ALL tool
-  // schemas are sent inline. Only when ENABLE_TOOL_SEARCH is unset — an explicit
-  // value means the user asserts their endpoint forwards the beta.
-  if (
-    !process.env.ENABLE_TOOL_SEARCH &&
-    (isRayuAnthropicCompatibleActive() || isOpenAICompatibleActive())
-  ) {
-    if (!loggedOptimistic) {
-      loggedOptimistic = true
-      logForDebugging(
-        `[ToolSearch:optimistic] disabled: the active Rayu provider is a third-party (anthropic-compatible / openai-compatible) endpoint that does not accept tool_reference/defer_loading. All tool schemas are sent inline. Set ENABLE_TOOL_SEARCH=true only if your endpoint forwards the beta.`,
-      )
-    }
-    return false
-  }
-
-  // tool_reference is a beta content type that third-party API gateways
-  // (ANTHROPIC_BASE_URL proxies) typically don't support. When the provider
-  // is 'anthropic' but the base URL points elsewhere, the proxy will reject
-  // tool_reference blocks with a 400. Vertex/Bedrock/Foundry are unaffected —
-  // they have their own endpoints and beta headers.
-  // https://github.com/anthropics/claude-code/issues/30912
+  // The tool_reference / defer_loading beta is Claude-only. Enable tool search
+  // ONLY on a genuine first-party Anthropic endpoint. bedrock/vertex/foundry are
+  // implicitly allowed below because getAPIProvider() returns THEIR value (not
+  // 'anthropic'), so this block is skipped for them — and they attach their own
+  // tool-search beta headers.
   //
-  // HOWEVER: some proxies DO support tool_reference (LiteLLM passthrough,
-  // Cloudflare AI Gateway, corp gateways that forward beta headers). The
-  // blanket disable breaks defer_loading for those users — all MCP tools
-  // loaded into main context instead of on-demand (gh-31936 / CC-457,
-  // likely the real cause of CC-330 "v2.1.70 defer_loading regression").
-  // This gate only applies when ENABLE_TOOL_SEARCH is unset/empty (default
-  // behavior). Setting any non-empty value — 'true', 'auto', 'auto:N' —
-  // means the user is explicitly configuring tool search and asserts their
-  // setup supports it. The falsy check (rather than === undefined) aligns
-  // with getToolSearchMode(), which also treats "" as unset.
+  // EVERY Rayu custom provider kind — rayu-hosted (gateway → DeepSeek), anthropic-
+  // compatible (LongCat / Ollama Cloud), openai-compatible, and the rest — reports
+  // getAPIProvider()==='anthropic' via the default fall-through in providers.ts,
+  // yet points at a NON-Claude upstream (DeepSeek / Kimi / GLM / gpt-oss / …). Those
+  // upstreams ignore the beta: deferred tools go out with defer_loading:true but are
+  // never delivered, ToolSearch can't discover them, and the model then calls tools
+  // like WebFetch/TaskUpdate blind, guesses parameters (e.g. task_id vs taskId), and
+  // the client validator rejects the call.
+  //
+  // isFirstPartyAnthropicBaseUrl() alone CANNOT catch these — their baseURL is set on
+  // the SDK client, not via ANTHROPIC_BASE_URL — so we key off the active provider
+  // KIND: isRayuNonAnthropicActive() covers every configured kind ≠ 'anthropic'
+  // (rayu-hosted, anthropic-compatible, openai-compatible, genai, kiro, copilot);
+  // isOpenAICompatibleActive() covers the RAYU_OPENAI_COMPATIBLE=1 env case with no
+  // config provider; !isFirstPartyAnthropicBaseUrl() still covers a kind:'anthropic'
+  // pointed at a proxy via ANTHROPIC_BASE_URL. Force-disable so ALL tool schemas are
+  // sent inline (the pre-tool-search behavior). Only when ENABLE_TOOL_SEARCH is unset
+  // — an explicit value means the user asserts their endpoint forwards the beta.
   if (
     !process.env.ENABLE_TOOL_SEARCH &&
     getAPIProvider() === 'anthropic' &&
-    !isFirstPartyAnthropicBaseUrl()
+    (isRayuNonAnthropicActive() ||
+      isOpenAICompatibleActive() ||
+      !isFirstPartyAnthropicBaseUrl())
   ) {
     if (!loggedOptimistic) {
       loggedOptimistic = true
       logForDebugging(
-        `[ToolSearch:optimistic] disabled: ANTHROPIC_BASE_URL=${process.env.ANTHROPIC_BASE_URL} is not a first-party Anthropic host. Set ENABLE_TOOL_SEARCH=true (or auto / auto:N) if your proxy forwards tool_reference blocks.`,
+        `[ToolSearch:optimistic] disabled: the active provider is not a first-party Anthropic endpoint (a Rayu custom kind such as rayu-hosted/anthropic-compatible/openai-compatible, or an ANTHROPIC_BASE_URL proxy). Its upstream does not accept tool_reference/defer_loading, so all tool schemas are sent inline. Set ENABLE_TOOL_SEARCH=true only if your endpoint forwards the beta.`,
       )
     }
     return false

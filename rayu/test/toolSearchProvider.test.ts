@@ -63,6 +63,27 @@ describe('tool search disabled for Rayu third-party providers', () => {
     expect(isToolSearchEnabledOptimistic()).toBe(false)
   })
 
+  test('rayu-hosted active (gateway → non-Claude upstream) → tool search OFF', async () => {
+    const cfg = await freshCfg()
+    const providers = await import('../src/utils/model/providers.ts')
+    const { isToolSearchEnabledOptimistic } = await import(
+      '../src/utils/toolSearch.ts'
+    )
+    cfg.upsertProvider(
+      {
+        id: 'rayu-hosted',
+        kind: 'rayu-hosted',
+        defaultModel: 'deepseek-v4-pro',
+      },
+      true,
+    )
+    // Same trap as anthropic-compatible: reports 'anthropic' + first-party.
+    expect(providers.getAPIProvider()).toBe('anthropic')
+    expect(providers.isFirstPartyAnthropicBaseUrl()).toBe(true)
+    // The fix: kind !== 'anthropic' (isRayuNonAnthropicActive) → tool search off.
+    expect(isToolSearchEnabledOptimistic()).toBe(false)
+  })
+
   test('escape hatch: ENABLE_TOOL_SEARCH=true re-enables it for anthropic-compatible', async () => {
     const cfg = await freshCfg()
     const { isToolSearchEnabledOptimistic } = await import(
