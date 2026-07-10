@@ -89,6 +89,14 @@ export type Theme = {
   rainbow_blue_shimmer: string
   rainbow_indigo_shimmer: string
   rainbow_violet_shimmer: string
+  // Tool-category foreground colors: per-tool color-coding of the tool-use
+  // label and result block in the TUI (VS Code-like, for quick visual scanning)
+  toolExecute: string
+  toolRead: string
+  toolSearch: string
+  toolEdit: string
+  toolWeb: string
+  toolTask: string
 }
 
 export const THEME_NAMES = [
@@ -116,6 +124,13 @@ export type ThemeSetting = (typeof THEME_SETTINGS)[number]
  * from users' custom terminal ANSI color definitions
  */
 const lightTheme: Theme = {
+  // Tool-category foreground colors (VS Code-like tool color-coding)
+  toolExecute: 'rgb(176,122,0)', // Bash/PowerShell/REPL — amber
+  toolRead: 'rgb(34,134,80)', // Read/LSP — green
+  toolSearch: 'rgb(0,132,150)', // Grep/Glob/WebSearch/ToolSearch — teal
+  toolEdit: 'rgb(196,90,20)', // Edit/Write/NotebookEdit/TodoWrite — orange
+  toolWeb: 'rgb(124,58,205)', // WebFetch/GenerateImage/GenerateVideo — purple
+  toolTask: 'rgb(37,99,235)', // Agent/Task*/Team*/Skill — blue
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(255,0,135)', // Vibrant pink
   brand: 'rgb(45,140,80)', // Rayu green
@@ -199,6 +214,13 @@ const lightTheme: Theme = {
  * for terminals without true color support
  */
 const lightAnsiTheme: Theme = {
+  // Tool-category foreground colors (VS Code-like tool color-coding)
+  toolExecute: 'ansi:yellow', // Bash/PowerShell/REPL
+  toolRead: 'ansi:green', // Read/LSP
+  toolSearch: 'ansi:cyan', // Grep/Glob/WebSearch/ToolSearch
+  toolEdit: 'ansi:red', // Edit/Write/NotebookEdit/TodoWrite (orange n/a in 16-color)
+  toolWeb: 'ansi:magenta', // WebFetch/GenerateImage/GenerateVideo
+  toolTask: 'ansi:blue', // Agent/Task*/Team*/Skill
   autoAccept: 'ansi:magenta',
   bashBorder: 'ansi:magenta',
   brand: 'ansi:greenBright',
@@ -281,6 +303,13 @@ const lightAnsiTheme: Theme = {
  * for terminals without true color support
  */
 const darkAnsiTheme: Theme = {
+  // Tool-category foreground colors (VS Code-like tool color-coding)
+  toolExecute: 'ansi:yellowBright', // Bash/PowerShell/REPL
+  toolRead: 'ansi:greenBright', // Read/LSP
+  toolSearch: 'ansi:cyanBright', // Grep/Glob/WebSearch/ToolSearch
+  toolEdit: 'ansi:redBright', // Edit/Write/NotebookEdit/TodoWrite (orange n/a in 16-color)
+  toolWeb: 'ansi:magentaBright', // WebFetch/GenerateImage/GenerateVideo
+  toolTask: 'ansi:blueBright', // Agent/Task*/Team*/Skill
   autoAccept: 'ansi:magentaBright',
   bashBorder: 'ansi:magentaBright',
   brand: 'ansi:greenBright',
@@ -363,6 +392,14 @@ const darkAnsiTheme: Theme = {
  * to avoid inconsistencies from users' custom terminal ANSI color definitions
  */
 const lightDaltonizedTheme: Theme = {
+  // Tool-category foreground colors (VS Code-like tool color-coding).
+  // Colorblind-safe: distinguishable without relying on green-vs-red.
+  toolExecute: 'rgb(150,110,0)', // Bash/PowerShell/REPL — olive/amber
+  toolRead: 'rgb(0,140,140)', // Read/LSP — teal
+  toolSearch: 'rgb(0,102,204)', // Grep/Glob/WebSearch/ToolSearch — blue
+  toolEdit: 'rgb(204,102,0)', // Edit/Write/NotebookEdit/TodoWrite — orange
+  toolWeb: 'rgb(128,0,128)', // WebFetch/GenerateImage/GenerateVideo — purple
+  toolTask: 'rgb(199,42,140)', // Agent/Task*/Team*/Skill — magenta
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(0,102,204)', // Blue instead of pink
   brand: 'rgb(0,153,136)', // Teal-green adjusted for deuteranopia (distinguishable from red)
@@ -446,6 +483,13 @@ const lightDaltonizedTheme: Theme = {
  * from users' custom terminal ANSI color definitions
  */
 const darkTheme: Theme = {
+  // Tool-category foreground colors (VS Code-like tool color-coding)
+  toolExecute: 'rgb(255,199,89)', // Bash/PowerShell/REPL — warm amber
+  toolRead: 'rgb(94,201,138)', // Read/LSP — green
+  toolSearch: 'rgb(86,194,214)', // Grep/Glob/WebSearch/ToolSearch — cyan
+  toolEdit: 'rgb(240,150,90)', // Edit/Write/NotebookEdit/TodoWrite — orange
+  toolWeb: 'rgb(197,160,255)', // WebFetch/GenerateImage/GenerateVideo — violet
+  toolTask: 'rgb(122,162,247)', // Agent/Task*/Team*/Skill — blue
   autoAccept: 'rgb(175,135,255)', // Electric violet
   bashBorder: 'rgb(253,93,177)', // Bright pink
   brand: 'rgb(70,190,130)', // Rayu green (dark bg)
@@ -528,6 +572,14 @@ const darkTheme: Theme = {
  * to avoid inconsistencies from users' custom terminal ANSI color definitions
  */
 const darkDaltonizedTheme: Theme = {
+  // Tool-category foreground colors (VS Code-like tool color-coding).
+  // Colorblind-safe: distinguishable without relying on green-vs-red.
+  toolExecute: 'rgb(240,220,90)', // Bash/PowerShell/REPL — yellow
+  toolRead: 'rgb(102,204,204)', // Read/LSP — cyan
+  toolSearch: 'rgb(102,178,255)', // Grep/Glob/WebSearch/ToolSearch — blue
+  toolEdit: 'rgb(255,178,102)', // Edit/Write/NotebookEdit/TodoWrite — orange
+  toolWeb: 'rgb(178,102,255)', // WebFetch/GenerateImage/GenerateVideo — purple
+  toolTask: 'rgb(255,153,204)', // Agent/Task*/Team*/Skill — pink
   autoAccept: 'rgb(175,135,255)', // Electric violet
   bashBorder: 'rgb(51,153,255)', // Bright blue
   brand: 'rgb(0,180,150)', // Teal-green adjusted for deuteranopia (dark bg)
