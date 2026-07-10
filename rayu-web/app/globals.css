@@ -680,6 +680,304 @@ input.btn.secondary:focus {
   color: var(--green);
 }
 
+/* Comparison Table — "Why Rayu Outperforms" */
+.compare-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin-top: 2rem;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  table-layout: fixed;
+}
+
+.compare-table th,
+.compare-table td {
+  padding: 1.1rem 1.25rem;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.92rem;
+  vertical-align: middle;
+}
+
+.compare-table th:first-child,
+.compare-table td:first-child {
+  text-align: left;
+  width: 30%;
+}
+
+.compare-table thead th {
+  background: var(--bg3);
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.compare-table thead th.rayu-col {
+  color: var(--green);
+  background: rgba(0, 255, 136, 0.06);
+  border-bottom-color: var(--border-bright);
+}
+
+.compare-table td.rayu-col {
+  background: rgba(0, 255, 136, 0.04);
+  color: var(--green);
+  font-weight: 600;
+  border-left: 1px solid var(--border-bright);
+  border-right: 1px solid var(--border-bright);
+}
+
+.compare-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.compare-table tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.compare-table tbody tr:hover td.rayu-col {
+  background: rgba(0, 255, 136, 0.07);
+}
+
+.compare-table .row-label {
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
+  color: #ffffff;
+  font-size: 0.95rem;
+}
+
+.compare-table .yes {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.compare-table .no {
+  color: var(--red);
+  opacity: 0.7;
+}
+
+.compare-table .warn {
+  color: #ffbd2e;
+  opacity: 0.85;
+}
+
+/* Testimonials — ribbon card design */
+.testimonial-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 64px;
+  margin-top: 2rem;
+  padding: 0 1rem;
+}
+
+.testimonial-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.6);
+  padding: 22px 22px 30px;
+  position: relative;
+  overflow: visible;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.testimonial-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--border-bright);
+  box-shadow: 0 24px 48px -20px rgba(0, 255, 136, 0.18);
+}
+
+.testimonial-card-top {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+
+.testimonial-ribbon {
+  position: absolute;
+  top: -22px;
+  left: -22px;
+  right: -22px;
+  height: 78px;
+  background: linear-gradient(100deg, var(--green) 0%, var(--green-dim) 100%);
+  border-radius: 20px 20px 0 0;
+  clip-path: polygon(0 0, 100% 0, 100% 62%, 86% 100%, 0 100%);
+  opacity: 0.92;
+}
+
+.testimonial-avatar {
+  position: relative;
+  z-index: 2;
+  width: 78px;
+  height: 78px;
+  border-radius: 16px;
+  border: 3px solid var(--bg2);
+  background: linear-gradient(160deg, #0d1117 0%, #030507 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--green);
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 800;
+  font-size: 24px;
+  box-shadow: 0 8px 18px -6px rgba(0, 0, 0, 0.5);
+  flex-shrink: 0;
+}
+
+.testimonial-who {
+  position: relative;
+  z-index: 2;
+  margin-top: 40px;
+}
+
+.testimonial-name {
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 700;
+  font-size: 17px;
+  color: #ffffff;
+  line-height: 1.2;
+}
+
+.testimonial-role {
+  font-family: 'DM Mono', monospace;
+  font-size: 12.5px;
+  color: var(--text);
+  opacity: 0.65;
+  margin-top: 4px;
+}
+
+.testimonial-quote-wrap {
+  background: var(--bg3);
+  border-radius: 14px;
+  padding: 18px 18px 16px;
+  margin-top: 16px;
+  position: relative;
+}
+
+.testimonial-quote-mark {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--green) 0%, var(--green-dim) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.testimonial-text {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--text);
+  opacity: 0.92;
+}
+
+.testimonial-rating-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
+}
+
+.testimonial-stars {
+  display: flex;
+  gap: 3px;
+}
+
+.testimonial-stars .star {
+  color: #F5B400;
+  font-size: 15px;
+  text-shadow: 0 0 6px rgba(245, 180, 0, 0.35);
+}
+
+.testimonial-tag {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #030507;
+  background: linear-gradient(135deg, var(--green) 0%, var(--green-dim) 100%);
+  padding: 5px 10px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 0 12px var(--green-glow);
+}
+
+@media (max-width: 760px) {
+  .testimonial-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Provider chips grid */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+.provider-chip {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.1rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  transition: all 0.25s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.provider-chip:hover {
+  border-color: var(--border-bright);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 255, 136, 0.06);
+}
+
+.provider-chip:hover .provider-dot {
+  box-shadow: 0 0 12px var(--green);
+}
+
+.provider-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+  transition: box-shadow 0.25s ease;
+}
+
+.provider-name {
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+
+.provider-tag {
+  font-family: 'DM Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
 /* Animations declarations */
 @keyframes breathe {
   0%, 100% {

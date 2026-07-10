@@ -2,6 +2,24 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.4.472 - 2026-07-09
+- Fixed tool search (deferred tool loading) for Rayu third-party providers — `tool_reference`/`defer_loading` beta was wrongly enabled for `anthropic-compatible` and `openai-compatible` providers, causing deferred tools (WebFetch, TaskUpdate, WebSearch, etc.) to be called with guessed parameters and rejected by the client-side validator
+- Added escape hatch: set `ENABLE_TOOL_SEARCH=true` to force-enable deferred tools on endpoints that forward the beta
+- Added regression test suite for tool search provider detection (`toolSearchProvider.test.ts`)
+- Cleaned up stale bug-hunter notes
+
+## 1.4.471 - 2026-07-09
+- Migrated remaining legacy Claude Code internal references and branding to Rayu across the codebase
+- Fixed Kimi Code 2.7 provider compatibility in the streaming pipeline
+- Ollama provider promoted to primary active provider with improved multi-key configuration support
+- Fixed `update`, `uninstall`, and `install` CLI commands for cross-platform reliability
+
+## 1.4.470 - 2026-07-09
+- All supported providers now route through Rayu-hosted gateway with full multi-provider compatibility
+- Improved handling of disabled providers — long-running stale provider connections are now properly cleaned up
+- UI polish: refined several terminal components for better readability and consistency
+- Added native context window support for Rayu-hosted models
+
 ## 1.4.466 - 2026-07-08
 - Rebranded from Claude theme to Rayu branding theme with new Goose mascot identity
 - Added `/banner` and `/mascot` slash commands for displaying Rayu branding in the terminal

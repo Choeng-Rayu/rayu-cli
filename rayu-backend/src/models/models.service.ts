@@ -127,11 +127,40 @@ export class ModelsService {
     return { deleted: true }
   }
 
-  /** Create-if-missing seed; never overwrites admin-edited models. */
+  /**
+   * Create-if-missing seed + NON-DESTRUCTIVE routing reconciliation.
+   *
+   * Business fields (prices, creditMultiplier, allowedPlanCodes, enabled) are
+   * NEVER overwritten for an existing model — they are admin-owned. But when the
+   * seed re-points a model at a DIFFERENT upstream PROVIDER than the stored row
+   * (e.g. DeepSeek V4 moving off the official `deepseek` API onto Ollama Cloud),
+   * the ROUTING fields — provider, upstreamBaseUrl, upstreamModelId — are
+   * reconciled to the seed on boot. A provider change invalidates the old base
+   * URL + upstream model id, so all three move together.
+   *
+   * This is what makes a provider switch in MODEL_SEED actually take effect on
+   * an EXISTING database: the plain create-if-missing seed left old rows
+   * pointing at the old upstream, so the gateway (which routes purely off
+   * hosted_models.provider/upstreamBaseUrl/upstreamModelId) kept hitting the old
+   * provider. The reconcile only triggers on a provider change, so an admin who
+   * merely tuned the upstream model id/tag for the SAME provider is untouched.
+   */
   async seedDefaults(): Promise<void> {
     for (const m of MODEL_SEED) {
       const existing = await this.findByCode(m.code)
-      if (existing) continue
+      if (existing) {
+        if (existing.provider !== m.provider) {
+          await this.prisma.hostedModel.update({
+            where: { code: m.code },
+            data: {
+              provider: m.provider,
+              upstreamBaseUrl: m.upstreamBaseUrl,
+              upstreamModelId: m.upstreamModelId,
+            },
+          })
+        }
+        continue
+      }
       await this.prisma.hostedModel.create({
         data: {
           code: m.code,
