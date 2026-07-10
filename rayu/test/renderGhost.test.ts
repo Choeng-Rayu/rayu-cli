@@ -17,6 +17,7 @@
 // not a harness artifact.
 import { describe, expect, test } from 'bun:test'
 import { LogUpdate } from '../src/ink/log-update.ts'
+import Output from '../src/ink/output.ts'
 import type { Diff, Frame } from '../src/ink/frame.ts'
 import {
   CharPool,
@@ -506,5 +507,38 @@ describe('renderer ghost — diff replay verification', () => {
       console.log('H mismatch: got', JSON.stringify(got))
     }
     expect(got).toBe(expected.replace(/\s+$/, ''))
+  })
+
+  // ROOT of the leading 'T' ghost during streaming / subagents. The ScrollBox
+  // scroll fast-path calls Output.shift() (→ shiftRows), which moves cells in
+  // place (copyWithin) but historically recorded NO damage — unlike the
+  // sibling blit()/clear() ops. The frame-diff (diffEach) is damage-scoped, so
+  // the shifted rows were never revisited: the model reflected the scroll while
+  // the terminal kept a vacated leading glyph (the connector/spinner 'T' at the
+  // indent), which survived until a full repaint. This locks in the fix —
+  // Output.shift MUST damage the shifted band so diffEach revisits it; test H
+  // above then proves the revisit clears the leading glyph. Without the fix
+  // `damage` is undefined here and the assertions fail.
+  test('I. Output.shift records damage for the shifted band (root fix)', () => {
+    const pools = makePools()
+    const H = 10
+    const screen = createScreen(WIDTH, H, pools.style, pools.char, pools.link)
+    const out = new Output({
+      width: WIDTH,
+      height: H,
+      stylePool: pools.style,
+      screen,
+    })
+    out.shift(2, 6, 1) // scroll rows 2..6 up by 1 (n > 0 = up)
+    const result = out.get()
+
+    expect(result.damage).toBeDefined()
+    const d = result.damage!
+    // Full-width band covering the shifted rows [2,6] inclusive, so the
+    // damage-scoped diff revisits every cell the shift moved.
+    expect(d.x).toBe(0)
+    expect(d.width).toBe(WIDTH)
+    expect(d.y).toBeLessThanOrEqual(2)
+    expect(d.y + d.height).toBeGreaterThanOrEqual(7) // through row 6 inclusive
   })
 })
