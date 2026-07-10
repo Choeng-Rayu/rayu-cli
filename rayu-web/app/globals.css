@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Inter:wght@300;400;500;600&display=swap');
+/* Times New Roman is a system font — no Google Fonts import needed */
 
 /* Tailwind CSS layers — must come after @import statements */
 @tailwind base;
@@ -30,7 +30,7 @@ body {
   padding: 0;
   background-color: var(--bg);
   color: var(--text);
-  font-family: 'Inter', sans-serif;
+  font-family: 'Times New Roman', serif;
   line-height: 1.5;
   min-height: 100vh;
 }
@@ -93,9 +93,9 @@ a {
 }
 
 .nav-logo {
-  font-family: 'Orbitron', sans-serif;
+  font-family: 'Times New Roman', serif;
   font-weight: 900;
-  font-size: 1.5rem;
+  font-size: 1.8rem;
   letter-spacing: 5px;
   color: var(--text);
   text-decoration: none;
@@ -124,7 +124,7 @@ a {
 .nav-links a {
   color: var(--text);
   text-decoration: none;
-  font-size: 0.95rem;
+  font-size: 1.14rem;
   font-weight: 500;
   position: relative;
   padding: 4px 0;
@@ -169,25 +169,25 @@ a {
 
 /* Typography elements */
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Orbitron', sans-serif;
+  font-family: 'Times New Roman', serif;
   margin: 0;
   color: #ffffff;
 }
 
 h1 {
-  font-size: 3rem;
+  font-size: 3.6rem;
   font-weight: 900;
   line-height: 1.15;
   letter-spacing: -0.02em;
 }
 
 h2 {
-  font-size: 2.25rem;
+  font-size: 2.7rem;
   font-weight: 700;
 }
 
 h3 {
-  font-size: 1.35rem;
+  font-size: 1.62rem;
   font-weight: 600;
 }
 
@@ -197,9 +197,9 @@ p {
 
 /* Section Eyebrow */
 .section-eyebrow {
-  font-family: 'DM Mono', monospace;
+  font-family: 'Times New Roman', monospace;
   color: var(--green);
-  font-size: 0.85rem;
+  font-size: 1.02rem;
   text-transform: uppercase;
   letter-spacing: 2px;
   margin-bottom: 0.75rem;
@@ -218,7 +218,7 @@ p {
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: var(--text);
   padding: 10px 20px;
-  font-size: 0.9rem;
+  font-size: 1.08rem;
   font-weight: 500;
   border-radius: 6px;
   cursor: pointer;
@@ -241,7 +241,7 @@ p {
   color: #030507;
   border: none;
   padding: 10px 20px;
-  font-size: 0.9rem;
+  font-size: 1.08rem;
   font-weight: 600;
   border-radius: 6px;
   cursor: pointer;
@@ -287,7 +287,7 @@ p {
   color: #030507;
   border: none;
   padding: 14px 28px;
-  font-size: 1.05rem;
+  font-size: 1.26rem;
   font-weight: 700;
   border-radius: 8px;
   cursor: pointer;
@@ -332,7 +332,7 @@ p {
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: var(--text);
   padding: 14px 28px;
-  font-size: 1.05rem;
+  font-size: 1.26rem;
   font-weight: 600;
   border-radius: 8px;
   cursor: pointer;
@@ -351,12 +351,12 @@ p {
 
 /* Terminal button */
 .btn-terminal {
-  font-family: 'DM Mono', monospace;
+  font-family: 'Times New Roman', monospace;
   color: var(--green);
   background: var(--bg3);
   border: 1px solid var(--border-bright);
   padding: 14px 24px;
-  font-size: 1rem;
+  font-size: 1.2rem;
   font-weight: 500;
   border-radius: 8px;
   cursor: pointer;
@@ -481,8 +481,8 @@ p {
 }
 
 .card-title {
-  font-family: 'Orbitron', sans-serif;
-  font-size: 1.25rem;
+  font-family: 'Times New Roman', serif;
+  font-size: 1.5rem;
   font-weight: 700;
   margin-bottom: 0.5rem;
   color: #ffffff;
@@ -521,16 +521,16 @@ p {
 }
 
 .stat-num {
-  font-family: 'Orbitron', sans-serif;
-  font-size: 2.25rem;
+  font-family: 'Times New Roman', serif;
+  font-size: 2.7rem;
   font-weight: 900;
   color: var(--green);
   margin-bottom: 0.25rem;
 }
 
 .stat-label {
-  font-family: 'Inter', sans-serif;
-  font-size: 0.85rem;
+  font-family: 'Times New Roman', serif;
+  font-size: 1.02rem;
   color: var(--text);
   opacity: 0.7;
 }
@@ -539,8 +539,8 @@ p {
 .badge {
   display: inline-flex;
   align-items: center;
-  font-family: 'DM Mono', monospace;
-  font-size: 0.75rem;
+  font-family: 'Times New Roman', monospace;
+  font-size: 0.9rem;
   padding: 0.25rem 0.75rem;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.04);
@@ -556,8 +556,8 @@ p {
 }
 
 .price {
-  font-family: 'Orbitron', sans-serif;
-  font-size: 2rem;
+  font-family: 'Times New Roman', serif;
+  font-size: 2.4rem;
   font-weight: 900;
   margin: 1rem 0;
   color: #ffffff;
@@ -588,15 +588,15 @@ tr:last-child td {
 th {
   background: var(--bg3);
   color: var(--text);
-  font-family: 'Orbitron', sans-serif;
-  font-size: 0.8rem;
+  font-family: 'Times New Roman', serif;
+  font-size: 0.96rem;
   letter-spacing: 1px;
   font-weight: 600;
   text-transform: uppercase;
 }
 
 td {
-  font-size: 0.9rem;
+  font-size: 1.08rem;
   color: var(--text);
 }
 
@@ -610,7 +610,7 @@ input.btn.secondary {
   color: var(--text) !important;
   padding: 0.75rem 1rem !important;
   border-radius: 8px !important;
-  font-family: 'Inter', sans-serif !important;
+  font-family: 'Times New Roman', serif !important;
   font-size: 0.95rem !important;
   transition: all 0.2s ease !important;
   text-align: left !important;
@@ -664,8 +664,8 @@ input.btn.secondary:focus {
 }
 
 .ticker-item {
-  font-family: 'Orbitron', sans-serif;
-  font-size: 0.9rem;
+  font-family: 'Times New Roman', serif;
+  font-size: 1.08rem;
   font-weight: 600;
   color: var(--text);
   opacity: 0.45;
@@ -699,7 +699,7 @@ input.btn.secondary:focus {
   padding: 1.25rem 1.5rem;
   text-align: center;
   border-bottom: 1px solid var(--border);
-  font-size: 0.95rem;
+  font-size: 1.14rem;
   vertical-align: middle;
   line-height: 1.4;
 }
@@ -712,8 +712,8 @@ input.btn.secondary:focus {
 
 .compare-table thead th {
   background: var(--bg3);
-  font-family: 'Orbitron', sans-serif;
-  font-size: 0.78rem;
+  font-family: 'Times New Roman', serif;
+  font-size: 0.94rem;
   letter-spacing: 1.5px;
   font-weight: 800;
   text-transform: uppercase;
@@ -775,10 +775,10 @@ input.btn.secondary:focus {
 }
 
 .compare-table .row-label {
-  font-family: 'Inter', sans-serif;
+  font-family: 'Times New Roman', serif;
   font-weight: 700;
   color: #ffffff;
-  font-size: 0.98rem;
+  font-size: 1.18rem;
   letter-spacing: -0.01em;
 }
 
@@ -789,7 +789,7 @@ input.btn.secondary:focus {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  font-size: 0.75rem;
+  font-size: 0.9rem;
   font-weight: 800;
   margin-right: 8px;
   flex-shrink: 0;
@@ -903,9 +903,9 @@ input.btn.secondary:focus {
   align-items: center;
   justify-content: center;
   color: #ffffff;
-  font-family: 'Orbitron', sans-serif;
+  font-family: 'Times New Roman', serif;
   font-weight: 800;
-  font-size: 26px;
+  font-size: 31px;
   letter-spacing: 1px;
   box-shadow:
     0 10px 24px -8px rgba(0, 0, 0, 0.6),
@@ -920,17 +920,17 @@ input.btn.secondary:focus {
 }
 
 .testimonial-name {
-  font-family: 'Orbitron', sans-serif;
+  font-family: 'Times New Roman', serif;
   font-weight: 800;
-  font-size: 18px;
+  font-size: 22px;
   color: #ffffff;
   line-height: 1.2;
   letter-spacing: -0.01em;
 }
 
 .testimonial-role {
-  font-family: 'DM Mono', monospace;
-  font-size: 13px;
+  font-family: 'Times New Roman', monospace;
+  font-size: 16px;
   color: var(--green);
   margin-top: 6px;
   font-weight: 500;
@@ -946,8 +946,8 @@ input.btn.secondary:focus {
 }
 
 .testimonial-quote-mark {
-  font-family: 'Orbitron', sans-serif;
-  font-size: 38px;
+  font-family: 'Times New Roman', serif;
+  font-size: 46px;
   font-weight: 900;
   line-height: 1;
   color: var(--green);
@@ -958,7 +958,7 @@ input.btn.secondary:focus {
 }
 
 .testimonial-text {
-  font-size: 15px;
+  font-size: 18px;
   line-height: 1.7;
   color: #ffffff;
   font-weight: 400;
@@ -978,13 +978,13 @@ input.btn.secondary:focus {
 
 .testimonial-stars .star {
   color: #F5B400;
-  font-size: 16px;
+  font-size: 19px;
   text-shadow: 0 0 8px rgba(245, 180, 0, 0.4);
 }
 
 .testimonial-tag {
-  font-family: 'Orbitron', sans-serif;
-  font-size: 11px;
+  font-family: 'Times New Roman', serif;
+  font-size: 13px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1045,16 +1045,16 @@ input.btn.secondary:focus {
 }
 
 .provider-name {
-  font-family: 'Orbitron', sans-serif;
+  font-family: 'Times New Roman', serif;
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 1.08rem;
   color: var(--text);
   letter-spacing: 0.5px;
 }
 
 .provider-tag {
-  font-family: 'DM Mono', monospace;
-  font-size: 0.7rem;
+  font-family: 'Times New Roman', monospace;
+  font-size: 0.84rem;
   color: var(--muted);
   margin-left: auto;
   text-transform: uppercase;
@@ -1118,10 +1118,10 @@ input.btn.secondary:focus {
     padding: 2.5rem 1.5rem;
   }
   h1 {
-    font-size: 2.25rem;
+    font-size: 2.7rem;
   }
   h2 {
-    font-size: 1.75rem;
+    font-size: 2.1rem;
   }
 }
 
@@ -1149,8 +1149,8 @@ input.btn.secondary:focus {
 }
 
 .admin-sidebar-title {
-  font-family: 'DM Mono', monospace;
-  font-size: 0.7rem;
+  font-family: 'Times New Roman', monospace;
+  font-size: 0.84rem;
   letter-spacing: 2px;
   text-transform: uppercase;
   color: var(--muted);
@@ -1175,7 +1175,7 @@ input.btn.secondary:focus {
   border-radius: 8px;
   color: var(--text);
   opacity: 0.65;
-  font-size: 0.92rem;
+  font-size: 1.1rem;
   font-weight: 500;
   border-left: 2px solid transparent;
   transition: all 0.15s ease;
@@ -1196,7 +1196,7 @@ input.btn.secondary:focus {
 .admin-nav-ico {
   width: 16px;
   text-align: center;
-  font-size: 0.95rem;
+  font-size: 1.14rem;
 }
 
 .admin-main {
@@ -1218,7 +1218,7 @@ input.btn.secondary:focus {
 }
 
 .admin-topbar h1 {
-  font-size: 1.5rem;
+  font-size: 1.8rem;
 }
 
 .admin-content {
@@ -1233,8 +1233,8 @@ input.btn.secondary:focus {
   color: var(--text);
   border-radius: 8px;
   padding: 0.6rem 0.8rem;
-  font-family: 'Inter', sans-serif;
-  font-size: 0.9rem;
+  font-family: 'Times New Roman', serif;
+  font-size: 1.08rem;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -1247,7 +1247,7 @@ input.btn.secondary:focus {
 
 .admin-field-label {
   display: block;
-  font-size: 0.75rem;
+  font-size: 0.9rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--muted);
@@ -1268,8 +1268,8 @@ input.btn.secondary:focus {
   opacity: 0.6;
   border: none;
   padding: 0.45rem 0.9rem;
-  font-family: 'DM Mono', monospace;
-  font-size: 0.85rem;
+  font-family: 'Times New Roman', monospace;
+  font-size: 1.02rem;
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -1322,7 +1322,7 @@ input.btn.secondary:focus {
   padding: 3rem 1rem;
   color: var(--text);
   opacity: 0.5;
-  font-size: 0.95rem;
+  font-size: 1.14rem;
 }
 
 /* Dialog overlay */
