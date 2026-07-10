@@ -8,3 +8,16 @@ this happen when I use through rayu host provider through ollama glm5.2 it show 
    close the class. But I added `getCommissionRate` after that `}`.
   Wait, but `getStats` is declared with `=>` (arrow), so there's no method body `{}`. The `}` at line 193 is closing the CLASS, not the method. So `getCommissionRate` is
   (ctrl+o to expand)
+
+
+
+
+
+
+
+  Second Bug: when the user use the modle that don't support the tool and when the user past the tool it will show the error so please change the error to tell the user is model not support image upload or tell me hwo to handle with that mostly this happen with deepseek because deepseek don't support image 
+  ❯ built in tool
+  ⎿  ⧉ Selected 1 lines from ../../../../tmp/rayu_ghost.log in Visual Studio Code
+  ⎿  API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"this model does not support image input (ref:
+     d2ab84d0-97d7-487c-9c4a-b0e8cfbe8e50)"},"request_id":"req_ec917690865518c50be2f910"}
+NOte ONly this deepseek or the model that not support image not all the model is not rayu-cli issue it the LLM provider issue 

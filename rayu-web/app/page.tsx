@@ -94,7 +94,7 @@ export default function HomePage() {
           <h1 style={{ marginBottom: '1.5rem' }}>
             Code with agents that <span style={{ color: 'var(--green)', textShadow: '0 0 20px var(--green-glow)' }}>think,</span> act, and ship.
           </h1>
-          <p style={{ color: 'var(--text)', opacity: 0.8, fontSize: '1.15rem', lineHeight: '1.7', marginBottom: '2.5rem', maxWidth: '580px' }}>
+          <p style={{ color: 'var(--text)', opacity: 0.8, fontSize: '1.38rem', lineHeight: '1.7', marginBottom: '2.5rem', maxWidth: '580px' }}>
             Rayu is a multi-provider terminal AI coding agent. Bring your own API key, connect any model, and ship faster with autonomous agents that write, test, and deploy your code.
           </p>
           <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', width: '100%' }}>
@@ -104,26 +104,26 @@ export default function HomePage() {
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-          <HeroTerminal />
+          <div className="hero-terminal-wrap"><HeroTerminal /></div>
         </div>
       </section>
 
       {/* Stats Bar */}
-      <section style={{ margin: '6rem 0' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.5rem' }}>
-          <div className="stat-cell">
+      <section className="reveal" style={{ margin: '6rem 0' }}>
+        <div className="stagger-container" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.5rem' }}>
+          <div className="stat-cell stagger-item">
             <div className="stat-num">20+</div>
             <div className="stat-label">Providers Supported</div>
           </div>
-          <div className="stat-cell">
+          <div className="stat-cell stagger-item">
             <div className="stat-num">600+</div>
             <div className="stat-label">MCP Tools</div>
           </div>
-          <div className="stat-cell">
+          <div className="stat-cell stagger-item">
             <div className="stat-num">99.9%</div>
             <div className="stat-label">Uptime</div>
           </div>
-          <div className="stat-cell">
+          <div className="stat-cell stagger-item">
             <div className="stat-num">0</div>
             <div className="stat-label">Vendor Lock-in</div>
           </div>
@@ -142,59 +142,59 @@ export default function HomePage() {
       </div>
 
       {/* Feature Cards */}
-      <section style={{ margin: '6rem 0' }}>
+      <section className="reveal" style={{ margin: '6rem 0' }}>
         <div style={{ textAlign: 'center', marginBottom: '4rem' }}>
           <span className="section-eyebrow">FEATURES</span>
           <h2 style={{ marginTop: '0.5rem' }}>Engineered for hyper-growth development</h2>
-          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.1rem' }}>
+          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.32rem' }}>
             All the tools you need to build, test, and ship from a single command prompt.
           </p>
         </div>
-        <div className="grid-3-col">
-          <div className="card">
-            <div style={{ color: 'var(--green)', fontSize: '1.1rem', marginBottom: '1rem', fontFamily: 'DM Mono, monospace' }}>01 / CONNECT</div>
+        <div className="stagger-container grid-3-col">
+          <div className="card stagger-item">
+            <div style={{ color: 'var(--green)', fontSize: '1.32rem', marginBottom: '1rem', fontFamily: 'Times New Roman, monospace' }}>01 / CONNECT</div>
             <h3 className="card-title">Multi-Provider</h3>
-            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '0.95rem', lineHeight: '1.6' }}>Connect any LLM with the simple <code>/connect</code> command. Switch providers on the fly.</p>
+            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '1.14rem', lineHeight: '1.6' }}>Connect any LLM with the simple <code>/connect</code> command. Switch providers on the fly.</p>
           </div>
-          <div className="card">
-            <div style={{ color: 'var(--green)', fontSize: '1.1rem', marginBottom: '1rem', fontFamily: 'DM Mono, monospace' }}>02 / PROTOCOL</div>
+          <div className="card stagger-item">
+            <div style={{ color: 'var(--green)', fontSize: '1.32rem', marginBottom: '1rem', fontFamily: 'Times New Roman, monospace' }}>02 / PROTOCOL</div>
             <h3 className="card-title">MCP Servers</h3>
-            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '0.95rem', lineHeight: '1.6' }}>Unlock 600+ tools through Model Context Protocol — databases, browsers, file systems, and more.</p>
+            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '1.14rem', lineHeight: '1.6' }}>Unlock 600+ tools through Model Context Protocol — databases, browsers, file systems, and more.</p>
           </div>
-          <div className="card">
-            <div style={{ color: 'var(--green)', fontSize: '1.1rem', marginBottom: '1rem', fontFamily: 'DM Mono, monospace' }}>03 / EXECUTE</div>
+          <div className="card stagger-item">
+            <div style={{ color: 'var(--green)', fontSize: '1.32rem', marginBottom: '1rem', fontFamily: 'Times New Roman, monospace' }}>03 / EXECUTE</div>
             <h3 className="card-title">Autonomous Agents</h3>
-            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '0.95rem', lineHeight: '1.6' }}>Deploy agents that read, think, plan, write, test, and correct their own errors automatically.</p>
+            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '1.14rem', lineHeight: '1.6' }}>Deploy agents that read, think, plan, write, test, and correct their own errors automatically.</p>
           </div>
-          <div className="card">
-            <div style={{ color: 'var(--green)', fontSize: '1.1rem', marginBottom: '1rem', fontFamily: 'DM Mono, monospace' }}>04 / CLI-NATIVE</div>
+          <div className="card stagger-item">
+            <div style={{ color: 'var(--green)', fontSize: '1.32rem', marginBottom: '1rem', fontFamily: 'Times New Roman, monospace' }}>04 / CLI-NATIVE</div>
             <h3 className="card-title">Terminal Native</h3>
-            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '0.95rem', lineHeight: '1.6' }}>Built for keyboard warriors. Full shell access, git integration, local commands.</p>
+            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '1.14rem', lineHeight: '1.6' }}>Built for keyboard warriors. Full shell access, git integration, local commands.</p>
           </div>
-          <div className="card">
-            <div style={{ color: 'var(--green)', fontSize: '1.1rem', marginBottom: '1rem', fontFamily: 'DM Mono, monospace' }}>05 / PERSISTENCE</div>
+          <div className="card stagger-item">
+            <div style={{ color: 'var(--green)', fontSize: '1.32rem', marginBottom: '1rem', fontFamily: 'Times New Roman, monospace' }}>05 / PERSISTENCE</div>
             <h3 className="card-title">Persistent Memory</h3>
-            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '0.95rem', lineHeight: '1.6' }}>Retains context across sessions — project specifics, past bugs, and conventions remembered automatically.</p>
+            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '1.14rem', lineHeight: '1.6' }}>Retains context across sessions — project specifics, past bugs, and conventions remembered automatically.</p>
           </div>
-          <div className="card">
-            <div style={{ color: 'var(--green)', fontSize: '1.1rem', marginBottom: '1rem', fontFamily: 'DM Mono, monospace' }}>06 / LIBRE</div>
+          <div className="card stagger-item">
+            <div style={{ color: 'var(--green)', fontSize: '1.32rem', marginBottom: '1rem', fontFamily: 'Times New Roman, monospace' }}>06 / LIBRE</div>
             <h3 className="card-title">Open Source</h3>
-            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '0.95rem', lineHeight: '1.6' }}>Self-hostable, customizable, BYOK forever free. Run entirely locally with open-weights models.</p>
+            <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '1.14rem', lineHeight: '1.6' }}>Self-hostable, customizable, BYOK forever free. Run entirely locally with open-weights models.</p>
           </div>
         </div>
       </section>
 
       {/* Why Rayu Outperforms — Standout comparison */}
-      <section style={{ margin: '6rem 0' }}>
+      <section className="reveal" style={{ margin: '6rem 0' }}>
         <div style={{ textAlign: 'center', marginBottom: '4rem' }}>
           <span className="section-eyebrow">BENCHMARK</span>
           <h2 style={{ marginTop: '0.5rem' }}>Why Rayu outperforms the rest</h2>
-          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.1rem' }}>
+          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.32rem' }}>
             Built from the ground up to outperform every other CLI agent on the market. Faster, private, and provider-agnostic.
           </p>
         </div>
         <div className="table-scroll">
-          <table className="compare-table">
+          <table className="compare-table reveal">
             <thead>
               <tr>
                 <th>Feature</th>
@@ -208,51 +208,51 @@ export default function HomePage() {
             <tbody>
               <tr>
                 <td className="row-label">Response Speed</td>
-                <td className="rayu-col">◈ &lt;500ms</td>
-                <td>~3–5s</td>
-                <td>~5–10s</td>
-                <td>~5–8s</td>
-                <td>~3–6s</td>
+                <td className="rayu-col"><span className="cmp-icon yes">◈</span><span className="cmp-text positive">&lt;500ms</span></td>
+                <td><span className="cmp-text dim">~3–5s</span></td>
+                <td><span className="cmp-text dim">~5–10s</span></td>
+                <td><span className="cmp-text dim">~5–8s</span></td>
+                <td><span className="cmp-text dim">~3–6s</span></td>
               </tr>
               <tr>
                 <td className="row-label">P2P Collaboration</td>
-                <td className="rayu-col">◈ Native</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
+                <td className="rayu-col"><span className="cmp-icon yes">◈</span><span className="cmp-text positive">Native</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
               </tr>
               <tr>
                 <td className="row-label">Privacy / No Training Data</td>
-                <td className="rayu-col">◈ Zero retention</td>
-                <td className="warn">◐ Cloud-dependent</td>
-                <td className="warn">◐ Cloud-dependent</td>
-                <td className="no">✕ Trains on your code</td>
-                <td className="no">✕ Trains on your code</td>
+                <td className="rayu-col"><span className="cmp-icon yes">◈</span><span className="cmp-text positive">Zero retention</span></td>
+                <td><span className="cmp-icon warn">◐</span><span className="cmp-text warning">Cloud-dependent</span></td>
+                <td><span className="cmp-icon warn">◐</span><span className="cmp-text warning">Cloud-dependent</span></td>
+                <td><span className="cmp-icon no">✕</span><span className="cmp-text negative">Trains on your code</span></td>
+                <td><span className="cmp-icon no">✕</span><span className="cmp-text negative">Trains on your code</span></td>
               </tr>
               <tr>
                 <td className="row-label">Multi-Provider BYOK</td>
-                <td className="rayu-col">◈ 20+ providers</td>
-                <td className="warn">◐ Limited</td>
-                <td className="no">✕ Single</td>
-                <td className="no">✕ Anthropic only</td>
-                <td className="no">✕ OpenAI only</td>
+                <td className="rayu-col"><span className="cmp-icon yes">◈</span><span className="cmp-text positive">20+ providers</span></td>
+                <td><span className="cmp-icon warn">◐</span><span className="cmp-text warning">Limited</span></td>
+                <td><span className="cmp-icon no">✕</span><span className="cmp-text negative">Single</span></td>
+                <td><span className="cmp-icon no">✕</span><span className="cmp-text negative">Anthropic only</span></td>
+                <td><span className="cmp-icon no">✕</span><span className="cmp-text negative">OpenAI only</span></td>
               </tr>
               <tr>
                 <td className="row-label">Agent Swarms</td>
-                <td className="rayu-col">◈ Built-in &amp; parallel</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
+                <td className="rayu-col"><span className="cmp-icon yes">◈</span><span className="cmp-text positive">Built-in &amp; parallel</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
               </tr>
               <tr>
                 <td className="row-label">Offline / Local Models</td>
-                <td className="rayu-col">◈ Private local support</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
-                <td className="no">—</td>
+                <td className="rayu-col"><span className="cmp-icon yes">◈</span><span className="cmp-text positive">Private local support</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
+                <td><span className="cmp-icon neutral">—</span></td>
               </tr>
             </tbody>
           </table>
@@ -260,17 +260,17 @@ export default function HomePage() {
       </section>
 
       {/* Providers Grid — expanded support */}
-      <section style={{ margin: '6rem 0' }}>
+      <section className="reveal" style={{ margin: '6rem 0' }}>
         <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
           <span className="section-eyebrow">PROVIDERS</span>
           <h2 style={{ marginTop: '0.5rem' }}>One CLI. Every provider you use.</h2>
-          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.1rem' }}>
+          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.32rem' }}>
             Bring your own key or use the Rayu-hosted gateway. Switch models mid-session with <code>/model</code> — no rewrites, no lock-in.
           </p>
         </div>
-        <div className="provider-grid">
+        <div className="stagger-container provider-grid">
           {providers.map((p) => (
-            <div key={p.name} className="provider-chip">
+            <div key={p.name} className="provider-chip stagger-item">
               <span className="provider-dot" />
               <span className="provider-name">{p.name}</span>
               <span className="provider-tag">{p.tag}</span>
@@ -280,17 +280,17 @@ export default function HomePage() {
       </section>
 
       {/* Client Feedback — Testimonials */}
-      <section style={{ margin: '6rem 0' }}>
+      <section className="reveal" style={{ margin: '6rem 0' }}>
         <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
           <span className="section-eyebrow">TESTIMONIALS</span>
           <h2 style={{ marginTop: '0.5rem' }}>What our clients say about us</h2>
-          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.1rem' }}>
+          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.32rem' }}>
             Real feedback from engineers who ran Rayu CLI on real work.
           </p>
         </div>
-        <div className="testimonial-grid">
+        <div className="stagger-container testimonial-grid">
           {testimonials.map((t) => (
-            <div key={t.name} className="testimonial-card">
+            <div key={t.name} className="testimonial-card stagger-item">
               <div className="testimonial-ribbon" />
               <div className="testimonial-card-top">
                 <div className="testimonial-avatar">{t.initials}</div>
@@ -319,8 +319,8 @@ export default function HomePage() {
       {/* Footer CTA */}
       <section style={{ marginTop: '8rem', marginBottom: '4rem', background: 'linear-gradient(180deg, var(--bg2) 0%, var(--bg3) 100%)', border: '1px solid var(--border-bright)', borderRadius: '16px', padding: '5rem 3rem', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: '300px', height: '1px', background: 'linear-gradient(90deg, transparent, var(--green), transparent)' }} />
-        <h2 style={{ fontSize: '2.5rem', marginBottom: '1.5rem', lineHeight: '1.2' }}>Your first agent is one command away.</h2>
-        <p style={{ color: 'var(--text)', opacity: 0.8, fontSize: '1.1rem', maxWidth: '600px', margin: '0 auto 2.5rem auto', lineHeight: '1.6' }}>
+        <h2 style={{ fontSize: '3rem', marginBottom: '1.5rem', lineHeight: '1.2' }}>Your first agent is one command away.</h2>
+        <p style={{ color: 'var(--text)', opacity: 0.8, fontSize: '1.32rem', maxWidth: '600px', margin: '0 auto 2.5rem auto', lineHeight: '1.6' }}>
           Get access to Rayu Terminal now. Bring your own keys and scale your development speed to infinity.
         </p>
         <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -330,8 +330,8 @@ export default function HomePage() {
       </section>
 
       {/* Footer */}
-      <footer style={{ borderTop: '1px solid var(--border)', paddingTop: '2.5rem', marginTop: '6rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem', color: 'var(--text)', opacity: 0.5, fontSize: '0.9rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontFamily: 'Orbitron, sans-serif', fontWeight: 900, letterSpacing: '2px', color: '#ffffff' }}>
+      <footer style={{ borderTop: '1px solid var(--border)', paddingTop: '2.5rem', marginTop: '6rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem', color: 'var(--text)', opacity: 0.5, fontSize: '1.08rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontFamily: 'Times New Roman, serif', fontWeight: 900, letterSpacing: '2px', color: '#ffffff' }}>
           <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--green)' }} />
           RAYU
         </div>

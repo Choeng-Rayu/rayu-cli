@@ -3242,12 +3242,15 @@ export async function queryHaiku({
   outputFormat,
   signal,
   options,
+  model,
 }: {
   systemPrompt: SystemPrompt
   userPrompt: string
   outputFormat?: BetaJSONOutputFormat
   signal: AbortSignal
   options: HaikuOptions
+  /** Optional model id override; defaults to the active provider's small-fast model. */
+  model?: string
 }): Promise<AssistantMessage> {
   const result = await withVCR(
     [
@@ -3273,7 +3276,7 @@ export async function queryHaiku({
         signal,
         options: {
           ...options,
-          model: getSmallFastModel(),
+          model: model ?? getSmallFastModel(),
           enablePromptCaching: options.enablePromptCaching ?? false,
           outputFormat,
           async getToolPermissionContext() {

@@ -118,6 +118,13 @@ export type RayuConfig = {
    */
   videoModel?: string
   /**
+   * Default model id for the WebFetch tool's page-summarization step, chosen
+   * via /webfetch_model. When unset, WebFetch uses the active provider's
+   * instant/small-fast model (see getWebFetchModel / getSmallFastModel) — i.e.
+   * the user's own configured model, never a hardcoded Anthropic model.
+   */
+  webFetchModel?: string
+  /**
    * Opt-in project profile name for the specialist swarm (e.g. 'cambodia').
    * When set, the matching locale/stack fragments are injected into PA/DB/MOB.
    * Unset → no locale bias (the 'default' profile). See built-in/profiles.ts.
@@ -346,6 +353,19 @@ export function setVideoModelSelection(model: string | undefined): void {
   const cfg = loadRayuConfig()
   if (model) cfg.videoModel = model
   else delete cfg.videoModel
+  saveRayuConfig(cfg)
+}
+
+/** User-chosen model for the WebFetch summarization step (or undefined). */
+export function getWebFetchModelSelection(): string | undefined {
+  return loadRayuConfig().webFetchModel || undefined
+}
+
+/** Persist the default WebFetch model (pass undefined to clear → default). */
+export function setWebFetchModelSelection(model: string | undefined): void {
+  const cfg = loadRayuConfig()
+  if (model) cfg.webFetchModel = model
+  else delete cfg.webFetchModel
   saveRayuConfig(cfg)
 }
 
