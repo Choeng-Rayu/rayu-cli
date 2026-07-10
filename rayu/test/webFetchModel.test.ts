@@ -75,3 +75,29 @@ test('getWebFetchModel defaults to getSmallFastModel and honors an explicit sele
   cfg.setWebFetchModelSelection('meta/llama-3.3-70b-instruct')
   expect(getWebFetchModel()).toBe('meta/llama-3.3-70b-instruct')
 })
+
+test('formatWebFetchModelError guides to /webfetch_model and never leaks a claude model name', async () => {
+  const { formatWebFetchModelError } = await import(
+    '../src/tools/WebFetchTool/utils.ts'
+  )
+  // The claude-haiku fallback: the raw provider error mentions claude, but our
+  // guidance must NOT surface it and must point the user at /webfetch_model.
+  const msg = formatWebFetchModelError(
+    new Error(
+      '403 model not available on your plan: claude-haiku-4-5-20251001',
+    ),
+    'claude-haiku-4-5-20251001',
+  )
+  expect(msg.toLowerCase()).not.toContain('claude')
+  expect(msg).toContain('/webfetch_model')
+  expect(msg).toContain('fetched') // notes the page WAS fetched
+})
+
+test('formatWebFetchModelError surfaces the user\u2019s own (non-claude) model name', async () => {
+  const { formatWebFetchModelError } = await import(
+    '../src/tools/WebFetchTool/utils.ts'
+  )
+  const msg = formatWebFetchModelError(new Error('boom'), 'ministral-3:14b')
+  expect(msg).toContain('ministral-3:14b')
+  expect(msg).toContain('/webfetch_model')
+})
