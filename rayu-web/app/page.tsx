@@ -4,7 +4,61 @@ import HeroCTA from './components/HeroCTA'
 
 export default function HomePage() {
   const tickerItems = [
-    'Claude 3.5 Sonnet', 'GPT-4o', 'Gemini 1.5 Pro', 'Mistral Large', 'Llama 3.1', 'GitHub API', 'MCP Protocol', 'AWS Bedrock', 'Vertex AI', 'Groq', 'Together AI', 'Ollama', 'OpenRouter', 'DeepSeek-V2', 'Anthropic'
+    'Claude 4.5 Sonnet', 'GPT-4o', 'Gemini 2.0 Pro', 'Mistral Large', 'Llama 3.1', 'GitHub API', 'MCP Protocol', 'AWS Bedrock', 'Vertex AI', 'Groq', 'Together AI', 'Ollama', 'LM Studio', 'OpenRouter', 'DeepSeek-V3', 'Anthropic', 'Kimi K2', 'GLM-5.2', 'NVIDIA NIM', 'Cerebras', 'SambaNova', 'Novita', 'Fireworks AI', 'Cohere'
+  ]
+
+  const providers = [
+    { name: 'Anthropic', tag: 'Claude 4.5' },
+    { name: 'OpenAI', tag: 'GPT-4o' },
+    { name: 'Google Vertex', tag: 'Gemini 2.0' },
+    { name: 'DeepSeek', tag: 'V3 / R1' },
+    { name: 'AWS Bedrock', tag: 'Multi-model' },
+    { name: 'Mistral', tag: 'Large 2' },
+    { name: 'Kimi / Moonshot', tag: 'K2' },
+    { name: 'GLM', tag: '5.2' },
+    { name: 'Groq', tag: 'Low latency' },
+    { name: 'Together AI', tag: 'Hosted OSS' },
+    { name: 'OpenRouter', tag: 'Aggregator' },
+    { name: 'NVIDIA NIM', tag: 'Self-hosted' },
+    { name: 'Cerebras', tag: 'Fast inference' },
+    { name: 'SambaNova', tag: 'Fast inference' },
+    { name: 'Fireworks AI', tag: 'Hosted OSS' },
+    { name: 'Novita', tag: 'Multi-model' },
+    { name: 'Cohere', tag: 'Command R+' },
+    { name: 'Ollama', tag: 'Local' },
+    { name: 'LM Studio', tag: 'Local' },
+    { name: 'Llama 3.1', tag: 'Meta OSS' },
+  ]
+
+  const testimonials = [
+    {
+      quote: "It's cool that Cambodia gets to own a tool like this, instead of just reaching for Claude Code every time.",
+      name: 'Mengsry Mey',
+      role: 'Senior Software Engineer · MRTJC',
+      initials: 'MM',
+      tag: 'KH National pride',
+    },
+    {
+      quote: "What sets it apart from OpenCode and the rest of the open-source field is per-agent model assignment — Gemini on frontend, Claude Sonnet on backend, Claude Opus running the orchestrator.",
+      name: 'Ly Yeak Khai',
+      role: 'CEO & Founder · Senior Software Engineer · Dockified',
+      initials: 'LK',
+      tag: 'Model routing',
+    },
+    {
+      quote: "Genuinely fun to use, and faster than Claude Code or OpenCode at getting to a good result.",
+      name: 'Khenchandara Pisey',
+      role: 'Senior Web Developer',
+      initials: 'KP',
+      tag: 'Speed',
+    },
+    {
+      quote: "It ships image and video generation built in, so a frontend dev can stay in one terminal for the whole workflow.",
+      name: 'SeavFou Eang',
+      role: 'Software Engineering Student · CADT',
+      initials: 'SE',
+      tag: 'Tooling',
+    },
   ]
 
   return (
@@ -58,8 +112,8 @@ export default function HomePage() {
       <section style={{ margin: '6rem 0' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.5rem' }}>
           <div className="stat-cell">
-            <div className="stat-num">15+</div>
-            <div className="stat-label">Models Supported</div>
+            <div className="stat-num">20+</div>
+            <div className="stat-label">Providers Supported</div>
           </div>
           <div className="stat-cell">
             <div className="stat-num">600+</div>
@@ -127,6 +181,138 @@ export default function HomePage() {
             <h3 className="card-title">Open Source</h3>
             <p style={{ color: 'var(--text)', opacity: 0.7, fontSize: '0.95rem', lineHeight: '1.6' }}>Self-hostable, customizable, BYOK forever free. Run entirely locally with open-weights models.</p>
           </div>
+        </div>
+      </section>
+
+      {/* Why Rayu Outperforms — Standout comparison */}
+      <section style={{ margin: '6rem 0' }}>
+        <div style={{ textAlign: 'center', marginBottom: '4rem' }}>
+          <span className="section-eyebrow">BENCHMARK</span>
+          <h2 style={{ marginTop: '0.5rem' }}>Why Rayu outperforms the rest</h2>
+          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.1rem' }}>
+            Built from the ground up to outperform every other CLI agent on the market. Faster, private, and provider-agnostic.
+          </p>
+        </div>
+        <div className="table-scroll">
+          <table className="compare-table">
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th className="rayu-col">Rayu</th>
+                <th>OpenCode</th>
+                <th>KiloCode</th>
+                <th>Claude Code</th>
+                <th>Codex</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="row-label">Response Speed</td>
+                <td className="rayu-col">◈ &lt;500ms</td>
+                <td>~3–5s</td>
+                <td>~5–10s</td>
+                <td>~5–8s</td>
+                <td>~3–6s</td>
+              </tr>
+              <tr>
+                <td className="row-label">P2P Collaboration</td>
+                <td className="rayu-col">◈ Native</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+              </tr>
+              <tr>
+                <td className="row-label">Privacy / No Training Data</td>
+                <td className="rayu-col">◈ Zero retention</td>
+                <td className="warn">◐ Cloud-dependent</td>
+                <td className="warn">◐ Cloud-dependent</td>
+                <td className="no">✕ Trains on your code</td>
+                <td className="no">✕ Trains on your code</td>
+              </tr>
+              <tr>
+                <td className="row-label">Multi-Provider BYOK</td>
+                <td className="rayu-col">◈ 20+ providers</td>
+                <td className="warn">◐ Limited</td>
+                <td className="no">✕ Single</td>
+                <td className="no">✕ Anthropic only</td>
+                <td className="no">✕ OpenAI only</td>
+              </tr>
+              <tr>
+                <td className="row-label">Agent Swarms</td>
+                <td className="rayu-col">◈ Built-in &amp; parallel</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+              </tr>
+              <tr>
+                <td className="row-label">Offline / Local Models</td>
+                <td className="rayu-col">◈ Private local support</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+                <td className="no">—</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Providers Grid — expanded support */}
+      <section style={{ margin: '6rem 0' }}>
+        <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+          <span className="section-eyebrow">PROVIDERS</span>
+          <h2 style={{ marginTop: '0.5rem' }}>One CLI. Every provider you use.</h2>
+          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.1rem' }}>
+            Bring your own key or use the Rayu-hosted gateway. Switch models mid-session with <code>/model</code> — no rewrites, no lock-in.
+          </p>
+        </div>
+        <div className="provider-grid">
+          {providers.map((p) => (
+            <div key={p.name} className="provider-chip">
+              <span className="provider-dot" />
+              <span className="provider-name">{p.name}</span>
+              <span className="provider-tag">{p.tag}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Client Feedback — Testimonials */}
+      <section style={{ margin: '6rem 0' }}>
+        <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+          <span className="section-eyebrow">TESTIMONIALS</span>
+          <h2 style={{ marginTop: '0.5rem' }}>What our clients say about us</h2>
+          <p style={{ color: 'var(--text)', opacity: 0.6, marginTop: '1rem', fontSize: '1.1rem' }}>
+            Real feedback from engineers who ran Rayu CLI on real work.
+          </p>
+        </div>
+        <div className="testimonial-grid">
+          {testimonials.map((t) => (
+            <div key={t.name} className="testimonial-card">
+              <div className="testimonial-ribbon" />
+              <div className="testimonial-card-top">
+                <div className="testimonial-avatar">{t.initials}</div>
+                <div className="testimonial-who">
+                  <div className="testimonial-name">{t.name}</div>
+                  <div className="testimonial-role">{t.role}</div>
+                </div>
+              </div>
+              <div className="testimonial-quote-wrap">
+                <span className="testimonial-quote-mark">&ldquo;</span>
+                <p className="testimonial-text">{t.quote}</p>
+              </div>
+              <div className="testimonial-rating-row">
+                <div className="testimonial-stars">
+                  <span className="star">★</span><span className="star">★</span><span className="star">★</span><span className="star">★</span><span className="star">★</span>
+                </div>
+                <div className="testimonial-tag">
+                  <span>◈</span> {t.tag}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 

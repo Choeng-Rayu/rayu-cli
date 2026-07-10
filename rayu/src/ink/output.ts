@@ -390,7 +390,33 @@ export default class Output {
         }
 
         case 'shift': {
-          shiftRows(screen, operation.top, operation.bottom, operation.n)
+          const { top, bottom, n } = operation
+          shiftRows(screen, top, bottom, n)
+          // shiftRows moves cells in place (copyWithin) and, unlike blit()/clear(),
+          // records NO damage. The frame-diff (diffEach in log-update) is scoped to
+          // the damage rect, so an unrecorded shift leaves the shifted rows unvisited:
+          // the model reflects the scroll but the physical terminal is never
+          // reconciled. A cell vacated by the shift — e.g. a leading indent glyph
+          // (a spinner / "⎿" connector / thinking 'T' at col 2) that becomes a
+          // continuation space — then survives on screen as a ghost until a full
+          // repaint (resize/done). Record the shifted band as damage so the diff
+          // reconciles it. It still only WRITES cells that actually differ, so it
+          // stays cheap and is safe for the alt-screen DECSTBM path (log-update
+          // pre-shifts prevScreen to match, so equal cells emit nothing). Mirrors
+          // the blit()/clear() damage bookkeeping above.
+          const startY = Math.max(0, top)
+          const endY = Math.min(bottom, screenHeight - 1)
+          if (endY >= startY) {
+            const rect = {
+              x: 0,
+              y: startY,
+              width: screenWidth,
+              height: endY - startY + 1,
+            }
+            screen.damage = screen.damage
+              ? unionRect(screen.damage, rect)
+              : rect
+          }
           continue
         }
 

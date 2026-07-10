@@ -26,18 +26,20 @@ const OLLAMA_PROVIDER = process.env.OLLAMA_PROVIDER_NAME?.trim() || 'rayu-ollama
 // Rayu resells these via the (Phase 2) gateway using its own purchased keys.
 export const MODEL_SEED: HostedModelSeed[] = [
   // DeepSeek V4 routed through OLLAMA CLOUD (provider OLLAMA_PROVIDER, Rayu's
-  // OLLAMA_API_KEY) — the official DeepSeek route is dropped. input==output price
-  // → FLAT billing, so creditMultiplier is exactly credits per 1M tokens
-  // (pro = 1.0 → 1 credit/1M; flash = 0.33). NOTE: set upstreamModelId to the
-  // EXACT deepseek id in your Ollama account (Ollama serves deepseek as e.g.
-  // deepseek-v3.1:671b-cloud). The CLI resolves the deepseek-v4 codes to 1M
-  // context — add a per-model override if the Ollama model's window is smaller.
+  // OLLAMA_API_KEY) — the official DeepSeek provider is DISABLED/dropped. The
+  // upstreamModelId is the EXACT Ollama Cloud tag (`ollama run <id>`):
+  //   deepseek-v4-pro   → deepseek-v4-pro:cloud
+  //   deepseek-v4-flash → deepseek-v4-flash:cloud
+  // input==output price → FLAT billing, so creditMultiplier is exactly credits
+  // per 1M tokens (pro = 1.0 → 1 credit/1M; flash = 0.33). The CLI resolves the
+  // deepseek-v4 codes to 1M context — add a per-model override if the Ollama
+  // model's window is smaller.
   {
     code: 'deepseek-v4-flash',
     label: 'DeepSeek V4 Flash',
     provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
-    upstreamModelId: 'deepseek-v3.1:671b-cloud', // verify/set exact Ollama id
+    upstreamModelId: 'deepseek-v4-flash:cloud', // Ollama Cloud tag
     inputPricePer1MCents: 40,
     outputPricePer1MCents: 40, // input==output → flat 0.33 credits / 1M tokens
     creditMultiplier: 0.33, // cheaper tier — ~1/3 the credit cost of Pro
@@ -49,7 +51,7 @@ export const MODEL_SEED: HostedModelSeed[] = [
     label: 'DeepSeek V4 Pro',
     provider: OLLAMA_PROVIDER,
     upstreamBaseUrl: 'https://ollama.com',
-    upstreamModelId: 'deepseek-v3.1:671b-cloud', // verify/set exact Ollama id
+    upstreamModelId: 'deepseek-v4-pro:cloud', // Ollama Cloud tag
     inputPricePer1MCents: 40,
     outputPricePer1MCents: 40, // input==output → flat, exactly 1 credit / 1M tokens
     creditMultiplier: 1, // reference tier (1 credit / 1M tokens at baseline)
