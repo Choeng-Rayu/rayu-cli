@@ -5,6 +5,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { queryHaiku } from '../../services/api/claude.js'
+import { getWebFetchModel } from '../../utils/model/model.js'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
@@ -504,6 +505,9 @@ export async function applyPromptToMarkdown(
     systemPrompt: asSystemPrompt([]),
     userPrompt: modelPrompt,
     signal,
+    // Use the user's configured WebFetch model (/webfetch_model) or, by
+    // default, the active provider's model — never a hardcoded Anthropic model.
+    model: getWebFetchModel(),
     options: {
       querySource: 'web_fetch_apply',
       agents: [],

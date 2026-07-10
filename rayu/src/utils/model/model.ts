@@ -50,12 +50,35 @@ export function getSmallFastModel(): ModelName {
       }
     }
     
-    const m = p?.smallFastModel || getValidDefaultModel(p)
+    // Never fall through to a hardcoded Anthropic Haiku for a non-Anthropic
+    // provider. Fall back to the provider's default, then the user's active
+    // model (getMainLoopModel) — always the user's own configured model.
+    const m =
+      p?.smallFastModel ||
+      getValidDefaultModel(p) ||
+      p?.defaultModel ||
+      getMainLoopModel()
     if (m) return m
   } else if (process.env.ANTHROPIC_SMALL_FAST_MODEL) {
     return process.env.ANTHROPIC_SMALL_FAST_MODEL
   }
   return getDefaultHaikuModel()
+}
+
+/**
+ * Model for the WebFetch tool's page-summarization step.
+ *
+ * Priority: the user's explicit `/webfetch_model` choice → otherwise the active
+ * provider's instant/small-fast model (getSmallFastModel). It is always the
+ * user's own configured model for their provider — never a hardcoded Anthropic
+ * model on a non-Anthropic provider.
+ */
+export function getWebFetchModel(): ModelName {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { getWebFetchModelSelection } =
+    require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return getWebFetchModelSelection() ?? getSmallFastModel()
 }
 
 export function isNonCustomOpusModel(model: ModelName): boolean {

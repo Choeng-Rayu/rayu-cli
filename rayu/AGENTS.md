@@ -1,63 +1,67 @@
-# RAYU.md — RAYU CLI Agent Instructions
+# AGENTS.md — AI Agent Instructions for RAYU CLI
 
-This file provides critical guidance to AI agents (including RAYU itself) when working with the CLI codebase. **READ THIS FILE FIRST before making ANY changes inside `rayu/`.**
+This file provides critical guidance to AI agents (including RAYU itself) when working with this codebase. **READ THIS FILE FIRST before making ANY changes.**
 
 ---
 
 ## What is RAYU CLI?
 
-**RAYU CLI** (`@rayu-dev/rayu-cli`) is a **terminal-based AI coding agent** — a multi-provider AI assistant that runs in your terminal, offering deep integration with your development workflow. It is published on npm as `@rayu-dev/rayu-cli`.
+**RAYU CLI** (`@rayu-dev/rayu-cli`) is a **terminal-based AI coding agent** — a multi-provider AI assistant that runs in your terminal, offering deep integration with your development workflow.
 
 ### What Makes RAYU Unique?
 
-RAYU is a **universal AI coding assistant** that works with any AI provider:
+RAYU is designed to be a **universal AI coding assistant** that works with any AI provider (Anthropic, OpenAI, NVIDIA, DeepSeek, Kimi/Moonshot, OpenRouter, Google Gemini, AWS Bedrock, or any OpenAI-compatible endpoint). Think of it as:
 
-- **A terminal UI wrapper** giving Claude Code-style interaction with ANY AI provider
+- **A terminal UI wrapper** that gives you Claude Code-style interaction with ANY AI provider
 - **A multi-provider CLI tool** with ~94 slash commands for development workflows
 - **An extensible tool platform** with ~48 built-in tools (file operations, bash, web search, MCP integration, etc.)
 - **A skill system** supporting both bundled and external skills
-- **A Telegram bridge** allowing mobile/remote access via Telegram bot
-- **Image/Video generation** built-in via AI models
-- **Optional billing integration** with rayu-backend for centralized management
+- **A Telegram bridge** allowing mobile/remote access to your AI coding agent via Telegram bot
 
-### Technical Snapshot
+### Core Features
 
-| Attribute | Value |
-|-----------|-------|
-| Language | TypeScript + Bun |
-| UI Framework | Custom React/Ink (custom reconciler, NOT npm `ink`) |
-| Source files | ~2027 across 60+ top-level `src/` directories |
-| Provenance | ~96% derivative from Claude Code fork, ~4% original Rayu |
-| State management | Zustand-like stores (`src/state/`) |
-| Feature flags | Compile-time DCE via `feature('FLAG')` from `bun:bundle` |
-| Commands | ~94 registered in `src/commands.ts` via `getCommands()` |
-| Tools | ~48 registered in `src/tools.ts` via `getTools()` |
-| Skills | 20+ bundled in `src/skills/bundled/` |
-| Hooks | 84 React hooks in `src/hooks/` |
-| Components | 145+ UI components in `src/components/` |
-| Utilities | 354 files across 40+ subdirs in `src/utils/` |
-| Constants | 22 files in `src/constants/` |
-| Types | 15+ type definitions in `src/types/` |
-| Keybindings | 15 files in `src/keybindings/` |
-| Ink renderer | 50+ files in `src/ink/` (custom reconciler with packed Int32 buffers) |
+1. **Multi-Provider Support**: Switch between Anthropic Claude, OpenAI, DeepSeek, Google Gemini, AWS Bedrock, and more
+2. **Rich Terminal UI**: Custom React/Ink-based TUI with syntax highlighting, diffs, progress indicators, and interactive components
+3. **Comprehensive Tooling**: 48+ tools including file operations (Read, Write, Edit, Glob, Grep), Bash execution, web fetch/search, LSP integration, MCP servers, and more
+4. **Command System**: 94+ slash commands for development tasks (/connect, /model, /help, /config, /diff, /plan, /swarm, /memory, /telegram-bot, etc.)
+5. **Skill System**: Bundled skills (simplify, verify, remember, updateConfig, keybindings, etc.) and support for external Claude skills
+6. **Telegram Integration**: Connect your RAYU CLI to Telegram for mobile/remote access
+7. **State Management**: Zustand-like stores for managing complex application state
+8. **Image/Video Generation**: Built-in tools for generating images and videos via AI models
+9. **Billing Integration**: Optional rayu-backend integration for centralized billing and management
 
-### Provider Support
+### Technical Architecture
 
-RAYU supports multiple AI providers through a common abstraction layer (`src/services/api/`):
+**RAYU CLI** is a TypeScript + Bun + React/Ink application with the following key characteristics:
 
-- **Anthropic Claude** — native via `@anthropic-ai/sdk`
-- **OpenAI** — adapter via `openai` SDK
-- **Google Gemini** — adapter via `@google/genai`
-- **AWS Bedrock** — adapter via `@aws-sdk/client-bedrock-runtime`
-- **DeepSeek, Kimi, OpenRouter** — OpenAI-compatible adapter
-- **Any OpenAI-compatible local server**
+- **~2027+ source files** across **60+ top-level directories** under `src/`
+- **~96% derivative** from Anthropic Claude Code fork; **~4% original** Rayu additions (ORIGIN_MANIFEST.md tracks provenance)
+- **Monorepo context:** Part of `/home/rayu/rayu-cli/` with 4 sibling projects (rayu-backend, rayu-gateway, rayu-web, deploy)
+- **TypeScript + Bun** with compile-time feature flag DCE via `feature('FLAG')` from `bun:bundle`
+- **Custom React reconciler** (`src/ink/`) for terminal output (not standard npm `ink`)
+- **Zustand-like state management** in `src/state/`
+- **~94 registered commands** in `src/commands.ts` via `getCommands()`
+- **~48 registered tools** in `src/tools.ts` via `getTools()`
+
+### Provider Architecture
+
+RAYU uses a **provider abstraction layer** (`src/services/api/`) that adapts different AI provider APIs to a common interface:
+
+- **Anthropic Claude**: Native support via `@anthropic-ai/sdk`
+- **OpenAI**: Adapter via `openai` SDK
+- **Google Gemini**: Adapter via `@google/genai`
+- **AWS Bedrock**: Adapter via `@aws-sdk/client-bedrock-runtime`
+- **DeepSeek, Kimi, OpenRouter**: OpenAI-compatible adapter with custom endpoints
+- **Local servers**: Any OpenAI-compatible local server
+
+All providers expose a unified interface for streaming, tool calls, and message formatting.
 
 ### How RAYU Differs from Claude Code
 
-RAYU started as a Claude Code fork but has diverged significantly:
+RAYU CLI started as a Claude Code fork but has evolved significantly:
 
-| Area | Claude Code (upstream) | RAYU CLI |
-|------|----------------------|----------|
+| Feature | Claude Code (upstream) | RAYU CLI |
+|---------|------------------------|----------|
 | Provider support | Anthropic only | Multi-provider (Anthropic, OpenAI, DeepSeek, Gemini, Bedrock, etc.) |
 | Pricing model | Direct API key | Optional centralized billing via rayu-backend |
 | Remote access | Desktop/Web only | Telegram bridge for mobile/remote access |
@@ -65,15 +69,19 @@ RAYU started as a Claude Code fork but has diverged significantly:
 | Deployment | Self-hosted | Self-hosted + optional cloud (rayu-backend) |
 | Branding | Claude Code | RAYU (customizable brand glyph/mascot) |
 
-**Critical: Do NOT assume Claude Code features work the same in RAYU. Always read the actual source code.**
+**Critical for AI agents:** Do NOT assume Claude Code features work the same in RAYU. Always read the actual source code, never guess based on upstream behavior.
 
 ---
 
-## 🚨 CRITICAL RULES FOR AI AGENTS
+## CRITICAL RULES FOR AI AGENTS
 
-### Rule 1: NO ASSUMPTIONS — Find Root Cause and Clarify
+### 🛑 Rule 1: NO ASSUMPTIONS — Always Find Root Cause and Clarify
 
 **NEVER assume how RAYU works based on general "AI agent" or "Claude Code" knowledge.** This codebase has significant modifications and is NOT a standard fork.
+
+**🚨 CRITICAL WARNING FOR AI AGENTS 🚨**
+
+**DO NOT make assumptions about this codebase.** You MUST find the root cause and clarify by reading the actual source code. This is NOT negotiable. This is NOT optional.
 
 **If you guess, you WILL introduce bugs. If you assume, you WILL break existing functionality.**
 
@@ -81,7 +89,7 @@ RAYU started as a Claude Code fork but has diverged significantly:
 - ✅ **DO:** Read the actual source code, trace execution paths, verify behavior in the code
 - ✅ **DO:** Clarify by reading file contents — don't assume from names or docstrings
 - ✅ **DO:** Check `ORIGIN_MANIFEST.md` to understand which files are original vs derivative
-- ✅ **DO:** Use Graphify to explore the codebase and discover relationships
+- ✅ **DO:** Use Graphify (see Rule 3) to explore the codebase and discover relationships
 - ✅ **DO:** Ask the user for clarification if the code is genuinely ambiguous after reading it
 - ❌ **DON'T:** Guess behavior from "what it should be"
 - ❌ **DON'T:** Assume upstream Claude Code features work the same here
@@ -94,7 +102,7 @@ RAYU started as a Claude Code fork but has diverged significantly:
 - "This command behaves the same" → **READ** the command source in `src/commands/`
 - "This tool has these parameters" → **READ** the tool definition in `src/tools/`
 - "Feature flags are runtime checks" → **NO** — `feature('FLAG')` is **compile-time DCE**, removed from bundle entirely if disabled
-- "The Ink renderer is standard npm ink" → **NO** — custom reconciler at `src/ink/reconciler.ts`
+- "The Ink renderer is standard npm ink" → **NO** — custom reconciler at `src/ink/reconciler.ts` with packed Int32 buffers, custom ANSI parser, Yoga layout
 - "Permission system is simple" → **NO** — 20+ files with classifiers, shell rule matching, dangerous patterns, shadowed rule detection
 - "State management uses React context" → **NO** — uses Zustand-like stores in `src/state/`
 - "Directory structure follows convention" → **NO** — Rayu adds entire new directories: `src/telegram/`, `src/coordinator/`, `src/bridge/`, `src/buddy/`, `src/memdir/`, `src/assistant/`, `src/remote/`, etc.
@@ -103,11 +111,13 @@ RAYU started as a Claude Code fork but has diverged significantly:
 
 ---
 
-### Rule 2: PREVENT DUPLICATE CODE — Read Before You Write
+### 🔍 Rule 2: PREVENT DUPLICATE CODE — Read Before You Write
 
 **CRITICAL: Before adding ANY new function, component, command, tool, utility, or feature, you MUST verify it does not already exist.**
 
 The codebase has **2027+ source files** across **60+ directories** — accidental duplication is EXTREMELY likely.
+
+**🚨 THIS IS NOT OPTIONAL 🚨**
 
 **You MUST search FIRST, code SECOND. Always. Every time. No exceptions.**
 
@@ -120,12 +130,12 @@ The codebase has **2027+ source files** across **60+ directories** — accidenta
 3. **Check ALL relevant locations:**
    - `src/commands/` — 94 commands exist; check `src/commands.ts` for registry
    - `src/tools/` — 48 tools exist; check `src/tools.ts` for registry
-   - `src/utils/` — 354 files across 40+ subdirectories
-   - `src/components/` — 145+ UI components
-   - `src/services/` — API services, MCP, analytics, etc.
-   - `src/skills/bundled/` — 20+ bundled skills
+   - `src/utils/` — 354 files across 40+ subdirectories (git, settings, bash, mcp, memory, permissions, hooks, swarm, model, messages, background, github, sandbox, suggestions, todo, ultraplan, filePersistence, secureStorage, processUserInput, deepLink, computerUse, dxt, nativeInstaller, powershell, shell, skills, task, teleport, cron, etc.)
+   - `src/components/` — 145+ UI components across design-system, messages, permissions, agents, diff, hooks, mcp, memory, sandbox, shell, skills, tasks, teams, ui, wizard
+   - `src/services/` — API services (api/, mcp/, rayuAuth/, analytics/, lsp/, plugins/, settingsSync/, compact/, policyLimits/)
+   - `src/skills/bundled/` — 20+ bundled skills (simplify, verify, remember, updateConfig, keybindings, claudeApi, rayuSkills, batch, debug, loop, loremIpsum, scheduleRemoteAgents, skillify, stuck, etc.)
    - `src/hooks/` — 84 React hooks
-   - `src/state/` — Zustand-like stores
+   - `src/state/` — Zustand-like stores (AppState, selectors, store, etc.)
    - `src/ink/` — terminal renderer (50+ files)
    - `src/constants/` — 22 files of constants
    - `src/types/` — 15+ type definitions
@@ -143,14 +153,34 @@ The codebase has **2027+ source files** across **60+ directories** — accidenta
 5. **Reuse and extend** existing patterns rather than creating new ones
 6. **Check for similar patterns** — even if the exact function doesn't exist, there may be a similar one to extend
 7. **Check `ORIGIN_MANIFEST.md`** to understand which files are original Rayu vs derivative Claude Code
+
 8. **When in doubt, use Graphify** (see Rule 3) to discover related code across the entire codebase
+
+**Examples of how to search:**
+
+```bash
+# Search for existing tool implementations
+grep -r "class.*Tool" src/tools/
+
+# Search for similar command implementations
+grep -r "command.*telegram" src/commands/
+
+# Search for utility functions
+grep -r "function.*validate" src/utils/
+
+# Use Graphify to explore relationships
+/graphify --mode deep src/tools/
+```
 
 ---
 
-### Rule 3: USE GRAPHIFY FOR CODEBASE UNDERSTANDING
+### 📊 Rule 3: USE GRAPHIFY FOR CODEBASE UNDERSTANDING
 
-**Graphify is your FIRST tool, not your last resort.** It is a knowledge-graph tool that can:
+**🚨 GRAPHIFY IS YOUR FIRST TOOL, NOT YOUR LAST RESORT 🚨**
 
+**Graphify is available and MUST be used as a FIRST STEP for codebase exploration.**
+
+Graphify is a knowledge-graph tool that can:
 - Build a knowledge graph of the codebase (nodes = code entities, edges = relationships)
 - Discover code structure, dependencies, and relationships **10x faster** than manual searching
 - Find whether functionality already exists before you write it
@@ -159,7 +189,7 @@ The codebase has **2027+ source files** across **60+ directories** — accidenta
 - Trace execution paths through complex module interactions
 
 **When to use Graphify (use it EARLY and OFTEN):**
-- ✅ **Before writing any new code** — discover if something already exists
+- ✅ **Before writing any new code** — use Graphify to discover if something already exists
 - ✅ **Before adding a new tool** — check if a similar tool exists
 - ✅ **Before adding a new command** — check if a similar command exists
 - ✅ **Before adding a utility function** — check if similar utilities exist
@@ -168,20 +198,25 @@ The codebase has **2027+ source files** across **60+ directories** — accidenta
 - ✅ When debugging complex cross-module issues
 - ✅ When you need to understand the dependency graph of a module
 - ✅ When you're unsure where to put new code
-- ✅ When you're trying to understand the provider architecture, tool registration, or command registration
+- ✅ When you're trying to understand the provider architecture
+- ✅ When you're trying to understand the tool registration system
+- ✅ When you're trying to understand the command registration system
 
 **How to use Graphify:**
+- Skill location: `.kiro/skills/graphify/SKILL.md`
 - **Invoke via:** `/graphify` or the Skill tool
 - **Outputs go to:** `graphify-out/` directory (`graph.json`, `GRAPH_REPORT.md`)
 - **Key commands:**
   - `--mode deep` — thorough extraction (use this for comprehensive analysis)
-  - `--update` — incremental update
+  - `--update` — incremental update (use this to refresh after changes)
   - `--cluster-only` — recluster only (faster than full rebuild)
-  - `--html` / `--svg` / `--graphml` / `--neo4j` — export formats
-  - `--watch` — auto-rebuild for continuous development
-  - `query` — BFS/DFS traversal to trace relationships
+  - `--html` / `--svg` / `--graphml` / `--neo4j` — export formats (use HTML for interactive exploration)
+  - `--watch` — auto-rebuild (use this for continuous development)
+  - `query` — BFS/DFS traversal (use this to trace relationships)
+- **Tip:** Run `graphify --mode deep` on a specific directory to understand its structure before making changes
 
 **Example Graphify workflow:**
+
 ```bash
 # Before adding a new tool, check existing tools
 /graphify --mode deep src/tools/
@@ -196,13 +231,18 @@ The codebase has **2027+ source files** across **60+ directories** — accidenta
 
 # Before adding a utility
 /graphify --mode deep src/utils/
+
+# To understand the provider architecture
+/graphify --mode deep src/services/api/
 ```
+
+**Graphify is available to you via the `/graphify` skill. Use it as your FIRST exploration tool, not your last resort.**
 
 **If you write code without running Graphify first, you are almost certainly creating duplicate code.**
 
 ---
 
-### Rule 4: Follow Project Conventions
+### 📋 Rule 4: Follow Project Conventions
 
 - **TypeScript + Bun** — use ES modules, dynamic `import()` for lazy loading
 - **Feature flags:** `feature('FLAG')` from `bun:bundle` is **COMPILE-TIME DCE**, not runtime. Do NOT convert to static `import` — it bloats the bundle
@@ -219,7 +259,7 @@ The codebase has **2027+ source files** across **60+ directories** — accidenta
 
 ---
 
-### Rule 5: Build & Test Commands
+### 🧪 Rule 5: Build & Test Commands
 
 ```bash
 bun install              # install dependencies
@@ -242,6 +282,7 @@ bun run build:packages   # .deb/.rpm Linux packages
 - **Tool interface:** Defined in `src/Tool.ts`
 - **Tool registry:** `src/tools.ts` exports `getTools()` which returns all available tools
 - **Tool implementation pattern:** Each tool is a class extending the Tool interface
+- **Tool registration:** Tools are registered in `src/tools.ts` via `getTools()`
 - **Tool categories:**
   - **File operations:** Read, Write, Edit, Glob, Grep
   - **Execution:** Bash, REPL (Ant-only)
@@ -255,15 +296,22 @@ bun run build:packages   # .deb/.rpm Linux packages
   - **Media:** ImageGen, VideoGen
   - **Notifications:** Brief, PushNotification (feature-gated)
   - **Scheduling:** CronCreate, CronDelete, CronList (feature-gated)
-  - **Team:** TeamCreate, TeamDelete, SendMessage (lazy-loaded)
+  - **Team:** TeamCreate, TeamDelete, SendMessage (lazy-loaded to break circular deps)
   - **Testing:** TestingPermission (testing only)
+
+**How tools work:**
+1. AI model decides which tool to call (from schema)
+2. Tool is invoked via `tool.execute()` with `toolInput` and `context`
+3. Tool performs action (read file, execute bash, call API, etc.)
+4. Tool returns `ToolResult` with content blocks
+5. Result is sent back to AI model for next turn
 
 **Adding a new tool:**
 - Create a new class in `src/tools/YourToolName/YourToolName.ts`
 - Extend the Tool interface
 - Implement required methods: `name`, `description`, `inputSchema`, `execute()`
 - Register in `src/tools.ts` by importing and adding to the tools array
-- Use `ImageGenTool` as a reference pattern (simple and well-structured)
+- Use `ImageGenTool` as a reference pattern (it's relatively simple and well-structured)
 
 ### Command System
 
@@ -271,7 +319,18 @@ bun run build:packages   # .deb/.rpm Linux packages
 
 - **Command interface:** Defined in `src/commands.ts`
 - **Command registry:** `src/commands.ts` exports `getCommands()` which returns all available commands
-- **Command types:** `'interactive'` (shows UI), `'non-interactive'` (executes immediately), `'jsx'` (renders JSX component)
+- **Command implementation pattern:** Each command is an object with `name`, `description`, `type`, and `action`
+- **Command registration:** Commands are registered in `src/commands.ts` via `getCommands()`
+- **Command types:**
+  - `'interactive'` — shows interactive UI (most commands)
+  - `'non-interactive'` — executes immediately without showing UI
+  - `'jsx'` — renders JSX component
+
+**How commands work:**
+1. User types `/commandName` in the input
+2. Command is looked up in the registry
+3. Command's `action` function is called
+4. Action can show UI, modify state, or trigger other actions
 
 **Adding a new command:**
 - Create a new directory in `src/commands/yourCommandName/`
@@ -281,8 +340,25 @@ bun run build:packages   # .deb/.rpm Linux packages
 
 ### Provider Architecture
 
-Providers abstract different AI APIs into a common interface (`src/services/api/`):
+**Providers** abstract different AI APIs into a common interface.
 
+- **Provider abstraction:** `src/services/api/`
+- **Supported providers:**
+  - Anthropic Claude (native via `@anthropic-ai/sdk`)
+  - OpenAI (adapter)
+  - Google Gemini (adapter via `@google/genai`)
+  - AWS Bedrock (adapter via `@aws-sdk/client-bedrock-runtime`)
+  - DeepSeek, Kimi, OpenRouter (OpenAI-compatible adapter)
+  - Any OpenAI-compatible local server
+
+**How providers work:**
+1. User selects provider via `/connect` command
+2. Provider config is saved in `~/.rayu/config.json`
+3. API calls go through provider-specific adapter
+4. Adapter normalizes responses to common format
+5. RAYU processes normalized responses
+
+**Provider files:**
 - `src/services/api/claude.ts` — Anthropic Claude adapter
 - `src/services/api/openai.ts` — OpenAI adapter (also used for DeepSeek, Kimi, OpenRouter)
 - `src/services/api/gemini.ts` — Google Gemini adapter
@@ -290,33 +366,69 @@ Providers abstract different AI APIs into a common interface (`src/services/api/
 
 ### State Management
 
-Zustand-like stores in `src/state/`:
-- `src/state/AppState.ts` — main store, exports `useAppState()` hook
-- Key slices: Messages, Tools, Commands, Permissions, MCP, Settings, Skills, Tasks, Telegram
+**RAYU uses Zustand-like stores** for state management (not React context).
+
+- **State location:** `src/state/`
+- **Main store:** `src/state/AppState.ts` exports `useAppState()` hook
+- **State shape:** See `AppState` interface in `src/state/AppState.ts`
+- **State mutations:** Via setter functions, not direct mutation
+
+**Key state slices:**
+- Messages (conversation history)
+- Tools (available tools)
+- Commands (available commands)
+- Permissions (permission mode, rules, denials)
+- MCP (connected MCP servers)
+- Settings (user configuration)
+- Skills (loaded skills)
+- Tasks (todo list)
+- Telegram (telegram bot connection state)
 
 ### Terminal Rendering (Ink)
 
-**CUSTOM React reconciler** at `src/ink/reconciler.ts` — NOT standard npm `ink`:
-- Packed Int32 buffers for performance
-- Custom ANSI parser
-- Yoga layout engine
-- Custom component primitives
+**RAYU uses a CUSTOM React reconciler** for terminal output — NOT standard npm `ink`.
+
+- **Reconciler location:** `src/ink/reconciler.ts`
+- **Key differences from standard Ink:**
+  - Packed Int32 buffers for performance
+  - Custom ANSI parser
+  - Yoga layout engine
+  - Custom component primitives
+
+**DO NOT assume standard Ink APIs work here. READ THE CODE.**
 
 ### Telegram Bridge
 
-For mobile/remote access via `@rayu_clawbot`:
+**RAYU has a Telegram bridge** for mobile/remote access.
+
+- **Bridge location:** `src/telegram/`, `src/bridge/`
+- **Bot:** `@rayu_clawbot` (user must pair via QR code)
+- **How it works:**
+  1. User runs `/telegram-bot` command
+  2. QR code displayed for pairing
+  3. User scans QR code with Telegram
+  4. Bot sends messages to RAYU CLI via WebSocket
+  5. RAYU CLI sends responses back to Telegram
+
+**Telegram bridge files:**
 - `src/commands/telegram-bot/` — Telegram bot command
 - `src/telegram/` — Telegram message handlers
 - `src/bridge/` — Bridge abstractions
 
 ### Billing Integration (Optional)
 
-Integrates with rayu-backend for centralized billing:
-- `src/services/rayuAuth/` — Auth and entitlement services
-- `src/commands/billing/` — Billing commands
-- **This is OPTIONAL** — RAYU can run fully offline with direct API keys
+**RAYU can integrate with rayu-backend** for centralized billing.
 
----
+- **Backend location:** `/home/rayu/rayu-cli/rayu-backend/` (sibling monorepo project)
+- **Integration files:** `src/services/rayuAuth/`, `src/commands/billing/`
+- **How it works:**
+  1. User logs in via `/login` command (or automatically on first launch)
+  2. Auth tokens stored securely
+  3. API calls proxied through rayu-gateway
+  4. Usage tracked in rayu-backend database
+  5. User billed based on usage
+
+**This is OPTIONAL — RAYU can run fully offline with direct API keys.**
 
 ## Key File Map
 
@@ -336,7 +448,7 @@ Integrates with rayu-backend for centralized billing:
 | `src/services/rayuAuth/` | Optional rayu-backend authentication |
 | `src/components/` | UI components (145+ files) |
 | `src/state/` | Zustand-like state management |
-| `src/hooks/` | React hooks (84) |
+| `src/hooks/` | React hooks (84 covering suggestions, permissions, keybindings, voice, swarm, teleport, settings, skills, tasks, etc.) |
 | `src/constants/` | Constants (22 files) |
 | `src/types/` | TypeScript type definitions (15+ files) |
 | `src/skills/bundled/` | Bundled skill definitions (20+ skills) |
@@ -355,37 +467,36 @@ Integrates with rayu-backend for centralized billing:
 ### Before you start:
 
 1. **Use Graphify** — Run `/graphify` to understand the codebase structure and verify the feature doesn't already exist
-2. **Read this file** — RAYU.md (you're reading it now)
-3. **Read AGENTS.md** — For deeper agent guidance
-4. **Check ORIGIN_MANIFEST.md** — Understand provenance (is this area derivative or original Rayu?)
-5. **Search existing implementations** — Check all relevant directories from Rule 2
+2. **Read AGENTS.md** — This file (you're reading it now)
+3. **Check ORIGIN_MANIFEST.md** — Understand provenance (is this area derivative or original Rayu?)
+4. **Search existing implementations** — Check all relevant directories from Rule 2
 
 ### Design phase:
 
-6. **Read related source code** — Don't assume; verify actual implementation
-7. **Ask clarifying questions** — If behavior is unclear, read the code until it's clear
-8. **Check conventions** — Follow the patterns in nearby files
+5. **Read related source code** — Don't assume; verify actual implementation
+6. **Ask clarifying questions** — If behavior is unclear, read the code until it's clear
+7. **Check conventions** — Follow the patterns in nearby files
 
 ### Implementation phase:
 
-9. **Write tests first** (TDD) — 80%+ coverage minimum
-10. **Implement minimal code** to pass tests
-11. **Run type checks:** `bun run typecheck`
-12. **Build bundle:** `bun run build` (verify no bloat from feature flags)
-13. **Test locally:** `bun run dev`
+8. **Write tests first** (TDD) — 80%+ coverage minimum
+9. **Implement minimal code** to pass tests
+10. **Run type checks:** `bun run typecheck`
+11. **Build bundle:** `bun run build` (verify no bloat from feature flags)
+12. **Test locally:** `bun run dev`
 
 ### Review phase:
 
-14. **Code review** — Check against project conventions
-15. **Verify no duplication** — Did you accidentally duplicate code elsewhere?
-16. **Security review** — Check for hardcoded secrets, validation, etc.
-17. **Performance check** — For large files or complex operations
+13. **Code review** — Check against project conventions
+14. **Verify no duplication** — Did you accidentally duplicate code elsewhere?
+15. **Security review** — Check for hardcoded secrets, validation, etc.
+16. **Performance check** — For large files or complex operations
 
 ### Commit phase:
 
-18. **Detailed commit message** — Follow conventional commits format (feat, fix, refactor, docs, test, chore, perf, ci)
-19. **Verify CI passes** — All automated checks green
-20. **Resolve merge conflicts** — Sync with target branch
+17. **Detailed commit message** — Follow conventional commits format (feat, fix, refactor, docs, test, chore, perf, ci)
+18. **Verify CI passes** — All automated checks green
+19. **Resolve merge conflicts** — Sync with target branch
 
 ---
 

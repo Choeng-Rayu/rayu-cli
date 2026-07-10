@@ -119,6 +119,7 @@ import sandboxToggle from './commands/sandbox-toggle/index.js'
 import contactMe from './commands/contactMe/index.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
+import billing from './commands/billing/index.js'
 import usage from './commands/usage/index.js'
 import advisor from './commands/advisor.js'
 import { logError } from './utils/log.js'
@@ -144,6 +145,7 @@ import connect from './commands/connect/index.js'
 import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
 import modelSubagent from './commands/model-subagent/index.js'
+import webfetchModel from './commands/webfetch-model/index.js'
 import collaboratorModel from './commands/collaborator-model/index.js'
 import modelImageGeneration from './commands/model-image-generation/index.js'
 import modelVideoGeneration from './commands/model-video-generation/index.js'
@@ -232,6 +234,7 @@ const COMMANDS = memoize((): Command[] => [
   disconnectTelegram,
   model,
   modelSubagent,
+  webfetchModel,
   collaboratorModel,
   modelImageGeneration,
   modelVideoGeneration,
@@ -252,6 +255,7 @@ const COMMANDS = memoize((): Command[] => [
   contactMe,
   login,
   logout,
+  billing,
   usage,
   tag,
   theme,
