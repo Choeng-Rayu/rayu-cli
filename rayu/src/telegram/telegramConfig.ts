@@ -10,7 +10,17 @@ export interface PendingToken {
 
 /** Persisted Telegram bridge state. Stored at <configHome>/telegram.json (0600). */
 export interface TelegramConfig {
-  /** The bot token (from @BotFather). Stored here so users don't need env vars. */
+  /**
+   * Connection mode:
+   *  - 'hosted' (default): use the shared Rayu-hosted bot via the backend — no
+   *    bot token needed; linking + routing happen server-side.
+   *  - 'byo': bring your own @BotFather token (stored in `botToken`); the CLI
+   *    talks to Telegram directly.
+   * Absent = inferred: 'byo' when a botToken is present (back-compat with users
+   * who already pasted one), else 'hosted'.
+   */
+  mode?: 'hosted' | 'byo'
+  /** The bot token (from @BotFather). Only used in BYO mode. */
   botToken?: string
   linkedChatId?: number
   linkedUsername?: string
@@ -19,6 +29,37 @@ export interface TelegramConfig {
 
 function configPath(): string {
   return join(getRayuConfigHomeDir(), 'telegram.json')
+}
+
+/**
+ * Resolve the active connection mode. Defaults to 'hosted' (shared Rayu bot).
+ * For back-compat, a config that already has a BYO token but no explicit mode
+ * is treated as 'byo' so existing setups keep working unchanged.
+ */
+export function getTelegramMode(): 'hosted' | 'byo' {
+  const cfg = readTelegramConfig()
+  if (cfg.mode === 'hosted' || cfg.mode === 'byo') return cfg.mode
+  return cfg.botToken && cfg.botToken.trim().length > 0 ? 'byo' : 'hosted'
+}
+
+/** Persist the connection mode. */
+export function setTelegramMode(mode: 'hosted' | 'byo'): void {
+  const cfg = readTelegramConfig()
+  cfg.mode = mode
+  writeTelegramConfig(cfg)
+}
+
+/**
+ * Record the linked chat locally. In BYO mode this is set by consumePendingToken
+ * (the CLI does the linking); in hosted mode the backend owns the link and the
+ * CLI mirrors it here so the bridge's chat filter (chatId === linkedChatId)
+ * works unchanged.
+ */
+export function setLinkedChat(chatId: number, username?: string): void {
+  const cfg = readTelegramConfig()
+  cfg.linkedChatId = chatId
+  cfg.linkedUsername = username
+  writeTelegramConfig(cfg)
 }
 
 /**
@@ -36,6 +77,20 @@ export function getBotToken(): string | undefined {
 export function saveBotToken(token: string): void {
   const cfg = readTelegramConfig()
   cfg.botToken = token.trim()
+  writeTelegramConfig(cfg)
+}
+
+/**
+ * Remove the stored BYO bot token (and any half-finished pairing) so the user
+ * can enter a fresh one — e.g. after the old token was revoked/expired. Leaves
+ * the mode as-is; the connect flow re-prompts for a token when none is set.
+ */
+export function clearBotToken(): void {
+  const cfg = readTelegramConfig()
+  delete cfg.botToken
+  delete cfg.pendingToken
+  delete cfg.linkedChatId
+  delete cfg.linkedUsername
   writeTelegramConfig(cfg)
 }
 

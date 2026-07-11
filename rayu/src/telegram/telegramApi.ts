@@ -6,6 +6,34 @@ import { existsSync, statSync } from 'fs'
 const API_BASE = 'https://api.telegram.org'
 const MAX_MESSAGE_CHARS = 4096
 
+/**
+ * Hosted-mode routing seam. When a HostedRouter is installed (shared Rayu bot),
+ * the Telegram API calls below are transparently rerouted through the backend
+ * instead of api.telegram.org — so the entire bridge/connect/permissions code
+ * keeps calling sendMessage/getUpdates/etc. with a sentinel token, unchanged.
+ * When null (BYO mode), everything hits Telegram directly with the user's token.
+ */
+export interface HostedRouter {
+  /** Long-poll the user's inbound queue (the `offset` arg is ignored). */
+  getUpdates(offset: number): Promise<TelegramUpdate[]>
+  /** Relay a Bot API method (sendMessage, editMessageText, …) via the backend. */
+  call(method: string, params: Record<string, unknown>): Promise<unknown>
+  /** The shared bot's @username (for deep links). */
+  botUsername(): Promise<string | undefined>
+}
+
+let hostedRouter: HostedRouter | null = null
+
+/** Install (or clear) the hosted router. Set on hosted connect, cleared on stop. */
+export function setHostedRouter(router: HostedRouter | null): void {
+  hostedRouter = router
+}
+
+/** True when Telegram calls are being routed through the backend (hosted bot). */
+export function isHostedMode(): boolean {
+  return hostedRouter !== null
+}
+
 /** Escape special HTML characters for Telegram HTML parse_mode. */
 export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -51,6 +79,8 @@ function url(token: string, method: string): string {
 }
 
 async function callApi(token: string, method: string, body: object): Promise<unknown> {
+  // Hosted mode: relay through the backend instead of calling Telegram directly.
+  if (hostedRouter) return hostedRouter.call(method, body as Record<string, unknown>)
   const res = await fetch(url(token, method), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -71,6 +101,7 @@ async function callApi(token: string, method: string, body: object): Promise<unk
 
 /** Returns the bot's @username, or undefined on failure. Used for deep-link QR. */
 export async function getBotUsername(token: string): Promise<string | undefined> {
+  if (hostedRouter) return hostedRouter.botUsername()
   try {
     const result = await callApi(token, 'getMe', {})
     return (result as { username?: string }).username
@@ -85,6 +116,13 @@ export async function getUpdates(
   offset: number,
   timeoutSec = 50,
 ): Promise<TelegramUpdate[]> {
+  if (hostedRouter) {
+    try {
+      return await hostedRouter.getUpdates(offset)
+    } catch {
+      return []
+    }
+  }
   try {
     const result = await callApi(token, 'getUpdates', { offset, timeout: timeoutSec })
     return Array.isArray(result) ? (result as TelegramUpdate[]) : []
@@ -157,6 +195,12 @@ export async function sendPhoto(
   mediaType: string,
   caption?: string,
 ): Promise<void> {
+  // Hosted mode: binary uploads aren't relayed yet — send a text notice so the
+  // chat still gets feedback (BYO mode uploads the real photo).
+  if (hostedRouter) {
+    await sendMessage(token, chatId, caption ?? '🖼 Image generated (view it in the CLI).')
+    return
+  }
   const ext = mediaType.includes('jpeg') || mediaType.includes('jpg') ? 'jpg' : 'png'
   const buffer = Buffer.from(base64Data, 'base64')
   const blob = new Blob([buffer], { type: mediaType })
@@ -185,6 +229,11 @@ export async function sendVideo(
   filePath: string,
   caption?: string,
 ): Promise<void> {
+  // Hosted mode: binary uploads aren't relayed yet — send a text notice.
+  if (hostedRouter) {
+    await sendMessage(token, chatId, caption ?? '🎬 Video generated (view it in the CLI).')
+    return
+  }
   // Guard: file must exist and be within Telegram's bot upload limit.
   if (!existsSync(filePath)) {
     await sendMessage(token, chatId, `🎬 Video generated but file not found: ${filePath}`)
@@ -323,6 +372,7 @@ export async function setMyCommands(
  * Returns the file_path needed to construct the download URL, or undefined on failure.
  */
 export async function getFile(token: string, fileId: string): Promise<string | undefined> {
+  if (hostedRouter) return undefined // inbound file download not relayed in hosted mode yet
   try {
     const result = await callApi(token, 'getFile', { file_id: fileId })
     return (result as { file_path?: string }).file_path
@@ -340,6 +390,7 @@ export async function downloadFileAsBase64(
   token: string,
   filePath: string,
 ): Promise<{ base64: string; mediaType: string } | undefined> {
+  if (hostedRouter) return undefined // not relayed in hosted mode yet
   try {
     const fileUrl = `${API_BASE}/file/bot${token}/${filePath}`
     const res = await fetch(fileUrl)

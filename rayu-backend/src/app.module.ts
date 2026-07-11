@@ -15,6 +15,7 @@ import { PrismaModule } from './prisma/prisma.module'
 import { PrismaService } from './prisma/prisma.service'
 import { AppSettingsModule } from './settings/app-settings.module'
 import { AppSettingsService } from './settings/app-settings.service'
+import { TelegramModule } from './telegram/telegram.module'
 import { UsageModule } from './usage/usage.module'
 import { UsersModule } from './users/users.module'
 
@@ -35,6 +36,7 @@ const LOCAL_ADMIN_CLERK_ID = 'local_admin_rayucode'
     FeedbackModule,
     AdminModule,
     PaymentsModule,
+    TelegramModule,
   ],
 })
 export class AppModule implements OnModuleInit {
