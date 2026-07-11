@@ -134,7 +134,7 @@ import { getGlobalConfig, saveGlobalConfig, getGlobalConfigWriteCount } from '..
 import { hasConsoleBillingAccess } from '../utils/billing.js';
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
-import { textForResubmit, handleMessageFromStream, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
+import { textForResubmit, handleMessageFromStream, finalizeStreamingThinkingOnTurnEnd, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
 import { generateSessionTitle } from '../utils/sessionTitle.js';
 import { BASH_INPUT_TAG, COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG, LOCAL_COMMAND_STDOUT_TAG } from '../constants/xml.js';
 import { escapeXml } from '../utils/xml.js';
@@ -1587,6 +1587,14 @@ export function REPL({
     apiMetricsRef.current = [];
     setStreamingText(null);
     setStreamingToolUses([]);
+    // Finalize the live thinking preview. If the turn ended while a thinking
+    // block was still mid-stream (request errored/aborted before the block
+    // completed), streamingThinking is stuck at { isStreaming: true } and
+    // nothing else clears it — the animated "Thinking…" preview would keep
+    // spinning below the error/turn-status and look like it's still working.
+    // On a normal turn the block already completed (isStreaming:false), so
+    // this is a no-op and the 30s "✓ Thought" linger is preserved.
+    setStreamingThinking(finalizeStreamingThinkingOnTurnEnd);
     setSpinnerMessage(null);
     setSpinnerColor(null);
     setSpinnerShimmerColor(null);
