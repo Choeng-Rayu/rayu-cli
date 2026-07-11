@@ -12,7 +12,8 @@ ENV npm_config_fetch_retries=5 \
     npm_config_fetch_timeout=600000
 
 COPY package.json package-lock.json* ./
-RUN npm install
+# Retry npm install up to 3 times for flaky build-host networks (Coolify, etc.)
+RUN for i in 1 2 3; do npm install && break || sleep 10; done
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY prisma ./prisma
 COPY src ./src
@@ -32,7 +33,7 @@ ENV NODE_ENV=production \
 COPY package.json package-lock.json* ./
 # Production deps include `prisma` (CLI) + `@prisma/client` so we can run
 # `migrate deploy` and the generated client at runtime.
-RUN npm install --omit=dev && npm cache clean --force
+RUN for i in 1 2 3; do npm install --omit=dev && break || sleep 10; done && npm cache clean --force
 
 COPY prisma ./prisma
 # Generate the client against the production node_modules.
