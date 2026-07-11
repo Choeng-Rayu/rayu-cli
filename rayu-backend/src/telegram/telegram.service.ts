@@ -58,11 +58,13 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms))
 
 /**
- * Shared Telegram bot service. Runs ONE getUpdates poller for the whole
- * deployment (Telegram allows a single consumer per token), routes each chat's
- * traffic to the owning Rayu user's inbound queue, and relays outbound calls
- * (chat_id forced to the caller's own link). Users who bring their own bot token
- * in the CLI never touch this service.
+ * Shared Telegram bot service. Runs either:
+ * - a getUpdates poller, or
+ * - a Telegram Bot API webhook receiver
+ * for the whole deployment (Telegram allows a single consumer per token), routes
+ * each chat's traffic to the owning Rayu user's inbound queue, and relays
+ * outbound calls (chat_id forced to the caller's own link). Users who bring their
+ * own bot token in the CLI never touch this service.
  */
 @Injectable()
 export class TelegramService implements OnModuleInit {
@@ -70,6 +72,9 @@ export class TelegramService implements OnModuleInit {
   // The shared bot's token lives under its OWN env var (RAYU_SHARED_BOT_TOKEN)
   // so it never collides with the separate ABA payment bot's TELEGRAM_BOT_TOKEN.
   private readonly token = process.env.RAYU_SHARED_BOT_TOKEN?.trim() || ''
+  private readonly webhookUrl = process.env.TELEGRAM_WEBHOOK_URL?.trim() || ''
+  private readonly webhookSecret =
+    process.env.TELEGRAM_WEBHOOK_SECRET?.trim() || ''
   private botUsername: string | null = null
   private polling = false
   private lastConflictLogAt = 0
@@ -81,19 +86,31 @@ export class TelegramService implements OnModuleInit {
     return this.token.length > 0
   }
 
+  /** True when the deployment is configured to receive Telegram webhooks. */
+  get webhookConfigured(): boolean {
+    return this.webhookUrl.length > 0
+  }
+
   onModuleInit(): void {
-    // Never start the network poller in tests, or when explicitly skipped, or
-    // when no shared token is configured (BYO-only deployment).
+    // Never start the network consumer in tests, or when no shared token is
+    // configured (BYO-only deployment).
     if (
       !this.configured ||
-      process.env.NODE_ENV === 'test' ||
-      process.env.SKIP_TELEGRAM_POLL === 'true'
+      process.env.NODE_ENV === 'test'
     ) {
-      if (this.configured) {
-        this.logger.log('Shared Telegram bot configured (poller disabled).')
-      }
       return
     }
+
+    if (process.env.SKIP_TELEGRAM_POLL === 'true' && !this.webhookConfigured) {
+      this.logger.log('Shared Telegram bot configured (poller + webhook disabled).')
+      return
+    }
+
+    if (this.webhookConfigured) {
+      void this.registerWebhook()
+      return
+    }
+
     void this.startPoller()
   }
 
@@ -124,6 +141,26 @@ export class TelegramService implements OnModuleInit {
       botUsername: info.username,
       deepLink: info.username ? `https://t.me/${info.username}?start=${code}` : null,
     }
+  }
+
+  /** Accept and route a single Telegram update (used by webhook + poller). */
+  async receiveUpdate(u: TelegramUpdate): Promise<void> {
+    try {
+      await this.handleUpdate(u)
+    } catch (e) {
+      this.logger.warn(`telegram update handling failed: ${String(e)}`)
+    }
+  }
+
+  async setWebhook(): Promise<void> {
+    if (!this.configured) throw new Error('shared bot token not configured')
+    if (!this.webhookConfigured) throw new Error('webhook URL not configured')
+    const secretToken = this.webhookSecret || undefined
+    await tgCall(this.token, 'setWebhook', {
+      url: this.webhookUrl,
+      allowed_updates: ['message', 'callback_query'],
+      secret_token: secretToken,
+    })
   }
 
   async getLink(userId: number): Promise<LinkStatus> {
@@ -196,6 +233,18 @@ export class TelegramService implements OnModuleInit {
   }
 
   // ---- Central poller -------------------------------------------------------
+
+  private async registerWebhook(): Promise<void> {
+    try {
+      await this.setWebhook()
+      this.logger.log(`Shared Telegram bot webhook registered: ${this.webhookUrl}`)
+    } catch (e) {
+      this.logger.error(
+        `Failed to register Telegram webhook: ${String(e)}. ` +
+          'Telegram will not push updates until this is fixed.',
+      )
+    }
+  }
 
   private async startPoller(): Promise<void> {
     this.polling = true
@@ -273,6 +322,21 @@ export class TelegramService implements OnModuleInit {
         'This chat is not linked. Run /telegram-bot in rayu-cli to connect.',
       )
     }
+  }
+
+  /** Validate the secret token Telegram sends in webhook requests. */
+  validateWebhookSecret(headerValue: string | undefined): boolean {
+    if (!this.webhookSecret) return true
+    if (!headerValue) return false
+    // Constant-time-ish compare is overkill for a random secret token, but safe.
+    const a = Buffer.from(this.webhookSecret)
+    const b = Buffer.from(headerValue)
+    if (a.length !== b.length) return false
+    let match = true
+    for (let i = 0; i < a.length; i++) {
+      match = match && a[i] === b[i]
+    }
+    return match
   }
 
   private async handlePairing(
