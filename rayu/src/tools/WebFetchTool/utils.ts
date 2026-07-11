@@ -29,7 +29,7 @@ class DomainBlockedError extends Error {
 class DomainCheckFailedError extends Error {
   constructor(domain: string) {
     super(
-      `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies blocking claude.ai.`,
+      `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies.`,
     )
     this.name = 'DomainCheckFailedError'
   }
@@ -69,10 +69,9 @@ const URL_CACHE = new LRUCache<string, CacheEntry>({
   ttl: CACHE_TTL_MS,
 })
 
-// Separate cache for preflight domain checks. URL_CACHE is URL-keyed, so
-// fetching two paths on the same domain triggers two identical preflight
-// HTTP round-trips to api.anthropic.com. This hostname-keyed cache avoids
-// that. Only 'allowed' is cached — blocked/failed re-check on next attempt.
+// Vestigial hostname-keyed cache from the former domain-check preflight, which
+// is now a Rayu no-op (see checkDomainBlocklist — no external request). Kept
+// only so clearWebFetchCache keeps a stable surface; nothing populates it now.
 const DOMAIN_CHECK_CACHE = new LRUCache<string, true>({
   max: 128,
   ttl: 5 * 60 * 1000, // 5 minutes — shorter than URL_CACHE TTL
@@ -177,30 +176,12 @@ type DomainCheckResult =
 export async function checkDomainBlocklist(
   domain: string,
 ): Promise<DomainCheckResult> {
-  if (DOMAIN_CHECK_CACHE.has(domain)) {
-    return { status: 'allowed' }
-  }
-  try {
-    const response = await axios.get(
-      `https://api.anthropic.com/api/web/domain_info?domain=${encodeURIComponent(domain)}`,
-      { timeout: DOMAIN_CHECK_TIMEOUT_MS },
-    )
-    if (response.status === 200) {
-      if (response.data.can_fetch === true) {
-        DOMAIN_CHECK_CACHE.set(domain, true)
-        return { status: 'allowed' }
-      }
-      return { status: 'blocked' }
-    }
-    // Non-200 status but didn't throw
-    return {
-      status: 'check_failed',
-      error: new Error(`Domain check returned status ${response.status}`),
-    }
-  } catch (e) {
-    logError(e)
-    return { status: 'check_failed', error: e as Error }
-  }
+  // Rayu does not run an external domain-safety preflight. Fetch safety is
+  // enforced by per-domain user permission approval — every non-preapproved
+  // host is confirmed by the user before a fetch (see
+  // WebFetchTool.checkPermissions). No external request is made here.
+  void domain
+  return { status: 'allowed' }
 }
 
 /**
@@ -381,9 +362,8 @@ export async function getURLMarkdownContent(
 
     const hostname = parsedUrl.hostname
 
-    // Check if the user has opted to skip the blocklist check
-    // This is for enterprise customers with restrictive security policies
-    // that prevent outbound connections to claude.ai
+    // The domain preflight is a Rayu no-op (checkDomainBlocklist always
+    // allows); the skipWebFetchPreflight setting is retained for compatibility.
     const settings = getSettings_DEPRECATED()
     if (!settings.skipWebFetchPreflight) {
       const checkResult = await checkDomainBlocklist(hostname)
@@ -433,11 +413,11 @@ export async function getURLMarkdownContent(
   ;(response as { data: unknown }).data = null
   const contentType = response.headers['content-type'] ?? ''
 
-  // Binary content: save raw bytes to disk with a proper extension so Claude
-  // can inspect the file later. We still fall through to the utf-8 decode +
-  // Haiku path below — for PDFs in particular the decoded string has enough
-  // ASCII structure (/Title, text streams) that Haiku can summarize it, and
-  // the saved file is a supplement rather than a replacement.
+  // Binary content: save raw bytes to disk with a proper extension so the
+  // agent can inspect the file later. We still fall through to the utf-8 decode
+  // + summarization path below — for PDFs in particular the decoded string has
+  // enough ASCII structure (/Title, text streams) that the model can summarize
+  // it, and the saved file is a supplement rather than a replacement.
   let persistedPath: string | undefined
   let persistedSize: number | undefined
   if (isBinaryContentType(contentType)) {
@@ -482,6 +462,27 @@ export async function getURLMarkdownContent(
   return entry
 }
 
+/**
+ * Turn a failed WebFetch summarization into clean, actionable guidance for the
+ * main agent (which relays it to the user), instead of leaking the raw provider
+ * API error. The common cause is the summarization model not being available on
+ * the user's provider/plan — the fix is to pick a small, available model with
+ * /webfetch_model.
+ */
+export function formatWebFetchModelError(error: unknown, model: string): string {
+  void error
+  // Only surface the model name when it's the user's own (non-Claude) model.
+  const modelPart = model && !/claude/i.test(model) ? ` ("${model}")` : ''
+  return (
+    `The page was fetched successfully, but the WebFetch model${modelPart} ` +
+    `could not summarize it — the model is not available on your current ` +
+    `provider/plan.\n\n` +
+    `Tell the user to run /webfetch_model and choose a small, available model ` +
+    `from their provider (a small/instant model is enough for page summaries), ` +
+    `then retry this fetch.`
+  )
+}
+
 export async function applyPromptToMarkdown(
   prompt: string,
   markdownContent: string,
@@ -501,21 +502,36 @@ export async function applyPromptToMarkdown(
     prompt,
     isPreapprovedDomain,
   )
-  const assistantMessage = await queryHaiku({
-    systemPrompt: asSystemPrompt([]),
-    userPrompt: modelPrompt,
-    signal,
-    // Use the user's configured WebFetch model (/webfetch_model) or, by
-    // default, the active provider's model — never a hardcoded Anthropic model.
-    model: getWebFetchModel(),
-    options: {
-      querySource: 'web_fetch_apply',
-      agents: [],
-      isNonInteractiveSession,
-      hasAppendSystemPrompt: false,
-      mcpTools: [],
-    },
-  })
+  const webFetchModel = getWebFetchModel()
+  let assistantMessage
+  try {
+    assistantMessage = await queryHaiku({
+      systemPrompt: asSystemPrompt([]),
+      userPrompt: modelPrompt,
+      signal,
+      // Use the user's configured WebFetch model (/webfetch_model) or, by
+      // default, the active provider's model — never a hardcoded Anthropic model.
+      model: webFetchModel,
+      options: {
+        querySource: 'web_fetch_apply',
+        agents: [],
+        isNonInteractiveSession,
+        hasAppendSystemPrompt: false,
+        mcpTools: [],
+      },
+    })
+  } catch (e) {
+    // A genuine cancel must still abort the tool call.
+    if (signal.aborted) {
+      throw new AbortError()
+    }
+    // Graceful degradation: the page WAS fetched, but the summarization model
+    // failed (commonly "not available on your plan/provider"). Don't surface
+    // the raw provider error — return guidance so the agent tells the user to
+    // pick a working model via /webfetch_model.
+    logError(e)
+    return formatWebFetchModelError(e, webFetchModel)
+  }
 
   // We need to bubble this up, so that the tool call throws, causing us to return
   // an is_error tool_use block to the server, and render a red dot in the UI.

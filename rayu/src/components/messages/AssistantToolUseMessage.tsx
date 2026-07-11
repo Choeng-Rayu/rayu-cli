@@ -12,6 +12,7 @@ import { findToolByName, type Tool, type ToolProgressData, type Tools } from '..
 import type { ProgressMessage } from '../../types/message.js';
 import { useIsClassifierChecking } from '../../utils/classifierApprovalsHook.js';
 import { logError } from '../../utils/log.js';
+import { getToolNameColor } from '../../utils/toolColors.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import { MessageResponse } from '../MessageResponse.js';
 import { useSelectedMessageBg } from '../messageActions.js';
@@ -194,7 +195,7 @@ export function AssistantToolUseMessage(t0) {
   } else {
     t7 = $[37];
   }
-  const t8 = userFacingToolNameBackgroundColor ? "inverseText" : undefined;
+  const t8 = userFacingToolNameBackgroundColor ? "inverseText" : getToolNameColor(tool_0.name);
   let t9;
   if ($[38] !== t8 || $[39] !== userFacingToolName || $[40] !== userFacingToolNameBackgroundColor) {
     t9 = <Box flexShrink={0}><Text bold={true} wrap="truncate-end" backgroundColor={userFacingToolNameBackgroundColor} color={t8}>{userFacingToolName}</Text></Box>;

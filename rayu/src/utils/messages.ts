@@ -2944,6 +2944,29 @@ export type StreamingThinking = {
 }
 
 /**
+ * Finalizes the live streaming-thinking preview when a turn ends.
+ *
+ * On a normal turn the completion path (an assistant message carrying the
+ * finished thinking block) has already flipped the state to
+ * `isStreaming:false` with a `streamingEndedAt`, which the 30s auto-hide in
+ * REPL then clears — so this returns it unchanged and that brief "✓ Thought"
+ * linger is preserved.
+ *
+ * But if the turn ended while a thinking block was still mid-stream — e.g. the
+ * request errored ("Streaming is required…") or was aborted before the block
+ * completed — the state is stuck at `isStreaming:true`. Nothing else clears it
+ * (the auto-hide requires `!isStreaming`), so the animated "Thinking…" preview
+ * keeps spinning below the error/turn-status and looks like the model is still
+ * working. In that case we drop it to `null` so the final response/error stays
+ * as the last thing on screen.
+ */
+export function finalizeStreamingThinkingOnTurnEnd(
+  current: StreamingThinking | null,
+): StreamingThinking | null {
+  return current && current.isStreaming ? null : current
+}
+
+/**
  * Handles messages from a stream, updating response length for deltas and appending completed messages
  */
 export function handleMessageFromStream(

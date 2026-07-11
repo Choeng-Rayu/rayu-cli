@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef } from 'react'
 import React from 'react'
-import { getBotToken, readTelegramConfig } from '../telegram/telegramConfig.js'
+import {
+  getBotToken,
+  getTelegramMode,
+  readTelegramConfig,
+} from '../telegram/telegramConfig.js'
 import {
   initTelegramBridge,
   type TelegramBridgeHandle,
 } from '../telegram/telegramBridge.js'
 import type { ContentBlock, WrappedMessage } from '../telegram/formatActivity.js'
 import { isFileChangeReviewMessage } from '../telegram/formatActivity.js'
-import { sendMessage } from '../telegram/telegramApi.js'
+import { sendMessage, setHostedRouter } from '../telegram/telegramApi.js'
+import { createHostedRouter } from '../telegram/telegramTransport.js'
+import { hasRayuSession } from '../services/rayuAuth/rayuSession.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 
 /** True for user messages that are tool results (not human-typed text). */
@@ -54,8 +60,22 @@ export function useTelegramBridge(
   useEffect(() => {
     if (!bridgeActive) return
 
-    const token = getBotToken()
-    if (!token) return
+    // Resolve the transport: hosted (shared Rayu bot via backend) or BYO token.
+    const mode = getTelegramMode()
+    let token: string
+    if (mode === 'hosted') {
+      // Shared bot needs a signed-in Rayu session; route all Telegram calls
+      // through the backend. A sentinel token satisfies the (now unused) token
+      // params — the hosted router ignores it.
+      if (!hasRayuSession()) return
+      setHostedRouter(createHostedRouter())
+      token = 'hosted'
+    } else {
+      const byo = getBotToken()
+      if (!byo) return
+      setHostedRouter(null)
+      token = byo
+    }
 
     const handle = initTelegramBridge({ token })
     handleRef.current = handle
@@ -64,12 +84,16 @@ export function useTelegramBridge(
 
     return () => {
       void handle.endTurn()
-      // Notify the Telegram user that the CLI session has disconnected.
+      // Notify the linked chat that the CLI session closed (routes via the
+      // hosted backend or directly, depending on mode). Clear the hosted router
+      // only AFTER that notice is sent so it doesn't race to Telegram directly.
       const chatId = readTelegramConfig().linkedChatId
-      if (chatId && token) {
-        void sendMessage(token, chatId, '🔌 Session closed — rayu-cli disconnected.').catch(() => {})
-      }
+      const notice =
+        chatId !== undefined
+          ? sendMessage(token, chatId, '🔌 Session closed — rayu-cli disconnected.').catch(() => {})
+          : Promise.resolve()
       handle.stop()
+      void notice.finally(() => setHostedRouter(null))
       handleRef.current = null
       lastSentIndexRef.current = 0
       inTurnRef.current = false

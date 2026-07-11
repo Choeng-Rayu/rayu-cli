@@ -29,6 +29,9 @@ model User {
   creditLedger  CreditLedger[]
   creditTopups  CreditTopup[]
   promoRedemptions PromoRedemption[]
+  telegramLink     TelegramLink?
+  telegramPairings TelegramPairing[]
+  telegramInbound  TelegramInbound[]
 
   @@map("users")
 }
@@ -255,4 +258,68 @@ model PromoRedemption {
   @@unique([promoCodeId, userId])
   @@index([userId])
   @@map("promo_redemptions")
+}
+
+// ---- Shared Telegram bot (one bot serves ALL users) ------------------------
+// The backend holds ONE bot token (RAYU_SHARED_BOT_TOKEN) and runs a single
+// getUpdates poller (Telegram allows only one consumer per token). Each chat is
+// mapped to the owning Rayu user via TelegramLink; the poller routes a chat's
+// messages into that user's TelegramInbound queue, which the CLI long-polls.
+// Outbound is relayed with the shared token, chat_id forced to the user's own
+// link (per-user isolation). Users may still bring their own bot token in the
+// CLI (BYO mode) — that path never touches these tables.
+
+// One Telegram chat bound to one Rayu user (1:1). chatId is stored as a string
+// to sidestep BigInt/JSON friction (Telegram group/channel ids exceed i32).
+model TelegramLink {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @unique @map("user_id")
+  chatId    String   @unique @map("chat_id") @db.VarChar(64)
+  username  String?  @db.VarChar(191)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("telegram_links")
+}
+
+// Short-lived, single-use pairing code. The CLI requests one, the user sends
+// `/start <code>` to the shared bot, and the poller binds that chat to the user.
+model TelegramPairing {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique @db.VarChar(32)
+  userId    Int      @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("telegram_pairings")
+}
+
+// Per-user inbound queue: raw Telegram updates routed to a user, consumed by the
+// CLI via long-poll (GET /telegram/updates?after=<id>). Rows are deleted once
+// acknowledged (or aged out by a sweep).
+model TelegramInbound {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  payload   Json
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, id])
+  @@map("telegram_inbound")
+}
+
+// Singleton (id=1) persisting the central poller's getUpdates offset so a
+// backend restart doesn't reprocess (and double-deliver) recent updates.
+model TelegramCursor {
+  id        Int      @id @default(1)
+  offset    BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("telegram_cursor")
 }
