@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { cn } from '../../lib/utils';
 import { motion } from 'framer-motion';
-import { Check, X, Star, ArrowRight, Loader, AlertCircle, Key, Server } from 'lucide-react';
+import { Check, X, Star, ArrowRight, Loader, AlertCircle, Key, Server, Ticket } from 'lucide-react';
 import { apiUrl } from '../../lib/config';
 import { Plan, sortPlans } from '../../lib/plans';
 
@@ -265,6 +265,20 @@ export default function PlansPage() {
   const [error, setError]      = useState(false);
   const [retryCount, setRetry] = useState(0);
 
+  // Promo code state (static, frontend-only)
+  const PROMO_CODE = 'free-top-feature';
+  const [promoInput, setPromoInput]   = useState('');
+  const [promoStatus, setPromoStatus] = useState<'idle' | 'success' | 'invalid'>('idle');
+
+  const handlePromoApply = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (promoInput.trim().toLowerCase() === PROMO_CODE) {
+      setPromoStatus('success');
+    } else {
+      setPromoStatus('invalid');
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -404,6 +418,58 @@ export default function PlansPage() {
           ))}
         </div>
       </div>
+
+      {/* ── Promo code ── */}
+      <motion.div
+        className="mt-16 max-w-md mx-auto"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.3 }}
+      >
+        <div className="bg-[#0b0e14] border border-white/5 rounded-2xl p-6 text-center">
+          <div className="flex items-center justify-center gap-2 mb-3">
+            <Ticket className="size-4 text-[var(--green)]" />
+            <span
+              className="text-[10px] font-semibold tracking-[0.18em] uppercase text-[var(--muted)]"
+              style={{ fontFamily: 'Orbitron, sans-serif' }}
+            >
+              Have a promo code?
+            </span>
+          </div>
+          <p className="text-sm text-white/60 mb-4">
+            Enter your code to unlock free Basic with unlimited users.
+          </p>
+          <form onSubmit={handlePromoApply} className="flex gap-2">
+            <input
+              type="text"
+              value={promoInput}
+              onChange={(e) => { setPromoInput(e.target.value); setPromoStatus('idle'); }}
+              placeholder="Enter promo code"
+              className="flex-1 rounded-xl bg-white/[0.03] border border-white/10 px-4 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-[var(--green)] focus:bg-white/[0.05] transition-colors"
+              style={{ fontFamily: 'DM Mono, monospace' }}
+              aria-label="Promo code"
+            />
+            <button
+              type="submit"
+              className="rounded-xl px-4 py-2.5 text-sm font-semibold bg-[var(--green)] text-[#030507] hover:bg-[var(--green-dim)] transition-colors"
+            >
+              Apply
+            </button>
+          </form>
+          {promoStatus === 'success' && (
+            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-[var(--green)]">
+              <Check className="size-4" />
+              <span>Promo applied! Enjoy free Basic with unlimited users.</span>
+            </div>
+          )}
+          {promoStatus === 'invalid' && (
+            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-[var(--red)]">
+              <X className="size-4" />
+              <span>Invalid promo code. Please try again.</span>
+            </div>
+          )}
+        </div>
+      </motion.div>
 
       {/* ── Footer note ── */}
       <motion.p
