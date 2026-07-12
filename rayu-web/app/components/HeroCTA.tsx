@@ -13,7 +13,7 @@ export default function HeroCTA() {
   const [copied, setCopied] = useState(false)
 
   function copy() {
-    navigator.clipboard.writeText('npm install -g rayu').then(() => {
+    navigator.clipboard.writeText('npm install -g @rayu-dev/rayu-cli').then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
@@ -27,7 +27,7 @@ export default function HeroCTA() {
         title="Click to copy"
         style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
       >
-        {copied ? '✓ Copied!' : '$ npm install -g rayu'}
+        {copied ? '✓ Copied!' : '$ npm install -g @rayu-dev/rayu-cli'}
         <span style={{ fontSize: '0.75rem', opacity: 0.5 }}>{copied ? '' : '⎘'}</span>
       </button>
 
