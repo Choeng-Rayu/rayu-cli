@@ -415,7 +415,7 @@ export default function DashboardPage() {
               <p style={{ opacity: 0.6, fontSize: '0.88rem', marginTop: 0 }}>You haven&apos;t used any credits yet. Connect the CLI to start using Rayu-hosted models — no API key needed.</p>
               <ol style={{ margin: '0.5rem 0 0', paddingLeft: '1.2rem', lineHeight: 2, fontSize: '0.9rem' }}>
                 <li>Install / update the CLI: <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>npm i -g @rayu-dev/rayu-cli</code></li>
-                <li>Start with hosted access: <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>USE_RAYU_OAUTH=true rayu</code>, then <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>/login</code></li>
+                <li>Start with hosted access: <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>Type: rayu</code>, then <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>/login</code></li>
                 <li>Pick a hosted model with <code style={{ background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4 }}>/model</code> and start chatting</li>
               </ol>
             </div>
