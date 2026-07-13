@@ -9,7 +9,7 @@ import * as crypto from 'crypto'
 import { promisify } from 'util'
 import type { UserRole } from '../common/enums'
 import { UsersService } from '../users/users.service'
-import { ClerkService } from './clerk.service'
+import { OAuthService } from './oauth.service'
 import { CodeStoreService } from './code-store.service'
 
 const scrypt = promisify(crypto.scrypt)
@@ -41,7 +41,7 @@ interface RefreshClaims {
 @Injectable()
 export class AuthService {
   constructor(
-    private readonly clerk: ClerkService,
+    private readonly oauth: OAuthService,
     private readonly users: UsersService,
     private readonly codes: CodeStoreService,
     private readonly jwt: JwtService,
@@ -60,15 +60,15 @@ export class AuthService {
 
   /**
    * Step 1 of the CLI bridge: the website calls this with the signed-in user's
-   * Clerk session token. We verify it, upsert the Rayu user (Free plan), and
+   * Google ID token. We verify it, upsert the Rayu user (Free plan), and
    * return a one-time code bound to the CLI's CSRF state.
    */
-  async exchangeClerkToken(
-    clerkToken: string,
+  async exchangeOAuthToken(
+    idToken: string,
     state: string,
   ): Promise<{ code: string }> {
-    const profile = await this.clerk.verifySessionToken(clerkToken)
-    const user = await this.users.upsertFromClerk(profile)
+    const profile = await this.oauth.verifyGoogleIdToken(idToken)
+    const user = await this.users.upsertFromOAuth(profile)
     if (user.status !== 'active') {
       throw new UnauthorizedException(`Account is ${user.status}`)
     }
@@ -77,15 +77,54 @@ export class AuthService {
   }
 
   /**
-   * Browser login: the website exchanges a signed-in Clerk session token for
+   * Browser login: the website exchanges a verified Google ID token for
    * Rayu tokens directly (no one-time code). Used by the web dashboard to call
    * authenticated/admin API endpoints.
    */
   async webSession(
-    clerkToken: string,
+    idToken: string,
   ): Promise<RayuTokens & { user: PublicUser }> {
-    const profile = await this.clerk.verifySessionToken(clerkToken)
-    const user = await this.users.upsertFromClerk(profile)
+    const profile = await this.oauth.verifyGoogleIdToken(idToken)
+    const user = await this.users.upsertFromOAuth(profile)
+    if (user.status !== 'active') {
+      throw new UnauthorizedException(`Account is ${user.status}`)
+    }
+    const tokens = this.mintTokens(user)
+    return { ...tokens, user: this.toPublicUser(user) }
+  }
+
+  /**
+   * Local email/password registration. New users get the Free plan.
+   */
+  async registerLocal(
+    email: string,
+    password: string,
+    displayName?: string | null,
+  ): Promise<RayuTokens & { user: PublicUser }> {
+    const hash = await this.hashPassword(password)
+    const user = await this.users.createLocalUser(email, hash, displayName)
+    if (user.status !== 'active') {
+      throw new UnauthorizedException(`Account is ${user.status}`)
+    }
+    const tokens = this.mintTokens(user)
+    return { ...tokens, user: this.toPublicUser(user) }
+  }
+
+  /**
+   * Local email/password login.
+   */
+  async loginLocal(
+    email: string,
+    password: string,
+  ): Promise<RayuTokens & { user: PublicUser }> {
+    const user = await this.users.findByEmail(email)
+    if (!user || !user.passwordHash) {
+      throw new UnauthorizedException('Invalid credentials')
+    }
+    const valid = await this.verifyPassword(password, user.passwordHash)
+    if (!valid) {
+      throw new UnauthorizedException('Invalid credentials')
+    }
     if (user.status !== 'active') {
       throw new UnauthorizedException(`Account is ${user.status}`)
     }

@@ -15,7 +15,7 @@ import { ModelsService } from '../models/models.service'
 import { AppSettingsService } from '../settings/app-settings.service'
 import { UsersService } from '../users/users.service'
 import { AuthService, PublicUser, RayuTokens } from './auth.service'
-import { ExchangeDto, LocalLoginDto, RefreshDto, TokenDto } from './dto/auth.dto'
+import { ExchangeDto, GoogleOAuthDto, LocalLoginDto, RefreshDto, RegisterDto, TokenDto } from './dto/auth.dto'
 import { RayuAuthGuard } from './rayu-auth.guard'
 
 @Controller()
@@ -29,20 +29,20 @@ export class AuthController {
   ) {}
 
   /**
-   * Called by the website's /cli-login bridge. The signed-in user's Clerk
-   * session token is passed in the Authorization header; the CLI's CSRF state
-   * is in the body. Returns a one-time code.
+   * Called by the website's /cli-login bridge. The signed-in user's Google ID
+   * token is passed in the Authorization header; the CLI's CSRF state is in the
+   * body. Returns a one-time code.
    */
   @Post('cli/exchange')
   async exchange(
     @Headers('authorization') authorization: string | undefined,
     @Body() body: ExchangeDto,
   ): Promise<{ code: string }> {
-    const clerkToken = this.extractBearer(authorization)
-    if (!clerkToken) {
-      throw new UnauthorizedException('Missing Clerk session token')
+    const idToken = this.extractBearer(authorization)
+    if (!idToken) {
+      throw new UnauthorizedException('Missing Google ID token')
     }
-    return this.auth.exchangeClerkToken(clerkToken, body.state)
+    return this.auth.exchangeOAuthToken(idToken, body.state)
   }
 
   /** Called by the CLI to redeem the one-time code for Rayu tokens. */
@@ -52,18 +52,45 @@ export class AuthController {
   }
 
   /**
-   * Browser login for the website/dashboard: exchange a Clerk session token
+   * Browser login for the website/dashboard: exchange a Google ID token
    * (Authorization header) for Rayu tokens directly.
    */
   @Post('web/session')
   async webSession(
     @Headers('authorization') authorization: string | undefined,
   ): Promise<RayuTokens & { user: PublicUser }> {
-    const clerkToken = this.extractBearer(authorization)
-    if (!clerkToken) {
-      throw new UnauthorizedException('Missing Clerk session token')
+    const idToken = this.extractBearer(authorization)
+    if (!idToken) {
+      throw new UnauthorizedException('Missing Google ID token')
     }
-    return this.auth.webSession(clerkToken)
+    return this.auth.webSession(idToken)
+  }
+
+  /**
+   * Browser login via verified Google ID token in the request body.
+   * Used when the frontend has already performed the Google OAuth handshake.
+   */
+  @Post('auth/oauth/google')
+  googleOAuth(
+    @Body() body: GoogleOAuthDto,
+  ): Promise<RayuTokens & { user: PublicUser }> {
+    return this.auth.webSession(body.idToken)
+  }
+
+  /** Local email/password registration. */
+  @Post('auth/register')
+  register(
+    @Body() body: RegisterDto,
+  ): Promise<RayuTokens & { user: PublicUser }> {
+    return this.auth.registerLocal(body.email, body.password, body.displayName)
+  }
+
+  /** Local email/password login. */
+  @Post('auth/login')
+  login(
+    @Body() body: LocalLoginDto,
+  ): Promise<RayuTokens & { user: PublicUser }> {
+    return this.auth.loginLocal(body.email, body.password)
   }
 
   /** Called by the CLI to refresh an expired access token. */

@@ -1,6 +1,6 @@
 'use client'
 
-import { useAuth } from '@clerk/nextjs'
+import { useSession } from 'next-auth/react'
 import {
   createContext,
   useCallback,
@@ -11,6 +11,7 @@ import {
   useState,
 } from 'react'
 import { apiUrl } from '../../lib/config'
+import { RAYU_SESSION_KEY } from '../../lib/useRayuToken'
 
 export interface AdminMe {
   id: number
@@ -33,6 +34,8 @@ interface AdminCtx {
   localLogin: (email: string, password: string) => Promise<void>
   /** Log out the local admin session. */
   localLogout: () => void
+  /** Log out the Google session (admin area only). */
+  oauthLogout: () => void
 }
 
 const Ctx = createContext<AdminCtx | null>(null)
@@ -45,7 +48,7 @@ export function useAdmin(): AdminCtx {
 }
 
 export function AdminProvider({ children }: { children: React.ReactNode }) {
-  const { isLoaded, isSignedIn, getToken } = useAuth()
+  const { data: session, status } = useSession()
   const [token, setToken] = useState<string | null>(null)
   const [me, setMe] = useState<AdminMe | null>(null)
   const [forbidden, setForbidden] = useState(false)
@@ -63,7 +66,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (!isLoaded) return
+    if (status === 'loading') return
 
     // 1. Check for a stored local admin token first.
     const stored = typeof window !== 'undefined'
@@ -90,17 +93,19 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
-    // 2. Fall back to Clerk session.
-    if (!isSignedIn) {
+    // 2. Fall back to Google OAuth session.
+    if (status !== 'authenticated') {
       setReady(true)
       return
     }
     void (async () => {
       try {
-        const clerkToken = await getToken()
-        const res = await fetch(apiUrl('/web/session'), {
+        const idToken = session?.idToken
+        if (!idToken) throw new Error('Missing Google ID token')
+        const res = await fetch(apiUrl('/auth/oauth/google'), {
           method: 'POST',
-          headers: { Authorization: `Bearer ${clerkToken}` },
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken }),
         })
         if (!res.ok) throw new Error(`Session failed (${res.status})`)
         const data = (await res.json()) as { accessToken: string; user: AdminMe }
@@ -115,7 +120,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
         setReady(true)
       }
     })()
-  }, [isLoaded, isSignedIn, getToken, validateToken])
+  }, [status, session, validateToken])
 
   const localLogin = useCallback(async (email: string, password: string) => {
     setError('')
@@ -142,6 +147,13 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     setForbidden(false)
   }, [])
 
+  const oauthLogout = useCallback(() => {
+    sessionStorage.removeItem(RAYU_SESSION_KEY)
+    setToken(null)
+    setMe(null)
+    setForbidden(false)
+  }, [])
+
   // Keep latest token in a ref so apiFetch has a stable identity.
   const tokenRef = useRef<string | null>(null)
   tokenRef.current = token
@@ -160,8 +172,8 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   )
 
   const value = useMemo(
-    () => ({ ready, forbidden, error, me, token, apiFetch, localLogin, localLogout }),
-    [ready, forbidden, error, me, token, apiFetch, localLogin, localLogout],
+    () => ({ ready, forbidden, error, me, token, apiFetch, localLogin, localLogout, oauthLogout }),
+    [ready, forbidden, error, me, token, apiFetch, localLogin, localLogout, oauthLogout],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

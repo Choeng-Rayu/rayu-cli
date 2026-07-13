@@ -12,16 +12,19 @@ datasource db {
 
 model User {
   id           Int       @id @default(autoincrement())
-  clerkUserId  String    @unique @db.VarChar(191)
-  email        String?   @db.VarChar(320)
+  // Deprecated: kept for existing Clerk users. New OAuth accounts live in Account.
+  clerkUserId  String?   @unique @db.VarChar(191)
+  email        String?   @unique @db.VarChar(320)
   displayName  String?   @db.VarChar(191)
   avatarUrl    String?   @db.VarChar(1024)
+  emailVerified Boolean  @default(false)
   role         String    @default("user") @db.VarChar(32)
   status       String    @default("active") @db.VarChar(32)
   passwordHash String?   @db.VarChar(512)
   createdAt    DateTime  @default(now())
   lastActiveAt DateTime?
 
+  accounts      Account[]
   subscriptions Subscription[]
   payments      Payment[]
   feedback      Feedback[]
@@ -34,6 +37,26 @@ model User {
   telegramInbound  TelegramInbound[]
 
   @@map("users")
+}
+
+// OAuth / SSO identities attached to a user. Scales to any number of providers
+// (google, github, gitlab, telegram, clerk, etc.) without schema changes.
+model Account {
+  id                  Int       @id @default(autoincrement())
+  userId              Int       @map("user_id")
+  provider            String    @db.VarChar(32)
+  providerAccountId   String    @map("provider_account_id") @db.VarChar(191)
+  accessToken         String?   @db.Text
+  refreshToken        String?   @db.Text
+  expiresAt           DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
 }
 
 model Plan {

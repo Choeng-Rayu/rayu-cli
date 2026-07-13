@@ -1,9 +1,8 @@
 export interface AppConfig {
   port: number
   nodeEnv: string
-  // Clerk
-  clerkSecretKey: string | undefined
-  clerkPublishableKey: string | undefined
+  // OAuth
+  googleClientId: string | undefined
   // Rayu session JWT
   jwtSecret: string
   accessTokenTtlSeconds: number
@@ -48,8 +47,7 @@ export default (): {
     app: {
       port: parseInt(process.env.PORT ?? '4000', 10),
       nodeEnv,
-      clerkSecretKey: process.env.CLERK_SECRET_KEY,
-      clerkPublishableKey: process.env.CLERK_PUBLISHABLE_KEY,
+      googleClientId: process.env.GOOGLE_CLIENT_ID,
       jwtSecret:
         process.env.RAYU_JWT_SECRET ??
         (isTest ? 'test-only-insecure-secret' : 'dev-only-insecure-secret'),

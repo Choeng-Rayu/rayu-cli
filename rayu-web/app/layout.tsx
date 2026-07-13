@@ -1,9 +1,9 @@
 import Link from 'next/link'
 import type { Metadata } from 'next'
-import { ClerkProvider } from '@clerk/nextjs'
 import Script from 'next/script'
 import './globals.css'
 import NavAuth from './components/NavAuth'
+import { Providers } from './providers'
 import { getOrganizationSchema, getWebsiteSchema } from './structured-data'
 
 export const metadata: Metadata = {
@@ -81,7 +81,7 @@ export default function RootLayout({
   const websiteJson = JSON.stringify(getWebsiteSchema())
 
   return (
-    <ClerkProvider>
+    <Providers>
       <html lang="en">
         <body>
           <Script
@@ -113,6 +113,6 @@ export default function RootLayout({
           </div>
         </body>
       </html>
-    </ClerkProvider>
+    </Providers>
   )
 }

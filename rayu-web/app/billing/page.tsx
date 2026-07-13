@@ -54,7 +54,7 @@ interface PromoPreview {
 }
 
 export default function BillingPage() {
-  const { token, authError, isLoaded, isSignedIn } = useRayuToken()
+  const { token, authError, status } = useRayuToken()
   const [plans, setPlans] = useState<Plan[]>([])
   const [selectedPlan, setSelectedPlan] = useState<PaidPlanCode | ''>('')
   const [khqr, setKhqr] = useState<KhqrResponse | null>(null)
@@ -230,7 +230,7 @@ export default function BillingPage() {
     stopPolling()
   }
 
-  if (isLoaded && !isSignedIn) {
+  if (status === 'unauthenticated') {
     return (
       <main className="container">
         <span className="section-eyebrow">BILLING</span>

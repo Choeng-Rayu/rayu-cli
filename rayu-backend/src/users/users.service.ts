@@ -1,15 +1,17 @@
-import { Injectable } from '@nestjs/common'
+import { ConflictException, Injectable } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
 import type { Plan, User } from '@prisma/client'
 import type { UserStatus } from '../common/enums'
 import { PrismaService } from '../prisma/prisma.service'
 import { PlansService } from '../plans/plans.service'
 
-export interface ClerkProfile {
-  clerkUserId: string
+export interface OAuthProfile {
+  provider: string
+  providerAccountId: string
   email?: string | null
   displayName?: string | null
   avatarUrl?: string | null
+  emailVerified?: boolean
 }
 
 @Injectable()
@@ -23,34 +25,55 @@ export class UsersService {
     return this.prisma.user.findUnique({ where: { id } })
   }
 
-  findByClerkId(clerkUserId: string): Promise<User | null> {
-    return this.prisma.user.findUnique({ where: { clerkUserId } })
+  findByEmail(email: string): Promise<User | null> {
+    return this.prisma.user.findUnique({ where: { email } })
   }
 
-  findByEmail(email: string): Promise<User | null> {
-    return this.prisma.user.findFirst({ where: { email } })
+  findByAccount(provider: string, providerAccountId: string): Promise<(User & { account: { id: number } }) | null> {
+    return this.prisma.user.findFirst({
+      where: {
+        accounts: {
+          some: { provider, providerAccountId },
+        },
+      },
+      include: { accounts: { where: { provider, providerAccountId }, take: 1 } },
+    }) as Promise<(User & { account: { id: number } }) | null>
   }
 
   /**
-   * Upsert a user from a verified Clerk profile. New users are auto-assigned
+   * Upsert a user from a verified OAuth profile. New users are auto-assigned
    * the Free plan. Returns the persisted user.
    */
-  async upsertFromClerk(profile: ClerkProfile): Promise<User> {
-    const existing = await this.findByClerkId(profile.clerkUserId)
+  async upsertFromOAuth(profile: OAuthProfile): Promise<User> {
+    const existing = await this.findByAccount(
+      profile.provider,
+      profile.providerAccountId,
+    )
     if (!existing) {
-      const user = await this.prisma.user.create({
+      // If an email is provided, try to link to an existing user first.
+      let user = profile.email ? await this.findByEmail(profile.email) : null
+      if (!user) {
+        user = await this.prisma.user.create({
+          data: {
+            email: profile.email ?? null,
+            displayName: profile.displayName ?? null,
+            avatarUrl: profile.avatarUrl ?? null,
+            emailVerified: profile.emailVerified ?? false,
+            role: 'user',
+            status: 'active',
+            lastActiveAt: new Date(),
+          },
+        })
+        await this.assignFreePlan(user.id)
+      }
+      await this.prisma.account.create({
         data: {
-          clerkUserId: profile.clerkUserId,
-          email: profile.email ?? null,
-          displayName: profile.displayName ?? null,
-          avatarUrl: profile.avatarUrl ?? null,
-          role: 'user',
-          status: 'active',
-          lastActiveAt: new Date(),
+          userId: user.id,
+          provider: profile.provider,
+          providerAccountId: profile.providerAccountId,
         },
       })
-      await this.assignFreePlan(user.id)
-      return user
+      return this.findById(user.id) as Promise<User>
     }
     return this.prisma.user.update({
       where: { id: existing.id },
@@ -58,9 +81,37 @@ export class UsersService {
         email: profile.email ?? existing.email,
         displayName: profile.displayName ?? existing.displayName,
         avatarUrl: profile.avatarUrl ?? existing.avatarUrl,
+        emailVerified: profile.emailVerified ?? existing.emailVerified,
         lastActiveAt: new Date(),
       },
     })
+  }
+
+  /**
+   * Create a local email/password user. Throws if email is already taken.
+   */
+  async createLocalUser(
+    email: string,
+    passwordHash: string,
+    displayName?: string | null,
+  ): Promise<User> {
+    const existing = await this.findByEmail(email)
+    if (existing) {
+      throw new ConflictException('Email already registered')
+    }
+    const user = await this.prisma.user.create({
+      data: {
+        email,
+        passwordHash,
+        displayName: displayName ?? null,
+        emailVerified: false,
+        role: 'user',
+        status: 'active',
+        lastActiveAt: new Date(),
+      },
+    })
+    await this.assignFreePlan(user.id)
+    return user
   }
 
   private async assignFreePlan(userId: number): Promise<void> {
@@ -175,7 +226,6 @@ export class UsersService {
         OR: [
           { email: { contains: opts.search } },
           { displayName: { contains: opts.search } },
-          { clerkUserId: { contains: opts.search } },
         ],
       })
     }

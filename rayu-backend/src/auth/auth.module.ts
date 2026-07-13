@@ -7,7 +7,7 @@ import { AppSettingsModule } from '../settings/app-settings.module'
 import { UsersModule } from '../users/users.module'
 import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
-import { ClerkService } from './clerk.service'
+import { OAuthService } from './oauth.service'
 import { CodeStoreService } from './code-store.service'
 import { RayuAuthGuard } from './rayu-auth.guard'
 import { RolesGuard } from './roles.guard'
@@ -29,7 +29,7 @@ import { RolesGuard } from './roles.guard'
   controllers: [AuthController],
   providers: [
     AuthService,
-    ClerkService,
+    OAuthService,
     { provide: CodeStoreService, useFactory: () => new CodeStoreService() },
     RayuAuthGuard,
     RolesGuard,
