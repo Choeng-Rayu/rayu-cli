@@ -135,7 +135,7 @@ function DefRow({ label, value }: { label: string; value: ReactNode }) {
 }
 
 export default function DashboardPage() {
-  const { token, authError, isLoaded, isSignedIn } = useRayuToken()
+  const { token, authError, status } = useRayuToken()
   const [ent, setEnt] = useState<Entitlements | null>(null)
   const [usage, setUsage] = useState<GatewayCredits | null>(null)
   const [gatewayDown, setGatewayDown] = useState(false)
@@ -202,7 +202,7 @@ export default function DashboardPage() {
     }
   }
 
-  if (isLoaded && !isSignedIn) {
+  if (status === 'unauthenticated') {
     return (
       <main className="container">
         <span className="section-eyebrow">DASHBOARD</span>

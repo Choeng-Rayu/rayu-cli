@@ -1,4 +1,4 @@
-import { IsEmail, IsNotEmpty, IsString, MaxLength } from 'class-validator'
+import { IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator'
 
 export class LocalLoginDto {
   @IsEmail()
@@ -9,6 +9,29 @@ export class LocalLoginDto {
   @IsNotEmpty()
   @MaxLength(128)
   password!: string
+}
+
+export class RegisterDto {
+  @IsEmail()
+  @MaxLength(320)
+  email!: string
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  password!: string
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(191)
+  displayName?: string
+}
+
+export class GoogleOAuthDto {
+  // Google ID token from the frontend (obtained via NextAuth / Google Sign-In).
+  @IsString()
+  @IsNotEmpty()
+  idToken!: string
 }
 
 export class ExchangeDto {

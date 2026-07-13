@@ -1,8 +1,7 @@
-
 'use client'
 export const dynamic = 'force-dynamic'
 
-import { SignInButton, useAuth } from '@clerk/nextjs'
+import { signIn, useSession } from 'next-auth/react'
 import { Suspense, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { apiUrl } from '../../lib/config'
@@ -12,7 +11,7 @@ type Phase = 'loading' | 'invalid' | 'signin' | 'exchanging' | 'done' | 'error'
 
 function CliLoginInner() {
   const search = useSearchParams()
-  const { isLoaded, isSignedIn, getToken } = useAuth()
+  const { data: session, status } = useSession()
   const [phase, setPhase] = useState<Phase>('loading')
   const [message, setMessage] = useState<string>('')
   const started = useRef(false)
@@ -20,12 +19,12 @@ function CliLoginInner() {
   const params = parseCliLoginParams(search)
 
   useEffect(() => {
-    if (!isLoaded) return
+    if (status === 'loading') return
     if (!params) {
       setPhase('invalid')
       return
     }
-    if (!isSignedIn) {
+    if (status !== 'authenticated') {
       setPhase('signin')
       return
     }
@@ -34,13 +33,13 @@ function CliLoginInner() {
     setPhase('exchanging')
     void (async () => {
       try {
-        const clerkToken = await getToken()
-        if (!clerkToken) throw new Error('Could not get a Clerk session token')
+        const idToken = session?.idToken
+        if (!idToken) throw new Error('Could not get a Google ID token')
         const res = await fetch(apiUrl('/cli/exchange'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${clerkToken}`,
+            Authorization: `Bearer ${idToken}`,
           },
           body: JSON.stringify({ state: params.state }),
         })
@@ -57,7 +56,7 @@ function CliLoginInner() {
         setPhase('error')
       }
     })()
-  }, [isLoaded, isSignedIn, params, getToken])
+  }, [status, session, params])
 
   return (
     <main className="container">
@@ -73,15 +72,12 @@ function CliLoginInner() {
         {phase === 'signin' && (
           <>
             <p>Sign in to connect your terminal:</p>
-            <SignInButton
-              forceRedirectUrl={
-                typeof window !== 'undefined'
-                  ? window.location.href
-                  : undefined
-              }
+            <button
+              className="btn"
+              onClick={() => void signIn('google', { callbackUrl: window.location.href })}
             >
-              <button className="btn">Sign in to continue</button>
-            </SignInButton>
+              Sign in to continue
+            </button>
           </>
         )}
         {phase === 'exchanging' && <p>Authorizing your terminal…</p>}

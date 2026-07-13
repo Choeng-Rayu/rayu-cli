@@ -20,7 +20,6 @@ import { UsageModule } from './usage/usage.module'
 import { UsersModule } from './users/users.module'
 
 const LOCAL_ADMIN_EMAIL = 'admin@rayucode.com'
-const LOCAL_ADMIN_CLERK_ID = 'local_admin_rayucode'
 
 @Module({
   imports: [
@@ -70,14 +69,13 @@ export class AppModule implements OnModuleInit {
     if (!password) return // nothing to do — no credential configured
 
     const existing = await this.prisma.user.findUnique({
-      where: { clerkUserId: LOCAL_ADMIN_CLERK_ID },
+      where: { email: LOCAL_ADMIN_EMAIL },
     })
     const passwordHash = await this.auth.hashPassword(password)
 
     if (!existing) {
       await this.prisma.user.create({
         data: {
-          clerkUserId: LOCAL_ADMIN_CLERK_ID,
           email: LOCAL_ADMIN_EMAIL,
           displayName: 'Admin',
           role: 'admin',

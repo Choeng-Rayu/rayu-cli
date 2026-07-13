@@ -1,10 +1,11 @@
 'use client'
 
-import { useAuth, SignInButton } from '@clerk/nextjs'
+import { signIn, signOut, useSession } from 'next-auth/react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useState } from 'react'
 import { useAdmin } from './AdminProvider'
+import { RAYU_SESSION_KEY } from '../../lib/useRayuToken'
 
 const NAV = [
   { href: '/admin', label: 'Overview', icon: '◎', exact: true },
@@ -79,13 +80,15 @@ function LocalLoginForm() {
 }
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
-  const { isLoaded, isSignedIn } = useAuth()
-  const { ready, forbidden, error, me, token, localLogout } = useAdmin()
+  const { status: oauthStatus } = useSession()
+  const { ready, forbidden, error, me, token, localLogout, oauthLogout } = useAdmin()
   const pathname = usePathname()
 
-  // Show local login form while Clerk is loading or when not signed in via Clerk.
+  const loading = oauthStatus === 'loading' || (!token && !ready)
+
+  // Show local login form while OAuth is loading or when not signed in via OAuth.
   // If a valid local admin token is present, AdminProvider sets ready+token directly.
-  if (!isLoaded || (!isSignedIn && !ready)) {
+  if (loading) {
     return (
       <Centered>
         <h1>Loading…</h1>
@@ -94,7 +97,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // Local admin token is present and valid — skip Clerk flow entirely.
+  // Local admin token is present and valid — skip OAuth flow entirely.
   if (token && me && (me.role === 'admin' || me.role === 'superadmin')) {
     const active = NAV.find((n) => isActive(pathname, n.href, n.exact))
     return (
@@ -138,8 +141,8 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // Not signed in via Clerk — show both local login and Clerk sign-in.
-  if (!isSignedIn) {
+  // Not signed in via OAuth — show both local login and Google sign-in.
+  if (oauthStatus !== 'authenticated' && !token) {
     return (
       <Centered>
         <h1>Admin Area</h1>
@@ -148,16 +151,19 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </p>
         <LocalLoginForm />
         <div style={{ marginTop: '1.25rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem', opacity: 0.7 }}>
-          <p style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>Or sign in with Clerk:</p>
-          <SignInButton>
-            <button className="btn-ghost">Sign in with Clerk</button>
-          </SignInButton>
+          <p style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>Or sign in with Google:</p>
+          <button
+            className="btn-ghost"
+            onClick={() => void signIn('google', { callbackUrl: '/admin' })}
+          >
+            Sign in with Google
+          </button>
         </div>
       </Centered>
     )
   }
 
-  if (isSignedIn && !ready) {
+  if (oauthStatus === 'authenticated' && !ready) {
     return (
       <Centered>
         <h1>Loading…</h1>
@@ -231,6 +237,17 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             <span style={{ opacity: 0.6, fontSize: '0.85rem' }}>
               {me?.email ?? ''}
             </span>
+            <button
+              onClick={() => {
+                sessionStorage.removeItem(RAYU_SESSION_KEY)
+                oauthLogout()
+                void signOut({ callbackUrl: '/' })
+              }}
+              className="admin-nav-link"
+              style={{ opacity: 0.7, background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              Logout
+            </button>
             <Link href="/" className="admin-nav-link" style={{ opacity: 0.7 }}>
               ↩ Site
             </Link>
