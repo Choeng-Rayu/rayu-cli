@@ -21,9 +21,7 @@
 ## 🎥 Watch It In Action
 
 <p align="center">
-  <video src="docs/assets/rayu-demo.mp4" width="800" controls>
-    Your browser does not support the video tag. <a href="docs/assets/rayu-demo.mp4">Download the video</a> to watch it.
-  </video>
+  <img src="docs/assets/rayu-demo.gif" alt="RAYU CLI Demo" width="800">
 </p>
 
 <p align="center">
