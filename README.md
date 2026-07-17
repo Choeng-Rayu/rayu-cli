@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/rayucode-logo.png" alt="RAYU Code Logo" width="200">
+<img src="docs/assets/rayucode-logo.png" alt="RAYU Code" width="300">
 
-# RAYU — The AI Coding Agent Ecosystem
+**The AI Coding Agent Ecosystem**
 
 [![npm](https://img.shields.io/npm/v/@rayu-dev/rayu-cli.svg?style=flat-square&colorA=7c3aed&colorB=7c3aed)](https://www.npmjs.com/package/@rayu-dev/rayu-cli)
 [![CI](https://github.com/Choeng-Rayu/rayu-cli/workflows/CI/badge.svg)](https://github.com/Choeng-Rayu/rayu-cli/actions)
