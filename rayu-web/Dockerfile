@@ -2,7 +2,8 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Set NODE_ENV=development during install to include devDependencies needed for build
+# Install with NODE_ENV=development so npm includes devDependencies
+# (typescript, @types/*, etc.) needed for the build step.
 ENV NODE_ENV=development
 
 COPY package.json package-lock.json* ./
@@ -24,6 +25,11 @@ ENV GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
 ENV NEXT_PUBLIC_RAYU_API_URL=$NEXT_PUBLIC_RAYU_API_URL
 ENV NEXT_PUBLIC_RAYU_GATEWAY_URL=$NEXT_PUBLIC_RAYU_GATEWAY_URL
 ENV NEXT_TELEMETRY_DISABLED=1
+# Switch to production for the build — Next.js requires NODE_ENV=production
+# for correct static page prerendering. Building with NODE_ENV=development
+# causes "<Html> should not be imported outside of pages/_document" errors
+# on the auto-generated /404 and /_error pages.
+ENV NODE_ENV=production
 RUN npm run build
 
 # ---- Runner ----
