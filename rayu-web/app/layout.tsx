@@ -97,15 +97,16 @@ export default function RootLayout({
           />
           <div className="site">
             <header className="nav">
-              <Link href="/" className="nav-logo">
+              <Link href="/" className="nav-logo" style={{ display: 'flex', alignItems: 'center' }}>
                 <Image
                   src="/rayucode-logo.png"
                   alt="RAYU Code"
-                  width={120}
-                  height={40}
+                  width={48}
+                  height={48}
                   className="nav-logo-mark"
                   priority
                 />
+                <span style={{ marginLeft: '0.75rem', fontSize: '1.25rem', fontWeight: 600 }}>RAYU</span>
               </Link>
               <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
                 <li><Link href="/plans">Plans</Link></li>
@@ -126,8 +127,8 @@ export default function RootLayout({
               <Image
                 src="/rayucode-logo.png"
                 alt="RAYU Code"
-                width={100}
-                height={33}
+                width={64}
+                height={64}
                 style={{ marginBottom: '0.75rem' }}
               />
               <p style={{ opacity: 0.6, fontSize: '0.9rem' }}>
