@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import Image from 'next/image'
 import HeroTerminal from './components/HeroTerminal'
 import HeroCTA from './components/HeroCTA'
 
@@ -88,6 +89,14 @@ export default function HomePage() {
       {/* Hero Section */}
       <section className="grid-2-col" style={{ margin: '2rem 0 6rem 0' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+          <Image
+            src="/rayucode-logo.png"
+            alt="RAYU Code Logo"
+            width={120}
+            height={120}
+            style={{ marginBottom: '1.5rem' }}
+            priority
+          />
           <div className="badge active" style={{ marginBottom: '1.5rem', gap: '6px' }}>
             <span className="pulse" style={{ color: 'var(--green)' }}>◈</span> Multi-provider AI coding agent
           </div>
