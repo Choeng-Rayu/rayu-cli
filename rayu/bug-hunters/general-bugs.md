@@ -190,4 +190,10 @@ this is another test session is that it can use the tool but show this issue:
 NOTE: when i restart thsi session so it can the tool properly
 
 # Bug 5
-wh
+When the Rayu try to response for longer then 10mn it show this issue so please aanlyze to find the roote cause 
+Note: this issue Current I use provider host by rayu-host
+this is the issue 
+```
+  Read 1 file, listed 2 directories (ctrl+o to expand)
+  ⎿  API Error: Streaming is required for operations that may take longer than 10 minutes. See https://github.com/anthropics/anthropic-sdk-typescript#long-requests for more details
+```
