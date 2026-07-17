@@ -8,9 +8,9 @@ The platform already has most primitives — this is mostly **wiring + Bakong**,
 - **Schema** (`rayu-backend/prisma/schema.prisma`): `User.role` (default "user"), `Plan` (code/priceCents/availability/limits), `Subscription` (userId/planId/status), and a **`Payment` table already exists** (userId, provider default "bakong", amountCents, currency, status pending/paid/failed, externalRef, createdAt). Relations already wired (`User.payments`, `User.subscriptions`).
 - **Enums** (`src/common/enums.ts`): `USER_ROLES=['user','admin','superadmin']`, `PLAN_CODES=['free','pro','pro_plus','max','enterprise']`, `PAYMENT_STATUSES=['pending','paid','failed']`, `SUBSCRIPTION_STATUSES=['active','canceled']`. Use these; do NOT add Prisma native enums.
 - **Auth/roles already done**: `RayuAuthGuard` (Bearer -> live user) + `RolesGuard` + `@Roles(...)` decorator. `AdminController` already exists (`src/admin/admin.module.ts`) guarded with `@UseGuards(RayuAuthGuard, RolesGuard) @Roles('admin','superadmin')` and has `GET /admin/users`, `PATCH /admin/users/:id/status`, `GET /admin/stats`.
-- **Admin web page exists** (`rayu-web/app/admin/page.tsx`): exchanges Clerk token via `POST /api/web/session`, lists users, supports status changes, handles 403. We extend it — no new auth plumbing.
+- **Admin web page exists** (`rayu-web/app/admin/`): exchanges a Google OAuth ID token via `POST /api/auth/oauth/google`, lists users, supports status changes, handles 403. We extend it — no new auth plumbing.
 - **Plan currently paid-disabled**: `plans.constants.ts` marks pro/pro_plus/max as `coming_soon`; `/plans` page renders CTA disabled. Upgrade flow must flip the active plans to purchasable.
-- **Web -> API auth pattern**: `useAuth().getToken()` (Clerk) -> `POST /api/web/session` -> `{accessToken}` -> call API with `Authorization: Bearer`. `apiUrl()` from `rayu-web/lib/config.ts`.
+- **Web -> API auth pattern**: `useRayuToken()` (from `lib/useRayuToken.ts`) reads a Rayu session from `localStorage` (or exchanges the NextAuth Google ID token via `POST /api/auth/oauth/google`) -> `{accessToken}` -> call API with `Authorization: Bearer`. `apiUrl()` from `rayu-web/lib/config.ts`.
 - **Backend deps**: NO bakong package installed yet (`rayu-backend/package.json`). Must add `bakong-khqr` (or the Choeng-Rayu wrapper). API prefix is `/api`; global ValidationPipe with `forbidNonWhitelisted`.
 
 ## Approach
@@ -98,14 +98,14 @@ All under `@Roles('admin','superadmin')` + both guards (already on the controlle
 ## Frontend pages needed (`rayu-web/app/`)
 1. **Extend `app/admin/page.tsx`** — add a "View" action per user row -> opens a user-detail panel/route showing plan + payment history, and a plan selector (`<select>` over PLAN_CODES) wired to `PATCH /api/admin/users/:id/plan`. Reuse existing Rayu-token exchange + `apiUrl` + table styling/classes (`.card`, `.btn-ghost`, `.badge`).
    - Optionally add `app/admin/users/[id]/page.tsx` for a dedicated detail view (same `web/session` token pattern).
-2. **`app/billing/page.tsx`** (NEW, client component, behind Clerk sign-in) — user-facing upgrade:
+2. **`app/billing/page.tsx`** (NEW, client component, behind Google sign-in) — user-facing upgrade:
    - Reads `/api/plans`, lets user pick a paid plan -> `POST /api/payments/khqr` -> render the KHQR (use a QR lib, e.g. `qrcode.react`, to render the returned `qr` string) -> poll `GET /api/payments/:id/status` every ~3s until `paid`/`failed` -> success state.
    - Show own history from `GET /api/payments/mine`.
 3. **`app/plans/page.tsx`** — flip active paid plans' CTA from disabled "Coming soon" to "Upgrade" linking to `/billing?plan=<code>`. (`toPlanView` in `lib/plans.ts` already derives `available` from `availability`; once the backend plan is `active`, the CTA enables — just add the link target.)
 
 ## Bakong integration approach (`src/payments/bakong.service.ts`)
 - Add dependency `bakong-khqr` to `rayu-backend/package.json` (the Choeng-Rayu `-bakong_js` repo wraps this same surface). **Pin an exact version** and verify the installed API surface before coding (see Risks).
-- Extend `src/config/configuration.ts` with a `bakong` block reading `BAKONG_MERCHANT_ID`, `BAKONG_PHONE_NUMBER`, `BAKONG_DEVELOPER_TOKEN`, `BAKONG_API_URL` from `process.env` (server-side only, like `clerkSecretKey`).
+- Extend `src/config/configuration.ts` with a `bakong` block reading `BAKONG_MERCHANT_ID`, `BAKONG_PHONE_NUMBER`, `BAKONG_DEVELOPER_TOKEN`, `BAKONG_API_URL` from `process.env` (server-side only, like `RAYU_JWT_SECRET`).
 - `BakongService`:
   - `generateKhqr({ amount, currency, billNumber }): { qr: string, md5: string }` — build `IndividualInfo(BAKONG_MERCHANT_ID, merchantName, 'Phnom Penh', { currency: khqrData.currency.usd|khr, amount, mobileNumber: BAKONG_PHONE_NUMBER, billNumber, storeLabel, terminalLabel })`, then `new BakongKHQR().generateIndividual(info)` -> `{ data: { qr, md5 } }`.
   - `checkPaidByMd5(md5): Promise<{ paid: boolean, ref?: string }>` — call `BakongKHQR.checkTransactionByMD5(BAKONG_DEVELOPER_TOKEN, md5)` (or `POST {BAKONG_API_URL}/check_transaction_by_md5` with Bearer token) and map `responseCode===0` / `data.hash` to paid.

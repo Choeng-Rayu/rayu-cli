@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/rayucode-logo.png" alt="RAYU Code Logo" width="200">
+<img src="docs/assets/rayucode-logo.png" alt="RAYU Code" width="300">
 
-# RAYU — The AI Coding Agent Ecosystem
+**The AI Coding Agent Ecosystem**
 
 [![npm](https://img.shields.io/npm/v/@rayu-dev/rayu-cli.svg?style=flat-square&colorA=7c3aed&colorB=7c3aed)](https://www.npmjs.com/package/@rayu-dev/rayu-cli)
 [![CI](https://github.com/Choeng-Rayu/rayu-cli/workflows/CI/badge.svg)](https://github.com/Choeng-Rayu/rayu-cli/actions)
@@ -21,9 +21,7 @@
 ## 🎥 Watch It In Action
 
 <p align="center">
-  <video src="docs/assets/rayu-demo.mp4" width="800" controls>
-    Your browser does not support the video tag. <a href="docs/assets/rayu-demo.mp4">Download the video</a> to watch it.
-  </video>
+  <img src="docs/assets/rayu-demo.gif" alt="RAYU CLI Demo" width="800">
 </p>
 
 <p align="center">

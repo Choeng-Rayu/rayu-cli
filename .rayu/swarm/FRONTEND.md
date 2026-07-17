@@ -11,7 +11,7 @@
 
 ### 2. `app/billing/page.tsx` — new
 - `'use client'` + `export const dynamic = 'force-dynamic'` (same pattern as admin page)
-- Auth: Clerk token -> `POST /api/web/session` -> `{ accessToken }` -> Bearer on all calls
+- Auth: `useRayuToken()` -> Rayu access token (from `localStorage` or fresh exchange via `POST /api/auth/oauth/google`) -> Bearer on all calls
 - Flow: plan picker from `GET /api/plans` (filtered to active + priceCents > 0) -> `POST /api/payments/khqr` -> `QRCodeSVG` render -> poll `GET /api/payments/:id/status` every 3s -> success/failure states
 - Reads `?plan=<code>` query param to pre-select plan (from `/plans` Upgrade links)
 - Shows `GET /api/payments/mine` history table below
@@ -40,6 +40,6 @@
 
 ## Key patterns
 - `'use client'` must be on LINE 1 (no blank line before) to avoid prerender errors in Next.js 15
-- `export const dynamic = 'force-dynamic'` prevents prerender on client components using Clerk
+- `export const dynamic = 'force-dynamic'` prevents prerender on client components reading auth/session state
 - `apiUrl()` from `lib/config.ts` for all API calls
-- Bearer token auth: Clerk token -> `/web/session` -> Rayu access token -> API calls
+- Bearer token auth: `useRayuToken()` -> Rayu access token (refreshed via `/cli/refresh`) -> API calls

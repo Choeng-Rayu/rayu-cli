@@ -10,11 +10,11 @@ import { getOrganizationSchema, getWebsiteSchema } from './structured-data'
 export const metadata: Metadata = {
   metadataBase: new URL('https://rayucode.com'),
   title: {
-    default: 'Rayu - Terminal AI Coding Agent | Multi-Provider CLI Tool',
+    default: 'Rayu - Agentic AI Coding Agent | Multi-Provider CLI Tool',
     template: '%s | Rayu',
   },
   description:
-    'Rayu is a multi-provider terminal AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents that write, test, and deploy your code.',
+    'Rayu is a multi-provider Agentic AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents that write, test, and deploy your code.',
   keywords: [
     'AI coding agent',
     'terminal AI',
@@ -44,15 +44,15 @@ export const metadata: Metadata = {
     locale: 'en_US',
     url: 'https://rayucode.com',
     siteName: 'Rayu',
-    title: 'Rayu - Terminal AI Coding Agent | Multi-Provider CLI Tool',
+    title: 'Rayu - Agentic AI Coding Agent | Multi-Provider CLI Tool',
     description:
-      'Rayu is a multi-provider terminal AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents that write, test, and deploy your code.',
+      'Rayu is a multi-provider Agentic AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents that write, test, and deploy your code.',
     images: [
       {
         url: '/og-image.png',
         width: 1200,
         height: 630,
-        alt: 'Rayu - Terminal AI Coding Agent',
+        alt: 'Rayu - Agentic AI Coding Agent',
       },
     ],
   },
@@ -60,9 +60,9 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     site: '@rayucode',
     creator: '@rayucode',
-    title: 'Rayu - Terminal AI Coding Agent | Multi-Provider CLI Tool',
+    title: 'Rayu - Agentic AI Coding Agent | Multi-Provider CLI Tool',
     description:
-      'Rayu is a multi-provider terminal AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents.',
+      'Rayu is a multi-provider Agentic AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents.',
     images: ['/og-image.png'],
   },
   alternates: {
@@ -97,16 +97,15 @@ export default function RootLayout({
           />
           <div className="site">
             <header className="nav">
-              <Link href="/" className="nav-logo">
+              <Link href="/" className="nav-logo" style={{ display: 'flex', alignItems: 'center' }}>
                 <Image
                   src="/rayucode-logo.png"
-                  alt="RAYU Code Logo"
-                  width={32}
-                  height={32}
-                  className="nav-logo-mark"
+                  alt="RAYU Code"
+                  width={80}
+                  height={80}
+                  style={{ width: '80px', height: '80px', borderRadius: '12px' }}
                   priority
                 />
-                RAYU
               </Link>
               <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
                 <li><Link href="/plans">Plans</Link></li>
@@ -124,15 +123,13 @@ export default function RootLayout({
               marginTop: '4rem',
               textAlign: 'center'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-                <Image
-                  src="/rayucode-logo.png"
-                  alt="RAYU Code Logo"
-                  width={24}
-                  height={24}
-                />
-                <strong>RAYU</strong>
-              </div>
+              <Image
+                src="/rayucode-logo.png"
+                alt="RAYU Code"
+                width={64}
+                height={64}
+                style={{ marginBottom: '0.75rem' }}
+              />
               <p style={{ opacity: 0.6, fontSize: '0.9rem' }}>
                 © 2026 RAYU · Open source under MIT License
               </p>

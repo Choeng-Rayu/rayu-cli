@@ -68,7 +68,7 @@ node -e "process.stdout.write(require(require('os').homedir()+'/.rayu/rayu-auth.
 Or mint one for the pro account (`choengrayu233@gmail.com`):
 ```bash
 cd ~/rayu-cli/rayu-backend && set -a; . .env; set +a
-TOK=$(MINT_CLERK_ID=user_3F9dLC81k2cBWrQMVGNNg0h2qd9 MINT_EMAIL=choengrayu233@gmail.com \
+TOK=$(MINT_OAUTH_SUB=choengrayu233 MINT_EMAIL=choengrayu233@gmail.com \
   npx ts-node scripts/mint-session.ts 2>/dev/null \
   | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).accessToken))")
 ```

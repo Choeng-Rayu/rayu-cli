@@ -27,6 +27,13 @@ export default function SignInPage() {
     })
       .then(async (res) => {
         if (!res.ok) throw new Error(`OAuth session failed (${res.status})`)
+        const data = (await res.json()) as {
+          accessToken: string
+          refreshToken: string
+          expiresAt: number
+          user: { id: number; email: string | null; displayName: string | null; avatarUrl: string | null; role: string }
+        }
+        localStorage.setItem(RAYU_SESSION_KEY, JSON.stringify(data))
         router.push('/dashboard')
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))

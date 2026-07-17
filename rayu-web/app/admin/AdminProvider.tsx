@@ -17,6 +17,7 @@ export interface AdminMe {
   id: number
   email: string | null
   displayName: string | null
+  avatarUrl: string | null
   role: string
 }
 
@@ -127,7 +128,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       headers: { Authorization: `Bearer ${t}` },
     })
     if (!res.ok) throw new Error(`Token invalid (${res.status})`)
-    const data = (await res.json()) as { user: AdminMe }
+    const data = (await res.json()) as { user: AdminMe; status: string }
     return data.user
   }, [])
 
@@ -159,20 +160,26 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     const stored = readStoredAdmin()
     if (stored) {
       void (async () => {
-        // Refresh if the access token is near/past expiry; the refresh token
-        // is valid for 30 days, so a tab that's been closed for hours can still
-        // recover without forcing the admin to re-enter credentials.
-        const live =
-          stored.expiresAt - REFRESH_SKEW_MS > Date.now()
-            ? stored
-            : await refreshAdminSession(stored)
-        if (!live) {
+        try {
+          // Refresh if the access token is near/past expiry; the refresh token
+          // is valid for 30 days, so a tab that's been closed for hours can still
+          // recover without forcing the admin to re-enter credentials.
+          const live =
+            stored.expiresAt - REFRESH_SKEW_MS > Date.now()
+              ? stored
+              : await refreshAdminSession(stored)
+          if (!live) {
+            clearStoredAdmin()
+            return
+          }
+          await applySession(live)
+        } catch {
+          // Defensive: applySession/refreshAdminSession swallow their own
+          // errors, but if anything escapes we still must unblock the UI.
           clearStoredAdmin()
+        } finally {
           setReady(true)
-          return
         }
-        await applySession(live)
-        setReady(true)
       })()
       return
     }
@@ -264,6 +271,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   const oauthLogout = useCallback(() => {
     if (typeof window !== 'undefined') {
       localStorage.removeItem(RAYU_SESSION_KEY)
+      localStorage.removeItem(LOCAL_SESSION_KEY)
     }
     setToken(null)
     setMe(null)

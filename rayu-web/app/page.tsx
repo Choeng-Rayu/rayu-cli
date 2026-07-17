@@ -89,14 +89,14 @@ export default function HomePage() {
       {/* Hero Section */}
       <section className="grid-2-col" style={{ margin: '2rem 0 6rem 0' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-          <Image
+          {/* <Image
             src="/rayucode-logo.png"
             alt="RAYU Code Logo"
             width={120}
             height={120}
             style={{ marginBottom: '1.5rem' }}
             priority
-          />
+          /> */}
           <div className="badge active" style={{ marginBottom: '1.5rem', gap: '6px' }}>
             <span className="pulse" style={{ color: 'var(--green)' }}>◈</span> Multi-provider AI coding agent
           </div>
@@ -104,7 +104,7 @@ export default function HomePage() {
             Code with agents that <span style={{ color: 'var(--green)', textShadow: '0 0 20px var(--green-glow)' }}>think,</span> act, and ship.
           </h1>
           <p style={{ color: 'var(--text)', opacity: 0.8, fontSize: '1.38rem', lineHeight: '1.7', marginBottom: '2.5rem', maxWidth: '580px' }}>
-            Rayu is a multi-provider terminal AI coding agent. Bring your own API key, connect any model, and ship faster with autonomous agents that write, test, and deploy your code.
+            Rayu is a multi-provider Agentic AI coding agent. Bring your own API key, connect any model, and ship faster with autonomous agents that write, test, and deploy your code.
           </p>
           <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', width: '100%' }}>
             <Link href="/plans" className="btn-hero-primary">Start Building Free →</Link>

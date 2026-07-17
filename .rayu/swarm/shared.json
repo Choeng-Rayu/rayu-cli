@@ -4,14 +4,14 @@
     "backend": {
       "framework": "NestJS 10",
       "orm": "Prisma 6 (MySQL in prod, validated string-union enums at API layer)",
-      "auth": "Clerk session -> Rayu JWT (access/refresh). RayuAuthGuard + RolesGuard already exist. Roles: user|admin|superadmin.",
+      "auth": "Native Google OAuth (NextAuth on web) or email/password -> Rayu JWT (access/refresh). RayuAuthGuard + RolesGuard already exist. Roles: user|admin|superadmin.",
       "apiPrefix": "/api",
       "validation": "global ValidationPipe (whitelist + forbidNonWhitelisted + transform); DTOs via class-validator",
       "path": "/home/rayu/rayu-cli/rayu-backend"
     },
     "frontend": {
       "framework": "Next.js (app router, client components use 'use client')",
-      "auth": "Clerk (ClerkProvider). Browser exchanges Clerk token for Rayu access token via POST /api/web/session, then calls API with Bearer.",
+      "auth": "NextAuth (Google OAuth). Browser exchanges Google ID token for a Rayu access token via POST /api/auth/oauth/google, then calls API with Bearer. Session persists in localStorage + refreshes via /api/cli/refresh.",
       "apiHelper": "lib/config.ts apiUrl(path); base from NEXT_PUBLIC_RAYU_API_URL",
       "path": "/home/rayu/rayu-cli/rayu-web"
     },
