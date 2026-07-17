@@ -118,6 +118,25 @@ export default function RootLayout({
               </div>
             </header>
             {children}
+            <footer style={{
+              borderTop: '1px solid var(--border)',
+              padding: '2rem 0',
+              marginTop: '4rem',
+              textAlign: 'center'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                <Image
+                  src="/rayucode-logo.png"
+                  alt="RAYU Code Logo"
+                  width={24}
+                  height={24}
+                />
+                <strong>RAYU</strong>
+              </div>
+              <p style={{ opacity: 0.6, fontSize: '0.9rem' }}>
+                © 2026 RAYU · Open source under MIT License
+              </p>
+            </footer>
           </div>
         </body>
       </html>
