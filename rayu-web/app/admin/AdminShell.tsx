@@ -5,7 +5,6 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useState } from 'react'
 import { useAdmin } from './AdminProvider'
-import { RAYU_SESSION_KEY } from '../../lib/useRayuToken'
 
 const NAV = [
   { href: '/admin', label: 'Overview', icon: '◎', exact: true },
@@ -239,7 +238,6 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             </span>
             <button
               onClick={() => {
-                localStorage.removeItem(RAYU_SESSION_KEY)
                 oauthLogout()
                 void signOut({ callbackUrl: '/' })
               }}

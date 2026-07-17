@@ -127,7 +127,7 @@ flowchart TB
   end
 
   subgraph Platform["Existing rayu-cli services"]
-    Backend["rayu-backend (NestJS)<br/>Caller: POST /v1/builds<br/>Clerk→Rayu JWT"]
+    Backend["rayu-backend (NestJS)<br/>Caller: POST /v1/builds<br/>Google OAuth → Rayu JWT"]
     Gateway["rayu-gateway (Go)<br/>Caller: proxies SSE<br/>validates Rayu JWT"]
     Web["rayu-web (Next.js)"]
   end
@@ -247,7 +247,7 @@ Request/response shapes (all `application/json`, Req 1.9):
   "failureReason": null }
 ```
 
-**Service authentication (Req 15) — recommendation.** Use a **signed service token (HMAC-SHA256) reusing the shared `RAYU_JWT_SECRET`** that `rayu-backend` and `rayu-gateway` already share, rather than mTLS. Rationale: the secret-sharing trust channel already exists across these services (see RAYU.md cross-service auth), it is zero new PKI to operate on a single VPS, and the gateway already mints/validates Rayu JWTs. The orchestrator validates an `Authorization: Bearer <service-jwt>` whose claims include the Caller identity and a short TTL; the **End_User identity travels in the request body/`ownerId`** (and is itself derived upstream from the Clerk→Rayu exchange). mTLS remains a documented alternative if network-level caller authentication is later required. Auth failures → `401` and no side effects (Req 15.2). `GET /healthz`,`/metrics` exempt (Req 15.3).
+**Service authentication (Req 15) — recommendation.** Use a **signed service token (HMAC-SHA256) reusing the shared `RAYU_JWT_SECRET`** that `rayu-backend` and `rayu-gateway` already share, rather than mTLS. Rationale: the secret-sharing trust channel already exists across these services (see RAYU.md cross-service auth), it is zero new PKI to operate on a single VPS, and the gateway already mints/validates Rayu JWTs. The orchestrator validates an `Authorization: Bearer <service-jwt>` whose claims include the Caller identity and a short TTL; the **End_User identity travels in the request body/`ownerId`** (and is itself derived upstream from the Google OAuth → Rayu exchange). mTLS remains a documented alternative if network-level caller authentication is later required. Auth failures → `401` and no side effects (Req 15.2). `GET /healthz`,`/metrics` exempt (Req 15.3).
 
 **Rate limiting (Req 15.4).** Token-bucket per Caller identity; excess → `429`. Distinct from quota `429`s by error code (`rate_limited` vs `quota_exceeded`/`daily_quota_exceeded`).
 
@@ -505,9 +505,9 @@ The logger wraps every entry through `Redact` (Req 21.4); the event serializer r
 
 ### 10. `rayu-web` "Rayu Computer" panel — Req 23, 24, 25
 
-A client component following the repo's confirmed conventions (`'use client'` on line 1; `export const dynamic = 'force-dynamic'`; `apiUrl()` from `lib/config.ts`; Clerk→Rayu token exchange via the existing web/session route).
+A client component following the repo's confirmed conventions (`'use client'` on line 1; `export const dynamic = 'force-dynamic'`; `apiUrl()` from `lib/config.ts`; Rayu access token obtained via `useRayuToken()` from `lib/useRayuToken.ts`, which exchanges the NextAuth Google ID token for a Rayu session and persists it in `localStorage` with silent refresh).
 
-- **Submission (Req 23):** Clerk-gated (sign-in prompt while unauthenticated, no submit — Req 23.2); validate non-empty/non-whitespace prompt client-side (Req 23.4); obtain Rayu access token and `POST` to `NEXT_PUBLIC_RAYU_API_URL` with Bearer (Req 23.3); on 201 switch to live-progress view (Req 23.5); 429 → quota message + retry (Req 23.6); other errors → message + re-enable (Req 23.7). Optional BYOK is **never** persisted in browser storage and only sent over the authenticated HTTPS request (Req 23.8).
+- **Submission (Req 23):** Auth-gated (sign-in prompt while unauthenticated, no submit — Req 23.2); validate non-empty/non-whitespace prompt client-side (Req 23.4); obtain Rayu access token via `useRayuToken()` and `POST` to `NEXT_PUBLIC_RAYU_API_URL` with Bearer (Req 23.3); on 201 switch to live-progress view (Req 23.5); 429 → quota message + retry (Req 23.6); other errors → message + re-enable (Req 23.7). Optional BYOK is **never** persisted in browser storage and only sent over the authenticated HTTPS request (Req 23.8).
 - **Live progress + resume (Req 24):** open `EventSource`/`fetch` SSE to `NEXT_PUBLIC_RAYU_GATEWAY_URL` (Req 24.1); render by `kind` (phase/agent/tool_use/tool_result/file_change/log — Req 24.2); update status on `status` events (Req 24.3); retain last rendered `seq` (Req 24.4); on drop before terminal, reconnect with `Last-Event-ID = lastSeq` (Req 24.5); cancel control posts cancel to backend (Req 24.6); show "still connected, awaiting progress" when idle (Req 24.7).
 - **Completion/failure (Req 25):** on `live`, render `https://<id>.<base>` as an open-in-new-context control (Req 25.1); on `failed`, show the terminal `error` reason (Req 25.2); on `canceled`, indicate cancellation (Req 25.3); on any terminal, close SSE + re-enable starting a new build (Req 25.4); opening a panel for an already-terminal build requests the stream with no `Last-Event-ID`, renders replay in seq order, and shows the terminal outcome (Req 25.5).
 
@@ -782,4 +782,4 @@ Fixtures are recorded once from a real swarm run (the `.rayu-stream.ndjson` trac
 
 ### `rayu-web` panel tests (Req 23–25)
 
-Component tests render the panel with a mocked `EventSource`/`fetch` and Clerk session: assert Clerk gating (Req 23.2), empty-prompt validation (Req 23.4), `429`/error handling (Req 23.6/23.7), render-by-`kind` (Req 24.2), status updates (Req 24.3), reconnect-with-`Last-Event-ID` (Req 24.5, via `fast-check` over random drop/resume points), cancel (Req 24.6), and terminal displays — live link in a new context (Req 25.1), failure reason (Req 25.2), canceled (Req 25.3), and already-terminal replay (Req 25.5). A test also asserts the BYOK value is never written to `localStorage`/`sessionStorage`/cookies (Req 23.8).
+Component tests render the panel with a mocked `EventSource`/`fetch` and NextAuth session: assert auth gating (Req 23.2), empty-prompt validation (Req 23.4), `429`/error handling (Req 23.6/23.7), render-by-`kind` (Req 24.2), status updates (Req 24.3), reconnect-with-`Last-Event-ID` (Req 24.5, via `fast-check` over random drop/resume points), cancel (Req 24.6), and terminal displays — live link in a new context (Req 25.1), failure reason (Req 25.2), canceled (Req 25.3), and already-terminal replay (Req 25.5). A test also asserts the BYOK value is never written to `localStorage`/`sessionStorage`/cookies (Req 23.8).

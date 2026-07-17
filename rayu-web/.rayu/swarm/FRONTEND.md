@@ -35,7 +35,7 @@ This file maintains the current frontend status, design tokens, and integration 
 - Fixed height `64px`, backdrop blur `12px`, padding `0 48px`.
 - Left: Logo `RAYU` in Orbitron 900 with breathing green dot logo mark.
 - Center: Horizontal link list containing Plans, Terminal, and Docs. Links animate using custom sliding scaleX borders.
-- Right: Clerk Auth actions (SignIn, SignUp, UserButton) mapped to standard AGENTIX button states (`btn-ghost`, `btn-primary`).
+- Right: NextAuth sign-in/sign-out actions mapped to standard AGENTIX button states (`btn-ghost`, `btn-primary`).
 
 ### Landing Page (`app/page.tsx`)
 - **Hero**: Splitted 2-column grid. Left side carries headings, main copywriting, social proof overlapping avatars and buttons. Right side features a custom terminal visual emulation of `rayu "fix the auth bug"` execution showing path readings, patch diffing, testing output, and completed state.
@@ -56,5 +56,5 @@ This file maintains the current frontend status, design tokens, and integration 
 
 ## 3. Integration & Contract Guidelines
 - **API Origin**: Managed dynamically through `lib/config` `apiUrl` functions.
-- **Clerk Auth**: Integrations in `layout.tsx` and `admin/page.tsx` remain untouched and functional using `<Show>`, `<SignInButton>`, `<SignUpButton>`, `<UserButton>`, and `useAuth()` hooks.
+- **Native Google OAuth + NextAuth**: Integrations in `layout.tsx` (SessionProvider) and `app/admin/AdminProvider.tsx` use `useSession()`/`useRayuToken()`. The Rayu access token (Bearer) is obtained via `POST /api/auth/oauth/google` and persisted in `localStorage`, with silent refresh via `/api/cli/refresh`.
 - **TypeScript**: The entire application type-checks cleanly. Do not bypass compilers or skip standard typings on props.

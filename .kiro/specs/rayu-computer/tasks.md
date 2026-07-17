@@ -336,11 +336,11 @@ Property-based tests (P1–P8 from the design's Correctness Properties) use `pgr
 
 - [ ] 23. rayu-web "Rayu Computer" panel
   - [ ] 23.1 Implement prompt submission
-    - Add the panel as a `rayu-web` App Router client component (`'use client'` line 1, `export const dynamic = 'force-dynamic'`) using `lib/config.ts` `apiUrl()` and the existing Clerk→Rayu exchange (`lib/useRayuToken.ts`): sign-in gate while unauthenticated (no submit), client-side non-empty/whitespace validation, `POST` to `NEXT_PUBLIC_RAYU_API_URL` with Bearer, 201 → live-progress view, 429 → quota message + retry, other errors → message + re-enable; never persist BYOK in browser storage (send only over the authenticated request)
+    - Add the panel as a `rayu-web` App Router client component (`'use client'` line 1, `export const dynamic = 'force-dynamic'`) using `lib/config.ts` `apiUrl()` and the existing Google OAuth → Rayu exchange (`lib/useRayuToken.ts`): sign-in gate while unauthenticated (no submit), client-side non-empty/whitespace validation, `POST` to `NEXT_PUBLIC_RAYU_API_URL` with Bearer, 201 → live-progress view, 429 → quota message + retry, other errors → message + re-enable; never persist BYOK in browser storage (send only over the authenticated request)
     - _Requirements: 23.1, 23.2, 23.3, 23.4, 23.5, 23.6, 23.7, 23.8_
 
   - [ ]* 23.2 Write component tests for submission
-    - Cover Clerk gating, empty-prompt validation, 429 and generic-error handling, and that BYOK is never written to `localStorage`/`sessionStorage`/cookies (Jest)
+    - Cover auth gating, empty-prompt validation, 429 and generic-error handling, and that BYOK is never written to `localStorage`/`sessionStorage`/cookies (Jest)
     - _Requirements: 23.2, 23.4, 23.6, 23.7, 23.8_
 
   - [ ] 23.3 Implement the live-progress view and resume

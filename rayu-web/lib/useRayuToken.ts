@@ -12,6 +12,7 @@ export interface RayuSession {
     id: number
     email: string | null
     displayName: string | null
+    avatarUrl: string | null
     role: string
   }
 }
@@ -110,22 +111,22 @@ export function useRayuToken() {
   }, [])
 
   useEffect(() => {
-    // 1. Prefer an existing stored Rayu session (email/password or prior OAuth).
-    const stored = readStoredSession()
-    if (stored) {
-      void (async () => {
+    void (async () => {
+      // 1. Prefer an existing stored Rayu session (email/password or prior OAuth).
+      const stored = readStoredSession()
+      if (stored) {
         const fresh = await ensureFresh(stored)
         if (fresh) {
           setToken(fresh.accessToken)
           setRayuSession(fresh)
+          return
         }
-      })()
-      return
-    }
+        // ensureFresh returned null — refresh token invalid; fall through to a
+        // fresh Google OAuth exchange so the user isn't stuck with no session.
+      }
 
-    // 2. Otherwise exchange a Google ID token for a Rayu session.
-    if (status !== 'authenticated' || !session?.idToken) return
-    void (async () => {
+      // 2. Exchange a Google ID token for a Rayu session.
+      if (status !== 'authenticated' || !session?.idToken) return
       try {
         const res = await fetch(apiUrl('/auth/oauth/google'), {
           method: 'POST',

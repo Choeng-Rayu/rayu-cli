@@ -233,7 +233,7 @@ describe('rayu-backend (e2e)', () => {
   it('refresh issues a new access token', async () => {
     setTestUser(ctx, {
       sub: 'user_refresh',
-      email: 'refresh@example.com',
+      email: 'refresh2@example.com',
       displayName: null,
       avatarUrl: null,
     })
