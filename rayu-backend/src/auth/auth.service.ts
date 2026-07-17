@@ -203,7 +203,7 @@ export class AuthService {
   }
 
   /**
-   * Local admin login: email + password, no Clerk required.
+   * Local admin login: email + password (no OAuth provider needed).
    * Only works for users that have a passwordHash set (local accounts).
    */
   async localAdminLogin(

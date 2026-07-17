@@ -27,7 +27,7 @@ export default function NavAuth() {
     if (status !== 'authenticated' || !session?.idToken) return
     // Exchange the Google ID token for a Rayu session once per sign-in.
     const cached = typeof window !== 'undefined'
-      ? sessionStorage.getItem(RAYU_SESSION_KEY)
+      ? localStorage.getItem(RAYU_SESSION_KEY)
       : null
     if (cached) {
       try {
@@ -47,7 +47,7 @@ export default function NavAuth() {
         if (!res.ok) throw new Error(`Session failed (${res.status})`)
         const data = (await res.json()) as RayuSession
         setRayu(data)
-        sessionStorage.setItem(RAYU_SESSION_KEY, JSON.stringify(data))
+        localStorage.setItem(RAYU_SESSION_KEY, JSON.stringify(data))
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('Rayu session exchange failed', err)
@@ -65,7 +65,7 @@ export default function NavAuth() {
         <button
           className="btn-primary"
           onClick={() => {
-            sessionStorage.removeItem(RAYU_SESSION_KEY)
+            localStorage.removeItem(RAYU_SESSION_KEY)
             void signOut({ callbackUrl: '/' })
           }}
         >

@@ -5,7 +5,7 @@
 // exactly as before and none of this code changes the user experience.
 //
 // It mirrors the storage pattern of googleOAuth.ts: the session (access +
-// refresh token issued by rayu-backend after a Clerk login) is persisted to
+// refresh token issued by rayu-backend after a Google OAuth login) is persisted to
 // ~/.rayu/rayu-auth.json with 0600 permissions and never logged.
 //
 // NOTE: This is the Rayu *account* session — distinct from the Anthropic

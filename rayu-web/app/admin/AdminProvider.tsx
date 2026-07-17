@@ -20,6 +20,13 @@ export interface AdminMe {
   role: string
 }
 
+interface AdminSession {
+  accessToken: string
+  refreshToken: string
+  expiresAt: number
+  user: AdminMe
+}
+
 interface AdminCtx {
   /** Session-exchange attempt finished (success or failure). */
   ready: boolean
@@ -39,7 +46,66 @@ interface AdminCtx {
 }
 
 const Ctx = createContext<AdminCtx | null>(null)
-const LOCAL_TOKEN_KEY = 'rayu_admin_token'
+const LOCAL_SESSION_KEY = 'rayu_admin_session'
+// Refresh this far ahead of the access-token expiry so a request never leaves
+// with a token that expires in-flight.
+const REFRESH_SKEW_MS = 60_000
+
+function readStoredAdmin(): AdminSession | null {
+  if (typeof window === 'undefined') return null
+  const raw = localStorage.getItem(LOCAL_SESSION_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as AdminSession
+    if (
+      !parsed?.accessToken ||
+      !parsed?.refreshToken ||
+      !parsed?.expiresAt ||
+      !parsed?.user
+    ) {
+      localStorage.removeItem(LOCAL_SESSION_KEY)
+      return null
+    }
+    return parsed
+  } catch {
+    localStorage.removeItem(LOCAL_SESSION_KEY)
+    return null
+  }
+}
+
+function writeStoredAdmin(s: AdminSession): void {
+  if (typeof window === 'undefined') return
+  localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(s))
+}
+
+function clearStoredAdmin(): void {
+  if (typeof window === 'undefined') return
+  localStorage.removeItem(LOCAL_SESSION_KEY)
+}
+
+async function refreshAdminSession(s: AdminSession): Promise<AdminSession | null> {
+  try {
+    const res = await fetch(apiUrl('/cli/refresh'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken: s.refreshToken }),
+    })
+    if (!res.ok) return null
+    const tokens = (await res.json()) as {
+      accessToken: string
+      refreshToken: string
+      expiresAt: number
+    }
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresAt: tokens.expiresAt,
+      user: s.user,
+    }
+  } catch {
+    return null
+  }
+}
 
 export function useAdmin(): AdminCtx {
   const c = useContext(Ctx)
@@ -55,7 +121,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState('')
   const [ready, setReady] = useState(false)
 
-  // Validate a Rayu access token via /me and return the user.
+  // Validate a Rayu access token via /me and return the user. Throws on 401/etc.
   const validateToken = useCallback(async (t: string): Promise<AdminMe> => {
     const res = await fetch(apiUrl('/me'), {
       headers: { Authorization: `Bearer ${t}` },
@@ -65,30 +131,48 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     return data.user
   }, [])
 
+  // Apply a refreshed admin session: persist + update state + verify role.
+  const applySession = useCallback(
+    async (s: AdminSession): Promise<void> => {
+      try {
+        const user = await validateToken(s.accessToken)
+        if (user.role !== 'admin' && user.role !== 'superadmin') {
+          clearStoredAdmin()
+          setForbidden(true)
+          return
+        }
+        const persisted: AdminSession = { ...s, user }
+        writeStoredAdmin(persisted)
+        setToken(persisted.accessToken)
+        setMe(persisted.user)
+      } catch {
+        clearStoredAdmin()
+      }
+    },
+    [validateToken],
+  )
+
   useEffect(() => {
     if (status === 'loading') return
 
-    // 1. Check for a stored local admin token first.
-    const stored = typeof window !== 'undefined'
-      ? localStorage.getItem(LOCAL_TOKEN_KEY)
-      : null
-
+    // 1. Check for a stored local admin session first.
+    const stored = readStoredAdmin()
     if (stored) {
       void (async () => {
-        try {
-          const user = await validateToken(stored)
-          if (user.role !== 'admin' && user.role !== 'superadmin') {
-            localStorage.removeItem(LOCAL_TOKEN_KEY)
-            setForbidden(true)
-          } else {
-            setToken(stored)
-            setMe(user)
-          }
-        } catch {
-          localStorage.removeItem(LOCAL_TOKEN_KEY)
-        } finally {
+        // Refresh if the access token is near/past expiry; the refresh token
+        // is valid for 30 days, so a tab that's been closed for hours can still
+        // recover without forcing the admin to re-enter credentials.
+        const live =
+          stored.expiresAt - REFRESH_SKEW_MS > Date.now()
+            ? stored
+            : await refreshAdminSession(stored)
+        if (!live) {
+          clearStoredAdmin()
           setReady(true)
+          return
         }
+        await applySession(live)
+        setReady(true)
       })()
       return
     }
@@ -108,47 +192,79 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           body: JSON.stringify({ idToken }),
         })
         if (!res.ok) throw new Error(`Session failed (${res.status})`)
-        const data = (await res.json()) as { accessToken: string; user: AdminMe }
-        setToken(data.accessToken)
-        setMe(data.user)
-        if (data.user?.role !== 'admin' && data.user?.role !== 'superadmin') {
-          setForbidden(true)
+        const data = (await res.json()) as {
+          accessToken: string
+          refreshToken: string
+          expiresAt: number
+          user: AdminMe
         }
+        await applySession(data)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setReady(true)
       }
     })()
-  }, [status, session, validateToken])
+  }, [status, session, validateToken, applySession])
 
-  const localLogin = useCallback(async (email: string, password: string) => {
-    setError('')
-    const res = await fetch(apiUrl('/admin-login'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    })
-    if (!res.ok) {
-      const msg = await res.json().catch(() => ({ message: 'Login failed' }))
-      throw new Error((msg as { message?: string }).message ?? 'Login failed')
-    }
-    const data = (await res.json()) as { accessToken: string; user: AdminMe }
-    localStorage.setItem(LOCAL_TOKEN_KEY, data.accessToken)
-    setToken(data.accessToken)
-    setMe(data.user)
-    setForbidden(false)
-  }, [])
+  // Schedule a proactive refresh before the access token expires.
+  useEffect(() => {
+    if (!token || !me) return
+    const stored = readStoredAdmin()
+    if (!stored) return
+    const msUntilRefresh = stored.expiresAt - Date.now() - REFRESH_SKEW_MS
+    if (msUntilRefresh <= 0) return
+    const id = setTimeout(() => {
+      void (async () => {
+        const refreshed = await refreshAdminSession(stored)
+        if (!refreshed) {
+          clearStoredAdmin()
+          setToken(null)
+          setMe(null)
+          return
+        }
+        writeStoredAdmin(refreshed)
+        setToken(refreshed.accessToken)
+      })()
+    }, msUntilRefresh)
+    return () => clearTimeout(id)
+  }, [token, me])
+
+  const localLogin = useCallback(
+    async (email: string, password: string) => {
+      setError('')
+      const res = await fetch(apiUrl('/admin-login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({ message: 'Login failed' }))
+        throw new Error((msg as { message?: string }).message ?? 'Login failed')
+      }
+      const data = (await res.json()) as {
+        accessToken: string
+        refreshToken: string
+        expiresAt: number
+        user: AdminMe
+      }
+      await applySession(data)
+      setForbidden(false)
+    },
+    [applySession],
+  )
 
   const localLogout = useCallback(() => {
-    localStorage.removeItem(LOCAL_TOKEN_KEY)
+    clearStoredAdmin()
     setToken(null)
     setMe(null)
     setForbidden(false)
   }, [])
 
   const oauthLogout = useCallback(() => {
-    sessionStorage.removeItem(RAYU_SESSION_KEY)
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(RAYU_SESSION_KEY)
+    }
     setToken(null)
     setMe(null)
     setForbidden(false)

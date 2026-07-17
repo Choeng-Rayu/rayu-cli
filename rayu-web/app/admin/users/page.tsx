@@ -111,7 +111,7 @@ export default function UsersPage() {
         <input
           className="admin-input"
           style={{ flex: 1 }}
-          placeholder="Search by email, name, or Clerk id"
+          placeholder="Search by email or name"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => {

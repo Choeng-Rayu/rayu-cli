@@ -48,7 +48,7 @@ export default function SignInPage() {
         throw new Error((msg as { message?: string }).message ?? 'Login failed')
       }
       const data = (await res.json()) as { accessToken: string; refreshToken: string; expiresAt: number; user: { id: number; email: string | null; displayName: string | null; role: string } }
-      sessionStorage.setItem(RAYU_SESSION_KEY, JSON.stringify(data))
+      localStorage.setItem(RAYU_SESSION_KEY, JSON.stringify(data))
       router.push('/dashboard')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

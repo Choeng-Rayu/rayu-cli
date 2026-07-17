@@ -12,8 +12,6 @@ datasource db {
 
 model User {
   id           Int       @id @default(autoincrement())
-  // Deprecated: kept for existing Clerk users. New OAuth accounts live in Account.
-  clerkUserId  String?   @unique @db.VarChar(191)
   email        String?   @unique @db.VarChar(320)
   displayName  String?   @db.VarChar(191)
   avatarUrl    String?   @db.VarChar(1024)
@@ -40,7 +38,7 @@ model User {
 }
 
 // OAuth / SSO identities attached to a user. Scales to any number of providers
-// (google, github, gitlab, telegram, clerk, etc.) without schema changes.
+// (google, github, gitlab, telegram, etc.) without schema changes.
 model Account {
   id                  Int       @id @default(autoincrement())
   userId              Int       @map("user_id")

@@ -1,11 +1,11 @@
 // Interactive Rayu account login for the CLI.
 //
-// Bridges a browser-based Clerk login on the Rayu website back into the
+// Bridges a browser-based Google OAuth login on the Rayu website back into the
 // terminal via a localhost redirect:
 //
 //   1. start a loopback HTTP server on 127.0.0.1:<ephemeral port>
 //   2. open the browser to ${RAYU_WEB_URL}/cli-login?port=&state=
-//   3. the website signs the user in (Clerk) and calls the backend, then
+//   3. the website signs the user in (Google OAuth via NextAuth) and calls the backend, then
 //      redirects the browser to http://127.0.0.1:<port>/callback?code=&state=
 //   4. capture the one-time code, exchange it at /cli/token for Rayu tokens
 //   5. persist the session (0600)

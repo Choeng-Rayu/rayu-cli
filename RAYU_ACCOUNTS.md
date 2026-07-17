@@ -3,15 +3,16 @@
 User accounts, a marketing website, and an opt-in CLI login for Rayu, across
 three projects:
 
-| Project        | Path             | Stack                                  |
-|----------------|------------------|----------------------------------------|
-| `rayu-cli`     | `./rayu`         | Bun + TypeScript + React/Ink (the CLI) |
-| `rayu-backend` | `./rayu-backend` | NestJS + Prisma + MySQL + Clerk + JWT   |
-| `rayu-web`     | `./rayu-web`     | Next.js App Router + Clerk             |
+| Project        | Path             | Stack                                          |
+|----------------|------------------|------------------------------------------------|
+| `rayu-cli`     | `./rayu`         | Bun + TypeScript + React/Ink (the CLI)         |
+| `rayu-backend` | `./rayu-backend` | NestJS + Prisma + MySQL + JWT                   |
+| `rayu-web`     | `./rayu-web`     | Next.js App Router + NextAuth (Google OAuth)   |
 
 ## What this includes (phase 1)
 
-- Sign in with Clerk (Google / GitHub / Facebook). Telegram is deferred.
+- Sign in with **Google OAuth** (via NextAuth on the web) or **email/password**
+  (native). Telegram is deferred.
 - New users are auto-assigned the **Free** plan (bring your own provider key
   via the CLI's `/connect` — direct to the provider).
 - **Plans (all admin-editable at runtime — see below):**
@@ -39,10 +40,10 @@ three projects:
 resets, wiring the CLI to enforce entitlements, Telegram login, and the real
 chatbot. (Bakong payments scaffolding exists in the backend.)
 
-> Security: the CLI ships **no secrets**. Clerk secret key, MySQL credentials,
-> the Rayu JWT signing secret, and (future) Bakong credentials live only in the
-> backend environment. If the Bakong developer token was shared anywhere, rotate
-> it.
+> Security: the CLI ships **no secrets**. Google OAuth client secret, MySQL
+> credentials, the Rayu JWT signing secret, and (future) Bakong credentials
+> live only in the backend environment. If the Bakong developer token was
+> shared anywhere, rotate it.
 
 ## The CLI ↔ web ↔ backend login bridge
 
@@ -50,10 +51,10 @@ chatbot. (Bakong payments scaffolding exists in the backend.)
 CLI (/login, USE_RAYU_OAUTH=true)
   starts a localhost AuthCodeListener on :PORT, opens the browser to
   RAYU_WEB_URL/cli-login?port=PORT&state=STATE
-      -> website signs the user in with Clerk
-      -> website POST /api/cli/exchange (Clerk token + state) to the backend
-      -> backend verifies Clerk, upserts the user (Free plan), returns a
-         one-time code
+      -> website signs the user in with Google (NextAuth)
+      -> website POST /api/cli/exchange (Google ID token + state) to the backend
+      -> backend verifies the Google ID token, upserts the user (Free plan),
+         returns a one-time code
       -> website redirects the browser to 127.0.0.1:PORT/callback?code&state
   CLI captures the code, POST /api/cli/token -> { accessToken, refreshToken }
   CLI stores ~/.rayu/rayu-auth.json (0600) and proceeds.
@@ -65,7 +66,7 @@ CLI (/login, USE_RAYU_OAUTH=true)
 2. **Backend**
    ```bash
    cd rayu-backend
-   cp .env.example .env   # set DATABASE_URL, CLERK_SECRET_KEY, RAYU_JWT_SECRET
+   cp .env.example .env   # set DATABASE_URL, RAYU_JWT_SECRET
    npm install
    npx prisma migrate deploy   # apply schema (plans are also seeded on boot)
    npm run start:dev            # http://localhost:4000/api/health
@@ -73,7 +74,7 @@ CLI (/login, USE_RAYU_OAUTH=true)
 3. **Web**
    ```bash
    cd rayu-web
-   cp .env.example .env.local   # set Clerk keys + NEXT_PUBLIC_RAYU_API_URL
+   cp .env.example .env.local   # set NextAuth + Google OAuth + NEXT_PUBLIC_RAYU_API_URL
    npm install
    npm run dev                  # http://localhost:3000
    ```
@@ -90,7 +91,7 @@ CLI (/login, USE_RAYU_OAUTH=true)
 
 ```bash
 cd deploy
-cp .env.example .env     # fill in SITE_ADDRESS, Clerk keys, MySQL + JWT secrets
+cp .env.example .env     # fill in SITE_ADDRESS, Google OAuth, MySQL + JWT secrets
 docker compose up -d --build
 ```
 
@@ -110,26 +111,34 @@ cd rayu && bun test test/rayuAuth.test.ts test/commandRegistry.test.ts
 
 The backend e2e (`rayu-backend/test/app.e2e-spec.ts`) runs against a live MySQL
 test database (`rayu_test`, auto-reset via `prisma db push` in jest
-globalSetup) with a mocked Clerk verifier: exchange → token → `/me`, refresh,
-usage summary, feedback, admin role-gating + suspend, and **login → usage →
-visible in admin stats**.
+globalSetup) with a mocked Google OAuth verifier: exchange → token → `/me`,
+refresh, usage summary, feedback, admin role-gating + suspend, and **login →
+usage → visible in admin stats**.
 
 ## Environment variables
 
 **rayu-backend** (`rayu-backend/.env`): `PORT`, `DATABASE_URL` (MySQL, used by
-Prisma), `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `RAYU_JWT_SECRET`,
-`RAYU_ACCESS_TTL`, `RAYU_REFRESH_TTL`, `WEB_ORIGIN`, and (phase 2) `BAKONG_*`.
+Prisma), `RAYU_JWT_SECRET`, `RAYU_ACCESS_TTL`, `RAYU_REFRESH_TTL`, `WEB_ORIGIN`,
+`GOOGLE_CLIENT_ID` (optional — enforces audience check), and (phase 2)
+`BAKONG_*`.
 
-**rayu-web** (`rayu-web/.env.local`): `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`,
-`CLERK_SECRET_KEY`, `NEXT_PUBLIC_RAYU_API_URL`.
+**rayu-web** (`rayu-web/.env.local`): `NEXTAUTH_SECRET`, `NEXTAUTH_URL`,
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXT_PUBLIC_RAYU_API_URL`.
 
 **rayu-cli** (`rayu/.env.rayu-accounts.example`): `USE_RAYU_OAUTH`,
 `RAYU_API_URL`, `RAYU_WEB_URL`.
 
-## Note on the Clerk middleware file
+## Auth design notes
 
-Clerk's latest quickstart uses `proxy.ts`, which is the **Next.js 16** file
-convention. This project targets **Next.js 15.5**, where the supported file is
-`middleware.ts` — so `rayu-web/middleware.ts` holds the identical
-`clerkMiddleware()` and matcher. When upgrading to Next 16, rename it to
-`proxy.ts` (contents unchanged).
+- **Native JWT auth:** the backend signs HS256 access (1h) + refresh (30d)
+  tokens with `RAYU_JWT_SECRET`. The gateway verifies access tokens with the
+  same secret — they share nothing else.
+- **Web persistence:** the Rayu session (`{ accessToken, refreshToken,
+  expiresAt, user }`) is stored in `localStorage` under `rayu_session` and
+  silently refreshed via `POST /api/cli/refresh` before the access token
+  expires, so dashboard sessions stay alive across browser restarts until the
+  30-day refresh token expires.
+- **Admin auth:** the admin session lives in `localStorage` under
+  `rayu_admin_session` and follows the same refresh flow. Local admin login
+  (`admin@rayucode.com` / `LOCAL_ADMIN_PASSWORD`) bypasses the browser OAuth
+  flow for dev/ops access.
