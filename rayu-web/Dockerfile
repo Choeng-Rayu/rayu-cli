@@ -2,6 +2,9 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+# Set NODE_ENV=development during install to include devDependencies needed for build
+ENV NODE_ENV=development
+
 COPY package.json package-lock.json* ./
 RUN npm install
 
