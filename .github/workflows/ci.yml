@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  cli-test:
+    name: CLI Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        bun-version: ['1.0.0']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: ${{ matrix.bun-version }}
+
+    - name: Install dependencies
+      working-directory: ./rayu
+      run: bun install
+
+    - name: Type check
+      working-directory: ./rayu
+      run: bun run typecheck
+
+    - name: Run tests
+      working-directory: ./rayu
+      run: bun test
+
+    - name: Build
+      working-directory: ./rayu
+      run: bun run build
+
+  backend-test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: rayu_test
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: rayu-backend/package-lock.json
+
+    - name: Install dependencies
+      working-directory: ./rayu-backend
+      run: npm ci
+
+    - name: Type check
+      working-directory: ./rayu-backend
+      run: npm run typecheck
+
+    - name: Run unit tests
+      working-directory: ./rayu-backend
+      run: npm test
+      env:
+        DATABASE_URL: mysql://root:test@localhost:3306/rayu_test
+
+    - name: Run e2e tests
+      working-directory: ./rayu-backend
+      run: npm run test:e2e
+      env:
+        DATABASE_URL: mysql://root:test@localhost:3306/rayu_test
+
+  gateway-test:
+    name: Gateway Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Install dependencies
+      working-directory: ./rayu-gateway
+      run: go mod download
+
+    - name: Run tests
+      working-directory: ./rayu-gateway
+      run: go test -v ./...
+
+    - name: Build
+      working-directory: ./rayu-gateway
+      run: go build ./cmd/gateway
+
+  web-test:
+    name: Web Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: rayu-web/package-lock.json
+
+    - name: Install dependencies
+      working-directory: ./rayu-web
+      run: npm ci
+
+    - name: Type check
+      working-directory: ./rayu-web
+      run: npm run typecheck
+
+    - name: Lint
+      working-directory: ./rayu-web
+      run: npm run lint
+
+    - name: Run tests
+      working-directory: ./rayu-web
+      run: npm test
+
+    - name: Build
+      working-directory: ./rayu-web
+      run: npm run build
