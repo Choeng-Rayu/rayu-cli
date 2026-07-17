@@ -101,9 +101,9 @@ export default function RootLayout({
                 <Image
                   src="/rayucode-logo.png"
                   alt="RAYU Code"
-                  width={48}
-                  height={48}
-                  style={{ width: '48px', height: '48px', borderRadius: '8px' }}
+                  width={80}
+                  height={80}
+                  style={{ width: '80px', height: '80px', borderRadius: '12px' }}
                   priority
                 />
               </Link>
