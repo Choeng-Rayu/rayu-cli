@@ -21,14 +21,17 @@
 ## 🎥 Watch It In Action
 
 <p align="center">
-  <a href="docs/assets/Screencast%20From%202026-07-11%2001-01-14.webm">
+  <a href="https://github.com/Choeng-Rayu/rayu-cli/raw/main/docs/assets/Screencast%20From%202026-07-11%2001-01-14.webm">
     <img src="docs/assets/rayu-cli-preview.png" alt="Watch the demo video" width="800">
   </a>
 </p>
 
 <p align="center">
-  ▶️ <a href="docs/assets/Screencast%20From%202026-07-11%20001-01-14.webm"><strong>Click here to watch the full demo video</strong></a>
+  📥 <a href="https://github.com/Choeng-Rayu/rayu-cli/raw/main/docs/assets/Screencast%20From%202026-07-11%2001-01-14.webm"><strong>Download the demo video</strong></a> (WebM format, 31MB) · 
+  🎬 <a href="https://github.com/Choeng-Rayu/rayu-cli/tree/main/docs/assets"><strong>View all assets</strong></a>
 </p>
+
+> **Note:** GitHub doesn't support inline video playback for `.webm` files. Click the link above to download and watch the demo, or view it directly on the [documentation site](https://rayucode.com/docs).
 
 > **The ultimate standard for terminal-based AI development.** Rayu is built from the ground up to outperform every other CLI agent on the market. It works flawlessly, runs faster, and respects your privacy completely.
 
