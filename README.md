@@ -1,8 +1,13 @@
-# 🔮 Rayu — The AI Coding Agent Ecosystem
-
 <div align="center">
 
+<img src="docs/assets/rayucode-logo.png" alt="RAYU Code Logo" width="200">
+
+# RAYU — The AI Coding Agent Ecosystem
+
 [![npm](https://img.shields.io/npm/v/@rayu-dev/rayu-cli.svg?style=flat-square&colorA=7c3aed&colorB=7c3aed)](https://www.npmjs.com/package/@rayu-dev/rayu-cli)
+[![CI](https://github.com/Choeng-Rayu/rayu-cli/workflows/CI/badge.svg)](https://github.com/Choeng-Rayu/rayu-cli/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/Choeng-Rayu?style=flat-square)](https://github.com/sponsors/Choeng-Rayu)
 [![Website](https://img.shields.io/badge/🌐_rayucode.com-7c3aed?style=flat-square)](https://rayucode.com)
 
 **Website:** [rayucode.com](https://rayucode.com) · **Docs:** [rayucode.com/docs](https://rayucode.com/docs) · **Changelog:** [rayucode.com/changelog](https://rayucode.com/changelog)

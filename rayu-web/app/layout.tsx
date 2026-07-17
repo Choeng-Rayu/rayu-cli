@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import Image from 'next/image'
 import type { Metadata } from 'next'
 import Script from 'next/script'
 import './globals.css'
@@ -97,7 +98,14 @@ export default function RootLayout({
           <div className="site">
             <header className="nav">
               <Link href="/" className="nav-logo">
-                <div className="nav-logo-mark" />
+                <Image
+                  src="/rayucode-logo.png"
+                  alt="RAYU Code Logo"
+                  width={32}
+                  height={32}
+                  className="nav-logo-mark"
+                  priority
+                />
                 RAYU
               </Link>
               <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
