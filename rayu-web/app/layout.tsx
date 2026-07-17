@@ -103,10 +103,10 @@ export default function RootLayout({
                   alt="RAYU Code"
                   width={48}
                   height={48}
-                  className="nav-logo-mark"
+                  style={{ width: '48px', height: '48px', borderRadius: '8px' }}
                   priority
                 />
-                <span style={{ marginLeft: '0.75rem', fontSize: '1.25rem', fontWeight: 600 }}>RAYU</span>
+                <span style={{ marginLeft: '0.75rem', fontSize: '1.25rem', fontWeight: 600, fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '0.5px' }}>RAYU</span>
               </Link>
               <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
                 <li><Link href="/plans">Plans</Link></li>
