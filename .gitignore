@@ -1,13 +1,34 @@
+# Dependencies
 rayu/node_modules/
-rayu/graphify-out/
-rayu/dist/bin/
-rayu/dist/pkg/
-rayu/.playwright-mcp/
+rayu-backend/node_modules/
+rayu-web/node_modules/
+rayu-gateway/vendor/
+
+# Build outputs (generated during CI/CD, not committed)
 rayu/dist/
-rayu/dist/rayu.js
-vertex-test/vertex-test/
+rayu-backend/dist/
+rayu-web/.next/
+rayu-gateway/bin/
+
+# Generated files
+rayu/graphify-out/
+rayu/.playwright-mcp/
+
+# Test artifacts
 vertex-test/
+
+# Local development
 skills/
 rayu/cute-girl-images/
 claude-code/
 .credential/
+.env
+.env.local
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
