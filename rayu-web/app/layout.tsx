@@ -100,13 +100,12 @@ export default function RootLayout({
               <Link href="/" className="nav-logo">
                 <Image
                   src="/rayucode-logo.png"
-                  alt="RAYU Code Logo"
-                  width={32}
-                  height={32}
+                  alt="RAYU Code"
+                  width={120}
+                  height={40}
                   className="nav-logo-mark"
                   priority
                 />
-                RAYU
               </Link>
               <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
                 <li><Link href="/plans">Plans</Link></li>
@@ -124,15 +123,13 @@ export default function RootLayout({
               marginTop: '4rem',
               textAlign: 'center'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-                <Image
-                  src="/rayucode-logo.png"
-                  alt="RAYU Code Logo"
-                  width={24}
-                  height={24}
-                />
-                <strong>RAYU</strong>
-              </div>
+              <Image
+                src="/rayucode-logo.png"
+                alt="RAYU Code"
+                width={100}
+                height={33}
+                style={{ marginBottom: '0.75rem' }}
+              />
               <p style={{ opacity: 0.6, fontSize: '0.9rem' }}>
                 © 2026 RAYU · Open source under MIT License
               </p>
