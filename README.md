@@ -18,6 +18,18 @@
   <img src="docs/assets/rayu-cli-preview.png" alt="Rayu CLI Preview" width="800">
 </p>
 
+## 🎥 Watch It In Action
+
+<p align="center">
+  <a href="docs/assets/Screencast%20From%202026-07-11%2001-01-14.webm">
+    <img src="docs/assets/rayu-cli-preview.png" alt="Watch the demo video" width="800">
+  </a>
+</p>
+
+<p align="center">
+  ▶️ <a href="docs/assets/Screencast%20From%202026-07-11%20001-01-14.webm"><strong>Click here to watch the full demo video</strong></a>
+</p>
+
 > **The ultimate standard for terminal-based AI development.** Rayu is built from the ground up to outperform every other CLI agent on the market. It works flawlessly, runs faster, and respects your privacy completely.
 
 ---
