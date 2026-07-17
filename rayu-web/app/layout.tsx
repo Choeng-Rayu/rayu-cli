@@ -10,11 +10,11 @@ import { getOrganizationSchema, getWebsiteSchema } from './structured-data'
 export const metadata: Metadata = {
   metadataBase: new URL('https://rayucode.com'),
   title: {
-    default: 'Rayu - Terminal AI Coding Agent | Multi-Provider CLI Tool',
+    default: 'Rayu - Agentic AI Coding Agent | Multi-Provider CLI Tool',
     template: '%s | Rayu',
   },
   description:
-    'Rayu is a multi-provider terminal AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents that write, test, and deploy your code.',
+    'Rayu is a multi-provider Agentic AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents that write, test, and deploy your code.',
   keywords: [
     'AI coding agent',
     'terminal AI',
@@ -44,15 +44,15 @@ export const metadata: Metadata = {
     locale: 'en_US',
     url: 'https://rayucode.com',
     siteName: 'Rayu',
-    title: 'Rayu - Terminal AI Coding Agent | Multi-Provider CLI Tool',
+    title: 'Rayu - Agentic AI Coding Agent | Multi-Provider CLI Tool',
     description:
-      'Rayu is a multi-provider terminal AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents that write, test, and deploy your code.',
+      'Rayu is a multi-provider Agentic AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents that write, test, and deploy your code.',
     images: [
       {
         url: '/og-image.png',
         width: 1200,
         height: 630,
-        alt: 'Rayu - Terminal AI Coding Agent',
+        alt: 'Rayu - Agentic AI Coding Agent',
       },
     ],
   },
@@ -60,9 +60,9 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     site: '@rayucode',
     creator: '@rayucode',
-    title: 'Rayu - Terminal AI Coding Agent | Multi-Provider CLI Tool',
+    title: 'Rayu - Agentic AI Coding Agent | Multi-Provider CLI Tool',
     description:
-      'Rayu is a multi-provider terminal AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents.',
+      'Rayu is a multi-provider Agentic AI coding agent. Connect any LLM, use 600+ MCP tools, and ship faster with autonomous agents.',
     images: ['/og-image.png'],
   },
   alternates: {
@@ -106,7 +106,6 @@ export default function RootLayout({
                   style={{ width: '48px', height: '48px', borderRadius: '8px' }}
                   priority
                 />
-                <span style={{ marginLeft: '0.75rem', fontSize: '1.25rem', fontWeight: 600, fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '0.5px' }}>RAYU</span>
               </Link>
               <ul className="nav-links" style={{ marginLeft: '2.5rem', marginRight: 'auto' }}>
                 <li><Link href="/plans">Plans</Link></li>
