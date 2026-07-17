@@ -100,7 +100,7 @@ export class AuthController {
   }
 
   /**
-   * Local admin login: email + password, no Clerk required.
+   * Local admin login: email + password (no OAuth provider needed).
    * Only works for accounts that have a passwordHash (local admin accounts).
    */
   @Post('admin-login')

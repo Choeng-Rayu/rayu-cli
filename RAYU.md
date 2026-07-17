@@ -13,7 +13,7 @@ This monorepo contains four independent projects:
 | `rayu/` | TypeScript + Bun + React/Ink | The CLI itself (published as `@rayu-dev/rayu-cli` on npm) |
 | `rayu-backend/` | NestJS + Prisma + MySQL | Accounts API — users, auth, plans, usage, payments |
 | `rayu-gateway/` | Go 1.24 + chi + Redis | Streaming AI gateway — proxies all hosted-model requests |
-| `rayu-web/` | Next.js 15 + Clerk | Marketing site + user dashboard at rayu-web.vercel.app |
+| `rayu-web/` | Next.js 15 + NextAuth (Google OAuth) | Marketing site + user dashboard at rayu-web.vercel.app |
 | `deploy/` | Docker Compose + Caddy | Single-VPS production stack for all four services |
 
 The CLI sub-project also has its own `rayu/RAYU.md` with deeper CLI internals (ink renderer, tool/command system, build macros, permissions). Read it when working inside `rayu/`.
@@ -104,7 +104,7 @@ Caddy routes: `/api/*` → `backend:4000`, `/gateway/*` → `gateway:8080`, `/*`
 ### The Full Request Path
 
 ```
-User → Clerk OAuth → rayu-backend /api/auth/session
+User → Google OAuth (NextAuth on rayu-web) → rayu-backend /api/auth/oauth/google
   → issues Rayu JWT (signed with RAYU_JWT_SECRET)
   → CLI stores JWT in ~/.rayu/rayu-auth.json
 
@@ -124,7 +124,7 @@ rayu-web → rayu-backend /api/ for user data + entitlements
 ### Service Contracts
 
 - **Backend → Gateway:** No direct coupling. Gateway reads MySQL independently. They share only the JWT secret.
-- **Backend → Web:** REST API under `/api`. Clerk-issued session tokens are exchanged for Rayu JWTs.
+- **Backend → Web:** REST API under `/api`. The web exchanges Google ID tokens (or email/password credentials) for Rayu JWTs.
 - **CLI → Backend:** Only for auth/login, plan lookups, usage events. AI calls go to the gateway.
 - **CLI → Gateway:** All AI completions when `USE_RAYU_OAUTH=true`. Falls back to direct provider calls when false.
 
@@ -148,4 +148,4 @@ The CLI uses `feature('FLAG')` from `bun:bundle` which is compile-time dead-code
 - **Provider keys live only in the gateway's env**, never in the DB or CLI. The gateway rotates multi-keys via round-robin and uses circuit breakers per upstream host.
 - **The gateway writes credit ledger + usage events through a bounded serialized queue** (`eventqueue`) to prevent MySQL pool starvation under concurrent streaming load.
 - **Promo codes** (new: `promo/` module, migration `0000000000007_promo_codes`) support percent/fixed discounts, per-plan scoping, `maxRedemptions` caps, date windows, and one-redemption-per-user enforcement. A `$0` claim bypasses the QR payment flow entirely.
-- **Admin auth** supports both Clerk SSO and a local password login (`admin@rayucode.com` / `LOCAL_ADMIN_PASSWORD` env var), enabling access without Clerk during development.
+- **Admin auth** supports Google SSO and a local password login (`admin@rayucode.com` / `LOCAL_ADMIN_PASSWORD` env var), enabling access without a browser OAuth flow during development.

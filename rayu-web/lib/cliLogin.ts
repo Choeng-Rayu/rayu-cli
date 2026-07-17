@@ -1,5 +1,5 @@
 // Pure helpers for the CLI login bridge so the redirect logic is unit-testable
-// independent of React/Clerk.
+// independent of React/NextAuth.
 
 export interface CliLoginParams {
   port: number

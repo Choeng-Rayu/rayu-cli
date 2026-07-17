@@ -22,7 +22,7 @@ This is a monorepo containing four independent projects:
 - `rayu/` — CLI (TypeScript + Bun + React/Ink)
 - `rayu-backend/` — Backend API (NestJS + Prisma + MySQL)
 - `rayu-gateway/` — AI Gateway (Go + chi + Redis)
-- `rayu-web/` — Marketing/Dashboard (Next.js 15 + Clerk)
+- `rayu-web/` — Marketing/Dashboard (Next.js 15 + NextAuth/Google OAuth)
 - `deploy/` — Production deployment (Docker Compose + Caddy)
 
 ### Setting Up Development Environment

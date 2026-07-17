@@ -21,17 +21,20 @@
 ## 🎥 Watch It In Action
 
 <p align="center">
-  <a href="https://github.com/Choeng-Rayu/rayu-cli/raw/main/docs/assets/Screencast%20From%202026-07-11%2001-01-14.webm">
-    <img src="docs/assets/rayu-cli-preview.png" alt="Watch the demo video" width="800">
-  </a>
+  <video src="docs/assets/rayu-demo.mp4" width="800" controls>
+    Your browser does not support the video tag. <a href="docs/assets/rayu-demo.mp4">Download the video</a> to watch it.
+  </video>
 </p>
 
 <p align="center">
-  📥 <a href="https://github.com/Choeng-Rayu/rayu-cli/raw/main/docs/assets/Screencast%20From%202026-07-11%2001-01-14.webm"><strong>Download the demo video</strong></a> (WebM format, 31MB) · 
-  🎬 <a href="https://github.com/Choeng-Rayu/rayu-cli/tree/main/docs/assets"><strong>View all assets</strong></a>
+  <em>🎬 RAYU CLI in action — 4:42 demo showing multi-provider AI coding agent capabilities</em>
 </p>
 
-> **Note:** GitHub doesn't support inline video playback for `.webm` files. Click the link above to download and watch the demo, or view it directly on the [documentation site](https://rayucode.com/docs).
+<p align="center">
+  <a href="docs/assets/rayu-demo.mp4"><strong>📥 Download MP4 (13MB)</strong></a> · 
+  <a href="docs/assets/Screencast%20From%202026-07-11%2001-01-14.webm"><strong>📥 Download WebM (31MB)</strong></a> · 
+  <a href="https://rayucode.com/docs"><strong>📖 Documentation</strong></a>
+</p>
 
 > **The ultimate standard for terminal-based AI development.** Rayu is built from the ground up to outperform every other CLI agent on the market. It works flawlessly, runs faster, and respects your privacy completely.
 
@@ -98,7 +101,7 @@ Rayu consists of four independent services. They work together or as individual 
 | [`rayu/`](./rayu/) | TypeScript + Bun + Ink | **The CLI** — AI coding agent itself |
 | [`rayu-backend/`](./rayu-backend/) | NestJS + Prisma + MySQL | **Accounts API** — auth, plans, billing |
 | [`rayu-gateway/`](./rayu-gateway/) | Go + chi + Redis | **AI Gateway** — streaming proxy, rate limiting |
-| [`rayu-web/`](./rayu-web/) | Next.js 15 + Clerk | **Website** — marketing site + user dashboard |
+| [`rayu-web/`](./rayu-web/) | Next.js 15 + NextAuth | **Website** — marketing site + user dashboard |
 | [`deploy/`](./deploy/) | Docker Compose + Caddy | **Production** — single-VPS deployment stack |
 
 ---

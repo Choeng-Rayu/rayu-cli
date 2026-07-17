@@ -10,7 +10,7 @@ interface CodeEntry {
 
 /**
  * In-memory store of one-time authorization codes used by the CLI login
- * bridge. A code is issued after a successful Clerk verification (bound to the
+ * bridge. A code is issued after a successful Google OAuth verification (bound to the
  * CSRF `state` the CLI generated) and can be redeemed exactly once, within a
  * short TTL, for Rayu tokens.
  *

@@ -2,6 +2,31 @@ import { INestApplication } from '@nestjs/common'
 import request from 'supertest'
 import { createTestApp, TestContext } from './test-app'
 
+/**
+ * Set the mocked Google OAuth profile the backend will see on the next
+ * /cli/exchange, /web/session, or /auth/oauth/google call. The `sub` is just
+ * an opaque per-test identifier used as the OAuth `providerAccountId`; tests
+ * look users up by their unique email instead.
+ */
+function setTestUser(
+  ctx: TestContext,
+  opts: {
+    sub: string
+    email: string
+    displayName?: string | null
+    avatarUrl?: string | null
+  },
+) {
+  ctx.setOAuthUser({
+    provider: 'google',
+    providerAccountId: opts.sub,
+    email: opts.email,
+    displayName: opts.displayName ?? null,
+    avatarUrl: opts.avatarUrl ?? null,
+    emailVerified: true,
+  })
+}
+
 describe('rayu-backend (e2e)', () => {
   let ctx: TestContext
   let app: INestApplication
@@ -40,8 +65,8 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('POST /api/payments/khqr issues KHQR for an active hosted plan, rejects coming_soon', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_buyer',
+    setTestUser(ctx, {
+      sub: 'buyer',
       email: 'buyer@example.com',
       displayName: null,
       avatarUrl: null,
@@ -69,8 +94,8 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('reuses the same pending QR on repeat create (page refresh); cancel frees a new one', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_refresh',
+    setTestUser(ctx, {
+      sub: 'refresh',
       email: 'refresh@example.com',
       displayName: null,
       avatarUrl: null,
@@ -110,8 +135,8 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('blocks re-buying an already-active non-credit plan (basic), still allows credit plans', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_dup',
+    setTestUser(ctx, {
+      sub: 'dup',
       email: 'dup@example.com',
       displayName: null,
       avatarUrl: null,
@@ -148,8 +173,8 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('full CLI bridge: exchange -> token -> /me, replay fails', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_user_1',
+    setTestUser(ctx, {
+      sub: 'user_1',
       email: 'user1@example.com',
       displayName: 'User One',
       avatarUrl: null,
@@ -157,7 +182,7 @@ describe('rayu-backend (e2e)', () => {
 
     const exchange = await request(app.getHttpServer())
       .post('/api/cli/exchange')
-      .set('Authorization', 'Bearer fake-clerk-token')
+      .set('Authorization', 'Bearer fake-google-token')
       .send({ state: 'state-1' })
     expect(exchange.status).toBe(201)
     const code = exchange.body.code
@@ -184,16 +209,16 @@ describe('rayu-backend (e2e)', () => {
     expect(replay.status).toBe(401)
   })
 
-  it('web/session mints Rayu tokens directly from a Clerk token', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_web',
+  it('web/session mints Rayu tokens directly from a Google ID token', async () => {
+    setTestUser(ctx, {
+      sub: 'web',
       email: 'web@example.com',
       displayName: 'Web User',
       avatarUrl: null,
     })
     const res = await request(app.getHttpServer())
       .post('/api/web/session')
-      .set('Authorization', 'Bearer fake-clerk')
+      .set('Authorization', 'Bearer fake-google')
       .send({})
     expect(res.status).toBe(201)
     expect(res.body.accessToken).toBeTruthy()
@@ -206,8 +231,8 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('refresh issues a new access token', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_user_refresh',
+    setTestUser(ctx, {
+      sub: 'user_refresh',
       email: 'refresh@example.com',
       displayName: null,
       avatarUrl: null,
@@ -236,8 +261,8 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('usage: record then summary returns top provider', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_usage',
+    setTestUser(ctx, {
+      sub: 'usage',
       email: 'usage@example.com',
       displayName: null,
       avatarUrl: null,
@@ -262,8 +287,8 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('feedback persists for an authed user', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_fb',
+    setTestUser(ctx, {
+      sub: 'fb',
       email: 'fb@example.com',
       displayName: null,
       avatarUrl: null,
@@ -279,16 +304,16 @@ describe('rayu-backend (e2e)', () => {
 
   it('admin endpoints: non-admin 403, admin can list + suspend, suspended rejected', async () => {
     // Make an admin user.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_admin',
+    setTestUser(ctx, {
+      sub: 'admin',
       email: 'admin@example.com',
       displayName: 'Admin',
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-admin')
     // Non-admin (regular user) first.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_regular',
+    setTestUser(ctx, {
+      sub: 'regular',
       email: 'regular@example.com',
       displayName: null,
       avatarUrl: null,
@@ -303,7 +328,7 @@ describe('rayu-backend (e2e)', () => {
 
     // Promote admin user in the DB.
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_admin' },
+      where: { email: 'admin@example.com' },
       data: { role: 'superadmin' },
     })
     // Re-login to get a token carrying the new role is not required because the
@@ -318,36 +343,34 @@ describe('rayu-backend (e2e)', () => {
 
     // Active vs non-active filter (derived from lastActiveAt).
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_admin' },
+      where: { email: 'admin@example.com' },
       data: { lastActiveAt: new Date() },
     })
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_regular' },
+      where: { email: 'regular@example.com' },
       data: { lastActiveAt: null },
     })
     const activeList = await request(app.getHttpServer())
       .get('/api/admin/users?activity=active')
       .set('Authorization', `Bearer ${adminAccess}`)
     expect(activeList.status).toBe(200)
-    const activeIds = activeList.body.items.map(
-      (u: { clerkUserId: string }) => u.clerkUserId,
-    )
-    expect(activeIds).toContain('clerk_admin')
-    expect(activeIds).not.toContain('clerk_regular')
+    const activeEmails = activeList.body.items.map((u: { email: string }) => u.email)
+    expect(activeEmails).toContain('admin@example.com')
+    expect(activeEmails).not.toContain('regular@example.com')
 
     const inactiveList = await request(app.getHttpServer())
       .get('/api/admin/users?activity=inactive')
       .set('Authorization', `Bearer ${adminAccess}`)
     expect(inactiveList.status).toBe(200)
-    const inactiveIds = inactiveList.body.items.map(
-      (u: { clerkUserId: string }) => u.clerkUserId,
+    const inactiveEmails = inactiveList.body.items.map(
+      (u: { email: string }) => u.email,
     )
-    expect(inactiveIds).toContain('clerk_regular')
-    expect(inactiveIds).not.toContain('clerk_admin')
+    expect(inactiveEmails).toContain('regular@example.com')
+    expect(inactiveEmails).not.toContain('admin@example.com')
 
     // Find the regular user id and suspend it.
     const regular = await ctx.prisma.user.findUnique({
-      where: { clerkUserId: 'clerk_regular' },
+      where: { email: 'regular@example.com' },
     })
     expect(regular).toBeTruthy()
     const suspend = await request(app.getHttpServer())
@@ -372,8 +395,8 @@ describe('rayu-backend (e2e)', () => {
 
   it('end-to-end chain: login -> usage -> visible in admin stats', async () => {
     // A fresh user signs in via the CLI bridge.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_chain',
+    setTestUser(ctx, {
+      sub: 'chain',
       email: 'chain@example.com',
       displayName: null,
       avatarUrl: null,
@@ -388,15 +411,15 @@ describe('rayu-backend (e2e)', () => {
       .expect(201)
 
     // An admin sees the usage reflected in global stats.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_admin2',
+    setTestUser(ctx, {
+      sub: 'admin2',
       email: 'admin2@example.com',
       displayName: 'Admin Two',
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-admin2-123456')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_admin2' },
+      where: { email: 'admin2@example.com' },
       data: { role: 'admin' },
     })
     const stats = await request(app.getHttpServer())
@@ -411,21 +434,21 @@ describe('rayu-backend (e2e)', () => {
 
   it('admin can manage plans (features, price, limits) and changes persist + drive entitlements', async () => {
     // Promote an admin.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_planadmin',
+    setTestUser(ctx, {
+      sub: 'planadmin',
       email: 'planadmin@example.com',
       displayName: 'Plan Admin',
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-planadmin-123456')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_planadmin' },
+      where: { email: 'planadmin@example.com' },
       data: { role: 'superadmin' },
     })
 
     // A regular free user.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_freeuser',
+    setTestUser(ctx, {
+      sub: 'freeuser',
       email: 'freeuser@example.com',
       displayName: null,
       avatarUrl: null,
@@ -509,15 +532,15 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('GET /api/admin/analytics returns the full analytics payload (admin only)', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_analytics_admin',
+    setTestUser(ctx, {
+      sub: 'analytics_admin',
       email: 'analytics@example.com',
       displayName: 'Analytics Admin',
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-analytics-123456')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_analytics_admin' },
+      where: { email: 'analytics@example.com' },
       data: { role: 'admin' },
     })
     // Generate a usage event so series/top-users have data.
@@ -528,8 +551,8 @@ describe('rayu-backend (e2e)', () => {
       .expect(201)
 
     // Non-admin is blocked.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_analytics_regular',
+    setTestUser(ctx, {
+      sub: 'analytics_regular',
       email: 'areg@example.com',
       displayName: null,
       avatarUrl: null,
@@ -574,15 +597,15 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('analytics ?days= range adjusts the time-series length', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_range_admin',
+    setTestUser(ctx, {
+      sub: 'range_admin',
       email: 'range@example.com',
       displayName: null,
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-range-123456')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_range_admin' },
+      where: { email: 'range@example.com' },
       data: { role: 'admin' },
     })
     const res = await request(app.getHttpServer())
@@ -594,21 +617,21 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('admin feedback inbox + bulk status (admin only)', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_fbadmin',
+    setTestUser(ctx, {
+      sub: 'fbadmin',
       email: 'fbadmin@example.com',
       displayName: null,
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-fbadmin-123456')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_fbadmin' },
+      where: { email: 'fbadmin@example.com' },
       data: { role: 'superadmin' },
     })
 
     // A user submits feedback.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_fbuser',
+    setTestUser(ctx, {
+      sub: 'fbuser',
       email: 'fbuser@example.com',
       displayName: null,
       avatarUrl: null,
@@ -637,7 +660,7 @@ describe('rayu-backend (e2e)', () => {
 
     // Bulk-suspend the feedback user.
     const fbUser = await ctx.prisma.user.findUnique({
-      where: { clerkUserId: 'clerk_fbuser' },
+      where: { email: 'fbuser@example.com' },
     })
     const bulk = await request(app.getHttpServer())
       .patch('/api/admin/users/bulk-status')
@@ -654,19 +677,19 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('hosted models CRUD + credit settings (admin only)', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_modeladmin',
+    setTestUser(ctx, {
+      sub: 'modeladmin',
       email: 'modeladmin@example.com',
       displayName: null,
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-modeladmin-1234')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_modeladmin' },
+      where: { email: 'modeladmin@example.com' },
       data: { role: 'superadmin' },
     })
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_modelreg',
+    setTestUser(ctx, {
+      sub: 'modelreg',
       email: 'modelreg@example.com',
       displayName: null,
       avatarUrl: null,
@@ -744,15 +767,15 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('plan credit allowances drive /me/entitlements (allowed models + credits)', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_credadmin',
+    setTestUser(ctx, {
+      sub: 'credadmin',
       email: 'credadmin@example.com',
       displayName: null,
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-credadmin-1234')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_credadmin' },
+      where: { email: 'credadmin@example.com' },
       data: { role: 'admin' },
     })
 
@@ -764,8 +787,8 @@ describe('rayu-backend (e2e)', () => {
     expect(patched.status).toBe(200)
 
     // A free user: no hosted models, null credit allowance.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_creditfree',
+    setTestUser(ctx, {
+      sub: 'creditfree',
       email: 'creditfree@example.com',
       displayName: null,
       avatarUrl: null,
@@ -785,15 +808,15 @@ describe('rayu-backend (e2e)', () => {
     expect(freeEnt.body.creditConfig.baselineCreditsPer1M).toBeGreaterThan(0)
 
     // A Pro user: hosted models allowed + credit allowance reflected.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_creditpro',
+    setTestUser(ctx, {
+      sub: 'creditpro',
       email: 'creditpro@example.com',
       displayName: null,
       avatarUrl: null,
     })
     const proAccess = await login(app, 'state-creditpro-1234')
     const proUser = await ctx.prisma.user.findUnique({
-      where: { clerkUserId: 'clerk_creditpro' },
+      where: { email: 'creditpro@example.com' },
     })
     const proPlan = await ctx.prisma.plan.findUnique({ where: { code: 'pro' } })
     await ctx.prisma.subscription.updateMany({
@@ -816,15 +839,15 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('credit projection: suggested multiplier from price + plan margin (admin only)', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_projadmin',
+    setTestUser(ctx, {
+      sub: 'projadmin',
       email: 'projadmin@example.com',
       displayName: null,
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-projadmin-1234')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_projadmin' },
+      where: { email: 'projadmin@example.com' },
       data: { role: 'superadmin' },
     })
     // Give Pro a weekly allowance so the projection has something to cost.
@@ -863,8 +886,8 @@ describe('rayu-backend (e2e)', () => {
       .expect(200)
 
     // Non-admin blocked.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_projreg',
+    setTestUser(ctx, {
+      sub: 'projreg',
       email: 'projreg@example.com',
       displayName: null,
       avatarUrl: null,
@@ -895,8 +918,8 @@ describe('rayu-backend (e2e)', () => {
   })
 
   it('subscription: 30-day period on activation + expiry reverts to free', async () => {
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_sub',
+    setTestUser(ctx, {
+      sub: 'sub',
       email: 'sub@example.com',
       displayName: null,
       avatarUrl: null,
@@ -918,7 +941,7 @@ describe('rayu-backend (e2e)', () => {
     expect(status.status).toBe(200)
     expect(status.body.activated).toBe(true)
 
-    const u = await ctx.prisma.user.findUnique({ where: { clerkUserId: 'clerk_sub' } })
+    const u = await ctx.prisma.user.findUnique({ where: { email: 'sub@example.com' } })
     const sub = await ctx.prisma.subscription.findFirst({
       where: { userId: u!.id, status: 'active' },
       orderBy: { startedAt: 'desc' },
@@ -944,15 +967,15 @@ describe('rayu-backend (e2e)', () => {
 
   it('top-up: KHQR grants credits + exposes balance; guarded when rate is 0', async () => {
     // Admin enables top-up by setting the per-1k rate.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_topadmin',
+    setTestUser(ctx, {
+      sub: 'topadmin',
       email: 'topadmin@example.com',
       displayName: null,
       avatarUrl: null,
     })
     const adminAccess = await login(app, 'state-topadmin-1')
     await ctx.prisma.user.update({
-      where: { clerkUserId: 'clerk_topadmin' },
+      where: { email: 'topadmin@example.com' },
       data: { role: 'superadmin' },
     })
     await request(app.getHttpServer())
@@ -962,8 +985,8 @@ describe('rayu-backend (e2e)', () => {
       .expect(200)
 
     // User buys 5000 credits -> 5000/1000 * 100¢ = 500¢.
-    ctx.setClerkUser({
-      clerkUserId: 'clerk_topuser',
+    setTestUser(ctx, {
+      sub: 'topuser',
       email: 'topuser@example.com',
       displayName: null,
       avatarUrl: null,
@@ -1003,12 +1026,12 @@ describe('rayu-backend (e2e)', () => {
   })
 })
 
-// Helper: run the exchange->token bridge for the currently-set Clerk user and
+// Helper: run the exchange->token bridge for the currently-set OAuth user and
 // return the access token.
 async function login(app: INestApplication, state: string): Promise<string> {
   const exchange = await request(app.getHttpServer())
     .post('/api/cli/exchange')
-    .set('Authorization', 'Bearer clerk')
+    .set('Authorization', 'Bearer fake-google')
     .send({ state })
   const token = await request(app.getHttpServer())
     .post('/api/cli/token')

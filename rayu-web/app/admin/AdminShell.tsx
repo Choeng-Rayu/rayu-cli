@@ -239,7 +239,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             </span>
             <button
               onClick={() => {
-                sessionStorage.removeItem(RAYU_SESSION_KEY)
+                localStorage.removeItem(RAYU_SESSION_KEY)
                 oauthLogout()
                 void signOut({ callbackUrl: '/' })
               }}
