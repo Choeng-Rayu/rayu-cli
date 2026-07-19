@@ -51,8 +51,8 @@ into the charge.
 
 | Model (id) | Served via | Rate — credits / 1M tokens | Context window | Status |
 |---|---|---:|---:|---|
-| **DeepSeek V4 Flash** (`deepseek-v4-flash`) | Ollama Cloud | **0.33** | 1M | Active |
-| **DeepSeek V4 Pro** (`deepseek-v4-pro`) | Ollama Cloud | **1.0** | 1M | Active |
+| **DeepSeek V4 Flash** (`deepseek-v4-flash`) | DeepSeek API | **0.33** | 1M | Active |
+| **DeepSeek V4 Pro** (`deepseek-v4-pro`) | DeepSeek API | **1.0** | 1M | Active |
 | **GLM‑5.2** (`glm-5.2`) | Ollama Cloud | **2.5** | 1M | Active |
 | **Kimi K2.7** (`kimi-k2.7`) | Ollama Cloud | **2.5** | 256K | Active |
 | **MiniMax M3** (`minimax-m3`) | Ollama Cloud | **2.5** | 1M | Active |
@@ -63,10 +63,11 @@ into the charge.
 | **LongCat 2.0** (`longcat-2`) | LongCat | 0.5 | 1M | **Disabled** |
 
 Notes:
-- **Only Ollama Cloud is active** right now (`RAYU_DISABLED_PROVIDERS=longcat`).
-  LongCat is disabled — its models are hidden from users and any request to them
-  is refused (with no charge). The original DeepSeek (official API) provider is
-  **not used**; DeepSeek V4 Flash/Pro are served through Ollama Cloud.
+- **DeepSeek (official API) and Ollama Cloud are both active** right now
+  (`RAYU_DISABLED_PROVIDERS=longcat`). LongCat is disabled — its models are hidden
+  from users and any request to them is refused (with no charge). DeepSeek V4
+  Flash/Pro are served DIRECT through DeepSeek's own Anthropic-compatible API
+  (provider `deepseek`); the remaining hosted models are served through Ollama Cloud.
 - **MiniMax M3** and **Llama 4** rates were not individually specified and use a
   sensible default (2.5 and 1.0) — adjust in the admin dashboard as needed.
 - **Context window** is what the CLI reports for the model (used for context
