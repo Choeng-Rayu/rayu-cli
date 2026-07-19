@@ -19,13 +19,30 @@ import (
 )
 
 // Client is the shared HTTP client. No overall timeout — long streams rely on
-// the request context for cancellation; only the dial/idle are bounded.
+// the request context for cancellation; only the dial/idle/header phases are
+// bounded. ResponseHeaderTimeout is the important one for reliability: it bounds
+// the time from finishing the request to receiving the upstream's RESPONSE
+// HEADERS, WITHOUT limiting how long the (SSE) body then streams. So when an
+// upstream is overloaded/at its limit and stalls before answering (e.g. Ollama
+// Cloud under quota pressure), the gateway fails FAST and returns a clean
+// provider_unavailable 502 — instead of hanging until Cloudflare gives up and
+// substitutes its own "origin_bad_gateway" page (which the customer would then
+// see raw). Streaming is unaffected: providers send 200 + SSE headers within a
+// second, long before any token generation.
+//
+// 30s is deliberate: a multi-key provider (e.g. OLLAMA_API_KEY="k1,k2,k3") can
+// fail over across N keys, and each key's request gets its own header timeout,
+// so the WORST case for a full hang is N×30s. With 3 keys that is 90s — still
+// under Cloudflare's ~100s origin timeout, so the gateway wins the race and
+// returns the clean 502 first. (The circuit breaker then trips and later
+// requests fail fast, so the slow path is only the first hit of an outage.)
 var Client = &http.Client{
 	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
 	},
 }
 
