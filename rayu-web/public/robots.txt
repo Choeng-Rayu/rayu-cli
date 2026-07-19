@@ -1,10 +1,15 @@
-User-Agent: *
+# Public marketing pages and documentation are crawlable.
+User-agent: *
 Allow: /
-Disallow: /dashboard/
-Disallow: /billing/
-Disallow: /credits/
+
+# Do not crawl authenticated, transactional, administrative, or API URLs.
+Disallow: /api/
 Disallow: /admin/
-Disallow: /cli-login/
+Disallow: /billing/
 Disallow: /chatbot/
+Disallow: /cli-login/
+Disallow: /credits/
+Disallow: /dashboard/
+Disallow: /sign-up/
 
 Sitemap: https://rayucode.com/sitemap.xml
