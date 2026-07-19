@@ -4,7 +4,8 @@ import type { PrismaService } from '../prisma/prisma.service'
 
 // The gateway routes hosted models purely off hosted_models.provider /
 // upstreamBaseUrl / upstreamModelId. When MODEL_SEED re-points a model at a new
-// upstream provider (e.g. DeepSeek V4 → Ollama Cloud), seedDefaults must
+// upstream provider (e.g. DeepSeek V4 → DeepSeek's own Anthropic-compatible API),
+// seedDefaults must
 // repoint the EXISTING row's routing on boot — otherwise the create-if-missing
 // seed leaves old rows hitting the old provider. These tests lock that in.
 function seedFor(code: string) {
@@ -33,24 +34,26 @@ function makeService(existingByCode: Record<string, unknown>) {
 }
 
 describe('ModelsService.seedDefaults — routing reconciliation', () => {
-  test('repoints existing rows whose provider changed in the seed (DeepSeek → Ollama)', async () => {
+  test('repoints existing rows whose provider changed in the seed (Ollama → DeepSeek)', async () => {
     const pro = seedFor('deepseek-v4-pro')
     const flash = seedFor('deepseek-v4-flash')
-    // Sanity: the seed itself moved these OFF the official deepseek provider,
-    // onto the exact Ollama Cloud tags.
+    // Sanity: the seed routes these DIRECT to DeepSeek's own Anthropic-compatible
+    // API (provider 'deepseek', https://api.deepseek.com), using DeepSeek's own
+    // model ids — NOT Ollama Cloud `:cloud` tags.
     for (const m of [pro, flash]) {
-      expect(m.provider).not.toBe('deepseek')
-      expect(m.upstreamBaseUrl).toBe('https://ollama.com')
+      expect(m.provider).toBe('deepseek')
+      expect(m.upstreamBaseUrl).toBe('https://api.deepseek.com')
     }
-    expect(pro.upstreamModelId).toBe('deepseek-v4-pro:cloud')
-    expect(flash.upstreamModelId).toBe('deepseek-v4-flash:cloud')
+    expect(pro.upstreamModelId).toBe('deepseek-v4-pro')
+    expect(flash.upstreamModelId).toBe('deepseek-v4-flash')
 
-    // Existing DB rows are still on the OLD official 'deepseek' upstream.
+    // Existing DB rows are still on the OLD Ollama Cloud upstream.
+    const ollamaProvider = seedFor('glm-5.2').provider // the Ollama Cloud provider name
     const stale = (code: string) => ({
       code,
-      provider: 'deepseek',
-      upstreamBaseUrl: 'https://api.deepseek.com',
-      upstreamModelId: 'deepseek-chat',
+      provider: ollamaProvider,
+      upstreamBaseUrl: 'https://ollama.com',
+      upstreamModelId: `${code}:cloud`,
     })
     const { service, update } = makeService({
       'deepseek-v4-pro': stale('deepseek-v4-pro'),

@@ -133,8 +133,9 @@ export class ModelsService {
    * Business fields (prices, creditMultiplier, allowedPlanCodes, enabled) are
    * NEVER overwritten for an existing model — they are admin-owned. But when the
    * seed re-points a model at a DIFFERENT upstream PROVIDER than the stored row
-   * (e.g. DeepSeek V4 moving off the official `deepseek` API onto Ollama Cloud),
-   * the ROUTING fields — provider, upstreamBaseUrl, upstreamModelId — are
+   * (e.g. DeepSeek V4 moving from Ollama Cloud back onto the official `deepseek`
+   * Anthropic-compatible API), the ROUTING fields — provider, upstreamBaseUrl,
+   * upstreamModelId — are
    * reconciled to the seed on boot. A provider change invalidates the old base
    * URL + upstream model id, so all three move together.
    *
