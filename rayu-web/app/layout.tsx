@@ -69,7 +69,7 @@ export const metadata: Metadata = {
     canonical: 'https://rayucode.com',
   },
   verification: {
-    google: 'google-site-verification-code', // Replace with actual code from Google Search Console
+    google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION,
   },
 }
 
