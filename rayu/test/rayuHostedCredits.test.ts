@@ -16,7 +16,7 @@ import {
 } from '../src/services/rayuAuth/rayuEntitlements.ts'
 import { makeRayuHostedFetch } from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
 import { loadRayuConfig, saveRayuConfig } from '../src/utils/rayuConfig.ts'
-import { APIError } from '@anthropic-ai/sdk/index.js'
+import { APIConnectionError, APIError } from '@anthropic-ai/sdk/index.js'
 import Anthropic from '@anthropic-ai/sdk'
 import {
   getAssistantMessageFromError,
@@ -441,5 +441,60 @@ describe('getAssistantMessageFromError · rayu-hosted provider unavailable (Case
     expect(isRayuHostedProviderUnavailable(providerUnavailableError(502))).toBe(false)
     const msg = getAssistantMessageFromError(providerUnavailableError(502), 'deepseek-chat')
     expect(textOf(msg)).not.toContain("Rayu's AI provider")
+  })
+})
+
+// --- Case 1b: connection failure (gateway/origin unreachable, e.g. Cloudflare
+// 5xx before the origin, or the Go gateway down). This is what surfaced in the
+// wild as "API Error: Connection error." — on rayu-hosted it must read as a
+// friendly "can't reach Rayu" instead of the raw SDK string. ---
+describe('getAssistantMessageFromError · rayu-hosted connection failure', () => {
+  test('hosted: a connection error becomes a friendly "can\'t reach Rayu" message', () => {
+    setActiveProvider('rayu-hosted')
+    const err = new APIConnectionError({ message: 'Connection error.' })
+    const text = textOf(getAssistantMessageFromError(err, 'glm-5.2'))
+    expect(text.toLowerCase()).toContain("can't reach rayu")
+    expect(text).not.toContain('Connection error.') // not the raw SDK string
+  })
+
+  test('BYO: a connection error keeps the normal connection message (not the hosted one)', () => {
+    setActiveProvider('byo')
+    const err = new APIConnectionError({ message: 'Connection error.' })
+    const text = textOf(getAssistantMessageFromError(err, 'deepseek-chat'))
+    expect(text).not.toContain("Can't reach Rayu")
+  })
+})
+
+// Regression for the exact production report: a Cloudflare "origin_bad_gateway"
+// 502 (the Go gateway origin was down, so Cloudflare answered before it) on a
+// rayu-hosted model must render the friendly message — never the raw Cloudflare
+// JSON. This is the precise payload/shape the CLI saw in the wild.
+describe('getAssistantMessageFromError · exact Cloudflare origin 502', () => {
+  test('hosted: Cloudflare 502 becomes the friendly message, not the raw JSON', () => {
+    setActiveProvider('rayu-hosted')
+    const cf = {
+      type: 'https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-502/',
+      title: 'Error 502: Bad gateway',
+      status: 502,
+      detail:
+        'The origin web server returned an invalid or incomplete response to Cloudflare.',
+      error_code: 502,
+      error_name: 'origin_bad_gateway',
+      error_category: 'origin',
+      zone: 'gateway.rayucode.com',
+      cloudflare_error: true,
+    }
+    const err = APIError.generate(
+      502,
+      cf,
+      `502 ${JSON.stringify(cf)}`,
+      new Headers({ 'content-type': 'application/json' }),
+    ) as APIError
+    const text = textOf(getAssistantMessageFromError(err, 'kimi-k2.7'))
+    expect(text.toLowerCase()).toContain('temporarily unavailable')
+    // The raw Cloudflare body must NOT leak to the customer.
+    expect(text.toLowerCase()).not.toContain('cloudflare')
+    expect(text).not.toContain('origin_bad_gateway')
+    expect(text).not.toContain('gateway.rayucode.com')
   })
 })

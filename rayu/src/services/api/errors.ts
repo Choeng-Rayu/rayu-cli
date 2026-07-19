@@ -545,20 +545,37 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // --- Rayu-hosted: RAYU's OWN upstream LLM provider is unavailable ----------
-  // Scoped via isRayuHostedActive() (inside the detector) so BYO-key providers
-  // keep their real upstream errors. This is Rayu's provider account being
-  // unavailable / rate-limited / subscription-gated — NOT the customer's plan
-  // limit (that's the credit-limit branch below). The gateway already sanitized
-  // the upstream body to a 5xx provider_unavailable, so we never surface the
-  // upstream (e.g. ollama.com); we just steer the user to a smaller model or a
-  // retry, per product spec.
-  if (isRayuHostedProviderUnavailable(error)) {
+  // --- Rayu-hosted: Rayu's own SERVICE/provider is unavailable ---------------
+  // Scoped via isRayuHostedActive() so BYO-key providers keep their real upstream
+  // errors. Covers the whole "it's Rayu's side, not the customer's" family — NOT
+  // the customer's plan limit (that's the credit-limit branch below). Two shapes:
+  //   (a) we couldn't even reach Rayu (gateway/origin down, a Cloudflare 5xx
+  //       before the origin, or a dropped connection) → an APIConnectionError
+  //       with no HTTP status; and
+  //   (b) we reached Rayu but got a server error (5xx), including a gateway-
+  //       sanitized provider_unavailable → a smaller model may route to a
+  //       healthier upstream.
+  // In both cases we NEVER surface the raw upstream / Cloudflare body.
+  if (isRayuHostedActive()) {
     const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'
-    return createAssistantAPIErrorMessage({
-      error: 'invalid_request',
-      content: `⚠️ Rayu's AI provider for "${model}" is temporarily unavailable. Try a smaller model with ${switchCmd}, or try again in a little while.`,
-    })
+    // (a) Couldn't reach Rayu at all. Timeouts are already handled by the
+    // dedicated branch above, so exclude them here.
+    if (
+      error instanceof APIConnectionError &&
+      !(error instanceof APIConnectionTimeoutError)
+    ) {
+      return createAssistantAPIErrorMessage({
+        error: 'unknown',
+        content: `⚠️ Can't reach Rayu right now — the service may be temporarily down, or your connection dropped. Please try again in a little while.`,
+      })
+    }
+    // (b) Reached Rayu but the provider/origin returned a server error (5xx).
+    if (isRayuHostedProviderUnavailable(error)) {
+      return createAssistantAPIErrorMessage({
+        error: 'invalid_request',
+        content: `⚠️ Rayu's AI provider for "${model}" is temporarily unavailable. Try a smaller model with ${switchCmd}, or try again in a little while.`,
+      })
+    }
   }
 
   // Check for image size/resize errors (thrown before API call during validation)

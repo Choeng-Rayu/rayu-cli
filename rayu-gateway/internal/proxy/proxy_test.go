@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 )
@@ -104,6 +105,41 @@ func TestStreamRetriesTransientUpstreamError(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("upstream calls=%d, want 2 (initial + 1 retry)", calls)
+	}
+}
+
+// TestStreamHeaderTimeoutFailsFast proves the ResponseHeaderTimeout guard: an
+// upstream that accepts the connection but STALLS before sending response
+// headers (the Ollama-at-its-limit / overloaded case) makes the request fail
+// quickly with wrote=false — so the server layer emits a clean
+// provider_unavailable 502 instead of the gateway hanging until Cloudflare
+// substitutes its own "origin_bad_gateway" page. Uses a tiny timeout so the
+// test is fast.
+func TestStreamHeaderTimeoutFailsFast(t *testing.T) {
+	block := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-block // never send response headers until the test tears down
+	}))
+
+	orig := Client
+	Client = &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 150 * time.Millisecond}}
+	defer func() { Client = orig }()
+	defer upstream.Close()
+	defer close(block)
+
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	_, wrote, err := Stream(context.Background(), rec, upstream.URL, "sk", []byte(`{}`))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a header-timeout error, got nil")
+	}
+	if wrote {
+		t.Fatalf("expected wrote=false on a pre-flight header timeout, got wrote=true (body=%q)", rec.Body.String())
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("header timeout did not fail fast: took %v", elapsed)
 	}
 }
 
