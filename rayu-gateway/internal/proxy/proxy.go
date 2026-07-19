@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/circuitbreaker"
+	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 )
 
 // Client is the shared HTTP client. No overall timeout — long streams rely on
@@ -293,12 +294,13 @@ func Stream(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey stri
 
 	flusher, _ := w.(http.Flusher)
 
-	// Pass an upstream error through verbatim so the client sees the reason.
+	// rayu-hosted path: never leak the upstream provider's raw error body to the
+	// customer (e.g. an Ollama "requires a subscription" 403). Read it only for
+	// the server-side error log; reply with a clean, upstream-agnostic 502 that
+	// the CLI turns into "try a smaller model or try again later".
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(b)
+		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
 		return nil, true, fmt.Errorf("upstream status %d: %s", resp.StatusCode, errSnippet(b))
 	}
 

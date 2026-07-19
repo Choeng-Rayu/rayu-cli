@@ -15,12 +15,13 @@ import {
   _setRayuEntitlementsForTesting,
 } from '../src/services/rayuAuth/rayuEntitlements.ts'
 import { makeRayuHostedFetch } from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
-import { loadRayuConfig } from '../src/utils/rayuConfig.ts'
+import { loadRayuConfig, saveRayuConfig } from '../src/utils/rayuConfig.ts'
 import { APIError } from '@anthropic-ai/sdk/index.js'
 import Anthropic from '@anthropic-ai/sdk'
 import {
   getAssistantMessageFromError,
   isRayuCreditLimitError,
+  isRayuHostedProviderUnavailable,
 } from '../src/services/api/errors.ts'
 import { CannotRetryError, withRetry } from '../src/services/api/withRetry.ts'
 import { createRayuHostedClient } from '../src/services/api/rayuHosted/rayuHostedClient.ts'
@@ -377,5 +378,68 @@ describe('createRayuHostedClient · native Anthropic (DeepSeek Anthropic API)', 
     } finally {
       delete process.env.RAYU_GATEWAY_URL
     }
+  })
+})
+
+// --- Case 1: RAYU's own upstream LLM provider is unavailable (rayu-hosted) ---
+// Distinct from the customer's plan/credit limit (Case 2, the credit-limit
+// branch above). The gateway sanitizes ANY hosted upstream failure (an Ollama
+// "requires a subscription" 403, an upstream 5xx, out-of-credits, …) to a clean
+// 5xx `provider_unavailable`, so the CLI shows "try a smaller model / try again
+// later" and NEVER leaks the upstream (e.g. ollama.com).
+
+/** Point the on-disk active provider at a given kind (getActiveProvider reads it). */
+function setActiveProvider(kind: 'rayu-hosted' | 'byo'): void {
+  const cfg = loadRayuConfig()
+  cfg.providers = (kind === 'rayu-hosted'
+    ? [{ id: 'rayu-hosted', kind: 'rayu-hosted' }]
+    : [{ id: 'deepseek', kind: 'openai-compatible', baseURL: 'https://api.deepseek.com/v1', apiKey: 'sk-x' }]) as never
+  cfg.activeProvider = kind === 'rayu-hosted' ? 'rayu-hosted' : 'deepseek'
+  saveRayuConfig(cfg)
+}
+
+/** The clean 5xx the gateway now returns for a sanitized hosted upstream failure. */
+function providerUnavailableError(status = 502): APIError {
+  return APIError.generate(
+    status,
+    {
+      error: {
+        message:
+          'The AI provider for this model is temporarily unavailable. Try another (smaller) model or try again later.',
+        type: 'provider_unavailable',
+      },
+    },
+    'provider unavailable',
+    new Headers(),
+  ) as APIError
+}
+
+describe('getAssistantMessageFromError · rayu-hosted provider unavailable (Case 1)', () => {
+  test('renders "try a smaller model / try again later" and never leaks the upstream', () => {
+    setActiveProvider('rayu-hosted')
+    const msg = getAssistantMessageFromError(providerUnavailableError(502), 'kimi-k2.7')
+    const text = textOf(msg)
+    expect(text.toLowerCase()).toContain('temporarily unavailable')
+    expect(text.toLowerCase()).toContain('smaller model')
+    expect(msg.isApiErrorMessage).toBe(true)
+    // Never surface the upstream provider or its subscription/limit wording…
+    expect(text.toLowerCase()).not.toContain('ollama')
+    expect(text.toLowerCase()).not.toContain('subscription')
+    // …and this is NOT the plan/credit-limit (upgrade) message.
+    expect(text).not.toContain('/plans')
+  })
+
+  test('detector: true for a hosted 5xx, false for a 429 (that is the plan-limit path)', () => {
+    setActiveProvider('rayu-hosted')
+    expect(isRayuHostedProviderUnavailable(providerUnavailableError(503))).toBe(true)
+    expect(isRayuHostedProviderUnavailable(providerUnavailableError(500))).toBe(true)
+    expect(isRayuHostedProviderUnavailable(creditLimitError())).toBe(false)
+  })
+
+  test('BYO-key providers are NOT affected — a 5xx keeps normal handling, not the hosted message', () => {
+    setActiveProvider('byo')
+    expect(isRayuHostedProviderUnavailable(providerUnavailableError(502))).toBe(false)
+    const msg = getAssistantMessageFromError(providerUnavailableError(502), 'deepseek-chat')
+    expect(textOf(msg)).not.toContain("Rayu's AI provider")
   })
 })

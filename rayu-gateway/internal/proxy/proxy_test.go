@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 )
 
 func TestStreamProxiesAndParsesUsage(t *testing.T) {
@@ -41,10 +43,16 @@ func TestStreamProxiesAndParsesUsage(t *testing.T) {
 	}
 }
 
-func TestStreamPassesUpstreamError(t *testing.T) {
+// TestStreamSanitizesUpstreamError verifies the hosted streaming path NEVER
+// leaks the upstream provider's raw error body to the customer: an upstream 4xx
+// with a provider-specific message is replaced by a clean, upstream-agnostic 502
+// provider_unavailable (the CLI turns this into "try a smaller model or try again
+// later"). The real upstream status/body is still returned as the Go error for
+// the server-side log.
+func TestStreamSanitizesUpstreamError(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":{"message":"bad model"}}`)
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":{"message":"this model requires a subscription, upgrade for access: https://ollama.com/upgrade"}}`)
 	}))
 	defer upstream.Close()
 
@@ -53,11 +61,19 @@ func TestStreamPassesUpstreamError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected upstream error")
 	}
-	if !wrote || rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 passthrough, got wrote=%v code=%d", wrote, rec.Code)
+	if !wrote || rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected sanitized 502, got wrote=%v code=%d", wrote, rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "bad model") {
-		t.Fatalf("error body not passed through: %q", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, httpx.ProviderUnavailableType) {
+		t.Fatalf("client body missing provider_unavailable marker: %q", body)
+	}
+	if strings.Contains(body, "ollama.com") || strings.Contains(body, "subscription") {
+		t.Fatalf("upstream error leaked to client: %q", body)
+	}
+	// The real upstream status is preserved in the Go error for the server log.
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("server-side error should carry the real status: %v", err)
 	}
 }
 
