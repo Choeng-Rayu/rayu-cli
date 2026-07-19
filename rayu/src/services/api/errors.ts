@@ -484,6 +484,47 @@ function formatCreditResetHint(seconds: number): string {
   return `in about ${mins} minute${mins === 1 ? '' : 's'}`
 }
 
+/** True when the active provider is Rayu-hosted, so branded/friendly errors
+ * apply. BYO-key providers are intentionally EXCLUDED — they must keep seeing
+ * their real upstream errors (a user's own key/quota problem is theirs to fix). */
+function isRayuHostedActive(): boolean {
+  try {
+    return getActiveProvider()?.kind === 'rayu-hosted'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Case 1 — RAYU's OWN upstream LLM provider is unavailable / rate-limited /
+ * subscription-gated. This is NOT the customer's fault and NOT their plan limit:
+ * it's Rayu's provider account. The gateway sanitizes ANY hosted upstream failure
+ * to a 5xx carrying error.type "provider_unavailable" (see
+ * httpx.WriteProviderUnavailable) so the upstream's raw body — e.g. an Ollama
+ * "this model requires a subscription … ollama.com/upgrade" 403 — NEVER reaches
+ * the customer. Only meaningful on the rayu-hosted provider.
+ */
+export function isRayuHostedProviderUnavailable(error: unknown): boolean {
+  if (!(error instanceof APIError) || !isRayuHostedActive()) return false
+  // The gateway normalizes hosted upstream failures to 5xx (502/503).
+  if (typeof error.status === 'number' && error.status >= 500) return true
+  // Belt-and-suspenders: match the stable marker wherever it survives the
+  // OpenAI/Anthropic error translation (parsed body or composed message).
+  const body = (error as { error?: unknown }).error
+  if (body && typeof body === 'object') {
+    if (String((body as { type?: unknown }).type ?? '') === 'provider_unavailable') return true
+    const nested = (body as { error?: unknown }).error
+    if (
+      nested &&
+      typeof nested === 'object' &&
+      String((nested as { type?: unknown }).type ?? '') === 'provider_unavailable'
+    ) {
+      return true
+    }
+  }
+  return /provider_unavailable/i.test(error.message ?? '')
+}
+
 export function getAssistantMessageFromError(
   error: unknown,
   model: string,
@@ -501,6 +542,22 @@ export function getAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       content: API_TIMEOUT_ERROR_MESSAGE,
       error: 'unknown',
+    })
+  }
+
+  // --- Rayu-hosted: RAYU's OWN upstream LLM provider is unavailable ----------
+  // Scoped via isRayuHostedActive() (inside the detector) so BYO-key providers
+  // keep their real upstream errors. This is Rayu's provider account being
+  // unavailable / rate-limited / subscription-gated — NOT the customer's plan
+  // limit (that's the credit-limit branch below). The gateway already sanitized
+  // the upstream body to a 5xx provider_unavailable, so we never surface the
+  // upstream (e.g. ollama.com); we just steer the user to a smaller model or a
+  // retry, per product spec.
+  if (isRayuHostedProviderUnavailable(error)) {
+    const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'
+    return createAssistantAPIErrorMessage({
+      error: 'invalid_request',
+      content: `⚠️ Rayu's AI provider for "${model}" is temporarily unavailable. Try a smaller model with ${switchCmd}, or try again in a little while.`,
     })
   }
 

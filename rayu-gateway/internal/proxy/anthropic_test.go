@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 )
 
 func TestAnthropicUsageToUsage(t *testing.T) {
@@ -105,17 +107,19 @@ func TestCompleteAnthropicAuthSchemes(t *testing.T) {
 }
 
 
-// TestStreamAnthropicReprobesBodylessError covers the LongCat quirk: a streaming
-// request that fails with an EMPTY body (out-of-credits → bodyless 500) is
-// re-probed non-streaming to surface the real status + reason (402 + message).
-func TestStreamAnthropicReprobesBodylessError(t *testing.T) {
+// TestStreamAnthropicSanitizesBodylessError covers the LongCat quirk (a bodyless
+// streaming 500 whose real reason is only visible via a non-streaming re-probe):
+// the re-probe still runs so the SERVER LOG shows the true cause, but the CLIENT
+// is sent a clean, upstream-agnostic 502 provider_unavailable — the upstream
+// reason ("out of credits") must NEVER reach the customer.
+func TestStreamAnthropicSanitizesBodylessError(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Accept") == "text/event-stream" {
 			// LongCat streaming quirk: bodyless 500 on error.
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		// Non-streaming re-probe returns the real reason.
+		// Non-streaming re-probe returns the real reason (server-log only now).
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusPaymentRequired)
 		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"Token 额度不足 (out of credits)"}}`)
@@ -129,11 +133,44 @@ func TestStreamAnthropicReprobesBodylessError(t *testing.T) {
 	if !wrote {
 		t.Fatal("expected wrote=true")
 	}
-	if rec.Code != http.StatusPaymentRequired {
-		t.Fatalf("client status=%d, want 402 (recovered from the bodyless 500)", rec.Code)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("client status=%d, want sanitized 502", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "out of credits") {
-		t.Fatalf("client body should carry the real reason, got %q", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, httpx.ProviderUnavailableType) {
+		t.Fatalf("client body missing provider_unavailable marker: %q", body)
+	}
+	if strings.Contains(body, "out of credits") || strings.Contains(body, "额度不足") {
+		t.Fatalf("upstream reason leaked to client: %q", body)
+	}
+}
+
+// TestStreamAnthropicDoesNotLeakSubscriptionError is the exact reported scenario:
+// an Ollama-hosted model returns 403 "requires a subscription … ollama.com". The
+// customer must NEVER see that upstream body — only the clean provider_unavailable
+// (which the CLI renders as "try a smaller model or try again later").
+func TestStreamAnthropicDoesNotLeakSubscriptionError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"permission_error","message":"this model requires a subscription, upgrade for access: https://ollama.com/upgrade"}}`)
+	}))
+	defer upstream.Close()
+
+	rec := httptest.NewRecorder()
+	_, wrote, err := StreamAnthropic(context.Background(), rec, upstream.URL, []string{"k"}, true, []byte(`{"model":"kimi-k2.7","stream":true}`))
+	if err == nil || !wrote {
+		t.Fatalf("expected a surfaced upstream error, got wrote=%v err=%v", wrote, err)
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("client status=%d, want sanitized 502", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "ollama.com") || strings.Contains(body, "subscription") || strings.Contains(body, "permission_error") {
+		t.Fatalf("upstream error leaked to client: %q", body)
+	}
+	if !strings.Contains(body, httpx.ProviderUnavailableType) {
+		t.Fatalf("client body missing provider_unavailable marker: %q", body)
 	}
 }
 

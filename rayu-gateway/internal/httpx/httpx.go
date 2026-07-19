@@ -24,6 +24,36 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+// ProviderUnavailableType is the stable error `type` the CLI matches to render a
+// clean, customer-facing "AI provider temporarily unavailable" message for
+// rayu-hosted models — INSTEAD of leaking the upstream provider's raw error body
+// (e.g. an Ollama "requires a subscription … ollama.com/upgrade" 403). Kept in
+// sync with the CLI's isRayuHostedProviderUnavailable() detector.
+const ProviderUnavailableType = "provider_unavailable"
+
+// ProviderUnavailableMessage is an upstream-agnostic, customer-safe fallback
+// message for the rayu-hosted path. The CLI replaces it with its own localized
+// guidance ("try a smaller model or try again later"), but this is what any
+// other client — or a log — sees: never the upstream provider's raw body.
+const ProviderUnavailableMessage = "The AI provider for this model is temporarily unavailable. Try another (smaller) model or try again later."
+
+// WriteProviderUnavailable writes a clean, upstream-agnostic error for the
+// rayu-hosted path so a customer never sees the upstream provider's raw body.
+// status defaults to 502 (Bad Gateway) when <= 0. The stable `type` lets the CLI
+// recognize this as "Rayu's own provider is unavailable" (as opposed to the
+// customer's plan/credit limit, which is a 429 with a `reason`).
+func WriteProviderUnavailable(w http.ResponseWriter, status int) {
+	if status <= 0 {
+		status = http.StatusBadGateway
+	}
+	WriteJSON(w, status, map[string]any{
+		"error": map[string]any{
+			"message": ProviderUnavailableMessage,
+			"type":    ProviderUnavailableType,
+		},
+	})
+}
+
 func errType(status int) string {
 	switch status {
 	case http.StatusUnauthorized:

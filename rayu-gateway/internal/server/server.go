@@ -488,11 +488,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeUpstreamError(w, cerr, "upstream error")
 		return
 	}
-	if status != http.StatusOK {
-		log.Printf("chat: upstream non-200 user=%d model=%s status=%d", hr.userID, hr.hm.Code, status)
-	}
 	actual := hr.settle(usage)
 	setCreditHeaders(w, hr.usedPeriod-hr.estBillable+actual, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
+	if status != http.StatusOK {
+		// rayu-hosted path: don't leak the upstream provider's raw error body to
+		// the customer — reply with a clean, upstream-agnostic 502.
+		log.Printf("chat: upstream non-200 user=%d model=%s status=%d", hr.userID, hr.hm.Code, status)
+		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
@@ -545,6 +549,12 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	actual := hr.settle(usage)
 	setCreditHeaders(w, hr.usedPeriod-hr.estBillable+actual, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
+	if status != http.StatusOK {
+		// rayu-hosted path: don't leak the upstream provider's raw error body to
+		// the customer — reply with a clean, upstream-agnostic 502.
+		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
@@ -753,13 +763,16 @@ func proxyError(w http.ResponseWriter, status int, msg string) {
 // attempt to dial, so this returns fast as a 503 (with Retry-After) rather
 // than the 502 used for "we tried and the upstream didn't answer". Any other
 // error keeps the existing 502 semantics via defaultMsg.
-func writeUpstreamError(w http.ResponseWriter, err error, defaultMsg string) {
+func writeUpstreamError(w http.ResponseWriter, err error, _ string) {
+	// rayu-hosted path: reply with a clean, upstream-agnostic error (never the
+	// upstream body) so the CLI shows "try a smaller model or try again later".
+	// Circuit open → 503 + Retry-After (a temporary cooldown); otherwise 502.
 	if errors.Is(err, circuitbreaker.ErrOpen) {
 		w.Header().Set("Retry-After", "5")
-		httpx.WriteError(w, http.StatusServiceUnavailable, "upstream temporarily unavailable")
+		httpx.WriteProviderUnavailable(w, http.StatusServiceUnavailable)
 		return
 	}
-	httpx.WriteError(w, http.StatusBadGateway, defaultMsg)
+	httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
 }
 
 func headerOr(r *http.Request, key, def string) string {

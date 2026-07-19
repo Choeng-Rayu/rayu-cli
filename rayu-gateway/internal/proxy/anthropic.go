@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 )
 
 // Anthropic Messages API forwarding for the rayu-hosted path. DeepSeek exposes
@@ -165,20 +167,20 @@ func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL str
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		status := resp.StatusCode
-		// Some providers (e.g. LongCat) return a BODYLESS error on the streaming
-		// endpoint for conditions the non-streaming endpoint reports properly
-		// (out-of-credits → an empty HTTP 500 when streaming, but a clean HTTP
-		// 402 + message non-streaming). Re-probe in non-streaming mode to recover
-		// the real status + reason so the client sees "402 out of credits" instead
-		// of an opaque empty 500. Best-effort; keeps the original on any failure.
+		// Best-effort: recover a real reason from a BODYLESS streaming error (some
+		// providers, e.g. LongCat, return an empty 500 when streaming but a clean
+		// 402 + message non-streaming) so the SERVER LOG shows the true cause. The
+		// CLIENT is still sent a sanitized, upstream-agnostic error below.
 		if len(bytes.TrimSpace(b)) == 0 {
 			if pb, ps := probeNonStreamError(ctx, upstreamURL, usedKey, bearer, body); len(pb) > 0 {
 				b, status = pb, ps
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write(b)
+		// rayu-hosted path: never leak the upstream provider's raw error body to
+		// the customer (e.g. an Ollama "requires a subscription … ollama.com" 403).
+		// Reply with a clean, upstream-agnostic 502 the CLI turns into "try a
+		// smaller model or try again later".
+		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
 		return nil, true, fmt.Errorf("upstream status %d: %s", status, errSnippet(b))
 	}
 
