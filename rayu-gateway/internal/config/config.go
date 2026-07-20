@@ -37,6 +37,7 @@ type Config struct {
 	DisabledProviders map[string]bool     // providers turned OFF via RAYU_DISABLED_PROVIDERS (zero-code enable/disable)
 	ConfigRefresh int               // seconds between in-memory config refreshes
 	UserCacheTTL  int               // seconds to cache per-user entitlements
+	MaxInFlight   int               // global cap on concurrently-processed hosted streaming requests (RAYU_MAX_INFLIGHT; 0 = unlimited)
 	CorsOrigins   []string          // allowed browser origins for the dashboard
 }
 
@@ -62,6 +63,11 @@ func Load() (*Config, error) {
 	}
 	c.ConfigRefresh, _ = strconv.Atoi(getenv("CONFIG_REFRESH_SECONDS", "30"))
 	c.UserCacheTTL, _ = strconv.Atoi(getenv("USER_CACHE_TTL_SECONDS", "10"))
+	// Global load-shedding valve: max hosted streaming requests processed at once
+	// (0 = unlimited). When exceeded, the gateway sheds with a fast, clean 503 so
+	// a burst of concurrent users degrades gracefully instead of exhausting the
+	// origin's connections/FDs and collapsing into Cloudflare origin_bad_gateway.
+	c.MaxInFlight, _ = strconv.Atoi(getenv("RAYU_MAX_INFLIGHT", "0"))
 
 	// Allowed browser origins for the dashboard's /v1/credits calls. Default "*"
 	// is safe because every /v1 route still requires a valid Rayu JWT.

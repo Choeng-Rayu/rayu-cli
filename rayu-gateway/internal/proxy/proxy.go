@@ -36,13 +36,18 @@ import (
 // under Cloudflare's ~100s origin timeout, so the gateway wins the race and
 // returns the clean 502 first. (The circuit breaker then trips and later
 // requests fail fast, so the slow path is only the first hit of an outage.)
+// UpstreamResponseHeaderTimeout bounds how long the gateway waits for an upstream
+// to send RESPONSE HEADERS before failing the request (see Client below). Logged
+// at startup so operators can confirm which build is deployed.
+const UpstreamResponseHeaderTimeout = 30 * time.Second
+
 var Client = &http.Client{
 	Transport: &http.Transport{
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: UpstreamResponseHeaderTimeout,
 	},
 }
 
