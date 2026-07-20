@@ -18,6 +18,7 @@ import (
 	"github.com/choeng-rayu/rayu-gateway/internal/config"
 	"github.com/choeng-rayu/rayu-gateway/internal/credits"
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
+	"github.com/choeng-rayu/rayu-gateway/internal/proxy"
 	"github.com/choeng-rayu/rayu-gateway/internal/server"
 	"github.com/choeng-rayu/rayu-gateway/internal/store"
 )
@@ -34,6 +35,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 	log.Printf("config: port=%s, keys[%s]", cfg.Port, cfg.ProviderKeySummary())
+	log.Printf("proxy: upstream response-header timeout=%s (stalled upstreams fail fast → clean 502, no Cloudflare origin_bad_gateway)", proxy.UpstreamResponseHeaderTimeout)
 	if cfg.DatabaseDSN == "" {
 		log.Fatal("DATABASE_URL is required")
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/config"
+	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 )
 
 const testSecret = "test-secret"
@@ -176,5 +177,52 @@ func TestValidateUpstreamURLGuard(t *testing.T) {
 		if err := validateUpstreamURL(u); err == nil {
 			t.Errorf("validate(%q) = nil, want error", u)
 		}
+	}
+}
+
+// TestInflightLimiterShedsAtCapacity proves graceful load-shedding: with a cap of
+// 1, while one request holds the slot a second concurrent request is rejected
+// FAST with a clean, retryable 503 provider_unavailable (the CLI's friendly
+// "temporarily unavailable" message) — not queued, not a silent origin failure.
+func TestInflightLimiterShedsAtCapacity(t *testing.T) {
+	l := newInflightLimiter(1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	h := l.wrap(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+
+	go h(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil))
+	<-entered // the single slot is now held
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("at capacity: status=%d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), httpx.ProviderUnavailableType) {
+		t.Fatalf("body=%q, want a clean provider_unavailable", rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected Retry-After on the shed 503")
+	}
+	close(release)
+}
+
+// TestInflightLimiterUnlimited: RAYU_MAX_INFLIGHT=0 disables shedding entirely.
+func TestInflightLimiterUnlimited(t *testing.T) {
+	l := newInflightLimiter(0)
+	if l.sem != nil {
+		t.Fatal("max<=0 must mean unlimited (nil semaphore)")
+	}
+	called := 0
+	h := l.wrap(func(w http.ResponseWriter, _ *http.Request) { called++; w.WriteHeader(http.StatusOK) })
+	for i := 0; i < 5; i++ {
+		h(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/x", nil))
+	}
+	if called != 5 {
+		t.Fatalf("unlimited limiter should pass every request through, got %d/5", called)
 	}
 }

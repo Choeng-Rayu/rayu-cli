@@ -81,11 +81,14 @@ func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Stor
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	inflight := newInflightLimiter(cfg.MaxInFlight)
 	r.Group(func(pr chi.Router) {
 		pr.Use(auth.Middleware(cfg.JWTSecret))
 		pr.Get("/v1/models", s.handleModels)
-		pr.Post("/v1/chat/completions", s.handleChat)
-		pr.Post("/anthropic/v1/messages", s.handleAnthropicMessages)
+		// Only the heavy STREAMING completions are load-shed; the light metadata
+		// endpoints (models/credits/whoami) are cheap and stay unlimited.
+		pr.Post("/v1/chat/completions", inflight.wrap(s.handleChat))
+		pr.Post("/anthropic/v1/messages", inflight.wrap(s.handleAnthropicMessages))
 		pr.Get("/v1/credits", s.handleCredits)
 
 		pr.Get("/v1/_whoami", s.handleWhoami)
@@ -988,6 +991,50 @@ func isoTime(t *time.Time) any {
 // corsMiddleware allows the configured browser origins (default "*") to call the
 // JWT-protected API (the dashboard reads /v1/credits). Auth is via Bearer token,
 // not cookies, so a wildcard origin is safe here.
+// inflightLimiter caps how many hosted STREAMING requests the gateway actively
+// processes at once. Streaming holds a full connection chain (client → gateway →
+// upstream) open for the whole generation, so a burst of concurrent users can
+// otherwise exhaust the origin's connections/FDs/goroutines and drag the whole
+// process down — which surfaces to clients as a Cloudflare origin_bad_gateway
+// with NO gateway log line, because the saturated origin can no longer accept
+// new connections. At capacity we shed IMMEDIATELY with a clean, retryable 503
+// (the CLI renders it as the friendly "temporarily unavailable" message) and,
+// critically, LOG the rejection so overload is visible instead of silent.
+//
+// This is a graceful-degradation valve, NOT added capacity: set RAYU_MAX_INFLIGHT
+// to a value your instance can sustain (measure with `docker stats`), and scale
+// the gateway horizontally for real throughput. 0 = unlimited (disabled).
+type inflightLimiter struct {
+	sem chan struct{}
+	max int
+}
+
+func newInflightLimiter(max int) *inflightLimiter {
+	if max <= 0 {
+		return &inflightLimiter{} // unlimited
+	}
+	return &inflightLimiter{sem: make(chan struct{}, max), max: max}
+}
+
+func (l *inflightLimiter) wrap(next http.HandlerFunc) http.HandlerFunc {
+	if l == nil || l.sem == nil {
+		return next // unlimited: no wrapper overhead
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case l.sem <- struct{}{}:
+			defer func() { <-l.sem }()
+			next(w, r)
+		default:
+			// Saturated: shed fast so the process stays healthy and keeps
+			// accepting/logging, rather than collapsing into silent 502s.
+			w.Header().Set("Retry-After", "5")
+			log.Printf("reject: gateway at capacity (RAYU_MAX_INFLIGHT=%d) path=%s", l.max, r.URL.Path)
+			httpx.WriteProviderUnavailable(w, http.StatusServiceUnavailable)
+		}
+	}
+}
+
 // logRequests logs one line per request (method, path, status, duration, bytes),
 // skipping the health probe. Streaming requests log when the stream completes,
 // so the duration reflects total stream time.
