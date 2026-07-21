@@ -13,15 +13,22 @@ interface Mocks {
   service: PaymentsService
   prisma: {
     plan: { findUnique: Mock }
-    payment: { findUnique: Mock; create: Mock; update: Mock; findFirst: Mock }
+    payment: { findUnique: Mock; create: Mock; update: Mock; updateMany: Mock; findFirst: Mock }
     creditTopup: { create: Mock; findFirst: Mock; updateMany: Mock }
-    subscription: { updateMany: Mock; create: Mock }
+    creditLedger: { aggregate: Mock }
+    subscription: { findMany: Mock; updateMany: Mock; create: Mock }
     $transaction: Mock
   }
   bakong: { checkPaidByMd5: Mock; generateKhqr: Mock }
   aba: { generateAbaQR: Mock }
   settings: { get: Mock }
   users: { getActiveSubscription: Mock }
+  promo: {
+    validateForPurchase: Mock
+    recordPendingRedemption: Mock
+    finalizeRedemption: Mock
+    cancelPendingRedemption: Mock
+  }
 }
 
 function makeService(): Mocks {
@@ -34,14 +41,19 @@ function makeService(): Mocks {
         Promise.resolve({ id: 42, ...data }),
       ),
       update: jest.fn(() => Promise.resolve({})),
+      updateMany: jest.fn(() => Promise.resolve({ count: 1 })),
       findFirst: jest.fn(),
     },
     creditTopup: {
       create: jest.fn(() => Promise.resolve({})),
       findFirst: jest.fn(() => Promise.resolve(null)),
-      updateMany: jest.fn(() => Promise.resolve({})),
+      updateMany: jest.fn(() => Promise.resolve({ count: 1 })),
+    },
+    creditLedger: {
+      aggregate: jest.fn(() => Promise.resolve({ _sum: { credits: 0 } })),
     },
     subscription: {
+      findMany: jest.fn(() => Promise.resolve([])),
       updateMany: jest.fn(() => Promise.resolve({})),
       create: jest.fn(() => Promise.resolve({})),
     },
@@ -347,6 +359,188 @@ describe('PaymentsService · KHQR expiry lifecycle', () => {
       const m = makeService()
       m.prisma.payment.findFirst.mockResolvedValue(null)
       expect(await m.service.confirmAbaPaymentByAmount(10, 'TRX9')).toBe(false)
+    })
+  })
+
+  describe('carry-over credits on paid plan activation', () => {
+    function abaPayment(planCode: string, planId: number) {
+      return {
+        id: 42,
+        userId: 1,
+        status: 'pending',
+        provider: 'aba',
+        planId,
+        plan: { code: planCode },
+      }
+    }
+
+    function previousSub(creditsPerPeriod: number, startedAtDaysAgo: number, currentPeriodEndDaysFromNow: number) {
+      const now = Date.now()
+      return {
+        id: 1,
+        startedAt: new Date(now - startedAtDaysAgo * 24 * 60 * 60 * 1000),
+        currentPeriodEnd: new Date(now + currentPeriodEndDaysFromNow * 24 * 60 * 60 * 1000),
+        plan: { limits: { creditsPerPeriod } },
+      }
+    }
+
+    it('grants unused credits when upgrading mid-period', async () => {
+      const m = makeService()
+      m.prisma.payment.findFirst.mockResolvedValue(abaPayment('pro_plus', 8))
+      m.prisma.subscription.findMany.mockResolvedValue([previousSub(50, 10, 20)])
+      m.prisma.creditLedger.aggregate.mockResolvedValue({ _sum: { credits: 30 } })
+
+      const ok = await m.service.confirmAbaPaymentByAmount(20, 'TRX10')
+
+      expect(ok).toBe(true)
+      expect(m.prisma.creditTopup.create).toHaveBeenCalled()
+      const topupData = m.prisma.creditTopup.create.mock.calls[0][0].data
+      expect(topupData.credits).toBe(20)
+      expect(topupData.amountCents).toBe(0)
+      expect(topupData.status).toBe('paid')
+    })
+
+    it('grants unused credits on same-plan renewal', async () => {
+      const m = makeService()
+      m.prisma.payment.findFirst.mockResolvedValue(abaPayment('pro', 7))
+      m.prisma.subscription.findMany.mockResolvedValue([previousSub(50, 15, 15)])
+      m.prisma.creditLedger.aggregate.mockResolvedValue({ _sum: { credits: 40 } })
+
+      await m.service.confirmAbaPaymentByAmount(10, 'TRX11')
+
+      const topupData = m.prisma.creditTopup.create.mock.calls[0][0].data
+      expect(topupData.credits).toBe(10)
+    })
+
+    it('grants no carry-over when prior plan is free', async () => {
+      const m = makeService()
+      m.prisma.payment.findFirst.mockResolvedValue(abaPayment('pro', 7))
+      m.prisma.subscription.findMany.mockResolvedValue([
+        {
+          id: 1,
+          startedAt: new Date(),
+          currentPeriodEnd: null,
+          plan: { limits: { creditsPerPeriod: null } },
+        },
+      ])
+
+      await m.service.confirmAbaPaymentByAmount(10, 'TRX12')
+
+      expect(m.prisma.creditTopup.create).not.toHaveBeenCalled()
+    })
+
+    it('grants the full allowance as carry-over when no plan credits were used', async () => {
+      const m = makeService()
+      m.prisma.payment.findFirst.mockResolvedValue(abaPayment('pro_plus', 8))
+      m.prisma.subscription.findMany.mockResolvedValue([previousSub(50, 5, 25)])
+      m.prisma.creditLedger.aggregate.mockResolvedValue({ _sum: { credits: 0 } })
+
+      await m.service.confirmAbaPaymentByAmount(20, 'TRX13')
+
+      const topupData = m.prisma.creditTopup.create.mock.calls[0][0].data
+      expect(topupData.credits).toBe(50)
+    })
+
+    it('grants no carry-over when the prior period has already expired', async () => {
+      const m = makeService()
+      m.prisma.payment.findFirst.mockResolvedValue(abaPayment('pro', 7))
+      m.prisma.subscription.findMany.mockResolvedValue([
+        {
+          id: 1,
+          startedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000),
+          currentPeriodEnd: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000),
+          plan: { limits: { creditsPerPeriod: 50 } },
+        },
+      ])
+      m.prisma.creditLedger.aggregate.mockResolvedValue({ _sum: { credits: 10 } })
+
+      await m.service.confirmAbaPaymentByAmount(10, 'TRX14')
+
+      expect(m.prisma.creditTopup.create).not.toHaveBeenCalled()
+    })
+
+    it('is idempotent: a second activation of the same payment does not duplicate subscriptions or top-ups', async () => {
+      const m = makeService()
+      m.prisma.payment.findFirst.mockResolvedValue(abaPayment('pro_plus', 8))
+      m.prisma.subscription.findMany.mockResolvedValue([previousSub(50, 10, 20)])
+      m.prisma.creditLedger.aggregate.mockResolvedValue({ _sum: { credits: 30 } })
+      // First call wins; second call sees count===0.
+      m.prisma.payment.updateMany
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 })
+
+      const ok1 = await m.service.confirmAbaPaymentByAmount(20, 'TRX15')
+      const ok2 = await m.service.confirmAbaPaymentByAmount(20, 'TRX15')
+
+      expect(ok1).toBe(true)
+      expect(ok2).toBe(true)
+      expect(m.prisma.subscription.create).toHaveBeenCalledTimes(1)
+      expect(m.prisma.creditTopup.create).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('claimFreePromo carry-over', () => {
+    function promoQuote() {
+      return {
+        isFree: true,
+        promo: { id: 99, code: 'FREE100' },
+        originalCents: 1000,
+        discountCents: 1000,
+        finalCents: 0,
+      }
+    }
+
+    function previousSub(creditsPerPeriod: number, startedAtDaysAgo: number, currentPeriodEndDaysFromNow: number) {
+      const now = Date.now()
+      return {
+        id: 1,
+        startedAt: new Date(now - startedAtDaysAgo * 24 * 60 * 60 * 1000),
+        currentPeriodEnd: new Date(now + currentPeriodEndDaysFromNow * 24 * 60 * 60 * 1000),
+        plan: { limits: { creditsPerPeriod } },
+      }
+    }
+
+    it('carries over unused credits when claiming a new plan with a free promo', async () => {
+      const m = makeService()
+      m.prisma.plan.findUnique.mockResolvedValue({
+        id: 8,
+        code: 'pro_plus',
+        availability: 'active',
+        priceCents: 2000,
+        limits: { creditsPerPeriod: 115 },
+      })
+      m.promo.validateForPurchase.mockResolvedValue(promoQuote())
+      m.prisma.subscription.findMany.mockResolvedValue([previousSub(50, 10, 20)])
+      m.prisma.creditLedger.aggregate.mockResolvedValue({ _sum: { credits: 20 } })
+
+      const res = await m.service.claimFreePromo(1, 'pro_plus' as any, 'FREE100')
+
+      expect(res.activated).toBe(true)
+      expect(res.claimed).toBe(true)
+      expect(res.carryoverCredits).toBe(30)
+      expect(m.prisma.creditTopup.create).toHaveBeenCalled()
+      const topupData = m.prisma.creditTopup.create.mock.calls[0][0].data
+      expect(topupData.credits).toBe(30)
+      expect(topupData.amountCents).toBe(0)
+      expect(topupData.status).toBe('paid')
+    })
+
+    it('grants no carry-over when claiming from a free plan', async () => {
+      const m = makeService()
+      m.prisma.plan.findUnique.mockResolvedValue({
+        id: 7,
+        code: 'pro',
+        availability: 'active',
+        priceCents: 1000,
+        limits: { creditsPerPeriod: 50 },
+      })
+      m.promo.validateForPurchase.mockResolvedValue(promoQuote())
+      m.prisma.subscription.findMany.mockResolvedValue([])
+
+      const res = await m.service.claimFreePromo(1, 'pro' as any, 'FREE100')
+
+      expect(res.carryoverCredits).toBe(0)
+      expect(m.prisma.creditTopup.create).not.toHaveBeenCalled()
     })
   })
 })

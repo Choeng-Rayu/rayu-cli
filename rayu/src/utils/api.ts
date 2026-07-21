@@ -32,6 +32,10 @@ import { roughTokenCountEstimation } from '../services/tokenEstimation.js'
 import type { Tool, ToolPermissionContext, Tools } from '../Tool.js'
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
+import {
+  ASK_USER_QUESTION_TOOL_CHIP_WIDTH,
+  ASK_USER_QUESTION_TOOL_NAME,
+} from '../tools/AskUserQuestionTool/prompt.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
 import type { Message } from '../types/message.js'
@@ -564,6 +568,128 @@ export async function logContextMetrics(
   })
 }
 
+// Field-name synonyms weaker models emit instead of AskUserQuestion's canonical
+// keys, ordered by preference. Used only to REPAIR a malformed call, never to
+// override a value the model already put under the correct key.
+const ASK_Q_TEXT_KEYS = ['question', 'q', 'prompt', 'query', 'text', 'title']
+const ASK_Q_HEADER_KEYS = ['header', 'label', 'tag', 'category', 'topic', 'title']
+const ASK_OPT_LABEL_KEYS = [
+  'label',
+  'title',
+  'text',
+  'name',
+  'value',
+  'option',
+  'choice',
+]
+const ASK_OPT_DESC_KEYS = [
+  'description',
+  'desc',
+  'detail',
+  'details',
+  'explanation',
+  'subtitle',
+  'summary',
+]
+
+function firstNonEmptyString(
+  o: Record<string, unknown>,
+  keys: readonly string[],
+): string | undefined {
+  for (const k of keys) {
+    const v = o[k]
+    if (typeof v === 'string' && v.trim().length > 0) return v
+  }
+  return undefined
+}
+
+/** Derive a short chip `header` from the question when the model omitted it. */
+function deriveAskQuestionHeader(question: string, maxWidth: number): string {
+  const cleaned = question.replace(/[?.!\s]+$/g, '').trim()
+  if (cleaned.length <= maxWidth) return cleaned || 'Question'
+  let out = ''
+  for (const word of cleaned.split(/\s+/)) {
+    if ((out ? out.length + 1 : 0) + word.length > maxWidth) break
+    out = out ? `${out} ${word}` : word
+  }
+  return out || cleaned.slice(0, maxWidth)
+}
+
+/**
+ * Coerce a loosely-shaped AskUserQuestion payload toward its strict schema.
+ *
+ * Weaker / non-Anthropic models (notably GLM-5.2 via the Rayu-hosted gateway)
+ * routinely emit VALID JSON for this — the most deeply-nested tool schema in the
+ * app — yet drop required leaf fields (`header`, an option `label` or
+ * `description`) or use synonym keys. Without this, `tool.inputSchema.safeParse`
+ * hard-fails with "The required parameter `questions[0].options[0].label` is
+ * missing" and the user is stranded with "Invalid tool parameters" (especially in
+ * plan mode, where the planner leans on this tool). We repair the common,
+ * unambiguous deviations:
+ *   - map synonym keys to the canonical ones (q/text/title → question, etc.)
+ *   - backfill option `label` ↔ `description` when exactly one side is present
+ *   - derive a missing `header` from the question text
+ *   - wrap bare-string questions/options into objects
+ *
+ * It is a NO-OP for well-formed input (strong models are unaffected) and never
+ * fabricates a question/option from nothing — a genuinely empty item still fails
+ * validation so the model is told to retry rather than shown a bogus prompt.
+ */
+function coerceAskUserQuestionInput(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!Array.isArray(input.questions)) return input
+
+  const questions = input.questions.map(rawQ => {
+    const q: Record<string, unknown> =
+      typeof rawQ === 'string'
+        ? { question: rawQ }
+        : rawQ && typeof rawQ === 'object'
+          ? { ...(rawQ as Record<string, unknown>) }
+          : (rawQ as Record<string, unknown>)
+    if (!q || typeof q !== 'object') return rawQ
+
+    const question = firstNonEmptyString(q, ASK_Q_TEXT_KEYS)
+    if (question !== undefined) q.question = question
+
+    let header = firstNonEmptyString(q, ASK_Q_HEADER_KEYS)
+    if (header === undefined && question !== undefined) {
+      header = deriveAskQuestionHeader(
+        question,
+        ASK_USER_QUESTION_TOOL_CHIP_WIDTH,
+      )
+    }
+    if (header !== undefined) q.header = header
+
+    const rawOptions = Array.isArray(q.options)
+      ? q.options
+      : Array.isArray((q as { choices?: unknown }).choices)
+        ? (q as { choices: unknown[] }).choices
+        : undefined
+    if (Array.isArray(rawOptions)) {
+      q.options = rawOptions.map(rawOpt => {
+        if (typeof rawOpt === 'string') {
+          return { label: rawOpt, description: rawOpt }
+        }
+        if (!rawOpt || typeof rawOpt !== 'object') return rawOpt
+        const opt = { ...(rawOpt as Record<string, unknown>) }
+        const label = firstNonEmptyString(opt, ASK_OPT_LABEL_KEYS)
+        const description = firstNonEmptyString(opt, ASK_OPT_DESC_KEYS)
+        // Backfill each side from the other so a one-sided option still renders
+        // instead of hard-failing the whole tool call.
+        const finalLabel = label ?? description
+        const finalDescription = description ?? label
+        if (finalLabel !== undefined) opt.label = finalLabel
+        if (finalDescription !== undefined) opt.description = finalDescription
+        return opt
+      })
+    }
+    return q
+  })
+
+  return { ...input, questions }
+}
+
 // TODO: Generalize this to all tools
 export function normalizeToolInput<T extends Tool>(
   tool: T,
@@ -676,6 +802,13 @@ export function normalizeToolInput<T extends Tool>(
         block: legacyInput.block ?? true,
         timeout: timeout ?? 30000,
       } as z.infer<T['inputSchema']>
+    }
+    case ASK_USER_QUESTION_TOOL_NAME: {
+      // Repair common weak-model deviations (missing label/description/header,
+      // synonym keys) before strict zod validation. No-op when well-formed.
+      return coerceAskUserQuestionInput(
+        input as Record<string, unknown>,
+      ) as z.infer<T['inputSchema']>
     }
     default:
       return input
