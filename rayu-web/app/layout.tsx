@@ -4,6 +4,7 @@ import type { Metadata } from 'next'
 import Script from 'next/script'
 import './globals.css'
 import NavAuth from './components/NavAuth'
+import GithubStars from './components/GithubStars'
 import { Providers } from './providers'
 import { getOrganizationSchema, getWebsiteSchema } from './structured-data'
 
@@ -113,6 +114,7 @@ export default function RootLayout({
                 <li><Link href="/changelog">Changelog</Link></li>
               </ul>
               <div className="nav-actions">
+                <GithubStars />
                 <NavAuth />
               </div>
             </header>
