@@ -2,6 +2,12 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.4.477 - 2026-07-21
+- Fixed Rayu-hosted provider gateway bugs affecting multiple concurrent requests and routing
+- Hardened the internal Rayu provider path — resolved the gate issue that caused intermittent failures under load
+- Improved gateway request handling and route resolution for Rayu-hosted models
+- Tightened gateway logging for clearer diagnostics on hosted-provider failures
+
 ## 1.4.472 - 2026-07-09
 - Fixed tool search (deferred tool loading) for Rayu third-party providers — `tool_reference`/`defer_loading` beta was wrongly enabled for `anthropic-compatible` and `openai-compatible` providers, causing deferred tools (WebFetch, TaskUpdate, WebSearch, etc.) to be called with guessed parameters and rejected by the client-side validator
 - Added escape hatch: set `ENABLE_TOOL_SEARCH=true` to force-enable deferred tools on endpoints that forward the beta
