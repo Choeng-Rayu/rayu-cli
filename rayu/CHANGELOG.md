@@ -2,6 +2,11 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.4.478 - 2026-07-21
+- Improved the Ask User Question tool for all LLM providers
+- Fixed the Gateway upstream error
+- Fixed the plan credit calculation bug
+
 ## 1.4.477 - 2026-07-21
 - Fixed Rayu-hosted provider gateway bugs affecting multiple concurrent requests and routing
 - Hardened the internal Rayu provider path — resolved the gate issue that caused intermittent failures under load
