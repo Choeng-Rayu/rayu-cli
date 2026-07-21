@@ -3,6 +3,7 @@ import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getCanonicalName } from './model/model.js'
+import { isClaudeModelOrAlias } from './model/aliases.js'
 import { resolveAntModel } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
@@ -98,11 +99,16 @@ export function modelSupportsThinking(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  // Rayu: any non-Anthropic / OpenAI-compatible provider (NVIDIA, DeepSeek,
-  // Gemini, local servers, etc.) supports extended thinking — mirrors
-  // modelSupportsEffort() in effort.ts so `ultrathink` works on any provider's
-  // reasoning model, not just Claude. (Explicit 3P override above still wins.)
-  if (isOpenAICompatibleActive() || isRayuNonAnthropicActive()) {
+  // Rayu: OpenAI-compatible providers (NVIDIA, DeepSeek, local, …) support
+  // extended thinking. Other non-Anthropic providers (Bedrock/Vertex/Kiro/…)
+  // also do for their NON-Claude models — but native Claude models on those
+  // providers must use the canonical per-family gating below, so e.g. Bedrock
+  // Haiku is correctly excluded instead of being sent unsupported thinking
+  // params that make Bedrock 400. (Explicit 3P override above still wins.)
+  if (
+    isOpenAICompatibleActive() ||
+    (isRayuNonAnthropicActive() && !isClaudeModelOrAlias(model))
+  ) {
     return true
   }
   if (process.env.USER_TYPE === 'ant') {
@@ -143,8 +149,10 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
     return false
   }
   // Rayu: other non-Anthropic kinds (Bedrock/Vertex/Kiro/Copilot/rayu-hosted)
-  // keep adaptive thinking (mirrors modelSupportsThinking / modelSupportsEffort).
-  if (isRayuNonAnthropicActive()) {
+  // keep adaptive thinking for their NON-Claude models. Native Claude models on
+  // those providers fall through to the canonical 4.6-only gating below, so
+  // Bedrock Haiku/older Claude don't claim adaptive thinking they can't do.
+  if (isRayuNonAnthropicActive() && !isClaudeModelOrAlias(model)) {
     return true
   }
   const canonical = getCanonicalName(model)

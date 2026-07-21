@@ -24,7 +24,11 @@ import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { getAPIProvider, isOpenAICompatibleActive } from './providers.js'
+import {
+  getAPIProvider,
+  isOpenAICompatibleActive,
+  isRayuNonAnthropicActive,
+} from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias, isClaudeModelOrAlias } from './aliases.js'
@@ -34,8 +38,27 @@ export type ModelShortName = string
 export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
+/**
+ * True when the ACTIVE provider is not first-party Anthropic yet `getAPIProvider()`
+ * falls back to `'anthropic'` — i.e. `getModelStrings()` would produce first-party
+ * Claude ids (e.g. `claude-haiku-4-5-20251001`) the provider CANNOT serve. Covers
+ * rayu-hosted (GLM/Ollama/DeepSeek/…), anthropic-compatible (LongCat/Ollama BYO),
+ * openai-compatible (NVIDIA/OpenRouter/local), kiro, copilot, and gemini/vertex.
+ *
+ * EXCLUDES the Claude-serving 3P surfaces (Bedrock/Vertex/Foundry via env or a
+ * kind:'bedrock' provider), where `getAPIProvider()` is NOT 'anthropic' and
+ * `getModelStrings()` already yields provider-correct Claude ids.
+ *
+ * These providers must resolve their OWN model for secondary/default work — never
+ * a hardcoded Claude id, which the gateway/provider rejects (403/400), e.g. a
+ * `claude-haiku-4-5` utility call while the user is actually on GLM-5.2.
+ */
+function activeProviderUsesOwnModelStrings(): boolean {
+  return isRayuNonAnthropicActive() && getAPIProvider() === 'anthropic'
+}
+
 export function getSmallFastModel(): ModelName {
-  if (isOpenAICompatibleActive()) {
+  if (activeProviderUsesOwnModelStrings()) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { getActiveProvider, getValidDefaultModel } =
       require('../rayuConfig.js') as typeof import('../rayuConfig.js')
@@ -237,9 +260,11 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
-  // Rayu: when an OpenAI-compatible or Bedrock provider is active, default to
-  // its configured model rather than a hardcoded Anthropic model string.
-  if (isOpenAICompatibleActive() || getAPIProvider() === 'bedrock') {
+  // Rayu: when the active provider resolves to its OWN model strings (any
+  // non-Anthropic provider — rayu-hosted, openai-compatible, anthropic-compatible,
+  // kiro, copilot, gemini/vertex) or a Bedrock provider, default to its configured
+  // model rather than a hardcoded Anthropic model string.
+  if (activeProviderUsesOwnModelStrings() || getAPIProvider() === 'bedrock') {
     try {
       /* eslint-disable @typescript-eslint/no-require-imports */
       const { getActiveProvider, getValidDefaultModel } =

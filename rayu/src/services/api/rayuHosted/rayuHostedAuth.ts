@@ -8,6 +8,12 @@ import {
   getRayuGatewayBaseUrl,
   getValidRayuAccessToken,
 } from '../../rayuAuth/rayuSession.js'
+import {
+  buildModelMetadataHeaders,
+  RAYU_INTENDED_MODEL_HEADER,
+  RAYU_LOGICAL_REQUEST_ID_HEADER,
+  RAYU_QUERY_SOURCE_HEADER,
+} from './gatewayHeaders.js'
 
 /** OpenAI-compatible base URL of the Rayu gateway (gateway base + /v1). */
 export function rayuHostedBaseURL(): string {
@@ -78,6 +84,23 @@ export function makeRayuHostedFetch(): typeof fetch {
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)
     headers.set('Authorization', `Bearer ${token}`)
+
+    // Request-identity + model-metadata headers (same contract as the BYO-key
+    // gateway proxy). The hosted handlers never forward client headers upstream,
+    // so these stay server-side; they enable real-model logging + logical-id
+    // turn accounting.
+    const meta = buildModelMetadataHeaders({
+      upstreamUrl: url,
+      body: init?.body,
+      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+      requestId: globalThis.crypto.randomUUID(),
+      intended: headers.get(RAYU_INTENDED_MODEL_HEADER),
+      logicalRequestId: headers.get(RAYU_LOGICAL_REQUEST_ID_HEADER),
+      querySource: headers.get(RAYU_QUERY_SOURCE_HEADER),
+    })
+    for (const [k, v] of Object.entries(meta)) {
+      headers.set(k, v)
+    }
     return inner(input, { ...init, headers })
   }
   return wrapped as typeof fetch

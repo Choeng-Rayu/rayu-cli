@@ -59,6 +59,12 @@ import {
 } from '../../rayuAuth/rayuSession.js'
 import { getCachedEntitlements } from '../../rayuAuth/rayuEntitlements.js'
 import { isEnvTruthy } from '../../../utils/envUtils.js'
+import {
+  buildModelMetadataHeaders,
+  RAYU_INTENDED_MODEL_HEADER,
+  RAYU_LOGICAL_REQUEST_ID_HEADER,
+  RAYU_QUERY_SOURCE_HEADER,
+} from './gatewayHeaders.js'
 
 /**
  * Plan codes (from the admin-configured plan catalog) that have NO BYO-key
@@ -270,6 +276,25 @@ export function makeGatewayRoutingFetch(
     headers.set('X-Rayu-Token', token)
     headers.set('X-Rayu-Upstream-URL', originalUrl)
     headers.set('X-Rayu-Provider', provider.id)
+
+    // Request-identity + model-metadata headers so the gateway can log the REAL
+    // model (Bedrock hides it in the URL), attribute the query source, and
+    // correlate retries by a logical id. resolved/canonical are derived from the
+    // actual outgoing request and are authoritative; intended/logical/source are
+    // passthroughs from claude.ts (backfilled when absent). All are stripped by
+    // the gateway before forwarding upstream.
+    const meta = buildModelMetadataHeaders({
+      upstreamUrl: originalUrl,
+      body: init?.body,
+      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+      requestId: globalThis.crypto.randomUUID(),
+      intended: headers.get(RAYU_INTENDED_MODEL_HEADER),
+      logicalRequestId: headers.get(RAYU_LOGICAL_REQUEST_ID_HEADER),
+      querySource: headers.get(RAYU_QUERY_SOURCE_HEADER),
+    })
+    for (const [k, v] of Object.entries(meta)) {
+      headers.set(k, v)
+    }
 
     const callbackToDirect = isGatewayCallbackEnabled()
     try {

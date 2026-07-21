@@ -42,7 +42,7 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { isRayuCreditLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
+import { isRayuCreditLimitError, isRayuDailyTurnLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -270,6 +270,18 @@ export async function* withRetry<T>(
         throw new CannotRetryError(error, retryContext)
       }
 
+      // Gateway per-day TURN cap (429 reason:"daily_turn_limit"). Terminal until
+      // the daily reset: retrying can't succeed and only amplifies load, so bail
+      // immediately with the clear "daily limit" message instead of the up-to-10×
+      // retry loop. Placed with the credit-limit bail so it wins over the
+      // fast-mode / transient-429 branches below.
+      if (isRayuDailyTurnLimitError(error)) {
+        logEvent('tengu_api_rayu_daily_turn_limit_reached', {
+          provider: getAPIProviderForStatsig(),
+        })
+        throw new CannotRetryError(error, retryContext)
+      }
+
       // Fast mode fallback: on 429/529, either wait and retry (short delays)
       // or fall back to standard speed (long delays) to avoid cache thrashing.
       // Skip in persistent mode: the short-retry path below loops with fast
@@ -329,6 +341,24 @@ export async function* withRetry<T>(
       // during capacity cascades. User never sees these fail.
       if (is529Error(error) && !shouldRetry529(options.querySource)) {
         logEvent('tengu_api_529_background_dropped', {
+          query_source:
+            options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        })
+        throw new CannotRetryError(error, retryContext)
+      }
+
+      // Non-foreground 429 (provider/gateway rate limit): a background or
+      // subagent request the user isn't blocking on should NOT retry — each
+      // retry is provider/gateway amplification during a rate-limit window, and
+      // the user never sees these fail. Foreground sources still retry below,
+      // honoring Retry-After. Mirrors the 529 background-drop above. (Terminal
+      // Rayu credit/daily-turn 429s already bailed at the top of the catch.)
+      if (
+        error instanceof APIError &&
+        error.status === 429 &&
+        !shouldRetry529(options.querySource)
+      ) {
+        logEvent('tengu_api_429_background_dropped', {
           query_source:
             options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })

@@ -232,6 +232,21 @@ export function formatAPIError(error: APIError): string {
           return `Unable to connect to API: SSL error (${code})`
       }
     }
+
+    // Non-SSL transport errors — a specific, layer-aware message so a bare
+    // "Connection error" isn't a dead end for the user or support. These
+    // distinguish client/DNS/refused from a mid-request drop (retryable).
+    switch (code) {
+      case 'ECONNREFUSED':
+        return 'Unable to connect to the API — the connection was refused. Check your network, VPN, or proxy, then try again'
+      case 'ECONNRESET':
+      case 'EPIPE':
+      case 'ECONNABORTED':
+        return 'The connection dropped mid-request (a network blip, a proxy, or the server closing the connection). Retrying usually works'
+      case 'ENOTFOUND':
+      case 'EAI_AGAIN':
+        return 'DNS lookup failed — the API hostname could not be resolved. Check your network/DNS or proxy settings'
+    }
   }
 
   if (error.message === 'Connection error.') {

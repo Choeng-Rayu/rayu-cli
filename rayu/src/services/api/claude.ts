@@ -200,6 +200,7 @@ import { validateBoundedIntEnvVar } from '../../utils/envValidation.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { getInferenceProfileBackingModel } from '../../utils/model/bedrock.js'
 import {
+  getCanonicalName,
   normalizeModelStringForAPI,
   parseUserSpecifiedModel,
 } from '../../utils/model/model.js'
@@ -228,6 +229,11 @@ import { getInitializationStatus } from '../lsp/manager.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
+import {
+  RAYU_INTENDED_MODEL_HEADER,
+  RAYU_LOGICAL_REQUEST_ID_HEADER,
+  RAYU_QUERY_SOURCE_HEADER,
+} from './rayuHosted/gatewayHeaders.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
   CUSTOM_OFF_SWITCH_MESSAGE,
@@ -1498,6 +1504,10 @@ async function* queryModel(
   let stream: Stream<BetaRawMessageStreamEvent> | undefined = undefined
   let streamRequestId: string | null | undefined = undefined
   let clientRequestId: string | undefined = undefined
+  // Stable logical request id for THIS turn's request, shared across retries so
+  // the gateway can dedupe daily-turn accounting and correlate attempts. Distinct
+  // from clientRequestId (per-attempt, first-party only).
+  const logicalRequestId = randomUUID()
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins -- Response is available in Node 18+ and is used by the SDK
   let streamResponse: Response | undefined = undefined
 
@@ -1813,6 +1823,29 @@ async function* queryModel(
             ? randomUUID()
             : undefined
 
+        // Metadata headers so a gateway-routed request (Bedrock/hosted/anthropic)
+        // carries the INTENDED model + query source + logical id. resolved/
+        // canonical are added authoritatively by the routing fetch wrapper from
+        // the actual wire request; these are the caller's intent for the gateway
+        // fidelity check + attribution. All X-Rayu-* are stripped upstream.
+        const rayuMetaHeaders: Record<string, string> = {
+          [RAYU_LOGICAL_REQUEST_ID_HEADER]: logicalRequestId,
+        }
+        {
+          let intendedCanonical = ''
+          try {
+            intendedCanonical = getCanonicalName(options.model)
+          } catch {
+            intendedCanonical = ''
+          }
+          if (intendedCanonical) {
+            rayuMetaHeaders[RAYU_INTENDED_MODEL_HEADER] = intendedCanonical
+          }
+          if (options.querySource) {
+            rayuMetaHeaders[RAYU_QUERY_SOURCE_HEADER] = options.querySource
+          }
+        }
+
         // Use raw stream instead of BetaMessageStream to avoid O(n²) partial JSON parsing
         // BetaMessageStream calls partialParse() on every input_json_delta, which we don't need
         // since we handle tool input accumulation ourselves
@@ -1822,9 +1855,12 @@ async function* queryModel(
             { ...params, stream: true },
             {
               signal,
-              ...(clientRequestId && {
-                headers: { [CLIENT_REQUEST_ID_HEADER]: clientRequestId },
-              }),
+              headers: {
+                ...rayuMetaHeaders,
+                ...(clientRequestId && {
+                  [CLIENT_REQUEST_ID_HEADER]: clientRequestId,
+                }),
+              },
             },
           )
           .withResponse()

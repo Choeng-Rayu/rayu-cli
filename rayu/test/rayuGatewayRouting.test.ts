@@ -458,3 +458,78 @@ describe('makeGatewayRoutingFetch', () => {
     expect(calls.length).toBe(1) // no direct fallback
   })
 })
+
+describe('makeGatewayRoutingFetch: request-identity + model-metadata headers (Task 2)', () => {
+  const BEDROCK_URL =
+    'https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-opus-4-6-v1/invoke-with-response-stream'
+
+  test('openai-compatible: sets request-id, logical-id, resolved + canonical from body; backfills intended', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    await signIn()
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner(
+      () => new Response('{}', { status: 200, headers: { 'x-rayu-proxied': '1' } }),
+    )
+    await m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer nv-key', 'Content-Type': 'application/json' },
+      body: '{"model":"gpt-x"}',
+    })
+    const h = new Headers(calls[0].init?.headers)
+    expect(h.get('x-rayu-request-id')).toBeTruthy()
+    // No caller logical id -> backfilled to the request id.
+    expect(h.get('x-rayu-logical-request-id')).toBe(h.get('x-rayu-request-id'))
+    expect(h.get('x-rayu-resolved-model')).toBe('gpt-x')
+    expect(h.get('x-rayu-canonical-model')).toBe('gpt-x')
+    // intended backfilled from canonical when the caller didn't provide it.
+    expect(h.get('x-rayu-intended-model')).toBe('gpt-x')
+  })
+
+  test('bedrock: resolved model is parsed from the URL path (body has no model)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    await signIn()
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const bedrock = provider({
+      id: 'bedrock-anthropic',
+      kind: 'bedrock',
+      bedrockApi: 'anthropic',
+      apiKey: 'bearer',
+      baseURL: undefined,
+    })
+    const { fn, calls } = makeInner(
+      () => new Response('{}', { status: 200, headers: { 'x-rayu-proxied': '1' } }),
+    )
+    await m.makeGatewayRoutingFetch(bedrock, fn)(BEDROCK_URL, {
+      method: 'POST',
+      body: '{"max_tokens":1,"messages":[],"anthropic_version":"bedrock-2023-05-31"}',
+    })
+    const h = new Headers(calls[0].init?.headers)
+    expect(h.get('x-rayu-upstream-url')).toBe(BEDROCK_URL)
+    expect(h.get('x-rayu-resolved-model')).toBe('us.anthropic.claude-opus-4-6-v1')
+    expect(h.get('x-rayu-canonical-model')).toBe('claude-opus-4-6')
+  })
+
+  test('caller-provided intended + query-source + logical id are preserved (attribution)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    await signIn()
+    const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
+    const { fn, calls } = makeInner(
+      () => new Response('{}', { status: 200, headers: { 'x-rayu-proxied': '1' } }),
+    )
+    await m.makeGatewayRoutingFetch(provider(), fn)(ORIGINAL, {
+      method: 'POST',
+      headers: {
+        'x-rayu-intended-model': 'claude-sonnet-4-6',
+        'x-rayu-query-source': 'agent:custom',
+        'x-rayu-logical-request-id': 'LID-123',
+      },
+      body: '{"model":"gpt-x"}',
+    })
+    const h = new Headers(calls[0].init?.headers)
+    expect(h.get('x-rayu-intended-model')).toBe('claude-sonnet-4-6')
+    expect(h.get('x-rayu-query-source')).toBe('agent:custom')
+    expect(h.get('x-rayu-logical-request-id')).toBe('LID-123')
+    // resolved still reflects the ACTUAL wire model, independent of intended.
+    expect(h.get('x-rayu-resolved-model')).toBe('gpt-x')
+  })
+})

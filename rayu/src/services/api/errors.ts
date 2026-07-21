@@ -457,6 +457,36 @@ export function isRayuCreditLimitError(error: unknown): boolean {
 }
 
 /**
+ * True for the gateway's per-day TURN cap block (429) — distinct from the
+ * credit/period limit above. The gateway marks it with `X-Rayu-Limit:
+ * daily_turn_limit` and a body `reason: "daily_turn_limit"`. This is TERMINAL
+ * for the rest of the UTC day: retrying it cannot succeed and only amplifies
+ * load, so withRetry bails immediately instead of the up-to-10× retry loop.
+ */
+export function isRayuDailyTurnLimitError(error: unknown): boolean {
+  if (!(error instanceof APIError) || error.status !== 429) {
+    return false
+  }
+  // Primary: the gateway's intentional-limit header.
+  const limitHeader = error.headers?.get?.('x-rayu-limit')
+  if (String(limitHeader ?? '') === 'daily_turn_limit') {
+    return true
+  }
+  // Secondary: the machine-readable body discriminator.
+  const body = (error as { error?: unknown }).error
+  if (body && typeof body === 'object') {
+    if (
+      'reason' in body &&
+      String((body as { reason?: unknown }).reason ?? '') === 'daily_turn_limit'
+    ) {
+      return true
+    }
+  }
+  // Last resort: the composed error message.
+  return /daily[ _]turn[ _]limit/i.test(error.message ?? '')
+}
+
+/**
  * Seconds until the credit period resets, from the gateway body (`resetSeconds`)
  * or the Retry-After header, whichever is present and positive. null if unknown.
  */
@@ -614,6 +644,21 @@ export function getAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       error: 'billing_error',
       content: `💳 You've reached your plan's credit limit for this billing period.${resetHint} Renew or upgrade your plan, or add more credits, to keep using Rayu-hosted models: ${plansUrl}${switchHint}`,
+    })
+  }
+
+  // Gateway per-day TURN cap: terminal until the daily reset. Distinct message
+  // from the credit limit so the user knows it's a daily cap (not billing) and
+  // won't clear by retrying now.
+  if (isRayuDailyTurnLimitError(error)) {
+    const plansUrl = `${getRayuWebBaseUrl()}/plans`
+    const resetSeconds = getRayuCreditResetSeconds(error as APIError)
+    const resetHint = resetSeconds
+      ? ` It resets ${formatCreditResetHint(resetSeconds)}.`
+      : ' It resets at the start of the next day (UTC).'
+    return createAssistantAPIErrorMessage({
+      error: 'rate_limit',
+      content: `🚦 You've reached your plan's daily request limit.${resetHint} Upgrade for a higher daily limit: ${plansUrl}`,
     })
   }
 
@@ -1331,7 +1376,23 @@ export function classifyAPIError(error: unknown): string {
     if (connectionDetails?.isSSLError) {
       return 'ssl_cert_error'
     }
-    return 'connection_error'
+    // Distinguish the connection failure mode for telemetry + support triage
+    // (client/DNS/refused vs a mid-request drop that a retry usually clears).
+    switch (connectionDetails?.code) {
+      case 'ENOTFOUND':
+      case 'EAI_AGAIN':
+        return 'dns_error'
+      case 'ECONNREFUSED':
+        return 'connection_refused'
+      case 'ECONNRESET':
+      case 'EPIPE':
+      case 'ECONNABORTED':
+        return 'connection_reset'
+      case 'ETIMEDOUT':
+        return 'api_timeout'
+      default:
+        return 'connection_error'
+    }
   }
 
   return 'unknown'
