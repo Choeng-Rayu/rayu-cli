@@ -116,6 +116,13 @@ services:
       # Upstream provider keys live ONLY here (never in the DB/CLI/user).
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      # Observability / model-fidelity (optional; safe defaults when unset).
+      #   RAYU_ENFORCE_MODEL_FIDELITY=1  -> hard-reject a /v1/proxy request whose
+      #     intended model family differs from the routed model (default: log only).
+      #   RAYU_PROXY_BODY_READ_TIMEOUT=N -> seconds to wait for a request body
+      #     before 408 (default 0 = Go server default; no SSE-breaking write cap).
+      RAYU_ENFORCE_MODEL_FIDELITY: ${RAYU_ENFORCE_MODEL_FIDELITY:-}
+      RAYU_PROXY_BODY_READ_TIMEOUT: ${RAYU_PROXY_BODY_READ_TIMEOUT:-}
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/healthz']
       interval: 15s

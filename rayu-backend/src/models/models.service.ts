@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common'
 import { Prisma, type HostedModel } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { MODEL_SEED } from './models.constants'
@@ -13,6 +18,35 @@ const DISABLED_PROVIDERS = new Set(
     .map((s) => s.trim())
     .filter(Boolean),
 )
+
+/** Claude model families used for the catalog family-consistency guard. */
+type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'other'
+
+function modelFamilyOf(id: string): ModelFamily {
+  const m = id.toLowerCase()
+  if (m.includes('opus')) return 'opus'
+  if (m.includes('sonnet')) return 'sonnet'
+  if (m.includes('haiku')) return 'haiku'
+  return 'other'
+}
+
+/**
+ * A hosted-model row is family-consistent when its `code` and `upstreamModelId`
+ * resolve to the same Claude family. When either side is 'other' (a non-Claude
+ * model such as deepseek/glm/kimi, or an opaque upstream id) the mapping is
+ * allowed — we only ever reject a DEFINITE cross-family mapping (e.g. a
+ * "claude-sonnet-*" code pointed at a "…opus…" upstream), which is the catalog
+ * analogue of the CLI's model-fidelity guarantee.
+ */
+export function isModelFamilyConsistent(
+  code: string,
+  upstreamModelId: string,
+): boolean {
+  const cf = modelFamilyOf(code)
+  const uf = modelFamilyOf(upstreamModelId)
+  if (cf === 'other' || uf === 'other') return true
+  return cf === uf
+}
 
 export interface ModelPatch {
   label?: string
@@ -37,6 +71,8 @@ export interface CreateModel extends ModelPatch {
 
 @Injectable()
 export class ModelsService {
+  private readonly logger = new Logger(ModelsService.name)
+
   constructor(private readonly prisma: PrismaService) {}
 
   findAll(): Promise<HostedModel[]> {
@@ -76,13 +112,20 @@ export class ModelsService {
   }
 
   async create(data: CreateModel): Promise<HostedModel> {
+    const upstreamModelId = data.upstreamModelId ?? data.code
+    if (!isModelFamilyConsistent(data.code, upstreamModelId)) {
+      throw new BadRequestException(
+        `Model "${data.code}" maps to upstreamModelId "${upstreamModelId}", which is a different model family. ` +
+          `A Sonnet code must map to a Sonnet upstream (etc.) so the routed model matches the selected model.`,
+      )
+    }
     return this.prisma.hostedModel.create({
       data: {
         code: data.code,
         label: data.label ?? data.code,
         provider: data.provider ?? 'deepseek',
         upstreamBaseUrl: data.upstreamBaseUrl ?? '',
-        upstreamModelId: data.upstreamModelId ?? data.code,
+        upstreamModelId,
         inputPricePer1MCents: data.inputPricePer1MCents ?? 0,
         outputPricePer1MCents: data.outputPricePer1MCents ?? 0,
         creditMultiplier: data.creditMultiplier ?? 1,
@@ -97,6 +140,16 @@ export class ModelsService {
   async update(code: string, patch: ModelPatch): Promise<HostedModel> {
     const existing = await this.findByCode(code)
     if (!existing) throw new NotFoundException(`Unknown model: ${code}`)
+    // Guard the routing field: the effective upstreamModelId must stay in the
+    // same model family as the code, so an admin edit can't repoint a Sonnet
+    // code at an Opus upstream (the catalog analogue of model fidelity).
+    const effectiveUpstream = patch.upstreamModelId ?? existing.upstreamModelId
+    if (!isModelFamilyConsistent(code, effectiveUpstream)) {
+      throw new BadRequestException(
+        `Model "${code}" cannot map to upstreamModelId "${effectiveUpstream}": different model family. ` +
+          `Keep the upstream in the same family as the model code.`,
+      )
+    }
     const data: Prisma.HostedModelUpdateInput = {}
     if (patch.label !== undefined) data.label = patch.label
     if (patch.provider !== undefined) data.provider = patch.provider
@@ -178,6 +231,29 @@ export class ModelsService {
           enabled: m.enabled,
         },
       })
+    }
+    // Non-destructive boot audit: flag any existing row whose code/upstream
+    // cross model families so operators can fix a mis-mapped catalog entry.
+    await this.auditModelFamilyConsistency()
+  }
+
+  /**
+   * Boot-time audit: WARN (never mutate) about any EXISTING hosted_models row
+   * whose code and upstreamModelId are in different Claude model families — e.g.
+   * a row that predates the create/update guard or was edited directly in the
+   * DB. Admin-owned fields are left untouched; the operator fixes it in the
+   * dashboard.
+   */
+  async auditModelFamilyConsistency(): Promise<void> {
+    const all = await this.findAll()
+    for (const m of all) {
+      if (!isModelFamilyConsistent(m.code, m.upstreamModelId)) {
+        this.logger.warn(
+          `hosted model "${m.code}" maps to upstreamModelId "${m.upstreamModelId}" of a different ` +
+            `model family — requests for "${m.code}" will route to the wrong model. ` +
+            `Fix it in the admin model catalog.`,
+        )
+      }
     }
   }
 }

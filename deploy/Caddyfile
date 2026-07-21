@@ -3,12 +3,34 @@
 {$SITE_ADDRESS} {
 	encode gzip
 
-	# Rayu streaming gateway (paid hosted models). handle_path strips the
-	# /gateway prefix, so /gateway/v1/* -> gateway:8080/v1/*. flush_interval -1
-	# disables buffering so SSE streams to the CLI in real time.
+	# --- Edge access logging + request-id correlation --------------------------
+	# JSON access logs to stdout (Coolify/Docker captures the container's stdout).
+	# Every line carries the CLI-generated correlation ids so a failing request is
+	# traceable across the EDGE (this log) and the GATEWAY (`proxy: … reqid=…`
+	# lines) by the same id — including requests that fail HERE and never reach the
+	# Go gateway (TLS, timeouts, 502s), which is exactly the class of "connection
+	# error with no gateway log" the CLI reports.
+	#
+	#   rayu_request_id  = X-Rayu-Request-Id        (per physical attempt)
+	#   rayu_logical_id  = X-Rayu-Logical-Request-Id (stable across retries)
+	# The gateway logs the same reqid, so `grep <id>` joins edge ↔ gateway.
+	log {
+		output stdout
+		format json
+	}
+	log_append rayu_request_id {http.request.header.X-Rayu-Request-Id}
+	log_append rayu_logical_id {http.request.header.X-Rayu-Logical-Request-Id}
+
+	# Rayu streaming gateway (paid hosted models + BYO-key /v1/proxy). handle_path
+	# strips the /gateway prefix, so /gateway/v1/* -> gateway:8080/v1/*.
+	# flush_interval -1 disables buffering so SSE streams to the CLI in real time.
+	# NOTE: do NOT add read/write timeouts here — long SSE streams must not be cut.
 	handle_path /gateway/* {
 		reverse_proxy gateway:8080 {
 			flush_interval -1
+			# Forward a stable edge id so even a request WITHOUT a CLI id can be
+			# correlated; the gateway strips all X-Rayu-* before the provider hop.
+			header_up X-Rayu-Edge-Id {http.request.uuid}
 		}
 	}
 

@@ -10,6 +10,7 @@ import {
   ALL_MODEL_CONFIGS,
   CANONICAL_ID_TO_KEY,
   type CanonicalModelId,
+  isFamilyConsistentOverride,
   type ModelKey,
 } from './configs.js'
 import { type APIProvider, getAPIProvider } from './providers.js'
@@ -55,10 +56,51 @@ async function getBedrockModelStrings(): Promise<ModelStrings> {
 }
 
 /**
+ * Family-crossing modelOverrides we've already warned about, so the warning
+ * fires once per (key→value) pair instead of on every getModelStrings() call.
+ */
+const warnedMismatchedOverrides = new Set<string>()
+
+/**
+ * Reject (and warn once about) a modelOverride whose value crosses Claude
+ * families relative to its key — the model-fidelity guarantee. A dropped
+ * override falls back to the provider-derived wire id for that key, so a
+ * Sonnet selection can never silently route to an Opus wire id.
+ *
+ * Returns true when the override is safe to apply.
+ */
+function overridePassesFidelity(canonicalId: string, override: string): boolean {
+  if (isFamilyConsistentOverride(canonicalId, override)) {
+    return true
+  }
+  const sig = `${canonicalId}\u0000${override}`
+  if (!warnedMismatchedOverrides.has(sig)) {
+    warnedMismatchedOverrides.add(sig)
+    logError(
+      new Error(
+        `Ignoring cross-family modelOverride "${canonicalId}" -> "${override}": ` +
+          `the override targets a different model family than the model it overrides. ` +
+          `Falling back to the default wire model for "${canonicalId}" to preserve model fidelity.`,
+      ),
+    )
+  }
+  return false
+}
+
+/** Test-only reset of the one-shot mismatch-warning dedupe set. */
+export function _resetModelOverrideFidelityWarningsForTesting(): void {
+  warnedMismatchedOverrides.clear()
+}
+
+/**
  * Layer user-configured modelOverrides (from settings.json) on top of the
  * provider-derived model strings. Overrides are keyed by canonical first-party
  * model ID (e.g. "claude-opus-4-6") and map to arbitrary provider-specific
  * strings — typically Bedrock inference profile ARNs.
+ *
+ * MODEL FIDELITY: a family-crossing override (e.g. "claude-sonnet-4-6" ->
+ * "…claude-opus-4-6…") is REJECTED here so a Sonnet selection never resolves to
+ * an Opus wire id. See isFamilyConsistentOverride/overridePassesFidelity.
  */
 function applyModelOverrides(ms: ModelStrings): ModelStrings {
   const overrides = getInitialSettings().modelOverrides
@@ -68,7 +110,7 @@ function applyModelOverrides(ms: ModelStrings): ModelStrings {
   const out = { ...ms }
   for (const [canonicalId, override] of Object.entries(overrides)) {
     const key = CANONICAL_ID_TO_KEY[canonicalId as CanonicalModelId]
-    if (key && override) {
+    if (key && override && overridePassesFidelity(canonicalId, override)) {
       out[key] = override
     }
   }
@@ -80,6 +122,10 @@ function applyModelOverrides(ms: ModelStrings): ModelStrings {
  * first-party model ID. If the input doesn't match any current override value,
  * it is returned unchanged. Safe to call during module init (no-ops if settings
  * aren't loaded yet).
+ *
+ * MODEL FIDELITY: a family-crossing override is IGNORED here too, so the reverse
+ * mapping can never label an Opus wire id as "claude-sonnet-4-6" (which would
+ * make the UI show "Sonnet 4.6" while actually calling Opus).
  */
 export function resolveOverriddenModel(modelId: string): string {
   let overrides: Record<string, string> | undefined
@@ -92,7 +138,7 @@ export function resolveOverriddenModel(modelId: string): string {
     return modelId
   }
   for (const [canonicalId, override] of Object.entries(overrides)) {
-    if (override === modelId) {
+    if (override === modelId && isFamilyConsistentOverride(canonicalId, override)) {
       return canonicalId
     }
   }

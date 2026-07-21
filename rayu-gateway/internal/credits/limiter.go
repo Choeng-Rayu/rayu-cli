@@ -306,6 +306,90 @@ func (l *Limiter) ReleaseTurn(ctx context.Context, userID int64) error {
 	return releaseTurnScript.Run(ctx, l.rdb, []string{turnKey(userID, now)}).Err()
 }
 
+// --- Idempotent-by-logical-request-id turn accounting ---------------------
+//
+// The CLI retries a failed request (transient upstream 5xx/429/connection blip)
+// several times, and each physical attempt hits /v1/proxy. Counting every
+// attempt would let a single logical request burn many daily turns. These
+// variants dedupe by a stable logical request id: the FIRST attempt reserves,
+// repeat attempts that still HOLD the reservation reuse it (no double count),
+// and a release (on failure) drops the hold so the next retry re-reserves — so
+// one logical request consumes at most one turn regardless of retry count.
+
+// turnHoldKey marks that a given logical request currently holds a daily turn.
+func turnHoldKey(uid int64, logicalID string) string {
+	return "turnhold:" + strconv.FormatInt(uid, 10) + ":" + logicalID
+}
+
+// reserveTurnIdemScript: KEYS=[dayCounter, hold]; ARGV=[cap, dayTTL, holdTTL].
+// Returns {ok, used, ttl, reused}.
+var reserveTurnIdemScript = redis.NewScript(`
+local cap=tonumber(ARGV[1]); local ttl=tonumber(ARGV[2]); local holdttl=tonumber(ARGV[3])
+if redis.call('SETNX',KEYS[2],'1')==0 then
+  -- This logical request already holds a turn: reuse it (no double count).
+  local used=tonumber(redis.call('GET',KEYS[1]) or '0')
+  return {1, used, redis.call('TTL',KEYS[1]), 1}
+end
+redis.call('EXPIRE',KEYS[2],holdttl)
+local used=tonumber(redis.call('GET',KEYS[1]) or '0')
+if cap>0 and used>=cap then
+  redis.call('DEL',KEYS[2])  -- don't hold on a denial
+  return {0, used, redis.call('TTL',KEYS[1]), 0}
+end
+local n=redis.call('INCR',KEYS[1])
+if n==1 then redis.call('EXPIRE',KEYS[1],ttl) end
+return {1, n, redis.call('TTL',KEYS[1]), 0}
+`)
+
+// ReserveTurnFor is ReserveTurn, deduped by logicalID so retries of the same
+// logical request reserve at most one turn. Empty logicalID falls back to the
+// per-attempt ReserveTurn.
+func (l *Limiter) ReserveTurnFor(ctx context.Context, userID, cap int64, logicalID string) (TurnResult, error) {
+	if logicalID == "" {
+		return l.ReserveTurn(ctx, userID, cap)
+	}
+	now := time.Now()
+	ttl := secondsUntilEndOfUTCDay(now)
+	raw, err := reserveTurnIdemScript.Run(ctx, l.rdb,
+		[]string{turnKey(userID, now), turnHoldKey(userID, logicalID)},
+		cap, ttl, ttl,
+	).Result()
+	if err != nil {
+		return TurnResult{}, err
+	}
+	arr, ok := raw.([]any)
+	if !ok || len(arr) < 3 {
+		return TurnResult{}, fmt.Errorf("unexpected reserveTurnFor reply: %v", raw)
+	}
+	return TurnResult{
+		OK:           toInt(arr[0]) == 1,
+		UsedToday:    toInt(arr[1]),
+		Limit:        cap,
+		ResetSeconds: toInt(arr[2]),
+	}, nil
+}
+
+// releaseTurnIdemScript: KEYS=[dayCounter, hold]. Drops the hold (so a retry
+// re-reserves) and decrements the day counter, flooring at 0.
+var releaseTurnIdemScript = redis.NewScript(`
+redis.call('DEL',KEYS[2])
+local n=tonumber(redis.call('GET',KEYS[1]) or '0')
+if n<=0 then return 0 end
+return redis.call('DECR',KEYS[1])
+`)
+
+// ReleaseTurnFor refunds a turn reserved via ReserveTurnFor and clears the hold
+// so a subsequent retry of the same logical request can reserve again. Empty
+// logicalID falls back to ReleaseTurn.
+func (l *Limiter) ReleaseTurnFor(ctx context.Context, userID int64, logicalID string) error {
+	if logicalID == "" {
+		return l.ReleaseTurn(ctx, userID)
+	}
+	now := time.Now()
+	return releaseTurnIdemScript.Run(ctx, l.rdb,
+		[]string{turnKey(userID, now), turnHoldKey(userID, logicalID)}).Err()
+}
+
 // TurnsToday returns the current per-day turn count and seconds-until-reset for
 // display (GET /v1/credits). resetSeconds is -1 when no turns have been used today.
 func (l *Limiter) TurnsToday(ctx context.Context, userID int64) (used, resetSeconds int64, err error) {
