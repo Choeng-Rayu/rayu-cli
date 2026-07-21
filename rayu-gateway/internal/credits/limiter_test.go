@@ -369,6 +369,71 @@ func TestReleaseTurnRefund(t *testing.T) {
 	}
 }
 
+
+// --- Idempotent-by-logical-request-id turn accounting (Task 7) ------------
+
+func TestReserveTurnForDedupesRetries(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	// 3 attempts of the SAME logical request (retries, no release) must reserve
+	// exactly ONE turn.
+	for i := 0; i < 3; i++ {
+		r, err := lim.ReserveTurnFor(ctx, 42, 5, "LID-1")
+		if err != nil || !r.OK {
+			t.Fatalf("attempt %d should pass: ok=%v err=%v", i, r.OK, err)
+		}
+		if r.UsedToday != 1 {
+			t.Fatalf("attempt %d usedToday=%d want 1 (retries must not double count)", i, r.UsedToday)
+		}
+	}
+	// A DISTINCT logical request counts separately.
+	r2, _ := lim.ReserveTurnFor(ctx, 42, 5, "LID-2")
+	if !r2.OK || r2.UsedToday != 2 {
+		t.Fatalf("distinct logical id: ok=%v used=%d want ok=true used=2", r2.OK, r2.UsedToday)
+	}
+	used, _, _ := lim.TurnsToday(ctx, 42)
+	if used != 2 {
+		t.Fatalf("day counter=%d want 2 (two distinct logical requests)", used)
+	}
+}
+
+func TestReserveTurnForReleaseAllowsReReserve(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	r1, _ := lim.ReserveTurnFor(ctx, 7, 5, "LID-1")
+	if !r1.OK || r1.UsedToday != 1 {
+		t.Fatalf("first reserve: ok=%v used=%d", r1.OK, r1.UsedToday)
+	}
+	// Failure path: release drops the hold AND decrements.
+	if err := lim.ReleaseTurnFor(ctx, 7, "LID-1"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if used, _, _ := lim.TurnsToday(ctx, 7); used != 0 {
+		t.Fatalf("used after release=%d want 0", used)
+	}
+	// Retry of the same logical id re-reserves (hold was cleared).
+	r2, _ := lim.ReserveTurnFor(ctx, 7, 5, "LID-1")
+	if !r2.OK || r2.UsedToday != 1 {
+		t.Fatalf("re-reserve after release: ok=%v used=%d want ok=true used=1", r2.OK, r2.UsedToday)
+	}
+}
+
+func TestReserveTurnForEmptyLogicalFallsBackToPerAttempt(t *testing.T) {
+	lim, mr := newLimiter(t)
+	defer mr.Close()
+	ctx := context.Background()
+
+	// Empty logical id -> per-attempt counting (back-compat with ReserveTurn).
+	_, _ = lim.ReserveTurnFor(ctx, 9, 0, "")
+	_, _ = lim.ReserveTurnFor(ctx, 9, 0, "")
+	if used, _, _ := lim.TurnsToday(ctx, 9); used != 2 {
+		t.Fatalf("empty-logical used=%d want 2 (per-attempt)", used)
+	}
+}
 func TestTurnsTodayEmpty(t *testing.T) {
 	lim, mr := newLimiter(t)
 	defer mr.Close()

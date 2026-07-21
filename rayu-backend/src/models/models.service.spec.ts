@@ -22,6 +22,7 @@ function makeService(existingByCode: Record<string, unknown>) {
       findUnique: jest.fn((args: { where: { code: string } }) =>
         Promise.resolve(existingByCode[args.where.code] ?? null),
       ),
+      findMany: jest.fn(() => Promise.resolve(Object.values(existingByCode))),
       update,
       create,
     },
@@ -97,5 +98,91 @@ describe('ModelsService.seedDefaults — routing reconciliation', () => {
     await service.seedDefaults()
     expect(create).toHaveBeenCalled()
     expect(update).not.toHaveBeenCalled()
+  })
+})
+
+import { Logger } from '@nestjs/common'
+import { isModelFamilyConsistent } from './models.service'
+
+describe('isModelFamilyConsistent', () => {
+  test('rejects a definite cross-family mapping, allows same-family + opaque', () => {
+    expect(
+      isModelFamilyConsistent('claude-sonnet-4-6', 'us.anthropic.claude-opus-4-6-v1'),
+    ).toBe(false)
+    expect(
+      isModelFamilyConsistent('claude-sonnet-4-6', 'us.anthropic.claude-sonnet-4-6-v1:0'),
+    ).toBe(true)
+    // Non-Claude codes/upstreams carry no family constraint.
+    expect(isModelFamilyConsistent('deepseek-v4-pro', 'deepseek-v4-pro')).toBe(true)
+    expect(isModelFamilyConsistent('glm-5.2', 'glm-5.2:cloud')).toBe(true)
+  })
+})
+
+describe('ModelsService — catalog family-consistency guard', () => {
+  test('create() rejects a Sonnet code mapped to an Opus upstream', async () => {
+    const { service, create } = makeService({})
+    await expect(
+      service.create({
+        code: 'claude-sonnet-4-6',
+        upstreamModelId: 'us.anthropic.claude-opus-4-6-v1',
+      }),
+    ).rejects.toThrow(/different model family/i)
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  test('create() allows a same-family Sonnet mapping', async () => {
+    const { service, create } = makeService({})
+    await service.create({
+      code: 'claude-sonnet-4-6',
+      upstreamModelId: 'us.anthropic.claude-sonnet-4-6-v1:0',
+    })
+    expect(create).toHaveBeenCalled()
+  })
+
+  test('create() allows non-Claude (opaque) mappings unchanged', async () => {
+    const { service, create } = makeService({})
+    await service.create({
+      code: 'deepseek-v4-pro',
+      upstreamModelId: 'deepseek-v4-pro',
+    })
+    expect(create).toHaveBeenCalled()
+  })
+
+  test('update() rejects repointing a Sonnet code at an Opus upstream', async () => {
+    const { service, update } = makeService({
+      'claude-sonnet-4-6': {
+        code: 'claude-sonnet-4-6',
+        provider: 'bedrock',
+        upstreamBaseUrl: '',
+        upstreamModelId: 'us.anthropic.claude-sonnet-4-6-v1:0',
+      },
+    })
+    await expect(
+      service.update('claude-sonnet-4-6', {
+        upstreamModelId: 'us.anthropic.claude-opus-4-6-v1',
+      }),
+    ).rejects.toThrow(/different model family/i)
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  test('boot audit WARNS (does not throw/mutate) on an existing mismatched row', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined)
+    try {
+      const { service, update } = makeService({
+        'claude-sonnet-4-6': {
+          code: 'claude-sonnet-4-6',
+          provider: 'bedrock',
+          upstreamBaseUrl: '',
+          upstreamModelId: 'us.anthropic.claude-opus-4-6-v1', // cross-family (bad)
+        },
+      })
+      await service.auditModelFamilyConsistency()
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toContain('claude-sonnet-4-6')
+      // audit never mutates.
+      expect(update).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

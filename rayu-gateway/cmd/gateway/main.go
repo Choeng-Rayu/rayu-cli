@@ -5,10 +5,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +25,34 @@ import (
 	"github.com/choeng-rayu/rayu-gateway/internal/store"
 )
 
+// logCatalog logs the loaded hosted-model catalog ONCE at startup so an operator
+// can immediately see what the gateway will accept — e.g. whether the model the
+// CLI sends (glm-5.2) is present and which upstream/provider it maps to, and
+// confirm no first-party Anthropic id (claude-haiku-4-5-…) is expected on this
+// deployment. An empty catalog is called out explicitly (every hosted request
+// would 403).
+func logCatalog(models []store.HostedModel) {
+	if len(models) == 0 {
+		log.Printf("catalog: 0 hosted models loaded — every hosted request will 403 'model not available on your plan'")
+		return
+	}
+	const maxShown = 40
+	parts := make([]string, 0, len(models))
+	for i := range models {
+		if i >= maxShown {
+			parts = append(parts, fmt.Sprintf("…(+%d more)", len(models)-maxShown))
+			break
+		}
+		m := models[i]
+		state := ""
+		if !m.Enabled {
+			state = "(disabled)"
+		}
+		parts = append(parts, fmt.Sprintf("%s→%s[%s]%s", m.Code, m.UpstreamModelID, m.Provider, state))
+	}
+	log.Printf("catalog: %d hosted models: %s", len(models), strings.Join(parts, ", "))
+}
+
 func main() {
 	// Dev convenience: load a local .env and let it OVERRIDE any variables already
 	// present in the shell, so a stale `export DEEPSEEK_API_KEY=...` can't silently
@@ -35,6 +65,8 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 	log.Printf("config: port=%s, keys[%s]", cfg.Port, cfg.ProviderKeySummary())
+	log.Printf("config: model_fidelity_enforce=%v proxy_body_read_timeout=%ds",
+		cfg.EnforceModelFidelity, cfg.ProxyBodyReadTimeoutSeconds)
 	log.Printf("proxy: upstream response-header timeout=%s (stalled upstreams fail fast → clean 502, no Cloudflare origin_bad_gateway)", proxy.UpstreamResponseHeaderTimeout)
 	if cfg.DatabaseDSN == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -56,6 +88,7 @@ func main() {
 	if err := cache.Start(ctx); err != nil {
 		log.Fatalf("entitlements load: %v", err)
 	}
+	logCatalog(cache.Models())
 
 	redisOpt, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {

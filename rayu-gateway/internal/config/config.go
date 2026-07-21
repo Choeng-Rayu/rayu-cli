@@ -39,6 +39,26 @@ type Config struct {
 	UserCacheTTL  int               // seconds to cache per-user entitlements
 	MaxInFlight   int               // global cap on concurrently-processed hosted streaming requests (RAYU_MAX_INFLIGHT; 0 = unlimited)
 	CorsOrigins   []string          // allowed browser origins for the dashboard
+	// EnforceModelFidelity hard-rejects a /v1/proxy request whose intended model
+	// family (X-Rayu-Intended-Model) differs from the model actually routed
+	// (Bedrock URL path / body). Default OFF: mismatches are only logged. Env
+	// RAYU_ENFORCE_MODEL_FIDELITY=1 turns on hard rejection (defense-in-depth).
+	EnforceModelFidelity bool
+	// ProxyBodyReadTimeoutSeconds bounds how long the gateway waits to read a
+	// /v1/proxy request body before giving up with 408 (RAYU_PROXY_BODY_READ_TIMEOUT
+	// seconds; 0 = no explicit deadline). Deliberately NOT a global server
+	// WriteTimeout, which would break long SSE streams.
+	ProxyBodyReadTimeoutSeconds int
+}
+
+// EnvTruthy reports whether an env value means "on" (1/true/yes/on, any case).
+func EnvTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func getenv(k, def string) string {
@@ -68,6 +88,12 @@ func Load() (*Config, error) {
 	// a burst of concurrent users degrades gracefully instead of exhausting the
 	// origin's connections/FDs and collapsing into Cloudflare origin_bad_gateway.
 	c.MaxInFlight, _ = strconv.Atoi(getenv("RAYU_MAX_INFLIGHT", "0"))
+
+	// Model-fidelity enforcement + proxy body-read deadline (both default off/0).
+	c.EnforceModelFidelity = EnvTruthy(os.Getenv("RAYU_ENFORCE_MODEL_FIDELITY"))
+	c.ProxyBodyReadTimeoutSeconds, _ = strconv.Atoi(
+		getenv("RAYU_PROXY_BODY_READ_TIMEOUT", "0"),
+	)
 
 	// Allowed browser origins for the dashboard's /v1/credits calls. Default "*"
 	// is safe because every /v1 route still requires a valid Rayu JWT.

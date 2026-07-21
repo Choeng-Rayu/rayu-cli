@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -260,6 +261,9 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 // records the ledger. Built by reserveHosted; consumed by both hosted endpoints.
 type hostedReserve struct {
 	userID          int64
+	reqID           string // X-Rayu-Request-Id (edge/gateway correlation)
+	source          string // X-Rayu-Query-Source (which CLI feature issued this)
+	intended        string // X-Rayu-Intended-Model (what the CLI meant to send)
 	req             map[string]any
 	hm              *store.HostedModel
 	apiKey          string
@@ -272,6 +276,17 @@ type hostedReserve struct {
 	settle          func(usage *proxy.Usage) int64
 }
 
+// hostedIdentity pulls the CLI correlation/attribution headers off a hosted
+// request. `source` is the KEY field for diagnosing "why did model X get called"
+// — it names the CLI feature (repl_main_thread, agent:*, tool summary, compact,
+// webfetch, quota probe, …) that issued the request.
+func hostedIdentity(r *http.Request) (reqID, source, intended string) {
+	reqID = headerOr(r, "X-Rayu-Request-Id", "-")
+	source = headerOr(r, "X-Rayu-Query-Source", "unknown")
+	intended = strings.TrimSpace(r.Header.Get("X-Rayu-Intended-Model"))
+	return
+}
+
 // reserveHosted runs the shared hosted-request preamble — auth, entitlement,
 // model lookup, max_tokens guard, provider key, daily-turn cap, and the credit
 // reserve — identically for the OpenAI (/v1/chat/completions) and Anthropic
@@ -280,23 +295,36 @@ type hostedReserve struct {
 // any failure it writes the HTTP error itself and returns ok=false.
 func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedReserve, bool) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
+	reqID, source, intended := hostedIdentity(r)
 	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
 	if err != nil {
+		log.Printf("hosted reject: user=%d reqid=%s source=%s reason=entitlement_error: %v",
+			claims.UserID, reqID, source, err)
 		writeEntitlementError(w, err)
 		return nil, false
 	}
 	if !ent.Active() {
+		log.Printf("hosted reject: user=%d reqid=%s source=%s reason=account_%s",
+			claims.UserID, reqID, source, statusOrUnknown(ent.Status))
 		httpx.WriteError(w, http.StatusForbidden, "account is "+statusOrUnknown(ent.Status))
 		return nil, false
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "request body too large or unreadable")
+		status, label := classifyBodyReadError(err, r.Context().Err())
+		log.Printf("hosted reject: user=%d reqid=%s source=%s reason=body_%s status=%d: %v",
+			claims.UserID, reqID, source, strings.ReplaceAll(label, " ", "_"), status, err)
+		if status == http.StatusRequestTimeout {
+			w.Header().Set("Retry-After", "1")
+		}
+		httpx.WriteError(w, status, "request body "+label)
 		return nil, false
 	}
 	var req map[string]any
 	if json.Unmarshal(body, &req) != nil {
+		log.Printf("hosted reject: user=%d reqid=%s source=%s reason=invalid_json",
+			claims.UserID, reqID, source)
 		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
 		return nil, false
 	}
@@ -310,8 +338,8 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		}
 	}
 	if hm == nil {
-		log.Printf("reject: user=%d model=%q not allowed for plan=%s (allowed=%d)",
-			claims.UserID, modelCode, ent.Plan.Code, len(ent.AllowedModels))
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q intended=%q not allowed for plan=%s; allowed=[%s]",
+			claims.UserID, reqID, source, modelCode, intended, ent.Plan.Code, allowedModelCodes(ent.AllowedModels))
 		httpx.WriteError(w, http.StatusForbidden, "model not available on your plan: "+modelCode)
 		return nil, false
 	}
@@ -320,7 +348,8 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	// provider's models BEFORE the daily-turn count or credit reserve, so a
 	// disabled provider never charges credits or burns a turn.
 	if s.cfg.ProviderDisabled(hm.Provider) {
-		log.Printf("reject: user=%d model=%q provider=%q is disabled", claims.UserID, modelCode, hm.Provider)
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q provider=%q is disabled",
+			claims.UserID, reqID, source, modelCode, hm.Provider)
 		httpx.WriteError(w, http.StatusServiceUnavailable, "model temporarily unavailable: "+modelCode)
 		return nil, false
 	}
@@ -328,6 +357,8 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	settings := s.ent.Settings()
 	if settings.MaxTokensPerRequest > 0 {
 		if mt, ok := req["max_tokens"].(float64); ok && int(mt) > settings.MaxTokensPerRequest {
+			log.Printf("reject: user=%d reqid=%s source=%s model=%q reason=max_tokens_exceeded (%d>%d)",
+				claims.UserID, reqID, source, modelCode, int(mt), settings.MaxTokensPerRequest)
 			httpx.WriteError(w, http.StatusBadRequest, "max_tokens exceeds the per-request limit")
 			return nil, false
 		}
@@ -335,6 +366,8 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 
 	apiKeys := s.cfg.KeysForProvider(hm.Provider)
 	if len(apiKeys) == 0 {
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q provider=%q reason=provider_key_not_configured",
+			claims.UserID, reqID, source, modelCode, hm.Provider)
 		httpx.WriteError(w, http.StatusInternalServerError, "provider key not configured")
 		return nil, false
 	}
@@ -353,7 +386,8 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		if tr.ResetSeconds > 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(tr.ResetSeconds, 10))
 		}
-		log.Printf("reject: user=%d daily turn limit reached (%d/%d)", claims.UserID, tr.UsedToday, turnCap)
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q daily turn limit reached (%d/%d)",
+			claims.UserID, reqID, source, hm.Code, tr.UsedToday, turnCap)
 		httpx.WriteJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error":        map[string]any{"message": "daily turn limit reached", "type": "rate_limit_exceeded"},
 			"reason":       "daily_turn_limit",
@@ -394,6 +428,8 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	})
 	if rerr != nil {
 		s.releaseTurnBG(claims.UserID) // refund the turn; the request didn't proceed
+		log.Printf("hosted reject: user=%d reqid=%s source=%s model=%q reason=limiter_unavailable: %v",
+			claims.UserID, reqID, source, hm.Code, rerr)
 		httpx.WriteError(w, http.StatusInternalServerError, "rate limiter unavailable")
 		return nil, false
 	}
@@ -403,6 +439,8 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		if reset > 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(reset, 10))
 		}
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q reason=credit_limit(%s) reset=%ds",
+			claims.UserID, reqID, source, hm.Code, rr.Reason, reset)
 		httpx.WriteJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error":        map[string]any{"message": "credit limit reached: " + rr.Reason, "type": "rate_limit_exceeded"},
 			"reason":       rr.Reason,
@@ -411,7 +449,7 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		return nil, false
 	}
 
-	source := rr.Source
+	creditSource := rr.Source
 	settled := false
 	settle := func(usage *proxy.Usage) int64 {
 		actual := actualBillable(usage, rates) // billable tokens (fine-grained)
@@ -419,19 +457,19 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 			settled = true
 			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = s.lim.Settle(bg, claims.UserID, source, estBillable, actual)
+			_ = s.lim.Settle(bg, claims.UserID, creditSource, estBillable, actual)
 			s.ent.Invalidate(claims.UserID)
 			if usage != nil {
 				// billable = credit-weighted tokens actually charged; ~credits is
 				// billable/tokensPerCredit (no coarse whole-credit rounding).
-				log.Printf("hosted done: user=%d model=%s billable=%d (~%.4f credits, est %d) via=%s tokens(total=%d prompt=%d completion=%d reasoning=%d cacheHit=%d cacheMiss=%d)",
-					claims.UserID, hm.Code, actual, float64(actual)/float64(tpc), estBillable, source,
+				log.Printf("hosted done: user=%d reqid=%s source=%s model=%s billable=%d (~%.4f credits, est %d) via=%s tokens(total=%d prompt=%d completion=%d reasoning=%d cacheHit=%d cacheMiss=%d)",
+					claims.UserID, reqID, source, hm.Code, actual, float64(actual)/float64(tpc), estBillable, creditSource,
 					usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens, usage.CompletionTokensDetails.ReasoningTokens,
 					usage.PromptCacheHitTokens, usage.PromptCacheMissTokens)
-				s.recordLedger(claims.UserID, *hm, usage, creditsFromBillable(actual, tpc), source, rates)
+				s.recordLedger(claims.UserID, *hm, usage, creditsFromBillable(actual, tpc), creditSource, rates)
 			} else {
-				log.Printf("hosted done: user=%d model=%s billable=%d (est %d) via=%s (no usage reported)",
-					claims.UserID, hm.Code, actual, estBillable, source)
+				log.Printf("hosted done: user=%d reqid=%s source=%s model=%s billable=%d (est %d) via=%s (no usage reported)",
+					claims.UserID, reqID, source, hm.Code, actual, estBillable, creditSource)
 			}
 		}
 		return actual
@@ -439,6 +477,9 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 
 	return &hostedReserve{
 		userID:          claims.UserID,
+		reqID:           reqID,
+		source:          source,
+		intended:        intended,
 		req:             req,
 		hm:              hm,
 		apiKey:          apiKey,
@@ -462,7 +503,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	req := hr.req
 	stream, _ := req["stream"].(bool)
-	log.Printf("chat: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estBillable)
+	log.Printf("chat: user=%d reqid=%s source=%s model=%s intended=%q stream=%v reserved=%d",
+		hr.userID, hr.reqID, hr.source, hr.hm.Code, hr.intended, stream, hr.estBillable)
 	req["model"] = hr.hm.UpstreamModelID
 	if stream {
 		req["stream_options"] = map[string]any{"include_usage": true}
@@ -476,7 +518,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		usage, wrote, serr := proxy.Stream(r.Context(), w, upstreamURL, hr.apiKey, newBody)
 		hr.settle(usage)
 		if serr != nil {
-			log.Printf("chat: upstream error user=%d model=%s wrote=%v: %v", hr.userID, hr.hm.Code, wrote, serr)
+			log.Printf("chat: upstream error user=%d reqid=%s source=%s model=%s wrote=%v: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, wrote, serr)
 		}
 		if serr != nil && !wrote {
 			writeUpstreamError(w, serr, "upstream error")
@@ -487,7 +529,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	usage, status, respBody, cerr := proxy.Complete(r.Context(), upstreamURL, hr.apiKey, newBody)
 	if cerr != nil {
 		hr.settle(nil)
-		log.Printf("chat: upstream unreachable user=%d model=%s: %v", hr.userID, hr.hm.Code, cerr)
+		log.Printf("chat: upstream unreachable user=%d reqid=%s source=%s model=%s: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, cerr)
 		writeUpstreamError(w, cerr, "upstream error")
 		return
 	}
@@ -496,7 +538,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if status != http.StatusOK {
 		// rayu-hosted path: don't leak the upstream provider's raw error body to
 		// the customer — reply with a clean, upstream-agnostic 502.
-		log.Printf("chat: upstream non-200 user=%d model=%s status=%d", hr.userID, hr.hm.Code, status)
+		log.Printf("chat: upstream non-200 user=%d reqid=%s source=%s model=%s status=%d", hr.userID, hr.reqID, hr.source, hr.hm.Code, status)
 		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
 		return
 	}
@@ -517,7 +559,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	req := hr.req
 	stream, _ := req["stream"].(bool)
-	log.Printf("anthropic: user=%d model=%s stream=%v reserved=%d", hr.userID, hr.hm.Code, stream, hr.estBillable)
+	log.Printf("anthropic: user=%d reqid=%s source=%s model=%s intended=%q stream=%v reserved=%d",
+		hr.userID, hr.reqID, hr.source, hr.hm.Code, hr.intended, stream, hr.estBillable)
 	req["model"] = hr.hm.UpstreamModelID
 	newBody, _ := json.Marshal(req)
 	upstreamURL := anthropicUpstream(hr.hm.UpstreamBaseURL, s.cfg.ProviderEndpointStyle(hr.hm.Provider))
@@ -532,7 +575,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		usage, wrote, serr := proxy.StreamAnthropic(r.Context(), w, upstreamURL, keys, bearer, newBody)
 		hr.settle(usage)
 		if serr != nil {
-			log.Printf("anthropic: upstream error user=%d model=%s wrote=%v: %v", hr.userID, hr.hm.Code, wrote, serr)
+			log.Printf("anthropic: upstream error user=%d reqid=%s source=%s model=%s wrote=%v: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, wrote, serr)
 		}
 		if serr != nil && !wrote {
 			writeUpstreamError(w, serr, "upstream error")
@@ -543,12 +586,12 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	usage, status, respBody, cerr := proxy.CompleteAnthropic(r.Context(), upstreamURL, keys, bearer, newBody)
 	if cerr != nil {
 		hr.settle(nil)
-		log.Printf("anthropic: upstream unreachable user=%d model=%s: %v", hr.userID, hr.hm.Code, cerr)
+		log.Printf("anthropic: upstream unreachable user=%d reqid=%s source=%s model=%s: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, cerr)
 		writeUpstreamError(w, cerr, "upstream error")
 		return
 	}
 	if status != http.StatusOK {
-		log.Printf("anthropic: upstream non-200 user=%d model=%s status=%d", hr.userID, hr.hm.Code, status)
+		log.Printf("anthropic: upstream non-200 user=%d reqid=%s source=%s model=%s status=%d", hr.userID, hr.reqID, hr.source, hr.hm.Code, status)
 	}
 	actual := hr.settle(usage)
 	setCreditHeaders(w, hr.usedPeriod-hr.estBillable+actual, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
@@ -662,6 +705,12 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Request-identity headers, read early: the logical request id keys the
+	// idempotent daily-turn accounting so the CLI's retries of ONE logical
+	// request don't each burn a separate daily turn.
+	reqID := headerOr(r, "X-Rayu-Request-Id", "-")
+	logicalID := headerOr(r, "X-Rayu-Logical-Request-Id", reqID)
+
 	// --- Daily turn cap (maxDailyTurns) — BEST-EFFORT on the BYO-key path ---
 	// Enforced only when entitlements + limiter are available (nil in some unit
 	// tests). On deny we return a plain 429 that is intentionally NOT tagged with
@@ -671,7 +720,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	reservedTurn := false
 	if s.ent != nil && s.lim != nil {
 		if ent, eerr := s.ent.Resolve(r.Context(), claims.UserID); eerr == nil {
-			tr, terr := s.lim.ReserveTurn(r.Context(), claims.UserID, dailyTurnCap(ent.Plan.MaxDailyTurns))
+			tr, terr := s.lim.ReserveTurnFor(r.Context(), claims.UserID, dailyTurnCap(ent.Plan.MaxDailyTurns), logicalID)
 			switch {
 			case terr != nil:
 				// limiter unavailable → fail open (don't block BYO-key traffic)
@@ -697,16 +746,70 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Bounded body read. A slow/stalled client upload (or an edge/proxy that
+	// half-opens the connection) otherwise hangs here until something upstream
+	// gives up — the class of failure seen as `POST /v1/proxy -> 400 (59.953s)`
+	// with no `proxy:` detail line. RAYU_PROXY_BODY_READ_TIMEOUT (seconds) sets an
+	// explicit read deadline; 0 leaves Go's server defaults. We deliberately do
+	// NOT set a global write timeout, which would truncate long SSE streams.
+	bodyReadStart := time.Now()
+	if s.cfg != nil && s.cfg.ProxyBodyReadTimeoutSeconds > 0 {
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(bodyReadStart.Add(
+			time.Duration(s.cfg.ProxyBodyReadTimeoutSeconds) * time.Second,
+		))
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		if reservedTurn {
-			s.releaseTurnBG(claims.UserID)
+			s.releaseTurnForBG(claims.UserID, logicalID)
 		}
-		proxyError(w, http.StatusBadRequest, "request body too large or unreadable")
+		// Classify the failure so operators can tell a too-large upload from a
+		// stalled/timed-out read from a generic read error — instead of one
+		// opaque 400 for all three (the original "request body too large or
+		// unreadable" line that masked the 59.953s stall).
+		status, label := classifyBodyReadError(err, r.Context().Err())
+		log.Printf("proxy: body read %s user=%d after=%s status=%d ctxErr=%v: %v",
+			label, claims.UserID, time.Since(bodyReadStart).Round(time.Millisecond),
+			status, r.Context().Err(), err)
+		if status == http.StatusRequestTimeout {
+			w.Header().Set("Retry-After", "1")
+		}
+		proxyError(w, status, "request body "+label)
 		return
 	}
 	provider := headerOr(r, "X-Rayu-Provider", "unknown")
-	model := bestEffortModel(body)
+	source := headerOr(r, "X-Rayu-Query-Source", "unknown")
+	intended := strings.TrimSpace(r.Header.Get("X-Rayu-Intended-Model"))
+	// The model ACTUALLY going upstream: Bedrock hides it in the URL path, other
+	// providers put it in the JSON body; fall back to the CLI-declared resolved
+	// model header. This is what makes gateway logs show the real model instead
+	// of the empty body "model" for Bedrock.
+	actual := modelFromUpstreamURL(upstream)
+	if actual == "" {
+		actual = bestEffortModel(body)
+	}
+	if actual == "" {
+		actual = strings.TrimSpace(r.Header.Get("X-Rayu-Resolved-Model"))
+	}
+
+	// MODEL FIDELITY: the routed model must match the model the user intended. A
+	// definite cross-family mismatch (e.g. intended sonnet-4-6, routed opus) is
+	// always logged; when RAYU_ENFORCE_MODEL_FIDELITY is set it is rejected here,
+	// BEFORE any upstream call or turn burn, so the bad request never reaches AWS.
+	if familyMismatch(intended, actual) {
+		log.Printf("proxy: MODEL FIDELITY MISMATCH user=%d reqid=%s logical=%s source=%s intended=%q actual=%q upstream=%s",
+			claims.UserID, reqID, logicalID, source, intended, actual, upstream)
+		if s.cfg != nil && s.cfg.EnforceModelFidelity {
+			if reservedTurn {
+				s.releaseTurnForBG(claims.UserID, logicalID)
+			}
+			w.Header().Set("X-Rayu-Model-Fidelity", "mismatch")
+			proxyError(w, http.StatusConflict,
+				"model fidelity mismatch: intended and routed model families differ")
+			return
+		}
+	}
 
 	// Positive marker so the CLI can distinguish a genuinely-proxied response
 	// from anything else — an older gateway without this route (404), a redirect,
@@ -716,11 +819,11 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if ferr != nil && !wrote {
 		// Upstream unreachable / gateway-side failure before any bytes were sent.
 		if reservedTurn {
-			s.releaseTurnBG(claims.UserID) // CLI will fail safe to direct; don't burn a turn
+			s.releaseTurnForBG(claims.UserID, logicalID) // CLI will fail safe to direct; don't burn a turn
 		}
 		w.Header().Del("X-Rayu-Proxied")
-		log.Printf("proxy: upstream unreachable user=%d provider=%s model=%q upstream=%s: %v",
-			claims.UserID, provider, model, upstream, ferr)
+		log.Printf("proxy: upstream unreachable user=%d reqid=%s source=%s provider=%s intended=%q actual=%q upstream=%s: %v",
+			claims.UserID, reqID, source, provider, intended, actual, upstream, ferr)
 		if errors.Is(ferr, circuitbreaker.ErrOpen) {
 			w.Header().Set("Retry-After", "5")
 			proxyError(w, http.StatusServiceUnavailable, "upstream temporarily unavailable")
@@ -729,13 +832,35 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Post-header stream break: upstream started (headers/bytes sent, wrote=true)
+	// then failed mid-stream. The status is already committed, but this MUST be
+	// logged distinctly instead of being reported as a clean success — otherwise
+	// the client sees a truncated stream / "connection error" with no gateway
+	// trace to explain it.
+	if ferr != nil && wrote {
+		log.Printf("proxy: stream interrupted user=%d reqid=%s source=%s provider=%s intended=%q actual=%q upstream=%s status=%d wrote=true: %v",
+			claims.UserID, reqID, source, provider, intended, actual, upstream, status, ferr)
+		if reservedTurn {
+			// Partial/broken stream: refund so an interrupted turn the user has to
+			// retry doesn't consume the daily cap.
+			s.releaseTurnForBG(claims.UserID, logicalID)
+			reservedTurn = false
+		}
+	}
 	if status != http.StatusOK {
 		// The gateway is a transparent pass-through here, so a non-200 (e.g. the
 		// upstream's own 503/429) is expected sometimes — but it MUST show up in
 		// gateway logs, or every "why did I get a 503 from the gateway" report
 		// requires cross-referencing the provider's own dashboard to answer.
-		log.Printf("proxy: upstream non-200 user=%d provider=%s model=%q upstream=%s status=%d",
-			claims.UserID, provider, model, upstream, status)
+		log.Printf("proxy: upstream non-200 user=%d reqid=%s source=%s provider=%s intended=%q actual=%q upstream=%s status=%d",
+			claims.UserID, reqID, source, provider, intended, actual, upstream, status)
+		if reservedTurn {
+			// Upstream rejected the request (e.g. Bedrock 400/429). No successful
+			// turn happened and the CLI will retry, so refund the reservation to
+			// avoid multiplying the daily-turn count across retries.
+			s.releaseTurnForBG(claims.UserID, logicalID)
+			reservedTurn = false
+		}
 	}
 
 	// Best-effort tracking via the bounded write queue. Never affects the
@@ -745,11 +870,12 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		s.wq.Enqueue(eventqueue.Item{
 			Name: "proxy_usage_event",
 			Run: func(ctx context.Context) error {
-				return s.st.InsertUsageEvent(ctx, claims.UserID, provider, model, "gateway")
+				return s.st.InsertUsageEvent(ctx, claims.UserID, provider, actual, "gateway")
 			},
 		})
 	}
-	log.Printf("proxy: user=%d provider=%s model=%q -> %s (status=%d)", claims.UserID, provider, model, upstream, status)
+	log.Printf("proxy: user=%d reqid=%s source=%s provider=%s intended=%q actual=%q -> %s (status=%d)",
+		claims.UserID, reqID, source, provider, intended, actual, upstream, status)
 }
 
 // proxyError writes a gateway-origin error tagged with X-Rayu-Proxy-Error so the
@@ -785,6 +911,23 @@ func headerOr(r *http.Request, key, def string) string {
 	return def
 }
 
+// allowedModelCodes returns a comma-joined, length-capped list of the model
+// codes a plan allows. Logged on a "model not allowed" reject so an operator can
+// see the actual allow-list (and spot a wrong/hardcoded model id from the CLI)
+// without a DB lookup.
+func allowedModelCodes(models []store.HostedModel) string {
+	const maxCodes = 20
+	codes := make([]string, 0, len(models))
+	for i := range models {
+		if i >= maxCodes {
+			codes = append(codes, "…")
+			break
+		}
+		codes = append(codes, models[i].Code)
+	}
+	return strings.Join(codes, ",")
+}
+
 // bestEffortModel pulls the "model" field from a JSON request body for tracking.
 func bestEffortModel(body []byte) string {
 	var m struct {
@@ -794,6 +937,91 @@ func bestEffortModel(body []byte) string {
 		return m.Model
 	}
 	return ""
+}
+
+// bedrockModelURLRe matches the model id in a Bedrock invoke URL. The
+// AnthropicBedrock SDK moves the model OUT of the JSON body and INTO the path:
+//
+//	/model/{id}/invoke
+//	/model/{id}/invoke-with-response-stream
+//
+// so bestEffortModel(body) returns "" for Bedrock and the real model must be
+// read from the URL instead (this is why gateway logs showed model="").
+var bedrockModelURLRe = regexp.MustCompile(
+	`/model/([^/]+)/invoke(?:-with-response-stream)?(?:$|\?|#)`,
+)
+
+// modelFromUpstreamURL extracts the model id from a Bedrock invoke URL, or ""
+// when the URL is not a Bedrock invoke URL.
+func modelFromUpstreamURL(upstream string) string {
+	m := bedrockModelURLRe.FindStringSubmatch(upstream)
+	if len(m) < 2 || m[1] == "" {
+		return ""
+	}
+	if dec, err := url.PathUnescape(m[1]); err == nil {
+		return dec
+	}
+	return m[1]
+}
+
+// modelFamilyOf classifies a model id/alias into its Claude family by substring
+// ("opus"/"sonnet"/"haiku"), or "other" for non-Claude / opaque ids. Mirrors the
+// CLI's modelFamilyOf so both ends agree on the fidelity rule.
+func modelFamilyOf(model string) string {
+	m := strings.ToLower(model)
+	switch {
+	case strings.Contains(m, "opus"):
+		return "opus"
+	case strings.Contains(m, "sonnet"):
+		return "sonnet"
+	case strings.Contains(m, "haiku"):
+		return "haiku"
+	default:
+		return "other"
+	}
+}
+
+// familyMismatch reports a DEFINITE cross-family mismatch between the intended
+// and the actually-routed model: both classify to a known (non-"other") Claude
+// family and those families differ. Unknown/opaque ids never trigger it, so an
+// enterprise deployment id / custom profile is never falsely flagged (mirrors
+// the CLI's isFamilyConsistentOverride).
+func familyMismatch(intended, actual string) bool {
+	if intended == "" || actual == "" {
+		return false
+	}
+	fi := modelFamilyOf(intended)
+	fa := modelFamilyOf(actual)
+	if fi == "other" || fa == "other" {
+		return false
+	}
+	return fi != fa
+}
+
+// isTimeoutErr reports whether err is a deadline/timeout (net timeout errors and
+// anything implementing Timeout() bool, e.g. from SetReadDeadline).
+func isTimeoutErr(err error) bool {
+	var te interface{ Timeout() bool }
+	return errors.As(err, &te) && te.Timeout()
+}
+
+// classifyBodyReadError maps a request-body read failure to an HTTP status +
+// short label so the three distinct failure modes are individually diagnosable:
+//   - too large  -> 413 (client sent > maxRequestBytes)
+//   - timeout    -> 408 (read deadline / cancelled context — the 59.953s stall)
+//   - unreadable -> 400 (generic transport read error)
+func classifyBodyReadError(err error, ctxErr error) (int, string) {
+	var maxErr *http.MaxBytesError
+	switch {
+	case errors.As(err, &maxErr):
+		return http.StatusRequestEntityTooLarge, "too large"
+	case isTimeoutErr(err) ||
+		errors.Is(ctxErr, context.DeadlineExceeded) ||
+		errors.Is(err, context.DeadlineExceeded):
+		return http.StatusRequestTimeout, "timeout"
+	default:
+		return http.StatusBadRequest, "unreadable"
+	}
 }
 
 // hopByHopHeaders are per-connection headers that must not be forwarded.
@@ -946,6 +1174,15 @@ func (s *Server) releaseTurnBG(userID int64) {
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = s.lim.ReleaseTurn(bg, userID)
+}
+
+// releaseTurnForBG refunds one daily turn AND clears the logical-request hold
+// out-of-band, so a subsequent retry of the same logical request can reserve
+// again (idempotent-by-logical-id accounting). Used on the /v1/proxy path.
+func (s *Server) releaseTurnForBG(userID int64, logicalID string) {
+	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.lim.ReleaseTurnFor(bg, userID, logicalID)
 }
 
 func statusOrUnknown(s string) string {
