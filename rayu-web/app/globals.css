@@ -555,6 +555,31 @@ p {
   border-color: var(--border-bright);
 }
 
+/* GitHub stars in nav */
+.nav-github-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+.nav-github-stars:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+.nav-github-stars svg {
+  flex-shrink: 0;
+}
+.nav-github-stars-count {
+  font-family: 'Times New Roman', monospace;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .price {
   font-family: 'Times New Roman', serif;
   font-size: 2.4rem;
