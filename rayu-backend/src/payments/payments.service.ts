@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import type { Payment, Plan } from '@prisma/client'
+import { Prisma, type Payment, type Plan } from '@prisma/client'
 import type { PlanCode } from '../common/enums'
 import { PrismaService } from '../prisma/prisma.service'
 import { PromoService } from '../promo/promo.service'
@@ -47,6 +47,83 @@ export class PaymentsService {
     return (
       typeof limits.creditsPerPeriod === 'number' && limits.creditsPerPeriod > 0
     )
+  }
+
+  /**
+   * Compute how many credits from a prior paid period should be carried over to
+   * a new paid plan activation. Unused credits from an active (non-expired)
+   * credit plan are converted into a permanent top-up credit. Expired periods
+   * and non-credit plans yield 0.
+   */
+  private async computeCarryoverCredits(
+    userId: number,
+    previousSub: { id: number; startedAt: Date; currentPeriodEnd: Date | null; plan: Plan } | null,
+  ): Promise<number> {
+    if (!previousSub) return 0
+    // An already-expired period has no remaining allowance to carry forward.
+    if (previousSub.currentPeriodEnd && previousSub.currentPeriodEnd.getTime() <= Date.now()) {
+      return 0
+    }
+    const limits = (previousSub.plan.limits ?? {}) as { creditsPerPeriod?: number | null }
+    const allowance =
+      typeof limits.creditsPerPeriod === 'number' ? limits.creditsPerPeriod : null
+    if (!allowance || allowance <= 0) return 0
+
+    const consumed = await this.prisma.creditLedger.aggregate({
+      _sum: { credits: true },
+      where: {
+        userId,
+        source: 'plan',
+        createdAt: { gte: previousSub.startedAt },
+      },
+    })
+    const used = consumed._sum.credits ?? 0
+    return Math.max(0, allowance - used)
+  }
+
+  /**
+   * Shared subscription switch for paid plan activations: cancels all active
+   * subscriptions, creates a new one with the given period end, and carries over
+   * any unused credits from the previous active period as a permanent top-up.
+   * Returns the number of credits carried over.
+   */
+  private async switchSubscriptionWithCarryover(
+    userId: number,
+    planId: number,
+    currentPeriodEnd: Date,
+  ): Promise<number> {
+    const previousSubs = await this.prisma.subscription.findMany({
+      where: { userId, status: 'active' },
+      include: { plan: true },
+      orderBy: { startedAt: 'desc' },
+      take: 1,
+    })
+    const previousSub = previousSubs[0] ?? null
+    const carryoverCredits = await this.computeCarryoverCredits(userId, previousSub)
+
+    const ops: Prisma.PrismaPromise<unknown>[] = [
+      this.prisma.subscription.updateMany({
+        where: { userId, status: 'active' },
+        data: { status: 'canceled' },
+      }),
+      this.prisma.subscription.create({
+        data: { userId, planId, status: 'active', currentPeriodEnd },
+      }),
+    ]
+    if (carryoverCredits > 0) {
+      ops.push(
+        this.prisma.creditTopup.create({
+          data: {
+            userId,
+            credits: carryoverCredits,
+            amountCents: 0,
+            status: 'paid',
+          },
+        }),
+      )
+    }
+    await this.prisma.$transaction(ops)
+    return carryoverCredits
   }
 
   async createKhqr(
@@ -253,15 +330,11 @@ export class PaymentsService {
       finalCents: quote.finalCents,
       paymentId: payment.id,
     })
-    await this.prisma.$transaction([
-      this.prisma.subscription.updateMany({
-        where: { userId, status: 'active' },
-        data: { status: 'canceled' },
-      }),
-      this.prisma.subscription.create({
-        data: { userId, planId: plan.id, status: 'active', currentPeriodEnd: periodEnd },
-      }),
-    ])
+    const carryoverCredits = await this.switchSubscriptionWithCarryover(
+      userId,
+      plan.id,
+      periodEnd,
+    )
     // Increment usedCount + mark the redemption applied (atomic cap re-check).
     await this.promo.finalizeRedemption(quote.promo.id, userId, payment.id)
 
@@ -273,6 +346,7 @@ export class PaymentsService {
       discountCents: quote.discountCents,
       activated: true,
       claimed: true,
+      carryoverCredits,
     }
   }
 
@@ -483,22 +557,35 @@ export class PaymentsService {
    * Mark a confirmed payment as paid and apply its effect: either grant the
    * linked credit top-up, or switch the user's subscription (30-day period).
    * Shared by the Bakong poll path and the ABA Telegram listener.
+   * Idempotent: if the payment is already paid, returns the active state without
+   * creating duplicate subscriptions or carry-over top-ups.
    */
   private async activatePaid(payment: Payment & { plan: Plan | null }, ref: string | null) {
     const topup = await this.prisma.creditTopup.findFirst({
       where: { paymentId: payment.id },
     })
     if (topup) {
-      await this.prisma.$transaction([
-        this.prisma.payment.update({
-          where: { id: payment.id },
+      // Idempotent paid transition: only update if still pending.
+      const [updated] = await this.prisma.$transaction([
+        this.prisma.payment.updateMany({
+          where: { id: payment.id, status: 'pending' },
           data: { status: 'paid', paidAt: new Date(), externalRef: ref },
         }),
-        this.prisma.creditTopup.update({
-          where: { id: topup.id },
+        this.prisma.creditTopup.updateMany({
+          where: { id: topup.id, status: 'pending' },
           data: { status: 'paid' },
         }),
       ])
+      if ((updated as { count: number }).count === 0) {
+        // Already activated by another concurrent caller; return current state.
+        return {
+          paymentId: payment.id,
+          status: 'paid' as const,
+          kind: 'topup' as const,
+          credits: topup.credits,
+          activated: true,
+        }
+      }
       return {
         paymentId: payment.id,
         status: 'paid',
@@ -508,25 +595,35 @@ export class PaymentsService {
       }
     }
 
+    if (!payment.planId || !payment.plan) {
+      throw new BadRequestException('Payment has no associated plan')
+    }
+
     const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
-    await this.prisma.$transaction([
-      this.prisma.payment.update({
-        where: { id: payment.id },
+
+    // Idempotent paid transition for plan purchases: only one caller wins the
+    // pending -> paid status flip. Losers see count===0 and return the already-
+    // activated state without duplicating subscriptions or carry-over credits.
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.payment.updateMany({
+        where: { id: payment.id, status: 'pending' },
         data: { status: 'paid', paidAt: new Date(), externalRef: ref },
       }),
-      this.prisma.subscription.updateMany({
-        where: { userId: payment.userId, status: 'active' },
-        data: { status: 'canceled' },
-      }),
-      this.prisma.subscription.create({
-        data: {
-          userId: payment.userId,
-          planId: payment.planId!,
-          status: 'active',
-          currentPeriodEnd: periodEnd,
-        },
-      }),
     ])
+    if ((updated as { count: number }).count === 0) {
+      return {
+        paymentId: payment.id,
+        status: 'paid' as const,
+        planCode: payment.plan?.code ?? null,
+        activated: true,
+      }
+    }
+
+    const carryoverCredits = await this.switchSubscriptionWithCarryover(
+      payment.userId,
+      payment.planId,
+      periodEnd,
+    )
 
     // Finalize a promo redemption (increment usedCount, mark applied) when this
     // purchase used a discount code.
@@ -543,6 +640,7 @@ export class PaymentsService {
       status: 'paid' as const,
       planCode: payment.plan?.code ?? null,
       activated: true,
+      carryoverCredits,
     }
   }
 

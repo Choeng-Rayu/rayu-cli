@@ -3,6 +3,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -276,12 +278,30 @@ type hostedReserve struct {
 	settle          func(usage *proxy.Usage) int64
 }
 
+// newReqID mints a gateway-assigned correlation id, used when the client did
+// NOT send X-Rayu-Request-Id (an older CLI build). The "gw_" prefix makes it
+// obvious the id came from the gateway (so a missing client id is visible), while
+// still giving every request a single id that ties its start/done/response lines
+// together in the gateway log.
+func newReqID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "gw_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "gw_" + hex.EncodeToString(b[:])
+}
+
 // hostedIdentity pulls the CLI correlation/attribution headers off a hosted
 // request. `source` is the KEY field for diagnosing "why did model X get called"
 // — it names the CLI feature (repl_main_thread, agent:*, tool summary, compact,
-// webfetch, quota probe, …) that issued the request.
+// webfetch, quota probe, …) that issued the request. When the client is an older
+// build that doesn't send these, reqID is gateway-assigned and source is
+// "unknown" (which itself signals "old CLI, please update").
 func hostedIdentity(r *http.Request) (reqID, source, intended string) {
-	reqID = headerOr(r, "X-Rayu-Request-Id", "-")
+	reqID = strings.TrimSpace(r.Header.Get("X-Rayu-Request-Id"))
+	if reqID == "" {
+		reqID = newReqID()
+	}
 	source = headerOr(r, "X-Rayu-Query-Source", "unknown")
 	intended = strings.TrimSpace(r.Header.Get("X-Rayu-Intended-Model"))
 	return
@@ -707,8 +727,13 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Request-identity headers, read early: the logical request id keys the
 	// idempotent daily-turn accounting so the CLI's retries of ONE logical
-	// request don't each burn a separate daily turn.
-	reqID := headerOr(r, "X-Rayu-Request-Id", "-")
+	// request don't each burn a separate daily turn. reqID is gateway-assigned
+	// when the client (older CLI) didn't send one, so the request is still
+	// correlatable in the gateway log.
+	reqID := strings.TrimSpace(r.Header.Get("X-Rayu-Request-Id"))
+	if reqID == "" {
+		reqID = newReqID()
+	}
 	logicalID := headerOr(r, "X-Rayu-Logical-Request-Id", reqID)
 
 	// --- Daily turn cap (maxDailyTurns) — BEST-EFFORT on the BYO-key path ---

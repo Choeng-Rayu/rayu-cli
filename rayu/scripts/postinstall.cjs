@@ -23,9 +23,9 @@ const message = [
   '  Docs & issues:  https://github.com/Choeng-Rayu/rayu-cli',
   '',
   'Whats new?:',
-  '    - We Have restructure the rayu subagents, and added a new one for asset generation!',
-  '    - Add new agent callaborator agent that can call other agents as tools, and manage the conversation between them.',
-  '    - Try it by /collaborator_swarm and also /collaborator_model in the agent playground!',
+  '    - Improve the ask user question tool for all LLMs providers.',
+  '    - Fix the Gateway upstream error.',
+  '    - Fix the bug for plan credit calculation.',
   '',
 ].join('\n') + '\n';
 

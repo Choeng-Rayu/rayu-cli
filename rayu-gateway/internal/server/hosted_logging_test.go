@@ -96,3 +96,40 @@ func TestAuthMiddlewareLogs401Reason(t *testing.T) {
 		t.Fatalf("auth 401 log missing reqid; got:\n%s", logs)
 	}
 }
+
+// An OLDER CLI that doesn't send X-Rayu-* headers must still get a
+// gateway-assigned reqid (so the request is correlatable in the gateway log),
+// with source=unknown signalling "old client, please update".
+func TestHostedAssignsRequestIdWhenClientOmitsIt(t *testing.T) {
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 50, Status: "active",
+			Plan:          store.Plan{Code: "max", Name: "Max"},
+			AllowedModels: []store.HostedModel{{Code: "deepseek-v4-pro", Provider: "deepseek", Enabled: true}},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1000},
+	}
+	h, _ := chatHarness(t, fe)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+		strings.NewReader(`{"model":"claude-haiku-4-5-20251001"}`)) // not allowed -> logs
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 50))
+	// NO X-Rayu-* headers at all (simulates the old published CLI).
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", rec.Code)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "reqid=gw_") {
+		t.Fatalf("expected a gateway-assigned reqid (gw_…) for a header-less client; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "source=unknown") {
+		t.Fatalf("expected source=unknown for an old client; got:\n%s", logs)
+	}
+}
