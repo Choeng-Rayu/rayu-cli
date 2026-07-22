@@ -650,7 +650,12 @@ function coerceAskUserQuestionInput(
     if (!q || typeof q !== 'object') return rawQ
 
     const question = firstNonEmptyString(q, ASK_Q_TEXT_KEYS)
+    // Salvage to the canonical key, or REMOVE an empty/whitespace value so the
+    // strict schema reports it "missing" (a visible "Invalid tool parameters"
+    // the model can act on) instead of passing an empty string that renders as
+    // a blank, unanswerable dialog.
     if (question !== undefined) q.question = question
+    else delete q.question
 
     let header = firstNonEmptyString(q, ASK_Q_HEADER_KEYS)
     if (header === undefined && question !== undefined) {
@@ -660,6 +665,7 @@ function coerceAskUserQuestionInput(
       )
     }
     if (header !== undefined) q.header = header
+    else delete q.header
 
     const rawOptions = Array.isArray(q.options)
       ? q.options
@@ -676,11 +682,15 @@ function coerceAskUserQuestionInput(
         const label = firstNonEmptyString(opt, ASK_OPT_LABEL_KEYS)
         const description = firstNonEmptyString(opt, ASK_OPT_DESC_KEYS)
         // Backfill each side from the other so a one-sided option still renders
-        // instead of hard-failing the whole tool call.
+        // instead of hard-failing. When BOTH are empty, remove them so the
+        // schema flags the option (visible error) rather than showing a blank
+        // choice the user can't distinguish.
         const finalLabel = label ?? description
         const finalDescription = description ?? label
         if (finalLabel !== undefined) opt.label = finalLabel
+        else delete opt.label
         if (finalDescription !== undefined) opt.description = finalDescription
+        else delete opt.description
         return opt
       })
     }
