@@ -556,9 +556,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	actual := hr.settle(usage)
 	setCreditHeaders(w, hr.usedPeriod-hr.estBillable+actual, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
 	if status != http.StatusOK {
-		// rayu-hosted path: don't leak the upstream provider's raw error body to
-		// the customer — reply with a clean, upstream-agnostic 502.
+		// Relay a client-fixable request error (400/413/422) with its real status
+		// + message so the CLI shows the cause and doesn't retry; keep the clean
+		// 502 for provider-side/transient failures.
 		log.Printf("chat: upstream non-200 user=%d reqid=%s source=%s model=%s status=%d", hr.userID, hr.reqID, hr.source, hr.hm.Code, status)
+		if proxy.IsUpstreamRequestError(status) {
+			msg := proxy.UpstreamErrorMessage(respBody)
+			if msg == "" {
+				msg = "The request was rejected by the model provider."
+			}
+			httpx.WriteError(w, status, msg)
+			return
+		}
 		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
 		return
 	}
@@ -616,8 +625,18 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	actual := hr.settle(usage)
 	setCreditHeaders(w, hr.usedPeriod-hr.estBillable+actual, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
 	if status != http.StatusOK {
-		// rayu-hosted path: don't leak the upstream provider's raw error body to
-		// the customer — reply with a clean, upstream-agnostic 502.
+		// Relay a client-fixable request error (400/413/422 — e.g. "this model
+		// does not support image input") with its real status + message so the
+		// CLI shows the cause and does NOT retry; keep the sanitized 502 for
+		// provider-side/transient failures.
+		if proxy.IsUpstreamRequestError(status) {
+			msg := proxy.UpstreamErrorMessage(respBody)
+			if msg == "" {
+				msg = "The request was rejected by the model provider."
+			}
+			httpx.WriteAnthropicError(w, status, msg)
+			return
+		}
 		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
 		return
 	}

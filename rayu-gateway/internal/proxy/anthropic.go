@@ -176,11 +176,12 @@ func StreamAnthropic(ctx context.Context, w http.ResponseWriter, upstreamURL str
 				b, status = pb, ps
 			}
 		}
-		// rayu-hosted path: never leak the upstream provider's raw error body to
-		// the customer (e.g. an Ollama "requires a subscription … ollama.com" 403).
-		// Reply with a clean, upstream-agnostic 502 the CLI turns into "try a
-		// smaller model or try again later".
-		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
+		// A client-fixable request error (400/413/422 — e.g. "this model does not
+		// support image input") is relayed with its REAL status + message so the
+		// CLI surfaces the cause and does NOT retry a permanent failure. Anything
+		// else (5xx, auth/quota) keeps the sanitized, upstream-agnostic 502 so we
+		// never leak the provider's raw body (e.g. an Ollama subscription URL).
+		relayUpstreamError(w, status, b, httpx.WriteAnthropicError)
 		return nil, true, fmt.Errorf("upstream status %d: %s", status, errSnippet(b))
 	}
 

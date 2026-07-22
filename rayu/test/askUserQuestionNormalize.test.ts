@@ -138,4 +138,78 @@ describe('normalizeToolInput: AskUserQuestion coercion (weak-model repair)', () 
     })
     expect(parsed.success).toBe(false)
   })
+
+  // The silent-failure class: empty/whitespace strings satisfy `z.string()`
+  // (no .min), so before this they passed validation and rendered a BLANK,
+  // unanswerable dialog with no error. Coercion now removes the empty value so
+  // the schema reports it missing → a visible error the model can retry.
+  it('repairs an option with a label but empty-string description (was a blank dialog)', () => {
+    const { coerced, parsed } = coerceAndValidate({
+      questions: [
+        {
+          question: 'Deploy now?',
+          header: 'Deploy',
+          options: [
+            { label: 'Yes', description: '' },
+            { label: 'No', description: '   ' },
+          ],
+        },
+      ],
+    })
+    expect(parsed.success).toBe(true)
+    expect(coerced.questions[0]!.options).toEqual([
+      { label: 'Yes', description: 'Yes' },
+      { label: 'No', description: 'No' },
+    ])
+  })
+
+  it('fails visibly (not blank) when the question text is an empty string', () => {
+    const { coerced, parsed } = coerceAndValidate({
+      questions: [
+        {
+          question: '',
+          header: 'X',
+          options: [
+            { label: 'A', description: 'a' },
+            { label: 'B', description: 'b' },
+          ],
+        },
+      ],
+    })
+    expect(parsed.success).toBe(false)
+    // the empty value is removed so it's reported "missing", not passed as ""
+    expect('question' in coerced.questions[0]!).toBe(false)
+  })
+
+  it('fails visibly when the question text is whitespace only', () => {
+    const { parsed } = coerceAndValidate({
+      questions: [
+        {
+          question: '   ',
+          header: 'X',
+          options: [
+            { label: 'A', description: 'a' },
+            { label: 'B', description: 'b' },
+          ],
+        },
+      ],
+    })
+    expect(parsed.success).toBe(false)
+  })
+
+  it('fails visibly when an option has both label and description empty', () => {
+    const { parsed } = coerceAndValidate({
+      questions: [
+        {
+          question: 'Pick one',
+          header: 'Pick',
+          options: [
+            { label: 'A', description: 'a' },
+            { label: '', description: '   ' },
+          ],
+        },
+      ],
+    })
+    expect(parsed.success).toBe(false)
+  })
 })

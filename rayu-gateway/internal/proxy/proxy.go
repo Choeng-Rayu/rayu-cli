@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/circuitbreaker"
@@ -297,6 +298,82 @@ func errSnippet(b []byte) string {
 	return string(s)
 }
 
+// IsUpstreamRequestError reports whether an upstream 4xx means the REQUEST
+// itself was bad (client-fixable and PERMANENT) rather than a provider-side or
+// transient failure. These are relayed to the client with their real status +
+// message so the CLI shows the actual cause (e.g. "this model does not support
+// image input") and does NOT retry a request that can never succeed — instead
+// of being masked as a retryable 502.
+//
+// Auth/quota (401/403/429) and 5xx are deliberately EXCLUDED: those are
+// provider-side (the gateway's key/capacity), may leak provider internals
+// (subscription/upgrade URLs), and/or are legitimately retryable, so they keep
+// the sanitized provider-unavailable mapping.
+func IsUpstreamRequestError(status int) bool {
+	switch status {
+	case http.StatusBadRequest, // 400 — malformed / unsupported feature (image, tool, param)
+		http.StatusRequestEntityTooLarge, // 413 — context/image too large
+		http.StatusUnprocessableEntity:   // 422 — semantically invalid params
+		return true
+	}
+	return false
+}
+
+// UpstreamErrorMessage best-effort extracts a human-readable message from an
+// upstream error body. Anthropic and OpenAI both use {"error":{"message":...}};
+// some providers use a top-level {"message":...}. Capped for safe relay. Only
+// ever called for a request-content 4xx (see IsUpstreamRequestError), whose
+// message describes the REQUEST (safe to surface), never provider secrets.
+// Returns "" if no message is found.
+func UpstreamErrorMessage(body []byte) string {
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &e) == nil {
+		if m := strings.TrimSpace(e.Error.Message); m != "" {
+			return capErrMsg(m)
+		}
+		if m := strings.TrimSpace(e.Message); m != "" {
+			return capErrMsg(m)
+		}
+	}
+	return ""
+}
+
+func capErrMsg(s string) string {
+	const max = 300
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
+}
+
+// relayUpstreamError writes the appropriate client response for a non-200
+// upstream status on a rayu-hosted (pre-stream) failure. A client-fixable
+// request error (400/413/422) is relayed with its real status + message (via
+// writeErr, which selects the wire format — Anthropic vs OpenAI) so the CLI
+// surfaces the cause and doesn't retry; everything else keeps the sanitized,
+// upstream-agnostic 502.
+func relayUpstreamError(
+	w http.ResponseWriter,
+	status int,
+	body []byte,
+	writeErr func(w http.ResponseWriter, status int, msg string),
+) {
+	if IsUpstreamRequestError(status) {
+		msg := UpstreamErrorMessage(body)
+		if msg == "" {
+			msg = "The request was rejected by the model provider."
+		}
+		writeErr(w, status, msg)
+		return
+	}
+	httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
+}
+
 // Stream proxies a streaming completion. It owns the response once it starts
 // writing; `wrote` reports whether any bytes/headers were sent to the client.
 // On a pre-flight failure (wrote=false) the caller should write an error.
@@ -316,13 +393,14 @@ func Stream(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey stri
 
 	flusher, _ := w.(http.Flusher)
 
-	// rayu-hosted path: never leak the upstream provider's raw error body to the
-	// customer (e.g. an Ollama "requires a subscription" 403). Read it only for
-	// the server-side error log; reply with a clean, upstream-agnostic 502 that
-	// the CLI turns into "try a smaller model or try again later".
+	// rayu-hosted path: a client-fixable request error (400/413/422) is relayed
+	// with its real status + message so the CLI shows the cause and does NOT
+	// retry; a provider-side/transient failure (5xx, auth, quota) keeps the
+	// clean, upstream-agnostic 502 that the CLI turns into "try a smaller model
+	// or try again later". Either way the raw upstream body is only logged.
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
+		relayUpstreamError(w, resp.StatusCode, b, httpx.WriteError)
 		return nil, true, fmt.Errorf("upstream status %d: %s", resp.StatusCode, errSnippet(b))
 	}
 
