@@ -130,6 +130,28 @@ catalog: 7 hosted models: glm-5.2→glm-5.2:cloud[rayu-ollama], deepseek-v4-pro�
 ```
 An empty catalog is called out explicitly (`catalog: 0 hosted models loaded — every hosted request will 403`).
 
+## 2d. Upstream error → client status mapping (hosted path)
+
+When the upstream provider returns a non-200 on the rayu-hosted path, the log
+line is the same (`anthropic|chat: upstream error … upstream status <N>: <body>`),
+but the **client-facing** status now depends on the class of error:
+
+| Upstream status | Client gets | Why |
+|---|---|---|
+| **400 / 413 / 422** (bad request — e.g. `this model does not support image input`, context too large) | **same status + real message** (native Anthropic or OpenAI error envelope) | Client-fixable and **permanent** — the CLI shows the cause and the SDK does **not** retry it. |
+| **401 / 403** (auth / subscription) | **502** `provider_unavailable` (sanitized) | Provider-side (the gateway's key); may leak subscription/upgrade URLs — never relayed. |
+| **429** (rate limit) | **502**/`provider_unavailable` (sanitized) | Transient; the CLI has its own backoff. |
+| **5xx / timeout / circuit-open / unreachable** | **502** `provider_unavailable` (sanitized) | Provider outage; retryable; raw body never leaked. |
+
+Diagnosing the motivating case: a `502` at the edge with a gateway log line
+`upstream status 400: {…"does not support image input"…}` was previously the
+**mask** — a permanent 400 shown as a retryable 502 (Cloudflare "origin bad
+gateway", pointless SDK retries). Now that same upstream 400 reaches the CLI as a
+**400 with the real message**, so the user sees the cause and the turn fails fast
+instead of retrying. If you still see a `502` for a hosted request, the upstream
+status in the log will be 5xx/401/403/429 — a genuine provider-side/transient
+condition, not a bad request.
+
 ## 3. Daily-turn accounting (retry-safe)
 
 Turn reservation is keyed by `X-Rayu-Logical-Request-Id`, and turns are refunded

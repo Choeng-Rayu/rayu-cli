@@ -54,6 +54,23 @@ func WriteProviderUnavailable(w http.ResponseWriter, status int) {
 	})
 }
 
+// WriteAnthropicError writes a NATIVE Anthropic-format error envelope
+// ({"type":"error","error":{"type","message"}}) so the CLI's Anthropic client
+// (the rayu-hosted path) surfaces `msg` verbatim. Used to relay a client-fixable
+// upstream request error (e.g. a 400 "this model does not support image input")
+// with its REAL status, instead of the sanitized provider_unavailable 502 —
+// which the SDK would retry and Cloudflare would render as a generic bad
+// gateway. The stable per-status `type` matches what the Anthropic SDK expects.
+func WriteAnthropicError(w http.ResponseWriter, status int, msg string) {
+	WriteJSON(w, status, map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    errType(status),
+			"message": msg,
+		},
+	})
+}
+
 func errType(status int) string {
 	switch status {
 	case http.StatusUnauthorized:
