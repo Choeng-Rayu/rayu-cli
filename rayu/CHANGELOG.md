@@ -2,6 +2,9 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.4.479 - 2026-07-23
+- Fixed the Ask User Question tool not working in full manage (full-control) permission mode
+
 ## 1.4.478 - 2026-07-21
 - Improved the Ask User Question tool for all LLM providers
 - Fixed the Gateway upstream error
