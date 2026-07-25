@@ -112,6 +112,24 @@ export function getBinaryName(platform: string): string {
   return platform.startsWith('win32') ? 'rayu.exe' : 'rayu'
 }
 
+/**
+ * Does `fileName` look like a superseded Windows executable left behind by
+ * updateSymlink()'s rename-then-copy strategy (`<binary>.old.<timestamp>`)?
+ *
+ * Derived from getBinaryName() rather than hardcoded: this check previously
+ * tested for `claude.exe.old.<n>`, which stopped matching when the binary was
+ * renamed to rayu.exe. The branch became dead code, so every Windows update
+ * leaked another copy of the old executable into the install directory
+ * forever. Exported so the naming contract can be asserted in tests.
+ */
+export function isStaleWindowsExecutable(
+  fileName: string,
+  binaryName: string,
+): boolean {
+  const escaped = binaryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${escaped}\\.old\\.\\d+$`).test(fileName)
+}
+
 function getBaseDirectories() {
   const platform = getPlatform()
   const executableName = getBinaryName(platform)
@@ -1195,7 +1213,7 @@ export async function cleanupOldVersions(): Promise<void> {
       const files = await readdir(executableDir)
       let cleanedCount = 0
       for (const file of files) {
-        if (!/^claude\.exe\.old\.\d+$/.test(file)) continue
+        if (!isStaleWindowsExecutable(file, getBinaryName(getPlatform()))) continue
         try {
           await unlink(join(executableDir, file))
           cleanedCount++

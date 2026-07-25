@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { getRayuConfigHomeDir } from 'src/utils/envUtils.js'
-import { execNpmSync, isLikelyEacces } from 'src/utils/npmExec.js'
+import { execNpmSync, buildNpmRemediation, describeNpmError } from 'src/utils/npmExec.js'
 import { writeToStdout } from 'src/utils/process.js'
 
 function execNpmUninstallSync(): void {
@@ -53,26 +53,11 @@ export async function uninstall(args: string[] = []) {
     process.stderr.write(
       chalk.red(`\nFailed to uninstall ${MACRO.PACKAGE_URL}\n`),
     )
-    process.stderr.write('\nTry running manually:\n')
+    const detail = describeNpmError(err)
+    if (detail) process.stderr.write(`${detail}\n`)
     process.stderr.write(
-      chalk.bold(`  npm uninstall -g ${MACRO.PACKAGE_URL}\n`),
+      `${buildNpmRemediation('uninstall', MACRO.PACKAGE_URL, err)}\n`,
     )
-    if (isLikelyEacces(err)) {
-      process.stderr.write(
-        '\nThis looks like a permissions error on npm\'s global install\n' +
-          'directory. If Node was installed via nvm, Homebrew, Volta, or fnm,\n' +
-          'do NOT use sudo. Only use sudo if Node was installed system-wide\n' +
-          '(e.g. via apt/yum or the nodejs.org installer):\n' +
-          `  sudo npm uninstall -g ${MACRO.PACKAGE_URL}\n`,
-      )
-    } else {
-      process.stderr.write(
-        'Or with sudo if you installed with elevated permissions:\n',
-      )
-      process.stderr.write(
-        chalk.bold(`  sudo npm uninstall -g ${MACRO.PACKAGE_URL}\n`),
-      )
-    }
     process.exit(1)
     return
   }

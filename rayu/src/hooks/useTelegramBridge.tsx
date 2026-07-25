@@ -4,6 +4,7 @@ import {
   getBotToken,
   getTelegramMode,
   readTelegramConfig,
+  telegramTransportKey,
 } from '../telegram/telegramConfig.js'
 import {
   initTelegramBridge,
@@ -56,6 +57,10 @@ export function useTelegramBridge(
 
   // Only activate the bridge when the user has explicitly connected via /telegram-bot.
   const bridgeActive = useAppState(s => s.telegramBridgeActive)
+  // Which bot the bridge should be talking to. Re-running the effect on a change
+  // is what makes switching bots mid-session actually switch: `token` and the
+  // hosted router below are captured once per bridge instance.
+  const transportKey = useAppState(s => s.telegramTransportKey)
 
   useEffect(() => {
     if (!bridgeActive) return
@@ -67,12 +72,19 @@ export function useTelegramBridge(
       // Shared bot needs a signed-in Rayu session; route all Telegram calls
       // through the backend. A sentinel token satisfies the (now unused) token
       // params — the hosted router ignores it.
-      if (!hasRayuSession()) return
+      if (!hasRayuSession()) {
+        // Don't leave the session claiming to be connected when it isn't.
+        setAppState(prev => ({ ...prev, telegramBridgeActive: false }))
+        return
+      }
       setHostedRouter(createHostedRouter())
       token = 'hosted'
     } else {
       const byo = getBotToken()
-      if (!byo) return
+      if (!byo) {
+        setAppState(prev => ({ ...prev, telegramBridgeActive: false }))
+        return
+      }
       setHostedRouter(null)
       token = byo
     }
@@ -82,12 +94,20 @@ export function useTelegramBridge(
 
     setAppState(prev => ({ ...prev, telegramPermissionCallbacks: handle.permissionCallbacks }))
 
+    // The bot this bridge instance was built for. Cleanup compares it against
+    // live config to tell a genuine stop apart from a hand-off to another bot
+    // (the effect re-running because the transport changed).
+    const builtTransport = telegramTransportKey()
+
     return () => {
       void handle.endTurn()
+      const chatId = readTelegramConfig().linkedChatId
+      const isHandoff = telegramTransportKey() !== builtTransport
       // Notify the linked chat that the CLI session closed (routes via the
       // hosted backend or directly, depending on mode). Clear the hosted router
       // only AFTER that notice is sent so it doesn't race to Telegram directly.
-      const chatId = readTelegramConfig().linkedChatId
+      // On a hand-off this goes out over the OLD token, which is exactly what
+      // stops the previous bot from looking still-connected.
       const notice =
         chatId !== undefined
           ? sendMessage(token, chatId, '🔌 Session closed — rayu-cli disconnected.').catch(() => {})
@@ -100,10 +120,13 @@ export function useTelegramBridge(
       setAppState(prev => ({
         ...prev,
         telegramPermissionCallbacks: undefined,
-        telegramBridgeActive: false,
+        // Only lower the latch when this really is the end of the connection.
+        // On a hand-off the next effect run is already starting a replacement
+        // bridge, and clearing the flag here would immediately tear it down.
+        ...(isHandoff ? {} : { telegramBridgeActive: false }),
       }))
     }
-  }, [bridgeActive, setAppState])
+  }, [bridgeActive, transportKey, setAppState])
 
   // Mirror completed user/assistant messages after each turn.
   useEffect(() => {

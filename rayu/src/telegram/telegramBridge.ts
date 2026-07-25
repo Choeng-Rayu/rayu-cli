@@ -76,8 +76,61 @@ function linkedChatId(): number | undefined {
 function parseCommand(text: string): { cmd: string; arg: string } {
   const trimmed = text.trim()
   const space = trimmed.indexOf(' ')
-  if (space === -1) return { cmd: trimmed, arg: '' }
-  return { cmd: trimmed.slice(0, space), arg: trimmed.slice(space + 1).trim() }
+  const rawCmd = space === -1 ? trimmed : trimmed.slice(0, space)
+  const arg = space === -1 ? '' : trimmed.slice(space + 1).trim()
+  // Telegram appends the bot mention in groups: "/model@rayu_bot sonnet".
+  const cmd = rawCmd.startsWith('/') ? (rawCmd.split('@')[0] ?? rawCmd) : rawCmd
+  return { cmd, arg }
+}
+
+/**
+ * Telegram command names are restricted to [a-z0-9_] and 32 chars, so a CLI
+ * command like `disconnect-telegram` is advertised as `/disconnect_telegram`.
+ */
+export function toTelegramCommandName(name: string): string {
+  return name
+    .replace(/-/g, '_')
+    .replace(/[^a-z0-9_]/gi, '')
+    .toLowerCase()
+    .slice(0, 32)
+}
+
+/**
+ * Reverse map of toTelegramCommandName: the name Telegram sends → the real CLI
+ * command name. Without it, a user tapping the autocomplete entry the bridge
+ * itself registered gets "Unknown skill: disconnect_telegram", because the
+ * underscored name matches no command in the registry. It also un-hides commands
+ * from the blocked list, whose entries are the real hyphenated names.
+ *
+ * Only names that actually change are stored, so a lookup miss means "use it
+ * verbatim". First registration wins, matching setMyCommands' dedupe order.
+ */
+export function buildTelegramCommandAliases(names: string[]): Map<string, string> {
+  const aliases = new Map<string, string>()
+  for (const name of names) {
+    const safe = toTelegramCommandName(name)
+    if (safe && safe !== name && !aliases.has(safe)) aliases.set(safe, name)
+  }
+  return aliases
+}
+
+/** Cached per process: the command registry is loaded once. */
+let commandAliasesPromise: Promise<Map<string, string>> | null = null
+
+function loadCommandAliases(): Promise<Map<string, string>> {
+  if (!commandAliasesPromise) {
+    commandAliasesPromise = (async () => {
+      try {
+        const { getCommands } = await import('../commands.js')
+        const { getCwd } = await import('../utils/cwd.js')
+        return buildTelegramCommandAliases((await getCommands(getCwd())).map(c => c.name))
+      } catch {
+        // Registry unavailable — fall back to using names verbatim.
+        return new Map<string, string>()
+      }
+    })()
+  }
+  return commandAliasesPromise
 }
 
 /** Extract image blocks from WrappedMessage content for Telegram sendPhoto. */
@@ -284,6 +337,12 @@ async function handleUpdate(
         chatId,
         `✅ Linked to ${hostname()}${username ? ` as @${username}` : ''}.\n\nSend any message to drive the CLI. Use /disconnect to unlink.\n\nTip: Use /connect to set up your AI provider.`,
       )
+    } else if (chatId === linkedChatId()) {
+      // Telegram redelivers any update it hasn't had confirmed (the bridge can be
+      // torn down between handling an update and issuing the next getUpdates), so
+      // the same /start can arrive twice. The first one consumed the token and
+      // already sent the confirmation — telling an already-linked chat that its
+      // token expired is just wrong, so stay silent.
     } else {
       await sendMessage(options.token, chatId, '❌ Invalid or expired token.')
     }
@@ -332,16 +391,20 @@ async function handleUpdate(
   // These would render a React UI in the terminal and block the message queue
   // until someone physically presses ESC/Enter at the terminal.
   if (text.startsWith('/')) {
-    const cmdName = cmd.slice(1) // strip leading /
+    // Translate the Telegram-safe name back to the real command before both the
+    // blocked-list check and the enqueue — the blocked list holds real names, and
+    // the REPL can only resolve real names.
+    const typed = cmd.slice(1).toLowerCase()
+    const cmdName = (await loadCommandAliases()).get(typed) ?? typed
     if (TELEGRAM_BLOCKED_COMMANDS.has(cmdName)) {
       await sendMessage(
         options.token,
         chatId,
-        `⚠️ \`${cmd}\` requires the terminal UI and cannot be used from Telegram.\n\nPlease run it directly in rayu-cli.`,
+        `⚠️ \`/${cmdName}\` requires the terminal UI and cannot be used from Telegram.\n\nPlease run it directly in rayu-cli.`,
       )
       return
     }
-    enqueue({ value: text, mode: 'prompt' })
+    enqueue({ value: arg ? `/${cmdName} ${arg}` : `/${cmdName}`, mode: 'prompt' })
     return
   }
 
@@ -371,9 +434,7 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
     const fromCli = allCommands
       .filter(cmd => !cmd.isHidden)
       .map(cmd => ({
-        // Telegram only allows [a-z0-9_] in command names — replace hyphens with underscores,
-        // strip any other invalid characters, and truncate to 32.
-        command: cmd.name.replace(/-/g, '_').replace(/[^a-z0-9_]/gi, '').toLowerCase().slice(0, 32),
+        command: toTelegramCommandName(cmd.name),
         description: (cmd.description || cmd.name).slice(0, 256),
       }))
       // Drop commands whose name became empty or too short after sanitization.
@@ -613,6 +674,9 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
 
   // Register CLI commands with Telegram so they appear as autocomplete.
   void registerCommandsWithTelegram(options.token)
+  // Warm the reverse alias map so the first inbound /command doesn't have to wait
+  // on the registry load.
+  void loadCommandAliases()
 
   const poll = async (): Promise<void> => {
     while (running) {

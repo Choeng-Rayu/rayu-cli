@@ -457,6 +457,14 @@ export type AppState = DeepImmutable<{
   telegramPermissionCallbacks?: BridgePermissionCallbacks
   /** True when the user has explicitly activated the Telegram bridge via /telegram-bot in this session. */
   telegramBridgeActive?: boolean
+  /**
+   * Identity of the bot the bridge should be talking to (`telegramTransportKey()`
+   * — `hosted:<botUsername>` or `byo:<botId>`). The bridge captures its transport
+   * at init, so this is what tells it to tear down and rebuild when the user
+   * switches between the shared bot and their own token, or re-pairs with a
+   * different bot. Undefined until a connection is established.
+   */
+  telegramTransportKey?: string
   // Channel permission callbacks — permission prompts over Telegram/iMessage/etc.
   // Races against local UI + bridge + hooks + classifier via claim() in
   // interactiveHandler.ts. Constructed once in useManageMCPConnections.

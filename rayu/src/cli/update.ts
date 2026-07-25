@@ -1,6 +1,13 @@
 import chalk from 'chalk'
 import { isInBundledMode } from 'src/utils/bundledMode.js'
-import { describeNpmError, execNpmSync, isLikelyEacces } from 'src/utils/npmExec.js'
+import {
+  buildNpmRemediation,
+  describeNpmError,
+  execNpmSync,
+  IS_WINDOWS,
+  isLikelyWindowsFileLock,
+  scheduleWindowsDeferredInstall,
+} from 'src/utils/npmExec.js'
 import { writeToStdout } from 'src/utils/process.js'
 
 export async function update() {
@@ -57,32 +64,29 @@ async function updateNpmPackage() {
     process.stderr.write(chalk.red('\nFailed to install update\n'))
     const detail = describeNpmError(err)
     if (detail) process.stderr.write(`${detail}\n`)
-    process.stderr.write('\nTry manually:\n')
-    process.stderr.write(
-      chalk.bold(`  npm install -g ${MACRO.PACKAGE_URL}@latest\n`),
-    )
-    if (isLikelyEacces(err)) {
-      process.stderr.write(
-        '\nThis looks like a permissions error on npm\'s global install\n' +
-          'directory. If Node was installed via nvm, Homebrew, Volta, or fnm,\n' +
-          'do NOT use sudo — it installs into a root-owned path that will\n' +
-          'conflict with your user-owned Node version. Instead fix npm\'s\n' +
-          'global prefix, e.g.:\n' +
-          '  mkdir -p ~/.npm-global\n' +
-          '  npm config set prefix ~/.npm-global\n' +
-          '  export PATH=~/.npm-global/bin:$PATH   # add to your shell rc file\n' +
-          'Only use sudo if Node was installed system-wide (e.g. via apt/yum\n' +
-          'or the nodejs.org installer):\n' +
-          `  sudo npm install -g ${MACRO.PACKAGE_URL}@latest\n`,
-      )
-    } else {
-      process.stderr.write(
-        'Or with sudo if you have permission issues:\n',
-      )
-      process.stderr.write(
-        chalk.bold(`  sudo npm install -g ${MACRO.PACKAGE_URL}@latest\n`),
-      )
+
+    // Windows self-update recovery: npm could not overwrite our own launcher
+    // because the shell that started us is still holding it open. Nothing we
+    // do in-process can release that handle, so hand the install to a detached
+    // helper that waits for us to exit first. See isLikelyWindowsFileLock().
+    if (IS_WINDOWS && isLikelyWindowsFileLock(err)) {
+      const spec = `${MACRO.PACKAGE_URL}@latest`
+      if (scheduleWindowsDeferredInstall(spec)) {
+        process.stderr.write(
+          chalk.yellow(
+            '\nRayu could not replace its own files while it is running.\n',
+          ),
+        )
+        writeToStdout(
+          'A new window has opened to finish the update as soon as Rayu exits.\n' +
+            'Leave it open until it reports success, then reopen your terminal.\n',
+        )
+        process.exit(1)
+        return
+      }
     }
+
+    process.stderr.write(`${buildNpmRemediation('install', `${MACRO.PACKAGE_URL}@latest`, err)}\n`)
     process.exit(1)
     return
   }
