@@ -20,7 +20,6 @@ import {
   answerCallbackQuery,
   downloadFileAsBase64,
   editMessageText,
-  escapeHtml,
   getFile,
   getUpdates,
   sendChatAction,
@@ -30,6 +29,7 @@ import {
   setMyCommands,
   type TelegramUpdate,
 } from './telegramApi.js'
+import { renderTelegramHtml } from './telegramMarkdown.js'
 import {
   createTelegramPermissionCallbacks,
   handlePermissionReply,
@@ -759,7 +759,7 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
       // ── File change review (own compact message) ─────────────────────────────
       for (const message of messages) {
         if (isFileChangeReviewMessage(message)) {
-          void sendMessage(options.token, chatId, formatFileChangeReview(message)).catch(() => {})
+          void sendMessage(options.token, chatId, formatFileChangeReview(message), 'HTML').catch(() => {})
         }
       }
 
@@ -769,7 +769,7 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
         // Build activity summary (💭 + tool lines + errors), then EDIT that message
         // to prepend the summary → one final message with everything.
         const activitySummary = formatActivitySummary(messages, turnHadThinking, false)
-        const aiText = lastTurnText.trim() ? escapeHtml(lastTurnText) : ''
+        const aiText = lastTurnText.trim() ? renderTelegramHtml(lastTurnText) : ''
         const combined = [activitySummary, aiText].filter(Boolean).join('\n\n')
         if (combined) {
           void editMessageText(options.token, chatId, lastTurnMessageId, combined, 'HTML').catch(() => {

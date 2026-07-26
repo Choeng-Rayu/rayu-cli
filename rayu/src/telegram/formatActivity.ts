@@ -13,6 +13,7 @@
  */
 
 import { escapeHtml } from './telegramApi.js'
+import { renderTelegramHtml } from './telegramMarkdown.js'
 
 // ---- File change review types (mirrors pendingFileChanges.ts shapes) ----
 export interface FileChangeReviewFile {
@@ -230,7 +231,8 @@ export function formatActivitySummary(
 
   for (const message of messages) {
     if (message.isMeta) continue
-    const isAssistant = message.message?.role === 'assistant'
+    const isAssistant =
+      message.type === 'assistant' || message.message?.role === 'assistant'
     for (const block of blocksOf(message)) {
       switch (block.type) {
         case 'thinking':
@@ -250,7 +252,9 @@ export function formatActivitySummary(
           break
         case 'text':
           if (includeText && isAssistant && block.text?.trim()) {
-            textLines.push(escapeHtml(block.text.trim()))
+            // Render the model's Markdown into Telegram HTML so headings, code
+            // blocks, lists, and emphasis display properly instead of raw syntax.
+            textLines.push(renderTelegramHtml(block.text.trim()))
           }
           break
       }
@@ -272,9 +276,10 @@ export function formatActivitySummary(
 }
 
 /**
- * Extract the first meaningful error line from a tool_result content block.
+ * Extract the first meaningful line from a tool_result content block, capped at
+ * `max` chars. Shared by error surfacing and the per-message result preview.
  */
-function extractErrorLine(content: unknown): string {
+function extractFirstLine(content: unknown, max = 200): string {
   let text = ''
   if (typeof content === 'string') {
     text = content
@@ -285,9 +290,13 @@ function extractErrorLine(content: unknown): string {
   } else {
     text = String(content ?? '')
   }
-  // Return first non-empty line, capped at 200 chars
   const firstLine = text.trim().split('\n').find(l => l.trim()) ?? text.trim()
-  return firstLine.slice(0, 200)
+  return firstLine.slice(0, max)
+}
+
+/** First error line from a tool_result content block, capped at 200 chars. */
+function extractErrorLine(content: unknown): string {
+  return extractFirstLine(content, 200)
 }
 
 /**
@@ -317,40 +326,39 @@ function blocksOf(message: WrappedMessage): ContentBlock[] {
 /**
  * Format one REPL message into Telegram HTML, or null if nothing to show.
  *
- * Rules:
- * - assistant text → full text, HTML-escaped
- * - tool_use       → icon + name only ("Running Bash", "🤖 Agent ...", "📖 Read")
- * - tool_result    → only on error: "⚠️ <first error line>"
- * - thinking       → skipped
- * - user messages  → skipped (they already came from the user)
+ * A general-purpose per-message renderer (distinct from the curated
+ * formatActivitySummary used by the live bridge): it surfaces every block so it
+ * can be used for inspection/replay.
+ * - assistant text → Markdown rendered to Telegram HTML
+ * - thinking       → "💭 <text>"
+ * - tool_use       → "<icon> <b>ToolName</b>"
+ * - tool_result    → "↳ <first line>" (truncated)
+ * - user text      → skipped (it's input we already sent)
  */
 export function formatMessage(message: WrappedMessage, _label?: ToolLabeler): string | null {
   if (message.isMeta) return null
 
-  const isAssistant = message.message?.role === 'assistant'
+  const isAssistant =
+    message.type === 'assistant' || message.message?.role === 'assistant'
   const parts: string[] = []
 
   for (const block of blocksOf(message)) {
     switch (block.type) {
       case 'text':
         // Only show AI text from assistant messages — user text blocks are inputs we sent
-        if (isAssistant && block.text?.trim()) parts.push(escapeHtml(block.text.trim()))
+        if (isAssistant && block.text?.trim()) parts.push(renderTelegramHtml(block.text.trim()))
         break
       case 'thinking':
-        // Skipped — thinking is internal, not shown in Telegram
+        if (block.thinking?.trim()) parts.push(`💭 ${escapeHtml(block.thinking.trim())}`)
         break
       case 'tool_use': {
-        // tool_use only appears in assistant messages
         const name = block.name ?? 'tool'
-        parts.push(formatToolUseLine(name, block.input))
+        parts.push(`${toolIcon(name)} <b>${escapeHtml(name)}</b>`)
         break
       }
       case 'tool_result': {
-        // tool_result appears in user messages — only surface errors
-        if (isToolResultError(block)) {
-          const errLine = extractErrorLine(block.content)
-          if (errLine) parts.push(`⚠️ ${escapeHtml(errLine)}`)
-        }
+        const line = extractFirstLine(block.content, 500)
+        if (line) parts.push(`↳ ${escapeHtml(line)}`)
         break
       }
     }
@@ -373,11 +381,27 @@ export function isFileChangeReviewMessage(msg: unknown): msg is FileChangeReview
 }
 
 /**
- * Format a file change review as a compact single-line Telegram message.
- * Example: "📁 3 files  +12  −5"
+ * Format a file change review as an organized Telegram HTML message: a bold
+ * header with totals, one line per file (path in monospace, +adds/−removals,
+ * ✨ for new files), truncated to 8 files with an overflow count, and a footer
+ * pointing at the /undo and /review_detail commands. Sent with parse_mode HTML.
  */
 export function formatFileChangeReview(msg: FileChangeReviewMessage): string {
   const { review } = msg
   const fileWord = review.totalFiles === 1 ? 'file' : 'files'
-  return `📁 ${review.totalFiles} ${fileWord}  +${review.totalAdditions}  −${review.totalRemovals}`
+  const header = `📝 <b>${review.totalFiles} ${fileWord} changed</b>  +${review.totalAdditions} −${review.totalRemovals}`
+
+  const MAX_FILES = 8
+  const lines = review.files.slice(0, MAX_FILES).map(f => {
+    const icon = f.isCreated ? '✨ ' : ''
+    const suffix = f.isCreated ? '  (new file)' : ''
+    return `  • ${icon}<code>${escapeHtml(f.displayPath)}</code>  +${f.additions} −${f.removals}${suffix}`
+  })
+  const overflow =
+    review.totalFiles > MAX_FILES ? `  … and ${review.totalFiles - MAX_FILES} more` : ''
+
+  const body = [...lines, overflow].filter(Boolean).join('\n')
+  const footer = '<i>/undo to revert · /review_detail for the full diff</i>'
+
+  return [header, body, footer].filter(Boolean).join('\n\n')
 }

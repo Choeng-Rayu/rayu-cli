@@ -39,6 +39,29 @@ export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+/**
+ * Strip Telegram HTML back to readable plain text. Used as the resend payload
+ * when Telegram rejects the HTML entities (see sendChunk / editMessageText),
+ * so the user still gets the message instead of a silent failure.
+ */
+export function stripTelegramHtml(html: string): string {
+  return html
+    .replace(/<a\s+href="[^"]*"\s*>/gi, '')
+    .replace(/<[^>]+>/g, '') // all remaining tags (b, i, code, pre, blockquote, …)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&') // ampersand last so it doesn't double-decode
+}
+
+/** True when a Telegram API error is caused by unparseable HTML entities. */
+function isHtmlParseError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /can't parse entities|parse entities|unsupported start tag|unclosed|can't find end/i.test(
+    msg,
+  )
+}
+
 /** One button in an inline keyboard row. */
 export interface InlineKeyboardButton {
   text: string
@@ -156,14 +179,37 @@ export async function sendMessage(
 ): Promise<number> {
   let lastId = 0
   for (const chunk of chunkText(text)) {
-    const result = await callApi(token, 'sendMessage', {
-      chat_id: chatId,
-      text: chunk,
-      ...(parseMode ? { parse_mode: parseMode } : {}),
-    })
-    lastId = (result as { message_id: number }).message_id
+    lastId = await sendChunk(token, chatId, chunk, parseMode)
   }
   return lastId
+}
+
+/**
+ * Send one chunk. If Telegram rejects the HTML (e.g. a tag split across a chunk
+ * boundary, or a renderer edge case), resend the same chunk as plain text so
+ * the user still receives it rather than nothing.
+ */
+async function sendChunk(
+  token: string,
+  chatId: number,
+  text: string,
+  parseMode?: 'HTML',
+): Promise<number> {
+  try {
+    const result = await callApi(token, 'sendMessage', {
+      chat_id: chatId,
+      text,
+      ...(parseMode ? { parse_mode: parseMode } : {}),
+    })
+    return (result as { message_id: number }).message_id
+  } catch (e) {
+    if (parseMode !== 'HTML' || !isHtmlParseError(e)) throw e
+    const result = await callApi(token, 'sendMessage', {
+      chat_id: chatId,
+      text: stripTelegramHtml(text),
+    })
+    return (result as { message_id: number }).message_id
+  }
 }
 
 export async function editMessageText(
@@ -183,6 +229,20 @@ export async function editMessageText(
   } catch (e) {
     // "message is not modified" is not a real error — content was identical, ignore it
     if (e instanceof Error && e.message.includes('not modified')) return
+    // Bad HTML — resend as plain text so the edit still lands.
+    if (parseMode === 'HTML' && isHtmlParseError(e)) {
+      try {
+        await callApi(token, 'editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: stripTelegramHtml(text).slice(0, MAX_MESSAGE_CHARS),
+        })
+        return
+      } catch (e2) {
+        if (e2 instanceof Error && e2.message.includes('not modified')) return
+        throw e2
+      }
+    }
     throw e
   }
 }

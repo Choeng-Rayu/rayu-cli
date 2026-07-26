@@ -20,6 +20,7 @@ import {
   writeTelegramConfig,
 } from '../src/telegram/telegramConfig.js'
 import { formatFileChangeReview, formatMessage, isFileChangeReviewMessage, toolIcon } from '../src/telegram/formatActivity.js'
+import { renderTelegramHtml, stripTelegramHtml } from '../src/telegram/telegramMarkdown.js'
 import { handlePermissionReply } from '../src/telegram/telegramPermissions.js'
 import {
   buildTelegramCommandAliases,
@@ -582,6 +583,137 @@ describe('formatFileChangeReview', () => {
   test('uses singular "file" for one file', () => {
     const msg = makeReview([{ displayPath: 'a.ts', additions: 1, removals: 0 }])
     expect(formatFileChangeReview(msg)).toContain('1 file')
+  })
+})
+
+// ---- Markdown → Telegram HTML rendering ----
+// The AI emits Markdown; Telegram's HTML parse_mode supports only a small tag
+// set. renderTelegramHtml must map Markdown to that set (degrading headings,
+// lists, tables, hr) and always emit balanced, escaped, valid HTML.
+describe('renderTelegramHtml', () => {
+  /** Count open vs close for each supported tag — output must always balance. */
+  function tagsBalanced(html: string): boolean {
+    const count = (re: RegExp) => (html.match(re) ?? []).length
+    // Opens use \b so attributed tags (<code class="language-ts">, <a href=…>) match.
+    return (
+      count(/<b>/g) === count(/<\/b>/g) &&
+      count(/<i>/g) === count(/<\/i>/g) &&
+      count(/<s>/g) === count(/<\/s>/g) &&
+      count(/<u>/g) === count(/<\/u>/g) &&
+      count(/<code\b/g) === count(/<\/code>/g) &&
+      count(/<pre\b/g) === count(/<\/pre>/g) &&
+      count(/<blockquote\b/g) === count(/<\/blockquote>/g) &&
+      count(/<a\b/g) === count(/<\/a>/g)
+    )
+  }
+
+  test('passes plain text through unchanged', () => {
+    expect(renderTelegramHtml('Hello world')).toBe('Hello world')
+  })
+
+  test('returns empty string for blank input', () => {
+    expect(renderTelegramHtml('')).toBe('')
+    expect(renderTelegramHtml('   \n  ')).toBe('')
+  })
+
+  test('renders bold and italic', () => {
+    expect(renderTelegramHtml('**bold**')).toBe('<b>bold</b>')
+    expect(renderTelegramHtml('*italic*')).toBe('<i>italic</i>')
+  })
+
+  test('renders nested emphasis', () => {
+    expect(renderTelegramHtml('**a _b_**')).toBe('<b>a <i>b</i></b>')
+  })
+
+  test('renders inline code and does not format inside it', () => {
+    expect(renderTelegramHtml('`x`')).toBe('<code>x</code>')
+    expect(renderTelegramHtml('`**not bold**`')).toBe('<code>**not bold**</code>')
+  })
+
+  test('renders fenced code with and without a language', () => {
+    expect(renderTelegramHtml('```python\nprint(1)\n```')).toContain(
+      '<pre><code class="language-python">print(1)</code></pre>',
+    )
+    expect(renderTelegramHtml('```\nplain\n```')).toContain('<pre>plain</pre>')
+  })
+
+  test('renders headings as bold (h1 underlined)', () => {
+    expect(renderTelegramHtml('# Title')).toContain('<b><u>Title</u></b>')
+    expect(renderTelegramHtml('## Sub')).toContain('<b>Sub</b>')
+  })
+
+  test('renders safe links and drops unsafe schemes', () => {
+    expect(renderTelegramHtml('[Rayu](https://rayucode.com)')).toBe(
+      '<a href="https://rayucode.com">Rayu</a>',
+    )
+    const unsafe = renderTelegramHtml('[x](javascript:alert(1))')
+    expect(unsafe).not.toContain('<a')
+    expect(unsafe).toContain('x')
+  })
+
+  test('renders bullet and ordered lists', () => {
+    const ul = renderTelegramHtml('- a\n- b')
+    expect(ul).toContain('• a')
+    expect(ul).toContain('• b')
+    const ol = renderTelegramHtml('1. first\n2. second')
+    expect(ol).toContain('1. first')
+    expect(ol).toContain('2. second')
+  })
+
+  test('renders blockquotes', () => {
+    const q = renderTelegramHtml('> quoted')
+    expect(q).toContain('<blockquote>')
+    expect(q).toContain('quoted')
+    expect(q).toContain('</blockquote>')
+  })
+
+  test('renders a horizontal rule as a divider', () => {
+    expect(renderTelegramHtml('---')).toContain('──────────')
+  })
+
+  test('renders a table as a monospace pre block', () => {
+    const table = renderTelegramHtml('| A | B |\n|---|---|\n| 1 | 2 |')
+    expect(table).toContain('<pre>')
+    expect(table).toContain('A')
+    expect(table).toContain('2')
+  })
+
+  test('escapes HTML special characters in text', () => {
+    expect(renderTelegramHtml('a < b & c > d')).toBe('a &lt; b &amp; c &gt; d')
+  })
+
+  test('escapes HTML special characters inside code', () => {
+    expect(renderTelegramHtml('`a<b> & c`')).toBe('<code>a&lt;b&gt; &amp; c</code>')
+  })
+
+  test('produces balanced tags for partial/streaming markdown', () => {
+    // Mid-stream buffers end inside a token — output must still be valid HTML.
+    for (const partial of ['**bold', 'text `code', '```js\nconst x =', '# Head', '> quo']) {
+      const html = renderTelegramHtml(partial)
+      expect(tagsBalanced(html)).toBe(true)
+    }
+  })
+
+  test('does not throw on messy real-world markdown', () => {
+    const md = '## Plan\n\n1. Do **X**\n2. Run `cmd`\n\n```ts\nconst a = 1 < 2\n```\n\n> note\n\n| a | b |\n|--|--|\n| 1 | 2 |'
+    const html = renderTelegramHtml(md)
+    expect(tagsBalanced(html)).toBe(true)
+    expect(html).toContain('<b>X</b>')
+    expect(html).toContain('<code>cmd</code>')
+    expect(html).toContain('const a = 1 &lt; 2')
+  })
+})
+
+describe('stripTelegramHtml', () => {
+  test('removes tags and decodes entities', () => {
+    expect(stripTelegramHtml('<b>x</b>')).toBe('x')
+    expect(stripTelegramHtml('<a href="https://x.com">link</a>')).toBe('link')
+    expect(stripTelegramHtml('&lt;div&gt; &amp; &quot;q&quot;')).toBe('<div> & "q"')
+  })
+
+  test('round-trips rendered markdown back to readable text', () => {
+    const html = renderTelegramHtml('**bold** and `code`')
+    expect(stripTelegramHtml(html)).toBe('bold and code')
   })
 })
 
