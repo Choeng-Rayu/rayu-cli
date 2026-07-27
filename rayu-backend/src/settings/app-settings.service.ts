@@ -4,7 +4,8 @@ import { PrismaService } from '../prisma/prisma.service'
 
 export interface SettingsPatch {
   baselineCreditsPer1M?: number
-  topupCentsPer1kCredits?: number
+  creditsPerDollar?: number
+  minTopupCents?: number
   maxConcurrentStreams?: number
   maxTokensPerRequest?: number
   maxRequestsPer5h?: number

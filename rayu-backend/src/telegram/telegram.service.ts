@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   type OnModuleInit,
@@ -8,17 +9,23 @@ import type { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import {
   tgCall,
+  tgDownloadFile,
   tgGetMe,
   tgGetUpdates,
   tgSendMessage,
   type TelegramUpdate,
 } from './telegram.client'
+import { grantFileIds, hasFileGrant } from './telegram.file-grants'
 import {
+  collectFileIds,
   generatePairingCode,
   isExpired,
+  isPlausibleFileId,
+  isSafeTelegramFilePath,
   parseStartCommand,
   RELAY_ALLOWED_METHODS,
   RELAY_CHAT_SCOPED_METHODS,
+  resolveImageMediaType,
   routeUpdate,
   unmatchedPairingReply,
   updateChatId,
@@ -30,6 +37,8 @@ const PAIRING_TTL_MS = 10 * 60 * 1000 // 10 minutes
 const INBOUND_LONG_POLL_MS = 25_000
 const INBOUND_POLL_STEP_MS = 1_000
 const INBOUND_BATCH = 50
+/** Hard cap on an inbound image download (Telegram's own bot limit is 20 MB). */
+const MAX_INBOUND_FILE_BYTES = 10 * 1024 * 1024
 
 export interface BotInfo {
   configured: boolean
@@ -196,6 +205,11 @@ export class TelegramService implements OnModuleInit {
         const link = await this.prisma.telegramLink.findUnique({
           where: { userId },
         })
+        // Record which inbound files this user is now allowed to download. Done
+        // at delivery time because the rows are deleted on the next ack.
+        for (const row of rows) {
+          grantFileIds(userId, collectFileIds(row.payload))
+        }
         return {
           linked: !!link,
           updates: rows.map((r) => ({ id: r.id, update: r.payload })),
@@ -203,6 +217,90 @@ export class TelegramService implements OnModuleInit {
       }
       await sleep(INBOUND_POLL_STEP_MS)
     }
+  }
+
+  /**
+   * Serve an inbound image the user sent to the shared bot.
+   *
+   * SECURITY. A Telegram `file_id` is a global handle and the shared bot has
+   * seen every linked user's files, so an id alone proves nothing. Three gates:
+   *  1. the route is JWT-guarded and scoped to `user.id` (caller identity);
+   *  2. the id must have been GRANTED to this user — recorded when the update
+   *     carrying it was delivered to them (`grantInboundFiles`), or still
+   *     present in one of their undelivered inbound rows. Another user's id is
+   *     a 403, so ids cannot be probed;
+   *  3. only images, only up to MAX_INBOUND_FILE_BYTES.
+   * The shared bot token never leaves the backend: bytes are returned inline,
+   * never a Telegram URL.
+   *
+   * Grants live in memory with a TTL. Inbound rows are deleted as soon as the
+   * CLI acks them, so a DB-only check would be racy; a restart (or a second
+   * backend instance that did not serve the poll) simply means the user re-sends
+   * the image — no security consequence, only that one retry.
+   */
+  async downloadInboundFile(
+    userId: number,
+    fileId: string,
+  ): Promise<{ base64: string; mediaType: string; size: number }> {
+    if (!this.configured) {
+      throw new BadRequestException('shared telegram bot is not configured')
+    }
+    if (!isPlausibleFileId(fileId)) {
+      throw new BadRequestException('invalid file_id')
+    }
+    const link = await this.prisma.telegramLink.findUnique({ where: { userId } })
+    if (!link) throw new BadRequestException('telegram not linked')
+
+    if (!(await this.mayReadFile(userId, fileId))) {
+      // Deliberately not "unknown file" — a caller must not be able to tell
+      // "exists but not yours" from "does not exist".
+      throw new ForbiddenException('file not available for this account')
+    }
+
+    const info = (await tgCall(this.token, 'getFile', { file_id: fileId })) as {
+      file_path?: string
+      file_size?: number
+    }
+    const filePath = info.file_path ?? ''
+    if (!isSafeTelegramFilePath(filePath)) {
+      throw new BadRequestException('unsupported file')
+    }
+    if ((info.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
+      throw new BadRequestException('file too large')
+    }
+
+    const { buffer, contentType } = await tgDownloadFile(
+      this.token,
+      filePath,
+      MAX_INBOUND_FILE_BYTES,
+    ).catch(() => {
+      // Never leak the URL (it contains the shared bot token) in the error.
+      throw new BadRequestException('could not download file')
+    })
+
+    const mediaType = resolveImageMediaType(filePath, contentType)
+    if (!mediaType) {
+      throw new BadRequestException('only image files can be sent to the CLI')
+    }
+
+    return {
+      base64: buffer.toString('base64'),
+      mediaType,
+      size: buffer.byteLength,
+    }
+  }
+
+  /** True when this user has been granted (or still owns) the file id. */
+  private async mayReadFile(userId: number, fileId: string): Promise<boolean> {
+    if (hasFileGrant(userId, fileId)) return true
+    // Fall back to their still-undelivered inbound rows.
+    const rows = await this.prisma.telegramInbound.findMany({
+      where: { userId },
+      orderBy: { id: 'desc' },
+      take: INBOUND_BATCH,
+      select: { payload: true },
+    })
+    return rows.some((row) => collectFileIds(row.payload).includes(fileId))
   }
 
   /**

@@ -1,0 +1,14 @@
+-- Retire providers.keyEnv: API keys now live in provider_api_keys, encrypted.
+--
+-- Until now a provider row named an ENVIRONMENT VARIABLE and the gateway read the
+-- secret from its own process env. That made adding a provider a deploy step and
+-- gave every key of a provider a single shared health state. Keys are now
+-- individual encrypted rows (migration 0000000000011) with per-key rotation and
+-- cooldown, so the column has no remaining reader.
+--
+-- CUTOVER (deliberate, scheduled): after this migration a provider has no key
+-- until an admin adds one in the dashboard (Providers → <name> → Add Key). Hosted
+-- models for that provider return "provider key not configured" in the meantime.
+-- The env vars themselves are untouched — nothing reads them, so they can be
+-- removed from the deployment once every provider has its keys entered.
+ALTER TABLE `providers` DROP COLUMN `keyEnv`;

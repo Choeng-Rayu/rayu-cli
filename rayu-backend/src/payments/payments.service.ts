@@ -351,10 +351,12 @@ export class PaymentsService {
   }
 
   /**
-   * Create a pay-as-you-go top-up KHQR. The USD price is derived from the
-   * admin-configured topupCentsPer1kCredits rate. Creates a pending payment +
-   * a pending credit_topups row linked by paymentId; the credits are granted
-   * when the payment is confirmed (Bakong: checkStatus; ABA: Telegram userbot).
+   * Create a pay-as-you-go top-up KHQR. The USD price comes from the
+   * admin-configured creditsPerDollar rate, and the purchase must be worth at
+   * least minTopupCents (default $1) — a 5¢ QR is not worth a payment round trip
+   * and most wallets refuse trivial amounts. Creates a pending payment + a
+   * pending credit_topups row linked by paymentId; the credits are granted when
+   * the payment is confirmed (Bakong: checkStatus; ABA: Telegram userbot).
    */
   async createTopupKhqr(
     userId: number,
@@ -362,13 +364,19 @@ export class PaymentsService {
     method: PaymentMethod = 'aba',
   ) {
     const settings = await this.settings.get()
-    const ratePer1k = settings.topupCentsPer1kCredits
-    if (!ratePer1k || ratePer1k <= 0) {
+    const creditsPerDollar = settings.creditsPerDollar
+    if (!creditsPerDollar || creditsPerDollar <= 0) {
       throw new BadRequestException('Top-up is not available')
     }
-    const amountCents = Math.ceil((credits / 1000) * ratePer1k)
-    if (amountCents <= 0) {
-      throw new BadRequestException('Top-up amount too small')
+    // Round UP: a buyer never receives credits that were not paid for.
+    const amountCents = Math.ceil((credits / creditsPerDollar) * 100)
+    const minCents = Math.max(1, settings.minTopupCents)
+    if (amountCents < minCents) {
+      // Say what to do, in the unit the user chose (credits), not just "too small".
+      const minCredits = Math.ceil((minCents / 100) * creditsPerDollar)
+      throw new BadRequestException(
+        `Minimum top-up is $${(minCents / 100).toFixed(2)} (${minCredits.toLocaleString()} credits)`,
+      )
     }
 
     // Reuse a still-valid pending top-up QR on refresh (same intent = same

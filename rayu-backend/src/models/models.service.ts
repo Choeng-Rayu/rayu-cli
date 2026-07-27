@@ -4,20 +4,19 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common'
-import { Prisma, type HostedModel } from '@prisma/client'
+import { Prisma, type HostedModel, type Provider } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { MODEL_SEED } from './models.constants'
 
-// Providers turned OFF via RAYU_DISABLED_PROVIDERS (comma-separated) are hidden
-// from USERS — the entitlement + user catalog exclude their models — mirroring
-// the gateway's zero-code provider disable (both read the same env). The admin
-// catalog (findAll) still shows everything so it stays manageable. Read once.
-const DISABLED_PROVIDERS = new Set(
-  (process.env.RAYU_DISABLED_PROVIDERS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
-)
+/**
+ * A hosted model with its provider row attached. Everything about ROUTING (wire
+ * format, base URL, auth scheme, key env) lives on the provider, so callers that
+ * need to know where a model goes must load it this way.
+ */
+export type HostedModelWithProvider = HostedModel & { provider: Provider }
+
+/** Include clause used by every read path, so provider is always populated. */
+const WITH_PROVIDER = { provider: true } as const
 
 /** Claude model families used for the catalog family-consistency guard. */
 type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'other'
@@ -50,18 +49,25 @@ export function isModelFamilyConsistent(
 
 export interface ModelPatch {
   label?: string
-  provider?: string
-  upstreamBaseUrl?: string
+  // Upstream provider, by providers.id. Base URL / wire format / auth all come
+  // from that row, so a model no longer carries any routing config of its own.
+  providerId?: number
   upstreamModelId?: string
   inputPricePer1MCents?: number
   outputPricePer1MCents?: number
+  // The four admin-entered credit charges (credits per 1M tokens). Used verbatim
+  // by the gateway; creditMultiplier is the INPUT charge.
   creditMultiplier?: number
-  // Allow explicit null (= "not configured", the gateway falls back to its
-  // own default) so the admin UI can clear the field back to inherited
-  // behavior — matches ModelFieldsDto's cacheRead/cacheWriteCreditMultiplier.
-  cacheReadCreditMultiplier?: number | null
-  cacheWriteCreditMultiplier?: number | null
+  outputCreditMultiplier?: number
+  cacheReadCreditMultiplier?: number
+  cacheWriteCreditMultiplier?: number
   allowedPlanCodes?: string[]
+  // Context window in tokens. Explicit null clears it back to "unknown", which
+  // makes the CLI fall back to its own default for the model.
+  contextWindow?: number | null
+  supportsReasoning?: boolean
+  supportsImage?: boolean
+  supportsTools?: boolean
   enabled?: boolean
 }
 
@@ -75,34 +81,38 @@ export class ModelsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(): Promise<HostedModel[]> {
-    return this.prisma.hostedModel.findMany({ orderBy: { id: 'asc' } })
-  }
-
-  /** All ENABLED hosted models (the catalog shown to every signed-in user). */
-  async findEnabled(): Promise<HostedModel[]> {
-    const models = await this.prisma.hostedModel.findMany({
-      where: { enabled: true },
+  findAll(): Promise<HostedModelWithProvider[]> {
+    return this.prisma.hostedModel.findMany({
       orderBy: { id: 'asc' },
+      include: WITH_PROVIDER,
     })
-    return models.filter((m) => !DISABLED_PROVIDERS.has(m.provider))
   }
 
-  findByCode(code: string): Promise<HostedModel | null> {
-    return this.prisma.hostedModel.findUnique({ where: { code } })
+  /**
+   * All ENABLED hosted models (the catalog shown to every signed-in user).
+   * Models of a DISABLED provider are excluded at the database level — that
+   * single flag is the provider kill switch (it replaced the gateway's old
+   * RAYU_DISABLED_PROVIDERS env var, and the gateway honours the same row).
+   */
+  findEnabled(): Promise<HostedModelWithProvider[]> {
+    return this.prisma.hostedModel.findMany({
+      where: { enabled: true, provider: { enabled: true } },
+      orderBy: { id: 'asc' },
+      include: WITH_PROVIDER,
+    })
+  }
+
+  findByCode(code: string): Promise<HostedModelWithProvider | null> {
+    return this.prisma.hostedModel.findUnique({
+      where: { code },
+      include: WITH_PROVIDER,
+    })
   }
 
   /** Enabled models whose allowedPlanCodes include the given plan code. */
-  async findAllowedForPlan(planCode: string): Promise<HostedModel[]> {
-    const all = await this.prisma.hostedModel.findMany({
-      where: { enabled: true },
-      orderBy: { id: 'asc' },
-    })
-    return all.filter(
-      (m) =>
-        !DISABLED_PROVIDERS.has(m.provider) &&
-        this.allowedCodes(m).includes(planCode),
-    )
+  async findAllowedForPlan(planCode: string): Promise<HostedModelWithProvider[]> {
+    const all = await this.findEnabled()
+    return all.filter((m) => this.allowedCodes(m).includes(planCode))
   }
 
   /** Parse the allowedPlanCodes JSON into a string[]. */
@@ -111,7 +121,7 @@ export class ModelsService {
     return Array.isArray(v) ? (v as string[]) : []
   }
 
-  async create(data: CreateModel): Promise<HostedModel> {
+  async create(data: CreateModel): Promise<HostedModelWithProvider> {
     const upstreamModelId = data.upstreamModelId ?? data.code
     if (!isModelFamilyConsistent(data.code, upstreamModelId)) {
       throw new BadRequestException(
@@ -119,25 +129,42 @@ export class ModelsService {
           `A Sonnet code must map to a Sonnet upstream (etc.) so the routed model matches the selected model.`,
       )
     }
+    const provider = await this.requireProvider(data.providerId)
     return this.prisma.hostedModel.create({
       data: {
         code: data.code,
         label: data.label ?? data.code,
-        provider: data.provider ?? 'deepseek',
-        upstreamBaseUrl: data.upstreamBaseUrl ?? '',
+        providerId: provider.id,
         upstreamModelId,
         inputPricePer1MCents: data.inputPricePer1MCents ?? 0,
         outputPricePer1MCents: data.outputPricePer1MCents ?? 0,
+        // Defaults mirror the DB column defaults: output == input (a sane neutral
+        // start), cache-read at the 10% weight, cache-write == input.
         creditMultiplier: data.creditMultiplier ?? 1,
-        cacheReadCreditMultiplier: data.cacheReadCreditMultiplier ?? null,
-        cacheWriteCreditMultiplier: data.cacheWriteCreditMultiplier ?? null,
+        outputCreditMultiplier:
+          data.outputCreditMultiplier ?? data.creditMultiplier ?? 1,
+        cacheReadCreditMultiplier: data.cacheReadCreditMultiplier ?? 0.1,
+        cacheWriteCreditMultiplier:
+          data.cacheWriteCreditMultiplier ?? data.creditMultiplier ?? 1,
         allowedPlanCodes: (data.allowedPlanCodes ?? []) as Prisma.InputJsonValue,
+        contextWindow: data.contextWindow ?? null,
+        // Capabilities default to the PROVIDER's defaults, so adding a model to
+        // an image-capable provider doesn't silently start rejecting images.
+        supportsReasoning: data.supportsReasoning ?? provider.supportsReasoning,
+        supportsImage: data.supportsImage ?? provider.supportsImage,
+        // Tool support is the common case, so it defaults ON; the admin turns it
+        // off for the rare model that rejects tool definitions.
+        supportsTools: data.supportsTools ?? true,
         enabled: data.enabled ?? true,
       },
+      include: WITH_PROVIDER,
     })
   }
 
-  async update(code: string, patch: ModelPatch): Promise<HostedModel> {
+  async update(
+    code: string,
+    patch: ModelPatch,
+  ): Promise<HostedModelWithProvider> {
     const existing = await this.findByCode(code)
     if (!existing) throw new NotFoundException(`Unknown model: ${code}`)
     // Guard the routing field: the effective upstreamModelId must stay in the
@@ -152,9 +179,10 @@ export class ModelsService {
     }
     const data: Prisma.HostedModelUpdateInput = {}
     if (patch.label !== undefined) data.label = patch.label
-    if (patch.provider !== undefined) data.provider = patch.provider
-    if (patch.upstreamBaseUrl !== undefined)
-      data.upstreamBaseUrl = patch.upstreamBaseUrl
+    if (patch.providerId !== undefined) {
+      const provider = await this.requireProvider(patch.providerId)
+      data.provider = { connect: { id: provider.id } }
+    }
     if (patch.upstreamModelId !== undefined)
       data.upstreamModelId = patch.upstreamModelId
     if (patch.inputPricePer1MCents !== undefined)
@@ -163,14 +191,25 @@ export class ModelsService {
       data.outputPricePer1MCents = patch.outputPricePer1MCents
     if (patch.creditMultiplier !== undefined)
       data.creditMultiplier = patch.creditMultiplier
+    if (patch.outputCreditMultiplier !== undefined)
+      data.outputCreditMultiplier = patch.outputCreditMultiplier
     if (patch.cacheReadCreditMultiplier !== undefined)
       data.cacheReadCreditMultiplier = patch.cacheReadCreditMultiplier
     if (patch.cacheWriteCreditMultiplier !== undefined)
       data.cacheWriteCreditMultiplier = patch.cacheWriteCreditMultiplier
     if (patch.allowedPlanCodes !== undefined)
       data.allowedPlanCodes = patch.allowedPlanCodes as Prisma.InputJsonValue
+    if (patch.contextWindow !== undefined) data.contextWindow = patch.contextWindow
+    if (patch.supportsReasoning !== undefined)
+      data.supportsReasoning = patch.supportsReasoning
+    if (patch.supportsImage !== undefined) data.supportsImage = patch.supportsImage
+    if (patch.supportsTools !== undefined) data.supportsTools = patch.supportsTools
     if (patch.enabled !== undefined) data.enabled = patch.enabled
-    return this.prisma.hostedModel.update({ where: { code }, data })
+    return this.prisma.hostedModel.update({
+      where: { code },
+      data,
+      include: WITH_PROVIDER,
+    })
   }
 
   async remove(code: string): Promise<{ deleted: true }> {
@@ -187,28 +226,40 @@ export class ModelsService {
    * NEVER overwritten for an existing model — they are admin-owned. But when the
    * seed re-points a model at a DIFFERENT upstream PROVIDER than the stored row
    * (e.g. DeepSeek V4 moving from Ollama Cloud back onto the official `deepseek`
-   * Anthropic-compatible API), the ROUTING fields — provider, upstreamBaseUrl,
-   * upstreamModelId — are
-   * reconciled to the seed on boot. A provider change invalidates the old base
-   * URL + upstream model id, so all three move together.
+   * provider), the routing fields — providerId and upstreamModelId — are
+   * reconciled to the seed on boot, because a provider change invalidates the
+   * old upstream model id too.
    *
    * This is what makes a provider switch in MODEL_SEED actually take effect on
    * an EXISTING database: the plain create-if-missing seed left old rows
-   * pointing at the old upstream, so the gateway (which routes purely off
-   * hosted_models.provider/upstreamBaseUrl/upstreamModelId) kept hitting the old
-   * provider. The reconcile only triggers on a provider change, so an admin who
-   * merely tuned the upstream model id/tag for the SAME provider is untouched.
+   * pointing at the old upstream, so the gateway (which routes off the model's
+   * provider row + upstreamModelId) kept hitting the old provider. The reconcile
+   * only triggers on a provider change, so an admin who merely tuned the
+   * upstream model id/tag for the SAME provider is untouched.
+   *
+   * A seed entry naming a provider that does not exist is skipped with a warning
+   * rather than crashing boot — the provider registry is admin-editable, so a
+   * renamed/deleted provider must not take the whole service down.
    */
   async seedDefaults(): Promise<void> {
     for (const m of MODEL_SEED) {
+      const provider = await this.prisma.provider.findUnique({
+        where: { name: m.providerName },
+      })
+      if (!provider) {
+        this.logger.warn(
+          `seed skipped for model "${m.code}": provider "${m.providerName}" is not in the registry. ` +
+            `Add it in the admin dashboard (or restore its name) to seed this model.`,
+        )
+        continue
+      }
       const existing = await this.findByCode(m.code)
       if (existing) {
-        if (existing.provider !== m.provider) {
+        if (existing.providerId !== provider.id) {
           await this.prisma.hostedModel.update({
             where: { code: m.code },
             data: {
-              provider: m.provider,
-              upstreamBaseUrl: m.upstreamBaseUrl,
+              providerId: provider.id,
               upstreamModelId: m.upstreamModelId,
             },
           })
@@ -219,15 +270,19 @@ export class ModelsService {
         data: {
           code: m.code,
           label: m.label,
-          provider: m.provider,
-          upstreamBaseUrl: m.upstreamBaseUrl,
+          providerId: provider.id,
           upstreamModelId: m.upstreamModelId,
           inputPricePer1MCents: m.inputPricePer1MCents,
           outputPricePer1MCents: m.outputPricePer1MCents,
           creditMultiplier: m.creditMultiplier,
-          cacheReadCreditMultiplier: m.cacheReadCreditMultiplier ?? null,
-          cacheWriteCreditMultiplier: m.cacheWriteCreditMultiplier ?? null,
+          outputCreditMultiplier: m.outputCreditMultiplier ?? m.creditMultiplier,
+          cacheReadCreditMultiplier: m.cacheReadCreditMultiplier ?? 0.1,
+          cacheWriteCreditMultiplier: m.cacheWriteCreditMultiplier ?? m.creditMultiplier,
           allowedPlanCodes: m.allowedPlanCodes as Prisma.InputJsonValue,
+          contextWindow: m.contextWindow ?? null,
+          supportsReasoning: m.supportsReasoning,
+          supportsImage: m.supportsImage,
+          supportsTools: m.supportsTools ?? true,
           enabled: m.enabled,
         },
       })
@@ -255,5 +310,29 @@ export class ModelsService {
         )
       }
     }
+  }
+
+  /**
+   * Resolve a provider id from an admin request. A model MUST belong to a
+   * registered provider — that row is what tells the gateway the wire format,
+   * base URL, auth scheme, and key env, so an unknown id has to be rejected
+   * rather than defaulted (a silent default would route traffic somewhere the
+   * admin did not choose).
+   */
+  private async requireProvider(providerId: number | undefined): Promise<Provider> {
+    if (providerId === undefined || providerId === null) {
+      throw new BadRequestException(
+        'providerId is required: pick the upstream provider this model routes to',
+      )
+    }
+    const provider = await this.prisma.provider.findUnique({
+      where: { id: providerId },
+    })
+    if (!provider) {
+      throw new BadRequestException(
+        `Unknown providerId ${providerId}. Create the provider first in the admin provider registry.`,
+      )
+    }
+    return provider
   }
 }

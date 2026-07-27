@@ -87,6 +87,21 @@ export class TelegramController {
   }
 
   /**
+   * Download an image the user sent to the shared bot, so the CLI can attach it
+   * to a turn. Only file_ids that were delivered to THIS user are served (see
+   * downloadInboundFile) — the shared bot token stays server-side and the bytes
+   * come back inline rather than as a Telegram URL.
+   */
+  @UseGuards(RayuAuthGuard)
+  @Get('file')
+  file(
+    @CurrentUser() user: User,
+    @Query('file_id') fileId: string,
+  ): Promise<{ base64: string; mediaType: string; size: number }> {
+    return this.telegram.downloadInboundFile(user.id, fileId ?? '')
+  }
+
+  /**
    * Telegram Bot API webhook receiver. Not JWT-guarded — Telegram pushes here
    * directly. Protected by a secret token in `X-Telegram-Bot-Api-Secret-Token`.
    */

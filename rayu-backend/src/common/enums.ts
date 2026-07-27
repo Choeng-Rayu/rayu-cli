@@ -32,3 +32,37 @@ export type FeedbackType = (typeof FEEDBACK_TYPES)[number]
 
 export const USAGE_SOURCES = ['cli', 'web'] as const
 export type UsageSource = (typeof USAGE_SOURCES)[number]
+
+// --- Hosted provider registry -------------------------------------------------
+// Wire format an upstream provider speaks. The gateway's canonical internal
+// format is Anthropic Messages (what the CLI speaks natively); every other
+// format is translated by a gateway adapter.
+export const PROVIDER_FORMATS = [
+  'anthropic_messages',
+  'openai_chat',
+  'openai_responses',
+  'genai',
+] as const
+export type ProviderFormat = (typeof PROVIDER_FORMATS)[number]
+
+// How the upstream API key is presented on the wire.
+export const PROVIDER_AUTH_SCHEMES = [
+  'bearer', // Authorization: Bearer <key>
+  'x_api_key', // x-api-key: <key>  (Anthropic standard)
+  'x_goog_api_key', // x-goog-api-key: <key>  (Google GenAI)
+] as const
+export type ProviderAuthScheme = (typeof PROVIDER_AUTH_SCHEMES)[number]
+
+// Health of a single provider API key. The gateway writes these back as it
+// observes upstream responses, so the dashboard reflects reality:
+//   active       — usable now
+//   rate_limited — a 429 was seen; unusable until cooldownUntil passes
+//   invalid      — a 401/403 was seen (or it failed to decrypt); needs replacing
+//   disabled     — an admin switched it off
+export const PROVIDER_KEY_STATUSES = [
+  'active',
+  'rate_limited',
+  'invalid',
+  'disabled',
+] as const
+export type ProviderKeyStatus = (typeof PROVIDER_KEY_STATUSES)[number]

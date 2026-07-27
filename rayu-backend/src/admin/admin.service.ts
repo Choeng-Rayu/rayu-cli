@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import type { User, Plan } from '@prisma/client'
+import type { HostedModel, User, Plan } from '@prisma/client'
 import type { PlanCode, UserStatus } from '../common/enums'
 import { PLAN_CODES } from '../common/enums'
 import { FEATURE_CATALOG } from '../common/features'
@@ -197,7 +197,13 @@ export class AdminService {
 
   // --- Plan / feature entitlement management (admin-editable business logic) ---
 
-  private toPlanAdminView(plan: Plan) {
+  /**
+   * The admin shape of a plan. `models` is optional only so callers that already
+   * loaded the catalog can avoid a second query; when given, the plan reports
+   * which hosted models it may use (derived from hosted_models.allowedPlanCodes,
+   * the authoritative store).
+   */
+  private toPlanAdminView(plan: Plan, models?: HostedModel[]) {
     const limits = this.plans.getLimits(plan)
     return {
       id: plan.id,
@@ -209,14 +215,77 @@ export class AdminService {
       creditsPerPeriod: limits.creditsPerPeriod ?? null,
       topUpEnabled: limits.topUpEnabled ?? false,
       features: this.plans.getResolvedFeatures(plan),
+      allowedModelCodes: (models ?? [])
+        .filter((m) => this.models.allowedCodes(m).includes(plan.code))
+        .map((m) => m.code),
     }
   }
 
   async listPlans() {
-    const plans = await this.plans.findAll()
+    const [plans, models] = await Promise.all([
+      this.plans.findAll(),
+      this.models.findAll(),
+    ])
     return {
       catalog: FEATURE_CATALOG,
-      plans: plans.map((p) => this.toPlanAdminView(p)),
+      // The model catalog travels with the plans so the Plans & Credits page can
+      // render a model-access checklist without a second, separately-paginated
+      // request that could disagree with what the plans reference.
+      models: models.map((m) => ({
+        code: m.code,
+        label: m.label,
+        provider: m.provider.name,
+        enabled: m.enabled,
+      })),
+      plans: plans.map((p) => this.toPlanAdminView(p, models)),
+    }
+  }
+
+  /**
+   * Replace which hosted models a plan may use.
+   *
+   * Model access is stored per MODEL (hosted_models.allowedPlanCodes), but the
+   * admin edits it per PLAN — so one checklist submit rewrites many model rows.
+   * All of them are written in ONE transaction: a partial apply would silently
+   * grant or revoke access to a subset of models, which is a billing/entitlement
+   * bug that is hard to notice and hard to reconstruct.
+   */
+  async setPlanModels(planCode: string, modelCodes: string[]) {
+    const plan = await this.plans.findByCode(planCode)
+    if (!plan) throw new NotFoundException(`Unknown plan "${planCode}"`)
+
+    const models = await this.models.findAll()
+    const known = new Set(models.map((m) => m.code))
+    const unknown = modelCodes.filter((c) => !known.has(c))
+    if (unknown.length > 0) {
+      throw new BadRequestException(`Unknown model code(s): ${unknown.join(', ')}`)
+    }
+    const wanted = new Set(modelCodes)
+
+    // Only touch rows whose membership actually changes, so an unrelated edit
+    // does not bump updatedAt on the whole catalog.
+    const writes = []
+    for (const m of models) {
+      const codes = this.models.allowedCodes(m)
+      const has = codes.includes(planCode)
+      const shouldHave = wanted.has(m.code)
+      if (has === shouldHave) continue
+      const next = shouldHave
+        ? [...codes, planCode]
+        : codes.filter((c) => c !== planCode)
+      writes.push(
+        this.prisma.hostedModel.update({
+          where: { code: m.code },
+          data: { allowedPlanCodes: next },
+        }),
+      )
+    }
+    if (writes.length > 0) await this.prisma.$transaction(writes)
+
+    const fresh = await this.models.findAll()
+    return {
+      ...this.toPlanAdminView(plan, fresh),
+      changedModels: writes.length,
     }
   }
 
@@ -341,8 +410,11 @@ export class AdminService {
   }
 
   async updatePlan(code: string, patch: PlanPatch) {
-    const updated = await this.plans.updatePlan(code, patch)
-    return this.toPlanAdminView(updated)
+    const [updated, models] = await Promise.all([
+      this.plans.updatePlan(code, patch),
+      this.models.findAll(),
+    ])
+    return this.toPlanAdminView(updated, models)
   }
 
   async stats(): Promise<AdminStats> {

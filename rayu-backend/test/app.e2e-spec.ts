@@ -525,6 +525,88 @@ describe('rayu-backend (e2e)', () => {
       .set('Authorization', `Bearer ${adminAccess}`)
       .send({ features: { not_a_feature: { enabled: true } } })
       .expect(400)
+
+    // --- Model access, edited per PLAN (Plans & Credits checklist) ---
+    // Stored per model in hosted_models.allowedPlanCodes, so this asserts the
+    // round trip: the plan list reports it, PUT replaces it, and the user's
+    // entitlements (which read the model rows) agree.
+    const withModels = await request(app.getHttpServer())
+      .get('/api/admin/plans')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(Array.isArray(withModels.body.models)).toBe(true)
+    expect(withModels.body.models.length).toBeGreaterThan(0)
+    const proPlan = withModels.body.plans.find((p: any) => p.code === 'pro')
+    expect(Array.isArray(proPlan.allowedModelCodes)).toBe(true)
+    expect(proPlan.allowedModelCodes.length).toBeGreaterThan(0)
+
+    // Grant Pro exactly one model.
+    const keepCode = proPlan.allowedModelCodes[0]
+    const granted = await request(app.getHttpServer())
+      .put('/api/admin/plans/pro/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ modelCodes: [keepCode] })
+    expect(granted.status).toBe(200)
+    expect(granted.body.allowedModelCodes).toEqual([keepCode])
+
+    // A pro user now sees exactly that model.
+    setTestUser(ctx, {
+      sub: 'promodels',
+      email: 'promodels@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const proAccess = await login(app, 'state-promodels-1')
+    const proUser = await ctx.prisma.user.findUniqueOrThrow({
+      where: { email: 'promodels@example.com' },
+    })
+    await request(app.getHttpServer())
+      .patch(`/api/admin/users/${proUser.id}/plan`)
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ planCode: 'pro' })
+      .expect(200)
+    const proEnt = await request(app.getHttpServer())
+      .get('/api/me/entitlements')
+      .set('Authorization', `Bearer ${proAccess}`)
+    expect(proEnt.body.allowedModels.map((m: any) => m.code)).toEqual([keepCode])
+
+    // Revoking everything is a valid state (a plan with no hosted models).
+    const revoked = await request(app.getHttpServer())
+      .put('/api/admin/plans/pro/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ modelCodes: [] })
+    expect(revoked.status).toBe(200)
+    expect(revoked.body.allowedModelCodes).toEqual([])
+
+    // Restore, and prove an unknown model code is refused WITHOUT partially
+    // applying the rest of the list.
+    await request(app.getHttpServer())
+      .put('/api/admin/plans/pro/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ modelCodes: proPlan.allowedModelCodes })
+      .expect(200)
+    await request(app.getHttpServer())
+      .put('/api/admin/plans/pro/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ modelCodes: [keepCode, 'no-such-model'] })
+      .expect(400)
+    const unchanged = await request(app.getHttpServer())
+      .get('/api/admin/plans')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(
+      unchanged.body.plans.find((p: any) => p.code === 'pro').allowedModelCodes.sort(),
+    ).toEqual([...proPlan.allowedModelCodes].sort())
+
+    // Unknown plan is a 404, and a non-admin cannot touch model access.
+    await request(app.getHttpServer())
+      .put('/api/admin/plans/not-a-plan/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ modelCodes: [] })
+      .expect(404)
+    await request(app.getHttpServer())
+      .put('/api/admin/plans/pro/models')
+      .set('Authorization', `Bearer ${freeAccess}`)
+      .send({ modelCodes: [] })
+      .expect(403)
   })
 
   it('GET /api/me/entitlements rejects unauthenticated', async () => {
@@ -711,31 +793,88 @@ describe('rayu-backend (e2e)', () => {
       .set('Authorization', `Bearer ${regAccess}`)
       .expect(403)
 
-    // Create a model.
+    // Create a model. Routing now comes from the provider registry, so the
+    // model only names a providerId (no provider string / base URL of its own).
+    const providersList = await request(app.getHttpServer())
+      .get('/api/admin/providers')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(providersList.status).toBe(200)
+    const deepseekProvider = providersList.body.find(
+      (p: any) => p.name === 'deepseek',
+    )
+    expect(deepseekProvider).toBeDefined()
+
     const created = await request(app.getHttpServer())
       .post('/api/admin/models')
       .set('Authorization', `Bearer ${adminAccess}`)
       .send({
         code: 'qwen-turbo',
         label: 'Qwen Turbo',
-        provider: 'deepinfra',
-        upstreamBaseUrl: 'https://api.deepinfra.com/v1/openai',
+        providerId: deepseekProvider.id,
         upstreamModelId: 'qwen-3.5-turbo',
         inputPricePer1MCents: 4,
         outputPricePer1MCents: 20,
         creditMultiplier: 1,
         cacheReadCreditMultiplier: 0.08,
         allowedPlanCodes: ['pro', 'pro_plus', 'max'],
+        outputCreditMultiplier: 2.5,
+        cacheWriteCreditMultiplier: 1.25,
+        supportsReasoning: true,
+        supportsImage: false,
+        supportsTools: false,
+        contextWindow: 200000,
         enabled: true,
       })
     expect(created.status).toBe(201)
     expect(created.body.cacheReadCreditMultiplier).toBe(0.08)
+    // All four credit charges are stored explicitly — nothing derived.
+    expect(created.body).toMatchObject({
+      creditMultiplier: 1,
+      outputCreditMultiplier: 2.5,
+      cacheReadCreditMultiplier: 0.08,
+      cacheWriteCreditMultiplier: 1.25,
+      supportsTools: false,
+    })
+
+    // A slipped decimal must not be able to bill a customer 1000x.
+    for (const bad of [
+      { creditMultiplier: -1 },
+      { outputCreditMultiplier: 5000 },
+      { cacheReadCreditMultiplier: -0.5 },
+      { cacheWriteCreditMultiplier: 100000 },
+    ]) {
+      await request(app.getHttpServer())
+        .post('/api/admin/models')
+        .set('Authorization', `Bearer ${adminAccess}`)
+        .send({ code: 'bad-charge', providerId: deepseekProvider.id, ...bad })
+        .expect(400)
+    }
+    expect(created.body.providerId).toBe(deepseekProvider.id)
+    expect(created.body.supportsImage).toBe(false)
+    expect(created.body.contextWindow).toBe(200000)
+
+    // Context window validation: absurd or sub-minimum values are refused so the
+    // CLI can never budget against a typo'd window.
+    for (const contextWindow of [0, 12, 50_000_000, -1, 1.5]) {
+      await request(app.getHttpServer())
+        .post('/api/admin/models')
+        .set('Authorization', `Bearer ${adminAccess}`)
+        .send({ code: 'bad-ctx', providerId: deepseekProvider.id, contextWindow })
+        .expect(400)
+    }
 
     // Bad plan code rejected.
     await request(app.getHttpServer())
       .post('/api/admin/models')
       .set('Authorization', `Bearer ${adminAccess}`)
       .send({ code: 'bad', allowedPlanCodes: ['nope'] })
+      .expect(400)
+
+    // Unknown providerId rejected (no silent default upstream).
+    await request(app.getHttpServer())
+      .post('/api/admin/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ code: 'bad-provider', providerId: 999999 })
       .expect(400)
 
     // Patch + delete.
@@ -746,6 +885,21 @@ describe('rayu-backend (e2e)', () => {
     expect(patched.status).toBe(200)
     expect(patched.body.creditMultiplier).toBe(2.5)
     expect(patched.body.cacheReadCreditMultiplier).toBe(0.12)
+
+    // Context window: patch it, then CLEAR it back to "CLI default" with null.
+    const ctxPatched = await request(app.getHttpServer())
+      .patch('/api/admin/models/qwen-turbo')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ contextWindow: 1000000 })
+    expect(ctxPatched.status).toBe(200)
+    expect(ctxPatched.body.contextWindow).toBe(1000000)
+    const ctxCleared = await request(app.getHttpServer())
+      .patch('/api/admin/models/qwen-turbo')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ contextWindow: null })
+    expect(ctxCleared.status).toBe(200)
+    expect(ctxCleared.body.contextWindow).toBeNull()
+
     await request(app.getHttpServer())
       .delete('/api/admin/models/qwen-turbo')
       .set('Authorization', `Bearer ${adminAccess}`)
@@ -764,6 +918,296 @@ describe('rayu-backend (e2e)', () => {
     expect(sp.status).toBe(200)
     expect(sp.body.baselineCreditsPer1M).toBe(1200)
     expect(sp.body.maxConcurrentStreams).toBe(5)
+  })
+
+  it('admin can manage the provider registry (and its security rules hold)', async () => {
+    setTestUser(ctx, {
+      sub: 'provadmin',
+      email: 'provadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-provadmin-1234')
+    await ctx.prisma.user.update({
+      where: { email: 'provadmin@example.com' },
+      data: { role: 'superadmin' },
+    })
+    setTestUser(ctx, {
+      sub: 'provreg',
+      email: 'provreg@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const regAccess = await login(app, 'state-provreg-1234')
+
+    // Seeded providers are present with their wire config.
+    const list = await request(app.getHttpServer())
+      .get('/api/admin/providers')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(list.status).toBe(200)
+    const seeded = list.body.find((p: any) => p.name === 'deepseek')
+    expect(seeded).toMatchObject({
+      format: 'anthropic_messages',
+      authScheme: 'x_api_key',
+      endpointPath: '/anthropic/v1/messages',
+    })
+    // Model counts come back so the UI can block unsafe deletes.
+    expect(seeded.modelCount).toBeGreaterThan(0)
+
+    // Non-admin blocked on every route.
+    await request(app.getHttpServer())
+      .get('/api/admin/providers')
+      .set('Authorization', `Bearer ${regAccess}`)
+      .expect(403)
+    await request(app.getHttpServer())
+      .post('/api/admin/providers')
+      .set('Authorization', `Bearer ${regAccess}`)
+      .send({
+        name: 'sneaky',
+        format: 'openai_chat',
+        baseUrl: 'https://example.com',
+      })
+      .expect(403)
+
+    // Create an OpenAI-compatible provider; format defaults fill in the path/auth.
+    const created = await request(app.getHttpServer())
+      .post('/api/admin/providers')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({
+        name: 'openrouter',
+        label: 'OpenRouter',
+        format: 'openai_chat',
+        baseUrl: 'https://openrouter.ai/api',
+        supportsReasoning: true,
+        supportsImage: true,
+      })
+    expect(created.status).toBe(201)
+    expect(created.body).toMatchObject({
+      name: 'openrouter',
+      endpointPath: '/v1/chat/completions',
+      authScheme: 'bearer',
+    })
+    // The provider row never carries a secret: keys are separate encrypted rows.
+    expect(created.body).not.toHaveProperty('apiKey')
+    expect(created.body).not.toHaveProperty('keyEnv')
+
+    // SECURITY: baseUrl cannot point at an internal/metadata address or plain http.
+    for (const baseUrl of [
+      'http://openrouter.ai',
+      'https://169.254.169.254',
+      'https://127.0.0.1',
+      'https://10.1.2.3',
+    ]) {
+      await request(app.getHttpServer())
+        .post('/api/admin/providers')
+        .set('Authorization', `Bearer ${adminAccess}`)
+        .send({
+          name: 'evil-url',
+          format: 'openai_chat',
+          baseUrl,
+        })
+        .expect(400)
+    }
+
+    // Unknown format rejected by the DTO allowlist.
+    await request(app.getHttpServer())
+      .post('/api/admin/providers')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({
+        name: 'weird',
+        format: 'grpc_magic',
+        baseUrl: 'https://example.com',
+      })
+      .expect(400)
+
+    // Patch: switching format re-derives the endpoint path.
+    const patched = await request(app.getHttpServer())
+      .patch('/api/admin/providers/openrouter')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ format: 'openai_responses' })
+    expect(patched.status).toBe(200)
+    expect(patched.body).toMatchObject({
+      format: 'openai_responses',
+      endpointPath: '/v1/responses',
+    })
+
+    // Attach a model, then prove the provider cannot be deleted from under it.
+    await request(app.getHttpServer())
+      .post('/api/admin/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({
+        code: 'or-test-model',
+        label: 'OR Test',
+        providerId: created.body.id,
+        upstreamModelId: 'openai/gpt-5.5',
+        allowedPlanCodes: ['pro'],
+      })
+      .expect(201)
+    await request(app.getHttpServer())
+      .delete('/api/admin/providers/openrouter')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .expect(409)
+
+    // Disabling the provider hides its models from the USER catalog while the
+    // admin catalog still lists them (the provider kill switch).
+    await request(app.getHttpServer())
+      .patch('/api/admin/providers/openrouter')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ enabled: false })
+      .expect(200)
+    const ent = await request(app.getHttpServer())
+      .get('/api/me/entitlements')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(ent.status).toBe(200)
+    expect(ent.body.hostedModels.map((m: any) => m.code)).not.toContain('or-test-model')
+    const adminModels = await request(app.getHttpServer())
+      .get('/api/admin/models')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(adminModels.body.map((m: any) => m.code)).toContain('or-test-model')
+
+    // Cleanup: model first (FK is RESTRICT), then the provider.
+    await request(app.getHttpServer())
+      .delete('/api/admin/models/or-test-model')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .expect(200)
+    await request(app.getHttpServer())
+      .delete('/api/admin/providers/openrouter')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .expect(200)
+    await request(app.getHttpServer())
+      .delete('/api/admin/providers/openrouter')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .expect(404)
+  })
+
+  it('admin manages provider API keys (encrypted, masked-only, rotation-ready)', async () => {
+    setTestUser(ctx, {
+      sub: 'keyadmin',
+      email: 'keyadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-keyadmin-1234')
+    await ctx.prisma.user.update({
+      where: { email: 'keyadmin@example.com' },
+      data: { role: 'superadmin' },
+    })
+    setTestUser(ctx, {
+      sub: 'keyreg',
+      email: 'keyreg@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const regAccess = await login(app, 'state-keyreg-1234')
+
+    await request(app.getHttpServer())
+      .post('/api/admin/providers')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({
+        name: 'keyprov',
+        label: 'Key Provider',
+        format: 'openai_chat',
+        baseUrl: 'https://api.example.com',
+      })
+      .expect(201)
+
+    const KEY_A = 'sk-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaa1111'
+    const KEY_B = 'sk-test-bbbbbbbbbbbbbbbbbbbbbbbbbbbb2222'
+
+    // Non-admin cannot touch keys at all.
+    await request(app.getHttpServer())
+      .get('/api/admin/providers/keyprov/keys')
+      .set('Authorization', `Bearer ${regAccess}`)
+      .expect(403)
+    await request(app.getHttpServer())
+      .post('/api/admin/providers/keyprov/keys')
+      .set('Authorization', `Bearer ${regAccess}`)
+      .send({ key: KEY_A })
+      .expect(403)
+
+    // Add two DIFFERENT keys → rotation is possible.
+    const first = await request(app.getHttpServer())
+      .post('/api/admin/providers/keyprov/keys')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ key: KEY_A, label: 'Primary' })
+    expect(first.status).toBe(201)
+    expect(first.body).toMatchObject({ label: 'Primary', priority: 0, enabled: true, status: 'active' })
+
+    const second = await request(app.getHttpServer())
+      .post('/api/admin/providers/keyprov/keys')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ key: KEY_B })
+    expect(second.status).toBe(201)
+    expect(second.body.priority).toBe(1) // ordered after the first
+
+    // REGRESSION GUARD: no response anywhere may contain the plaintext key, and
+    // the encrypted/hash columns must never be serialized.
+    const list = await request(app.getHttpServer())
+      .get('/api/admin/providers/keyprov/keys')
+      .set('Authorization', `Bearer ${adminAccess}`)
+    expect(list.status).toBe(200)
+    for (const body of [first.body, second.body, list.body]) {
+      const serialized = JSON.stringify(body)
+      expect(serialized).not.toContain(KEY_A)
+      expect(serialized).not.toContain(KEY_B)
+      expect(serialized).not.toContain('encryptedKey')
+      expect(serialized).not.toContain('keyHash')
+    }
+    expect(list.body).toHaveLength(2)
+    expect(list.body[0].maskedKey).toContain('sk-tes')
+
+    // The DB row itself must be an encrypted envelope, not the key.
+    const stored = await ctx.prisma.providerApiKey.findMany({
+      orderBy: { priority: 'asc' },
+    })
+    expect(stored).toHaveLength(2)
+    expect(stored[0]!.encryptedKey.startsWith('v1:')).toBe(true)
+    expect(stored[0]!.encryptedKey).not.toContain(KEY_A)
+
+    // Duplicate → 409 (otherwise rotation would spin on one exhausted key).
+    await request(app.getHttpServer())
+      .post('/api/admin/providers/keyprov/keys')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ key: KEY_A })
+      .expect(409)
+
+    // Replace the secret in place; id/label survive, secret changes.
+    const replaced = await request(app.getHttpServer())
+      .patch(`/api/admin/providers/keyprov/keys/${first.body.id}`)
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ key: 'sk-test-cccccccccccccccccccccccccccc3333' })
+    expect(replaced.status).toBe(200)
+    expect(replaced.body.id).toBe(first.body.id)
+    expect(replaced.body.label).toBe('Primary')
+    expect(replaced.body.maskedKey).not.toBe(first.body.maskedKey)
+
+    // Disable / re-enable.
+    const disabled = await request(app.getHttpServer())
+      .patch(`/api/admin/providers/keyprov/keys/${second.body.id}`)
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ enabled: false })
+    expect(disabled.body).toMatchObject({ enabled: false, status: 'disabled' })
+    const reenabled = await request(app.getHttpServer())
+      .patch(`/api/admin/providers/keyprov/keys/${second.body.id}`)
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ enabled: true })
+    expect(reenabled.body).toMatchObject({ enabled: true, status: 'active' })
+
+    // Delete one, then confirm deleting the provider cascades the rest away.
+    await request(app.getHttpServer())
+      .delete(`/api/admin/providers/keyprov/keys/${second.body.id}`)
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .expect(200)
+    await request(app.getHttpServer())
+      .delete(`/api/admin/providers/keyprov/keys/${second.body.id}`)
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .expect(404)
+
+    await request(app.getHttpServer())
+      .delete('/api/admin/providers/keyprov')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .expect(200)
+    expect(await ctx.prisma.providerApiKey.count()).toBe(0)
   })
 
   it('plan credit allowances drive /me/entitlements (allowed models + credits)', async () => {
@@ -804,6 +1248,29 @@ describe('rayu-backend (e2e)', () => {
     expect(freeEnt.body.hostedModels.map((m: any) => m.code)).toEqual(
       expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro']),
     )
+    // The CLI drives its model list, capabilities, and CONTEXT WINDOW off this
+    // payload, so every hosted model must carry them — that is what makes an
+    // admin-added model (and its window) appear in the CLI with no release.
+    const hosted = freeEnt.body.hostedModels as Array<Record<string, unknown>>
+    for (const m of hosted) {
+      expect(typeof m.code).toBe('string')
+      expect(typeof m.provider).toBe('string') // provider NAME only, never the row
+      expect(typeof m.supportsReasoning).toBe('boolean')
+      expect(typeof m.supportsImage).toBe('boolean')
+      expect(typeof m.supportsTools).toBe('boolean')
+      expect('contextWindow' in m).toBe(true)
+      // The CLI reads all four charges for its cost display.
+      expect(typeof m.creditMultiplier).toBe('number')
+      expect(typeof m.outputCreditMultiplier).toBe('number')
+      expect(typeof m.cacheReadCreditMultiplier).toBe('number')
+      expect(typeof m.cacheWriteCreditMultiplier).toBe('number')
+      // Internal routing config must never reach a user.
+      expect(m).not.toHaveProperty('keyEnv')
+      expect(m).not.toHaveProperty('baseUrl')
+      expect(m).not.toHaveProperty('upstreamModelId')
+    }
+    const pro = hosted.find((m) => m.code === 'deepseek-v4-pro')
+    expect(pro?.contextWindow).toBe(1000000)
     expect(freeEnt.body.creditAllowance.creditsPerPeriod).toBeNull()
     expect(freeEnt.body.creditConfig.baselineCreditsPer1M).toBeGreaterThan(0)
 
@@ -981,10 +1448,10 @@ describe('rayu-backend (e2e)', () => {
     await request(app.getHttpServer())
       .patch('/api/admin/credit-settings')
       .set('Authorization', `Bearer ${adminAccess}`)
-      .send({ topupCentsPer1kCredits: 100 })
+      .send({ creditsPerDollar: 1000, minTopupCents: 100 })
       .expect(200)
 
-    // User buys 5000 credits -> 5000/1000 * 100¢ = 500¢.
+    // User buys 5000 credits at 1000 credits/$ -> $5.00 = 500¢.
     setTestUser(ctx, {
       sub: 'topuser',
       email: 'topuser@example.com',
@@ -1014,11 +1481,17 @@ describe('rayu-backend (e2e)', () => {
     expect(ent.body.topupBalance).toBe(5000)
     ctx.setBakongPaid(false)
 
-    // Guarded when the rate is 0.
+    // A purchase worth less than minTopupCents is refused (here: 50 credits =
+    // $0.05, under the $1 floor) — not silently rounded up to the minimum.
+    await auth(request(app.getHttpServer()).post('/api/payments/topup-khqr'))
+      .send({ credits: 50, method: 'bakong' })
+      .expect(400)
+
+    // Guarded when the rate is 0 (top-up switched off globally).
     await request(app.getHttpServer())
       .patch('/api/admin/credit-settings')
       .set('Authorization', `Bearer ${adminAccess}`)
-      .send({ topupCentsPer1kCredits: 0 })
+      .send({ creditsPerDollar: 0 })
       .expect(200)
     await auth(request(app.getHttpServer()).post('/api/payments/topup-khqr'))
       .send({ credits: 5000 })

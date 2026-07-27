@@ -28,6 +28,38 @@ export interface TelegramUpdate {
 }
 
 /**
+ * Download a file from the shared bot's file namespace.
+ *
+ * `redirect: 'error'` keeps a rogue path from bouncing the request elsewhere,
+ * the timeout bounds the hold on a request thread, and the byte cap is enforced
+ * after the fetch so a large file can't be turned into a memory spike beyond it.
+ * The bot token appears only in the URL and is never surfaced in errors.
+ */
+export async function tgDownloadFile(
+  token: string,
+  filePath: string,
+  maxBytes: number,
+  timeoutMs = 15_000,
+): Promise<{ buffer: Buffer; contentType: string | null }> {
+  const res = await fetch(`${API_BASE}/file/bot${token}/${filePath}`, {
+    redirect: 'error',
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!res.ok) {
+    throw new Error(`telegram file download failed: ${res.status}`)
+  }
+  const declared = Number(res.headers.get('content-length') ?? '0')
+  if (declared > maxBytes) {
+    throw new Error('telegram file too large')
+  }
+  const buffer = Buffer.from(await res.arrayBuffer())
+  if (buffer.byteLength > maxBytes) {
+    throw new Error('telegram file too large')
+  }
+  return { buffer, contentType: res.headers.get('content-type') }
+}
+
+/**
  * Call a Telegram Bot API method. Throws on transport or API-level failure so
  * the relay can surface a real error to the CLI. Honours a single 429 retry.
  */
