@@ -59,7 +59,11 @@ export default (): {
         process.env.RAYU_REFRESH_TTL ?? `${60 * 60 * 24 * 30}`,
         10,
       ),
-      webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:3000',
+      // Trimmed: this value goes straight into enableCors({origin}), which does an
+      // exact string compare against the browser's Origin header. A trailing
+      // space — invisible in a hosting panel's env field — would silently reject
+      // every cross-origin request from the dashboard.
+      webOrigin: (process.env.WEB_ORIGIN ?? 'http://localhost:3000').trim(),
     },
     bakong: {
       merchantId: process.env.BAKONG_MERCHANT_ID,
