@@ -56,6 +56,26 @@ export interface PlanAdminView {
   creditsPerPeriod: number | null
   topUpEnabled: boolean
   features: Record<string, FeatureEntitlement>
+  /**
+   * Hosted models this plan may use. Stored per model
+   * (hosted_models.allowedPlanCodes) but edited here as a per-plan checklist.
+   */
+  allowedModelCodes: string[]
+}
+
+/** A hosted model as it appears in the plan model-access checklist. */
+export interface PlanModelOption {
+  code: string
+  label: string
+  provider: string
+  enabled: boolean
+}
+
+/** Response of GET /admin/plans. */
+export interface PlansResponse {
+  catalog: FeatureCatalogItem[]
+  models: PlanModelOption[]
+  plans: PlanAdminView[]
 }
 
 export interface FeatureCatalogItem {
@@ -126,26 +146,176 @@ export interface FeedbackItem {
 // Green-forward chart palette aligned to the site theme.
 export const CHART_PALETTE = ['#00FF88', '#00cc6e', '#36c5ff', '#ffbd2e', '#FF3366', '#9b8cff']
 
+// --- Provider registry -------------------------------------------------------
+// The wire format an upstream speaks. The gateway translates its canonical
+// Anthropic Messages request into this format, so a provider of ANY of these can
+// be added from the dashboard with no client release.
+export const PROVIDER_FORMATS = [
+  'anthropic_messages',
+  'openai_chat',
+  'openai_responses',
+  'genai',
+  'bedrock_anthropic',
+] as const
+export type ProviderFormat = (typeof PROVIDER_FORMATS)[number]
+
+export const PROVIDER_AUTH_SCHEMES = ['bearer', 'x_api_key', 'x_goog_api_key'] as const
+export type ProviderAuthScheme = (typeof PROVIDER_AUTH_SCHEMES)[number]
+
+/** Human labels for the format select. */
+export const PROVIDER_FORMAT_LABELS: Record<ProviderFormat, string> = {
+  anthropic_messages: 'Anthropic Messages',
+  openai_chat: 'OpenAI compatible (chat/completions)',
+  openai_responses: 'OpenAI Responses',
+  genai: 'Google GenAI (Gemini)',
+  bedrock_anthropic: 'AWS Bedrock (Anthropic on bedrock-runtime)',
+}
+
+/**
+ * An admin-managed upstream provider. NOTE there is no apiKey field by design:
+ * keys are separate, encrypted provider_api_keys rows managed through
+ * /admin/providers/:name/keys, and a secret is never returned by the API.
+ */
+export interface Provider {
+  id: number
+  name: string
+  label: string
+  format: ProviderFormat
+  baseUrl: string
+  endpointPath: string | null
+  authScheme: ProviderAuthScheme
+  supportsReasoning: boolean
+  supportsImage: boolean
+  enabled: boolean
+  /** How many hosted models point at this provider (blocks unsafe deletes). */
+  modelCount: number
+}
+
+/** Per-provider routing health, reported by the GATEWAY (which holds the keys). */
+export interface ProviderHealth {
+  providerId: number
+  name: string
+  format: string
+  baseUrl: string
+  endpoint: string
+  authScheme: string
+  /** How many API keys the provider has configured. */
+  keyCount: number
+  keyPresent: boolean
+  /** How many of those keys can serve traffic right now (not cooling/invalid). */
+  usableKeys: number
+  /** Per-key health, masked — never a secret. */
+  keys: ProviderKeyHealth[]
+  enabled: boolean
+  routable: boolean
+  configError?: string
+}
+
+/**
+ * An API key as the BACKEND stores it: masked only. The secret is write-only —
+ * it is accepted once on create/replace, encrypted, and never returned again.
+ */
+export interface ProviderKeyView {
+  id: number
+  label: string
+  maskedKey: string
+  priority: number
+  enabled: boolean
+  status: 'active' | 'rate_limited' | 'invalid' | 'disabled'
+  lastUsedAt: string | null
+  cooldownUntil: string | null
+  lastError: string | null
+  createdAt: string
+}
+
+/** Why a provider test failed — maps to the field an admin has to correct. */
+export type ProviderTestClassification =
+  | 'ok'
+  | 'bad_api_key'
+  | 'unknown_model'
+  | 'bad_base_url'
+  | 'format_mismatch'
+  | 'rate_limited'
+  | 'upstream_error'
+
+/**
+ * Which stage of the upstream handshake succeeded. `null` = never reached, so it
+ * cannot be judged (e.g. the key when the host did not answer at all). This is
+ * what turns "something is wrong" into "one field is wrong".
+ */
+export interface ProviderTestChecks {
+  reachable: boolean | null
+  keyAccepted: boolean | null
+  modelAccepted: boolean | null
+}
+
+/** Result of POST /v1/_provider-test on the gateway (a real, unbilled request). */
+export interface ProviderTestResult {
+  ok: boolean
+  classification: ProviderTestClassification
+  message: string
+  checks: ProviderTestChecks
+  suggestion?: string
+  httpStatus?: number
+  latencyMs: number
+  providerName: string
+  format: string
+  endpoint: string
+  modelCode?: string
+  upstreamModelId?: string
+  keyId?: number
+  maskedKey?: string
+}
+
+/** One API key's live health as the GATEWAY sees it (masked, never the secret). */
+export interface ProviderKeyHealth {
+  id: number
+  label: string
+  maskedKey: string
+  priority: number
+  enabled: boolean
+  status: 'active' | 'rate_limited' | 'invalid' | 'disabled'
+  /** Set while the key is cooling down after a 429. */
+  cooldownUntil?: string
+}
+
 export interface HostedModel {
   id: number
   code: string
   label: string
-  provider: string
-  upstreamBaseUrl: string
+  providerId: number
+  /** Present when the API returns the model with its provider row attached. */
+  provider?: Pick<Provider, 'id' | 'name' | 'label' | 'format' | 'enabled'>
   upstreamModelId: string
   inputPricePer1MCents: number
   outputPricePer1MCents: number
+  /** INPUT credit charge (credits per 1M tokens). Name kept: it is what the CLI sees. */
   creditMultiplier: number
+  /** OUTPUT credit charge (credits per 1M tokens). */
+  outputCreditMultiplier: number
   cacheReadCreditMultiplier: number | null
   cacheWriteCreditMultiplier: number | null
   allowedPlanCodes: string[] | null
+  /**
+   * Context window in TOKENS, or null when unset (the CLI then falls back to its
+   * own default for the model). The CLI budgets auto-compaction and context
+   * warnings against this, so it is admin-owned.
+   */
+  contextWindow: number | null
+  supportsReasoning: boolean
+  supportsImage: boolean
+  /** Whether tool/function calling may be sent to this model. */
+  supportsTools: boolean
   enabled: boolean
 }
 
 export interface AppSettings {
   id: number
   baselineCreditsPer1M: number
-  topupCentsPer1kCredits: number
+  /** How many credits $1 buys. 0 = top-up unavailable. */
+  creditsPerDollar: number
+  /** Smallest top-up purchase, in cents (100 = $1). */
+  minTopupCents: number
   maxConcurrentStreams: number
   maxTokensPerRequest: number
   maxRequestsPer5h: number

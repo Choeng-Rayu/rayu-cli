@@ -51,6 +51,10 @@ interface GatewayCredits {
   periodEnd: string | null
   topupBalance: number
   topUpEnabled: boolean
+  /** Credits one dollar buys (0 = top-up unavailable) — set by the admin. */
+  creditsPerDollar: number
+  /** Smallest purchase, in cents. */
+  minTopupCents: number
   maxDailyTurns: number | null
   turnsUsedToday: number
   turnsRemaining: number | null
@@ -141,7 +145,11 @@ export default function DashboardPage() {
   const [gatewayDown, setGatewayDown] = useState(false)
   const [history, setHistory] = useState<LedgerRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [amount, setAmount] = useState(50)
+  // Top-up is priced in DOLLARS here (the rate and minimum are the admin's, read
+  // from the gateway) and converted to credits when the QR is requested. The
+  // previous fixed credit options were hardcoded against one particular rate and
+  // silently became wrong the moment the admin changed it.
+  const [dollars, setDollars] = useState(1)
   const [khqr, setKhqr] = useState<TopupKhqr | null>(null)
   const [paid, setPaid] = useState(false)
   const [error, setError] = useState('')
@@ -182,7 +190,7 @@ export default function DashboardPage() {
       const res = await fetch(apiUrl('/payments/topup-khqr'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ credits: amount }),
+        body: JSON.stringify({ credits: topupCredits }),
       })
       if (!res.ok) {
         const e = (await res.json()) as { message?: string }
@@ -235,6 +243,10 @@ export default function DashboardPage() {
   const remainingTokens = usage?.remainingTokens ?? (allowanceTokens != null ? Math.max(0, allowanceTokens - usedTokens) : null)
   const topUpEnabled = usage?.topUpEnabled ?? ent?.creditAllowance.topUpEnabled ?? false
   const topupBalance = usage?.topupBalance ?? ent?.topupBalance ?? 0
+  const creditsPerDollar = usage?.creditsPerDollar ?? 0
+  const minTopupCents = usage?.minTopupCents ?? 100
+  const minDollars = Math.max(0.01, minTopupCents / 100)
+  const topupCredits = Math.floor(dollars * creditsPerDollar)
   const maxDailyTurns = usage?.maxDailyTurns ?? ent?.maxDailyTurns ?? null
   const turnsUsedToday = usage?.turnsUsedToday ?? 0
   const turnsRemaining = usage?.turnsRemaining ?? (maxDailyTurns != null ? Math.max(0, maxDailyTurns - turnsUsedToday) : null)
@@ -464,12 +476,35 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <select className="admin-select" value={amount} onChange={(e) => setAmount(Number(e.target.value))} style={{ width: 240 }}>
-                    <option value={50}>50 credits ({compact(50 * tokensPerCredit)} tokens)</option>
-                    <option value={115}>115 credits</option>
-                    <option value={300}>300 credits</option>
-                  </select>
-                  <button className="btn-primary" style={{ padding: '10px 22px' }} onClick={() => void buyCredits()}>Buy with Bakong KHQR</button>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ opacity: 0.6, fontSize: '0.85rem' }}>Amount ($)</span>
+                    <input
+                      type="number"
+                      className="admin-input"
+                      style={{ width: 110 }}
+                      min={minDollars}
+                      step={1}
+                      value={dollars}
+                      onChange={(e) => setDollars(Math.max(minDollars, Number(e.target.value)))}
+                    />
+                  </label>
+                  <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.85rem', opacity: 0.75 }}>
+                    = {topupCredits.toLocaleString()} credits
+                    {tokensPerCredit > 0 && ` (≈ ${compact(topupCredits * tokensPerCredit)} tokens)`}
+                  </span>
+                  <button
+                    className="btn-primary"
+                    style={{ padding: '10px 22px' }}
+                    disabled={creditsPerDollar <= 0 || topupCredits <= 0}
+                    onClick={() => void buyCredits()}
+                  >
+                    Buy with Bakong KHQR
+                  </button>
+                  <span style={{ opacity: 0.45, fontSize: '0.76rem', width: '100%' }}>
+                    {creditsPerDollar > 0
+                      ? `$1 = ${creditsPerDollar.toLocaleString()} credits · minimum $${minDollars.toFixed(2)}`
+                      : 'Top-ups are currently unavailable.'}
+                  </span>
                 </div>
               )}
             </div>

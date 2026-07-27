@@ -74,6 +74,88 @@ export const RELAY_ALLOWED_METHODS = new Set<string>([
   'answerCallbackQuery',
 ])
 
+// ---------------------------------------------------------------------------
+// Inbound file downloads
+// ---------------------------------------------------------------------------
+
+/**
+ * A Telegram `file_id` is a GLOBAL handle: anyone holding one can fetch the file
+ * with any bot token that has seen it. The shared bot has seen every linked
+ * user's files, so the download endpoint must never accept an arbitrary id from
+ * a caller — it can only serve ids that appeared in an update addressed to THAT
+ * user. This collects the ids from one update so they can be granted.
+ */
+export function collectFileIds(update: unknown): string[] {
+  const message = (update as { message?: Record<string, unknown> } | null)?.message
+  if (!message) return []
+  const ids: string[] = []
+
+  const push = (value: unknown): void => {
+    if (typeof value === 'string' && value.length > 0) ids.push(value)
+  }
+
+  if (Array.isArray(message.photo)) {
+    for (const size of message.photo) {
+      push((size as { file_id?: unknown } | null)?.file_id)
+    }
+  }
+  for (const key of ['document', 'sticker', 'audio', 'video', 'voice', 'animation']) {
+    push((message[key] as { file_id?: unknown } | null)?.file_id)
+  }
+  if (Array.isArray(message.new_chat_photo)) {
+    for (const size of message.new_chat_photo) {
+      push((size as { file_id?: unknown } | null)?.file_id)
+    }
+  }
+  return ids
+}
+
+/** Telegram file_ids are base64url-ish. Reject anything else before use. */
+export function isPlausibleFileId(fileId: string): boolean {
+  return /^[A-Za-z0-9_-]{8,256}$/.test(fileId)
+}
+
+/**
+ * `file_path` comes back from getFile and is interpolated into a download URL.
+ * Keep it to a relative, traversal-free path so it can't redirect the fetch
+ * somewhere else or climb out of the bot's file namespace.
+ */
+export function isSafeTelegramFilePath(filePath: string): boolean {
+  if (filePath.length === 0 || filePath.length > 256) return false
+  if (filePath.includes('..') || filePath.startsWith('/')) return false
+  return /^[A-Za-z0-9_./-]+$/.test(filePath)
+}
+
+/** Images only — the CLI turns these into pasted image blocks. */
+const IMAGE_MEDIA_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+])
+
+/**
+ * Resolve the media type to serve, or null when the file is not an allowed
+ * image. Trusts the extension over the header: Telegram serves photos as
+ * image/jpeg but a spoofed content-type must not widen what we accept.
+ */
+export function resolveImageMediaType(
+  filePath: string,
+  contentType?: string | null,
+): string | null {
+  const ext = filePath.slice(filePath.lastIndexOf('.') + 1).toLowerCase()
+  const byExt: Record<string, string> = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    gif: 'image/gif',
+  }
+  if (byExt[ext]) return byExt[ext]
+  const header = (contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  return IMAGE_MEDIA_TYPES.has(header) ? header : null
+}
+
 /** Methods that are chat-scoped → the relay forces chat_id to the user's link. */
 export const RELAY_CHAT_SCOPED_METHODS = new Set<string>([
   'sendMessage',

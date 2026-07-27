@@ -402,7 +402,15 @@ bun run build:packages   # .deb/.rpm Linux packages
 **RAYU has a Telegram bridge** for mobile/remote access.
 
 - **Bridge location:** `src/telegram/`, `src/bridge/`
-- **Bot:** `@rayu_clawbot` (user must pair via QR code)
+- **Bot:** resolved at runtime — never hardcoded in the CLI. The default
+  (hosted) bot's `@username` comes from rayu-backend's `/telegram/bot`, which
+  derives it from `RAYU_SHARED_BOT_TOKEN`; to change the default bot, rotate
+  that env var and restart the backend (`TelegramService.botUsername` is
+  memoized per process). Users may instead bring their own @BotFather token,
+  in which case the CLI talks to Telegram directly and the bot is resolved via
+  `getMe`. The bot a link was made with is recorded in `telegram.json` as
+  `linkedBotUsername` so `/telegram-bot` can detect a bot change and re-pair
+  instead of silently reusing a stale link.
 - **How it works:**
   1. User runs `/telegram-bot` command
   2. QR code displayed for pairing

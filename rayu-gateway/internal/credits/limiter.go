@@ -35,13 +35,13 @@ func NewLimiter(rdb redis.UniversalClient) *Limiter {
 
 // ReserveParams are the inputs to a pre-flight reservation.
 type ReserveParams struct {
-	UserID       int64
-	EstCredits   int64
-	CapPeriod    int64 // per-period allowance; Unlimited to skip
-	PeriodTTLSec int   // seconds until the period resets (currentPeriodEnd)
-	MaxConcurrent int  // 0 = unlimited
-	MaxReq5h      int  // 0 = unlimited
-	TopUpEnabled bool  // allow drawing from the top-up balance when the period is exhausted
+	UserID        int64
+	EstCredits    int64
+	CapPeriod     int64 // per-period allowance; Unlimited to skip
+	PeriodTTLSec  int   // seconds until the period resets (currentPeriodEnd)
+	MaxConcurrent int   // 0 = unlimited
+	MaxReq5h      int   // 0 = unlimited
+	TopUpEnabled  bool  // allow drawing from the top-up balance when the period is exhausted
 	// PeriodID identifies the current billing period (currentPeriodEnd). When it
 	// changes (a renewal/upgrade), the used-credit counter is reset so the new
 	// period starts with a full allowance. Empty = no period (free/no-expiry).
@@ -222,7 +222,6 @@ func (l *Limiter) Status(ctx context.Context, userID int64) (Status, error) {
 	}
 	return Status{UsedPeriod: used, TopupBalance: topup, ResetPeriod: reset}, nil
 }
-
 
 // --- Per-day turn cap (maxDailyTurns) -------------------------------------
 //

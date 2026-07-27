@@ -62,7 +62,10 @@ function makeService(): Mocks {
   }
   const bakong = { checkPaidByMd5: jest.fn(), generateKhqr: jest.fn(() => ({ qr: 'BAKONG_QR', md5: 'md5-x' })) }
   const aba = { generateAbaQR: jest.fn(() => 'ABA_QR') }
-  const settings = { get: jest.fn(() => Promise.resolve({ topupCentsPer1kCredits: 100 })) }
+  // Default top-up config: $1 buys 5 credits, minimum purchase $1.
+  const settings = {
+    get: jest.fn(() => Promise.resolve({ creditsPerDollar: 5, minTopupCents: 100 })),
+  }
   // Default: user's effective active plan is Free, so a plan purchase is never
   // blocked as a duplicate unless a test overrides this.
   const users = {
@@ -542,5 +545,48 @@ describe('PaymentsService · KHQR expiry lifecycle', () => {
       expect(res.carryoverCredits).toBe(0)
       expect(m.prisma.creditTopup.create).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('PaymentsService · credit top-up pricing', () => {
+  it('prices a top-up from creditsPerDollar', async () => {
+    const m = makeService()
+    // $1 = 5 credits ⇒ 25 credits = $5.00.
+    const res = await m.service.createTopupKhqr(7, 25, 'bakong')
+    expect(res.amountCents).toBe(500)
+    expect(res.credits).toBe(25)
+    const payment = m.prisma.payment.create.mock.calls[0][0].data as { amountCents: number }
+    expect(payment.amountCents).toBe(500)
+  })
+
+  it('rounds the price UP so credits are never given away', async () => {
+    const m = makeService()
+    m.settings.get.mockResolvedValue({ creditsPerDollar: 3, minTopupCents: 1 })
+    // 5 credits at 3/$ = $1.6667 → 167¢, not 166¢.
+    const res = await m.service.createTopupKhqr(7, 5, 'bakong')
+    expect(res.amountCents).toBe(167)
+  })
+
+  it('refuses a purchase below the minimum and says what the minimum is', async () => {
+    const m = makeService()
+    // 2 credits at 5/$ = 40¢, below the $1 floor.
+    await expect(m.service.createTopupKhqr(7, 2, 'bakong')).rejects.toThrow(
+      /Minimum top-up is \$1\.00 \(5 credits\)/,
+    )
+    expect(m.prisma.payment.create).not.toHaveBeenCalled()
+  })
+
+  it('accepts exactly the minimum', async () => {
+    const m = makeService()
+    const res = await m.service.createTopupKhqr(7, 5, 'bakong')
+    expect(res.amountCents).toBe(100)
+  })
+
+  it('is unavailable while the rate is 0', async () => {
+    const m = makeService()
+    m.settings.get.mockResolvedValue({ creditsPerDollar: 0, minTopupCents: 100 })
+    await expect(m.service.createTopupKhqr(7, 5000, 'bakong')).rejects.toThrow(
+      BadRequestException,
+    )
   })
 })

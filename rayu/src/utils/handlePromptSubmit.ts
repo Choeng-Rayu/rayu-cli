@@ -18,6 +18,7 @@ import {
   type QueuedCommand,
 } from '../types/textInputTypes.js'
 import { createAbortController } from './abortController.js'
+import { publishActiveTurn } from './activeTurn.js'
 import type { PastedContent } from './config.js'
 import { logForDebugging } from './debug.js'
 import type { EffortValue } from './effort.js'
@@ -418,6 +419,9 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
   // executeUserInput call, so there's no prior controller to inherit.
   const abortController = createAbortController()
   setAbortController(abortController)
+  // Expose this turn's controller so non-React callers (the Telegram bridge)
+  // can request the same cancellation Esc performs. Cleared in the finally.
+  publishActiveTurn(abortController)
 
   function makeContext(): ProcessUserInputContext {
     return getToolUseContext(messages, [], abortController, mainLoopModel)
@@ -606,5 +610,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // turn's resetLoadingState. Harmless when onQuery ran: setMessages grew
     // displayedMessages past the baseline, so REPL.tsx already hid it.
     setUserInputOnProcessing(undefined)
+    // Stop advertising an interruptible turn once this one is done.
+    publishActiveTurn(null)
   }
 }

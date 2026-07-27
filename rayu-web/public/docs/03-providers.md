@@ -4,58 +4,107 @@ A **provider** is an API endpoint plus your credentials. Rayu supports these kin
 
 - **`anthropic`** — the Anthropic API (Claude models), via the Anthropic SDK.
 - **`openai-compatible`** — any endpoint that implements OpenAI's `/v1/chat/completions` (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword, OpenAI, OpenRouter, Google Gemini API, vLLM/Ollama/local, …). Requests are translated between the Anthropic message shape used internally and the OpenAI shape.
-- **`bedrock`** — the AWS Bedrock API, via the `@anthropic-ai/bedrock-sdk` client.
+- **`bedrock`** — AWS Bedrock. Three API surfaces: `converse` (default, model-agnostic AWS Converse API), `openai` (bedrock-mantle OpenAI-compatible endpoint), `anthropic` (Claude via `@anthropic-ai/bedrock-sdk`).
 - **`vertex`** — Google **Gemini on Vertex AI**, authenticated with Google OAuth / Application Default Credentials. Served through the OpenAI-compatible adapter with a per-request OAuth bearer token.
+- **`genai`** — Login with Gemini (Google account / Code Assist). Interactive OAuth, no GCP project required.
+- **`kiro`** — Claude via Kiro's AWS CodeWhisperer backend. Authenticated with a `ksk_` API key or via `kiro-cli` OAuth.
+- **`copilot`** — GitHub Copilot. Authenticated with a GitHub OAuth device-flow token (no API key to paste).
+- **`rayu-hosted`** — Rayu's own hosted gateway. Activated automatically when you log in with Rayu OAuth (`USE_RAYU_OAUTH=true`).
 
 ## Built-in provider presets
 
 | Preset id | Label | Base URL | Auto-import env var |
 |-----------|-------|----------|---------------------|
-| `anthropic` | Anthropic (Claude) | _(default API)_ | `ANTHROPIC_API_KEY` |
+| `anthropic` | Anthropic (Claude) | _(Anthropic SDK default)_ | `ANTHROPIC_API_KEY` |
 | `nvidia` | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
-| `doubleword` | Doubleword | `https://api.doubleword.ai/v1` | `DOUBLE_WORD_API_KEY` |
+| `doubleword` | Doubleword | `https://api.doubleword.ai/v1` | `DOUBLE_WORD_API_KEY` / `DOUBLEWORD_API_KEY` |
 | `deepseek` | DeepSeek | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
+| `glm` | GLM — Z.ai | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` / `ZHIPUAI_API_KEY` / `GLM_API_KEY` |
+| `minimax` | MiniMax | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
 | `kimi-moonshot` | Kimi / Moonshot | `https://api.moonshot.ai/v1` | `KIMI_API_KEY` / `MOONSHOT_API_KEY` |
 | `kimi-for-code` | Kimi for Code | `https://api.kimi.com/coding/v1` | `KIMI_FOR_CODE_API_KEY` |
+| `fugu` | Fugu — Sakana AI | `https://api.sakana.ai/v1` | `SAKANA_API_KEY` |
 | `openai` | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `gemini` | Google Gemini — API key | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | `gemini-vertex` | Google Gemini — Vertex AI (OAuth) | _(per project/region)_ | _(OAuth / ADC)_ |
 | `gemini-login` | Login with Gemini (Google account) | _(Code Assist — free, no project)_ | _(interactive OAuth)_ |
+| `copilot` | GitHub Copilot | _(api.githubcopilot.com)_ | _(GitHub OAuth device flow)_ |
+| `xai` | xAI / Grok | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| `huggingface` | Hugging Face — Inference Providers | `https://router.huggingface.co/v1` | `HF_TOKEN` |
-| `localhost` | Localhost (Ollama) | `http://localhost:11434/v1` | — |
+| `groq` | Groq | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
+| `fireworks` | Fireworks AI | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
+| `togetherai` | Together AI | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` / `TOGETHERAI_API_KEY` |
+| `cerebras` | Cerebras | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` |
+| `baseten` | Baseten | `https://inference.baseten.co/v1` | `BASETEN_API_KEY` |
+| `deepinfra` | DeepInfra | `https://api.deepinfra.com/v1/openai` | `DEEPINFRA_API_KEY` |
+| `huggingface` | Hugging Face — Inference Providers | `https://router.huggingface.co/v1` | `HF_TOKEN` / `HUGGINGFACE_API_KEY` |
+| `kiro` | Kiro — Claude via AWS | _(AWS CodeWhisperer)_ | `KIRO_API_KEY` |
+| `bedrock` | AWS Bedrock — Converse API (all models) | _(AWS SDK, region-scoped)_ | `AWS_BEARER_TOKEN_BEDROCK` |
+| `bedrock-openai` | AWS Bedrock — OpenAI-compatible (bedrock-mantle) | _(bedrock-mantle, region-scoped)_ | — |
+| `bedrock-anthropic` | AWS Bedrock — Claude (Anthropic Messages API) | _(region-scoped)_ | — |
+| `ollama` | Ollama (local · auto-detect) | `http://localhost:11434/v1` | _(none required)_ |
 | `local` | Custom Endpoint | _(you enter it)_ | — |
-| `bedrock` | AWS Bedrock | _(on-demand AWS Bedrock)_ | `AWS_BEARER_TOKEN_BEDROCK` |
 
 ---
 
-## AWS Bedrock (`bedrock`)
+## AWS Bedrock
 
-Rayu-CLI natively supports AWS Bedrock. When the active provider is `bedrock`, Rayu uses the `@anthropic-ai/bedrock-sdk` to connect directly to Bedrock.
+Rayu supports three Bedrock presets, each using a different API surface:
+
+| Preset | API surface | Best for |
+|--------|-------------|----------|
+| `bedrock` | AWS **Converse** API (via AWS SDK) | All Bedrock models — Claude, Kimi, DeepSeek, Llama, etc. Model-agnostic; natively separates reasoning + tool use. |
+| `bedrock-openai` | **bedrock-mantle** OpenAI-compatible endpoint | Open-weight models (`gpt-oss`, `qwen`, …). Standard `/v1/chat/completions`. |
+| `bedrock-anthropic` | **Anthropic Messages API** (`@anthropic-ai/bedrock-sdk`) | Claude models via cross-region inference profiles. |
 
 ### Authentication
 
-There are two ways to authenticate with AWS Bedrock:
+All three presets use a **Bedrock Bearer token** (`AWS_BEARER_TOKEN_BEDROCK`). Run `/connect` → pick the desired Bedrock preset, enter your token and AWS region (defaults to `us-east-1`).
 
-1. **Bearer Token (Recommended for `/connect`):**
-   Run `/connect` and pick **AWS Bedrock**. You will be prompted to enter:
-   - **AWS Bedrock API Key:** Stored as `apiKey` or `bearerToken` inside `~/.rayu/providers.json`.
-   - **AWS Region:** The AWS region where Bedrock is enabled (defaults to `us-east-1`).
-
-2. **Standard AWS Credentials (Fallback):**
-   If you leave the API key blank in `/connect`, Rayu will fall back to using default AWS credentials from your environment or standard AWS credentials file (`~/.aws/credentials`):
-   - `AWS_ACCESS_KEY_ID`
-   - `AWS_SECRET_ACCESS_KEY`
-   - `AWS_SESSION_TOKEN` (optional)
-   - `AWS_DEFAULT_REGION` or `AWS_REGION`
+Supported regions: `us-east-1`, `us-east-2`, `us-west-2`, `ap-south-1`, `ap-southeast-1`, `ap-southeast-2`, `ap-northeast-1`, `eu-central-1`, `eu-west-1`, `eu-west-3`.
 
 ### Model Discovery
 
-When you connect to AWS Bedrock, Rayu queries your AWS account for available models:
-1. **Foundation Models:** Calls `ListFoundationModels` (returns on-demand foundation models available in your region, including Claude, DeepSeek, Llama, Mistral, etc.).
-2. **Inference Profiles:** Calls `ListInferenceProfiles` (returns cross-region Claude inference profiles).
+- `bedrock` (Converse): calls `GET /foundation-models` and `GET /inference-profiles` on the Bedrock control plane, filtered to ACTIVE models.
+- `bedrock-openai`: calls `GET /foundation-models`, filtered to models where `openAiChatCompletions: true`.
+- `bedrock-anthropic`: fetches cross-region Claude inference profiles (`/inference-profiles`) plus on-demand Anthropic foundation models.
 
-These are merged and cached in `~/.rayu/providers.json`. This allows the `/model` command to list and switch between all available Bedrock models in your account.
+Results are cached in `~/.rayu/providers.json` and refreshed at startup.
+
+---
+
+## Kiro
+
+The `kiro` preset connects to Claude models through Kiro's AWS CodeWhisperer backend. Two auth methods:
+
+- **API key** (`apikey`): paste a `ksk_…` key from Kiro's dashboard. Set `KIRO_API_KEY` for auto-import.
+- **OAuth** (`oauth`): if you have `kiro-cli` installed and logged in, Rayu reads the token from `~/.local/share/kiro-cli/data.sqlite3` automatically — no key to paste.
+
+Default model: `claude-sonnet-4.6`. Small/fast model: `claude-haiku-4.5`.
+
+---
+
+## GitHub Copilot
+
+The `copilot` preset uses your existing GitHub Copilot subscription. No API key: Rayu performs a GitHub OAuth device-flow login (opens a browser code page), exchanges the GitHub token for a short-lived Copilot token, and auto-refreshes it. Models are fetched live from `api.githubcopilot.com/models` (Claude, GPT, Gemini, and more, depending on your subscription).
+
+---
+
+## GLM — Z.ai
+
+The `glm` preset connects to Zhipu AI's GLM family via `https://api.z.ai/api/paas/v4`. GLM-5.2 is the flagship coding/agent model with a 1M-token context; GLM-4.6 is 200K; GLM-4.5 family is 128K. All GLM-4.5+ models emit native chain-of-thought via `reasoning_content`. Set `ZAI_API_KEY`, `ZHIPUAI_API_KEY`, or `GLM_API_KEY`.
+
+---
+
+## MiniMax
+
+The `minimax` preset connects to `https://api.minimax.io/v1`. MiniMax-M3 is the frontier model (1M context); MiniMax-M2.x models are 204,800 tokens. All M-series models think natively by default (reasoning returned as `reasoning_content` or inline `<think>…</think>`). Set `MINIMAX_API_KEY`.
+
+---
+
+## Fugu — Sakana AI
+
+The `fugu` preset connects to Sakana AI's multi-agent system at `https://api.sakana.ai/v1`. Two models: `fugu` (default, routes across providers) and `fugu-ultra` (premium). Both have a 1M-token context window. Set `SAKANA_API_KEY`.
 
 ---
 
@@ -108,7 +157,7 @@ Relevant environment variables:
 | Variable | Meaning |
 |----------|---------|
 | `GOOGLE_CLOUD_PROJECT` / `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project id for Vertex |
-| `GOOGLE_CLOUD_LOCATION` / `CLOUD_ML_REGION` | Vertex region (default `us-central1`) |
+| `GOOGLE_CLOUD_LOCATION` / `CLOUD_ML_REGION` | Vertex region (default `global`) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to a service-account key (ADC) |
 | `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` | Override the OAuth client used for the loopback login (defaults to the public Google Cloud SDK desktop client) |
 
@@ -164,9 +213,9 @@ per-request cost); pick a pro/preview model via `/model` when needed.
 
 > **For sustained heavy use, prefer the Vertex AI provider** (next section) —
 > it uses quota-based limits on your own GCP project instead of the consumer
-> rate window. Also note Google is **deprecating the consumer Code Assist
-> endpoint for free/Pro/Ultra accounts on ~June 18, 2026** (migrating to
-> "Antigravity"), so Vertex is the more durable choice.
+> rate window. Google has migrated the consumer Code Assist endpoint for
+> free/Pro/Ultra accounts to "Antigravity" (as of ~June 2026), so Vertex
+> is the more durable and reliable choice.
 
 ---
 

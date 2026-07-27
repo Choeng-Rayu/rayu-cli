@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getRayuConfigHomeDir } from '../utils/envUtils.js'
 
@@ -24,6 +24,18 @@ export interface TelegramConfig {
   botToken?: string
   linkedChatId?: number
   linkedUsername?: string
+  /**
+   * The @username of the BOT this link was established with (no leading '@').
+   *
+   * Distinct from `linkedUsername`, which is the *human's* Telegram handle.
+   * Recorded so a later connect can tell whether the stored link still belongs
+   * to the bot we would use today: the hosted/default bot's identity lives
+   * entirely on the backend (RAYU_SHARED_BOT_TOKEN), so if the deployment
+   * switches to a different bot, a stale link here would silently keep the CLI
+   * pointed at the old one with no way to re-pair. Absent on configs written
+   * before this field existed.
+   */
+  linkedBotUsername?: string
   pendingToken?: PendingToken
 }
 
@@ -55,11 +67,69 @@ export function setTelegramMode(mode: 'hosted' | 'byo'): void {
  * CLI mirrors it here so the bridge's chat filter (chatId === linkedChatId)
  * works unchanged.
  */
-export function setLinkedChat(chatId: number, username?: string): void {
+export function setLinkedChat(
+  chatId: number,
+  username?: string,
+  botUsername?: string,
+): void {
   const cfg = readTelegramConfig()
   cfg.linkedChatId = chatId
   cfg.linkedUsername = username
+  if (botUsername) cfg.linkedBotUsername = botUsername
   writeTelegramConfig(cfg)
+}
+
+/**
+ * Record which bot the current link belongs to. Called once the bot's identity
+ * is known (hosted: backend /telegram/bot, BYO: getMe), including as a backfill
+ * for links created before `linkedBotUsername` was persisted.
+ */
+export function setLinkedBotUsername(botUsername: string): void {
+  const cfg = readTelegramConfig()
+  cfg.linkedBotUsername = botUsername
+  writeTelegramConfig(cfg)
+}
+
+/**
+ * @BotFather token shape: `<numeric bot id>:<secret>`.
+ *
+ * Deliberately permissive about the secret's length/alphabet so a future
+ * BotFather format tweak can't lock users out — the length floor only exists
+ * to reject obvious partial input (a single keystroke, a bare bot id).
+ */
+const BOT_TOKEN_RE = /^\d+:[A-Za-z0-9_-]{10,}$/
+
+/**
+ * Clean up a token the way it actually arrives from a terminal paste.
+ *
+ * A pasted token is not necessarily a bare string: with bracketed paste mode
+ * enabled (which the Ink renderer turns on) the terminal wraps it in
+ * `ESC[200~ … ESC[201~`, some terminals split long pastes across lines, and
+ * users frequently paste with surrounding quotes copied from a config snippet.
+ * Normalising here means the caller compares the token the user *meant* to
+ * paste, not the terminal's transport encoding.
+ */
+export function normalizeBotToken(raw: string): string {
+  return raw
+    // Bracketed-paste guards, then any other CSI/escape sequence.
+    .replace(/\u001b\[20[01]~/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    // A wrapped paste can contain spaces/newlines inside the token itself.
+    .replace(/\s+/g, '')
+    .replace(/^["']|["']$/g, '')
+    .trim()
+}
+
+/**
+ * Is this a syntactically plausible bot token? Single source of truth so the
+ * connect UI and the config layer can't disagree about what "valid" means.
+ * Syntax only — it says nothing about whether Telegram will accept the token.
+ */
+export function isValidBotToken(raw: string): boolean {
+  return BOT_TOKEN_RE.test(normalizeBotToken(raw))
 }
 
 /**
@@ -76,7 +146,7 @@ export function getBotToken(): string | undefined {
 /** Save a bot token to the config file. */
 export function saveBotToken(token: string): void {
   const cfg = readTelegramConfig()
-  cfg.botToken = token.trim()
+  cfg.botToken = normalizeBotToken(token)
   writeTelegramConfig(cfg)
 }
 
@@ -108,7 +178,18 @@ export function readTelegramConfig(): TelegramConfig {
 export function writeTelegramConfig(config: TelegramConfig): void {
   const dir = getRayuConfigHomeDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
+  const path = configPath()
+  writeFileSync(path, JSON.stringify(config, null, 2), { mode: 0o600 })
+  // `mode` only applies when the file is CREATED. This file holds the bot token
+  // and the linked chat, so tighten an already-existing file too. Best-effort:
+  // POSIX permissions are meaningless on Windows and chmod can fail there.
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(path, 0o600)
+    } catch {
+      // Non-fatal — the config is still written.
+    }
+  }
 }
 
 export function setPendingToken(token: string, ttlMs: number): TelegramConfig {
@@ -120,6 +201,28 @@ export function setPendingToken(token: string, ttlMs: number): TelegramConfig {
   return next
 }
 
+/**
+ * Failed `/start <token>` attempts against the current pending token.
+ *
+ * The pending token is the only thing standing between a stranger's chat and
+ * control of this CLI, and the bot accepts messages from anyone. Telegram's own
+ * flood limits make online guessing slow, but a bounded attempt count removes
+ * the possibility entirely: after MAX_PAIRING_ATTEMPTS misses the token is burnt
+ * and the user has to run /telegram-bot again.
+ */
+const MAX_PAIRING_ATTEMPTS = 5
+let pairingAttempts = 0
+
+/** Length-safe, non-short-circuiting compare so a miss leaks no timing signal. */
+function tokensMatch(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  }
+  return diff === 0
+}
+
 /** Bind a chat to a valid, unexpired pending token. Returns updated config or null on mismatch/expiry. */
 export function consumePendingToken(
   token: string,
@@ -128,9 +231,18 @@ export function consumePendingToken(
 ): TelegramConfig | null {
   const current = readTelegramConfig()
   const pending = current.pendingToken
-  if (!pending || pending.token !== token || pending.expiresAt < Date.now()) {
+  if (!pending || pending.expiresAt < Date.now()) {
     return null
   }
+  if (!tokensMatch(pending.token, token)) {
+    if (++pairingAttempts >= MAX_PAIRING_ATTEMPTS) {
+      // Burn the token — a real user retries with a fresh QR, a guesser is out.
+      pairingAttempts = 0
+      writeTelegramConfig({ ...current, pendingToken: undefined })
+    }
+    return null
+  }
+  pairingAttempts = 0
   const next: TelegramConfig = {
     ...current,
     linkedChatId: chatId,
@@ -141,8 +253,47 @@ export function consumePendingToken(
   return next
 }
 
+/**
+ * Stable identity of the bot the CLI would talk to right now:
+ * `hosted:<botUsername>` or `byo:<botId>`.
+ *
+ * This is the bridge's lifecycle key. The bridge captures its transport (a bot
+ * token, or the hosted router) once at init and never re-reads it, so a boolean
+ * "bridge is active" flag cannot express "still active, but to a DIFFERENT bot" —
+ * that is how a session could report a successful connect to the shared bot while
+ * every message kept flowing through the previously used BYO bot.
+ *
+ * Deliberately does NOT include the linked chat: the bridge resolves the chat id
+ * dynamically on every send, so a chat binding change needs no rebuild. Keying on
+ * the chat too would restart the bridge the moment pairing completes, and a
+ * restart can abandon an un-confirmed Telegram update — which Telegram then
+ * redelivers to the new instance.
+ */
+export function telegramTransportKey(): string {
+  const cfg = readTelegramConfig()
+  const mode = getTelegramMode()
+  return mode === 'hosted'
+    ? // The shared bot's identity lives on the backend; linkedBotUsername is the
+      // local record of it, and 'shared' is the placeholder before it's known.
+      `hosted:${cfg.linkedBotUsername ?? 'shared'}`
+    : // Numeric bot id — the public half of the token, before the ':'.
+      `byo:${getBotToken()?.split(':')[0] ?? 'none'}`
+}
+
+/**
+ * Forget the current link so the next connect re-pairs from scratch.
+ *
+ * Keeps `mode` and the BYO `botToken` — the user's *choice* of transport and
+ * their own credentials survive an unlink; only the chat binding goes. (This
+ * previously rewrote the file as `{ botToken }` alone, which also dropped the
+ * explicit mode and made getTelegramMode() fall back to inferring it from the
+ * presence of a token.)
+ */
 export function unlink(): void {
-  const current = readTelegramConfig()
-  // Keep botToken but clear linking state
-  writeTelegramConfig({ botToken: current.botToken })
+  const next: TelegramConfig = { ...readTelegramConfig() }
+  delete next.linkedChatId
+  delete next.linkedUsername
+  delete next.linkedBotUsername
+  delete next.pendingToken
+  writeTelegramConfig(next)
 }

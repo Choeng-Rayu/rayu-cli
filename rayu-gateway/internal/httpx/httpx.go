@@ -71,6 +71,35 @@ func WriteAnthropicError(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+// Stable machine codes for capability rejections. The CLI matches on these
+// rather than parsing prose, so it can warn the user and offer to switch models
+// ("this model can't read images") without depending on wording. They travel as
+// `error.rayu_code` alongside the normal Anthropic error envelope.
+const (
+	// CodeNoImageSupport: the request contains image content but the selected
+	// model's supportsImage flag is false.
+	CodeNoImageSupport = "model_no_image_support"
+	// CodeNoThinkingSupport: the request asks for extended thinking but the
+	// selected model's supportsReasoning flag is false.
+	CodeNoThinkingSupport = "model_no_thinking_support"
+)
+
+// WriteCapabilityError writes an Anthropic-format 400 carrying a stable
+// `rayu_code`, for a request the selected model cannot serve (image input or
+// extended thinking). 400 is deliberate: this is a client-fixable, PERMANENT
+// condition — retrying the same request can never succeed, but changing model
+// (or dropping the attachment) will. It is raised BEFORE any credit is charged.
+func WriteCapabilityError(w http.ResponseWriter, code, msg string) {
+	WriteJSON(w, http.StatusBadRequest, map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":      errType(http.StatusBadRequest),
+			"message":   msg,
+			"rayu_code": code,
+		},
+	})
+}
+
 func errType(status int) string {
 	switch status {
 	case http.StatusUnauthorized:

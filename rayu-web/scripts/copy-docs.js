@@ -1,7 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const srcDocsDir = path.join(__dirname, '../../rayu/documentations');
+// Docs live at the REPO ROOT (documentations/), not under rayu/. The old path
+// pointed at a directory that does not exist, and the existsSync guard below made
+// that a silent no-op — so the site served whatever copy happened to be committed
+// in public/docs, frozen. Any doc edit was invisible on /docs until this was fixed.
+const srcDocsDir = path.join(__dirname, '../../documentations');
 const srcChangelog = path.join(__dirname, '../../rayu/CHANGELOG.md');
 const destDocsDir = path.join(__dirname, '../public/docs');
 

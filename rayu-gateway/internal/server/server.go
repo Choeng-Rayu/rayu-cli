@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -14,10 +15,9 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -30,8 +30,11 @@ import (
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
 	"github.com/choeng-rayu/rayu-gateway/internal/eventqueue"
 	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
+	"github.com/choeng-rayu/rayu-gateway/internal/providercfg"
+	"github.com/choeng-rayu/rayu-gateway/internal/providerkeys"
 	"github.com/choeng-rayu/rayu-gateway/internal/proxy"
 	"github.com/choeng-rayu/rayu-gateway/internal/store"
+	"github.com/choeng-rayu/rayu-gateway/internal/translate"
 )
 
 const (
@@ -39,23 +42,40 @@ const (
 	defaultMaxTokens = 2048    // estimate fallback when max_tokens is unset
 )
 
-// entSource resolves per-user entitlements and exposes cached app settings. It
-// is backed by *entitlements.Cache in production and a fake in tests (so the
-// chat/proxy handlers can be exercised without a live MySQL).
+// entSource resolves per-user entitlements and exposes cached app settings +
+// the resolved provider registry. It is backed by *entitlements.Cache in
+// production and a fake in tests (so the chat/proxy handlers can be exercised
+// without a live MySQL).
 type entSource interface {
 	Resolve(ctx context.Context, userID int64) (entitlements.Entitlement, error)
 	Settings() store.AppSettings
 	Invalidate(userID int64)
+	// Route returns the validated upstream route for a provider id, resolved once
+	// per config refresh (never per request).
+	Route(providerID int64) (entitlements.ProviderRoute, bool)
+	Routes() map[int64]entitlements.ProviderRoute
+	// Keys is the live per-key registry: which of a provider's API keys may serve
+	// a request right now, plus their health. Decryption already happened during
+	// the config refresh, so this is pure in-memory bookkeeping.
+	Keys() *providerkeys.Registry
+	// Models is the whole hosted catalog, not one user's allowed subset: the admin
+	// provider test must be able to exercise a model no plan can use yet.
+	Models() []store.HostedModel
+	// Reload refreshes the config snapshot immediately. ADMIN paths only: the
+	// snapshot exists precisely so a request never queries the database.
+	Reload(ctx context.Context) error
 }
 
 // Server holds the gateway dependencies shared across handlers.
 type Server struct {
-	cfg   *config.Config
-	ent   entSource
-	lim   *credits.Limiter
-	st    *store.Store
-	wq    *eventqueue.Queue
-	keyRR sync.Map // provider(string) → *atomic.Uint64: round-robin cursor for multi-key rotation
+	cfg *config.Config
+	ent entSource
+	lim *credits.Limiter
+	st  *store.Store
+	wq  *eventqueue.Queue
+	// testLim caps the admin provider-test endpoint: each test is a real upstream
+	// call with a real key, so it must not be clickable in a loop.
+	testLim *testLimiter
 }
 
 // New builds the gateway HTTP handler. /healthz is public; everything under
@@ -72,7 +92,7 @@ func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Stor
 			log.Printf("eventqueue: dropped item %q (reason=%s): %v", item.Name, reason, err)
 		},
 	})
-	s := &Server{cfg: cfg, ent: ent, lim: lim, st: st, wq: wq}
+	s := &Server{cfg: cfg, ent: ent, lim: lim, st: st, wq: wq, testLim: newTestLimiter()}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP)
@@ -90,12 +110,24 @@ func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Stor
 		pr.Get("/v1/models", s.handleModels)
 		// Only the heavy STREAMING completions are load-shed; the light metadata
 		// endpoints (models/credits/whoami) are cheap and stay unlimited.
-		pr.Post("/v1/chat/completions", inflight.wrap(s.handleChat))
 		pr.Post("/anthropic/v1/messages", inflight.wrap(s.handleAnthropicMessages))
+		// Token counting is metadata: free, no upstream call, no concurrency slot.
+		// Without it the SDK's countTokens() 404s and the client falls back to
+		// sending real billed completions to measure its own context.
+		pr.Post("/anthropic/v1/messages/count_tokens", s.handleCountTokens)
+		// Retired ingress. Kept registered (rather than 404ing) because CLI builds
+		// already published may still POST here: they get an actionable 410 plus a
+		// log line that tells operators old clients are still in the field.
+		pr.Post("/v1/chat/completions", s.handleRetiredChatCompletions)
 		pr.Get("/v1/credits", s.handleCredits)
 
 		pr.Get("/v1/_whoami", s.handleWhoami)
 		pr.Get("/v1/_entitlements", s.handleEntitlements)
+		pr.Get("/v1/_provider-health", s.handleProviderHealth)
+		// Admin-only, rate-limited, charges nothing: one real 1-token request
+		// through the production adapter so the dashboard can say "this provider +
+		// key + model works" instead of the admin finding out from a user.
+		pr.Post("/v1/_provider-test", s.handleProviderTest)
 	})
 
 	// Transparent tracking proxy for BYO-key providers. Identity comes from the
@@ -164,6 +196,55 @@ func (s *Server) handleEntitlements(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleProviderHealth reports, per provider in the registry, whether the
+// gateway can actually route it: is the config valid, is the provider enabled,
+// and is its API key present in THIS gateway's environment. The admin dashboard
+// needs this because the backend cannot see the gateway's env — the key never
+// leaves it.
+//
+// The key itself is never returned; only a masked fingerprint ("sk-e2…71c8(35)")
+// so an operator can tell two keys apart and spot a truncated/rotated value
+// without the secret appearing in a browser, a log, or a screenshot.
+// Admin-only: the config detail (env var names, upstream URLs) is operational
+// information users have no need for.
+func (s *Server) handleProviderHealth(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	if claims.Role != "admin" && claims.Role != "superadmin" {
+		httpx.WriteError(w, http.StatusForbidden, "admin only")
+		return
+	}
+	routes := s.ent.Routes()
+	out := make([]map[string]any, 0, len(routes))
+	for id, pr := range routes {
+		entry := map[string]any{
+			"providerId": id,
+			"name":       pr.Route.Name,
+			"format":     pr.Route.Format,
+			"baseUrl":    pr.Route.BaseURL,
+			"endpoint":   pr.Route.Endpoint(),
+			"authScheme": pr.Route.AuthScheme,
+			"keyCount":   pr.Route.KeyCount,
+			"keyPresent": pr.Route.HasKey(),
+			"enabled":    pr.Route.Enabled,
+			// usableKeys is what actually matters operationally: a provider with 3
+			// keys where 2 are rate-limited still works, and the dashboard should
+			// say so rather than just "3 keys".
+			"usableKeys": s.ent.Keys().Usable(id),
+			"routable":   pr.Usable() && s.ent.Keys().Usable(id) > 0,
+			// Per-key health, masked — never a secret.
+			"keys": s.ent.Keys().SnapshotFor(id),
+		}
+		if pr.Err != nil {
+			entry["configError"] = pr.Err.Error()
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i]["providerId"].(int64) < out[j]["providerId"].(int64)
+	})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"providers": out})
+}
+
 // handleModels returns the caller's plan-allowed hosted models in OpenAI list shape.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
@@ -180,6 +261,15 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	for _, m := range ent.AllowedModels {
 		data = append(data, map[string]any{
 			"id": m.Code, "object": "model", "created": 1700000000, "owned_by": "rayu", "label": m.Label,
+			// Capabilities so the client can warn the user ("this model can't read
+			// images — pick another model") instead of discovering it as an error
+			// mid-request. Authoritative per model; enforced on the request path.
+			"supportsReasoning": m.SupportsReasoning,
+			"supportsImage":     m.SupportsImage,
+			"supportsTools":     m.SupportsTools,
+			// Admin-set context window in tokens (null when unset, so the client
+			// keeps its own default). Clients budget auto-compaction against this.
+			"contextWindow": m.ContextWindow,
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
@@ -249,6 +339,10 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 		"periodEnd":        isoTime(ent.PeriodEnd),
 		"topupBalance":     topup,
 		"topUpEnabled":     ent.Plan.TopUpEnabled,
+		// Top-up pricing, so a client can quote "$1 = N credits" and enforce the
+		// minimum purchase locally instead of guessing or hardcoding a rate.
+		"creditsPerDollar": settings.CreditsPerDollar,
+		"minTopupCents":    settings.MinTopupCents,
 		// Per-day turn cap (maxDailyTurns). turnsRemaining is null when unlimited.
 		"maxDailyTurns":     ent.Plan.MaxDailyTurns,
 		"turnsUsedToday":    turnsUsed,
@@ -262,14 +356,17 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 // bookkeeping, and a settle closure that reconciles credits to actual usage and
 // records the ledger. Built by reserveHosted; consumed by both hosted endpoints.
 type hostedReserve struct {
-	userID          int64
-	reqID           string // X-Rayu-Request-Id (edge/gateway correlation)
-	source          string // X-Rayu-Query-Source (which CLI feature issued this)
-	intended        string // X-Rayu-Intended-Model (what the CLI meant to send)
-	req             map[string]any
-	hm              *store.HostedModel
-	apiKey          string
-	apiKeys         []string // all provider keys — multi-key failover on the Anthropic path
+	userID   int64
+	reqID    string // X-Rayu-Request-Id (edge/gateway correlation)
+	source   string // X-Rayu-Query-Source (which CLI feature issued this)
+	intended string // X-Rayu-Intended-Model (what the CLI meant to send)
+	req      map[string]any
+	hm       *store.HostedModel
+	route    providercfg.Route // resolved provider route (URL, auth, keys)
+	adapter  translate.Adapter // wire-format adapter for that provider
+	// apiKeys are the provider keys usable right now, in try order. Each carries
+	// its id so a failure can be attributed to that key.
+	apiKeys         []proxy.APIKey
 	estBillable     int64 // pre-flight billable-token reservation
 	usedPeriod      int64 // billable tokens used this period (from the limiter)
 	capPeriod       int64 // billable-token allowance (or credits.Unlimited)
@@ -364,12 +461,44 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		return nil, false
 	}
 
-	// Zero-code provider disable (RAYU_DISABLED_PROVIDERS): refuse a disabled
-	// provider's models BEFORE the daily-turn count or credit reserve, so a
-	// disabled provider never charges credits or burns a turn.
-	if s.cfg.ProviderDisabled(hm.Provider) {
+	// --- Provider registry resolution (replaces the old env registry) ----------
+	// The provider row decides the wire format, URL, auth scheme, and which env
+	// var holds the key. Everything here happens BEFORE the daily-turn count and
+	// the credit reserve, so a misconfigured or disabled provider never charges a
+	// user or burns a turn. Errors are deliberately vague to the CLI (they are
+	// operator problems, and the detail can name internal hosts/vars) but precise
+	// in the log.
+	pr, haveRoute := s.ent.Route(hm.ProviderID)
+	if !haveRoute {
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q provider_id=%d reason=provider_not_in_registry",
+			claims.UserID, reqID, source, modelCode, hm.ProviderID)
+		httpx.WriteError(w, http.StatusServiceUnavailable, "model temporarily unavailable: "+modelCode)
+		return nil, false
+	}
+	// A row that fails validation is REFUSED, never silently repaired: the
+	// gateway would otherwise attach a provider key to a URL/variable nobody
+	// configured (SSRF + key exfiltration). Re-checked here (not just in the
+	// backend) so a row written directly to the database is caught too.
+	if pr.Err != nil {
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q provider=%q reason=provider_config_invalid: %v",
+			claims.UserID, reqID, source, modelCode, pr.Route.Name, pr.Err)
+		httpx.WriteError(w, http.StatusServiceUnavailable, "model temporarily unavailable: "+modelCode)
+		return nil, false
+	}
+	// Admin kill switch (replaces RAYU_DISABLED_PROVIDERS).
+	if !pr.Route.Enabled {
 		log.Printf("reject: user=%d reqid=%s source=%s model=%q provider=%q is disabled",
-			claims.UserID, reqID, source, modelCode, hm.Provider)
+			claims.UserID, reqID, source, modelCode, pr.Route.Name)
+		httpx.WriteError(w, http.StatusServiceUnavailable, "model temporarily unavailable: "+modelCode)
+		return nil, false
+	}
+	// The provider's wire format must have an adapter in THIS build. Checked here,
+	// before any turn or credit is reserved, because a format this gateway cannot
+	// speak is an operator/deploy problem and must never cost the user anything.
+	adapter, aerr := translate.For(pr.Route.Format)
+	if aerr != nil {
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q provider=%q reason=unsupported_format: %v (this build serves: %v)",
+			claims.UserID, reqID, source, modelCode, pr.Route.Name, aerr, translate.Formats())
 		httpx.WriteError(w, http.StatusServiceUnavailable, "model temporarily unavailable: "+modelCode)
 		return nil, false
 	}
@@ -384,14 +513,46 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		}
 	}
 
-	apiKeys := s.cfg.KeysForProvider(hm.Provider)
-	if len(apiKeys) == 0 {
-		log.Printf("reject: user=%d reqid=%s source=%s model=%q provider=%q reason=provider_key_not_configured",
-			claims.UserID, reqID, source, modelCode, hm.Provider)
-		httpx.WriteError(w, http.StatusInternalServerError, "provider key not configured")
+	// --- Per-model capability gate ---------------------------------------------
+	// Refuse content the selected model cannot handle BEFORE reserving a turn or
+	// credits, and say so with a stable machine code so the CLI can warn the user
+	// and offer to switch models (see internal/httpx WriteCapabilityError).
+	if !hm.SupportsImage && requestHasImage(req) {
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q reason=no_image_support",
+			claims.UserID, reqID, source, modelCode)
+		httpx.WriteCapabilityError(w, httpx.CodeNoImageSupport,
+			"Model \""+hm.Code+"\" cannot read images. Switch to a model with image support, or remove the image from your message.")
 		return nil, false
 	}
-	apiKey := apiKeys[0] // first key powers the single-key OpenAI path
+	if !hm.SupportsReasoning && requestWantsThinking(req) {
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q reason=no_thinking_support",
+			claims.UserID, reqID, source, modelCode)
+		httpx.WriteCapabilityError(w, httpx.CodeNoThinkingSupport,
+			"Model \""+hm.Code+"\" does not support extended thinking. Switch to a reasoning-capable model, or disable thinking for this request.")
+		return nil, false
+	}
+
+	// Which keys may serve this request right now: disabled, invalid and
+	// still-cooling keys are already excluded, in priority order. No DB read and
+	// no decryption happens here — the registry holds decrypted keys in memory.
+	apiKeys := s.ent.Keys().Pick(hm.ProviderID)
+	if len(apiKeys) == 0 {
+		// Distinguish "never configured" from "all keys are temporarily unusable":
+		// the first is an admin task, the second resolves itself.
+		total := len(s.ent.Keys().SnapshotFor(hm.ProviderID))
+		if total == 0 {
+			log.Printf("reject: user=%d reqid=%s source=%s model=%q provider=%q reason=no_api_key_configured",
+				claims.UserID, reqID, source, modelCode, pr.Route.Name)
+			httpx.WriteError(w, http.StatusInternalServerError, "provider key not configured")
+			return nil, false
+		}
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q provider=%q reason=all_keys_unusable (%d configured: rate-limited or invalid)",
+			claims.UserID, reqID, source, modelCode, pr.Route.Name, total)
+		w.Header().Set("Retry-After", "60")
+		httpx.WriteError(w, http.StatusServiceUnavailable,
+			"model temporarily unavailable: "+modelCode)
+		return nil, false
+	}
 
 	// --- Daily turn cap (maxDailyTurns) — HARD limit on the hosted path ---
 	// Counted per user per UTC day; nil/0 cap = unlimited. Checked before the
@@ -421,8 +582,12 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	tpc := credits.TokensPerCredit(baseline)
 	mult := hm.CreditMultiplier
 	// rates prices each usage bucket (input/output/cache-read/cache-write)
-	// independently for the ACTUAL charge (see credits.DeriveModelRates).
-	rates := credits.DeriveModelRates(hm.CreditMultiplier, hm.InputPricePer1MCents, hm.OutputPricePer1MCents, hm.CacheReadCreditMultiplier, hm.CacheWriteCreditMultiplier)
+	// independently for the ACTUAL charge, using the four charges the admin
+	// entered — nothing is derived from the cost prices (see credits.ModelRatesFor).
+	rates := credits.ModelRatesFor(
+		hm.CreditMultiplier, hm.OutputCreditMultiplier,
+		hm.CacheReadCreditMultiplier, hm.CacheWriteCreditMultiplier,
+	)
 	// Track usage + allowance in FINE-GRAINED billable tokens (not whole ceil'd
 	// credits): a tiny turn then costs its true fraction instead of a full 1M-
 	// token credit. Cap = the plan's credit allowance × tokensPerCredit.
@@ -495,6 +660,12 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		return actual
 	}
 
+	// Hand the adapter proxy.APIKey values: secret to use, id to blame on failure.
+	tryKeys := make([]proxy.APIKey, 0, len(apiKeys))
+	for _, k := range apiKeys {
+		tryKeys = append(tryKeys, proxy.APIKey{ID: k.ID, Secret: k.Secret})
+	}
+
 	return &hostedReserve{
 		userID:          claims.UserID,
 		reqID:           reqID,
@@ -502,8 +673,9 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		intended:        intended,
 		req:             req,
 		hm:              hm,
-		apiKey:          apiKey,
-		apiKeys:         apiKeys,
+		route:           pr.Route,
+		adapter:         adapter,
+		apiKeys:         tryKeys,
 		estBillable:     estBillable,
 		usedPeriod:      rr.UsedPeriod,
 		capPeriod:       capBillable,
@@ -513,74 +685,34 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	}, true
 }
 
-// handleChat reserves credits (via reserveHosted), proxies the (streaming)
-// OpenAI-compatible completion to the model's upstream, settles to actual usage,
-// and records the ledger.
-func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	hr, ok := s.reserveHosted(w, r)
-	if !ok {
-		return
-	}
-	req := hr.req
-	stream, _ := req["stream"].(bool)
-	log.Printf("chat: user=%d reqid=%s source=%s model=%s intended=%q stream=%v reserved=%d",
-		hr.userID, hr.reqID, hr.source, hr.hm.Code, hr.intended, stream, hr.estBillable)
-	req["model"] = hr.hm.UpstreamModelID
-	if stream {
-		req["stream_options"] = map[string]any{"include_usage": true}
-	}
-	newBody, _ := json.Marshal(req)
-	upstreamURL := strings.TrimRight(hr.hm.UpstreamBaseURL, "/") + "/chat/completions"
+// retiredChatCompletionsMessage tells the user how to fix a call to the retired
+// OpenAI-shaped hosted ingress. It is deliberately actionable: the only cause is
+// an out-of-date CLI, since current builds use the Anthropic ingress.
+const retiredChatCompletionsMessage = "This endpoint has been retired. Update rayu-cli (npm i -g @rayu-dev/rayu-cli) — hosted models are now served on /anthropic/v1/messages."
 
-	if stream {
-		// Best-effort headers before the stream starts (exact figures via /v1/credits).
-		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
-		usage, wrote, serr := proxy.Stream(r.Context(), w, upstreamURL, hr.apiKey, newBody)
-		hr.settle(usage)
-		if serr != nil {
-			log.Printf("chat: upstream error user=%d reqid=%s source=%s model=%s wrote=%v: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, wrote, serr)
-		}
-		if serr != nil && !wrote {
-			writeUpstreamError(w, serr, "upstream error")
-		}
-		return
-	}
-
-	usage, status, respBody, cerr := proxy.Complete(r.Context(), upstreamURL, hr.apiKey, newBody)
-	if cerr != nil {
-		hr.settle(nil)
-		log.Printf("chat: upstream unreachable user=%d reqid=%s source=%s model=%s: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, cerr)
-		writeUpstreamError(w, cerr, "upstream error")
-		return
-	}
-	actual := hr.settle(usage)
-	setCreditHeaders(w, hr.usedPeriod-hr.estBillable+actual, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
-	if status != http.StatusOK {
-		// Relay a client-fixable request error (400/413/422) with its real status
-		// + message so the CLI shows the cause and doesn't retry; keep the clean
-		// 502 for provider-side/transient failures.
-		log.Printf("chat: upstream non-200 user=%d reqid=%s source=%s model=%s status=%d", hr.userID, hr.reqID, hr.source, hr.hm.Code, status)
-		if proxy.IsUpstreamRequestError(status) {
-			msg := proxy.UpstreamErrorMessage(respBody)
-			if msg == "" {
-				msg = "The request was rejected by the model provider."
-			}
-			httpx.WriteError(w, status, msg)
-			return
-		}
-		httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(respBody)
+// handleRetiredChatCompletions answers the retired OpenAI-shaped hosted ingress.
+//
+// The hosted path now has ONE ingress: POST /anthropic/v1/messages, with the
+// gateway translating to whatever the provider speaks. This route stays
+// registered rather than 404ing because already-published CLI builds may still
+// POST here; 410 Gone + a clear message is a far better failure than a bare 404,
+// and the log line shows operators that old clients are still in the field.
+//
+// Nothing is reserved or billed: this returns before any entitlement, turn, or
+// credit work.
+func (s *Server) handleRetiredChatCompletions(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	log.Printf("retired endpoint: user=%d POST /v1/chat/completions source=%s ua=%q — client needs updating",
+		claims.UserID, headerOr(r, "X-Rayu-Query-Source", "unknown"), r.UserAgent())
+	httpx.WriteError(w, http.StatusGone, retiredChatCompletionsMessage)
 }
 
-// handleAnthropicMessages is the rayu-hosted Anthropic Messages endpoint. It
-// shares reserveHosted with handleChat, then forwards to the model's Anthropic-
-// compatible upstream (DeepSeek: https://api.deepseek.com/anthropic/v1/messages)
-// with x-api-key, relaying the native Anthropic stream and metering off the
-// Anthropic usage (input_tokens = fresh input, cache_read_input_tokens = cached).
+// handleAnthropicMessages is THE rayu-hosted completion endpoint. The CLI always
+// speaks Anthropic Messages here; the provider's own wire format is resolved from
+// the registry and served by the matching adapter in internal/translate — either
+// the byte-verbatim Anthropic passthrough or a translating adapter (OpenAI chat /
+// OpenAI Responses / Google GenAI). Usage is metered in the same normalized
+// buckets whichever format was used, so billing is format-independent.
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	hr, ok := s.reserveHosted(w, r)
 	if !ok {
@@ -588,23 +720,34 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	req := hr.req
 	stream, _ := req["stream"].(bool)
-	log.Printf("anthropic: user=%d reqid=%s source=%s model=%s intended=%q stream=%v reserved=%d",
-		hr.userID, hr.reqID, hr.source, hr.hm.Code, hr.intended, stream, hr.estBillable)
+	log.Printf("anthropic: user=%d reqid=%s source=%s model=%s provider=%s format=%s intended=%q stream=%v reserved=%d",
+		hr.userID, hr.reqID, hr.source, hr.hm.Code, hr.route.Name, hr.route.Format, hr.intended, stream, hr.estBillable)
+	// Model fidelity: the upstream always receives the PROVIDER's model id.
 	req["model"] = hr.hm.UpstreamModelID
-	newBody, _ := json.Marshal(req)
-	upstreamURL := anthropicUpstream(hr.hm.UpstreamBaseURL, s.cfg.ProviderEndpointStyle(hr.hm.Provider))
-	bearer := s.cfg.ProviderUsesBearer(hr.hm.Provider)
-	// Multi-key rotation: round-robin the starting key; the proxy fails over to
-	// the next on a rate-limit/quota/auth status. OLLAMA_API_KEY may be a
-	// comma-separated list; single-key providers get a one-element slice.
-	keys := s.rotateKeys(hr.hm.Provider, hr.apiKeys)
+
+	// Multi-key failover: the keys arrive in priority order, already filtered to
+	// the ones usable right now. The adapter walks them on a rate-limit/quota/auth
+	// status and reports each failure so the key's health is recorded — a 429 puts
+	// that key on cooldown, a 401/403 takes it out of rotation entirely.
+	providerID := hr.hm.ProviderID
+	areq := translate.Request{
+		Route:           hr.route,
+		Keys:            hr.apiKeys,
+		UpstreamModelID: hr.hm.UpstreamModelID,
+		Anthropic:       req,
+		Stream:          stream,
+		OnKeyFailure: func(f proxy.KeyFailure) {
+			s.recordKeyFailure(providerID, f)
+		},
+	}
 
 	if stream {
 		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
-		usage, wrote, serr := proxy.StreamAnthropic(r.Context(), w, upstreamURL, keys, bearer, newBody)
+		usage, wrote, serr := hr.adapter.Stream(r.Context(), w, areq)
 		hr.settle(usage)
 		if serr != nil {
-			log.Printf("anthropic: upstream error user=%d reqid=%s source=%s model=%s wrote=%v: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, wrote, serr)
+			log.Printf("anthropic: upstream error user=%d reqid=%s source=%s model=%s format=%s wrote=%v: %v",
+				hr.userID, hr.reqID, hr.source, hr.hm.Code, hr.route.Format, wrote, serr)
 		}
 		if serr != nil && !wrote {
 			writeUpstreamError(w, serr, "upstream error")
@@ -612,7 +755,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	usage, status, respBody, cerr := proxy.CompleteAnthropic(r.Context(), upstreamURL, keys, bearer, newBody)
+	usage, status, respBody, cerr := hr.adapter.Complete(r.Context(), areq)
 	if cerr != nil {
 		hr.settle(nil)
 		log.Printf("anthropic: upstream unreachable user=%d reqid=%s source=%s model=%s: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, cerr)
@@ -645,42 +788,30 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	_, _ = w.Write(respBody)
 }
 
-// rotateKeys returns the provider's API keys rotated so a different key leads
-// each request (round-robin), spreading load across a multi-key provider (e.g.
-// OLLAMA_API_KEY="k1,k2,..."). Combined with the proxy's in-request failover it
-// uses every key and skips a rate-limited one. A 0/1-key slice is returned
-// unchanged. Safe for concurrent use.
-func (s *Server) rotateKeys(provider string, keys []string) []string {
-	n := len(keys)
-	if n <= 1 {
-		return keys
+// recordKeyFailure records what an upstream said about a specific API key, so
+// rotation reflects reality instead of retrying a credential that just failed.
+//
+//   - 429 / 402 → cooldown. The key is skipped until the window passes; the
+//     provider's Retry-After is honoured (capped, so a provider cannot remove a
+//     key from rotation for an hour).
+//   - 401 / 403 → invalid. The key stays out until an admin replaces it: retrying
+//     a rejected credential wastes latency and can trip abuse counters.
+//
+// State is updated in memory immediately (so the NEXT request skips the key) and
+// persisted asynchronously, so a health write never sits on the request path.
+func (s *Server) recordKeyFailure(providerID int64, f proxy.KeyFailure) {
+	if f.KeyID == 0 {
+		return
 	}
-	v, _ := s.keyRR.LoadOrStore(provider, new(atomic.Uint64))
-	start := int((v.(*atomic.Uint64).Add(1) - 1) % uint64(n))
-	out := make([]string, 0, n)
-	out = append(out, keys[start:]...)
-	out = append(out, keys[:start]...)
-	return out
-}
-
-// anthropicUpstream derives DeepSeek's Anthropic Messages endpoint from a model's
-// configured (OpenAI-style) upstream base URL by keeping the origin and appending
-// /anthropic/v1/messages (DeepSeek exposes the Anthropic-compatible API at
-// https://api.deepseek.com/anthropic).
-func anthropicUpstream(base, endpoint string) string {
-	trimmed := strings.TrimRight(base, "/")
-	// endpoint "messages" → {host}/v1/messages (Ollama Cloud — NO /anthropic
-	// segment); anything else → {host}/anthropic/v1/messages (DeepSeek/LongCat/
-	// first-party Anthropic). The style is per-provider config, resolved by
-	// Config.ProviderEndpointStyle (built-in defaults + the RAYU_PROVIDERS registry).
-	path := "/anthropic/v1/messages"
-	if endpoint == "messages" {
-		path = "/v1/messages"
+	if f.RateLimited() {
+		s.ent.Keys().MarkRateLimited(providerID, f.KeyID, f.RetryAfter)
+		log.Printf("provider key #%d rate limited (HTTP %d) — cooling down, rotating to the next key",
+			f.KeyID, f.Status)
+		return
 	}
-	if u, err := url.Parse(trimmed); err == nil && u.Scheme != "" && u.Host != "" {
-		return u.Scheme + "://" + u.Host + path
-	}
-	return strings.TrimSuffix(trimmed, "/v1") + path
+	s.ent.Keys().MarkInvalid(providerID, f.KeyID, fmt.Sprintf("HTTP %d", f.Status))
+	log.Printf("provider key #%d rejected by the upstream (HTTP %d) — taken out of rotation until replaced",
+		f.KeyID, f.Status)
 }
 
 // recordLedger writes the durable consumption row via the bounded write

@@ -20,9 +20,9 @@ import {
   answerCallbackQuery,
   downloadFileAsBase64,
   editMessageText,
-  escapeHtml,
   getFile,
   getUpdates,
+  isHostedMode,
   sendChatAction,
   sendMessage,
   sendPhoto,
@@ -30,8 +30,10 @@ import {
   setMyCommands,
   type TelegramUpdate,
 } from './telegramApi.js'
+import { renderTelegramHtml } from './telegramMarkdown.js'
 import {
   createTelegramPermissionCallbacks,
+  handlePermissionCallback,
   handlePermissionReply,
 } from './telegramPermissions.js'
 import {
@@ -43,6 +45,25 @@ import {
   isConnectSessionActive,
 } from './telegramConnect.js'
 import { StreamingMirror } from './streamingMirror.js'
+import { buildImageQueueCommand, collectAlbumImage } from './telegramMedia.js'
+import { getHostedFile } from './telegramHostedApi.js'
+import {
+  handleQuestionCallback,
+  handleQuestionTextInput,
+} from './telegramQuestions.js'
+import {
+  handlePlanCallback,
+  handlePlanTextInput,
+} from './telegramPlanApproval.js'
+import {
+  clearStopCard,
+  handleInterruptCallback,
+  hasStopCard,
+  interruptMessage,
+  isInterruptCommand,
+  performInterrupt,
+  showStopCard,
+} from './telegramInterrupt.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import { enqueue } from '../utils/messageQueueManager.js'
 
@@ -76,8 +97,61 @@ function linkedChatId(): number | undefined {
 function parseCommand(text: string): { cmd: string; arg: string } {
   const trimmed = text.trim()
   const space = trimmed.indexOf(' ')
-  if (space === -1) return { cmd: trimmed, arg: '' }
-  return { cmd: trimmed.slice(0, space), arg: trimmed.slice(space + 1).trim() }
+  const rawCmd = space === -1 ? trimmed : trimmed.slice(0, space)
+  const arg = space === -1 ? '' : trimmed.slice(space + 1).trim()
+  // Telegram appends the bot mention in groups: "/model@rayu_bot sonnet".
+  const cmd = rawCmd.startsWith('/') ? (rawCmd.split('@')[0] ?? rawCmd) : rawCmd
+  return { cmd, arg }
+}
+
+/**
+ * Telegram command names are restricted to [a-z0-9_] and 32 chars, so a CLI
+ * command like `disconnect-telegram` is advertised as `/disconnect_telegram`.
+ */
+export function toTelegramCommandName(name: string): string {
+  return name
+    .replace(/-/g, '_')
+    .replace(/[^a-z0-9_]/gi, '')
+    .toLowerCase()
+    .slice(0, 32)
+}
+
+/**
+ * Reverse map of toTelegramCommandName: the name Telegram sends → the real CLI
+ * command name. Without it, a user tapping the autocomplete entry the bridge
+ * itself registered gets "Unknown skill: disconnect_telegram", because the
+ * underscored name matches no command in the registry. It also un-hides commands
+ * from the blocked list, whose entries are the real hyphenated names.
+ *
+ * Only names that actually change are stored, so a lookup miss means "use it
+ * verbatim". First registration wins, matching setMyCommands' dedupe order.
+ */
+export function buildTelegramCommandAliases(names: string[]): Map<string, string> {
+  const aliases = new Map<string, string>()
+  for (const name of names) {
+    const safe = toTelegramCommandName(name)
+    if (safe && safe !== name && !aliases.has(safe)) aliases.set(safe, name)
+  }
+  return aliases
+}
+
+/** Cached per process: the command registry is loaded once. */
+let commandAliasesPromise: Promise<Map<string, string>> | null = null
+
+function loadCommandAliases(): Promise<Map<string, string>> {
+  if (!commandAliasesPromise) {
+    commandAliasesPromise = (async () => {
+      try {
+        const { getCommands } = await import('../commands.js')
+        const { getCwd } = await import('../utils/cwd.js')
+        return buildTelegramCommandAliases((await getCommands(getCwd())).map(c => c.name))
+      } catch {
+        // Registry unavailable — fall back to using names verbatim.
+        return new Map<string, string>()
+      }
+    })()
+  }
+  return commandAliasesPromise
 }
 
 /** Extract image blocks from WrappedMessage content for Telegram sendPhoto. */
@@ -165,6 +239,45 @@ const TELEGRAM_BLOCKED_COMMANDS = new Set([
   'web-setup',
 ])
 
+/**
+ * Download an inbound Telegram file and return it as base64.
+ *
+ * Two transports: in hosted (shared bot) mode the CLI has no bot token, so the
+ * download goes through the backend, which verifies the file was delivered to
+ * this account before serving it. In BYO mode we call Telegram directly.
+ * Returns undefined after telling the user why, so callers can just bail.
+ */
+async function fetchInboundImage(
+  token: string,
+  chatId: number,
+  fileId: string,
+  kind: 'photo' | 'file' | 'sticker',
+): Promise<{ base64: string; mediaType: string } | undefined> {
+  if (isHostedMode()) {
+    const hosted = await getHostedFile(fileId)
+    if (!hosted) {
+      await sendMessage(
+        token,
+        chatId,
+        `⚠️ Could not fetch that ${kind}. Only images are supported, up to 10 MB.`,
+      )
+      return undefined
+    }
+    return hosted
+  }
+  const filePath = await getFile(token, fileId)
+  if (!filePath) {
+    await sendMessage(token, chatId, `⚠️ Could not download the ${kind}.`)
+    return undefined
+  }
+  const downloaded = await downloadFileAsBase64(token, filePath)
+  if (!downloaded) {
+    await sendMessage(token, chatId, `⚠️ Failed to process the ${kind}.`)
+    return undefined
+  }
+  return downloaded
+}
+
 async function handleUpdate(
   update: TelegramUpdate,
   options: TelegramBridgeOptions,
@@ -182,11 +295,20 @@ async function handleUpdate(
     }
 
     const data = cq.data ?? ''
-    // Route all callbacks through the wizard handler.
-    // handleCallbackQuery always calls answerCallbackQuery first (dismisses
-    // the spinner unconditionally), then returns false for unknown data.
-    // This means adding new callback namespaces (mdl:, etc.) never requires
-    // changes here.
+    // Interactive cards own their namespaces and answer the callback query
+    // themselves; each returns false for data it doesn't recognise.
+    //   q:    — AskUserQuestion interview
+    //   pl:   — plan approval
+    //   int:  — stop the running turn
+    //   perm: — permission decisions
+    // Anything else falls through to the wizard handler, which always calls
+    // answerCallbackQuery first (dismisses the spinner unconditionally) and
+    // returns false for unknown data — so adding further namespaces there
+    // (mdl:, cnx:, …) still requires no change here.
+    if (await handleQuestionCallback(options.token, chatId, cq.id, data)) return
+    if (await handlePlanCallback(options.token, chatId, cq.id, data)) return
+    if (await handleInterruptCallback(options.token, chatId, cq.id, data)) return
+    if (await handlePermissionCallback(options.token, chatId, cq.id, data)) return
     await handleCallbackQuery(options.token, cq.id, chatId, data)
     return
   }
@@ -205,64 +327,101 @@ async function handleUpdate(
 
     // Download the largest photo (last element in the array).
     const largest = message.photo[message.photo.length - 1]!
-    const filePath = await getFile(options.token, largest.file_id)
-    if (!filePath) {
-      await sendMessage(options.token, chatId, '⚠️ Could not download the photo.')
-      return
+    const downloaded = await fetchInboundImage(options.token, chatId, largest.file_id, 'photo')
+    if (!downloaded) return
+
+    const image = {
+      ...downloaded,
+      width: largest.width,
+      height: largest.height,
     }
-    const downloaded = await downloadFileAsBase64(options.token, filePath)
-    if (!downloaded) {
-      await sendMessage(options.token, chatId, '⚠️ Failed to process the photo.')
+
+    // Albums arrive as one update per photo — batch them into a single turn.
+    if (message.media_group_id) {
+      collectAlbumImage({
+        groupId: message.media_group_id,
+        caption: text,
+        image,
+        onFlush: command => {
+          enqueue(command)
+          void sendMessage(options.token, chatId, '📎 Images received — working on it.')
+        },
+      })
       return
     }
 
-    // Enqueue as a message with pasted image content — same format as CLI paste.
-    const caption = text || 'Analyze this image'
-    enqueue({
-      value: caption,
-      mode: 'prompt',
-      pastedContents: {
-        0: {
-          id: 0,
-          type: 'image',
-          content: downloaded.base64,
-          mediaType: downloaded.mediaType,
-          dimensions: { width: largest.width, height: largest.height },
-        },
-      },
-    })
+    const command = buildImageQueueCommand(text, [image])
+    if (!command) return
+    enqueue(command)
+    await sendMessage(options.token, chatId, '📎 Image received — working on it.')
     return
   }
 
-  // ---- Handle document messages (image files sent as documents) ----
-  if (message.document && message.document.mime_type?.startsWith('image/')) {
+  // ---- Handle static stickers (they are ordinary webp images) ----
+  if (message.sticker) {
+    if (chatId !== linkedChatId()) return
+    if (message.sticker.is_animated || message.sticker.is_video) {
+      await sendMessage(
+        options.token,
+        chatId,
+        '⚠️ Animated stickers are not supported. Send a photo or a static sticker.',
+      )
+      return
+    }
+    const downloaded = await fetchInboundImage(
+      options.token,
+      chatId,
+      message.sticker.file_id,
+      'sticker',
+    )
+    if (!downloaded) return
+    const command = buildImageQueueCommand(text, [
+      {
+        ...downloaded,
+        width: message.sticker.width,
+        height: message.sticker.height,
+        filename: 'sticker.webp',
+      },
+    ])
+    if (!command) return
+    enqueue(command)
+    await sendMessage(options.token, chatId, '📎 Sticker received — working on it.')
+    return
+  }
+
+  // ---- Handle document messages (files sent as attachments) ----
+  if (message.document) {
     if (chatId !== linkedChatId()) return
 
-    const filePath = await getFile(options.token, message.document.file_id)
-    if (!filePath) {
-      await sendMessage(options.token, chatId, '⚠️ Could not download the file.')
-      return
-    }
-    const downloaded = await downloadFileAsBase64(options.token, filePath)
-    if (!downloaded) {
-      await sendMessage(options.token, chatId, '⚠️ Failed to process the file.')
+    if (!message.document.mime_type?.startsWith('image/')) {
+      // Previously silent — the user had no idea the file was dropped.
+      await sendMessage(
+        options.token,
+        chatId,
+        `⚠️ Only images can be sent to the terminal right now${
+          message.document.file_name ? ` (${message.document.file_name} was ignored)` : ''
+        }.\n\nFor code or text, paste it in a message instead.`,
+      )
       return
     }
 
-    const caption = text || `Analyze this image${message.document.file_name ? ` (${message.document.file_name})` : ''}`
-    enqueue({
-      value: caption,
-      mode: 'prompt',
-      pastedContents: {
-        0: {
-          id: 0,
-          type: 'image',
-          content: downloaded.base64,
-          mediaType: downloaded.mediaType,
-          filename: message.document.file_name,
-        },
+    const downloaded = await fetchInboundImage(
+      options.token,
+      chatId,
+      message.document.file_id,
+      'file',
+    )
+    if (!downloaded) return
+
+    const command = buildImageQueueCommand(text, [
+      {
+        ...downloaded,
+        ...(message.document.file_name && { filename: message.document.file_name }),
       },
-    })
+    ])
+    if (!command) return
+    enqueue(command)
+    await sendMessage(options.token, chatId, '📎 Image received — working on it.')
     return
   }
 
@@ -284,6 +443,12 @@ async function handleUpdate(
         chatId,
         `✅ Linked to ${hostname()}${username ? ` as @${username}` : ''}.\n\nSend any message to drive the CLI. Use /disconnect to unlink.\n\nTip: Use /connect to set up your AI provider.`,
       )
+    } else if (chatId === linkedChatId()) {
+      // Telegram redelivers any update it hasn't had confirmed (the bridge can be
+      // torn down between handling an update and issuing the next getUpdates), so
+      // the same /start can arrive twice. The first one consumed the token and
+      // already sent the confirmation — telling an already-linked chat that its
+      // token expired is just wrong, so stay silent.
     } else {
       await sendMessage(options.token, chatId, '❌ Invalid or expired token.')
     }
@@ -301,6 +466,23 @@ async function handleUpdate(
 
   // Only the linked chat drives the CLI.
   if (chatId !== linkedChatId()) return
+
+  // Stop the AI. Checked before the interactive-card handlers so it works even
+  // while a question card is open, and before the command queue so it is never
+  // itself queued behind the turn it is trying to stop.
+  if (isInterruptCommand(cmd)) {
+    const outcome = performInterrupt()
+    if (hasStopCard()) await clearStopCard(interruptMessage(outcome))
+    else await sendMessage(options.token, chatId, interruptMessage(outcome), 'HTML')
+    return
+  }
+
+  // An open interactive card waiting on free text claims the message first, so
+  // an answer, note or plan feedback never leaks into the conversation as a new
+  // turn.
+  const replyTo = message.reply_to_message?.message_id
+  if (await handleQuestionTextInput(chatId, text, replyTo)) return
+  if (await handlePlanTextInput(chatId, text, replyTo)) return
 
   // Permission reply (y/n/always) takes priority.
   if (handlePermissionReply(text)) return
@@ -332,21 +514,28 @@ async function handleUpdate(
   // These would render a React UI in the terminal and block the message queue
   // until someone physically presses ESC/Enter at the terminal.
   if (text.startsWith('/')) {
-    const cmdName = cmd.slice(1) // strip leading /
+    // Translate the Telegram-safe name back to the real command before both the
+    // blocked-list check and the enqueue — the blocked list holds real names, and
+    // the REPL can only resolve real names.
+    const typed = cmd.slice(1).toLowerCase()
+    const cmdName = (await loadCommandAliases()).get(typed) ?? typed
     if (TELEGRAM_BLOCKED_COMMANDS.has(cmdName)) {
       await sendMessage(
         options.token,
         chatId,
-        `⚠️ \`${cmd}\` requires the terminal UI and cannot be used from Telegram.\n\nPlease run it directly in rayu-cli.`,
+        `⚠️ \`/${cmdName}\` requires the terminal UI and cannot be used from Telegram.\n\nPlease run it directly in rayu-cli.`,
       )
       return
     }
-    enqueue({ value: text, mode: 'prompt' })
+    enqueue({ value: arg ? `/${cmdName} ${arg}` : `/${cmdName}`, mode: 'prompt' })
+    void showStopCard(options.token, chatId)
     return
   }
 
   // Plain text → new REPL turn.
   enqueue({ value: text, mode: 'prompt' })
+  // Give the user a one-tap way out while the turn runs. Cleared on endTurn.
+  void showStopCard(options.token, chatId)
 }
 
 /**
@@ -362,6 +551,7 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
 
     // Built-in bridge commands always included (these come first).
     const builtins = [
+      { command: 'interrupt', description: 'Stop the AI right now (like pressing Esc)' },
       { command: 'connect', description: 'Connect a provider and select a model' },
       { command: 'model', description: 'Show or set the active model (/model <name>)' },
       { command: 'provider', description: 'Show all configured providers' },
@@ -371,9 +561,7 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
     const fromCli = allCommands
       .filter(cmd => !cmd.isHidden)
       .map(cmd => ({
-        // Telegram only allows [a-z0-9_] in command names — replace hyphens with underscores,
-        // strip any other invalid characters, and truncate to 32.
-        command: cmd.name.replace(/-/g, '_').replace(/[^a-z0-9_]/gi, '').toLowerCase().slice(0, 32),
+        command: toTelegramCommandName(cmd.name),
         description: (cmd.description || cmd.name).slice(0, 256),
       }))
       // Drop commands whose name became empty or too short after sanitization.
@@ -613,6 +801,9 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
 
   // Register CLI commands with Telegram so they appear as autocomplete.
   void registerCommandsWithTelegram(options.token)
+  // Warm the reverse alias map so the first inbound /command doesn't have to wait
+  // on the registry load.
+  void loadCommandAliases()
 
   const poll = async (): Promise<void> => {
     while (running) {
@@ -672,6 +863,10 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
         await mirror.finalize().catch(() => {})
         mirror = null
       }
+      // Retire the ⛔ Stop button — there is nothing left to stop. A turn that
+      // streamed no text never reaches here; the card then survives until the
+      // next turn and a tap simply reports "nothing is running".
+      await clearStopCard()
     },
 
     pushActivity(messages: WrappedMessage[]): void {
@@ -695,7 +890,7 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
       // ── File change review (own compact message) ─────────────────────────────
       for (const message of messages) {
         if (isFileChangeReviewMessage(message)) {
-          void sendMessage(options.token, chatId, formatFileChangeReview(message)).catch(() => {})
+          void sendMessage(options.token, chatId, formatFileChangeReview(message), 'HTML').catch(() => {})
         }
       }
 
@@ -705,7 +900,7 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
         // Build activity summary (💭 + tool lines + errors), then EDIT that message
         // to prepend the summary → one final message with everything.
         const activitySummary = formatActivitySummary(messages, turnHadThinking, false)
-        const aiText = lastTurnText.trim() ? escapeHtml(lastTurnText) : ''
+        const aiText = lastTurnText.trim() ? renderTelegramHtml(lastTurnText) : ''
         const combined = [activitySummary, aiText].filter(Boolean).join('\n\n')
         if (combined) {
           void editMessageText(options.token, chatId, lastTurnMessageId, combined, 'HTML').catch(() => {

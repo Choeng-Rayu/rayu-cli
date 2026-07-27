@@ -112,7 +112,12 @@ export function AutoUpdater({
         // Use global update for global installations
         logForDebugging('AutoUpdater: Using global update method');
         updateMethod = 'global';
-        installStatus = await installGlobalPackage();
+        // Pin the exact version we already resolved above. Passing no version
+        // makes npm resolve the `latest` tag a second time, and that second
+        // resolution can differ from `latestVersion` (tag moved, or npm served
+        // a cached packument) — which would report a successful update to a
+        // version that was never installed.
+        installStatus = await installGlobalPackage(latestVersion);
       } else if (installationType === 'native') {
         // This shouldn't happen - native should use NativeAutoUpdater
         logForDebugging('AutoUpdater: Unexpected native installation in non-native updater');
@@ -126,7 +131,7 @@ export function AutoUpdater({
         if (isMigrated) {
           installStatus = await installOrUpdateClaudePackage(channel);
         } else {
-          installStatus = await installGlobalPackage();
+          installStatus = await installGlobalPackage(latestVersion);
         }
       }
       onChangeIsUpdating(false);

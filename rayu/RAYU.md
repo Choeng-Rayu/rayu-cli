@@ -304,7 +304,9 @@ Zustand-like stores in `src/state/`:
 
 ### Telegram Bridge
 
-For mobile/remote access via `@rayu_clawbot`:
+For mobile/remote access. The default bot is whatever `RAYU_SHARED_BOT_TOKEN`
+points at on rayu-backend (the CLI asks `/telegram/bot` for its `@username`);
+users can instead supply their own @BotFather token:
 - `src/commands/telegram-bot/` — Telegram bot command
 - `src/telegram/` — Telegram message handlers
 - `src/bridge/` — Bridge abstractions

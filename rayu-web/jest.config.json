@@ -1,6 +1,11 @@
 {
   "preset": "ts-jest",
   "testEnvironment": "node",
-  "roots": ["<rootDir>/lib"],
-  "testMatch": ["**/*.test.ts"]
+  "roots": [
+    "<rootDir>/lib",
+    "<rootDir>/app/admin"
+  ],
+  "testMatch": [
+    "**/*.test.ts"
+  ]
 }

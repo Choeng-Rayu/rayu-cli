@@ -554,9 +554,18 @@ To fix this issue:
     // Run from home directory to avoid reading project-level .npmrc/.bunfig.toml
     // which could be maliciously crafted to redirect to an attacker's registry
     const packageManager = env.isRunningWithBun() ? 'bun' : 'npm'
+    // --prefer-online forces npm to revalidate the packument instead of
+    // resolving from its cached copy (the registry marks packuments
+    // `max-age=300`). Without it, an install started within 5 minutes of a
+    // publish can resolve to an older version than the caller just reported to
+    // the user, "succeed", and change nothing. bun has no equivalent flag.
+    const installArgs = ['install', '-g', packageSpec]
+    if (packageManager === 'npm') {
+      installArgs.push('--prefer-online')
+    }
     const installResult = await execFileNoThrowWithCwd(
       packageManager,
-      ['install', '-g', packageSpec],
+      installArgs,
       { cwd: homedir() },
     )
     if (installResult.code !== 0) {

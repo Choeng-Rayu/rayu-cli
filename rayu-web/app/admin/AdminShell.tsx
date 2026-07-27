@@ -10,10 +10,9 @@ const NAV = [
   { href: '/admin', label: 'Overview', icon: '◎', exact: true },
   { href: '/admin/analytics', label: 'Analytics', icon: '📈' },
   { href: '/admin/users', label: 'Users', icon: '👥' },
-  { href: '/admin/plans', label: 'Plans & Features', icon: '🎚' },
+  { href: '/admin/plans', label: 'Plans & Credits', icon: '🎚' },
   { href: '/admin/promo-codes', label: 'Promo Codes', icon: '🏷' },
-  { href: '/admin/models', label: 'Models', icon: '🧠' },
-  { href: '/admin/credit-settings', label: 'Credit Settings', icon: '⚙' },
+  { href: '/admin/providers', label: 'Providers', icon: '🔌' },
   { href: '/admin/payments', label: 'Payments', icon: '💰' },
   { href: '/admin/feedback', label: 'Feedback', icon: '✉' },
 ]

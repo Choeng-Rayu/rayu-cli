@@ -13,10 +13,40 @@ import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.j
 export type ProviderKind = 'anthropic' | 'anthropic-compatible' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
+/**
+ * The wire protocols Rayu speaks. A provider KIND says who you are talking to;
+ * a WIRE FORMAT says which request/response shape goes over the socket. The two
+ * are deliberately separate because one provider entry can serve several formats
+ * (e.g. a single Bedrock provider: Claude models over Anthropic Messages,
+ * open-weight models over OpenAI Chat Completions).
+ *
+ * `anthropic-messages` is not merely one of the formats — it is the app's
+ * internal IR. claude.ts builds an Anthropic Messages (beta) request and every
+ * adapter presents `beta.messages.create(...).withResponse()`, translating
+ * outward from that shape.
+ *
+ * Defined here (next to ProviderKind) rather than in services/api so config
+ * types stay free of any dependency on the request layer.
+ */
+export type WireFormat =
+  | 'anthropic-messages'
+  | 'openai-chat'
+  | 'openai-responses'
+  | 'genai'
+  | 'codewhisperer'
+  | 'bedrock-converse'
+
 export type RayuProvider = {
   /** Stable id, e.g. 'anthropic', 'nvidia', 'openai', 'openrouter', 'local', 'bedrock'. */
   id: string
   kind: ProviderKind
+  /**
+   * Explicit wire-format override, highest precedence in resolveWireFormat().
+   * Set for user-defined custom providers, where the format is chosen in the
+   * /connect wizard rather than inferred from the kind + model id. Leave unset
+   * for built-in providers so they keep their per-kind / per-model rules.
+   */
+  wireFormat?: WireFormat
   apiKey?: string
   /**
    * Multiple API keys for openai-compatible multi-key providers (NVIDIA /
@@ -37,6 +67,15 @@ export type RayuProvider = {
   contextWindow?: number
   /** Per-model context-window (tokens) overrides, keyed by model id. */
   modelContextWindows?: Record<string, number>
+  /**
+   * Per-model DISPLAY NAME, keyed by model id. Populated for rayu-hosted from
+   * /me/entitlements (the name the Rayu admin typed), so the picker can show
+   * "DeepSeek V4 Pro" next to the id the request actually carries. Nothing about
+   * the hosted catalog is hardcoded in the CLI: a rename in the dashboard lands
+   * here on the next entitlements refresh. A model with no name is simply absent
+   * from the map, and the picker then shows the id alone.
+   */
+  modelLabels?: Record<string, string>
   /** User-listed model ids selectable via /model (openai-compatible). */
   models?: string[]
   /** Models fetched live from {baseURL}/models, cached for the /model picker. */
@@ -49,14 +88,16 @@ export type RayuProvider = {
   streamOptions?: ProviderFeatureMode
   // --- AWS Bedrock fields (kind: 'bedrock') ---
   /**
-   * Which Bedrock API surface this provider uses:
-   * - 'converse' (default): AWS Converse/ConverseStream API via the AWS SDK.
-   *   Model-agnostic across ALL Bedrock models (Claude, Kimi, DeepSeek, GLM, …)
-   *   and natively separates reasoning (`reasoningContent`) + tool use.
-   * - 'openai': OpenAI-compatible Chat Completions endpoint (bedrock-mantle),
-   *   for open-weight models (openai.gpt-oss, qwen, …).
-   * - 'anthropic': Anthropic Messages API (via @anthropic-ai/bedrock-sdk),
-   *   for Claude models invoked with cross-region inference-profile ids.
+   * @deprecated LEGACY Bedrock API-surface discriminator.
+   *
+   * Bedrock is now ONE provider whose wire format is resolved per MODEL
+   * (resolveWireFormat: Claude → Anthropic Messages on the bedrock-runtime
+   * invoke endpoints; everything Bedrock serves over OpenAI Chat Completions →
+   * the bedrock-mantle endpoint). The Converse surface was retired.
+   *
+   * This field is READ ONLY for backwards compatibility, so providers saved by
+   * older versions keep behaving identically until
+   * migrateBedrockToUnifiedProvider() drops it at startup. Never write it.
    */
   bedrockApi?: 'openai' | 'anthropic' | 'converse'
   /** AWS Access Key ID. SECURITY: stored in 0600 config file. */
@@ -586,15 +627,35 @@ export function getRayuModelContextWindow(model: string): number | null {
     }
     return null
   }
-  // The known-model table + per-model overrides apply to EVERY non-Anthropic
-  // provider (OpenAI-compatible, Vertex, Login-with-Gemini, Copilot, rayu-hosted,
-  // Bedrock, and any FUTURE provider kind). This deliberately mirrors the
-  // caller's isRayuNonAnthropicActive() gate — the old explicit allowlist here is
-  // exactly why each newly-added provider (e.g. rayu-hosted) silently fell back
-  // to the 200k default instead of the model's real window (deepseek-v4 = 1M).
-  // Anthropic uses the SDK's own context handling; Kiro is resolved above via its
-  // catalog. Add a provider kind and it inherits correct context automatically.
+  // The known-model table + per-model overrides apply to every other
+  // non-Anthropic provider (OpenAI-compatible, Vertex, Login-with-Gemini,
+  // Copilot, Bedrock, and any FUTURE provider kind), where the CLI is the only
+  // thing that knows the model. Anthropic uses the SDK's own context handling;
+  // Kiro is resolved above via its catalog; rayu-hosted is resolved below from
+  // the SERVER catalog (never from this table).
   if (!p || p.kind === 'anthropic') {
+    return null
+  }
+  // Rayu-HOSTED: the catalog is SERVER-DRIVEN, so the context window must be too.
+  // The admin sets it per model in the dashboard; it arrives via
+  // /me/entitlements and is synced into modelContextWindows by
+  // syncRayuHostedProvider. We deliberately do NOT consult the built-in
+  // KNOWN_MODEL_CONTEXT table here: a hosted model may be added or renamed at any
+  // time, and matching an admin's model code against hardcoded patterns is how a
+  // brand-new model silently inherits some other model's window. Unknown window →
+  // null, and the caller applies its documented default.
+  if (p.kind === 'rayu-hosted') {
+    const perModel = p.modelContextWindows?.[model]
+    if (perModel && perModel > 0) return perModel
+    // Provider-level fallback is still honoured: it is explicit local config
+    // (or an operator override), not a guess about the model.
+    if (p.contextWindow && p.contextWindow > 0) return p.contextWindow
+    reportIssue(
+      'rayu_context.hosted_window_unset',
+      'no admin-configured context window for this Rayu-hosted model; using the client default — set it in Admin → Providers → the model row',
+      { provider: p.id, model },
+      'low',
+    )
     return null
   }
 
@@ -646,56 +707,6 @@ type BedrockModelSummary = {
   inferenceAPIsSupported?: { openAiChatCompletions?: boolean }
 }
 
-/**
- * Fetch the Bedrock model catalog from the control-plane endpoint
- * `GET https://bedrock.{region}.amazonaws.com/foundation-models`, authenticated
- * with the Bedrock API key (bearer token). Bedrock has no OpenAI-style /models
- * listing, so this control-plane call is the source of truth.
- *
- * Returns only models the region marks as `openAiChatCompletions: true` — the
- * authoritative signal that a model is invocable via Bedrock's OpenAI Chat
- * Completions endpoint (which Rayu's adapter uses). Anthropic Claude and Amazon
- * Nova report false here (they require the Anthropic Messages / Converse APIs),
- * so they are excluded to avoid 400/404 errors at chat time. These models are
- * invoked with their bare modelId (no inference-profile geo prefix).
- * SECURITY: the key is sent only to the AWS Bedrock control-plane host; never logged.
- */
-async function fetchBedrockModels(p: RayuProvider): Promise<string[]> {
-  if (!p.apiKey) return []
-  const region = bedrockRegionOf(p)
-  const url = `https://bedrock.${region}.amazonaws.com/foundation-models`
-  try {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${p.apiKey}` },
-      signal: AbortSignal.timeout(15_000),
-    })
-    if (!res.ok) {
-      reportIssue('rayu_models.fetch_failed', 'bedrock foundation-models returned non-OK', {
-        provider: p.id,
-        status: res.status,
-      })
-      return []
-    }
-    const json = (await res.json()) as { modelSummaries?: BedrockModelSummary[] }
-    const ids = new Set<string>()
-    for (const m of json.modelSummaries ?? []) {
-      const id = m.modelId
-      if (!id) continue
-      const status = m.modelLifecycle?.status
-      if (status && status !== 'ACTIVE') continue
-      // Authoritative: only list models the OpenAI Chat Completions endpoint serves.
-      if (m.inferenceAPIsSupported?.openAiChatCompletions !== true) continue
-      ids.add(id)
-    }
-    return [...ids].sort()
-  } catch (e) {
-    reportIssue('rayu_models.fetch_error', 'bedrock foundation-models request failed', {
-      provider: p.id,
-      error: e instanceof Error ? e.message : String(e),
-    })
-    return []
-  }
-}
 
 type BedrockInferenceProfileSummary = {
   inferenceProfileId?: string
@@ -703,21 +714,69 @@ type BedrockInferenceProfileSummary = {
 }
 
 /**
- * Fetch the Claude model ids usable via Bedrock's Anthropic Messages API
- * (@anthropic-ai/bedrock-sdk, invoked with the bearer token). Combines:
- *  - cross-region inference profiles (GET /inference-profiles) whose id targets
- *    an Anthropic model — the invocable ids for newer Claude models
- *    (e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0); and
- *  - ON_DEMAND Anthropic foundation models (GET /foundation-models) invocable
- *    by their bare id (older Claude 3.x in some regions).
+ * Sanitize a model id coming from a REMOTE catalog before it is persisted or
+ * used.
+ *
+ * SECURITY: catalog responses are untrusted input. `encodeModelWithProvider`
+ * joins a provider id and a model id with `\u0000`, so a model id containing
+ * that separator (or other control characters) could spoof provider routing and
+ * send a request to a different provider than the user selected. Ids are also
+ * length-capped and restricted to the characters real ids actually use
+ * (alphanumerics plus `. - _ : / @ +`), verified against live Bedrock, Vertex,
+ * Copilot and OpenAI-compatible catalogs.
+ */
+export function sanitizeRemoteModelId(id: unknown): string | null {
+  if (typeof id !== 'string') return null
+  const trimmed = id.trim()
+  if (!trimmed || trimmed.length > 512) return null
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null
+  if (!/^[A-Za-z0-9._:/@+-]+$/.test(trimmed)) return null
+  return trimmed
+}
+
+/**
+ * Fetch the FULL Bedrock catalog for one provider: every model the account can
+ * invoke, across both wire formats.
+ *
+ * Bedrock exposes no OpenAI-style /models listing, so this uses two control-plane
+ * calls and unions them:
+ *
+ *  1. `GET /inference-profiles` — Claude is only invocable through a
+ *     cross-region inference profile (verified live in us-east-1: every ACTIVE
+ *     `anthropic.*` foundation model reports `inferenceTypesSupported:
+ *     ['INFERENCE_PROFILE']` and NONE is ON_DEMAND, so the profile ids such as
+ *     `global.anthropic.claude-haiku-4-5-20251001-v1:0` are the invocable ones).
+ *     These models speak the Anthropic Messages API.
+ *  2. `GET /foundation-models` — models flagged
+ *     `inferenceAPIsSupported.openAiChatCompletions === true` are invocable on
+ *     Bedrock's OpenAI-compatible Chat Completions endpoint (gpt-oss, qwen,
+ *     deepseek, mistral, nvidia, minimax, …).
+ *
+ * ON_DEMAND `anthropic.*` foundation models are also included when a region
+ * offers them (older Claude 3.x), since those are invocable by bare id.
+ *
+ * resolveWireFormat() then picks the right format per model, so ONE Bedrock
+ * provider serves its whole catalog.
+ *
+ * Models that support neither surface (Amazon Nova, and Mistral/Cohere/Llama in
+ * regions without a mantle endpoint) are intentionally NOT listed: they are only
+ * reachable through the Converse API, which this migration removed.
+ *
  * SECURITY: the key is sent only to the AWS Bedrock control-plane host; never logged.
  */
-async function fetchBedrockAnthropicModels(p: RayuProvider): Promise<string[]> {
+async function fetchBedrockModels(p: RayuProvider): Promise<string[]> {
   if (!p.apiKey) return []
   const region = bedrockRegionOf(p)
   const headers = { Authorization: `Bearer ${p.apiKey}` }
   const ids = new Set<string>()
-  // 1) Cross-region inference profiles (the invocable ids for newer Claude).
+
+  const add = (raw: unknown) => {
+    const id = sanitizeRemoteModelId(raw)
+    if (id) ids.add(id)
+  }
+
+  // 1) Cross-region inference profiles — the invocable ids for Claude.
   try {
     const res = await fetch(
       `https://bedrock.${region}.amazonaws.com/inference-profiles?maxResults=1000`,
@@ -731,9 +790,9 @@ async function fetchBedrockAnthropicModels(p: RayuProvider): Promise<string[]> {
         const id = s.inferenceProfileId
         if (!id) continue
         if (s.status && s.status !== 'ACTIVE') continue
-        // Anthropic Claude profiles only (this provider speaks the Messages API).
+        // Anthropic Claude profiles (served over Anthropic Messages).
         if (!/anthropic|claude/i.test(id)) continue
-        ids.add(id)
+        add(id)
       }
     } else {
       reportIssue('rayu_models.fetch_failed', 'bedrock inference-profiles non-OK', {
@@ -747,28 +806,46 @@ async function fetchBedrockAnthropicModels(p: RayuProvider): Promise<string[]> {
       error: e instanceof Error ? e.message : String(e),
     })
   }
-  // 2) ON_DEMAND Anthropic foundation models (bare ids, older Claude 3.x).
+
+  // 2) Foundation models: the OpenAI-Chat-capable ones, plus any ON_DEMAND
+  //    Anthropic models invocable by bare id.
   try {
     const res = await fetch(
       `https://bedrock.${region}.amazonaws.com/foundation-models`,
       { headers, signal: AbortSignal.timeout(15_000) },
     )
-    if (res.ok) {
+    if (!res.ok) {
+      reportIssue('rayu_models.fetch_failed', 'bedrock foundation-models returned non-OK', {
+        provider: p.id,
+        status: res.status,
+      })
+    } else {
       const json = (await res.json()) as { modelSummaries?: BedrockModelSummary[] }
       for (const m of json.modelSummaries ?? []) {
         const id = m.modelId
-        if (!id || !/anthropic|claude/i.test(id)) continue
+        if (!id) continue
+        if (m.modelLifecycle?.status && m.modelLifecycle.status !== 'ACTIVE') {
+          continue
+        }
         const out = m.outputModalities ?? []
-        const status = m.modelLifecycle?.status
-        const inf = m.inferenceTypesSupported ?? []
         if (out.length && !out.includes('TEXT')) continue
-        if (status && status !== 'ACTIVE') continue
-        if (inf.includes('ON_DEMAND')) ids.add(id)
+        // Anthropic: only when invocable by bare id (otherwise the profile from
+        // step 1 is the invocable form).
+        if (/anthropic|claude/i.test(id)) {
+          if ((m.inferenceTypesSupported ?? []).includes('ON_DEMAND')) add(id)
+          continue
+        }
+        // Everything else: only when Bedrock serves it over OpenAI Chat.
+        if (m.inferenceAPIsSupported?.openAiChatCompletions === true) add(id)
       }
     }
-  } catch {
-    // best-effort; profiles above are the primary source
+  } catch (e) {
+    reportIssue('rayu_models.fetch_error', 'bedrock foundation-models request failed', {
+      provider: p.id,
+      error: e instanceof Error ? e.message : String(e),
+    })
   }
+
   return [...ids].sort()
 }
 
@@ -962,10 +1039,10 @@ async function fetchGenAIGeminiModels(_p: RayuProvider): Promise<string[]> {
 
 export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
   // Bedrock exposes no OpenAI-style /models endpoint; list via its control plane.
+  // ONE unified catalog spanning both wire formats (Claude inference profiles +
+  // the OpenAI-Chat-capable foundation models).
   if (p.kind === 'bedrock') {
-    return p.bedrockApi === 'anthropic'
-      ? fetchBedrockAnthropicModels(p)
-      : fetchBedrockModels(p)
+    return fetchBedrockModels(p)
   }
   // Gemini on Vertex AI: list Gemini models from the publisher catalog,
   // authenticated with a Google Cloud OAuth bearer token.
@@ -1138,6 +1215,14 @@ export type RayuModelChoice = {
   value: string
   providerId: string
   model: string
+  /**
+   * Admin-configured display name for this model, when the provider has one
+   * (rayu-hosted gets these from /me/entitlements). Absent for providers whose
+   * models are just ids, which is every BYO provider.
+   */
+  label?: string
+  /** Admin-configured context window in tokens, when known. */
+  contextWindow?: number
 }
 
 /**
@@ -1173,7 +1258,17 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
       const value = `${p.id}${RAYU_MODEL_SEP}${model}`
       if (seen.has(value)) continue
       seen.add(value)
-      out.push({ value, providerId: p.id, model })
+      // Name + window are carried through when the provider knows them, so the
+      // picker never has to look up a per-provider table of its own.
+      const label = p.modelLabels?.[model]
+      const contextWindow = p.modelContextWindows?.[model]
+      out.push({
+        value,
+        providerId: p.id,
+        model,
+        ...(label ? { label } : {}),
+        ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
+      })
     }
   }
 

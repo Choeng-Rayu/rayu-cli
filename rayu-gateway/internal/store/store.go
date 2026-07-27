@@ -13,33 +13,71 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// HostedModel mirrors a row in hosted_models. CacheReadCreditMultiplier/
-// CacheWriteCreditMultiplier are nil when the admin hasn't configured a
-// model-specific override; the gateway then falls back to its own defaults
-// (see credits.DeriveModelRates) so every model that predates these columns
-// bills identically to before they existed.
+// Provider mirrors a row in `providers`: the admin-managed registry that tells
+// the gateway HOW to talk to an upstream (wire format, URL, auth scheme). It
+// replaced the RAYU_PROVIDERS / RAYU_DISABLED_PROVIDERS / OLLAMA_PROVIDER_NAME
+// env registry.
+//
+// SECURITY: no credential lives on this row. A provider's keys are separate
+// provider_api_keys rows, encrypted at rest (see LoadProviderKeys). Fields are
+// json:"-" except the ones safe to expose, because HostedModel is serialized to
+// clients.
+type Provider struct {
+	ID           int64  `json:"-"`
+	Name         string `json:"name"`
+	Label        string `json:"-"`
+	Format       string `json:"-"`
+	BaseURL      string `json:"-"`
+	EndpointPath string `json:"-"`
+	AuthScheme   string `json:"-"`
+	Enabled      bool   `json:"-"`
+}
+
+// HostedModel mirrors a row in hosted_models. The four credit charges
+// (CreditMultiplier = input, OutputCreditMultiplier, CacheRead…, CacheWrite…) are
+// ADMIN-ENTERED and used verbatim by credits.ModelRatesFor — nothing is derived
+// from the cost prices, which feed only the internal cost ledger.
+//
+// Routing lives entirely on Provider: a model contributes only its upstream
+// model id. SupportsReasoning/SupportsImage are the per-model capability flags
+// the gateway enforces (before charging credits) and exposes to the CLI.
 type HostedModel struct {
 	Code                       string   `json:"code"`
 	Label                      string   `json:"label"`
-	Provider                   string   `json:"provider"`
-	UpstreamBaseURL            string   `json:"-"`
+	ProviderID                 int64    `json:"-"`
+	Provider                   Provider `json:"provider"`
 	UpstreamModelID            string   `json:"-"`
 	InputPricePer1MCents       int      `json:"-"`
 	OutputPricePer1MCents      int      `json:"-"`
 	CreditMultiplier           float64  `json:"creditMultiplier"`
-	CacheReadCreditMultiplier  *float64 `json:"-"`
-	CacheWriteCreditMultiplier *float64 `json:"-"`
+	OutputCreditMultiplier     float64  `json:"-"`
+	CacheReadCreditMultiplier  float64  `json:"-"`
+	CacheWriteCreditMultiplier float64  `json:"-"`
 	AllowedPlanCodes           []string `json:"-"`
-	Enabled                    bool     `json:"-"`
+	// ContextWindow is the admin-set window in TOKENS, or nil when the admin has
+	// not set one (the client then keeps its own default for the model).
+	ContextWindow     *int `json:"contextWindow"`
+	SupportsReasoning bool `json:"supportsReasoning"`
+	SupportsImage     bool `json:"supportsImage"`
+	SupportsTools     bool `json:"supportsTools"`
+	Enabled           bool `json:"-"`
 }
+
+// ProviderName is the provider slug this model routes through (used in logs and
+// per-provider key rotation).
+func (m HostedModel) ProviderName() string { return m.Provider.Name }
 
 // AppSettings mirrors the singleton app_settings row.
 type AppSettings struct {
-	BaselineCreditsPer1M   int
-	MaxConcurrentStreams   int
-	MaxTokensPerRequest    int
-	MaxRequestsPer5h       int
-	TopupCentsPer1kCredits int
+	BaselineCreditsPer1M int
+	MaxConcurrentStreams int
+	MaxTokensPerRequest  int
+	MaxRequestsPer5h     int
+	// Credit top-up pricing, as the admin set it: how many credits $1 buys
+	// (0 = top-up unavailable) and the smallest purchase in cents. Reported to
+	// clients so the CLI can quote a price without calling the backend.
+	CreditsPerDollar int
+	MinTopupCents    int
 }
 
 // Plan mirrors a plan, with the credit fields decoded from its limits JSON.
@@ -136,9 +174,25 @@ func parseLimits(raw []byte) planLimits {
 	return out
 }
 
-// LoadModels returns all hosted_models rows.
+// loadModelsQuery joins hosted_models to its provider registry row in ONE query.
+// A join (not a second lookup per model) keeps the periodic config refresh to a
+// single round-trip regardless of catalog size — the whole catalog is then served
+// from memory, so no request ever pays for this.
+const loadModelsQuery = `SELECT
+	m.code, m.label, m.provider_id, m.upstreamModelId,
+	m.inputPricePer1MCents, m.outputPricePer1MCents, m.creditMultiplier,
+	m.outputCreditMultiplier, m.cacheReadCreditMultiplier, m.cacheWriteCreditMultiplier,
+	m.allowedPlanCodes, m.contextWindow,
+	m.supportsReasoning, m.supportsImage, m.supportsTools, m.enabled,
+	p.name, p.label, p.format, p.baseUrl, p.endpointPath, p.authScheme, p.enabled
+FROM hosted_models m
+JOIN providers p ON p.id = m.provider_id`
+
+// LoadModels returns all hosted_models rows with their provider registry row
+// attached (the gateway needs both to route: provider = where/how, model = which
+// upstream model id).
 func (s *Store) LoadModels(ctx context.Context) ([]HostedModel, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT code,label,provider,upstreamBaseUrl,upstreamModelId,inputPricePer1MCents,outputPricePer1MCents,creditMultiplier,cacheReadCreditMultiplier,cacheWriteCreditMultiplier,allowedPlanCodes,enabled FROM hosted_models`)
+	rows, err := s.db.QueryContext(ctx, loadModelsQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -147,17 +201,26 @@ func (s *Store) LoadModels(ctx context.Context) ([]HostedModel, error) {
 	for rows.Next() {
 		var m HostedModel
 		var allowed []byte
-		var cacheRead, cacheWrite sql.NullFloat64
-		if err := rows.Scan(&m.Code, &m.Label, &m.Provider, &m.UpstreamBaseURL, &m.UpstreamModelID, &m.InputPricePer1MCents, &m.OutputPricePer1MCents, &m.CreditMultiplier, &cacheRead, &cacheWrite, &allowed, &m.Enabled); err != nil {
+		var contextWindow sql.NullInt64
+		var endpointPath sql.NullString
+		if err := rows.Scan(
+			&m.Code, &m.Label, &m.ProviderID, &m.UpstreamModelID,
+			&m.InputPricePer1MCents, &m.OutputPricePer1MCents, &m.CreditMultiplier,
+			&m.OutputCreditMultiplier, &m.CacheReadCreditMultiplier, &m.CacheWriteCreditMultiplier,
+			&allowed, &contextWindow,
+			&m.SupportsReasoning, &m.SupportsImage, &m.SupportsTools, &m.Enabled,
+			&m.Provider.Name, &m.Provider.Label, &m.Provider.Format, &m.Provider.BaseURL,
+			&endpointPath, &m.Provider.AuthScheme, &m.Provider.Enabled,
+		); err != nil {
 			return nil, err
 		}
-		if cacheRead.Valid {
-			v := cacheRead.Float64
-			m.CacheReadCreditMultiplier = &v
+		m.Provider.ID = m.ProviderID
+		if contextWindow.Valid && contextWindow.Int64 > 0 {
+			v := int(contextWindow.Int64)
+			m.ContextWindow = &v
 		}
-		if cacheWrite.Valid {
-			v := cacheWrite.Float64
-			m.CacheWriteCreditMultiplier = &v
+		if endpointPath.Valid {
+			m.Provider.EndpointPath = endpointPath.String
 		}
 		if len(allowed) > 0 {
 			_ = json.Unmarshal(allowed, &m.AllowedPlanCodes)
@@ -167,11 +230,108 @@ func (s *Store) LoadModels(ctx context.Context) ([]HostedModel, error) {
 	return out, rows.Err()
 }
 
+// ProviderKey mirrors a row in provider_api_keys. EncryptedKey is an AES-256-GCM
+// envelope the gateway opens with RAYU_PROVIDER_SECRET (see internal/secretbox);
+// the plaintext exists only in gateway memory. MaskedKey is what may be logged.
+type ProviderKey struct {
+	ID            int64
+	ProviderID    int64
+	Label         string
+	EncryptedKey  string
+	MaskedKey     string
+	Priority      int
+	Enabled       bool
+	Status        string
+	CooldownUntil *time.Time
+}
+
+// LoadProviderKeys returns every provider API key, in the order the gateway
+// should try them. One query for all providers keeps the periodic config refresh
+// to a fixed number of round-trips regardless of how many providers exist.
+func (s *Store) LoadProviderKeys(ctx context.Context) ([]ProviderKey, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, provider_id, label, encryptedKey, maskedKey, priority, enabled, status, cooldownUntil
+		 FROM provider_api_keys
+		 ORDER BY provider_id, priority, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProviderKey
+	for rows.Next() {
+		var k ProviderKey
+		var cooldown sql.NullTime
+		if err := rows.Scan(&k.ID, &k.ProviderID, &k.Label, &k.EncryptedKey,
+			&k.MaskedKey, &k.Priority, &k.Enabled, &k.Status, &cooldown); err != nil {
+			return nil, err
+		}
+		if cooldown.Valid {
+			t := cooldown.Time
+			k.CooldownUntil = &t
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// UpdateProviderKeyState persists what the gateway observed about a key (health,
+// cooldown, last use). Called from the bounded write queue, never on the request
+// path — a billing/health write must not add latency to a completion.
+func (s *Store) UpdateProviderKeyState(
+	ctx context.Context,
+	keyID int64,
+	status string,
+	cooldownUntil *time.Time,
+	lastError string,
+	usedAt time.Time,
+) error {
+	var errArg any
+	if lastError != "" {
+		errArg = lastError
+	}
+	var coolArg any
+	if cooldownUntil != nil && !cooldownUntil.IsZero() {
+		coolArg = *cooldownUntil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE provider_api_keys
+		    SET status = ?, cooldownUntil = ?, lastError = ?, lastUsedAt = ?, updatedAt = NOW(3)
+		  WHERE id = ?`,
+		status, coolArg, errArg, usedAt, keyID)
+	return err
+}
+
+// LoadProviders returns the full provider registry, including providers that
+// currently have no models (the admin health view needs those too).
+func (s *Store) LoadProviders(ctx context.Context) ([]Provider, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, label, format, baseUrl, endpointPath, authScheme, enabled FROM providers ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Provider
+	for rows.Next() {
+		var p Provider
+		var endpointPath sql.NullString
+		if err := rows.Scan(&p.ID, &p.Name, &p.Label, &p.Format, &p.BaseURL,
+			&endpointPath, &p.AuthScheme, &p.Enabled); err != nil {
+			return nil, err
+		}
+		if endpointPath.Valid {
+			p.EndpointPath = endpointPath.String
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // LoadSettings returns the singleton app_settings row (id=1).
 func (s *Store) LoadSettings(ctx context.Context) (AppSettings, error) {
 	var a AppSettings
-	err := s.db.QueryRowContext(ctx, `SELECT baselineCreditsPer1M,maxConcurrentStreams,maxTokensPerRequest,maxRequestsPer5h,topupCentsPer1kCredits FROM app_settings WHERE id=1`).
-		Scan(&a.BaselineCreditsPer1M, &a.MaxConcurrentStreams, &a.MaxTokensPerRequest, &a.MaxRequestsPer5h, &a.TopupCentsPer1kCredits)
+	err := s.db.QueryRowContext(ctx, `SELECT baselineCreditsPer1M,maxConcurrentStreams,maxTokensPerRequest,maxRequestsPer5h,creditsPerDollar,minTopupCents FROM app_settings WHERE id=1`).
+		Scan(&a.BaselineCreditsPer1M, &a.MaxConcurrentStreams, &a.MaxTokensPerRequest,
+			&a.MaxRequestsPer5h, &a.CreditsPerDollar, &a.MinTopupCents)
 	if err == sql.ErrNoRows {
 		return AppSettings{BaselineCreditsPer1M: 1000, MaxConcurrentStreams: 3}, nil
 	}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { makeKeyRotatingFetch } from '../src/services/api/anthropicCompatibleClient.ts'
+import { makeKeyRotatingFetch } from '../src/services/api/anthropicMessagesClient.ts'
 
 // Ollama Cloud is kind:'anthropic-compatible' (native Anthropic SDK path), so
 // its multi-key rate-limit failover lives in the fetch layer, not the OpenAI

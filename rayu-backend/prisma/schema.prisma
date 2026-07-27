@@ -11,24 +11,24 @@ datasource db {
 }
 
 model User {
-  id           Int       @id @default(autoincrement())
-  email        String?   @unique @db.VarChar(320)
-  displayName  String?   @db.VarChar(191)
-  avatarUrl    String?   @db.VarChar(1024)
-  emailVerified Boolean  @default(false)
-  role         String    @default("user") @db.VarChar(32)
-  status       String    @default("active") @db.VarChar(32)
-  passwordHash String?   @db.VarChar(512)
-  createdAt    DateTime  @default(now())
-  lastActiveAt DateTime?
+  id            Int       @id @default(autoincrement())
+  email         String?   @unique @db.VarChar(320)
+  displayName   String?   @db.VarChar(191)
+  avatarUrl     String?   @db.VarChar(1024)
+  emailVerified Boolean   @default(false)
+  role          String    @default("user") @db.VarChar(32)
+  status        String    @default("active") @db.VarChar(32)
+  passwordHash  String?   @db.VarChar(512)
+  createdAt     DateTime  @default(now())
+  lastActiveAt  DateTime?
 
-  accounts      Account[]
-  subscriptions Subscription[]
-  payments      Payment[]
-  feedback      Feedback[]
-  usageEvents   UsageEvent[]
-  creditLedger  CreditLedger[]
-  creditTopups  CreditTopup[]
+  accounts         Account[]
+  subscriptions    Subscription[]
+  payments         Payment[]
+  feedback         Feedback[]
+  usageEvents      UsageEvent[]
+  creditLedger     CreditLedger[]
+  creditTopups     CreditTopup[]
   promoRedemptions PromoRedemption[]
   telegramLink     TelegramLink?
   telegramPairings TelegramPairing[]
@@ -40,15 +40,15 @@ model User {
 // OAuth / SSO identities attached to a user. Scales to any number of providers
 // (google, github, gitlab, telegram, etc.) without schema changes.
 model Account {
-  id                  Int       @id @default(autoincrement())
-  userId              Int       @map("user_id")
-  provider            String    @db.VarChar(32)
-  providerAccountId   String    @map("provider_account_id") @db.VarChar(191)
-  accessToken         String?   @db.Text
-  refreshToken        String?   @db.Text
-  expiresAt           DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  id                Int       @id @default(autoincrement())
+  userId            Int       @map("user_id")
+  provider          String    @db.VarChar(32)
+  providerAccountId String    @map("provider_account_id") @db.VarChar(191)
+  accessToken       String?   @db.Text
+  refreshToken      String?   @db.Text
+  expiresAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -87,23 +87,23 @@ model Subscription {
 }
 
 model Payment {
-  id          Int       @id @default(autoincrement())
-  userId      Int       @map("user_id")
-  planId      Int?      @map("plan_id")
-  provider    String    @default("bakong") @db.VarChar(64)
-  amountCents Int       @default(0)
-  currency    String    @default("USD") @db.VarChar(8)
-  status      String    @default("pending") @db.VarChar(32)
-  externalRef String?   @db.VarChar(191)
-  md5         String?   @unique @db.VarChar(64)
-  khqr        String?   @db.Text
+  id            Int       @id @default(autoincrement())
+  userId        Int       @map("user_id")
+  planId        Int?      @map("plan_id")
+  provider      String    @default("bakong") @db.VarChar(64)
+  amountCents   Int       @default(0)
+  currency      String    @default("USD") @db.VarChar(8)
+  status        String    @default("pending") @db.VarChar(32)
+  externalRef   String?   @db.VarChar(191)
+  md5           String?   @unique @db.VarChar(64)
+  khqr          String?   @db.Text
   // Promo/discount applied at checkout (optional). promoCodeId references a
   // PromoCode row; discountCents is how much was taken off the plan price.
-  promoCodeId   Int?    @map("promo_code_id")
-  discountCents Int     @default(0) @map("discount_cents")
-  paidAt      DateTime?
-  expiresAt   DateTime?
-  createdAt   DateTime  @default(now())
+  promoCodeId   Int?      @map("promo_code_id")
+  discountCents Int       @default(0) @map("discount_cents")
+  paidAt        DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
 
   user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   plan Plan? @relation(fields: [planId], references: [id])
@@ -142,50 +142,162 @@ model UsageEvent {
   @@map("usage_events")
 }
 
+// Admin-managed registry of upstream providers Rayu resells through the
+// gateway. This is the SINGLE SOURCE OF TRUTH for routing: the gateway reads
+// these rows (no env registry) to decide the wire format, URL, and auth scheme
+// for every hosted model, so a new provider is added entirely from the admin
+// dashboard.
+//
+// SECURITY: the API key itself is NEVER stored on this row. Keys are separate
+// ProviderApiKey rows, encrypted with AES-256-GCM under RAYU_PROVIDER_SECRET, so
+// a database dump alone never yields a usable provider credential.
+model Provider {
+  id                Int      @id @default(autoincrement())
+  name              String   @unique @db.VarChar(64)
+  label             String   @db.VarChar(128)
+  // Wire format spoken by the upstream, one of common/enums PROVIDER_FORMATS:
+  // anthropic_messages | openai_chat | openai_responses | genai. The gateway
+  // translates its canonical Anthropic Messages request into this format.
+  // Stored as VARCHAR (not a DB enum) to match the rest of this schema.
+  format            String   @db.VarChar(32)
+  // Origin of the upstream API, e.g. https://api.deepseek.com. Validated
+  // (https-only, no private/loopback/metadata hosts) on write AND again in the
+  // gateway at route time — the gateway attaches a secret to this URL, so a
+  // bad value is both an SSRF and a key-exfiltration risk.
+  baseUrl           String   @db.VarChar(255)
+  // Optional path override appended to baseUrl. NULL = the format's default
+  // (e.g. anthropic_messages → /anthropic/v1/messages).
+  endpointPath      String?  @db.VarChar(191)
+  // How to present the key, one of common/enums PROVIDER_AUTH_SCHEMES:
+  // bearer | x_api_key | x_goog_api_key.
+  authScheme        String   @db.VarChar(32)
+  // Capability DEFAULTS applied to newly created models of this provider. The
+  // per-model flags on HostedModel are the authoritative ones at request time.
+  supportsReasoning Boolean  @default(false)
+  supportsImage     Boolean  @default(false)
+  // Kill switch: a disabled provider's models are hidden from users and refused
+  // by the gateway before any credit is charged (replaces the old
+  // RAYU_DISABLED_PROVIDERS env var).
+  enabled           Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  models  HostedModel[]
+  apiKeys ProviderApiKey[]
+
+  @@map("providers")
+}
+
+// One API key for a provider. Keys are stored INDIVIDUALLY (not as a
+// comma-separated blob) so each can be rotated, health-checked, disabled, and
+// cooled down on its own — which is what makes "if one key rate-limits, use the
+// next" actually work and observable.
+//
+// SECURITY: `encryptedKey` is an AES-256-GCM envelope (see common/secretBox.ts);
+// the master key lives only in RAYU_PROVIDER_SECRET, never in this database. The
+// plaintext is NEVER returned by the API — `maskedKey` exists so listing keys
+// requires no decryption at all. `keyHash` is for duplicate detection only and is
+// never exposed.
+model ProviderApiKey {
+  id            Int       @id @default(autoincrement())
+  providerId    Int       @map("provider_id")
+  label         String    @db.VarChar(64)
+  // AES-256-GCM envelope: "v1:base64(iv ‖ tag ‖ ciphertext)".
+  encryptedKey  String    @db.Text
+  // SHA-256 of the plaintext — unique per provider so the same key cannot be
+  // added twice (which would make rotation a no-op across identical keys).
+  keyHash       String    @db.VarChar(64)
+  // Display form, e.g. "sk-pro••••••••6789(51)". Safe to log and to return.
+  maskedKey     String    @db.VarChar(64)
+  // Rotation order: lower is tried first.
+  priority      Int       @default(0)
+  enabled       Boolean   @default(true)
+  // active | rate_limited | invalid | disabled — see common/enums
+  // PROVIDER_KEY_STATUSES. Written back by the gateway as it observes upstream
+  // responses, so the dashboard shows real health rather than a guess.
+  status        String    @default("active") @db.VarChar(16)
+  lastUsedAt    DateTime?
+  cooldownUntil DateTime?
+  lastError     String?   @db.VarChar(255)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, keyHash])
+  @@index([providerId, priority])
+  @@map("provider_api_keys")
+}
+
 // Catalog of upstream LLM models Rayu resells through the (Phase 2) gateway.
 // All pricing/multiplier/access is admin-editable; not hardcoded.
 model HostedModel {
   id                         Int      @id @default(autoincrement())
   code                       String   @unique @db.VarChar(64)
   label                      String   @db.VarChar(128)
-  provider                   String   @db.VarChar(32)
-  upstreamBaseUrl            String   @db.VarChar(255)
+  providerId                 Int      @map("provider_id")
   upstreamModelId            String   @db.VarChar(128)
   inputPricePer1MCents       Int      @default(0)
   outputPricePer1MCents      Int      @default(0)
+  // --- Credit charges: what the USER is billed, per 1M tokens ----------------
+  // All four are ADMIN-ENTERED and used verbatim by the gateway. Nothing is
+  // derived from the cost prices above (those are Rayu's own cost, used only for
+  // the ledger and the profit projection), so changing a price never silently
+  // changes what a customer pays.
+  //
+  // creditMultiplier keeps its name because it is the field already published to
+  // the CLI in /me/entitlements; it is the INPUT charge. The admin UI labels it
+  // "Credit charge · input".
   creditMultiplier           Float    @default(1)
-  // Credit multiplier for cache-HIT prompt tokens (tokens the provider reused
-  // from its own cache instead of reprocessing — e.g. DeepSeek's reported
-  // `prompt_cache_hit_tokens`). NULL = gateway uses its own global default
-  // (currently ~10% of the input rate). Typical override: 0.05-0.15.
-  cacheReadCreditMultiplier  Float?
-  // Credit multiplier for cache-WRITE/cache-creation prompt tokens (some
-  // providers charge a premium the first time a prefix is cached — e.g.
-  // Anthropic charges ~1.25x; DeepSeek has no such concept, so this stays
-  // null for DeepSeek models). NULL = gateway falls back to the model's
-  // normal input rate (creditMultiplier), i.e. no premium/discount.
-  cacheWriteCreditMultiplier Float?
+  outputCreditMultiplier     Float    @default(1)
+  // Charge for prompt tokens the provider served from its own cache (typically a
+  // large discount) and for cache-creation tokens (sometimes a premium).
+  cacheReadCreditMultiplier  Float    @default(0.1)
+  cacheWriteCreditMultiplier Float    @default(1)
   allowedPlanCodes           Json?
+  // Context window in TOKENS, as the admin entered it (e.g. 200000, 1000000).
+  // NULL = "unknown", in which case the CLI keeps using its own default for the
+  // model. This is the authoritative window for a hosted model: the CLI applies
+  // it to auto-compaction, context warnings, and budget calculations, so raising
+  // it in the dashboard immediately changes client behaviour with no release.
+  contextWindow              Int?
+  // Per-model capability flags — AUTHORITATIVE at request time. The gateway
+  // rejects an image block on a model with supportsImage=false (and a
+  // `thinking` field when supportsReasoning=false) BEFORE charging credits, and
+  // exposes both flags to the CLI so it can warn the user to switch models.
+  supportsReasoning          Boolean  @default(false)
+  supportsImage              Boolean  @default(false)
+  // Model accepts tool/function definitions. Exposed to the client so it can
+  // avoid sending tools to a model that would reject them.
+  supportsTools              Boolean  @default(true)
   enabled                    Boolean  @default(true)
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
 
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@index([providerId])
   @@map("hosted_models")
 }
 
 // Singleton global config (row id = 1). Admin-editable credit + abuse settings.
 model AppSettings {
-  id                     Int      @id @default(1)
-  baselineCreditsPer1M   Int      @default(1000)
-  topupCentsPer1kCredits Int      @default(0)
-  maxConcurrentStreams   Int      @default(3)
-  maxTokensPerRequest    Int      @default(0)
-  maxRequestsPer5h       Int      @default(0)
-  baselineModelCode      String?  @db.VarChar(64)
-  assumedInputRatio      Float    @default(0.67)
-  assumedUsagePercent    Int      @default(25)
-  infraCostCentsPerUser  Int      @default(0)
-  updatedAt              DateTime @updatedAt
+  id                    Int      @id @default(1)
+  baselineCreditsPer1M  Int      @default(1000)
+  // Credit top-up pricing, as the admin enters it on the Plans & Credits page:
+  // how many credits one US dollar buys (0 = top-up unavailable), and the
+  // smallest purchase allowed (default 100 = $1). The gateway reads both so the
+  // CLI can quote a price without calling the backend.
+  creditsPerDollar      Int      @default(0)
+  minTopupCents         Int      @default(100)
+  maxConcurrentStreams  Int      @default(3)
+  maxTokensPerRequest   Int      @default(0)
+  maxRequestsPer5h      Int      @default(0)
+  baselineModelCode     String?  @db.VarChar(64)
+  assumedInputRatio     Float    @default(0.67)
+  assumedUsagePercent   Int      @default(25)
+  infraCostCentsPerUser Int      @default(0)
+  updatedAt             DateTime @updatedAt
 
   @@map("app_settings")
 }

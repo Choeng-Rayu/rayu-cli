@@ -160,13 +160,27 @@ export class AuthController {
       },
       topupBalance,
       // The plan-allowed subset the user may actually USE (drives entitlement).
+      // NOTE: only the provider NAME is exposed — never the provider row, which
+      // carries internal routing config (baseUrl, endpoint path, auth scheme).
       allowedModels: allowed.map((m) => ({
         code: m.code,
         label: m.label,
-        provider: m.provider,
+        provider: m.provider.name,
+        // The four credit charges the admin set (credits per 1M tokens).
+        // creditMultiplier is the INPUT charge.
         creditMultiplier: m.creditMultiplier,
+        outputCreditMultiplier: m.outputCreditMultiplier,
         cacheReadCreditMultiplier: m.cacheReadCreditMultiplier,
         cacheWriteCreditMultiplier: m.cacheWriteCreditMultiplier,
+        // Capabilities so the CLI can warn ("this model can't read images —
+        // pick another model") instead of letting the request fail upstream.
+        supportsReasoning: m.supportsReasoning,
+        supportsImage: m.supportsImage,
+        supportsTools: m.supportsTools,
+        // Admin-set context window (tokens); null = CLI default. The CLI applies
+        // it to auto-compaction + context warnings, so an admin change lands on
+        // the next entitlements refresh with no client release.
+        contextWindow: m.contextWindow,
       })),
       // The full enabled hosted catalog — shown to EVERY signed-in user so the
       // rayu-hosted provider is always visible (Free sees it but is gated on use;
@@ -174,10 +188,15 @@ export class AuthController {
       hostedModels: hostedAll.map((m) => ({
         code: m.code,
         label: m.label,
-        provider: m.provider,
+        provider: m.provider.name,
         creditMultiplier: m.creditMultiplier,
+        outputCreditMultiplier: m.outputCreditMultiplier,
         cacheReadCreditMultiplier: m.cacheReadCreditMultiplier,
         cacheWriteCreditMultiplier: m.cacheWriteCreditMultiplier,
+        supportsReasoning: m.supportsReasoning,
+        supportsImage: m.supportsImage,
+        supportsTools: m.supportsTools,
+        contextWindow: m.contextWindow,
       })),
     }
   }

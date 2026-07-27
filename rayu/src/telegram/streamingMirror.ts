@@ -1,6 +1,6 @@
 /** Emulates CLI streaming in a Telegram chat via throttled message edits. */
 
-import { escapeHtml } from './telegramApi.js'
+import { renderTelegramHtml } from './telegramMarkdown.js'
 
 export interface MirrorApi {
   sendMessage: (chatId: number, text: string) => Promise<number>
@@ -67,7 +67,12 @@ export class StreamingMirror {
 
   private async flush(): Promise<void> {
     if (this.messageId === 0 || this.buffer === this.sent || this.buffer.trim() === '') return
-    const text = this.parseMode === 'HTML' ? escapeHtml(this.buffer) : this.buffer
+    // Render the (possibly partial) Markdown to Telegram HTML so the streamed
+    // message shows real formatting instead of raw `**`/`##`/``` ``` ``` syntax.
+    // renderTelegramHtml always emits balanced tags, so partial buffers stay
+    // valid; telegramApi resends as plain text if Telegram still objects.
+    const text = this.parseMode === 'HTML' ? renderTelegramHtml(this.buffer) : this.buffer
+    if (!text) return
     this.lastEditAt = Date.now()
     try {
       await this.api.editMessageText(this.chatId, this.messageId, text, this.parseMode)

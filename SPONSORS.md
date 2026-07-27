@@ -47,7 +47,7 @@ Your sponsorship helps us:
 
 ### 💎 Silver ($100/month)
 - All Bronze benefits
-- Logo on rayu-web.vercel.app
+- Logo on rayucode.com
 - Monthly priority feature request
 
 ### 🌟 Gold ($500/month)

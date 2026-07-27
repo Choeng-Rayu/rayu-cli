@@ -1,23 +1,16 @@
-import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk/index.js'
-import { randomUUID } from 'crypto'
+import type Anthropic from '@anthropic-ai/sdk/index.js'
+import type { ClientOptions } from '@anthropic-ai/sdk/index.js'
+import { isOpenAICompatibleActive } from 'src/utils/model/providers.js'
+import { CLIENT_REQUEST_ID_HEADER } from './anthropicTransport.js'
 import {
-  checkAndRefreshOAuthTokenIfNeeded,
-  getAnthropicApiKey,
-} from 'src/utils/auth.js'
-import { getUserAgent } from 'src/utils/http.js'
-import {
-  getAPIProvider,
-  isFirstPartyAnthropicBaseUrl,
-  isOpenAICompatibleActive,
-} from 'src/utils/model/providers.js'
-import { getProxyFetchOptions } from 'src/utils/proxy.js'
-import {
-  getIsNonInteractiveSession,
-  getSessionId,
-} from '../../bootstrap/state.js'
-import { getOauthConfig } from '../../constants/oauth.js'
-import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+  buildClient,
+  buildEnvOpenAIChatClient,
+  buildFirstPartyAnthropicClient,
+} from './providerRegistry.js'
+
+// Re-exported so existing importers (claude.ts) keep their import path while the
+// implementation lives in the shared Anthropic transport module.
+export { CLIENT_REQUEST_ID_HEADER }
 
 /**
  * Environment variables for different client types:
@@ -31,10 +24,10 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
  * - ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION: Optional. Override AWS region specifically for the small fast model (Haiku)
  *
  * Foundry (Azure):
- * - ANTHROPIC_FOUNDRY_RESOURCE: Your Azure resource name (e.g., 'my-resource')
+ * - ANTHROPIC_FOUNDRY_RESOURCE: Your Azure resource name (e.g. 'my-resource')
  *   For the full endpoint: https://{resource}.services.ai.azure.com/anthropic/v1/messages
  * - ANTHROPIC_FOUNDRY_BASE_URL: Optional. Alternative to resource - provide full base URL directly
- *   (e.g., 'https://my-resource.services.ai.azure.com')
+ *   (e.g. 'https://my-resource.services.ai.azure.com')
  *
  * Authentication (one of the following):
  * - ANTHROPIC_FOUNDRY_API_KEY: Your Microsoft Foundry API key (if using API key auth)
@@ -60,453 +53,48 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
  * 4. Fallback region (us-east5)
  */
 
-function createStderrLogger(): ClientOptions['logger'] {
-  return {
-    error: (msg, ...args) =>
-      // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
-      console.error('[Anthropic SDK ERROR]', msg, ...args),
-    // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
-    warn: (msg, ...args) => console.error('[Anthropic SDK WARN]', msg, ...args),
-    // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
-    info: (msg, ...args) => console.error('[Anthropic SDK INFO]', msg, ...args),
-    debug: (msg, ...args) =>
-      // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
-      console.error('[Anthropic SDK DEBUG]', msg, ...args),
-  }
-}
-
 /**
- * Rayu: build an OpenAI-compatible adapter client from the active provider's
- * config (api key + base URL). Env overrides RAYU_OPENAI_BASE_URL /
- * RAYU_OPENAI_API_KEY take precedence (useful for CI/tests). Returns null when
- * no base URL can be resolved, so the caller falls back to the Anthropic path.
+ * Resolve the provider a request should be served by.
  *
- * Provider changes update the in-memory config cache through saveRayuConfig(),
- * so this hot path can reuse that cache instead of hitting disk every request.
+ * Rayu multi-provider routing: the request "model" may carry a provider prefix
+ * (`providerId\u0000model`) so a subagent / swarm collaborator can run on a
+ * DIFFERENT provider than the active one, concurrently. When present, that
+ * provider wins. The request body's model is independently stripped to the bare
+ * id by normalizeModelStringForAPI, so the wire model is always clean regardless
+ * of routing. This avoids AsyncLocalStorage, which is unreliable across async
+ * generators on Bun.
  */
-async function getRayuOpenAICompatibleClient(
-  maxRetries: number,
-): Promise<unknown | null> {
-  const { getActiveProvider, getProviderApiKeys } = await import(
-    'src/utils/rayuConfig.js'
-  )
-  const { createOpenAICompatibleClient } = await import('./openaiAdapter.js')
-  const active = getActiveProvider()
-  const baseURL =
-    process.env.RAYU_OPENAI_BASE_URL ?? active?.baseURL ?? ''
-  // Resolve the API key list. RAYU_OPENAI_API_KEY (env) takes precedence and is
-  // always a single key. Otherwise use the provider's stored keys, capping to
-  // the FIRST key unless this is a multi-key provider (NVIDIA / OpenRouter) AND
-  // the Basic-plan multi-key entitlement is granted — so Free users effectively
-  // use one key even if several are stored.
-  const envKey = process.env.RAYU_OPENAI_API_KEY
-  let apiKeys: string[]
-  if (envKey) {
-    apiKeys = [envKey]
-  } else {
-    apiKeys = getProviderApiKeys(active)
-    const { supportsMultiApiKey } = await import('src/utils/rayuProviders.js')
-    const { isMultiApiKeyAllowed } = await import(
-      '../rayuAuth/multiApiKeyFeature.js'
-    )
-    if (!supportsMultiApiKey(active?.id) || !isMultiApiKeyAllowed()) {
-      apiKeys = apiKeys.slice(0, 1)
+async function resolveRequestProvider(
+  model: string | undefined,
+): Promise<import('src/utils/rayuConfig.js').RayuProvider | undefined> {
+  const { decodeModelProvider, getActiveProvider, loadRayuConfig } =
+    await import('src/utils/rayuConfig.js')
+  if (model) {
+    const { providerId } = decodeModelProvider(model)
+    if (providerId) {
+      const routed = loadRayuConfig().providers.find(p => p.id === providerId)
+      if (routed) return routed
     }
   }
-  const apiKey = apiKeys[0] ?? ''
-  if (!baseURL) {
-    return null
-  }
-  // Rayu: when opted-in + signed in, route this BYO-key provider through the
-  // gateway proxy for active-user tracking (fail-safe falls back to direct).
-  const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
-    './rayuHosted/gatewayRouting.js'
-  )
-  const routeFetch =
-    active && shouldRouteViaGateway(active)
-      ? makeGatewayRoutingFetch(active)
-      : undefined
-  return createOpenAICompatibleClient({
-    apiKey,
-    apiKeys,
-    baseURL,
-    maxRetries,
-    providerId: active?.id,
-    promptCacheKey: active?.promptCacheKey,
-    reasoningEffort: active?.reasoningEffort,
-    streamOptions: active?.streamOptions,
-    ...(routeFetch ? { fetch: routeFetch } : {}),
-  })
+  return getActiveProvider()
 }
 
 /**
- * Rayu: build an AnthropicBedrock client (@anthropic-ai/bedrock-sdk) for the
- * active provider when it is a Bedrock provider configured for the Anthropic
- * Messages API (bedrockApi:'anthropic'). Authenticates with the Bedrock API key
- * (bearer token) — no AWS SigV4 credentials required — and presents the same
- * beta.messages.create surface (incl. streaming + tool use) that claude.ts uses.
- * Returns null when the active provider is not an Anthropic-style Bedrock
- * provider, so the caller falls through to the other client paths.
- * SECURITY: the bearer token is read from the 0600 provider config; never logged.
+ * Exposed for tests: the provider-resolution decision (routed provider from the
+ * encoded model, else the active provider) is the half of routing that used to
+ * be duplicated, so it is asserted directly rather than inferred from a
+ * constructed client.
  */
-async function getRayuBedrockAnthropicClient(
-  maxRetries: number,
-): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (
-    active?.kind !== 'bedrock' ||
-    active.bedrockApi !== 'anthropic' ||
-    !active.apiKey
-  ) {
-    return null
-  }
-  const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
-  // Rayu: route bedrock-anthropic (bearer token) through the gateway when enabled.
-  const rf = await rayuRouteFetch(active)
-  return new AnthropicBedrock({
-    apiKey: active.apiKey,
-    awsRegion: active.awsRegion || process.env.AWS_REGION || 'us-east-1',
-    maxRetries,
-    ...(rf ? { fetch: rf as ClientOptions['fetch'] } : {}),
-  })
-}
+export const _resolveRequestProviderForTesting = resolveRequestProvider
 
 /**
- * Rayu: build a Bedrock Converse client for the active provider when it is a
- * Bedrock provider on the Converse API surface (bedrockApi:'converse', the
- * default). Model-agnostic across all Bedrock models with native reasoning +
- * tool use. Returns null otherwise so the caller falls through.
- * SECURITY: the Bedrock API key is read from the 0600 provider config; never logged.
+ * Build the API client for a request.
+ *
+ * Every provider goes through ONE dispatch table (providerRegistry.buildClient),
+ * for the main agent and for any subagent / swarm collaborator routed to a
+ * different provider. First-party Anthropic is the terminal fallback, which also
+ * covers "no provider configured yet" (fresh install, SDK consumers, tests).
  */
-async function getRayuBedrockConverseClient(
-  maxRetries: number,
-): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (active?.kind !== 'bedrock' || active.bedrockApi !== 'converse') {
-    return null
-  }
-  const { createBedrockConverseClient } = await import('./bedrockConverseAdapter.js')
-  return createBedrockConverseClient({
-    apiKey: active.apiKey,
-    region: active.awsRegion,
-    maxRetries,
-  })
-}
-
-/**
- * Rayu: build a Gemini-on-Vertex client (OpenAI adapter + OAuth fetch wrapper)
- * for the active provider when it is a kind:'vertex' provider. Returns null
- * otherwise so the caller falls through to the other client paths.
- * SECURITY: the OAuth token is minted per request and never logged.
- */
-/**
- * Rayu: build the gateway-routing fetch for a provider when routing is enabled
- * (USE_RAYU_OAUTH + signed in + a routable kind). Returns undefined to leave the
- * client on its normal direct fetch. Used by the vertex + bedrock-anthropic
- * paths (the openai-compatible paths inline the same check).
- */
-async function rayuRouteFetch(
-  provider: import('src/utils/rayuConfig.js').RayuProvider,
-): Promise<typeof fetch | undefined> {
-  const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
-    './rayuHosted/gatewayRouting.js'
-  )
-  return shouldRouteViaGateway(provider)
-    ? makeGatewayRoutingFetch(provider)
-    : undefined
-}
-
-async function getRayuVertexClient(
-  maxRetries: number,
-): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (active?.kind !== 'vertex') {
-    return null
-  }
-  const { createVertexGenaiClient } = await import('./gemini/vertexGenaiClient.js')
-  // Rayu: route Vertex (Google OAuth bearer) through the gateway when enabled.
-  return createVertexGenaiClient(active, maxRetries, await rayuRouteFetch(active))
-}
-
-/**
- * Rayu: build a GenAI ("Login with Gemini") client for a provider. Uses the
- * @google/genai adapter in Vertex-global mode, authenticated by the stored
- * interactive-OAuth credentials. Returns null when login/project is missing.
- */
-async function buildGenAIClientFor(
-  provider: import('src/utils/rayuConfig.js').RayuProvider,
-  maxRetries: number,
-): Promise<unknown | null> {
-  // "Login with Gemini" uses the Gemini Code Assist backend — free, tied to the
-  // Google account, NO GCP project required (gemini-cli parity).
-  const { createCodeAssistClient } = await import('./gemini/codeAssistClient.js')
-  const { getGeminiLoginAccessToken } = await import('../oauth/geminiLogin.js')
-  void provider
-  return createCodeAssistClient({
-    maxRetries,
-    providerId: provider.id,
-    getToken: async () => {
-      const r = await getGeminiLoginAccessToken()
-      if (!r?.token) {
-        throw new Error('Not signed in to Gemini. Run /connect → Login with Gemini.')
-      }
-      return r.token
-    },
-  })
-}
-
-/** Rayu: route the active provider to the GenAI client when kind is 'genai'. */
-async function getRayuGenAIClient(maxRetries: number): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (active?.kind !== 'genai') return null
-  return buildGenAIClientFor(active, maxRetries)
-}
-
-/**
- * Rayu: route the active provider to the Kiro adapter when kind is 'kiro'
- * (AWS CodeWhisperer backend; apikey or kiro-cli OAuth). Lazy-imported so the
- * Kiro adapter only loads when Kiro is the active provider.
- */
-async function getRayuKiroClient(maxRetries: number): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (active?.kind !== 'kiro') return null
-  const { createKiroClient } = await import('./kiro/kiroAdapter.js')
-  return createKiroClient(active, maxRetries)
-}
-
-/**
- * Rayu: route the active provider to the GitHub Copilot client when kind is
- * 'copilot'. Copilot is OpenAI-compatible (api.githubcopilot.com) behind a
- * short-lived token refreshed from the stored GitHub OAuth token. Lazy-imported
- * so nothing Copilot-related loads unless Copilot is the active provider.
- */
-async function getRayuCopilotClient(maxRetries: number): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (active?.kind !== 'copilot') return null
-  const { createCopilotClient } = await import('./copilot/copilotClient.js')
-  return createCopilotClient(active, maxRetries)
-}
-
-/**
-/**
- * Rayu: route the active provider to the Rayu-hosted gateway client when kind
- * is 'rayu-hosted'. The gateway serves these via DeepSeek's Anthropic-compatible
- * API, so this is a native Anthropic SDK client; auth is the user's Rayu account
- * JWT (injected by a token-refreshing fetch wrapper). The upstream provider key
- * never leaves the gateway. Lazy-imported.
- */
-async function getRayuHostedClient(maxRetries: number): Promise<unknown | null> {
-  const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (active?.kind !== 'rayu-hosted') return null
-  const { createRayuHostedClient } = await import('./rayuHosted/rayuHostedClient.js')
-  return createRayuHostedClient(active, maxRetries)
-}
-
-/**
- * Rayu: route the active provider to a native Anthropic SDK client when kind is
- * 'anthropic-compatible' — a BYO-key third-party Anthropic Messages endpoint at
- * a custom baseURL with Bearer auth (e.g. LongCat). Distinct from first-party
- * 'anthropic' (no baseURL, x-api-key) and from 'rayu-hosted' (JWT, gateway).
- * Lazy-imported so nothing loads unless it's the active provider.
- */
-/**
- * Build the SAME Anthropic transport the first-party 'anthropic' client uses (see
- * getAnthropicClient below): default headers (x-app, User-Agent, session id, and
- * ANTHROPIC_CUSTOM_HEADERS), the 600s default timeout, proxy fetch options, an
- * optional debug logger, and any fetch override. Reused for
- * kind:'anthropic-compatible' providers (LongCat, Ollama Cloud) so they hit the
- * ORIGINAL Anthropic API call path — only the baseURL + Bearer auth differ.
- * First-party-only concerns (OAuth refresh, x-api-key / configureApiKeyHeaders,
- * rayu-gateway active-user routing) are intentionally omitted.
- */
-function anthropicCompatibleTransport(
-  source?: string,
-  fetchOverride?: ClientOptions['fetch'],
-): Partial<ClientOptions> {
-  const customHeaders = getCustomHeaders()
-  const defaultHeaders: { [key: string]: string } = {
-    'x-app': 'cli',
-    'User-Agent': getUserAgent(),
-    'X-Claude-Code-Session-Id': getSessionId(),
-    ...customHeaders,
-  }
-  const resolvedFetch = buildFetch(fetchOverride, source)
-  return {
-    defaultHeaders,
-    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
-    fetchOptions: getProxyFetchOptions({
-      forAnthropicAPI: true,
-    }) as ClientOptions['fetchOptions'],
-    ...(resolvedFetch ? { fetch: resolvedFetch } : {}),
-    ...(isDebugToStdErr() ? { logger: createStderrLogger() } : {}),
-  }
-}
-
-async function getRayuAnthropicCompatibleClient(
-  maxRetries: number,
-  source?: string,
-  fetchOverride?: ClientOptions['fetch'],
-): Promise<unknown | null> {
-  const { getActiveProvider, getProviderApiKeys } = await import('src/utils/rayuConfig.js')
-  const active = getActiveProvider()
-  if (active?.kind !== 'anthropic-compatible') return null
-  const { createAnthropicCompatibleClient } = await import('./anthropicCompatibleClient.js')
-  // Resolve the key list; cap to the first key unless this is a multi-key
-  // provider (e.g. Ollama Cloud) AND the Basic-plan multi-key entitlement is
-  // granted. This is the anthropic-compatible analogue of the openai path.
-  let apiKeys = getProviderApiKeys(active)
-  const { supportsMultiApiKey } = await import('src/utils/rayuProviders.js')
-  const { isMultiApiKeyAllowed } = await import('../rayuAuth/multiApiKeyFeature.js')
-  if (!supportsMultiApiKey(active.id) || !isMultiApiKeyAllowed()) {
-    apiKeys = apiKeys.slice(0, 1)
-  }
-  return createAnthropicCompatibleClient(
-    active,
-    maxRetries,
-    anthropicCompatibleTransport(source, fetchOverride),
-    apiKeys,
-  )
-}
-
-/**
- * Rayu: build an API client for a SPECIFIC provider (not necessarily the active
- * one). Used to route a subagent request to a provider chosen via
- * /model_subagent that differs from the main agent's provider. Mirrors the
- * active-provider routing: Anthropic-style Bedrock → AnthropicBedrock SDK;
- * OpenAI-compatible (incl. OpenAI-style Bedrock) → OpenAI adapter. Returns null
- * when the provider can't be served this way (caller falls back).
- * SECURITY: credentials are read from the 0600 provider config; never logged.
- */
-async function buildClientForProvider(
-  provider: import('src/utils/rayuConfig.js').RayuProvider,
-  maxRetries: number,
-): Promise<unknown | null> {
-  if (
-    provider.kind === 'bedrock' &&
-    provider.bedrockApi === 'anthropic' &&
-    provider.apiKey
-  ) {
-    const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
-    const rf = await rayuRouteFetch(provider)
-    return new AnthropicBedrock({
-      apiKey: provider.apiKey,
-      awsRegion: provider.awsRegion || process.env.AWS_REGION || 'us-east-1',
-      maxRetries,
-      ...(rf ? { fetch: rf as ClientOptions['fetch'] } : {}),
-    })
-  }
-  // Bedrock Converse API: model-agnostic (Claude, Kimi, DeepSeek, …) via the
-  // AWS SDK; natively separates reasoning + tool use. Default Bedrock surface.
-  if (provider.kind === 'bedrock' && provider.bedrockApi === 'converse') {
-    const { createBedrockConverseClient } = await import(
-      './bedrockConverseAdapter.js'
-    )
-    return createBedrockConverseClient({
-      apiKey: provider.apiKey,
-      region: provider.awsRegion,
-      maxRetries,
-    })
-  }
-  // Gemini on Vertex AI: native genai endpoint (reuses genaiTranslate so tool
-  // schema sanitization + Gemini-3 thought_signature replay apply).
-  if (provider.kind === 'vertex') {
-    const { createVertexGenaiClient } = await import(
-      './gemini/vertexGenaiClient.js'
-    )
-    return createVertexGenaiClient(provider, maxRetries, await rayuRouteFetch(provider))
-  }
-  // Login-with-Gemini: @google/genai adapter (Vertex-global + OAuth).
-  if (provider.kind === 'genai') {
-    return buildGenAIClientFor(provider, maxRetries)
-  }
-  // Kiro: AWS CodeWhisperer backend (apikey or kiro-cli OAuth). Lazy-imported so
-  // nothing Kiro-related (sqlite read, adapter) loads unless the active provider
-  // is kind:'kiro'.
-  if (provider.kind === 'kiro') {
-    const { createKiroClient } = await import('./kiro/kiroAdapter.js')
-    return createKiroClient(provider, maxRetries)
-  }
-  // GitHub Copilot: OpenAI adapter + Copilot OAuth fetch wrapper (refreshes the
-  // short-lived Copilot token from the stored GitHub OAuth token).
-  if (provider.kind === 'copilot') {
-    const { createCopilotClient } = await import('./copilot/copilotClient.js')
-    return createCopilotClient(provider, maxRetries)
-  }
-  // Rayu-hosted gateway: OpenAI adapter + Rayu JWT fetch wrapper.
-  if (provider.kind === 'rayu-hosted') {
-    const { createRayuHostedClient } = await import('./rayuHosted/rayuHostedClient.js')
-    return createRayuHostedClient(provider, maxRetries)
-  }
-  // Anthropic-compatible BYO-key endpoints (LongCat, …): native Anthropic SDK
-  // pointed at a custom baseURL with Bearer auth (authToken).
-  if (provider.kind === 'anthropic-compatible') {
-    const { createAnthropicCompatibleClient } = await import('./anthropicCompatibleClient.js')
-    // Same key resolution + paid-plan gate as the active-provider path, so a
-    // subagent routed to a multi-key anthropic-compatible provider (Ollama
-    // Cloud) also rotates keys — capped to one key otherwise.
-    const { getProviderApiKeys } = await import('src/utils/rayuConfig.js')
-    const { supportsMultiApiKey } = await import('src/utils/rayuProviders.js')
-    const { isMultiApiKeyAllowed } = await import('../rayuAuth/multiApiKeyFeature.js')
-    let apiKeys = getProviderApiKeys(provider)
-    if (!supportsMultiApiKey(provider.id) || !isMultiApiKeyAllowed()) {
-      apiKeys = apiKeys.slice(0, 1)
-    }
-    return createAnthropicCompatibleClient(
-      provider,
-      maxRetries,
-      anthropicCompatibleTransport(),
-      apiKeys,
-    )
-  }
-  // OpenAI-compatible endpoints, including OpenAI-style Bedrock (bedrockApi !==
-  // 'anthropic'), are served by the OpenAI adapter from baseURL + apiKey.
-  if (
-    (provider.kind === 'openai-compatible' || provider.kind === 'bedrock') &&
-    provider.baseURL
-  ) {
-    const { createOpenAICompatibleClient } = await import('./openaiAdapter.js')
-    // Resolve the key list for this specific provider, capped to one key unless
-    // it's a multi-key provider (NVIDIA / OpenRouter) and the Basic-plan
-    // entitlement is granted. Bedrock/other providers keep their single key.
-    const { getProviderApiKeys } = await import('src/utils/rayuConfig.js')
-    const { supportsMultiApiKey } = await import('src/utils/rayuProviders.js')
-    const { isMultiApiKeyAllowed } = await import(
-      '../rayuAuth/multiApiKeyFeature.js'
-    )
-    let apiKeys = getProviderApiKeys(provider)
-    if (!supportsMultiApiKey(provider.id) || !isMultiApiKeyAllowed()) {
-      apiKeys = apiKeys.slice(0, 1)
-    }
-    // Rayu gateway routing applies only to openai-compatible (shouldRoute is
-    // false for bedrock), so this leaves Bedrock direct.
-    const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
-      './rayuHosted/gatewayRouting.js'
-    )
-    const routeFetch = shouldRouteViaGateway(provider)
-      ? makeGatewayRoutingFetch(provider)
-      : undefined
-    return createOpenAICompatibleClient({
-      apiKey: apiKeys[0] ?? provider.apiKey ?? '',
-      apiKeys,
-      baseURL: provider.baseURL,
-      maxRetries,
-      providerId: provider.id,
-      promptCacheKey: provider.promptCacheKey,
-      reasoningEffort: provider.reasoningEffort,
-      streamOptions: provider.streamOptions,
-      ...(routeFetch ? { fetch: routeFetch } : {}),
-    })
-  }
-  return null
-}
-
 export async function getAnthropicClient({
   apiKey,
   maxRetries,
@@ -520,265 +108,43 @@ export async function getAnthropicClient({
   fetchOverride?: ClientOptions['fetch']
   source?: string
 }): Promise<Anthropic> {
-  // Rayu multi-provider subagent routing: the request "model" may carry a
-  // provider prefix (providerId\u0000model) so a subagent can run on a DIFFERENT
-  // provider than the active one, concurrently. Decode it and build the client
-  // for that specific provider. The request body's model is independently
-  // stripped to the bare id by normalizeModelStringForAPI, so the wire model is
-  // always clean regardless of routing. This avoids AsyncLocalStorage, which is
-  // unreliable across async generators on Bun.
-  if (model) {
-    const { decodeModelProvider, loadRayuConfig } = await import(
-      'src/utils/rayuConfig.js'
-    )
-    const { providerId } = decodeModelProvider(model)
-    if (providerId) {
-      const provider = loadRayuConfig().providers.find(p => p.id === providerId)
-      if (provider) {
-        const overrideClient = await buildClientForProvider(provider, maxRetries)
-        if (overrideClient) {
-          return overrideClient as unknown as Anthropic
-        }
-      }
+  const provider = await resolveRequestProvider(model)
+  if (provider) {
+    const client = await buildClient(provider, {
+      maxRetries,
+      model,
+      source,
+      fetchOverride,
+      // RAYU_OPENAI_BASE_URL / RAYU_OPENAI_API_KEY may override only the ACTIVE
+      // provider's endpoint+key (CI/headless escape hatch); a request explicitly
+      // routed to another provider must keep that provider's own credentials.
+      allowEnvOverrides: !isRoutedModel(model),
+    })
+    if (client) {
+      return client as unknown as Anthropic
     }
   }
 
-  // Rayu: route to the AnthropicBedrock SDK when the active provider is a
-  // Bedrock provider configured for the Anthropic Messages API (Claude models).
-  const bedrockAnthropicClient = await getRayuBedrockAnthropicClient(maxRetries)
-  if (bedrockAnthropicClient) {
-    return bedrockAnthropicClient as unknown as Anthropic
+  // Env-only OpenAI-compatible escape hatch: RAYU_OPENAI_COMPATIBLE=1 +
+  // RAYU_OPENAI_BASE_URL with no saved provider (or with a first-party Anthropic
+  // provider saved), used for headless/CI runs.
+  if (isOpenAICompatibleActive()) {
+    const envClient = await buildEnvOpenAIChatClient(provider, maxRetries)
+    if (envClient) {
+      return envClient as unknown as Anthropic
+    }
   }
 
-  // Rayu: route to the Bedrock Converse client (AWS SDK) when the active
-  // provider is a Bedrock provider on the Converse surface (the default). This
-  // is model-agnostic and natively separates reasoning + tool use.
-  const bedrockConverseClient = await getRayuBedrockConverseClient(maxRetries)
-  if (bedrockConverseClient) {
-    return bedrockConverseClient as unknown as Anthropic
-  }
-
-  // Rayu: route to the GenAI client ("Login with Gemini") when active.
-  const genaiClient = await getRayuGenAIClient(maxRetries)
-  if (genaiClient) {
-    return genaiClient as unknown as Anthropic
-  }
-
-  // Rayu: route to the Gemini-on-Vertex client when the active provider is a
-  // kind:'vertex' provider (OAuth bearer token + google/ model prefix).
-  const vertexClient = await getRayuVertexClient(maxRetries)
-  if (vertexClient) {
-    return vertexClient as unknown as Anthropic
-  }
-
-  // Rayu: route to the Kiro adapter when the active provider is kind:'kiro'
-  // (AWS CodeWhisperer backend; apikey or kiro-cli OAuth — no x-api-key).
-  const kiroClient = await getRayuKiroClient(maxRetries)
-  if (kiroClient) {
-    return kiroClient as unknown as Anthropic
-  }
-
-  // Rayu: route to the GitHub Copilot client when the active provider is
-  // kind:'copilot' (OpenAI-compatible api.githubcopilot.com + Copilot OAuth).
-  const copilotClient = await getRayuCopilotClient(maxRetries)
-  if (copilotClient) {
-    return copilotClient as unknown as Anthropic
-  }
-
-  // Rayu: route to the Rayu-hosted gateway client when the active provider is
-  // kind:'rayu-hosted' (paid hosted models via the user's subscription; the
-  // Rayu JWT authenticates and the gateway holds the upstream provider key).
-  const rayuHostedClient = await getRayuHostedClient(maxRetries)
-  if (rayuHostedClient) {
-    return rayuHostedClient as unknown as Anthropic
-  }
-
-  // Rayu: route to a native Anthropic SDK client when the active provider is
-  // kind:'anthropic-compatible' (BYO-key third-party Anthropic Messages endpoint
-  // at a custom baseURL + Bearer auth, e.g. LongCat).
-  const anthropicCompatibleClient = await getRayuAnthropicCompatibleClient(
+  return buildFirstPartyAnthropicClient({
     maxRetries,
+    apiKey,
     source,
     fetchOverride,
-  )
-  if (anthropicCompatibleClient) {
-    return anthropicCompatibleClient as unknown as Anthropic
-  }
-
-  // Rayu: route to the OpenAI-compatible adapter when the active provider is an
-  // OpenAI-compatible endpoint (OpenAI/NVIDIA/OpenRouter/local). The adapter
-  // presents the same beta.messages.create surface claude.ts depends on.
-  if (isOpenAICompatibleActive()) {
-    const rayuClient = await getRayuOpenAICompatibleClient(maxRetries)
-    if (rayuClient) {
-      return rayuClient as unknown as Anthropic
-    }
-  }
-
-  const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
-  const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
-  const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP
-  const customHeaders = getCustomHeaders()
-  const defaultHeaders: { [key: string]: string } = {
-    'x-app': 'cli',
-    'User-Agent': getUserAgent(),
-    'X-Claude-Code-Session-Id': getSessionId(),
-    ...customHeaders,
-    ...(containerId ? { 'x-claude-remote-container-id': containerId } : {}),
-    ...(remoteSessionId
-      ? { 'x-claude-remote-session-id': remoteSessionId }
-      : {}),
-    // SDK consumers can identify their app/library for backend analytics
-    ...(clientApp ? { 'x-client-app': clientApp } : {}),
-  }
-
-  // Log API client configuration for HFI debugging
-  logForDebugging(
-    `[API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: ${!!process.env.ANTHROPIC_CUSTOM_HEADERS}, has Authorization header: ${!!customHeaders['Authorization']}`,
-  )
-
-  // Add additional protection header if enabled via env var
-  const additionalProtectionEnabled = isEnvTruthy(
-    process.env.CLAUDE_CODE_ADDITIONAL_PROTECTION,
-  )
-  if (additionalProtectionEnabled) {
-    defaultHeaders['x-anthropic-additional-protection'] = 'true'
-  }
-
-  // Rayu connects only to first-party Anthropic-shaped endpoints and
-  // OpenAI-compatible providers. The OpenAI-compatible path already returned
-  // above; here we configure standard Anthropic auth headers.
-  logForDebugging('[API:auth] OAuth token check starting')
-  await checkAndRefreshOAuthTokenIfNeeded()
-  logForDebugging('[API:auth] OAuth token check complete')
-
-  await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
-
-  const resolvedFetch = buildFetch(fetchOverride, source)
-
-  // Rayu: when opted-in + signed in and the active provider is first-party
-  // Anthropic (an API-key provider), route its requests through the gateway
-  // proxy for active-user tracking. The wrapper fails safe to `resolvedFetch`
-  // (a direct call) if the gateway is down. OAuth/Bedrock providers returned
-  // earlier, so they are never affected.
-  let routedFetch = resolvedFetch
-  try {
-    const { getActiveProvider } = await import('src/utils/rayuConfig.js')
-    const active = getActiveProvider()
-    if (active?.kind === 'anthropic') {
-      const { shouldRouteViaGateway, makeGatewayRoutingFetch } = await import(
-        './rayuHosted/gatewayRouting.js'
-      )
-      if (shouldRouteViaGateway(active)) {
-        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-        const inner = (resolvedFetch ?? globalThis.fetch) as typeof fetch
-        routedFetch = makeGatewayRoutingFetch(
-          active,
-          inner,
-        ) as typeof resolvedFetch
-      }
-    }
-  } catch {
-    // never let routing setup break Anthropic client creation
-  }
-
-  const ARGS = {
-    defaultHeaders,
-    maxRetries,
-    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
-    dangerouslyAllowBrowser: true,
-    fetchOptions: getProxyFetchOptions({
-      forAnthropicAPI: true,
-    }) as ClientOptions['fetchOptions'],
-    ...(routedFetch && {
-      fetch: routedFetch,
-    }),
-  }
-
-  const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: apiKey || getAnthropicApiKey() || undefined,
-    // Set baseURL from OAuth config when using staging OAuth
-    ...(process.env.USER_TYPE === 'ant' &&
-    isEnvTruthy(process.env.USE_STAGING_OAUTH)
-      ? { baseURL: getOauthConfig().BASE_API_URL }
-      : {}),
-    ...ARGS,
-    ...(isDebugToStdErr() && { logger: createStderrLogger() }),
-  }
-
-  return new Anthropic(clientConfig)
+    provider,
+  })
 }
 
-async function configureApiKeyHeaders(
-  headers: Record<string, string>,
-  isNonInteractiveSession: boolean,
-): Promise<void> {
-  void isNonInteractiveSession
-  const token = process.env.RAYU_ANTHROPIC_AUTH_TOKEN
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-}
-
-function getCustomHeaders(): Record<string, string> {
-  const customHeaders: Record<string, string> = {}
-  const customHeadersEnv = process.env.ANTHROPIC_CUSTOM_HEADERS
-
-  if (!customHeadersEnv) return customHeaders
-
-  // Split by newlines to support multiple headers
-  const headerStrings = customHeadersEnv.split(/\n|\r\n/)
-
-  for (const headerString of headerStrings) {
-    if (!headerString.trim()) continue
-
-    // Parse header in format "Name: Value" (curl style). Split on first `:`
-    // then trim — avoids regex backtracking on malformed long header lines.
-    const colonIdx = headerString.indexOf(':')
-    if (colonIdx === -1) continue
-    const name = headerString.slice(0, colonIdx).trim()
-    const value = headerString.slice(colonIdx + 1).trim()
-    if (name) {
-      customHeaders[name] = value
-    }
-  }
-
-  return customHeaders
-}
-
-export const CLIENT_REQUEST_ID_HEADER = 'x-client-request-id'
-
-function buildFetch(
-  fetchOverride: ClientOptions['fetch'],
-  source: string | undefined,
-): ClientOptions['fetch'] {
-  // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-  const inner = fetchOverride ?? globalThis.fetch
-  // Only send to the first-party API — Bedrock/Vertex/Foundry don't log it
-  // and unknown headers risk rejection by strict proxies (inc-4029 class).
-  const injectClientRequestId =
-    getAPIProvider() === 'anthropic' &&
-    !isOpenAICompatibleActive() &&
-    isFirstPartyAnthropicBaseUrl()
-  return (input, init) => {
-    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-    const headers = new Headers(init?.headers)
-    // Generate a client-side request ID so timeouts (which return no server
-    // request ID) can still be correlated with server logs by the API team.
-    // Callers that want to track the ID themselves can pre-set the header.
-    if (injectClientRequestId && !headers.has(CLIENT_REQUEST_ID_HEADER)) {
-      headers.set(CLIENT_REQUEST_ID_HEADER, randomUUID())
-    }
-    try {
-      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      const url = input instanceof Request ? input.url : String(input)
-      const id = headers.get(CLIENT_REQUEST_ID_HEADER)
-      logForDebugging(
-        `[API REQUEST] ${new URL(url).pathname}${id ? ` ${CLIENT_REQUEST_ID_HEADER}=${id}` : ''} source=${source ?? 'unknown'}`,
-      )
-    } catch {
-      // never let logging crash the fetch
-    }
-    return inner(input, { ...init, headers })
-  }
+/** True when the model string carries a `providerId\u0000` routing prefix. */
+function isRoutedModel(model: string | undefined): boolean {
+  return !!model && model.includes('\u0000')
 }

@@ -30,6 +30,23 @@ func accessToken(t *testing.T, userID int64) string {
 	return s
 }
 
+// accessTokenRole mints a token for a specific role, so the admin-only endpoints
+// (provider health/test) can be exercised — and their 403 proven for a user.
+func accessTokenRole(t *testing.T, userID int64, role string) string {
+	t.Helper()
+	c := jwt.MapClaims{
+		"sub":  userID,
+		"role": role,
+		"type": "access",
+		"exp":  time.Now().Add(time.Hour).Unix(),
+	}
+	s, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString([]byte(testSecret))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return s
+}
+
 func testServer() *Server {
 	// No entitlements/limiter/store needed for the proxy path (store is nil, so
 	// tracking is skipped). Only the JWT secret matters.

@@ -30,23 +30,21 @@ describe('bedrock provider helpers', () => {
     )
   })
 
-  test('PROVIDER_PRESETS includes a bedrock preset with the bearer-token env key', async () => {
+  test('PROVIDER_PRESETS includes ONE unified bedrock preset with the bearer-token env key', async () => {
     const { PROVIDER_PRESETS } = await import('../src/utils/rayuProviders.ts')
-    const bedrock = PROVIDER_PRESETS.find(p => p.id === 'bedrock')
-    expect(bedrock).toBeDefined()
-    expect(bedrock?.kind).toBe('bedrock')
-    // Converse is the default Bedrock surface (model-agnostic; reasoning + tools).
-    expect(bedrock?.bedrockApi).toBe('converse')
+    const bedrocks = PROVIDER_PRESETS.filter(p => p.kind === 'bedrock')
+    // ONE Bedrock provider for the whole catalog: the wire format is chosen per
+    // MODEL (Claude → Anthropic Messages, everything else → OpenAI Chat), so the
+    // old bedrock / bedrock-openai / bedrock-anthropic split is gone.
+    expect(bedrocks).toHaveLength(1)
+    const bedrock = bedrocks[0]
+    expect(bedrock?.id).toBe('bedrock')
     expect(bedrock?.envKeys).toContain('AWS_BEARER_TOKEN_BEDROCK')
-    // A secondary OpenAI-compatible (mantle) Bedrock preset.
-    const openai = PROVIDER_PRESETS.find(p => p.id === 'bedrock-openai')
-    expect(openai).toBeDefined()
-    expect(openai?.bedrockApi).toBe('openai')
-    // A third preset for the Anthropic Messages API (Claude).
-    const anthropic = PROVIDER_PRESETS.find(p => p.id === 'bedrock-anthropic')
-    expect(anthropic).toBeDefined()
-    expect(anthropic?.kind).toBe('bedrock')
-    expect(anthropic?.bedrockApi).toBe('anthropic')
+    // No surface discriminator is written any more.
+    expect(bedrock?.bedrockApi).toBeUndefined()
+    for (const legacyId of ['bedrock-openai', 'bedrock-anthropic']) {
+      expect(PROVIDER_PRESETS.find(p => p.id === legacyId)).toBeUndefined()
+    }
   })
 })
 

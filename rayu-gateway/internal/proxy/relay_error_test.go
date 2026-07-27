@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 )
 
 func TestIsUpstreamRequestError(t *testing.T) {
@@ -73,8 +75,8 @@ func TestStreamAnthropicRelaysRequestError(t *testing.T) {
 	defer upstream.Close()
 
 	rec := httptest.NewRecorder()
-	_, wrote, err := StreamAnthropic(context.Background(), rec, upstream.URL, []string{"k"}, false,
-		[]byte(`{"model":"glm-5.2","stream":true}`))
+	_, wrote, err := StreamAnthropic(context.Background(), rec, upstream.URL, testKeys("k"), false,
+		[]byte(`{"model":"glm-5.2","stream":true}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "upstream status 400") {
 		t.Fatalf("err=%v, want it to note upstream status 400", err)
 	}
@@ -105,8 +107,8 @@ func TestStreamAnthropicMasksProviderFailureAs502(t *testing.T) {
 			_, _ = io.WriteString(w, `{"error":{"message":"requires a subscription at ollama.com/upgrade"}}`)
 		}))
 		rec := httptest.NewRecorder()
-		_, wrote, _ := StreamAnthropic(context.Background(), rec, upstream.URL, []string{"k"}, false,
-			[]byte(`{"model":"glm-5.2","stream":true}`))
+		_, wrote, _ := StreamAnthropic(context.Background(), rec, upstream.URL, testKeys("k"), false,
+			[]byte(`{"model":"glm-5.2","stream":true}`), nil)
 		upstream.Close()
 		if !wrote {
 			t.Fatalf("status %d: expected wrote=true", upstreamStatus)
@@ -124,25 +126,30 @@ func TestStreamAnthropicMasksProviderFailureAs502(t *testing.T) {
 	}
 }
 
-// The OpenAI-shape path (handleChat/Stream) relays request errors too, in the
-// OpenAI error envelope.
-func TestStreamRelaysRequestErrorOpenAIShape(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"error":{"message":"context length exceeded","type":"invalid_request_error"}}`)
-	}))
-	defer upstream.Close()
-
+// relayUpstreamError also serves the OpenAI error envelope (still used by the
+// BYO-key proxy path and the retired-ingress response), so both writers are
+// covered: a request error keeps its real status + message, a provider failure is
+// masked as 502.
+func TestRelayUpstreamErrorOpenAIShape(t *testing.T) {
 	rec := httptest.NewRecorder()
-	_, wrote, err := Stream(context.Background(), rec, upstream.URL, "k",
-		[]byte(`{"model":"deepseek-v4-pro","stream":true}`))
-	if err == nil || !strings.Contains(err.Error(), "upstream status 400") {
-		t.Fatalf("err=%v, want upstream status 400", err)
-	}
-	if !wrote || rec.Code != http.StatusBadRequest {
-		t.Fatalf("wrote=%v client status=%d, want 400", wrote, rec.Code)
+	relayUpstreamError(rec, http.StatusBadRequest,
+		[]byte(`{"error":{"message":"context length exceeded","type":"invalid_request_error"}}`),
+		httpx.WriteError)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "context length exceeded") {
 		t.Fatalf("client body should surface the cause; got: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	relayUpstreamError(rec, http.StatusForbidden,
+		[]byte(`{"error":{"message":"your plan requires an upgrade at https://provider.example/upgrade"}}`),
+		httpx.WriteError)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want 502 (provider failure must be masked)", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "provider.example") {
+		t.Fatalf("provider detail leaked to the client: %s", rec.Body.String())
 	}
 }

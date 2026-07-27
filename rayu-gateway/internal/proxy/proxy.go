@@ -4,7 +4,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -136,16 +135,6 @@ func (u *Usage) FreshInputTokens() int {
 	return u.PromptTokens
 }
 
-func newReq(ctx context.Context, url, apiKey string, body []byte) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	return req, nil
-}
-
 // --- Transient-upstream retry -----------------------------------------------
 //
 // Providers (DeepSeek, DeepInfra, AWS Bedrock, ...) occasionally answer a
@@ -266,8 +255,105 @@ func doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) (*
 	}
 }
 
-// parseUsageLine extracts a non-empty usage object from a single SSE `data:` line.
-func parseUsageLine(line []byte) *Usage {
+// APIKey is one credential to try, carrying its database id so a failure can be
+// attributed to the KEY that caused it. Without the id, a provider's keys are an
+// anonymous blob and "key 2 is rate limited" is unknowable.
+type APIKey struct {
+	ID     int64
+	Secret string
+}
+
+// KeyFailure describes why a specific key could not serve a request, so the
+// caller can put it on cooldown (429) or take it out of rotation (401/403).
+type KeyFailure struct {
+	KeyID  int64
+	Status int
+	// RetryAfter is the provider's requested wait, when it sent one.
+	RetryAfter time.Duration
+}
+
+// RateLimited reports whether this failure means "try again later" rather than
+// "this credential is wrong".
+func (f KeyFailure) RateLimited() bool {
+	return f.Status == http.StatusTooManyRequests || f.Status == http.StatusPaymentRequired
+}
+
+// SendWithFailover sends an upstream request, trying each API key IN ORDER and
+// failing over to the next when a key returns a rotatable status (rate limit,
+// quota exhausted, or auth/permission — see isRotatableStatus). build is called
+// fresh per attempt because a request body can only be read once.
+//
+// This is the single place adapters get the gateway's upstream resilience from:
+// per-host circuit breaker, transient-status retry (via doWithRetry), and
+// multi-key rotation. Every wire format therefore behaves identically under
+// provider failure, and a new adapter cannot accidentally opt out.
+//
+// onFailure (optional) is called for EVERY key that failed with a rotatable
+// status — including the last one — so per-key health reflects reality even when
+// no key succeeded.
+//
+// Failover happens BEFORE anything is written to the client, so it is invisible:
+// the returned response is either a success or the last key's error.
+func SendWithFailover(
+	ctx context.Context,
+	keys []APIKey,
+	build func(secret string) (*http.Request, error),
+	onFailure func(KeyFailure),
+) (resp *http.Response, usedKey APIKey, err error) {
+	if len(keys) == 0 {
+		keys = []APIKey{{}}
+	}
+	var lastErr error
+	for i, apiKey := range keys {
+		key := apiKey
+		r, e := doWithRetry(ctx, func() (*http.Request, error) { return build(key.Secret) })
+		if e != nil {
+			lastErr = e
+			if i < len(keys)-1 {
+				continue // transport error — try the next key
+			}
+			return nil, APIKey{}, e
+		}
+		if isRotatableStatus(r.StatusCode) {
+			if onFailure != nil {
+				onFailure(KeyFailure{
+					KeyID:      key.ID,
+					Status:     r.StatusCode,
+					RetryAfter: retryAfterFrom(r.Header),
+				})
+			}
+			// Another key remains → close this response and fail over to it.
+			if i < len(keys)-1 {
+				_, _ = io.Copy(io.Discard, r.Body)
+				_ = r.Body.Close()
+				continue
+			}
+		}
+		return r, key, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no api keys configured")
+	}
+	return nil, APIKey{}, lastErr
+}
+
+// retryAfterFrom reads an integer-seconds Retry-After header, if present.
+func retryAfterFrom(h http.Header) time.Duration {
+	if ra := h.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 0
+}
+
+// ParseOpenAIUsageLine extracts a usage object from one OpenAI-style SSE `data:`
+// line, or nil when the line carries no usage. Exported for the openai_chat
+// adapter in internal/translate: keeping ONE parser next to the Usage type it
+// fills is what guarantees both cache conventions (DeepSeek's explicit
+// prompt_cache_hit_tokens and OpenAI's prompt_tokens_details.cached_tokens) stay
+// handled identically for billing, whichever format the request came in as.
+func ParseOpenAIUsageLine(line []byte) *Usage {
 	s := bytes.TrimSpace(line)
 	if !bytes.HasPrefix(s, []byte("data:")) {
 		return nil
@@ -296,6 +382,22 @@ func errSnippet(b []byte) string {
 		return string(s[:max]) + "…"
 	}
 	return string(s)
+}
+
+// ErrSnippet is errSnippet for adapters in internal/translate: a capped, log-safe
+// rendering of an upstream error body.
+func ErrSnippet(b []byte) string { return errSnippet(b) }
+
+// RelayUpstreamError is the Anthropic-facing relay policy for adapters in
+// internal/translate: a client-fixable request error (400/413/422) keeps its real
+// status and message so the CLI shows the cause and does not retry; anything else
+// becomes the sanitized provider-unavailable 502, so a provider's raw body (which
+// may name the provider or carry upgrade URLs) never reaches a customer.
+//
+// Every translating adapter must route pre-stream failures through this, so the
+// error contract does not vary by wire format.
+func RelayUpstreamError(w http.ResponseWriter, status int, body []byte) {
+	relayUpstreamError(w, status, body, httpx.WriteAnthropicError)
 }
 
 // IsUpstreamRequestError reports whether an upstream 4xx means the REQUEST
@@ -372,87 +474,6 @@ func relayUpstreamError(
 		return
 	}
 	httpx.WriteProviderUnavailable(w, http.StatusBadGateway)
-}
-
-// Stream proxies a streaming completion. It owns the response once it starts
-// writing; `wrote` reports whether any bytes/headers were sent to the client.
-// On a pre-flight failure (wrote=false) the caller should write an error.
-func Stream(ctx context.Context, w http.ResponseWriter, upstreamURL, apiKey string, body []byte) (usage *Usage, wrote bool, err error) {
-	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
-		req, err := newReq(ctx, upstreamURL, apiKey, body)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Accept", "text/event-stream")
-		return req, nil
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	defer resp.Body.Close()
-
-	flusher, _ := w.(http.Flusher)
-
-	// rayu-hosted path: a client-fixable request error (400/413/422) is relayed
-	// with its real status + message so the CLI shows the cause and does NOT
-	// retry; a provider-side/transient failure (5xx, auth, quota) keeps the
-	// clean, upstream-agnostic 502 that the CLI turns into "try a smaller model
-	// or try again later". Either way the raw upstream body is only logged.
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		relayUpstreamError(w, resp.StatusCode, b, httpx.WriteError)
-		return nil, true, fmt.Errorf("upstream status %d: %s", resp.StatusCode, errSnippet(b))
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	if flusher != nil {
-		flusher.Flush()
-	}
-
-	reader := bufio.NewReader(resp.Body)
-	for {
-		line, rerr := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			if _, werr := w.Write(line); werr != nil {
-				return usage, true, werr // client disconnected
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-			if u := parseUsageLine(line); u != nil {
-				usage = u
-			}
-		}
-		if rerr != nil {
-			break // EOF or upstream/ctx error ends the stream
-		}
-	}
-	return usage, true, nil
-}
-
-// Complete proxies a non-streaming completion, returning the upstream status,
-// raw body, and parsed usage for the caller to write + meter.
-func Complete(ctx context.Context, upstreamURL, apiKey string, body []byte) (usage *Usage, status int, respBody []byte, err error) {
-	resp, err := doWithRetry(ctx, func() (*http.Request, error) {
-		return newReq(ctx, upstreamURL, apiKey, body)
-	})
-	if err != nil {
-		return nil, 0, nil, err
-	}
-	defer resp.Body.Close()
-	respBody, _ = io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusOK {
-		var parsed struct {
-			Usage *Usage `json:"usage"`
-		}
-		if json.Unmarshal(respBody, &parsed) == nil && parsed.Usage != nil {
-			usage = parsed.Usage
-		}
-	}
-	return usage, resp.StatusCode, respBody, nil
 }
 
 // Forward is a transparent reverse-proxy for BYO-key provider requests routed

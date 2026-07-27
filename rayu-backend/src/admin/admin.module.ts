@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common'
@@ -29,9 +30,13 @@ import {
 import {
   PLAN_AVAILABILITY,
   PLAN_CODES,
+  PROVIDER_AUTH_SCHEMES,
+  PROVIDER_FORMATS,
   USER_STATUSES,
   type PlanAvailability,
   type PlanCode,
+  type ProviderAuthScheme,
+  type ProviderFormat,
   type UserStatus,
 } from '../common/enums'
 import { sanitizeEntitlementsPatch } from '../common/features'
@@ -42,6 +47,8 @@ import { RolesGuard } from '../auth/roles.guard'
 import { ModelsModule } from '../models/models.module'
 import { ModelsService } from '../models/models.service'
 import { PlansModule } from '../plans/plans.module'
+import { ProvidersModule } from '../providers/providers.module'
+import { ProvidersService } from '../providers/providers.service'
 import { PromoModule } from '../promo/promo.module'
 import {
   DISCOUNT_TYPES,
@@ -113,21 +120,29 @@ export class UpdatePlanDto {
   features?: Record<string, unknown>
 }
 
+// The full set of hosted models a plan may use. Absent codes are REVOKED, so the
+// client must send the complete checklist state, not a delta — a delta would make
+// two admins editing concurrently silently merge their choices.
+export class SetPlanModelsDto {
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(64, { each: true })
+  modelCodes!: string[]
+}
+
 class ModelFieldsDto {
   @IsOptional()
   @IsString()
   @MaxLength(128)
   label?: string
 
+  // The model's upstream provider, by registry id (providers table). Replaces
+  // the old free-text `provider` + `upstreamBaseUrl` pair: base URL, wire
+  // format, auth scheme, and key env now all live on the provider row.
   @IsOptional()
-  @IsString()
-  @MaxLength(32)
-  provider?: string
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  upstreamBaseUrl?: string
+  @IsInt()
+  @Min(1)
+  providerId?: number
 
   @IsOptional()
   @IsString()
@@ -144,31 +159,64 @@ class ModelFieldsDto {
   @Min(0)
   outputPricePer1MCents?: number
 
+  // --- Credit charges (credits per 1M tokens) --------------------------------
+  // All four are admin-owned and used VERBATIM by the gateway; nothing is derived
+  // from the cost prices above. Capped at 1000 so a slipped decimal can't bill a
+  // customer 1000x. creditMultiplier is the INPUT charge (name kept because it is
+  // the field already published to the CLI).
   @IsOptional()
   @IsNumber()
   @Min(0)
+  @Max(1000)
   creditMultiplier?: number
 
-  // Allow explicit null (= "not configured", the gateway falls back to its
-  // own default) so the admin UI can clear the field back to inherited
-  // behavior; @IsOptional() alone only skips validation for `undefined`, not
-  // `null` (same pattern as maxDailyTurns/creditsPerPeriod above).
   @IsOptional()
-  @ValidateIf((_o, v) => v !== null)
   @IsNumber()
   @Min(0)
-  cacheReadCreditMultiplier?: number | null
+  @Max(1000)
+  outputCreditMultiplier?: number
 
   @IsOptional()
-  @ValidateIf((_o, v) => v !== null)
   @IsNumber()
   @Min(0)
-  cacheWriteCreditMultiplier?: number | null
+  @Max(1000)
+  cacheReadCreditMultiplier?: number
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1000)
+  cacheWriteCreditMultiplier?: number
 
   @IsOptional()
   @IsArray()
   @IsIn(PLAN_CODES as unknown as string[], { each: true })
   allowedPlanCodes?: string[]
+
+  // Context window in TOKENS (e.g. 200000, 1000000). Explicit null clears it,
+  // which makes the CLI fall back to its own default for the model. Capped at 20M
+  // so a typo (extra zeros) can't make the CLI budget against an absurd window.
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsInt()
+  @Min(1000)
+  @Max(20_000_000)
+  contextWindow?: number | null
+
+  // Per-model capabilities. The gateway rejects an image block (or a `thinking`
+  // field) for a model whose flag is false BEFORE charging credits, and exposes
+  // both flags to the CLI so it can warn the user to switch models.
+  @IsOptional()
+  @IsBoolean()
+  supportsReasoning?: boolean
+
+  @IsOptional()
+  @IsBoolean()
+  supportsImage?: boolean
+
+  @IsOptional()
+  @IsBoolean()
+  supportsTools?: boolean
 
   @IsOptional()
   @IsBoolean()
@@ -183,16 +231,130 @@ export class CreateModelDto extends ModelFieldsDto {
 
 export class UpdateModelDto extends ModelFieldsDto {}
 
+// --- Provider registry (admin-managed upstreams) ------------------------------
+// SECURITY: there is deliberately NO apiKey field here. Keys are managed through
+// the separate /admin/providers/:name/keys routes below, which encrypt on write
+// and never return a secret. baseUrl/endpointPath are validated in
+// ProvidersService (SSRF rules) and again by the gateway at route time.
+class ProviderFieldsDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  label?: string
+
+  @IsOptional()
+  @IsIn(PROVIDER_FORMATS as unknown as string[])
+  format?: ProviderFormat
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  baseUrl?: string
+
+  // Explicit null = "clear the override, use the format default".
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @MaxLength(191)
+  endpointPath?: string | null
+
+  @IsOptional()
+  @IsIn(PROVIDER_AUTH_SCHEMES as unknown as string[])
+  authScheme?: ProviderAuthScheme
+
+
+  @IsOptional()
+  @IsBoolean()
+  supportsReasoning?: boolean
+
+  @IsOptional()
+  @IsBoolean()
+  supportsImage?: boolean
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean
+}
+
+export class CreateProviderDto extends ProviderFieldsDto {
+  @IsString()
+  @MaxLength(64)
+  name!: string
+
+  @IsIn(PROVIDER_FORMATS as unknown as string[])
+  declare format: ProviderFormat
+
+  @IsString()
+  @MaxLength(255)
+  declare baseUrl: string
+}
+
+export class UpdateProviderDto extends ProviderFieldsDto {}
+
+// --- Provider API keys --------------------------------------------------------
+// The key is WRITE-ONLY: it is accepted here, encrypted immediately, and never
+// returned by any endpoint again (responses carry only a masked form).
+export class AddProviderKeyDto {
+  @IsString()
+  @MaxLength(512)
+  key!: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  label?: string
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(999)
+  priority?: number
+}
+
+export class UpdateProviderKeyDto {
+  /** Present = replace the secret in place (keeps id/label/priority). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  key?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  label?: string
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(999)
+  priority?: number
+}
+
 export class UpdateSettingsDto {
   @IsOptional()
   @IsInt()
   @Min(1)
   baselineCreditsPer1M?: number
 
+  // Credit top-up rate: how many credits $1 buys. 0 = top-up unavailable. Capped
+  // so a typo cannot hand out a practically infinite allowance.
   @IsOptional()
   @IsInt()
   @Min(0)
-  topupCentsPer1kCredits?: number
+  @Max(10_000_000)
+  creditsPerDollar?: number
+
+  // Smallest purchase in cents. Floor of 1¢ keeps the KHQR amount payable; the
+  // product default is 100 (= $1).
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1_000_000)
+  minTopupCents?: number
 
   @IsOptional()
   @IsInt()
@@ -339,6 +501,7 @@ export class AdminController {
     private readonly models: ModelsService,
     private readonly settings: AppSettingsService,
     private readonly promo: PromoService,
+    private readonly providers: ProvidersService,
   ) {}
 
   @Get('users')
@@ -468,6 +631,77 @@ export class AdminController {
     })
   }
 
+  // Model access is edited per PLAN here (a checklist), but stored per MODEL in
+  // hosted_models.allowedPlanCodes. PUT replaces the whole set for this plan, in
+  // one transaction — see AdminService.setPlanModels.
+  @Put('plans/:code/models')
+  setPlanModels(@Param('code') code: string, @Body() body: SetPlanModelsDto) {
+    return this.admin.setPlanModels(code, body.modelCodes)
+  }
+
+  // --- Provider registry (admin-managed upstream providers) ---
+  // Single source of truth for gateway routing: wire format, base URL, auth
+  // scheme, and the NAME of the env var holding the key (never the key itself).
+
+  @Get('providers')
+  listProviders() {
+    return this.providers.findAll()
+  }
+
+  @Post('providers')
+  createProvider(@Body() body: CreateProviderDto) {
+    return this.providers.create(body)
+  }
+
+  @Patch('providers/:name')
+  updateProvider(
+    @Param('name') name: string,
+    @Body() body: UpdateProviderDto,
+  ) {
+    return this.providers.update(name, body)
+  }
+
+  @Delete('providers/:name')
+  deleteProvider(@Param('name') name: string) {
+    return this.providers.remove(name)
+  }
+
+  // --- Provider API keys ---
+  // One row per key so each can rotate/cool down independently. Responses are
+  // masked-only: the plaintext is never readable again once saved.
+
+  @Get('providers/:name/keys')
+  listProviderKeys(@Param('name') name: string) {
+    return this.providers.listKeys(name)
+  }
+
+  @Post('providers/:name/keys')
+  addProviderKey(@Param('name') name: string, @Body() body: AddProviderKeyDto) {
+    return this.providers.addKey(name, body)
+  }
+
+  @Patch('providers/:name/keys/:id')
+  updateProviderKey(
+    @Param('name') name: string,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdateProviderKeyDto,
+  ) {
+    // A body carrying `key` means "replace the secret"; anything else is a
+    // metadata edit (label / enabled / priority).
+    if (body.key !== undefined) {
+      return this.providers.replaceKey(name, id, body.key)
+    }
+    return this.providers.updateKey(name, id, body)
+  }
+
+  @Delete('providers/:name/keys/:id')
+  deleteProviderKey(
+    @Param('name') name: string,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.providers.removeKey(name, id)
+  }
+
   // --- Hosted models (reseller catalog) ---
 
   @Get('models')
@@ -536,6 +770,7 @@ export class AdminController {
     PrismaModule,
     PlansModule,
     ModelsModule,
+    ProvidersModule,
     AppSettingsModule,
     PromoModule,
   ],

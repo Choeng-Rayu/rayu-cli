@@ -255,7 +255,7 @@ describe('Ollama Cloud (anthropic-compatible)', () => {
       true,
     )
     // getAPIProvider() 'anthropic' → Anthropic Messages format;
-    // isOpenAICompatibleActive() false → native SDK (createAnthropicCompatibleClient);
+    // isOpenAICompatibleActive() false → native SDK (createAnthropicMessagesClient);
     // isRayuNonAnthropicActive() true → third-party context/thinking gates apply.
     expect(providers.getAPIProvider()).toBe('anthropic')
     expect(providers.isOpenAICompatibleActive()).toBe(false)

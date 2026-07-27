@@ -43,9 +43,18 @@ services:
       DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       RAYU_JWT_SECRET: ${RAYU_JWT_SECRET}
+      # Encrypts provider API keys entered in the admin dashboard before they are
+      # written to MySQL. The gateway needs the identical value to decrypt them.
+      RAYU_PROVIDER_SECRET: ${RAYU_PROVIDER_SECRET}
       RAYU_ACCESS_TTL: '3600'
       RAYU_REFRESH_TTL: '2592000'
       WEB_ORIGIN: ${PUBLIC_SITE_URL}
+      # Hosted catalog (providers + models) is ADMIN-OWNED and is NOT seeded by
+      # default: a fresh deployment starts with an empty catalog and the CLI shows
+      # no hosted models until an admin adds them in the dashboard. Set
+      # SEED_CATALOG=true only to populate the shipped defaults on a brand-new
+      # database. Plans/settings always seed; config audits always run.
+      SEED_CATALOG: ${SEED_CATALOG:-}
       # Bakong (phase 2 — unused in phase 1)
       BAKONG_MERCHANT_ID: ${BAKONG_MERCHANT_ID:-}
       BAKONG_PHONE_NUMBER: ${BAKONG_PHONE_NUMBER:-}
@@ -113,9 +122,15 @@ services:
       DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379
       RAYU_JWT_SECRET: ${RAYU_JWT_SECRET}
-      # Upstream provider keys live ONLY here (never in the DB/CLI/user).
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      # Master key for the ENCRYPTED provider API keys in MySQL. Must be the SAME
+      # value the backend uses (it seals, the gateway opens). The gateway refuses
+      # to start if keys exist and this is missing/wrong.
+      RAYU_PROVIDER_SECRET: ${RAYU_PROVIDER_SECRET}
+      # Provider config AND keys are admin-managed rows in MySQL (dashboard →
+      # Providers): base URL, wire format, auth scheme, enable switch, and one or
+      # more API keys per provider (rotated by priority, with automatic failover).
+      # Adding a provider or rotating a key needs NO redeploy — changes are picked
+      # up within CONFIG_REFRESH_SECONDS.
       # Observability / model-fidelity (optional; safe defaults when unset).
       #   RAYU_ENFORCE_MODEL_FIDELITY=1  -> hard-reject a /v1/proxy request whose
       #     intended model family differs from the routed model (default: log only).
