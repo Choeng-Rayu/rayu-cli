@@ -157,6 +157,9 @@ func trimCacheControl(cc map[string]any) (map[string]any, bool) {
 // to Bedrock's accepted subset. The original map is not mutated — the caller still
 // needs it for logging and billing.
 func bedrockBody(anthropic map[string]any) ([]byte, error) {
+	// Bedrock validates thinking signatures, so a block minted by another provider
+	// (or synthesised from an OpenAI-style reasoning field) is a hard 400 here.
+	anthropic, _ = stripPriorTurnThinking(anthropic)
 	out := make(map[string]any, len(anthropic)+1)
 	for k, v := range anthropic {
 		switch k {

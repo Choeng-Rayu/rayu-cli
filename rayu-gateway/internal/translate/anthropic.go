@@ -12,7 +12,8 @@ import (
 // anthropicPassthrough serves providers that already speak Anthropic Messages
 // (DeepSeek's /anthropic endpoint, LongCat, Ollama Cloud, first-party Anthropic).
 //
-// It deliberately does NOT translate: the request is forwarded as-is and the SSE
+// It deliberately does NOT translate: the request is forwarded as-is (apart from
+// dropping completed turns' thinking blocks — see thinking.go) and the SSE
 // response is relayed BYTE-FOR-BYTE, with usage sniffed off the stream as it
 // passes. That keeps the most-used path at zero marshalling cost and guarantees
 // the client sees exactly what the provider sent — no field can be dropped or
@@ -26,7 +27,10 @@ func (anthropicPassthrough) Format() string { return providercfg.FormatAnthropic
 func (anthropicPassthrough) Stream(
 	ctx context.Context, w http.ResponseWriter, req Request,
 ) (*proxy.Usage, bool, error) {
-	body, err := json.Marshal(req.Anthropic)
+	// Drop completed turns' thinking blocks: their signatures belong to whatever
+	// model answered then, which is not necessarily this one (see thinking.go).
+	anth, _ := stripPriorTurnThinking(req.Anthropic)
+	body, err := json.Marshal(anth)
 	if err != nil {
 		return nil, false, err
 	}
@@ -36,7 +40,8 @@ func (anthropicPassthrough) Stream(
 func (anthropicPassthrough) Complete(
 	ctx context.Context, req Request,
 ) (*proxy.Usage, int, []byte, error) {
-	body, err := json.Marshal(req.Anthropic)
+	anth, _ := stripPriorTurnThinking(req.Anthropic)
+	body, err := json.Marshal(anth)
 	if err != nil {
 		return nil, 0, nil, err
 	}
