@@ -80,10 +80,23 @@ export interface TelegramUpdate {
     caption?: string
     chat: { id: number; username?: string; first_name?: string }
     from?: { username?: string; first_name?: string }
+    /** Set when the user replies to one of our messages (force_reply prompts). */
+    reply_to_message?: { message_id: number }
     /** Photo array — Telegram sends multiple sizes; last element is largest. */
     photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>
     /** Document (file attachment). */
     document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
+    /** Sticker. Animated/video stickers are not still images and are skipped. */
+    sticker?: {
+      file_id: string
+      width: number
+      height: number
+      is_animated?: boolean
+      is_video?: boolean
+      emoji?: string
+    }
+    /** Present on every item of an album; all items share the same id. */
+    media_group_id?: string
   }
   /** Fired when the user taps an inline keyboard button. */
   callback_query?: {
@@ -362,17 +375,32 @@ export async function sendMessageWithInlineKeyboard(
   chatId: number,
   text: string,
   keyboard: InlineKeyboard,
+  parseMode?: 'HTML',
 ): Promise<number> {
-  const result = await callApi(token, 'sendMessage', {
+  const send = (body: Record<string, unknown>) => callApi(token, 'sendMessage', body)
+  const base = {
     chat_id: chatId,
-    text: text.slice(0, MAX_MESSAGE_CHARS),
     reply_markup: { inline_keyboard: keyboard },
-  })
-  return (result as { message_id: number }).message_id
+  }
+  try {
+    const result = await send({
+      ...base,
+      text: text.slice(0, MAX_MESSAGE_CHARS),
+      ...(parseMode ? { parse_mode: parseMode } : {}),
+    })
+    return (result as { message_id: number }).message_id
+  } catch (e) {
+    if (parseMode !== 'HTML' || !isHtmlParseError(e)) throw e
+    // Never lose an interactive prompt (e.g. a permission request) to bad
+    // markup — resend as plain text so the buttons still reach the user.
+    const result = await send({ ...base, text: stripTelegramHtml(text).slice(0, MAX_MESSAGE_CHARS) })
+    return (result as { message_id: number }).message_id
+  }
 }
 
 /**
  * Edit an existing message's text and/or inline keyboard.
+ * Pass an empty `keyboard` array to remove the buttons (e.g. after a decision).
  * Silently ignores "message is not modified" errors (Telegram returns 400 for no-op edits).
  */
 export async function editMessageWithInlineKeyboard(
@@ -381,18 +409,86 @@ export async function editMessageWithInlineKeyboard(
   messageId: number,
   text: string,
   keyboard?: InlineKeyboard,
+  parseMode?: 'HTML',
 ): Promise<void> {
+  const base = {
+    chat_id: chatId,
+    message_id: messageId,
+    ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+  }
   try {
     await callApi(token, 'editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+      ...base,
       text: text.slice(0, MAX_MESSAGE_CHARS),
-      ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+      ...(parseMode ? { parse_mode: parseMode } : {}),
     })
   } catch (e) {
     // Ignore "message is not modified" — not a real error
     if (e instanceof Error && e.message.includes('not modified')) return
+    if (parseMode === 'HTML' && isHtmlParseError(e)) {
+      try {
+        await callApi(token, 'editMessageText', {
+          ...base,
+          text: stripTelegramHtml(text).slice(0, MAX_MESSAGE_CHARS),
+        })
+        return
+      } catch (e2) {
+        if (e2 instanceof Error && e2.message.includes('not modified')) return
+        throw e2
+      }
+    }
     throw e
+  }
+}
+
+/**
+ * Build the sendMessage payload for a force-reply prompt. Split out from the
+ * sender so it can be asserted in tests without a network call.
+ *
+ * `force_reply` makes Telegram focus the reply box and tie the reply to this
+ * message — the inbound update then carries `reply_to_message.message_id`, which
+ * is how an interactive card knows a typed answer belongs to it.
+ */
+export function buildForceReplyBody(
+  chatId: number,
+  text: string,
+  parseMode?: 'HTML',
+  placeholder?: string,
+): Record<string, unknown> {
+  return {
+    chat_id: chatId,
+    text: text.slice(0, MAX_MESSAGE_CHARS),
+    reply_markup: {
+      force_reply: true,
+      // Bot API caps the placeholder at 64 chars.
+      ...(placeholder ? { input_field_placeholder: placeholder.slice(0, 64) } : {}),
+    },
+    ...(parseMode ? { parse_mode: parseMode } : {}),
+  }
+}
+
+/**
+ * Send a message that opens the reply box (force_reply).
+ * Returns the message_id so a caller can match the user's reply back to it.
+ */
+export async function sendMessageWithForceReply(
+  token: string,
+  chatId: number,
+  text: string,
+  parseMode?: 'HTML',
+  placeholder?: string,
+): Promise<number> {
+  const body = buildForceReplyBody(chatId, text, parseMode, placeholder)
+  try {
+    const result = await callApi(token, 'sendMessage', body)
+    return (result as { message_id: number }).message_id
+  } catch (e) {
+    if (parseMode !== 'HTML' || !isHtmlParseError(e)) throw e
+    // Never lose an interactive prompt to bad markup — resend as plain text.
+    const result = await callApi(token, 'sendMessage', {
+      ...buildForceReplyBody(chatId, stripTelegramHtml(text), undefined, placeholder),
+    })
+    return (result as { message_id: number }).message_id
   }
 }
 

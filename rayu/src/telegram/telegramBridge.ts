@@ -22,6 +22,7 @@ import {
   editMessageText,
   getFile,
   getUpdates,
+  isHostedMode,
   sendChatAction,
   sendMessage,
   sendPhoto,
@@ -32,6 +33,7 @@ import {
 import { renderTelegramHtml } from './telegramMarkdown.js'
 import {
   createTelegramPermissionCallbacks,
+  handlePermissionCallback,
   handlePermissionReply,
 } from './telegramPermissions.js'
 import {
@@ -43,6 +45,15 @@ import {
   isConnectSessionActive,
 } from './telegramConnect.js'
 import { StreamingMirror } from './streamingMirror.js'
+import { buildImageQueueCommand, collectAlbumImage } from './telegramMedia.js'
+import {
+  handleQuestionCallback,
+  handleQuestionTextInput,
+} from './telegramQuestions.js'
+import {
+  handlePlanCallback,
+  handlePlanTextInput,
+} from './telegramPlanApproval.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import { enqueue } from '../utils/messageQueueManager.js'
 
@@ -218,6 +229,41 @@ const TELEGRAM_BLOCKED_COMMANDS = new Set([
   'web-setup',
 ])
 
+/**
+ * Download an inbound Telegram file and return it as base64.
+ *
+ * Returns undefined (after telling the user why) when the download can't happen.
+ * Note the hosted-bot case: getFile/downloadFileAsBase64 short-circuit when the
+ * hosted router is installed, because the file URL needs the shared bot token,
+ * which only the backend holds. Say so plainly instead of "could not download".
+ */
+async function fetchInboundImage(
+  token: string,
+  chatId: number,
+  fileId: string,
+  kind: 'photo' | 'file' | 'sticker',
+): Promise<{ base64: string; mediaType: string } | undefined> {
+  if (isHostedMode()) {
+    await sendMessage(
+      token,
+      chatId,
+      `⚠️ Sending a ${kind} isn't supported on the shared Rayu bot yet.\n\nConnect your own bot token via \`/telegram-bot\` in the CLI to send images.`,
+    )
+    return undefined
+  }
+  const filePath = await getFile(token, fileId)
+  if (!filePath) {
+    await sendMessage(token, chatId, `⚠️ Could not download the ${kind}.`)
+    return undefined
+  }
+  const downloaded = await downloadFileAsBase64(token, filePath)
+  if (!downloaded) {
+    await sendMessage(token, chatId, `⚠️ Failed to process the ${kind}.`)
+    return undefined
+  }
+  return downloaded
+}
+
 async function handleUpdate(
   update: TelegramUpdate,
   options: TelegramBridgeOptions,
@@ -235,11 +281,18 @@ async function handleUpdate(
     }
 
     const data = cq.data ?? ''
-    // Route all callbacks through the wizard handler.
-    // handleCallbackQuery always calls answerCallbackQuery first (dismisses
-    // the spinner unconditionally), then returns false for unknown data.
-    // This means adding new callback namespaces (mdl:, etc.) never requires
-    // changes here.
+    // Interactive cards own their namespaces and answer the callback query
+    // themselves; each returns false for data it doesn't recognise.
+    //   q:    — AskUserQuestion interview
+    //   pl:   — plan approval
+    //   perm: — permission decisions
+    // Anything else falls through to the wizard handler, which always calls
+    // answerCallbackQuery first (dismisses the spinner unconditionally) and
+    // returns false for unknown data — so adding further namespaces there
+    // (mdl:, cnx:, …) still requires no change here.
+    if (await handleQuestionCallback(options.token, chatId, cq.id, data)) return
+    if (await handlePlanCallback(options.token, chatId, cq.id, data)) return
+    if (await handlePermissionCallback(options.token, chatId, cq.id, data)) return
     await handleCallbackQuery(options.token, cq.id, chatId, data)
     return
   }
@@ -258,64 +311,101 @@ async function handleUpdate(
 
     // Download the largest photo (last element in the array).
     const largest = message.photo[message.photo.length - 1]!
-    const filePath = await getFile(options.token, largest.file_id)
-    if (!filePath) {
-      await sendMessage(options.token, chatId, '⚠️ Could not download the photo.')
-      return
+    const downloaded = await fetchInboundImage(options.token, chatId, largest.file_id, 'photo')
+    if (!downloaded) return
+
+    const image = {
+      ...downloaded,
+      width: largest.width,
+      height: largest.height,
     }
-    const downloaded = await downloadFileAsBase64(options.token, filePath)
-    if (!downloaded) {
-      await sendMessage(options.token, chatId, '⚠️ Failed to process the photo.')
+
+    // Albums arrive as one update per photo — batch them into a single turn.
+    if (message.media_group_id) {
+      collectAlbumImage({
+        groupId: message.media_group_id,
+        caption: text,
+        image,
+        onFlush: command => {
+          enqueue(command)
+          void sendMessage(options.token, chatId, '📎 Images received — working on it.')
+        },
+      })
       return
     }
 
-    // Enqueue as a message with pasted image content — same format as CLI paste.
-    const caption = text || 'Analyze this image'
-    enqueue({
-      value: caption,
-      mode: 'prompt',
-      pastedContents: {
-        0: {
-          id: 0,
-          type: 'image',
-          content: downloaded.base64,
-          mediaType: downloaded.mediaType,
-          dimensions: { width: largest.width, height: largest.height },
-        },
-      },
-    })
+    const command = buildImageQueueCommand(text, [image])
+    if (!command) return
+    enqueue(command)
+    await sendMessage(options.token, chatId, '📎 Image received — working on it.')
     return
   }
 
-  // ---- Handle document messages (image files sent as documents) ----
-  if (message.document && message.document.mime_type?.startsWith('image/')) {
+  // ---- Handle static stickers (they are ordinary webp images) ----
+  if (message.sticker) {
+    if (chatId !== linkedChatId()) return
+    if (message.sticker.is_animated || message.sticker.is_video) {
+      await sendMessage(
+        options.token,
+        chatId,
+        '⚠️ Animated stickers are not supported. Send a photo or a static sticker.',
+      )
+      return
+    }
+    const downloaded = await fetchInboundImage(
+      options.token,
+      chatId,
+      message.sticker.file_id,
+      'sticker',
+    )
+    if (!downloaded) return
+    const command = buildImageQueueCommand(text, [
+      {
+        ...downloaded,
+        width: message.sticker.width,
+        height: message.sticker.height,
+        filename: 'sticker.webp',
+      },
+    ])
+    if (!command) return
+    enqueue(command)
+    await sendMessage(options.token, chatId, '📎 Sticker received — working on it.')
+    return
+  }
+
+  // ---- Handle document messages (files sent as attachments) ----
+  if (message.document) {
     if (chatId !== linkedChatId()) return
 
-    const filePath = await getFile(options.token, message.document.file_id)
-    if (!filePath) {
-      await sendMessage(options.token, chatId, '⚠️ Could not download the file.')
-      return
-    }
-    const downloaded = await downloadFileAsBase64(options.token, filePath)
-    if (!downloaded) {
-      await sendMessage(options.token, chatId, '⚠️ Failed to process the file.')
+    if (!message.document.mime_type?.startsWith('image/')) {
+      // Previously silent — the user had no idea the file was dropped.
+      await sendMessage(
+        options.token,
+        chatId,
+        `⚠️ Only images can be sent to the terminal right now${
+          message.document.file_name ? ` (${message.document.file_name} was ignored)` : ''
+        }.\n\nFor code or text, paste it in a message instead.`,
+      )
       return
     }
 
-    const caption = text || `Analyze this image${message.document.file_name ? ` (${message.document.file_name})` : ''}`
-    enqueue({
-      value: caption,
-      mode: 'prompt',
-      pastedContents: {
-        0: {
-          id: 0,
-          type: 'image',
-          content: downloaded.base64,
-          mediaType: downloaded.mediaType,
-          filename: message.document.file_name,
-        },
+    const downloaded = await fetchInboundImage(
+      options.token,
+      chatId,
+      message.document.file_id,
+      'file',
+    )
+    if (!downloaded) return
+
+    const command = buildImageQueueCommand(text, [
+      {
+        ...downloaded,
+        ...(message.document.file_name && { filename: message.document.file_name }),
       },
-    })
+    ])
+    if (!command) return
+    enqueue(command)
+    await sendMessage(options.token, chatId, '📎 Image received — working on it.')
     return
   }
 
@@ -360,6 +450,13 @@ async function handleUpdate(
 
   // Only the linked chat drives the CLI.
   if (chatId !== linkedChatId()) return
+
+  // An open interactive card waiting on free text claims the message first, so
+  // an answer, note or plan feedback never leaks into the conversation as a new
+  // turn.
+  const replyTo = message.reply_to_message?.message_id
+  if (await handleQuestionTextInput(chatId, text, replyTo)) return
+  if (await handlePlanTextInput(chatId, text, replyTo)) return
 
   // Permission reply (y/n/always) takes priority.
   if (handlePermissionReply(text)) return

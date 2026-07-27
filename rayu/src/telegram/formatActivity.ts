@@ -2,12 +2,12 @@
  * Render REPL messages into Telegram-friendly HTML.
  *
  * Philosophy: Telegram shows curated, important-only content.
- * - AI text response → full text (HTML-escaped)
- * - Tools            → icon + tool name only (no args, no output)
- * - Bash             → "Running Bash"
+ * - AI text response → Markdown rendered to Telegram HTML (see telegramMarkdown)
+ * - Tools            → icon + bold name + the one field that identifies the target
+ * - Bash             → "🖥️ <b>Bash</b> <code>command</code>"
  * - Agent            → role · model · provider
  * - Tool results     → only shown on error
- * - Thinking         → skipped entirely
+ * - Thinking         → collapsed to a single "💭 Thinking…" line
  *
  * The terminal UI is unchanged — this only affects Telegram output.
  */
@@ -170,17 +170,47 @@ function isAgentTool(name: string): boolean {
 }
 
 /**
+ * Shorten a value to one line for display next to a tool name.
+ * Long file paths keep their tail (the filename is what identifies them).
+ */
+function clipDetail(value: string, max = 72, keepTail = false): string {
+  const oneLine = value.replace(/\s+/g, ' ').trim()
+  if (oneLine.length <= max) return oneLine
+  return keepTail ? `…${oneLine.slice(-(max - 1))}` : `${oneLine.slice(0, max - 1)}…`
+}
+
+/**
+ * The single most useful field of a tool's input — what it acted on.
+ * Shown in monospace after the tool name so a Telegram reader can tell
+ * "📝 Edit src/app.ts" from "📝 Edit README.md" at a glance.
+ */
+function toolTarget(name: string, input: unknown): string {
+  if (!input || typeof input !== 'object') return ''
+  const inp = input as Record<string, unknown>
+  const str = (key: string): string => (typeof inp[key] === 'string' ? (inp[key] as string) : '')
+
+  if (isBashLike(name)) return clipDetail(str('command'), 72)
+
+  const path = str('file_path') || str('path') || str('notebook_path')
+  if (path) return clipDetail(path, 60, true)
+
+  const url = str('url')
+  if (url) return clipDetail(url, 60)
+
+  const pattern = str('pattern') || str('query')
+  if (pattern) return clipDetail(pattern, 60)
+
+  return ''
+}
+
+/**
  * Format a single tool_use block into a highlighted HTML line.
- * Bash       → "🖥️ <b>Running Bash</b>"
+ * Bash       → "🖥️ <b>Bash</b> <code>npm test</code>"
  * Agent      → "🤖 <b>Agent</b> — role: X · model: Y · provider: Z"
- * Other      → "<icon> <b>ToolName</b>"
+ * Other      → "<icon> <b>ToolName</b> <code>target</code>"
  */
 function formatToolUseLine(name: string, input: unknown): string {
   const nameLower = name.toLowerCase()
-
-  if (isBashLike(nameLower)) {
-    return '🖥️ <b>Running Bash</b>'
-  }
 
   if (isAgentTool(nameLower)) {
     const inp = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
@@ -194,9 +224,14 @@ function formatToolUseLine(name: string, input: unknown): string {
   }
 
   const icon = toolIcon(name)
-  const key = name.toLowerCase().replace(/-/g, '_')
-  const displayName = TOOL_DISPLAY_NAMES[key] ?? name.replace(/_/g, ' ')
-  return `${icon} <b>${escapeHtml(displayName)}</b>`
+  const key = nameLower.replace(/-/g, '_')
+  const displayName = isBashLike(nameLower)
+    ? 'Bash'
+    : (TOOL_DISPLAY_NAMES[key] ?? name.replace(/_/g, ' '))
+  const target = toolTarget(nameLower, input)
+  const head = `${icon} <b>${escapeHtml(displayName)}</b>`
+  // <code> can't be nested inside other entities, but it's fine as a sibling.
+  return target ? `${head} <code>${escapeHtml(target)}</code>` : head
 }
 
 /**
@@ -211,10 +246,10 @@ function formatToolUseLine(name: string, input: unknown): string {
  *                      turns where there is no pre-existing streamed message).
  *
  * Output format:
- *   💭                         ← thinking happened (just emoji)
- *   🖥️ <b>Running Bash</b>
- *   📝 <b>Edit</b>
- *   ⚠️ <i>error if any</i>
+ *   💭 <i>Thinking…</i>                        ← thinking happened
+ *   🖥️ <b>Bash</b> <code>npm test</code>
+ *   📝 <b>Edit</b> <code>…/src/app.ts</code>
+ *   ⚠️ <b>Error</b> — <i>error if any</i>
  *
  *   Full AI response text...   ← only when includeText = true
  */
@@ -247,7 +282,7 @@ export function formatActivitySummary(
         case 'tool_result':
           if (isToolResultError(block)) {
             const err = extractErrorLine(block.content)
-            if (err) errorLines.push(`⚠️ <i>${escapeHtml(err)}</i>`)
+            if (err) errorLines.push(`⚠️ <b>Error</b> — <i>${escapeHtml(err)}</i>`)
           }
           break
         case 'text':
@@ -262,7 +297,7 @@ export function formatActivitySummary(
   }
 
   const activityParts: string[] = []
-  if (thinkingFound) activityParts.push('💭')
+  if (thinkingFound) activityParts.push('💭 <i>Thinking…</i>')
   activityParts.push(...toolLines)
   activityParts.push(...errorLines)
 

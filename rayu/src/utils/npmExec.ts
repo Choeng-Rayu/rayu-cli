@@ -1,7 +1,7 @@
 import { spawn, execFileSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'os'
-import { join } from 'path'
+import { join, posix, win32 } from 'path'
 
 // On Windows, npm is installed as npm.cmd (a shell shim), not a directly
 // executable PE binary. execFileSync spawns the file directly and cannot
@@ -152,6 +152,267 @@ export function isLikelyWindowsFileLock(err: unknown): boolean {
 }
 
 export type NpmAction = 'install' | 'uninstall'
+
+/**
+ * A version token we are willing to splice into an npm package spec.
+ *
+ * `rayu update` resolves the target version from the network (`npm view
+ * …@latest version`) and then installs that exact version, so this string
+ * crosses from a remote source into a command line — and on win32
+ * execNpmSync() builds a cmd.exe command string rather than an argv array.
+ * Anything outside the semver character set (digits, letters, `.`, `-`, `+`,
+ * `_`) is rejected rather than quoted, so a malformed or hostile registry
+ * response can never contribute shell metacharacters. Length is capped
+ * because no real published version is anywhere near 64 chars.
+ */
+const SAFE_VERSION_TOKEN = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/
+
+export function isSafeVersionToken(version: string): boolean {
+  return SAFE_VERSION_TOKEN.test(version)
+}
+
+/**
+ * `<package>@<version>` for an exact, immutable install target, or null when
+ * the version is not a shape we trust.
+ *
+ * Installing a pinned version instead of the mutable `@latest` tag is what
+ * makes an update deterministic: `npm view …@latest` and `npm install …@latest`
+ * are two independent resolutions of a tag that can move (or be served from a
+ * 5-minute-stale cached packument — the npm registry sends
+ * `cache-control: public, max-age=300`) between the two calls. When they
+ * disagree, npm installs a version other than the one we just told the user
+ * about, exits 0, and the update silently does nothing.
+ */
+export function buildPinnedSpec(
+  packageName: string,
+  version: string,
+): string | null {
+  if (!isSafeVersionToken(version)) return null
+  return `${packageName}@${version}`
+}
+
+/**
+ * npm's global prefix, read with cwd=homedir so a project-level .npmrc can't
+ * point us at a different prefix than the one a plain `npm install -g` in the
+ * user's shell would use. Returns null if npm can't be run.
+ */
+export function getNpmGlobalPrefix(): string | null {
+  try {
+    const out = execNpmSync(['-g', 'config', 'get', 'prefix'], {
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim()
+    return out.length > 0 && out !== 'undefined' ? out : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Directory npm links global bin shims into. Unix nests them under `bin/`;
+ * on Windows they land directly in the prefix (rayu, rayu.cmd, rayu.ps1).
+ */
+export function getNpmGlobalBinDir(
+  prefix: string,
+  platform: string = process.platform,
+): string {
+  return platform === 'win32' ? prefix : join(prefix, 'bin')
+}
+
+/** Path helpers for a target platform, so tests can exercise win32 on Linux. */
+function pathApiFor(platform: string) {
+  return platform === 'win32' ? win32 : posix
+}
+
+/**
+ * Compare two filesystem paths for equality. Windows paths are
+ * case-insensitive and mix separators, so normalize before comparing;
+ * trailing separators are ignored on both platforms.
+ */
+export function isSamePath(
+  a: string,
+  b: string,
+  platform: string = process.platform,
+): boolean {
+  const api = pathApiFor(platform)
+  const normalize = (p: string) => {
+    let out = api.normalize(p).replace(/[/\\]+$/, '')
+    if (platform === 'win32') out = out.toLowerCase().split(win32.sep).join('/')
+    return out
+  }
+  return normalize(a) === normalize(b)
+}
+
+export type PathLookupOptions = {
+  /** Defaults to process.env.PATH. */
+  pathValue?: string
+  /** Defaults to process.env.PATHEXT (win32 only). */
+  pathExt?: string
+  platform?: string
+  /** Injectable for tests; defaults to fs.existsSync. */
+  exists?: (candidate: string) => boolean
+}
+
+/**
+ * Every launcher named `name` that is reachable on PATH, in PATH order.
+ *
+ * This is a portable `which -a` / `where` that needs no child process, so it
+ * behaves the same on Linux, macOS and Windows (where the shim actually
+ * invoked is `name` + a PATHEXT extension, and `where` isn't available in
+ * every environment). Used to detect the case where the copy of Rayu that the
+ * shell resolves is NOT the copy npm just updated — e.g. a `sudo npm i -g`
+ * install under /usr/local/bin shadowed by (or shadowing) a user-prefix
+ * install under ~/.npm-global/bin. That mismatch is invisible to npm, which
+ * is why an update can report success while `rayu --version` never changes.
+ */
+export function findExecutablesOnPath(
+  name: string,
+  options: PathLookupOptions = {},
+): string[] {
+  const platform = options.platform ?? process.platform
+  const api = pathApiFor(platform)
+  const pathValue = options.pathValue ?? process.env.PATH ?? ''
+  const exists = options.exists ?? existsSync
+  const separator = platform === 'win32' ? ';' : ':'
+
+  const extensions = ['']
+  if (platform === 'win32') {
+    const rawExt =
+      options.pathExt ?? process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD'
+    for (const ext of rawExt.split(';')) {
+      const trimmed = ext.trim()
+      if (trimmed) extensions.push(trimmed.toLowerCase())
+    }
+    // npm also writes an extensionless POSIX-shell shim next to the .cmd one,
+    // and a .ps1 for PowerShell, which is not in the default PATHEXT.
+    if (!extensions.includes('.ps1')) extensions.push('.ps1')
+  }
+
+  const found: string[] = []
+  for (const rawDir of pathValue.split(separator)) {
+    const dir = rawDir.trim()
+    if (!dir) continue
+    for (const ext of extensions) {
+      const candidate = api.join(dir, `${name}${ext}`)
+      if (!exists(candidate)) continue
+      if (found.some(existing => isSamePath(existing, candidate, platform))) {
+        continue
+      }
+      found.push(candidate)
+    }
+  }
+  return found
+}
+
+/**
+ * Explains that the update landed in npm's global prefix but the `rayu` the
+ * shell resolves first comes from somewhere else, so the new version will not
+ * be the one that runs. Pure text so it can be asserted in tests.
+ */
+export function buildShadowedInstallWarning(args: {
+  /** Launcher PATH resolves first. */
+  activePath: string
+  /** npm global bin dir we just installed into. */
+  npmBinDir: string
+  /** Other launchers on PATH, for context. */
+  otherPaths?: string[]
+  platform?: string
+}): string {
+  const platform = args.platform ?? process.platform
+  const isWin = platform === 'win32'
+  const api = pathApiFor(platform)
+  const lines = [
+    'The update was installed into npm\'s global folder:',
+    `  ${args.npmBinDir}`,
+    'but your shell runs a different copy of Rayu first:',
+    `  ${args.activePath}`,
+    '',
+    'That other copy is unchanged, so `rayu` will keep reporting the old',
+    'version. This happens when Rayu was installed twice — typically once',
+    isWin
+      ? 'per-user and once machine-wide (or via a different Node install).'
+      : 'without sudo and once with sudo (root uses /usr/local as its prefix).',
+    '',
+    'Fix it by removing the copy you do not want, then updating again:',
+  ]
+
+  if (isWin) {
+    lines.push(
+      `  1. Delete or rename: ${args.activePath}`,
+      `  2. Make sure ${args.npmBinDir} is on your PATH`,
+      '  3. Open a NEW terminal and run: rayu update',
+    )
+  } else {
+    const activeDir = api.dirname(args.activePath)
+    const needsSudo =
+      activeDir.startsWith('/usr/') || activeDir.startsWith('/opt/')
+    lines.push(
+      `  ${needsSudo ? 'sudo ' : ''}npm uninstall -g ${MACRO.PACKAGE_URL}   # removes ${args.activePath}`,
+      `  hash -r   # or: exec $SHELL -l  (clears the shell's command cache)`,
+      '  rayu update',
+    )
+    if (needsSudo) {
+      lines.push(
+        '',
+        `Run that uninstall with the same account that created ${activeDir}`,
+        '(sudo, if it was installed with sudo) — otherwise npm will remove the',
+        'user-prefix copy you just updated instead.',
+      )
+    }
+  }
+
+  const others = (args.otherPaths ?? []).filter(
+    p => !isSamePath(p, args.activePath, platform),
+  )
+  if (others.length > 0) {
+    lines.push('', 'All rayu launchers found on PATH (first one wins):')
+    for (const p of [args.activePath, ...others]) lines.push(`  ${p}`)
+  }
+
+  return lines.join('\n')
+}
+
+/**
+ * Post-install sanity check: is the launcher PATH resolves the one npm just
+ * wrote? Returns null when everything lines up (or when we can't tell, e.g.
+ * npm is unavailable or PATH has no rayu at all — those are different
+ * problems with their own messaging elsewhere).
+ */
+export function detectShadowedInstall(options: {
+  binaryName?: string
+  platform?: string
+  /** Explicit null means "unknown" (tests / npm unavailable): stay silent. */
+  npmBinDir?: string | null
+  pathLookup?: PathLookupOptions
+} = {}): string | null {
+  const platform = options.platform ?? process.platform
+  const api = pathApiFor(platform)
+  const prefix =
+    'npmBinDir' in options
+      ? options.npmBinDir
+      : getNpmGlobalPrefixBinDir(platform)
+  if (!prefix) return null
+
+  const found = findExecutablesOnPath(options.binaryName ?? 'rayu', {
+    platform,
+    ...options.pathLookup,
+  })
+  const active = found[0]
+  if (!active) return null
+  if (isSamePath(api.dirname(active), prefix, platform)) return null
+
+  return buildShadowedInstallWarning({
+    activePath: active,
+    npmBinDir: prefix,
+    otherPaths: found.slice(1),
+    platform,
+  })
+}
+
+function getNpmGlobalPrefixBinDir(platform: string): string | null {
+  const prefix = getNpmGlobalPrefix()
+  return prefix ? getNpmGlobalBinDir(prefix, platform) : null
+}
 
 /**
  * Platform-correct remediation text for a failed global npm operation.

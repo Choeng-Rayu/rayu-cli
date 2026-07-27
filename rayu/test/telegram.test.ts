@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import { chunkText } from '../src/telegram/telegramApi.js'
+import { chunkText, buildForceReplyBody, setHostedRouter } from '../src/telegram/telegramApi.js'
 import {
   getBotToken,
   getTelegramMode,
@@ -21,7 +21,40 @@ import {
 } from '../src/telegram/telegramConfig.js'
 import { formatFileChangeReview, formatMessage, isFileChangeReviewMessage, toolIcon } from '../src/telegram/formatActivity.js'
 import { renderTelegramHtml, stripTelegramHtml } from '../src/telegram/telegramMarkdown.js'
-import { handlePermissionReply } from '../src/telegram/telegramPermissions.js'
+import { handlePermissionReply, handlePermissionCallback, createTelegramPermissionCallbacks, isInteractionTool, summarizePermissionInput } from '../src/telegram/telegramPermissions.js'
+import {
+  allAnswered,
+  answerQuestion,
+  autoSubmits,
+  buildUpdatedInput,
+  commitMultiSelect,
+  createSession,
+  encodeQ,
+  fitCard,
+  handleQuestionCallback,
+  handleQuestionTextInput,
+  parseQ,
+  parseQuestions,
+  questionKeyboard,
+  renderQuestionCard,
+  resetQuestionSessions,
+  setNote,
+  toggleOption,
+} from '../src/telegram/telegramQuestions.js'
+import {
+  _setImagePasteIdSeed,
+  buildImageQueueCommand,
+  collectAlbumImage,
+  pendingAlbumCount,
+  resetAlbumBuffers,
+} from '../src/telegram/telegramMedia.js'
+import {
+  handlePlanCallback,
+  handlePlanTextInput,
+  planResponseFor,
+  readPlan,
+  resetPlanSessions,
+} from '../src/telegram/telegramPlanApproval.js'
 import {
   buildTelegramCommandAliases,
   toTelegramCommandName,
@@ -488,6 +521,184 @@ describe('handlePermissionReply (always)', () => {
   })
 })
 
+// ---- permission prompts (inline keyboard flow) ----
+// The HostedRouter seam intercepts every Bot API call, so these tests exercise the
+// real send/edit/answer path and assert the emitted payloads without any network.
+describe('telegram permission prompts', () => {
+  interface ApiCall { method: string; params: Record<string, unknown> }
+  let calls: ApiCall[]
+
+  beforeEach(() => {
+    calls = []
+    setHostedRouter({
+      getUpdates: async () => [],
+      botUsername: async () => 'rayu_test_bot',
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return { message_id: 555 }
+      },
+    })
+    // sendRequest reads linkedChatId from config to know where to send.
+    setLinkedChat(4242, 'tester', 'rayu_test_bot')
+  })
+
+  afterEach(() => {
+    setHostedRouter(null)
+  })
+
+  /** Flush the fire-and-forget send inside sendRequest. */
+  const settle = () => new Promise(r => setTimeout(r, 0))
+
+  const lastCall = (method: string) => [...calls].reverse().find(c => c.method === method)
+
+  test('sends a prompt with Allow once / Always allow / Deny buttons', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    cb.sendRequest('req-1', 'Bash', { command: 'rm -rf build' }, 'tu-1', 'Delete the build dir')
+    await settle()
+
+    const sent = lastCall('sendMessage')
+    expect(sent).toBeDefined()
+    expect(sent!.params['chat_id']).toBe(4242)
+    expect(sent!.params['parse_mode']).toBe('HTML')
+
+    const text = String(sent!.params['text'])
+    expect(text).toContain('🔐 <b>Permission required</b>')
+    expect(text).toContain('<b>Bash</b>')
+    expect(text).toContain('<code>rm -rf build</code>')
+    expect(text).toContain('Delete the build dir')
+
+    const keyboard = (sent!.params['reply_markup'] as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }).inline_keyboard
+    const labels = keyboard.flat().map(b => b.text)
+    expect(labels).toEqual(['✅ Allow once', '♾️ Always allow', '⛔ Deny'])
+    expect(keyboard.flat().every(b => b.callback_data.startsWith('perm:'))).toBe(true)
+  })
+
+  test('tapping Allow once resolves the request with allow and no saved rule', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { behavior: string; updatedPermissions?: unknown } | undefined
+    cb.onResponse('req-2', r => { got = r })
+    cb.sendRequest('req-2', 'FileRead', { file_path: '/tmp/a.txt' }, 'tu-2', 'Read a file')
+    await settle()
+
+    const data = ((lastCall('sendMessage')!.params['reply_markup'] as { inline_keyboard: Array<Array<{ callback_data: string }>> })
+      .inline_keyboard.flat()[0]!).callback_data
+    const handled = await handlePermissionCallback('tok', 4242, 'cbq-1', data)
+
+    expect(handled).toBe(true)
+    expect(got?.behavior).toBe('allow')
+    expect(got?.updatedPermissions).toBeUndefined()
+  })
+
+  test('tapping Always allow saves an allow rule for that tool', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { behavior: string; updatedPermissions?: Array<{ rules: Array<{ toolName: string }>; behavior: string }> } | undefined
+    cb.onResponse('req-3', r => { got = r as typeof got })
+    cb.sendRequest('req-3', 'Bash', { command: 'ls' }, 'tu-3', 'List files')
+    await settle()
+
+    const handled = await handlePermissionCallback('tok', 4242, 'cbq-2', 'perm:always:' + currentShortId())
+    expect(handled).toBe(true)
+    expect(got?.behavior).toBe('allow')
+    expect(got?.updatedPermissions?.[0]?.rules[0]?.toolName).toBe('Bash')
+    expect(got?.updatedPermissions?.[0]?.behavior).toBe('allow')
+  })
+
+  test('tapping Deny resolves with deny', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { behavior: string } | undefined
+    cb.onResponse('req-4', r => { got = r })
+    cb.sendRequest('req-4', 'Bash', { command: 'ls' }, 'tu-4', '')
+    await settle()
+
+    await handlePermissionCallback('tok', 4242, 'cbq-3', 'perm:deny:' + currentShortId())
+    expect(got?.behavior).toBe('deny')
+  })
+
+  test('a decision rewrites the prompt and clears the buttons', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    cb.onResponse('req-5', () => {})
+    cb.sendRequest('req-5', 'Bash', { command: 'ls' }, 'tu-5', '')
+    await settle()
+
+    await handlePermissionCallback('tok', 4242, 'cbq-4', 'perm:allow:' + currentShortId())
+
+    const edit = lastCall('editMessageText')
+    expect(edit).toBeDefined()
+    expect(edit!.params['message_id']).toBe(555)
+    expect(String(edit!.params['text'])).toContain('✅ <b>Allowed once</b>')
+    // Empty inline_keyboard removes the buttons so a decision can't be re-submitted.
+    expect(edit!.params['reply_markup']).toEqual({ inline_keyboard: [] })
+  })
+
+  test('answers the callback so the button spinner stops', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    cb.onResponse('req-6', () => {})
+    cb.sendRequest('req-6', 'Bash', { command: 'ls' }, 'tu-6', '')
+    await settle()
+
+    await handlePermissionCallback('tok', 4242, 'cbq-5', 'perm:deny:' + currentShortId())
+    const answer = lastCall('answerCallbackQuery')
+    expect(answer).toBeDefined()
+    expect(answer!.params['callback_query_id']).toBe('cbq-5')
+    expect(String(answer!.params['text'])).toContain('Denied')
+  })
+
+  test('ignores non-permission callback data so the connect wizard still gets it', async () => {
+    expect(await handlePermissionCallback('tok', 4242, 'cbq-6', 'cnx:cancel')).toBe(false)
+  })
+
+  test('reports stale taps as handled instead of resolving anything', async () => {
+    expect(await handlePermissionCallback('tok', 4242, 'cbq-7', 'perm:allow:p9999')).toBe(true)
+    const answer = lastCall('answerCallbackQuery')
+    expect(String(answer!.params['text'])).toContain('no longer pending')
+  })
+
+  test('cancelRequest drops the prompt and later taps do nothing', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let calledTimes = 0
+    cb.onResponse('req-7', () => { calledTimes++ })
+    cb.sendRequest('req-7', 'Bash', { command: 'ls' }, 'tu-7', '')
+    await settle()
+    const shortId = currentShortId()
+
+    cb.cancelRequest('req-7')
+    expect(String(lastCall('editMessageText')!.params['text'])).toContain('Request cancelled')
+
+    await handlePermissionCallback('tok', 4242, 'cbq-8', `perm:allow:${shortId}`)
+    expect(calledTimes).toBe(0)
+  })
+
+  /** Read the short id back out of the most recent prompt's first button. */
+  function currentShortId(): string {
+    const keyboard = (lastCall('sendMessage')!.params['reply_markup'] as { inline_keyboard: Array<Array<{ callback_data: string }>> }).inline_keyboard
+    return keyboard.flat()[0]!.callback_data.split(':')[2]!
+  }
+})
+
+describe('summarizePermissionInput', () => {
+  test('prefers the shell command', () => {
+    expect(summarizePermissionInput('Bash', { command: 'npm test', file_path: '/x' })).toBe('npm test')
+  })
+
+  test('falls back to file path, url, then pattern', () => {
+    expect(summarizePermissionInput('Edit', { file_path: '/a/b.ts' })).toBe('/a/b.ts')
+    expect(summarizePermissionInput('WebFetch', { url: 'https://x.com' })).toBe('https://x.com')
+    expect(summarizePermissionInput('Grep', { pattern: 'TODO' })).toBe('TODO')
+  })
+
+  test('returns empty string when nothing recognizable is present', () => {
+    expect(summarizePermissionInput('Weird', { foo: 1 })).toBe('')
+    expect(summarizePermissionInput('Weird', undefined)).toBe('')
+  })
+
+  test('collapses whitespace and truncates very long values', () => {
+    expect(summarizePermissionInput('Bash', { command: 'a\n  b' })).toBe('a b')
+    const out = summarizePermissionInput('Bash', { command: 'x'.repeat(500) })
+    expect(out.length).toBeLessThanOrEqual(220)
+    expect(out.endsWith('…')).toBe(true)
+  })
+})
+
 // ---- isFileChangeReviewMessage ----
 describe('isFileChangeReviewMessage', () => {
   test('returns true for a valid file change review message', () => {
@@ -726,5 +937,702 @@ describe('isConnectSessionActive', () => {
   test('returns false for chatId with no active session', () => {
     // No session has been started for this chatId
     expect(isConnectSessionActive(12345)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AskUserQuestion over Telegram
+// ---------------------------------------------------------------------------
+
+// The answers are delivered back through `updatedInput.answers` (the same
+// contract the terminal dialog uses), so these tests assert the exact object a
+// tap sequence produces — an empty `answers` map is the bug this flow fixes.
+describe('question callback data codec', () => {
+  test('round-trips an option tap', () => {
+    const data = encodeQ('o', 'k1', 2, 3)
+    expect(data).toBe('q:o:k1:2:3')
+    expect(parseQ(data)).toEqual({ action: 'o', sid: 'k1', qIndex: 2, optIndex: 3 })
+  })
+
+  test('ignores other namespaces', () => {
+    expect(parseQ('perm:allow:p1')).toBeUndefined()
+    expect(parseQ('cnx:p:openai')).toBeUndefined()
+    expect(parseQ('mdl:mi:3')).toBeUndefined()
+  })
+
+  test('rejects unknown actions and malformed indices', () => {
+    expect(parseQ('q:zz:k1')).toBeUndefined()
+    expect(parseQ('q:o:k1:abc')).toBeUndefined()
+    expect(parseQ('q:o')).toBeUndefined()
+  })
+
+  test('stays well under the 64-byte callback_data cap', () => {
+    const session = createSession({
+      requestId: 'r',
+      chatId: 1,
+      token: 't',
+      input: {
+        questions: [
+          {
+            question: 'A very long question '.repeat(20),
+            header: 'Header',
+            options: [
+              { label: 'Option one with a long label', description: 'x'.repeat(300) },
+              { label: 'Option two', description: 'y' },
+            ],
+          },
+        ],
+      },
+    })
+    for (const row of questionKeyboard(session)) {
+      for (const button of row) {
+        expect(Buffer.byteLength(button.callback_data, 'utf8')).toBeLessThanOrEqual(64)
+      }
+    }
+  })
+})
+
+describe('question session state machine', () => {
+  const twoQuestions = {
+    questions: [
+      {
+        question: 'Which database?',
+        header: 'DB',
+        options: [
+          { label: 'Postgres', description: 'Relational', preview: 'CREATE TABLE …' },
+          { label: 'SQLite', description: 'Embedded' },
+        ],
+      },
+      {
+        question: 'Which extras?',
+        header: 'Extras',
+        multiSelect: true,
+        options: [
+          { label: 'Auth', description: 'Login' },
+          { label: 'Billing', description: 'Payments' },
+          { label: 'Search', description: 'Full text' },
+        ],
+      },
+    ],
+    metadata: { source: 'test' },
+  }
+
+  test('parseQuestions survives malformed input', () => {
+    expect(parseQuestions(undefined)).toEqual([])
+    expect(parseQuestions({ questions: 'nope' })).toEqual([])
+    expect(parseQuestions({ questions: [null, 42, { question: '' }] })).toEqual([])
+    const ok = parseQuestions({ questions: [{ question: 'Q', options: [{ label: 'A' }, 'bad'] }] })
+    expect(ok).toHaveLength(1)
+    expect(ok[0]!.options).toEqual([{ label: 'A' }])
+  })
+
+  test('builds the updatedInput the tool expects', () => {
+    const session = createSession({
+      requestId: 'r1',
+      chatId: 1,
+      token: 't',
+      input: twoQuestions as unknown as Record<string, unknown>,
+    })
+
+    // Q1: pick an option that carries a preview, and attach a note.
+    answerQuestion(session, 0, 'Postgres')
+    setNote(session, 0, '  needs pgvector  ')
+    expect(session.index).toBe(1)
+
+    // Q2: multi-select two options, then commit.
+    toggleOption(session, 1, 0)
+    toggleOption(session, 1, 2)
+    toggleOption(session, 1, 2) // toggling twice clears it
+    toggleOption(session, 1, 1)
+    expect(commitMultiSelect(session, 1)).toBe(true)
+
+    expect(allAnswered(session)).toBe(true)
+    expect(buildUpdatedInput(session)).toEqual({
+      ...twoQuestions,
+      answers: {
+        'Which database?': 'Postgres',
+        'Which extras?': 'Auth, Billing',
+      },
+      annotations: {
+        'Which database?': { preview: 'CREATE TABLE …', notes: 'needs pgvector' },
+      },
+    })
+  })
+
+  test('commit is refused while nothing is selected', () => {
+    const session = createSession({
+      requestId: 'r2',
+      chatId: 1,
+      token: 't',
+      input: twoQuestions as unknown as Record<string, unknown>,
+    })
+    expect(commitMultiSelect(session, 1)).toBe(false)
+  })
+
+  test('a single single-select question submits without a review step', () => {
+    const one = createSession({
+      requestId: 'r3',
+      chatId: 1,
+      token: 't',
+      input: { questions: [{ question: 'Ship it?', options: [{ label: 'Yes' }, { label: 'No' }] }] },
+    })
+    expect(autoSubmits(one)).toBe(true)
+
+    const many = createSession({
+      requestId: 'r4',
+      chatId: 1,
+      token: 't',
+      input: twoQuestions as unknown as Record<string, unknown>,
+    })
+    expect(autoSubmits(many)).toBe(false)
+  })
+})
+
+describe('question card rendering', () => {
+  const session = () =>
+    createSession({
+      requestId: 'rr',
+      chatId: 1,
+      token: 't',
+      input: {
+        questions: [
+          {
+            question: 'Which database?',
+            header: 'DB',
+            options: [
+              { label: 'Postgres', description: 'Relational', preview: 'CREATE TABLE x;' },
+              { label: 'SQLite', description: 'Embedded' },
+            ],
+          },
+        ],
+      },
+    })
+
+  test('shows the question, options and previews', () => {
+    const text = renderQuestionCard(session())
+    expect(text).toContain('<b>Which database?</b>')
+    expect(text).toContain('<b>Postgres</b>')
+    expect(text).toContain('<i>Relational</i>')
+    expect(text).toContain('<pre>CREATE TABLE x;</pre>')
+  })
+
+  test('escapes untrusted question text', () => {
+    const hostile = createSession({
+      requestId: 'rh',
+      chatId: 1,
+      token: 't',
+      input: {
+        questions: [{ question: 'Use <script> & tags?', options: [{ label: '<b>bold</b>' }] }],
+      },
+    })
+    const text = renderQuestionCard(hostile)
+    expect(text).toContain('&lt;script&gt; &amp; tags?')
+    expect(text).not.toContain('<script>')
+  })
+
+  test('multi-select renders checkboxes and a Done button', () => {
+    const multi = createSession({
+      requestId: 'rm',
+      chatId: 1,
+      token: 't',
+      input: {
+        questions: [
+          {
+            question: 'Pick features',
+            multiSelect: true,
+            options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }, { label: 'D' }],
+          },
+        ],
+      },
+    })
+    toggleOption(multi, 0, 1)
+    const text = renderQuestionCard(multi)
+    expect((text.match(/☐/g) ?? []).length).toBe(3)
+    expect((text.match(/☑/g) ?? []).length).toBe(1)
+    const labels = questionKeyboard(multi).flat().map(b => b.text)
+    expect(labels).toContain('✅ Done')
+    expect(labels.some(l => l.startsWith('☑'))).toBe(true)
+  })
+
+  test('clamps an oversized card to Telegram’s limit', () => {
+    const huge = createSession({
+      requestId: 'rg',
+      chatId: 1,
+      token: 't',
+      input: {
+        questions: [
+          {
+            question: 'Q'.repeat(400),
+            options: [
+              { label: 'A', description: 'd'.repeat(3000), preview: 'p'.repeat(3000) },
+              { label: 'B', description: 'e'.repeat(3000), preview: 'q'.repeat(3000) },
+            ],
+          },
+        ],
+      },
+    })
+    expect(fitCard(huge).length).toBeLessThanOrEqual(4096)
+  })
+})
+
+// End-to-end through the HostedRouter seam: real send/edit/answer payloads, no network.
+describe('question flow over the bridge', () => {
+  interface ApiCall { method: string; params: Record<string, unknown> }
+  let calls: ApiCall[]
+  let nextMessageId: number
+
+  beforeEach(() => {
+    calls = []
+    nextMessageId = 900
+    resetQuestionSessions()
+    setHostedRouter({
+      getUpdates: async () => [],
+      botUsername: async () => 'rayu_test_bot',
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return { message_id: ++nextMessageId }
+      },
+    })
+    setLinkedChat(4242, 'tester', 'rayu_test_bot')
+  })
+
+  afterEach(() => {
+    setHostedRouter(null)
+    resetQuestionSessions()
+  })
+
+  const settle = () => new Promise(r => setTimeout(r, 0))
+  const lastCall = (method: string) => [...calls].reverse().find(c => c.method === method)
+  const keyboardOf = (call: ApiCall) =>
+    (call.params['reply_markup'] as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> })
+      .inline_keyboard
+
+  const singleQuestion = {
+    questions: [
+      {
+        question: 'Which database should we use?',
+        header: 'DB',
+        options: [
+          { label: 'Postgres', description: 'Relational' },
+          { label: 'SQLite', description: 'Embedded' },
+        ],
+      },
+    ],
+  }
+
+  test('renders the real question instead of a bare permission card', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    cb.sendRequest('q-1', 'AskUserQuestion', singleQuestion, 'tu-1', 'Answer questions?')
+    await settle()
+
+    const sent = lastCall('sendMessage')!
+    const text = String(sent.params['text'])
+    expect(text).toContain('Which database should we use?')
+    expect(text).toContain('Postgres')
+    expect(text).not.toContain('🔐 <b>Permission required</b>')
+
+    const labels = keyboardOf(sent).flat().map(b => b.text)
+    expect(labels.some(l => l.includes('Postgres'))).toBe(true)
+    expect(labels).toContain('⛔ Cancel')
+    // Never offer a persistent rule for a form.
+    expect(labels.some(l => l.includes('Always'))).toBe(false)
+  })
+
+  test('tapping an option returns the answers in updatedInput', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { behavior: string; updatedInput?: Record<string, unknown> } | undefined
+    cb.onResponse('q-2', r => { got = r })
+    cb.sendRequest('q-2', 'AskUserQuestion', singleQuestion, 'tu-2', 'Answer questions?')
+    await settle()
+
+    const data = keyboardOf(lastCall('sendMessage')!).flat()[0]!.callback_data
+    expect(await handleQuestionCallback('tok', 4242, 'cbq-1', data)).toBe(true)
+
+    expect(got?.behavior).toBe('allow')
+    expect(got?.updatedInput?.['answers']).toEqual({
+      'Which database should we use?': 'Postgres',
+    })
+    // The card is closed and the buttons removed.
+    const edit = lastCall('editMessageText')!
+    expect(String(edit.params['text'])).toContain('Answers sent')
+    expect((edit.params['reply_markup'] as { inline_keyboard: unknown[] }).inline_keyboard).toEqual([])
+  })
+
+  test('multi-question interview walks to a review card before submitting', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { behavior: string; updatedInput?: Record<string, unknown> } | undefined
+    cb.onResponse('q-3', r => { got = r })
+    cb.sendRequest(
+      'q-3',
+      'AskUserQuestion',
+      {
+        questions: [
+          { question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'SQLite' }] },
+          {
+            question: 'Which extras?',
+            multiSelect: true,
+            options: [{ label: 'Auth' }, { label: 'Billing' }],
+          },
+        ],
+      },
+      'tu-3',
+      'Answer questions?',
+    )
+    await settle()
+
+    const sid = keyboardOf(lastCall('sendMessage')!).flat()[0]!.callback_data.split(':')[2]!
+    await handleQuestionCallback('tok', 4242, 'c1', `q:o:${sid}:0:0`) // Postgres
+    expect(got).toBeUndefined() // still interviewing
+
+    await handleQuestionCallback('tok', 4242, 'c2', `q:o:${sid}:1:0`) // toggle Auth
+    await handleQuestionCallback('tok', 4242, 'c3', `q:d:${sid}:1`) // Done
+    expect(got).toBeUndefined()
+
+    const review = String(lastCall('editMessageText')!.params['text'])
+    expect(review).toContain('Review your answers')
+    expect(keyboardOf(lastCall('editMessageText')!).flat().map(b => b.text)).toContain('✅ Submit')
+
+    await handleQuestionCallback('tok', 4242, 'c4', `q:s:${sid}`)
+    expect(got?.updatedInput?.['answers']).toEqual({
+      'Which database?': 'Postgres',
+      'Which extras?': 'Auth',
+    })
+  })
+
+  test('“Other” opens a force_reply and the typed answer is consumed', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { behavior: string; updatedInput?: Record<string, unknown> } | undefined
+    cb.onResponse('q-4', r => { got = r })
+    cb.sendRequest('q-4', 'AskUserQuestion', singleQuestion, 'tu-4', 'Answer questions?')
+    await settle()
+
+    const sid = keyboardOf(lastCall('sendMessage')!).flat()[0]!.callback_data.split(':')[2]!
+    await handleQuestionCallback('tok', 4242, 'c1', `q:x:${sid}:0`)
+
+    const prompt = lastCall('sendMessage')!
+    expect((prompt.params['reply_markup'] as { force_reply?: boolean }).force_reply).toBe(true)
+    const promptId = 902 // second sendMessage of this test
+
+    const consumed = await handleQuestionTextInput(4242, 'DuckDB please', promptId)
+    expect(consumed).toBe(true)
+    expect(got?.updatedInput?.['answers']).toEqual({
+      'Which database should we use?': 'DuckDB please',
+    })
+  })
+
+  test('a note is attached as an annotation', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { updatedInput?: Record<string, unknown> } | undefined
+    cb.onResponse('q-5', r => { got = r })
+    cb.sendRequest('q-5', 'AskUserQuestion', singleQuestion, 'tu-5', 'Answer questions?')
+    await settle()
+
+    const sid = keyboardOf(lastCall('sendMessage')!).flat()[0]!.callback_data.split(':')[2]!
+    await handleQuestionCallback('tok', 4242, 'c1', `q:n:${sid}:0`)
+    await handleQuestionTextInput(4242, 'must run on ARM', 902)
+    await handleQuestionCallback('tok', 4242, 'c2', `q:o:${sid}:0:1`) // SQLite
+
+    expect(got?.updatedInput?.['annotations']).toEqual({
+      'Which database should we use?': { notes: 'must run on ARM' },
+    })
+  })
+
+  test('unrelated text is left alone when nothing is awaiting input', async () => {
+    expect(await handleQuestionTextInput(4242, 'what is the weather', undefined)).toBe(false)
+  })
+
+  test('Cancel declines the tool', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { behavior: string; message?: string } | undefined
+    cb.onResponse('q-6', r => { got = r })
+    cb.sendRequest('q-6', 'AskUserQuestion', singleQuestion, 'tu-6', 'Answer questions?')
+    await settle()
+
+    const sid = keyboardOf(lastCall('sendMessage')!).flat()[0]!.callback_data.split(':')[2]!
+    await handleQuestionCallback('tok', 4242, 'c1', `q:c:${sid}`)
+
+    expect(got?.behavior).toBe('deny')
+    expect(got?.message).toContain('declined')
+  })
+
+  test('a stale card reports itself instead of resolving anything', async () => {
+    expect(await handleQuestionCallback('tok', 4242, 'c1', 'q:o:k999:0:0')).toBe(true)
+    const answered = lastCall('answerCallbackQuery')!
+    expect(String(answered.params['text'])).toContain('no longer active')
+  })
+
+  test('cancelRequest closes the card without answering the tool', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let called = false
+    cb.onResponse('q-7', () => { called = true })
+    cb.sendRequest('q-7', 'AskUserQuestion', singleQuestion, 'tu-7', 'Answer questions?')
+    await settle()
+
+    cb.cancelRequest('q-7')
+    await settle()
+
+    expect(called).toBe(false)
+    expect(String(lastCall('editMessageText')!.params['text'])).toContain('Answered in the terminal')
+    // The session is gone, so a later tap can't revive it.
+    expect(await handleQuestionTextInput(4242, 'late answer', undefined)).toBe(false)
+  })
+
+  test('an empty question list falls back to the generic permission card', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    cb.sendRequest('q-8', 'AskUserQuestion', { questions: [] }, 'tu-8', 'Answer questions?')
+    await settle()
+
+    const text = String(lastCall('sendMessage')!.params['text'])
+    expect(text).toContain('🔐 <b>Permission required</b>')
+    // Still no "Always allow" — a persisted rule would auto-submit empty answers.
+    const labels = keyboardOf(lastCall('sendMessage')!).flat().map(b => b.text)
+    expect(labels).toEqual(['✅ Allow once', '⛔ Deny'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Interaction-tool hardening
+// ---------------------------------------------------------------------------
+
+describe('interaction tool guard', () => {
+  test('classifies the form-like tools', () => {
+    expect(isInteractionTool('AskUserQuestion')).toBe(true)
+    expect(isInteractionTool('ExitPlanMode')).toBe(true)
+    expect(isInteractionTool('ReviewArtifact')).toBe(true)
+    expect(isInteractionTool('Bash')).toBe(false)
+  })
+})
+
+describe('handlePermissionReply resolves one request at a time', () => {
+  let calls: Array<{ method: string; params: Record<string, unknown> }>
+
+  beforeEach(() => {
+    calls = []
+    setHostedRouter({
+      getUpdates: async () => [],
+      botUsername: async () => 'rayu_test_bot',
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return { message_id: 777 }
+      },
+    })
+    setLinkedChat(4242, 'tester', 'rayu_test_bot')
+    // Earlier suites leave records that were never tapped. "Oldest" is global
+    // state, so drain them first (with the router installed, so no network).
+    while (handlePermissionReply('n')) {
+      /* drain */
+    }
+    calls = []
+  })
+
+  afterEach(() => {
+    setHostedRouter(null)
+  })
+
+  test('a typed "y" approves only the oldest pending request', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    const seen: string[] = []
+    cb.onResponse('t-1', () => seen.push('first'))
+    cb.sendRequest('t-1', 'Bash', { command: 'ls' }, 'tu-1', '')
+    cb.onResponse('t-2', () => seen.push('second'))
+    cb.sendRequest('t-2', 'Bash', { command: 'pwd' }, 'tu-2', '')
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(handlePermissionReply('y')).toBe(true)
+    expect(seen).toEqual(['first'])
+
+    expect(handlePermissionReply('y')).toBe(true)
+    expect(seen).toEqual(['first', 'second'])
+
+    expect(handlePermissionReply('y')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Telegram → terminal image relay
+// ---------------------------------------------------------------------------
+
+describe('buildImageQueueCommand', () => {
+  beforeEach(() => {
+    _setImagePasteIdSeed(1000)
+  })
+
+  test('assigns unique non-zero ids and references them in the text', () => {
+    const cmd = buildImageQueueCommand('look at these', [
+      { base64: 'AAA', mediaType: 'image/jpeg', width: 800, height: 600 },
+      { base64: 'BBB', mediaType: 'image/png', width: 100, height: 50 },
+    ])!
+
+    const ids = Object.keys(cmd.pastedContents!).map(Number)
+    expect(ids).toEqual([1001, 1002])
+    expect(ids.every(id => id !== 0)).toBe(true)
+    expect(cmd.value).toBe('look at these\n[Image #1001] [Image #1002]')
+    expect(cmd.mode).toBe('prompt')
+  })
+
+  test('uses the ImageDimensions shape the renderer and model expect', () => {
+    const cmd = buildImageQueueCommand('', [
+      { base64: 'AAA', mediaType: 'image/jpeg', width: 800, height: 600 },
+    ])!
+    expect(cmd.pastedContents![1001]!.dimensions).toEqual({
+      originalWidth: 800,
+      originalHeight: 600,
+    })
+    expect(String(cmd.value).startsWith('Analyze this image')).toBe(true)
+  })
+
+  test('keeps the filename for documents and skips empty payloads', () => {
+    const cmd = buildImageQueueCommand('', [
+      { base64: 'AAA', mediaType: 'image/png', filename: 'diagram.png' },
+      { base64: '', mediaType: 'image/png' },
+    ])!
+    expect(Object.keys(cmd.pastedContents!)).toHaveLength(1)
+    expect(cmd.pastedContents![1001]!.filename).toBe('diagram.png')
+    expect(cmd.pastedContents![1001]!.dimensions).toBeUndefined()
+    expect(buildImageQueueCommand('', [])).toBeUndefined()
+  })
+})
+
+describe('album buffering', () => {
+  beforeEach(() => {
+    resetAlbumBuffers()
+    _setImagePasteIdSeed(2000)
+  })
+
+  afterEach(() => {
+    resetAlbumBuffers()
+  })
+
+  test('an album becomes one turn carrying every image and the single caption', async () => {
+    const flushed: Array<{ value: string | unknown; pastedContents?: Record<number, unknown> }> = []
+    const image = (n: string) => ({ base64: n, mediaType: 'image/jpeg', width: 10, height: 10 })
+
+    collectAlbumImage({ groupId: 'g1', caption: 'review these', image: image('A'), flushMs: 5, onFlush: c => flushed.push(c) })
+    collectAlbumImage({ groupId: 'g1', caption: '', image: image('B'), flushMs: 5, onFlush: c => flushed.push(c) })
+    collectAlbumImage({ groupId: 'g1', caption: '', image: image('C'), flushMs: 5, onFlush: c => flushed.push(c) })
+    expect(pendingAlbumCount()).toBe(1)
+
+    await new Promise(r => setTimeout(r, 30))
+
+    expect(flushed).toHaveLength(1)
+    expect(Object.keys(flushed[0]!.pastedContents!)).toHaveLength(3)
+    expect(String(flushed[0]!.value)).toBe('review these\n[Image #2001] [Image #2002] [Image #2003]')
+    expect(pendingAlbumCount()).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ExitPlanMode card
+// ---------------------------------------------------------------------------
+
+describe('plan approval card', () => {
+  interface ApiCall { method: string; params: Record<string, unknown> }
+  let calls: ApiCall[]
+  let nextMessageId: number
+
+  beforeEach(() => {
+    calls = []
+    nextMessageId = 500
+    resetPlanSessions()
+    setHostedRouter({
+      getUpdates: async () => [],
+      botUsername: async () => 'rayu_test_bot',
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return { message_id: ++nextMessageId }
+      },
+    })
+    setLinkedChat(4242, 'tester', 'rayu_test_bot')
+  })
+
+  afterEach(() => {
+    setHostedRouter(null)
+    resetPlanSessions()
+  })
+
+  const settle = () => new Promise(r => setTimeout(r, 0))
+  const lastCall = (method: string) => [...calls].reverse().find(c => c.method === method)
+
+  test('reads the plan defensively', () => {
+    expect(readPlan({ plan: '## Steps' })).toBe('## Steps')
+    expect(readPlan({})).toBe('')
+    expect(readPlan(undefined)).toBe('')
+  })
+
+  test('renders the plan as Telegram HTML with three choices', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    cb.sendRequest('p-1', 'ExitPlanMode', { plan: '## Steps\n\n- **one**\n- two' }, 'tu-1', 'Approve plan?')
+    await settle()
+
+    const sent = lastCall('sendMessage')!
+    const text = String(sent.params['text'])
+    expect(text).toContain('Plan ready for review')
+    expect(text).toContain('<b>Steps</b>')
+    expect(text).toContain('<b>one</b>')
+
+    const labels = (sent.params['reply_markup'] as { inline_keyboard: Array<Array<{ text: string }>> })
+      .inline_keyboard.flat().map(b => b.text)
+    expect(labels).toEqual(['✅ Approve', '⚡ Approve + auto-accept edits', '✏️ Keep planning'])
+  })
+
+  test('approve + auto-accept edits sets the session permission mode', () => {
+    expect(planResponseFor('a')).toEqual({ behavior: 'allow' })
+    expect(planResponseFor('e')).toEqual({
+      behavior: 'allow',
+      updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
+    })
+  })
+
+  test('keep planning returns the typed feedback as the denial message', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { behavior: string; message?: string } | undefined
+    cb.onResponse('p-2', r => { got = r })
+    cb.sendRequest('p-2', 'ExitPlanMode', { plan: 'do the thing' }, 'tu-2', 'Approve plan?')
+    await settle()
+
+    const sid = String(
+      (lastCall('sendMessage')!.params['reply_markup'] as { inline_keyboard: Array<Array<{ callback_data: string }>> })
+        .inline_keyboard.flat()[0]!.callback_data,
+    ).split(':')[2]
+    await handlePlanCallback('tok', 4242, 'c1', `pl:k:${sid}`)
+
+    const prompt = lastCall('sendMessage')!
+    expect((prompt.params['reply_markup'] as { force_reply?: boolean }).force_reply).toBe(true)
+
+    expect(await handlePlanTextInput(4242, 'split step 2 in half', 502)).toBe(true)
+    expect(got?.behavior).toBe('deny')
+    expect(got?.message).toBe('split step 2 in half')
+  })
+
+  test('a plan-less request falls back to the generic permission card', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    cb.sendRequest('p-3', 'ExitPlanMode', {}, 'tu-3', 'Approve plan?')
+    await settle()
+    expect(String(lastCall('sendMessage')!.params['text'])).toContain('🔐 <b>Permission required</b>')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// force_reply payload
+// ---------------------------------------------------------------------------
+
+describe('buildForceReplyBody', () => {
+  test('asks Telegram to open the reply box', () => {
+    const body = buildForceReplyBody(42, 'Answer this', 'HTML', 'Type your answer')
+    expect(body['chat_id']).toBe(42)
+    expect(body['parse_mode']).toBe('HTML')
+    expect(body['reply_markup']).toEqual({
+      force_reply: true,
+      input_field_placeholder: 'Type your answer',
+    })
+  })
+
+  test('clamps the text and the placeholder', () => {
+    const body = buildForceReplyBody(1, 'x'.repeat(5000), undefined, 'p'.repeat(200))
+    expect(String(body['text']).length).toBe(4096)
+    expect(body['parse_mode']).toBeUndefined()
+    expect(
+      (body['reply_markup'] as { input_field_placeholder: string }).input_field_placeholder.length,
+    ).toBe(64)
   })
 })
