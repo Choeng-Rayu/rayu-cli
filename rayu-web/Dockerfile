@@ -3,11 +3,14 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Install with NODE_ENV=development so npm includes devDependencies
-# (typescript, @types/*, etc.) needed for the build step.
+# (typescript, @types/*, etc.) needed for the build step. `--include=dev` is
+# belt-and-braces: npm omits devDependencies whenever NODE_ENV=production, and a
+# hosting platform can inject that into the build environment, which fails the
+# build with a confusing "command not found".
 ENV NODE_ENV=development
 
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm install --include=dev
 
 COPY . .
 

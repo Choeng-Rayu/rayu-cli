@@ -2,6 +2,17 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+# The BUILD needs devDependencies (@nestjs/cli provides `nest`, typescript, …).
+#
+# npm omits devDependencies whenever NODE_ENV=production, and a hosting platform
+# may inject that into the build environment (Coolify does, for any variable
+# marked "available at buildtime"). The build then fails with `sh: nest: not
+# found` (exit 127) — a confusing failure whose cause is nowhere in this file.
+# NODE_ENV is pinned to development for this stage AND `--include=dev` is passed
+# explicitly, so neither an injected ENV nor an injected build ARG can strip the
+# tools the build needs. Only the runner stage is production.
+ENV NODE_ENV=development
+
 # Tolerate a flaky/slow build-host network: retry transient npm-registry fetch
 # failures (ECONNRESET/ETIMEDOUT/socket hang up) with backoff instead of failing
 # the whole image build on a single blip. Applies to every npm call in this stage.
@@ -15,12 +26,14 @@ COPY package.json package-lock.json ./
 # Use npm ci + a persistent BuildKit npm cache. Retry up to 3 times, and fail
 # loudly if all retries are exhausted (the old loop could continue silently).
 RUN --mount=type=cache,target=/root/.npm \
-    for i in 1 2 3; do npm ci --no-audit --no-fund && exit 0 || sleep 10; done; false
+    for i in 1 2 3; do npm ci --include=dev --no-audit --no-fund && exit 0 || sleep 10; done; false
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY prisma ./prisma
 COPY src ./src
-# build = `prisma generate && nest build`
-RUN npm run build
+# build = `prisma generate && nest build`. NODE_ENV is forced here too: an
+# injected `ENV NODE_ENV=production` can appear AFTER the line above (the platform
+# adds its own instructions), and nest/tsc must not see production.
+RUN NODE_ENV=development npm run build
 
 # ---- Runner: production deps + generated Prisma client ----
 FROM node:20-alpine AS runner
