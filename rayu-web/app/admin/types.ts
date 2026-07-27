@@ -155,6 +155,7 @@ export const PROVIDER_FORMATS = [
   'openai_chat',
   'openai_responses',
   'genai',
+  'bedrock_anthropic',
 ] as const
 export type ProviderFormat = (typeof PROVIDER_FORMATS)[number]
 
@@ -167,6 +168,7 @@ export const PROVIDER_FORMAT_LABELS: Record<ProviderFormat, string> = {
   openai_chat: 'OpenAI compatible (chat/completions)',
   openai_responses: 'OpenAI Responses',
   genai: 'Google GenAI (Gemini)',
+  bedrock_anthropic: 'AWS Bedrock (Anthropic on bedrock-runtime)',
 }
 
 /**
@@ -236,11 +238,23 @@ export type ProviderTestClassification =
   | 'rate_limited'
   | 'upstream_error'
 
+/**
+ * Which stage of the upstream handshake succeeded. `null` = never reached, so it
+ * cannot be judged (e.g. the key when the host did not answer at all). This is
+ * what turns "something is wrong" into "one field is wrong".
+ */
+export interface ProviderTestChecks {
+  reachable: boolean | null
+  keyAccepted: boolean | null
+  modelAccepted: boolean | null
+}
+
 /** Result of POST /v1/_provider-test on the gateway (a real, unbilled request). */
 export interface ProviderTestResult {
   ok: boolean
   classification: ProviderTestClassification
   message: string
+  checks: ProviderTestChecks
   suggestion?: string
   httpStatus?: number
   latencyMs: number

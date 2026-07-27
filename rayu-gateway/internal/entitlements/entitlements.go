@@ -102,6 +102,15 @@ func New(
 // Keys exposes the live key registry (rotation + health).
 func (c *Cache) Keys() *providerkeys.Registry { return c.keys }
 
+// Reload refreshes the config snapshot NOW instead of waiting for the ticker.
+//
+// The request path must never call this — it is several database queries, and
+// the whole point of the 30s snapshot is that a request reads memory. It exists
+// for ADMIN actions that need to see their own write immediately: a key or model
+// saved a second ago is not in the snapshot yet, so "save then test" would
+// otherwise fail for up to the refresh interval and look like a broken feature.
+func (c *Cache) Reload(ctx context.Context) error { return c.reload(ctx) }
+
 // openKey turns a stored row into a usable key. A key that cannot be decrypted is
 // kept but marked INVALID rather than dropped: an operator needs to see "this key
 // can't be decrypted — is RAYU_PROVIDER_SECRET the same value as the backend's?"

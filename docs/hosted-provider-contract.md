@@ -49,6 +49,44 @@ cap and made the command fail. Current CLI builds additionally refuse that
 fallback on the hosted path, so an older gateway degrades to a local estimate
 instead of spending credits.
 
+### AWS Bedrock (`bedrock_anthropic`)
+
+Bedrock speaks Anthropic Messages but not at an Anthropic-shaped endpoint, which
+is why it is its own format rather than a `anthropic_messages` provider. All three
+differences were verified against the live API:
+
+| | Bedrock |
+|---|---|
+| URL | `POST {baseUrl}/model/{model}/invoke` — the model id is in the **path** (`{model}` is substituted with the model's `upstreamModelId`) |
+| Streaming URL | the same path with `/invoke-with-response-stream` |
+| Body | must include `anthropic_version: "bedrock-2023-05-31"`; must **omit** `model` and `stream` (either is a 400 "Extra inputs are not permitted") |
+| Streaming response | `application/vnd.amazon.eventstream` frames, each carrying a base64 Anthropic event — decoded and re-emitted as SSE by the gateway |
+| Auth | Bedrock API key as `Authorization: Bearer` → authScheme `bearer` |
+
+Admin settings that work:
+
+```
+baseUrl      https://bedrock-runtime.us-east-1.amazonaws.com
+endpointPath /model/{model}/invoke
+authScheme   bearer
+format       bedrock_anthropic
+model id     us.anthropic.claude-sonnet-4-6      (an INFERENCE PROFILE id)
+```
+
+Two traps worth knowing, because both fail in ways that look like a typo:
+
+- **The model id must be an inference profile**, not a foundation model id. A bare
+  `anthropic.claude-sonnet-4-6` is refused with *"Invocation of model ID … with
+  on-demand throughput isn't supported"*. Prefix it with the region scope
+  (`us.` / `global.`). Ids are not uniform: Sonnet 4.6 is
+  `us.anthropic.claude-sonnet-4-6` while Opus 4.6 is
+  `us.anthropic.claude-opus-4-6-v1`.
+- **`bedrock-mantle.<region>.api.aws` is a different endpoint.** It serves only the
+  OpenAI Chat Completions API, has no `/anthropic/...` path at all, and Claude
+  models explicitly refuse `/v1/chat/completions`. Pointing an
+  `anthropic_messages` provider at it answers *"The model '…' does not exist"* for
+  **every** model id, which reads as a bad model name.
+
 ### Retired endpoint
 
 `POST {RAYU_GATEWAY}/v1/chat/completions` is **retired** and answers
@@ -64,6 +102,7 @@ translates Anthropic Messages to/from that format:
 | Provider format      | Upstream shape                                        |
 | -------------------- | ----------------------------------------------------- |
 | `anthropic_messages` | Anthropic Messages (relayed byte-for-byte, no translation) |
+| `bedrock_anthropic`  | AWS Bedrock's Anthropic surface (see below)            |
 | `openai_chat`        | OpenAI-compatible `POST /v1/chat/completions`         |
 | `openai_responses`   | OpenAI `POST /v1/responses`                           |
 | `genai`              | Google Gemini `…/v1beta/models/{model}:streamGenerateContent` |

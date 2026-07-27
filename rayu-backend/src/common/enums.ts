@@ -42,6 +42,11 @@ export const PROVIDER_FORMATS = [
   'openai_chat',
   'openai_responses',
   'genai',
+  // AWS Bedrock's Anthropic surface: same message format, but the model id is in
+  // the URL path (/model/{model}/invoke), the body needs anthropic_version and
+  // must omit model/stream, and streaming is AWS event-stream. See the gateway's
+  // internal/translate/bedrock.go.
+  'bedrock_anthropic',
 ] as const
 export type ProviderFormat = (typeof PROVIDER_FORMATS)[number]
 

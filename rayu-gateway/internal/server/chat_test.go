@@ -106,6 +106,11 @@ type fakeEnt struct {
 	// health recorded during a request survives to the assertions.
 	reg     *providerkeys.Registry
 	regOnce sync.Once
+	// onReload stands in for a config refresh reading newer database rows, and
+	// reloads counts how often an admin path asked for one (it must never happen
+	// on the request path).
+	onReload func(*fakeEnt)
+	reloads  int
 	// disabledProviders forces a provider row's kill switch off in the resolved
 	// route, without the test having to restate the whole row.
 	disabledProviders map[string]bool
@@ -120,6 +125,16 @@ func (f *fakeEnt) Resolve(context.Context, int64) (entitlements.Entitlement, err
 }
 func (f *fakeEnt) Settings() store.AppSettings { return f.settings }
 func (f *fakeEnt) Invalidate(int64)            {}
+
+// Reload records the call and applies the test's onReload hook, standing in for
+// the config refresh picking up rows written since the last snapshot.
+func (f *fakeEnt) Reload(context.Context) error {
+	f.reloads++
+	if f.onReload != nil {
+		f.onReload(f)
+	}
+	return nil
+}
 
 // Models is the whole catalog. The harness has no separate catalog, so the
 // entitlement's models stand in — plus any extra ones a test declares for the

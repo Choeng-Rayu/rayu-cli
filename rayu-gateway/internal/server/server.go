@@ -61,6 +61,9 @@ type entSource interface {
 	// Models is the whole hosted catalog, not one user's allowed subset: the admin
 	// provider test must be able to exercise a model no plan can use yet.
 	Models() []store.HostedModel
+	// Reload refreshes the config snapshot immediately. ADMIN paths only: the
+	// snapshot exists precisely so a request never queries the database.
+	Reload(ctx context.Context) error
 }
 
 // Server holds the gateway dependencies shared across handlers.

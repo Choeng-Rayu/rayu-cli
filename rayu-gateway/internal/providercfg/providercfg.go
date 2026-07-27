@@ -32,7 +32,19 @@ const (
 	FormatOpenAIChat        = "openai_chat"
 	FormatOpenAIResponses   = "openai_responses"
 	FormatGenAI             = "genai"
+	// FormatBedrockAnthropic is AWS Bedrock's Anthropic surface. It speaks
+	// Anthropic Messages, but three things make it its own format rather than a
+	// variant of anthropic_messages: the model id lives in the URL PATH
+	// (/model/{model}/invoke), the body must carry anthropic_version and must NOT
+	// carry "model" or "stream", and streaming responses are AWS event-stream
+	// frames instead of SSE.
+	FormatBedrockAnthropic = "bedrock_anthropic"
 )
+
+// ModelPlaceholder is the token an endpoint path may use to say "the upstream
+// model id goes here" (Bedrock's per-model invoke URL). It is substituted at
+// request time, path-escaped.
+const ModelPlaceholder = "{model}"
 
 // Auth schemes, matching the backend's PROVIDER_AUTH_SCHEMES.
 const (
@@ -52,6 +64,10 @@ func DefaultEndpointPath(format string) string {
 		return "/v1/chat/completions"
 	case FormatOpenAIResponses:
 		return "/v1/responses"
+	case FormatBedrockAnthropic:
+		// Bedrock's non-streaming invoke path. The adapter swaps the suffix for
+		// invoke-with-response-stream when the client asked to stream.
+		return "/model/" + ModelPlaceholder + "/invoke"
 	default:
 		return ""
 	}
@@ -60,7 +76,8 @@ func DefaultEndpointPath(format string) string {
 // KnownFormat reports whether the gateway understands a provider's format.
 func KnownFormat(format string) bool {
 	switch format {
-	case FormatAnthropicMessages, FormatOpenAIChat, FormatOpenAIResponses, FormatGenAI:
+	case FormatAnthropicMessages, FormatOpenAIChat, FormatOpenAIResponses, FormatGenAI,
+		FormatBedrockAnthropic:
 		return true
 	}
 	return false
@@ -106,6 +123,23 @@ func (r Route) Endpoint() string {
 	path := r.EndpointPath
 	if path == "" {
 		path = DefaultEndpointPath(r.Format)
+	}
+	return r.URL(path)
+}
+
+// EndpointFor is Endpoint with the {model} placeholder resolved, for formats
+// whose URL carries the model id (Bedrock). A path without the placeholder is
+// returned unchanged, so every other format is unaffected.
+func (r Route) EndpointFor(upstreamModelID string) string {
+	path := r.EndpointPath
+	if path == "" {
+		path = DefaultEndpointPath(r.Format)
+	}
+	if strings.Contains(path, ModelPlaceholder) {
+		// PathEscape, not QueryEscape: this is a path segment. Bedrock ids contain
+		// dots and colons, which are legal unescaped, but an admin typo must not be
+		// able to inject an extra path segment.
+		path = strings.ReplaceAll(path, ModelPlaceholder, url.PathEscape(upstreamModelID))
 	}
 	return r.URL(path)
 }

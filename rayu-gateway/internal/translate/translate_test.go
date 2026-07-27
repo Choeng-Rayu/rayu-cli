@@ -45,6 +45,7 @@ func TestForKnownAndUnknownFormats(t *testing.T) {
 		providercfg.FormatOpenAIChat,
 		providercfg.FormatOpenAIResponses,
 		providercfg.FormatGenAI,
+		providercfg.FormatBedrockAnthropic,
 	} {
 		a, err := For(format)
 		if err != nil {
@@ -58,8 +59,8 @@ func TestForKnownAndUnknownFormats(t *testing.T) {
 			t.Errorf("providercfg does not accept %s", format)
 		}
 	}
-	if len(Formats()) != 4 {
-		t.Errorf("Formats()=%v want exactly the 4 supported wire formats", Formats())
+	if len(Formats()) != 5 {
+		t.Errorf("Formats()=%v want exactly the 5 supported wire formats", Formats())
 	}
 	_, err := For("grpc_magic")
 	var unsupported ErrUnsupportedFormat

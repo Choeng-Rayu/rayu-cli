@@ -63,10 +63,28 @@ type providerTestRequest struct {
 	APIKeyID int64 `json:"apiKeyId"`
 }
 
+// providerTestChecks reports which STAGE of the handshake succeeded. A single
+// classification says what broke; this says what worked, which is what an admin
+// actually needs: "the endpoint answered and took my key, only the model id was
+// refused" points at one field, whereas a bare failure invites re-checking the
+// key, the URL, and the format all at once.
+//
+// nil = not reached / not determinable (the key cannot be judged when the host
+// never answered) and serializes as null.
+type providerTestChecks struct {
+	// Reachable: the base URL + endpoint path produced an HTTP response.
+	Reachable *bool `json:"reachable"`
+	// KeyAccepted: the upstream did not reject the credential (no 401/403).
+	KeyAccepted *bool `json:"keyAccepted"`
+	// ModelAccepted: the upstream recognised the model id.
+	ModelAccepted *bool `json:"modelAccepted"`
+}
+
 type providerTestResult struct {
-	OK             bool   `json:"ok"`
-	Classification string `json:"classification"`
-	Message        string `json:"message"`
+	OK             bool               `json:"ok"`
+	Classification string             `json:"classification"`
+	Message        string             `json:"message"`
+	Checks         providerTestChecks `json:"checks"`
 	// Suggestion is a concrete next step when one can be inferred (e.g. the
 	// nearest model id the provider is already configured with).
 	Suggestion string `json:"suggestion,omitempty"`
@@ -164,11 +182,24 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 		result.Classification = testBadBaseURL
 		result.Message = pr.Err.Error()
 		result.Suggestion = "Fix the provider's base URL / endpoint path, then test again."
+		// Nothing was attempted, so only "not reachable" is known.
+		result.Checks = providerTestChecks{Reachable: boolPtr(false)}
 		httpx.WriteJSON(w, http.StatusOK, result)
 		return
 	}
 
+	// The admin has just SAVED this key/model in the dashboard, and the config
+	// snapshot only refreshes every CONFIG_REFRESH_SECONDS — so a first lookup miss
+	// usually means "newer than the snapshot", not "does not exist". Refresh once
+	// and retry, otherwise "Add key & test" fails for up to 30 seconds and looks
+	// like the feature is broken (it did).
 	model, err := s.testModel(body.ProviderID, body.ModelCode)
+	if err != nil {
+		if rerr := s.ent.Reload(r.Context()); rerr != nil {
+			log.Printf("provider test: config reload failed: %v", rerr)
+		}
+		model, err = s.testModel(body.ProviderID, body.ModelCode)
+	}
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -177,6 +208,12 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 	result.UpstreamModelID = model.UpstreamModelID
 
 	key, err := s.testKey(body.ProviderID, body.APIKeyID)
+	if err != nil {
+		if rerr := s.ent.Reload(r.Context()); rerr != nil {
+			log.Printf("provider test: config reload failed: %v", rerr)
+		}
+		key, err = s.testKey(body.ProviderID, body.APIKeyID)
+	}
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -221,6 +258,7 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 	classification, message := classifyProviderTest(status, respBody, err)
 	result.Classification = classification
 	result.OK = classification == testOK
+	result.Checks = checksFor(classification, status, err)
 	// Redact defensively: an upstream error body can echo the request, and some
 	// providers include the presented credential in it.
 	result.Message = redactSecret(message, key.Secret)
@@ -236,6 +274,32 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 	log.Printf("provider test: admin=%d provider=%q model=%q key=#%d result=%s http=%d latency=%dms",
 		claims.UserID, pr.Route.Name, model.Code, key.ID, classification, status, result.LatencyMs)
 	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// checksFor derives the per-stage checklist from what the upstream actually did.
+func checksFor(classification string, status int, err error) providerTestChecks {
+	if err != nil {
+		// No HTTP response at all: the key and the model were never judged.
+		return providerTestChecks{Reachable: boolPtr(false)}
+	}
+	c := providerTestChecks{Reachable: boolPtr(true)}
+	switch classification {
+	case testBadAPIKey:
+		// The endpoint answered, so it exists; the credential is what it refused.
+		c.KeyAccepted = boolPtr(false)
+	case testUnknownModel:
+		c.KeyAccepted = boolPtr(true)
+		c.ModelAccepted = boolPtr(false)
+	case testOK:
+		c.KeyAccepted = boolPtr(true)
+		c.ModelAccepted = boolPtr(true)
+	case testRateLimited, testFormatMismatch:
+		// Throttling and a wrong response shape both prove the credential passed.
+		c.KeyAccepted = boolPtr(true)
+	}
+	return c
 }
 
 // testModel resolves which model to exercise: the requested one, or the
@@ -404,10 +468,19 @@ func (s *Server) suggestModelID(providerID int64, attempted string) string {
 	}
 	// Only suggest a genuinely similar id; an unrelated model is noise.
 	if best != "" && bestDist <= maxInt(3, len(attempted)/3) {
-		return "Did you mean \"" + best + "\"? Model ids must match the provider's own catalog exactly."
+		return "Did you mean \"" + best + "\"? Model ids must match the provider's own catalog exactly. " +
+			endpointDoubtHint
 	}
-	return "Check the exact model id in the provider's documentation — it must match their catalog exactly."
+	return "Check the exact model id in the provider's documentation — it must match their catalog exactly. " +
+		endpointDoubtHint
 }
+
+// endpointDoubtHint is the second thing to suspect after a model id, and the one
+// admins never think of: an endpoint that is not this provider's Anthropic Messages
+// URL answers "no such model" for EVERY id, so the failure looks like a typo no
+// matter what is typed.
+const endpointDoubtHint = "If every model id you try is rejected, the base URL / endpoint path is " +
+	"probably not this provider's Messages endpoint — check the Connection section."
 
 // editDistance is Levenshtein distance, used only for the typo suggestion above.
 func editDistance(a, b string) int {

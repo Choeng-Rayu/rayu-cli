@@ -21,6 +21,7 @@ import {
   ProviderFormat,
   ProviderHealth,
   ProviderKeyView,
+  ProviderTestChecks,
   ProviderTestResult,
 } from '../types'
 
@@ -62,6 +63,8 @@ const FORMAT_DEFAULTS: Record<
   openai_chat: { endpointPath: '/v1/chat/completions', authScheme: 'bearer' },
   openai_responses: { endpointPath: '/v1/responses', authScheme: 'bearer' },
   genai: { endpointPath: null, authScheme: 'x_goog_api_key' },
+  // {model} is replaced with the model's own id by the gateway at request time.
+  bedrock_anthropic: { endpointPath: '/model/{model}/invoke', authScheme: 'bearer' },
 }
 
 interface ModelDraft {
@@ -126,6 +129,35 @@ function codeFromModelId(modelId: string): string {
     .slice(0, 64)
 }
 
+/**
+ * What a provider must actually satisfy to be routable, per wire format.
+ *
+ * This exists because the failure it prevents is expensive and silent: an
+ * endpoint that is not the provider's Messages/Completions URL answers "no such
+ * model" for EVERY model id, so an admin spends their time editing model ids that
+ * were never the problem. Stating the required shape up front — and the known
+ * cases that CANNOT be expressed — is cheaper than any error message.
+ */
+const FORMAT_REQUIREMENTS: Record<ProviderFormat, string> = {
+  anthropic_messages:
+    'One fixed URL that accepts an Anthropic Messages POST, with the model in the request BODY ' +
+    '(e.g. https://api.deepseek.com + /anthropic/v1/messages). Providers whose Anthropic endpoint ' +
+    'puts the model in the PATH — notably AWS Bedrock (/model/{id}/invoke) — cannot be used with ' +
+    'this format.',
+  openai_chat:
+    'An OpenAI-compatible POST /v1/chat/completions. Model ids are exactly as that endpoint\u2019s ' +
+    'GET /v1/models lists them.',
+  openai_responses: 'An OpenAI Responses API POST /v1/responses.',
+  genai:
+    'Google GenAI. The adapter builds a per-model URL from the base URL, so leave the endpoint path blank.',
+  bedrock_anthropic:
+    'AWS Bedrock, e.g. base URL https://bedrock-runtime.us-east-1.amazonaws.com with path ' +
+    '/model/{model}/invoke and auth "bearer" (a Bedrock API key). {model} is replaced with the ' +
+    'model\u2019s id, which must be an INFERENCE PROFILE id such as us.anthropic.claude-sonnet-4-6 — ' +
+    'a bare foundation id is refused with \u201Con-demand throughput isn\u2019t supported\u201D. ' +
+    'Note bedrock-mantle is a different, OpenAI-only endpoint and does not serve Claude.',
+}
+
 export default function ProvidersPage() {
   const { apiFetch, token } = useAdmin()
   const [providers, setProviders] = useState<Provider[]>([])
@@ -148,6 +180,12 @@ export default function ProvidersPage() {
   const [delProvider, setDelProvider] = useState<Provider | null>(null)
   const [delKey, setDelKey] = useState<{ provider: Provider; key: ProviderKeyView } | null>(null)
   const [delModel, setDelModel] = useState<HostedModel | null>(null)
+  // The result of the LAST test, shown as a modal. A test is a deliberate act
+  // with a real upstream call behind it, and its answer is several facts
+  // (classification + which stage failed + the exact config that was used) —
+  // easy to miss as a line of small text under a button, which is where admins
+  // were missing it.
+  const [testModal, setTestModal] = useState<ProviderTestResult | null>(null)
 
   const reload = useCallback(async () => {
     const [pRes, mRes] = await Promise.all([apiFetch('/admin/providers'), apiFetch('/admin/models')])
@@ -237,11 +275,25 @@ export default function ProvidersPage() {
       })
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: string; message?: string }
-        say(subject, `Test failed: ${err.error ?? err.message ?? res.status}`)
+        const detail = err.error ?? err.message ?? `HTTP ${res.status}`
+        say(subject, `Test failed: ${detail}`)
+        // The gateway refused to even run the test (not admin, unknown provider,
+        // rate limited, …). That is still a result the admin needs to see.
+        setTestModal({
+          ok: false,
+          classification: 'upstream_error',
+          message: `The gateway did not run the test: ${detail}`,
+          checks: { reachable: null, keyAccepted: null, modelAccepted: null },
+          latencyMs: 0,
+          providerName: '',
+          format: '',
+          endpoint: '',
+        })
         return null
       }
       const result = (await res.json()) as ProviderTestResult
       setTests((t) => ({ ...t, [subject]: result }))
+      setTestModal(result)
       say(subject, '')
       return result
     } catch {
@@ -486,6 +538,26 @@ export default function ProvidersPage() {
                 </div>
               )}
 
+              {/* Why a provider is switched off is not obvious from a badge: the
+                  Add-provider flow deliberately leaves it disabled until a model
+                  test passes, which otherwise reads as "the provider is broken". */}
+              {!p.enabled && (
+                <div
+                  style={{
+                    marginTop: '0.5rem',
+                    fontSize: '0.78rem',
+                    padding: '0.45rem 0.6rem',
+                    borderRadius: 6,
+                    border: '1px solid rgba(255,189,46,0.35)',
+                    background: 'rgba(255,189,46,0.06)',
+                  }}
+                >
+                  Disabled — users cannot see its models. New providers start disabled and are
+                  switched on automatically once a model test passes; you can also tick{' '}
+                  <strong>enabled</strong> above and save.
+                </div>
+              )}
+
               {/* Connection details — collapsed, because they are set once */}
               {open && (
                 <div style={{ marginTop: '0.9rem' }}>
@@ -540,6 +612,10 @@ export default function ProvidersPage() {
                       image input by default for new models
                     </label>
                   </div>
+                  <p style={{ fontSize: '0.75rem', opacity: 0.5, margin: '0.6rem 0 0' }}>
+                    <strong>{PROVIDER_FORMAT_LABELS[p.format]} needs:</strong>{' '}
+                    {FORMAT_REQUIREMENTS[p.format]}
+                  </p>
                   <div style={{ marginTop: '0.8rem', display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
                     <button className="btn-primary" disabled={busy[`prov:${p.name}`]} onClick={() => saveProvider(p)}>
                       {busy[`prov:${p.name}`] ? 'Saving…' : 'Save connection'}
@@ -835,6 +911,8 @@ export default function ProvidersPage() {
         />
       </div>
 
+      <TestResultDialog result={testModal} onClose={() => setTestModal(null)} />
+
       <ConfirmDialog
         open={!!delProvider}
         title="Delete provider?"
@@ -1045,8 +1123,11 @@ function AddProviderWizard({
               </select>
             </Field>
           </div>
-          <p style={{ fontSize: '0.78rem', opacity: 0.5, marginBottom: 0 }}>
+          <p style={{ fontSize: '0.78rem', opacity: 0.55, marginBottom: 0 }}>
             Base URL must be https to a public host — the provider key is sent to it.
+            <br />
+            <strong>{PROVIDER_FORMAT_LABELS[draft.format]} needs:</strong>{' '}
+            {FORMAT_REQUIREMENTS[draft.format]}
           </p>
           <div style={{ marginTop: '0.8rem', display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
             <button className="btn-primary" disabled={!draft.name || !draft.baseUrl || working} onClick={createProvider}>
@@ -1435,9 +1516,126 @@ function TestLine({
       <strong>{result.ok ? 'OK' : result.classification.replace(/_/g, ' ')}</strong>
       {` · ${result.latencyMs}ms`}
       {!compact && result.message ? ` — ${result.message}` : ''}
+      {/* What WORKED, not just what failed: this is what narrows a broken
+          provider to a single field instead of re-checking the URL, the key and
+          the format all at once. */}
+      <StageChecks checks={result.checks} />
       {result.suggestion && (
         <div style={{ opacity: 0.8, color: 'inherit' }}>{result.suggestion}</div>
       )}
+    </div>
+  )
+}
+
+/**
+ * The outcome of a Test, as a modal.
+ *
+ * A test is a deliberate act that makes a real upstream call, and its answer is
+ * several facts at once: pass/fail, which stage failed, what to change, and — the
+ * part that was missing — the EXACT configuration that produced it. Showing the
+ * config back is what turns "unknown model" into "…and here is the URL it was
+ * sent to", which is how a wrong endpoint gets noticed instead of being mistaken
+ * for a wrong model id.
+ */
+function TestResultDialog({
+  result,
+  onClose,
+}: {
+  result: ProviderTestResult | null
+  onClose: () => void
+}) {
+  if (!result) return null
+  const tone = result.ok ? 'var(--green)' : 'var(--red)'
+  const rows: Array<[string, string]> = [
+    ['Provider', result.providerName || '—'],
+    ['Wire format', result.format || '—'],
+    ['URL called', result.endpoint || '—'],
+    ['Model (Rayu code)', result.modelCode || '—'],
+    ['Model id sent upstream', result.upstreamModelId || '—'],
+    ['API key', result.maskedKey ? `${result.maskedKey} (#${result.keyId})` : '—'],
+    ['HTTP status', result.httpStatus ? String(result.httpStatus) : '—'],
+    ['Latency', `${result.latencyMs} ms`],
+  ]
+  return (
+    <div className="dialog-overlay" onClick={onClose}>
+      <div className="dialog" style={{ maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ marginTop: 0, color: tone }}>
+          {result.ok ? 'Test passed' : `Test failed — ${result.classification.replace(/_/g, ' ')}`}
+        </h3>
+
+        <div style={{ margin: '0.5rem 0 0.9rem' }}>
+          <StageChecks checks={result.checks} />
+        </div>
+
+        {result.message && (
+          <p style={{ fontSize: '0.86rem', lineHeight: 1.6, margin: '0 0 0.6rem' }}>{result.message}</p>
+        )}
+        {result.suggestion && (
+          <p
+            style={{
+              fontSize: '0.85rem',
+              lineHeight: 1.6,
+              margin: '0 0 0.9rem',
+              padding: '0.5rem 0.65rem',
+              borderRadius: 6,
+              border: '1px solid rgba(255,189,46,0.35)',
+              background: 'rgba(255,189,46,0.06)',
+            }}
+          >
+            {result.suggestion}
+          </p>
+        )}
+
+        <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.06em', opacity: 0.45, marginBottom: '0.35rem' }}>
+          Configuration used
+        </div>
+        <table style={{ marginTop: 0, fontSize: '0.8rem' }}>
+          <tbody>
+            {rows.map(([k, v]) => (
+              <tr key={k}>
+                <td style={{ opacity: 0.6, whiteSpace: 'nowrap' }}>{k}</td>
+                <td style={{ fontFamily: 'DM Mono, monospace', wordBreak: 'break-all' }}>{v}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <p style={{ fontSize: '0.75rem', opacity: 0.45, marginTop: '0.8rem', marginBottom: 0 }}>
+          The test sent one 1-token request through the same adapter and key rotation as production. It charged
+          no credits and used no daily turn.
+        </p>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
+          <button className="btn-primary" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Reachable / key accepted / model accepted, as the gateway observed them. */
+function StageChecks({ checks }: { checks?: ProviderTestChecks }) {
+  if (!checks) return null
+  const stages: Array<[string, boolean | null]> = [
+    ['endpoint reachable', checks.reachable],
+    ['key accepted', checks.keyAccepted],
+    ['model id accepted', checks.modelAccepted],
+  ]
+  // A stage that was never reached says nothing useful, so it renders as "—"
+  // rather than as a failure an admin would go and "fix".
+  return (
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 2, opacity: 0.95 }}>
+      {stages.map(([label, state]) => (
+        <span
+          key={label}
+          style={{ color: state === true ? 'var(--green)' : state === false ? 'var(--red)' : 'inherit', opacity: state === null ? 0.5 : 1 }}
+          title={state === null ? 'not reached — nothing to conclude' : undefined}
+        >
+          {state === true ? '✓' : state === false ? '✕' : '—'} {label}
+        </span>
+      ))}
     </div>
   )
 }

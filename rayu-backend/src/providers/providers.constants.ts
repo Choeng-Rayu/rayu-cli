@@ -20,6 +20,11 @@ export const FORMAT_DEFAULTS: Record<
   openai_chat: { endpointPath: '/v1/chat/completions', authScheme: 'bearer' },
   openai_responses: { endpointPath: '/v1/responses', authScheme: 'bearer' },
   genai: { endpointPath: null, authScheme: 'x_goog_api_key' },
+  // {model} is substituted with the model's upstreamModelId by the gateway.
+  bedrock_anthropic: {
+    endpointPath: '/model/{model}/invoke',
+    authScheme: 'bearer',
+  },
 }
 
 export interface ProviderSeed {

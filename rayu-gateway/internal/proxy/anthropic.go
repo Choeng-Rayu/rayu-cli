@@ -73,7 +73,60 @@ func parseAnthropicUsageLine(line []byte) (u anthropicUsageJSON, hasInput, hasOu
 	if !bytes.HasPrefix(s, []byte("data:")) {
 		return
 	}
-	payload := bytes.TrimSpace(s[len("data:"):])
+	return parseAnthropicEventUsage(bytes.TrimSpace(s[len("data:"):]))
+}
+
+// AnthropicUsageAccumulator collects usage across the events of one Anthropic
+// stream. Anthropic splits it: `message_start` carries the input buckets,
+// `message_delta` carries the cumulative output.
+//
+// Exported because not every Anthropic stream arrives as SSE — Bedrock delivers
+// the same events inside AWS event-stream frames, and billing must be identical
+// for both, which means one implementation.
+type AnthropicUsageAccumulator struct {
+	acc  anthropicUsageJSON
+	seen bool
+}
+
+// Observe feeds one event body (the JSON that would follow `data:`).
+func (a *AnthropicUsageAccumulator) Observe(eventJSON []byte) {
+	u, hasIn, hasOut := parseAnthropicEventUsage(eventJSON)
+	if !hasIn && !hasOut {
+		return
+	}
+	a.seen = true
+	if hasIn {
+		a.acc.InputTokens = u.InputTokens
+		a.acc.CacheReadInputTokens = u.CacheReadInputTokens
+		a.acc.CacheCreationInputTokens = u.CacheCreationInputTokens
+	}
+	if hasOut {
+		a.acc.OutputTokens = u.OutputTokens // cumulative; latest wins
+	}
+}
+
+// Usage returns the accumulated usage, or nil when the stream reported none (so
+// the caller can tell "no usage" from "zero tokens").
+func (a *AnthropicUsageAccumulator) Usage() *Usage {
+	if !a.seen {
+		return nil
+	}
+	return a.acc.toUsage()
+}
+
+// UsageFromAnthropicBody parses usage from a NON-streaming Anthropic response
+// body, for adapters that read the body themselves.
+func UsageFromAnthropicBody(body []byte) *Usage {
+	var out struct {
+		Usage *anthropicUsageJSON `json:"usage"`
+	}
+	if json.Unmarshal(body, &out) != nil || out.Usage == nil {
+		return nil
+	}
+	return out.Usage.toUsage()
+}
+
+func parseAnthropicEventUsage(payload []byte) (u anthropicUsageJSON, hasInput, hasOutput bool) {
 	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
 		return
 	}

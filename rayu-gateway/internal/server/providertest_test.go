@@ -336,6 +336,159 @@ func TestProviderTestCanTargetAnUnusableKey(t *testing.T) {
 	}
 }
 
+// A failure tells an admin what broke; the checklist tells them what WORKED,
+// which is what narrows a misconfiguration to one field. The Bedrock case that
+// prompted this: every model id was rejected, so it looked like a bad key or a
+// bad model name, when in fact the endpoint answered and accepted the key and
+// only the model id was refused.
+func TestProviderTestReportsWhichStageSucceeded(t *testing.T) {
+	cases := []struct {
+		name                              string
+		handler                           http.HandlerFunc
+		reachable, keyAccepted, modelSeen *bool
+	}{
+		{
+			name: "success: everything passed",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"pong"}]}`)
+			},
+			reachable: boolPtr(true), keyAccepted: boolPtr(true), modelSeen: boolPtr(true),
+		},
+		{
+			name: "unknown model: endpoint and key are fine",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"error":{"message":"The model 'x' does not exist"}}`)
+			},
+			reachable: boolPtr(true), keyAccepted: boolPtr(true), modelSeen: boolPtr(false),
+		},
+		{
+			name: "rejected key: the endpoint still exists",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			// The model was never judged, so it stays unknown (null).
+			reachable: boolPtr(true), keyAccepted: boolPtr(false), modelSeen: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, done := providerTestHarness(t, tc.handler, liveKey())
+			defer done()
+			_, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"longcat-2"}`)
+			assertCheck(t, "reachable", res.Checks.Reachable, tc.reachable)
+			assertCheck(t, "keyAccepted", res.Checks.KeyAccepted, tc.keyAccepted)
+			assertCheck(t, "modelAccepted", res.Checks.ModelAccepted, tc.modelSeen)
+		})
+	}
+}
+
+// An unreachable host must not claim anything about the key or the model — that
+// would send an admin editing fields that were never exercised.
+func TestProviderTestChecksAreUnknownWhenUnreachable(t *testing.T) {
+	checks := checksFor(testBadBaseURL, 0, io.ErrUnexpectedEOF)
+	if checks.Reachable == nil || *checks.Reachable {
+		t.Errorf("reachable=%v, want false", checks.Reachable)
+	}
+	if checks.KeyAccepted != nil || checks.ModelAccepted != nil {
+		t.Errorf("key/model must be unknown when nothing answered: %+v", checks)
+	}
+}
+
+// The hint that would have saved the Bedrock debugging session: when a model id
+// is refused, say that a wrong endpoint looks exactly the same.
+func TestUnknownModelSuggestionQuestionsTheEndpoint(t *testing.T) {
+	h, _, done := providerTestHarness(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":{"message":"The model 'x' does not exist"}}`)
+	}, liveKey())
+	defer done()
+
+	_, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"longcat-2"}`)
+	if res.Classification != testUnknownModel {
+		t.Fatalf("classification=%q", res.Classification)
+	}
+	if !strings.Contains(res.Suggestion, "base URL") {
+		t.Fatalf("suggestion never questions the endpoint: %q", res.Suggestion)
+	}
+}
+
+func assertCheck(t *testing.T, name string, got, want *bool) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Errorf("%s=%v, want null (not determinable)", name, *got)
+	case want != nil && got == nil:
+		t.Errorf("%s=null, want %v", name, *want)
+	case want != nil && got != nil && *want != *got:
+		t.Errorf("%s=%v, want %v", name, *got, *want)
+	}
+}
+
+// REGRESSION: "Add key & test" (and "Add model & test") failed with 400 for up to
+// CONFIG_REFRESH_SECONDS, because the key had just been written to the database
+// and the gateway's 30s config snapshot had not picked it up yet — so the test
+// said "unknown API key for this provider" about a key the admin was looking at.
+// A first miss now triggers ONE immediate reload and a retry.
+func TestProviderTestSeesAKeySavedASecondAgo(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"pong"}]}`)
+	}))
+	defer upstream.Close()
+
+	prov := longcatProvider(upstream.URL)
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 910, Status: "active",
+			Plan:          store.Plan{Code: "pro", Name: "Pro"},
+			AllowedModels: []store.HostedModel{hostedModel("longcat-2", prov, "LongCat-2.0", 1)},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1},
+		// The snapshot the gateway is holding: ONE key. Key 99 exists in the
+		// "database" but is not in the snapshot yet.
+		providerKeys: map[int64][]providerkeys.Key{
+			provIDLongCat: {
+				{ID: 50, Secret: "sk-old", Masked: "sk-ol…", Enabled: true, Status: providerkeys.StatusActive},
+			},
+		},
+		// onReload stands in for the config refresh reading the new row.
+		onReload: func(f *fakeEnt) {
+			f.Keys().Replace(provIDLongCat, []providerkeys.Key{
+				{ID: 50, Secret: "sk-old", Masked: "sk-ol…", Enabled: true, Status: providerkeys.StatusActive},
+				{ID: 99, Secret: "sk-brand-new", Masked: "sk-br…", Priority: 1, Enabled: true, Status: providerkeys.StatusActive},
+			})
+		},
+	}
+	h, _ := chatHarness(t, fe)
+
+	code, res := runProviderTest(t, h, "admin", `{"providerId":2,"apiKeyId":99}`)
+	if code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 — a key saved a moment ago must be testable immediately", code)
+	}
+	if !res.OK || res.KeyID != 99 {
+		t.Fatalf("result=%+v, want the just-added key 99 to have been tested", res)
+	}
+	if fe.reloads != 1 {
+		t.Errorf("reloads=%d, want exactly 1 (refresh on miss, not on every test)", fe.reloads)
+	}
+}
+
+// The reload is a database read, so it must happen only when a lookup actually
+// misses — never on the happy path.
+func TestProviderTestDoesNotReloadWhenNothingIsMissing(t *testing.T) {
+	h, fe, done := providerTestHarness(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"pong"}]}`)
+	}, liveKey())
+	defer done()
+
+	if code, _ := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"longcat-2"}`); code != http.StatusOK {
+		t.Fatalf("status=%d", code)
+	}
+	if fe.reloads != 0 {
+		t.Errorf("reloads=%d, want 0 when the snapshot already has the model and key", fe.reloads)
+	}
+}
+
 func TestProviderTestIsAdminOnlyAndValidated(t *testing.T) {
 	h, _, done := providerTestHarness(t, func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("upstream must not be called for a rejected request")
