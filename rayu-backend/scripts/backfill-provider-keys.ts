@@ -17,18 +17,21 @@
  *
  * USAGE (from rayu-backend, with DATABASE_URL + RAYU_PROVIDER_SECRET set):
  *
- *   # provider=ENV_VAR pairs; the env var must be readable by THIS process
- *   PROVIDER_KEYS="deepseek=DEEPSEEK_API_KEY,longcat=LONGCAT_API_KEY" \
+ *   # provider=ENV_VAR pairs; the env var must be readable by THIS process.
+ *   # Providers are separated by ';'
+ *   PROVIDER_KEYS="deepseek=DEEPSEEK_API_KEY;longcat=LONGCAT_API_KEY" \
  *   DEEPSEEK_API_KEY=sk-... LONGCAT_API_KEY=sk-... \
  *   npx ts-node scripts/backfill-provider-keys.ts
  *
- *   # …or pass the secret inline (provider=VALUE with a literal key):
- *   PROVIDER_KEYS_INLINE="deepseek=sk-abc,longcat=sk-def" \
+ *   # …or pass the secrets inline (provider=VALUE with literal keys):
+ *   PROVIDER_KEYS_INLINE="deepseek=sk-abc;longcat=sk-def;rayu-ollama=k1,k2,k3" \
  *   npx ts-node scripts/backfill-provider-keys.ts
  *
- * A comma-separated env value (the old multi-key convention,
- * OLLAMA_API_KEY="k1,k2") becomes SEVERAL keys with ascending priority, which is
- * exactly how the gateway rotated them before.
+ * DELIMITERS: ';' between providers, ',' between the keys OF ONE provider. They
+ * have to differ — the old multi-key convention was a comma-separated value
+ * (OLLAMA_API_KEY="k1,k2,k3"), so using ',' for both would make "a=k1,k2" parse as
+ * a second provider named "k2". Multiple keys become separate rows with ascending
+ * priority, exactly how the gateway rotated them before.
  *
  * SAFE TO RE-RUN: it goes through the same service the dashboard uses, so a key
  * that is already stored is rejected as a duplicate and reported as "skipped".
@@ -46,10 +49,13 @@ interface Entry {
   secrets: string[]
 }
 
-/** Parse `provider=X,provider=Y` into entries, resolving env vars when asked. */
+/** Parse `provider=X;provider=Y` into entries, resolving env vars when asked. */
 function parseSpec(spec: string, fromEnv: boolean): Entry[] {
   const out: Entry[] = []
-  for (const pair of spec.split(',')) {
+  // ';' (or a newline) separates PROVIDERS; ',' stays free for a provider's
+  // multiple keys. A spec that uses ',' between providers would otherwise be
+  // indistinguishable from one provider with several keys.
+  for (const pair of spec.split(/[;\n]/)) {
     const trimmed = pair.trim()
     if (!trimmed) continue
     const eq = trimmed.indexOf('=')
