@@ -9,10 +9,7 @@ rayu
 On first launch you'll go through a short setup:
 
 1. **Theme** — pick a color theme.
-2. **Provider setup** — choose a provider (Anthropic, NVIDIA, DeepSeek,
-   Kimi/Moonshot, Doubleword, OpenAI, OpenRouter, or a local endpoint) and paste
-   your **API key**. For local/custom endpoints you also enter a base URL and a
-   default model.
+2. **Provider setup** — choose a provider (Anthropic, NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword, GLM, MiniMax, Fugu, OpenAI, OpenRouter, xAI/Grok, GitHub Copilot, Login with Gemini, Vertex AI, Bedrock, Ollama, or a local/custom endpoint) and paste your **API key** (or sign in via OAuth for Copilot/Gemini/Kiro).
 3. **Trust** — confirm you trust the current working directory (Rayu can read,
    edit, and run files there).
 

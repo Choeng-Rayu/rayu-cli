@@ -14,8 +14,9 @@ export function getDocs(): DocItem[] {
   if (fs.existsSync(docsDir)) {
     filenames = fs.readdirSync(docsDir)
   } else {
-    // Fallback during dev if copy task hasn't run yet
-    const fallbackDir = path.join(process.cwd(), '../rayu/documentations')
+    // Fallback during dev if the copy task hasn't run yet. Docs live at the repo
+    // root (documentations/), which is also what scripts/copy-docs.js reads.
+    const fallbackDir = path.join(process.cwd(), '../documentations')
     if (fs.existsSync(fallbackDir)) {
       filenames = fs.readdirSync(fallbackDir)
     }

@@ -1,6 +1,6 @@
 # Rayu-CLI Documentation
 
-> **Browse online:** https://rayu-web.vercel.app/docs
+> **Browse online:** https://rayucode.com/docs
 
 Rayu-CLI is a terminal-based AI coding agent. It lets you **bring your own API key** and use
 **any OpenAI-compatible provider** (NVIDIA, DeepSeek, Kimi/Moonshot, Doubleword,
@@ -24,10 +24,12 @@ switching, MCP support, and the full built-in tool suite.
 | 9 | [Diagnostics & Privacy](./09-diagnostics-privacy.md) | Bug/issue logging, telemetry, network posture |
 | 10 | [Troubleshooting](./10-troubleshooting.md) | Common errors and fixes |
 | 11 | [Codebase Knowledge Graph](./11-knowledge-graph.md) | Local indexing, querying, and tracing using `/graphify` |
-| 12 | [Specialist Swarm](./12-specialist-swarm.md) | Orchestrating parallel specialist agents (`/swarm`) |
+| 12 | [Specialist Swarm](./12-specialist-swarm.md) | Orchestrating parallel specialist agents (`/collaborator_swarm`) |
 | 13 | [Image Generation](./12-image-generation.md) | Built-in `GenerateImage` tool (NVIDIA), save/inline/terminal display |
 | 14 | [Building binaries](./13-binaries.md) | Cross-platform standalone executables, versioning, install |
 | 15 | [Telegram Bot](./15-telegram-bot.md) | Linking a Telegram bot to drive the CLI remotely |
+| 16 | [Credits & limits](./credits-and-limits.md) | Plans, credits, per-model charges, and where each admin control is enforced |
+| 17 | [Deploying on Coolify](./deploy-coolify.md) | Production runbook: env vars, domains, migrations, provider-key cutover, backups |
 
 ## 30-second tour
 

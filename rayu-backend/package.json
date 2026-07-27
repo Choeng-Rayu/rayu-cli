@@ -19,6 +19,7 @@
     "db:push": "prisma db push",
     "seed": "ts-node src/seed.ts",
     "telegram:login": "ts-node scripts/telegram-login.ts",
+    "keys:backfill": "ts-node scripts/backfill-provider-keys.ts",
     "test": "jest --config jest.config.json",
     "test:e2e": "prisma generate && jest --config test/jest-e2e.json"
   },

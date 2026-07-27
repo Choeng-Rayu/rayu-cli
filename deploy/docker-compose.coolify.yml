@@ -1,0 +1,161 @@
+# Rayu on Coolify — Docker Compose stack.
+#
+# WHY A SEPARATE FILE FROM docker-compose.yml
+#
+# The single-VPS file runs its own Caddy on host ports 80/443. Coolify already
+# runs a proxy (Traefik) in front of every stack, so shipping Caddy here would
+# fight it for those ports. This file therefore has NO edge service and NO host
+# port bindings: Coolify's proxy terminates TLS and routes each domain you assign
+# in the UI to the container port named below.
+#
+# ─── Deploy ──────────────────────────────────────────────────────────────────
+# 1. Coolify → Project → + New Resource → Docker Compose (from this Git repo).
+#    Base Directory: /deploy      Compose file: docker-compose.coolify.yml
+# 2. Fill the environment variables Coolify lists (the ones with `:?` below are
+#    REQUIRED — Coolify blocks the deploy until they are set).
+# 3. Assign domains (Coolify needs the container port when it is not 80):
+#      web      → https://rayucode.com:3000
+#      backend  → https://api.rayucode.com:4000
+#      gateway  → https://gateway.rayucode.com:8080
+#    mysql and redis get NO domain: with no domain and no published port they
+#    stay private to the stack network, which is what you want for a database.
+# 4. Deploy. The backend applies Prisma migrations on boot (docker-entrypoint.sh),
+#    so a fresh database is created and an existing one is upgraded automatically.
+#
+# THEN READ: documentations/deploy-coolify.md → "Provider key cutover". After the
+# first deploy of this release, provider API keys are NOT in the environment any
+# more; they are encrypted rows an admin enters in the dashboard. Hosted models
+# stay unavailable until that is done.
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?rayu}
+      MYSQL_USER: ${MYSQL_USER:?rayu}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # No ports: and no domain → reachable only from this stack. Use Coolify's
+    # terminal (or a one-off container) for psql/mysql access; never publish 3306.
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost', '-p${MYSQL_ROOT_PASSWORD}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Credit windows are ephemeral: they expire by TTL and the top-up balance
+    # re-syncs from MySQL, so persistence would only add a restore path to get
+    # wrong. A Redis restart costs at most one in-flight window.
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ../rayu-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: '4000'
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      # Signs the CLI/dashboard session tokens. The gateway MUST have the same
+      # value or every hosted request is a 401.
+      RAYU_JWT_SECRET: ${RAYU_JWT_SECRET:?}
+      # Encrypts provider API keys before they are written to MySQL (AES-256-GCM).
+      # The gateway needs the IDENTICAL value to decrypt them. Rotating it makes
+      # every stored key unreadable — they must then be re-entered.
+      RAYU_PROVIDER_SECRET: ${RAYU_PROVIDER_SECRET:?}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?}
+      RAYU_ACCESS_TTL: '3600'
+      RAYU_REFRESH_TTL: '2592000'
+      # CORS for the dashboard's calls to /api.
+      WEB_ORIGIN: ${PUBLIC_SITE_URL:?}
+      # The hosted catalog (providers + models + keys) is ADMIN-OWNED: nothing is
+      # seeded, so a fresh deployment starts empty and an admin builds it in the
+      # dashboard. Set to true ONLY to populate the shipped example catalog on a
+      # brand-new database. Plans and global settings always seed.
+      SEED_CATALOG: ${SEED_CATALOG:-}
+      RAYU_SHARED_BOT_TOKEN: ${RAYU_SHARED_BOT_TOKEN:-}
+      BAKONG_MERCHANT_ID: ${BAKONG_MERCHANT_ID:-}
+      BAKONG_PHONE_NUMBER: ${BAKONG_PHONE_NUMBER:-}
+      BAKONG_DEVELOPER_TOKEN: ${BAKONG_DEVELOPER_TOKEN:-}
+      BAKONG_API_URL: ${BAKONG_API_URL:-}
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:4000/api/health']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  gateway:
+    build:
+      context: ../rayu-gateway
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: '8080'
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379
+      RAYU_JWT_SECRET: ${RAYU_JWT_SECRET:?}
+      # Same value as the backend's. The gateway REFUSES TO START if provider
+      # keys exist and this is missing or wrong, because every hosted request
+      # would otherwise fail with no visible cause.
+      RAYU_PROVIDER_SECRET: ${RAYU_PROVIDER_SECRET:?}
+      # The dashboard reads live credit usage from the gateway. On separate
+      # subdomains that is a cross-origin call, so the site origin must be
+      # allowed. Every /v1 route still requires a valid Rayu JWT.
+      GATEWAY_CORS_ORIGINS: ${PUBLIC_SITE_URL:?}
+      # Provider routing AND keys are admin-managed rows in MySQL — adding a
+      # provider or rotating a key needs no redeploy (picked up within
+      # CONFIG_REFRESH_SECONDS).
+      CONFIG_REFRESH_SECONDS: ${CONFIG_REFRESH_SECONDS:-30}
+      RAYU_MAX_INFLIGHT: ${RAYU_MAX_INFLIGHT:-}
+      RAYU_ENFORCE_MODEL_FIDELITY: ${RAYU_ENFORCE_MODEL_FIDELITY:-}
+      RAYU_PROXY_BODY_READ_TIMEOUT: ${RAYU_PROXY_BODY_READ_TIMEOUT:-}
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/healthz']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: ../rayu-web
+      args:
+        # Next.js inlines NEXT_PUBLIC_* at BUILD time, so these must be build
+        # args, not just runtime env — a value changed only at runtime would not
+        # reach the browser bundle.
+        NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?}
+        NEXTAUTH_URL: ${PUBLIC_SITE_URL:?}
+        GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?}
+        GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?}
+        NEXT_PUBLIC_RAYU_API_URL: ${PUBLIC_API_URL:?}
+        NEXT_PUBLIC_RAYU_GATEWAY_URL: ${PUBLIC_GATEWAY_URL:?}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?}
+      NEXTAUTH_URL: ${PUBLIC_SITE_URL:?}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?}
+      NEXT_PUBLIC_RAYU_API_URL: ${PUBLIC_API_URL:?}
+      NEXT_PUBLIC_RAYU_GATEWAY_URL: ${PUBLIC_GATEWAY_URL:?}
+
+volumes:
+  mysql_data:
