@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -658,5 +659,61 @@ func TestHostedTokenBillingPerMultiplier(t *testing.T) {
 					c.code, st.UsedPeriod, c.want, c.mult, float64(c.want)/1e6)
 			}
 		})
+	}
+}
+
+// TestHostedRequestDropsPriorTurnThinking is the end-to-end guard for the
+// model-switch failure: a user asks Claude, switches to DeepSeek with /model,
+// asks again, then switches back. The CLI replays history verbatim, so the
+// DeepSeek turn's thinking block — whose signature is a plain UUID that no
+// Anthropic endpoint can verify — would otherwise reach the upstream and kill
+// the request with
+// "messages.N.content.0: Invalid `signature` in `thinking` block".
+//
+// This asserts on the body the UPSTREAM receives, so it fails if the sanitiser
+// is ever unwired from the adapter, not just if its logic regresses.
+func TestHostedRequestDropsPriorTurnThinking(t *testing.T) {
+	var forwarded map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &forwarded)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":1}}`)
+	}))
+	defer upstream.Close()
+
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 77, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				hostedModel("deepseek-v4-pro", deepseekProvider(upstream.URL), "deepseek-v4-pro", 1),
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 10},
+	}
+	h, _ := chatHarness(t, fe)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{
+		"model":"deepseek-v4-pro","max_tokens":16,"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"from another model","signature":"4fd2c917-979d-4e69-8a37-3ce63dbd1f9b"},
+				{"type":"text","text":"Hi!"}]},
+			{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 77))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	msgs, ok := forwarded["messages"].([]any)
+	if !ok || len(msgs) != 3 {
+		t.Fatalf("upstream got %#v", forwarded["messages"])
+	}
+	blocks := msgs[1].(map[string]any)["content"].([]any)
+	if len(blocks) != 1 || blocks[0].(map[string]any)["type"] != "text" {
+		t.Fatalf("the foreign thinking block reached the upstream: %#v", blocks)
 	}
 }
