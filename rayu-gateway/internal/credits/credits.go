@@ -78,37 +78,40 @@ type ModelRates struct {
 	CacheWrite float64 // cache-creation prompt tokens (always 0 usage for DeepSeek today; wired for future cache-write-billing providers)
 }
 
-// DeriveModelRates builds a model's ModelRates from its admin-configured
-// pricing (store.HostedModel's fields, passed in individually so this package
-// stays decoupled from the store package).
+// ModelRatesFor builds a model's ModelRates from the FOUR admin-entered credit
+// charges stored on the model (passed in individually so this package stays
+// decoupled from the store package).
 //
-// The Output rate is DERIVED, not a separate admin-entered field: a model's
-// existing inputPricePer1MCents/outputPricePer1MCents — already populated
-// with each model's real relative provider cost, e.g. DeepSeek's ~2x
-// output:input ratio — scale creditMultiplier automatically. That reuses
-// already-correct, already-admin-maintained pricing data instead of asking
-// admins to redundantly enter (and keep in sync) another ratio.
+// There is deliberately no derivation here any more. The output charge used to be
+// computed from the model's cost prices (`creditMultiplier × outputPrice /
+// inputPrice`), which coupled what a CUSTOMER pays to Rayu's own cost figures —
+// editing a cost price silently re-priced the product — and left two of the four
+// charges invisible in the dashboard. All four are now explicit, admin-owned, and
+// used verbatim; the cost prices feed only the internal cost ledger and the
+// profit projection.
 //
-// cacheReadMultiplier/cacheWriteMultiplier are OPTIONAL per-model overrides
-// (nil = inherit the fallback below), so a model with neither configured
-// derives EXACTLY the same rates as before these overrides existed — no
-// existing hosted_models row changes its bill until an admin opts in.
-func DeriveModelRates(creditMultiplier float64, inputPricePer1MCents, outputPricePer1MCents int, cacheReadMultiplier, cacheWriteMultiplier *float64) ModelRates {
-	output := creditMultiplier
-	if inputPricePer1MCents > 0 && outputPricePer1MCents > 0 {
-		output = creditMultiplier * float64(outputPricePer1MCents) / float64(inputPricePer1MCents)
+// Non-positive values are treated as "not configured" and fall back to the input
+// charge, so a partially-filled row can never bill at zero.
+func ModelRatesFor(input, output, cacheRead, cacheWrite float64) ModelRates {
+	if input < 0 {
+		input = 0
 	}
 	rates := ModelRates{
-		Input:      creditMultiplier,
+		Input:      input,
 		Output:     output,
-		CacheRead:  CacheHitBillingWeight,
-		CacheWrite: creditMultiplier, // no premium/discount by default (DeepSeek has no cache-write concept)
+		CacheRead:  cacheRead,
+		CacheWrite: cacheWrite,
 	}
-	if cacheReadMultiplier != nil {
-		rates.CacheRead = *cacheReadMultiplier
+	if rates.Output <= 0 {
+		rates.Output = input
 	}
-	if cacheWriteMultiplier != nil {
-		rates.CacheWrite = *cacheWriteMultiplier
+	if rates.CacheRead < 0 {
+		// CacheHitBillingWeight is an ABSOLUTE charge (not a fraction of input),
+		// matching how the DB column defaults.
+		rates.CacheRead = CacheHitBillingWeight
+	}
+	if rates.CacheWrite <= 0 {
+		rates.CacheWrite = input
 	}
 	return rates
 }

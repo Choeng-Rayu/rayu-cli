@@ -22,6 +22,7 @@ import { reportBug, reportIssue } from 'src/utils/rayuDiagnostics.js'
 import { hashPair } from 'src/utils/hash.js'
 import { PRODUCT_NAME } from 'src/constants/product.js'
 import type { ProviderFeatureMode } from 'src/utils/rayuConfig.js'
+import { isRotatableKeyStatus } from './keyRotation.js'
 
 type AnyObj = Record<string, unknown>
 
@@ -822,18 +823,11 @@ export type OpenAICompatibleConfig = {
   fetch?: typeof fetch
 }
 
-// HTTP statuses that mean "this API key can't serve the request right now, but
-// a DIFFERENT key might" — so the adapter rotates to the next stored key:
-//   429 Too Many Requests  — rate limit / quota exceeded (the main trigger)
-//   402 Payment Required   — out of credits (e.g. OpenRouter)
-//   401 Unauthorized       — invalid / expired / revoked key
-//   403 Forbidden          — key-scoped quota/permission exhaustion
-// Note: 404 (Not Found) is intentionally NOT here — it means the model/endpoint
-// doesn't exist, which no key can fix, so rotating would just burn every key.
-const ROTATABLE_KEY_STATUSES: ReadonlySet<number> = new Set([429, 402, 401, 403])
-
+// Rate-limit key-rotation policy is shared with the anthropic-compatible client
+// (which rotates at the fetch layer instead of the request layer) — see
+// keyRotation.ts for the status list and the rationale.
 function isRotatableKeyError(status: number | undefined): boolean {
-  return typeof status === 'number' && ROTATABLE_KEY_STATUSES.has(status)
+  return isRotatableKeyStatus(status)
 }
 
 /**

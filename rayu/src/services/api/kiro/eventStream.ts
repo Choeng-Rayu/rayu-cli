@@ -1,31 +1,19 @@
-// AWS event-stream decoder for the Kiro (CodeWhisperer) backend. Ports
-// kirocc-fork/internal/kiroproto/{frame.go,eventstream.go,tooluse.go}.
-//
-// Wire format (big-endian): a stream of frames, each:
-//   prelude (12 bytes): [totalLen u32][headersLen u32][preludeCRC u32]
-//   body (totalLen-12): [headers headersLen][payload ...][messageCRC u32]
-// preludeCRC = CRC32(prelude[0:8]); messageCRC = CRC32(frame[0:totalLen-4]).
-// Headers are length-prefixed name + 1-byte value-type + (typed) value.
+// Kiro (CodeWhisperer) event decoding. The AWS event-stream FRAMING (prelude,
+// CRC32, headers, partial-frame buffering) is shared with the Bedrock streaming
+// path and lives in ../awsEventStream.ts; this module owns only the
+// Kiro-specific payload semantics (event types, tool-use accumulation).
+// Ports kirocc-fork/internal/kiroproto/{frame.go,eventstream.go,tooluse.go}.
+import {
+  crc32,
+  encodeEventStreamFrame,
+  extractFrameHeaders,
+  toByteIterable,
+  tryReadFrame as readFrame,
+} from '../awsEventStream.js'
 
-const MAX_FRAME_SIZE = 4 * 1024 * 1024
-
-// --- CRC-32 (IEEE) ----------------------------------------------------------
-const CRC32_TABLE = (() => {
-  const t = new Uint32Array(256)
-  for (let n = 0; n < 256; n++) {
-    let c = n
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-    t[n] = c >>> 0
-  }
-  return t
-})()
-
-function crc32(buf: Uint8Array, start = 0, end = buf.length): number {
-  let crc = 0xffffffff
-  for (let i = start; i < end; i++) {
-    crc = (CRC32_TABLE[(crc ^ buf[i]!)! & 0xff]! ^ (crc >>> 8)) >>> 0
-  }
-  return (crc ^ 0xffffffff) >>> 0
+/** Read one frame, with Kiro-labelled errors. */
+function tryReadFrame(buf: Uint8Array) {
+  return readFrame(buf, 'kiro eventstream')
 }
 
 // --- Event types ------------------------------------------------------------
@@ -77,95 +65,7 @@ export function kiroEventErrorText(e: KiroEvent): string {
   return e.errorMessage || e.invalidStateReason || ''
 }
 
-// --- Header value sizes (per AWS event-stream spec) -------------------------
-// -1 = variable length (2-byte uint16 prefix).
-const HEADER_VALUE_SIZES: Record<number, number> = {
-  0: 0, // bool true
-  1: 0, // bool false
-  2: 1, // byte
-  3: 2, // short
-  4: 4, // int
-  5: 8, // long
-  6: -1, // byte array
-  7: -1, // string
-  8: 8, // timestamp
-  9: 16, // uuid
-}
-
-/** Walk header bytes; return :message-type and :event-type/:exception-type. */
-function extractFrameHeaders(headers: Uint8Array): {
-  msgType: string
-  eventType: string
-} {
-  let msgType = ''
-  let eventType = ''
-  const view = new DataView(headers.buffer, headers.byteOffset, headers.byteLength)
-  const dec = new TextDecoder()
-  let i = 0
-  while (i < headers.length) {
-    const nameLen = headers[i]!
-    i++
-    if (i + nameLen > headers.length) break
-    const name = dec.decode(headers.subarray(i, i + nameLen))
-    i += nameLen
-    if (i >= headers.length) break
-    const valueType = headers[i]!
-    i++
-    const size = HEADER_VALUE_SIZES[valueType]
-    if (size === undefined) break
-    let valueLen: number
-    if (size >= 0) {
-      valueLen = size
-    } else {
-      if (i + 2 > headers.length) break
-      valueLen = view.getUint16(i)
-      i += 2
-    }
-    if (i + valueLen > headers.length) break
-    const value = headers.subarray(i, i + valueLen)
-    i += valueLen
-    if (valueType === 7) {
-      if (name === ':message-type') msgType = dec.decode(value)
-      else if (name === ':event-type' || name === ':exception-type') {
-        eventType = dec.decode(value)
-      }
-    }
-  }
-  return { msgType, eventType }
-}
-
-/** Try to read one complete frame from the front of buf; null if incomplete. */
-function tryReadFrame(
-  buf: Uint8Array,
-): { headers: Uint8Array; payload: Uint8Array; consumed: number } | null {
-  if (buf.length < 12) return null
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
-  const totalLen = view.getUint32(0)
-  const headersLen = view.getUint32(4)
-  const preludeCRC = view.getUint32(8)
-  if (totalLen < 16) {
-    throw new Error(`kiro eventstream: total_length ${totalLen} too small`)
-  }
-  if (totalLen > MAX_FRAME_SIZE) {
-    throw new Error(`kiro eventstream: total_length ${totalLen} exceeds max`)
-  }
-  if (crc32(buf, 0, 8) !== preludeCRC) {
-    throw new Error('kiro eventstream: prelude CRC mismatch')
-  }
-  if (headersLen > totalLen - 12 - 4) {
-    throw new Error('kiro eventstream: headers_length exceeds body')
-  }
-  if (buf.length < totalLen) return null // need more bytes
-  const msgCRC = view.getUint32(totalLen - 4)
-  if (crc32(buf, 0, totalLen - 4) !== msgCRC) {
-    throw new Error('kiro eventstream: message CRC mismatch')
-  }
-  return {
-    headers: buf.subarray(12, 12 + headersLen),
-    payload: buf.subarray(12 + headersLen, totalLen - 4),
-    consumed: totalLen,
-  }
-}
+// --- Header value sizes / frame reading are provided by ../awsEventStream.ts --
 
 const dec = new TextDecoder()
 function parseJSON<T>(payload: Uint8Array): T | null {
@@ -341,26 +241,6 @@ function decodeFrame(
   }
 }
 
-/** Normalize a fetch ReadableStream or AsyncIterable into a byte async-iterable. */
-async function* toByteIterable(
-  source: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
-): AsyncGenerator<Uint8Array> {
-  if (Symbol.asyncIterator in source) {
-    yield* source as AsyncIterable<Uint8Array>
-    return
-  }
-  const reader = (source as ReadableStream<Uint8Array>).getReader()
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value) yield value
-    }
-  } finally {
-    reader.releaseLock()
-  }
-}
-
 /**
  * Stream-decode a Kiro event-stream response body into typed KiroEvents.
  * Buffers partial frames across chunk boundaries; flushes any in-progress tool
@@ -411,60 +291,22 @@ export function parseKiroEventStreamBytes(bytes: Uint8Array): KiroEvent[] {
 }
 
 // --- Frame encoder (for tests / fixtures) -----------------------------------
-function encodeStringHeader(name: string, value: string): Uint8Array {
-  const enc = new TextEncoder()
-  const nameBytes = enc.encode(name)
-  const valBytes = enc.encode(value)
-  const out = new Uint8Array(1 + nameBytes.length + 1 + 2 + valBytes.length)
-  const view = new DataView(out.buffer)
-  let i = 0
-  out[i++] = nameBytes.length
-  out.set(nameBytes, i)
-  i += nameBytes.length
-  out[i++] = 7 // string type
-  view.setUint16(i, valBytes.length)
-  i += 2
-  out.set(valBytes, i)
-  return out
-}
 
 /**
  * Encode a single Kiro event-stream frame. Used by tests to craft fixtures
  * without a captured binary blob. msgType defaults to 'event'.
+ * Framing is delegated to the shared encoder; only the JSON payload is Kiro's.
  */
 export function encodeKiroFrame(
   eventType: string,
   payloadObj: unknown,
   msgType = 'event',
 ): Uint8Array {
-  const headerParts = [
-    encodeStringHeader(':message-type', msgType),
-    encodeStringHeader(
-      msgType === 'exception' ? ':exception-type' : ':event-type',
-      eventType,
-    ),
-    encodeStringHeader(':content-type', 'application/json'),
-  ]
-  const headersLen = headerParts.reduce((n, h) => n + h.length, 0)
-  const headers = new Uint8Array(headersLen)
-  {
-    let o = 0
-    for (const h of headerParts) {
-      headers.set(h, o)
-      o += h.length
-    }
-  }
-  const payload = new TextEncoder().encode(JSON.stringify(payloadObj))
-  const totalLen = 12 + headersLen + payload.length + 4
-  const frame = new Uint8Array(totalLen)
-  const view = new DataView(frame.buffer)
-  view.setUint32(0, totalLen)
-  view.setUint32(4, headersLen)
-  view.setUint32(8, crc32(frame, 0, 8))
-  frame.set(headers, 12)
-  frame.set(payload, 12 + headersLen)
-  view.setUint32(totalLen - 4, crc32(frame, 0, totalLen - 4))
-  return frame
+  return encodeEventStreamFrame(
+    eventType,
+    new TextEncoder().encode(JSON.stringify(payloadObj)),
+    msgType,
+  )
 }
 
 /** Concatenate encoded frames into one buffer. */

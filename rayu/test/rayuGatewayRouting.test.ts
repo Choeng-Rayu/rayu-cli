@@ -111,26 +111,22 @@ describe('shouldRouteViaGateway', () => {
     ).toBe(true)
   })
 
-  test('bedrock: only bedrockApi=anthropic WITH a bearer key routes', async () => {
+  test('bedrock: a bearer-key provider routes; without a key it does not', async () => {
     process.env.USE_RAYU_OAUTH = 'true'
     await signIn()
     const m = await import('../src/services/api/rayuHosted/gatewayRouting.ts')
-    // bedrock-anthropic in bearer-token mode -> routes
+    // Bedrock in bearer-token mode -> routes. Both of its surfaces are now
+    // fetch-based (Claude via the Anthropic Messages invoke endpoints, the rest
+    // via bedrock-mantle), so the old Converse/AWS-SDK exclusion is obsolete.
     expect(
       m.shouldRouteViaGateway(
-        provider({ id: 'bedrock-anthropic', kind: 'bedrock', bedrockApi: 'anthropic', apiKey: 'bearer', baseURL: undefined }),
+        provider({ id: 'bedrock', kind: 'bedrock', apiKey: 'bearer', baseURL: undefined }),
       ),
     ).toBe(true)
-    // Converse (AWS SDK: SigV4 + event-stream, no fetch hook) -> never routes
+    // No key means SigV4 credentials, which have no fetch hook -> not routed.
     expect(
       m.shouldRouteViaGateway(
-        provider({ id: 'bedrock', kind: 'bedrock', bedrockApi: 'converse', apiKey: 'x', baseURL: undefined }),
-      ),
-    ).toBe(false)
-    // anthropic-on-bedrock without a key (would be SigV4) -> not routed
-    expect(
-      m.shouldRouteViaGateway(
-        provider({ id: 'bedrock-anthropic', kind: 'bedrock', bedrockApi: 'anthropic', apiKey: undefined, baseURL: undefined }),
+        provider({ id: 'bedrock', kind: 'bedrock', apiKey: undefined, baseURL: undefined }),
       ),
     ).toBe(false)
   })

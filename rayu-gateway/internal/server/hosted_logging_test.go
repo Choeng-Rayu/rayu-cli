@@ -32,8 +32,8 @@ func TestHostedModelNotAllowedLogsSourceAndAllowlist(t *testing.T) {
 			UserID: 2, Status: "active",
 			Plan: store.Plan{Code: "pro", Name: "Pro"},
 			AllowedModels: []store.HostedModel{
-				{Code: "glm-5.2", Provider: "rayu-ollama", Enabled: true},
-				{Code: "deepseek-v4-pro", Provider: "deepseek", Enabled: true},
+				hostedModel("glm-5.2", ollamaProvider("https://ollama.example"), "glm-5.2:cloud", 1),
+				hostedModel("deepseek-v4-pro", deepseekProvider("https://deepseek.example"), "deepseek-v4-pro", 1),
 			},
 		},
 		settings: store.AppSettings{BaselineCreditsPer1M: 1000},
@@ -105,7 +105,7 @@ func TestHostedAssignsRequestIdWhenClientOmitsIt(t *testing.T) {
 		ent: entitlements.Entitlement{
 			UserID: 50, Status: "active",
 			Plan:          store.Plan{Code: "max", Name: "Max"},
-			AllowedModels: []store.HostedModel{{Code: "deepseek-v4-pro", Provider: "deepseek", Enabled: true}},
+			AllowedModels: []store.HostedModel{hostedModel("deepseek-v4-pro", deepseekProvider("https://deepseek.example"), "deepseek-v4-pro", 1)},
 		},
 		settings: store.AppSettings{BaselineCreditsPer1M: 1000},
 	}

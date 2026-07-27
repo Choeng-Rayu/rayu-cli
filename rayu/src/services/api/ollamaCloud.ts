@@ -1,6 +1,6 @@
 // Ollama Cloud model + context discovery. Ollama Cloud (ollama.com) serves the
 // account's hosted models behind a Bearer API key. Chat runs through the NATIVE
-// Anthropic Messages API (kind:'anthropic-compatible' → createAnthropicCompatibleClient,
+// Anthropic Messages API (kind:'anthropic-compatible' → createAnthropicMessagesClient,
 // baseURL https://ollama.com → POST /v1/messages), but MODEL LISTING uses
 // Ollama's own endpoints:
 //   • GET  {host}/v1/models   (OpenAI-compatible) → { data: [{ id }] }

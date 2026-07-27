@@ -26,8 +26,10 @@ pricing — is configured by the super-admin and **enforced** across the stack.
   - `topUpEnabled` — allow pay-as-you-go top-up credits.
   - `features` — per-feature `{ enabled, limit }` map (telegram, swarm, image/video gen, …).
 - **`plans.priceCents` / `plans.availability`** — pricing and whether the plan is purchasable (`active` vs `coming_soon`).
-- **`app_settings`** (singleton): `baselineCreditsPer1M`, `maxConcurrentStreams`, `maxTokensPerRequest`, `maxRequestsPer5h`, `topupCentsPer1kCredits`, plus projection-only knobs (`baselineModelCode`, `assumedInputRatio`, `assumedUsagePercent`, `infraCostCentsPerUser`).
-- **`hosted_models`**: `code`, `provider`, `upstreamModelId`, prices, `creditMultiplier`, `allowedPlanCodes`, `enabled`.
+- **`app_settings`** (singleton): `baselineCreditsPer1M`, `maxConcurrentStreams`, `maxTokensPerRequest`, `maxRequestsPer5h`, `creditsPerDollar` + `minTopupCents` (credit top-up pricing), plus projection-only knobs (`baselineModelCode`, `assumedInputRatio`, `assumedUsagePercent`, `infraCostCentsPerUser`).
+- **`hosted_models`**: `code`, `provider`, `upstreamModelId`, prices, the four credit charges (`creditMultiplier` = input, `outputCreditMultiplier`, `cacheReadCreditMultiplier`, `cacheWriteCreditMultiplier`), `allowedPlanCodes`, capability flags, `enabled`.
+
+All of the above is edited in the admin dashboard: **Plans & Credits** (plans, model access per plan, top-up rate, global limits) and **Providers** (providers, their API keys, and each model's credit charges).
 
 ## Flow
 
@@ -52,9 +54,10 @@ Admin panel (rayu-web)  --PATCH /api/admin/*-->  MySQL  <--reads--  rayu-gateway
 | Plan `features` | `plans.limits` | CLI `rayuFeatureAllowed()` — client-side UX gating, **fails open** |
 | Plan `priceCents` / `availability` | `plans` | Backend checkout (`createKhqr` requires `active` + `priceCents>0`); `/plans` + `/billing` |
 | `baselineCreditsPer1M`, `maxConcurrentStreams`, `maxTokensPerRequest`, `maxRequestsPer5h` | `app_settings` | Gateway |
-| `topupCentsPer1kCredits` | `app_settings` | Backend top-up pricing |
+| `creditsPerDollar`, `minTopupCents` | `app_settings` | Backend top-up pricing (`POST /payments/topup-khqr`); reported by the gateway on `/v1/credits` so clients can quote the price |
 | `baselineModelCode`, `assumedInputRatio`, `assumedUsagePercent`, `infraCostCentsPerUser` | `app_settings` | Admin **profit projection only** (advisory; no runtime effect) |
-| Hosted model `allowedPlanCodes`, `creditMultiplier`, `enabled`, prices | `hosted_models` | Gateway model access + credit math |
+| Hosted model `allowedPlanCodes` (edited per plan on Plans & Credits) | `hosted_models` | Gateway + backend model access |
+| Hosted model credit charges (input/output/cache-read/cache-write), `enabled`, prices | `hosted_models` | Gateway credit math (charges are used VERBATIM — nothing is derived from the cost prices) |
 
 ## Credits
 
@@ -163,11 +166,14 @@ So an admin edit takes effect within ~10–30s; the CLI may need up to its coold
 
 ## How to change business logic (admin panel)
 
-1. **Plans & Features** (`/admin/plans`) — price, availability, `maxDailyTurns`, `creditsPerPeriod`, top-up, per-feature toggles/limits.
-2. **Credit Settings** (`/admin/credit-settings`) — baseline credits, abuse caps, top-up price, and the profit projection knobs.
-3. **Models** (`/admin/models`) — hosted model catalog, prices, multipliers, `allowedPlanCodes`, enable/disable.
+There are two pages, because there are two decisions:
 
-Seeds are **non-destructive** (create-if-missing): editing in production is never overwritten on redeploy. Defaults live in `rayu-backend/src/plans/plans.constants.ts`, `models.constants.ts`, and `AppSettingsService`.
+1. **Plans & Credits** (`/admin/plans`) — what a customer gets for their money: price, availability, `maxDailyTurns`, `creditsPerPeriod`, per-feature toggles/limits, which models each plan may use (`allowedPlanCodes`), the credit top-up rate (`creditsPerDollar`, `minTopupCents`), and — collapsed — the baseline credit rate, abuse caps and profit projection.
+2. **Providers** (`/admin/providers`) — how the gateway reaches an upstream: base URL, wire format, auth scheme, its encrypted API keys, and the models it serves (upstream model id, context window, the four credit charges, capabilities). Each key and model has a **Test** button that makes a real 1-token request through the gateway and charges nothing.
+
+(`/admin/credit-settings` and `/admin/models` are retired; both redirect to the page that absorbed them.)
+
+Seeds are **non-destructive** (create-if-missing) and the hosted catalog is only seeded when `SEED_CATALOG=true`, so a fresh deployment starts empty and the admin owns it. Plan/settings defaults live in `rayu-backend/src/plans/plans.constants.ts` and `AppSettingsService`.
 
 ## Verifying end-to-end
 

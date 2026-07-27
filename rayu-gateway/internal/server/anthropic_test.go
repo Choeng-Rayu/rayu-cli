@@ -6,31 +6,39 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/choeng-rayu/rayu-gateway/internal/config"
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
+	"github.com/choeng-rayu/rayu-gateway/internal/providercfg"
+	"github.com/choeng-rayu/rayu-gateway/internal/providerkeys"
 	"github.com/choeng-rayu/rayu-gateway/internal/store"
 )
 
-func TestAnthropicUpstream(t *testing.T) {
-	type tc struct{ base, endpoint, want string }
-	cases := []tc{
-		// endpoint "anthropic" → {origin}/anthropic/v1/messages (DeepSeek/LongCat/first-party)
-		{"https://api.deepseek.com", "anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://api.deepseek.com/", "anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://api.deepseek.com/v1", "anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://api.deepseek.com/v1/", "anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://gw.example.test:8443/v1", "anthropic", "https://gw.example.test:8443/anthropic/v1/messages"},
-		// endpoint "messages" → {origin}/v1/messages (Ollama Cloud — no /anthropic)
-		{"https://ollama.com", "messages", "https://ollama.com/v1/messages"},
-		{"https://ollama.com/", "messages", "https://ollama.com/v1/messages"},
-		// empty/unknown endpoint defaults to the anthropic style
+// TestProviderRouteEndpoint is the successor to the old anthropicUpstream()
+// helper test: the upstream URL now comes from the provider REGISTRY row
+// (baseUrl + endpointPath) instead of being derived in gateway code, so the same
+// routing cases are asserted through providercfg.Route.
+func TestProviderRouteEndpoint(t *testing.T) {
+	cases := []struct{ base, path, want string }{
+		// DeepSeek / LongCat / first-party: {origin}/anthropic/v1/messages
+		{"https://api.deepseek.com", "/anthropic/v1/messages", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://api.deepseek.com/", "/anthropic/v1/messages", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://gw.example.test:8443", "/anthropic/v1/messages", "https://gw.example.test:8443/anthropic/v1/messages"},
+		// Ollama Cloud: {origin}/v1/messages (no /anthropic segment)
+		{"https://ollama.com", "/v1/messages", "https://ollama.com/v1/messages"},
+		{"https://ollama.com/", "/v1/messages", "https://ollama.com/v1/messages"},
+		// Blank path falls back to the format default.
 		{"https://api.deepseek.com", "", "https://api.deepseek.com/anthropic/v1/messages"},
 	}
 	for _, c := range cases {
-		if got := anthropicUpstream(c.base, c.endpoint); got != c.want {
-			t.Errorf("anthropicUpstream(%q, %q)=%q want %q", c.base, c.endpoint, got, c.want)
+		r := providercfg.Route{
+			Format:       providercfg.FormatAnthropicMessages,
+			BaseURL:      c.base,
+			EndpointPath: c.path,
+		}
+		if got := r.Endpoint(); got != c.want {
+			t.Errorf("Endpoint(base=%q path=%q)=%q want %q", c.base, c.path, got, c.want)
 		}
 	}
 }
@@ -58,8 +66,7 @@ func TestHandleAnthropicMessagesCacheAwareBilling(t *testing.T) {
 			UserID: 51, Status: "active",
 			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
 			AllowedModels: []store.HostedModel{
-				{Code: "deepseek-v4-pro", Provider: "deepseek", Enabled: true, CreditMultiplier: 1,
-					UpstreamBaseURL: upstream.URL, UpstreamModelID: "deepseek-v4-pro"},
+				hostedModel("deepseek-v4-pro", deepseekProvider(upstream.URL), "deepseek-v4-pro", 1),
 			},
 		},
 		settings: store.AppSettings{BaselineCreditsPer1M: 10},
@@ -116,8 +123,7 @@ func TestHandleAnthropicMessagesStreaming(t *testing.T) {
 			UserID: 52, Status: "active",
 			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
 			AllowedModels: []store.HostedModel{
-				{Code: "deepseek-v4-pro", Provider: "deepseek", Enabled: true, CreditMultiplier: 1,
-					UpstreamBaseURL: upstream.URL, UpstreamModelID: "deepseek-v4-pro"},
+				hostedModel("deepseek-v4-pro", deepseekProvider(upstream.URL), "deepseek-v4-pro", 1),
 			},
 		},
 		settings: store.AppSettings{BaselineCreditsPer1M: 10},
@@ -149,7 +155,6 @@ func TestHandleAnthropicMessagesStreaming(t *testing.T) {
 	}
 }
 
-
 // TestHandleAnthropicMessagesLongCatBearerAuth verifies the LongCat provider is
 // forwarded to its Anthropic endpoint with `Authorization: Bearer <key>` (NOT
 // x-api-key), that the gateway swaps in its own provider key (not the caller's
@@ -170,8 +175,7 @@ func TestHandleAnthropicMessagesLongCatBearerAuth(t *testing.T) {
 			UserID: 61, Status: "active",
 			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
 			AllowedModels: []store.HostedModel{
-				{Code: "longcat-2", Provider: "longcat", Enabled: true, CreditMultiplier: 0.5,
-					UpstreamBaseURL: upstream.URL, UpstreamModelID: "LongCat-2.0"},
+				hostedModel("longcat-2", longcatProvider(upstream.URL), "LongCat-2.0", 0.5),
 			},
 		},
 		settings: store.AppSettings{BaselineCreditsPer1M: 10},
@@ -225,8 +229,7 @@ func TestHandleAnthropicMessagesOllamaCloudRouting(t *testing.T) {
 			UserID: 62, Status: "active",
 			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
 			AllowedModels: []store.HostedModel{
-				{Code: "glm-5.2", Provider: "rayu-ollama", Enabled: true, CreditMultiplier: 2.5,
-					UpstreamBaseURL: upstream.URL, UpstreamModelID: "glm-5.2:cloud"},
+				hostedModel("glm-5.2", ollamaProvider(upstream.URL), "glm-5.2:cloud", 2.5),
 			},
 		},
 		settings: store.AppSettings{BaselineCreditsPer1M: 1}, // 1 credit = 1,000,000 tokens
@@ -262,7 +265,6 @@ func TestHandleAnthropicMessagesOllamaCloudRouting(t *testing.T) {
 	}
 }
 
-
 // TestHandleAnthropicMessagesTinyTurnCostsLittle is the regression test for the
 // reported "a 'hi' burned a whole credit / showed millions of tokens" bug: a
 // trivial turn must cost only its true handful of BILLABLE TOKENS, not round up
@@ -280,8 +282,7 @@ func TestHandleAnthropicMessagesTinyTurnCostsLittle(t *testing.T) {
 			UserID: 71, Status: "active",
 			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
 			AllowedModels: []store.HostedModel{
-				{Code: "deepseek-v4-flash", Provider: "deepseek", Enabled: true, CreditMultiplier: 1,
-					UpstreamBaseURL: upstream.URL, UpstreamModelID: "deepseek-v4-flash"},
+				hostedModel("deepseek-v4-flash", deepseekProvider(upstream.URL), "deepseek-v4-flash", 1),
 			},
 		},
 		settings: store.AppSettings{BaselineCreditsPer1M: 1}, // 1 credit = 1,000,000 tokens
@@ -308,35 +309,160 @@ func TestHandleAnthropicMessagesTinyTurnCostsLittle(t *testing.T) {
 	}
 }
 
-// TestRotateKeysRoundRobin proves the per-provider round-robin: consecutive
-// requests lead with the next key (wrapping), each provider has an independent
-// cursor, and single/empty key sets are returned unchanged (no rotation).
-func TestRotateKeysRoundRobin(t *testing.T) {
-	s := &Server{}
-	keys := []string{"a", "b", "c"}
-	for i, want := range []string{"a", "b", "c", "a", "b"} {
-		got := s.rotateKeys("rayu-ollama", keys)
-		if len(got) != 3 || got[0] != want {
-			t.Fatalf("call %d: rotateKeys leads with %v, want first=%q", i, got, want)
+// TestHostedRequestRotatesPastARateLimitedKey is the whole point of per-key
+// rotation, asserted through the REAL request path: a provider with three keys
+// whose first key is rate-limited still answers 200 on the SAME request (the
+// client never sees the 429), the rate-limited key is put on cooldown, and the
+// NEXT request skips it entirely.
+func TestHostedRequestRotatesPastARateLimitedKey(t *testing.T) {
+	var mu sync.Mutex
+	var tried []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		tried = append(tried, key)
+		mu.Unlock()
+		if key == "k1" {
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
+			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","content":[{"type":"text","text":"ok"}],`+
+			`"usage":{"input_tokens":10,"output_tokens":5}}`)
+	}))
+	defer upstream.Close()
+
+	prov := longcatProvider(upstream.URL)
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 94, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				hostedModel("longcat-2", prov, "LongCat-2.0", 1),
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1},
+		providerKeys: map[int64][]providerkeys.Key{
+			provIDLongCat: {
+				{ID: 11, Secret: "k1", Masked: "k1***", Priority: 0, Enabled: true, Status: providerkeys.StatusActive},
+				{ID: 12, Secret: "k2", Masked: "k2***", Priority: 1, Enabled: true, Status: providerkeys.StatusActive},
+				{ID: 13, Secret: "k3", Masked: "k3***", Priority: 2, Enabled: true, Status: providerkeys.StatusActive},
+			},
+		},
 	}
-	// Independent cursor per provider.
-	if got := s.rotateKeys("other", keys); got[0] != "a" {
-		t.Fatalf("independent provider: leads with %q, want a", got[0])
+	h, _ := chatHarness(t, fe)
+
+	send := func() int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+			strings.NewReader(`{"model":"longcat-2","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("Authorization", "Bearer "+accessToken(t, 94))
+		h.ServeHTTP(rec, req)
+		return rec.Code
 	}
-	// Single / empty key sets are unchanged.
-	if got := s.rotateKeys("p", []string{"solo"}); len(got) != 1 || got[0] != "solo" {
-		t.Fatalf("single key rotated: %v", got)
+
+	if code := send(); code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 — failover must be invisible to the client", code)
 	}
-	if got := s.rotateKeys("p", nil); got != nil {
-		t.Fatalf("nil keys not passed through: %v", got)
+	mu.Lock()
+	first := append([]string(nil), tried...)
+	mu.Unlock()
+	if len(first) != 2 || first[0] != "k1" || first[1] != "k2" {
+		t.Fatalf("keys tried = %v, want [k1 k2] (rate-limited key then the next by priority)", first)
+	}
+
+	// The 429 must have been attributed to k1 and only k1.
+	snap := fe.Keys().SnapshotFor(provIDLongCat)
+	byID := map[int64]providerkeys.Snapshot{}
+	for _, k := range snap {
+		byID[k.ID] = k
+	}
+	if got := byID[11].Status; got != providerkeys.StatusRateLimited {
+		t.Errorf("key 11 status=%s, want %s", got, providerkeys.StatusRateLimited)
+	}
+	if byID[11].CooldownUntil.IsZero() {
+		t.Error("key 11 has no cooldown deadline; the provider's Retry-After was ignored")
+	}
+	if got := byID[12].Status; got != providerkeys.StatusActive {
+		t.Errorf("key 12 status=%s, want %s (it served the request)", got, providerkeys.StatusActive)
+	}
+	if got := fe.Keys().Usable(provIDLongCat); got != 2 {
+		t.Errorf("usable keys=%d, want 2 (3 configured, 1 cooling down)", got)
+	}
+
+	// A cooling key is not retried: the second request must start at k2.
+	mu.Lock()
+	tried = nil
+	mu.Unlock()
+	if code := send(); code != http.StatusOK {
+		t.Fatalf("second request status=%d, want 200", code)
+	}
+	mu.Lock()
+	second := append([]string(nil), tried...)
+	mu.Unlock()
+	if len(second) != 1 || second[0] != "k2" {
+		t.Fatalf("second request tried %v, want [k2] — a cooling key must be skipped, not retried", second)
 	}
 }
 
+// TestHostedRequestUnavailableWhenEveryKeyIsUnusable: a provider WITH keys where
+// none can serve (all invalid) is a temporary-unavailable condition, not a
+// misconfiguration, and must cost the user nothing.
+func TestHostedRequestUnavailableWhenEveryKeyIsUnusable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream must NOT be called when no key is usable")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
 
-// TestHandleAnthropicMessagesDisabledProviderRejected proves the zero-code
-// provider disable (RAYU_DISABLED_PROVIDERS): a disabled provider's model is
-// refused with 503 BEFORE any upstream call, credit charge, or daily-turn burn.
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 95, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				hostedModel("longcat-2", longcatProvider(upstream.URL), "LongCat-2.0", 1),
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1},
+		providerKeys: map[int64][]providerkeys.Key{
+			provIDLongCat: {
+				{ID: 21, Secret: "dead1", Masked: "de***", Enabled: true, Status: providerkeys.StatusInvalid},
+				{ID: 22, Secret: "dead2", Masked: "de***", Enabled: false, Status: providerkeys.StatusActive},
+			},
+		},
+	}
+	h, lim := chatHarness(t, fe)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+		strings.NewReader(`{"model":"longcat-2","max_tokens":16}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 95))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503 (keys configured but none usable)", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("no Retry-After on a 503: the client cannot tell this is temporary")
+	}
+	if body := rec.Body.String(); strings.Contains(body, "dead1") || strings.Contains(body, "dead2") {
+		t.Errorf("response leaks a provider key: %s", body)
+	}
+	st, err := lim.Status(context.Background(), 95)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.UsedPeriod != 0 {
+		t.Fatalf("usedPeriod=%d, want 0 (an unavailable provider must never charge credits)", st.UsedPeriod)
+	}
+}
+
+// TestHandleAnthropicMessagesDisabledProviderRejected proves the admin kill
+// switch (providers.enabled = false, which replaced RAYU_DISABLED_PROVIDERS): a
+// disabled provider's model is refused with 503 BEFORE any upstream call, credit
+// charge, or daily-turn burn.
 func TestHandleAnthropicMessagesDisabledProviderRejected(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("upstream must NOT be called for a disabled provider")
@@ -349,18 +475,13 @@ func TestHandleAnthropicMessagesDisabledProviderRejected(t *testing.T) {
 			UserID: 91, Status: "active",
 			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
 			AllowedModels: []store.HostedModel{
-				{Code: "longcat-2", Provider: "longcat", Enabled: true, CreditMultiplier: 0.5,
-					UpstreamBaseURL: upstream.URL, UpstreamModelID: "LongCat-2.0"},
+				hostedModel("longcat-2", longcatProvider(upstream.URL), "LongCat-2.0", 0.5),
 			},
 		},
-		settings: store.AppSettings{BaselineCreditsPer1M: 1},
+		settings:          store.AppSettings{BaselineCreditsPer1M: 1},
+		disabledProviders: map[string]bool{"longcat": true}, // admin kill switch
 	}
-	cfg := &config.Config{
-		JWTSecret:         testSecret,
-		ProviderKeys:      map[string]string{"longcat": "sk-longcat"},
-		DisabledProviders: map[string]bool{"longcat": true}, // zero-code disable
-	}
-	h, lim := chatHarnessCfg(t, fe, cfg)
+	h, lim := chatHarness(t, fe)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
@@ -380,6 +501,109 @@ func TestHandleAnthropicMessagesDisabledProviderRejected(t *testing.T) {
 	}
 }
 
+// TestHandleAnthropicMessagesMissingProviderKeyRejected proves a provider with NO
+// API key rows is refused before any credit is charged — the operator-facing
+// failure mode when a provider was added in the dashboard but no key was entered.
+func TestHandleAnthropicMessagesMissingProviderKeyRejected(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream must NOT be called when the provider key is missing")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 92, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+			AllowedModels: []store.HostedModel{
+				hostedModel("longcat-2", longcatProvider(upstream.URL), "LongCat-2.0", 0.5),
+			},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1},
+		// No key rows for this provider at all.
+		providerKeys: map[int64][]providerkeys.Key{provIDLongCat: {}},
+	}
+	h, lim := chatHarness(t, fe)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+		strings.NewReader(`{"model":"longcat-2","max_tokens":16}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken(t, 92))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500 (provider key not configured)", rec.Code)
+	}
+	// The response must not disclose provider internals.
+	if body := rec.Body.String(); strings.Contains(body, "longcat") || strings.Contains(body, upstream.URL) {
+		t.Errorf("response leaks provider config: %s", body)
+	}
+	st, err := lim.Status(context.Background(), 92)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.UsedPeriod != 0 {
+		t.Fatalf("usedPeriod=%d, want 0 (a keyless provider must never charge credits)", st.UsedPeriod)
+	}
+}
+
+// TestHandleAnthropicMessagesUnsafeProviderRowRejected proves a provider ROW that
+// fails validation is refused at request time — not just at the admin API. This
+// is the defence against a row written directly to the database pointing the
+// gateway (with a real provider key attached) at an internal address.
+func TestHandleAnthropicMessagesUnsafeProviderRowRejected(t *testing.T) {
+	for name, p := range map[string]store.Provider{
+		"cloud metadata address": func() store.Provider {
+			p := deepseekProvider("https://169.254.169.254")
+			return p
+		}(),
+		"endpoint path escaping the origin": func() store.Provider {
+			p := deepseekProvider("https://api.deepseek.com")
+			p.EndpointPath = "https://evil.example.com/v1/messages"
+			return p
+		}(),
+		"unknown wire format": func() store.Provider {
+			p := deepseekProvider("https://api.deepseek.com")
+			p.Format = "grpc_magic"
+			return p
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fe := &fakeEnt{
+				ent: entitlements.Entitlement{
+					UserID: 93, Status: "active",
+					Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(50)},
+					AllowedModels: []store.HostedModel{
+						hostedModel("deepseek-v4-pro", p, "deepseek-v4-pro", 1),
+					},
+				},
+				settings: store.AppSettings{BaselineCreditsPer1M: 1},
+				// Resolve routes exactly as production does (no dev escape hatch),
+				// which is the configuration these guards protect.
+				strictRoutes: true,
+			}
+			h, lim := chatHarness(t, fe)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages",
+				strings.NewReader(`{"model":"deepseek-v4-pro","max_tokens":16}`))
+			req.Header.Set("Authorization", "Bearer "+accessToken(t, 93))
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status=%d, want 503 for an invalid provider row", rec.Code)
+			}
+			st, err := lim.Status(context.Background(), 93)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.UsedPeriod != 0 {
+				t.Fatalf("usedPeriod=%d, want 0", st.UsedPeriod)
+			}
+		})
+	}
+}
+
 // TestHostedTokenBillingPerMultiplier proves the paid-path token count:
 // credits = creditMultiplier × (tokens / 1M) at baseline 1. Flat billing (no
 // per-bucket price → output rate == input rate == multiplier), matching the
@@ -390,10 +614,10 @@ func TestHostedTokenBillingPerMultiplier(t *testing.T) {
 		mult float64
 		want int64 // billable tokens for 1,000,000 total (credits = want / 1e6)
 	}{
-		{"deepseek-v4-pro", 1.0, 1_000_000}, // 1 credit / 1M
-		{"glm-5.2", 2.5, 2_500_000},         // 2.5 credits / 1M
-		{"gpt-oss-120b", 0.75, 750_000},     // 0.75 credits / 1M
-		{"deepseek-v4-flash", 0.33, 330_000},// 0.33 credits / 1M
+		{"deepseek-v4-pro", 1.0, 1_000_000},  // 1 credit / 1M
+		{"glm-5.2", 2.5, 2_500_000},          // 2.5 credits / 1M
+		{"gpt-oss-120b", 0.75, 750_000},      // 0.75 credits / 1M
+		{"deepseek-v4-flash", 0.33, 330_000}, // 0.33 credits / 1M
 	}
 	for _, c := range cases {
 		t.Run(c.code, func(t *testing.T) {
@@ -409,8 +633,7 @@ func TestHostedTokenBillingPerMultiplier(t *testing.T) {
 					UserID: 90, Status: "active",
 					Plan: store.Plan{Code: "pro", Name: "Pro", CreditsPerPeriod: i64(1000)},
 					AllowedModels: []store.HostedModel{
-						{Code: c.code, Provider: "rayu-ollama", Enabled: true, CreditMultiplier: c.mult,
-							UpstreamBaseURL: upstream.URL, UpstreamModelID: "x"},
+						hostedModel(c.code, ollamaProvider(upstream.URL), "x", c.mult),
 					},
 				},
 				settings: store.AppSettings{BaselineCreditsPer1M: 1}, // 1 credit = 1,000,000 tokens

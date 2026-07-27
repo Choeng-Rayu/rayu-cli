@@ -31,6 +31,12 @@ export type ProviderPreset = {
   /** True for endpoints where the user must type the base URL (no fixed host). */
   promptBaseURL?: boolean
   /** For bedrock presets: which Bedrock API surface to use (default 'converse'). */
+  /**
+   * @deprecated Removed in the unified-provider-format migration. Bedrock is now
+   * ONE provider whose wire format is chosen per model. Retained here only so the
+   * config migration can read (and drop) the field from providers saved by older
+   * versions — never write it.
+   */
   bedrockApi?: 'openai' | 'anthropic' | 'converse'
   /**
    * True for presets authenticated via Google OAuth / Application Default
@@ -160,7 +166,7 @@ export const RAYU_HOSTED_PROVIDER_LABEL = 'Rayu (hosted)'
  * rate-limit key rotation:
  *   • NVIDIA / OpenRouter — openai-compatible → rotation in openaiAdapter
  *     (withKeyRotation).
- *   • Ollama Cloud — anthropic-compatible → rotation in anthropicCompatibleClient
+ *   • Ollama Cloud — anthropic-compatible → rotation in anthropicMessagesClient
  *     (makeKeyRotatingFetch), since it uses the native Anthropic SDK path.
  * The rotation mechanism is generic per client kind, so enabling another
  * provider is just adding its id here — or, with no code change, via the
@@ -193,7 +199,7 @@ function envMultiKeyProviderIds(): string[] {
 /**
  * Provider kinds whose auth is a ROTATABLE user-supplied API key sent as a
  * request header. Multi-key rotation is ONLY wired for these two client paths
- * (openaiAdapter.withKeyRotation + anthropicCompatibleClient.makeKeyRotatingFetch).
+ * (openaiAdapter.withKeyRotation + anthropicMessagesClient.makeKeyRotatingFetch).
  *
  * Every other kind is intentionally excluded, because their credential is NOT a
  * rotatable user API key:
@@ -544,31 +550,16 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     id: 'bedrock',
-    label: 'AWS Bedrock — all models (Converse API: Claude, Kimi, DeepSeek, …)',
+    label: 'AWS Bedrock — all models (Claude + open-weight)',
     kind: 'bedrock',
-    bedrockApi: 'converse',
-    // No fixed baseURL: region-scoped, called through the AWS SDK
-    // Converse/ConverseStream API. Models are fetched live. Converse is
-    // model-agnostic and natively separates reasoning + tool use.
+    // ONE Bedrock provider for the whole catalog. The wire format is chosen per
+    // MODEL by resolveWireFormat(): Claude inference profiles speak the Anthropic
+    // Messages API (bedrock-runtime invoke endpoints), and the models Bedrock
+    // flags `openAiChatCompletions` speak OpenAI Chat Completions on the
+    // bedrock-mantle endpoint. Region-scoped, so no fixed baseURL here — the
+    // wizard sets the mantle baseURL after the region is chosen. Models are
+    // fetched live from the Bedrock control plane.
     envKeys: ['AWS_BEARER_TOKEN_BEDROCK'],
-  },
-  {
-    id: 'bedrock-openai',
-    label: 'AWS Bedrock — OpenAI-compatible (bedrock-mantle: gpt-oss, qwen, …)',
-    kind: 'bedrock',
-    bedrockApi: 'openai',
-    // Region-scoped OpenAI Chat Completions endpoint (bedrockBaseURL → mantle).
-    // No envKeys so AWS_BEARER_TOKEN_BEDROCK maps to the default (converse)
-    // provider during env migration; pick this explicitly via /connect.
-  },
-  {
-    id: 'bedrock-anthropic',
-    label: 'AWS Bedrock — Claude (Anthropic Messages API)',
-    kind: 'bedrock',
-    bedrockApi: 'anthropic',
-    // Region-scoped; uses @anthropic-ai/bedrock-sdk with the Bedrock API key.
-    // No envKeys here so AWS_BEARER_TOKEN_BEDROCK maps to a single (converse)
-    // provider during env migration; pick this explicitly via /connect.
   },
   {
     id: 'kiro',

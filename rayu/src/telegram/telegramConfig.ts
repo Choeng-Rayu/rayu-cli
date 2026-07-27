@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getRayuConfigHomeDir } from '../utils/envUtils.js'
 
@@ -178,7 +178,18 @@ export function readTelegramConfig(): TelegramConfig {
 export function writeTelegramConfig(config: TelegramConfig): void {
   const dir = getRayuConfigHomeDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
+  const path = configPath()
+  writeFileSync(path, JSON.stringify(config, null, 2), { mode: 0o600 })
+  // `mode` only applies when the file is CREATED. This file holds the bot token
+  // and the linked chat, so tighten an already-existing file too. Best-effort:
+  // POSIX permissions are meaningless on Windows and chmod can fail there.
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(path, 0o600)
+    } catch {
+      // Non-fatal — the config is still written.
+    }
+  }
 }
 
 export function setPendingToken(token: string, ttlMs: number): TelegramConfig {
@@ -190,6 +201,28 @@ export function setPendingToken(token: string, ttlMs: number): TelegramConfig {
   return next
 }
 
+/**
+ * Failed `/start <token>` attempts against the current pending token.
+ *
+ * The pending token is the only thing standing between a stranger's chat and
+ * control of this CLI, and the bot accepts messages from anyone. Telegram's own
+ * flood limits make online guessing slow, but a bounded attempt count removes
+ * the possibility entirely: after MAX_PAIRING_ATTEMPTS misses the token is burnt
+ * and the user has to run /telegram-bot again.
+ */
+const MAX_PAIRING_ATTEMPTS = 5
+let pairingAttempts = 0
+
+/** Length-safe, non-short-circuiting compare so a miss leaks no timing signal. */
+function tokensMatch(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  }
+  return diff === 0
+}
+
 /** Bind a chat to a valid, unexpired pending token. Returns updated config or null on mismatch/expiry. */
 export function consumePendingToken(
   token: string,
@@ -198,9 +231,18 @@ export function consumePendingToken(
 ): TelegramConfig | null {
   const current = readTelegramConfig()
   const pending = current.pendingToken
-  if (!pending || pending.token !== token || pending.expiresAt < Date.now()) {
+  if (!pending || pending.expiresAt < Date.now()) {
     return null
   }
+  if (!tokensMatch(pending.token, token)) {
+    if (++pairingAttempts >= MAX_PAIRING_ATTEMPTS) {
+      // Burn the token — a real user retries with a fresh QR, a guesser is out.
+      pairingAttempts = 0
+      writeTelegramConfig({ ...current, pendingToken: undefined })
+    }
+    return null
+  }
+  pairingAttempts = 0
   const next: TelegramConfig = {
     ...current,
     linkedChatId: chatId,

@@ -189,17 +189,17 @@ export function RayuProviderSetup({
   // does not show its own picker, to avoid a duplicate model-selection step.
   function finishBedrock(chosenModel: string, models: string[]): void {
     const trimmed = chosenModel.trim()
-    const api: 'openai' | 'anthropic' | 'converse' = preset?.bedrockApi ?? 'converse'
-    // Converse + Anthropic use the AWS SDK (endpoint derived from region); only
-    // the OpenAI-compatible surface needs a stored base URL.
-    const usesAwsSdk = api === 'anthropic' || api === 'converse'
+    // ONE Bedrock provider for the whole catalog. The wire format is resolved per
+    // MODEL at request time (Claude → Anthropic Messages on the bedrock-runtime
+    // invoke endpoints; everything else → OpenAI Chat on bedrock-mantle), so the
+    // mantle base URL is always stored and the Anthropic path derives its own
+    // endpoint from the region.
     const provider: RayuProvider = {
-      id: preset?.id ?? 'bedrock',
+      id: 'bedrock',
       kind: 'bedrock',
-      bedrockApi: api,
       apiKey: apiKey.trim() || undefined,
       awsRegion: region,
-      ...(usesAwsSdk ? {} : { baseURL: bedrockBaseURL(region) }),
+      baseURL: bedrockBaseURL(region),
       ...(trimmed ? { defaultModel: trimmed } : {}),
       ...(models.length ? { fetchedModels: models } : {}),
     }
@@ -207,43 +207,27 @@ export function RayuProviderSetup({
     onDone()
   }
 
-  // Prefer a known-good default for the chosen API style.
+  /**
+   * Pick a sensible default from the unified catalog: a current Claude Sonnet
+   * when present (the strongest coding model Bedrock offers), else a reasoning
+   * open-weight model, else anything.
+   */
   function pickBedrockDefault(models: string[]): string {
-    if (preset?.bedrockApi === 'converse') {
-      // Converse spans all Bedrock models; prefer a reasoning model, then Claude.
-      const prefs = [
-        /kimi-k2-thinking/i,
-        /claude-sonnet-4-6/i,
-        /claude-sonnet/i,
-        /deepseek/i,
-        /kimi/i,
-      ]
-      for (const re of prefs) {
-        const hit = models.find(m => re.test(m))
-        if (hit) return hit
-      }
-      return models[0] ?? ''
+    const prefs = [
+      /claude-sonnet-4-6/i,
+      /claude-sonnet-4-5/i,
+      /claude-sonnet/i,
+      /claude-opus/i,
+      /kimi-k2-thinking/i,
+      /deepseek/i,
+      /gpt-oss-120b/i,
+      /gpt-oss/i,
+    ]
+    for (const re of prefs) {
+      const hit = models.find(m => re.test(m))
+      if (hit) return hit
     }
-    if (preset?.bedrockApi === 'anthropic') {
-      // Prefer current Claude Sonnet versions (older ones may be Legacy/locked).
-      const prefs = [
-        /claude-sonnet-4-6/i,
-        /claude-sonnet-4-5/i,
-        /sonnet/i,
-        /claude/i,
-      ]
-      for (const re of prefs) {
-        const hit = models.find(m => re.test(m))
-        if (hit) return hit
-      }
-      return models[0] ?? ''
-    }
-    return (
-      models.find(m => /gpt-oss-120b/.test(m)) ??
-      models.find(m => /gpt-oss/.test(m)) ??
-      models[0] ??
-      ''
-    )
+    return models[0] ?? ''
   }
 
   // Persist the Gemini/Vertex provider (kind 'vertex') with the chosen GCP
@@ -449,16 +433,12 @@ export function RayuProviderSetup({
     if (phase !== 'fetchingModels') return
     let cancelled = false
     void (async () => {
-      const baseApi = preset?.bedrockApi ?? 'converse'
       const models = await fetchProviderModels({
-        id: preset?.id ?? 'bedrock',
+        id: 'bedrock',
         kind: 'bedrock',
-        bedrockApi: baseApi,
         apiKey: apiKey.trim(),
         awsRegion: region,
-        // OpenAI surface needs the mantle base URL; Converse/Anthropic derive
-        // their endpoint from the region (AWS SDK), so no baseURL.
-        ...(baseApi === 'openai' ? { baseURL: bedrockBaseURL(region) } : {}),
+        baseURL: bedrockBaseURL(region),
       }).catch(() => [] as string[])
       if (cancelled) return
       const chat = models.filter(isLikelyChatModel)
@@ -1249,20 +1229,16 @@ export function RayuProviderSetup({
         <Text bold>Default Bedrock model id</Text>
         {fetchError ? <Text color="yellow">{fetchError}</Text> : null}
         <Text dimColor>
-          {preset?.bedrockApi === 'anthropic'
-            ? 'Enter a Claude inference-profile id, e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0'
-            : 'Enter an OpenAI-compatible model id, e.g. openai.gpt-oss-120b-1:0'}
+          Enter a Claude inference-profile id (e.g.
+          us.anthropic.claude-sonnet-4-5-20250929-v1:0) or an OpenAI-compatible
+          model id (e.g. openai.gpt-oss-120b-1:0) — this provider serves both.
           {' '}(run /connect again to switch region).
         </Text>
         <TextInput
           value={model}
           onChange={setModel}
           onSubmit={() => finishBedrock(model, bedrockModels)}
-          placeholder={
-            preset?.bedrockApi === 'anthropic'
-              ? 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
-              : 'openai.gpt-oss-120b-1:0'
-          }
+          placeholder={'us.anthropic.claude-sonnet-4-5-20250929-v1:0'}
           columns={80}
           cursorOffset={cursor}
           onChangeCursorOffset={setCursor}

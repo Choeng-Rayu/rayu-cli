@@ -1,5 +1,5 @@
 import { toString as qrToString } from 'qrcode'
-import { randomUUID } from 'crypto'
+import { randomBytes } from 'crypto'
 import * as React from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import { Pane } from '../../components/design-system/Pane.js'
@@ -478,7 +478,12 @@ function LinkStep({
   onCancel: () => void
 }): React.ReactNode {
   const token = getBotToken()!
-  const [pairToken] = useState(() => randomUUID().slice(0, 8))
+  // Pairing token = the ONLY gate on linking a chat to this CLI, and a linked
+  // chat can drive the agent (including Bash via tool approval). It used to be
+  // randomUUID().slice(0, 8) — 32 bits, and the bot that accepts it is publicly
+  // addressable. 96 bits keeps it short enough to retype while removing any
+  // guessing margin. base64url so it is safe in a t.me/?start= deep link.
+  const [pairToken] = useState(() => randomBytes(12).toString('base64url'))
   const [qr, setQr] = useState('')
   const [botUsername, setBotUsername] = useState<string | undefined>(undefined)
   const setAppState = useSetAppState()

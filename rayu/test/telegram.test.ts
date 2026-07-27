@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -55,6 +55,26 @@ import {
   readPlan,
   resetPlanSessions,
 } from '../src/telegram/telegramPlanApproval.js'
+import {
+  clearStopCard,
+  handleInterruptCallback,
+  hasStopCard,
+  interruptMessage,
+  isInterruptCommand,
+  performInterrupt,
+  resetStopCard,
+  showStopCard,
+} from '../src/telegram/telegramInterrupt.js'
+import {
+  isTurnInterruptible,
+  publishActiveTurn,
+  resetActiveTurn,
+} from '../src/utils/activeTurn.js'
+import {
+  clearCommandQueue,
+  enqueue,
+  hasCommandsInQueue,
+} from '../src/utils/messageQueueManager.js'
 import {
   buildTelegramCommandAliases,
   toTelegramCommandName,
@@ -1341,6 +1361,52 @@ describe('question flow over the bridge', () => {
     expect(await handleQuestionTextInput(4242, 'what is the weather', undefined)).toBe(false)
   })
 
+  // force_reply is not dependable (desktop clients, or the prompt no longer
+  // being the newest message, drop the reply association), so typing must work
+  // on its own — otherwise the answer leaks to the model as a new turn.
+  test('a plain message with no reply association still answers the question', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { updatedInput?: Record<string, unknown> } | undefined
+    cb.onResponse('q-9', r => { got = r })
+    cb.sendRequest('q-9', 'AskUserQuestion', singleQuestion, 'tu-9', 'Answer questions?')
+    await settle()
+
+    // No "Other" tap, no reply_to_message — just a message.
+    expect(await handleQuestionTextInput(4242, 'MySQL actually', undefined)).toBe(true)
+    expect(got?.updatedInput?.['answers']).toEqual({
+      'Which database should we use?': 'MySQL actually',
+    })
+  })
+
+  test('a reply pointing at the card (not the prompt) is still accepted', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    let got: { updatedInput?: Record<string, unknown> } | undefined
+    cb.onResponse('q-10', r => { got = r })
+    cb.sendRequest('q-10', 'AskUserQuestion', singleQuestion, 'tu-10', 'Answer questions?')
+    await settle()
+
+    const sid = keyboardOf(lastCall('sendMessage')!).flat()[0]!.callback_data.split(':')[2]!
+    await handleQuestionCallback('tok', 4242, 'c1', `q:x:${sid}:0`)
+    // 4242 is not a message id we ever sent — simulates a mismatched reply target.
+    expect(await handleQuestionTextInput(4242, 'Cassandra', 123456)).toBe(true)
+    expect(got?.updatedInput?.['answers']).toEqual({
+      'Which database should we use?': 'Cassandra',
+    })
+  })
+
+  test('slash commands are not swallowed as an answer', async () => {
+    const cb = createTelegramPermissionCallbacks('tok')
+    cb.sendRequest('q-11', 'AskUserQuestion', singleQuestion, 'tu-11', 'Answer questions?')
+    await settle()
+
+    // Greedy capture must yield to commands so /interrupt still works.
+    expect(await handleQuestionTextInput(4242, '/interrupt', undefined)).toBe(false)
+    // But an explicit "Other" reply takes the text verbatim, slash and all.
+    const sid = keyboardOf(lastCall('sendMessage')!).flat()[0]!.callback_data.split(':')[2]!
+    await handleQuestionCallback('tok', 4242, 'c1', `q:x:${sid}:0`)
+    expect(await handleQuestionTextInput(4242, '/usr/local/pgsql', undefined)).toBe(true)
+  })
+
   test('Cancel declines the tool', async () => {
     const cb = createTelegramPermissionCallbacks('tok')
     let got: { behavior: string; message?: string } | undefined
@@ -1634,5 +1700,188 @@ describe('buildForceReplyBody', () => {
     expect(
       (body['reply_markup'] as { input_field_placeholder: string }).input_field_placeholder.length,
     ).toBe(64)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stop the AI from Telegram
+// ---------------------------------------------------------------------------
+
+describe('telegram interrupt', () => {
+  interface ApiCall { method: string; params: Record<string, unknown> }
+  let calls: ApiCall[]
+
+  beforeEach(() => {
+    calls = []
+    resetActiveTurn()
+    resetStopCard()
+    clearCommandQueue()
+    setHostedRouter({
+      getUpdates: async () => [],
+      botUsername: async () => 'rayu_test_bot',
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return { message_id: 321 }
+      },
+    })
+    setLinkedChat(4242, 'tester', 'rayu_test_bot')
+  })
+
+  afterEach(() => {
+    setHostedRouter(null)
+    resetActiveTurn()
+    resetStopCard()
+    clearCommandQueue()
+  })
+
+  const lastCall = (method: string) => [...calls].reverse().find(c => c.method === method)
+
+  test('recognises the interrupt commands but not /stop (that unlinks)', () => {
+    expect(isInterruptCommand('/interrupt')).toBe(true)
+    expect(isInterruptCommand('/cancel')).toBe(true)
+    expect(isInterruptCommand('/esc')).toBe(true)
+    expect(isInterruptCommand('/abort')).toBe(true)
+    // /stop is consumed by the hosted backend as a disconnect command.
+    expect(isInterruptCommand('/stop')).toBe(false)
+    expect(isInterruptCommand('/model')).toBe(false)
+  })
+
+  test('aborts the running turn with a remote-interrupt reason', () => {
+    const controller = new AbortController()
+    publishActiveTurn(controller)
+    expect(isTurnInterruptible()).toBe(true)
+
+    expect(performInterrupt()).toBe('stopped')
+    expect(controller.signal.aborted).toBe(true)
+    // 'interrupt', not 'user-cancel': the REPL rewinds the conversation and
+    // restores the prompt locally on 'user-cancel', which must not happen for a
+    // turn that came from Telegram.
+    expect(controller.signal.reason).toBe('interrupt')
+    expect(isTurnInterruptible()).toBe(false)
+  })
+
+  test('a second interrupt reports idle instead of pretending', () => {
+    const controller = new AbortController()
+    publishActiveTurn(controller)
+    expect(performInterrupt()).toBe('stopped')
+    expect(performInterrupt()).toBe('idle')
+    expect(interruptMessage('idle')).toContain('Nothing is running')
+  })
+
+  test('with no turn running it drops queued messages instead', () => {
+    enqueue({ value: 'do a thing', mode: 'prompt' })
+    expect(performInterrupt()).toBe('queue-cleared')
+    expect(hasCommandsInQueue()).toBe(false)
+  })
+
+  test('the stop card carries a single ⛔ Stop button and is reused', async () => {
+    await showStopCard('tok', 4242)
+    const sent = lastCall('sendMessage')!
+    const keyboard = (sent.params['reply_markup'] as {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>
+    }).inline_keyboard
+    expect(keyboard.flat().map(b => b.text)).toEqual(['⛔ Stop'])
+    expect(keyboard.flat()[0]!.callback_data).toBe('int:stop')
+
+    // A second turn must not stack another button in the chat.
+    const before = calls.filter(c => c.method === 'sendMessage').length
+    await showStopCard('tok', 4242)
+    expect(calls.filter(c => c.method === 'sendMessage').length).toBe(before)
+  })
+
+  test('tapping Stop aborts the turn and clears the buttons', async () => {
+    const controller = new AbortController()
+    publishActiveTurn(controller)
+    await showStopCard('tok', 4242)
+
+    const handled = await handleInterruptCallback('tok', 4242, 'cbq-1', 'int:stop')
+    expect(handled).toBe(true)
+    expect(controller.signal.aborted).toBe(true)
+
+    const edit = lastCall('editMessageText')!
+    expect(String(edit.params['text'])).toContain('Stopped')
+    expect((edit.params['reply_markup'] as { inline_keyboard: unknown[] }).inline_keyboard).toEqual([])
+    expect(hasStopCard()).toBe(false)
+  })
+
+  test('ignores callbacks from other namespaces', async () => {
+    expect(await handleInterruptCallback('tok', 4242, 'cbq-2', 'perm:allow:p1')).toBe(false)
+    expect(await handleInterruptCallback('tok', 4242, 'cbq-3', 'q:o:k1:0:0')).toBe(false)
+  })
+
+  test('clearStopCard retires the card after a normal turn', async () => {
+    await showStopCard('tok', 4242)
+    await clearStopCard()
+    expect(hasStopCard()).toBe(false)
+    expect(String(lastCall('editMessageText')!.params['text'])).toContain('Done')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pairing security
+// ---------------------------------------------------------------------------
+
+// The pending token is the only gate between a stranger's chat and control of
+// this CLI (a linked chat can approve tool use, including Bash), and the bot
+// accepts messages from anyone who can find it.
+describe('pairing token hardening', () => {
+  let tmp: string
+  const origConfigDir = process.env.RAYU_CONFIG_DIR
+  const clearHomeCache = () => {
+    const cache = (getRayuConfigHomeDir as unknown as { cache?: Map<unknown, unknown> }).cache
+    cache?.clear?.()
+  }
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'rayu-pair-'))
+    process.env.RAYU_CONFIG_DIR = tmp
+    clearHomeCache()
+    writeTelegramConfig({})
+  })
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+    if (origConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
+    else process.env.RAYU_CONFIG_DIR = origConfigDir
+    clearHomeCache()
+  })
+
+  test('a wrong token never links the chat', () => {
+    setPendingToken('correct-token', 60_000)
+    expect(consumePendingToken('wrong-token', 111, 'attacker')).toBeNull()
+    expect(readTelegramConfig().linkedChatId).toBeUndefined()
+  })
+
+  test('the token is burnt after repeated wrong guesses', () => {
+    setPendingToken('correct-token', 60_000)
+    for (let i = 0; i < 5; i++) {
+      expect(consumePendingToken(`guess-${i}`, 111, 'attacker')).toBeNull()
+    }
+    // Pending token is gone, so even the RIGHT token no longer links.
+    expect(readTelegramConfig().pendingToken).toBeUndefined()
+    expect(consumePendingToken('correct-token', 222, 'owner')).toBeNull()
+  })
+
+  test('a successful pair resets the attempt counter', () => {
+    setPendingToken('tok-a', 60_000)
+    expect(consumePendingToken('nope', 111, 'x')).toBeNull()
+    expect(consumePendingToken('tok-a', 222, 'owner')).not.toBeNull()
+    expect(readTelegramConfig().linkedChatId).toBe(222)
+
+    // Fresh budget: four misses in a row must not burn the next token.
+    setPendingToken('tok-b', 60_000)
+    for (let i = 0; i < 4; i++) consumePendingToken('nope', 111, 'x')
+    expect(readTelegramConfig().pendingToken?.token).toBe('tok-b')
+  })
+
+  test('an expired token cannot be used', () => {
+    setPendingToken('tok-c', -1)
+    expect(consumePendingToken('tok-c', 111, 'owner')).toBeNull()
+  })
+
+  test('the config file is not world-readable', () => {
+    writeTelegramConfig({ linkedChatId: 5 })
+    const mode = statSync(join(tmp, 'telegram.json')).mode & 0o777
+    expect(mode & 0o077).toBe(0)
   })
 })

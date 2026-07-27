@@ -387,6 +387,10 @@ export function renderQuestionCard(session: QuestionSession, compact = false): s
   const note = session.notes.get(question.question)
   if (note) lines.push('', `📝 <i>${escapeHtml(clip(note, 200))}</i>`)
 
+  // Typing is always accepted as a custom answer (see handleQuestionTextInput),
+  // so say so — it is the fallback when force_reply doesn't engage.
+  lines.push('', '<i>Tap an option, or just send your own answer as a message.</i>')
+
   return lines.join('\n')
 }
 
@@ -736,12 +740,22 @@ async function promptForText(
 }
 
 /**
- * Consume a text message that answers an open force_reply prompt. Returns true
- * when the text was consumed, so the bridge does not enqueue it as a new turn.
+ * Consume a text message aimed at an open question card. Returns true when the
+ * text was used, so the bridge does not enqueue it as a new turn.
  *
- * Matching prefers the reply target (`reply_to_message.message_id`), but also
- * accepts a plain message while a prompt is open — mobile clients sometimes lose
- * the reply association, and the user clearly means it as the answer.
+ * Matching is deliberately forgiving, in this order:
+ *  1. a reply whose target is our force_reply prompt (the happy path);
+ *  2. any session in this chat that is waiting for free text;
+ *  3. any session in this chat sitting on a question — typing is treated as the
+ *     free-text answer for it.
+ *
+ * (3) exists because `force_reply` is not dependable: desktop clients and
+ * clients where the prompt is no longer the newest message often drop the reply
+ * association, so the user's answer arrived with no `reply_to_message` and, with
+ * strict matching, fell through to the model as a brand-new turn. Typing is also
+ * exactly how the terminal dialog takes a custom answer, so this matches it.
+ * The review card is excluded — at that point the user is choosing Submit or
+ * Cancel, and swallowing chat there would be surprising.
  */
 export async function handleQuestionTextInput(
   chatId: number,
@@ -751,23 +765,35 @@ export async function handleQuestionTextInput(
   const trimmed = text.trim()
   if (!trimmed) return false
 
-  let fallback: QuestionSession | undefined
-  let matched: QuestionSession | undefined
+  let replyMatch: QuestionSession | undefined
+  let awaitingMatch: QuestionSession | undefined
+  let openMatch: QuestionSession | undefined
   for (const session of SESSIONS.values()) {
-    if (session.chatId !== chatId || !session.awaiting) continue
+    if (session.chatId !== chatId || session.settled) continue
     if (
+      session.awaiting &&
       replyToMessageId !== undefined &&
       session.awaiting.promptMessageId === replyToMessageId
     ) {
-      matched = session
+      replyMatch = session
       break
     }
-    fallback ??= session
+    if (session.awaiting) awaitingMatch ??= session
+    else if (!isReviewing(session)) openMatch ??= session
   }
-  const session = matched ?? fallback
-  if (!session?.awaiting) return false
+  const session = replyMatch ?? awaitingMatch ?? openMatch
+  if (!session) return false
 
-  const { kind, qIndex } = session.awaiting
+  // Greedy capture (case 3) must not eat slash commands — a user typing
+  // /interrupt while a card is open means the command, not an answer. When the
+  // user explicitly asked to type (Other/Note) or replied to our prompt, take
+  // the text verbatim so answers that legitimately start with "/" still work.
+  const isGreedy = session === openMatch && !session.awaiting
+  if (isGreedy && trimmed.startsWith('/')) return false
+
+  // No awaiting record (case 3) → treat it as the answer to the current question.
+  const kind = session.awaiting?.kind ?? 'other'
+  const qIndex = session.awaiting?.qIndex ?? session.index
   session.awaiting = undefined
   const question = session.questions[qIndex]
   if (!question) return true

@@ -5,6 +5,51 @@ import (
 	"testing"
 )
 
+// ParseOpenAIUsageLine is what the openai_chat adapter meters off, so both cache
+// conventions and the "no usage here" cases must be handled per line.
+func TestParseOpenAIUsageLine(t *testing.T) {
+	cases := map[string]struct {
+		line   string
+		want   bool // expect usage
+		prompt int
+		cached int
+	}{
+		"deepseek convention": {
+			`data: {"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}`,
+			true, 100, 80,
+		},
+		"openai convention": {
+			`data: {"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":60}}}`,
+			true, 100, 60,
+		},
+		"no cache reported": {
+			`data: {"usage":{"prompt_tokens":7,"completion_tokens":1,"total_tokens":8}}`,
+			true, 7, 0,
+		},
+		"content delta only": {`data: {"choices":[{"delta":{"content":"hi"}}]}`, false, 0, 0},
+		"done sentinel":      {`data: [DONE]`, false, 0, 0},
+		"not a data line":    {`event: message`, false, 0, 0},
+		"malformed json":     {`data: {`, false, 0, 0},
+		"zero total usage":   {`data: {"usage":{"prompt_tokens":0,"total_tokens":0}}`, false, 0, 0},
+	}
+	for name, c := range cases {
+		got := ParseOpenAIUsageLine([]byte(c.line))
+		if c.want != (got != nil) {
+			t.Errorf("%s: usage present=%v want %v", name, got != nil, c.want)
+			continue
+		}
+		if got == nil {
+			continue
+		}
+		if got.PromptTokens != c.prompt {
+			t.Errorf("%s: prompt=%d want %d", name, got.PromptTokens, c.prompt)
+		}
+		if got.CacheReadTokens() != c.cached {
+			t.Errorf("%s: cacheRead=%d want %d", name, got.CacheReadTokens(), c.cached)
+		}
+	}
+}
+
 func TestUsageCacheSplit(t *testing.T) {
 	cases := []struct {
 		name          string

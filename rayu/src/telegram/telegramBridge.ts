@@ -46,6 +46,7 @@ import {
 } from './telegramConnect.js'
 import { StreamingMirror } from './streamingMirror.js'
 import { buildImageQueueCommand, collectAlbumImage } from './telegramMedia.js'
+import { getHostedFile } from './telegramHostedApi.js'
 import {
   handleQuestionCallback,
   handleQuestionTextInput,
@@ -54,6 +55,15 @@ import {
   handlePlanCallback,
   handlePlanTextInput,
 } from './telegramPlanApproval.js'
+import {
+  clearStopCard,
+  handleInterruptCallback,
+  hasStopCard,
+  interruptMessage,
+  isInterruptCommand,
+  performInterrupt,
+  showStopCard,
+} from './telegramInterrupt.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import { enqueue } from '../utils/messageQueueManager.js'
 
@@ -232,10 +242,10 @@ const TELEGRAM_BLOCKED_COMMANDS = new Set([
 /**
  * Download an inbound Telegram file and return it as base64.
  *
- * Returns undefined (after telling the user why) when the download can't happen.
- * Note the hosted-bot case: getFile/downloadFileAsBase64 short-circuit when the
- * hosted router is installed, because the file URL needs the shared bot token,
- * which only the backend holds. Say so plainly instead of "could not download".
+ * Two transports: in hosted (shared bot) mode the CLI has no bot token, so the
+ * download goes through the backend, which verifies the file was delivered to
+ * this account before serving it. In BYO mode we call Telegram directly.
+ * Returns undefined after telling the user why, so callers can just bail.
  */
 async function fetchInboundImage(
   token: string,
@@ -244,12 +254,16 @@ async function fetchInboundImage(
   kind: 'photo' | 'file' | 'sticker',
 ): Promise<{ base64: string; mediaType: string } | undefined> {
   if (isHostedMode()) {
-    await sendMessage(
-      token,
-      chatId,
-      `⚠️ Sending a ${kind} isn't supported on the shared Rayu bot yet.\n\nConnect your own bot token via \`/telegram-bot\` in the CLI to send images.`,
-    )
-    return undefined
+    const hosted = await getHostedFile(fileId)
+    if (!hosted) {
+      await sendMessage(
+        token,
+        chatId,
+        `⚠️ Could not fetch that ${kind}. Only images are supported, up to 10 MB.`,
+      )
+      return undefined
+    }
+    return hosted
   }
   const filePath = await getFile(token, fileId)
   if (!filePath) {
@@ -285,6 +299,7 @@ async function handleUpdate(
     // themselves; each returns false for data it doesn't recognise.
     //   q:    — AskUserQuestion interview
     //   pl:   — plan approval
+    //   int:  — stop the running turn
     //   perm: — permission decisions
     // Anything else falls through to the wizard handler, which always calls
     // answerCallbackQuery first (dismisses the spinner unconditionally) and
@@ -292,6 +307,7 @@ async function handleUpdate(
     // (mdl:, cnx:, …) still requires no change here.
     if (await handleQuestionCallback(options.token, chatId, cq.id, data)) return
     if (await handlePlanCallback(options.token, chatId, cq.id, data)) return
+    if (await handleInterruptCallback(options.token, chatId, cq.id, data)) return
     if (await handlePermissionCallback(options.token, chatId, cq.id, data)) return
     await handleCallbackQuery(options.token, cq.id, chatId, data)
     return
@@ -451,6 +467,16 @@ async function handleUpdate(
   // Only the linked chat drives the CLI.
   if (chatId !== linkedChatId()) return
 
+  // Stop the AI. Checked before the interactive-card handlers so it works even
+  // while a question card is open, and before the command queue so it is never
+  // itself queued behind the turn it is trying to stop.
+  if (isInterruptCommand(cmd)) {
+    const outcome = performInterrupt()
+    if (hasStopCard()) await clearStopCard(interruptMessage(outcome))
+    else await sendMessage(options.token, chatId, interruptMessage(outcome), 'HTML')
+    return
+  }
+
   // An open interactive card waiting on free text claims the message first, so
   // an answer, note or plan feedback never leaks into the conversation as a new
   // turn.
@@ -502,11 +528,14 @@ async function handleUpdate(
       return
     }
     enqueue({ value: arg ? `/${cmdName} ${arg}` : `/${cmdName}`, mode: 'prompt' })
+    void showStopCard(options.token, chatId)
     return
   }
 
   // Plain text → new REPL turn.
   enqueue({ value: text, mode: 'prompt' })
+  // Give the user a one-tap way out while the turn runs. Cleared on endTurn.
+  void showStopCard(options.token, chatId)
 }
 
 /**
@@ -522,6 +551,7 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
 
     // Built-in bridge commands always included (these come first).
     const builtins = [
+      { command: 'interrupt', description: 'Stop the AI right now (like pressing Esc)' },
       { command: 'connect', description: 'Connect a provider and select a model' },
       { command: 'model', description: 'Show or set the active model (/model <name>)' },
       { command: 'provider', description: 'Show all configured providers' },
@@ -833,6 +863,10 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
         await mirror.finalize().catch(() => {})
         mirror = null
       }
+      // Retire the ⛔ Stop button — there is nothing left to stop. A turn that
+      // streamed no text never reaches here; the card then survives until the
+      // next turn and a tap simply reports "nothing is running".
+      await clearStopCard()
     },
 
     pushActivity(messages: WrappedMessage[]): void {

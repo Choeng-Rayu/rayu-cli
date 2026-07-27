@@ -64,7 +64,8 @@ into the charge.
 
 Notes:
 - **DeepSeek (official API) and Ollama Cloud are both active** right now
-  (`RAYU_DISABLED_PROVIDERS=longcat`). LongCat is disabled — its models are hidden
+  (LongCat's provider row has `enabled = false` in Admin → Providers). A disabled
+  provider's models are hidden
   from users and any request to them is refused (with no charge). DeepSeek V4
   Flash/Pro are served DIRECT through DeepSeek's own Anthropic-compatible API
   (provider `deepseek`); the remaining hosted models are served through Ollama Cloud.
@@ -142,7 +143,9 @@ admin‑configured — see [`credits-and-limits.md`](./credits-and-limits.md).
 | Per‑model rate (`creditMultiplier`) + prices | Admin → Models (`hosted_models` table) |
 | `1 credit = 1,000,000 tokens` baseline (`baselineCreditsPer1M`) | Admin → Credit Settings (`app_settings`) |
 | Plan credit allowance (`creditsPerPeriod`) | Admin → Plans |
-| Which providers are active | Gateway env `RAYU_DISABLED_PROVIDERS` (zero‑code) |
+| Which providers are active | Admin → Providers (`providers.enabled`) |
+| Where/how a provider is called (base URL, wire format, auth) | Admin → Providers (`providers` table) |
+| Per‑model capabilities (thinking, image input) | Admin → Models (`supportsReasoning` / `supportsImage`) |
 
 The gateway computes every charge from these values at request time — changing a
 rate in the dashboard changes the charge with no code change or redeploy of the

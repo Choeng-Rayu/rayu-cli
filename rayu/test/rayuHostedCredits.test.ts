@@ -15,16 +15,27 @@ import {
   _setRayuEntitlementsForTesting,
 } from '../src/services/rayuAuth/rayuEntitlements.ts'
 import { makeRayuHostedFetch } from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
-import { loadRayuConfig, saveRayuConfig } from '../src/utils/rayuConfig.ts'
+import {
+  getAllProviderModelOptions,
+  loadRayuConfig,
+  saveRayuConfig,
+} from '../src/utils/rayuConfig.ts'
+import {
+  describeModelChoice,
+  formatContextTokens,
+} from '../src/components/SearchableModelPicker.tsx'
 import { APIConnectionError, APIError } from '@anthropic-ai/sdk/index.js'
-import Anthropic from '@anthropic-ai/sdk'
+// Same specifier the source uses (src/services/api/anthropicMessagesClient.ts).
+// The bare '@anthropic-ai/sdk' and '@anthropic-ai/sdk/index.js' resolve to
+// separate module records, giving two distinct Anthropic classes — so
+// `toBeInstanceOf` only holds when both sides import the same one.
+import Anthropic from '@anthropic-ai/sdk/index.js'
 import {
   getAssistantMessageFromError,
   isRayuCreditLimitError,
   isRayuHostedProviderUnavailable,
 } from '../src/services/api/errors.ts'
 import { CannotRetryError, withRetry } from '../src/services/api/withRetry.ts'
-import { createRayuHostedClient } from '../src/services/api/rayuHosted/rayuHostedClient.ts'
 
 let dir: string
 beforeEach(() => {
@@ -154,6 +165,209 @@ describe('syncRayuHostedProvider', () => {
     const cfg = loadRayuConfig()
     expect(cfg.providers.find((x) => x.id === 'rayu-hosted')).toBeFalsy()
     expect(cfg.activeProvider).not.toBe('rayu-hosted')
+  })
+
+  // The whole point of the server-driven catalog: an admin adds a model in the
+  // dashboard and it appears in the CLI on the next entitlements refresh, with no
+  // release and no user action.
+  test('a model added by the admin appears on the next sync (and a removed one goes)', () => {
+    syncRayuHostedProvider(entWith(['deepseek-v4-pro']), { activate: true })
+    expect(
+      loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')?.models,
+    ).toEqual(['deepseek-v4-pro'])
+
+    // Admin adds "deepseek" and drops nothing.
+    syncRayuHostedProvider(entWith(['deepseek-v4-pro', 'deepseek']))
+    const grown = loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+    expect(grown?.models).toEqual(['deepseek-v4-pro', 'deepseek'])
+    // fetchedModels drives the /model picker, so it must track the catalog too.
+    expect(grown?.fetchedModels).toEqual(['deepseek-v4-pro', 'deepseek'])
+
+    // Admin then removes the original model.
+    syncRayuHostedProvider(entWith(['deepseek']))
+    expect(
+      loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')?.models,
+    ).toEqual(['deepseek'])
+  })
+
+  // A stale default is worse than no default: every request would go to a model
+  // the gateway now rejects (403), which looks like a CLI bug.
+  test('prunes a default/small model that left the catalog, keeps one that stayed', () => {
+    syncRayuHostedProvider(entWith(['deepseek-v4-pro', 'glm-5.2']), { activate: true })
+    const cfg = loadRayuConfig()
+    const i = cfg.providers.findIndex((x) => x.id === 'rayu-hosted')
+    cfg.providers[i] = {
+      ...cfg.providers[i]!,
+      defaultModel: 'glm-5.2',
+      smallFastModel: 'glm-5.2',
+    }
+    saveRayuConfig(cfg)
+
+    // glm-5.2 survives a refresh that still lists it.
+    syncRayuHostedProvider(entWith(['deepseek-v4-pro', 'glm-5.2']))
+    let p = loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+    expect(p?.defaultModel).toBe('glm-5.2')
+    expect(p?.smallFastModel).toBe('glm-5.2')
+
+    // Admin removes glm-5.2 → both fall back to a model that actually exists.
+    syncRayuHostedProvider(entWith(['deepseek-v4-pro']))
+    p = loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+    expect(p?.defaultModel).toBe('deepseek-v4-pro')
+    expect(p?.smallFastModel).toBe('deepseek-v4-pro')
+  })
+
+  // The admin-entered context window must reach the provider config, because that
+  // map is what getRayuModelContextWindow() reads for hosted models.
+  test('stores the admin context window per model, omitting unset/invalid ones', () => {
+    const ent: RayuEntitlements = {
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [
+        { code: 'big', label: 'big', provider: 'p', creditMultiplier: 1, contextWindow: 1_000_000 },
+        { code: 'mid', label: 'mid', provider: 'p', creditMultiplier: 1, contextWindow: 200_000 },
+        { code: 'unset', label: 'unset', provider: 'p', creditMultiplier: 1, contextWindow: null },
+        { code: 'missing', label: 'missing', provider: 'p', creditMultiplier: 1 },
+        // Defensive: a bad server value must NOT become a 0-token window.
+        { code: 'zero', label: 'zero', provider: 'p', creditMultiplier: 1, contextWindow: 0 },
+      ],
+    }
+    syncRayuHostedProvider(ent, { activate: true })
+    const p = loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+    expect(p?.modelContextWindows).toEqual({ big: 1_000_000, mid: 200_000 })
+    // Every model is still selectable — only the WINDOW is unknown for some.
+    expect(p?.models).toEqual(['big', 'mid', 'unset', 'missing', 'zero'])
+  })
+
+  test('an admin raising the context window overwrites the stored one', () => {
+    const withWindow = (tokens: number): RayuEntitlements => ({
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [
+        { code: 'deepseek', label: 'd', provider: 'p', creditMultiplier: 1, contextWindow: tokens },
+      ],
+    })
+    syncRayuHostedProvider(withWindow(200_000), { activate: true })
+    expect(
+      loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+        ?.modelContextWindows?.['deepseek'],
+    ).toBe(200_000)
+
+    syncRayuHostedProvider(withWindow(1_000_000))
+    expect(
+      loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+        ?.modelContextWindows?.['deepseek'],
+    ).toBe(1_000_000)
+  })
+
+  // The model NAME the admin typed must reach the CLI, because the picker shows it
+  // next to the id. Nothing about the hosted catalog is hardcoded here, so a
+  // rename in the dashboard has to travel through the entitlements payload.
+  test('stores the admin display name per model, skipping ones that add nothing', () => {
+    const ent: RayuEntitlements = {
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [
+        { code: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', provider: 'deepseek', creditMultiplier: 1 },
+        // A label that just repeats the id would render as "x — x".
+        { code: 'glm-5.2', label: 'glm-5.2', provider: 'zai', creditMultiplier: 1 },
+        // Blank / whitespace-only names are not names.
+        { code: 'blank', label: '   ', provider: 'p', creditMultiplier: 1 },
+      ],
+    }
+    syncRayuHostedProvider(ent, { activate: true })
+    const p = loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+    expect(p?.modelLabels).toEqual({ 'deepseek-v4-pro': 'DeepSeek V4 Pro' })
+    // Every model stays selectable — only the NAME is missing for some.
+    expect(p?.models).toEqual(['deepseek-v4-pro', 'glm-5.2', 'blank'])
+  })
+
+  test('an admin renaming a model overwrites the stored name', () => {
+    const named = (label: string): RayuEntitlements => ({
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [{ code: 'm1', label, provider: 'p', creditMultiplier: 1 }],
+    })
+    syncRayuHostedProvider(named('Old Name'), { activate: true })
+    expect(
+      loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+        ?.modelLabels?.['m1'],
+    ).toBe('Old Name')
+
+    syncRayuHostedProvider(named('New Name'))
+    expect(
+      loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+        ?.modelLabels?.['m1'],
+    ).toBe('New Name')
+  })
+
+  // What the picker actually consumes: id + name + window for every hosted model,
+  // all three sourced from the backend payload.
+  test('picker options carry the backend id, name and context window', () => {
+    const ent: RayuEntitlements = {
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [
+        {
+          code: 'deepseek-v4-pro',
+          label: 'DeepSeek V4 Pro',
+          provider: 'deepseek',
+          creditMultiplier: 1,
+          contextWindow: 128_000,
+        },
+        { code: 'nameless', label: '', provider: 'p', creditMultiplier: 1 },
+      ],
+    }
+    syncRayuHostedProvider(ent, { activate: true })
+
+    const options = getAllProviderModelOptions()
+    const pro = options.find((o) => o.model === 'deepseek-v4-pro')
+    expect(pro).toMatchObject({
+      providerId: 'rayu-hosted',
+      model: 'deepseek-v4-pro',
+      label: 'DeepSeek V4 Pro',
+      contextWindow: 128_000,
+    })
+    expect(describeModelChoice(pro!)).toBe('rayu-hosted · DeepSeek V4 Pro · 128K ctx')
+
+    // A model with no admin name/window still lists — just without the extras.
+    const bare = options.find((o) => o.model === 'nameless')
+    expect(bare?.label).toBeUndefined()
+    expect(bare?.contextWindow).toBeUndefined()
+    expect(describeModelChoice(bare!)).toBe('rayu-hosted')
+  })
+
+  // Scope guard: the hosted sync must never disturb another provider's entry.
+  test('leaves other providers untouched', () => {
+    const cfg = loadRayuConfig()
+    cfg.providers.push({
+      id: 'my-openai',
+      kind: 'openai-compatible',
+      baseURL: 'https://api.example.com/v1',
+      models: ['gpt-x'],
+      defaultModel: 'gpt-x',
+      modelContextWindows: { 'gpt-x': 111_000 },
+    })
+    cfg.activeProvider = 'my-openai'
+    saveRayuConfig(cfg)
+
+    syncRayuHostedProvider(entWith(['deepseek-v4-pro']))
+
+    const after = loadRayuConfig()
+    const other = after.providers.find((x) => x.id === 'my-openai')
+    expect(other).toMatchObject({
+      kind: 'openai-compatible',
+      baseURL: 'https://api.example.com/v1',
+      models: ['gpt-x'],
+      defaultModel: 'gpt-x',
+      modelContextWindows: { 'gpt-x': 111_000 },
+    })
+    // A background refresh must not hijack the user's active provider either.
+    expect(after.activeProvider).toBe('my-openai')
   })
 })
 
@@ -357,14 +571,17 @@ describe('withRetry · credit limit is not retried', () => {
 })
 
 
-describe('createRayuHostedClient · native Anthropic (DeepSeek Anthropic API)', () => {
-  test('returns a native @anthropic-ai/sdk client pointed at the gateway /anthropic base', () => {
+describe('rayu-hosted client · native Anthropic (DeepSeek Anthropic API)', () => {
+  test('returns a native @anthropic-ai/sdk client pointed at the gateway /anthropic base', async () => {
     process.env.RAYU_GATEWAY_URL = 'https://gw.example.test'
     try {
-      const client = createRayuHostedClient(
-        { id: 'rayu-hosted', kind: 'rayu-hosted' } as never,
-        2,
+      const { buildClient } = await import(
+        '../src/services/api/providerRegistry.ts'
       )
+      const client = (await buildClient(
+        { id: 'rayu-hosted', kind: 'rayu-hosted' } as never,
+        { maxRetries: 2 },
+      )) as Anthropic
       // It's the real Anthropic SDK client — not the OpenAI adapter shim — so
       // claude.ts drives it natively (thinking/tools/usage map 1:1, no
       // translation), and usage comes back in Anthropic's native shape.
@@ -496,5 +713,18 @@ describe('getAssistantMessageFromError · exact Cloudflare origin 502', () => {
     expect(text.toLowerCase()).not.toContain('cloudflare')
     expect(text).not.toContain('origin_bad_gateway')
     expect(text).not.toContain('gateway.rayucode.com')
+  })
+})
+
+// The compact window shown in the picker: readable at a glance, and never a lie
+// (a 1.5M window must not round to "1M").
+describe('formatContextTokens', () => {
+  test('renders the units admins think in', () => {
+    expect(formatContextTokens(1_000_000)).toBe('1M')
+    expect(formatContextTokens(1_500_000)).toBe('1.5M')
+    expect(formatContextTokens(200_000)).toBe('200K')
+    expect(formatContextTokens(128_000)).toBe('128K')
+    expect(formatContextTokens(32_768)).toBe('32.8K')
+    expect(formatContextTokens(900)).toBe('900')
   })
 })

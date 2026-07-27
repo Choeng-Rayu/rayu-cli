@@ -3,7 +3,11 @@ import type { BetaMessageParam as MessageParam } from '@anthropic-ai/sdk/resourc
 // @aws-sdk/client-bedrock-runtime is imported dynamically in countTokensWithBedrock()
 // to defer ~279KB of AWS SDK code until a Bedrock call is actually made
 import type { CountTokensCommandInput } from '@aws-sdk/client-bedrock-runtime'
-import { getAPIProvider, isOpenAICompatibleActive } from 'src/utils/model/providers.js'
+import {
+  getAPIProvider,
+  isOpenAICompatibleActive,
+  isRayuHostedActive,
+} from 'src/utils/model/providers.js'
 import { VERTEX_COUNT_TOKENS_ALLOWED_BETAS } from '../constants/betas.js'
 import type { Attachment } from '../utils/attachments.js'
 import { getModelBetas } from '../utils/betas.js'
@@ -253,6 +257,10 @@ export function roughTokenCountEstimationForFileType(
  * Uses Haiku for token counting (Haiku 4.5 supports thinking blocks), except:
  * - Vertex global region: uses Sonnet (Haiku not available)
  * - Bedrock with thinking blocks: uses Sonnet (Haiku 3.5 doesn't support thinking)
+ *
+ * NOTE this fallback measures tokens by issuing a REAL max_tokens=1 completion.
+ * That is acceptable where the request is free to the user, and NOT acceptable on
+ * the Rayu-hosted path (see the guard below).
  */
 export async function countTokensViaHaikuFallback(
   messages: Anthropic.Beta.Messages.BetaMessageParam[],
@@ -261,6 +269,15 @@ export async function countTokensViaHaikuFallback(
   // OpenAI-compatible providers can't use the Anthropic countTokens endpoint
   // (the adapter doesn't implement it); let callers fall back to estimation.
   if (isOpenAICompatibleActive()) {
+    return null
+  }
+  // Rayu-HOSTED: never "count" by sending a billed completion. /context counts
+  // once per section, so this fallback spent ~20 credits-charged requests per
+  // invocation and tripped the plan's concurrency cap, which made /context fail
+  // outright. The gateway answers count_tokens directly; if that ever fails, a
+  // LOCAL estimate is the correct degradation — the user's balance is not a
+  // budget for the CLI's own bookkeeping.
+  if (isRayuHostedActive()) {
     return null
   }
   // Check if messages contain thinking blocks

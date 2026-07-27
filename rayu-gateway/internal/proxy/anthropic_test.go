@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
 )
@@ -67,7 +68,7 @@ func TestCompleteAnthropicAuthSchemes(t *testing.T) {
 		var gotKey, gotAuth string
 		srv := newUpstream(&gotKey, &gotAuth)
 		defer srv.Close()
-		usage, status, _, err := CompleteAnthropic(context.Background(), srv.URL, []string{"sk-test-key"}, false, []byte(`{"model":"deepseek-v4-pro","max_tokens":16}`))
+		usage, status, _, err := CompleteAnthropic(context.Background(), srv.URL, testKeys("sk-test-key"), false, []byte(`{"model":"deepseek-v4-pro","max_tokens":16}`), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +91,7 @@ func TestCompleteAnthropicAuthSchemes(t *testing.T) {
 		var gotKey, gotAuth string
 		srv := newUpstream(&gotKey, &gotAuth)
 		defer srv.Close()
-		_, status, _, err := CompleteAnthropic(context.Background(), srv.URL, []string{"lc-secret"}, true, []byte(`{"model":"LongCat-2.0","max_tokens":16}`))
+		_, status, _, err := CompleteAnthropic(context.Background(), srv.URL, testKeys("lc-secret"), true, []byte(`{"model":"LongCat-2.0","max_tokens":16}`), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,7 +106,6 @@ func TestCompleteAnthropicAuthSchemes(t *testing.T) {
 		}
 	})
 }
-
 
 // TestStreamAnthropicSanitizesBodylessError covers the LongCat quirk (a bodyless
 // streaming 500 whose real reason is only visible via a non-streaming re-probe):
@@ -127,8 +127,8 @@ func TestStreamAnthropicSanitizesBodylessError(t *testing.T) {
 	defer upstream.Close()
 
 	rec := httptest.NewRecorder()
-	_, wrote, _ := StreamAnthropic(context.Background(), rec, upstream.URL, []string{"lc-key"}, true,
-		[]byte(`{"model":"LongCat-2.0","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	_, wrote, _ := StreamAnthropic(context.Background(), rec, upstream.URL, testKeys("lc-key"), true,
+		[]byte(`{"model":"LongCat-2.0","stream":true,"messages":[{"role":"user","content":"hi"}]}`), nil)
 
 	if !wrote {
 		t.Fatal("expected wrote=true")
@@ -158,7 +158,7 @@ func TestStreamAnthropicDoesNotLeakSubscriptionError(t *testing.T) {
 	defer upstream.Close()
 
 	rec := httptest.NewRecorder()
-	_, wrote, err := StreamAnthropic(context.Background(), rec, upstream.URL, []string{"k"}, true, []byte(`{"model":"kimi-k2.7","stream":true}`))
+	_, wrote, err := StreamAnthropic(context.Background(), rec, upstream.URL, testKeys("k"), true, []byte(`{"model":"kimi-k2.7","stream":true}`), nil)
 	if err == nil || !wrote {
 		t.Fatalf("expected a surfaced upstream error, got wrote=%v err=%v", wrote, err)
 	}
@@ -192,7 +192,7 @@ func TestCompleteAnthropicKeyFailover(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	usage, status, _, err := CompleteAnthropic(context.Background(), upstream.URL, []string{"key1", "key2"}, true, []byte(`{"model":"m","max_tokens":16}`))
+	usage, status, _, err := CompleteAnthropic(context.Background(), upstream.URL, testKeys("key1", "key2"), true, []byte(`{"model":"m","max_tokens":16}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestCompleteAnthropicAllKeysRateLimited(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	_, status, _, err := CompleteAnthropic(context.Background(), upstream.URL, []string{"k1", "k2"}, true, []byte(`{"model":"m","max_tokens":16}`))
+	_, status, _, err := CompleteAnthropic(context.Background(), upstream.URL, testKeys("k1", "k2"), true, []byte(`{"model":"m","max_tokens":16}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +227,76 @@ func TestCompleteAnthropicAllKeysRateLimited(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("upstream calls=%d, want 2 (tried both keys)", n)
+	}
+}
+
+// TestFailoverAttributesFailuresToTheRightKey is what makes per-key health
+// possible: a rotatable failure must be reported WITH the id of the key that
+// caused it, including the last key (nothing is left to fail over to, but the
+// key is still the one that was rejected). Otherwise a provider's keys are an
+// anonymous blob and "key 2 is rate limited" is unknowable.
+func TestFailoverAttributesFailuresToTheRightKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		case "k1": // rate limited, with the provider's own backoff hint
+			w.Header().Set("Retry-After", "42")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case "k2": // revoked credential
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"usage":{"input_tokens":1,"output_tokens":1}}`)
+		}
+	}))
+	defer upstream.Close()
+
+	var got []KeyFailure
+	_, used, err := SendWithFailover(context.Background(), testKeys("k1", "k2", "k3"),
+		func(secret string) (*http.Request, error) {
+			req, _ := http.NewRequest(http.MethodPost, upstream.URL, strings.NewReader("{}"))
+			req.Header.Set("Authorization", "Bearer "+secret)
+			return req, nil
+		}, func(f KeyFailure) { got = append(got, f) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used.ID != 3 {
+		t.Fatalf("served by key id %d, want 3 (the first two failed)", used.ID)
+	}
+	if len(got) != 2 {
+		t.Fatalf("failures reported = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].KeyID != 1 || !got[0].RateLimited() || got[0].RetryAfter != 42*time.Second {
+		t.Errorf("first failure = %+v, want key 1 rate-limited with Retry-After=42s", got[0])
+	}
+	if got[1].KeyID != 2 || got[1].RateLimited() {
+		t.Errorf("second failure = %+v, want key 2 reported as a bad credential", got[1])
+	}
+}
+
+// TestFailoverReportsTheLastKeyToo: with a single key there is nothing to fail
+// over to, but the failure must still be recorded — otherwise a one-key provider
+// never learns its key is rate limited.
+func TestFailoverReportsTheLastKeyToo(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer upstream.Close()
+
+	var got []KeyFailure
+	resp, _, err := SendWithFailover(context.Background(), testKeys("only"),
+		func(string) (*http.Request, error) {
+			return http.NewRequest(http.MethodPost, upstream.URL, strings.NewReader("{}"))
+		}, func(f KeyFailure) { got = append(got, f) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want the upstream 429 relayed", resp.StatusCode)
+	}
+	if len(got) != 1 || got[0].KeyID != 1 {
+		t.Fatalf("failures = %+v, want exactly key 1", got)
 	}
 }
 
@@ -250,7 +320,7 @@ func TestStreamAnthropicKeyFailover(t *testing.T) {
 	defer upstream.Close()
 
 	rec := httptest.NewRecorder()
-	usage, wrote, err := StreamAnthropic(context.Background(), rec, upstream.URL, []string{"key1", "key2"}, true, []byte(`{"model":"m","stream":true}`))
+	usage, wrote, err := StreamAnthropic(context.Background(), rec, upstream.URL, testKeys("key1", "key2"), true, []byte(`{"model":"m","stream":true}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

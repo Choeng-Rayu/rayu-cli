@@ -163,6 +163,7 @@ const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? require('./utils/
 
 // TeleportRepoMismatchDialog, TeleportResumeWrapper dynamically imported at call sites
 import { migrateAutoUpdatesToSettings } from './migrations/migrateAutoUpdatesToSettings.js';
+import { migrateBedrockToUnifiedProvider } from './migrations/migrateBedrockToUnifiedProvider.js';
 import { migrateBypassPermissionsAcceptedToSettings } from './migrations/migrateBypassPermissionsAcceptedToSettings.js';
 import { migrateEnableAllProjectMcpServersToSettings } from './migrations/migrateEnableAllProjectMcpServersToSettings.js';
 import { migrateFennecToOpus } from './migrations/migrateFennecToOpus.js';
@@ -313,12 +314,15 @@ async function logStartupTelemetry(): Promise<void> {
 
 // @[MODEL LAUNCH]: Consider any migrations you may need for model strings. See migrateSonnet1mToSonnet45.ts for an example.
 // Bump this when adding a new sync migration so existing users re-run the set.
-const CURRENT_MIGRATION_VERSION = 11;
+const CURRENT_MIGRATION_VERSION = 12;
 function runMigrations(): void {
   if (getGlobalConfig().migrationVersion !== CURRENT_MIGRATION_VERSION) {
     migrateAutoUpdatesToSettings();
     migrateBypassPermissionsAcceptedToSettings();
     migrateEnableAllProjectMcpServersToSettings();
+    // Unified provider formats: collapse the three saved Bedrock providers
+    // (bedrockApi converse/openai/anthropic) into ONE per-model-routed provider.
+    migrateBedrockToUnifiedProvider();
     resetProToOpusDefault();
     migrateSonnet1mToSonnet45();
     migrateLegacyOpusToCurrent();

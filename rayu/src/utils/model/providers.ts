@@ -64,6 +64,25 @@ export function isRayuAnthropicCompatibleActive(): boolean {
 }
 
 /**
+ * Rayu: true when the active provider is the Rayu-HOSTED gateway
+ * (kind:'rayu-hosted'). Auth is the user's Rayu JWT and every request is BILLED
+ * against their plan credits, which makes it different from every other provider
+ * in one important way: work the CLI does for its own bookkeeping must not be
+ * sent through it. Callers use this to keep local-only paths local.
+ */
+export function isRayuHostedActive(): boolean {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getActiveProvider } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return getActiveProvider()?.kind === 'rayu-hosted'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Rayu: true when the active provider is an OpenAI-compatible endpoint
  * (OpenAI / NVIDIA / OpenRouter / local). Kept separate from the APIProvider
  * union so the Record<APIProvider, ModelName> model-config contract is
@@ -91,18 +110,17 @@ export function isOpenAICompatibleActive(): boolean {
     /* eslint-enable @typescript-eslint/no-require-imports */
     const p = getActiveProvider()
     if (p?.kind === 'openai-compatible') return true
-    // Rayu /connect → AWS Bedrock (bedrock-mantle) OpenAI-compatible Chat
-    // Completions endpoint with a Bedrock API key (bearer token). Route it
-    // through the same adapter — but NOT the Anthropic-Messages variant
-    // (bedrockApi:'anthropic', AnthropicBedrock SDK) nor the Converse variant
-    // (bedrockApi:'converse', AWS-SDK Converse adapter).
-    if (
-      p?.kind === 'bedrock' &&
-      p.bedrockApi !== 'anthropic' &&
-      p.bedrockApi !== 'converse' &&
-      !!p.apiKey &&
-      !!p.baseURL
-    ) {
+    // Rayu /connect → AWS Bedrock. ONE Bedrock provider now serves both wire
+    // formats, chosen per MODEL: Claude speaks Anthropic Messages, everything
+    // else speaks OpenAI Chat Completions on the bedrock-mantle endpoint.
+    //
+    // This predicate has no model argument, so it answers for the provider as a
+    // whole and reports true when the mantle endpoint is configured. That is
+    // correct for the non-Claude majority of the catalog but wrong for a Claude
+    // model on the same provider — a limitation of the active-provider-global
+    // predicates generally, which resolveProviderCapabilities(provider, model)
+    // replaces. Callers that need per-model accuracy must use that instead.
+    if (p?.kind === 'bedrock' && !!p.apiKey && !!p.baseURL) {
       return true
     }
     return false

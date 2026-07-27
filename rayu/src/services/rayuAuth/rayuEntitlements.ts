@@ -45,6 +45,18 @@ export interface AllowedModel {
   label: string
   provider: string
   creditMultiplier: number
+  /**
+   * Context window in TOKENS as configured by the Rayu admin, or null/undefined
+   * when they haven't set one (the CLI then falls back to its own default for the
+   * model). This is the authoritative window for a Rayu-HOSTED model — it drives
+   * auto-compaction and context warnings — so raising it in the dashboard takes
+   * effect on the next entitlements refresh, with no CLI release.
+   */
+  contextWindow?: number | null
+  /** Model accepts a thinking/reasoning parameter (admin-declared). */
+  supportsReasoning?: boolean
+  /** Model accepts image content blocks (admin-declared). */
+  supportsImage?: boolean
 }
 
 export interface RayuEntitlements {

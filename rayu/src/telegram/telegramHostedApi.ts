@@ -104,6 +104,28 @@ export async function getHostedUpdates(after: number): Promise<HostedUpdatesBatc
 }
 
 /**
+ * Fetch an inbound image through the backend. The shared bot's token lives only
+ * on the server, so the CLI cannot hit api.telegram.org for the file itself —
+ * the backend checks the file was delivered to this account and returns bytes.
+ * Returns undefined on any failure so the caller can fall back to a message.
+ */
+export async function getHostedFile(
+  fileId: string,
+): Promise<{ base64: string; mediaType: string } | undefined> {
+  try {
+    const res = await authedFetch(
+      `/telegram/file?file_id=${encodeURIComponent(fileId)}`,
+    )
+    if (!res.ok) return undefined
+    const json = (await res.json()) as { base64?: string; mediaType?: string }
+    if (!json.base64 || !json.mediaType) return undefined
+    return { base64: json.base64, mediaType: json.mediaType }
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Relay an outbound Telegram call through the backend (chat_id forced to the
  * user's own chat server-side). Throws on failure so callers that care can
  * catch — the bridge already wraps its sends in .catch().

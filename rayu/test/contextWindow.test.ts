@@ -77,26 +77,12 @@ describe('getRayuModelContextWindow — Gemini 1M', () => {
 })
 
 describe('getRayuModelContextWindow — non-Anthropic providers use the model table', () => {
-  test('deepseek-v4 on rayu-hosted reports the real 1M window, not the 200k default', async () => {
-    const m = await fresh()
-    m.upsertProvider({
-      id: 'rayu-hosted',
-      kind: 'rayu-hosted',
-      baseURL: 'https://hosted.example',
-      models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
-      defaultModel: 'deepseek-v4-flash',
-    })
-    m._resetRayuConfigCache()
-    expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(1_000_000)
-    expect(m.getRayuModelContextWindow('deepseek-v4-pro')).toBe(1_000_000)
-  })
-
   test('per-model context override still wins on a non-allowlisted provider kind', async () => {
     const m = await fresh()
     m.upsertProvider({
-      id: 'rayu-hosted',
-      kind: 'rayu-hosted',
-      baseURL: 'https://hosted.example',
+      id: 'byo-openai',
+      kind: 'openai-compatible',
+      baseURL: 'https://api.example.com/v1',
       models: ['deepseek-v4-flash'],
       modelContextWindows: { 'deepseek-v4-flash': 500_000 },
     })
@@ -104,37 +90,113 @@ describe('getRayuModelContextWindow — non-Anthropic providers use the model ta
     expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(500_000)
   })
 
-  test('rayu-ollama hosted model codes resolve their curated context windows', async () => {
+  // BYO-key providers still use the built-in table: the CLI is the only thing
+  // that knows those models. (Rayu-hosted deliberately does NOT — see below.)
+  test('a BYO OpenAI-compatible provider still resolves from the known-model table', async () => {
+    const m = await fresh()
+    m.upsertProvider({
+      id: 'byo-openai',
+      kind: 'openai-compatible',
+      baseURL: 'https://api.example.com/v1',
+      models: ['glm-5.2', 'kimi-k2.7-code'],
+    })
+    m._resetRayuConfigCache()
+    expect(m.getRayuModelContextWindow('glm-5.2')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('kimi-k2.7-code')).toBe(256_000)
+  })
+})
+
+
+describe('rayu-hosted: the admin-managed catalog drives the context window', () => {
+  // What the admin-managed catalog buys us: a model the CLI has never heard of
+  // still gets a correct window, because syncRayuHostedProvider copies the
+  // dashboard value into provider.modelContextWindows.
+  test('an admin-added model unknown to the CLI table uses the synced window', async () => {
     const m = await fresh()
     m.upsertProvider({
       id: 'rayu-hosted',
       kind: 'rayu-hosted',
       baseURL: 'https://hosted.example',
-      models: [
-        'glm-5.2',
-        'llama-4',
-        'kimi-k2.7',
-        'minimax-m3',
-        'gpt-oss-120b',
-        'qwen3.5-397b',
-        'qwen3.5-122b',
-        'deepseek-v4-flash',
-        'deepseek-v4-pro',
-      ],
-      defaultModel: 'glm-5.2',
+      models: ['brand-new-model-2027'],
+      defaultModel: 'brand-new-model-2027',
+      modelContextWindows: { 'brand-new-model-2027': 400_000 },
     })
     m._resetRayuConfigCache()
-    expect(m.getRayuModelContextWindow('glm-5.2')).toBe(1_000_000)
-    expect(m.getRayuModelContextWindow('llama-4')).toBe(1_000_000)
-    expect(m.getRayuModelContextWindow('minimax-m3')).toBe(1_000_000)
-    expect(m.getRayuModelContextWindow('kimi-k2.7')).toBe(256_000)
-    expect(m.getRayuModelContextWindow('qwen3.5-397b')).toBe(256_000)
-    expect(m.getRayuModelContextWindow('qwen3.5-122b')).toBe(256_000)
-    // GPT-OSS 120B is 128K, not 1M (per spec).
-    expect(m.getRayuModelContextWindow('gpt-oss-120b')).toBe(131_072)
-    // deepseek-v4 flash/pro (served via DeepSeek's API) resolve to 1M in the CLI table.
-    expect(m.getRayuModelContextWindow('deepseek-v4-flash')).toBe(1_000_000)
-    expect(m.getRayuModelContextWindow('deepseek-v4-pro')).toBe(1_000_000)
+    expect(m.getRayuModelContextWindow('brand-new-model-2027')).toBe(400_000)
+  })
+
+  // When the admin's value disagrees with the CLI's built-in guess, the ADMIN
+  // wins for hosted models — that is what makes the dashboard authoritative.
+  test('the admin window overrides the CLI table for a hosted model', async () => {
+    const m = await fresh()
+    m.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      baseURL: 'https://hosted.example',
+      models: ['glm-5.2'],
+      defaultModel: 'glm-5.2',
+      // The table says 1M for glm-5.2; this deployment's admin says 200K.
+      modelContextWindows: { 'glm-5.2': 200_000 },
+    })
+    m._resetRayuConfigCache()
+    expect(m.getRayuModelContextWindow('glm-5.2')).toBe(200_000)
+  })
+
+  // A model the admin left unset must NOT inherit some other model's window from
+  // a hardcoded table: hosted context is server-driven, so an unset window means
+  // "unknown" and the caller applies its documented client default.
+  test('a hosted model with no synced window is unknown (no hardcoded guess)', async () => {
+    const m = await fresh()
+    m.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      baseURL: 'https://hosted.example',
+      // These codes DO match the built-in table, which a BYO provider would use —
+      // hosted must ignore it entirely.
+      models: ['glm-5.2', 'kimi-k2.7', 'deepseek-v4-pro'],
+      defaultModel: 'glm-5.2',
+      modelContextWindows: { 'glm-5.2': 200_000 }, // only glm has an admin value
+    })
+    m._resetRayuConfigCache()
+    expect(m.getRayuModelContextWindow('glm-5.2')).toBe(200_000)
+    expect(m.getRayuModelContextWindow('kimi-k2.7')).toBeNull()
+    expect(m.getRayuModelContextWindow('deepseek-v4-pro')).toBeNull()
+  })
+
+  // A provider-level window is explicit local config, not a per-model guess, so
+  // it is still honoured when the admin hasn't set a per-model value.
+  test('falls back to an explicit provider-level window when set', async () => {
+    const m = await fresh()
+    m.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      baseURL: 'https://hosted.example',
+      models: ['some-new-model'],
+      defaultModel: 'some-new-model',
+      contextWindow: 300_000,
+    })
+    m._resetRayuConfigCache()
+    expect(m.getRayuModelContextWindow('some-new-model')).toBe(300_000)
+  })
+
+  // The env escape hatch must still win everywhere (operator override).
+  test('RAYU_CONTEXT_TOKENS overrides even the admin value', async () => {
+    const m = await fresh()
+    m.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      baseURL: 'https://hosted.example',
+      models: ['glm-5.2'],
+      defaultModel: 'glm-5.2',
+      modelContextWindows: { 'glm-5.2': 200_000 },
+    })
+    m._resetRayuConfigCache()
+    process.env.RAYU_CONTEXT_TOKENS = '64000'
+    try {
+      expect(m.getRayuModelContextWindow('glm-5.2')).toBe(64_000)
+    } finally {
+      delete process.env.RAYU_CONTEXT_TOKENS
+    }
   })
 })
 

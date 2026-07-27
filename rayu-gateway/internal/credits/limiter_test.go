@@ -139,46 +139,50 @@ func TestForTokensAndForUsageClampNegativeInputs(t *testing.T) {
 	}
 }
 
-func TestDeriveModelRates(t *testing.T) {
-	t.Run("no overrides: output derived from price ratio, cache falls back to global default", func(t *testing.T) {
-		// DeepSeek V4 Flash's real pricing: input(miss) 14c/1M, output 28c/1M — exactly 2x.
-		r := DeriveModelRates(0.33, 14, 28, nil, nil)
-		if r.Input != 0.33 {
-			t.Errorf("Input=%v, want 0.33", r.Input)
-		}
-		wantOutput := 0.33 * 2
-		if diff := r.Output - wantOutput; diff > 1e-9 || diff < -1e-9 {
-			t.Errorf("Output=%v, want %v (2x Input, derived from the 14/28 price ratio)", r.Output, wantOutput)
-		}
-		if r.CacheRead != CacheHitBillingWeight {
-			t.Errorf("CacheRead=%v, want the global default %v", r.CacheRead, CacheHitBillingWeight)
-		}
-		if r.CacheWrite != 0.33 {
-			t.Errorf("CacheWrite=%v, want 0.33 (no premium/discount by default)", r.CacheWrite)
+func TestModelRatesFor(t *testing.T) {
+	// The four charges are ADMIN-ENTERED and must be used verbatim: nothing is
+	// derived from cost prices any more, so editing a cost price can never
+	// silently re-price the product.
+	t.Run("all four charges pass through untouched", func(t *testing.T) {
+		r := ModelRatesFor(0.33, 0.66, 0.02, 0.5)
+		if r.Input != 0.33 || r.Output != 0.66 || r.CacheRead != 0.02 || r.CacheWrite != 0.5 {
+			t.Errorf("rates=%+v, want the admin values 0.33/0.66/0.02/0.5", r)
 		}
 	})
-	t.Run("missing price data falls back to the flat multiplier for Output too", func(t *testing.T) {
-		r := DeriveModelRates(1, 0, 0, nil, nil)
+	t.Run("a model may charge output BELOW input (cheap-completion models)", func(t *testing.T) {
+		r := ModelRatesFor(2, 1, 0.1, 2)
 		if r.Output != 1 {
-			t.Errorf("Output=%v, want 1 (falls back to creditMultiplier when prices are unset)", r.Output)
+			t.Errorf("Output=%v, want 1 — the admin value must not be second-guessed", r.Output)
 		}
 	})
-	t.Run("explicit per-model overrides win", func(t *testing.T) {
-		read, write := 0.05, 1.25
-		r := DeriveModelRates(1, 10, 10, &read, &write)
-		if r.CacheRead != 0.05 {
-			t.Errorf("CacheRead=%v, want the override 0.05", r.CacheRead)
-		}
-		if r.CacheWrite != 1.25 {
-			t.Errorf("CacheWrite=%v, want the override 1.25", r.CacheWrite)
+	t.Run("an unset output charge falls back to input, never to zero", func(t *testing.T) {
+		r := ModelRatesFor(1.5, 0, 0.1, 1.5)
+		if r.Output != 1.5 {
+			t.Errorf("Output=%v, want the input charge 1.5 (a 0 charge would bill nothing)", r.Output)
 		}
 	})
-	t.Run("an existing row with no overrides bills identically to before these overrides existed", func(t *testing.T) {
-		// Equal input/output price (no real ratio data) + no overrides must
-		// collapse to a single flat rate, matching the original ForTokens(total, baseline, mult) shape.
-		r := DeriveModelRates(1, 10, 10, nil, nil)
+	t.Run("an unset cache-write charge falls back to input", func(t *testing.T) {
+		r := ModelRatesFor(2, 3, 0.2, 0)
+		if r.CacheWrite != 2 {
+			t.Errorf("CacheWrite=%v, want the input charge 2", r.CacheWrite)
+		}
+	})
+	t.Run("a zero cache-READ charge is honoured (free cache reads are legitimate)", func(t *testing.T) {
+		r := ModelRatesFor(1, 1, 0, 1)
+		if r.CacheRead != 0 {
+			t.Errorf("CacheRead=%v, want 0 — some providers do not charge for cache hits", r.CacheRead)
+		}
+	})
+	t.Run("negative input is clamped rather than crediting the user", func(t *testing.T) {
+		r := ModelRatesFor(-5, 1, 0.1, 1)
+		if r.Input != 0 {
+			t.Errorf("Input=%v, want 0", r.Input)
+		}
+	})
+	t.Run("rates feed ForUsage without panicking", func(t *testing.T) {
+		r := ModelRatesFor(1, 2, 0.1, 1)
 		u := Usage{TotalTokens: 5_000_000, PromptCacheHitTokens: 3_000_000, PromptCacheMissTokens: 2_000_000}
-		_ = ForUsage(u, 10, r) // must not panic / must produce a sane result; exact value covered by TestForUsage
+		_ = ForUsage(u, 10, r)
 	})
 }
 
@@ -369,7 +373,6 @@ func TestReleaseTurnRefund(t *testing.T) {
 	}
 }
 
-
 // --- Idempotent-by-logical-request-id turn accounting (Task 7) ------------
 
 func TestReserveTurnForDedupesRetries(t *testing.T) {
@@ -447,7 +450,6 @@ func TestTurnsTodayEmpty(t *testing.T) {
 		t.Fatalf("empty TurnsToday used=%d reset=%d want 0/-1", used, reset)
 	}
 }
-
 
 // TestReserveResetsOnPeriodRenewal is the regression test for "I renewed my $10
 // plan but my credits stayed maxed out and I still can't use it": exhausting the

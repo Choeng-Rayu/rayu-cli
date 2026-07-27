@@ -160,10 +160,12 @@ function isGatewayCallbackEnabled(): boolean {
  * forward through the gateway, because each uses a fetch-based client:
  *  - openai-compatible / anthropic : API key in Authorization / x-api-key
  *  - vertex                        : Google OAuth bearer (native genai fetch)
- *  - bedrock + bedrockApi 'anthropic' WITH an apiKey : AnthropicBedrock SDK in
- *    bearer-token mode (no SigV4). The Converse path (AWS SDK: SigV4 + binary
- *    event-stream) has no fetch hook and is intentionally excluded, as are the
- *    OAuth-only kinds (genai/kiro/copilot) and the already-gatewayed rayu-hosted. */
+ *  - bedrock WITH an apiKey        : bearer-token mode (no SigV4). Both Bedrock
+ *    surfaces are now fetch-based — Claude via the Anthropic Messages invoke
+ *    endpoints and the open-weight models via bedrock-mantle — so neither has the
+ *    AWS-SDK/SigV4 binary-event-stream problem that previously excluded Converse.
+ *  OAuth-only kinds (genai/kiro/copilot) and the already-gatewayed rayu-hosted
+ *  are excluded. */
 function isRoutableKind(provider: RayuProvider): boolean {
   switch (provider.kind) {
     case 'openai-compatible':
@@ -171,7 +173,7 @@ function isRoutableKind(provider: RayuProvider): boolean {
     case 'vertex':
       return true
     case 'bedrock':
-      return provider.bedrockApi === 'anthropic' && !!provider.apiKey
+      return !!provider.apiKey
     default:
       return false
   }
