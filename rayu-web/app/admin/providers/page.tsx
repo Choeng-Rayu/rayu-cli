@@ -10,6 +10,7 @@ import {
 } from '../../../components/admin/ui'
 import { gatewayUrl } from '../../../lib/config'
 import { formatContextWindow, parseContextWindow } from '../contextWindow'
+import { nameLeaksProvider } from '../providerName'
 import { useAdmin } from '../AdminProvider'
 import {
   HostedModel,
@@ -760,7 +761,9 @@ export default function ProvidersPage() {
               <Subheading>Models</Subheading>
               <p style={{ fontSize: '0.75rem', opacity: 0.45, margin: '-0.2rem 0 0.5rem' }}>
                 Charges are credits per 1M tokens and are used verbatim by the gateway. A model is only visible to
-                users once a plan grants access to it on <strong>Plans &amp; Credits</strong>.
+                users once a plan grants access to it on <strong>Plans &amp; Credits</strong>. The <strong>Name</strong>
+                is customer-facing (the CLI shows it next to the model id), so keep the upstream provider out of it —
+                users only ever see “rayu-hosted”.
               </p>
               {pModels.length === 0 ? (
                 <p style={{ fontSize: '0.82rem', opacity: 0.55, margin: '0 0 0.5rem' }}>
@@ -773,7 +776,7 @@ export default function ProvidersPage() {
                       <tr>
                         <th>On</th>
                         <th>Model id (provider&apos;s)</th>
-                        <th>Name</th>
+                        <th title="Shown to users in the CLI model picker">Name (shown to users)</th>
                         <th title="Context window in tokens">Context</th>
                         <th title="Credits per 1M input tokens">In</th>
                         <th title="Credits per 1M output tokens">Out</th>
@@ -809,6 +812,11 @@ export default function ProvidersPage() {
                               value={m.label}
                               onChange={(e) => patchModel(m.code, { label: e.target.value })}
                             />
+                            {nameLeaksProvider(m.label, p.name) && (
+                              <div style={{ fontSize: '0.66rem', color: '#ffbd2e', marginTop: 2, maxWidth: 150 }}>
+                                Users see this name — it mentions “{p.name}”.
+                              </div>
+                            )}
                           </td>
                           <td>
                             <ContextInput
@@ -890,6 +898,7 @@ export default function ProvidersPage() {
               {/* Add model */}
               <AddModelRow
                 draft={draftFor(p)}
+                providerSlug={p.name}
                 busy={!!busy[`newmodel:${p.id}`]}
                 message={msg[`newmodel:${p.id}`]}
                 testResult={tests[`model:${draftCode(draftFor(p))}`]}
@@ -1239,6 +1248,7 @@ function AddProviderWizard({
 /** Inline "add a model to this provider" row (same rules as the wizard step 3). */
 function AddModelRow({
   draft,
+  providerSlug,
   busy: isBusy,
   message,
   testResult,
@@ -1246,6 +1256,8 @@ function AddModelRow({
   onSubmit,
 }: {
   draft: ModelDraft
+  /** Used only to warn when the customer-facing name mentions the upstream. */
+  providerSlug: string
   busy: boolean
   message?: string
   testResult?: ProviderTestResult
@@ -1272,7 +1284,7 @@ function AddModelRow({
             onChange={(e) => onPatch({ upstreamModelId: e.target.value })}
           />
         </Field>
-        <Field label="Name">
+        <Field label="Name (shown to users)">
           <input
             className="admin-input"
             style={{ width: 150 }}
@@ -1280,6 +1292,11 @@ function AddModelRow({
             value={draft.label}
             onChange={(e) => onPatch({ label: e.target.value })}
           />
+          {nameLeaksProvider(draft.label, providerSlug) && (
+            <div style={{ fontSize: '0.66rem', color: '#ffbd2e', marginTop: 2, maxWidth: 150 }}>
+              Users see this name — it mentions “{providerSlug}”.
+            </div>
+          )}
         </Field>
         <Field label="Context">
           <ContextInput

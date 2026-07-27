@@ -59,9 +59,103 @@ const (
 	bedrockStreamSuffix = "/invoke-with-response-stream"
 )
 
+// bedrockCacheControlFields are the cache_control keys Bedrock accepts. Anything
+// else in that object is refused outright.
+//
+// Bedrock validates the request body STRICTLY: an unknown field is a 400, not an
+// ignored extra. First-party Anthropic, by contrast, accepts newer cache_control
+// options as they ship. `scope` is the live example — the CLI sends
+// `cache_control:{type:"ephemeral",scope:"global"}` and Bedrock answers
+// `system.1.cache_control.ephemeral.scope: Extra inputs are not permitted`,
+// failing every request.
+//
+// Stripping it here is the correct layer: the CLI speaks ONE canonical format and
+// must not know which upstream serves a model, so per-upstream quirks belong in
+// that upstream's adapter. Dropping `scope` costs nothing observable — it selects
+// a cache partition, so the worst case is a cache miss, never a wrong answer.
+var bedrockCacheControlFields = map[string]bool{
+	"type": true, // "ephemeral" — the only type
+	"ttl":  true, // "5m" / "1h" — verified accepted
+}
+
+// sanitizeForBedrock returns v with every cache_control object reduced to the
+// fields Bedrock accepts. It COPIES only the containers it has to change, so an
+// unaffected request is passed through without reallocation, and the caller's map
+// is never mutated (the server still logs and settles billing against it).
+func sanitizeForBedrock(v any) (any, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		changed := false
+		out := t
+		set := func(key string, val any) {
+			if !changed {
+				// First change: copy before writing, so the original is untouched.
+				out = make(map[string]any, len(t))
+				for k, ov := range t {
+					out[k] = ov
+				}
+				changed = true
+			}
+			out[key] = val
+		}
+		for k, ov := range t {
+			if k == "cache_control" {
+				if cc, ok := ov.(map[string]any); ok {
+					if trimmed, dropped := trimCacheControl(cc); dropped {
+						set(k, trimmed)
+					}
+					continue
+				}
+			}
+			if sv, sc := sanitizeForBedrock(ov); sc {
+				set(k, sv)
+			}
+		}
+		return out, changed
+	case []any:
+		changed := false
+		out := t
+		for i, ov := range t {
+			if sv, sc := sanitizeForBedrock(ov); sc {
+				if !changed {
+					out = make([]any, len(t))
+					copy(out, t)
+					changed = true
+				}
+				out[i] = sv
+			}
+		}
+		return out, changed
+	default:
+		return v, false
+	}
+}
+
+// trimCacheControl keeps only the accepted keys, reporting whether anything went.
+func trimCacheControl(cc map[string]any) (map[string]any, bool) {
+	dropped := false
+	for k := range cc {
+		if !bedrockCacheControlFields[k] {
+			dropped = true
+			break
+		}
+	}
+	if !dropped {
+		return cc, false
+	}
+	out := make(map[string]any, len(cc))
+	for k, v := range cc {
+		if bedrockCacheControlFields[k] {
+			out[k] = v
+		}
+	}
+	return out, true
+}
+
 // bedrockBody rewrites the canonical Anthropic request into what Bedrock accepts:
-// inject anthropic_version, drop the fields it refuses. The original map is not
-// mutated — the caller may still need it (e.g. for logging or a retry).
+// inject anthropic_version, drop the fields it refuses, and reduce cache_control
+// to Bedrock's accepted subset. The original map is not mutated — the caller still
+// needs it for logging and billing.
 func bedrockBody(anthropic map[string]any) ([]byte, error) {
 	out := make(map[string]any, len(anthropic)+1)
 	for k, v := range anthropic {
@@ -70,7 +164,8 @@ func bedrockBody(anthropic map[string]any) ([]byte, error) {
 			// Carried by the URL / chosen by the endpoint. Sending either is a 400.
 			continue
 		}
-		out[k] = v
+		sanitized, _ := sanitizeForBedrock(v)
+		out[k] = sanitized
 	}
 	out["anthropic_version"] = bedrockAPIVersion
 	return json.Marshal(out)

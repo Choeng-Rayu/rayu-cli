@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,102 @@ func bedrockRoute(t *testing.T, baseURL string) providercfg.Route {
 		t.Fatalf("build route: %v", err)
 	}
 	return r
+}
+
+// REGRESSION: every real CLI request failed with
+// `system.1.cache_control.ephemeral.scope: Extra inputs are not permitted`.
+// Bedrock validates the body strictly, so a cache_control option that first-party
+// Anthropic accepts (here `scope`, which the CLI sends) breaks EVERY request. The
+// field is stripped per-upstream, because the CLI speaks one canonical format and
+// must not know which provider serves a model.
+func TestBedrockStripsCacheControlFieldsItRejects(t *testing.T) {
+	original := map[string]any{
+		"model":      "us.anthropic.claude-sonnet-4-6",
+		"max_tokens": float64(8),
+		"system": []any{
+			map[string]any{
+				"type": "text", "text": "You are Rayu.",
+				"cache_control": map[string]any{"type": "ephemeral", "scope": "global"},
+			},
+			map[string]any{
+				"type": "text", "text": "second",
+				// ttl IS accepted and must survive: it changes cache lifetime, and
+				// silently dropping it would change caching behaviour and cost.
+				"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h", "scope": "global"},
+			},
+		},
+		"messages": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "hi",
+					"cache_control": map[string]any{"type": "ephemeral", "scope": "global"}},
+			}},
+		},
+		"tools": []any{
+			map[string]any{"name": "read_file", "description": "Read a file",
+				"cache_control": map[string]any{"type": "ephemeral", "scope": "global"}},
+		},
+		"metadata": map[string]any{"user_id": "u2"},
+	}
+
+	raw, err := bedrockBody(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(`"scope"`)) {
+		t.Fatalf("scope survived into the Bedrock body:\n%s", raw)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(raw, &sent); err != nil {
+		t.Fatal(err)
+	}
+	// ttl kept, type kept.
+	sys := sent["system"].([]any)
+	cc0 := sys[0].(map[string]any)["cache_control"].(map[string]any)
+	if cc0["type"] != "ephemeral" || len(cc0) != 1 {
+		t.Errorf("first system cache_control=%v, want only type", cc0)
+	}
+	cc1 := sys[1].(map[string]any)["cache_control"].(map[string]any)
+	if cc1["type"] != "ephemeral" || cc1["ttl"] != "1h" || len(cc1) != 2 {
+		t.Errorf("second system cache_control=%v, want type+ttl", cc1)
+	}
+	// Nested containers (messages → content → block) and tools are reached too.
+	msgCC := sent["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	if len(msgCC) != 1 {
+		t.Errorf("message block cache_control=%v, want only type", msgCC)
+	}
+	toolCC := sent["tools"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	if len(toolCC) != 1 {
+		t.Errorf("tool cache_control=%v, want only type", toolCC)
+	}
+	// Untouched fields survive.
+	if sent["metadata"].(map[string]any)["user_id"] != "u2" {
+		t.Error("metadata was altered")
+	}
+
+	// The caller's map must be unchanged: the server logs and settles billing
+	// against this very object after the adapter returns.
+	sysBlock := original["system"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	if sysBlock["scope"] != "global" {
+		t.Errorf("the request map was mutated: %v", sysBlock)
+	}
+}
+
+// A request with nothing to strip must be passed through untouched — no silent
+// rewriting of a body that was already valid.
+func TestBedrockLeavesACleanBodyAlone(t *testing.T) {
+	in := map[string]any{
+		"max_tokens": float64(4),
+		"system":     "be brief",
+		"messages": []any{map[string]any{"role": "user", "content": "hi",
+			"cache_control": map[string]any{"type": "ephemeral"}}},
+	}
+	out, changed := sanitizeForBedrock(in)
+	if changed {
+		t.Error("a clean body was reported as changed")
+	}
+	if fmt.Sprintf("%v", out) != fmt.Sprintf("%v", in) {
+		t.Errorf("body was altered:\n got %v\nwant %v", out, in)
+	}
 }
 
 func TestBedrockPutsTheModelInTheURLNotTheBody(t *testing.T) {

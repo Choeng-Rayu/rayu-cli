@@ -8,7 +8,10 @@ import {
   formatRayuUsageSummary,
   type RayuCreditStatus,
 } from '../src/services/rayuAuth/rayuCredits.ts'
-import { syncRayuHostedProvider } from '../src/services/rayuAuth/rayuHostedProvider.ts'
+import {
+  refreshHostedCatalog,
+  syncRayuHostedProvider,
+} from '../src/services/rayuAuth/rayuHostedProvider.ts'
 import type { RayuEntitlements } from '../src/services/rayuAuth/rayuEntitlements.ts'
 import {
   _resetRayuEntitlementsForTesting,
@@ -339,6 +342,39 @@ describe('syncRayuHostedProvider', () => {
     expect(bare?.label).toBeUndefined()
     expect(bare?.contextWindow).toBeUndefined()
     expect(describeModelChoice(bare!)).toBe('rayu-hosted')
+  })
+
+  // The upstream provider (which reseller serves a model) is an internal
+  // commercial detail. The CLI shows one provider for every hosted model —
+  // "rayu-hosted" — so nothing from the payload's `provider` field may reach the
+  // config the picker renders from.
+  test('never stores or shows the upstream provider name', () => {
+    const ent: RayuEntitlements = {
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [
+        {
+          code: 'glm-5.2',
+          label: 'GLM-5.2',
+          provider: 'rayu-ollama',
+          creditMultiplier: 1,
+          contextWindow: 1_000_000,
+        },
+        { code: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'bedrock', creditMultiplier: 2 },
+      ],
+    }
+    syncRayuHostedProvider(ent, { activate: true })
+
+    const hosted = loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+    const serialized = JSON.stringify(hosted)
+    for (const upstream of ['rayu-ollama', 'bedrock', 'ollama']) {
+      expect(serialized).not.toContain(upstream)
+    }
+
+    // And the row the user reads names only the hosted provider.
+    const glm = getAllProviderModelOptions().find((o) => o.model === 'glm-5.2')!
+    expect(describeModelChoice(glm)).toBe('rayu-hosted · GLM-5.2 · 1M ctx')
   })
 
   // Scope guard: the hosted sync must never disturb another provider's entry.
@@ -726,5 +762,14 @@ describe('formatContextTokens', () => {
     expect(formatContextTokens(128_000)).toBe('128K')
     expect(formatContextTokens(32_768)).toBe('32.8K')
     expect(formatContextTokens(900)).toBe('900')
+  })
+})
+
+// A newly added model has to show up without relaunching, so the picker refreshes
+// the catalog when it opens. That refresh must be harmless when there is nothing
+// to fetch (signed out / OAuth off), because a picker has to open regardless.
+describe('refreshHostedCatalog', () => {
+  test('reports no change and never throws without a session', async () => {
+    await expect(refreshHostedCatalog()).resolves.toBe(false)
   })
 })

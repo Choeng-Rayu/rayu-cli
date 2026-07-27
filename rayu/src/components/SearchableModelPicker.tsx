@@ -16,6 +16,7 @@ import {
   setActiveProviderModel,
   type RayuModelChoice,
 } from '../utils/rayuConfig.js'
+import { refreshHostedCatalog } from '../services/rayuAuth/rayuHostedProvider.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -43,8 +44,23 @@ export function SearchableModelPicker({
   headerTip?: string
 }): React.ReactNode {
   const setAppState = useSetAppState()
-  const all = React.useMemo(() => getAllProviderModelOptions(), [])
+  const [all, setAll] = React.useState(() => getAllProviderModelOptions())
   const [query, setQuery] = React.useState('')
+
+  // The hosted catalog is server-driven, so a model the admin added (or renamed)
+  // seconds ago may not be in the config this component just read — the launch
+  // refresh is asynchronous. Refresh once on open and re-read only if the list
+  // actually changed, so the picker never shows a stale catalog and never
+  // re-renders for nothing.
+  React.useEffect(() => {
+    let alive = true
+    void refreshHostedCatalog().then((changed) => {
+      if (alive && changed) setAll(getAllProviderModelOptions())
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   const filtered = React.useMemo(() => {
     const q = query.toLowerCase().trim()

@@ -107,6 +107,50 @@ export function syncRayuHostedProvider(
 }
 
 /**
+ * Re-fetch entitlements and report whether the hosted model list CHANGED.
+ *
+ * The model picker reads the provider config synchronously, but the launch-time
+ * entitlements refresh is asynchronous — so a model the admin added moments ago
+ * can be missing from the list the user is looking at, which reads as "the CLI
+ * didn't pick it up". Callers use this to refresh once when the picker opens and
+ * re-render only if something actually moved.
+ *
+ * Cheap and safe: signed out, OAuth off, or inside the refresh cooldown all return
+ * false without a network call, and a failure is swallowed (a picker must open
+ * even when the backend is down).
+ */
+export async function refreshHostedCatalog(): Promise<boolean> {
+  try {
+    const before = hostedModelSignature()
+    const { refreshRayuEntitlements } = await import('./rayuEntitlements.js')
+    await refreshRayuEntitlements()
+    return hostedModelSignature() !== before
+  } catch {
+    return false
+  }
+}
+
+/** A comparable summary of what the picker would show for hosted models. */
+function hostedModelSignature(): string {
+  try {
+    const p = loadRayuConfig().providers.find(
+      (x) => x.id === RAYU_HOSTED_PROVIDER_ID,
+    )
+    if (!p) return ''
+    // Ids + names + windows: everything the picker renders, so a rename or a
+    // context-window change counts as a change too.
+    return (p.models ?? [])
+      .map(
+        (m) =>
+          `${m}|${p.modelLabels?.[m] ?? ''}|${p.modelContextWindows?.[m] ?? ''}`,
+      )
+      .join(',')
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Build the per-model display-name map from a hosted catalog.
  *
  * A name is only recorded when it ADDS something: a blank label, or one that just
