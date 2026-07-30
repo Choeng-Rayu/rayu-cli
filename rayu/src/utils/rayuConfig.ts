@@ -10,7 +10,7 @@ import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'anthropic-compatible' | 'openai-compatible' | 'bedrock' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted'
+export type ProviderKind = 'anthropic' | 'anthropic-compatible' | 'openai-compatible' | 'bedrock' | 'azure' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 /**
@@ -34,7 +34,6 @@ export type WireFormat =
   | 'openai-responses'
   | 'genai'
   | 'codewhisperer'
-  | 'bedrock-converse'
 
 export type RayuProvider = {
   /** Stable id, e.g. 'anthropic', 'nvidia', 'openai', 'openrouter', 'local', 'bedrock'. */
@@ -106,6 +105,15 @@ export type RayuProvider = {
   awsSecretAccessKey?: string
   /** AWS region for Bedrock API calls (default: us-east-1). */
   awsRegion?: string
+  // --- Microsoft Azure / Foundry fields (kind: 'azure') ---
+  /**
+   * Azure resource name ('my-resource') or a full endpoint URL. Both surfaces are
+   * derived from it: `{origin}/anthropic` for Claude and `{origin}/openai/v1` for
+   * Azure OpenAI. See services/api/azureFoundry.ts.
+   */
+  azureResource?: string
+  /** `api-version` for the Azure OpenAI surface (default: 'preview'). */
+  azureApiVersion?: string
   // --- Google Vertex AI fields (kind: 'vertex') ---
   /** GCP project id for Vertex AI requests. */
   gcpProject?: string
@@ -739,19 +747,27 @@ export function sanitizeRemoteModelId(id: unknown): string | null {
  * Fetch the FULL Bedrock catalog for one provider: every model the account can
  * invoke, across both wire formats.
  *
- * Bedrock exposes no OpenAI-style /models listing, so this uses two control-plane
- * calls and unions them:
+ * Each surface is listed from the endpoint that ACTUALLY serves it, because the
+ * two disagree about model ids (verified live in us-east-1):
  *
- *  1. `GET /inference-profiles` — Claude is only invocable through a
- *     cross-region inference profile (verified live in us-east-1: every ACTIVE
- *     `anthropic.*` foundation model reports `inferenceTypesSupported:
- *     ['INFERENCE_PROFILE']` and NONE is ON_DEMAND, so the profile ids such as
- *     `global.anthropic.claude-haiku-4-5-20251001-v1:0` are the invocable ones).
- *     These models speak the Anthropic Messages API.
- *  2. `GET /foundation-models` — models flagged
- *     `inferenceAPIsSupported.openAiChatCompletions === true` are invocable on
- *     Bedrock's OpenAI-compatible Chat Completions endpoint (gpt-oss, qwen,
- *     deepseek, mistral, nvidia, minimax, …).
+ *  1. Claude → `GET {control plane}/inference-profiles`. Claude is only invocable
+ *     through a cross-region inference profile: every ACTIVE `anthropic.*`
+ *     foundation model reports `inferenceTypesSupported: ['INFERENCE_PROFILE']`
+ *     and none is ON_DEMAND, so ids like
+ *     `global.anthropic.claude-haiku-4-5-20251001-v1:0` are the invocable ones.
+ *     These speak the Anthropic Messages API on bedrock-runtime.
+ *
+ *  2. Everything else → `GET {mantle baseURL}/models`, the OpenAI-compatible
+ *     listing of the endpoint that will serve the request. The control plane's
+ *     `openAiChatCompletions` flag is NOT usable as the id source: of its 34
+ *     flagged models only 27 ids match mantle exactly — the control plane returns
+ *     version-suffixed ids (`openai.gpt-oss-120b-1:0`, `qwen.qwen3-32b-v1:0`) and
+ *     a different vendor prefix (`moonshot.` vs mantle's `moonshotai.`), all of
+ *     which 404 on the chat endpoint. Mantle also serves 22 models the control
+ *     plane does not flag at all (gemma-4, gpt-5.4, deepseek.v3.1).
+ *     Mantle DOES list `anthropic.*` ids, but invoking one returns
+ *     400 "does not support the '/v1/chat/completions' API", so they are excluded
+ *     here — Claude comes from step 1 in its invocable form.
  *
  * ON_DEMAND `anthropic.*` foundation models are also included when a region
  * offers them (older Claude 3.x), since those are invocable by bare id.
@@ -760,10 +776,10 @@ export function sanitizeRemoteModelId(id: unknown): string | null {
  * provider serves its whole catalog.
  *
  * Models that support neither surface (Amazon Nova, and Mistral/Cohere/Llama in
- * regions without a mantle endpoint) are intentionally NOT listed: they are only
+ * regions without a mantle endpoint) are intentionally NOT listed: they were only
  * reachable through the Converse API, which this migration removed.
  *
- * SECURITY: the key is sent only to the AWS Bedrock control-plane host; never logged.
+ * SECURITY: the key is sent only to the AWS Bedrock hosts; never logged.
  */
 async function fetchBedrockModels(p: RayuProvider): Promise<string[]> {
   if (!p.apiKey) return []
@@ -807,43 +823,57 @@ async function fetchBedrockModels(p: RayuProvider): Promise<string[]> {
     })
   }
 
-  // 2) Foundation models: the OpenAI-Chat-capable ones, plus any ON_DEMAND
-  //    Anthropic models invocable by bare id.
+  // 2) The mantle OpenAI-compatible listing — authoritative for the ids that
+  //    endpoint accepts. rayuProviders is imported lazily to avoid a cycle.
+  const { bedrockBaseURL } = await import('./rayuProviders.js')
+  const mantleBase = (p.baseURL || bedrockBaseURL(region)).replace(/\/+$/, '')
+  try {
+    const res = await fetch(`${mantleBase}/models`, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (res.ok) {
+      const json = (await res.json()) as { data?: Array<{ id?: string }> }
+      for (const m of json.data ?? []) {
+        const id = m.id
+        if (!id) continue
+        // Listed but not servable here: mantle rejects Claude with a 400.
+        if (/^anthropic\.|claude/i.test(id)) continue
+        add(id)
+      }
+    } else {
+      reportIssue('rayu_models.fetch_failed', 'bedrock mantle /models non-OK', {
+        provider: p.id,
+        status: res.status,
+      })
+    }
+  } catch (e) {
+    reportIssue('rayu_models.fetch_error', 'bedrock mantle /models request failed', {
+      provider: p.id,
+      error: e instanceof Error ? e.message : String(e),
+    })
+  }
+
+  // 3) ON_DEMAND Anthropic foundation models (bare ids, older Claude 3.x in some
+  //    regions) — invocable directly, without an inference profile.
   try {
     const res = await fetch(
       `https://bedrock.${region}.amazonaws.com/foundation-models`,
       { headers, signal: AbortSignal.timeout(15_000) },
     )
-    if (!res.ok) {
-      reportIssue('rayu_models.fetch_failed', 'bedrock foundation-models returned non-OK', {
-        provider: p.id,
-        status: res.status,
-      })
-    } else {
+    if (res.ok) {
       const json = (await res.json()) as { modelSummaries?: BedrockModelSummary[] }
       for (const m of json.modelSummaries ?? []) {
         const id = m.modelId
-        if (!id) continue
-        if (m.modelLifecycle?.status && m.modelLifecycle.status !== 'ACTIVE') {
-          continue
-        }
+        if (!id || !/anthropic|claude/i.test(id)) continue
+        if (m.modelLifecycle?.status && m.modelLifecycle.status !== 'ACTIVE') continue
         const out = m.outputModalities ?? []
         if (out.length && !out.includes('TEXT')) continue
-        // Anthropic: only when invocable by bare id (otherwise the profile from
-        // step 1 is the invocable form).
-        if (/anthropic|claude/i.test(id)) {
-          if ((m.inferenceTypesSupported ?? []).includes('ON_DEMAND')) add(id)
-          continue
-        }
-        // Everything else: only when Bedrock serves it over OpenAI Chat.
-        if (m.inferenceAPIsSupported?.openAiChatCompletions === true) add(id)
+        if ((m.inferenceTypesSupported ?? []).includes('ON_DEMAND')) add(id)
       }
     }
-  } catch (e) {
-    reportIssue('rayu_models.fetch_error', 'bedrock foundation-models request failed', {
-      provider: p.id,
-      error: e instanceof Error ? e.message : String(e),
-    })
+  } catch {
+    // Best-effort: the inference profiles above are the primary Claude source.
   }
 
   return [...ids].sort()
@@ -1030,11 +1060,93 @@ async function fetchVertexGeminiModels(p: RayuProvider): Promise<string[]> {
 }
 
 /**
+ * Full Vertex catalog for a provider: Gemini + Claude + MaaS.
+ *
+ * Gemini comes from the live publisher listing (see fetchVertexGeminiModels).
+ * Claude and the MaaS models are CURATED: Vertex's publisher-models listing
+ * covers Google's own publisher only, and there is no reliable listing for the
+ * `anthropic` publisher or the openapi MaaS endpoint — so inventing one would be
+ * guesswork. Both curated sets are env-overridable (VERTEX_CLAUDE_MODELS /
+ * VERTEX_MAAS_MODELS). resolveWireFormat() routes each id to its own format.
+ */
+async function fetchVertexModels(p: RayuProvider): Promise<string[]> {
+  const gemini = await fetchVertexGeminiModels(p)
+  const { curatedVertexClaudeModels, curatedVertexMaasModels } = await import(
+    '../services/api/gemini/vertexAnthropic.js'
+  )
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of [
+    ...gemini,
+    ...curatedVertexClaudeModels(),
+    ...curatedVertexMaasModels(),
+  ]) {
+    const id = sanitizeRemoteModelId(raw)
+    if (id && !seen.has(id)) {
+      seen.add(id)
+      out.push(id)
+    }
+  }
+  return out
+}
+
+/**
  * Models for the Login-with-Gemini (Code Assist) provider. Code Assist exposes
  * no public model-listing endpoint, so we offer the curated current Gemini set.
  */
 async function fetchGenAIGeminiModels(_p: RayuProvider): Promise<string[]> {
   return curatedCodeAssistModels()
+}
+
+/**
+ * Fetch the deployments/models an Azure resource exposes.
+ *
+ * Azure has two documented listings and which one a resource answers depends on
+ * whether it is on the v1 API, so both are tried in order (see
+ * services/api/azureFoundry.ts). Deployment NAMES are what must be sent as the
+ * model, so the listing's `id` is used.
+ *
+ * The returned ids span both wire formats — resolveWireFormat() routes each one
+ * (Claude → Anthropic Messages, everything else → Azure OpenAI Responses).
+ *
+ * NOT live-verified: no Azure credentials were available, so the response shapes
+ * come from the Microsoft REST reference rather than an observed response.
+ * SECURITY: the key is sent only to the validated Azure origin; never logged.
+ */
+async function fetchAzureModels(p: RayuProvider): Promise<string[]> {
+  const endpoint = p.azureResource || p.baseURL || ''
+  if (!p.apiKey || !endpoint) return []
+  const { azureModelListURLs, parseAzureModelList, validateAzureEndpoint } =
+    await import('../services/api/azureFoundry.js')
+  const valid = validateAzureEndpoint(endpoint)
+  if (!valid.ok) {
+    reportIssue('rayu_models.fetch_failed', 'azure endpoint rejected', {
+      provider: p.id,
+      reason: valid.reason,
+    })
+    return []
+  }
+  const ids = new Set<string>()
+  for (const url of azureModelListURLs(endpoint, p.azureApiVersion)) {
+    try {
+      const res = await fetch(url, {
+        headers: { 'api-key': p.apiKey },
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!res.ok) continue
+      for (const raw of parseAzureModelList(await res.json())) {
+        const id = sanitizeRemoteModelId(raw)
+        if (id) ids.add(id)
+      }
+      if (ids.size) break
+    } catch (e) {
+      reportIssue('rayu_models.fetch_error', 'azure model listing failed', {
+        provider: p.id,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
+  }
+  return [...ids].sort()
 }
 
 export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
@@ -1044,10 +1156,14 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
   if (p.kind === 'bedrock') {
     return fetchBedrockModels(p)
   }
-  // Gemini on Vertex AI: list Gemini models from the publisher catalog,
-  // authenticated with a Google Cloud OAuth bearer token.
+  // Azure: deployments span both wire formats (Claude + Azure OpenAI).
+  if (p.kind === 'azure') {
+    return fetchAzureModels(p)
+  }
+  // Vertex AI: ONE provider spanning three formats — Gemini from the live
+  // publisher catalog, plus the curated Claude + MaaS sets.
   if (p.kind === 'vertex') {
-    return fetchVertexGeminiModels(p)
+    return fetchVertexModels(p)
   }
   // Login-with-Gemini: list via the @google/genai SDK (OAuth), filter to chat.
   if (p.kind === 'genai') {
@@ -1119,6 +1235,7 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
     !p ||
     (p.kind !== 'openai-compatible' &&
       p.kind !== 'bedrock' &&
+      p.kind !== 'azure' &&
       p.kind !== 'vertex' &&
       p.kind !== 'genai' &&
       p.kind !== 'kiro' &&

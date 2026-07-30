@@ -54,11 +54,13 @@ describe('resolveWireFormat', () => {
         { id: 'bedrock', kind: 'bedrock', bedrockApi: 'anthropic' },
         'anthropic-messages',
       ],
+      [{ id: 'bedrock', kind: 'bedrock', bedrockApi: 'openai' }, 'openai-chat'],
+      // A legacy Converse provider falls through to the per-model rules, since
+      // the Converse API was retired.
       [
         { id: 'bedrock', kind: 'bedrock', bedrockApi: 'converse' },
-        'bedrock-converse',
+        'openai-chat',
       ],
-      [{ id: 'bedrock', kind: 'bedrock', bedrockApi: 'openai' }, 'openai-chat'],
       // No bedrockApi stored → the OpenAI surface (matches the old
       // isOpenAICompatibleActive() check, which excluded only anthropic/converse).
       [{ id: 'bedrock', kind: 'bedrock' }, 'openai-chat'],
@@ -103,16 +105,11 @@ describe('resolveWireFormat — per-model resolution (Task 3)', () => {
     ).toBe('anthropic-messages')
   })
 
-  test('the legacy bedrockApi discriminator still wins for already-saved providers', async () => {
+  test('the legacy bedrockApi discriminator still wins for the surfaces that remain', async () => {
     const { resolveWireFormat } = await registry()
     // A user who connected Bedrock before this migration has bedrockApi stored;
-    // their provider must keep behaving identically until Task 5 migrates it.
-    expect<string>(
-      resolveWireFormat(
-        { id: 'bedrock', kind: 'bedrock', bedrockApi: 'converse' },
-        'us.anthropic.claude-sonnet-4-6-v1',
-      ),
-    ).toBe('bedrock-converse')
+    // the two surfaces that still exist must keep behaving identically until
+    // migrateBedrockToUnifiedProvider() drops the field.
     expect<string>(
       resolveWireFormat(
         { id: 'bedrock', kind: 'bedrock', bedrockApi: 'openai' },
@@ -125,6 +122,30 @@ describe('resolveWireFormat — per-model resolution (Task 3)', () => {
         'openai.gpt-oss-120b-1:0',
       ),
     ).toBe('anthropic-messages')
+  })
+
+  test('a legacy Converse provider falls through to per-model routing', async () => {
+    const { resolveWireFormat, resolveClientTarget } = await registry()
+    // Converse was retired, so its models are re-routed by family instead: Claude
+    // over Anthropic Messages, everything else over OpenAI Chat. Nova and the
+    // other Converse-only models are simply no longer listed.
+    const legacy: RayuProvider = {
+      id: 'bedrock',
+      kind: 'bedrock',
+      bedrockApi: 'converse',
+      apiKey: 'k',
+      baseURL: 'https://bedrock-mantle.us-east-1.api.aws/openai/v1',
+    }
+    expect<string>(
+      resolveWireFormat(legacy, 'us.anthropic.claude-sonnet-4-6-v1'),
+    ).toBe('anthropic-messages')
+    expect<string>(resolveWireFormat(legacy, 'deepseek.v3.2')).toBe('openai-chat')
+    expect<string>(
+      resolveClientTarget(legacy, 'us.anthropic.claude-sonnet-4-6-v1'),
+    ).toBe('bedrock-anthropic')
+    expect<string>(resolveClientTarget(legacy, 'deepseek.v3.2')).toBe(
+      'openai-chat',
+    )
   })
 
   test('ONE unified Bedrock provider serves Claude and non-Claude models with different formats', async () => {
@@ -183,15 +204,48 @@ describe('resolveWireFormat — per-model resolution (Task 3)', () => {
     ).toBe('anthropic-messages')
   })
 
-  test('vertex stays on GenAI until Task 9 adds the Claude/MaaS clients', async () => {
-    const { resolveWireFormat } = await registry()
-    const vertex: RayuProvider = { id: 'gemini-vertex', kind: 'vertex' }
-    expect<string>(resolveWireFormat(vertex, 'gemini-3.5-flash')).toBe('genai')
-    // Deliberately NOT 'anthropic-messages' yet: resolving a format with no
-    // client behind it would route the request nowhere.
-    expect<string>(resolveWireFormat(vertex, 'claude-sonnet-4-5@20250929')).toBe(
-      'genai',
+  test('ONE Vertex provider resolves all THREE of its formats per model', async () => {
+    const { resolveWireFormat, resolveClientTarget } = await registry()
+    const vertex: RayuProvider = {
+      id: 'gemini-vertex',
+      kind: 'vertex',
+      gcpProject: 'my-project',
+      gcpRegion: 'global',
+    }
+    // Gemini → the native GenAI publisher endpoint.
+    for (const g of ['gemini-3.5-flash', 'gemini-2.5-pro', 'models/gemini-2.5-flash']) {
+      expect<string>(resolveWireFormat(vertex, g)).toBe('genai')
+    }
+    // Claude → Anthropic Messages on the `anthropic` publisher. Vertex ids carry
+    // an @-dated suffix rather than the first-party date suffix.
+    for (const c of ['claude-sonnet-4-5@20250929', 'claude-haiku-4-5@20251001']) {
+      expect<string>(resolveWireFormat(vertex, c)).toBe('anthropic-messages')
+    }
+    // MaaS → the OpenAI-compatible openapi endpoint.
+    for (const m of [
+      'meta/llama-3.3-70b-instruct-maas',
+      'mistralai/mistral-large-2411',
+      'qwen/qwen3-next-80b-a3b-instruct-maas',
+    ]) {
+      expect<string>(resolveWireFormat(vertex, m)).toBe('openai-chat')
+    }
+    // ...and each format gets its own client target.
+    expect<string>(resolveClientTarget(vertex, 'gemini-3.5-flash')).toBe(
+      'vertex-genai',
     )
+    expect<string>(resolveClientTarget(vertex, 'claude-sonnet-4-5@20250929')).toBe(
+      'vertex-anthropic',
+    )
+    expect<string>(
+      resolveClientTarget(vertex, 'meta/llama-3.3-70b-instruct-maas'),
+    ).toBe('vertex-maas')
+  })
+
+  test('a Vertex provider with no model falls back to Gemini', async () => {
+    const { resolveWireFormat } = await registry()
+    expect<string>(
+      resolveWireFormat({ id: 'gemini-vertex', kind: 'vertex' }),
+    ).toBe('genai')
   })
 
   test('the unified Bedrock provider dispatches to two different clients', async () => {
@@ -267,9 +321,15 @@ describe('resolveClientTarget — the single dispatch table', () => {
       'bedrock-anthropic',
     ],
     [
-      'bedrock + bedrockApi:converse',
-      { id: 'bedrock', kind: 'bedrock', bedrockApi: 'converse', apiKey: 'bk' },
-      'bedrock-converse',
+      'bedrock + legacy bedrockApi:converse (re-routed per model)',
+      {
+        id: 'bedrock',
+        kind: 'bedrock',
+        bedrockApi: 'converse',
+        apiKey: 'bk',
+        baseURL: 'https://bedrock-mantle.us-east-1.api.aws/openai/v1',
+      },
+      'openai-chat',
     ],
     [
       'bedrock + bedrockApi:openai',

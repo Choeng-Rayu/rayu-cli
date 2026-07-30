@@ -30,14 +30,6 @@ export type ProviderPreset = {
   envKeys?: string[]
   /** True for endpoints where the user must type the base URL (no fixed host). */
   promptBaseURL?: boolean
-  /** For bedrock presets: which Bedrock API surface to use (default 'converse'). */
-  /**
-   * @deprecated Removed in the unified-provider-format migration. Bedrock is now
-   * ONE provider whose wire format is chosen per model. Retained here only so the
-   * config migration can read (and drop) the field from providers saved by older
-   * versions — never write it.
-   */
-  bedrockApi?: 'openai' | 'anthropic' | 'converse'
   /**
    * True for presets authenticated via Google OAuth / Application Default
    * Credentials rather than a typed API key (e.g. Gemini on Vertex AI). The
@@ -560,6 +552,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     // wizard sets the mantle baseURL after the region is chosen. Models are
     // fetched live from the Bedrock control plane.
     envKeys: ['AWS_BEARER_TOKEN_BEDROCK'],
+  },
+  {
+    id: 'azure',
+    label: 'Microsoft Azure — all deployments (Claude + Azure OpenAI)',
+    kind: 'azure',
+    // ONE Azure resource serving both wire formats, chosen per MODEL:
+    // Claude deployments → Anthropic Messages at {origin}/anthropic;
+    // everything else    → Azure OpenAI v1 Responses at {origin}/openai/v1.
+    // The endpoint is derived from the resource name entered in /connect, so no
+    // fixed baseURL here. Deployments are fetched live.
+    envKeys: ['ANTHROPIC_FOUNDRY_API_KEY', 'AZURE_OPENAI_API_KEY'],
   },
   {
     id: 'kiro',

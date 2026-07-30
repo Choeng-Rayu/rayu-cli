@@ -12,6 +12,10 @@ import {
   isRayuAnthropicCompatibleActive,
   isRayuNonAnthropicActive,
 } from './model/providers.js'
+import {
+  resolveRequestShape,
+  usesTranslatedFormat,
+} from './model/providerCapabilities.js'
 import { getSettingsWithErrors } from './settings/settings.js'
 
 export type ThinkingConfig =
@@ -99,16 +103,19 @@ export function modelSupportsThinking(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  // Rayu: OpenAI-compatible providers (NVIDIA, DeepSeek, local, …) support
-  // extended thinking. Other non-Anthropic providers (Bedrock/Vertex/Kiro/…)
-  // also do for their NON-Claude models — but native Claude models on those
-  // providers must use the canonical per-family gating below, so e.g. Bedrock
-  // Haiku is correctly excluded instead of being sent unsupported thinking
-  // params that make Bedrock 400. (Explicit 3P override above still wins.)
-  if (
-    isOpenAICompatibleActive() ||
-    (isRayuNonAnthropicActive() && !isClaudeModelOrAlias(model))
-  ) {
+  // Rayu: when the request is TRANSLATED into another protocol (OpenAI
+  // Chat/Responses for NVIDIA/DeepSeek/local/gpt-oss-on-Bedrock, GenAI for
+  // Gemini, CodeWhisperer for Kiro), the adapter maps Rayu's thinking parameter
+  // onto that protocol's own reasoning field, so thinking is available. When the
+  // request IS an Anthropic Messages request — first-party, or Claude on
+  // Bedrock/Azure/Vertex, or a third-party Anthropic endpoint — the canonical
+  // per-family gating below applies, so e.g. Bedrock Haiku is correctly excluded
+  // instead of being sent unsupported thinking params that make Bedrock 400.
+  //
+  // Resolved from the MODEL, so a subagent routed to another provider is shaped
+  // for THAT provider (see providerCapabilities.ts). An explicit 3P override
+  // above still wins.
+  if (usesTranslatedFormat(model)) {
     return true
   }
   if (process.env.USER_TYPE === 'ant') {
@@ -134,25 +141,23 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  // Rayu: OpenAI-compatible providers support adaptive thinking — the OpenAI
-  // adapter translates the thinking param into the provider's own reasoning
-  // field, so adaptive is fine. Explicit 3P override above still takes precedence.
-  if (isOpenAICompatibleActive()) {
-    return true
-  }
   // Rayu: third-party Anthropic-compatible endpoints (LongCat, Ollama Cloud) send
   // the NATIVE Anthropic wire format, but `thinking:{type:'adaptive'}` is a
   // Claude-only extension they don't understand — sending it produces NO thinking
   // output (no live thinking stream). They DO support the standard
   // `{type:'enabled',budget_tokens}` form, so return false here to take that path.
-  if (isRayuAnthropicCompatibleActive()) {
+  // Checked BEFORE the translated-format branch because their format IS Anthropic
+  // Messages. Explicit 3P override above still takes precedence.
+  const shape = resolveRequestShape(model)
+  if (shape.anthropicCompatibleEndpoint) {
     return false
   }
-  // Rayu: other non-Anthropic kinds (Bedrock/Vertex/Kiro/Copilot/rayu-hosted)
-  // keep adaptive thinking for their NON-Claude models. Native Claude models on
-  // those providers fall through to the canonical 4.6-only gating below, so
-  // Bedrock Haiku/older Claude don't claim adaptive thinking they can't do.
-  if (isRayuNonAnthropicActive() && !isClaudeModelOrAlias(model)) {
+  // Rayu: a TRANSLATED request (OpenAI Chat/Responses, GenAI, CodeWhisperer) has
+  // its thinking parameter mapped onto the target protocol's reasoning field, so
+  // adaptive is fine. Anthropic-Messages requests — first-party, or Claude on
+  // Bedrock/Azure/Vertex — fall through to the canonical 4.6-only gating below,
+  // so Bedrock Haiku/older Claude don't claim adaptive thinking they can't do.
+  if (!shape.anthropicFormat) {
     return true
   }
   const canonical = getCanonicalName(model)

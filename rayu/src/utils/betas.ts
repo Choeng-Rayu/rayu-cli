@@ -28,6 +28,7 @@ import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider, isOpenAICompatibleActive } from './model/providers.js'
+import { isFirstPartyRequest } from './model/providerCapabilities.js'
 import { getInitialSettings } from './settings/settings.js'
 
 /**
@@ -209,26 +210,37 @@ export function getToolSearchBetaHeader(): string {
 
 /**
  * Check if experimental betas should be included.
- * These are betas that are only available on anthropic provider
- * and may not be supported by proxies or other providers.
+ *
+ * These are FIRST-PARTY-ONLY betas that proxies and third-party endpoints do not
+ * implement. They reach the wire for any provider whose format is Anthropic
+ * Messages (claude.ts puts `betas` in the request, which the SDK sends as the
+ * `anthropic-beta` header) — so a third-party Anthropic endpoint such as LongCat
+ * or Ollama Cloud, or Claude on Bedrock/Azure/Vertex, would receive experimental
+ * first-party beta headers it cannot honor.
+ *
+ * The previous provider-global check could not see this: getAPIProvider() reports
+ * 'anthropic' for every non-Bedrock kind, and isOpenAICompatibleActive() is false
+ * for those kinds, so both terms passed. Now resolved per-MODEL, which also makes
+ * it correct for a routed subagent and for a provider serving several formats.
  */
-export function shouldIncludeFirstPartyOnlyBetas(): boolean {
+export function shouldIncludeFirstPartyOnlyBetas(model?: string): boolean {
   return (
-    (getAPIProvider() === 'anthropic' || getAPIProvider() === 'foundry') &&
-    !isOpenAICompatibleActive() &&
+    isFirstPartyRequest(model) &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   )
 }
 
 /**
- * Global-scope prompt caching is anthropic only. Foundry is excluded because
- * GrowthBook never bucketed Foundry users into the rollout experiment — the
- * treatment data is anthropic-only.
+ * Global-scope prompt caching is first-party only.
+ *
+ * Foundry was previously excluded because GrowthBook never bucketed Foundry users
+ * into the rollout experiment — the treatment data is anthropic-only — and
+ * isFirstPartyRequest() preserves that: an Azure/Foundry provider is not
+ * first-party.
  */
-export function shouldUseGlobalCacheScope(): boolean {
+export function shouldUseGlobalCacheScope(model?: string): boolean {
   return (
-    getAPIProvider() === 'anthropic' &&
-    !isOpenAICompatibleActive() &&
+    isFirstPartyRequest(model) &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   )
 }
@@ -237,7 +249,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   const betaHeaders = []
   const isHaiku = getCanonicalName(model).includes('haiku')
   const provider = getAPIProvider()
-  const includeFirstPartyOnlyBetas = shouldIncludeFirstPartyOnlyBetas()
+  const includeFirstPartyOnlyBetas = shouldIncludeFirstPartyOnlyBetas(model)
 
   if (!isHaiku) {
     betaHeaders.push(CLAUDE_CODE_20250219_BETA_HEADER)
@@ -310,7 +322,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   const thinkingPreservationEnabled = modelSupportsContextManagement(model)
 
   if (
-    shouldIncludeFirstPartyOnlyBetas() &&
+    shouldIncludeFirstPartyOnlyBetas(model) &&
     (antOptedIntoToolClearing || thinkingPreservationEnabled)
   ) {
     betaHeaders.push(CONTEXT_MANAGEMENT_BETA_HEADER)

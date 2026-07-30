@@ -4,6 +4,7 @@ import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { getAPIProvider, isOpenAICompatibleActive, isRayuNonAnthropicActive } from './model/providers.js'
+import { usesTranslatedFormat } from './model/providerCapabilities.js'
 import { isClaudeModelOrAlias } from './model/aliases.js'
 import { resolveAntModel } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
@@ -23,14 +24,13 @@ export type EffortValue = EffortLevel | number
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
-  // OpenAI-compatible providers support effort. Other non-Anthropic providers
-  // support it for their NON-Claude models; native Claude models on Bedrock/
-  // Vertex/etc. use the canonical 4.6-only gating below so Bedrock Haiku/Sonnet-
-  // 4.5/older don't get sent an unsupported effort param (a cause of the 400s).
-  if (
-    isOpenAICompatibleActive() ||
-    (isRayuNonAnthropicActive() && !isClaudeModelOrAlias(model))
-  ) {
+  // A TRANSLATED request (OpenAI Chat/Responses, GenAI, CodeWhisperer) has its
+  // effort mapped onto the target protocol's own field, so effort is available.
+  // Anthropic-Messages requests — first-party, or Claude on Bedrock/Azure/Vertex —
+  // use the canonical 4.6-only gating below so Bedrock Haiku/Sonnet-4.5/older
+  // don't get sent an unsupported effort param (a cause of the 400s).
+  // Resolved per-MODEL so a routed subagent is shaped for ITS provider.
+  if (usesTranslatedFormat(model)) {
     return true
   }
   const m = model.toLowerCase()
@@ -63,12 +63,10 @@ export function modelSupportsEffort(model: string): boolean {
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
 // Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
 export function modelSupportsMaxEffort(model: string): boolean {
-  // 'max' effort: OpenAI-compatible + non-Claude 3P allowed; native Claude models
-  // fall through to the Opus-4.6-only rule below (API rejects 'max' elsewhere).
-  if (
-    isOpenAICompatibleActive() ||
-    (isRayuNonAnthropicActive() && !isClaudeModelOrAlias(model))
-  ) {
+  // 'max' effort: a TRANSLATED request maps effort onto the target protocol's own
+  // field, so 'max' is fine there; Anthropic-Messages requests fall through to the
+  // Opus-4.6-only rule below (the API rejects 'max' elsewhere). Per-MODEL.
+  if (usesTranslatedFormat(model)) {
     return true
   }
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')

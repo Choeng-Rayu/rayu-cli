@@ -26,6 +26,10 @@ import {
   isOpenAICompatibleActive,
 } from 'src/utils/model/providers.js'
 import {
+  isFirstPartyRequest,
+  usesTranslatedFormat,
+} from 'src/utils/model/providerCapabilities.js'
+import {
   getAttributionHeader,
   getCLISyspromptPrefix,
 } from '../../constants/system.js'
@@ -1688,15 +1692,17 @@ async function* queryModel(
     }
 
     // The native Anthropic Messages API requires (and defaults to) temperature:1
-    // when thinking is enabled, so we omit it there. But OpenAI-compatible
-    // providers (NVIDIA NIM, OpenRouter, …) NEVER receive the Anthropic
-    // `thinking` param — the adapter drops it — so omitting temperature leaves
-    // the model on an unspecified server-default sampling. For some models
-    // (e.g. Kimi K2.x on NVIDIA) that degenerates into multilingual token soup
-    // at high effort (thinking on). Always send an explicit temperature for
-    // those providers; 1.0 matches NVIDIA's recommended thinking-mode value.
+    // when thinking is enabled, so we omit it there. But a request TRANSLATED into
+    // another protocol (OpenAI Chat/Responses for NVIDIA NIM, OpenRouter, gpt-oss
+    // on Bedrock, …) never carries the Anthropic `thinking` param — the adapter
+    // maps it — so omitting temperature would leave the model on an unspecified
+    // server-default sampling. For some models (e.g. Kimi K2.x on NVIDIA) that
+    // degenerates into multilingual token soup at high effort (thinking on).
+    // Always send an explicit temperature for those; 1.0 matches NVIDIA's
+    // recommended thinking-mode value. Resolved per-MODEL, so a routed subagent is
+    // shaped for ITS provider rather than the active one.
     const temperature =
-      !hasThinking || isOpenAICompatibleActive()
+      !hasThinking || usesTranslatedFormat(options.model)
         ? (options.temperatureOverride ?? 1)
         : undefined
 
@@ -1815,13 +1821,11 @@ async function* queryModel(
 
         // Generate and track client request ID so timeouts (which return no
         // server request ID) can still be correlated with server logs.
-        // First-party only — 3P providers don't log it (inc-4029 class).
-        clientRequestId =
-          getAPIProvider() === 'anthropic' &&
-          !isOpenAICompatibleActive() &&
-          isFirstPartyAnthropicBaseUrl()
-            ? randomUUID()
-            : undefined
+        // First-party only — 3P providers don't log it (inc-4029 class). Resolved
+        // per-MODEL so a routed subagent on a third-party provider never gets one.
+        clientRequestId = isFirstPartyRequest(options.model)
+          ? randomUUID()
+          : undefined
 
         // Metadata headers so a gateway-routed request (Bedrock/hosted/anthropic)
         // carries the INTENDED model + query source + logical id. resolved/

@@ -122,6 +122,48 @@ maybe('live: Claude on Bedrock via the unified Anthropic client', () => {
     expect(other.length).toBeGreaterThan(0)
   }, 60_000)
 
+  test('every catalogued non-Claude id is actually ACCEPTED by the chat endpoint', async () => {
+    // Regression guard for a real bug: the control plane's
+    // /foundation-models ids carry version suffixes (openai.gpt-oss-120b-1:0)
+    // and a different vendor prefix (moonshot. vs moonshotai.) than the mantle
+    // chat endpoint accepts — only 27 of its 34 flagged ids matched. Listing
+    // those would 404 at chat time, so the catalog sources this half from
+    // mantle's own /models. Here we prove a sample really invokes.
+    const { fetchProviderModels } = await import('../src/utils/rayuConfig.ts')
+    const { bedrockBaseURL } = await import('../src/utils/rayuProviders.ts')
+    const models = await fetchProviderModels({
+      id: 'bedrock',
+      kind: 'bedrock',
+      apiKey: KEY,
+      awsRegion: REGION,
+    })
+    const sample = models
+      .filter(m => !/anthropic|claude/i.test(m))
+      .filter(m => /gpt-oss|deepseek|kimi|minimax/i.test(m))
+      .slice(0, 3)
+    expect(sample.length).toBeGreaterThan(0)
+    for (const model of sample) {
+      const res = await fetch(`${bedrockBaseURL(REGION)}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${KEY}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 4,
+        }),
+      })
+      // A 404/400 "model does not exist" would mean the catalog lists an id the
+      // endpoint cannot serve.
+      expect(
+        res.status,
+        `${model} was rejected with ${res.status}`,
+      ).toBeLessThan(400)
+    }
+  }, 120_000)
+
   test('each catalog model resolves to the right wire format', async () => {
     const { fetchProviderModels } = await import('../src/utils/rayuConfig.ts')
     const { resolveWireFormat } = await import(

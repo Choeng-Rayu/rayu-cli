@@ -77,25 +77,28 @@ export function getContextWindowForModel(
   // header is sent automatically by betas.ts for these models.
   try {
     /* eslint-disable @typescript-eslint/no-require-imports */
-    const { isOpenAICompatibleActive } =
-      require('./model/providers.js') as typeof import('./model/providers.js')
+    const { usesTranslatedFormat } =
+      require('./model/providerCapabilities.js') as typeof import('./model/providerCapabilities.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
-    if (!isOpenAICompatibleActive() && modelSupports1M(model)) {
+    // The 1M-context beta is an Anthropic Messages feature; a request translated
+    // into another protocol has its own context window (resolved below).
+    if (!usesTranslatedFormat(model) && modelSupports1M(model)) {
       return 1_000_000
     }
   } catch {
     // fall through
   }
 
-  // Rayu: for any non-Anthropic Rayu provider (OpenAI-compatible NVIDIA/DeepSeek/
-  // Kimi/…, Gemini on Vertex, and Login-with-Gemini/Code Assist), the context
-  // window depends on the actual model, not Claude's 200k. Resolve from config
-  // overrides / known-model table / RAYU_CONTEXT_TOKENS.
+  // Rayu: for any provider other than first-party Anthropic, the context window
+  // depends on the actual model, not Claude's 200k — including Claude on
+  // Bedrock/Azure/Vertex and a third-party Anthropic endpoint. Resolve from config
+  // overrides / known-model table / RAYU_CONTEXT_TOKENS. Per-MODEL, so a routed
+  // subagent gets ITS provider's window rather than the active provider's.
   try {
     /* eslint-disable @typescript-eslint/no-require-imports */
-    const { isRayuNonAnthropicActive } =
-      require('./model/providers.js') as typeof import('./model/providers.js')
-    if (isRayuNonAnthropicActive()) {
+    const { isFirstPartyRequest } =
+      require('./model/providerCapabilities.js') as typeof import('./model/providerCapabilities.js')
+    if (!isFirstPartyRequest(model)) {
       const { getRayuModelContextWindow } =
         require('./rayuConfig.js') as typeof import('./rayuConfig.js')
       const ctx = getRayuModelContextWindow(model)
