@@ -8,6 +8,7 @@ import { formatCreditAmount, getCachedReferrerReward } from '../../services/api/
 import type { LogOption } from '../../types/logs.js';
 import { getCwd } from '../../utils/cwd.js';
 import { formatRelativeTimeAgo } from '../../utils/format.js';
+import { formatUpdateNoticeLines } from '../../utils/updateNotice.js';
 import type { FeedConfig, FeedLine } from './Feed.js';
 export function createRecentActivityFeed(activities: LogOption[]): FeedConfig {
   const lines: FeedLine[] = activities.map(log => {
@@ -49,12 +50,17 @@ export function createWhatsNewFeed(releaseNotes: string[]): FeedConfig {
   };
 }
 export function createUpdateAvailableFeed(currentVersion: string, latestVersion: string): FeedConfig {
+  // Wording (and the changelog link) come from the shared formatter so this
+  // panel and the banner above the prompt cannot drift apart. Previously this
+  // said `npm i -g @rayu-dev/rayu-cli@latest`, which can silently reinstall the
+  // SAME version when npm resolves the `latest` tag from a cached packument
+  // (the registry marks them `max-age=300`) — the failure fixed in `rayu
+  // update` by pinning the resolved exact version and verifying the result.
   return {
     title: 'Update available',
-    lines: [
-      { text: `v${latestVersion} is available (current v${currentVersion})` },
-      { text: 'npm i -g @rayu-dev/rayu-cli@latest' }
-    ],
+    lines: formatUpdateNoticeLines(currentVersion, latestVersion).map(text => ({
+      text
+    })),
     footer: undefined,
     emptyMessage: ''
   };

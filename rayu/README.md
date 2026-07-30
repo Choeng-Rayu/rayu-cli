@@ -51,6 +51,51 @@ Or reinstall the latest directly:
 npm install -g @rayu-dev/rayu-cli
 ```
 
+Prefer `rayu update`: it resolves the latest version once, installs that **exact**
+version, and then verifies what actually landed on disk. A plain
+`npm install -g @rayu-dev/rayu-cli@latest` resolves the mutable `latest` tag a
+second time and can silently reinstall the version you already have when npm
+serves cached registry metadata (packuments are cached for 5 minutes), which
+looks like a successful update that changed nothing.
+
+When a newer version is published, Rayu shows a one-line notice above the prompt
+and in the welcome box at launch, with a link to
+[the changelog](https://rayucode.com/changelog). Nothing is installed until you
+run `rayu update` yourself.
+
+### Automatic updates (opt-in)
+
+Auto-updates are **off by default**. Rayu tells you an update exists but never
+replaces your install behind your back. To turn them on, set `autoUpdates` in
+`~/.rayu/config.json`:
+
+```json
+{
+  "autoUpdates": true
+}
+```
+
+To silence update checks and notices entirely:
+
+```bash
+export DISABLE_AUTOUPDATER=1
+```
+
+Two things to know before enabling automatic updates:
+
+- **Node version.** Rayu requires **Node.js 18 or newer**. npm only *warns* when
+  a package's `engines` requirement isn't met, so if a future release raises that
+  floor, an automatic update could replace a working install with one that
+  refuses to start until you upgrade Node. `rayu update` has the same
+  constraint, but you choose when it happens.
+- **Duplicate installs.** If Rayu is installed under two different npm prefixes
+  (for example once with `sudo`, landing in `/usr/local`, and once without,
+  landing in `~/.npm-global`), an update writes to whichever prefix npm is
+  configured for — which may not be the copy your shell actually runs. The result
+  is a "successful" update where `rayu --version` never changes. `rayu update`
+  detects this and tells you which copy is shadowing which; the automatic updater
+  does not. Run `which -a rayu` to check, and remove the copy you don't want.
+
 ---
 
 ## Uninstall

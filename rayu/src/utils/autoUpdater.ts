@@ -428,6 +428,52 @@ export async function getLatestVersionFromNpm(
 // synchronously without doing network I/O during render.
 let cachedLatestNpmVersion: string | null = null
 
+// In-flight single-flight promise for ensureLatestNpmVersion(). Two callers now
+// need this value — setup.ts pre-warms it at startup, and the
+// UpdateAvailableNotice banner awaits it when it mounts — and without sharing
+// the promise they would each issue their own registry request. Keyed by
+// nothing: the channel is effectively fixed per session, and a second call with
+// a different channel simply joins the first (see ensureLatestNpmVersion).
+let inFlightLatestNpmVersion: Promise<string | null> | null = null
+
+/**
+ * Resolve the latest published version, reusing an in-flight request.
+ *
+ * Concurrent callers share one HTTP round trip. On failure this resolves null
+ * and CLEARS the memo, so a later call retries rather than being stuck with a
+ * negative result for the rest of the session (a launch during a network blip
+ * would otherwise never show an update notice). On success the memo is kept:
+ * the answer changes at most once per publish, and re-checking on every render
+ * would be wasteful.
+ *
+ * `fetchVersion` is injectable so tests can assert the single-flight and retry
+ * behaviour without network access (same pattern as getRecentReleaseNotes'
+ * changelogContent parameter in releaseNotes.ts).
+ */
+export function ensureLatestNpmVersion(
+  channel: ReleaseChannel = 'latest',
+  fetchVersion: (
+    channel: ReleaseChannel,
+  ) => Promise<string | null> = getLatestVersionFromNpm,
+): Promise<string | null> {
+  if (cachedLatestNpmVersion) {
+    return Promise.resolve(cachedLatestNpmVersion)
+  }
+  if (inFlightLatestNpmVersion) {
+    return inFlightLatestNpmVersion
+  }
+  inFlightLatestNpmVersion = fetchVersion(channel).then(version => {
+    if (version) {
+      cachedLatestNpmVersion = version
+    } else {
+      // Allow a retry later — see doc comment.
+      inFlightLatestNpmVersion = null
+    }
+    return version
+  })
+  return inFlightLatestNpmVersion
+}
+
 /**
  * Fetch the latest npm version and store it in the module cache. Safe to call
  * fire-and-forget at startup; never throws.
@@ -435,10 +481,7 @@ let cachedLatestNpmVersion: string | null = null
 export async function cacheLatestNpmVersion(
   channel: ReleaseChannel = 'latest',
 ): Promise<void> {
-  const version = await getLatestVersionFromNpm(channel)
-  if (version) {
-    cachedLatestNpmVersion = version
-  }
+  await ensureLatestNpmVersion(channel)
 }
 
 /**
@@ -447,6 +490,15 @@ export async function cacheLatestNpmVersion(
  */
 export function getCachedLatestNpmVersionSync(): string | null {
   return cachedLatestNpmVersion
+}
+
+/**
+ * Test-only: drop the cached version and any in-flight request so each test
+ * starts from a clean slate.
+ */
+export function _resetLatestNpmVersionCacheForTesting(): void {
+  cachedLatestNpmVersion = null
+  inFlightLatestNpmVersion = null
 }
 
 /**

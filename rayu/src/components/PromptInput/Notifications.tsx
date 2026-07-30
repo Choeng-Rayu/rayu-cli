@@ -32,6 +32,7 @@ import { IdeStatusIndicator } from '../IdeStatusIndicator.js';
 import { MemoryUsageIndicator } from '../MemoryUsageIndicator.js';
 import { SentryErrorBoundary } from '../SentryErrorBoundary.js';
 import { TokenWarning } from '../TokenWarning.js';
+import { UpdateAvailableNotice } from '../UpdateAvailableNotice.js';
 import { SandboxPromptFooterHint } from './SandboxPromptFooterHint.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -331,6 +332,7 @@ function NotificationContent({
               </Text>
             </Box> : null}
       <MemoryUsageIndicator />
+      <UpdateAvailableNotice />
       <SandboxPromptFooterHint />
     </>;
 }

@@ -121,7 +121,7 @@ export function SearchableModelPicker({
 
   return (
     <Box flexDirection="column" paddingLeft={1}>
-      <Text bold>{title ?? 'Select a model'}</Text>
+      <Text bold>{title ?? 'Select a model (/connect to add more models)'}</Text>
       {headerTip ? <Text dimColor>{headerTip}</Text> : null}
       <Text>
         Search: <Text color="brand">{query}</Text>

@@ -7,6 +7,14 @@ export const PRODUCT_CONFIG_DIRNAME = '.rayu'
 
 export const PRODUCT_URL = 'https://github.com/rayu-cli/rayu-cli'
 
+// Human-readable changelog, linked from the "update available" notice (see
+// src/utils/updateNotice.ts) so users can see what a new version contains
+// before running `rayu update`. Kept here rather than in releaseNotes.ts so the
+// notice helpers stay free of that module's axios/fs import weight;
+// releaseNotes.ts' CHANGELOG_URL/RAW_CHANGELOG_URL point at the raw
+// CHANGELOG.md in git, which is what the /release-notes command parses.
+export const CHANGELOG_WEB_URL = 'https://rayucode.com/changelog'
+
 // RAYU remote-session base URL. Rayu hardcodes no third-party remote-session
 // host: the production base is sourced from RAYU_REMOTE_SESSION_URL (falling
 // back to RAYU_WEB_URL) and is empty when neither is set. Remote-session
