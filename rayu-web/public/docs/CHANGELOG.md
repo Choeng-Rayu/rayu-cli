@@ -2,6 +2,18 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.5.11 - 2026-07-30
+- Fixed a bug where Rayu CLI would hang/stuck when running inside the default macOS Terminal app — Enter and several modified key events were not being delivered when the `modifiers-napi` dependency was absent
+
+## 1.5.1 - 2026-07-28
+- Migrated the Telegram bridge for a more user-friendly experience — smoother pairing flow, clearer status messages, and more reliable bot re-pairing when the linked bot changes
+- Improved Telegram message handling and bridge reliability for mobile/remote access
+
+## 1.5.0 - 2026-07-25
+- Migrated the Rayu-hosted provider to support many more models
+- Added real-time model list updates so newly enabled models on the gateway are picked up without requiring a CLI release
+- Improved provider routing and model resolution for Rayu-hosted models
+
 ## 1.4.479 - 2026-07-23
 - Fixed the Ask User Question tool not working in full manage (full-control) permission mode
 
