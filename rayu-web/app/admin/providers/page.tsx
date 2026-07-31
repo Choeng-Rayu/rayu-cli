@@ -9,7 +9,9 @@ import {
   SectionHeader,
 } from '../../../components/admin/ui'
 import { gatewayUrl } from '../../../lib/config'
+import { notifyGatewayConfigChanged, type ConfigChangeReason } from '../../../lib/gatewayNotify'
 import { formatContextWindow, parseContextWindow } from '../contextWindow'
+import { gatewayErrorText } from '../gatewayError'
 import { nameLeaksProvider } from '../providerName'
 import { useAdmin } from '../AdminProvider'
 import {
@@ -188,7 +190,13 @@ export default function ProvidersPage() {
   // were missing it.
   const [testModal, setTestModal] = useState<ProviderTestResult | null>(null)
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (reason: ConfigChangeReason = 'manual') => {
+    // Push the change to the gateway BEFORE re-reading anything, so the health
+    // badges and any test that follows describe the configuration as just saved
+    // rather than the snapshot it is replacing. Best effort: the gateway also
+    // refreshes on its own timer, so a failure here only costs a few seconds.
+    await notifyGatewayConfigChanged(token, reason)
+
     const [pRes, mRes] = await Promise.all([apiFetch('/admin/providers'), apiFetch('/admin/models')])
     let list: Provider[] = []
     if (pRes.ok) {
@@ -275,8 +283,7 @@ export default function ProvidersPage() {
         body: JSON.stringify(body),
       })
       if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { error?: string; message?: string }
-        const detail = err.error ?? err.message ?? `HTTP ${res.status}`
+        const detail = await gatewayErrorText(res)
         say(subject, `Test failed: ${detail}`)
         // The gateway refused to even run the test (not admin, unknown provider,
         // rate limited, …). That is still a result the admin needs to see.
@@ -324,14 +331,14 @@ export default function ProvidersPage() {
     })
     say(`prov:${p.name}`, res.ok ? 'Saved.' : await errorText(res))
     working(`prov:${p.name}`, false)
-    if (res.ok) await reload()
+    if (res.ok) await reload('providers')
   }
 
   async function removeProvider(p: Provider) {
     const res = await apiFetch(`/admin/providers/${p.name}`, { method: 'DELETE' })
     setDelProvider(null)
     if (!res.ok) say(`prov:${p.name}`, await errorText(res))
-    await reload()
+    await reload('providers')
   }
 
   // --- Keys -------------------------------------------------------------------
@@ -354,7 +361,7 @@ export default function ProvidersPage() {
     setNewKey((x) => ({ ...x, [p.id]: { key: '', label: '' } }))
     say(`newkey:${p.id}`, 'Key added.')
     working(`newkey:${p.id}`, false)
-    await reload()
+    await reload('keys')
     // Test immediately: an admin pasting a key wants to know NOW whether it works,
     // not the next time a user hits the model.
     await runTest(`key:${created.id}`, { providerId: p.id, apiKeyId: created.id })
@@ -373,7 +380,7 @@ export default function ProvidersPage() {
     setReplaceOpen((x) => ({ ...x, [k.id]: false }))
     working(`key:${k.id}`, false)
     if (res.ok) {
-      await reload()
+      await reload('keys')
       await runTest(`key:${k.id}`, { providerId: p.id, apiKeyId: k.id })
     }
   }
@@ -386,14 +393,14 @@ export default function ProvidersPage() {
     })
     if (!res.ok) say(`key:${k.id}`, await errorText(res))
     working(`key:${k.id}`, false)
-    await reload()
+    await reload('keys')
   }
 
   async function removeKey(p: Provider, k: ProviderKeyView) {
     const res = await apiFetch(`/admin/providers/${p.name}/keys/${k.id}`, { method: 'DELETE' })
     setDelKey(null)
     if (!res.ok) say(`key:${k.id}`, await errorText(res))
-    await reload()
+    await reload('keys')
   }
 
   // --- Models -----------------------------------------------------------------
@@ -430,7 +437,7 @@ export default function ProvidersPage() {
     }
     setModelDraft((x) => ({ ...x, [p.id]: blankModel(p) }))
     working(`newmodel:${p.id}`, false)
-    await reload()
+    await reload('models')
 
     const result = await runTest(`model:${code}`, { providerId: p.id, modelCode: code })
     if (result?.ok) {
@@ -439,7 +446,7 @@ export default function ProvidersPage() {
         body: JSON.stringify({ enabled: true }),
       })
       say(`newmodel:${p.id}`, 'Model added, tested, and enabled.')
-      await reload()
+      await reload('models')
     } else {
       say(
         `newmodel:${p.id}`,
@@ -468,14 +475,14 @@ export default function ProvidersPage() {
     })
     say(`model:${m.code}`, res.ok ? 'Saved.' : await errorText(res))
     working(`model:${m.code}`, false)
-    if (res.ok) await reload()
+    if (res.ok) await reload('models')
   }
 
   async function removeModel(m: HostedModel) {
     const res = await apiFetch(`/admin/models/${m.code}`, { method: 'DELETE' })
     setDelModel(null)
     if (!res.ok) say(`model:${m.code}`, await errorText(res))
-    await reload()
+    await reload('models')
   }
 
   if (!loaded) return <CardSkeleton rows={5} />
@@ -913,7 +920,7 @@ export default function ProvidersPage() {
           apiFetch={apiFetch}
           runTest={runTest}
           onCreated={async (created, firstKeyID, modelCode) => {
-            await reload()
+            await reload('providers')
             if (firstKeyID) await runTest(`key:${firstKeyID}`, { providerId: created.id, apiKeyId: firstKeyID })
             if (modelCode) await runTest(`model:${modelCode}`, { providerId: created.id, modelCode })
           }}

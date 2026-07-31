@@ -72,7 +72,7 @@ func TestHostedModelNotAllowedLogsSourceAndAllowlist(t *testing.T) {
 // expired token) are diagnosable.
 func TestAuthMiddlewareLogs401Reason(t *testing.T) {
 	s := testServer()
-	h := New(s.cfg, nil, nil, nil)
+	h := New(s.cfg, nil, nil, nil, nil)
 
 	var buf bytes.Buffer
 	log.SetOutput(&buf)

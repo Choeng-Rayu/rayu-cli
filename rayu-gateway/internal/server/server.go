@@ -76,11 +76,27 @@ type Server struct {
 	// testLim caps the admin provider-test endpoint: each test is a real upstream
 	// call with a real key, so it must not be clickable in a loop.
 	testLim *testLimiter
+	// reloadLim caps the admin config-refresh endpoint (cheaper than a test, so a
+	// looser budget of its own).
+	reloadLim *testLimiter
+	// reloader performs immediate config refreshes for ADMIN paths that must see
+	// their own write, collapsing concurrent requests into one database read and
+	// (when a bus is configured) telling the other replicas to refresh too.
+	reloader *ConfigReloader
 }
 
 // New builds the gateway HTTP handler. /healthz is public; everything under
 // /v1 requires a valid Rayu access token.
-func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Store) http.Handler {
+//
+// reloader performs immediate config refreshes for admin paths; pass nil for a
+// local-only one (tests, and any deployment without an invalidation bus).
+func New(
+	cfg *config.Config,
+	ent entSource,
+	lim *credits.Limiter,
+	st *store.Store,
+	reloader *ConfigReloader,
+) http.Handler {
 	// wq replaces the old per-write safeGo(...) goroutines for the credit
 	// ledger + usage-event writes: a single bounded, serialized queue so
 	// those best-effort durable writes can never open more MySQL
@@ -92,7 +108,18 @@ func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Stor
 			log.Printf("eventqueue: dropped item %q (reason=%s): %v", item.Name, reason, err)
 		},
 	})
-	s := &Server{cfg: cfg, ent: ent, lim: lim, st: st, wq: wq, testLim: newTestLimiter()}
+	s := &Server{
+		cfg: cfg, ent: ent, lim: lim, st: st, wq: wq,
+		testLim:   newTestLimiter(),
+		reloadLim: newSlidingLimiter(time.Minute, reloadPerAdmin),
+		reloader:  reloader,
+	}
+	if s.reloader == nil {
+		// Resolved at call time, not construction time: tests build a Server with no
+		// entSource to exercise the middleware, and taking ent.Reload eagerly would
+		// dereference a nil interface before any handler runs.
+		s.reloader = NewConfigReloader(func(ctx context.Context) error { return s.ent.Reload(ctx) }, nil)
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP)
@@ -128,6 +155,10 @@ func New(cfg *config.Config, ent entSource, lim *credits.Limiter, st *store.Stor
 		// through the production adapter so the dashboard can say "this provider +
 		// key + model works" instead of the admin finding out from a user.
 		pr.Post("/v1/_provider-test", s.handleProviderTest)
+		// Admin-only: "I just saved something, pick it up now" — so a dashboard
+		// change reaches real traffic immediately instead of at the next refresh
+		// tick, and fans out to the other replicas over the bus.
+		pr.Post("/v1/_reload", s.handleReload)
 	})
 
 	// Transparent tracking proxy for BYO-key providers. Identity comes from the

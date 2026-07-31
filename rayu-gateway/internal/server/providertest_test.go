@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
+	"github.com/choeng-rayu/rayu-gateway/internal/providercfg"
 	"github.com/choeng-rayu/rayu-gateway/internal/providerkeys"
 	"github.com/choeng-rayu/rayu-gateway/internal/store"
 )
@@ -473,9 +475,16 @@ func TestProviderTestSeesAKeySavedASecondAgo(t *testing.T) {
 	}
 }
 
-// The reload is a database read, so it must happen only when a lookup actually
-// misses — never on the happy path.
-func TestProviderTestDoesNotReloadWhenNothingIsMissing(t *testing.T) {
+// Every test refreshes the snapshot FIRST, including the happy path.
+//
+// This deliberately replaces the earlier "only refresh when a lookup misses"
+// contract. Refreshing only on a miss is undetectable for an EDIT: an admin who
+// changes a model's upstream id (or a provider's base URL / auth scheme) still
+// has a row under the same code, so nothing misses, nothing refreshes, and the
+// test silently exercises the configuration that was just replaced. A test that
+// reports on stale config is worse than no test, and the saving — a few queries
+// on a human-triggered action capped at 20/min — is not worth that.
+func TestProviderTestAlwaysRefreshesBeforeTesting(t *testing.T) {
 	h, fe, done := providerTestHarness(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"pong"}]}`)
 	}, liveKey())
@@ -484,8 +493,138 @@ func TestProviderTestDoesNotReloadWhenNothingIsMissing(t *testing.T) {
 	if code, _ := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"longcat-2"}`); code != http.StatusOK {
 		t.Fatalf("status=%d", code)
 	}
-	if fe.reloads != 0 {
-		t.Errorf("reloads=%d, want 0 when the snapshot already has the model and key", fe.reloads)
+	if fe.reloads != 1 {
+		t.Errorf("reloads=%d, want exactly 1 — refresh up front, once per test", fe.reloads)
+	}
+}
+
+// REGRESSION (the reported bug): "I save the model configuration, then I test it,
+// and it still uses the old configuration until I wait ~5 minutes."
+//
+// Editing a model keeps its Rayu code, so the stale snapshot still RESOLVES it —
+// there is no lookup miss to trigger a refresh. The test therefore has to refresh
+// unconditionally, before resolving anything, or it sends the previous upstream
+// model id to the provider and reports success for configuration the admin has
+// already replaced.
+func TestProviderTestSeesAModelEditedASecondAgo(t *testing.T) {
+	var sentBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		sentBody = string(b)
+		_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"pong"}]}`)
+	}))
+	defer upstream.Close()
+
+	prov := longcatProvider(upstream.URL)
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 911, Status: "active",
+			Plan: store.Plan{Code: "pro", Name: "Pro"},
+			// The snapshot the gateway is holding: the PRE-EDIT upstream model id.
+			AllowedModels: []store.HostedModel{hostedModel("longcat-2", prov, "LongCat-OLD", 1)},
+		},
+		settings:     store.AppSettings{BaselineCreditsPer1M: 1},
+		providerKeys: map[int64][]providerkeys.Key{provIDLongCat: liveKey()},
+		// The database already has the admin's edit; this is the refresh reading it.
+		onReload: func(f *fakeEnt) {
+			f.ent.AllowedModels[0].UpstreamModelID = "LongCat-2.0-NEW"
+		},
+	}
+	h, _ := chatHarness(t, fe)
+
+	code, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"longcat-2"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", code)
+	}
+	if !strings.Contains(sentBody, `"LongCat-2.0-NEW"`) {
+		t.Fatalf("upstream was sent the STALE model id — body=%s", sentBody)
+	}
+	if res.UpstreamModelID != "LongCat-2.0-NEW" {
+		t.Errorf("result reports upstreamModelId=%q, want the just-saved id", res.UpstreamModelID)
+	}
+}
+
+// The same staleness applies to the provider ROW: an edited base URL, endpoint
+// path or auth scheme is resolved from the snapshot before any lookup can miss,
+// so without an up-front refresh the test authenticates the old way against the
+// old host — and reports the old endpoint back to the admin.
+func TestProviderTestSeesAProviderConnectionEditedASecondAgo(t *testing.T) {
+	staleHits := 0
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		staleHits++
+		_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"pong"}]}`)
+	}))
+	defer stale.Close()
+
+	var freshAuth, freshAPIKey string
+	fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		freshAuth = r.Header.Get("Authorization")
+		freshAPIKey = r.Header.Get("x-api-key")
+		_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"pong"}]}`)
+	}))
+	defer fresh.Close()
+
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 912, Status: "active",
+			Plan:          store.Plan{Code: "pro", Name: "Pro"},
+			AllowedModels: []store.HostedModel{hostedModel("longcat-2", longcatProvider(stale.URL), "LongCat-2.0", 1)},
+		},
+		settings:     store.AppSettings{BaselineCreditsPer1M: 1},
+		providerKeys: map[int64][]providerkeys.Key{provIDLongCat: liveKey()},
+		// The admin repointed the provider at a new host and switched it from
+		// bearer auth to x-api-key.
+		onReload: func(f *fakeEnt) {
+			f.ent.AllowedModels[0].Provider.BaseURL = fresh.URL
+			f.ent.AllowedModels[0].Provider.AuthScheme = providercfg.AuthXAPIKey
+		},
+	}
+	h, _ := chatHarness(t, fe)
+
+	code, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"longcat-2"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", code)
+	}
+	if staleHits != 0 {
+		t.Errorf("the OLD base URL was called %d time(s) — the test used stale config", staleHits)
+	}
+	if freshAPIKey != "sk-live-secret" {
+		t.Errorf("new host saw x-api-key=%q, want the stored key under the just-saved auth scheme", freshAPIKey)
+	}
+	if freshAuth != "" {
+		t.Errorf("new host also saw Authorization=%q — the old auth scheme was used", freshAuth)
+	}
+	if !strings.HasPrefix(res.Endpoint, fresh.URL) {
+		t.Errorf("result reports endpoint=%q, want the just-saved base URL %q", res.Endpoint, fresh.URL)
+	}
+}
+
+// When the refresh itself fails (database unreachable) the test still runs against
+// the last known snapshot — but if a lookup then misses, the admin must be told
+// WHY, otherwise "model does not belong to this provider" points them at a model
+// that is in fact saved correctly.
+func TestProviderTestExplainsAFailedRefresh(t *testing.T) {
+	h, fe, done := providerTestHarness(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"pong"}]}`)
+	}, liveKey())
+	defer done()
+	fe.reloadErr = errors.New("dial tcp 10.0.0.9:3306: connect: connection refused")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/_provider-test",
+		strings.NewReader(`{"providerId":2,"modelCode":"not-in-the-snapshot"}`))
+	req.Header.Set("Authorization", "Bearer "+accessTokenRole(t, 900, "admin"))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "not-in-the-snapshot") {
+		t.Errorf("error lost the original cause: %s", body)
+	}
+	if !strings.Contains(body, "could not refresh") || !strings.Contains(body, "connection refused") {
+		t.Errorf("error does not say the refresh failed: %s", body)
 	}
 }
 

@@ -11,6 +11,7 @@ import {
   TableScroll,
   usd,
 } from '../../../components/admin/ui'
+import { notifyGatewayConfigChanged, type ConfigChangeReason } from '../../../lib/gatewayNotify'
 import { useAdmin } from '../AdminProvider'
 import {
   AppSettings,
@@ -50,7 +51,13 @@ export default function PlansAndCreditsPage() {
   const [showGlobals, setShowGlobals] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (reason: ConfigChangeReason = 'manual') => {
+    // Plan pricing, credit settings and plan→model access all gate real requests
+    // in the gateway, which serves them from a 30s snapshot — so tell it to
+    // re-read before we re-read, or a just-granted model stays "not available on
+    // your plan" for up to half a minute. Best effort; the timer is the safety net.
+    await notifyGatewayConfigChanged(token, reason)
+
     const [pr, sr, cp] = await Promise.all([
       apiFetch('/admin/plans'),
       apiFetch('/admin/credit-settings'),
@@ -65,7 +72,7 @@ export default function PlansAndCreditsPage() {
     if (sr.ok) setSettings((await sr.json()) as AppSettings)
     if (cp.ok) setProj((await cp.json()) as CreditProjection)
     setLoaded(true)
-  }, [apiFetch])
+  }, [apiFetch, token])
 
   useEffect(() => {
     if (token) void reload()
@@ -135,11 +142,11 @@ export default function PlansAndCreditsPage() {
           ...m,
           [plan.code]: `Plan saved, but model access failed: ${detail}`,
         }))
-        await reload()
+        await reload('plans')
         return
       }
       setMsg((m) => ({ ...m, [plan.code]: 'Saved.' }))
-      await reload()
+      await reload('plans')
     } finally {
       setSavingCode(null)
     }
@@ -165,7 +172,7 @@ export default function PlansAndCreditsPage() {
     })
     const detail = res.ok ? '' : await errorText(res)
     setMsg((m) => ({ ...m, __settings: res.ok ? 'Saved.' : `Error: ${detail}` }))
-    if (res.ok) await reload()
+    if (res.ok) await reload('plans')
   }
 
   // Models are grouped by provider so a long catalog stays scannable and it is

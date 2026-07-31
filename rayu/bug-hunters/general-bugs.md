@@ -64,74 +64,91 @@ Analyze this root caues because as you can see if the LLM use the tool read to r
   ⎿  Error: File does not exist. Note: your current working directory is /home/rayu/rayu-cli/rayu. Did you mean useCanUseTool.tsx?
 
 
-# Bug 4
-When THe LLM use the tool reply use the tool askUserQuestion but it not work base on it said "● I've now(called AskUserQuestion three times and each call returns with no captured answers — your selections aren't coming through."  ask you can in the exact used is it don't show the answer I'm not sure that this is the style display output because I just this: 
- Before I plan the implementation, I need a few decisions confirmed:
 
-```
-● User answered Rayu's questions:
-  ⎿  
+# bug 4 tool update or tool write sometime it has the issue it seem like the tool is schema is working properly to the model LLMs
+● Update(/home/rayu/H2H-V1/apps/backend/src/modules/mobile/payments/payments.controller.spec.ts)
+  ⎿  Error: String to replace not found in file.
+     String:   describe('POST /api/v1/payments/aba/initiate', () => {
+         const BOOKING = {
+           id: 'bk1',
+           bookingNumber: 'H2H-0042',
+           customerId: 'cust1',
+           professionalId: 'pro1',
+           status: 'in_progress',
+           currency: 'USD',
+           finalPrice: { toString: () => '100.00' } as any,
+           payment: null as any,
+           serviceOffer: { service: { name: 'Cleaning' } } as any,
+         };
 
-● I asked the confirmation questions; looks like you didn't select options. Here's the breakdown you asked for, so you can answer in your
-  own words:
+         it('returns 200 with the KHQR payload for an authorized customer', async () => {
+           prisma.booking.findUnique.mockResolvedValue(BOOKING);
+           prisma.professionalProfile.findUnique.mockResolvedValue({ userId: 'pro-user' });
+           prisma.payment.create.mockResolvedValue({ id: 'pay1' });
+
+           const res = await request(app.getHttpServer())
+             .post('/api/v1/payments/aba/initiate')
+             .set('Authorization', 'Bearer test-token')
+             .send({ bookingId: 'bk1' });
+
+           // eslint-disable-next-line no-console
+           console.log('INITIATE RESP', res.status, JSON.stringify(res.body));
+           expect(res.status).toBe(200);
+           expect(res.body.data).toEqual({
+             tranId: 'h2h_gen',
+             paymentId: 'pay1',
+             khqrString: '000201010212...KHQR',
+             amount: 100,
+             currency: 'USD',
+             expiresAt: '2026-07-30T11:00:00.000Z',
+           });
+           expect(aba.createKhqr).toHaveBeenCalledWith({
+             tranId: 'h2h_gen',
+             amount: 100,
+             currency: 'USD',
+             description: 'Booking H2H-0042 — Cleaning',
+           });
+         });
+
+         it('returns 403 when the auth guard rejects', async () => {
+           guardAllow = false;
+           const res = await request(app.getHttpServer())
+             .post('/api/v1/payments/aba/initiate')
+             .send({ bookingId: 'bk1' });
+           // Guard returns false → Nest responds 403 Forbidden by default
+           expect(res.status).toBe(403);
+           expect(aba.createKhqr).not.toHaveBeenCalled();
+         });
+
+         it('returns 400 when bookingId is missing', async () => {
+           const res = await request(app.getHttpServer())
+             .post('/api/v1/payments/aba/initiate')
+             .set('Authorization', 'Bearer test-token')
+             .send({});
+           expect(res.status).toBe(400);
+         });
+
+         it('returns 400 when bookingId is not a UUID', async () => {
+           const res = await request(app.getHttpServer())
+             .post('/api/v1/payments/aba/initiate')
+             .set('Authorization', 'Bearer test-token')
+             .send({ bookingId: 'not-a-uuid' });
+           expect(res.status).toBe(400);
+         });
+
+         it('returns 400 when an unknown property is supplied (forbidNonWhitelisted)', async () => {
+           const res = await request(app.getHttpServer())
+             .post('/api/v1/payments/aba/initiate')
+             .set('Authorization', 'Bearer test-token')
+             .send({ bookingId: 'bk1', evil: 'drop' });
+           expect(res.status).toBe(400);
+         });
+       });
+     Retry with a smaller exact string copied from a fresh Read result. If this needs a complete rewrite, first perform a fresh full Read of this exact file path, then use
+     Write with the complete new file content.
+     Tip: Use only 2-5 unique lines as old_string instead of large blocks — a smaller anchor is more likely to match exactly.
 
 
-```
-it the sentenct "● User answered Rayu's questions:
-  ⎿  " I expect to see the under  after this sysmbol ⎿  but it don't so please ananlyze is this the error tool or because this is the style design
-
-
-  here bug the tool ask user question is not work also please annlyze the roote: 
-  ```● User answered Rayu's questions:
-  ⎿  
-
-● The tool(isn't capturing your selections — the response comes back empty. Let me try a simpler single-question version to isolate whether
-   it's a rendering issue.
-
-● User answered Rayu's questions:
-  ⎿  
-
-● I've now(called AskUserQuestion three times and each call returns with no captured answers — your selections aren't coming through. That
-  points to a UI/rendering issue on the harness side, not me misusing the tool (the tool itself runs successfully; the answer payload is
-  just empty).
-```
-
-this is when i test to tell the LLM to test the tool askusequestion agian and it show this issue and I don't the exact the root cause
-```❯ puse the tool again                                                                                                                      
-  ⎿  Error: InputValidationError: [
-       {
-         "origin": "array",
-         "code": "too_big",
-         "maximum": 4,
-         "inclusive": true,
-         "path": [
-           "questions"
-         ],
-         "message": "Too big: expected array to have <=4 items"
-       }
-     ]
-```
-this is another test session is that it can use the tool but show this issue: 
-
-```❯ use the tool askuserquestoin to ask me about anyquestion and give me the option
-
-✔ Thought
-
-  The user wants me to ask them a question using AskUserQuestion. Let me ask a clarifying question about what they'd like to work on.
-
-● User answered Rayu's questions:
-  ⎿  · What would you like me to help you with in this session? → Fix a bug
-
-                                                                                                             01:01 AM glm-5.2:cloud
-● You picked Fix a bug. Tell me which bug — the file/symptom, any error messages, and what you expected vs. what happened — and I'll dig
-  in.
-  ⎿  Error: InputValidationError: AskUserQuestion failed due to the following issue:
-     The parameter `questions` type is expected as `array` but provided as `string`
-```
-
-
-
-NOTE: when i restart thsi session so it can the tool properly
 
 # Bug 5
 When the Rayu try to response for longer then 10mn it show this issue so please aanlyze to find the roote cause 

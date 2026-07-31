@@ -27,6 +27,7 @@ type Config struct {
 	RedisURL      string
 	ConfigRefresh int      // seconds between in-memory config refreshes
 	UserCacheTTL  int      // seconds to cache per-user entitlements
+	ConfigChannel string   // Redis pub/sub channel for admin config invalidation (empty = default)
 	MaxInFlight   int      // global cap on concurrently-processed hosted streaming requests (RAYU_MAX_INFLIGHT; 0 = unlimited)
 	CorsOrigins   []string // allowed browser origins for the dashboard
 	// AllowInsecureProviderBaseURL permits http / private-host provider base URLs
@@ -77,6 +78,12 @@ func Load() (*Config, error) {
 	}
 	c.ConfigRefresh, _ = strconv.Atoi(getenv("CONFIG_REFRESH_SECONDS", "30"))
 	c.UserCacheTTL, _ = strconv.Atoi(getenv("USER_CACHE_TTL_SECONDS", "10"))
+	// Redis pub/sub channel used to tell every replica that an admin changed the
+	// configuration, so a dashboard save takes effect immediately instead of at the
+	// next CONFIG_REFRESH_SECONDS tick. Empty uses configbus.DefaultChannel. Both
+	// the publisher and the subscriber are this gateway, so nothing else needs to
+	// know the value — it only has to MATCH across replicas sharing a Redis.
+	c.ConfigChannel = os.Getenv("RAYU_CONFIG_CHANNEL")
 	// Global load-shedding valve: max hosted streaming requests processed at once
 	// (0 = unlimited). When exceeded, the gateway sheds with a fast, clean 503 so
 	// a burst of concurrent users degrades gracefully instead of exhausting the

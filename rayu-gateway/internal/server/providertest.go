@@ -111,34 +111,58 @@ const (
 	providerTestTimeout  = 25 * time.Second
 )
 
-// testLimiter is a per-admin sliding window. In-process on purpose: the limit
+// testLimiter is a per-caller sliding window. In-process on purpose: the limit
 // exists to protect UPSTREAMS from one operator's clicking, and a gateway replica
 // only ever serves the admin currently talking to it.
 type testLimiter struct {
+	window time.Duration
+	max    int
+
 	mu   sync.Mutex
 	hits map[int64][]time.Time
 }
 
-func newTestLimiter() *testLimiter { return &testLimiter{hits: map[int64][]time.Time{}} }
+func newTestLimiter() *testLimiter {
+	return newSlidingLimiter(providerTestWindow, providerTestPerAdmin)
+}
+
+// newSlidingLimiter is the same window with caller-chosen bounds, so a cheap admin
+// action (a config refresh) is not held to the budget of an expensive one (a real
+// upstream call).
+func newSlidingLimiter(window time.Duration, max int) *testLimiter {
+	return &testLimiter{window: window, max: max, hits: map[int64][]time.Time{}}
+}
 
 // allow records an attempt and reports whether it fits in the window, plus how
 // long to wait when it does not.
 func (l *testLimiter) allow(userID int64, now time.Time) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	cutoff := now.Add(-providerTestWindow)
+	cutoff := now.Add(-l.window)
 	kept := l.hits[userID][:0]
 	for _, t := range l.hits[userID] {
 		if t.After(cutoff) {
 			kept = append(kept, t)
 		}
 	}
-	if len(kept) >= providerTestPerAdmin {
+	if len(kept) >= l.max {
 		l.hits[userID] = kept
-		return false, providerTestWindow - now.Sub(kept[0])
+		return false, l.window - now.Sub(kept[0])
 	}
 	l.hits[userID] = append(kept, now)
 	return true, 0
+}
+
+// withRefreshNote appends WHY a lookup may have missed when the up-front config
+// refresh failed. Without it the admin is told "model X does not belong to this
+// provider" about a model they can see saved in the dashboard, and the real cause
+// (the gateway cannot reach the database) is only in the server log.
+func withRefreshNote(msg string, refreshErr error) string {
+	if refreshErr == nil {
+		return msg
+	}
+	return msg + " — note: the gateway could not refresh its configuration (" +
+		refreshErr.Error() + "), so it answered from its last snapshot"
 }
 
 // handleProviderTest runs one real, unbilled request against a provider.
@@ -165,9 +189,29 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The admin saved this provider/key/model a moment ago, and the config snapshot
+	// only refreshes every CONFIG_REFRESH_SECONDS — so refresh FIRST, before the
+	// route, model and key are resolved from it.
+	//
+	// This used to refresh only when a lookup MISSED, which cannot see an EDIT: a
+	// changed upstream model id, base URL, endpoint path or auth scheme still
+	// resolves under the same code, so nothing missed, nothing refreshed, and the
+	// test exercised the configuration the admin had just replaced — then reported
+	// it as the truth. ("I save, I test, it still uses the old config until I wait.")
+	//
+	// The cost is a handful of queries plus key decryption on a human-triggered
+	// action that is already capped at 20/min per admin, and concurrent tests share
+	// one refresh (see configReloader). Correctness over the saved round-trips: a
+	// test that reports on stale configuration is worse than no test at all.
+	var reloadErr error
+	if err := s.reloader.Reload(r.Context()); err != nil {
+		reloadErr = err
+		log.Printf("provider test: config refresh failed, answering from the last snapshot: %v", err)
+	}
+
 	pr, ok := s.ent.Route(body.ProviderID)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "unknown provider")
+		httpx.WriteError(w, http.StatusNotFound, withRefreshNote("unknown provider", reloadErr))
 		return
 	}
 	result := providerTestResult{
@@ -188,20 +232,11 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The admin has just SAVED this key/model in the dashboard, and the config
-	// snapshot only refreshes every CONFIG_REFRESH_SECONDS — so a first lookup miss
-	// usually means "newer than the snapshot", not "does not exist". Refresh once
-	// and retry, otherwise "Add key & test" fails for up to 30 seconds and looks
-	// like the feature is broken (it did).
+	// The snapshot was refreshed above, so a miss here is a real miss: the model or
+	// key genuinely is not in the database (or the refresh failed and said so).
 	model, err := s.testModel(body.ProviderID, body.ModelCode)
 	if err != nil {
-		if rerr := s.ent.Reload(r.Context()); rerr != nil {
-			log.Printf("provider test: config reload failed: %v", rerr)
-		}
-		model, err = s.testModel(body.ProviderID, body.ModelCode)
-	}
-	if err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, withRefreshNote(err.Error(), reloadErr))
 		return
 	}
 	result.ModelCode = model.Code
@@ -209,13 +244,7 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 
 	key, err := s.testKey(body.ProviderID, body.APIKeyID)
 	if err != nil {
-		if rerr := s.ent.Reload(r.Context()); rerr != nil {
-			log.Printf("provider test: config reload failed: %v", rerr)
-		}
-		key, err = s.testKey(body.ProviderID, body.APIKeyID)
-	}
-	if err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, withRefreshNote(err.Error(), reloadErr))
 		return
 	}
 	result.KeyID = key.ID

@@ -27,9 +27,20 @@ type Entitlement struct {
 // Active reports whether the user may use the gateway at all.
 func (e Entitlement) Active() bool { return e.Status == "active" }
 
+// userStore is the slice of the store that per-user resolution needs. Narrowing it
+// here (rather than taking *store.Store) is what makes Resolve testable: the cache
+// can be driven by a counting fake, so "one database resolve per burst" and "a
+// catalog change is visible immediately" are provable without a live MySQL.
+type userStore interface {
+	UserStatus(ctx context.Context, userID int64) (string, error)
+	ActivePlan(ctx context.Context, userID int64, now time.Time) (*store.Plan, *time.Time, error)
+	TopupBalance(ctx context.Context, userID int64) (int64, error)
+}
+
 // Cache holds config + per-user entitlement caches.
 type Cache struct {
 	st      *store.Store
+	userSrc userStore
 	refresh time.Duration
 	userTTL time.Duration
 	// routeOpts controls how provider rows are validated into routes (dev flag).
@@ -52,6 +63,19 @@ type Cache struct {
 
 	umu   sync.Mutex
 	users map[int64]userEntry
+	// inflight deduplicates concurrent resolves of the SAME user. A cache miss is
+	// three sequential MySQL round-trips, and a user's requests arrive in bursts
+	// (the agent loop fires side queries alongside the main turn), so without this
+	// one expiry multiplies into N×3 queries against a shared connection pool.
+	inflight map[int64]*resolveCall
+}
+
+// resolveCall is one shared per-user resolve. Fields are written before done is
+// closed, so every waiter reads them with a happens-before guarantee.
+type resolveCall struct {
+	done  chan struct{}
+	entry userEntry
+	err   error
 }
 
 // ProviderRoute is a provider registry row resolved for use: either a usable
@@ -69,9 +93,17 @@ func (p ProviderRoute) Usable() bool {
 	return p.Err == nil && p.Route.Enabled && p.Route.HasKey()
 }
 
+// userEntry is what is actually CACHED for a user: only the parts that come from
+// the database. The allowed-model list is deliberately NOT here — it is derived
+// from the live config snapshot on every read (see Resolve), so enabling a model
+// or granting a plan access to one takes effect on the user's next request instead
+// of waiting out this entry's TTL on top of the config refresh.
 type userEntry struct {
-	ent Entitlement
-	exp time.Time
+	status    string
+	plan      store.Plan
+	periodEnd *time.Time
+	topup     int64
+	exp       time.Time
 }
 
 // New creates a cache. Call Start to load config and begin refreshing.
@@ -89,14 +121,23 @@ func New(
 ) *Cache {
 	return &Cache{
 		st:        st,
+		userSrc:   st,
 		refresh:   refresh,
 		userTTL:   userTTL,
 		routeOpts: routeOpts,
 		opener:    opener,
 		keys:      providerkeys.New(onKeyState),
 		users:     map[int64]userEntry{},
+		inflight:  map[int64]*resolveCall{},
 		routes:    map[int64]ProviderRoute{},
 	}
+}
+
+// withUserStore replaces the per-user database reader. Test-only seam: production
+// always resolves against the same *store.Store passed to New.
+func (c *Cache) withUserStore(us userStore) *Cache {
+	c.userSrc = us
+	return c
 }
 
 // Keys exposes the live key registry (rotation + health).
@@ -215,7 +256,24 @@ func (c *Cache) reload(ctx context.Context) error {
 	c.settings = settings
 	c.routes = routes
 	c.mu.Unlock()
+
+	// Drop expired per-user entries. Nothing else ever removes them: Invalidate is
+	// targeted and a re-resolve only overwrites the users who came back, so a
+	// long-running gateway otherwise keeps an entry for every account that has ever
+	// made a request. Piggy-backing on the refresh keeps it free of its own timer.
+	c.sweepUsers(time.Now())
 	return nil
+}
+
+// sweepUsers removes per-user entries whose TTL has passed.
+func (c *Cache) sweepUsers(now time.Time) {
+	c.umu.Lock()
+	defer c.umu.Unlock()
+	for id, e := range c.users {
+		if !e.exp.After(now) {
+			delete(c.users, id)
+		}
+	}
 }
 
 // Settings returns the cached app settings.
@@ -291,47 +349,102 @@ func AllowedModels(models []store.HostedModel, planCode string) []store.HostedMo
 // timeout so the gateway is always the one that answers first.
 const resolveDeadline = 3 * time.Second
 
-// Resolve returns the user's entitlement using a short-TTL per-user cache.
+// Resolve returns the user's entitlement, caching only the database-derived parts
+// for userTTL. The allowed-model list is rebuilt from the current config snapshot
+// on every call, so a catalog change is visible on the next request rather than
+// after this user's TTL also expires.
+//
+// Concurrent resolves of the same user share one database read (see inflight):
+// a user's requests arrive in bursts, and a burst arriving on an expired entry
+// used to mean one triple-query per request.
 func (c *Cache) Resolve(ctx context.Context, userID int64) (Entitlement, error) {
 	now := time.Now()
 	c.umu.Lock()
 	if e, ok := c.users[userID]; ok && e.exp.After(now) {
 		c.umu.Unlock()
-		return e.ent, nil
+		return c.entitlementFor(userID, e), nil
+	}
+	call := c.inflight[userID]
+	if call == nil {
+		call = &resolveCall{done: make(chan struct{})}
+		if c.inflight == nil {
+			c.inflight = map[int64]*resolveCall{}
+		}
+		c.inflight[userID] = call
+		go c.resolveNow(userID, call)
 	}
 	c.umu.Unlock()
 
-	ctx, cancel := context.WithTimeout(ctx, resolveDeadline)
+	select {
+	case <-call.done:
+		if call.err != nil {
+			return Entitlement{}, call.err
+		}
+		return c.entitlementFor(userID, call.entry), nil
+	case <-ctx.Done():
+		// This caller gave up (client disconnected); the shared read continues for
+		// the others and its result still populates the cache.
+		return Entitlement{}, ctx.Err()
+	}
+}
+
+// resolveNow performs the three user queries and publishes the result to every
+// waiter. It runs on a DETACHED context so one caller hanging up cannot abort a
+// read the others are waiting for, bounded by resolveDeadline exactly as before.
+func (c *Cache) resolveNow(userID int64, call *resolveCall) {
+	ctx, cancel := context.WithTimeout(context.Background(), resolveDeadline)
 	defer cancel()
 
-	status, err := c.st.UserStatus(ctx, userID)
-	if err != nil {
-		return Entitlement{}, err
+	entry, err := c.readUser(ctx, userID)
+
+	c.umu.Lock()
+	delete(c.inflight, userID)
+	if err == nil {
+		c.users[userID] = entry
 	}
-	plan, periodEnd, err := c.st.ActivePlan(ctx, userID, now)
+	c.umu.Unlock()
+
+	call.entry, call.err = entry, err
+	close(call.done)
+}
+
+// readUser is the database half: status, active plan, top-up balance.
+func (c *Cache) readUser(ctx context.Context, userID int64) (userEntry, error) {
+	now := time.Now()
+	status, err := c.userSrc.UserStatus(ctx, userID)
 	if err != nil {
-		return Entitlement{}, err
+		return userEntry{}, err
+	}
+	plan, periodEnd, err := c.userSrc.ActivePlan(ctx, userID, now)
+	if err != nil {
+		return userEntry{}, err
 	}
 	if plan == nil {
 		plan = &store.Plan{Code: "free"}
 	}
-	topup, err := c.st.TopupBalance(ctx, userID)
+	topup, err := c.userSrc.TopupBalance(ctx, userID)
 	if err != nil {
-		return Entitlement{}, err
+		return userEntry{}, err
 	}
+	return userEntry{
+		status:    status,
+		plan:      *plan,
+		periodEnd: periodEnd,
+		topup:     topup,
+		exp:       now.Add(c.userTTL),
+	}, nil
+}
 
-	ent := Entitlement{
+// entitlementFor joins a cached user entry to the CURRENT catalog snapshot.
+func (c *Cache) entitlementFor(userID int64, e userEntry) Entitlement {
+	return Entitlement{
 		UserID:        userID,
-		Status:        status,
-		Plan:          *plan,
-		PeriodEnd:     periodEnd,
-		AllowedModels: AllowedModels(c.Models(), plan.Code),
-		TopupBalance:  topup,
+		Status:        e.status,
+		Plan:          e.plan,
+		PeriodEnd:     e.periodEnd,
+		AllowedModels: AllowedModels(c.Models(), e.plan.Code),
+		TopupBalance:  e.topup,
 	}
-	c.umu.Lock()
-	c.users[userID] = userEntry{ent: ent, exp: now.Add(c.userTTL)}
-	c.umu.Unlock()
-	return ent, nil
 }
 
 // Invalidate drops a user's cached entitlement so the next Resolve re-reads
@@ -340,4 +453,11 @@ func (c *Cache) Invalidate(userID int64) {
 	c.umu.Lock()
 	delete(c.users, userID)
 	c.umu.Unlock()
+}
+
+// CachedUsers is how many per-user entries are held right now (test/diagnostics).
+func (c *Cache) CachedUsers() int {
+	c.umu.Lock()
+	defer c.umu.Unlock()
+	return len(c.users)
 }

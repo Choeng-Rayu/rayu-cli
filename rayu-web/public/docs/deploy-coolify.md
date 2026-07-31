@@ -75,7 +75,8 @@ Google OAuth redirect URI: `https://rayucode.com/api/auth/callback/google`.
 | Variable | Default | Effect |
 |---|---|---|
 | `SEED_CATALOG` | unset | `true` populates the shipped example providers/models on a brand-new database. Leave unset in production: the catalog is admin-owned and a restart must never re-create rows an operator deleted |
-| `CONFIG_REFRESH_SECONDS` | `30` | How long a provider/model/key edit takes to reach the gateway |
+| `CONFIG_REFRESH_SECONDS` | `30` | Safety net for picking up a provider/model/key edit. Saves are normally live immediately (the dashboard notifies the gateway), so this only covers a missed notification |
+| `RAYU_CONFIG_CHANNEL` | `rayu:config-changed` | Redis pub/sub channel used to relay an admin change to other gateway replicas. Only has to match across replicas |
 | `RAYU_MAX_INFLIGHT` | unlimited | Global cap on concurrent hosted streams |
 | `RAYU_SHARED_BOT_TOKEN` | unset | Shared Telegram bot |
 | `BAKONG_*` | unset | KHQR payments |
@@ -209,7 +210,10 @@ RAYU_GATEWAY_URL=https://gateway.rayucode.com rayu
 ## 7. Building the catalog (admin, no redeploy)
 
 Everything below is data, changed in the dashboard and picked up by the gateway
-within `CONFIG_REFRESH_SECONDS`:
+**immediately** — on every save the dashboard calls the gateway's admin-only
+`POST /v1/_reload`, which re-reads the database and relays the notice to any other
+replica over Redis. `CONFIG_REFRESH_SECONDS` remains as a safety net for a notice
+that never arrives (Redis down, or a change written outside the dashboard):
 
 1. **Providers → Add a provider** (3 steps: connection → key → first model). The
    provider is saved **disabled**, the model is tested through the real adapter,

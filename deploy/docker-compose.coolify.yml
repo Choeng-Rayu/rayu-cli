@@ -120,9 +120,12 @@ services:
       # allowed. Every /v1 route still requires a valid Rayu JWT.
       GATEWAY_CORS_ORIGINS: ${PUBLIC_SITE_URL:?}
       # Provider routing AND keys are admin-managed rows in MySQL — adding a
-      # provider or rotating a key needs no redeploy (picked up within
-      # CONFIG_REFRESH_SECONDS).
+      # provider or rotating a key needs no redeploy. A save is live immediately
+      # (the dashboard calls the gateway's POST /v1/_reload, which also relays the
+      # notice to other replicas on RAYU_CONFIG_CHANNEL); this timer is the safety
+      # net for a notice that never arrives.
       CONFIG_REFRESH_SECONDS: ${CONFIG_REFRESH_SECONDS:-30}
+      RAYU_CONFIG_CHANNEL: ${RAYU_CONFIG_CHANNEL:-}
       RAYU_MAX_INFLIGHT: ${RAYU_MAX_INFLIGHT:-}
       RAYU_ENFORCE_MODEL_FIDELITY: ${RAYU_ENFORCE_MODEL_FIDELITY:-}
       RAYU_PROXY_BODY_READ_TIMEOUT: ${RAYU_PROXY_BODY_READ_TIMEOUT:-}

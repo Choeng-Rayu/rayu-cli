@@ -111,6 +111,10 @@ type fakeEnt struct {
 	// on the request path).
 	onReload func(*fakeEnt)
 	reloads  int
+	// reloadErr makes the refresh fail, standing in for an unreachable database.
+	reloadErr error
+	// invalidated records the user ids dropped from the entitlement cache.
+	invalidated []int64
 	// disabledProviders forces a provider row's kill switch off in the resolved
 	// route, without the test having to restate the whole row.
 	disabledProviders map[string]bool
@@ -124,12 +128,21 @@ func (f *fakeEnt) Resolve(context.Context, int64) (entitlements.Entitlement, err
 	return f.ent, nil
 }
 func (f *fakeEnt) Settings() store.AppSettings { return f.settings }
-func (f *fakeEnt) Invalidate(int64)            {}
+
+// Invalidate records which users were dropped from the entitlement cache, so a
+// test can prove a per-user change (plan switch, suspension) took effect without
+// waiting for the TTL.
+func (f *fakeEnt) Invalidate(userID int64) {
+	f.invalidated = append(f.invalidated, userID)
+}
 
 // Reload records the call and applies the test's onReload hook, standing in for
 // the config refresh picking up rows written since the last snapshot.
 func (f *fakeEnt) Reload(context.Context) error {
 	f.reloads++
+	if f.reloadErr != nil {
+		return f.reloadErr
+	}
 	if f.onReload != nil {
 		f.onReload(f)
 	}
@@ -240,7 +253,7 @@ func chatHarnessCfg(t *testing.T, fe *fakeEnt, cfg *config.Config) (http.Handler
 	if cfg.JWTSecret == "" {
 		cfg.JWTSecret = testSecret
 	}
-	return New(cfg, fe, lim, nil), lim
+	return New(cfg, fe, lim, nil, nil), lim
 }
 
 // TestRetiredChatCompletionsIngress locks in the retirement of the OpenAI-shaped

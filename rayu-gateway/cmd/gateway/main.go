@@ -19,6 +19,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/config"
+	"github.com/choeng-rayu/rayu-gateway/internal/configbus"
 	"github.com/choeng-rayu/rayu-gateway/internal/credits"
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
 	"github.com/choeng-rayu/rayu-gateway/internal/eventqueue"
@@ -288,7 +289,29 @@ func main() {
 	defer rdb.Close()
 	lim := credits.NewLimiter(rdb)
 
-	handler := server.New(cfg, cache, lim, st)
+	// Invalidation bus: the dashboard's save reaches ONE replica, and this is how
+	// the others hear about it. Notification only — every replica re-reads the
+	// database itself — so a lost message costs a delay until the next periodic
+	// refresh, never wrong configuration. See internal/configbus.
+	bus := configbus.New(rdb, cfg.ConfigChannel)
+	reloader := server.NewConfigReloader(cache.Reload, bus.Publish)
+	// Subscribers use the LOCAL refresh (never Broadcast), so hearing a message can
+	// never make this replica publish one and start a loop.
+	bus.Subscribe(ctx, func(ev configbus.Event) {
+		if err := reloader.Reload(ctx); err != nil {
+			log.Printf("configbus: refresh after %q failed: %v", ev.Reason, err)
+			return
+		}
+		if ev.UserID != 0 {
+			cache.Invalidate(ev.UserID)
+		}
+		log.Printf("configbus: refreshed config (reason=%s userId=%d from=%s)",
+			ev.Reason, ev.UserID, ev.Node)
+	})
+	log.Printf("config invalidation: channel=%q node=%s (periodic refresh every %ds remains the safety net)",
+		bus.Channel(), bus.Node(), cfg.ConfigRefresh)
+
+	handler := server.New(cfg, cache, lim, st, reloader)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
