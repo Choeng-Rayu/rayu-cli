@@ -22,7 +22,7 @@ this is not happen in this case it happen in when I use this model doing sometim
 "
 
 
-# bug 2
+# bug 2 (root cuase maybe because the concurrent each user request) to fixed to just make the concurrent is changable in teh system admin
 it show this issue but I have the credits 
 
 ● 💳 You've reached your plan's credit limit for this billing period. Your credits renew
@@ -42,3 +42,18 @@ it show this issue but I have the credits
                 148,696,348 / 300,000,000
                                                                                          
        Top-up   0 credits
+
+
+
+
+
+
+
+#bug 3
+2026/07/31 10:36:45 hosted done: user=5 reqid=ad2bfe8c-fb7c-485c-9627-af88795c84c7 source=repl_main_thread model=glm-5.2 billable=0 (est 126120) via=plan (no usage reported)
+2026/07/31 10:36:45 anthropic: upstream error user=5 reqid=ad2bfe8c-fb7c-485c-9627-af88795c84c7 source=repl_main_thread model=glm-5.2 format=anthropic_messages wrote=false: Post "https://ollama.com/v1/messages": context canceled
+2026/07/31 10:36:45 POST /anthropic/v1/messages -> 502 (3.281s, 161B)
+2026/07/31 10:36:49 anthropic: user=5 reqid=ce34cbcf-0d3e-4de6-ad34-d82e467cfe97 source=repl_main_thread model=glm-5.2 provider=rayu-ollama format=anthropic_messages intended="glm-5.2" stream=true reserved=126120
+2026/07/31 10:37:19 hosted done: user=5 reqid=ce34cbcf-0d3e-4de6-ad34-d82e467cfe97 source=repl_main_thread model=glm-5.2 billable=0 (est 126120) via=plan (no usage reported)
+2026/07/31 10:37:19 anthropic: upstream error user=5 reqid=ce34cbcf-0d3e-4de6-ad34-d82e467cfe97 source=repl_main_thread model=glm-5.2 format=anthropic_messages wrote=false: Post "https://ollama.com/v1/messages": http2: timeout awaiting response headers
+2026/07/31 10:37:19 POST /anthropic/v1/messages -> 502 (30.022s, 161B)
