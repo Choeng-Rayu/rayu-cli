@@ -343,6 +343,148 @@ config → pools → migrations → caches → routers → workers (eventqueue, 
 
 ---
 
+## Logic Fidelity (Rust MUST follow source logic exactly)
+
+> **Rule:** The Rust service is a **behavioral clone**, not a reimagining. Every algorithm, ordering, edge case, rounding step, sign convention, fallback, and crash window documented in Phases 1–2 is normative. Where the source has a quirk (e.g., `finalizeRedemption` oversell-by-1, `recordPendingRedemption` unconditional `pending` write, ABA QR reuse keeps old price, `renewPayment` drops promo), **the Rust port replicates the quirk** — it is not "fixed" unless explicitly flagged as a decision below.
+
+### F1. Logic-porting rules (apply to every module)
+
+1. **Read the source before writing Rust.** For each module, the implementer reads the cited TS/Go file + its spec test in full, then writes Rust. No porting from the plan summary alone — the summary is a map, the source is the contract.
+2. **Preserve ordering.** Where the source does A then B then C, the Rust does A then B then C. Reordering is a bug (e.g., `reserveHosted`'s 17 steps; `validateForPurchase`'s 7-check order; `checkStatus`'s poll-before-expiry; `activatePaid`'s conditional-update-then-carryover-then-finalize).
+3. **Preserve the transaction boundaries.** The source uses multiple separate transactions deliberately (or by oversight — either way it's the deployed behavior). The Rust port keeps the same boundaries. Do **not** collapse `activatePaid` plan path (3 txs) or `claimFreePromo` (4 ops) into one transaction. Documented crash windows are preserved.
+4. **Preserve rounding exactly.** Every `Math.floor` / `Math.ceil` / `Math.round` / `Math.max(0, …)` site has a Rust twin with the same rounding mode at the same point. `computeDiscount` percent uses **floor**; `createTopupKhqr` amount uses **ceil**; `BillableTokens` uses **round** then `≤ 0 → 0`; credit display rounds to 2 dp. Do not unify rounding.
+5. **Preserve sign conventions.** `credit_ledger.credits` is positive for consumption. `computeCarryoverCredits` = `max(0, allowance - used)`. `settleScript`: `plan` source → `INCRBY (actual-est)`; `topup` → `INCRBY (est-actual)`. Do not flip signs.
+6. **Preserve fallbacks and defaults.** `MaxDailyTurns` nil/≤0 → unlimited; `baselineCreditsPer1M ≤ 0` → 1,000,000; `cacheReadCreditMultiplier < 0` → 0.10; `outputCreditMultiplier ≤ 0` → input; `max_tokens` absent/≤0 → 2048; `currentPeriodEnd` null → no expiry gate; `assumedInputRatio` null → 0.67; `assumedUsagePercent` null → 25; `infraCostCentsPerUser` null → 0; `creditsPerDollar ≤ 0` → topup disabled.
+7. **Preserve error messages and codes.** Every error string the CLI/web matches on is preserved verbatim: `"model not available on your plan: "`, `"account is " + status`, `"daily turn limit reached"`, `"credit limit reached: " + reason`, `"provider key not configured"`, `"model temporarily unavailable: " + code`, `"Plan is not purchasable"`, `"You're already on the {name} plan..."`, `"This promo code makes the plan free — claim it instead of paying."`, `"Top-up is not available"`, `"Minimum top-up is ..."`, `"Plan not found"`, `"Invalid promo code"`, `"not active"`, `"not active yet"`, `"has expired"`, `"cannot be used for the selected plan"`, `"You have already used this promo code"`, `"usage limit"`, `"Payment already completed"`, `"Cannot renew this payment"`, `"method not allowed: ..."`, `"telegram not linked"`, `"invalid file_id"`, `"file not available for this account"`, `"only image files can be sent to the CLI"`, `"could not download file"`, `"file too large"`, `"unsupported file"`, `"admin only"`. `rayu_code`s: `model_no_image_support`, `model_no_thinking_support`. `reason`s: `daily_turn_limit`, `concurrency`, `requests`, `period_limit`.
+8. **Preserve HTTP status codes per case.** 410 for retired `/v1/chat/completions`; 413/408/400 for body errors; 429 + `reason` JSON for limits; 503 + `Retry-After` for `provider_unavailable`/busy/circuit-open; 400 for capability errors; 409 for model fidelity mismatch (when enforced); 403 for `account is suspended/banned`; 502 for upstream unreachable; 503 + `Retry-After: 5` for circuit-open.
+9. **Preserve header semantics.** `X-Rayu-Proxied: 1` set before forward; `X-Rayu-Proxy-Error` on gateway-origin error; `X-Rayu-Limit: daily_turn_limit` (NOT `X-Rayu-Proxy-Error`) on proxy turn cap; `X-Rayu-Model-Fidelity: mismatch` only when enforced; credit headers `x-rayu-credits-used/remaining/topup-balance`; correlation `X-Rayu-Request-Id/Logical-Request-Id/Query-Source/Intended-Model/Resolved-Model/Upstream-URL/Provider`.
+10. **Preserve idempotency shapes.** `activatePaid` conditional `UPDATE … WHERE status='pending'` (one winner, losers return already-paid with no side effects); `finalizeRedemption` read-then-write in-transaction (preserve the oversell-by-1 window — do not "fix" to conditional UPDATE unless explicitly approved); `recordPendingRedemption` unconditional `status:'pending'` (safe only via upstream gate).
+11. **Preserve the crash windows.** `activatePaid` plan path: paid-without-sub and subscribed-without-finalized-promo are accepted states in the source. `claimFreePromo`: same. `createKhqr`/`createTopupKhqr`: orphan pending payment on crash. Do not add cross-table transactions that the source lacks.
+12. **Preserve single-instance assumptions.** In-memory one-time code store, Telegram file grants, poller `polling` flag, in-process admin rate limits — all assume one instance. Do not silently add multi-replica behavior; flag it.
+13. **No "improvements" unless flagged.** Logic the source has that the plan didn't enumerate is still required — when in doubt, port it. Anything *new* (per-IP auth rate limit, `zeroize`, `subtle`, write-time SSRF check) is explicitly listed as a **new control** in the Security section; it does not change existing logic.
+
+### F2. Domain-specific logic checklists (must pass before marking a module done)
+
+**Gateway billing (`gateway/credits` + `gateway/limiter`):**
+- [ ] `EstimateTokens` uses `len()` (bytes, not chars) of string content + text parts; `max_tokens` float64 else 2048; floor 1.
+- [ ] `BillableTokens` per-bucket: any cache>0 → `miss*Input + hit*CacheRead + write*CacheWrite + completion*Output`; else `prompt*Input + completion*Output`; else `total*Input`; round; ≤0 → 0.
+- [ ] `settle` is idempotent (runs once) + uses a **detached 5s bg context** (request ctx may be cancelling during streaming).
+- [ ] Non-streaming credit header = `used - est + actual` (estimated hold replaced by settled actual).
+- [ ] Reserve is in billable tokens; `capBillable = CreditsPerPeriod * tpc` (-1 if unlimited).
+- [ ] The four Lua scripts are byte-identical to the Go source (paste, don't rewrite).
+- [ ] `periodTTLSeconds` floor 60, 0 if nil; `periodID` empty if nil.
+- [ ] `EnsureTopup` uses `SetNX` TTL 5 min; `conc` TTL 10 min self-heal; `req5h` TTL 5h; `turns:<uid>:<YYYYMMDD>` TTL to midnight UTC.
+- [ ] `ReserveTurnFor`/`ReleaseTurnFor` idempotent by logical ID (SETNX hold → reuse, no double count).
+
+**Gateway proxy (`gateway/proxy` + `circuitbreaker`):**
+- [ ] `SendWithFailover` rotates on 429/402/401/403; reports `onKeyFailure` for **every** failing key including the last; transport errors fail over too.
+- [ ] `doWithRetry` retries **only** 502/503/504 (never 429); 2 retries; 250ms→500ms→1s capped 2s; honor integer `Retry-After`; transport error → Breakers.Failure + no retry; exhausted-still-5xx → Breakers.Failure; success/non-retryable-4xx → Breakers.Success.
+- [ ] A key returning a retryable 5xx does **NOT** fail over (returned as-is); only transport errors + rotatable statuses fail over.
+- [ ] Circuit breaker: 5 consecutive → open 15s; halfOpen admits exactly one trial; halfOpen failure → re-open immediately (no threshold wait).
+- [ ] `StreamAnthropic` reports `wrote=true` on pre-stream upstream errors (error was written); server doesn't double-write.
+- [ ] `Forward` (/v1/proxy) drops `X-Rayu-*`, Host, Content-Length, hop-by-hop; keeps user's `Authorization`/`x-api-key`; 32 KiB flush.
+- [ ] `CacheReadTokens()` = PromptCacheHitTokens || PromptTokensDetails.CachedTokens || 0; `FreshInputTokens()` reconciles to provider's `prompt_tokens`.
+- [ ] `IsUpstreamRequestError`: 400/413/422 only.
+
+**Gateway adapters:**
+- [ ] `anthropicPassthrough` byte-verbatim relay + sniff usage from `message_start` (input buckets) / `message_delta` (cumulative output, latest wins); `probeNonStreamError` re-issue stream=false.
+- [ ] `openAIChat` requests `stream_options.include_usage`; usage only at stream end → `message_start` zeros, full on `message_delta`; mid-stream error → `error` SSE event + usage-so-far (billable).
+- [ ] `bedrockAnthropic` URL-path model id; `anthropic_version: bedrock-2023-05-31`; AWS event-stream frames decoded per `eventstream.go`.
+- [ ] `genAI` Gemini 3 `thoughtSignature` relay preserved.
+- [ ] `thinking` strips `thinking`/`redacted_thinking` from completed turns (model-switch safety) — preserves the exact block list from `translate/thinking.go`.
+- [ ] Model substitution `req["model"] = hm.UpstreamModelID` happens before the upstream call on the hosted path.
+
+**Gateway `reserveHosted`:**
+- [ ] All 17 steps in order (identity → resolve → active → body 8 MiB → JSON → model lookup 403 → route → route err → enabled → adapter → max_tokens → capabilities → key pick → turn cap → credit reserve → source → settle closure).
+- [ ] Every error response code + envelope (OpenAI vs Anthropic) + `rayu_code` matches the source.
+- [ ] `releaseTurnBG` refunds the daily turn on credit-reserve failure (credit denial must not burn a turn).
+- [ ] All-unusable keys → 503 + `Retry-After: 60`; empty snapshot → 500 `"provider key not configured"`.
+- [ ] Capability gates fire **before** turn/credit reservation.
+- [ ] `allowedModels` derives from the live config snapshot (not the cached user entry).
+
+**`handleProxy`:**
+- [ ] `X-Rayu-Token` auth (not Authorization).
+- [ ] Daily turn cap best-effort, fail-open; `!OK` → `X-Rayu-Limit: daily_turn_limit` (NOT `X-Rayu-Proxy-Error`) so CLI surfaces.
+- [ ] Model fidelity: known-family cross-mismatch (`opus`/`sonnet`/`haiku` vs `other`) only; opaque ids never flag; always logged; enforced only if `RAYU_ENFORCE_MODEL_FIDELITY`.
+- [ ] `X-Rayu-Proxied: 1` before forward; `Del` on pre-flight fail.
+- [ ] Turn refund on pre-flight fail, mid-stream break, and upstream non-200.
+- [ ] UsageEvent write (NOT ledger) via eventqueue.
+
+**Payments (`api/payments`):**
+- [ ] `isCreditPlan` = `creditsPerPeriod` is number > 0.
+- [ ] `computeCarryoverCredits`: window = `createdAt >= previousSub.startedAt` (whole sub life); only most-recent active sub; `currentPeriodEnd <= now` → 0; ledger positive-consumption; `max(0, allowance - used)`.
+- [ ] `switchSubscriptionWithCarryover`: cancel **all** active subs, create new (startedAt=now), insert `paid` CreditTopup if carryover > 0.
+- [ ] `createKhqr`: purchasability → duplicate-purchase guard (non-credit only, uses effective plan) → promo quote → $0 bypass → QR reuse (intent includes promoCodeId + discounted amount) → new payment → `recordPendingRedemption` (non-atomic).
+- [ ] `buildQr`: ABA → `generateAbaQR` + `ABA-` md5 sentinel; Bakong → `generateKhqr`.
+- [ ] `generateAbaQR`: TLV parse, tag `01` required, mutate `01=12`/`54=amount.toFixed(2)`/`99=...`, delete `63`, re-serialize sorted ascending, append `6304`, CRC-16/CCITT-FALSE (init 0xFFFF, poly 0x1021).
+- [ ] `claimFreePromo`: 4 separate ops (payment → redemption → switch → finalize); `!quote.isFree` → 400; fixed 30-day period; `externalRef="PROMO-{code}"`.
+- [ ] `createTopupKhqr`: `amountCents = ceil((credits/creditsPerDollar)*100)`; `minCents = max(1, minTopupCents)`; reuse keyed `(userId, credits, pending)` then payment `(provider, pending, not expired)` — does NOT re-derive amountCents.
+- [ ] `checkStatus`: non-pending → return state (no poll); `!isAba` → poll (just-in-time activates past deadline); `isExpired` → `expirePayment`.
+- [ ] `activatePaid`: topup path one tx (payment + topup flip); plan path three separate ops (payment flip → switch → finalize); idempotent via `WHERE status='pending'`; loser returns already-paid no-op.
+- [ ] `confirmAbaPaymentByAmount`: `amountCents = round(amountUsd*100)`; match `provider='aba', status='pending', amountCents, expiresAt >= now-10min`, newest first; pending-only (expired rows excluded).
+- [ ] `renewPayment`: pending → expire old + topup (**do NOT cancel redemption** — leaves pending so user can re-apply); `method = provider==='bakong' ? 'bakong' : 'aba'`; plan → `createKhqr` **without promoCode** (discount lost); `paid` → 400; neither → 400.
+- [ ] `cancelPayment`/`expirePayment`: tx flip + `cancelPendingRedemption` after tx (non-atomic); `paid` → 400; expired/canceled → no-op.
+- [ ] All plan activations fixed 30 days; currency always USD; `method` defaults `aba`; renew maps non-bakong → `aba`.
+
+**Promo (`api/promo`):**
+- [ ] `normalizeCode` = `trim().toLowerCase()` everywhere.
+- [ ] `computeDiscount`: percent `floor(base*value/100)`; fixed `value`; clamp `min(max(0, d), base)`; `final = base - d` (≥0).
+- [ ] `validateForPurchase` 7-check order: find → active → startsAt → endsAt → plan scope → one-use (`applied` blocks only) → first-N cap (`!mine && usedCount >= max`) → quote.
+- [ ] `recordPendingRedemption` upsert + **unconditional `status:'pending'`** (gate via `validateForPurchase` rejecting applied).
+- [ ] `finalizeRedemption` tx: read → `!redemption || applied` → silent return → read promo → cap re-check (`maxRedemptions != null && usedCount >= max` → throw) → `usedCount++` → `status:'applied'` (+ paymentId if provided). Preserve oversell-by-1.
+- [ ] `cancelPendingRedemption`: `updateMany WHERE status='pending' → canceled` (only pending).
+
+**Telegram (`api/telegram`):**
+- [ ] Poller vs webhook mutually exclusive; 409-conflict rate-limited log 1/30s.
+- [ ] Pairing: 12-hex code, 10-min TTL, sweep (user's old codes + all expired globally) on every pair request, transitive rebinding (`deleteMany(OR: userId, chatId)`), consume all user's codes, purge inbound on relink (prevent replay), duplicate `/start` after link = success.
+- [ ] Update routing: `parseStartCommand` → pair (any chat); `hasLink && isDisconnect` → disconnect; `hasLink` → enqueue; else ignore (nudge only if text truthy).
+- [ ] `fetchInbound`: ack rows `id <= after` on **next** call; grants at delivery; ≤25s in 1s steps; ≤50 batch.
+- [ ] `relaySend`: force `chat_id` only for `{sendMessage, editMessageText, sendChatAction}`; `answerCallbackQuery` passes through; method whitelist.
+- [ ] `downloadInboundFile`: 3 gates (configured, plausible file_id, link exists, `mayReadFile`); ambiguous 403; extension-wins mediaType; URL-with-token never in errors; 10MB cap.
+- [ ] Webhook: empty secret → accept all; else constant-time compare.
+- [ ] Poller offset singleton id=1 BigInt; saved only when updates received; per-update `max(offset, update_id+1)`; handleUpdate errors logged never fatal.
+- [ ] `tgCall` 429: single retry `retry_after*1000+200ms`; second 429 throws.
+
+**Admin (`api/admin`):**
+- [ ] `analytics`: window clamp `min(90, max(7, floor(days)||30))`; all three raw SQL queries use **bound params** (not interpolation); `fillDays` continuous last n days UTC; MRR SQL exactly as source; `paidVsFree` from `planDistribution`.
+- [ ] `creditProjection`: `ratio ?? 0.67`, `baseCredits || 1000`, `blended = ratio*input + (1-ratio)*output`, `baseline` = `baselineModelCode` match else lowest-blended enabled, `suggestedMultiplier = max(0.1, round(b/baselineBlended, 2))` (or 1 if baselineBlended=0), `costPerCreditCents = b/(baseCredits*creditMultiplier)`, `worst` = max (last max wins), `expected = worstCase * (assumedUsagePercent ?? 25)/100`, `infra ?? 0`, `marginNegative = worstCaseMargin != null ? <0 : (unlimited && allowed.length>0)`.
+
+**Auth (`api/auth`):**
+- [ ] JWT HS256, `sub` number, `type=="access"`/`"refresh"`, refresh not rotate-on-use, requires `status==='active'`.
+- [ ] Google tokeninfo server-side; check `aud` + `exp`.
+- [ ] scrypt `salt:hash` hex; never log plaintext/hash.
+- [ ] One-time codes 5-min TTL, single-use, sweep on issue.
+- [ ] `ensureLocalAdmin` from `LOCAL_ADMIN_PASSWORD` (no silent prod default).
+
+### F3. Logic parity verification methodology
+
+The merged service must be **behaviorally indistinguishable** from the source pair. Verification is layered:
+
+1. **Unit-test port (Phase 1 & 2 verify):** every NestJS jest spec and Go test is rewritten as a Rust test with the **same inputs and expected outputs**. The Go test suite (`provideronboard_test.go`, `providerdiagnose_test.go`, plus existing `internal/server/*_test.go`, `internal/credits/*_test.go`, `internal/proxy/*_test.go`) and NestJS specs (`payments.service.spec.ts`, `promo.service.spec.ts`, `auth.service.spec.ts`, `users.service.spec.ts`, etc.) are the parity oracle. A ported test that fails = a logic drift bug.
+2. **Property tests (Rust-native):** for pure math (`credits.BillableTokens`, `computeDiscount`, `computeCarryoverCredits`, `EstimateTokens`, CRC-16/CCITT-FALSE, AES-GCM envelope), add `proptest`/`quickcheck` cases: e.g., `computeDiscount` final ≥ 0 and ≤ base for all (type, value, base); `BillableTokens` ≤ 0 → 0; CRC round-trips; AES encrypt→decrypt round-trips.
+3. **Golden-file tests:** record source responses for a fixed corpus of requests (streaming + non-streaming, all 5 adapters, `/v1/credits`, `/api/me/entitlements`, `/v1/_provider-test` classifications) and diff Rust outputs byte-for-byte. SSE streams are captured in full and compared line-by-line (whitespace-sensitive where the source is).
+4. **Lua script identity:** `git diff` the four Lua scripts between the Go source and the Rust embed — must be byte-identical.
+5. **Staging shadow (Phase 3.6):** run Rust server alongside the old pair on the same MySQL+Redis with the **same** `RAYU_JWT_SECRET`/`RAYU_PROVIDER_SECRET`. Drive the real CLI + web against both; diff `/v1/credits`, `/api/me/entitlements`, ledger rows (model, in/out tokens, credits, realCostCents, source), and a streamed completion's full SSE. Any diff blocks cutover.
+6. **Concurrency parity:** reproduce the `activatePaid` concurrent-confirmation test (two simultaneous confirmations → exactly one winner, one already-paid no-op) and the `finalizeRedemption` cap test (concurrent finalizers — Rust matches the source's oversell-by-1 window, not better).
+7. **Crash-window parity:** inject failures between the `activatePaid` plan-path steps and `claimFreePromo` steps; confirm the same partial states (paid-without-sub, subscribed-without-finalized-promo, orphan pending payment) occur in Rust. Documented quirks are not "fixed."
+
+### F4. Documented logic decisions (where Rust intentionally differs)
+
+Only these differences are approved; everything else is a faithful port.
+
+| # | Source behavior | Rust decision | Why |
+|---|---|---|---|
+| D1 | Admin analytics raw SQL interpolates clamped `win` | Bound param | SQLi hardening (Security S4); behavior identical since `win` is already clamped int |
+| D2 | Telegram webhook secret bytewise compare | `subtle::ConstantTimeEq` | Timing-attack hardening (Security S3); same result |
+| D3 | Decrypted provider keys live in `String`/Go string | `Zeroizing<Vec<u8>>` | Memory hygiene (Security S3); same crypto result |
+| D4 | No per-IP rate limit on auth endpoints | Add configurable per-IP limit | Brute-force hardening (Security S5); new control, doesn't change existing logic |
+| D5 | `validateUpstreamURL` at proxy-time only | Also at provider-row admin write | Defense-in-depth SSRF (Security S4); same rejection set |
+| D6 | Boot with dev/test JWT secret fallback | Refuse in prod | Production safety (Security S2); dev/test still allowed via explicit env |
+
+**No other logic changes are approved.** Any further "fix" (e.g., collapsing `activatePaid` into one transaction, conditional-UPDATE for `finalizeRedemption`, re-deriving topup price on reuse, preserving promo on `renewPayment`) is **out of scope** and must be raised as a separate decision before implementation.
+
+---
+
 ## Phase 3 — Integration, deploy, cutover
 
 - 3.1 Single binary single port: actix `App` mounts `/api/*` scope + gateway routes (unprefixed).
@@ -350,7 +492,7 @@ config → pools → migrations → caches → routers → workers (eventqueue, 
 - 3.3 Caddy: `handle_path /gateway/*` → `reverse_proxy server:8080` (prefix stripped, `flush_interval -1`); `handle /api/*` → `reverse_proxy server:8080` (prefix kept); `handle` → `web:3000`. Inject `X-Rayu-Edge-Id` + correlation headers.
 - 3.4 Migrations: `server` runs `sqlx migrate run` at boot (guarded). Remove `npx prisma migrate deploy`. Keep `prisma/schema.prisma` in repo for reference, freeze it.
 - 3.5 Env: pass the union of both services' env vars to `server`. Document in `rayu-server/.env.example`.
-- 3.6 Parity testing: run Rust server alongside old pair on staging with same MySQL+Redis. Drive CLI + web against both; diff `/v1/credits`, `/api/me/entitlements`, streaming outputs, ledger rows. Confirm provider key decryption against existing rows.
+- 3.6 Parity testing (per Logic Fidelity F3): run Rust server alongside old pair on staging with same MySQL+Redis and same `RAYU_JWT_SECRET`/`RAYU_PROVIDER_SECRET`. Drive CLI + web against both; diff `/v1/credits`, `/api/me/entitlements`, streaming outputs (full SSE line-by-line), ledger rows (model, in/out tokens, credits, realCostCents, source). Confirm every existing `provider_api_keys` row decrypts. Confirm `activatePaid` concurrent test (one winner). Confirm `finalizeRedemption` oversell-by-1 matches. Confirm crash-window partial states match. Any diff blocks cutover.
 - 3.7 Cutover: switch Caddy upstreams to `server`, decommission old containers. Keep old images tagged for rollback.
 - 3.8 Observability: `tracing` crate, request correlation via `X-Rayu-Request-Id`, metrics for inflight/reserve/settle/ledger-queue-depth.
 
@@ -582,3 +724,109 @@ This rewrite is a security-sensitive consolidation: the merged service handles a
 20. **Integer/overflow safety:** `checked_*` arithmetic where source uses `Math.max(0, …)`; `creditsPerDollar <= 0` → 400 (div-by-zero guard); `BillableTokens` clamps negatives. (Preserve + Rust-native.)
 21. **Supply chain:** `cargo audit` in CI, `Cargo.lock` checked in, minimal well-audited deps, `grammers` audited for holding a user session. (Rust-native.)
 22. **Secret continuity at cutover:** `RAYU_JWT_SECRET` + `RAYU_PROVIDER_SECRET` unchanged — parity-phase verifies (decrypt every key row, validate sample JWTs) before cutover. (New control.)
+
+## Appendix D — Source-file → Rust-module parity map
+
+Every source file below MUST have a corresponding Rust module + a ported test. A file with no Rust twin = an incomplete port. Use this as the completion checklist.
+
+### Backend (`rayu-backend/src/`) → `crates/api/` + `crates/core/`
+
+| Source file | Rust module | Logic checklist |
+|---|---|---|
+| `auth/auth.controller.ts` | `api/auth/routes` | all 10 routes, no-auth vs JWT |
+| `auth/auth.service.ts` | `api/auth/service` | `mintTokens`, OAuth upsert, one-time code, refresh, admin login, scrypt |
+| `auth/oauth.service.ts` | `api/auth/oauth` | Google tokeninfo, `aud`+`exp` check |
+| `auth/code-store.service.ts` | `api/auth/code_store` | in-memory 5-min TTL single-use sweep |
+| `auth/rayu-auth.guard.ts` | `api/auth/middleware` | Bearer→verify→load user→reject inactive→attach |
+| `auth/roles.guard.ts` | `api/auth/roles` | `user/admin/superadmin` |
+| `users/users.service.ts` | `api/users/service` | OAuth upsert, `getActiveSubscription` (expired→Free), `getTopupBalance`, credit history |
+| `plans/plans.service.ts` + `plans.constants.ts` | `api/plans/service` | `PlanLimits` parse, non-destructive seed/backfill, free/basic/pro/ultra/max/enterprise |
+| `usage/usage.service.ts` | `api/usage/service` | record + `lastActiveAt`, by-provider, `featureUsageThisMonth` (UTC month start) |
+| `payments/payments.service.ts` | `api/payments/service` | ALL of §2C payments logic |
+| `payments/aba.service.ts` | `api/payments/aba` | `generateAbaQR` (TLV+CRC), `parseAbaNotification` |
+| `payments/bakong.service.ts` | `api/payments/bakong` | `generateKhqr`, `checkPaidByMd5` |
+| `payments/aba-telegram.listener.ts` | `api/payments/aba_listener` | `grammers` MTProto, `normalizeChatId`, `onMessage` |
+| `promo/promo.service.ts` | `api/promo/service` | ALL of §2D promo logic |
+| `providers/providers.service.ts` | `api/providers/service` | SSRF-on-write, secretbox seal, `keyHash` dup, rotation priority, write-only keys |
+| `common/provider-security.ts` | `core/ssrf` | `validateUpstreamURL` (shared with gateway) |
+| `models/models.service.ts` | `api/models/service` | Claude family consistency, non-destructive seed reconcile `providerId` |
+| `settings/app-settings.service.ts` | `api/settings/service` | singleton id=1, get-or-create |
+| `telegram/telegram.service.ts` | `api/telegram/service` | ALL of §2E telegram logic |
+| `telegram/telegram.client.ts` | `api/telegram/client` | `tgCall`, `tgGetUpdates`, `tgGetMe`, `tgSendMessage`, `tgDownloadFile`, 429 single-retry |
+| `telegram/telegram.file-grants.ts` | `api/telegram/file_grants` | in-memory, 15-min TTL, 5000 budget, prune |
+| `telegram/telegram.util.ts` | `api/telegram/util` | `updateChatId`, `updateText`, `parseStartCommand`, `isDisconnectCommand`, `routeUpdate`, `collectFileIds`, `isPlausibleFileId`, `isSafeTelegramFilePath`, `resolveImageMediaType`, `RELAY_ALLOWED_METHODS`, `RELAY_CHAT_SCOPED_METHODS` |
+| `admin/admin.service.ts` | `api/admin/service` | users/plans/payments admin, `analytics` (3 SQL), `creditProjection` |
+| `feedback/feedback.module.ts` | `api/feedback` | `POST /feedback` |
+| `health/health.module.ts` | `api/health` | `GET /health` |
+| `common/secretBox.ts` | `core/secretbox` | AES-GCM `v1:` envelope, `sha256(secret)[..32]` |
+| `common/enums.ts` | `core/types` | role enum, status enum |
+| `prisma/schema.prisma` | `crates/migrations/0001_baseline.sql` | camelCase columns, all 16 models, cascade rules |
+| `prisma/migrations/*` (20 migrations) | `0001_baseline.sql` snapshot | frozen schema |
+
+### Gateway (`rayu-gateway/internal/`) → `crates/gateway/` + `crates/core/`
+
+| Source file | Rust module | Logic checklist |
+|---|---|---|
+| `server/server.go` | `gateway/routes` + `gateway/hosted` | all routes, `reserveHosted` 17 steps, `handleAnthropicMessages`, `handleProxy`, `handleCredits`, `handleModels`, `handleCountTokens`, retired 410, `writeUpstreamError`, `setCreditHeaders`, `classifyBodyReadError`, `validateUpstreamURL`, `modelFromUpstreamURL`, `bestEffortModel`, `familyMismatch`, `modelFamilyOf`, `forwardableHeaders`, `proxyError`, `inflightLimiter`, `dailyTurnCap`, `periodTTLSeconds`, `periodID`, `statusOrUnknown`, `newReqID`, `releaseTurnBG`, `recordKeyFailure`, `actualBillable`, `creditsFromBillable`, `recordLedger` |
+| `server/providertest.go` | `gateway/providertest` | `handleProviderTest` (1-token ping, classification, checks, suggestion, redact, 20/min, never condemn unproven, rehabilitate on pass) |
+| `server/providerdiagnose.go` | `gateway/diagnose` | `canonicalPaths`, `authHint`, `looksLikeHTML`, `detectResponseFormat`, `looksLikeAnthropicMessage`, `formatLabel`, `suggestEndpointPath` |
+| `server/reload.go` | `gateway/reload` | `handleReload` (60/min, publish configbus) |
+| `auth/jwt.go` | `core/jwt` | `VerifyAccessToken`, HS256-only, `type=="access"`, `sub` number |
+| `auth/middleware.go` | `core/jwt` middleware | Bearer→verify→claims in context |
+| `entitlements/entitlements.go` | `gateway/entitlements` | `Cache.Resolve`, `readUser`, single-flight, 3s deadline, `AllowedModels`, `Route`, `Keys`, `Invalidate`, `reload` |
+| `credits/credits.go` | `gateway/credits` | `TokensPerCredit`, `ModelRatesFor`, `EstimateTokens`, `EstimateBillableTokens`, `BillableTokens`, `ForTokens`, `ForUsage`, `CacheHitBillingWeight=0.10` |
+| `credits/limiter.go` | `gateway/limiter` | 4 Lua scripts verbatim, `keysFor`, `Reserve`/`Settle`/`ReserveTurn`/`ReleaseTurn`/`EnsureTopup`/`ReserveTurnFor`/`ReleaseTurnFor`, all TTLs |
+| `store/store.go` | `gateway/store` (sqlx) | `LoadModels`, `LoadProviders`, `LoadProviderKeys`, `LoadSettings`, `UserStatus`, `ActivePlan`, `PlanByCode`, topup balance, `InsertLedger`, `InsertUsageEvent`, `UpdateProviderKeyState` — all camelCase columns |
+| `providerkeys/providerkeys.go` | `gateway/providerkeys` | `Registry`, state machine, `Pick`, `MarkRateLimited` (60s cap 10min), `MarkInvalid`, `MarkUsed` |
+| `providercfg/providercfg.go` | `gateway/providercfg` | formats, auth schemes |
+| `circuitbreaker/circuitbreaker.go` | `gateway/circuitbreaker` | 5/15s/halfOpen-one-trial |
+| `proxy/proxy.go` | `gateway/proxy` | shared client, `SendWithFailover`, `doWithRetry`, `Forward`, `Usage`, `CacheReadTokens`/`FreshInputTokens`, `IsUpstreamRequestError`, `UpstreamErrorMessage`, `ParseOpenAIUsageLine` |
+| `proxy/anthropic.go` | `gateway/proxy/anthropic` | `newAnthropicReq`, `StreamAnthropic`, `parseAnthropicUsageLine`, `parseAnthropicEventUsage`, `probeNonStreamError`, `relayUpstreamError`, `isRotatableStatus` (429/402/401/403) |
+| `translate/anthropic.go` | `gateway/adapters/anthropic_passthrough` | byte-verbatim relay |
+| `translate/openai_chat.go` | `gateway/adapters/openai_chat` | Anthropic↔OpenAI translation, mid-stream error |
+| `translate/openai_responses.go` | `gateway/adapters/openai_responses` | Responses API |
+| `translate/genai.go` | `gateway/adapters/genai` | Google genai, Gemini 3 thoughtSignature |
+| `translate/bedrock.go` | `gateway/adapters/bedrock` | Bedrock URL-path, `bedrock-2023-05-31` |
+| `translate/eventstream.go` | `gateway/adapters/bedrock_eventstream` | AWS event-stream frame decoder |
+| `translate/sse.go` | `core/sse` | `scanSSEData`, `anthropicEmitter`, 1 MiB cap, flush per event |
+| `translate/thinking.go` | `gateway/adapters/thinking` | strip thinking/redacted_thinking |
+| `translate/capabilities.go` | `gateway/capabilities` | `requestHasImage`, `requestWantsThinking` |
+| `config/config.go` | `core/config` (gateway half) | all gateway env, `MySQLDSN` conversion |
+| `configbus/configbus.go` | `gateway/configbus` | Redis pub/sub `rayu:config-changed` |
+| `configreload/configreload.go` | `gateway/configreload` | single-flight reload |
+| `secretbox/secretbox.go` | `core/secretbox` | decrypt provider keys (shared with api) |
+| `httpx/httpx.go` | `core/httpx` | `WriteJSON`, `WriteError`, `WriteProviderUnavailable`, `WriteAnthropicError`, `WriteCapabilityError`, `errType`, codes |
+| `eventqueue/eventqueue.go` | `gateway/eventqueue` | bounded 4096, 4 workers, retry exp backoff max 5, drain on shutdown |
+| `cmd/gateway/main.go` | `crates/server/main.rs` (gateway half) | boot checks, secret refusal, pool sizing |
+
+### Cross-cutting (shared)
+
+| Concern | Rust home | Source |
+|---|---|---|
+| JWT issue + verify | `core/jwt` | `auth.service.ts` (issue) + `auth/jwt.go` (verify) |
+| AES-GCM envelope | `core/secretbox` | `common/secretBox.ts` + `secretbox/secretbox.go` |
+| SSRF validation | `core/ssrf` | `common/provider-security.ts` + `server.go:validateUpstreamURL` |
+| Error envelopes | `core/httpx` | `httpx/httpx.go` + NestJS exception filters |
+| MySQL (sqlx) | `core/db` + `gateway/store` | Prisma (api) + `store.go` (gateway) |
+| Redis (limiter + configbus) | `core/redis` + `gateway/limiter` + `gateway/configbus` | `limiter.go` + `configbus.go` (gateway-only) |
+| Config snapshot | `gateway/config` | `entitlements.go:reload` |
+| Caching | `core/cache` (moka) | `entitlements.go` (per-user) + snapshot (ArcSwap) |
+
+### Test parity map (every source test → Rust test)
+
+| Source test | Rust test |
+|---|---|
+| `rayu-backend/src/payments/payments.service.spec.ts` | `api/payments/service_test.rs` |
+| `rayu-backend/src/promo/promo.service.spec.ts` | `api/promo/service_test.rs` |
+| `rayu-backend/src/auth/*.spec.ts` | `api/auth/*_test.rs` |
+| `rayu-backend/src/users/*.spec.ts` | `api/users/*_test.rs` |
+| `rayu-backend/src/telegram/*.spec.ts` | `api/telegram/*_test.rs` |
+| `rayu-backend/src/admin/*.spec.ts` | `api/admin/*_test.rs` |
+| `rayu-backend/test/*.e2e-spec.ts` | `api/e2e_test.rs` (subset; parity-critical only) |
+| `rayu-gateway/internal/server/provideronboard_test.go` | `gateway/providertest_onboard_test.rs` |
+| `rayu-gateway/internal/server/providerdiagnose_test.go` | `gateway/diagnose_test.rs` |
+| `rayu-gateway/internal/server/*_test.go` | `gateway/*_test.rs` |
+| `rayu-gateway/internal/credits/*_test.go` | `gateway/credits_test.rs` + `gateway/limiter_test.rs` |
+| `rayu-gateway/internal/proxy/*_test.go` | `gateway/proxy_test.rs` |
+
+A module is **done** only when: (a) its source-file row above has a Rust twin, (b) its logic checklist (F2) passes, (c) its source test is ported and green, and (d) for billing/payments/auth, the staging-shadow diff (F3.5) is empty.
