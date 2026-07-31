@@ -123,52 +123,41 @@ func TestLooksLikeHTML(t *testing.T) {
 	}
 }
 
-func TestSuggestEndpointPath(t *testing.T) {
-	cases := []struct {
-		format     string
-		configured string
-		wantEmpty  bool
-		wantSaid   []string
-	}{
-		// Correct configurations must produce NO suggestion: advice that fires on
-		// healthy input trains admins to ignore it.
-		{providercfg.FormatAnthropicMessages, "", true, nil},
-		{providercfg.FormatAnthropicMessages, "/anthropic/v1/messages", true, nil},
-		{providercfg.FormatAnthropicMessages, "/anthropic/v1/messages/", true, nil},
-		{providercfg.FormatAnthropicMessages, "/v1/messages", true, nil},
-		{providercfg.FormatOpenAIChat, "/v1/chat/completions", true, nil},
-		{providercfg.FormatOpenAIResponses, "/v1/responses", true, nil},
-		// genai builds its own path, so there is nothing to correct.
-		{providercfg.FormatGenAI, "/anything", true, nil},
-
-		// The reported typo, and one per other format.
-		{providercfg.FormatAnthropicMessages, "/athropic/v1/messages", false,
-			[]string{"Did you mean", "/anthropic/v1/messages"}},
-		{providercfg.FormatOpenAIChat, "/v1/chat/completion", false,
-			[]string{"/v1/chat/completions"}},
-		{providercfg.FormatOpenAIResponses, "/v1/respones", false,
-			[]string{"/v1/responses"}},
-		// Something completely different: no "did you mean", but still the expected set.
-		{providercfg.FormatAnthropicMessages, "/api/generate", false,
-			[]string{"/anthropic/v1/messages", "/v1/messages"}},
+// A format constrains the BODY, never the URL: providers serve the same wire format
+// at whatever path they choose. So the diagnosis must report the URL it actually
+// called and must never call an unfamiliar path a mistake — the only format-derived
+// path in the system is the fallback used when the admin leaves the field blank.
+func TestEndpointDescriptionDoesNotPrescribeAPath(t *testing.T) {
+	custom := providercfg.Route{
+		Name: "agent-router", Format: providercfg.FormatAnthropicMessages,
+		BaseURL: "https://agentrouter.org", EndpointPath: "/relay/claude/v3",
 	}
-	for _, c := range cases {
-		got := suggestEndpointPath(c.format, c.configured)
-		if c.wantEmpty {
-			if got != "" {
-				t.Errorf("%s %q: expected no suggestion, got %q", c.format, c.configured, got)
-			}
-			continue
+	got := describeConfiguredEndpoint(custom)
+	if !strings.Contains(got, "https://agentrouter.org/relay/claude/v3") {
+		t.Errorf("does not name the URL that was called: %q", got)
+	}
+	if !strings.Contains(got, "verbatim") {
+		t.Errorf("does not say the configured URL is used as-is: %q", got)
+	}
+	for _, forbidden := range []string{"expected", "not a usual", "Did you mean", "should be"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("judges the admin's path (%q): %q", forbidden, got)
 		}
-		if got == "" {
-			t.Errorf("%s %q: expected a suggestion", c.format, c.configured)
-			continue
-		}
-		for _, want := range c.wantSaid {
-			if !strings.Contains(got, want) {
-				t.Errorf("%s %q: suggestion %q does not contain %q", c.format, c.configured, got, want)
-			}
-		}
+	}
+
+	// Blank is the one case worth calling out, because the gateway substitutes a
+	// path the admin never typed and would otherwise not know was sent.
+	blank := custom
+	blank.EndpointPath = ""
+	got = describeConfiguredEndpoint(blank)
+	if !strings.Contains(got, "blank") || !strings.Contains(got, "fallback") {
+		t.Errorf("does not disclose the substituted fallback: %q", got)
+	}
+	if !strings.Contains(got, providercfg.DefaultEndpointPath(providercfg.FormatAnthropicMessages)) {
+		t.Errorf("does not name the fallback path it used: %q", got)
+	}
+	if !strings.Contains(got, "any path is fine") {
+		t.Errorf("does not make clear a custom path is legitimate: %q", got)
 	}
 }
 

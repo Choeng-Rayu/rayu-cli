@@ -1,3 +1,19 @@
+// Diagnosing a NEW provider: which wire format did it actually answer in, and is
+// this even an API endpoint?
+//
+// # WHAT A FORMAT DOES AND DOES NOT DETERMINE
+//
+// A format describes the REQUEST AND RESPONSE BODY — Anthropic Messages, OpenAI
+// Chat Completions, OpenAI Responses, Google GenAI. It says nothing about the URL.
+// Providers serve the same format at whatever path they like (/anthropic/v1/messages,
+// /v1/messages, /relay/claude, /api/v3/chat …), so the base URL and endpoint path
+// are ADMIN INPUT, used verbatim for routing, and this package must never treat a
+// path as wrong merely because it is unfamiliar. The only place a format-derived
+// path is ever used is providercfg.DefaultEndpointPath, as a fallback when the admin
+// leaves the field blank.
+//
+// So everything here is derived from the RESPONSE the upstream actually sent, plus
+// what the admin typed. Nothing keys off a vendor, a hostname, or an expected path.
 package server
 
 import (
@@ -8,54 +24,21 @@ import (
 	"github.com/choeng-rayu/rayu-gateway/internal/providercfg"
 )
 
-// Diagnosing a NEW provider: which wire format did it actually answer in, is this
-// even an API endpoint, and what should the endpoint path and auth scheme be?
-//
-// WHY THIS IS FORMAT-DRIVEN AND NOT PROVIDER-DRIVEN
-//
-// Any provider can appear behind any of the supported formats, so nothing here
-// keys off a vendor, a hostname or a model name. Every answer is derived from the
-// FORMAT the admin selected and from the shape of what the upstream actually sent
-// back. A new provider that speaks one of these formats is therefore diagnosable on
-// day one, with no code change.
-
-// canonicalPaths are the endpoint paths a format is normally served at. The first
-// is the default used when an admin leaves the override blank
-// (providercfg.DefaultEndpointPath); the rest are legitimate alternatives seen in
-// the wild, so they must not be reported as mistakes.
-//
-// genai is absent on purpose: its URL embeds the model id and the streaming mode,
-// so its adapter builds the path and an admin override does not apply.
-func canonicalPaths(format string) []string {
-	switch format {
-	case providercfg.FormatAnthropicMessages:
-		// "/anthropic/v1/messages" is the common compatibility mount (DeepSeek,
-		// LongCat, most gateways); "/v1/messages" is first-party Anthropic's own.
-		return []string{"/anthropic/v1/messages", "/v1/messages"}
-	case providercfg.FormatOpenAIChat:
-		return []string{"/v1/chat/completions", "/chat/completions"}
-	case providercfg.FormatOpenAIResponses:
-		return []string{"/v1/responses", "/responses"}
-	case providercfg.FormatBedrockAnthropic:
-		return []string{providercfg.DefaultEndpointPath(format)}
-	default:
-		return nil
-	}
-}
-
 // authHint names the credential header a format normally uses, so an admin who
-// picked the wrong one has something concrete to compare against.
+// picked the wrong one has something concrete to compare against. Unlike a URL, the
+// auth scheme is a closed set in the schema (bearer / x_api_key / x_goog_api_key),
+// and which one a format expects is a property of the API, not of the provider.
 func authHint(format string) string {
 	switch format {
 	case providercfg.FormatAnthropicMessages:
-		return "Anthropic-compatible providers usually want the x-api-key scheme; " +
-			"some gateways in front of them want bearer instead."
+		return "Anthropic-compatible APIs usually authenticate with x-api-key; " +
+			"gateways in front of them often want bearer instead."
 	case providercfg.FormatOpenAIChat, providercfg.FormatOpenAIResponses:
-		return "OpenAI-compatible providers want the bearer scheme (Authorization: Bearer <key>)."
+		return "OpenAI-compatible APIs authenticate with bearer (Authorization: Bearer <key>)."
 	case providercfg.FormatGenAI:
-		return "Google GenAI wants the x_goog_api_key scheme."
+		return "Google GenAI authenticates with x_goog_api_key."
 	case providercfg.FormatBedrockAnthropic:
-		return "Bedrock wants the bearer scheme with an AWS bearer token."
+		return "Bedrock authenticates with bearer, using an AWS bearer token."
 	default:
 		return ""
 	}
@@ -134,40 +117,26 @@ func formatLabel(format string) string {
 	return format
 }
 
-// suggestEndpointPath tells the admin what the endpoint path for their chosen
-// format should look like, when the configured one is not a known-good value.
+// describeConfiguredEndpoint states what the gateway actually called, and whether
+// that path came from the admin or from the blank-field fallback.
 //
-// Returns "" when the path is already canonical (or when the format has no fixed
-// path), so a correct configuration is never second-guessed — a suggestion that
-// fires on healthy input is noise, and noise gets ignored.
-func suggestEndpointPath(format, configured string) string {
-	paths := canonicalPaths(format)
-	if len(paths) == 0 {
-		return ""
-	}
-	trimmed := strings.TrimRight(strings.TrimSpace(configured), "/")
-	if trimmed == "" {
-		// Blank means the format default is in use, which is by definition correct.
-		return ""
-	}
-	for _, p := range paths {
-		if strings.EqualFold(trimmed, p) {
-			return ""
+// It deliberately does NOT judge the path. Any path is legitimate — the provider
+// decides where it serves its API — so the useful facts are the exact URL that was
+// used and, when the field was left blank, that a default was substituted (which is
+// the one case where the admin may not know what was sent).
+func describeConfiguredEndpoint(route providercfg.Route) string {
+	full := route.Endpoint()
+	if strings.TrimSpace(route.EndpointPath) == "" {
+		def := providercfg.DefaultEndpointPath(route.Format)
+		if def == "" {
+			return "The gateway called " + full + "."
 		}
+		return "The endpoint path is blank, so the gateway used the fallback for " +
+			formatLabel(route.Format) + " (" + def + ") and called " + full +
+			". If this provider serves its API at a different path, set the endpoint path " +
+			"explicitly to whatever its own documentation says — any path is fine."
 	}
-
-	// Offer the closest known-good path first, then every alternative, so the admin
-	// can both fix a typo and see what else is legitimate.
-	best, bestDist := paths[0], 1<<31-1
-	for _, p := range paths {
-		if d := editDistance(strings.ToLower(trimmed), strings.ToLower(p)); d < bestDist {
-			best, bestDist = p, d
-		}
-	}
-	msg := "The endpoint path \"" + configured + "\" is not a usual one for " + format + ". "
-	if bestDist <= maxInt(4, len(best)/3) {
-		msg += "Did you mean \"" + best + "\"? "
-	}
-	msg += "Expected: " + strings.Join(paths, " or ") + "."
-	return msg
+	return "The gateway called exactly what is configured: " + full +
+		". The base URL and endpoint path are used verbatim, so compare them with the " +
+		"provider's own documentation."
 }

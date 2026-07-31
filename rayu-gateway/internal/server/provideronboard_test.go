@@ -86,34 +86,73 @@ func TestProviderTestBlamesTheURLWhenTheAnswerIsAWebPage(t *testing.T) {
 	assertCheck(t, "reachable", res.Checks.Reachable, boolPtr(true))
 	assertCheck(t, "keyAccepted", res.Checks.KeyAccepted, nil)
 	assertCheck(t, "modelAccepted", res.Checks.ModelAccepted, nil)
-	// And it must point at the real mistake.
-	if !strings.Contains(res.Suggestion, "/anthropic/v1/messages") {
-		t.Errorf("suggestion does not offer the canonical path: %q", res.Suggestion)
+	// And it must show the URL it actually called, so the admin can compare it with
+	// the provider's documentation — without being told their path is "wrong", since
+	// a provider may serve this format at any path it likes.
+	if !strings.Contains(res.Suggestion, "/athropic/v1/messages") {
+		t.Errorf("suggestion does not show the URL that was called: %q", res.Suggestion)
+	}
+	if strings.Contains(res.Suggestion, "Did you mean") {
+		t.Errorf("suggestion prescribes a path: %q", res.Suggestion)
 	}
 }
 
-// The same diagnosis has to work for every supported format, not just the one that
-// happened to be reported — the endpoint path differs per format.
-func TestProviderTestSuggestsTheCanonicalPathPerFormat(t *testing.T) {
-	cases := []struct {
-		name       string
-		format     string
-		configured string
-		want       string
-	}{
-		{"anthropic typo", providercfg.FormatAnthropicMessages, "/athropic/v1/messages", "/anthropic/v1/messages"},
-		{"anthropic short form", providercfg.FormatAnthropicMessages, "/v1/message", "/anthropic/v1/messages"},
-		{"openai chat singular", providercfg.FormatOpenAIChat, "/v1/chat/completion", "/v1/chat/completions"},
-		{"openai responses typo", providercfg.FormatOpenAIResponses, "/v1/response", "/v1/responses"},
+// A provider that serves the Anthropic format at a completely custom path is a
+// legitimate, common setup. It must pass with no complaint about the path.
+func TestProviderTestAcceptsAnyPathTheProviderActuallyServes(t *testing.T) {
+	const custom = "/relay/claude/v3"
+	h, _, done := providerAt(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != custom {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"not found"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[{"type":"text","text":"pong"}]}`)
+	}, providercfg.FormatAnthropicMessages, custom, liveKey())
+	defer done()
+
+	code, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"claude-opus-4-7"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status=%d", code)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			h, _, done := providerAt(t, htmlUpstream(), c.format, c.configured, liveKey())
+	if !res.OK || res.Classification != testOK {
+		t.Fatalf("result=%s (%s), want a pass — the path is the provider's to choose",
+			res.Classification, res.Message)
+	}
+	if !strings.HasSuffix(res.Endpoint, custom) {
+		t.Errorf("endpoint=%q, want it to end with the configured path %q", res.Endpoint, custom)
+	}
+	if res.Suggestion != "" {
+		t.Errorf("a healthy provider must get no advice, got %q", res.Suggestion)
+	}
+}
+
+// The gateway must never substitute its own idea of a path. Whatever the admin
+// typed is what gets called, for every format — that is the whole contract, and a
+// provider is free to serve the Anthropic or OpenAI body shape anywhere.
+func TestProviderTestCallsExactlyTheConfiguredPath(t *testing.T) {
+	for _, c := range []struct {
+		format string
+		path   string
+	}{
+		{providercfg.FormatAnthropicMessages, "/athropic/v1/messages"},
+		{providercfg.FormatAnthropicMessages, "/some/vendor/route"},
+		{providercfg.FormatOpenAIChat, "/openai/deep/path/completions"},
+		{providercfg.FormatOpenAIResponses, "/r"},
+	} {
+		t.Run(c.format+c.path, func(t *testing.T) {
+			var called string
+			h, _, done := providerAt(t, func(w http.ResponseWriter, r *http.Request) {
+				called = r.URL.Path
+				_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[]}`)
+			}, c.format, c.path, liveKey())
 			defer done()
-			_, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"claude-opus-4-7"}`)
-			if !strings.Contains(res.Suggestion, c.want) {
-				t.Errorf("format %s path %q: suggestion=%q, want it to offer %q",
-					c.format, c.configured, res.Suggestion, c.want)
+
+			if _, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"claude-opus-4-7"}`); res.Endpoint == "" {
+				t.Fatalf("no endpoint reported")
+			}
+			if called != c.path {
+				t.Errorf("upstream saw path %q, want exactly the configured %q", called, c.path)
 			}
 		})
 	}

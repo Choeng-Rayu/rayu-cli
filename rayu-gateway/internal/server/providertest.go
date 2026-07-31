@@ -559,50 +559,35 @@ func (s *Server) suggestFix(
 		return s.suggestModelID(providerID, model.UpstreamModelID)
 
 	case testBadBaseURL:
-		// The most common onboarding mistake, and the one the answer can pinpoint:
-		// a path that is not the one this format is served at.
-		if hint := suggestEndpointPath(route.Format, route.EndpointPath); hint != "" {
-			return hint
-		}
-		return "Check the Connection section: the base URL must be the provider's API " +
-			"origin, and the endpoint path must be its " + formatLabel(route.Format) +
-			" route. Expected path: " + expectedPathText(route.Format) + "."
+		// The URL is admin input and any path is legitimate, so the only honest thing
+		// to report is what was actually called — plus, when the field was blank, the
+		// fact that a fallback path was substituted.
+		return describeConfiguredEndpoint(route) +
+			" A URL that answers with a web page (or 404s) is not this provider's " +
+			formatLabel(route.Format) + " endpoint."
 
 	case testFormatMismatch:
 		if spoken := detectResponseFormat(respBody); spoken != "" && spoken != route.Format {
-			return "This provider speaks " + spoken + ". Set the provider's wire format to " +
-				spoken + " (it is currently " + formatLabel(route.Format) + "). " + authHint(spoken)
+			return "This provider answered in the " + spoken + " format. Set the provider's wire " +
+				"format to " + spoken + " (it is currently " + formatLabel(route.Format) + "). " +
+				authHint(spoken)
 		}
-		// JSON, but nothing recognisable: usually the right host and the wrong route.
-		if hint := suggestEndpointPath(route.Format, route.EndpointPath); hint != "" {
-			return hint
-		}
-		return "Confirm the provider's wire format, and that the endpoint path is its " +
-			formatLabel(route.Format) + " route."
+		// JSON, but nothing recognisable: either the format is wrong, or this URL is
+		// some other endpoint of the same provider.
+		return "The body is JSON but not a completion in any format the gateway knows. " +
+			"Confirm the provider's wire format, and that this URL is its completions " +
+			"endpoint. " + describeConfiguredEndpoint(route)
 
 	case testBadAPIKey:
-		// Before blaming the credential, name the two settings that produce the same
-		// 401: the wrong auth header, and an endpoint that is not this format's.
-		msg := "Check the key itself, then the auth scheme. " + authHint(route.Format)
-		if hint := suggestEndpointPath(route.Format, route.EndpointPath); hint != "" {
-			msg += " " + hint
-		}
-		return msg
+		// Before blaming the credential, name the other setting that produces the same
+		// 401: an auth scheme the provider does not use.
+		return "Check the key itself, then the auth scheme. " + authHint(route.Format)
 
 	case testRateLimited:
 		return "The credential is accepted — this is a quota or throughput limit. " +
 			"Add a second key to this provider so requests rotate instead of queueing."
 	}
 	return ""
-}
-
-// expectedPathText renders a format's acceptable endpoint paths for a message.
-func expectedPathText(format string) string {
-	paths := canonicalPaths(format)
-	if len(paths) == 0 {
-		return "the one in the provider's own documentation"
-	}
-	return strings.Join(paths, " or ")
 }
 
 // recordTestKeyFailure is the ADMIN-TEST half of recordKeyFailure: it honours a
