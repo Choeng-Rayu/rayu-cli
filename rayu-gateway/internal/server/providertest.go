@@ -15,6 +15,7 @@ import (
 
 	"github.com/choeng-rayu/rayu-gateway/internal/auth"
 	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
+	"github.com/choeng-rayu/rayu-gateway/internal/providercfg"
 	"github.com/choeng-rayu/rayu-gateway/internal/providerkeys"
 	"github.com/choeng-rayu/rayu-gateway/internal/proxy"
 	"github.com/choeng-rayu/rayu-gateway/internal/secretbox"
@@ -242,7 +243,7 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 	result.ModelCode = model.Code
 	result.UpstreamModelID = model.UpstreamModelID
 
-	key, err := s.testKey(body.ProviderID, body.APIKeyID)
+	key, keySkipped, err := s.testKey(body.ProviderID, body.APIKeyID)
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, withRefreshNote(err.Error(), reloadErr))
 		return
@@ -272,11 +273,16 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 			"max_tokens": 1,
 			"messages":   []any{map[string]any{"role": "user", "content": "ping"}},
 		},
-		// A test observes real per-key health: a 429 here really does mean that key
-		// is throttled, and a 401 really does mean it is rejected. Recording it
-		// keeps the registry honest instead of letting the next user's request
-		// rediscover the same failure.
-		OnKeyFailure: func(f proxy.KeyFailure) { s.recordKeyFailure(body.ProviderID, f) },
+		// A test observes real per-key health, but only for verdicts that are ABOUT
+		// the key: a 429 is the provider itself saying "later", and its cooldown
+		// expires on its own. A 401/403 is deliberately NOT recorded here — during
+		// onboarding the configuration is unproven, so it is at least as likely to
+		// mean a wrong URL, a wrong auth scheme or a web page as a wrong credential.
+		// Condemning the key on it stranded the provider: with its only key out of
+		// rotation, every later per-model test refused to run, so the admin could
+		// never verify the fix. Real traffic still records auth failures, because
+		// there the configuration has already been proven.
+		OnKeyFailure: func(f proxy.KeyFailure) { s.recordTestKeyFailure(body.ProviderID, f) },
 	}
 
 	started := time.Now()
@@ -296,8 +302,21 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 		// rotation immediately instead of waiting out its cooldown.
 		s.ent.Keys().MarkUsed(body.ProviderID, key.ID)
 	}
-	if classification == testUnknownModel {
-		result.Suggestion = s.suggestModelID(body.ProviderID, model.UpstreamModelID)
+	result.Suggestion = s.suggestFix(classification, pr.Route, model, body.ProviderID, respBody)
+	if keySkipped != "" {
+		// The test used a key rotation would have skipped. Say so, or a pass reads as
+		// "the provider is healthy" when live traffic still has no key to use.
+		note := "Note: key #" + strconv.FormatInt(key.ID, 10) + " was used even though " + keySkipped + "."
+		if result.OK {
+			note += " The test passed, so it has been returned to rotation."
+		} else {
+			note += " Fix the cause and test again — a passing test puts it back in rotation."
+		}
+		if result.Suggestion == "" {
+			result.Suggestion = note
+		} else {
+			result.Suggestion += " " + note
+		}
 	}
 
 	log.Printf("provider test: admin=%d provider=%q model=%q key=#%d result=%s http=%d latency=%dms",
@@ -360,32 +379,84 @@ func (s *Server) testModel(providerID int64, code string) (store.HostedModel, er
 	return *firstEnabled, nil
 }
 
-// testKey resolves which key to use. A targeted id is honoured even when the key
-// is disabled, invalid, or cooling down: re-testing a key an admin just replaced
-// (or believes is fixed) is the whole point.
-func (s *Server) testKey(providerID, keyID int64) (providerkeys.Key, error) {
+// testKey resolves which key to use, and why.
+//
+// A targeted id is honoured even when the key is disabled, invalid, or cooling
+// down: re-testing a key an admin just replaced (or believes is fixed) is the whole
+// point.
+//
+// With no id, a key that PICK would skip is used as a fallback rather than refusing
+// the test. Refusing was a dead end: one 401 against a half-configured provider
+// takes its only key out of rotation, and from then on every per-model test answered
+// "no usable API key" without calling anything — so fixing the actual mistake could
+// never be verified, and a successful test is exactly what puts the key back
+// (Registry.MarkUsed). skipped reports that state so the answer can say so.
+func (s *Server) testKey(providerID, keyID int64) (key providerkeys.Key, skipped string, err error) {
 	if keyID != 0 {
-		key, ok := s.ent.Keys().Find(providerID, keyID)
+		k, ok := s.ent.Keys().Find(providerID, keyID)
 		if !ok {
-			return providerkeys.Key{}, errors.New("unknown API key for this provider")
+			return providerkeys.Key{}, "", errors.New("unknown API key for this provider")
 		}
-		if key.Secret == "" {
-			return providerkeys.Key{}, errors.New(
+		if k.Secret == "" {
+			return providerkeys.Key{}, "", errors.New(
 				"this key cannot be decrypted — check that the gateway and backend share the same RAYU_PROVIDER_SECRET")
 		}
-		return key, nil
+		return k, "", nil
 	}
-	usable := s.ent.Keys().Pick(providerID)
-	if len(usable) == 0 {
-		return providerkeys.Key{}, errors.New(
-			"no usable API key for this provider — add one, or test a specific key by id")
+	if usable := s.ent.Keys().Pick(providerID); len(usable) > 0 {
+		return usable[0], "", nil
 	}
-	return usable[0], nil
+
+	// Nothing in rotation: fall back to the healthiest key there is, so the test can
+	// still prove (or disprove) the configuration.
+	for _, snap := range s.ent.Keys().SnapshotFor(providerID) {
+		k, ok := s.ent.Keys().Find(providerID, snap.ID)
+		if !ok || k.Secret == "" {
+			continue
+		}
+		return k, keySkipReason(snap), nil
+	}
+	if len(s.ent.Keys().SnapshotFor(providerID)) > 0 {
+		return providerkeys.Key{}, "", errors.New(
+			"this provider's API key(s) cannot be decrypted — check that the gateway and backend " +
+				"share the same RAYU_PROVIDER_SECRET")
+	}
+	return providerkeys.Key{}, "", errors.New(
+		"this provider has no API key — add one, then test again")
+}
+
+// keySkipReason explains, in an admin's terms, why a key is not in rotation.
+func keySkipReason(s providerkeys.Snapshot) string {
+	switch {
+	case !s.Enabled:
+		return "it is disabled"
+	case s.Status == providerkeys.StatusInvalid:
+		return "it is out of rotation after an earlier auth failure"
+	case s.Status == providerkeys.StatusRateLimited && s.CooldownUntil != nil:
+		return "it is cooling down until " + s.CooldownUntil.UTC().Format("15:04:05") + " UTC"
+	case s.Status == providerkeys.StatusRateLimited:
+		return "it is cooling down after a rate limit"
+	case s.Status == providerkeys.StatusDisabled:
+		return "it is disabled"
+	default:
+		return "it is not in rotation"
+	}
 }
 
 // classifyProviderTest turns a transport error or upstream status into the cause
 // an admin can act on, plus a short human message.
 func classifyProviderTest(status int, body []byte, err error) (string, string) {
+	// A web page is decisive and comes first, whatever the status and whatever the
+	// adapter made of the body: an API endpoint does not serve HTML. This is what a
+	// provider returns for a path it does not have (its single-page app, with 200),
+	// or from a CDN/WAF in front of it — neither says anything about the format, the
+	// credential or the model, so blaming any of those sends the admin the wrong way.
+	if looksLikeHTML(body) {
+		return testBadBaseURL,
+			"The URL answered with a web page, not an API response (HTTP " + itoa(status) + "). " +
+				"The base URL or endpoint path is pointing at the provider's website " +
+				"rather than its API. Response started: " + bodySnippet(body)
+	}
 	if err != nil {
 		return classifyTransportError(err)
 	}
@@ -396,6 +467,11 @@ func classifyProviderTest(status int, body []byte, err error) (string, string) {
 		// the one configured — the most confusing failure to debug by hand,
 		// because auth and routing both "worked".
 		if !looksLikeAnthropicMessage(body) {
+			if spoken := detectResponseFormat(body); spoken != "" {
+				return testFormatMismatch,
+					"The provider answered 200 in the " + spoken + " format, not the one configured. " +
+						"Response started: " + snippet
+			}
 			return testFormatMismatch,
 				"The provider answered 200 but not in the expected shape for this wire format. " +
 					"Check the provider's format setting. Response started: " + snippet
@@ -448,23 +524,6 @@ func classifyTransportError(err error) (string, string) {
 	}
 }
 
-// looksLikeAnthropicMessage checks the response is a Messages reply, which is what
-// every adapter must produce on success.
-func looksLikeAnthropicMessage(body []byte) bool {
-	var out struct {
-		Type    string `json:"type"`
-		Role    string `json:"role"`
-		Content []any  `json:"content"`
-		Usage   *struct {
-			InputTokens int `json:"input_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return false
-	}
-	return out.Content != nil || out.Usage != nil || out.Type == "message" || out.Role == "assistant"
-}
-
 // mentionsModel reports whether an upstream error blames the model id. Providers
 // phrase this a dozen ways ("model not found", "invalid model", "unknown model",
 // "does not exist"), so match on the noun plus a negative.
@@ -485,6 +544,92 @@ func mentionsModel(s string) bool {
 // provider. A rejected id is usually a typo or a stale version of a sibling model
 // that is known to work, so the nearest configured id is a better hint than a
 // generic "check the provider's docs".
+// suggestFix turns a classification into the next concrete thing to change. Every
+// branch is derived from the FORMAT and from what the upstream actually sent, so a
+// provider nobody has seen before is diagnosed the same way as a familiar one.
+func (s *Server) suggestFix(
+	classification string,
+	route providercfg.Route,
+	model store.HostedModel,
+	providerID int64,
+	respBody []byte,
+) string {
+	switch classification {
+	case testUnknownModel:
+		return s.suggestModelID(providerID, model.UpstreamModelID)
+
+	case testBadBaseURL:
+		// The most common onboarding mistake, and the one the answer can pinpoint:
+		// a path that is not the one this format is served at.
+		if hint := suggestEndpointPath(route.Format, route.EndpointPath); hint != "" {
+			return hint
+		}
+		return "Check the Connection section: the base URL must be the provider's API " +
+			"origin, and the endpoint path must be its " + formatLabel(route.Format) +
+			" route. Expected path: " + expectedPathText(route.Format) + "."
+
+	case testFormatMismatch:
+		if spoken := detectResponseFormat(respBody); spoken != "" && spoken != route.Format {
+			return "This provider speaks " + spoken + ". Set the provider's wire format to " +
+				spoken + " (it is currently " + formatLabel(route.Format) + "). " + authHint(spoken)
+		}
+		// JSON, but nothing recognisable: usually the right host and the wrong route.
+		if hint := suggestEndpointPath(route.Format, route.EndpointPath); hint != "" {
+			return hint
+		}
+		return "Confirm the provider's wire format, and that the endpoint path is its " +
+			formatLabel(route.Format) + " route."
+
+	case testBadAPIKey:
+		// Before blaming the credential, name the two settings that produce the same
+		// 401: the wrong auth header, and an endpoint that is not this format's.
+		msg := "Check the key itself, then the auth scheme. " + authHint(route.Format)
+		if hint := suggestEndpointPath(route.Format, route.EndpointPath); hint != "" {
+			msg += " " + hint
+		}
+		return msg
+
+	case testRateLimited:
+		return "The credential is accepted — this is a quota or throughput limit. " +
+			"Add a second key to this provider so requests rotate instead of queueing."
+	}
+	return ""
+}
+
+// expectedPathText renders a format's acceptable endpoint paths for a message.
+func expectedPathText(format string) string {
+	paths := canonicalPaths(format)
+	if len(paths) == 0 {
+		return "the one in the provider's own documentation"
+	}
+	return strings.Join(paths, " or ")
+}
+
+// recordTestKeyFailure is the ADMIN-TEST half of recordKeyFailure: it honours a
+// provider's own "later" (429/402, which self-heals when the cooldown elapses) but
+// never takes a key out of rotation for a 401/403.
+//
+// The difference is what the configuration has proven. On the request path the route
+// is known to work, so a 401 is genuinely the credential. During a test nothing is
+// proven — a misspelled path, an auth scheme the provider does not use, or a login
+// page all answer 401/403 — and condemning the key there is a trap: it removes the
+// only key, after which the per-model test refuses to run at all and the admin has
+// no way left to verify the real fix.
+func (s *Server) recordTestKeyFailure(providerID int64, f proxy.KeyFailure) {
+	if f.KeyID == 0 {
+		return
+	}
+	if f.RateLimited() {
+		s.ent.Keys().MarkRateLimited(providerID, f.KeyID, f.RetryAfter)
+		log.Printf("provider test: key #%d rate limited (HTTP %d) — cooling down", f.KeyID, f.Status)
+		return
+	}
+	log.Printf("provider test: key #%d got HTTP %d — left in rotation (a test cannot tell a bad key "+
+		"from a bad URL or a wrong auth scheme)", f.KeyID, f.Status)
+}
+
+// suggestModelID names the closest configured upstream model id when the provider
+// rejects the one that was sent.
 func (s *Server) suggestModelID(providerID int64, attempted string) string {
 	best, bestDist := "", 1<<31-1
 	for _, m := range s.ent.Models() {

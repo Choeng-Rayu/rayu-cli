@@ -228,13 +228,22 @@ func TestProviderTestClassifiesFailures(t *testing.T) {
 			if strings.Contains(res.Message, "sk-live-secret") || strings.Contains(res.Suggestion, "sk-live-secret") {
 				t.Errorf("the API key leaked into the result: %+v", res)
 			}
-			// Per-key health is real: a 401 must take the key out of rotation and a
-			// 429 must cool it down, so the next USER request skips it.
+			// Per-key health is recorded only for verdicts that are ABOUT the key.
+			//
+			// A 429 is the provider itself saying "later" and expires on its own, so
+			// the next USER request skips the key. A 401/403 deliberately does NOT
+			// condemn it: during a test the configuration is unproven, and a mistyped
+			// endpoint path, a wrong auth scheme or a login page all answer 401 too.
+			// Taking the key out here stranded the provider — with its only key out of
+			// rotation the per-model test refused to run at all ("no usable API key"),
+			// so the admin could never verify the real fix. The request path still
+			// records auth failures, because there the route is already proven.
 			snap := fe.Keys().SnapshotFor(provIDLongCat)
 			switch tc.want {
 			case testBadAPIKey:
-				if snap[0].Status != providerkeys.StatusInvalid {
-					t.Errorf("key status=%s after a 401, want invalid", snap[0].Status)
+				if snap[0].Status != providerkeys.StatusActive {
+					t.Errorf("key status=%s after a 401 in a TEST, want active (a test must not "+
+						"remove a key from rotation)", snap[0].Status)
 				}
 			case testRateLimited:
 				if snap[0].Status != providerkeys.StatusRateLimited {
