@@ -20,3 +20,25 @@ https://rayucode.com/plans","type":"upgrade_required","code":"plan_upgrade_requi
 
 this is not happen in this case it happen in when I use this model doing sometime I can't defined or tell you the exact isue but I tell current it have in above one case and the second is is when i use the subagent planner and it write to the file it said like issue in that writing the file "API Error: 403 {"error":{"message":"🔒 Rayu-hosted models are a paid feature. Please upgrade your plan to use them: https://rayucode.com/plans","type":"upgrade_required","code":"plan_upgrade_required"}}
 "
+
+
+# bug 2
+it show this issue but I have the credits 
+
+● 💳 You've reached your plan's credit limit for this billing period. Your credits renew
+  in about 26 days. Renew or upgrade your plan, or add more credits, to keep using
+  Rayu-hosted models: https://rayucode.com/plans — or run /model to switch to a model on
+  another provider (e.g. your own API key).
+
+❯ /usage                                                                                 
+  ⎿  Rayu Plan Usage
+
+       Plan     Max ($50/mo)
+
+       Credits  [███████████░░░░░░░░░░░] 50%
+                148.7 / 300 used · 151.3 left · resets in 26d 1h
+
+       Tokens   [███████████░░░░░░░░░░░] 50%
+                148,696,348 / 300,000,000
+                                                                                         
+       Top-up   0 credits

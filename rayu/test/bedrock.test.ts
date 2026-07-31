@@ -40,8 +40,9 @@ describe('bedrock provider helpers', () => {
     const bedrock = bedrocks[0]
     expect(bedrock?.id).toBe('bedrock')
     expect(bedrock?.envKeys).toContain('AWS_BEARER_TOKEN_BEDROCK')
-    // No surface discriminator is written any more.
-    expect(bedrock?.bedrockApi).toBeUndefined()
+    // No surface discriminator exists on presets any more (the field was removed
+    // from ProviderPreset; RayuProvider keeps it read-only for the migration).
+    expect('bedrockApi' in (bedrock ?? {})).toBe(false)
     for (const legacyId of ['bedrock-openai', 'bedrock-anthropic']) {
       expect(PROVIDER_PRESETS.find(p => p.id === legacyId)).toBeUndefined()
     }

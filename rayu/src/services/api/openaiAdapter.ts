@@ -23,6 +23,12 @@ import { hashPair } from 'src/utils/hash.js'
 import { PRODUCT_NAME } from 'src/constants/product.js'
 import type { ProviderFeatureMode } from 'src/utils/rayuConfig.js'
 import { isRotatableKeyStatus } from './keyRotation.js'
+import {
+  blocksToText,
+  imageBlockToUrl,
+  systemToText,
+  toolSpecs,
+} from './openaiShared.js'
 
 type AnyObj = Record<string, unknown>
 
@@ -74,40 +80,16 @@ type BuildOpenAIRequestOptions = {
 // ---------------------------------------------------------------------------
 // Request translation: Anthropic → OpenAI chat/completions
 // ---------------------------------------------------------------------------
-
-function systemToText(system: BetaParams['system']): string | undefined {
-  if (!system) return undefined
-  if (typeof system === 'string') return system
-  return system
-    .map(b => (typeof b === 'string' ? b : (b.text ?? '')))
-    .join('\n')
-}
-
-function blocksToText(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content
-    .filter(b => b && (b as AnyObj).type === 'text')
-    .map(b => (b as AnyObj).text as string)
-    .join('\n')
-}
+// IR-side parsing (system flattening, text blocks, image sources, tool specs) is
+// shared with the Responses adapter — see openaiShared.ts.
 
 /**
  * Translate one Anthropic image block → an OpenAI `image_url` content part.
- * Supports base64 sources ({type:'base64',media_type,data}) and url sources.
  * Returns null for non-image / unrecognized blocks.
  */
 function imageBlockToOpenAI(block: AnyObj): AnyObj | null {
-  if (!block || block.type !== 'image') return null
-  const src = (block.source as AnyObj) ?? {}
-  if (src.type === 'base64' && src.data) {
-    const mt = (src.media_type as string) ?? 'image/png'
-    return { type: 'image_url', image_url: { url: `data:${mt};base64,${src.data}` } }
-  }
-  if (src.type === 'url' && src.url) {
-    return { type: 'image_url', image_url: { url: src.url as string } }
-  }
-  return null
+  const url = imageBlockToUrl(block)
+  return url ? { type: 'image_url', image_url: { url } } : null
 }
 
 /** Collect OpenAI image_url parts from an Anthropic blocks array. */
@@ -223,32 +205,17 @@ function translateMessages(params: BetaParams): AnyObj[] {
 
 /** Translate Anthropic tools[] → OpenAI tools[] (function schema). */
 function translateTools(tools?: Array<AnyObj>): AnyObj[] | undefined {
-  if (!tools?.length) return undefined
-  return tools
-    .filter(t => {
-      if (!t) return false
-      // Already OpenAI-shaped function tools pass through.
-      if (t.function) return true
-      // Anthropic server tools (advisor, web_search, tool_search, etc.) carry a
-      // `type` like 'advisor_20260301' and have no JSON input_schema. They have
-      // no OpenAI equivalent — drop them instead of emitting a phantom empty
-      // function the model could try to call.
-      if (typeof t.type === 'string' && t.type !== 'custom' && !t.input_schema) {
-        return false
-      }
-      return !!t.name
-    })
-    .map(t => {
-      if (t.function) return t // already OpenAI-shaped
-      return {
-        type: 'function',
-        function: {
-          name: t.name,
-          description: t.description ?? '',
-          parameters: t.input_schema ?? { type: 'object', properties: {} },
-        },
-      }
-    })
+  // Shared IR-side parsing; Chat Completions nests each spec under `function`.
+  const specs = toolSpecs(tools)
+  if (!specs) return undefined
+  return specs.map(s => ({
+    type: 'function',
+    function: {
+      name: s.name,
+      description: s.description,
+      parameters: s.parameters,
+    },
+  }))
 }
 
 // OpenAI reasoning families (o1/o3/o4/gpt-5) reject `max_tokens` — they require
@@ -376,7 +343,7 @@ function mapFinishReason(reason: string | null | undefined): string {
  * fast plan-drain bug — and hides caching entirely. We split it so cache reads
  * are attributed (and priced) as cache reads. `input_tokens +
  * cache_read_input_tokens` still equals `prompt_tokens`, so no token is
- * double-counted or lost. Mirrors bedrockConverseAdapter.mapUsage.
+ * double-counted or lost.
  */
 function mapUsage(usage: AnyObj | undefined): AnyObj {
   const promptTokens = Math.max(0, (usage?.prompt_tokens as number) ?? 0)

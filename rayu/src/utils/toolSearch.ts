@@ -40,6 +40,7 @@ import {
   isOpenAICompatibleActive,
   isRayuNonAnthropicActive,
 } from './model/providers.js'
+import { isFirstPartyRequest } from './model/providerCapabilities.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 
@@ -296,21 +297,24 @@ export function isToolSearchEnabledOptimistic(): boolean {
   // like WebFetch/TaskUpdate blind, guesses parameters (e.g. task_id vs taskId), and
   // the client validator rejects the call.
   //
-  // isFirstPartyAnthropicBaseUrl() alone CANNOT catch these — their baseURL is set on
-  // the SDK client, not via ANTHROPIC_BASE_URL — so we key off the active provider
-  // KIND: isRayuNonAnthropicActive() covers every configured kind ≠ 'anthropic'
-  // (rayu-hosted, anthropic-compatible, openai-compatible, genai, kiro, copilot);
-  // isOpenAICompatibleActive() covers the RAYU_OPENAI_COMPATIBLE=1 env case with no
-  // config provider; !isFirstPartyAnthropicBaseUrl() still covers a kind:'anthropic'
-  // pointed at a proxy via ANTHROPIC_BASE_URL. Force-disable so ALL tool schemas are
-  // sent inline (the pre-tool-search behavior). Only when ENABLE_TOOL_SEARCH is unset
-  // — an explicit value means the user asserts their endpoint forwards the beta.
+  // Tool search sends `tool_reference` / `defer_loading`. Bedrock/Vertex/Foundry
+  // are handled by the guard below (getAPIProvider() returns THEIR value, so this
+  // block is skipped and they attach their own 3P tool-search beta header).
+  // Everything else must be a GENUINE first-party Anthropic endpoint:
+  // isFirstPartyRequest() folds in every Rayu custom kind (rayu-hosted,
+  // anthropic-compatible, openai-compatible, genai, kiro, copilot) as well as a
+  // kind:'anthropic' provider pointed at a proxy via ANTHROPIC_BASE_URL — the
+  // three separate predicates this used to need. Force-disable so ALL tool schemas
+  // are sent inline (the pre-tool-search behavior). Only when ENABLE_TOOL_SEARCH is
+  // unset — an explicit value means the user asserts their endpoint forwards it.
+  //
+  // No model argument here: this is the session-level "could tool search be on?"
+  // check, so it answers for the ACTIVE provider by design. The per-request
+  // decision is made by isToolSearchEnabled(model, …) below.
   if (
     !process.env.ENABLE_TOOL_SEARCH &&
     getAPIProvider() === 'anthropic' &&
-    (isRayuNonAnthropicActive() ||
-      isOpenAICompatibleActive() ||
-      !isFirstPartyAnthropicBaseUrl())
+    !isFirstPartyRequest()
   ) {
     if (!loggedOptimistic) {
       loggedOptimistic = true

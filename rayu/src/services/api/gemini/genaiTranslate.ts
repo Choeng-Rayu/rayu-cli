@@ -3,6 +3,10 @@
 // (contents/parts, functionCall/functionResponse, candidates) are identical
 // across Vertex, the Gemini Developer API, and Code Assist — only the transport
 // (SDK vs. raw cloudcode-pa endpoint) differs.
+//
+// Reading the Anthropic Messages IR (system prompt, text blocks, image sources)
+// is format-independent and shared with the OpenAI adapters — see anthropicIR.ts.
+import { imageBlockSource, systemToText } from '../anthropicIR.js'
 
 export type AnyObj = Record<string, unknown>
 
@@ -46,25 +50,17 @@ export function _resetThoughtSignaturesForTesting(): void {
   thoughtSignatures.clear()
 }
 
-function systemToText(system: BetaParams['system']): string | undefined {
-  if (!system) return undefined
-  if (typeof system === 'string') return system
-  return system.map(b => (typeof b === 'string' ? b : (b.text ?? ''))).join('\n')
-}
-
 /** A GenAI Part for an Anthropic image block (base64 only; url unsupported). */
 function imagePart(block: AnyObj): AnyObj | null {
-  if (!block || block.type !== 'image') return null
-  const src = (block.source as AnyObj) ?? {}
-  if (src.type === 'base64' && src.data) {
-    return {
-      inlineData: {
-        mimeType: (src.media_type as string) ?? 'image/png',
-        data: src.data as string,
-      },
-    }
+  const src = imageBlockSource(block)
+  // GenAI takes inline bytes, so a url-sourced image has no representation here.
+  if (!src || src.kind !== 'base64') return null
+  return {
+    inlineData: {
+      mimeType: src.mediaType,
+      data: src.data,
+    },
   }
-  return null
 }
 
 /**

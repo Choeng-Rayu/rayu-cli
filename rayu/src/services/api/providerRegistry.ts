@@ -34,6 +34,8 @@ import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 import type { RayuProvider, WireFormat } from '../../utils/rayuConfig.js'
 import { anthropicTransportOptions } from './anthropicTransport.js'
 import { createAnthropicMessagesClient } from './anthropicMessagesClient.js'
+import { azureResourceOrigin } from './azureFoundry.js'
+import { isVertexMaasModelId } from './gemini/vertexAnthropic.js'
 import { resolveProviderApiKeys } from './providerKeys.js'
 
 export type { WireFormat }
@@ -86,8 +88,6 @@ function bareModelId(model: string | undefined): string {
  *   Assist).
  * - `codewhisperer` — Kiro's AWS CodeWhisperer event-stream protocol. Unique to
  *   one provider.
- * - `bedrock-converse` — AWS Converse/ConverseStream. Retired in Task 6 of this
- *   migration; still listed so the registry can describe today's providers.
  *
  * The type itself is declared in rayuConfig.ts (next to ProviderKind) so config
  * types carry no dependency on the request layer; it is re-exported above for
@@ -131,22 +131,34 @@ export function resolveWireFormat(
       // Bedrock exposes over OpenAI Chat Completions (gpt-oss, qwen, deepseek,
       // mistral, …) goes to the bedrock-mantle endpoint.
       //
-      // The legacy `bedrockApi` discriminator is still honored for providers
-      // saved by older versions that have not been migrated yet
-      // (migrateBedrockToUnifiedProvider drops it at startup).
+      // The legacy `bedrockApi` discriminator is honored ONLY for the two
+      // surfaces that still exist, so providers saved by older versions keep
+      // working until migrateBedrockToUnifiedProvider() drops the field at
+      // startup. A legacy `bedrockApi:'converse'` provider deliberately falls
+      // through to the per-model rules: the Converse API was retired, so its
+      // Claude models now use Anthropic Messages and the rest use OpenAI Chat.
       if (provider.bedrockApi === 'anthropic') return 'anthropic-messages'
-      if (provider.bedrockApi === 'converse') return 'bedrock-converse'
       if (provider.bedrockApi === 'openai') return 'openai-chat'
       if (bare && isClaudeModelId(bare)) return 'anthropic-messages'
       return 'openai-chat'
     }
 
+    case 'azure':
+      // ONE Azure resource, format chosen per MODEL: Claude deployments speak the
+      // Anthropic Messages API at {origin}/anthropic (the shape the official
+      // @anthropic-ai/foundry-sdk uses), everything else speaks the Azure OpenAI
+      // v1 Responses API at {origin}/openai/v1.
+      return bare && isClaudeModelId(bare)
+        ? 'anthropic-messages'
+        : 'openai-responses'
+
     case 'vertex':
-      // Gemini today. Claude-on-Vertex (Anthropic Messages via streamRawPredict)
-      // and the MaaS models (Llama/Mistral/Qwen over OpenAI Chat) get their
-      // per-model rules in Task 9, together with the clients that serve them —
-      // adding the rule earlier would resolve a format with no implementation
-      // behind it.
+      // ONE Vertex provider, three formats chosen per MODEL:
+      //   Claude → Anthropic Messages on the `anthropic` publisher
+      //   MaaS   → OpenAI Chat on the openapi endpoint (llama/mistral/qwen)
+      //   Gemini → GenAI on the `google` publisher (the default)
+      if (bare && isClaudeModelId(bare)) return 'anthropic-messages'
+      if (bare && isVertexMaasModelId(bare)) return 'openai-chat'
       return 'genai'
 
     case 'genai':
@@ -184,9 +196,13 @@ export type ClientTarget =
   | 'anthropic-compatible'
   | 'rayu-hosted'
   | 'bedrock-anthropic'
-  | 'bedrock-converse'
+  | 'azure-anthropic'
+  | 'azure-openai-responses'
   | 'openai-chat'
+  | 'openai-responses'
   | 'vertex-genai'
+  | 'vertex-anthropic'
+  | 'vertex-maas'
   | 'genai-code-assist'
   | 'kiro'
   | 'copilot'
@@ -214,6 +230,10 @@ export function resolveClientTarget(
     case 'rayu-hosted':
       return 'rayu-hosted'
     case 'vertex':
+      // Per-model: Claude on the anthropic publisher, MaaS on the openapi
+      // endpoint, Gemini on the native genai endpoint.
+      if (format === 'anthropic-messages') return 'vertex-anthropic'
+      if (format === 'openai-chat') return 'vertex-maas'
       return 'vertex-genai'
     case 'genai':
       return 'genai-code-assist'
@@ -227,14 +247,34 @@ export function resolveClientTarget(
         // without a key there is nothing to authenticate with.
         return provider.apiKey ? 'bedrock-anthropic' : 'unsupported'
       }
-      if (format === 'bedrock-converse') return 'bedrock-converse'
       // Bedrock's OpenAI-compatible Chat Completions surface (bedrock-mantle)
       // needs both a key and an endpoint, matching isOpenAICompatibleActive().
       return provider.apiKey && hasOpenAIChatEndpoint(provider, opts)
         ? 'openai-chat'
         : 'unsupported'
-    }    case 'openai-compatible':
-      return hasOpenAIChatEndpoint(provider, opts) ? 'openai-chat' : 'unsupported'
+    }    case 'azure': {
+      // Both Azure surfaces authenticate with the resource's API key. Without a
+      // key there is nothing to send — and returning 'unsupported' rather than
+      // falling through matters for SECURITY: the Anthropic SDK would otherwise
+      // fall back to process.env.ANTHROPIC_API_KEY and send a first-party key to
+      // the Azure host.
+      const endpoint = azureResourceOrigin(
+        provider.azureResource || provider.baseURL || '',
+      )
+      if (!provider.apiKey || !endpoint) return 'unsupported'
+      return format === 'anthropic-messages'
+        ? 'azure-anthropic'
+        : 'azure-openai-responses'
+    }
+
+    case 'openai-compatible':
+      // An explicit wireFormat (custom providers) selects the OpenAI protocol;
+      // /chat/completions remains the default for the built-in presets.
+      return hasOpenAIChatEndpoint(provider, opts)
+        ? format === 'openai-responses'
+          ? 'openai-responses'
+          : 'openai-chat'
+        : 'unsupported'
     default:
       return 'unsupported'
   }
@@ -455,24 +495,87 @@ export async function buildClient(
       })
     }
 
-    case 'bedrock-converse': {
-      // AWS Converse/ConverseStream via the AWS SDK (SigV4 or bearer token).
-      const { createBedrockConverseClient } = await import(
-        './bedrockConverseAdapter.js'
-      )
-      return createBedrockConverseClient({
-        apiKey: provider.apiKey,
-        region: provider.awsRegion,
-        maxRetries,
-      })
-    }
-
     case 'vertex-genai': {
       const { createVertexGenaiClient } = await import(
         './gemini/vertexGenaiClient.js'
       )
       const { gatewayFetch } = await resolveTransport(provider)
       return createVertexGenaiClient(provider, maxRetries, gatewayFetch)
+    }
+
+    case 'vertex-anthropic': {
+      // Claude on Vertex: the SHARED Anthropic-Messages builder pointed at the
+      // region's aiplatform host, with a fetch that rewrites /v1/messages to the
+      // anthropic publisher's rawPredict path and injects the OAuth bearer.
+      // Same shape the official @anthropic-ai/vertex-sdk produces, without
+      // taking on that undeclared dependency.
+      const {
+        makeVertexAnthropicFetch,
+        vertexAnthropicBaseURL,
+      } = await import('./gemini/vertexAnthropic.js')
+      const { getVertexAccessToken } = await import(
+        './gemini/vertexAuth.js'
+      )
+      const region = provider.gcpRegion || 'global'
+      const project =
+        provider.gcpProject || process.env.GOOGLE_CLOUD_PROJECT || ''
+      const { anthropicOptions, gatewayFetch } = await resolveTransport(
+        provider,
+        { source, fetchOverride },
+      )
+      return createAnthropicMessagesClient({
+        maxRetries,
+        auth: {
+          mode: 'custom-fetch',
+          fetch: makeVertexAnthropicFetch({
+            project,
+            region,
+            getToken: getVertexAccessToken,
+            inner: (anthropicOptions.fetch ?? gatewayFetch) as
+              | typeof fetch
+              | undefined,
+          }),
+        },
+        baseURL: vertexAnthropicBaseURL(region),
+        source,
+      })
+    }
+
+    case 'vertex-maas': {
+      // Vertex MaaS (llama/mistral/qwen) over the OpenAI-compatible endpoint,
+      // authenticated with a per-request Google OAuth bearer — the same pattern
+      // Copilot uses (adapter + credential-injecting fetch).
+      const { createOpenAICompatibleClient } = await import(
+        './openaiAdapter.js'
+      )
+      const { getVertexAccessToken } = await import('./gemini/vertexAuth.js')
+      const { vertexBaseURL } = await import('../../utils/rayuProviders.js')
+      const region = provider.gcpRegion || 'global'
+      const project =
+        provider.gcpProject || process.env.GOOGLE_CLOUD_PROJECT || ''
+      if (!project) return null
+      const { gatewayFetch } = await resolveTransport(provider)
+      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+      const inner = gatewayFetch ?? globalThis.fetch
+      const oauthFetch = (async (
+        input: Parameters<typeof fetch>[0],
+        init: Parameters<typeof fetch>[1] = {},
+      ) => {
+        const token = await getVertexAccessToken()
+        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+        const headers = new Headers(init?.headers)
+        headers.set('Authorization', `Bearer ${token}`)
+        headers.set('x-goog-user-project', project)
+        return inner(input, { ...init, headers })
+      }) as typeof fetch
+      return createOpenAICompatibleClient({
+        // Auth is entirely in the fetch wrapper; the SDK needs a placeholder.
+        apiKey: 'vertex',
+        baseURL: vertexBaseURL(project, region),
+        maxRetries,
+        providerId: provider.id,
+        fetch: oauthFetch,
+      })
     }
 
     case 'genai-code-assist':
@@ -492,6 +595,46 @@ export async function buildClient(
       return createCopilotClient(provider, maxRetries)
     }
 
+    case 'azure-anthropic': {
+      // Claude on Azure Foundry: the SHARED Anthropic-Messages builder pointed at
+      // {origin}/anthropic with `x-api-key` auth — the same shape the official
+      // @anthropic-ai/foundry-sdk produces (it simply extends the Anthropic SDK),
+      // without taking on that undeclared dependency.
+      const { azureAnthropicBaseURL } = await import('./azureFoundry.js')
+      const endpoint = provider.azureResource || provider.baseURL || ''
+      return createAnthropicMessagesClient({
+        maxRetries,
+        // x-api-key carrying the AZURE key, not an Anthropic one. resolveClientTarget
+        // guarantees a non-empty key so the SDK never falls back to the env var.
+        auth: { mode: 'x-api-key', apiKey: provider.apiKey },
+        baseURL: azureAnthropicBaseURL(endpoint),
+        source,
+        fetchOverride,
+      })
+    }
+
+    case 'azure-openai-responses': {
+      // Azure OpenAI v1 Responses: {origin}/openai/v1/responses?api-version=…
+      // with the `api-key` header (Microsoft's own convention on this surface).
+      const { azureOpenAIBaseURL, azureApiKeyHeaders, azureQueryParams } =
+        await import('./azureFoundry.js')
+      const { createOpenAIResponsesClient } = await import(
+        './openaiResponsesAdapter.js'
+      )
+      const endpoint = provider.azureResource || provider.baseURL || ''
+      return createOpenAIResponsesClient({
+        // Auth travels in the api-key header; the SDK still requires a
+        // non-empty apiKey field, so pass the same value rather than a
+        // placeholder that could mask a misconfiguration.
+        apiKey: provider.apiKey ?? '',
+        baseURL: azureOpenAIBaseURL(endpoint),
+        maxRetries,
+        providerId: provider.id,
+        headers: azureApiKeyHeaders(provider.apiKey ?? '', 'openai'),
+        queryParams: azureQueryParams(provider.azureApiVersion),
+      })
+    }
+
     case 'openai-chat': {
       const config = await resolveOpenAIChatConfig(provider, {
         maxRetries,
@@ -504,6 +647,25 @@ export async function buildClient(
       const { gatewayFetch } = await resolveTransport(provider)
       return createOpenAICompatibleClient({
         ...config,
+        ...(gatewayFetch ? { fetch: gatewayFetch } : {}),
+      })
+    }
+
+    case 'openai-responses': {
+      const config = await resolveOpenAIChatConfig(provider, {
+        maxRetries,
+        allowEnvOverrides,
+      })
+      if (!config) return null
+      const { createOpenAIResponsesClient } = await import(
+        './openaiResponsesAdapter.js'
+      )
+      const { gatewayFetch } = await resolveTransport(provider)
+      return createOpenAIResponsesClient({
+        apiKey: config.apiKey,
+        baseURL: config.baseURL,
+        maxRetries: config.maxRetries,
+        providerId: config.providerId,
         ...(gatewayFetch ? { fetch: gatewayFetch } : {}),
       })
     }

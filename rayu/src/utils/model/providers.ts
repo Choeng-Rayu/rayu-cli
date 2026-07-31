@@ -9,14 +9,23 @@ export function getAPIProvider(): APIProvider {
   if (isEnvTruthy(process.env.RAYU_USE_VERTEX)) return 'vertex'
   if (isEnvTruthy(process.env.RAYU_USE_FOUNDRY)) return 'foundry'
 
-  // Rayu config: if the active provider is kind:'bedrock', route to bedrock.
-  // This allows /connect → AWS Bedrock to work without env vars.
+  // Rayu config: map the active provider's kind onto the upstream APIProvider
+  // union so the model layer's per-provider tables apply.
+  //   kind:'bedrock' → 'bedrock'
+  //   kind:'azure'   → 'foundry'  (Microsoft Foundry: the Claude model ids in
+  //                    configs.ts, the thinking/betas support branches and the
+  //                    retirement dates keyed on 'foundry' were all declared for
+  //                    this surface but had no provider to activate them until
+  //                    the Azure provider landed.)
+  // This allows /connect → AWS Bedrock / Microsoft Azure to work without env vars.
   try {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { getActiveProvider } =
       require('../rayuConfig.js') as typeof import('../rayuConfig.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
-    if (getActiveProvider()?.kind === 'bedrock') return 'bedrock'
+    const kind = getActiveProvider()?.kind
+    if (kind === 'bedrock') return 'bedrock'
+    if (kind === 'azure') return 'foundry'
   } catch {
     // fall through
   }
@@ -134,9 +143,14 @@ export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS
 }
 
 /**
- * Rayu: true when the active provider is the Gemini-on-Vertex provider
- * (kind:'vertex'). Routed to a dedicated OpenAI-adapter client that injects a
- * Google Cloud OAuth bearer token and the `google/` model prefix.
+ * Rayu: true when the active provider is the Vertex AI provider (kind:'vertex').
+ *
+ * ONE Vertex provider serves THREE wire formats, chosen per MODEL by
+ * resolveWireFormat(): Gemini over the native GenAI publisher endpoint, Claude
+ * over Anthropic Messages on the `anthropic` publisher, and the MaaS models
+ * (llama/mistral/qwen) over the OpenAI-compatible openapi endpoint. This
+ * predicate takes no model argument, so it only answers "is Vertex active?" —
+ * anything model-dependent must use resolveProviderCapabilities(provider, model).
  */
 export function isVertexGeminiActive(): boolean {
   try {

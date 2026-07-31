@@ -35,6 +35,11 @@ import {
 import { getMaxStoredApiKeys } from '../utils/envUtils.js'
 import { isMultiApiKeyAllowed } from '../services/rayuAuth/multiApiKeyFeature.js'
 import { upgradeTargetLabel } from '../services/rayuAuth/paidFeatureGate.js'
+import {
+  azureResourceOrigin,
+  isKnownAzureHost,
+  validateAzureEndpoint,
+} from '../services/api/azureFoundry.js'
 import { MultiApiKeyManager } from './MultiApiKeyManager.js'
 
 type Preset = ProviderPreset
@@ -53,6 +58,8 @@ type Phase =
   | 'region'
   | 'fetchingModels'
   | 'pickModel'
+  | 'azureResource'
+  | 'azureFetching'
   | 'vertexAuth'
   | 'vertexProject'
   | 'vertexRegion'
@@ -82,6 +89,8 @@ export function RayuProviderSetup({
   const [region, setRegion] = useState(DEFAULT_BEDROCK_REGION)
   const [bedrockModels, setBedrockModels] = useState<string[]>([])
   const [fetchError, setFetchError] = useState<string | null>(null)
+  // Azure (Foundry) state: the resource name or full endpoint URL.
+  const [azureResource, setAzureResource] = useState('')
   // Vertex (Gemini OAuth) state
   const [vertexProject, setVertexProject] = useState('')
   const [vertexRegion, setVertexRegion] = useState(DEFAULT_VERTEX_REGION)
@@ -119,6 +128,11 @@ export function RayuProviderSetup({
     if (p.id === 'ollama') {
       setFetchError(null)
       setPhase('ollamaDetect')
+    } else if (p.kind === 'azure') {
+      // Azure needs the resource/endpoint before the key so the key is only ever
+      // sent to a validated host.
+      setFetchError(null)
+      setPhase('azureResource')
     } else if (p.kind === 'kiro') {
       setKiroError(null)
       setPhase('kiroChoice')
@@ -229,6 +243,65 @@ export function RayuProviderSetup({
     }
     return models[0] ?? ''
   }
+
+  /**
+   * Persist the Azure provider and hand off to the shared model picker. ONE
+   * provider entry serves both wire formats; resolveWireFormat routes per model.
+   */
+  function finishAzure(chosenModel: string, models: string[]): void {
+    const trimmed = chosenModel.trim()
+    const provider: RayuProvider = {
+      id: 'azure',
+      kind: 'azure',
+      azureResource: azureResource.trim(),
+      apiKey: apiKey.trim() || undefined,
+      ...(trimmed ? { defaultModel: trimmed } : {}),
+      ...(models.length ? { fetchedModels: models } : {}),
+    }
+    upsertProvider(provider, true)
+    onDone()
+  }
+
+  /** Prefer a Claude deployment, then a GPT reasoning deployment, else anything. */
+  function pickAzureDefault(models: string[]): string {
+    const prefs = [/claude-sonnet/i, /claude-opus/i, /claude/i, /gpt-5/i, /gpt-4/i, /gpt/i]
+    for (const re of prefs) {
+      const hit = models.find(m => re.test(m))
+      if (hit) return hit
+    }
+    return models[0] ?? ''
+  }
+
+  // After the resource + key are entered, list the deployments so the shared
+  // model picker is populated, then finish. If the listing returns nothing (a
+  // resource on an API version we can't enumerate, or a permissions-restricted
+  // key) fall back to typing a deployment name manually.
+  React.useEffect(() => {
+    if (phase !== 'azureFetching') return
+    let cancelled = false
+    void (async () => {
+      const models = await fetchProviderModels({
+        id: 'azure',
+        kind: 'azure',
+        azureResource: azureResource.trim(),
+        apiKey: apiKey.trim(),
+      }).catch(() => [] as string[])
+      if (cancelled) return
+      const chat = models.filter(isLikelyChatModel)
+      if (chat.length > 0) {
+        setBedrockModels(chat)
+        finishAzure(pickAzureDefault(chat), chat)
+        return
+      }
+      setFetchError(
+        'No deployments were returned for this resource. Enter a deployment name manually (it is the name you gave the deployment in Azure, not the base model id).',
+      )
+      setPhase('pickModel')
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [phase])
 
   // Persist the Gemini/Vertex provider (kind 'vertex') with the chosen GCP
   // project + region. Model selection is handled afterwards by the shared
@@ -1189,6 +1262,53 @@ export function RayuProviderSetup({
     )
   }
 
+  if (phase === 'azureResource') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Azure resource name or endpoint</Text>
+        <Text dimColor>
+          e.g. my-resource (→ https://my-resource.services.ai.azure.com) or paste
+          the full endpoint URL from the Azure portal.
+        </Text>
+        {fetchError ? <Text color="yellow">{fetchError}</Text> : null}
+        <TextInput
+          value={azureResource}
+          onChange={setAzureResource}
+          onSubmit={() => {
+            // Validate BEFORE the key step so a credential is never entered for
+            // (or sent to) an endpoint we would refuse.
+            const check = validateAzureEndpoint(azureResource)
+            if (!check.ok) {
+              setFetchError(check.reason)
+              return
+            }
+            setFetchError(
+              isKnownAzureHost(check.origin)
+                ? null
+                : `Note: ${check.origin} is not a recognized Azure AI host. Continuing anyway.`,
+            )
+            setPhase('key')
+          }}
+          placeholder="my-resource"
+          columns={80}
+          cursorOffset={cursor}
+          onChangeCursorOffset={setCursor}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'azureFetching') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Fetching Azure deployments…</Text>
+        <Text dimColor>
+          Listing the deployments on {azureResourceOrigin(azureResource)}.
+        </Text>
+      </Box>
+    )
+  }
+
   if (phase === 'region') {
     return (
       <Box flexDirection="column" gap={1} paddingLeft={1}>
@@ -1221,24 +1341,34 @@ export function RayuProviderSetup({
   }
 
   if (phase === 'pickModel') {
-    // Reached only when the live catalog came back empty (bad key/region or
-    // listing disabled). Normal success goes straight to the shared model
-    // picker, so this is a manual fallback rather than a second picker.
+    // Reached only when the live catalog came back empty (bad key/region, or a
+    // listing the resource doesn't answer). Normal success goes straight to the
+    // shared model picker, so this is a manual fallback rather than a second picker.
+    const azure = preset?.kind === 'azure'
     return (
       <Box flexDirection="column" gap={1} paddingLeft={1}>
-        <Text bold>Default Bedrock model id</Text>
+        <Text bold>
+          {azure ? 'Azure deployment name' : 'Default Bedrock model id'}
+        </Text>
         {fetchError ? <Text color="yellow">{fetchError}</Text> : null}
         <Text dimColor>
-          Enter a Claude inference-profile id (e.g.
-          us.anthropic.claude-sonnet-4-5-20250929-v1:0) or an OpenAI-compatible
-          model id (e.g. openai.gpt-oss-120b-1:0) — this provider serves both.
-          {' '}(run /connect again to switch region).
+          {azure
+            ? 'The deployment name from the Azure portal. A Claude deployment uses the Anthropic Messages API; anything else uses Azure OpenAI Responses — this provider serves both.'
+            : 'Enter a Claude inference-profile id (e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0) or an OpenAI-compatible model id (e.g. openai.gpt-oss-120b-1:0) — this provider serves both. (run /connect again to switch region).'}
         </Text>
         <TextInput
           value={model}
           onChange={setModel}
-          onSubmit={() => finishBedrock(model, bedrockModels)}
-          placeholder={'us.anthropic.claude-sonnet-4-5-20250929-v1:0'}
+          onSubmit={() =>
+            azure
+              ? finishAzure(model, bedrockModels)
+              : finishBedrock(model, bedrockModels)
+          }
+          placeholder={
+            azure
+              ? 'my-claude-sonnet-deployment'
+              : 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
+          }
           columns={80}
           cursorOffset={cursor}
           onChangeCursorOffset={setCursor}
@@ -1279,6 +1409,7 @@ export function RayuProviderSetup({
   // key phase (openai-compatible + bedrock). For bedrock, the key is the
   // Bedrock API key (bearer token); submitting advances to region selection.
   const isBedrock = preset?.kind === 'bedrock'
+  const isAzure = preset?.kind === 'azure'
   const isOllamaCloud = preset?.id === 'ollama-cloud'
   // Multi-key provider (NVIDIA / OpenRouter) but the Basic-plan entitlement is
   // NOT granted → single-key input + an upgrade hint (we only reach here when
@@ -1308,12 +1439,22 @@ export function RayuProviderSetup({
         onSubmit={() =>
           isBedrock
             ? setPhase('region')
-            : isOllamaCloud
-              ? setPhase('ollamaCloudFetching')
-              : finish(apiKey)
+            : isAzure
+              ? setPhase('azureFetching')
+              : isOllamaCloud
+                ? setPhase('ollamaCloudFetching')
+                : finish(apiKey)
         }
         mask="*"
-        placeholder={isBedrock ? 'ABSK...' : isOllamaCloud ? 'your ollama.com API key' : 'sk-...'}
+        placeholder={
+          isBedrock
+            ? 'ABSK...'
+            : isAzure
+              ? 'your Azure resource API key'
+              : isOllamaCloud
+                ? 'your ollama.com API key'
+                : 'sk-...'
+        }
         columns={80}
         cursorOffset={cursor}
         onChangeCursorOffset={setCursor}
