@@ -9,6 +9,7 @@ rayu/dist/
 rayu-backend/dist/
 rayu-web/.next/
 rayu-gateway/bin/
+rayu-gateway-rust/target/
 
 # Generated files
 rayu/graphify-out/

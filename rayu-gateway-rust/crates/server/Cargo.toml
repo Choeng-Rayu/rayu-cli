@@ -1,0 +1,23 @@
+[package]
+name = "rayu-gateway-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rayu-gateway"
+path = "src/main.rs"
+
+[dependencies]
+rayu-core = { path = "../core" }
+rayu-gateway-lib = { path = "../gateway" }
+
+anyhow.workspace = true
+axum.workspace = true
+dotenvy.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tracing.workspace = true
