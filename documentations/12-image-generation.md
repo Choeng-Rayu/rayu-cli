@@ -46,6 +46,17 @@ is used automatically when it is the only configured backend).
 
 ## Models
 
+The model list is **not** built into the CLI. It comes from the Rayu media-model
+catalog at runtime (`GET /v1/models?media=image` on the gateway, backed by the
+admin-managed `media_models` table), so a model added in the dashboard shows up in
+`/model_image_generation` without a CLI update. Run
+`/model_image_generation` to see exactly what your account can use.
+
+When you are signed out (or `USE_RAYU_OAUTH=false`), the CLI falls back to a
+built-in list so BYOK image generation keeps working offline with your own key.
+
+The shipped catalog defaults are:
+
 | Model id | Use |
 |----------|-----|
 | `black-forest-labs/flux.1-schnell` | **Default** — fast text→image |
