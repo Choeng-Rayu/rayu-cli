@@ -1,9 +1,0 @@
-node_modules
-dist
-coverage
-.env
-.env.local
-*.sqlite
-*.log
-*.tsbuildinfo
-.git
