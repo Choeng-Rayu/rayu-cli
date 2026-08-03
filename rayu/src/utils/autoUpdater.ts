@@ -1,8 +1,7 @@
 import { constants as fsConstants } from 'fs'
-import { access, writeFile } from 'fs/promises'
+import { access } from 'fs/promises'
 import axios from 'axios'
 import { homedir } from 'os'
-import { join } from 'path'
 import { getDynamicConfig_BLOCKS_ON_INIT } from 'src/services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -11,14 +10,12 @@ import {
 import { type ReleaseChannel, saveGlobalConfig } from './config.js'
 import { logForDebugging } from './debug.js'
 import { env } from './env.js'
-import { getRayuConfigHomeDir } from './envUtils.js'
 import {
   getGitHubDistTags,
   getLatestVersionFromGitHub,
 } from './githubReleases.js'
-import { ClaudeError, getErrnoCode, isENOENT } from './errors.js'
+import { ClaudeError } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
-import { getFsImplementation } from './fsOperations.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { logError } from './log.js'
 import { gte, lt } from './semver.js'
@@ -30,6 +27,12 @@ import {
   writeFileLines,
 } from './shellConfig.js'
 import { jsonParse } from './slowOperations.js'
+import {
+  acquireUpdateLock,
+  getUpdateLockFilePath,
+  releaseUpdateLock,
+} from './updateLock.js'
+import { buildManagedInstallEnv } from './npmExec.js'
 
 const GITHUB_RELEASES_DOC =
   'Native/standalone version checks resolve via GitHub Releases (see githubReleases.ts). npm-based updates use MACRO.PACKAGE_URL.'
@@ -162,113 +165,15 @@ export function shouldSkipVersion(targetVersion: string): boolean {
   return shouldSkip
 }
 
-// Lock file for auto-updater to prevent concurrent updates
-const LOCK_TIMEOUT_MS = 5 * 60 * 1000 // 5 minute timeout for locks
-
 /**
  * Get the path to the lock file
  * This is a function to ensure it's evaluated at runtime after test setup
+ *
+ * Re-exported from updateLock.ts so `rayu update` can take the SAME lock
+ * without importing this module (see updateLock.ts for why that matters).
  */
 export function getLockFilePath(): string {
-  return join(getRayuConfigHomeDir(), '.update.lock')
-}
-
-/**
- * Attempts to acquire a lock for auto-updater
- * @returns true if lock was acquired, false if another process holds the lock
- */
-async function acquireLock(): Promise<boolean> {
-  const fs = getFsImplementation()
-  const lockPath = getLockFilePath()
-
-  // Check for existing lock: 1 stat() on the happy path (fresh lock or ENOENT),
-  // 2 on stale-lock recovery (re-verify staleness immediately before unlink).
-  try {
-    const stats = await fs.stat(lockPath)
-    const age = Date.now() - stats.mtimeMs
-    if (age < LOCK_TIMEOUT_MS) {
-      return false
-    }
-    // Lock is stale, remove it before taking over. Re-verify staleness
-    // immediately before unlinking to close a TOCTOU race: if two processes
-    // both observe the stale lock, A unlinks + writes a fresh lock, then B
-    // would unlink A's fresh lock and both believe they hold it. A fresh
-    // lock has a recent mtime, so re-checking staleness makes B back off.
-    try {
-      const recheck = await fs.stat(lockPath)
-      if (Date.now() - recheck.mtimeMs < LOCK_TIMEOUT_MS) {
-        return false
-      }
-      await fs.unlink(lockPath)
-    } catch (err) {
-      if (!isENOENT(err)) {
-        logError(err as Error)
-        return false
-      }
-    }
-  } catch (err) {
-    if (!isENOENT(err)) {
-      logError(err as Error)
-      return false
-    }
-    // ENOENT: no lock file, proceed to create one
-  }
-
-  // Create lock file atomically with O_EXCL (flag: 'wx'). If another process
-  // wins the race and creates it first, we get EEXIST and back off.
-  // Lazy-mkdir the config dir on ENOENT.
-  try {
-    await writeFile(lockPath, `${process.pid}`, {
-      encoding: 'utf8',
-      flag: 'wx',
-    })
-    return true
-  } catch (err) {
-    const code = getErrnoCode(err)
-    if (code === 'EEXIST') {
-      return false
-    }
-    if (code === 'ENOENT') {
-      try {
-        // fs.mkdir from getFsImplementation() is always recursive:true and
-        // swallows EEXIST internally, so a dir-creation race cannot reach the
-        // catch below — only writeFile's EEXIST (true lock contention) can.
-        await fs.mkdir(getRayuConfigHomeDir())
-        await writeFile(lockPath, `${process.pid}`, {
-          encoding: 'utf8',
-          flag: 'wx',
-        })
-        return true
-      } catch (mkdirErr) {
-        if (getErrnoCode(mkdirErr) === 'EEXIST') {
-          return false
-        }
-        logError(mkdirErr as Error)
-        return false
-      }
-    }
-    logError(err as Error)
-    return false
-  }
-}
-
-/**
- * Releases the update lock if it's held by this process
- */
-async function releaseLock(): Promise<void> {
-  const fs = getFsImplementation()
-  const lockPath = getLockFilePath()
-  try {
-    const lockData = await fs.readFile(lockPath, { encoding: 'utf8' })
-    if (lockData === `${process.pid}`) {
-      await fs.unlink(lockPath)
-    }
-  } catch (err) {
-    if (isENOENT(err)) {
-      return
-    }
-    logError(err as Error)
-  }
+  return getUpdateLockFilePath()
 }
 
 async function getInstallationPrefix(): Promise<string | null> {
@@ -556,7 +461,7 @@ export async function getVersionHistory(limit: number): Promise<string[]> {
 export async function installGlobalPackage(
   specificVersion?: string | null,
 ): Promise<InstallStatus> {
-  if (!(await acquireLock())) {
+  if (!(await acquireUpdateLock())) {
     logError(
       new AutoUpdaterError('Another process is currently installing an update'),
     )
@@ -618,7 +523,13 @@ To fix this issue:
     const installResult = await execFileNoThrowWithCwd(
       packageManager,
       installArgs,
-      { cwd: homedir() },
+      // buildManagedInstallEnv() marks this install as Rayu-driven and
+      // non-interactive. Our own postinstall script writes its welcome banner
+      // straight to /dev/tty (npm pipes lifecycle stdout, so that is the only
+      // way it reaches a real terminal) — which would paint over the live Ink
+      // TUI mid-session, since /dev/tty is the very terminal we are rendering
+      // to. The marker tells it to stay silent for background updates.
+      { cwd: homedir(), env: buildManagedInstallEnv() },
     )
     if (installResult.code !== 0) {
       const error = new AutoUpdaterError(
@@ -637,7 +548,7 @@ To fix this issue:
     return 'success'
   } finally {
     // Ensure we always release the lock
-    await releaseLock()
+    await releaseUpdateLock()
   }
 }
 

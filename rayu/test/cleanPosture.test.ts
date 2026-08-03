@@ -5,7 +5,7 @@ import { join } from 'path'
 // Consolidated "clean posture" invariants — a single place that ties together
 // the de-brand / de-risk guarantees delivered by this work. Individual aspects
 // also have dedicated tests (rebrand, networkGuard, analyticsEventLogging,
-// claudeAiOAuthDisabled, remoteSessionDeClaudeAi); this asserts them together.
+// claudeSubscriptionOAuth, remoteSessionDeClaudeAi); this asserts them together.
 
 const DIST = join(import.meta.dir, '..', 'dist', 'rayu.js')
 
@@ -42,11 +42,25 @@ describe('clean posture', () => {
     }
   })
 
-  test('claude.ai OAuth login is disabled and remote-session host is not claude.ai', async () => {
+  test('the OAuth authorize URL comes from config, and remote-session host is not claude.ai', async () => {
+    // The claude.ai subscription login ("Login with Claude — Pro/Max plan") is
+    // SUPPORTED, reachable from /connect. The posture guarantee is narrower now:
+    // every endpoint/client id must come from constants/oauth.ts (so a FedStart
+    // or local override is honored and nothing is hardcoded at the call site),
+    // and the PKCE verifier must never appear in the URL.
     const { buildAuthUrl } = await import('../src/services/oauth/client.ts')
-    expect(() =>
-      buildAuthUrl({ codeChallenge: 'a', state: 'b', port: 0, isManual: false }),
-    ).toThrow(/not supported in Rayu/i)
+    const { getOauthConfig } = await import('../src/constants/oauth.ts')
+    const cfg = getOauthConfig()
+    const url = buildAuthUrl({
+      codeChallenge: 'a',
+      state: 'b',
+      port: 0,
+      isManual: false,
+      loginWithClaudeAi: true,
+    })
+    expect(url.startsWith(cfg.CLAUDE_AI_AUTHORIZE_URL)).toBe(true)
+    expect(url).toContain(encodeURIComponent(cfg.CLIENT_ID))
+    expect(url).not.toContain('code_verifier')
 
     const prevR = process.env.RAYU_REMOTE_SESSION_URL
     const prevW = process.env.RAYU_WEB_URL

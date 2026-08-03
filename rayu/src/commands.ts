@@ -110,6 +110,7 @@ import files from './commands/files/index.js'
 import branch from './commands/branch/index.js'
 import agents from './commands/agents/index.js'
 import plugin from './commands/plugin/index.js'
+import rayuPlugin from './commands/rayu-plugin/index.js'
 import reloadPlugins from './commands/reload-plugins/index.js'
 import rewind from './commands/rewind/index.js'
 import heapDump from './commands/heapdump/index.js'
@@ -120,6 +121,7 @@ import contactMe from './commands/contactMe/index.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
 import billing from './commands/billing/index.js'
+import topup from './commands/topup/index.js'
 import usage from './commands/usage/index.js'
 import advisor from './commands/advisor.js'
 import { logError } from './utils/log.js'
@@ -242,6 +244,7 @@ const COMMANDS = memoize((): Command[] => [
   installSkill,
   outputStyle,
   plugin,
+  rayuPlugin,
   pr_comments,
   reloadPlugins,
   rename,
@@ -256,6 +259,7 @@ const COMMANDS = memoize((): Command[] => [
   login,
   logout,
   billing,
+  topup,
   usage,
   tag,
   theme,

@@ -101,12 +101,17 @@ export function isConnectSessionActive(chatId: number): boolean {
 
 function providerKeyboard(): InlineKeyboard {
   const rows: InlineKeyboard = []
-  for (let i = 0; i < PROVIDER_PRESETS.length; i += 2) {
+  // Telegram's /connect can only collect a base URL + an API key. Presets that
+  // require an interactive BROWSER sign-in (Login with Claude, Gemini on Vertex)
+  // would dead-end on the "Enter your API key" step, so they are not offered
+  // here — they are reachable from the terminal /connect instead.
+  const presets = PROVIDER_PRESETS.filter(p => !p.requiresOAuth)
+  for (let i = 0; i < presets.length; i += 2) {
     const row = [
-      { text: PROVIDER_PRESETS[i]!.label.split(' (')[0]!, callback_data: `${CB_PROVIDER}${PROVIDER_PRESETS[i]!.id}` },
+      { text: presets[i]!.label.split(' (')[0]!, callback_data: `${CB_PROVIDER}${presets[i]!.id}` },
     ]
-    if (PROVIDER_PRESETS[i + 1]) {
-      row.push({ text: PROVIDER_PRESETS[i + 1]!.label.split(' (')[0]!, callback_data: `${CB_PROVIDER}${PROVIDER_PRESETS[i + 1]!.id}` })
+    if (presets[i + 1]) {
+      row.push({ text: presets[i + 1]!.label.split(' (')[0]!, callback_data: `${CB_PROVIDER}${presets[i + 1]!.id}` })
     }
     rows.push(row)
   }

@@ -46,8 +46,11 @@ describe('provider presets', () => {
     expect(anthropic?.envKeys).toContain('ANTHROPIC_API_KEY')
     expect(anthropic?.defaultModel).toBe('claude-sonnet-4-6')
     expect(anthropic?.smallFastModel).toBe('claude-haiku-4-5-20251001')
-    // Surfaced first in /connect (the flagship native provider).
+    // Surfaced first in /connect (the flagship native provider), with the
+    // claude.ai subscription sign-in right after it — both are kind:'anthropic',
+    // they differ only in how they authenticate.
     expect(PROVIDER_PRESETS[0]?.id).toBe('anthropic')
+    expect(PROVIDER_PRESETS[1]?.id).toBe('claude-subscription')
   })
 
   test('an active anthropic provider routes to the native (non-OpenAI) API path', async () => {

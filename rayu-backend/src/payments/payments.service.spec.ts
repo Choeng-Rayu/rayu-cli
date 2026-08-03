@@ -1,4 +1,8 @@
-import { BadRequestException } from '@nestjs/common'
+import {
+  BadRequestException,
+  NotFoundException,
+  NotImplementedException,
+} from '@nestjs/common'
 import { PaymentsService } from './payments.service'
 import type { PrismaService } from '../prisma/prisma.service'
 import type { BakongService } from './bakong.service'
@@ -15,19 +19,45 @@ interface Mocks {
     plan: { findUnique: Mock }
     payment: { findUnique: Mock; create: Mock; update: Mock; updateMany: Mock; findFirst: Mock }
     creditTopup: { create: Mock; findFirst: Mock; updateMany: Mock }
-    creditLedger: { aggregate: Mock }
+    organizationCreditTopup: { findFirst: Mock; update: Mock; updateMany: Mock }
+    creditLedger: { aggregate: Mock; create: Mock }
     subscription: { findMany: Mock; updateMany: Mock; create: Mock }
+    user: { findUnique: Mock }
     $transaction: Mock
   }
   bakong: { checkPaidByMd5: Mock; generateKhqr: Mock }
   aba: { generateAbaQR: Mock }
   settings: { get: Mock }
-  users: { getActiveSubscription: Mock }
+  users: { getActiveSubscription: Mock; getTopupBalance: Mock }
   promo: {
     validateForPurchase: Mock
     recordPendingRedemption: Mock
     finalizeRedemption: Mock
     cancelPendingRedemption: Mock
+  }
+  stripe: {
+    createCheckoutSession: Mock
+    retrieveSession: Mock
+    expireSession: Mock
+    constructWebhookEvent: Mock
+  }
+}
+
+/**
+ * Turn the card rail on for the duration of one test.
+ *
+ * The rail is env-gated (stripe.config.isStripeEnabled reads process.env on every
+ * call), so a test that wants the enabled path must set the flag and — critically —
+ * clear it again, or it leaks into every test that runs after it and silently
+ * changes which branch of requireStripe() they take. Returns a restore function
+ * rather than relying on afterEach so the enabling is visible at the call site.
+ */
+function withStripeEnabled(): () => void {
+  const previous = process.env.STRIPE_ENABLED
+  process.env.STRIPE_ENABLED = 'true'
+  return () => {
+    if (previous === undefined) delete process.env.STRIPE_ENABLED
+    else process.env.STRIPE_ENABLED = previous
   }
 }
 
@@ -49,14 +79,26 @@ function makeService(): Mocks {
       findFirst: jest.fn(() => Promise.resolve(null)),
       updateMany: jest.fn(() => Promise.resolve({ count: 1 })),
     },
+    // Team credit purchases live in their own table; the individual lifecycle
+    // paths (expire/cancel/renew) touch it so an abandoned team QR cannot stay
+    // 'pending' and be handed back on the next attempt.
+    organizationCreditTopup: {
+      findFirst: jest.fn(() => Promise.resolve(null)),
+      update: jest.fn(() => Promise.resolve({})),
+      updateMany: jest.fn(() => Promise.resolve({ count: 0 })),
+    },
     creditLedger: {
       aggregate: jest.fn(() => Promise.resolve({ _sum: { credits: 0 } })),
+      create: jest.fn(() => Promise.resolve({})),
     },
     subscription: {
       findMany: jest.fn(() => Promise.resolve([])),
       updateMany: jest.fn(() => Promise.resolve({})),
       create: jest.fn(() => Promise.resolve({})),
     },
+    // billingEmail() reads the user's email to prefill Stripe Checkout. Default
+    // to null — the path is best-effort and must never be fatal to a purchase.
+    user: { findUnique: jest.fn(() => Promise.resolve(null)) },
     // ops are already promises (mocked methods run eagerly) → just await them
     $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
   }
@@ -72,6 +114,9 @@ function makeService(): Mocks {
     getActiveSubscription: jest.fn(() =>
       Promise.resolve({ plan: { code: 'free' }, currentPeriodEnd: null }),
     ),
+    // Mirrors the real reader: granted (paid topups) − consumed (ledger
+    // source='topup'), clamped at 0. Tests override to assert the clamp.
+    getTopupBalance: jest.fn(() => Promise.resolve(0)),
   }
   // Promo service mock — no-op by default (tests that exercise promo override).
   const promo = {
@@ -79,6 +124,24 @@ function makeService(): Mocks {
     recordPendingRedemption: jest.fn(() => Promise.resolve()),
     finalizeRedemption: jest.fn(() => Promise.resolve()),
     cancelPendingRedemption: jest.fn(() => Promise.resolve()),
+  }
+  // Card rail mock. Stands in for the SDK wrapper only — it has no business logic
+  // to mock, because every pricing and grant rule lives in PaymentsService. The
+  // URL properties are plain values (not jest.fn) because attachCheckout reads
+  // them as getters on the real service.
+  const stripe = {
+    createCheckoutSession: jest.fn(() =>
+      Promise.resolve({
+        id: 'cs_test_123',
+        url: 'https://checkout.stripe.com/c/pay/cs_test_123',
+        paymentIntentId: 'pi_test_123',
+      }),
+    ),
+    retrieveSession: jest.fn(),
+    expireSession: jest.fn(() => Promise.resolve()),
+    constructWebhookEvent: jest.fn(),
+    successUrl: 'https://rayu.test/billing/success',
+    cancelUrl: 'https://rayu.test/billing/cancel',
   }
 
   const service = new PaymentsService(
@@ -88,8 +151,11 @@ function makeService(): Mocks {
     settings as unknown as AppSettingsService,
     users as unknown as import('../users/users.service').UsersService,
     promo as unknown as import('../promo/promo.service').PromoService,
+    // orgs — individual-billing tests do not need the team service.
+    undefined,
+    stripe as unknown as import('./stripe/stripe.service').StripeService,
   )
-  return { service, prisma, bakong, aba, settings, users, promo } as unknown as Mocks
+  return { service, prisma, bakong, aba, settings, users, promo, stripe } as unknown as Mocks
 }
 
 describe('PaymentsService · KHQR expiry lifecycle', () => {
@@ -137,6 +203,7 @@ describe('PaymentsService · KHQR expiry lifecycle', () => {
 
       expect(res.reused).toBe(true)
       expect(res.paymentId).toBe(99)
+      if (res.method !== 'aba' && res.method !== 'bakong') throw new Error('expected KHQR rail')
       expect(res.qr).toBe('EXISTING_QR')
       expect(m.prisma.payment.create).not.toHaveBeenCalled()
     })
@@ -328,6 +395,7 @@ describe('PaymentsService · KHQR expiry lifecycle', () => {
 
       const res = await m.service.renewPayment(42, 1)
 
+      if (res.method !== 'aba' && res.method !== 'bakong') throw new Error('expected KHQR rail')
       expect(res.qr).toBe('BAKONG_QR')
       expect(res.paymentId).toBe(42) // mock create echoes id 42
       expect(res.expiresAt).toBeInstanceOf(Date)
@@ -588,5 +656,378 @@ describe('PaymentsService · credit top-up pricing', () => {
     await expect(m.service.createTopupKhqr(7, 5000, 'bakong')).rejects.toThrow(
       BadRequestException,
     )
+  })
+})
+
+describe('PaymentsService · getTopupQuote', () => {
+  it('quotes from the LIVE rate — a mid-session admin change re-prices', async () => {
+    const m = makeService()
+    // Default fixture: $1 = 5 credits.
+    const first = await m.service.getTopupQuote(25)
+    expect(first.amountCents).toBe(500)
+    expect(first.rateCreditsPerDollar).toBe(5)
+
+    // Admin halves the credits per dollar → same credits now cost twice as much.
+    m.settings.get.mockResolvedValue({ creditsPerDollar: 2.5, minTopupCents: 100 })
+    const second = await m.service.getTopupQuote(25)
+    expect(second.amountCents).toBe(1000)
+    expect(second.rateCreditsPerDollar).toBe(2.5)
+  })
+
+  it('creates NO payment row — it is a pure quote', async () => {
+    const m = makeService()
+    await m.service.getTopupQuote(25)
+    expect(m.prisma.payment.create).not.toHaveBeenCalled()
+    expect(m.prisma.creditTopup.create).not.toHaveBeenCalled()
+  })
+
+  it('derives minCredits from minTopupCents at the live rate', async () => {
+    const m = makeService()
+    const q = await m.service.getTopupQuote(25)
+    // $1 floor at 5 credits/$ ⇒ 5 credits.
+    expect(q.minCredits).toBe(5)
+    expect(q.minTopupCents).toBe(100)
+
+    // Raise the floor to $2 ⇒ 10 credits at the same rate. Never cached across
+    // a settings change.
+    m.settings.get.mockResolvedValue({ creditsPerDollar: 5, minTopupCents: 200 })
+    expect((await m.service.getTopupQuote(25)).minCredits).toBe(10)
+  })
+
+  it('clamps a below-minimum request up to minCredits and flags it', async () => {
+    const m = makeService()
+    const q = await m.service.getTopupQuote(2)
+    expect(q.meetsMinimum).toBe(false)
+    expect(q.credits).toBe(5)
+    expect(q.amountCents).toBe(100)
+  })
+
+  it('defaults to the cheapest payable purchase when no amount is asked for', async () => {
+    const m = makeService()
+    const q = await m.service.getTopupQuote()
+    expect(q.credits).toBe(5)
+    expect(q.amountCents).toBe(100)
+    expect(q.enabled).toBe(true)
+  })
+
+  it('reports enabled=false (not a $0 price) while the rate is 0', async () => {
+    const m = makeService()
+    m.settings.get.mockResolvedValue({ creditsPerDollar: 0, minTopupCents: 100 })
+    const q = await m.service.getTopupQuote(5000)
+    expect(q.enabled).toBe(false)
+    expect(q.amountCents).toBe(0)
+    expect(q.minCredits).toBe(0)
+    expect(q.rateCreditsPerDollar).toBe(0)
+  })
+
+  it('quotes the same price the create path charges (no rail divergence)', async () => {
+    const m = makeService()
+    const q = await m.service.getTopupQuote(37)
+    const created = await m.service.createTopupPayment(7, 37, 'bakong')
+    expect(created.amountCents).toBe(q.amountCents)
+  })
+})
+
+describe('PaymentsService · createTopupPayment rails', () => {
+  it('prices ABA and Bakong identically — one shared pricing path', async () => {
+    const aba = await makeService().service.createTopupPayment(7, 25, 'aba')
+    const bakong = await makeService().service.createTopupPayment(7, 25, 'bakong')
+    expect(aba.amountCents).toBe(500)
+    expect(bakong.amountCents).toBe(500)
+    expect(aba.method).toBe('aba')
+    expect(bakong.method).toBe('bakong')
+  })
+
+  it('answers 501 for the card rail while Stripe is not enabled', async () => {
+    const m = makeService()
+    delete process.env.STRIPE_ENABLED
+    await expect(m.service.createTopupPayment(7, 25, 'stripe')).rejects.toThrow(
+      NotImplementedException,
+    )
+    // No half-created purchase left behind, and no silent KHQR fallback.
+    expect(m.prisma.payment.create).not.toHaveBeenCalled()
+    expect(m.prisma.creditTopup.create).not.toHaveBeenCalled()
+  })
+
+  it('answers 501 when the config says enabled but the rail provider is missing', async () => {
+    // Construct the service WITHOUT the stripe provider, but WITH the env flag on —
+    // simulates a wiring bug where StripeService was not registered in the module.
+    const m = makeService()
+    const restore = withStripeEnabled()
+    try {
+      const broken = new PaymentsService(
+        m.prisma as unknown as PrismaService,
+        m.bakong as unknown as BakongService,
+        m.aba as unknown as AbaService,
+        m.settings as unknown as AppSettingsService,
+        m.users as unknown as import('../users/users.service').UsersService,
+        m.promo as unknown as import('../promo/promo.service').PromoService,
+      )
+      await expect(broken.createTopupPayment(7, 25, 'stripe')).rejects.toThrow(
+        NotImplementedException,
+      )
+    } finally {
+      restore()
+    }
+  })
+
+  it('refuses below-minimum amount before ever calling the Stripe SDK', async () => {
+    const m = makeService()
+    const restore = withStripeEnabled()
+    try {
+      m.settings.get.mockResolvedValue({ creditsPerDollar: 5, minTopupCents: 200 })
+      await expect(m.service.createTopupPayment(7, 1, 'stripe')).rejects.toThrow(
+        BadRequestException,
+      )
+      // Fail-before-touch: the Stripe SDK is NEVER called for a price-floor
+      // rejection — not for a Checkout Session and not for a signature check.
+      expect(m.stripe.createCheckoutSession).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('returns a checkoutUrl + pending rows when the card rail is enabled', async () => {
+    const m = makeService()
+    const restore = withStripeEnabled()
+    try {
+      const result = await m.service.createTopupPayment(7, 25, 'stripe')
+      expect(result.method).toBe('stripe')
+      if (result.method !== 'stripe') throw new Error('expected stripe rail')
+      expect(result.checkoutUrl).toBe('https://checkout.stripe.com/c/pay/cs_test_123')
+      expect(result.reused).toBe(false)
+      // Both rows created.
+      expect(m.prisma.payment.create).toHaveBeenCalled()
+      expect(m.prisma.creditTopup.create).toHaveBeenCalled()
+      // Checkout was attached (session stamped onto the payment row).
+      expect(m.prisma.payment.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            stripeCheckoutSessionId: expect.any(String),
+            stripeCheckoutUrl: expect.any(String),
+            stripePaymentIntentId: expect.any(String),
+          }),
+        }),
+      )
+    } finally {
+      restore()
+    }
+  })
+
+  it('reuses a still-valid pending session on refresh (same credits + method)', async () => {
+    const m = makeService()
+    const restore = withStripeEnabled()
+    try {
+      // First call creates everything.
+      const first = await m.service.createTopupPayment(7, 25, 'stripe')
+      expect(first.reused).toBe(false)
+
+      // Simulate the first payment row existing with a stored URL — the state a
+      // second attempt (refresh) sees.
+      m.prisma.creditTopup.findFirst.mockResolvedValue({
+        id: 99,
+        paymentId: 42,
+        userId: 7,
+        credits: 25,
+        status: 'pending',
+      })
+      m.prisma.payment.findFirst.mockResolvedValue({
+        id: 42,
+        provider: 'stripe',
+        status: 'pending',
+        amountCents: 500,
+        currency: 'USD',
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // still valid
+        stripeCheckoutUrl: 'https://checkout.stripe.com/c/pay/existing',
+      })
+
+      const second = await m.service.createTopupPayment(7, 25, 'stripe')
+      expect(second.reused).toBe(true)
+      if (second.method !== 'stripe') throw new Error('expected stripe rail')
+      expect(second.checkoutUrl).toBe('https://checkout.stripe.com/c/pay/existing')
+      // No new rows and no second session.
+      expect(m.prisma.payment.create).toHaveBeenCalledTimes(1)
+      expect(m.stripe.createCheckoutSession).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+    }
+  })
+
+  it('never reuses a row whose checkout URL is NULL (failed session creation)', async () => {
+    const m = makeService()
+    const restore = withStripeEnabled()
+    try {
+      m.prisma.creditTopup.findFirst.mockResolvedValue({
+        id: 99,
+        paymentId: 42,
+        userId: 7,
+        credits: 25,
+        status: 'pending',
+      })
+      // The payment row exists but the session stamp never landed — the first
+      // attachCheckout crashed before the UPDATE, so the URL column is NULL.
+      m.prisma.payment.findFirst.mockResolvedValue({
+        id: 42,
+        provider: 'stripe',
+        status: 'pending',
+        amountCents: 500,
+        currency: 'USD',
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        stripeCheckoutUrl: null, // ← orphan row
+      })
+
+      // Reset call counts to isolate the reuse attempt.
+      m.prisma.payment.create.mockClear()
+      m.stripe.createCheckoutSession.mockClear()
+
+      await m.service.createTopupPayment(7, 25, 'stripe')
+      // A new payment row and a new session were created — the orphan was ignored.
+      expect(m.prisma.payment.create).toHaveBeenCalledTimes(1)
+      expect(m.stripe.createCheckoutSession).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+    }
+  })
+
+  it('rejects every rail while the rate is 0', async () => {
+    for (const method of ['aba', 'bakong', 'stripe'] as const) {
+      const m = makeService()
+      m.settings.get.mockResolvedValue({ creditsPerDollar: 0, minTopupCents: 100 })
+      await expect(m.service.createTopupPayment(7, 5000, method)).rejects.toThrow(
+        BadRequestException,
+      )
+    }
+  })
+})
+
+describe('PaymentsService · top-up grant (activatePaid)', () => {
+  /** A paid-at-the-gateway Bakong top-up payment, reached via checkStatus. */
+  function pendingTopupPayment(m: Mocks): void {
+    m.prisma.payment.findUnique.mockResolvedValue({
+      id: 42,
+      userId: 7,
+      provider: 'bakong',
+      md5: 'md5-x',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + THIRTY_MIN),
+      plan: null,
+      planId: null,
+      promoCodeId: null,
+    })
+    m.bakong.checkPaidByMd5.mockResolvedValue({ paid: true, ref: 'TRX1' })
+    m.prisma.creditTopup.findFirst.mockResolvedValue({
+      id: 9,
+      userId: 7,
+      credits: 25,
+      status: 'pending',
+      paymentId: 42,
+    })
+  }
+
+  it('grants by flipping the topup row to paid — the balance both readers sum', async () => {
+    const m = makeService()
+    pendingTopupPayment(m)
+
+    const res = await m.service.checkStatus(42, 7)
+
+    expect(res).toMatchObject({ status: 'paid', activated: true, credits: 25 })
+    // The grant is the pending → paid flip, guarded on status so it can only
+    // happen once.
+    expect(m.prisma.creditTopup.updateMany).toHaveBeenCalledWith({
+      where: { id: 9, status: 'pending' },
+      data: { status: 'paid' },
+    })
+    // Deliberately NO positive ledger row: credit_ledger source='topup' means
+    // CONSUMPTION to both balance readers, so writing one here would cancel the
+    // grant it was meant to record.
+    expect(m.prisma.creditLedger.create).not.toHaveBeenCalled()
+  })
+
+  it('grants exactly once under concurrent activation (updateMany count guard)', async () => {
+    const m = makeService()
+    pendingTopupPayment(m)
+    // Simulate the race: the first pending → paid flip wins (count 1), the
+    // second finds nothing left to flip (count 0).
+    let calls = 0
+    m.prisma.payment.updateMany.mockImplementation(() =>
+      Promise.resolve({ count: ++calls === 1 ? 1 : 0 }),
+    )
+
+    const [first, second] = await Promise.all([
+      m.service.checkStatus(42, 7),
+      m.service.checkStatus(42, 7),
+    ])
+
+    // Both callers observe the paid state...
+    expect(first).toMatchObject({ status: 'paid', activated: true })
+    expect(second).toMatchObject({ status: 'paid', activated: true })
+    // ...but only one of them performed the grant.
+    const granted = [first, second].filter(
+      (r) => (r as { granted?: boolean }).granted === true,
+    )
+    expect(granted).toHaveLength(1)
+  })
+})
+
+describe('PaymentsService · refund clawback', () => {
+  function paidTopup(m: Mocks): void {
+    m.prisma.creditTopup.findFirst.mockResolvedValue({
+      id: 9,
+      userId: 7,
+      credits: 25,
+      status: 'paid',
+      paymentId: 42,
+    })
+  }
+
+  it('claws back by dropping the topup out of paid, and audits it as source=refund', async () => {
+    const m = makeService()
+    paidTopup(m)
+
+    const res = await m.service.refundTopup(42, 'REFUND-1')
+
+    expect(res.clawedBack).toBe(true)
+    // The clawback is visible to the gateway through the SAME column the grant
+    // used: a non-'paid' row drops out of the granted SUM.
+    expect(m.prisma.creditTopup.updateMany).toHaveBeenCalledWith({
+      where: { id: 9, status: 'paid' },
+      data: { status: 'refunded' },
+    })
+    // Audit row is source='refund', NOT 'topup' — 'topup' would be counted as
+    // consumption and subtract the credits a second time.
+    const ledgerArg = m.prisma.creditLedger.create.mock.calls[0][0] as {
+      data: { source: string; credits: number; userId: number }
+    }
+    expect(ledgerArg.data).toMatchObject({ source: 'refund', credits: 25, userId: 7 })
+  })
+
+  it('clamps the balance at 0 instead of going negative when the credits were already spent', async () => {
+    const m = makeService()
+    paidTopup(m)
+    // The reader clamps; assert the clawback reports the clamped balance.
+    m.users.getTopupBalance.mockResolvedValue(0)
+
+    const res = await m.service.refundTopup(42)
+
+    expect(res.topupBalance).toBe(0)
+    expect(res.topupBalance).toBeGreaterThanOrEqual(0)
+  })
+
+  it('is idempotent: a replayed refund event writes no second audit row', async () => {
+    const m = makeService()
+    paidTopup(m)
+    // Already refunded → nothing left in 'paid' to flip.
+    m.prisma.creditTopup.updateMany.mockResolvedValue({ count: 0 })
+
+    const res = await m.service.refundTopup(42)
+
+    expect(res.clawedBack).toBe(false)
+    expect(m.prisma.creditLedger.create).not.toHaveBeenCalled()
+  })
+
+  it('rejects a refund for a payment that is not a top-up', async () => {
+    const m = makeService()
+    m.prisma.creditTopup.findFirst.mockResolvedValue(null)
+    await expect(m.service.refundTopup(42)).rejects.toThrow(NotFoundException)
   })
 })

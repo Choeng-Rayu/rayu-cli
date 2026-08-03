@@ -35,6 +35,7 @@ import {
   APIError as AnthropicAPIError,
 } from '@anthropic-ai/sdk/index.js'
 import { reportIssue } from 'src/utils/rayuDiagnostics.js'
+import { providerAcceptsImages } from 'src/utils/model/providerCapabilities.js'
 import {
   blocksToText,
   imageBlockToUrl,
@@ -122,9 +123,13 @@ export function translateInput(params: BetaParams): AnyObj[] {
       const parts: AnyObj[] = []
       const text = blocksToText(content)
       if (text) parts.push({ type: 'input_text', text })
-      for (const b of blocks) {
-        const url = imageBlockToUrl(b)
-        if (url) parts.push({ type: 'input_image', image_url: url, detail: 'auto' })
+      // A user-defined provider may declare its endpoint text-only; sending image
+      // parts there is a 400, so drop them rather than fail the turn.
+      if (providerAcceptsImages(params.model)) {
+        for (const b of blocks) {
+          const url = imageBlockToUrl(b)
+          if (url) parts.push({ type: 'input_image', image_url: url, detail: 'auto' })
+        }
       }
       if (parts.length) {
         input.push({ type: 'message', role: 'user', content: parts })

@@ -8,13 +8,24 @@
 // Fallback: fal.ai (FAL_KEY)
 // SECURITY: keys sent only to their fixed hosts; never logged.
 import { getRayuApiKey } from '../../utils/rayuConfig.js'
+import { ensureMediaModels } from '../../services/rayuAuth/mediaModels.js'
 import {
+  type VideoModel,
   type VideoParams,
+  NVIDIA_FAL_VIDEO_BACKENDS,
   NVIDIA_GENAI_HOST,
   resolveVideoModel,
 } from './models.js'
 
-export type GeneratedVideo = { buffer: Buffer; mediaType: string }
+/** A generated video plus the model id that produced it. */
+export type GeneratedVideo = {
+  buffer: Buffer
+  mediaType: string
+  modelId: string
+}
+
+/** What a per-backend helper returns; the public entry point adds the model id. */
+type VideoBytes = { buffer: Buffer; mediaType: string }
 
 const NVCF_PEXEC_HOST = process.env.NVCF_PEXEC_HOST || 'https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions'
 const NVCF_STATUS_HOST = process.env.NVCF_STATUS_HOST || 'https://api.nvcf.nvidia.com/v2/nvcf/pexec/status'
@@ -78,7 +89,7 @@ async function generateVideoNvcf(opts: {
   apiKey: string
   signal?: AbortSignal
   _pollIntervalMs?: number
-}): Promise<GeneratedVideo> {
+}): Promise<VideoBytes> {
   const res = await fetch(`${NVCF_PEXEC_HOST}/${opts.nvcfFunctionId}`, {
     method: 'POST',
     headers: {
@@ -167,7 +178,7 @@ async function generateVideoCosmosLegacy(opts: {
   apiKey: string
   signal?: AbortSignal
   _pollIntervalMs?: number
-}): Promise<GeneratedVideo> {
+}): Promise<VideoBytes> {
   const res = await fetch(`${NVIDIA_COSMOS_HOST}/${opts.modelId}`, {
     method: 'POST',
     headers: {
@@ -216,7 +227,7 @@ async function generateVideoSvd(opts: {
   apiKey: string
   signal?: AbortSignal
   _pollIntervalMs?: number
-}): Promise<GeneratedVideo> {
+}): Promise<VideoBytes> {
   const res = await fetch(`${NVIDIA_GENAI_HOST}/${opts.modelId}`, {
     method: 'POST',
     headers: {
@@ -303,7 +314,7 @@ async function generateVideoFal(opts: {
   apiKey: string
   signal?: AbortSignal
   _pollIntervalMs?: number
-}): Promise<GeneratedVideo> {
+}): Promise<VideoBytes> {
   const job = await falSubmit(opts.modelId, opts.body, opts.apiKey, opts.signal)
   const result = (await falPoll(
     job.status_url,
@@ -329,43 +340,122 @@ export async function generateVideo(opts: {
   signal?: AbortSignal
   /** Override poll interval ms. Pass 0 in tests to skip the wait. */
   _pollIntervalMs?: number
+  /**
+   * Pre-resolved model, when the caller already picked one from the catalog.
+   * Omit it and the client fetches the catalog itself (cached, so this is a
+   * memory read after the first call).
+   */
+  model?: VideoModel
 }): Promise<GeneratedVideo> {
-  const model = resolveVideoModel(opts.modelId, !!opts.isImage2Video)
+  // Server-owned catalog: which video models exist, their backend, NVCF function
+  // id, and per-model request defaults come from the Rayu provider.
+  //
+  // Resolution is restricted to the backends THIS client can POST to, in
+  // credential order. Without that restriction a catalog whose default video
+  // model is Vertex/Veo would resolve here and mis-route, and a user holding only
+  // a fal key would be told "NVIDIA API key not configured" for a model they
+  // never chose.
+  const model =
+    opts.model ??
+    resolveVideoModel(
+      (await ensureMediaModels()).video,
+      opts.modelId,
+      !!opts.isImage2Video,
+      { backends: servableBackends(opts) },
+    )
   const body = model.buildBody(opts.params)
 
   if (model.backend === 'nvcf') {
     const apiKey = opts.apiKey ?? getNvidiaApiKey()
     if (!apiKey) throw new Error('NVIDIA API key not configured. Set NVIDIA_API_KEY or run /connect.')
 
-    // New NVCF models (cosmos-predict1-5b, transfer, cosmos3-nano) use function ID
+    // NVCF models with a function id go through the pexec host…
     if (model.nvcfFunctionId) {
-      return generateVideoNvcf({
-        nvcfFunctionId: model.nvcfFunctionId,
+      return {
+        ...(await generateVideoNvcf({
+          nvcfFunctionId: model.nvcfFunctionId,
+          body,
+          apiKey,
+          signal: opts.signal,
+          _pollIntervalMs: opts._pollIntervalMs,
+        })),
+        modelId: model.id,
+      }
+    }
+
+    // …and those without one (legacy cosmos) through ai.api.nvidia.com/v1/cosmos.
+    return {
+      ...(await generateVideoCosmosLegacy({
+        modelId: model.id,
         body,
         apiKey,
         signal: opts.signal,
         _pollIntervalMs: opts._pollIntervalMs,
-      })
-    }
-
-    // Legacy cosmos-1.0-7b uses the ai.api.nvidia.com/v1/cosmos host
-    return generateVideoCosmosLegacy({
+      })),
       modelId: model.id,
-      body,
-      apiKey,
-      signal: opts.signal,
-      _pollIntervalMs: opts._pollIntervalMs,
-    })
+    }
   }
 
   if (model.backend === 'nvidia-svd') {
     const apiKey = opts.apiKey ?? getNvidiaApiKey()
     if (!apiKey) throw new Error('NVIDIA API key not configured. Set NVIDIA_API_KEY or run /connect.')
-    return generateVideoSvd({ modelId: model.id, body, apiKey, signal: opts.signal, _pollIntervalMs: opts._pollIntervalMs })
+    return {
+      ...(await generateVideoSvd({
+        modelId: model.id,
+        body,
+        apiKey,
+        signal: opts.signal,
+        _pollIntervalMs: opts._pollIntervalMs,
+      })),
+      modelId: model.id,
+    }
   }
 
-  // fal.ai fallback
-  const apiKey = opts.apiKey ?? getFalApiKey()
-  if (!apiKey) throw new Error('fal.ai API key not configured. Set FAL_KEY or run /connect.')
-  return generateVideoFal({ modelId: model.id, body, apiKey, signal: opts.signal, _pollIntervalMs: opts._pollIntervalMs })
+  if (model.backend === 'fal') {
+    const apiKey = opts.apiKey ?? getFalApiKey()
+    if (!apiKey) throw new Error('fal.ai API key not configured. Set FAL_KEY or run /connect.')
+    return {
+      ...(await generateVideoFal({
+        modelId: model.id,
+        body,
+        apiKey,
+        signal: opts.signal,
+        _pollIntervalMs: opts._pollIntervalMs,
+      })),
+      modelId: model.id,
+    }
+  }
+
+  // Every backend this client serves is handled above, so an unhandled value
+  // means the catalog grew a backend the CLI does not know yet.
+  throw new Error(
+    `Video model "${model.id}" uses the unsupported backend "${model.backend}". ` +
+      `Update the CLI (npm i -g @rayu-dev/rayu-cli) or pick another model.`,
+  )
+}
+
+/**
+ * Backends this client may resolve a DEFAULT from, most preferred first.
+ *
+ * Always a subset of what it can POST to (never Vertex — Veo goes through
+ * vertexVideoClient), and narrowed to the backends the user actually holds a key
+ * for. Both halves matter:
+ *   • without the Vertex exclusion, a catalog whose default video model is Veo
+ *     would mis-route here;
+ *   • without the credential narrowing, a fal-only user's default would be an
+ *     NVIDIA model and they would see "NVIDIA API key not configured" for a model
+ *     they never picked, instead of an accurate "no fal model configured".
+ */
+function servableBackends(opts: { apiKey?: string }): string[] {
+  // An explicitly passed key belongs to whichever backend the caller intends, so
+  // it must not narrow anything; keep the full servable set.
+  if (opts.apiKey) return NVIDIA_FAL_VIDEO_BACKENDS
+  const hasNvidia = getNvidiaApiKey() != null
+  const hasFal = getFalApiKey() != null
+  if (hasNvidia && hasFal) return NVIDIA_FAL_VIDEO_BACKENDS
+  if (hasNvidia) return ['nvcf', 'nvidia-svd']
+  if (hasFal) return ['fal']
+  // No key at all: the tool's isEnabled() gate normally prevents this. Keep the
+  // full set so the per-backend key check below produces the familiar error.
+  return NVIDIA_FAL_VIDEO_BACKENDS
 }

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
 	"github.com/choeng-rayu/rayu-gateway/internal/providercfg"
@@ -301,6 +302,101 @@ func TestProviderTestReportsThatItUsedASkippedKey(t *testing.T) {
 	}
 }
 
+// An admin pasting a full URL with query parameters is a common onboarding mistake.
+// The route validator refuses it outright, so nothing is ever sent — and the test
+// must report that as a configuration error rather than attempting a call.
+func TestProviderTestReportsAnInvalidEndpointPath(t *testing.T) {
+	srv := httptest.NewServer(htmlUpstream())
+	defer srv.Close()
+
+	prov := store.Provider{
+		ID: provIDLongCat, Name: "agent-router", Label: "Agent Router",
+		Format: providercfg.FormatAnthropicMessages, BaseURL: srv.URL,
+		EndpointPath: "/v1/messages?beta=true", AuthScheme: providercfg.AuthBearer, Enabled: true,
+	}
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 900, Status: "active",
+			Plan:          store.Plan{Code: "pro", Name: "Pro"},
+			AllowedModels: []store.HostedModel{hostedModel("claude-opus-4-7", prov, "m", 1)},
+		},
+		settings:     store.AppSettings{BaselineCreditsPer1M: 1},
+		providerKeys: map[int64][]providerkeys.Key{provIDLongCat: liveKey()},
+	}
+	h, _ := chatHarness(t, fe)
+
+	code, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"claude-opus-4-7"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 with a classification", code)
+	}
+	if res.Classification != testBadBaseURL {
+		t.Fatalf("classification=%q, want %q", res.Classification, testBadBaseURL)
+	}
+	// Nothing was attempted, so only "not reachable" is known.
+	assertCheck(t, "reachable", res.Checks.Reachable, boolPtr(false))
+	if !strings.Contains(res.Message, "path only") {
+		t.Errorf("message does not name the problem: %q", res.Message)
+	}
+}
+
+// A credential embedded in the URL path (some providers document this) must not be
+// echoed back in the human-facing text.
+func TestProviderTestRedactsASecretEmbeddedInThePath(t *testing.T) {
+	const secret = "sk-live-embedded-secret"
+	srv := httptest.NewServer(htmlUpstream())
+	defer srv.Close()
+
+	prov := store.Provider{
+		ID: provIDLongCat, Name: "agent-router", Label: "Agent Router",
+		Format: providercfg.FormatAnthropicMessages, BaseURL: srv.URL,
+		EndpointPath: "/relay/" + secret + "/v1/messages",
+		AuthScheme:   providercfg.AuthBearer, Enabled: true,
+	}
+	fe := &fakeEnt{
+		ent: entitlements.Entitlement{
+			UserID: 900, Status: "active",
+			Plan:          store.Plan{Code: "pro", Name: "Pro"},
+			AllowedModels: []store.HostedModel{hostedModel("claude-opus-4-7", prov, "m", 1)},
+		},
+		settings: store.AppSettings{BaselineCreditsPer1M: 1},
+		providerKeys: map[int64][]providerkeys.Key{provIDLongCat: {
+			{ID: 31, Secret: secret, Masked: "sk-li…(23)", Enabled: true, Status: providerkeys.StatusActive},
+		}},
+	}
+	h, _ := chatHarness(t, fe)
+
+	_, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"claude-opus-4-7"}`)
+	if strings.Contains(res.Message, secret) {
+		t.Errorf("the key leaked into the message: %q", res.Message)
+	}
+	if strings.Contains(res.Suggestion, secret) {
+		t.Errorf("the key leaked into the suggestion: %q", res.Suggestion)
+	}
+}
+
+// Even when the ONLY key is one the admin disabled, the test must still run: the
+// alternative is the dead end this fallback exists to remove. It just has to say
+// clearly which key it used and why that key is not serving traffic.
+func TestProviderTestUsesADisabledKeyWhenItIsTheOnlyOne(t *testing.T) {
+	h, _, done := providerAt(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[{"type":"text","text":"pong"}]}`)
+	}, providercfg.FormatAnthropicMessages, "", []providerkeys.Key{
+		{ID: 7, Secret: "sk-off", Masked: "sk-of…", Priority: 0, Enabled: false, Status: providerkeys.StatusActive},
+	})
+	defer done()
+
+	code, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"claude-opus-4-7"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", code)
+	}
+	if res.KeyID != 7 || !res.OK {
+		t.Fatalf("keyId=%d ok=%v, want key 7 tested and passing", res.KeyID, res.OK)
+	}
+	if !strings.Contains(strings.ToLower(res.Suggestion), "disabled") {
+		t.Errorf("suggestion does not say the key is disabled: %q", res.Suggestion)
+	}
+}
+
 // A provider with NO keys at all is still an error — there is nothing to test with.
 func TestProviderTestStillRefusesWhenThereAreNoKeys(t *testing.T) {
 	h, _, done := providerAt(t, htmlUpstream(),
@@ -318,5 +414,53 @@ func TestProviderTestStillRefusesWhenThereAreNoKeys(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "add") {
 		t.Errorf("message should tell the admin to add a key: %s", rec.Body.String())
+	}
+}
+
+// When several keys are all out of rotation, the fallback must pick the LEAST bad —
+// a key that is merely cooling down is far more likely to be valid than one an admin
+// deliberately switched off, and silently testing a disabled key would be a
+// surprising thing to do with an explicit instruction.
+func TestProviderTestFallbackPrefersTheLeastBadKey(t *testing.T) {
+	h, fe, done := providerAt(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[{"type":"text","text":"pong"}]}`)
+	}, providercfg.FormatAnthropicMessages, "", []providerkeys.Key{
+		// Priority order puts the disabled one first, so a naive "take the first"
+		// fallback would choose exactly the key the admin turned off.
+		{ID: 1, Secret: "sk-disabled", Masked: "sk-di…", Priority: 0, Enabled: false, Status: providerkeys.StatusActive},
+		{ID: 2, Secret: "sk-invalid", Masked: "sk-in…", Priority: 1, Enabled: true, Status: providerkeys.StatusInvalid},
+		{ID: 3, Secret: "sk-cooling", Masked: "sk-co…", Priority: 2, Enabled: true, Status: providerkeys.StatusActive},
+	})
+	defer done()
+	// Put #3 on cooldown so nothing is in rotation at all.
+	fe.Keys().MarkRateLimited(provIDLongCat, 3, time.Minute)
+	if n := len(fe.Keys().Pick(provIDLongCat)); n != 0 {
+		t.Fatalf("precondition: usable keys=%d, want 0", n)
+	}
+
+	_, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"claude-opus-4-7"}`)
+	if res.KeyID != 3 {
+		t.Fatalf("used key #%d, want #3 (cooling down beats invalid, which beats disabled)", res.KeyID)
+	}
+	if !strings.Contains(strings.ToLower(res.Suggestion), "cooling down") {
+		t.Errorf("suggestion does not explain the key's state: %q", res.Suggestion)
+	}
+}
+
+// An explicit key id always wins, even over a healthier one — re-testing the key an
+// admin is looking at is the whole point of the per-key button.
+func TestProviderTestHonoursAnExplicitKeyOverTheFallback(t *testing.T) {
+	h, fe, done := providerAt(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[]}`)
+	}, providercfg.FormatAnthropicMessages, "", []providerkeys.Key{
+		{ID: 1, Secret: "sk-a", Masked: "sk-a…", Priority: 0, Enabled: true, Status: providerkeys.StatusActive},
+		{ID: 2, Secret: "sk-b", Masked: "sk-b…", Priority: 1, Enabled: false, Status: providerkeys.StatusInvalid},
+	})
+	defer done()
+	_ = fe
+
+	_, res := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"claude-opus-4-7","apiKeyId":2}`)
+	if res.KeyID != 2 {
+		t.Fatalf("used key #%d, want the requested #2", res.KeyID)
 	}
 }

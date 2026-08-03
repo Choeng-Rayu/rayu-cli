@@ -135,12 +135,18 @@ func (b *Bus) Subscribe(ctx context.Context, onEvent func(Event)) {
 }
 
 // newNodeID is a short random id for this process. Random rather than hostname
-// based so two replicas on one host (or a restarted container reusing a name)
-// never share an id and start ignoring each other's messages.
+// based so two replicas on one host (or a restarted container reusing a name) never
+// share an id and start ignoring each other's messages.
+//
+// On the (essentially impossible) failure of the system RNG it returns "", which
+// DISABLES self-filtering rather than guessing: acting on one's own message costs a
+// redundant refresh, whereas two replicas sharing a fallback id would silently ignore
+// each other's — the exact failure this id exists to prevent.
 func newNodeID() string {
 	var b [6]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "unknown"
+		log.Printf("configbus: could not generate a node id (%v); self-filtering disabled", err)
+		return ""
 	}
 	return hex.EncodeToString(b[:])
 }

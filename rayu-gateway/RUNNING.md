@@ -128,6 +128,9 @@ RAYU_JWT_SECRET=<same value as rayu-backend/.env>
 DATABASE_URL=mysql://rayu:rayu_app_local@127.0.0.1:3306/rayu
 REDIS_URL=redis://localhost:6379
 DEEPSEEK_API_KEY=sk-...your-rotated-key...
+# Only needed if you are working on Rayu Studio (rayu-web /studio), which calls
+# this gateway from the browser. The CLI never preflights, so it does not care.
+GATEWAY_CORS_ORIGINS=http://localhost:3000
 ```
 
 **2) Make sure MySQL + Redis are running (Docker):**

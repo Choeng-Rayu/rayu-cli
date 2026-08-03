@@ -11,6 +11,10 @@ import {
   scheduleWindowsDeferredInstall,
 } from 'src/utils/npmExec.js'
 import { writeToStdout } from 'src/utils/process.js'
+import {
+  acquireUpdateLock,
+  releaseUpdateLock,
+} from 'src/utils/updateLock.js'
 
 export async function update() {
   writeToStdout(`Current version: ${MACRO.VERSION}\n`)
@@ -74,11 +78,41 @@ async function updateNpmPackage() {
   const installSpec =
     buildPinnedSpec(MACRO.PACKAGE_URL, latestVersion) ??
     `${MACRO.PACKAGE_URL}@latest`
+
+  // Serialize against the in-session auto-updater, which installs the same
+  // package into the same global prefix from any Rayu window that happens to be
+  // open. npm does no cross-process locking for global installs, so two
+  // concurrent installs interleave over one directory tree and can leave a
+  // `rayu` launcher pointing at a half-written package.
+  if (!(await acquireUpdateLock())) {
+    process.stderr.write(
+      chalk.yellow('\nAnother Rayu update is already in progress\n'),
+    )
+    process.stderr.write(
+      'A running Rayu session may be auto-updating in the background.\n' +
+        'Wait a few seconds and run `rayu update` again.\n',
+    )
+    process.exit(1)
+    return
+  }
+
+  let installError: unknown = null
   try {
     execNpmSync(['install', '-g', installSpec, '--prefer-online'], {
       stdio: 'inherit',
     })
   } catch (err) {
+    installError = err
+  } finally {
+    // Release explicitly here rather than relying on this finally to cover the
+    // exit paths below: process.exit() terminates immediately without
+    // unwinding, and a leaked lock file would block every update on this
+    // machine until it ages out of the staleness window.
+    await releaseUpdateLock()
+  }
+
+  if (installError) {
+    const err = installError
     process.stderr.write(chalk.red('\nFailed to install update\n'))
     const detail = describeNpmError(err)
     if (detail) process.stderr.write(`${detail}\n`)
@@ -87,6 +121,13 @@ async function updateNpmPackage() {
     // because the shell that started us is still holding it open. Nothing we
     // do in-process can release that handle, so hand the install to a detached
     // helper that waits for us to exit first. See isLikelyWindowsFileLock().
+    //
+    // Note: that helper necessarily runs AFTER we exit, so it runs OUTSIDE the
+    // update lock (we released it above, and a lock we no longer own cannot be
+    // handed to another process). This is a deliberate trade-off: the helper is
+    // a last-resort recovery for an install that already failed, and the
+    // alternative — leaving a lock behind for a process we no longer control —
+    // would block every future update until it aged out.
     if (IS_WINDOWS && isLikelyWindowsFileLock(err)) {
       if (scheduleWindowsDeferredInstall(installSpec)) {
         process.stderr.write(

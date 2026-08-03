@@ -8,6 +8,17 @@ export interface VerifiedOAuthProfile {
   displayName: string | null
   avatarUrl: string | null
   emailVerified: boolean
+  /**
+   * Google Workspace HOSTED DOMAIN (`hd`) of the signer, e.g. "company.com".
+   * Absent/null for personal Google accounts (gmail.com and friends never carry
+   * it) and for every non-Google provider.
+   *
+   * This single claim is the whole of Rayu's team SSO: it comes from inside the
+   * Google-signed ID token, verified server-side below, so it cannot be spoofed
+   * by the client — which is why an org can safely auto-adopt anyone who signs
+   * in with its company domain, with no SAML, no OIDC client, and no IdP vendor.
+   */
+  hostedDomain?: string | null
 }
 
 interface GoogleTokenInfo {
@@ -18,6 +29,8 @@ interface GoogleTokenInfo {
   picture?: string
   aud?: string
   exp?: string
+  /** Workspace hosted domain; present only for Google Workspace accounts. */
+  hd?: string
 }
 
 /**
@@ -68,6 +81,10 @@ export class OAuthService {
       displayName: data.name ?? null,
       avatarUrl: data.picture ?? null,
       emailVerified: data.email_verified === 'true',
+      // Surfaced, not acted on: deciding what a hosted domain MEANS (which team
+      // adopts the signer) is the auth/organizations layer's job, so this service
+      // stays a pure token verifier with no database dependency.
+      hostedDomain: data.hd ? data.hd.trim().toLowerCase() : null,
     }
   }
 }

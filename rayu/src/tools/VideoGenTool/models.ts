@@ -1,10 +1,26 @@
-// Registry of NVIDIA-hosted video generation models (Physical AI catalog).
-// All use the NVCF pexec host: api.nvcf.nvidia.com/v2/nvcf/pexec/functions/{id}
-// Auth: Bearer $NVIDIA_API_KEY (free from build.nvidia.com, 20 requests/model)
-// Async pattern: HTTP 202 + NVCF-REQID header → poll pexec/status/{reqId}
-// SECURITY: only model params + prompt sent; key never logged.
+// Per-family request builders for video generation, plus model resolution
+// against the SERVER-OWNED catalog.
+//
+// There is deliberately no model registry in this file. Which video models exist,
+// their backend, their NVCF function id, how long a generation takes, and their
+// per-model request defaults all come from the Rayu provider at runtime
+// (services/rayuAuth/mediaModels.ts → gateway GET /v1/models?media=video), so
+// adding a model needs a backend catalog row and no CLI release.
+//
+// What DOES stay here is the request SHAPE per family — Triton command strings
+// for Cosmos, the SVD data-URI body, fal.ai's queue payload — because that is
+// third-party API mechanics, not catalog data.
+//
+// Async pattern (NVCF): HTTP 202 + NVCF-REQID header → poll pexec/status/{reqId}.
+// SECURITY: only model params + prompt are sent; the key is never logged.
+import {
+  getCachedMediaModels,
+  type MediaModelEntry,
+  type VideoCapability,
+} from '../../services/rayuAuth/mediaModels.js'
 
-export type VideoCapability = 'text2video' | 'image2video'
+export type { VideoCapability }
+/** Upstream that serves a video model (mirrors the catalog's `backend`). */
 export type VideoBackend = 'nvcf' | 'nvidia-svd' | 'fal' | 'vertex'
 
 export type VideoParams = {
@@ -23,211 +39,307 @@ export type VideoParams = {
   input_image_index?: number
 }
 
-export type VideoModel = {
-  id: string
-  backend: VideoBackend
-  capability: VideoCapability
-  /** NVCF function UUID (for nvcf backend). */
-  nvcfFunctionId?: string
-  /** Rough seconds a generation takes, for the user-facing wait message. */
-  estimatedSeconds: number
+/** Per-model request defaults from the catalog (`defaultParams`). */
+export type VideoDefaults = Record<string, unknown>
+
+/** A catalog entry paired with the request builder for its family. */
+export type VideoModel = MediaModelEntry & {
   buildBody: (p: VideoParams) => Record<string, unknown>
 }
 
-// ── NVCF model bodies ─────────────────────────────────────────────────────────
+export const NVIDIA_GENAI_HOST =
+  process.env.NVIDIA_GENAI_HOST || 'https://ai.api.nvidia.com/v1/genai'
 
-// cosmos-predict1-5b: Triton PREDICT_V2 format via NVCF.
-// The internal model name is 'edify'. The exact command API name is undocumented
-// — visit https://build.nvidia.com/nvidia/cosmos-predict1-5b while logged in
-// to see the working playground code sample. Best known format from testing:
-// command input with "t2v" prefix + prompt.
+function num(defaults: VideoDefaults, key: string, fallback: number): number {
+  const v = defaults[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
+}
+
+function str(defaults: VideoDefaults, key: string, fallback: string): string {
+  const v = defaults[key]
+  return typeof v === 'string' && v ? v : fallback
+}
+
+// ── Family request builders ──────────────────────────────────────────────────
+
+/**
+ * cosmos-predict1: Triton PREDICT_V2 via NVCF. The internal model name is
+ * 'edify' and the exact command API name is undocumented — visit
+ * https://build.nvidia.com/nvidia/cosmos-predict1-5b while logged in to see the
+ * working playground sample. Best known format from testing: a `command` input
+ * with a "t2v"/"i2v" prefix. Takes an OPTIONAL input image, which is why the
+ * catalog can list it for both video capabilities.
+ */
 const cosmosPredict1Body = (p: VideoParams): Record<string, unknown> => {
   const isVideo = !p.image
-  // Use underscore-joined prompt to avoid spaces causing parse issues
+  // Underscore/space-normalised prompt: quotes and newlines break the command parse.
   const safePrompt = p.prompt.replace(/["\\']/g, '').replace(/\s+/g, ' ').trim()
   const cmd = isVideo
     ? `t2v --prompt="${safePrompt}"${p.seed != null ? ` --seed=${p.seed}` : ''}`
     : `i2v --prompt="${safePrompt}"${p.image ? ` --input_image=${p.image}` : ''}${p.seed != null ? ` --seed=${p.seed}` : ''}`
   return {
-    inputs: [
-      { name: 'command', shape: [1], datatype: 'BYTES', data: [cmd] },
-    ],
-    outputs: [
-      { name: 'status', datatype: 'BYTES', shape: [1] },
-    ],
+    inputs: [{ name: 'command', shape: [1], datatype: 'BYTES', data: [cmd] }],
+    outputs: [{ name: 'status', datatype: 'BYTES', shape: [1] }],
   }
 }
 
-// cosmos-transfer1-7b: video-to-video style transfer + prompt
+/** cosmos-transfer1: video-to-video style transfer + prompt. */
 const cosmosTransfer1Body = (p: VideoParams): Record<string, unknown> => ({
   prompt: p.prompt,
   seed: p.seed ?? 0,
 })
 
-// cosmos3-nano: text-to-world lightweight model
+/** cosmos3-nano: lightweight text-to-world. */
 const cosmos3NanoBody = (p: VideoParams): Record<string, unknown> => ({
   prompt: p.prompt,
   seed: p.seed ?? 0,
 })
 
-// cosmos-1.0-7b: legacy Triton format
+/** cosmos-1.0-7b: legacy Triton `text2world` command on the cosmos host. */
 const cosmosLegacyText2World = (p: VideoParams): Record<string, unknown> => ({
   inputs: [
     {
       name: 'command',
       shape: [1],
       datatype: 'BYTES',
-      data: [`text2world --prompt="${p.prompt.replace(/"/g, '\\"')}"${p.seed != null ? ` --seed=${p.seed}` : ''}`],
+      data: [
+        `text2world --prompt="${p.prompt.replace(/"/g, '\\"')}"${p.seed != null ? ` --seed=${p.seed}` : ''}`,
+      ],
     },
   ],
   outputs: [{ name: 'status', datatype: 'BYTES', shape: [1] }],
 })
 
-// ── NVIDIA SVD (simple genai host) ───────────────────────────────────────────
-export const NVIDIA_GENAI_HOST =
-  process.env.NVIDIA_GENAI_HOST || 'https://ai.api.nvidia.com/v1/genai'
-
-const svdBody = (p: VideoParams): Record<string, unknown> => ({
+/** NVIDIA Stable Video Diffusion on the genai host (image-to-video). */
+const svdBody = (p: VideoParams, d: VideoDefaults): Record<string, unknown> => ({
   image: p.image ? `data:image/png;base64,${p.image}` : '',
   seed: p.seed ?? 0,
-  cfg_scale: 1.8,
-  motion_bucket_id: 127,
+  cfg_scale: num(d, 'cfg_scale', 1.8),
+  motion_bucket_id: num(d, 'motion_bucket_id', 127),
 })
 
-// ── fal.ai (fallback) ────────────────────────────────────────────────────────
-const falKlingText2VideoBody = (p: VideoParams): Record<string, unknown> => ({
-  prompt: p.prompt,
-  negative_prompt: p.negative_prompt ?? '',
-  duration: p.duration ?? '5',
-  aspect_ratio: p.aspect_ratio ?? '16:9',
-  cfg_scale: 0.5,
-})
+/**
+ * fal.ai Kling. One builder for both directions: the presence of an input image
+ * decides, so the catalog can list a text-to-video and an image-to-video model id
+ * under the same family.
+ */
+const falKlingBody = (
+  p: VideoParams,
+  d: VideoDefaults,
+): Record<string, unknown> => {
+  const common = {
+    prompt: p.prompt,
+    duration: p.duration ?? str(d, 'duration', '5'),
+    aspect_ratio: p.aspect_ratio ?? str(d, 'aspect_ratio', '16:9'),
+  }
+  if (p.image) {
+    return { ...common, image_url: `data:image/png;base64,${p.image}` }
+  }
+  return {
+    ...common,
+    negative_prompt: p.negative_prompt ?? '',
+    cfg_scale: num(d, 'cfg_scale', 0.5),
+  }
+}
 
-const falKlingImage2VideoBody = (p: VideoParams): Record<string, unknown> => ({
-  prompt: p.prompt,
-  image_url: `data:image/png;base64,${p.image ?? ''}`,
-  duration: p.duration ?? '5',
-  aspect_ratio: p.aspect_ratio ?? '16:9',
-})
-
-// ── Registry ─────────────────────────────────────────────────────────────────
-
-export const DEFAULT_VIDEO_MODEL =
-  process.env.NVIDIA_VIDEO_MODEL || 'nvidia/cosmos-predict1-5b'
-export const DEFAULT_IMAGE2VIDEO_MODEL =
-  process.env.NVIDIA_IMAGE2VIDEO_MODEL || 'nvidia/cosmos-predict1-5b'
-
-// Google Vertex AI Veo (long-running :predict). Body is built by
-// vertexVideoClient; the registry entry just records the backend + estimate.
-// NOTE: only GA model ids (…-generate-001). The preview ids (…-generate-preview)
-// were retired by Google on 2026-04-02 and now 404.
-export const DEFAULT_VERTEX_VIDEO_MODEL =
-  process.env.VERTEX_VIDEO_MODEL || 'veo-3.1-generate-001'
-
+/**
+ * Vertex Veo bodies are built by vertexVideoClient (buildVeoBody), which owns the
+ * `instances`/`parameters` shape and the long-running-operation poll. This
+ * placeholder keeps the family known so a Veo model resolves; reaching it means
+ * the NVIDIA client was handed a Vertex model.
+ */
 const veoBody = (p: VideoParams): Record<string, unknown> => ({ prompt: p.prompt })
 
-/** True when a model id targets the Vertex Veo backend. */
-export function isVertexVideoModel(id: string | undefined): boolean {
+/**
+ * family → request builder. The ONLY thing the CLI must change for a genuinely
+ * new request shape; a new model reusing a known shape needs nothing here. An
+ * unknown family fails with a clear, named error (see withBuilder).
+ */
+export const VIDEO_BODY_BUILDERS: Record<
+  string,
+  (p: VideoParams, d: VideoDefaults) => Record<string, unknown>
+> = {
+  'cosmos-predict1': cosmosPredict1Body,
+  'cosmos-transfer1': cosmosTransfer1Body,
+  'cosmos3-nano': cosmos3NanoBody,
+  'cosmos-legacy': cosmosLegacyText2World,
+  svd: svdBody,
+  'fal-kling': falKlingBody,
+  veo: veoBody,
+}
+
+const VERTEX_BACKEND = 'vertex'
+
+/**
+ * Environment overrides — OVERRIDES ONLY, never the source of truth. When unset
+ * (the normal case) the catalog's own `default` flag decides.
+ */
+function envOverride(name: string): string | undefined {
+  const v = process.env[name]
+  return v && v.trim() ? v.trim() : undefined
+}
+
+/** The video half of the synchronously-available catalog. */
+function cachedVideoModels(): MediaModelEntry[] {
+  return getCachedMediaModels().video
+}
+
+/** True when a model id targets the Vertex Veo backend, per the catalog. */
+export function isVertexVideoModel(
+  id: string | undefined,
+  models?: MediaModelEntry[],
+): boolean {
   if (!id) return false
-  return VIDEO_MODELS[id]?.backend === 'vertex' || /^veo-/i.test(id)
+  const entry = (models ?? cachedVideoModels()).find((m) => m.id === id)
+  if (entry) return entry.backend === VERTEX_BACKEND
+  // Unknown id (offline, or typed by hand): the id shape is the only signal left,
+  // and misrouting a Veo request to NVIDIA's host is worse than this heuristic.
+  return /^veo-/i.test(id)
 }
 
-export const VIDEO_MODELS: Record<string, VideoModel> = {
-  // ── NVIDIA Physical AI (free, 20 requests, NVCF function IDs) ──────────────
-  'nvidia/cosmos-predict1-5b': {
-    id: 'nvidia/cosmos-predict1-5b',
-    backend: 'nvcf',
-    capability: 'text2video',
-    nvcfFunctionId: 'eef816a3-3940-413b-93c9-513ae29f34f9',
-    estimatedSeconds: 120,
-    buildBody: cosmosPredict1Body,
-  },
-  'nvidia/cosmos-transfer1-7b': {
-    id: 'nvidia/cosmos-transfer1-7b',
-    backend: 'nvcf',
-    capability: 'image2video',
-    nvcfFunctionId: 'abb63707-47ee-497c-81a3-37e685bacdc6',
-    estimatedSeconds: 120,
-    buildBody: cosmosTransfer1Body,
-  },
-  'nvidia/cosmos3-nano': {
-    id: 'nvidia/cosmos3-nano',
-    backend: 'nvcf',
-    capability: 'text2video',
-    nvcfFunctionId: 'd09cd49d-d7f2-4361-928f-ea22af707249',
-    estimatedSeconds: 90,
-    buildBody: cosmos3NanoBody,
-  },
-  // ── NVIDIA Cosmos legacy (Triton format, cosmos host) ─────────────────────
-  'nvidia/cosmos-1.0-7b-diffusion-text2world': {
-    id: 'nvidia/cosmos-1.0-7b-diffusion-text2world',
-    backend: 'nvcf',
-    capability: 'text2video',
-    // Uses cosmos host directly (no separate NVCF function ID needed)
-    estimatedSeconds: 120,
-    buildBody: cosmosLegacyText2World,
-  },
-  // ── NVIDIA Stable Video Diffusion (genai host, image-to-video) ─────────────
-  'stabilityai/stable-video-diffusion': {
-    id: 'stabilityai/stable-video-diffusion',
-    backend: 'nvidia-svd',
-    capability: 'image2video',
-    estimatedSeconds: 60,
-    buildBody: svdBody,
-  },
-  // ── fal.ai (fallback when no NVIDIA key) ───────────────────────────────────
-  'fal-ai/kling-video/v2.1/standard/text-to-video': {
-    id: 'fal-ai/kling-video/v2.1/standard/text-to-video',
-    backend: 'fal',
-    capability: 'text2video',
-    estimatedSeconds: 90,
-    buildBody: falKlingText2VideoBody,
-  },
-  'fal-ai/kling-video/v2.1/standard/image-to-video': {
-    id: 'fal-ai/kling-video/v2.1/standard/image-to-video',
-    backend: 'fal',
-    capability: 'image2video',
-    estimatedSeconds: 90,
-    buildBody: falKlingImage2VideoBody,
-  },
-  // ── Google Vertex AI Veo (GA, long-running :predictLongRunning) ────────────
-  // GA model ids only. The …-generate-preview ids were retired 2026-04-02.
-  'veo-3.1-generate-001': {
-    id: 'veo-3.1-generate-001',
-    backend: 'vertex',
-    capability: 'text2video',
-    estimatedSeconds: 120,
-    buildBody: veoBody,
-  },
-  'veo-3.1-fast-generate-001': {
-    id: 'veo-3.1-fast-generate-001',
-    backend: 'vertex',
-    capability: 'text2video',
-    estimatedSeconds: 90,
-    buildBody: veoBody,
-  },
-  'veo-3.0-generate-001': {
-    id: 'veo-3.0-generate-001',
-    backend: 'vertex',
-    capability: 'text2video',
-    estimatedSeconds: 120,
-    buildBody: veoBody,
-  },
-  'veo-3.0-fast-generate-001': {
-    id: 'veo-3.0-fast-generate-001',
-    backend: 'vertex',
-    capability: 'text2video',
-    estimatedSeconds: 90,
-    buildBody: veoBody,
-  },
-}
-
-/** Resolve model: use explicit id if known + capability matches, else default. */
+/**
+ * Pick the model to use.
+ *
+ * `opts.backends` is the ORDERED list of backends the caller can actually serve.
+ * It is both a filter and a preference: a default is chosen from the first backend
+ * in the list that has a usable model, so a client never resolves a default it
+ * cannot POST to (which would surface as "API key not configured" for a model the
+ * user never chose, or as a bogus routing error).
+ *
+ * Order: the id the caller named → the env override → the `default` model of the
+ * most-preferred servable backend → the first usable model of that backend.
+ *
+ * A named id that is NOT in the catalog is an ERROR, never a silent substitution.
+ * A named id that IS in the catalog but cannot do the requested operation DOES
+ * fall through to the default — that is how `input_image` routes a text2video-only
+ * model to an image2video one, and it is deliberate.
+ */
 export function resolveVideoModel(
+  models: MediaModelEntry[],
   modelId: string | undefined,
   isImage2Video: boolean,
+  opts?: { backends?: string[] },
 ): VideoModel {
-  const m = modelId ? VIDEO_MODELS[modelId] : undefined
-  if (m && (!isImage2Video || m.capability === 'image2video')) return m
-  return VIDEO_MODELS[isImage2Video ? DEFAULT_IMAGE2VIDEO_MODEL : DEFAULT_VIDEO_MODEL]
+  const capability: VideoCapability = isImage2Video ? 'image2video' : 'text2video'
+  const backends = opts?.backends
+
+  const known = modelId ? models.find((m) => m.id === modelId) : undefined
+  if (modelId && !known) {
+    throw new Error(
+      `Unknown video model "${modelId}". Available: ` +
+        `${models.map((m) => m.id).join(', ') || '(none configured)'}`,
+    )
+  }
+  if (known && backends && !backends.includes(known.backend)) {
+    // The tool routes by the model's backend before calling us, so this means the
+    // request reached the wrong client — a Rayu bug, not a user error.
+    throw new Error(
+      `Video model "${known.id}" is served by the "${known.backend}" backend, which this ` +
+        `client does not handle. This is a Rayu routing bug — please report it.`,
+    )
+  }
+
+  const capable = models.filter((m) => m.capabilities.includes(capability))
+  const named = known?.capabilities.includes(capability) ? known : undefined
+  // Only models this client can actually serve, ordered so the FIRST entry is the
+  // right default. The env override is looked up in this same list, so it can pin a
+  // model but never smuggle in one the caller cannot POST to.
+  const usable = orderByBackendPreference(capable, backends)
+  const override = envOverride(
+    isImage2Video ? 'NVIDIA_IMAGE2VIDEO_MODEL' : 'NVIDIA_VIDEO_MODEL',
+  )
+  const chosen =
+    named ?? (override ? usable.find((m) => m.id === override) : undefined) ?? usable[0]
+
+  if (!chosen) {
+    throw new Error(
+      `No ${capability} model is available` +
+        `${backends ? ` for the ${backends.join('/')} backend(s)` : ''}. ` +
+        `Add one in the Rayu dashboard (Media models), or check your connection so the CLI ` +
+        `can fetch the catalog.`,
+    )
+  }
+  return withBuilder(chosen)
 }
+
+/**
+ * Models the caller can serve, in default-selection order: backends in the given
+ * preference order, and within each backend the catalog's `default` flag first,
+ * then server order (sortOrder). So `list[0]` is the model to use when nothing was
+ * named, and a flat `find` never jumps to a less-preferred backend.
+ */
+function orderByBackendPreference(
+  capable: MediaModelEntry[],
+  backends: string[] | undefined,
+): MediaModelEntry[] {
+  const defaultFirst = (ms: MediaModelEntry[]): MediaModelEntry[] => [
+    ...ms.filter((m) => m.isDefault),
+    ...ms.filter((m) => !m.isDefault),
+  ]
+  if (!backends) return defaultFirst(capable)
+  return backends.flatMap((b) =>
+    defaultFirst(capable.filter((m) => m.backend === b)),
+  )
+}
+
+/**
+ * Keep a model id only if the CLI can still act on it — see
+ * retainKnownImageModel for the full rationale. A selection remembered from
+ * `/model_video_generation` that has left the catalog is dropped (the caller then
+ * gets the current default) rather than failing every later generation; a
+ * hand-written `veo-*` id is kept because the Vertex client honours it verbatim.
+ */
+export function retainKnownVideoModel(
+  models: MediaModelEntry[],
+  id: string | undefined,
+): string | undefined {
+  if (!id) return undefined
+  if (models.some((m) => m.id === id)) return id
+  if (isVertexVideoModel(id, models)) return id
+  return undefined
+}
+
+/** Attach the family's request builder, failing clearly on an unknown family. */
+export function withBuilder(entry: MediaModelEntry): VideoModel {
+  const builder = VIDEO_BODY_BUILDERS[entry.family]
+  if (!builder) {
+    throw new Error(
+      `Video model "${entry.id}" uses request family "${entry.family}", which this ` +
+        `version of Rayu does not know how to build. Update the CLI ` +
+        `(npm i -g @rayu-dev/rayu-cli) or pick another model.`,
+    )
+  }
+  const defaults = entry.defaultParams ?? {}
+  return { ...entry, buildBody: (p: VideoParams) => builder(p, defaults) }
+}
+
+/**
+ * Default model id for a backend + capability, for callers that only need the id
+ * (e.g. the Vertex client's URL). Returns undefined when the catalog has none.
+ */
+export function defaultVideoModelId(
+  models: MediaModelEntry[],
+  backend: string,
+  isImage2Video: boolean,
+): string | undefined {
+  const capability: VideoCapability = isImage2Video ? 'image2video' : 'text2video'
+  const usable = models.filter(
+    (m) => m.backend === backend && m.capabilities.includes(capability),
+  )
+  const override = envOverride(
+    backend === VERTEX_BACKEND
+      ? 'VERTEX_VIDEO_MODEL'
+      : isImage2Video
+        ? 'NVIDIA_IMAGE2VIDEO_MODEL'
+        : 'NVIDIA_VIDEO_MODEL',
+  )
+  const overridden = override ? usable.find((m) => m.id === override) : undefined
+  return (overridden ?? usable.find((m) => m.isDefault) ?? usable[0])?.id
+}
+
+/**
+ * Backends the NVIDIA/fal video client can POST to, in fallback order. Vertex is
+ * deliberately absent: Veo goes through vertexVideoClient's long-running
+ * `:predictLongRunning` flow, so resolving a Veo default here would mis-route.
+ */
+export const NVIDIA_FAL_VIDEO_BACKENDS = ['nvcf', 'nvidia-svd', 'fal']

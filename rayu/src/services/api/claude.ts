@@ -865,7 +865,7 @@ export async function* executeNonStreamingRequest(
 
       const adjustedParams = adjustParamsForNonStreaming(
         retryParams,
-        MAX_NON_STREAMING_TOKENS,
+        nonStreamingMaxTokensForClient(anthropic),
       )
 
       try {
@@ -3393,6 +3393,50 @@ export async function queryWithModel({
 // The SDK's 21333-token cap is derived from 10min × 128k tokens/hour, but we
 // bypass it by setting a client-level timeout, so we can cap higher.
 export const MAX_NON_STREAMING_TOKENS = 64_000
+
+/**
+ * The largest `max_tokens` @anthropic-ai/sdk will accept on a NON-STREAMING
+ * request when the client carries no client-level `timeout`.
+ *
+ * The SDK computes `expectedTime = 60min × max_tokens / 128_000` and throws
+ * `AnthropicError('Streaming is required for operations that may take longer
+ * than 10 minutes…')` LOCALLY — before any HTTP request — when that exceeds
+ * 10 minutes. Solving for 10min gives 128_000 / 6 = 21_333 tokens.
+ *
+ * See `Anthropic.calculateNonstreamingTimeout` in
+ * node_modules/@anthropic-ai/sdk/client.mjs. That guard is skipped entirely
+ * when `_options.timeout` is set, which is why MAX_NON_STREAMING_TOKENS can be
+ * 64k for clients built by createAnthropicMessagesClient (anthropicTransport
+ * always sets API_TIMEOUT_MS). `clientLevelTimeoutMs` below re-checks that
+ * assumption per client instead of trusting it, because a client whose timeout
+ * is absent (an older build, a caller-constructed SDK client, a future
+ * provider path) would otherwise turn the streaming→non-streaming FALLBACK —
+ * the recovery path — into a hard "Streaming is required…" failure that hides
+ * the original streaming error.
+ */
+export const SDK_NONSTREAMING_MAX_TOKENS = Math.floor(128_000 / 6)
+
+/** The `timeout` an Anthropic SDK client was constructed with, if any. */
+function clientLevelTimeoutMs(client: unknown): number | undefined {
+  const timeout = (client as { _options?: { timeout?: unknown } } | null)
+    ?._options?.timeout
+  return typeof timeout === 'number' && Number.isFinite(timeout)
+    ? timeout
+    : undefined
+}
+
+/**
+ * The `max_tokens` ceiling for a non-streaming request on THIS client: the full
+ * 64k when the client carries a client-level timeout (so the SDK's local guard
+ * is inert), else the SDK's own derived ceiling.
+ *
+ * Exported for testing — the cap must stay pinned to the SDK's arithmetic.
+ */
+export function nonStreamingMaxTokensForClient(client: unknown): number {
+  return clientLevelTimeoutMs(client) !== undefined
+    ? MAX_NON_STREAMING_TOKENS
+    : Math.min(MAX_NON_STREAMING_TOKENS, SDK_NONSTREAMING_MAX_TOKENS)
+}
 
 /**
  * Adjusts thinking budget when max_tokens is capped for non-streaming fallback.

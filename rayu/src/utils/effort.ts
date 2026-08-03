@@ -3,9 +3,8 @@ import { isUltrathinkEnabled } from './thinking.js'
 import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
-import { getAPIProvider, isOpenAICompatibleActive, isRayuNonAnthropicActive } from './model/providers.js'
+import { getAPIProvider } from './model/providers.js'
 import { usesTranslatedFormat } from './model/providerCapabilities.js'
-import { isClaudeModelOrAlias } from './model/aliases.js'
 import { resolveAntModel } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -24,6 +23,14 @@ export type EffortValue = EffortLevel | number
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
+  // An EXPLICIT capability declaration wins over any inference — either a pinned
+  // ANTHROPIC_DEFAULT_*_MODEL_SUPPORTED_CAPABILITIES env var or a user-defined
+  // provider that declared its endpoint has no reasoning support. Checked first
+  // (as in modelSupportsThinking) so a text-only endpoint never receives `effort`.
+  const supported3P = get3PModelCapabilityOverride(model, 'effort')
+  if (supported3P !== undefined) {
+    return supported3P
+  }
   // A TRANSLATED request (OpenAI Chat/Responses, GenAI, CodeWhisperer) has its
   // effort mapped onto the target protocol's own field, so effort is available.
   // Anthropic-Messages requests — first-party, or Claude on Bedrock/Azure/Vertex —
@@ -36,10 +43,6 @@ export function modelSupportsEffort(model: string): boolean {
   const m = model.toLowerCase()
   if (isEnvTruthy(process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)) {
     return true
-  }
-  const supported3P = get3PModelCapabilityOverride(model, 'effort')
-  if (supported3P !== undefined) {
-    return supported3P
   }
   // Supported by a subset of Claude 4 models
   if (m.includes('opus-4-6') || m.includes('sonnet-4-6')) {
@@ -63,15 +66,16 @@ export function modelSupportsEffort(model: string): boolean {
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
 // Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
 export function modelSupportsMaxEffort(model: string): boolean {
+  // An EXPLICIT declaration wins over inference (see modelSupportsEffort).
+  const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
+  if (supported3P !== undefined) {
+    return supported3P
+  }
   // 'max' effort: a TRANSLATED request maps effort onto the target protocol's own
   // field, so 'max' is fine there; Anthropic-Messages requests fall through to the
   // Opus-4.6-only rule below (the API rejects 'max' elsewhere). Per-MODEL.
   if (usesTranslatedFormat(model)) {
     return true
-  }
-  const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
-  if (supported3P !== undefined) {
-    return supported3P
   }
   if (model.toLowerCase().includes('opus-4-6')) {
     return true

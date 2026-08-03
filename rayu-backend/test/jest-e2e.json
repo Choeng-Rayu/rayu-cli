@@ -9,5 +9,6 @@
   "roots": ["<rootDir>"],
   "globalSetup": "<rootDir>/global-setup.js",
   "setupFiles": ["<rootDir>/test-env.ts"],
-  "testTimeout": 30000
+  "testTimeout": 30000,
+  "maxWorkers": 1
 }

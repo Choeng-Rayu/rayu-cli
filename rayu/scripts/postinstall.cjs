@@ -44,6 +44,21 @@ function writeMarker() {
 const isWindows = process.platform === 'win32';
 const ttyDevice = isWindows ? 'CON' : '/dev/tty';
 
+// Rayu-driven installs (the in-session auto-updater, and the local-install
+// updater) set this. In that case the terminal device is NOT free real estate:
+// it is the terminal an Ink TUI is actively rendering into, so writing here
+// bypasses the parent's piped stdio and smears this banner over the live UI.
+// The banner is redundant there anyway — the user already has Rayu open.
+// Still write the marker so the binary does not replay the welcome later.
+// Keep this env var name in sync with MANAGED_INSTALL_ENV_VAR in
+// src/utils/npmExec.ts (this file is CommonJS run by npm and cannot import it).
+const isManagedInstall = !!process.env.RAYU_MANAGED_INSTALL;
+
+if (isManagedInstall) {
+  writeMarker();
+  process.exit(0);
+}
+
 try {
   const fd = fs.openSync(ttyDevice, 'w');
   fs.writeSync(fd, message);

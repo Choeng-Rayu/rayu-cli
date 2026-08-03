@@ -8,6 +8,7 @@ import {
   ALL_OAUTH_SCOPES,
   CLAUDE_AI_INFERENCE_SCOPE,
   CLAUDE_AI_OAUTH_SCOPES,
+  CLAUDE_AI_PROFILE_SCOPE,
   getOauthConfig,
 } from '../../constants/oauth.js'
 import {
@@ -32,18 +33,71 @@ import type {
 } from './types.js'
 
 /**
- * Rayu does not use Claude account authentication scopes.
- * @private Only call this if you're OAuth / auth related code!
+ * True when a granted scope set belongs to a Claude.ai SUBSCRIPTION login
+ * (Pro / Max / Team / Enterprise) rather than a Console API-key login.
+ *
+ * The discriminator is the inference scope: only the Claude.ai consent flow
+ * grants `user:inference`, which is what lets the access token be used as a
+ * bearer credential against /v1/messages. The Console flow grants
+ * `org:create_api_key` instead, and its token is only good for minting an
+ * `sk-ant-…` key.
+ *
+ * @private Only call this from OAuth / auth related code!
  */
 export function shouldUseClaudeAIAuth(scopes: string[] | undefined): boolean {
-  void scopes
-  return false
+  return scopes?.includes(CLAUDE_AI_INFERENCE_SCOPE) ?? false
 }
 
 export function parseScopes(scopeString?: string): string[] {
   return scopeString?.split(' ').filter(Boolean) ?? []
 }
 
+/**
+ * The scope set to request for a given login intent.
+ *
+ * - Claude.ai subscription login → the Claude.ai set (profile + inference +
+ *   sessions/mcp/upload). With `inferenceOnly` we drop everything except the two
+ *   scopes a headless inference client actually needs.
+ * - Console login → ALL scopes, because the Console consent page can redirect
+ *   into the Claude.ai flow and the token must be valid for whichever side the
+ *   user ends up on (see ALL_OAUTH_SCOPES in constants/oauth.ts).
+ */
+function scopesForLogin(opts: {
+  loginWithClaudeAi?: boolean
+  inferenceOnly?: boolean
+}): string[] {
+  if (opts.inferenceOnly) {
+    return [CLAUDE_AI_PROFILE_SCOPE, CLAUDE_AI_INFERENCE_SCOPE]
+  }
+  return opts.loginWithClaudeAi
+    ? [...CLAUDE_AI_OAUTH_SCOPES]
+    : [...ALL_OAUTH_SCOPES]
+}
+
+/**
+ * The redirect_uri for a flow.
+ *
+ * Automatic flow → the localhost listener started by AuthCodeListener. Manual
+ * flow → Anthropic's own callback page, which DISPLAYS the code so the user can
+ * paste it back into the terminal (used on headless hosts / no browser).
+ */
+export function oauthRedirectUri(port: number, isManual: boolean): string {
+  return isManual
+    ? getOauthConfig().MANUAL_REDIRECT_URL
+    : `http://localhost:${port}/callback`
+}
+
+/**
+ * Build the authorization URL for the OAuth 2.0 code flow with PKCE.
+ *
+ * Every endpoint, client id and scope comes from getOauthConfig() /
+ * constants/oauth.ts — nothing is hardcoded here, so a FedStart override or a
+ * local dev stack works without touching this function.
+ *
+ * `code=true` is only set for the manual flow: it tells the Anthropic page to
+ * render the authorization code for copy/paste instead of assuming a redirect
+ * back to a listener.
+ */
 export function buildAuthUrl({
   codeChallenge,
   state,
@@ -65,18 +119,32 @@ export function buildAuthUrl({
   loginHint?: string
   loginMethod?: string
 }): string {
-  void codeChallenge
-  void state
-  void port
-  void isManual
-  void loginWithClaudeAi
-  void inferenceOnly
-  void orgUUID
-  void loginHint
-  void loginMethod
-  throw new Error(
-    'OAuth login is not supported in Rayu. Configure providers with /connect or ~/.rayu/providers.json.',
+  const config = getOauthConfig()
+  const base = loginWithClaudeAi
+    ? config.CLAUDE_AI_AUTHORIZE_URL
+    : config.CONSOLE_AUTHORIZE_URL
+
+  const url = new URL(base)
+  const params = url.searchParams
+  if (isManual) {
+    // Show the code on the callback page instead of relying on the redirect.
+    params.set('code', 'true')
+  }
+  params.set('client_id', config.CLIENT_ID)
+  params.set('response_type', 'code')
+  params.set('redirect_uri', oauthRedirectUri(port, isManual))
+  params.set('scope', scopesForLogin({ loginWithClaudeAi, inferenceOnly }).join(' '))
+  params.set('code_challenge', codeChallenge)
+  params.set('code_challenge_method', 'S256')
+  params.set('state', state)
+  if (orgUUID) params.set('organization_uuid', orgUUID)
+  if (loginHint) params.set('login_hint', loginHint)
+  if (loginMethod) params.set('login_method', loginMethod)
+
+  logForDebugging(
+    `[oauth] authorize url built (claudeAi=${!!loginWithClaudeAi}, manual=${isManual})`,
   )
+  return url.toString()
 }
 
 export async function exchangeCodeForTokens(
@@ -90,9 +158,7 @@ export async function exchangeCodeForTokens(
   const requestBody: Record<string, string | number> = {
     grant_type: 'authorization_code',
     code: authorizationCode,
-    redirect_uri: useManualRedirect
-      ? getOauthConfig().MANUAL_REDIRECT_URL
-      : `http://localhost:${port}/callback`,
+    redirect_uri: oauthRedirectUri(port, useManualRedirect),
     client_id: getOauthConfig().CLIENT_ID,
     code_verifier: codeVerifier,
     state,
@@ -316,16 +382,12 @@ export async function createAndStoreApiKey(
   }
 }
 
-export function isOAuthTokenExpired(expiresAt: number | null): boolean {
-  if (expiresAt === null) {
-    return false
-  }
-
-  const bufferTime = 5 * 60 * 1000
-  const now = Date.now()
-  const expiresWithBuffer = now + bufferTime
-  return expiresWithBuffer >= expiresAt
-}
+/**
+ * Whether a stored access token is at (or within the refresh buffer of) expiry.
+ * Re-exported from claudeAiTokens.ts so the storage layer and the request path
+ * can never disagree about what "expired" means.
+ */
+export { isOAuthTokenExpired } from './claudeAiTokens.js'
 
 export async function fetchProfileInfo(accessToken: string): Promise<{
   subscriptionType: SubscriptionType | null
@@ -395,11 +457,18 @@ export async function fetchProfileInfo(accessToken: string): Promise<{
 }
 
 /**
- * Gets the organization UUID from the OAuth access token
- * @returns The organization UUID or null if not authenticated
+ * The organization UUID for the signed-in Claude.ai subscription.
+ *
+ * Read from the cached account info first (written by storeOAuthAccountInfo at
+ * login), falling back to the value the token endpoint returned alongside the
+ * tokens. Returns null when there is no subscription login — which is what every
+ * caller (teleport, bridge, remote background) already treats as "unavailable".
  */
 export async function getOrganizationUUID(): Promise<string | null> {
-  return null
+  const cached = getGlobalConfig().oauthAccount?.organizationUuid
+  if (cached) return cached
+  const tokens = getClaudeAIOAuthTokens()
+  return tokens?.tokenAccount?.organizationUuid ?? null
 }
 
 /**
@@ -407,7 +476,41 @@ export async function getOrganizationUUID(): Promise<string | null> {
  * @returns Whether or not the oauth account info was populated.
  */
 export async function populateOAuthAccountInfoIfNeeded(): Promise<boolean> {
-  return false
+  if (!isClaudeAISubscriber() || !hasProfileScope()) return false
+  if (getGlobalConfig().oauthAccount?.accountUuid) return false
+
+  await checkAndRefreshOAuthTokenIfNeeded()
+  const tokens = getClaudeAIOAuthTokens()
+  if (!tokens?.accessToken) return false
+
+  const profile = await getOauthProfileFromOauthToken(tokens.accessToken)
+  const accountUuid = profile?.account?.uuid ?? tokens.tokenAccount?.uuid
+  const emailAddress =
+    profile?.account?.email_address ?? tokens.tokenAccount?.emailAddress
+  if (!accountUuid || !emailAddress) return false
+
+  storeOAuthAccountInfo({
+    accountUuid,
+    emailAddress,
+    organizationUuid:
+      profile?.organization?.uuid ?? tokens.tokenAccount?.organizationUuid,
+    ...(profile?.account?.display_name
+      ? { displayName: profile.account.display_name }
+      : {}),
+    ...(typeof profile?.organization?.has_extra_usage_enabled === 'boolean'
+      ? { hasExtraUsageEnabled: profile.organization.has_extra_usage_enabled }
+      : {}),
+    ...(profile?.organization?.billing_type
+      ? { billingType: profile.organization.billing_type }
+      : {}),
+    ...(profile?.account?.created_at
+      ? { accountCreatedAt: profile.account.created_at }
+      : {}),
+    ...(profile?.organization?.subscription_created_at
+      ? { subscriptionCreatedAt: profile.organization.subscription_created_at }
+      : {}),
+  })
+  return true
 }
 
 export function storeOAuthAccountInfo({

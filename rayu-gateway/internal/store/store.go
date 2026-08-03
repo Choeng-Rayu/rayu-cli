@@ -230,6 +230,112 @@ func (s *Store) LoadModels(ctx context.Context) ([]HostedModel, error) {
 	return out, rows.Err()
 }
 
+// MediaModel mirrors a row in media_models: the admin-owned catalog of IMAGE-
+// and VIDEO-generation models the CLI offers.
+//
+// Unlike HostedModel this is NOT a routing record. Media generation is not
+// proxied by the gateway — the CLI calls NVIDIA / Vertex / fal directly with the
+// user's own key — so there is no provider, wire format, or credential here. The
+// gateway serves it purely so the CLI has a single, plan-filtered, server-owned
+// catalog instead of a hardcoded registry.
+//
+// Every field is exposed to the client (no json:"-"): the CLI needs all of it to
+// build a request without hardcoding anything.
+type MediaModel struct {
+	Code  string `json:"id"`
+	Label string `json:"label"`
+	// "image" | "video".
+	MediaType string `json:"mediaType"`
+	// image: generate/edit; video: text2video/image2video. An array because some
+	// models do both (cosmos-predict1-5b takes an optional input image).
+	Capabilities []string `json:"capabilities"`
+	// Upstream that serves it: nvidia | vertex | nvcf | nvidia-svd | fal.
+	Backend string `json:"backend"`
+	// Request-SHAPE family. The CLI keys its body builder off this string, so a
+	// new model reusing a known shape needs no client release.
+	Family string `json:"family"`
+	// NVCF function UUID; empty for models that don't need one.
+	NvcfFunctionID string `json:"nvcfFunctionId,omitempty"`
+	// Rough generation seconds for the client's wait message; nil = unknown.
+	EstimatedSeconds *int `json:"estimatedSeconds"`
+	// Per-model request defaults merged into the family body builder, kept as raw
+	// JSON: the gateway has no business interpreting upstream request params, it
+	// just carries what the admin configured.
+	DefaultParams json.RawMessage `json:"defaultParams,omitempty"`
+	// Plans allowed to use it. EMPTY = every plan (media generation is gated by
+	// the image_generation/video_generation feature flags, not per model).
+	AllowedPlanCodes []string `json:"-"`
+	// Preferred pick for its (mediaType, backend) pair.
+	IsDefault bool `json:"default"`
+	SortOrder int  `json:"-"`
+	Enabled   bool `json:"-"`
+}
+
+const loadMediaModelsQuery = `SELECT
+	code, label, mediaType, capabilities, backend, family,
+	nvcfFunctionId, estimatedSeconds, defaultParams, allowedPlanCodes,
+	isDefault, sortOrder, enabled
+FROM media_models
+ORDER BY mediaType, sortOrder, id`
+
+// LoadMediaModels returns the whole media_models catalog in display order.
+//
+// A MISSING TABLE is not an error here: the gateway must keep serving chat
+// traffic on a database that predates this migration, so the caller treats an
+// empty media catalog as "no media models configured" rather than failing its
+// config refresh (which would take the whole gateway down).
+func (s *Store) LoadMediaModels(ctx context.Context) ([]MediaModel, error) {
+	rows, err := s.db.QueryContext(ctx, loadMediaModelsQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MediaModel
+	for rows.Next() {
+		var m MediaModel
+		var caps, allowed, defaults []byte
+		var fnID sql.NullString
+		var estimated sql.NullInt64
+		if err := rows.Scan(
+			&m.Code, &m.Label, &m.MediaType, &caps, &m.Backend, &m.Family,
+			&fnID, &estimated, &defaults, &allowed,
+			&m.IsDefault, &m.SortOrder, &m.Enabled,
+		); err != nil {
+			return nil, err
+		}
+		if fnID.Valid {
+			m.NvcfFunctionID = fnID.String
+		}
+		if estimated.Valid && estimated.Int64 > 0 {
+			v := int(estimated.Int64)
+			m.EstimatedSeconds = &v
+		}
+		if len(caps) > 0 {
+			_ = json.Unmarshal(caps, &m.Capabilities)
+		}
+		if len(allowed) > 0 {
+			_ = json.Unmarshal(allowed, &m.AllowedPlanCodes)
+		}
+		// Carried through verbatim; only kept when it is valid JSON so a corrupt
+		// column can never make the client's response unparseable.
+		if len(defaults) > 0 && json.Valid(defaults) {
+			m.DefaultParams = json.RawMessage(defaults)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// HasCapability reports whether the model declares the given capability.
+func (m MediaModel) HasCapability(c string) bool {
+	for _, have := range m.Capabilities {
+		if have == c {
+			return true
+		}
+	}
+	return false
+}
+
 // ProviderKey mirrors a row in provider_api_keys. EncryptedKey is an AES-256-GCM
 // envelope the gateway opens with RAYU_PROVIDER_SECRET (see internal/secretbox);
 // the plaintext exists only in gateway memory. MaskedKey is what may be logged.
@@ -439,6 +545,213 @@ func (s *Store) InsertLedger(ctx context.Context, userID int64, modelCode string
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO credit_ledger (user_id, modelCode, inTokens, outTokens, credits, realCostCents, source, createdAt) VALUES (?,?,?,?,?,?,?,NOW())`,
 		userID, modelCode, inTok, outTok, creditsConsumed, realCostCents, source,
+	)
+	return err
+}
+
+// --- Teams (organization-owned subscription + shared credit pool) ------------
+//
+// A team member's request is billed to the ORG, not to the member's own
+// subscription: the org owns the plan, a shared pool caps total team usage, and
+// each member holds a bucket carved out of that pool. None of the per-user
+// queries above change — a member with no org claim in their JWT never reaches
+// any of the code below.
+
+// OrgMemberState is everything the gateway needs to bill one team member: the
+// org and seat status, the ORG's plan, and both credit tiers (the member's own
+// bucket and the shared pool).
+type OrgMemberState struct {
+	OrgID        int64
+	OrgStatus    string // organizations.status:        active | suspended
+	MemberStatus string // organization_members.status: active | removed
+	MemberRole   string
+	// SubStatus is "" when the team never bought a plan.
+	SubStatus     string
+	Plan          Plan
+	HasPlan       bool
+	PeriodEnd     *time.Time
+	BucketQuota   int64
+	BucketCredits int64
+	PoolTotal     int64
+	PoolUsed      int64
+	// PoolExtra is what the team BOUGHT for this period (credit_pools.
+	// extra_credits), on top of the plan's allowance. It is part of the hard cap,
+	// so it has to be read on the request path — a team that bought credits and
+	// could not spend them would be the worst possible outcome of this feature.
+	PoolExtra int64
+}
+
+// PoolRemaining is the team's unspent allowance — the HARD cap on team usage.
+// Purchased credits count: the plan's allowance is spent first only because
+// PoolUsed is one counter across both tiers.
+func (o OrgMemberState) PoolRemaining() int64 {
+	rem := o.PoolTotal + o.PoolExtra - o.PoolUsed
+	if rem < 0 {
+		return 0
+	}
+	return rem
+}
+
+// PurchasedRemaining is how much of the PURCHASED credits is left, which is what
+// an admin needs to see to decide whether to buy more. Spending fills the plan's
+// allowance first, so purchased credits are only touched once PoolUsed passes
+// PoolTotal.
+func (o OrgMemberState) PurchasedRemaining() int64 {
+	if o.PoolExtra <= 0 {
+		return 0
+	}
+	intoExtra := o.PoolUsed - o.PoolTotal
+	if intoExtra < 0 {
+		intoExtra = 0
+	}
+	rem := o.PoolExtra - intoExtra
+	if rem < 0 {
+		return 0
+	}
+	return rem
+}
+
+// Usable reports whether this member may spend the team's credits right now, and
+// why not when they may not. The reason strings are stable so the HTTP layer can
+// map them to a message without re-deriving the logic.
+func (o OrgMemberState) Usable(now time.Time) (bool, string) {
+	switch {
+	case o.OrgStatus != "active":
+		return false, "team_suspended"
+	case o.MemberStatus != "active":
+		return false, "membership_removed"
+	case !o.HasPlan || o.SubStatus == "":
+		return false, "team_no_plan"
+	case o.SubStatus != "active":
+		return false, "team_" + o.SubStatus // e.g. team_past_due, team_canceled
+	case o.PeriodEnd != nil && o.PeriodEnd.Before(now):
+		return false, "team_period_ended"
+	}
+	return true, ""
+}
+
+// orgMemberStateQuery resolves the seat, the org, its subscription/plan and its
+// pool in ONE round trip. LEFT JOINs keep a team that has not paid yet
+// resolvable (it comes back with HasPlan=false) instead of looking like a
+// missing membership.
+const orgMemberStateQuery = `SELECT
+	o.status, m.status, m.role, m.bucket_quota, m.bucket_credits,
+	s.status, s.currentPeriodEnd,
+	p.id, p.code, p.name, p.priceCents, p.limits,
+	cp.total_credits, cp.used_credits, cp.extra_credits
+FROM organization_members m
+JOIN organizations o ON o.id = m.organization_id
+LEFT JOIN organization_subscriptions s ON s.organization_id = m.organization_id
+LEFT JOIN plans p ON p.id = s.plan_id
+LEFT JOIN credit_pools cp ON cp.organization_id = m.organization_id
+WHERE m.organization_id = ? AND m.user_id = ?`
+
+// OrgMemberState loads a team member's billing state. Returns (nil, nil) when the
+// user holds no seat in that org — a stale org claim then falls back to
+// individual billing rather than failing the request.
+func (s *Store) OrgMemberState(ctx context.Context, orgID, userID int64) (*OrgMemberState, error) {
+	var (
+		st         OrgMemberState
+		subStatus  sql.NullString
+		periodEnd  sql.NullTime
+		planID     sql.NullInt64
+		planCode   sql.NullString
+		planName   sql.NullString
+		planPrice  sql.NullInt64
+		planLimits []byte
+		poolTotal  sql.NullInt64
+		poolUsed   sql.NullInt64
+		poolExtra  sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx, orgMemberStateQuery, orgID, userID).Scan(
+		&st.OrgStatus, &st.MemberStatus, &st.MemberRole, &st.BucketQuota, &st.BucketCredits,
+		&subStatus, &periodEnd,
+		&planID, &planCode, &planName, &planPrice, &planLimits,
+		&poolTotal, &poolUsed, &poolExtra,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	st.OrgID = orgID
+	if subStatus.Valid {
+		st.SubStatus = subStatus.String
+	}
+	if periodEnd.Valid {
+		t := periodEnd.Time
+		st.PeriodEnd = &t
+	}
+	if planID.Valid && planCode.Valid {
+		st.HasPlan = true
+		st.Plan = Plan{
+			ID:         planID.Int64,
+			Code:       planCode.String,
+			Name:       planName.String,
+			PriceCents: int(planPrice.Int64),
+		}
+		lim := parseLimits(planLimits)
+		st.Plan.CreditsPerPeriod = lim.creditsPerPeriod
+		st.Plan.TopUpEnabled = lim.topUpEnabled
+		st.Plan.MaxDailyTurns = lim.maxDailyTurns
+	}
+	st.PoolTotal = poolTotal.Int64
+	st.PoolUsed = poolUsed.Int64
+	st.PoolExtra = poolExtra.Int64
+	return &st, nil
+}
+
+// DebitOrgMember persists one settled team charge: the member's bucket goes down
+// (floored at 0 — an overflow was served by the pool, not by a negative bucket)
+// and the pool's used counter goes up. Both in one transaction, because a bucket
+// debit without the matching pool debit would let the team exceed its cap.
+//
+// Called from the gateway's bounded write queue, never on the request path.
+func (s *Store) DebitOrgMember(ctx context.Context, orgID, userID, creditsConsumed int64) error {
+	if creditsConsumed <= 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE organization_members
+		    SET bucket_credits = GREATEST(0, bucket_credits - ?), updatedAt = NOW(3)
+		  WHERE organization_id = ? AND user_id = ?`,
+		creditsConsumed, orgID, userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE credit_pools
+		    SET used_credits = used_credits + ?, updatedAt = NOW(3)
+		  WHERE organization_id = ?`,
+		creditsConsumed, orgID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// InsertOrgLedger writes a team consumption row: attributed to the ORG and to the
+// MEMBER who spent it. user_id is still written (equal to memberUserID) so the
+// member's personal credit history keeps working with no query change, and
+// organization_id is what makes the team's own reporting possible.
+func (s *Store) InsertOrgLedger(
+	ctx context.Context,
+	orgID, memberUserID int64,
+	modelCode string,
+	inTok, outTok int,
+	creditsConsumed int64,
+	realCostCents int,
+	source string,
+) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO credit_ledger
+		   (user_id, organization_id, member_user_id, modelCode, inTokens, outTokens, credits, realCostCents, source, createdAt)
+		 VALUES (?,?,?,?,?,?,?,?,?,NOW())`,
+		memberUserID, orgID, memberUserID, modelCode, inTok, outTok, creditsConsumed, realCostCents, source,
 	)
 	return err
 }

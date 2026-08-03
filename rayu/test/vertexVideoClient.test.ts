@@ -8,28 +8,66 @@ import {
   generateVertexVideo,
 } from '../src/tools/VideoGenTool/vertexVideoClient.ts'
 import {
-  DEFAULT_VERTEX_VIDEO_MODEL,
-  VIDEO_MODELS,
+  defaultVideoModelId,
   isVertexVideoModel,
 } from '../src/tools/VideoGenTool/models.ts'
+import {
+  _resetMediaModelsForTesting,
+  _setMediaModelsForTesting,
+  type MediaModelEntry,
+} from '../src/services/rayuAuth/mediaModels.ts'
+
+// Fetched-style catalog (GET /v1/models?media=video). The Veo model id is catalog
+// data now, so the client reads it from here rather than from a CLI constant.
+const VEO_CATALOG: MediaModelEntry[] = [
+  {
+    id: 'veo-3.1-generate-001',
+    label: 'Veo 3.1',
+    mediaType: 'video',
+    capabilities: ['text2video', 'image2video'],
+    backend: 'vertex',
+    family: 'veo',
+    estimatedSeconds: 120,
+    isDefault: true,
+  },
+  {
+    id: 'nvidia/cosmos-predict1-5b',
+    label: 'Cosmos Predict1 5B',
+    mediaType: 'video',
+    capabilities: ['text2video', 'image2video'],
+    backend: 'nvcf',
+    family: 'cosmos-predict1',
+    nvcfFunctionId: 'eef816a3-3940-413b-93c9-513ae29f34f9',
+    estimatedSeconds: 120,
+  },
+]
+
+const DEFAULT_VERTEX_VIDEO_MODEL = 'veo-3.1-generate-001'
 
 let savedProject: string | undefined
 beforeEach(() => {
   savedProject = process.env.GOOGLE_CLOUD_PROJECT
   process.env.GOOGLE_CLOUD_PROJECT = 'test-proj'
+  _setMediaModelsForTesting({
+    image: [],
+    video: VEO_CATALOG,
+    source: 'gateway',
+    fetchedAt: Date.now(),
+  })
 })
 afterEach(async () => {
   if (savedProject === undefined) delete process.env.GOOGLE_CLOUD_PROJECT
   else process.env.GOOGLE_CLOUD_PROJECT = savedProject
+  _resetMediaModelsForTesting()
   const v = await import('../src/services/api/gemini/vertexAuth.ts')
   v._resetVertexAuthCacheForTesting()
 })
 
 describe('isVertexVideoModel', () => {
   test('detects veo models', () => {
-    expect(isVertexVideoModel('veo-3.1-generate-001')).toBe(true)
-    expect(isVertexVideoModel('nvidia/cosmos-predict1-5b')).toBe(false)
-    expect(isVertexVideoModel(undefined)).toBe(false)
+    expect(isVertexVideoModel('veo-3.1-generate-001', VEO_CATALOG)).toBe(true)
+    expect(isVertexVideoModel('nvidia/cosmos-predict1-5b', VEO_CATALOG)).toBe(false)
+    expect(isVertexVideoModel(undefined, VEO_CATALOG)).toBe(false)
   })
 })
 
@@ -172,15 +210,17 @@ describe('generateVertexVideo region + 404 handling', () => {
   })
 })
 
-describe('Vertex Veo registry is GA-only (regression)', () => {
-  test('default model is a GA id (…-001, never …-preview)', () => {
-    expect(DEFAULT_VERTEX_VIDEO_MODEL).toBe('veo-3.1-generate-001')
-    expect(DEFAULT_VERTEX_VIDEO_MODEL.endsWith('-preview')).toBe(false)
+describe('Vertex Veo catalog is GA-only (regression)', () => {
+  test('the resolved default is a GA id (…-001, never …-preview)', () => {
+    const id = defaultVideoModelId(VEO_CATALOG, 'vertex', false)
+    expect(id).toBe(DEFAULT_VERTEX_VIDEO_MODEL)
+    expect(id?.endsWith('-preview')).toBe(false)
   })
-  test('every vertex-backed video model id ends with -001', () => {
-    const vertexIds = Object.values(VIDEO_MODELS)
-      .filter(m => m.backend === 'vertex')
-      .map(m => m.id)
+  test('every vertex-backed video model in the catalog ends with -001', () => {
+    // Google retired the …-generate-preview ids on 2026-04-02; a catalog row
+    // carrying one would 404 at generation time, so the guard now applies to
+    // whatever the SERVER published rather than to a CLI constant.
+    const vertexIds = VEO_CATALOG.filter(m => m.backend === 'vertex').map(m => m.id)
     expect(vertexIds.length).toBeGreaterThan(0)
     for (const id of vertexIds) {
       expect(id.endsWith('-001')).toBe(true)

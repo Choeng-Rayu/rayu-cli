@@ -1,4 +1,6 @@
 import {
+  forwardRef,
+  Inject,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common'
@@ -7,7 +9,11 @@ import { JwtService } from '@nestjs/jwt'
 import type { User } from '@prisma/client'
 import * as crypto from 'crypto'
 import { promisify } from 'util'
-import type { UserRole } from '../common/enums'
+import type { OrgRole, UserRole } from '../common/enums'
+import {
+  OrganizationsService,
+  type OrgContext,
+} from '../organizations/organizations.service'
 import { UsersService } from '../users/users.service'
 import { OAuthService } from './oauth.service'
 import { CodeStoreService } from './code-store.service'
@@ -32,6 +38,15 @@ interface AccessClaims {
   sub: number
   role: UserRole
   type: 'access'
+  /**
+   * TEAM claims — present only when the user holds an active seat in an active
+   * organization. Their ABSENCE is the individual-user contract that shipped
+   * before teams existed, which is what keeps every already-installed CLI and
+   * the gateway's JWT validator working unchanged: no `orgId` ⇒ bill the user's
+   * own subscription, exactly as before.
+   */
+  orgId?: number
+  orgRole?: OrgRole
 }
 interface RefreshClaims {
   sub: number
@@ -46,6 +61,10 @@ export class AuthService {
     private readonly codes: CodeStoreService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    // forwardRef: OrganizationsModule needs this module's RayuAuthGuard, and this
+    // service needs the org lookup that puts team claims on a token.
+    @Inject(forwardRef(() => OrganizationsService))
+    private readonly orgs: OrganizationsService,
   ) {}
 
   toPublicUser(user: User): PublicUser {
@@ -72,6 +91,11 @@ export class AuthService {
     if (user.status !== 'active') {
       throw new UnauthorizedException(`Account is ${user.status}`)
     }
+    // Auto-join here too, not just on the web session: a CLI-first user who has
+    // never opened the dashboard still lands on their company's team, and the
+    // token minted when they redeem this code (redeemCode → mintForUser) then
+    // carries the org claims.
+    await this.orgs.autoJoinFromHostedDomain(user.id, profile.hostedDomain)
     const code = this.codes.issue(user.id, state)
     return { code }
   }
@@ -83,14 +107,19 @@ export class AuthService {
    */
   async webSession(
     idToken: string,
-  ): Promise<RayuTokens & { user: PublicUser }> {
+  ): Promise<RayuTokens & { user: PublicUser; organization: OrgContext | null }> {
     const profile = await this.oauth.verifyGoogleIdToken(idToken)
     const user = await this.users.upsertFromOAuth(profile)
     if (user.status !== 'active') {
       throw new UnauthorizedException(`Account is ${user.status}`)
     }
-    const tokens = this.mintTokens(user)
-    return { ...tokens, user: this.toPublicUser(user) }
+    // The hd claim is the auto-join trigger. It returns the user's existing seat
+    // when they already have one, so this doubles as the membership lookup.
+    const org =
+      (await this.orgs.autoJoinFromHostedDomain(user.id, profile.hostedDomain)) ??
+      (await this.orgs.findActiveMembership(user.id))
+    const tokens = this.mintTokens(user, org)
+    return { ...tokens, user: this.toPublicUser(user), organization: org }
   }
 
   /**
@@ -106,6 +135,9 @@ export class AuthService {
     if (user.status !== 'active') {
       throw new UnauthorizedException(`Account is ${user.status}`)
     }
+    // A brand-new local account cannot be on a team yet (no hd claim exists for
+    // email/password sign-up, and an invite has to be accepted explicitly), so
+    // this mints the plain individual token without a membership lookup.
     const tokens = this.mintTokens(user)
     return { ...tokens, user: this.toPublicUser(user) }
   }
@@ -128,7 +160,7 @@ export class AuthService {
     if (user.status !== 'active') {
       throw new UnauthorizedException(`Account is ${user.status}`)
     }
-    const tokens = this.mintTokens(user)
+    const tokens = await this.mintForUser(user)
     return { ...tokens, user: this.toPublicUser(user) }
   }
 
@@ -147,7 +179,7 @@ export class AuthService {
     if (!user || user.status !== 'active') {
       throw new UnauthorizedException('Account is not active')
     }
-    const tokens = this.mintTokens(user)
+    const tokens = await this.mintForUser(user)
     return { ...tokens, user: this.toPublicUser(user) }
   }
 
@@ -165,7 +197,10 @@ export class AuthService {
     if (!user || user.status !== 'active') {
       throw new UnauthorizedException('Account is not active')
     }
-    return this.mintTokens(user)
+    // Team claims are re-resolved on every refresh, so joining or leaving a team
+    // (or having a seat removed) reaches the CLI within one token lifetime
+    // without the user signing in again.
+    return this.mintForUser(user)
   }
 
   /** Verify an access token and return the live user (used by the guard). */
@@ -224,11 +259,26 @@ export class AuthService {
     if (user.role !== 'admin' && user.role !== 'superadmin') {
       throw new UnauthorizedException('Not an admin account')
     }
-    const tokens = this.mintTokens(user)
+    const tokens = await this.mintForUser(user)
     return { ...tokens, user: this.toPublicUser(user) }
   }
 
-  mintTokens(user: User): RayuTokens {
+  /**
+   * Mint tokens for a user, looking up their team seat first. Every sign-in path
+   * that can belong to an existing account goes through here so the JWT's team
+   * claims are never stale by more than one token lifetime.
+   */
+  async mintForUser(user: User): Promise<RayuTokens> {
+    const org = await this.orgs.findActiveMembership(user.id)
+    return this.mintTokens(user, org)
+  }
+
+  /**
+   * Sign an access + refresh token pair. `org` is optional and additive: passing
+   * nothing produces byte-for-byte the same claim set as before teams existed,
+   * which is what makes this change safe for already-installed CLIs.
+   */
+  mintTokens(user: User, org?: OrgContext | null): RayuTokens {
     const accessTtl = this.config.get<number>('app.accessTokenTtlSeconds', 3600)
     const refreshTtl = this.config.get<number>(
       'app.refreshTokenTtlSeconds',
@@ -239,6 +289,7 @@ export class AuthService {
         sub: user.id,
         role: user.role as UserRole,
         type: 'access',
+        ...(org ? { orgId: org.orgId, orgRole: org.orgRole } : {}),
       } satisfies AccessClaims,
       { expiresIn: accessTtl },
     )

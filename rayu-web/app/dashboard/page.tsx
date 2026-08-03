@@ -6,6 +6,7 @@ import { apiUrl, gatewayUrl } from '../../lib/config'
 import { useRayuToken } from '../../lib/useRayuToken'
 import { HBar, LineChart } from '../../components/Charts'
 import KhqrCard from '../../components/KhqrCard'
+import { payWithCard, useStripeEnabled, useStripeReturnPoll } from '../../lib/stripeCheckout'
 import {
   aggregateByModel,
   avgCreditsPerRequest,
@@ -19,6 +20,7 @@ import {
   providerBreakdown,
   totals,
 } from '../../lib/dashboard'
+import { poolUsedPct, type TeamMembership } from '../../lib/team'
 
 interface AllowedModel {
   code: string
@@ -144,7 +146,11 @@ export default function DashboardPage() {
   const [usage, setUsage] = useState<GatewayCredits | null>(null)
   const [gatewayDown, setGatewayDown] = useState(false)
   const [history, setHistory] = useState<LedgerRow[]>([])
+  const [teams, setTeams] = useState<TeamMembership[]>([])
   const [loading, setLoading] = useState(true)
+  // Card rail availability + return-poll for a Stripe Checkout in flight.
+  const stripeEnabled = useStripeEnabled(status === 'authenticated' ? token : null)
+  const stripeReturn = useStripeReturnPoll(status === 'authenticated' ? token : null)
   // Top-up is priced in DOLLARS here (the rate and minimum are the admin's, read
   // from the gateway) and converted to credits when the QR is requested. The
   // previous fixed credit options were hardcoded against one particular rate and
@@ -158,12 +164,16 @@ export default function DashboardPage() {
   const loadAll = useCallback(async () => {
     if (!token) return
     const auth = { headers: { Authorization: `Bearer ${token}` } }
-    const [entRes, histRes] = await Promise.all([
+    const [entRes, histRes, teamRes] = await Promise.all([
       fetch(apiUrl('/me/entitlements'), auth),
       fetch(apiUrl('/me/credit-history?limit=200'), auth),
+      // Team membership (0 or 1). A failure here must never break the dashboard —
+      // it only decides whether the Team card renders.
+      fetch(apiUrl('/organizations/mine'), auth).catch(() => null),
     ])
     if (entRes.ok) setEnt((await entRes.json()) as Entitlements)
     if (histRes.ok) setHistory((await histRes.json()) as LedgerRow[])
+    if (teamRes?.ok) setTeams((await teamRes.json()) as TeamMembership[])
     try {
       const cr = await fetch(gatewayUrl('/v1/credits'), auth)
       if (cr.ok) {
@@ -205,6 +215,19 @@ export default function DashboardPage() {
         const s = (await sres.json()) as { status: string }
         if (s.status === 'paid') { stopPolling(); setPaid(true); setKhqr(null); void loadAll() }
       }, 3000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // Card rail: POST /payments/topup-khqr with method:'stripe' and redirect to
+  // the hosted Checkout page. useStripeReturnPoll resumes polling the status
+  // endpoint on return — a redirect is not proof of payment.
+  async function buyCreditsCard() {
+    if (!token) return
+    setError(''); setKhqr(null); setPaid(false); stopPolling()
+    try {
+      await payWithCard('/payments/topup-khqr', { credits: topupCredits }, token)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -325,6 +348,54 @@ export default function DashboardPage() {
       </div>
 
       {loading && !ent && !usage && <p style={{ opacity: 0.5 }}>Loading your usage…</p>}
+
+      {/* TEAM — shown when this account holds a seat. A team member's hosted usage
+          is billed to the team's shared pool, not to the personal allowance shown
+          above, so the pool is what actually limits them. */}
+      {teams.length > 0 ? (
+        teams.map((m) => {
+          const org = m.organization
+          const pool = org.creditPool
+          const p = poolUsedPct(pool)
+          return (
+            <div key={org.id} className="card" style={{ marginBottom: '1.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                    <span style={{ fontFamily: 'Orbitron, sans-serif', fontSize: '1.05rem', fontWeight: 700 }}>{org.name}</span>
+                    <span className="badge">team · {m.role}</span>
+                  </div>
+                  <div style={{ opacity: 0.55, fontSize: '0.8rem', marginTop: 5 }}>
+                    Your quota: {m.bucketCredits.toLocaleString()} of {m.bucketQuota.toLocaleString()} credits left
+                    {pool ? ` · team pool ${pool.remainingCredits.toLocaleString()} left` : ''}
+                  </div>
+                </div>
+                <a href={`/dashboard/team/${org.slug}`} className="btn-ghost" style={{ padding: '6px 14px', fontSize: '0.85rem' }}>
+                  Manage team
+                </a>
+              </div>
+              {pool && pool.totalCredits > 0 && (
+                <div style={{ marginTop: '0.9rem', height: 6, background: 'var(--bg3)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ width: `${p}%`, height: '100%', background: p >= 90 ? 'var(--red)' : p >= 75 ? '#f5a623' : 'var(--green)' }} />
+                </div>
+              )}
+            </div>
+          )
+        })
+      ) : (
+        <div className="card" style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontFamily: 'Orbitron, sans-serif', fontSize: '0.95rem' }}>Working with a team?</div>
+            <div style={{ opacity: 0.55, fontSize: '0.82rem', marginTop: 4 }}>
+              Pay once, share one credit pool, and let colleagues join automatically with your company
+              Google account.
+            </div>
+          </div>
+          <a href="/dashboard/team" className="btn-ghost" style={{ padding: '6px 14px', fontSize: '0.85rem' }}>
+            Set up a team
+          </a>
+        </div>
+      )}
 
       {premium ? (
         <>
@@ -474,6 +545,19 @@ export default function DashboardPage() {
                     status="pending"
                   />
                 </div>
+              ) : stripeReturn.pendingPaymentId != null && stripeReturn.status !== 'paid' ? (
+                <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+                  <p style={{ fontWeight: 600 }}>
+                    {stripeReturn.status === 'expired' || stripeReturn.status === 'canceled'
+                      ? 'Card payment was not completed.'
+                      : 'Confirming your card payment…'}
+                  </p>
+                  <p style={{ opacity: 0.6, fontSize: '0.9rem' }}>
+                    {stripeReturn.status === 'expired' || stripeReturn.status === 'canceled'
+                      ? 'The checkout expired or was canceled. Try again to start a new one.'
+                      : 'Waiting for Stripe to confirm the charge — this usually takes a few seconds.'}
+                  </p>
+                </div>
               ) : (
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -500,6 +584,16 @@ export default function DashboardPage() {
                   >
                     Buy with Bakong KHQR
                   </button>
+                  {stripeEnabled && (
+                    <button
+                      className="btn-ghost"
+                      style={{ padding: '10px 22px' }}
+                      disabled={creditsPerDollar <= 0 || topupCredits <= 0}
+                      onClick={() => void buyCreditsCard()}
+                    >
+                      Buy with card
+                    </button>
+                  )}
                   <span style={{ opacity: 0.45, fontSize: '0.76rem', width: '100%' }}>
                     {creditsPerDollar > 0
                       ? `$1 = ${creditsPerDollar.toLocaleString()} credits · minimum $${minDollars.toFixed(2)}`

@@ -6,9 +6,13 @@ import { AuthService } from './auth/auth.service'
 import configuration from './config/configuration'
 import { FeedbackModule } from './feedback/feedback.module'
 import { HealthModule } from './health/health.module'
+import { MediaModelsModule } from './media-models/media-models.module'
+import { MediaModelsService } from './media-models/media-models.service'
 import { ModelsModule } from './models/models.module'
 import { ModelsService } from './models/models.service'
+import { OrganizationsModule } from './organizations/organizations.module'
 import { PaymentsModule } from './payments/payments.module'
+import { StripeWebhookModule } from './payments/stripe/stripe-webhook.module'
 import { PlansModule } from './plans/plans.module'
 import { PlansService } from './plans/plans.service'
 import { PrismaModule } from './prisma/prisma.module'
@@ -17,6 +21,7 @@ import { ProvidersModule } from './providers/providers.module'
 import { ProvidersService } from './providers/providers.service'
 import { AppSettingsModule } from './settings/app-settings.module'
 import { AppSettingsService } from './settings/app-settings.service'
+import { StudioModule } from './studio/studio.module'
 import { TelegramModule } from './telegram/telegram.module'
 import { UsageModule } from './usage/usage.module'
 import { UsersModule } from './users/users.module'
@@ -45,21 +50,26 @@ function isMissingTableError(e: unknown): boolean {
     HealthModule,
     PlansModule,
     ModelsModule,
+    MediaModelsModule,
     ProvidersModule,
     AppSettingsModule,
     UsersModule,
     AuthModule,
+    OrganizationsModule,
     UsageModule,
     FeedbackModule,
     AdminModule,
     PaymentsModule,
+    StripeWebhookModule,
     TelegramModule,
+    StudioModule,
   ],
 })
 export class AppModule implements OnModuleInit {
   constructor(
     private readonly plans: PlansService,
     private readonly models: ModelsService,
+    private readonly mediaModels: MediaModelsService,
     private readonly providers: ProvidersService,
     private readonly settings: AppSettingsService,
     private readonly auth: AuthService,
@@ -89,6 +99,15 @@ export class AppModule implements OnModuleInit {
         await this.providers.auditProviderConfig()
         await this.models.auditModelFamilyConsistency()
       }
+      // The MEDIA catalog (image/video generation) seeds on FIRST boot even
+      // without SEED_CATALOG. Unlike the hosted chat catalog it carries no
+      // provider routing and no credential — it only names public third-party
+      // models the user's OWN key calls — and the CLI has no hardcoded registry
+      // to fall back on, so an empty table means image/video generation is simply
+      // unavailable. A non-empty table is left alone (admin-owned) unless
+      // SEED_CATALOG=true asks for the shipped defaults again.
+      await this.mediaModels.seedIfEmpty(process.env.SEED_CATALOG === 'true')
+      await this.mediaModels.auditMediaCatalog()
     } catch (e) {
       // A missing table means the schema was never migrated. Prisma's raw P2021
       // stack tells an operator nothing actionable, so translate it.

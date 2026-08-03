@@ -294,15 +294,16 @@ func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
 	result.Classification = classification
 	result.OK = classification == testOK
 	result.Checks = checksFor(classification, status, err)
-	// Redact defensively: an upstream error body can echo the request, and some
-	// providers include the presented credential in it.
+	// Redact both fields: an upstream error body can echo the request, and the
+	// suggestion quotes the configured URL — which an admin may have pasted with a
+	// credential in it (?api_key=…). Neither may carry a secret to a client.
 	result.Message = redactSecret(message, key.Secret)
 	if result.OK {
 		// Success clears an earlier rate limit, so a recovered key returns to
 		// rotation immediately instead of waiting out its cooldown.
 		s.ent.Keys().MarkUsed(body.ProviderID, key.ID)
 	}
-	result.Suggestion = s.suggestFix(classification, pr.Route, model, body.ProviderID, respBody)
+	result.Suggestion = redactSecret(s.suggestFix(classification, pr.Route, model, body.ProviderID, respBody), key.Secret)
 	if keySkipped != "" {
 		// The test used a key rotation would have skipped. Say so, or a pass reads as
 		// "the provider is healthy" when live traffic still has no key to use.
@@ -407,14 +408,23 @@ func (s *Server) testKey(providerID, keyID int64) (key providerkeys.Key, skipped
 		return usable[0], "", nil
 	}
 
-	// Nothing in rotation: fall back to the healthiest key there is, so the test can
-	// still prove (or disprove) the configuration.
+	// Nothing in rotation: fall back to the LEAST bad key there is, so the test can
+	// still prove (or disprove) the configuration. Order matters — a key that is only
+	// cooling down is far more likely to be valid than one an admin deliberately
+	// switched off, and silently exercising a disabled key would be a surprising
+	// thing to do with an explicit instruction.
+	best, bestRank, bestSnap := providerkeys.Key{}, -1, providerkeys.Snapshot{}
 	for _, snap := range s.ent.Keys().SnapshotFor(providerID) {
 		k, ok := s.ent.Keys().Find(providerID, snap.ID)
 		if !ok || k.Secret == "" {
-			continue
+			continue // undecryptable: nothing to authenticate with
 		}
-		return k, keySkipReason(snap), nil
+		if rank := keyFallbackRank(snap); rank > bestRank {
+			best, bestRank, bestSnap = k, rank, snap
+		}
+	}
+	if bestRank >= 0 {
+		return best, keySkipReason(bestSnap), nil
 	}
 	if len(s.ent.Keys().SnapshotFor(providerID)) > 0 {
 		return providerkeys.Key{}, "", errors.New(
@@ -423,6 +433,22 @@ func (s *Server) testKey(providerID, keyID int64) (key providerkeys.Key, skipped
 	}
 	return providerkeys.Key{}, "", errors.New(
 		"this provider has no API key — add one, then test again")
+}
+
+// keyFallbackRank orders unusable keys by how likely they are to actually work.
+// Higher wins.
+func keyFallbackRank(s providerkeys.Snapshot) int {
+	if !s.Enabled || s.Status == providerkeys.StatusDisabled {
+		return 0 // an explicit admin decision to stop using it
+	}
+	switch s.Status {
+	case providerkeys.StatusRateLimited:
+		return 3 // the provider accepted it and asked us to wait
+	case providerkeys.StatusInvalid:
+		return 2 // rejected once, possibly against a wrong URL
+	default:
+		return 1 // healthy but skipped for some other reason
+	}
 }
 
 // keySkipReason explains, in an admin's terms, why a key is not in rotation.
@@ -446,21 +472,34 @@ func keySkipReason(s providerkeys.Snapshot) string {
 // classifyProviderTest turns a transport error or upstream status into the cause
 // an admin can act on, plus a short human message.
 func classifyProviderTest(status int, body []byte, err error) (string, string) {
-	// A web page is decisive and comes first, whatever the status and whatever the
-	// adapter made of the body: an API endpoint does not serve HTML. This is what a
-	// provider returns for a path it does not have (its single-page app, with 200),
-	// or from a CDN/WAF in front of it — neither says anything about the format, the
-	// credential or the model, so blaming any of those sends the admin the wrong way.
-	if looksLikeHTML(body) {
+	page := looksLikeHTML(body)
+
+	// A web page is decisive — but only where nothing else could explain it. At
+	// 2xx/3xx/404/405 an HTML body means this URL is simply not an API endpoint
+	// (a provider serves its single-page app for routes it does not have, with 200),
+	// which says nothing about the format, the credential or the model. At 401, 429
+	// or 5xx the STATUS is the truth instead: a CDN, WAF or nginx in front of a
+	// perfectly correct URL serves those as HTML pages too, and calling that a bad
+	// URL would send the admin to edit a field that is right.
+	if page && htmlMeansWrongURL(status) {
 		return testBadBaseURL,
 			"The URL answered with a web page, not an API response (HTTP " + itoa(status) + "). " +
-				"The base URL or endpoint path is pointing at the provider's website " +
-				"rather than its API. Response started: " + bodySnippet(body)
+				"The base URL or endpoint path is pointing at something other than this " +
+				"provider's API. Response started: " + bodySnippet(body)
 	}
-	if err != nil {
+	if err != nil && status == 0 {
+		// No HTTP response at all: DNS, refused, TLS, timeout. An adapter that could
+		// not PARSE a response still has one (status != 0), and that is a format or
+		// URL problem — reporting it as a transport failure would read as "the
+		// provider is down" when nothing is down.
 		return classifyTransportError(err)
 	}
 	snippet := bodySnippet(body)
+	if page {
+		// Authoritative status, but the body is a page: say so, because it is the one
+		// clue that the URL deserves a second look as well.
+		snippet = "the response was a web page, not JSON: " + snippet
+	}
 	switch {
 	case status == http.StatusOK:
 		// A 200 that is not Anthropic-shaped means the provider's format is not
@@ -567,7 +606,10 @@ func (s *Server) suggestFix(
 			formatLabel(route.Format) + " endpoint."
 
 	case testFormatMismatch:
-		if spoken := detectResponseFormat(respBody); spoken != "" && spoken != route.Format {
+		// Only recommend a switch when the reply genuinely belongs to another family.
+		// Anthropic Messages and Bedrock share a reply shape, so a body can never
+		// justify swapping one for the other — that would break a working provider.
+		if spoken := detectResponseFormat(respBody); spoken != "" && !sameResponseFamily(spoken, route.Format) {
 			return "This provider answered in the " + spoken + " format. Set the provider's wire " +
 				"format to " + spoken + " (it is currently " + formatLabel(route.Format) + "). " +
 				authHint(spoken)

@@ -1,0 +1,31 @@
+@use '../z-index';
+
+.Toastify__toast-container {
+  @extend .z-toast;
+}
+
+.Toastify__toast {
+  /*
+   * Was `--at-apply: shadow-md`. Inlined as a plain box-shadow: UnoCSS's shadow
+   * utilities expand to a chain of --un-shadow-* custom properties that only
+   * resolve when its preflight is present, and this file is compiled by Sass
+   * before PostCSS sees it.
+   */
+  box-shadow:
+    0 4px 6px -1px rgb(0 0 0 / 0.1),
+    0 2px 4px -2px rgb(0 0 0 / 0.1);
+
+  background-color: var(--bolt-elements-bg-depth-2);
+  color: var(--bolt-elements-textPrimary);
+  border: 1px solid var(--bolt-elements-borderColor);
+}
+
+.Toastify__close-button {
+  color: var(--bolt-elements-item-contentDefault);
+  opacity: 1;
+  transition: none;
+
+  &:hover {
+    color: var(--bolt-elements-item-contentActive);
+  }
+}

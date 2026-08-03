@@ -9,12 +9,8 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
 import { getVideoModelSelection } from '../../utils/rayuConfig.js'
 import { extractPreviewFrame } from './framePreview.js'
-import {
-  DEFAULT_VERTEX_VIDEO_MODEL,
-  isVertexVideoModel,
-  resolveVideoModel,
-  VIDEO_MODELS,
-} from './models.js'
+import { ensureMediaModels } from '../../services/rayuAuth/mediaModels.js'
+import { isVertexVideoModel, retainKnownVideoModel } from './models.js'
 import { generateVideo, isVideoEnabled } from './nvidiaVideoClient.js'
 import {
   generateVertexVideo,
@@ -33,10 +29,7 @@ import {
   paidFeatureUpgradeNote,
 } from '../../services/rayuAuth/paidFeatureGate.js'
 import { bumpFeatureUsage } from '../../services/rayuAuth/rayuFeatureUsage.js'
-
-/** Feature key + label for the soft paid-gate (see paidFeatureGate.ts). */
-const VIDEO_GEN_FEATURE = 'video_generation'
-const VIDEO_GEN_LABEL = 'video generation'
+import { VIDEO_GEN_FEATURE, VIDEO_GEN_LABEL } from './constants.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -51,9 +44,12 @@ const inputSchema = lazySchema(() =>
         'Where to save the MP4 (inside the working directory). Default: ./generated-video-<timestamp>.mp4',
       ),
     model: z
-      .enum(Object.keys(VIDEO_MODELS) as [string, ...string[]])
+      .string()
       .optional()
-      .describe('Video model id; defaults to the Cosmos text2world model'),
+      .describe(
+        'Video model id from the Rayu media catalog (see /model_video_generation). ' +
+          'Defaults to the catalog default for the operation (text2video vs image2video).',
+      ),
     num_frames: z.number().int().optional(),
     fps: z.number().int().optional(),
     height: z.number().int().optional(),
@@ -161,6 +157,20 @@ export const VideoGenTool = buildTool({
         errorCode: 1,
       }
     }
+    // The model list is server-owned, so it cannot be a compile-time enum in the
+    // input schema. Validate against the live catalog and name what's available.
+    if (input.model) {
+      const catalog = await ensureMediaModels()
+      if (!retainKnownVideoModel(catalog.video, input.model)) {
+        return {
+          result: false,
+          message:
+            `Unknown video model "${input.model}". Available: ` +
+            `${catalog.video.map((m) => m.id).join(', ') || '(none configured)'}`,
+          errorCode: 2,
+        }
+      }
+    }
     return { result: true }
   },
   async checkPermissions(_input): Promise<PermissionResult> {
@@ -204,16 +214,34 @@ export const VideoGenTool = buildTool({
       }
     }
 
-    // Resolve the model: explicit input wins, else the configured default from
-    // /model_video_generation, else the backend default (NVIDIA/fal/Vertex).
-    const selectedModel = input.model ?? getVideoModelSelection()
-    const model = resolveVideoModel(selectedModel, isImage2Video)
+    // The catalog is fetched lazily HERE (first tool use), not at import time, so
+    // CLI startup never waits on the gateway. Cached + TTL'd afterwards.
+    const catalog = await ensureMediaModels()
 
-    // Route to Vertex Veo when a veo model is selected, or when Vertex is the
-    // only configured video backend. Otherwise use the NVIDIA/fal client.
-    const useVertex =
-      isVertexVideoModel(selectedModel) ||
-      (isGeminiVertexVideoAvailable() && !isVideoEnabled())
+    // Resolve the model: explicit input wins, else the configured default from
+    // /model_video_generation, else the catalog default for the backend.
+    //
+    // The remembered preference is dropped when it is no longer in the catalog (an
+    // admin removed it, a plan withdrew it, or we are offline on built-ins), so a
+    // choice made weeks ago cannot fail every generation. An EXPLICIT input.model
+    // was already rejected loudly by validateInput if unknown.
+    const selectedModel = retainKnownVideoModel(
+      catalog.video,
+      input.model ?? getVideoModelSelection(),
+    )
+
+    // Route to Vertex Veo when the SELECTED model is Vertex-served, or — when
+    // nothing is selected — when Vertex is the only configured video backend.
+    // Routing by the selected model's own backend keeps an explicitly requested
+    // NVIDIA/fal model from being silently swapped for Veo on a Vertex-only
+    // machine; the NVIDIA/fal client then reports the missing key instead.
+    const selectedEntry = selectedModel
+      ? catalog.video.find((m) => m.id === selectedModel)
+      : undefined
+    const useVertex = selectedEntry
+      ? selectedEntry.backend === 'vertex'
+      : isVertexVideoModel(selectedModel, catalog.video) ||
+        (isGeminiVertexVideoAvailable() && !isVideoEnabled())
 
     const vparams = {
       prompt: input.prompt,
@@ -227,29 +255,20 @@ export const VideoGenTool = buildTool({
       image,
     }
 
-    let buffer: Buffer
-    let usedModelId: string
-    if (useVertex) {
-      const r = await generateVertexVideo({
-        modelId: selectedModel,
-        params: vparams,
-        signal: context.abortController.signal,
-      })
-      buffer = r.buffer
-      usedModelId =
-        selectedModel && isVertexVideoModel(selectedModel)
-          ? selectedModel
-          : DEFAULT_VERTEX_VIDEO_MODEL
-    } else {
-      const r = await generateVideo({
-        modelId: selectedModel,
-        isImage2Video,
-        params: vparams,
-        signal: context.abortController.signal,
-      })
-      buffer = r.buffer
-      usedModelId = model.id
-    }
+    // Both clients report the model they actually used, resolved from the same
+    // catalog — the tool no longer keeps its own copy of the defaults.
+    const { buffer, modelId: usedModelId } = useVertex
+      ? await generateVertexVideo({
+          modelId: selectedModel,
+          params: vparams,
+          signal: context.abortController.signal,
+        })
+      : await generateVideo({
+          modelId: selectedModel,
+          isImage2Video,
+          params: vparams,
+          signal: context.abortController.signal,
+        })
 
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, buffer)

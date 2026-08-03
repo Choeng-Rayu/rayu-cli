@@ -168,6 +168,15 @@ export function resolveWireFormat(
       return 'codewhisperer'
 
     case 'copilot':
+      return 'openai-chat'
+
+    case 'custom':
+      // A user-defined provider ALWAYS carries an explicit wireFormat (the wizard
+      // requires it), which the override at the top of this function already
+      // returned. Reaching here means a hand-edited config with no format — treat
+      // it as OpenAI Chat, the most common third-party shape.
+      return 'openai-chat'
+
     case 'openai-compatible':
       return 'openai-chat'
 
@@ -265,6 +274,25 @@ export function resolveClientTarget(
       return format === 'anthropic-messages'
         ? 'azure-anthropic'
         : 'azure-openai-responses'
+    }
+
+    case 'custom': {
+      // A user-defined provider: the format was chosen in the wizard, so route on
+      // it directly. Every format needs an endpoint; the Anthropic-Messages and
+      // OpenAI protocols also need a key.
+      if (!hasOpenAIChatEndpoint(provider, opts)) return 'unsupported'
+      switch (format) {
+        case 'anthropic-messages':
+          return provider.apiKey ? 'anthropic-compatible' : 'unsupported'
+        case 'openai-responses':
+          return 'openai-responses'
+        case 'genai':
+          // No custom GenAI client exists: both GenAI clients are bound to Vertex
+          // or Code Assist auth. Surfaced as unsupported rather than mis-routed.
+          return 'unsupported'
+        default:
+          return 'openai-chat'
+      }
     }
 
     case 'openai-compatible':
@@ -769,13 +797,43 @@ export async function buildFirstPartyAnthropicClient(opts: {
     // never let routing setup break Anthropic client creation
   }
 
+  // Rayu: a Claude.ai PAID SUBSCRIPTION login (Pro / Max plan) authenticates
+  // with an Anthropic OAuth access token instead of an x-api-key. The credential
+  // is injected per REQUEST (and refreshed on expiry) by a custom fetch, because
+  // this client is built once per session while the token rotates. That wrapper
+  // also strips x-api-key so a stray API key can never ride along.
+  //
+  // createAnthropicMessagesClient passes a `custom-fetch` as the transport's
+  // fetchOverride, so the shared request logging/proxy layer wraps this auth
+  // fetch — a refreshed retry is logged like any other request.
+  //
+  // shouldRouteViaGateway() already returns false for this provider
+  // (gatewayRouting.isRoutableKind), so these requests go DIRECT to Anthropic —
+  // the subscription is billed by Anthropic, not by Rayu credits.
+  //
+  // Lazy-imported and only when this provider actually uses it, so the API-key
+  // path loads nothing extra.
+  let subscriptionFetch: typeof fetch | undefined
+  if (provider?.anthropicAuthType === 'oauth') {
+    const { usesClaudeSubscriptionAuth, makeClaudeSubscriptionFetch } =
+      await import('./claudeSubscriptionAuth.js')
+    if (usesClaudeSubscriptionAuth(provider)) {
+      subscriptionFetch = makeClaudeSubscriptionFetch({
+        inner: (fetchOverride ?? undefined) as typeof fetch | undefined,
+      })
+      logForDebugging('[API:auth] using Claude subscription OAuth bearer')
+    }
+  }
+
   return createAnthropicMessagesClient({
     maxRetries,
     firstParty: true,
-    auth: {
-      mode: 'x-api-key',
-      apiKey: apiKey || getAnthropicApiKey() || undefined,
-    },
+    auth: subscriptionFetch
+      ? { mode: 'custom-fetch', fetch: subscriptionFetch }
+      : {
+          mode: 'x-api-key',
+          apiKey: apiKey || getAnthropicApiKey() || undefined,
+        },
     // Staging OAuth points the SDK at the staging API (ant users only).
     ...(process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)

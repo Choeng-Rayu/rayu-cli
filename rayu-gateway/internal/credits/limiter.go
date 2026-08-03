@@ -223,6 +223,254 @@ func (l *Limiter) Status(ctx context.Context, userID int64) (Status, error) {
 	return Status{UsedPeriod: used, TopupBalance: topup, ResetPeriod: reset}, nil
 }
 
+// --- Team (organization) reservations --------------------------------------
+//
+// A team member is billed against TWO tiers at once: their own per-seat bucket
+// (a soft quota) and the org's shared pool (the hard cap). Both counters move on
+// every charge, which is what lets a team invite unlimited members and still be
+// capped by exactly one number — the pool.
+//
+// This is deliberately a separate script from the individual reserve rather than
+// a flag on it: the individual path's second tier (top-up) is a per-user BALANCE
+// that only pays when the plan tier is full, while the pool is a per-ORG counter
+// that pays on every request. Overloading one script with both meanings is how
+// billing code grows bugs nobody can read.
+
+// orgKeys returns [memberUsed, conc, req5h, poolUsed, memberPeriodID] for a seat.
+// Concurrency and the 5h request cap stay PER USER (they are abuse controls on a
+// person, not on a team), while the pool counter is shared by the whole org.
+func orgKeys(orgID, userID int64) []string {
+	o := strconv.FormatInt(orgID, 10)
+	u := strconv.FormatInt(userID, 10)
+	return []string{
+		"orgbucket:" + o + ":" + u,
+		"conc:" + u,
+		"req5h:" + u,
+		"orgpool:" + o,
+		"orgbucketpid:" + o + ":" + u,
+	}
+}
+
+// OrgReserveParams are the inputs to a team member's pre-flight reservation.
+type OrgReserveParams struct {
+	OrgID  int64
+	UserID int64
+	// EstBillable is the pre-flight hold in billable tokens (see credits.go).
+	EstBillable int64
+	// BucketCap is the member's own quota in billable tokens; Unlimited to skip
+	// the soft tier (the request is then always sourced from the pool).
+	BucketCap int64
+	// PoolCap is the team's remaining allowance in billable tokens; Unlimited
+	// only for a plan with no credit allowance at all. It INCLUDES anything the
+	// team bought this period — purchased credits raise the hard cap.
+	PoolCap int64
+	// PurchasedCap is how much of PoolCap came from PURCHASED credits rather than
+	// from the plan (billable tokens; 0 when the team bought nothing).
+	//
+	// It gates nothing. Subtracted from PoolCap it gives the line at which a
+	// charge stops being "what the subscription paid for" and becomes "what the
+	// admin bought", which is what the ledger records and what the dashboard
+	// reports back to the buyer. Expressed as the purchased amount rather than as
+	// that line so the ZERO VALUE is correct: a caller that knows nothing about
+	// purchased credits can never accidentally label plan usage as purchased.
+	PurchasedCap  int64
+	PeriodTTLSec  int
+	PeriodID      string
+	MaxConcurrent int
+	MaxReq5h      int
+}
+
+// OrgReserveResult reports the decision plus which tier paid.
+type OrgReserveResult struct {
+	OK     bool
+	Reason string // "ok" | "concurrency" | "requests" | "pool_limit"
+	// Source is "bucket" when the member's own quota covered the hold, "pool"
+	// when it overflowed into the plan's shared allowance, and "extra" when it
+	// went past that into credits the team bought. Recorded on the ledger.
+	Source     string
+	UsedBucket int64
+	UsedPool   int64
+	ResetPool  int64 // seconds until the pool counter resets; <0 if none
+}
+
+// orgReserveScript enforces the abuse caps, then the POOL (hard cap), then
+// classifies the charge as bucket vs pool vs extra. Both counters are incremented
+// on every accepted request.
+//
+// KEYS = [memberUsed, conc, req5h, poolUsed, memberPeriodID]
+// ARGV = [est, bucketCap, poolCap, maxConc, maxReq5h, win5h, concTTL, periodTTL, periodID, planPoolCap]
+var orgReserveScript = redis.NewScript(`
+local est=tonumber(ARGV[1]); local bcap=tonumber(ARGV[2]); local pcap=tonumber(ARGV[3])
+local maxc=tonumber(ARGV[4]); local maxr=tonumber(ARGV[5])
+local win5=tonumber(ARGV[6]); local cttl=tonumber(ARGV[7]); local pttl=tonumber(ARGV[8])
+local pid=ARGV[9]
+local plancap=tonumber(ARGV[10] or '-1')
+
+-- A renewal moves the period id: zero the member's bucket counter so the new
+-- period starts with a full quota instead of inheriting an exhausted count. The
+-- pool counter is NOT reset here — it is re-seeded from MySQL (which the renewal
+-- wrote) by EnsureOrgPoolUsed, so the durable number always wins.
+if pid ~= '' and redis.call('GET',KEYS[5]) ~= pid then
+  redis.call('SET',KEYS[1],'0')
+  redis.call('SET',KEYS[5],pid)
+  if pttl>0 then
+    redis.call('EXPIRE',KEYS[1],pttl)
+    redis.call('EXPIRE',KEYS[5],pttl)
+  end
+end
+
+local ub=tonumber(redis.call('GET',KEYS[1]) or '0')
+local conc=tonumber(redis.call('GET',KEYS[2]) or '0')
+local req=tonumber(redis.call('GET',KEYS[3]) or '0')
+local up=tonumber(redis.call('GET',KEYS[4]) or '0')
+
+local function deny(reason) return {0,reason,'',ub,up,redis.call('TTL',KEYS[4])} end
+
+if maxc>0 and conc>=maxc then return deny('concurrency') end
+if maxr>0 and req>=maxr then return deny('requests') end
+
+-- The pool is the only hard limit: when it cannot cover the hold, nobody on the
+-- team can spend, no matter what their personal quota says. pcap already includes
+-- whatever credits the team bought this period.
+if pcap>=0 and up+est>pcap then return deny('pool_limit') end
+
+local source='pool'
+if bcap<0 or ub+est<=bcap then source='bucket' end
+-- Past the plan's own allowance the team is spending what it BOUGHT. Reported so
+-- the ledger (and the admin) can tell subscription usage from purchased usage.
+-- Deliberately overrides 'bucket': the member's soft quota says who may spend,
+-- while this says whose money it was.
+if plancap>=0 and up+est>plancap then source='extra' end
+
+ub=redis.call('INCRBY',KEYS[1],est)
+if ub==est and pttl>0 then redis.call('EXPIRE',KEYS[1],pttl) end
+up=redis.call('INCRBY',KEYS[4],est)
+if up==est and pttl>0 then redis.call('EXPIRE',KEYS[4],pttl) end
+
+redis.call('INCR',KEYS[2]); redis.call('EXPIRE',KEYS[2],cttl)
+local nr=redis.call('INCR',KEYS[3]); if nr==1 then redis.call('EXPIRE',KEYS[3],win5) end
+return {1,'ok',source,ub,up,redis.call('TTL',KEYS[4])}
+`)
+
+// orgSettleScript reconciles a team reservation to actuals on BOTH counters and
+// releases the member's concurrency slot.
+// KEYS = [memberUsed, conc, poolUsed]; ARGV = [est, actual]
+var orgSettleScript = redis.NewScript(`
+local est=tonumber(ARGV[1]); local actual=tonumber(ARGV[2])
+local d=actual-est
+redis.call('INCRBY',KEYS[1],d)
+redis.call('INCRBY',KEYS[3],d)
+-- A refund must never leave a negative counter behind (it would read as free
+-- credits for the rest of the period).
+if tonumber(redis.call('GET',KEYS[1]) or '0')<0 then redis.call('SET',KEYS[1],0) end
+if tonumber(redis.call('GET',KEYS[3]) or '0')<0 then redis.call('SET',KEYS[3],0) end
+local c=redis.call('DECR',KEYS[2]); if c<0 then redis.call('SET',KEYS[2],0) end
+return 1
+`)
+
+// EnsureOrgPoolUsed seeds the Redis pool counter from the DURABLE MySQL value if
+// it is absent. Without this, a gateway restart mid-period would start the pool
+// back at zero and over-grant the team; with it, MySQL is the source of truth on
+// every cold start and Redis is only the fast path in between.
+func (l *Limiter) EnsureOrgPoolUsed(ctx context.Context, orgID, usedFromDB int64, ttlSec int) error {
+	if ttlSec <= 0 {
+		ttlSec = int((30 * 24 * time.Hour).Seconds())
+	}
+	k := orgKeys(orgID, 0)
+	return l.rdb.SetNX(ctx, k[3], usedFromDB, time.Duration(ttlSec)*time.Second).Err()
+}
+
+// EnsureOrgBucketUsed seeds a member's bucket counter from MySQL (quota minus
+// what is left) for the same reason as EnsureOrgPoolUsed.
+func (l *Limiter) EnsureOrgBucketUsed(ctx context.Context, orgID, userID, usedFromDB int64, ttlSec int) error {
+	if ttlSec <= 0 {
+		ttlSec = int((30 * 24 * time.Hour).Seconds())
+	}
+	k := orgKeys(orgID, userID)
+	return l.rdb.SetNX(ctx, k[0], usedFromDB, time.Duration(ttlSec)*time.Second).Err()
+}
+
+// ReserveOrg holds EstBillable against the member's bucket and the org pool.
+func (l *Limiter) ReserveOrg(ctx context.Context, p OrgReserveParams) (OrgReserveResult, error) {
+	pttl := p.PeriodTTLSec
+	if pttl <= 0 {
+		pttl = int((30 * 24 * time.Hour).Seconds())
+	}
+	// The plan's own allowance = the cap minus what was bought. An unlimited pool
+	// has no such line (nothing can overflow into purchased credits), so it stays
+	// Unlimited and the script never labels a charge "extra".
+	planCap := Unlimited
+	if p.PoolCap >= 0 {
+		planCap = p.PoolCap - p.PurchasedCap
+		if planCap < 0 {
+			planCap = 0
+		}
+	}
+	raw, err := orgReserveScript.Run(ctx, l.rdb, orgKeys(p.OrgID, p.UserID),
+		p.EstBillable, p.BucketCap, p.PoolCap, p.MaxConcurrent, p.MaxReq5h,
+		int(l.win5h.Seconds()), int(l.concTTL.Seconds()), pttl, p.PeriodID,
+		planCap,
+	).Result()
+	if err != nil {
+		return OrgReserveResult{}, err
+	}
+	arr, ok := raw.([]any)
+	if !ok || len(arr) < 6 {
+		return OrgReserveResult{}, fmt.Errorf("unexpected org reserve reply: %v", raw)
+	}
+	reason, _ := arr[1].(string)
+	source, _ := arr[2].(string)
+	return OrgReserveResult{
+		OK:         toInt(arr[0]) == 1,
+		Reason:     reason,
+		Source:     source,
+		UsedBucket: toInt(arr[3]),
+		UsedPool:   toInt(arr[4]),
+		ResetPool:  toInt(arr[5]),
+	}, nil
+}
+
+// SettleOrg reconciles a team reservation to the actual billable tokens consumed
+// and frees the member's concurrency slot. Use a background context.
+func (l *Limiter) SettleOrg(ctx context.Context, orgID, userID, estBillable, actualBillable int64) error {
+	k := orgKeys(orgID, userID)
+	return orgSettleScript.Run(ctx, l.rdb, []string{k[0], k[1], k[3]}, estBillable, actualBillable).Err()
+}
+
+// ReleaseOrg refunds a team reservation entirely (actual = 0).
+func (l *Limiter) ReleaseOrg(ctx context.Context, orgID, userID, estBillable int64) error {
+	return l.SettleOrg(ctx, orgID, userID, estBillable, 0)
+}
+
+// OrgStatus is the live team usage for one member (GET /v1/credits).
+type OrgStatus struct {
+	UsedBucket int64
+	UsedPool   int64
+	ResetPool  int64 // seconds until the pool counter resets; -1 when unset
+}
+
+// OrgStatus reads the member's bucket counter and the org pool counter.
+func (l *Limiter) OrgStatus(ctx context.Context, orgID, userID int64) (OrgStatus, error) {
+	k := orgKeys(orgID, userID)
+	pipe := l.rdb.Pipeline()
+	gb := pipe.Get(ctx, k[0])
+	gp := pipe.Get(ctx, k[3])
+	tp := pipe.TTL(ctx, k[3])
+	_, _ = pipe.Exec(ctx) // redis.Nil for a missing key is expected
+
+	out := OrgStatus{ResetPool: -1}
+	if v, err := gb.Int64(); err == nil {
+		out.UsedBucket = v
+	}
+	if v, err := gp.Int64(); err == nil {
+		out.UsedPool = v
+	}
+	if d, err := tp.Result(); err == nil && d > 0 {
+		out.ResetPool = int64(d.Seconds())
+	}
+	return out, nil
+}
+
 // --- Per-day turn cap (maxDailyTurns) -------------------------------------
 //
 // A separate, simpler limiter than the credit balance: it counts "turns"

@@ -11,6 +11,7 @@ import TextInput from './TextInput.js'
 import { PRODUCT_NAME } from '../constants/product.js'
 import {
   type RayuProvider,
+  type WireFormat,
   fetchProviderModels,
   getProviderApiKeys,
   isLikelyChatModel,
@@ -24,6 +25,7 @@ import {
   PROVIDER_PRESETS,
   type ProviderPreset,
   BEDROCK_REGIONS,
+  CLAUDE_SUBSCRIPTION_PROVIDER_ID,
   DEFAULT_BEDROCK_REGION,
   bedrockBaseURL,
   ollamaBaseURL,
@@ -40,7 +42,14 @@ import {
   isKnownAzureHost,
   validateAzureEndpoint,
 } from '../services/api/azureFoundry.js'
+import {
+  isProviderIdTaken,
+  normalizeCustomProviderId,
+  parseCustomModelIds,
+  validateCustomBaseURL,
+} from '../utils/customProvider.js'
 import { MultiApiKeyManager } from './MultiApiKeyManager.js'
+import { ConsoleOAuthFlow } from './ConsoleOAuthFlow.js'
 
 type Preset = ProviderPreset
 const PRESETS = PROVIDER_PRESETS
@@ -60,6 +69,12 @@ type Phase =
   | 'pickModel'
   | 'azureResource'
   | 'azureFetching'
+  | 'customName'
+  | 'customFormat'
+  | 'customBaseURL'
+  | 'customModels'
+  | 'customCapabilities'
+  | 'customImage'
   | 'vertexAuth'
   | 'vertexProject'
   | 'vertexRegion'
@@ -70,11 +85,19 @@ type Phase =
   | 'kiroApiKey'
   | 'kiroLogin'
   | 'copilotLogin'
+  // Claude.ai paid-subscription (Pro / Max plan) OAuth sign-in + its status view.
+  | 'claudeLogin'
+  | 'claudeStatus'
 
 export function RayuProviderSetup({
   onDone,
 }: {
-  onDone: () => void
+  /**
+   * Called when the wizard finishes (or is cancelled). `authChanged` is true when
+   * the step altered the session's AUTH (currently: a Claude.ai subscription
+   * sign-in or sign-out), so the caller can run the post-auth refresh sequence.
+   */
+  onDone: (info?: { authChanged?: boolean }) => void
 }): React.ReactNode {
   const [phase, setPhase] = useState<Phase>('pick')
   const [preset, setPreset] = useState<Preset | null>(null)
@@ -91,6 +114,12 @@ export function RayuProviderSetup({
   const [fetchError, setFetchError] = useState<string | null>(null)
   // Azure (Foundry) state: the resource name or full endpoint URL.
   const [azureResource, setAzureResource] = useState('')
+  // Custom (user-defined) provider state.
+  const [customName, setCustomName] = useState('')
+  const [customFormat, setCustomFormat] = useState<WireFormat>('openai-chat')
+  const [customModels, setCustomModels] = useState('')
+  const [customSupportsThinking, setCustomSupportsThinking] = useState(true)
+  const [customSupportsImage, setCustomSupportsImage] = useState(true)
   // Vertex (Gemini OAuth) state
   const [vertexProject, setVertexProject] = useState('')
   const [vertexRegion, setVertexRegion] = useState(DEFAULT_VERTEX_REGION)
@@ -115,6 +144,15 @@ export function RayuProviderSetup({
   } | null>(null)
   const [copilotError, setCopilotError] = useState<string | null>(null)
   const [copilotAttempt, setCopilotAttempt] = useState(0)
+  // Claude.ai paid-subscription login state. The status snapshot is read lazily
+  // (only when the user selects that preset) so the OAuth modules and the
+  // credential store are never touched on the normal /connect path.
+  const [claudeStatus, setClaudeStatus] = useState<{
+    plan: string
+    rateLimitTier: string | null
+    emailAddress?: string
+  } | null>(null)
+  const [claudeAttempt, setClaudeAttempt] = useState(0)
 
   function pick(p: Preset): void {
     setPreset(p)
@@ -128,11 +166,40 @@ export function RayuProviderSetup({
     if (p.id === 'ollama') {
       setFetchError(null)
       setPhase('ollamaDetect')
+    } else if (p.id === CLAUDE_SUBSCRIPTION_PROVIDER_ID) {
+      // "Login with Claude (Pro plan / Max plan)". If a subscription login already
+      // exists, show its status (plan + rate-limit tier + log out) instead of
+      // silently re-running the browser flow. Must be checked BEFORE the generic
+      // `requiresOAuth` branch below, which is the Google/Vertex path.
+      setFetchError(null)
+      void (async () => {
+        const { getClaudeSubscriptionStatus, subscriptionPlanLabel } =
+          await import('../services/oauth/claudeAiLogin.js')
+        const status = getClaudeSubscriptionStatus()
+        if (!status.signedIn) {
+          setClaudeStatus(null)
+          setClaudeAttempt(n => n + 1)
+          setPhase('claudeLogin')
+          return
+        }
+        setClaudeStatus({
+          plan: subscriptionPlanLabel(status.subscriptionType),
+          rateLimitTier: status.rateLimitTier,
+          ...(status.emailAddress ? { emailAddress: status.emailAddress } : {}),
+        })
+        setPhase('claudeStatus')
+      })()
     } else if (p.kind === 'azure') {
       // Azure needs the resource/endpoint before the key so the key is only ever
       // sent to a validated host.
       setFetchError(null)
       setPhase('azureResource')
+    } else if (p.kind === 'custom') {
+      // Everything is user-supplied: name → format → base URL → key → models →
+      // capabilities. The base URL is validated before the key step, so a
+      // credential is never entered for an endpoint we would refuse.
+      setFetchError(null)
+      setPhase('customName')
     } else if (p.kind === 'kiro') {
       setKiroError(null)
       setPhase('kiroChoice')
@@ -302,6 +369,46 @@ export function RayuProviderSetup({
       cancelled = true
     }
   }, [phase])
+
+  /**
+   * Persist a user-defined provider. Every field was validated in its own phase,
+   * so this only assembles and saves. The chosen wireFormat is stored explicitly —
+   * it is the highest-precedence input to resolveWireFormat(), which is what lets a
+   * brand-new provider work with no code change.
+   */
+  function finishCustom(supportsImage: boolean): void {    const idCheck = normalizeCustomProviderId(customName)
+    const urlCheck = validateCustomBaseURL(baseURL)
+    const modelsCheck = parseCustomModelIds(customModels)
+    if (!idCheck.ok || !urlCheck.ok || !modelsCheck.ok) {
+      // Unreachable via the wizard (each phase validates before advancing); guard
+      // so a malformed value can never be persisted.
+      setFetchError(
+        (!idCheck.ok && idCheck.reason) ||
+          (!urlCheck.ok && urlCheck.reason) ||
+          (!modelsCheck.ok && modelsCheck.reason) ||
+          'Invalid provider details.',
+      )
+      setPhase('customName')
+      return
+    }
+    const models = modelsCheck.value
+    const provider: RayuProvider = {
+      id: idCheck.value,
+      kind: 'custom',
+      label: customName.trim(),
+      wireFormat: customFormat,
+      baseURL: urlCheck.value,
+      apiKey: apiKey.trim() || undefined,
+      models,
+      fetchedModels: models,
+      defaultModel: models[0],
+      // Only the negative case is stored as an override; see RayuProvider docs.
+      ...(customSupportsThinking ? {} : { supportsThinking: false }),
+      ...(supportsImage ? {} : { supportsImage: false }),
+    }
+    upsertProvider(provider, true)
+    onDone()
+  }
 
   // Persist the Gemini/Vertex provider (kind 'vertex') with the chosen GCP
   // project + region. Model selection is handled afterwards by the shared
@@ -1080,6 +1187,77 @@ export function RayuProviderSetup({
     )
   }
 
+  if (phase === 'claudeLogin') {
+    // The OAuth flow component owns the browser/manual paste UX; on success it
+    // has already installed the 'claude-subscription' provider and made it
+    // active, so we only have to report that AUTH changed.
+    return (
+      <ConsoleOAuthFlow
+        key={claudeAttempt}
+        loginWithClaudeAi
+        startingMessage="Signing in with your Claude subscription (Pro plan / Max plan)."
+        onDone={(success: boolean) => {
+          if (success) onDone({ authChanged: true })
+          else setPhase('pick')
+        }}
+      />
+    )
+  }
+
+  if (phase === 'claudeStatus' && claudeStatus) {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Signed in with {claudeStatus.plan}</Text>
+        <Text dimColor>
+          {claudeStatus.emailAddress
+            ? `Account: ${claudeStatus.emailAddress}`
+            : 'Account: (email unavailable)'}
+          {claudeStatus.rateLimitTier
+            ? ` · rate-limit tier: ${claudeStatus.rateLimitTier}`
+            : ''}
+        </Text>
+        <Text dimColor>
+          Claude requests use this subscription directly — Anthropic bills your
+          plan, no Rayu credits are used.
+        </Text>
+        {fetchError ? <Text color="yellow">{fetchError}</Text> : null}
+        <Select
+          options={[
+            { label: 'Use this login — pick a model', value: 'use' },
+            { label: 'Sign in again (browser)', value: 'relogin' },
+            { label: 'Log out / forget this Claude login', value: 'logout' },
+            { label: 'Cancel', value: 'cancel' },
+          ]}
+          onChange={(v: string) => {
+            if (v === 'use') {
+              // Re-activate in case another provider was selected since login.
+              void (async () => {
+                const { setActiveProvider } = await import(
+                  '../utils/rayuConfig.js'
+                )
+                setActiveProvider(CLAUDE_SUBSCRIPTION_PROVIDER_ID)
+                onDone({ authChanged: true })
+              })()
+            } else if (v === 'relogin') {
+              setClaudeAttempt(n => n + 1)
+              setPhase('claudeLogin')
+            } else if (v === 'logout') {
+              void (async () => {
+                const { logoutClaudeSubscription } = await import(
+                  '../services/oauth/claudeAiLogin.js'
+                )
+                logoutClaudeSubscription()
+                setClaudeStatus(null)
+                onDone({ authChanged: true })
+              })()
+            } else onDone()
+          }}
+          onCancel={() => setPhase('pick')}
+        />
+      </Box>
+    )
+  }
+
   if (phase === 'baseURL') {
     return (
       <Box flexDirection="column" gap={1} paddingLeft={1}>
@@ -1262,6 +1440,198 @@ export function RayuProviderSetup({
     )
   }
 
+  if (phase === 'customName') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Provider name</Text>
+        <Text dimColor>
+          Shown in /model and /status. The saved id is derived from it (lower-case,
+          hyphenated).
+        </Text>
+        {fetchError ? <Text color="yellow">{fetchError}</Text> : null}
+        <TextInput
+          value={customName}
+          onChange={setCustomName}
+          onSubmit={() => {
+            const check = normalizeCustomProviderId(customName)
+            if (!check.ok) {
+              setFetchError(check.reason)
+              return
+            }
+            if (isProviderIdTaken(check.value, loadRayuConfig().providers)) {
+              setFetchError(
+                `A provider with id "${check.value}" already exists. Pick a different name.`,
+              )
+              return
+            }
+            setFetchError(null)
+            setPhase('customFormat')
+          }}
+          placeholder="My Endpoint"
+          columns={80}
+          cursorOffset={cursor}
+          onChangeCursorOffset={setCursor}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'customFormat') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>API format</Text>
+        <Text dimColor>
+          Which wire protocol the endpoint speaks. This is the only thing Rayu needs
+          to talk to a provider it has never seen.
+        </Text>
+        <Select
+          options={[
+            {
+              label: 'OpenAI Chat Completions — POST /chat/completions (most common)',
+              value: 'openai-chat',
+            },
+            {
+              label: 'OpenAI Responses — POST /responses (GPT-5 era, reasoning items)',
+              value: 'openai-responses',
+            },
+            {
+              label: 'Anthropic Messages — POST /v1/messages (Claude-compatible)',
+              value: 'anthropic-messages',
+            },
+            {
+              label: 'Google GenAI — generateContent (not yet supported for custom endpoints)',
+              value: 'genai',
+            },
+          ]}
+          onChange={(v: string) => {
+            setCustomFormat(v as WireFormat)
+            setFetchError(
+              v === 'genai'
+                ? 'Note: the GenAI clients are bound to Vertex / Code Assist authentication, so a custom GenAI endpoint cannot be served yet. Pick another format, or use /connect → Google Gemini.'
+                : null,
+            )
+            setPhase('customBaseURL')
+          }}
+          onCancel={onDone}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'customBaseURL') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Base URL</Text>
+        <Text dimColor>
+          {customFormat === 'anthropic-messages'
+            ? 'Rayu appends /v1/messages — e.g. https://api.example.com'
+            : customFormat === 'openai-responses'
+              ? 'Rayu appends /responses — e.g. https://api.example.com/v1'
+              : 'Rayu appends /chat/completions — e.g. https://api.example.com/v1'}
+        </Text>
+        {fetchError ? <Text color="yellow">{fetchError}</Text> : null}
+        <TextInput
+          value={baseURL}
+          onChange={setBaseURL}
+          onSubmit={() => {
+            // Validated BEFORE the key step so a credential is never entered for
+            // (or sent to) an endpoint we would refuse.
+            const check = validateCustomBaseURL(baseURL)
+            if (!check.ok) {
+              setFetchError(check.reason)
+              return
+            }
+            setFetchError(null)
+            setPhase('customModels')
+          }}
+          placeholder="https://api.example.com/v1"
+          columns={80}
+          cursorOffset={cursor}
+          onChangeCursorOffset={setCursor}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'customModels') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Model ids</Text>
+        <Text dimColor>
+          One or more, separated by commas or spaces. The first becomes the default.
+          These are the exact strings sent to the endpoint.
+        </Text>
+        {fetchError ? <Text color="yellow">{fetchError}</Text> : null}
+        <TextInput
+          value={customModels}
+          onChange={setCustomModels}
+          onSubmit={() => {
+            const check = parseCustomModelIds(customModels)
+            if (!check.ok) {
+              setFetchError(check.reason)
+              return
+            }
+            setFetchError(null)
+            setPhase('customCapabilities')
+          }}
+          placeholder="my-model-large, my-model-small"
+          columns={80}
+          cursorOffset={cursor}
+          onChangeCursorOffset={setCursor}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'customCapabilities') {
+    // Two quick declarations. Both only ever SUPPRESS a request feature, so a
+    // "no" can never break a working endpoint — it stops Rayu sending a parameter
+    // the endpoint would reject.
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Does this endpoint support thinking / reasoning?</Text>
+        <Text dimColor>
+          "No" stops Rayu sending the thinking and effort parameters, which some
+          endpoints reject with a 400.
+        </Text>
+        <Select
+          options={[
+            { label: 'Yes — it accepts reasoning parameters', value: 'yes' },
+            { label: 'No — text only, never send them', value: 'no' },
+          ]}
+          onChange={(v: string) => {
+            setCustomSupportsThinking(v === 'yes')
+            setPhase('customImage')
+          }}
+          onCancel={onDone}
+        />
+      </Box>
+    )
+  }
+
+  if (phase === 'customImage') {
+    return (
+      <Box flexDirection="column" gap={1} paddingLeft={1}>
+        <Text bold>Does this endpoint accept images?</Text>
+        <Text dimColor>
+          "No" makes Rayu drop image content instead of sending it — screenshots and
+          pasted images are skipped rather than failing the turn.
+        </Text>
+        <Select
+          options={[
+            { label: 'Yes — it accepts image content', value: 'yes' },
+            { label: 'No — text only', value: 'no' },
+          ]}
+          onChange={(v: string) => {
+            setCustomSupportsImage(v === 'yes')
+            setPhase('key')
+          }}
+          onCancel={onDone}
+        />
+      </Box>
+    )
+  }
+
   if (phase === 'azureResource') {
     return (
       <Box flexDirection="column" gap={1} paddingLeft={1}>
@@ -1410,6 +1780,7 @@ export function RayuProviderSetup({
   // Bedrock API key (bearer token); submitting advances to region selection.
   const isBedrock = preset?.kind === 'bedrock'
   const isAzure = preset?.kind === 'azure'
+  const isCustom = preset?.kind === 'custom'
   const isOllamaCloud = preset?.id === 'ollama-cloud'
   // Multi-key provider (NVIDIA / OpenRouter) but the Basic-plan entitlement is
   // NOT granted → single-key input + an upgrade hint (we only reach here when
@@ -1441,9 +1812,11 @@ export function RayuProviderSetup({
             ? setPhase('region')
             : isAzure
               ? setPhase('azureFetching')
-              : isOllamaCloud
-                ? setPhase('ollamaCloudFetching')
-                : finish(apiKey)
+              : isCustom
+                ? finishCustom(customSupportsImage)
+                : isOllamaCloud
+                  ? setPhase('ollamaCloudFetching')
+                  : finish(apiKey)
         }
         mask="*"
         placeholder={
@@ -1451,9 +1824,11 @@ export function RayuProviderSetup({
             ? 'ABSK...'
             : isAzure
               ? 'your Azure resource API key'
-              : isOllamaCloud
-                ? 'your ollama.com API key'
-                : 'sk-...'
+              : isCustom
+                ? 'the endpoint API key (Enter to skip if none)'
+                : isOllamaCloud
+                  ? 'your ollama.com API key'
+                  : 'sk-...'
         }
         columns={80}
         cursorOffset={cursor}

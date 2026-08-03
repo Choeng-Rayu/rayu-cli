@@ -5,6 +5,7 @@ package entitlements
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -53,9 +54,12 @@ type Cache struct {
 	// ONCE per refresh here, never on the request path.
 	keys *providerkeys.Registry
 
-	mu       sync.RWMutex
-	models   []store.HostedModel
-	settings store.AppSettings
+	mu     sync.RWMutex
+	models []store.HostedModel
+	// mediaModels is the image/video generation catalog. Snapshotted alongside the
+	// chat models so serving it costs a memory read, exactly like /v1/models.
+	mediaModels []store.MediaModel
+	settings    store.AppSettings
 	// routes is the validated provider registry, keyed by provider id, rebuilt on
 	// every refresh. Building it here (rather than per request) means a request
 	// never re-reads the environment, re-parses a URL, or re-validates a row.
@@ -211,6 +215,14 @@ func (c *Cache) reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The MEDIA catalog is best-effort: a database that predates the media_models
+	// migration must not stop the gateway from serving chat traffic. A load
+	// failure leaves the previous snapshot in place and the CLI falls back to its
+	// documented offline behaviour instead of the whole gateway going down.
+	mediaModels, mediaErr := c.st.LoadMediaModels(ctx)
+	if mediaErr != nil {
+		log.Printf("entitlements: media model catalog unavailable, keeping last snapshot: %v", mediaErr)
+	}
 	providers, err := c.st.LoadProviders(ctx)
 	if err != nil {
 		return err
@@ -253,6 +265,9 @@ func (c *Cache) reload(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	c.models = models
+	if mediaErr == nil {
+		c.mediaModels = mediaModels
+	}
 	c.settings = settings
 	c.routes = routes
 	c.mu.Unlock()
@@ -288,6 +303,43 @@ func (c *Cache) Models() []store.HostedModel {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.models
+}
+
+// MediaModels returns the cached image/video generation catalog.
+func (c *Cache) MediaModels() []store.MediaModel {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.mediaModels
+}
+
+// AllowedMediaModels returns the ENABLED media models a plan may use, optionally
+// narrowed to one media type ("image" / "video"; empty means both).
+//
+// An EMPTY allowedPlanCodes means EVERY plan — the opposite of the chat catalog's
+// rule. Media generation is gated by the per-plan image_generation /
+// video_generation feature flags, so an unrestricted model is the normal case and
+// reading an empty list as "nobody" would hide the whole catalog.
+func AllowedMediaModels(models []store.MediaModel, planCode, mediaType string) []store.MediaModel {
+	out := []store.MediaModel{}
+	for _, m := range models {
+		if !m.Enabled {
+			continue
+		}
+		if mediaType != "" && m.MediaType != mediaType {
+			continue
+		}
+		if len(m.AllowedPlanCodes) == 0 {
+			out = append(out, m)
+			continue
+		}
+		for _, pc := range m.AllowedPlanCodes {
+			if pc == planCode {
+				out = append(out, m)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // ModelByCode finds a cached model by its Rayu code.

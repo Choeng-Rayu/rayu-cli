@@ -20,6 +20,7 @@ import {
   IsIn,
   IsInt,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
   Max,
@@ -28,11 +29,19 @@ import {
   ValidateIf,
 } from 'class-validator'
 import {
+  MEDIA_BACKENDS,
+  MEDIA_CAPABILITIES,
+  MEDIA_FAMILIES,
+  MEDIA_TYPES,
   PLAN_AVAILABILITY,
   PLAN_CODES,
   PROVIDER_AUTH_SCHEMES,
   PROVIDER_FORMATS,
   USER_STATUSES,
+  type MediaBackend,
+  type MediaCapability,
+  type MediaFamily,
+  type MediaType,
   type PlanAvailability,
   type PlanCode,
   type ProviderAuthScheme,
@@ -44,12 +53,16 @@ import { AuthModule } from '../auth/auth.module'
 import { RayuAuthGuard } from '../auth/rayu-auth.guard'
 import { Roles } from '../auth/roles.decorator'
 import { RolesGuard } from '../auth/roles.guard'
+import { MediaModelsModule } from '../media-models/media-models.module'
+import { MediaModelsService } from '../media-models/media-models.service'
 import { ModelsModule } from '../models/models.module'
 import { ModelsService } from '../models/models.service'
 import { PlansModule } from '../plans/plans.module'
 import { ProvidersModule } from '../providers/providers.module'
 import { ProvidersService } from '../providers/providers.service'
 import { PromoModule } from '../promo/promo.module'
+import { PaymentsModule } from '../payments/payments.module'
+import { PaymentsService } from '../payments/payments.service'
 import {
   DISCOUNT_TYPES,
   type DiscountType,
@@ -231,6 +244,95 @@ export class CreateModelDto extends ModelFieldsDto {
 
 export class UpdateModelDto extends ModelFieldsDto {}
 
+// --- Media (image / video) generation catalog ---------------------------------
+// The CLI's image/video model lists come from here (via the gateway), so this is
+// the whole surface for "add a new image model" — no CLI release involved.
+//
+// SECURITY: metadata only. There is deliberately no key, no base URL, and no
+// billing rate: the CLI calls NVIDIA / Vertex / fal directly with the USER's key.
+class MediaModelFieldsDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  label?: string
+
+  @IsOptional()
+  @IsIn(MEDIA_TYPES as unknown as string[])
+  mediaType?: MediaType
+
+  // At least one capability, each valid for the media type (cross-checked in
+  // MediaModelsService — an image model cannot claim "text2video").
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsIn(MEDIA_CAPABILITIES as unknown as string[], { each: true })
+  capabilities?: MediaCapability[]
+
+  @IsOptional()
+  @IsIn(MEDIA_BACKENDS as unknown as string[])
+  backend?: MediaBackend
+
+  // Constrained to the families the CLI actually has a request builder for: a
+  // free-text family would create a catalog row no client can use.
+  @IsOptional()
+  @IsIn(MEDIA_FAMILIES as unknown as string[])
+  family?: MediaFamily
+
+  // NVCF function UUID (video on the `nvcf` backend). Explicit null clears it.
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @MaxLength(64)
+  nvcfFunctionId?: string | null
+
+  // Rough generation time for the CLI's wait message. Capped at an hour so a
+  // typo can't tell users to wait a week.
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsInt()
+  @Min(1)
+  @Max(3600)
+  estimatedSeconds?: number | null
+
+  // Per-model request defaults merged into the family body builder, e.g.
+  // { "cfg_scale": 0, "steps": 4 }. Explicit null clears it.
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsObject()
+  defaultParams?: Record<string, unknown> | null
+
+  // EMPTY array = every plan (media generation is gated by the
+  // image_generation / video_generation feature flags, not per-model).
+  @IsOptional()
+  @IsArray()
+  @IsIn(PLAN_CODES as unknown as string[], { each: true })
+  allowedPlanCodes?: string[]
+
+  @IsOptional()
+  @IsBoolean()
+  isDefault?: boolean
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100_000)
+  sortOrder?: number
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean
+}
+
+export class CreateMediaModelDto extends MediaModelFieldsDto {
+  // Upstream ids are slash-paths (e.g. "fal-ai/kling-video/v2.1/standard/…"),
+  // hence the wider limit than a chat model code.
+  @IsString()
+  @MaxLength(191)
+  code!: string
+}
+
+export class UpdateMediaModelDto extends MediaModelFieldsDto {}
+
 // --- Provider registry (admin-managed upstreams) ------------------------------
 // SECURITY: there is deliberately NO apiKey field here. Keys are managed through
 // the separate /admin/providers/:name/keys routes below, which encrypt on write
@@ -394,6 +496,15 @@ export class UpdateSettingsDto {
   infraCostCentsPerUser?: number
 }
 
+// Clawback of a paid top-up. `ref` is the payment-processor reference for the
+// refund (ABA reversal id, Stripe refund id) recorded on the payment row.
+export class RefundTopupDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  ref?: string
+}
+
 // Promo/discount code CRUD. discountType percent (0-100) or fixed (cents off);
 // appliesToPlans null/[] = all plans; maxRedemptions null = unlimited. Dates are
 // ISO strings (or null); the service validates + parses them.
@@ -499,9 +610,14 @@ export class AdminController {
   constructor(
     private readonly admin: AdminService,
     private readonly models: ModelsService,
+    // Image/video generation catalog. Codes are slash-paths, so the :code path
+    // param must be URL-encoded by the caller (e.g.
+    // black-forest-labs%2Fflux.1-schnell).
+    private readonly mediaModels: MediaModelsService,
     private readonly settings: AppSettingsService,
     private readonly promo: PromoService,
     private readonly providers: ProvidersService,
+    private readonly payments: PaymentsService,
   ) {}
 
   @Get('users')
@@ -724,6 +840,33 @@ export class AdminController {
     return this.models.remove(code)
   }
 
+  // --- Media (image / video) generation catalog ---
+  // This is the CLI's source of truth for image/video models: adding a row here
+  // makes the model appear in the CLI (next catalog refresh) with no release.
+
+  @Get('media-models')
+  listMediaModels() {
+    return this.mediaModels.findAll()
+  }
+
+  @Post('media-models')
+  createMediaModel(@Body() body: CreateMediaModelDto) {
+    return this.mediaModels.create(body)
+  }
+
+  @Patch('media-models/:code')
+  updateMediaModel(
+    @Param('code') code: string,
+    @Body() body: UpdateMediaModelDto,
+  ) {
+    return this.mediaModels.update(code, body)
+  }
+
+  @Delete('media-models/:code')
+  deleteMediaModel(@Param('code') code: string) {
+    return this.mediaModels.remove(code)
+  }
+
   // --- Promo / discount codes ---
 
   @Get('promo-codes')
@@ -760,6 +903,21 @@ export class AdminController {
   updateCreditSettings(@Body() body: UpdateSettingsDto) {
     return this.settings.update(body)
   }
+
+  // --- Top-up refunds -----------------------------------------------------
+  //
+  // Claw back a paid top-up. ABA transfers are reversed out-of-band (there is no
+  // webhook), so this is the operator's route to undo one; the Stripe
+  // `charge.refunded` handler will call the same PaymentsService.refundTopup
+  // when the card rail lands, keeping one clawback path for every rail.
+  // Idempotent: replaying it reports clawedBack=false and writes nothing.
+  @Post('payments/:id/refund-topup')
+  refundTopup(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: RefundTopupDto,
+  ) {
+    return this.payments.refundTopup(id, body.ref)
+  }
 }
 
 @Module({
@@ -770,9 +928,13 @@ export class AdminController {
     PrismaModule,
     PlansModule,
     ModelsModule,
+    MediaModelsModule,
     ProvidersModule,
     AppSettingsModule,
     PromoModule,
+    // For the top-up clawback endpoint: PaymentsService owns the single grant +
+    // refund path, so admin reuses it rather than writing rows itself.
+    PaymentsModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

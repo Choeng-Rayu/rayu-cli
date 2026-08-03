@@ -9,13 +9,8 @@ import { getImageModelSelection } from '../../utils/rayuConfig.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
-import {
-  DEFAULT_VERTEX_EDIT_MODEL,
-  DEFAULT_VERTEX_IMAGE_MODEL,
-  IMAGE_MODELS,
-  isVertexImageModel,
-  resolveModel,
-} from './models.js'
+import { ensureMediaModels } from '../../services/rayuAuth/mediaModels.js'
+import { isVertexImageModel, retainKnownImageModel } from './models.js'
 import { generateImage, getNvidiaApiKey } from './nvidiaImageClient.js'
 import {
   generateVertexImage,
@@ -34,10 +29,7 @@ import {
   paidFeatureUpgradeNote,
 } from '../../services/rayuAuth/paidFeatureGate.js'
 import { bumpFeatureUsage } from '../../services/rayuAuth/rayuFeatureUsage.js'
-
-/** Feature key + label for the soft paid-gate (see paidFeatureGate.ts). */
-const IMAGE_GEN_FEATURE = 'image_generation'
-const IMAGE_GEN_LABEL = 'image generation'
+import { IMAGE_GEN_FEATURE, IMAGE_GEN_LABEL } from './constants.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -52,9 +44,12 @@ const inputSchema = lazySchema(() =>
         'Where to save the PNG (inside the working directory). Default: ./generated-image-<timestamp>.png',
       ),
     model: z
-      .enum(Object.keys(IMAGE_MODELS) as [string, ...string[]])
+      .string()
       .optional()
-      .describe('Image model id; defaults to flux.1-schnell (or the edit model when input_image is set)'),
+      .describe(
+        'Image model id from the Rayu media catalog (see /model_image_generation). ' +
+          'Defaults to the catalog default for the operation (generate vs edit).',
+      ),
     width: z.number().int().optional(),
     height: z.number().int().optional(),
     aspect_ratio: z
@@ -196,6 +191,21 @@ export const ImageGenTool = buildTool({
         errorCode: 1,
       }
     }
+    // The model list is server-owned, so it cannot be a compile-time enum in the
+    // input schema. Validate against the live catalog instead, and name the
+    // available ids — the model asked for something that does not exist.
+    if (input.model) {
+      const catalog = await ensureMediaModels()
+      if (!retainKnownImageModel(catalog.image, input.model)) {
+        return {
+          result: false,
+          message:
+            `Unknown image model "${input.model}". Available: ` +
+            `${catalog.image.map((m) => m.id).join(', ') || '(none configured)'}`,
+          errorCode: 2,
+        }
+      }
+    }
     return { result: true }
   },
   async checkPermissions(_input): Promise<PermissionResult> {
@@ -238,15 +248,37 @@ export const ImageGenTool = buildTool({
         throw new Error(`input_image not found or unreadable: ${input.input_image}`)
       }
     }
-    // Resolve the model: explicit input wins, else the configured default from
-    // /model_image_generation, else the backend default (NVIDIA/Vertex).
-    const selectedModel = input.model ?? getImageModelSelection()
+    // The catalog is fetched lazily HERE (first tool use), not at import time, so
+    // CLI startup never waits on the gateway. Cached + TTL'd afterwards.
+    const catalog = await ensureMediaModels()
 
-    // Route to Vertex Imagen when an imagen model is selected, or when Vertex
-    // is the only configured image backend. Otherwise use the NVIDIA client.
-    const useVertex =
-      isVertexImageModel(selectedModel) ||
-      (isGeminiVertexImageAvailable() && getNvidiaApiKey() == null)
+    // Resolve the model: explicit input wins, else the configured default from
+    // /model_image_generation, else the catalog default for the backend.
+    //
+    // The remembered preference is dropped when it is no longer in the catalog (an
+    // admin removed it, a plan withdrew it, or we are offline on built-ins), so a
+    // choice made weeks ago cannot fail every generation. An EXPLICIT input.model
+    // was already rejected loudly by validateInput if unknown.
+    const selectedModel = retainKnownImageModel(
+      catalog.image,
+      input.model ?? getImageModelSelection(),
+    )
+
+    // Route to Vertex Imagen when the SELECTED model is Vertex-served, or — when
+    // nothing is selected — when Vertex is the only configured image backend.
+    //
+    // Routing by the selected model's own backend matters: deciding from
+    // availability alone would send an explicitly requested NVIDIA model to Vertex
+    // on a Vertex-only machine, silently generating with a different model. Routed
+    // this way, the NVIDIA client instead reports the missing NVIDIA key, which is
+    // the real problem.
+    const selectedEntry = selectedModel
+      ? catalog.image.find((m) => m.id === selectedModel)
+      : undefined
+    const useVertex = selectedEntry
+      ? selectedEntry.backend === 'vertex'
+      : isVertexImageModel(selectedModel, catalog.image) ||
+        (isGeminiVertexImageAvailable() && getNvidiaApiKey() == null)
 
     const genParams = {
       prompt: input.prompt,
@@ -260,35 +292,21 @@ export const ImageGenTool = buildTool({
       image,
     }
 
-    let buffer: Buffer
-    let mediaType: string
-    let usedModelId: string
-    if (useVertex) {
-      const r = await generateVertexImage({
-        modelId: selectedModel,
-        isEdit,
-        params: genParams,
-        signal: context.abortController.signal,
-      })
-      buffer = r.buffer
-      mediaType = r.mediaType
-      usedModelId =
-        selectedModel && isVertexImageModel(selectedModel)
-          ? selectedModel
-          : isEdit
-            ? DEFAULT_VERTEX_EDIT_MODEL
-            : DEFAULT_VERTEX_IMAGE_MODEL
-    } else {
-      const r = await generateImage({
-        modelId: selectedModel,
-        isEdit,
-        params: genParams,
-        signal: context.abortController.signal,
-      })
-      buffer = r.buffer
-      mediaType = r.mediaType
-      usedModelId = resolveModel(selectedModel, isEdit).id
-    }
+    // Both clients report the model they actually used, resolved from the same
+    // catalog — the tool no longer keeps its own copy of the defaults.
+    const { buffer, mediaType, modelId: usedModelId } = useVertex
+      ? await generateVertexImage({
+          modelId: selectedModel,
+          isEdit,
+          params: genParams,
+          signal: context.abortController.signal,
+        })
+      : await generateImage({
+          modelId: selectedModel,
+          isEdit,
+          params: genParams,
+          signal: context.abortController.signal,
+        })
 
     // Resolve the output path; the default filename uses the real extension.
     const { path } = resolveOutputPath(

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,60 @@ import (
 // at startup so operators can confirm which build is deployed.
 const UpstreamResponseHeaderTimeout = 30 * time.Second
 
+// DefaultStreamResponseHeaderTimeout is the header budget for STREAMING requests.
+//
+// WHY IT IS SEPARATE FROM the 30s above: that value rests on the assumption
+// documented for Client — "providers send 200 + SSE headers within a second, long
+// before any token generation". That is false for at least one production
+// upstream. Ollama Cloud does not flush SSE headers until the model is actually
+// loaded and generating, so a cold start on a large model (observed with
+// glm-5.2) blows straight past 30s and the gateway answers a clean but WRONG
+// 502 provider_unavailable:
+//
+//	hosted done: ... model=glm-5.2 billable=0 (est 126120) via=plan (no usage reported)
+//	anthropic: upstream error ... Post "https://ollama.com/v1/messages": http2: timeout awaiting response headers
+//	POST /anthropic/v1/messages -> 502 (30.022s, 161B)
+//
+// The request was healthy — it just needed more than 30s for the first byte. A
+// non-streaming call still gets the tighter 30s, where the assumption holds and
+// failing fast is right.
+const DefaultStreamResponseHeaderTimeout = 60 * time.Second
+
+// DefaultStreamFailoverBudget caps the TOTAL time a streaming request may spend
+// across key failover + retries before the first byte.
+//
+// Each attempt gets its own header timeout, so N keys would otherwise allow
+// N×timeout. The gateway must still lose the race to nothing: a fronting CDN
+// gives up on an origin that has written nothing at ~100s and substitutes its own
+// error page, which the customer would see raw instead of our sanitized 502.
+const DefaultStreamFailoverBudget = 90 * time.Second
+
+// streamHeaderTimeout / streamFailoverBudget are overridable so an operator can
+// tune them for their upstream mix without a rebuild.
+var (
+	streamHeaderTimeout  = durationFromEnv("UPSTREAM_STREAM_HEADER_TIMEOUT", DefaultStreamResponseHeaderTimeout)
+	streamFailoverBudget = durationFromEnv("UPSTREAM_STREAM_FAILOVER_BUDGET", DefaultStreamFailoverBudget)
+)
+
+// durationFromEnv reads a Go duration string (e.g. "45s", "2m"); a missing or
+// unparseable value keeps the default rather than disabling the bound.
+func durationFromEnv(name string, def time.Duration) time.Duration {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
+}
+
+// StreamHeaderTimeout / StreamFailoverBudget expose the effective values for
+// startup logging and tests.
+func StreamHeaderTimeout() time.Duration  { return streamHeaderTimeout }
+func StreamFailoverBudget() time.Duration { return streamFailoverBudget }
+
 var Client = &http.Client{
 	Transport: &http.Transport{
 		MaxIdleConns:          100,
@@ -49,6 +104,60 @@ var Client = &http.Client{
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: UpstreamResponseHeaderTimeout,
 	},
+}
+
+// StreamClient is Client with the streaming header budget. Same connection-pool
+// settings; only ResponseHeaderTimeout differs, so streams and completions still
+// share nothing but behaviour.
+var StreamClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: streamHeaderTimeout,
+	},
+}
+
+// streamingCtxKey marks a request context as belonging to a STREAMING upstream
+// call. Carried on the context rather than plumbed through every adapter
+// signature so the decision is made once, at the server layer that already knows
+// whether the client asked to stream.
+type streamingCtxKey struct{}
+
+// WithStreaming marks ctx so upstream calls made under it use StreamClient and
+// the streaming failover budget.
+func WithStreaming(ctx context.Context) context.Context {
+	return context.WithValue(ctx, streamingCtxKey{}, true)
+}
+
+// IsStreaming reports whether ctx was marked by WithStreaming.
+func IsStreaming(ctx context.Context) bool {
+	v, _ := ctx.Value(streamingCtxKey{}).(bool)
+	return v
+}
+
+// clientFor picks the header-timeout profile for this request.
+func clientFor(ctx context.Context) *http.Client {
+	if IsStreaming(ctx) {
+		return StreamClient
+	}
+	return Client
+}
+
+// maxStreamingAttempts is how many keys a STREAMING request may try so the sum of
+// their header timeouts stays inside the failover budget. Returns 0 (no cap) for
+// a non-streaming request or when either bound is disabled. Always at least 1 —
+// a budget smaller than one header timeout must still permit one attempt.
+func maxStreamingAttempts(ctx context.Context) int {
+	if !IsStreaming(ctx) || streamFailoverBudget <= 0 || streamHeaderTimeout <= 0 {
+		return 0
+	}
+	n := int(streamFailoverBudget / streamHeaderTimeout)
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 // Breakers is a per-upstream-host circuit breaker shared by Stream, Complete,
@@ -228,7 +337,7 @@ func doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) (*
 		if err != nil {
 			return nil, err
 		}
-		resp, err := Client.Do(req)
+		resp, err := clientFor(ctx).Do(req)
 		if err != nil {
 			Breakers.Failure(host)
 			return nil, err
@@ -302,6 +411,17 @@ func SendWithFailover(
 ) (resp *http.Response, usedKey APIKey, err error) {
 	if len(keys) == 0 {
 		keys = []APIKey{{}}
+	}
+	// Bound the whole attempt sequence for a stream: each attempt gets its own
+	// (larger) streaming header timeout, so walking every key could outlast the
+	// fronting CDN's patience for an origin that has written nothing — see
+	// DefaultStreamFailoverBudget.
+	//
+	// Done by capping the number of KEYS tried, not with a context deadline: the
+	// response body is streamed to the client long AFTER this function returns, so
+	// a deadline attached to ctx here would abort the stream mid-flight.
+	if n := maxStreamingAttempts(ctx); n > 0 && n < len(keys) {
+		keys = keys[:n]
 	}
 	var lastErr error
 	for i, apiKey := range keys {

@@ -1879,13 +1879,16 @@ function PromptInput({
     if (getPlatform() === 'macos' && isMacosOptionChar(char)) {
       const shortcut = MACOS_OPTION_SPECIAL_CHARS[char];
       const terminalName = getNativeCSIuTerminalDisplayName();
-      const jsx = terminalName ? <Text dimColor>
+      // Not named `jsx`: this file emits JSX, so a local with that name
+      // collides with the injected automatic-runtime factory import when
+      // bundled (see test/jsxRuntimeIdentifierCollision.test.ts).
+      const hintJsx = terminalName ? <Text dimColor>
           To enable {shortcut}, set <Text bold>Option as Meta</Text> in{' '}
           {terminalName} preferences (⌘,)
         </Text> : <Text dimColor>To enable {shortcut}, run /terminal-setup</Text>;
       addNotification({
         key: 'option-meta-hint',
-        jsx,
+        jsx: hintJsx,
         priority: 'immediate',
         timeoutMs: 5000
       });

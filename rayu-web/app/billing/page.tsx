@@ -6,6 +6,7 @@ import { apiUrl } from '../../lib/config'
 import { useRayuToken } from '../../lib/useRayuToken'
 import { Plan, purchasablePlans } from '../../lib/plans'
 import KhqrCard from '../../components/KhqrCard'
+import { payWithCard, useStripeEnabled, useStripeReturnPoll } from '../../lib/stripeCheckout'
 
 const PAID_PLAN_CODES = ['pro', 'pro_plus', 'max'] as const
 type PaidPlanCode = typeof PAID_PLAN_CODES[number]
@@ -69,6 +70,9 @@ export default function BillingPage() {
   const [promoBusy, setPromoBusy] = useState(false)
   const [promoError, setPromoError] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Card rail availability + return-poll for a Stripe Checkout in flight.
+  const stripeEnabled = useStripeEnabled(status === 'authenticated' ? token : null)
+  const stripeReturn = useStripeReturnPoll(status === 'authenticated' ? token : null)
 
   // Load plans and payment history once token is ready
   useEffect(() => {
@@ -157,6 +161,30 @@ export default function BillingPage() {
       const data = (await res.json()) as KhqrResponse
       setKhqr(data)
       startPolling(data.paymentId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Card rail: POST /payments/khqr with method:'stripe' and redirect to the
+  // hosted Checkout page. The promo (non-free) is forwarded so the discounted
+  // amount is what the card is charged. A redirect is not proof of payment —
+  // useStripeReturnPoll resumes polling the status endpoint on return.
+  async function initiateCardPayment() {
+    if (!token || !selectedPlan) return
+    setLoading(true)
+    setError('')
+    try {
+      await payWithCard(
+        '/payments/khqr',
+        {
+          planCode: selectedPlan,
+          ...(promo && !promo.isFree ? { promoCode: promo.code } : {}),
+        },
+        token,
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -405,19 +433,53 @@ export default function BillingPage() {
               {promoBusy ? 'Claiming…' : 'Claim for $0 & activate →'}
             </button>
           ) : (
-            <button
-              className="btn-primary"
-              disabled={!selectedPlan || loading}
-              style={{ padding: '12px 28px' }}
-              onClick={() => void initiatePayment()}
-            >
-              {loading
-                ? 'Generating QR...'
-                : promo
-                  ? `Pay $${(promo.finalCents / 100).toFixed(2)} with ABA KHQR`
-                  : 'Pay with ABA KHQR'}
-            </button>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button
+                className="btn-primary"
+                disabled={!selectedPlan || loading}
+                style={{ padding: '12px 28px' }}
+                onClick={() => void initiatePayment()}
+              >
+                {loading
+                  ? 'Generating QR...'
+                  : promo
+                    ? `Pay $${(promo.finalCents / 100).toFixed(2)} with ABA KHQR`
+                    : 'Pay with ABA KHQR'}
+              </button>
+              {stripeEnabled && (
+                <button
+                  className="btn-ghost"
+                  disabled={!selectedPlan || loading}
+                  style={{ padding: '12px 28px' }}
+                  onClick={() => void initiateCardPayment()}
+                >
+                  {loading
+                    ? 'Redirecting…'
+                    : promo
+                      ? `Pay $${(promo.finalCents / 100).toFixed(2)} with card`
+                      : 'Pay with card'}
+                </button>
+              )}
+            </div>
           )}
+        </div>
+      )}
+
+      {/* Stripe Checkout return — confirming the card payment that just
+          redirected away and back. A redirect is not proof of payment; this
+          polls the status endpoint until the webhook flips the row to paid. */}
+      {stripeReturn.pendingPaymentId != null && stripeReturn.status !== 'paid' && (
+        <div className="card" style={{ maxWidth: 420, margin: '0 auto 2rem', textAlign: 'center', padding: '2rem' }}>
+          <p style={{ fontWeight: 600, marginBottom: '0.5rem' }}>
+            {stripeReturn.status === 'expired' || stripeReturn.status === 'canceled'
+              ? 'Card payment was not completed.'
+              : 'Confirming your card payment…'}
+          </p>
+          <p style={{ opacity: 0.6, fontSize: '0.9rem' }}>
+            {stripeReturn.status === 'expired' || stripeReturn.status === 'canceled'
+              ? 'The checkout expired or was canceled. Try again to start a new one.'
+              : 'We are waiting for Stripe to confirm the charge. This usually takes a few seconds after you complete the hosted page.'}
+          </p>
         </div>
       )}
 

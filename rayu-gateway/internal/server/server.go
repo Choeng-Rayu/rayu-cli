@@ -30,6 +30,7 @@ import (
 	"github.com/choeng-rayu/rayu-gateway/internal/entitlements"
 	"github.com/choeng-rayu/rayu-gateway/internal/eventqueue"
 	"github.com/choeng-rayu/rayu-gateway/internal/httpx"
+	"github.com/choeng-rayu/rayu-gateway/internal/orgcredits"
 	"github.com/choeng-rayu/rayu-gateway/internal/providercfg"
 	"github.com/choeng-rayu/rayu-gateway/internal/providerkeys"
 	"github.com/choeng-rayu/rayu-gateway/internal/proxy"
@@ -61,6 +62,9 @@ type entSource interface {
 	// Models is the whole hosted catalog, not one user's allowed subset: the admin
 	// provider test must be able to exercise a model no plan can use yet.
 	Models() []store.HostedModel
+	// MediaModels is the whole image/video generation catalog. Plan filtering is
+	// applied per request by entitlements.AllowedMediaModels, mirroring Models.
+	MediaModels() []store.MediaModel
 	// Reload refreshes the config snapshot immediately. ADMIN paths only: the
 	// snapshot exists precisely so a request never queries the database.
 	Reload(ctx context.Context) error
@@ -73,6 +77,11 @@ type Server struct {
 	lim *credits.Limiter
 	st  *store.Store
 	wq  *eventqueue.Queue
+	// orgs resolves TEAM billing state for a JWT that carries an `orgId` claim.
+	// nil when the gateway has no database handle (unit tests), in which case an
+	// org claim is ignored and the caller is billed individually — the same
+	// behavior as a gateway build from before teams existed.
+	orgs *orgcredits.Resolver
 	// testLim caps the admin provider-test endpoint: each test is a real upstream
 	// call with a real key, so it must not be clickable in a loop.
 	testLim *testLimiter
@@ -97,6 +106,27 @@ func New(
 	st *store.Store,
 	reloader *ConfigReloader,
 ) http.Handler {
+	// Team billing needs the database; without one an `orgId` claim is simply
+	// ignored and billing stays individual.
+	var orgSrc orgcredits.Source
+	if st != nil {
+		orgSrc = st
+	}
+	return newHandler(cfg, ent, lim, st, reloader, orgSrc)
+}
+
+// newHandler is New with the team-billing source passed in explicitly, so a test
+// can exercise the TEAM path (shared pool, per-seat buckets, purchased credits)
+// against a fake instead of needing a live MySQL. Production always goes through
+// New, which derives the source from the store it was given.
+func newHandler(
+	cfg *config.Config,
+	ent entSource,
+	lim *credits.Limiter,
+	st *store.Store,
+	reloader *ConfigReloader,
+	orgSrc orgcredits.Source,
+) http.Handler {
 	// wq replaces the old per-write safeGo(...) goroutines for the credit
 	// ledger + usage-event writes: a single bounded, serialized queue so
 	// those best-effort durable writes can never open more MySQL
@@ -113,6 +143,11 @@ func New(
 		testLim:   newTestLimiter(),
 		reloadLim: newSlidingLimiter(time.Minute, reloadPerAdmin),
 		reloader:  reloader,
+	}
+	// Team billing needs the database; without one (tests) an `orgId` claim is
+	// simply ignored and billing stays individual.
+	if orgSrc != nil {
+		s.orgs = orgcredits.New(orgSrc, time.Duration(cfg.UserCacheTTL)*time.Second)
 	}
 	if s.reloader == nil {
 		// Resolved at call time, not construction time: tests build a Server with no
@@ -147,6 +182,11 @@ func New(
 		// log line that tells operators old clients are still in the field.
 		pr.Post("/v1/chat/completions", s.handleRetiredChatCompletions)
 		pr.Get("/v1/credits", s.handleCredits)
+		// Top-up price quote. Reads the admin's live app_settings rate from the
+		// config snapshot so the CLI can price a purchase WITHOUT a backend round
+		// trip (exactly what the app_settings schema comment describes). Quotes
+		// only — granting credits stays in the backend so there is one write path.
+		pr.Get("/v1/credits/topup/quote", s.handleTopupQuote)
 
 		pr.Get("/v1/_whoami", s.handleWhoami)
 		pr.Get("/v1/_entitlements", s.handleEntitlements)
@@ -276,7 +316,24 @@ func (s *Server) handleProviderHealth(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"providers": out})
 }
 
-// handleModels returns the caller's plan-allowed hosted models in OpenAI list shape.
+// handleModels returns the caller's plan-allowed models in OpenAI list shape.
+//
+// The `media` query parameter selects WHICH catalog is returned:
+//
+//	(absent)      → hosted CHAT models (hosted_models). Unchanged behaviour.
+//	media=image   → image-generation models (media_models, mediaType=image)
+//	media=video   → video-generation models (media_models, mediaType=video)
+//	media=all     → every media model, image and video
+//
+// The two catalogs are deliberately never mixed in one response: a chat client
+// asking for models must not be handed flux/veo (they are not routable through
+// this gateway), and the CLI's image tool must not have to filter a chat list.
+//
+// Media items carry the metadata the CLI needs to build an upstream request with
+// nothing hardcoded: capabilities, backend, request-shape family, per-model
+// request defaults, the NVCF function id, and an estimated duration. Media
+// generation itself is NOT proxied here — the CLI calls the upstream with the
+// user's own key — so this endpoint is a catalog, not a route.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
@@ -286,6 +343,18 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ent.Active() {
 		httpx.WriteError(w, http.StatusForbidden, "account is "+statusOrUnknown(ent.Status))
+		return
+	}
+	media := r.URL.Query().Get("media")
+	switch media {
+	case "":
+		// Chat catalog (default) — behaviour predates the media catalog.
+	case "image", "video", "all":
+		s.writeMediaModels(w, ent, media)
+		return
+	default:
+		httpx.WriteError(w, http.StatusBadRequest,
+			`unknown media filter: use media=image, media=video, media=all, or omit it for chat models`)
 		return
 	}
 	data := make([]map[string]any, 0, len(ent.AllowedModels))
@@ -306,6 +375,71 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
+// writeMediaModels answers the media variants of /v1/models. mediaType is
+// "image", "video", or "all" (empty filter = both).
+//
+// The response keeps the same `{object:"list", data:[…]}` envelope as the chat
+// catalog so one client parser handles both, and adds `mediaType` so a
+// media=all caller can split the list without a second request.
+func (s *Server) writeMediaModels(w http.ResponseWriter, ent entitlements.Entitlement, mediaType string) {
+	filter := mediaType
+	if filter == "all" {
+		filter = ""
+	}
+	models := entitlements.AllowedMediaModels(s.ent.MediaModels(), ent.Plan.Code, filter)
+	data := make([]map[string]any, 0, len(models))
+	for _, m := range models {
+		item := map[string]any{
+			"id": m.Code, "object": "model", "created": 1700000000, "owned_by": "rayu",
+			"label":     m.Label,
+			"mediaType": m.MediaType,
+			// Never nil: an absent/corrupt column decodes to an empty slice, and the
+			// client treats a model with no capabilities as unusable rather than
+			// crashing on a null.
+			"capabilities": nonNilStrings(m.Capabilities),
+			"backend":      m.Backend,
+			"family":       m.Family,
+			// Per-model upstream request defaults, verbatim as the admin set them.
+			// This is what lets two models share one request-shape family.
+			"defaultParams":    rawOrNil(m.DefaultParams),
+			"nvcfFunctionId":   emptyToNil(m.NvcfFunctionID),
+			"estimatedSeconds": m.EstimatedSeconds,
+			"default":          m.IsDefault,
+		}
+		data = append(data, item)
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"object": "list", "data": data,
+		// Echo the filter so a client can tell a genuinely empty catalog from a
+		// response it mis-addressed.
+		"media": mediaType,
+	})
+}
+
+// nonNilStrings guarantees a JSON array rather than null.
+func nonNilStrings(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+// emptyToNil renders an unset optional string as JSON null instead of "".
+func emptyToNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// rawOrNil passes stored JSON through untouched, or null when there is none.
+func rawOrNil(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
+}
+
 // handleCredits returns the caller's live per-period credit usage, remaining
 // allowance (credits + token equivalents), top-up balance, and reset time.
 func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
@@ -314,6 +448,18 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeEntitlementError(w, err)
 		return
+	}
+	// A team member's allowance is the TEAM's, so report that instead of their
+	// personal plan — otherwise the CLI would show a Free-plan zero while the
+	// member is happily spending team credits. Falls through to the individual
+	// view whenever the team is not billable (see reserveHosted for why).
+	if claims.OrgID > 0 && s.orgs != nil {
+		if org, oerr := s.orgs.Resolve(r.Context(), claims.OrgID, claims.UserID); oerr == nil && org != nil {
+			if ok, _ := org.Usable(time.Now()); ok {
+				s.writeTeamCredits(w, r, claims, org)
+				return
+			}
+		}
 	}
 	st, err := s.lim.Status(r.Context(), claims.UserID)
 	if err != nil {
@@ -382,8 +528,178 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// hostedReserve carries everything the shared preamble produced for a hosted
-// request: the parsed body, resolved model + provider key, the reserved-credit
+// handleTopupQuote prices a pay-as-you-go top-up from the admin's LIVE
+// app_settings rate: GET /v1/credits/topup/quote?credits=N.
+//
+// Why the gateway and not only the backend: the app_settings schema comment
+// states the gateway reads creditsPerDollar/minTopupCents "so the CLI can quote a
+// price without calling the backend". The CLI already holds a gateway connection
+// for AI calls, so quoting here saves it a second round trip to a second service.
+//
+// Staleness contract: the rate comes from s.ent.Settings(), the same in-memory
+// config snapshot that serves entitlements, refreshed from MySQL every
+// RAYU_CONFIG_REFRESH (default 30s) — so an admin rate change is quoted here
+// within that window (and immediately after POST /v1/_reload). The BACKEND is
+// authoritative on price: it re-reads app_settings with no cache when creating
+// the payment, so if a rate change lands between quote and create the user is
+// charged the backend's number. Clients should re-quote rather than cache.
+//
+// This endpoint NEVER grants credits — granting is the backend's activatePaid
+// alone, so there is exactly one write path.
+func (s *Server) handleTopupQuote(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	ent, err := s.ent.Resolve(r.Context(), claims.UserID)
+	if err != nil {
+		writeEntitlementError(w, err)
+		return
+	}
+	if !ent.Active() {
+		httpx.WriteError(w, http.StatusForbidden, "account is "+statusOrUnknown(ent.Status))
+		return
+	}
+
+	// An absent/blank/unparseable credits param means "no amount chosen yet" →
+	// quote the cheapest payable purchase rather than rejecting the request, so
+	// the client can render the screen before the user has typed anything.
+	var wanted int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("credits")); raw != "" {
+		if n, convErr := strconv.ParseInt(raw, 10, 64); convErr == nil {
+			wanted = n
+		}
+	}
+
+	settings := s.ent.Settings()
+	quote := credits.QuoteTopup(settings.CreditsPerDollar, settings.MinTopupCents, wanted)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"enabled":              quote.Enabled,
+		"credits":              quote.Credits,
+		"amountCents":          quote.AmountCents,
+		"currency":             quote.Currency,
+		"minCredits":           quote.MinCredits,
+		"maxCredits":           quote.MaxCredits,
+		"rateCreditsPerDollar": quote.RateCreditsPerDollar,
+		"minTopupCents":        quote.MinTopupCents,
+		"meetsMinimum":         quote.MeetsMinimum,
+		// Whether the caller's PLAN allows spending top-up credits at all. A user
+		// can hold a balance on a plan that does not draw from it, so the client
+		// needs both facts to decide what to show.
+		"topUpEnabled": ent.Plan.TopUpEnabled,
+	})
+}
+
+// writeTeamCredits answers GET /v1/credits for a TEAM member: the allowance is
+// the org's shared pool, and the member's own bucket is reported alongside it so
+// the CLI can show both ("you have X of your quota left; the team has Y").
+//
+// The live counters come from Redis (what has actually been spent this period)
+// and fall back to the durable MySQL numbers when Redis has no counter yet.
+func (s *Server) writeTeamCredits(
+	w http.ResponseWriter,
+	r *http.Request,
+	claims *auth.Claims,
+	org *store.OrgMemberState,
+) {
+	settings := s.ent.Settings()
+	tokensPerCredit := credits.TokensPerCredit(settings.BaselineCreditsPer1M)
+	st, err := s.lim.OrgStatus(r.Context(), org.OrgID, claims.UserID)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "status lookup failed")
+		return
+	}
+	usedPoolBillable := st.UsedPool
+	if usedPoolBillable == 0 && org.PoolUsed > 0 {
+		usedPoolBillable = org.PoolUsed * tokensPerCredit
+	}
+	usedBucketBillable := st.UsedBucket
+	if usedBucketBillable == 0 {
+		if dbUsed := (org.BucketQuota - org.BucketCredits) * tokensPerCredit; dbUsed > 0 {
+			usedBucketBillable = dbUsed
+		}
+	}
+	usedCredits := math.Round(float64(usedPoolBillable)/float64(tokensPerCredit)*100) / 100
+
+	var remainingCredits *float64
+	var allowanceTokens, usedTokens, remainingTokens *int64
+	if org.Plan.CreditsPerPeriod != nil {
+		// The allowance is the plan's PLUS whatever the admin bought for this
+		// period: a member whose team topped up must see the credits they can
+		// actually spend, not a zero that says "ask your admin" while there is
+		// money on the table.
+		allowance := org.PoolTotal + org.PoolExtra
+		rc := float64(allowance) - usedCredits
+		if rc < 0 {
+			rc = 0
+		}
+		remainingCredits = &rc
+		at := allowance * tokensPerCredit
+		ut := usedPoolBillable
+		rt := at - ut
+		if rt < 0 {
+			rt = 0
+		}
+		allowanceTokens, usedTokens, remainingTokens = &at, &ut, &rt
+	}
+	turnsUsed, turnsReset, _ := s.lim.TurnsToday(r.Context(), claims.UserID)
+	var turnsRemaining *int64
+	if org.Plan.MaxDailyTurns != nil && *org.Plan.MaxDailyTurns > 0 {
+		rem := *org.Plan.MaxDailyTurns - turnsUsed
+		if rem < 0 {
+			rem = 0
+		}
+		turnsRemaining = &rem
+	}
+	bucketRemaining := float64(org.BucketQuota) -
+		math.Round(float64(usedBucketBillable)/float64(tokensPerCredit)*100)/100
+	if bucketRemaining < 0 {
+		bucketRemaining = 0
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"plan":             org.Plan.Code,
+		"planName":         org.Plan.Name,
+		"priceCents":       org.Plan.PriceCents,
+		"creditsPerPeriod": org.Plan.CreditsPerPeriod,
+		"usedCredits":      usedCredits,
+		"remainingCredits": remainingCredits,
+		"tokensPerCredit":  tokensPerCredit,
+		"allowanceTokens":  allowanceTokens,
+		"usedTokens":       usedTokens,
+		"remainingTokens":  remainingTokens,
+		"resetSeconds":     st.ResetPool,
+		"periodEnd":        isoTime(org.PeriodEnd),
+		// A team pool has no personal top-up balance: top-ups are bought by a user
+		// for themselves, and spending them would bypass the team's cap.
+		"topupBalance":      0,
+		"topUpEnabled":      false,
+		"creditsPerDollar":  settings.CreditsPerDollar,
+		"minTopupCents":     settings.MinTopupCents,
+		"maxDailyTurns":     org.Plan.MaxDailyTurns,
+		"turnsUsedToday":    turnsUsed,
+		"turnsRemaining":    turnsRemaining,
+		"turnsResetSeconds": turnsReset,
+		// Team-specific view. `scope: "team"` is the flag a client checks before
+		// trusting the fields above to be a shared allowance rather than a personal
+		// one.
+		"scope": "team",
+		"team": map[string]any{
+			"organizationId":  org.OrgID,
+			"role":            org.MemberRole,
+			"poolCredits":     org.PoolTotal,
+			"poolUsedCredits": usedCredits,
+			"bucketQuota":     org.BucketQuota,
+			"bucketRemaining": bucketRemaining,
+			// The allowance split. Reported separately from poolCredits because the
+			// two behave differently: the plan's allowance renews, while purchased
+			// credits are bought once and expire with this period — so a client that
+			// tells someone "you have N credits" needs to be able to say which.
+			"planCredits":        org.PoolTotal,
+			"purchasedCredits":   org.PoolExtra,
+			"purchasedRemaining": org.PurchasedRemaining(),
+			"creditsExpireAt":    isoTime(org.PeriodEnd),
+		},
+	})
+}
+
+// hostedReserve carries everything the shared preamble produced for a hosted// request: the parsed body, resolved model + provider key, the reserved-credit
 // bookkeeping, and a settle closure that reconciles credits to actual usage and
 // records the ledger. Built by reserveHosted; consumed by both hosted endpoints.
 type hostedReserve struct {
@@ -458,6 +774,45 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		return nil, false
 	}
 
+	// --- Team context ---------------------------------------------------------
+	// An `orgId` claim means this request should be billed to a TEAM: the org's
+	// plan decides which models are allowed and how many credits exist, and the
+	// charge is split between the member's per-seat bucket and the shared pool.
+	//
+	// Every failure mode here FALLS BACK to individual billing rather than
+	// rejecting: a claim can be up to a token-lifetime stale (member removed, team
+	// suspended, plan lapsed), and in all of those cases the person really is an
+	// individual user again — so their own subscription is the correct answer, not
+	// an error. The reason is logged so an operator can see it happening.
+	plan := ent.Plan
+	periodEnd := ent.PeriodEnd
+	allowedModels := ent.AllowedModels
+	var org *store.OrgMemberState
+	if claims.OrgID > 0 && s.orgs != nil {
+		st, oerr := s.orgs.Resolve(r.Context(), claims.OrgID, claims.UserID)
+		switch {
+		case oerr != nil:
+			log.Printf("team: user=%d org=%d reqid=%s team lookup failed, billing individually: %v",
+				claims.UserID, claims.OrgID, reqID, oerr)
+		case st == nil:
+			log.Printf("team: user=%d org=%d reqid=%s no seat found (stale claim), billing individually",
+				claims.UserID, claims.OrgID, reqID)
+		default:
+			if ok, reason := st.Usable(time.Now()); ok {
+				org = st
+				plan = st.Plan
+				periodEnd = st.PeriodEnd
+				// Model access follows the TEAM's plan. Recomputed from the live
+				// catalog snapshot (same helper the user cache uses), so a catalog
+				// change reaches team members on their next request too.
+				allowedModels = entitlements.AllowedModels(s.ent.Models(), plan.Code)
+			} else {
+				log.Printf("team: user=%d org=%d reqid=%s not billable (%s), billing individually",
+					claims.UserID, claims.OrgID, reqID, reason)
+			}
+		}
+	}
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		status, label := classifyBodyReadError(err, r.Context().Err())
@@ -479,15 +834,15 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 
 	modelCode, _ := req["model"].(string)
 	var hm *store.HostedModel
-	for i := range ent.AllowedModels {
-		if ent.AllowedModels[i].Code == modelCode {
-			hm = &ent.AllowedModels[i]
+	for i := range allowedModels {
+		if allowedModels[i].Code == modelCode {
+			hm = &allowedModels[i]
 			break
 		}
 	}
 	if hm == nil {
 		log.Printf("reject: user=%d reqid=%s source=%s model=%q intended=%q not allowed for plan=%s; allowed=[%s]",
-			claims.UserID, reqID, source, modelCode, intended, ent.Plan.Code, allowedModelCodes(ent.AllowedModels))
+			claims.UserID, reqID, source, modelCode, intended, plan.Code, allowedModelCodes(allowedModels))
 		httpx.WriteError(w, http.StatusForbidden, "model not available on your plan: "+modelCode)
 		return nil, false
 	}
@@ -588,7 +943,11 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	// --- Daily turn cap (maxDailyTurns) — HARD limit on the hosted path ---
 	// Counted per user per UTC day; nil/0 cap = unlimited. Checked before the
 	// credit reserve so a denial neither charges credits nor calls upstream.
-	turnCap := dailyTurnCap(ent.Plan.MaxDailyTurns)
+	//
+	// For a team member the cap comes from the TEAM's plan but is still counted
+	// PER MEMBER (the key is the user id): a team of ten does not share one
+	// person's daily allowance, which is what the plan calls for.
+	turnCap := dailyTurnCap(plan.MaxDailyTurns)
 	tr, terr := s.lim.ReserveTurn(r.Context(), claims.UserID, turnCap)
 	if terr != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "rate limiter unavailable")
@@ -623,12 +982,36 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	// credits): a tiny turn then costs its true fraction instead of a full 1M-
 	// token credit. Cap = the plan's credit allowance × tokensPerCredit.
 	capBillable := credits.Unlimited
-	if ent.Plan.CreditsPerPeriod != nil {
-		capBillable = *ent.Plan.CreditsPerPeriod * tpc
+	if plan.CreditsPerPeriod != nil {
+		capBillable = *plan.CreditsPerPeriod * tpc
 	}
 	// Pre-flight hold: rough billable estimate; settle reconciles to actual.
 	estBillable := credits.EstimateBillableTokens(credits.EstimateTokens(req, defaultMaxTokens), mult)
-	topUpAvailable := ent.Plan.TopUpEnabled && ent.TopupBalance > 0
+
+	// --- TEAM reserve: member bucket first, shared pool as the hard cap --------
+	if org != nil {
+		hr, ok := s.reserveTeam(w, r, teamReserveInput{
+			claims:      claims,
+			org:         org,
+			plan:        plan,
+			periodEnd:   periodEnd,
+			settings:    settings,
+			hm:          hm,
+			rates:       rates,
+			tpc:         tpc,
+			estBillable: estBillable,
+			reqID:       reqID,
+			source:      source,
+			intended:    intended,
+			req:         req,
+			route:       pr.Route,
+			adapter:     adapter,
+			apiKeys:     apiKeys,
+		})
+		return hr, ok
+	}
+
+	topUpAvailable := plan.TopUpEnabled && ent.TopupBalance > 0
 	if topUpAvailable {
 		_ = s.lim.EnsureTopup(r.Context(), claims.UserID, ent.TopupBalance)
 	}
@@ -636,8 +1019,8 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 		UserID:        claims.UserID,
 		EstCredits:    estBillable,
 		CapPeriod:     capBillable,
-		PeriodTTLSec:  periodTTLSeconds(ent.PeriodEnd),
-		PeriodID:      periodID(ent.PeriodEnd),
+		PeriodTTLSec:  periodTTLSeconds(periodEnd),
+		PeriodID:      periodID(periodEnd),
 		MaxConcurrent: settings.MaxConcurrentStreams,
 		MaxReq5h:      settings.MaxRequestsPer5h,
 		TopUpEnabled:  topUpAvailable,
@@ -651,17 +1034,9 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	}
 	if !rr.OK {
 		s.releaseTurnBG(claims.UserID) // credit denial: don't also burn a daily turn
-		reset := rr.ResetPeriod
-		if reset > 0 {
-			w.Header().Set("Retry-After", strconv.FormatInt(reset, 10))
-		}
-		log.Printf("reject: user=%d reqid=%s source=%s model=%q reason=credit_limit(%s) reset=%ds",
-			claims.UserID, reqID, source, hm.Code, rr.Reason, reset)
-		httpx.WriteJSON(w, http.StatusTooManyRequests, map[string]any{
-			"error":        map[string]any{"message": "credit limit reached: " + rr.Reason, "type": "rate_limit_exceeded"},
-			"reason":       rr.Reason,
-			"resetSeconds": reset,
-		})
+		writeReserveDenial(w, rr.Reason, rr.ResetPeriod, "")
+		log.Printf("reject: user=%d reqid=%s source=%s model=%q reason=%s reset=%ds",
+			claims.UserID, reqID, source, hm.Code, rr.Reason, rr.ResetPeriod)
 		return nil, false
 	}
 
@@ -716,8 +1091,196 @@ func (s *Server) reserveHosted(w http.ResponseWriter, r *http.Request) (*hostedR
 	}, true
 }
 
-// retiredChatCompletionsMessage tells the user how to fix a call to the retired
-// OpenAI-shaped hosted ingress. It is deliberately actionable: the only cause is
+// teamReserveInput is everything reserveTeam needs from the shared preamble. It
+// is a struct rather than 15 positional parameters because every field is already
+// resolved and none of them are optional — the compiler, not a reader, should be
+// the one keeping the call site in order.
+type teamReserveInput struct {
+	claims      *auth.Claims
+	org         *store.OrgMemberState
+	plan        store.Plan
+	periodEnd   *time.Time
+	settings    store.AppSettings
+	hm          *store.HostedModel
+	rates       credits.ModelRates
+	tpc         int64
+	estBillable int64
+	reqID       string
+	source      string
+	intended    string
+	req         map[string]any
+	route       providercfg.Route
+	adapter     translate.Adapter
+	apiKeys     []providerkeys.Key
+}
+
+// reserveTeam is the credit reserve for a TEAM member.
+//
+// Two tiers move on every accepted request:
+//   - the member's per-seat bucket (a SOFT quota — exceeding it is allowed and
+//     just changes the recorded source to "pool"), and
+//   - the org's shared pool (the HARD cap — the single number that limits total
+//     team usage, which is what makes "unlimited members" safe).
+//
+// Both are counted in billable tokens in Redis for atomicity, and both are seeded
+// from MySQL on a cold start so a gateway restart cannot re-gift a spent
+// allowance. The settle closure reconciles Redis to actuals AND writes the
+// durable team debit + an org-scoped ledger row.
+func (s *Server) reserveTeam(
+	w http.ResponseWriter,
+	r *http.Request,
+	in teamReserveInput,
+) (*hostedReserve, bool) {
+	claims, org := in.claims, in.org
+	periodTTL := periodTTLSeconds(in.periodEnd)
+
+	// The pool cap is the team's TOTAL allowance — the plan's allowance PLUS any
+	// credits the admin bought for this period. Seeding from MySQL (SetNX) makes
+	// the durable number authoritative whenever Redis has no counter yet: after a
+	// restart, a failover, or the first request of a new period.
+	//
+	// purchasedCap is how much of that cap was bought. It gates nothing; the
+	// limiter subtracts it to know when a charge has crossed out of what the
+	// subscription paid for and into what the admin bought.
+	poolCap := credits.Unlimited
+	purchasedCap := int64(0)
+	if in.plan.CreditsPerPeriod != nil {
+		poolCap = (org.PoolTotal + org.PoolExtra) * in.tpc
+		purchasedCap = org.PoolExtra * in.tpc
+		_ = s.lim.EnsureOrgPoolUsed(r.Context(), org.OrgID, org.PoolUsed*in.tpc, periodTTL)
+	}
+
+	// The bucket cap is the member's quota; used = quota - remaining, per MySQL.
+	bucketCap := org.BucketQuota * in.tpc
+	usedBucketFromDB := (org.BucketQuota - org.BucketCredits) * in.tpc
+	if usedBucketFromDB < 0 {
+		usedBucketFromDB = 0
+	}
+	_ = s.lim.EnsureOrgBucketUsed(r.Context(), org.OrgID, claims.UserID, usedBucketFromDB, periodTTL)
+
+	rr, rerr := s.lim.ReserveOrg(r.Context(), credits.OrgReserveParams{
+		OrgID:         org.OrgID,
+		UserID:        claims.UserID,
+		EstBillable:   in.estBillable,
+		BucketCap:     bucketCap,
+		PoolCap:       poolCap,
+		PurchasedCap:  purchasedCap,
+		PeriodTTLSec:  periodTTL,
+		PeriodID:      periodID(in.periodEnd),
+		MaxConcurrent: in.settings.MaxConcurrentStreams,
+		MaxReq5h:      in.settings.MaxRequestsPer5h,
+	})
+	if rerr != nil {
+		s.releaseTurnBG(claims.UserID)
+		log.Printf("hosted reject: user=%d org=%d reqid=%s source=%s model=%q reason=limiter_unavailable: %v",
+			claims.UserID, org.OrgID, in.reqID, in.source, in.hm.Code, rerr)
+		httpx.WriteError(w, http.StatusInternalServerError, "rate limiter unavailable")
+		return nil, false
+	}
+	if !rr.OK {
+		s.releaseTurnBG(claims.UserID) // a credit denial must not burn a daily turn
+		teamMsg := ""
+		if rr.Reason == "pool_limit" {
+			// Say whose limit it is and who can fix it — a member cannot top up a
+			// team pool, only the team admin can. Both routes out are named,
+			// because buying credits is now the faster of the two.
+			teamMsg = "your team's credit pool is exhausted — ask the team admin to buy more credits, or to renew or upgrade the team plan"
+		}
+		writeReserveDenial(w, rr.Reason, rr.ResetPool, teamMsg, "team")
+		log.Printf("reject: user=%d org=%d reqid=%s source=%s model=%q reason=team_%s pool=%d/%d (purchased=%d) reset=%ds",
+			claims.UserID, org.OrgID, in.reqID, in.source, in.hm.Code, rr.Reason,
+			rr.UsedPool, poolCap, purchasedCap, rr.ResetPool)
+		return nil, false
+	}
+
+	// rr.Source is "bucket" or "pool"; both are team spending, and it is recorded
+	// on the ledger so an admin can see who overflowed their quota.
+	creditSource := rr.Source
+	settled := false
+	settle := func(usage *proxy.Usage) int64 {
+		actual := actualBillable(usage, in.rates)
+		if !settled {
+			settled = true
+			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = s.lim.SettleOrg(bg, org.OrgID, claims.UserID, in.estBillable, actual)
+			// Drop the cached team state so the next request sees this spend (the
+			// durable write below is what it will re-read).
+			s.orgs.Invalidate(org.OrgID, claims.UserID)
+			s.ent.Invalidate(claims.UserID)
+			consumed := creditsFromBillable(actual, in.tpc)
+			if usage != nil {
+				log.Printf("hosted done: user=%d org=%d reqid=%s source=%s model=%s billable=%d (~%.4f credits, est %d) via=%s(team) tokens(total=%d prompt=%d completion=%d reasoning=%d cacheHit=%d cacheMiss=%d)",
+					claims.UserID, org.OrgID, in.reqID, in.source, in.hm.Code, actual,
+					float64(actual)/float64(in.tpc), in.estBillable, creditSource,
+					usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens,
+					usage.CompletionTokensDetails.ReasoningTokens,
+					usage.PromptCacheHitTokens, usage.PromptCacheMissTokens)
+				s.recordTeamUsage(org.OrgID, claims.UserID, *in.hm, usage, consumed, creditSource, in.rates)
+			} else {
+				log.Printf("hosted done: user=%d org=%d reqid=%s source=%s model=%s billable=%d (est %d) via=%s(team) (no usage reported)",
+					claims.UserID, org.OrgID, in.reqID, in.source, in.hm.Code, actual, in.estBillable, creditSource)
+			}
+		}
+		return actual
+	}
+
+	tryKeys := make([]proxy.APIKey, 0, len(in.apiKeys))
+	for _, k := range in.apiKeys {
+		tryKeys = append(tryKeys, proxy.APIKey{ID: k.ID, Secret: k.Secret})
+	}
+	return &hostedReserve{
+		userID:      claims.UserID,
+		reqID:       in.reqID,
+		source:      in.source,
+		intended:    in.intended,
+		req:         in.req,
+		hm:          in.hm,
+		route:       in.route,
+		adapter:     in.adapter,
+		apiKeys:     tryKeys,
+		estBillable: in.estBillable,
+		// The credit headers report the TEAM's pool, because that is the allowance
+		// actually limiting this request.
+		usedPeriod:      rr.UsedPool,
+		capPeriod:       poolCap,
+		topupBal:        0, // top-ups are personal; a team pool has none
+		tokensPerCredit: in.tpc,
+		settle:          settle,
+	}, true
+}
+
+// recordTeamUsage persists one settled team charge: the durable bucket + pool
+// debit, and an org-scoped ledger row naming the member who spent it. Both go
+// through the bounded write queue — a billing write must never add latency to a
+// completion, and must never open more MySQL connections than the queue allows.
+func (s *Server) recordTeamUsage(
+	orgID, memberUserID int64,
+	m store.HostedModel,
+	u *proxy.Usage,
+	creditsConsumed int64,
+	source string,
+	rates credits.ModelRates,
+) {
+	if s.st == nil || u == nil {
+		return
+	}
+	realCostCents := realCostCentsFor(m, u, rates)
+	s.wq.Enqueue(eventqueue.Item{
+		Name: "record_team_usage",
+		Run: func(ctx context.Context) error {
+			// Ledger first: it is the audit trail, and a lost debit is recoverable
+			// from it, while a debit with no ledger row is not explainable.
+			if err := s.st.InsertOrgLedger(ctx, orgID, memberUserID, m.Code,
+				u.PromptTokens, u.CompletionTokens, creditsConsumed, realCostCents, source); err != nil {
+				return err
+			}
+			return s.st.DebitOrgMember(ctx, orgID, memberUserID, creditsConsumed)
+		},
+	})
+}
+
+// retiredChatCompletionsMessage tells the user how to fix a call to the retired// OpenAI-shaped hosted ingress. It is deliberately actionable: the only cause is
 // an out-of-date CLI, since current builds use the Anthropic ingress.
 const retiredChatCompletionsMessage = "This endpoint has been retired. Update rayu-cli (npm i -g @rayu-dev/rayu-cli) — hosted models are now served on /anthropic/v1/messages."
 
@@ -774,9 +1337,24 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 
 	if stream {
 		setCreditHeaders(w, hr.usedPeriod, hr.capPeriod, hr.tokensPerCredit, hr.topupBal)
-		usage, wrote, serr := hr.adapter.Stream(r.Context(), w, areq)
+		// Mark the context as streaming so the upstream call uses the streaming
+		// header-timeout profile (proxy.StreamClient). Some upstreams — Ollama
+		// Cloud, notably — do not flush SSE headers until the model is loaded and
+		// generating, which blows past the 30s non-streaming budget on a cold
+		// start and produced a bogus 502 for a request that was merely slow.
+		usage, wrote, serr := hr.adapter.Stream(proxy.WithStreaming(r.Context()), w, areq)
 		hr.settle(usage)
 		if serr != nil {
+			// A client that hung up (esc, /clear, process exit) cancels
+			// r.Context(), which surfaces here as "context canceled" wrapped in a
+			// transport error. That is not an upstream failure: logging it as one
+			// makes provider dashboards and on-call triage chase a healthy
+			// upstream, and there is nobody left to receive a 502.
+			if isClientGone(r.Context(), serr) {
+				log.Printf("anthropic: client canceled user=%d reqid=%s source=%s model=%s format=%s wrote=%v",
+					hr.userID, hr.reqID, hr.source, hr.hm.Code, hr.route.Format, wrote)
+				return
+			}
 			log.Printf("anthropic: upstream error user=%d reqid=%s source=%s model=%s format=%s wrote=%v: %v",
 				hr.userID, hr.reqID, hr.source, hr.hm.Code, hr.route.Format, wrote, serr)
 		}
@@ -789,6 +1367,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	usage, status, respBody, cerr := hr.adapter.Complete(r.Context(), areq)
 	if cerr != nil {
 		hr.settle(nil)
+		if isClientGone(r.Context(), cerr) {
+			log.Printf("anthropic: client canceled user=%d reqid=%s source=%s model=%s",
+				hr.userID, hr.reqID, hr.source, hr.hm.Code)
+			return
+		}
 		log.Printf("anthropic: upstream unreachable user=%d reqid=%s source=%s model=%s: %v", hr.userID, hr.reqID, hr.source, hr.hm.Code, cerr)
 		writeUpstreamError(w, cerr, "upstream error")
 		return
@@ -857,6 +1440,23 @@ func (s *Server) recordLedger(userID int64, m store.HostedModel, u *proxy.Usage,
 	if s.st == nil {
 		return
 	}
+	realCostCents := realCostCentsFor(m, u, rates)
+	s.wq.Enqueue(eventqueue.Item{
+		Name: "record_ledger",
+		Run: func(ctx context.Context) error {
+			return s.st.InsertLedger(ctx, userID, m.Code, u.PromptTokens, u.CompletionTokens, creditsConsumed, realCostCents, source)
+		},
+	})
+}
+
+// realCostCentsFor is RAYU's own cost for one request (not what the user is
+// charged): fresh input tokens at full price plus cache reads at the discounted
+// fraction, plus completion tokens. Shared by the individual and team ledger
+// writers so both report cost the same way.
+func realCostCentsFor(m store.HostedModel, u *proxy.Usage, rates credits.ModelRates) int {
+	if u == nil {
+		return 0
+	}
 	cacheReadFraction := 1.0
 	if rates.Input > 0 {
 		cacheReadFraction = rates.CacheRead / rates.Input
@@ -868,13 +1468,7 @@ func (s *Server) recordLedger(userID int64, m store.HostedModel, u *proxy.Usage,
 	billableInputTokens := float64(u.FreshInputTokens()) + float64(u.CacheReadTokens())*cacheReadFraction
 	cost := billableInputTokens/1e6*float64(m.InputPricePer1MCents) +
 		float64(u.CompletionTokens)/1e6*float64(m.OutputPricePer1MCents)
-	realCostCents := int(math.Round(cost))
-	s.wq.Enqueue(eventqueue.Item{
-		Name: "record_ledger",
-		Run: func(ctx context.Context) error {
-			return s.st.InsertLedger(ctx, userID, m.Code, u.PromptTokens, u.CompletionTokens, creditsConsumed, realCostCents, source)
-		},
-	})
+	return int(math.Round(cost))
 }
 
 // handleProxy is a transparent, authenticated reverse proxy for BYO-key
@@ -1073,10 +1667,11 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// proxied response — Enqueue is non-blocking and the write happens on a
 	// shared worker pool instead of one untracked goroutine per request.
 	if s.st != nil {
+		evSource := usageEventSource(source)
 		s.wq.Enqueue(eventqueue.Item{
 			Name: "proxy_usage_event",
 			Run: func(ctx context.Context) error {
-				return s.st.InsertUsageEvent(ctx, claims.UserID, provider, actual, "gateway")
+				return s.st.InsertUsageEvent(ctx, claims.UserID, provider, actual, evSource)
 			},
 		})
 	}
@@ -1115,6 +1710,37 @@ func headerOr(r *http.Request, key, def string) string {
 		return v
 	}
 	return def
+}
+
+// usageEventClients is the allow-list of client identities that may appear in
+// usage_events.source. It is an allow-list rather than a passthrough on purpose:
+// X-Rayu-Query-Source is client-controlled, and letting arbitrary strings into
+// an analytics column makes it impossible to GROUP BY afterwards (and would need
+// its own length/charset guard against the VarChar(32) column).
+var usageEventClients = map[string]string{
+	"studio": "studio",
+}
+
+// usageEventSource maps the request's X-Rayu-Query-Source to the value stored in
+// usage_events.source on the BYO-key proxy path.
+//
+// The CLI sends no X-Rayu-Query-Source at all (so hostedIdentity yields
+// "unknown"), and historically every proxied row was written as "gateway".
+// That default is preserved exactly — only a client that names itself in
+// usageEventClients gets its own bucket, so Rayu Studio traffic is separable
+// from CLI traffic without rewriting the meaning of existing rows.
+//
+// The source may be either a bare client name ("studio") or client-qualified
+// ("studio:chat"); only the segment before the first colon is considered.
+func usageEventSource(source string) string {
+	name := strings.TrimSpace(strings.ToLower(source))
+	if i := strings.IndexByte(name, ':'); i >= 0 {
+		name = name[:i]
+	}
+	if mapped, ok := usageEventClients[name]; ok {
+		return mapped
+	}
+	return "gateway"
 }
 
 // allowedModelCodes returns a comma-joined, length-capped list of the model
@@ -1496,6 +2122,37 @@ func logRequests(next http.Handler) http.Handler {
 	})
 }
 
+// corsAllowHeaders is the Access-Control-Allow-Headers value sent to browser
+// clients (Rayu Studio). The CLI is not a browser and never preflights, so this
+// list exists purely so an in-browser client can reach the gateway:
+//
+//   - Authorization      — hosted path: the Rayu access JWT. BYO path: the
+//     user's OWN upstream provider key (see handleProxy).
+//   - X-Rayu-Token       — BYO path identity, because Authorization is occupied.
+//   - X-Rayu-Upstream-URL — BYO path target (validated by validateUpstreamURL).
+//   - X-Rayu-Request-Id / X-Rayu-Logical-Request-Id — correlation + idempotent
+//     daily-turn accounting, so a client's retries of ONE logical request don't
+//     each burn a turn.
+//   - X-Rayu-Query-Source / X-Rayu-Intended-Model — attribution/diagnostics.
+//   - anthropic-version / anthropic-beta — the hosted endpoint speaks Anthropic
+//     Messages, and the Anthropic SDKs set these on every request.
+//
+// Anything not listed here is rejected by the browser at preflight, which
+// presents as the whole feature failing rather than one header being dropped.
+const corsAllowHeaders = "Authorization, Content-Type, " +
+	"X-Rayu-Token, X-Rayu-Upstream-URL, X-Rayu-Request-Id, X-Rayu-Logical-Request-Id, " +
+	"X-Rayu-Query-Source, X-Rayu-Intended-Model, " +
+	"anthropic-version, anthropic-beta"
+
+// corsExposeHeaders lists the response headers cross-origin JS is allowed to
+// READ. Without this, fetch() silently hides them: a browser client could stream
+// a completion but never show the credit balance it just spent, or detect that
+// the model it asked for was substituted. Keep in sync with setCreditHeaders and
+// the proxy/token-count handlers.
+const corsExposeHeaders = "x-rayu-credits-used, x-rayu-credits-remaining, x-rayu-topup-balance, " +
+	"x-rayu-limit, x-rayu-model-fidelity, x-rayu-proxied, x-rayu-proxy-error, x-rayu-token-count, " +
+	"x-rayu-request-id"
+
 func corsMiddleware(origins []string) func(http.Handler) http.Handler {
 	// (request logging lives in logRequests, registered before this)
 	allowed := map[string]bool{}
@@ -1512,10 +2169,16 @@ func corsMiddleware(origins []string) func(http.Handler) http.Handler {
 			if origin != "" && (allowAll || allowed[origin]) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				// /v1/proxy is registered with HandleFunc (any method), so a BYO-key
+				// client may need verbs beyond the hosted endpoints' GET/POST.
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+				w.Header().Set("Access-Control-Expose-Headers", corsExposeHeaders)
 				w.Header().Set("Access-Control-Max-Age", "600")
 			}
+			// Preflight is answered here, before the auth group's middleware runs —
+			// browsers never send Authorization on an OPTIONS, so letting it reach
+			// auth.Middleware would 401 every preflight.
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
 				return

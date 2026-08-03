@@ -64,6 +64,10 @@ export function registerMcpAddCommand(mcp: Command): void {
     )
     .option('--client-id <clientId>', 'OAuth client ID for HTTP/SSE servers')
     .option(
+      '--client-name <clientName>',
+      'client_name sent during OAuth dynamic client registration (default: "RAYU (<name>)"). Needed for servers that only register allowlisted client names.',
+    )
+    .option(
       '--client-secret',
       'Prompt for OAuth client secret (or set MCP_CLIENT_SECRET env var)',
     )
@@ -157,9 +161,12 @@ export function registerMcpAddCommand(mcp: Command): void {
             ? parseInt(options.callbackPort, 10)
             : undefined
           const oauth =
-            options.clientId || callbackPort || xaa
+            options.clientId || options.clientName || callbackPort || xaa
               ? {
                   ...(options.clientId ? { clientId: options.clientId } : {}),
+                  ...(options.clientName
+                    ? { clientName: options.clientName }
+                    : {}),
                   ...(callbackPort ? { callbackPort } : {}),
                   ...(xaa ? { xaa: true } : {}),
                 }
@@ -203,9 +210,12 @@ export function registerMcpAddCommand(mcp: Command): void {
             ? parseInt(options.callbackPort, 10)
             : undefined
           const oauth =
-            options.clientId || callbackPort || xaa
+            options.clientId || options.clientName || callbackPort || xaa
               ? {
                   ...(options.clientId ? { clientId: options.clientId } : {}),
+                  ...(options.clientName
+                    ? { clientName: options.clientName }
+                    : {}),
                   ...(callbackPort ? { callbackPort } : {}),
                   ...(xaa ? { xaa: true } : {}),
                 }

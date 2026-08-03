@@ -156,3 +156,16 @@ export function usesTranslatedFormat(model?: string): boolean {
 export function isFirstPartyRequest(model?: string): boolean {
   return resolveRequestShape(model).firstParty
 }
+
+/**
+ * False only when the resolved provider EXPLICITLY declares that its endpoint does
+ * not accept image content (the `supportsImage` toggle in /connect → Custom).
+ *
+ * Everything else returns true: built-in providers declare nothing and their image
+ * support is a property of the model, which the endpoint itself reports by
+ * accepting or rejecting the request. This exists so a user who knows their
+ * endpoint is text-only can stop Rayu from sending image parts that would 400.
+ */
+export function providerAcceptsImages(model?: string): boolean {
+  return resolveRequestShape(model).provider?.supportsImage !== false
+}

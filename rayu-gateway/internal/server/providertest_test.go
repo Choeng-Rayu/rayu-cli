@@ -479,8 +479,8 @@ func TestProviderTestSeesAKeySavedASecondAgo(t *testing.T) {
 	if !res.OK || res.KeyID != 99 {
 		t.Fatalf("result=%+v, want the just-added key 99 to have been tested", res)
 	}
-	if fe.reloads != 1 {
-		t.Errorf("reloads=%d, want exactly 1 (refresh on miss, not on every test)", fe.reloads)
+	if fe.reloadCount() != 1 {
+		t.Errorf("reloads=%d, want exactly 1 (refresh on miss, not on every test)", fe.reloadCount())
 	}
 }
 
@@ -502,8 +502,8 @@ func TestProviderTestAlwaysRefreshesBeforeTesting(t *testing.T) {
 	if code, _ := runProviderTest(t, h, "admin", `{"providerId":2,"modelCode":"longcat-2"}`); code != http.StatusOK {
 		t.Fatalf("status=%d", code)
 	}
-	if fe.reloads != 1 {
-		t.Errorf("reloads=%d, want exactly 1 — refresh up front, once per test", fe.reloads)
+	if fe.reloadCount() != 1 {
+		t.Errorf("reloads=%d, want exactly 1 — refresh up front, once per test", fe.reloadCount())
 	}
 }
 

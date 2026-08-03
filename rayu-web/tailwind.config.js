@@ -4,6 +4,16 @@ module.exports = {
     './app/**/*.{js,ts,jsx,tsx,mdx}',
     './components/**/*.{js,ts,jsx,tsx,mdx}',
     './lib/**/*.{js,ts,jsx,tsx}',
+    /*
+     * Rayu Studio is styled by UnoCSS, not Tailwind (see uno.config.ts). The
+     * './app/**' glob above would otherwise match app/studio/**, making both
+     * engines emit utilities for the same files — and disagree on the ones whose
+     * definitions differ between presetUno and Tailwind (line-heights, shadows,
+     * default colour scales).
+     *
+     * Note studio/** is not listed at all, so only this negation is needed.
+     */
+    '!./app/studio/**',
   ],
   theme: {
     extend: {

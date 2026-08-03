@@ -214,13 +214,14 @@ export async function mcpGetHandler(name: string): Promise<void> {
         console.log(`    ${key}: ${value}`);
       }
     }
-    if (server.oauth?.clientId || server.oauth?.callbackPort) {
+    if (server.oauth?.clientId || server.oauth?.clientName || server.oauth?.callbackPort) {
       const parts: string[] = [];
       if (server.oauth.clientId) {
         parts.push('client_id configured');
         const clientConfig = getMcpClientConfig(name, server);
         if (clientConfig?.clientSecret) parts.push('client_secret configured');
       }
+      if (server.oauth.clientName) parts.push(`client_name ${server.oauth.clientName}`);
       if (server.oauth.callbackPort) parts.push(`callback_port ${server.oauth.callbackPort}`);
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  OAuth: ${parts.join(', ')}`);
@@ -238,13 +239,14 @@ export async function mcpGetHandler(name: string): Promise<void> {
         console.log(`    ${key}: ${value}`);
       }
     }
-    if (server.oauth?.clientId || server.oauth?.callbackPort) {
+    if (server.oauth?.clientId || server.oauth?.clientName || server.oauth?.callbackPort) {
       const parts: string[] = [];
       if (server.oauth.clientId) {
         parts.push('client_id configured');
         const clientConfig = getMcpClientConfig(name, server);
         if (clientConfig?.clientSecret) parts.push('client_secret configured');
       }
+      if (server.oauth.clientName) parts.push(`client_name ${server.oauth.clientName}`);
       if (server.oauth.callbackPort) parts.push(`callback_port ${server.oauth.callbackPort}`);
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  OAuth: ${parts.join(', ')}`);

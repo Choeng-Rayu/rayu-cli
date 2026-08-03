@@ -121,11 +121,72 @@ function loadFromDiskOnce(): void {
   try {
     const p = entitlementsPath()
     if (existsSync(p)) {
-      cache = JSON.parse(readFileSync(p, 'utf8')) as RayuEntitlements
+      const parsed: unknown = JSON.parse(readFileSync(p, 'utf8'))
+      // A hand-edited or half-written file must not become the authority for
+      // gating: an object without `features`/`allowedModels` reads as "this user
+      // has nothing", which denies paid features to a paying customer.
+      cache = isEntitlementsPayload(parsed) ? parsed : null
     }
   } catch {
     cache = null
   }
+}
+
+/**
+ * Structural check that a value really is a `/me/entitlements` body.
+ *
+ * WHY THIS EXISTS: refreshRayuEntitlements() used to cast ANY 2xx JSON body to
+ * RayuEntitlements and both cache AND persist it. Any 200 that is not the
+ * backend's payload — a proxy/captive-portal JSON page, an enveloped
+ * `{data:{…}}` shape, a partial body from a backend mid-deploy — therefore
+ * became the authoritative entitlement state, where:
+ *   • `allowedModels` missing → hasHostedModelAccess() false → the CLI
+ *     short-circuits every hosted request with "🔒 Rayu-hosted models are a paid
+ *     feature. Please upgrade your plan" — to a PAID user;
+ *   • `features` missing → rayuFeatureAllowed() denies EVERY gated feature; and
+ *   • syncRayuHostedProvider() sees an empty catalog and DELETES the
+ *     rayu-hosted provider from providers.json, switching the active provider.
+ * Because the bad value was persisted at 0600 it survived restarts, which is why
+ * the failure looked random and self-healing (the next good refresh fixed it).
+ *
+ * Deliberately MINIMAL: only the fields gating actually reads are required, so a
+ * backend that adds fields keeps working. Arrays and null are rejected (typeof
+ * null === 'object', and an array would pass a naive object check).
+ */
+export function isEntitlementsPayload(v: unknown): v is RayuEntitlements {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const o = v as Record<string, unknown>
+  const plan = o.plan
+  if (typeof plan !== 'object' || plan === null || Array.isArray(plan)) {
+    return false
+  }
+  const code = (plan as Record<string, unknown>).code
+  if (typeof code !== 'string' || code === '') return false
+  const features = o.features
+  if (
+    typeof features !== 'object' ||
+    features === null ||
+    Array.isArray(features)
+  ) {
+    return false
+  }
+  // Optional, but when present must be arrays — an object here would make
+  // `.some(...)` / `.length` throw or silently read as empty.
+  for (const key of ['allowedModels', 'hostedModels'] as const) {
+    if (o[key] !== undefined && !Array.isArray(o[key])) return false
+  }
+  return true
+}
+
+/**
+ * True when the cached plan is a PAID one. A paying customer must never be shown
+ * "upgrade your plan" by the client: if their plan grants no usable model the
+ * cause is a catalog/config gap on Rayu's side (or a stale cache), and the
+ * gateway — the authoritative gate — returns the accurate error.
+ */
+function isPaidPlan(ent: RayuEntitlements): boolean {
+  const cents = ent.plan?.priceCents
+  return typeof cents === 'number' && cents > 0
 }
 
 function persist(ent: RayuEntitlements | null): void {
@@ -190,7 +251,15 @@ export async function refreshRayuEntitlements(): Promise<RayuEntitlements | null
       { headers: { Authorization: `Bearer ${token}` } },
     )
     if (!res.ok) return cache
-    const data = (await res.json()) as RayuEntitlements
+    const parsed: unknown = await res.json()
+    // Only a recognisable entitlements body may replace the cache. Anything else
+    // (proxy JSON page, enveloped/partial shape) leaves the LAST GOOD cache in
+    // place and is neither persisted nor fed to syncRayuHostedProvider — see
+    // isEntitlementsPayload for what the old blind cast did to paid users.
+    if (!isEntitlementsPayload(parsed)) {
+      return cache
+    }
+    const data = parsed
     // Bind to the current session user so the file can't be reused by another.
     data.userId = currentUserId()
     cache = data
@@ -262,8 +331,10 @@ export function isHostedModelEntitled(modelCode: string): boolean {
   if (!isUseRayuOAuthEnabled()) return true
   const ent = getCachedEntitlements()
   if (!ent) return true // unknown → let the gateway decide
-  const allowed = ent.allowedModels ?? []
-  return allowed.some((m) => m.code === modelCode)
+  // Field ABSENT is "unknown", not "nothing allowed" — an older backend, or a
+  // cache written before allowedModels existed, must not read as no access.
+  if (ent.allowedModels === undefined) return true
+  return ent.allowedModels.some((m) => m.code === modelCode)
 }
 
 /**
@@ -285,7 +356,16 @@ export function hasHostedModelAccess(): boolean {
   if (!isUseRayuOAuthEnabled()) return true
   const ent = getCachedEntitlements()
   if (!ent) return true // unknown → let the gateway decide
-  return (ent.allowedModels ?? []).length > 0
+  // A PAID plan is never told "upgrade your plan" by the client. If a paying
+  // user's allowedModels is empty the cause is on Rayu's side (no model↔plan
+  // rows configured for that plan, or a cache written from a partial payload),
+  // and the gateway returns the accurate error. Emitting "this is a paid
+  // feature" to someone who already paid is the worst possible outcome.
+  if (isPaidPlan(ent)) return true
+  // Field ABSENT is "unknown" (fail open, per this function's contract); only an
+  // EXPLICIT empty list means the plan grants no hosted models.
+  if (ent.allowedModels === undefined) return true
+  return ent.allowedModels.length > 0
 }
 
 /**

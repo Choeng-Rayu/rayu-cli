@@ -2,6 +2,9 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.5.12 - 2026-07-30
+- Improved the model selection experience — better picker UX and more reliable model resolution when switching providers
+
 ## 1.5.11 - 2026-07-30
 - Fixed a bug where Rayu CLI would hang/stuck when running inside the default macOS Terminal app — Enter and several modified key events were not being delivered when the `modifiers-napi` dependency was absent
 

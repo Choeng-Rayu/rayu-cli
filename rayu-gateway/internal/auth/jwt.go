@@ -14,6 +14,13 @@ import (
 type Claims struct {
 	UserID int64
 	Role   string
+	// OrgID/OrgRole are the TEAM claims. They are OPTIONAL: 0/"" means the caller
+	// is an individual user and is billed against their own subscription, exactly
+	// as every token issued before teams existed. A gateway build that predates
+	// teams ignores them, and a token that predates teams is still valid here —
+	// which is what keeps the CLI contract unbroken in both directions.
+	OrgID   int64
+	OrgRole string
 }
 
 var (
@@ -48,5 +55,12 @@ func VerifyAccessToken(tokenStr, secret string) (*Claims, error) {
 		return nil, ErrInvalidToken
 	}
 	role, _ := mc["role"].(string)
-	return &Claims{UserID: int64(sub), Role: role}, nil
+	// Team claims, when present. A malformed/absent value is NOT an error: the
+	// token is still a perfectly valid individual access token.
+	var orgID int64
+	if v, ok := mc["orgId"].(float64); ok && v > 0 {
+		orgID = int64(v)
+	}
+	orgRole, _ := mc["orgRole"].(string)
+	return &Claims{UserID: int64(sub), Role: role, OrgID: orgID, OrgRole: orgRole}, nil
 }

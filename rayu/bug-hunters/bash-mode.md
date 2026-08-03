@@ -6,5 +6,5 @@ Act as senior Software Engineering, now please ananlyze the bash mode because wh
   / for commands          shift + tab to auto-accept edits   ctrl + z to suspend                                                                                                      
   @ for file paths        ctrl + o for verbose output        ctrl + v to paste images                                                                                                 
   & for background        ctrl + t to toggle tasks           meta + p to switch model
-  /btw for side question  shift + ⏎ for newline              ctrl + s to stash prompt                                                                                                 
+  /btw for side question  shift + ⏎ for newline              ctrl + s to stash prompt                                                                                              
                                                              ctrl + g to edit in $EDITOR                                                                                              

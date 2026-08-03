@@ -172,15 +172,27 @@ rayu --print --output-format json "list top-level folders" | jq .result
 
 ## Providers
 
-Rayu supports five provider types:
+Rayu speaks **four wire formats**, so one provider entry can serve models that use
+different protocols. Which format a request uses is decided per **model**, not per
+provider:
 
-| Provider | SDK / Method | Key env var |
-|----------|-------------|-------------|
-| **`anthropic`** | Anthropic SDK (`@anthropic-ai/sdk`) | `ANTHROPIC_API_KEY` |
-| **`openai-compatible`** | OpenAI SDK — NVIDIA, DeepSeek, Kimi, OpenRouter, Ollama, LM Studio, etc. | `RAYU_OPENAI_API_KEY` |
-| **`bedrock`** | AWS Bedrock SDK v3 | `AWS_BEARER_TOKEN_BEDROCK` or default AWS creds |
-| **`vertex`** | Google Gemini API via `@google/genai` | Google OAuth / ADC |
-| **`rayu-hosted`** | Proxied through rayu-gateway (requires RAYU OAuth login) | N/A (uses JWT auth) |
+| Provider | Models it serves | Wire format(s) | Auth |
+|----------|------------------|----------------|------|
+| **Anthropic** | Claude | Anthropic Messages | `ANTHROPIC_API_KEY` |
+| **AWS Bedrock** | Claude **and** gpt-oss / qwen / deepseek / mistral / … | Anthropic Messages for Claude, OpenAI Chat for the rest | `AWS_BEARER_TOKEN_BEDROCK` (Bedrock API key) |
+| **Microsoft Azure** | Claude **and** GPT deployments | Anthropic Messages for Claude, OpenAI Responses for the rest | `ANTHROPIC_FOUNDRY_API_KEY` / `AZURE_OPENAI_API_KEY` |
+| **Google Vertex AI** | Gemini, Claude, **and** Llama / Mistral / Qwen (MaaS) | GenAI, Anthropic Messages, OpenAI Chat | Google OAuth / ADC |
+| **OpenAI-compatible** | NVIDIA, DeepSeek, Kimi, OpenRouter, GLM, Ollama, LM Studio, … | OpenAI Chat | `RAYU_OPENAI_API_KEY` or per-provider key |
+| **Anthropic-compatible** | LongCat, Ollama Cloud | Anthropic Messages | Bearer key |
+| **GitHub Copilot** | Copilot models | OpenAI Chat | GitHub OAuth device flow |
+| **Kiro** | Claude via AWS CodeWhisperer | CodeWhisperer event-stream | API key or `kiro-cli` login |
+| **Rayu (hosted)** | Curated hosted models | Anthropic Messages | Your Rayu account (JWT) |
+| **Custom** | Anything you declare | **you pick**: OpenAI Chat, OpenAI Responses, or Anthropic Messages | your key |
+
+**Custom providers need no code change.** Run `/connect` → *Custom provider*, give
+it a name, pick the API format its endpoint speaks, enter the base URL, the model
+ids and your key. Declare whether it supports reasoning and images so Rayu never
+sends a parameter your endpoint would reject.
 
 **Google Gemini** is available three ways:
 1. **Gemini API key** (`GEMINI_API_KEY`) via the OpenAI-compatible endpoint

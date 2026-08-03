@@ -60,6 +60,16 @@ export function isRayuNonAnthropicActive(): boolean {
  * the standard `{type:'enabled',budget_tokens}` form instead. Distinct from
  * first-party 'anthropic' and from the OpenAI-compatible providers.
  */
+/**
+ * Rayu: true when the active provider is a third-party Anthropic-compatible
+ * endpoint (kind:'anthropic-compatible' — LongCat, Ollama Cloud).
+ *
+ * @deprecated Superseded by resolveRequestShape(model).anthropicCompatibleEndpoint
+ * in utils/model/providerCapabilities.ts, which resolves per-(provider, model) and
+ * is therefore correct for a subagent routed to another provider. This predicate
+ * answers only for the ACTIVE provider. Retained because it is still asserted by
+ * tests and may be used by in-flight work; prefer the resolver in new code.
+ */
 export function isRayuAnthropicCompatibleActive(): boolean {
   try {
     /* eslint-disable @typescript-eslint/no-require-imports */

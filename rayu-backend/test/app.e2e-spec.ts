@@ -1497,6 +1497,217 @@ describe('rayu-backend (e2e)', () => {
       .send({ credits: 5000 })
       .expect(400)
   })
+
+  it('top-up quote reflects an admin rate change live, and gates on enabled', async () => {
+    setTestUser(ctx, {
+      sub: 'quoteadmin',
+      email: 'quoteadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-quoteadmin-1')
+    await ctx.prisma.user.update({
+      where: { email: 'quoteadmin@example.com' },
+      data: { role: 'superadmin' },
+    })
+    const setRate = (creditsPerDollar: number, minTopupCents?: number) =>
+      request(app.getHttpServer())
+        .patch('/api/admin/credit-settings')
+        .set('Authorization', `Bearer ${adminAccess}`)
+        .send(
+          minTopupCents == null
+            ? { creditsPerDollar }
+            : { creditsPerDollar, minTopupCents },
+        )
+        .expect(200)
+
+    setTestUser(ctx, {
+      sub: 'quoteuser',
+      email: 'quoteuser@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const access = await login(app, 'state-quoteuser-1')
+    const auth = (req: request.Test) => req.set('Authorization', `Bearer ${access}`)
+    const quote = (credits?: number) =>
+      auth(
+        request(app.getHttpServer()).get(
+          credits == null
+            ? '/api/payments/topup/quote'
+            : `/api/payments/topup/quote?credits=${credits}`,
+        ),
+      )
+
+    await setRate(1000, 100)
+    const first = await quote(5000)
+    expect(first.status).toBe(200)
+    expect(first.body).toMatchObject({
+      enabled: true,
+      credits: 5000,
+      amountCents: 500,
+      currency: 'USD',
+      minCredits: 1000,
+      rateCreditsPerDollar: 1000,
+      minTopupCents: 100,
+      meetsMinimum: true,
+    })
+
+    // The quote must equal what the create path actually charges.
+    const created = await auth(
+      request(app.getHttpServer()).post('/api/payments/topup'),
+    ).send({ credits: 5000, method: 'bakong' })
+    expect(created.status).toBe(201)
+    expect(created.body.amountCents).toBe(first.body.amountCents)
+    await auth(
+      request(app.getHttpServer()).post(
+        `/api/payments/${created.body.paymentId}/cancel`,
+      ),
+    ).expect(201)
+
+    // Admin halves the rate → the very next quote is re-priced. No redeploy, no
+    // restart, nothing cached on this side (AppSettingsService.get() hits the DB).
+    await setRate(500)
+    expect((await quote(5000)).body.amountCents).toBe(1000)
+
+    // Raising the cents floor re-derives minCredits at the live rate.
+    await setRate(500, 200)
+    const floored = await quote(5000)
+    expect(floored.body.minCredits).toBe(1000)
+    expect(floored.body.minTopupCents).toBe(200)
+
+    // A below-floor request is quoted at the floor and flagged, so a UI can
+    // explain the bump instead of silently charging more.
+    const bumped = await quote(10)
+    expect(bumped.body.meetsMinimum).toBe(false)
+    expect(bumped.body.credits).toBe(1000)
+
+    // Rate 0 = admin-disabled: enabled=false rather than a $0 price, and the
+    // create path refuses on every rail.
+    await setRate(0)
+    const off = await quote(5000)
+    expect(off.body).toMatchObject({
+      enabled: false,
+      amountCents: 0,
+      minCredits: 0,
+      rateCreditsPerDollar: 0,
+    })
+    await auth(request(app.getHttpServer()).post('/api/payments/topup'))
+      .send({ credits: 5000, method: 'bakong' })
+      .expect(400)
+  })
+
+  it('top-up: all rails share one grant path; replay does not double-grant; refund claws back', async () => {
+    setTestUser(ctx, {
+      sub: 'railadmin',
+      email: 'railadmin@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const adminAccess = await login(app, 'state-railadmin-1')
+    await ctx.prisma.user.update({
+      where: { email: 'railadmin@example.com' },
+      data: { role: 'superadmin' },
+    })
+    await request(app.getHttpServer())
+      .patch('/api/admin/credit-settings')
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ creditsPerDollar: 1000, minTopupCents: 100 })
+      .expect(200)
+
+    setTestUser(ctx, {
+      sub: 'railuser',
+      email: 'railuser@example.com',
+      displayName: null,
+      avatarUrl: null,
+    })
+    const access = await login(app, 'state-railuser-1')
+    const auth = (req: request.Test) => req.set('Authorization', `Bearer ${access}`)
+    const balance = async () =>
+      (await auth(request(app.getHttpServer()).get('/api/me/entitlements'))).body
+        .topupBalance
+
+    // ABA and Bakong are priced identically — one shared pricing path.
+    const abaBuy = await auth(
+      request(app.getHttpServer()).post('/api/payments/topup'),
+    ).send({ credits: 2000, method: 'aba' })
+    expect(abaBuy.status).toBe(201)
+    expect(abaBuy.body.amountCents).toBe(200)
+    expect(abaBuy.body.method).toBe('aba')
+    await auth(
+      request(app.getHttpServer()).post(
+        `/api/payments/${abaBuy.body.paymentId}/cancel`,
+      ),
+    ).expect(201)
+
+    // The card rail is accepted by validation but unavailable → 501, and it does
+    // NOT silently fall back to a KHQR.
+    const stripe = await auth(
+      request(app.getHttpServer()).post('/api/payments/topup'),
+    ).send({ credits: 2000, method: 'stripe' })
+    expect(stripe.status).toBe(501)
+
+    const buy = await auth(
+      request(app.getHttpServer()).post('/api/payments/topup'),
+    ).send({ credits: 2000, method: 'bakong' })
+    expect(buy.status).toBe(201)
+    const paymentId = buy.body.paymentId
+
+    ctx.setBakongPaid(true, 'ext-rail')
+    const paid = await auth(
+      request(app.getHttpServer()).get(`/api/payments/${paymentId}/status`),
+    )
+    expect(paid.body).toMatchObject({ kind: 'topup', credits: 2000, activated: true })
+    expect(await balance()).toBe(2000)
+
+    // The grant is the credit_topups pending → paid flip (what both balance
+    // readers sum); no positive credit_ledger row is written, because
+    // source='topup' means CONSUMPTION to those same readers.
+    const topupRow = await ctx.prisma.creditTopup.findFirst({ where: { paymentId } })
+    expect(topupRow?.status).toBe('paid')
+    expect(
+      await ctx.prisma.creditLedger.count({
+        where: { userId: topupRow!.userId, source: 'topup' },
+      }),
+    ).toBe(0)
+
+    // Replaying the paid event must not grant twice.
+    await auth(
+      request(app.getHttpServer()).get(`/api/payments/${paymentId}/status`),
+    ).expect(200)
+    await auth(
+      request(app.getHttpServer()).get(`/api/payments/${paymentId}/status`),
+    ).expect(200)
+    expect(await balance()).toBe(2000)
+    ctx.setBakongPaid(false)
+
+    // Refund clawback: drops the credits out of the granted SUM and audits the
+    // reversal as source='refund' (not 'topup', which would subtract twice).
+    const refund = await request(app.getHttpServer())
+      .post(`/api/admin/payments/${paymentId}/refund-topup`)
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({ ref: 'REV-1' })
+    expect(refund.status).toBe(201)
+    expect(refund.body).toMatchObject({ clawedBack: true, credits: 2000 })
+    expect(await balance()).toBe(0)
+    expect(
+      await ctx.prisma.creditLedger.count({
+        where: { userId: topupRow!.userId, source: 'refund' },
+      }),
+    ).toBe(1)
+
+    // Replayed refund is a no-op (no second audit row, balance stays clamped).
+    const replay = await request(app.getHttpServer())
+      .post(`/api/admin/payments/${paymentId}/refund-topup`)
+      .set('Authorization', `Bearer ${adminAccess}`)
+      .send({})
+    expect(replay.body.clawedBack).toBe(false)
+    expect(
+      await ctx.prisma.creditLedger.count({
+        where: { userId: topupRow!.userId, source: 'refund' },
+      }),
+    ).toBe(1)
+    expect(await balance()).toBe(0)
+  })
 })
 
 // Helper: run the exchange->token bridge for the currently-set OAuth user and

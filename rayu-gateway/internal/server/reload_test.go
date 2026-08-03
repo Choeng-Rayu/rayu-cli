@@ -60,8 +60,8 @@ func TestReloadRefreshesTheSnapshot(t *testing.T) {
 	if !res.OK || !res.Reloaded {
 		t.Fatalf("response=%+v, want ok+reloaded", res)
 	}
-	if fe.reloads != 1 {
-		t.Errorf("reloads=%d, want 1", fe.reloads)
+	if fe.reloadCount() != 1 {
+		t.Errorf("reloads=%d, want 1", fe.reloadCount())
 	}
 }
 
@@ -72,8 +72,8 @@ func TestReloadAcceptsAnEmptyBody(t *testing.T) {
 	if code, _ := postReload(t, h, "admin", ""); code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", code)
 	}
-	if fe.reloads != 1 {
-		t.Errorf("reloads=%d, want 1", fe.reloads)
+	if fe.reloadCount() != 1 {
+		t.Errorf("reloads=%d, want 1", fe.reloadCount())
 	}
 }
 
@@ -86,8 +86,8 @@ func TestReloadIsAdminOnly(t *testing.T) {
 			t.Errorf("role=%q status=%d, want 403", role, code)
 		}
 	}
-	if fe.reloads != 0 {
-		t.Errorf("reloads=%d, want 0 — a rejected caller must not trigger work", fe.reloads)
+	if fe.reloadCount() != 0 {
+		t.Errorf("reloads=%d, want 0 — a rejected caller must not trigger work", fe.reloadCount())
 	}
 }
 
@@ -125,8 +125,8 @@ func TestReloadInvalidatesTheNamedUser(t *testing.T) {
 	if code, _ := postReload(t, h, "admin", `{"reason":"plans","userId":77}`); code != http.StatusOK {
 		t.Fatalf("status=%d", code)
 	}
-	if len(fe.invalidated) != 1 || fe.invalidated[0] != 77 {
-		t.Fatalf("invalidated=%v, want [77]", fe.invalidated)
+	if len(fe.invalidatedUsers()) != 1 || fe.invalidatedUsers()[0] != 77 {
+		t.Fatalf("invalidated=%v, want [77]", fe.invalidatedUsers())
 	}
 }
 
@@ -170,8 +170,8 @@ func TestReloadBroadcastsToOtherReplicas(t *testing.T) {
 	}
 	// Refresh locally FIRST, then announce: the replica answering the admin must
 	// never be the last to know.
-	if fe.reloads != 1 {
-		t.Errorf("reloads=%d, want 1", fe.reloads)
+	if fe.reloadCount() != 1 {
+		t.Errorf("reloads=%d, want 1", fe.reloadCount())
 	}
 }
 

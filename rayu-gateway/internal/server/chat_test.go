@@ -98,6 +98,10 @@ type fakeEnt struct {
 	// catalog overrides "the whole hosted catalog" for admin paths that are not
 	// limited to a user's plan (nil = use the entitlement's allowed models).
 	catalog []store.HostedModel
+	// mediaCatalog is the image/video generation catalog served by
+	// /v1/models?media=…. Nil means "no media models configured", which is what a
+	// database that predates the media_models migration looks like.
+	mediaCatalog []store.MediaModel
 	// providerKeys overrides testProviderKeys per provider id: use it to give a
 	// provider several keys (rotation) or none at all (unconfigured provider).
 	// An empty (non-nil) slice means "this provider has no keys".
@@ -111,6 +115,9 @@ type fakeEnt struct {
 	// on the request path).
 	onReload func(*fakeEnt)
 	reloads  int
+	// mu guards the mutable bookkeeping below: the settle path calls Invalidate on
+	// every request, so the concurrency tests reach it from many goroutines.
+	mu sync.Mutex
 	// reloadErr makes the refresh fail, standing in for an unreachable database.
 	reloadErr error
 	// invalidated records the user ids dropped from the entitlement cache.
@@ -132,18 +139,40 @@ func (f *fakeEnt) Settings() store.AppSettings { return f.settings }
 // Invalidate records which users were dropped from the entitlement cache, so a
 // test can prove a per-user change (plan switch, suspension) took effect without
 // waiting for the TTL.
+//
+// Locked: the settle path calls this on EVERY request, so the concurrency tests
+// reach it from many goroutines at once.
 func (f *fakeEnt) Invalidate(userID int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.invalidated = append(f.invalidated, userID)
+}
+
+// invalidatedUsers is a snapshot of the recorded invalidations, for assertions.
+func (f *fakeEnt) invalidatedUsers() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.invalidated...)
+}
+
+// reloadCount is the number of config refreshes asked for, for assertions.
+func (f *fakeEnt) reloadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reloads
 }
 
 // Reload records the call and applies the test's onReload hook, standing in for
 // the config refresh picking up rows written since the last snapshot.
 func (f *fakeEnt) Reload(context.Context) error {
+	f.mu.Lock()
 	f.reloads++
-	if f.reloadErr != nil {
-		return f.reloadErr
+	reloadErr, onReload := f.reloadErr, f.onReload
+	f.mu.Unlock()
+	if reloadErr != nil {
+		return reloadErr
 	}
-	if f.onReload != nil {
+	if onReload != nil {
 		f.onReload(f)
 	}
 	return nil
@@ -158,6 +187,10 @@ func (f *fakeEnt) Models() []store.HostedModel {
 	}
 	return f.ent.AllowedModels
 }
+
+// MediaModels is the image/video generation catalog. Plan filtering happens in
+// the handler (entitlements.AllowedMediaModels), so this returns it whole.
+func (f *fakeEnt) MediaModels() []store.MediaModel { return f.mediaCatalog }
 
 // keysFor is the provider's key set: the test's override, or a single default
 // key so the common case needs no setup.

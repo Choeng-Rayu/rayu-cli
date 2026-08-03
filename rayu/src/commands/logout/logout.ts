@@ -1,4 +1,5 @@
 import type { LocalCommandResult } from '../../types/command.js'
+import { clearMediaModels } from '../../services/rayuAuth/mediaModels.js'
 import { clearRayuEntitlements } from '../../services/rayuAuth/rayuEntitlements.js'
 import { clearFeatureUsage } from '../../services/rayuAuth/rayuFeatureUsage.js'
 import {
@@ -14,5 +15,8 @@ export async function call(): Promise<LocalCommandResult> {
   clearRayuSession()
   clearRayuEntitlements()
   clearFeatureUsage()
+  // The image/video catalog is plan-filtered, so it must not outlive the session
+  // (a signed-out CLI falls back to its built-in defaults).
+  clearMediaModels()
   return { type: 'text', value: 'Signed out of Rayu.' }
 }

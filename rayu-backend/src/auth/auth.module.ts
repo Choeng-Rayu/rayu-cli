@@ -1,7 +1,8 @@
-import { Module } from '@nestjs/common'
+import { forwardRef, Module } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { JwtModule } from '@nestjs/jwt'
 import { ModelsModule } from '../models/models.module'
+import { OrganizationsModule } from '../organizations/organizations.module'
 import { PlansModule } from '../plans/plans.module'
 import { AppSettingsModule } from '../settings/app-settings.module'
 import { UsersModule } from '../users/users.module'
@@ -18,6 +19,10 @@ import { RolesGuard } from './roles.guard'
     PlansModule,
     ModelsModule,
     AppSettingsModule,
+    // Two-way by nature: sign-in writes team membership (SSO auto-join) and
+    // reads it back into the JWT, while the team endpoints authenticate with
+    // this module's guard.
+    forwardRef(() => OrganizationsModule),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

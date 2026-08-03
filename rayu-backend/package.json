@@ -29,6 +29,8 @@
     "@nestjs/core": "^10.4.15",
     "@nestjs/jwt": "^10.2.0",
     "@nestjs/platform-express": "^10.4.15",
+    "@octokit/rest": "^21.1.1",
+    "@octokit/types": "^13.10.0",
     "@prisma/client": "^6.1.0",
     "bakong-khqr": "^1.0.20",
     "class-transformer": "^0.5.1",
@@ -36,6 +38,7 @@
     "prisma": "^6.1.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "stripe": "22.4.0",
     "telegram": "^2.26.22"
   },
   "devDependencies": {

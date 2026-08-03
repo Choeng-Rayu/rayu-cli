@@ -10,6 +10,7 @@ const NAV = [
   { href: '/admin', label: 'Overview', icon: '◎', exact: true },
   { href: '/admin/analytics', label: 'Analytics', icon: '📈' },
   { href: '/admin/users', label: 'Users', icon: '👥' },
+  { href: '/admin/organizations', label: 'Teams', icon: '🏢' },
   { href: '/admin/plans', label: 'Plans & Credits', icon: '🎚' },
   { href: '/admin/promo-codes', label: 'Promo Codes', icon: '🏷' },
   { href: '/admin/providers', label: 'Providers', icon: '🔌' },
