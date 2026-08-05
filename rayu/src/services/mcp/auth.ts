@@ -3,6 +3,7 @@ import {
   discoverOAuthServerInfo,
   type OAuthClientProvider,
   type OAuthDiscoveryState,
+  parseErrorResponse,
   auth as sdkAuth,
   refreshAuthorization as sdkRefreshAuthorization,
 } from '@modelcontextprotocol/sdk/client/auth.js'
@@ -87,6 +88,7 @@ type MCPOAuthFlowErrorReason =
   | 'provider_denied'
   | 'state_mismatch'
   | 'port_unavailable'
+  | 'registration_rejected'
   | 'sdk_auth_failed'
   | 'token_exchange_failed'
   | 'unknown'
@@ -975,6 +977,7 @@ export async function performMCPOAuthFlow(
     )
 
     // Fetch and store OAuth metadata for scope information
+    let registrationEndpoint: string | undefined
     try {
       const metadata = await fetchAuthServerMetadata(
         serverName,
@@ -986,6 +989,7 @@ export async function performMCPOAuthFlow(
       if (metadata) {
         // Store metadata in provider for scope information
         provider.setMetadata(metadata)
+        registrationEndpoint = metadata.registration_endpoint
         logMCPDebug(
           serverName,
           `Fetched OAuth metadata with scope: ${getScopeFromMetadata(metadata) || 'NONE'}`,
@@ -997,6 +1001,18 @@ export async function performMCPOAuthFlow(
         `Failed to fetch OAuth metadata: ${errorMessage(error)}`,
       )
     }
+
+    // Read clientMetadata after setMetadata so the scope is the resolved one.
+    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+    const globalFetch: FetchLike = fetch
+    const registrationDiagnosticsFetch = wrapFetchWithRegistrationDiagnostics(
+      globalFetch,
+      {
+        serverName,
+        clientName: provider.clientMetadata.client_name ?? '',
+        registrationEndpoint,
+      },
+    )
 
     // Get the OAuth state from the provider for validation
     const oauthState = await provider.state()
@@ -1179,6 +1195,7 @@ export async function performMCPOAuthFlow(
             serverUrl: serverConfig.url,
             scope: wwwAuthParams.scope,
             resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+            fetchFn: registrationDiagnosticsFetch,
           })
           logMCPDebug(serverName, `Initial auth result: ${result}`)
 
@@ -1191,7 +1208,13 @@ export async function performMCPOAuthFlow(
         } catch (error) {
           logMCPDebug(serverName, `SDK auth error: ${error}`)
           cleanup()
-          rejectOnce(new Error(`SDK auth failed: ${errorMessage(error)}`))
+          // A refused DCR already carries a self-contained, actionable message —
+          // the "SDK auth failed" prefix would only bury it.
+          rejectOnce(
+            error instanceof McpClientRegistrationRejectedError
+              ? error
+              : new Error(`SDK auth failed: ${errorMessage(error)}`),
+          )
         }
       })
 
@@ -1221,6 +1244,7 @@ export async function performMCPOAuthFlow(
       serverUrl: serverConfig.url,
       authorizationCode,
       resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+      fetchFn: registrationDiagnosticsFetch,
     })
 
     logMCPDebug(serverName, `Auth result: ${result}`)
@@ -1268,6 +1292,9 @@ export async function performMCPOAuthFlow(
 
     if (error instanceof AuthenticationCancelledError) {
       reason = 'cancelled'
+    } else if (error instanceof McpClientRegistrationRejectedError) {
+      reason = 'registration_rejected'
+      httpStatus = error.status
     } else if (authorizationCodeObtained) {
       reason = 'token_exchange_failed'
     } else {
@@ -1373,6 +1400,159 @@ export function wrapFetchWithStepUpDetection(
   }
 }
 
+/**
+ * Dynamic Client Registration (RFC 7591) was refused by the authorization
+ * server. Distinct from the SDK's generic ServerError because the remedy is
+ * configuration, not a retry: the server decides *which* clients may register.
+ *
+ * Why this exists at all: the SDK funnels every non-OK DCR response through
+ * parseErrorResponse, which expects an RFC 6749 §5.2 JSON body. Servers that
+ * gate registration behind an allowlist typically answer with a bare
+ * `403 Forbidden` in text/plain, so the user was shown
+ * `HTTP 403: Invalid OAuth error response: SyntaxError: Unexpected token 'F',
+ * "Forbidden" is not valid JSON. Raw body: Forbidden` — a JSON parser
+ * complaint that says nothing about the actual cause. Figma's
+ * https://api.figma.com/v1/oauth/mcp/register behaves exactly this way: it
+ * matches the submitted `client_name` against a fixed allowlist and returns
+ * 403 for everything else.
+ */
+export class McpClientRegistrationRejectedError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly registrationEndpoint: string,
+    readonly clientName: string,
+  ) {
+    super(message)
+    this.name = 'McpClientRegistrationRejectedError'
+  }
+}
+
+/** Longest raw response body echoed back to the user, in characters. */
+const MAX_REGISTRATION_ERROR_BODY_CHARS = 200
+
+/**
+ * True when this request is the DCR POST. Prefers the discovered
+ * registration_endpoint; falls back to the SDK's default `/register` path when
+ * metadata discovery produced nothing.
+ */
+function isRegistrationRequest(
+  url: string | URL,
+  init: RequestInit | undefined,
+  registrationEndpoint: string | undefined,
+): boolean {
+  if ((init?.method ?? 'GET').toUpperCase() !== 'POST') {
+    return false
+  }
+  let requested: URL
+  try {
+    requested = new URL(String(url))
+  } catch {
+    return false
+  }
+  if (registrationEndpoint) {
+    try {
+      const expected = new URL(registrationEndpoint)
+      return (
+        requested.origin === expected.origin &&
+        requested.pathname.replace(/\/$/, '') ===
+          expected.pathname.replace(/\/$/, '')
+      )
+    } catch {
+      // Unparseable metadata value — fall through to the path heuristic.
+    }
+  }
+  return requested.pathname.replace(/\/$/, '').endsWith('/register')
+}
+
+function describeRegistrationRejection(
+  status: number,
+  statusText: string,
+  body: string,
+  registrationEndpoint: string,
+  clientName: string,
+): string {
+  const host = (() => {
+    try {
+      return new URL(registrationEndpoint).host
+    } catch {
+      return registrationEndpoint
+    }
+  })()
+  const detail = body
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_REGISTRATION_ERROR_BODY_CHARS)
+  return [
+    `${host} refused to register an OAuth client (HTTP ${status}${statusText ? ` ${statusText}` : ''}${detail ? `: ${detail}` : ''}).`,
+    `This authorization server does not accept open dynamic client registration — it only issues credentials to clients it recognises, usually matched on the exact client_name. Rayu sent "${clientName}".`,
+    `Fix it in this server's "oauth" config: set "clientId" (plus client secret) to a client you registered with the provider, or set "clientName" to a name the provider accepts — e.g. \`rayu mcp add --transport http <name> <url> --client-name "<approved name>"\`. Figma's remote MCP server is gated this way.`,
+  ].join('\n')
+}
+
+/**
+ * Wraps the fetch used for the OAuth flow so a refused DCR POST surfaces as an
+ * actionable McpClientRegistrationRejectedError instead of the SDK's JSON
+ * parse complaint. Spec-compliant OAuth error bodies are still mapped by the
+ * SDK's own parseErrorResponse so error-class-driven recovery in `auth()`
+ * (InvalidClientError → invalidate + retry) keeps working.
+ *
+ * Every other request passes through untouched — the body is only read for a
+ * non-OK registration response, which the SDK treats as fatal anyway.
+ */
+export function wrapFetchWithRegistrationDiagnostics(
+  baseFetch: FetchLike,
+  ctx: {
+    serverName: string
+    clientName: string
+    registrationEndpoint?: string
+  },
+): FetchLike {
+  return async (url: string | URL, init?: RequestInit) => {
+    const response = await baseFetch(url, init)
+    if (
+      response.ok ||
+      !isRegistrationRequest(url, init, ctx.registrationEndpoint)
+    ) {
+      return response
+    }
+
+    const endpoint = ctx.registrationEndpoint ?? String(url)
+    const body = await response.text().catch(() => '')
+    logMCPDebug(
+      ctx.serverName,
+      `Client registration rejected by ${endpoint}: HTTP ${response.status}`,
+    )
+
+    // A spec-compliant {"error": "..."} body already explains itself, and the
+    // SDK's error classes drive recovery in auth() (InvalidClientError →
+    // invalidate credentials + retry) — hand those back unchanged.
+    let isSpecCompliantOAuthError = false
+    try {
+      isSpecCompliantOAuthError =
+        OAuthErrorResponseSchema.safeParse(jsonParse(body)).success
+    } catch {
+      // Not JSON at all — the allowlist case below.
+    }
+    if (isSpecCompliantOAuthError) {
+      throw await parseErrorResponse(body)
+    }
+
+    throw new McpClientRegistrationRejectedError(
+      describeRegistrationRejection(
+        response.status,
+        response.statusText,
+        body,
+        endpoint,
+        ctx.clientName,
+      ),
+      response.status,
+      endpoint,
+      ctx.clientName,
+    )
+  }
+}
+
 export class RayuMcpOAuthProvider implements OAuthClientProvider {
   private serverName: string
   private serverConfig: McpSSEServerConfig | McpHTTPServerConfig
@@ -1416,7 +1596,11 @@ export class RayuMcpOAuthProvider implements OAuthClientProvider {
 
   get clientMetadata(): OAuthClientMetadata {
     const metadata: OAuthClientMetadata = {
-      client_name: `RAYU (${this.serverName})`,
+      // Configurable because DCR allowlists exist: some authorization servers
+      // only register clients whose client_name they recognise (see
+      // McpClientRegistrationRejectedError). Default identifies Rayu + server.
+      client_name:
+        this.serverConfig.oauth?.clientName ?? `RAYU (${this.serverName})`,
       redirect_uris: [this.redirectUri],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],

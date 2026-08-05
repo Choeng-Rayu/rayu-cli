@@ -35,6 +35,13 @@ const McpXaaConfigSchema = lazySchema(() => z.boolean())
 const McpOAuthConfigSchema = lazySchema(() =>
   z.object({
     clientId: z.string().optional(),
+    // RFC 7591 client_name sent during Dynamic Client Registration. Defaults to
+    // `RAYU (<serverName>)`. Some authorization servers only issue credentials to
+    // an allowlist of recognised clients and match on this exact string — Figma's
+    // https://api.figma.com/v1/oauth/mcp/register answers 403 "Forbidden" for any
+    // other name — so it has to be user-settable per server. Capped at RFC 7591's
+    // practical limit to keep an oversized value from being sent to the AS.
+    clientName: z.string().min(1).max(256).optional(),
     callbackPort: z.number().int().positive().optional(),
     authServerMetadataUrl: z
       .string()

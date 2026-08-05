@@ -45,16 +45,64 @@ RAYU is designed to be a **universal AI coding assistant** that works with any A
 
 ### Provider Architecture
 
-RAYU uses a **provider abstraction layer** (`src/services/api/`) that adapts different AI provider APIs to a common interface:
+RAYU adapts every AI provider onto ONE internal representation: the **Anthropic
+Messages (beta) request shape**. `src/services/api/claude.ts` builds that request
+and calls `beta.messages.create(...).withResponse()`; every provider is a
+*transport* that presents the same surface and translates outward from it.
 
-- **Anthropic Claude**: Native support via `@anthropic-ai/sdk`
-- **OpenAI**: Adapter via `openai` SDK
-- **Google Gemini**: Adapter via `@google/genai`
-- **AWS Bedrock**: Adapter via `@aws-sdk/client-bedrock-runtime`
-- **DeepSeek, Kimi, OpenRouter**: OpenAI-compatible adapter with custom endpoints
-- **Local servers**: Any OpenAI-compatible local server
+There are **4 canonical wire formats** plus 2 provider-specific ones. Provider
+KIND says who you are talking to; wire FORMAT says what goes over the socket — and
+one provider can serve several formats, chosen **per model**:
 
-All providers expose a unified interface for streaming, tool calls, and message formatting.
+| Wire format | Endpoint | Providers |
+|---|---|---|
+| `anthropic-messages` (the IR — no translation) | `/v1/messages` | first-party Anthropic; anthropic-compatible (LongCat, Ollama Cloud); rayu-hosted; **Claude** on Bedrock / Azure / Vertex |
+| `openai-chat` | `/chat/completions` | openai-compatible (NVIDIA, DeepSeek, Kimi, OpenRouter, local); GitHub Copilot; Bedrock non-Claude (bedrock-mantle); Vertex MaaS |
+| `openai-responses` | `/responses` | Azure OpenAI; any custom provider that picks it |
+| `genai` | `generateContent` | Gemini on Vertex; Login-with-Gemini (Code Assist) |
+| `codewhisperer` | AWS event-stream | Kiro |
+
+**The single dispatch table is `src/services/api/providerRegistry.ts`.** Adding or
+changing a provider means editing that one file:
+
+- `resolveWireFormat(provider, model)` — precedence: explicit `provider.wireFormat`
+  → per-kind model-pattern rules → kind default. **Pure**, so it is exhaustively
+  testable.
+- `resolveClientTarget(provider, model)` — which client implementation serves it,
+  or `'unsupported'` when credentials/endpoint are missing. **Pure.**
+- `buildClient(provider, opts)` — a thin executor over that decision. Used for the
+  MAIN agent and for any subagent/collaborator routed elsewhere, so a provider is
+  registered exactly once.
+
+**Cross-provider routing.** A request model may carry a `providerId\u0000model`
+prefix (`rayuConfig.encodeModelWithProvider`, produced by `utils/model/agent.ts`)
+so a subagent or swarm collaborator runs on a DIFFERENT provider than the active
+one, concurrently. `services/api/client.ts` decodes it to pick the transport, and
+`utils/model/providerCapabilities.ts` decodes the same string to shape the request
+— use `resolveRequestShape(model)` / `usesTranslatedFormat(model)` /
+`isFirstPartyRequest(model)` for anything request-shaping. The older
+`isXActive()` predicates in `utils/model/providers.ts` answer only for the ACTIVE
+provider and are correct only for session-global questions (the model picker,
+`/status`, preconnect, policy limits).
+
+Shared building blocks — reuse these, do not re-implement:
+
+| Module | Owns |
+|---|---|
+| `anthropicIR.ts` | reading the IR (system prompt, text blocks, image sources) — used by ALL translators |
+| `openaiShared.ts` | tool specs + reasoning-effort mapping for both OpenAI formats |
+| `anthropicMessagesClient.ts` | the ONLY `new Anthropic()` call site; auth modes `x-api-key` / `bearer` / `custom-fetch` |
+| `anthropicTransport.ts` | headers, timeout, proxy, debug logger; `firstParty` flag gates first-party-only headers |
+| `providerKeys.ts` | the API-key list + paid multi-key gate |
+| `keyRotation.ts` | which HTTP statuses roll over to the next key |
+| `awsEventStream.ts` | AWS event-stream framing (Kiro **and** Bedrock streaming) |
+
+**Security invariants** (see each module's header for the reasoning): a provider's
+credential is only ever sent to that provider's own host; URL-rewriting fetches
+validate the final host and use `redirect:'error'`; first-party-only headers
+(`ANTHROPIC_CUSTOM_HEADERS`, `x-client-request-id`, `X-Claude-Code-Session-Id`) are
+gated to genuine api.anthropic.com; remote catalog model ids are sanitized
+(`sanitizeRemoteModelId`) because a `\u0000` in one could spoof provider routing.
 
 ### How RAYU Differs from Claude Code
 
@@ -340,29 +388,37 @@ bun run build:packages   # .deb/.rpm Linux packages
 
 ### Provider Architecture
 
-**Providers** abstract different AI APIs into a common interface.
+**Providers** all speak the Anthropic Messages IR internally; each is a transport.
+See "Provider Architecture" above for the wire-format table — this section covers
+only the mechanics.
 
-- **Provider abstraction:** `src/services/api/`
-- **Supported providers:**
-  - Anthropic Claude (native via `@anthropic-ai/sdk`)
-  - OpenAI (adapter)
-  - Google Gemini (adapter via `@google/genai`)
-  - AWS Bedrock (adapter via `@aws-sdk/client-bedrock-runtime`)
-  - DeepSeek, Kimi, OpenRouter (OpenAI-compatible adapter)
-  - Any OpenAI-compatible local server
+- **Single dispatch table:** `src/services/api/providerRegistry.ts`
+- **Provider kinds** (`ProviderKind` in `src/utils/rayuConfig.ts`): `anthropic`,
+  `anthropic-compatible`, `openai-compatible`, `bedrock`, `azure`, `vertex`,
+  `genai`, `kiro`, `copilot`, `rayu-hosted`, `custom`
 
 **How providers work:**
-1. User selects provider via `/connect` command
-2. Provider config is saved in `~/.rayu/config.json`
-3. API calls go through provider-specific adapter
-4. Adapter normalizes responses to common format
-5. RAYU processes normalized responses
+1. User selects a provider via `/connect` (`src/components/RayuProviderSetup.tsx`)
+2. Provider config is saved to `~/.rayu/providers.json` at mode 0600 (secrets)
+3. `getAnthropicClient({model})` resolves the provider — routed prefix first, else
+   active — then `buildClient()` resolves format → client
+4. The adapter translates the Anthropic Messages request into the target protocol
+   and translates the response stream back into Anthropic events
+5. `claude.ts` consumes those events, unaware of which provider served them
 
-**Provider files:**
-- `src/services/api/claude.ts` — Anthropic Claude adapter
-- `src/services/api/openai.ts` — OpenAI adapter (also used for DeepSeek, Kimi, OpenRouter)
-- `src/services/api/gemini.ts` — Google Gemini adapter
-- `src/services/api/bedrock.ts` — AWS Bedrock adapter
+**Provider files** (the ones that actually exist):
+- `src/services/api/claude.ts` — builds the IR request; provider-agnostic
+- `src/services/api/providerRegistry.ts` — format + client resolution (start here)
+- `src/services/api/anthropicMessagesClient.ts` — the only `new Anthropic()`
+- `src/services/api/openaiAdapter.ts` — OpenAI Chat Completions
+- `src/services/api/openaiResponsesAdapter.ts` — OpenAI Responses
+- `src/services/api/gemini/genaiTranslate.ts` — GenAI (Vertex + Code Assist)
+- `src/services/api/bedrockAnthropic.ts` — Claude on Bedrock (URL rewrite + SSE transcode)
+- `src/services/api/azureFoundry.ts` — Azure endpoints (Claude + Azure OpenAI)
+- `src/services/api/gemini/vertexAnthropic.ts` — Claude + MaaS on Vertex
+- `src/services/api/kiro/` — CodeWhisperer event-stream
+- `src/utils/model/providerCapabilities.ts` — per-(provider, model) request shaping
+- `src/utils/customProvider.ts` — validation for user-defined providers
 
 ### State Management
 

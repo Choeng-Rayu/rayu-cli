@@ -19,6 +19,36 @@ import { join, posix, win32 } from 'path'
 // each with double quotes is sufficient and safe.
 export const IS_WINDOWS = process.platform === 'win32'
 
+/**
+ * Env var set on every npm/bun install that Rayu itself drives.
+ *
+ * `scripts/postinstall.cjs` opens the terminal device (`/dev/tty`, or `CON` on
+ * Windows) and writes its welcome banner there, because npm v7+ pipes
+ * lifecycle-script stdout and that is the only way the message reaches a real
+ * terminal on a genuine `npm i -g` by the user.
+ *
+ * That is exactly wrong for an install we spawn ourselves from a running
+ * session: /dev/tty is the terminal the Ink TUI is currently rendering into, so
+ * the banner bypasses our piped stdio and smears ~20 lines over the live UI.
+ * The banner is also redundant there — the session is already open.
+ *
+ * The literal string is duplicated in scripts/postinstall.cjs, which is plain
+ * CommonJS run by npm and cannot import from src/. Keep the two in sync.
+ */
+export const MANAGED_INSTALL_ENV_VAR = 'RAYU_MANAGED_INSTALL'
+
+/**
+ * Env overlay marking a child install as Rayu-driven and non-interactive.
+ *
+ * Only the overlay is returned, not a full copy of process.env — both execa
+ * (execFileNoThrowWithCwd) and child_process merge this over the parent env by
+ * default, so returning just the delta avoids accidentally pinning a stale
+ * snapshot of the environment.
+ */
+export function buildManagedInstallEnv(): NodeJS.ProcessEnv {
+  return { [MANAGED_INSTALL_ENV_VAR]: '1' }
+}
+
 export function execNpmSync(
   npmArgs: string[],
   options: { timeout?: number; stdio: 'pipe' | 'inherit' | Array<'pipe' | 'ignore'> },

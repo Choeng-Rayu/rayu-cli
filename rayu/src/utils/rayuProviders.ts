@@ -247,6 +247,13 @@ export function supportsMultiApiKey(providerId: string | undefined): boolean {
   return kind !== undefined && MULTI_KEY_PROVIDER_KINDS.has(kind)
 }
 
+/**
+ * Stable provider id for the Claude.ai paid-subscription (Pro / Max plan) login.
+ * Declared next to the preset — and imported by the /connect UI from here — so
+ * the UI does not have to pull in the OAuth modules just to name the provider.
+ */
+export const CLAUDE_SUBSCRIPTION_PROVIDER_ID = 'claude-subscription'
+
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     // First-party Anthropic API (the Console — console.anthropic.com). Uses the
@@ -263,6 +270,30 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModel: 'claude-sonnet-4-6',
     smallFastModel: 'claude-haiku-4-5-20251001',
     envKeys: ['ANTHROPIC_API_KEY'],
+  },
+  {
+    // Claude.ai PAID SUBSCRIPTION (Pro plan / Max plan) via Anthropic OAuth
+    // (authorization code + PKCE). Same native Anthropic Messages path as the
+    // Console-API-key preset above — extended THINKING and the full context
+    // window work natively — but authenticated with a bearer access token from
+    // the user's claude.ai subscription instead of an `sk-ant-…` key, and
+    // refreshed automatically on expiry.
+    //
+    // Anthropic bills the subscription directly, so these requests deliberately
+    // BYPASS the Rayu gateway (no Rayu credits are consumed): see
+    // services/api/rayuHosted/gatewayRouting.isRoutableKind.
+    //
+    // A SEPARATE id from 'anthropic' so a user can have both an API key and a
+    // subscription connected without either clobbering the other's credential.
+    // The token is never stored in providers.json — it lives in secureStorage
+    // (see services/oauth/claudeAiTokens.ts).
+    id: CLAUDE_SUBSCRIPTION_PROVIDER_ID,
+    label:
+      'Login with Claude (Pro plan / Max plan) · sign in with your claude.ai subscription',
+    kind: 'anthropic',
+    defaultModel: 'claude-sonnet-4-6',
+    smallFastModel: 'claude-haiku-4-5-20251001',
+    requiresOAuth: true,
   },
   {
     // LongCat — Meituan's LongCat-2.0, exposed via an Anthropic-compatible
@@ -563,6 +594,15 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     // The endpoint is derived from the resource name entered in /connect, so no
     // fixed baseURL here. Deployments are fetched live.
     envKeys: ['ANTHROPIC_FOUNDRY_API_KEY', 'AZURE_OPENAI_API_KEY'],
+  },
+  {
+    id: 'custom',
+    label: 'Custom provider — bring any endpoint (pick its API format)',
+    kind: 'custom',
+    // Everything is collected in /connect: name, wire format, base URL, key, model
+    // ids and capability flags. No fixed baseURL or envKeys — a user-defined
+    // provider has no preset to inherit from.
+    promptBaseURL: true,
   },
   {
     id: 'kiro',

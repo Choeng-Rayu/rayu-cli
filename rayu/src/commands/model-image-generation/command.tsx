@@ -5,11 +5,24 @@ import {
   getImageModelSelection,
   setImageModelSelection,
 } from '../../utils/rayuConfig.js'
-import { IMAGE_MODELS } from '../../tools/ImageGenTool/models.js'
+import {
+  getCachedMediaModels,
+  refreshMediaModels,
+  type MediaCatalog,
+  type MediaModelEntry,
+} from '../../services/rayuAuth/mediaModels.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 
-function backendLabel(provider?: string): string {
-  return provider === 'vertex' ? 'Vertex (Imagen)' : 'NVIDIA'
+/** Human name for the upstream that serves a model. */
+function backendLabel(backend: string): string {
+  if (backend === 'vertex') return 'Vertex (Imagen)'
+  return 'NVIDIA'
+}
+
+/** "id · backend · edit" — capabilities come from the catalog, not a code list. */
+function optionLabel(m: MediaModelEntry): string {
+  const caps = m.capabilities.includes('edit') ? ' · edit' : ''
+  return `${m.id}  ·  ${backendLabel(m.backend)}${caps}`
 }
 
 function ImageModelPicker({
@@ -18,12 +31,26 @@ function ImageModelPicker({
   onDone: (result?: string) => void
 }): React.ReactNode {
   const current = getImageModelSelection()
+  // The catalog is SERVER-OWNED, so render whatever is cached immediately, then
+  // refresh once on open: a model the admin added moments ago should appear now
+  // rather than after the TTL, which otherwise reads as "the CLI didn't pick it
+  // up". Mirrors refreshHostedCatalog() in the chat /model picker.
+  const [catalog, setCatalog] = React.useState<MediaCatalog>(() =>
+    getCachedMediaModels(),
+  )
+  React.useEffect(() => {
+    let alive = true
+    void refreshMediaModels(true).then((fresh) => {
+      if (alive && fresh) setCatalog(fresh)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
+
   const options = [
     { label: 'Default (auto: NVIDIA, or Vertex when configured)', value: '' },
-    ...Object.values(IMAGE_MODELS).map(m => ({
-      label: `${m.id}  ·  ${backendLabel(m.provider)}${m.capability === 'edit' ? ' · edit' : ''}`,
-      value: m.id,
-    })),
+    ...catalog.image.map((m) => ({ label: optionLabel(m), value: m.id })),
   ]
   return (
     <Box flexDirection="column" gap={1} paddingLeft={1}>
@@ -32,6 +59,12 @@ function ImageModelPicker({
         Used by /generate-image and /image-editor. Default backend is NVIDIA.
         {current ? `  Current: ${current}` : ''}
       </Text>
+      {catalog.source === 'fallback' && (
+        <Text dimColor>
+          Showing built-in defaults — sign in to Rayu to load the full model
+          catalog.
+        </Text>
+      )}
       <Select
         options={options}
         onChange={(v: string) => {

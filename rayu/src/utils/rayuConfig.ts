@@ -10,7 +10,7 @@ import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
-export type ProviderKind = 'anthropic' | 'anthropic-compatible' | 'openai-compatible' | 'bedrock' | 'azure' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted'
+export type ProviderKind = 'anthropic' | 'anthropic-compatible' | 'openai-compatible' | 'bedrock' | 'azure' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted' | 'custom'
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 /**
@@ -40,13 +40,47 @@ export type RayuProvider = {
   id: string
   kind: ProviderKind
   /**
+   * Human-readable name. Set for user-defined providers (kind:'custom'), where
+   * there is no preset to take a label from. Built-in providers get theirs from
+   * PROVIDER_PRESETS.
+   */
+  label?: string
+  /**
    * Explicit wire-format override, highest precedence in resolveWireFormat().
    * Set for user-defined custom providers, where the format is chosen in the
    * /connect wizard rather than inferred from the kind + model id. Leave unset
    * for built-in providers so they keep their per-kind / per-model rules.
    */
   wireFormat?: WireFormat
+  /**
+   * Declared capabilities for a user-defined provider. Only the NEGATIVE case is
+   * an override:
+   *   supportsThinking:false — suppress `thinking` / `output_config.effort`, which
+   *     would 400 on an endpoint that does not implement them (see
+   *     modelSupportOverrides.get3PModelCapabilityOverride).
+   *   supportsImage:false — drop image content parts instead of sending them to an
+   *     endpoint that rejects them.
+   * Unset (or true) means "use the normal per-format rules".
+   */
+  supportsThinking?: boolean
+  supportsImage?: boolean
   apiKey?: string
+  /**
+   * How a first-party Anthropic provider (kind:'anthropic') authenticates:
+   * - 'apikey' (default when unset): the Console `sk-ant-…` key in `apiKey` is
+   *   sent as `x-api-key` to api.anthropic.com.
+   * - 'oauth': a Claude.ai PAID SUBSCRIPTION login (Pro / Max plan). No apiKey
+   *   is stored — the access token lives in secureStorage under `claudeAiOauth`
+   *   (see services/oauth/claudeAiTokens.ts) and is sent as
+   *   `Authorization: Bearer`, refreshed on expiry. Anthropic bills the
+   *   subscription directly, so these requests must NOT be routed through the
+   *   Rayu gateway (see rayuHosted/gatewayRouting.isRoutableKind).
+   *
+   * Mirrors `kiroAuthType` — one provider KIND, two credential sources — so the
+   * two anthropic entries ('anthropic' and 'claude-subscription') can coexist
+   * without either clobbering the other's credential.
+   */
+  anthropicAuthType?: 'apikey' | 'oauth'
   /**
    * Multiple API keys for openai-compatible multi-key providers (NVIDIA /
    * OpenRouter). When present, the request path rotates to the next key on a
@@ -288,6 +322,26 @@ export function setActiveProvider(id: string): void {
     cfg.activeProvider = id
     saveRayuConfig(cfg)
   }
+}
+
+/**
+ * Forget a provider entirely (used by the /connect "log out / forget" paths).
+ * When the removed provider was the active one, the active selection falls back
+ * to the first remaining provider so the session is never left pointing at an
+ * id that no longer exists.
+ *
+ * @returns true when a provider was actually removed.
+ */
+export function removeProvider(id: string): boolean {
+  const cfg = loadRayuConfig()
+  const idx = cfg.providers.findIndex(p => p.id === id)
+  if (idx < 0) return false
+  cfg.providers.splice(idx, 1)
+  if (cfg.activeProvider === id) {
+    cfg.activeProvider = cfg.providers[0]?.id
+  }
+  saveRayuConfig(cfg)
+  return true
 }
 
 export function setActiveProviderModel(providerId: string, model: string): void {
@@ -1189,6 +1243,17 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     const { fetchOllamaCloudModels } = await import('../services/api/ollamaCloud.js')
     return fetchOllamaCloudModels(p.apiKey, p.baseURL)
   }
+  // Claude.ai subscription login (kind:'anthropic' + anthropicAuthType:'oauth'):
+  // list the models the ACCOUNT can use from api.anthropic.com/v1/models with the
+  // stored OAuth bearer. Lazy import so the OAuth modules stay off the startup
+  // path. API-key anthropic providers fall through and return [] as before.
+  if (p.kind === 'anthropic') {
+    if (p.anthropicAuthType !== 'oauth') return []
+    const { fetchClaudeSubscriptionModels } = await import(
+      '../services/oauth/claudeAiLogin.js'
+    )
+    return fetchClaudeSubscriptionModels()
+  }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
   const url = p.baseURL.replace(/\/+$/, '') + '/models'
@@ -1362,7 +1427,12 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
   )
 
   for (const p of sorted) {
-    if (p.kind === 'anthropic') continue
+    // First-party Anthropic API-KEY providers are excluded: their Claude models
+    // come from the built-in model catalog, not from this config. A Claude.ai
+    // SUBSCRIPTION provider (anthropicAuthType:'oauth') IS included, because its
+    // catalog is fetched live from the account and is the only place the models
+    // available to that plan are known.
+    if (p.kind === 'anthropic' && p.anthropicAuthType !== 'oauth') continue
 
     // Collect model ids for any non-anthropic provider kind (openai-compatible,
     // bedrock, vertex, etc.). Priority: fetchedModels → pinned models → defaultModel.

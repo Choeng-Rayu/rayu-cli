@@ -10,9 +10,15 @@ import {
   resolveVertexProjectRegion,
 } from '../../services/api/gemini/vertexAuth.js'
 import { isGeminiVertexConfigured } from '../../utils/model/providers.js'
-import { DEFAULT_VERTEX_VIDEO_MODEL, type VideoParams } from './models.js'
+import { ensureMediaModels } from '../../services/rayuAuth/mediaModels.js'
+import { defaultVideoModelId, type VideoParams } from './models.js'
 
-export type GeneratedVideo = { buffer: Buffer; mediaType: string }
+/** A generated video plus the Veo model id that produced it. */
+export type GeneratedVideo = {
+  buffer: Buffer
+  mediaType: string
+  modelId: string
+}
 
 // Veo is served only in a limited set of regions. The `global` location used
 // for Gemini chat is NOT valid for Veo, and neither are many regional
@@ -109,10 +115,20 @@ export async function generateVertexVideo(opts: {
   // Veo is regional-only and served in a limited region set — remap any
   // unsupported region (including the chat `global` location) to us-central1.
   const vidRegion = region && VEO_REGIONS.has(region) ? region : DEFAULT_VEO_REGION
+  // The Veo model comes from the server-owned media catalog (an explicit caller id
+  // wins). A hand-typed veo-* id the catalog doesn't list is still honoured, so a
+  // brand-new Google model works before the dashboard has it.
+  const catalog = (await ensureMediaModels()).video
   const model =
     opts.modelId && /^veo-/i.test(opts.modelId)
       ? opts.modelId
-      : DEFAULT_VERTEX_VIDEO_MODEL
+      : defaultVideoModelId(catalog, 'vertex', !!opts.params.image)
+  if (!model) {
+    throw new Error(
+      'No Vertex Veo model is available in the Rayu media catalog. Add one in the ' +
+        'dashboard (Media models), or pass an explicit veo-* model id.',
+    )
+  }
   const token = await getVertexAccessToken()
   const url = baseModelUrl(vidRegion, project, model)
 
@@ -163,7 +179,11 @@ export async function generateVertexVideo(opts: {
       if (!b64) {
         throw new Error('Vertex Veo completed but returned no video (content-filtered?).')
       }
-      return { buffer: Buffer.from(b64, 'base64'), mediaType: 'video/mp4' }
+      return {
+        buffer: Buffer.from(b64, 'base64'),
+        mediaType: 'video/mp4',
+        modelId: model,
+      }
     }
   }
   throw new Error('Vertex Veo generation timed out.')

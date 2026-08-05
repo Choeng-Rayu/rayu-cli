@@ -15,9 +15,21 @@ import {
   preferThirdPartyAuthentication,
 } from '../bootstrap/state.js'
 import {
+  CLAUDE_AI_INFERENCE_SCOPE,
+  CLAUDE_AI_PROFILE_SCOPE,
+} from '../constants/oauth.js'
+import {
   getMockSubscriptionType,
   shouldUseMockSubscription,
 } from '../services/mockRateLimits.js'
+import {
+  deleteClaudeAIOAuthTokens,
+  readClaudeAIOAuthTokens,
+  readClaudeAIOAuthTokensAsync,
+  refreshClaudeAIOAuthTokensIfNeeded,
+  resetClaudeAIOAuthRefreshState,
+  writeClaudeAIOAuthTokens,
+} from '../services/oauth/claudeAiTokens.js'
 import type { OAuthTokens, SubscriptionType } from '../services/oauth/types.js'
 import {
   getApiKeyFromFileDescriptor,
@@ -87,6 +99,34 @@ function isManagedOAuthContext(): boolean {
   )
 }
 
+/**
+ * True when the ACTIVE provider is a Claude.ai paid-subscription login
+ * (kind:'anthropic' + anthropicAuthType:'oauth'), i.e. Claude requests should
+ * authenticate with the stored Anthropic OAuth access token rather than an
+ * API key. Cheap + sync: safe on the request hot path.
+ */
+export function isClaudeSubscriptionProviderActive(): boolean {
+  try {
+    const active = getActiveProvider()
+    return active?.kind === 'anthropic' && active.anthropicAuthType === 'oauth'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True when a Claude.ai subscription login EXISTS on this machine (tokens with
+ * the inference scope), regardless of which provider is currently active. Used
+ * by the /connect status view; request-path decisions use
+ * {@link isClaudeAISubscriber}, which additionally requires that login to be
+ * the active one.
+ */
+export function hasClaudeAISubscriptionLogin(): boolean {
+  const tokens = getClaudeAIOAuthTokens()
+  if (!tokens?.accessToken) return false
+  return tokens.scopes?.includes(CLAUDE_AI_INFERENCE_SCOPE) ?? false
+}
+
 /** Whether we are supporting direct 1P auth. */
 // this code is closely related to getAuthTokenSource
 export function isAnthropicAuthEnabled(): boolean {
@@ -98,13 +138,25 @@ export function isAnthropicAuthEnabled(): boolean {
     // fall through
   }
 
+  // A Claude.ai subscription login is first-party Anthropic auth too — it just
+  // carries a bearer OAuth token instead of an x-api-key.
+  if (isClaudeSubscriptionProviderActive() && hasClaudeAISubscriptionLogin()) {
+    return true
+  }
+
   return !!getRayuAnthropicApiKey() || !!process.env.RAYU_ANTHROPIC_API_KEY
 }
 
 /** Where the auth token is being sourced from, if any. */
 // this code is closely related to isAnthropicAuthEnabled
-export function getAuthTokenSource() {
-  return { source: 'none' as const, hasToken: false }
+export function getAuthTokenSource(): {
+  source: 'claudeai' | 'none'
+  hasToken: boolean
+} {
+  if (isClaudeSubscriptionProviderActive() && hasClaudeAISubscriptionLogin()) {
+    return { source: 'claudeai', hasToken: true }
+  }
+  return { source: 'none', hasToken: false }
 }
 
 export type ApiKeySource =
@@ -976,16 +1028,27 @@ async function maybeRemoveApiKeyFromMacOSKeychain(): Promise<void> {
   }
 }
 
-// Rayu does not persist Claude account OAuth tokens.
-export function saveOAuthTokensIfNeeded(_tokens: OAuthTokens): {
+// --- Claude.ai subscription (Pro / Max plan) OAuth tokens -------------------
+// Thin wrappers over services/oauth/claudeAiTokens.ts, which owns the
+// secureStorage slot and the single-flight refresh. Kept here because this is
+// the module the rest of the CLI already imports.
+
+/**
+ * Persist Anthropic OAuth tokens for the Claude.ai subscription login.
+ * Writes to the dedicated `claudeAiOauth` secureStorage slot — the Rayu account
+ * JWT (services/rayuAuth) is untouched.
+ */
+export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
   success: boolean
   warning?: string
 } {
-  return { success: true }
+  const result = writeClaudeAIOAuthTokens(tokens)
+  clearOAuthTokenCache()
+  return result
 }
 
 export const getClaudeAIOAuthTokens = memoize((): OAuthTokens | null => {
-  return null
+  return readClaudeAIOAuthTokens()
 })
 
 /**
@@ -999,41 +1062,86 @@ export function clearOAuthTokenCache(): void {
   clearKeychainCache()
 }
 
-export function handleOAuth401Error(
-  _failedAccessToken: string,
+/**
+ * Recover from a 401 on a Claude.ai OAuth request.
+ *
+ * Only refreshes when the token that failed is still the one on disk — if a
+ * concurrent request already rotated it, the caller should simply retry with the
+ * new token instead of burning the fresh refresh_token.
+ */
+export async function handleOAuth401Error(
+  failedAccessToken: string,
 ): Promise<boolean> {
-  return Promise.resolve(false)
+  clearOAuthTokenCache()
+  const current = readClaudeAIOAuthTokens()
+  if (!current?.refreshToken) return false
+  if (current.accessToken !== failedAccessToken) {
+    // Someone else already refreshed — the retry will pick up the new token.
+    return true
+  }
+  const ok = await refreshClaudeAIOAuthTokensIfNeeded({ force: true })
+  clearOAuthTokenCache()
+  return ok
 }
 
 /**
  * Reads OAuth tokens asynchronously, avoiding blocking keychain reads.
- * Delegates to the sync memoized version for env var / file descriptor tokens
- * (which don't hit the keychain), and only uses async for storage reads.
  */
 export async function getClaudeAIOAuthTokensAsync(): Promise<OAuthTokens | null> {
-  return null
-}
-
-export function checkAndRefreshOAuthTokenIfNeeded(
-  retryCount = 0,
-  force = false,
-): Promise<boolean> {
-  void retryCount
-  void force
-  return Promise.resolve(false)
-}
-
-export function isClaudeAISubscriber(): boolean {
-  return false
+  return readClaudeAIOAuthTokensAsync()
 }
 
 /**
- * Check if the current OAuth token has the user:profile scope.
+ * Refresh the Claude.ai access token if it is at (or near) expiry.
+ * Single-flight, so concurrent Claude requests trigger ONE refresh.
  *
- * Rayu does not use Claude account profile scopes.
+ * @returns true when a usable access token is available afterwards.
+ */
+export async function checkAndRefreshOAuthTokenIfNeeded(
+  retryCount = 0,
+  force = false,
+): Promise<boolean> {
+  void retryCount // retries are handled inside the single-flight refresh
+  if (!readClaudeAIOAuthTokens()) return false
+  const refreshed = await refreshClaudeAIOAuthTokensIfNeeded({ force })
+  // The memoized sync reader must not keep serving the pre-refresh token.
+  clearOAuthTokenCache()
+  return refreshed
+}
+
+/**
+ * True when Claude requests in THIS session authenticate with a Claude.ai paid
+ * subscription. Requires both a stored subscription login and that login to be
+ * the active provider, so a user who has signed in with Claude but is currently
+ * running on (say) NVIDIA does not get subscription-only request shaping.
+ */
+export function isClaudeAISubscriber(): boolean {
+  return isClaudeSubscriptionProviderActive() && hasClaudeAISubscriptionLogin()
+}
+
+/**
+ * Check if the current OAuth token has the user:profile scope (needed for
+ * /api/oauth/profile, usage and policy-limit reads).
  */
 export function hasProfileScope(): boolean {
-  return false
+  return (
+    getClaudeAIOAuthTokens()?.scopes?.includes(CLAUDE_AI_PROFILE_SCOPE) ?? false
+  )
+}
+
+/**
+ * Forget the Claude.ai subscription login: clear the credential slot, the cached
+ * account info and every in-memory auth cache. The Rayu account JWT and all
+ * other providers are left alone.
+ */
+export function logoutClaudeAISubscription(): boolean {
+  const ok = deleteClaudeAIOAuthTokens()
+  resetClaudeAIOAuthRefreshState()
+  saveGlobalConfig(current => ({ ...current, oauthAccount: undefined }))
+  clearOAuthTokenCache()
+  clearBetasCaches()
+  clearToolSchemaCache()
+  return ok
 }
 
 export function is1PApiCustomer(): boolean {

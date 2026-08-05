@@ -35,7 +35,14 @@ export async function processBashCommand(inputString: string, precedingInputBloc
   });
 
   // ctrl+b to background indicator
-  let jsx: React.ReactNode;
+  //
+  // NOTE: do NOT name this `jsx`. This file emits JSX, so the bundler injects
+  // the automatic-runtime `jsx` factory import; a local binding with the same
+  // name gets renamed together with that import and the factory call site
+  // compiles to `let jsx420; jsx420(BashModeProgress, ...)` → "jsx420 is not a
+  // function". That threw before the try block, so bash mode (`!cmd`) silently
+  // produced no messages in the bundled CLI while working under `bun run dev`.
+  let progressJsx: React.ReactNode;
 
   // Just show initial UI
   setToolJSX({
@@ -47,7 +54,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       ...context,
       // TODO: Clean up this hack
       setToolJSX: _ => {
-        jsx = _?.jsx;
+        progressJsx = _?.jsx;
       }
     };
 
@@ -58,7 +65,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       setToolJSX({
         jsx: <>
             <BashModeProgress input={inputString!} progress={progress.data} verbose={context.options.verbose} />
-            {jsx}
+            {progressJsx}
           </>,
         shouldHidePromptInput: false,
         showSpinner: false

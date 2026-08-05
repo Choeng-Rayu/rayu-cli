@@ -150,11 +150,68 @@ A per-user, per-UTC-day counter (Redis key `turns:<userId>:<YYYYMMDD>`, TTL = en
 
 **Hard vs soft summary:** `maxDailyTurns` and `creditsPerPeriod` are a hard boundary **only for Rayu-hosted models**. For BYO-key usage all client-side gating (features, turn cap) is advisory.
 
+## Team credits: the plan vs pay-as-you-go
+
+A team has **two** ways to get credits, and they are not interchangeable.
+
+| | Team plan | Purchased credits (pay-as-you-go) |
+|---|---|---|
+| Bought with | `POST /payments/team-khqr` | `POST /payments/team/<slug>/topup` |
+| Stored in | `credit_pools.total_credits` | `credit_pools.extra_credits` |
+| Audit row | `payments` + `organization_subscriptions` | `payments` + `organization_credit_topups` |
+| Renews | yes, every period | **no — zeroed at renewal** |
+| Grants model access | **yes** (`hosted_models.allowedPlanCodes` is matched against the ORG's plan code) | no |
+| Spent | first | second, only after the plan's allowance is gone |
+
+**Credits are an add-on, never a substitute for a plan.** A purchase is refused
+unless the team holds an active, in-period team plan whose `limits.topUpEnabled`
+is set — the same flag individual plans use. The reason is not bookkeeping: model
+access and `maxDailyTurns` come from the ORG's plan, so credits without a plan
+would buy something unusable. `GET /payments/team/<slug>/topup/quote` returns
+`enabled: false` plus a machine `reason` (`no_team_plan`, `plan_past_due`,
+`plan_canceled`, `period_ended`, `plan_topup_disabled`, `rate_disabled`) and an
+actionable `message`, and the create endpoint refuses with the same message —
+one shared check, so a dashboard can never show a payable price for a purchase
+the backend would reject.
+
+**Pricing is shared with individual top-ups.** Both go through
+`topup-pricing.ts` against the live `app_settings.creditsPerDollar` /
+`minTopupCents`. There is no separate team rate.
+
+**Expiry.** Purchased credits last until the pool's current period ends. Nothing
+sweeps them: `OrganizationsService.activateSubscription` sets
+`extra_credits = 0` on every activation and renewal, and the gateway already
+refuses all team spending once `period_end` has passed
+(`OrgMemberState.Usable()` → `team_period_ended`). The quote therefore returns
+`expiresAt`, `daysLeft` and `expiresSoon` (≤ 3 days), and the dashboard shows
+the expiry date *before* the pay button — buying two days before renewal buys
+two days.
+
+**Spend order falls out of the data model.** `credit_pools.used_credits` is one
+monotonic counter across both tiers, so the plan's allowance is necessarily
+consumed first; there is no second Redis key on the request path. The gateway
+passes `PoolCap = (total + extra) × tokensPerCredit` and
+`PurchasedCap = extra × tokensPerCredit` to `ReserveOrg`, which labels each
+charge `bucket` (inside the member's own quota), `pool` (the plan's shared
+allowance) or `extra` (purchased credits) on the `credit_ledger`.
+
+**Buying for one member.** `targetUserId` additionally raises that member's
+`bucket_quota` and `bucket_credits`. The shared pool goes up either way, because
+the pool is the hard cap and a bucket without pool backing is a number nobody
+can spend. A target who has left the team by the time the payment confirms gets
+a pool-only grant (logged, and reported as `targetMissing`) — the money already
+moved, so the grant never fails.
+
+**Refunds** flip the `organization_credit_topups` row to `refunded` and decrement
+`extra_credits`, floored at 0 so a team that already spent the credits cannot end
+up eating its plan's own allowance.
+
 ## Where usage is shown
 
 - **CLI:** `/credits` (or `/usage`) → `GET {gateway}/v1/credits`. Shows credits used/remaining and, when a cap is set, `Daily turns: X / Y used · Z left`.
 - **Dashboard (`/dashboard`):** reads `GET {gateway}/v1/credits` (falls back to `/api/me/entitlements` allowance if the gateway is unavailable). Renders credit + daily-turn bars.
 - **`/v1/credits` fields:** `creditsPerPeriod`, `usedCredits` (fractional — derived from billable tokens), `remainingCredits`, `tokensPerCredit`, `allowanceTokens` (= `creditsPerPeriod × tokensPerCredit`), `usedTokens` (real billable tokens used this period), `remainingTokens`, `maxDailyTurns`, `turnsUsedToday`, `turnsRemaining` (null when unlimited), `resetSeconds`, `topupBalance`, `topUpEnabled`, `periodEnd`.
+- **For a team member**, `/v1/credits` answers with the TEAM's allowance and `scope: "team"`. `remainingCredits` / `allowanceTokens` cover the plan's allowance **plus** purchased credits, and the `team` block splits them: `planCredits`, `purchasedCredits`, `purchasedRemaining`, `creditsExpireAt`, alongside `poolCredits`, `poolUsedCredits`, `bucketQuota`, `bucketRemaining`.
 
 ## Propagation latency (why a change isn't instant)
 
@@ -178,3 +235,22 @@ Seeds are **non-destructive** (create-if-missing) and the hosted catalog is only
 ## Verifying end-to-end
 
 See `rayu-gateway/RUNNING.md` → "Verify credits & the daily turn cap" for the concrete runbook (assign a paid plan → hosted chat → credits decrement on the dashboard → daily cap returns 429).
+
+For team credits: buy a team plan → exhaust the pool → confirm a member gets the
+`pool_limit` 429 → buy credits as the team admin → confirm the same member is
+served again and the ledger row for that request has `source = 'extra'`.
+
+## Known sharp edges (pre-existing, documented rather than fixed)
+
+- **ABA amount matching.** `confirmAbaPaymentByAmount` matches the most recent
+  pending ABA payment with the exact amount, because ABA's Telegram alert carries
+  the amount and a transaction id but not our payment id. Two pending payments of
+  the same amount can therefore be confused. Team credit purchases add another
+  kind of row to that candidate set; Bakong (which is polled by `md5`) is not
+  affected.
+- **Early manual renewal and the Redis pool counter.** `EnsureOrgPoolUsed` uses
+  `SETNX`, so a renewal performed *before* the period's natural end leaves the
+  old `poolUsed` counter in place until its TTL expires. Credit *purchases* are
+  unaffected: caps are passed per request from MySQL, so a grant takes effect
+  within the gateway's org-cache TTL.
+

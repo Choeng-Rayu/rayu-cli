@@ -10,6 +10,8 @@ import { getErrnoCode } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import { logError } from './log.js'
+import { buildManagedInstallEnv } from './npmExec.js'
+import { withUpdateLock } from './updateLock.js'
 import { jsonStringify } from './slowOperations.js'
 
 // Lazy getters: getRayuConfigHomeDir() is memoized and reads process.env.
@@ -98,6 +100,19 @@ export async function installOrUpdateClaudePackage(
   channel: ReleaseChannel,
   specificVersion?: string | null,
 ): Promise<'in_progress' | 'success' | 'install_failed'> {
+  // Serialize against every other updater (the global auto-updater and
+  // `rayu update`). Two sessions can otherwise run `npm install` in
+  // ~/.rayu/local concurrently and interleave over the same node_modules.
+  const outcome = await withUpdateLock(() =>
+    installOrUpdateClaudePackageLocked(channel, specificVersion),
+  )
+  return outcome.ran ? outcome.result : 'in_progress'
+}
+
+async function installOrUpdateClaudePackageLocked(
+  channel: ReleaseChannel,
+  specificVersion?: string | null,
+): Promise<'in_progress' | 'success' | 'install_failed'> {
   try {
     // First ensure the environment is set up
     if (!(await ensureLocalPackageEnvironment())) {
@@ -113,7 +128,14 @@ export async function installOrUpdateClaudePackage(
     const result = await execFileNoThrowWithCwd(
       'npm',
       ['install', `${MACRO.PACKAGE_URL}@${versionSpec}`],
-      { cwd: getLocalInstallDir(), maxBuffer: 1000000 },
+      // Marked as a Rayu-driven install so our postinstall script does not
+      // write its welcome banner to /dev/tty over the live TUI. See
+      // buildManagedInstallEnv() in npmExec.ts.
+      {
+        cwd: getLocalInstallDir(),
+        maxBuffer: 1000000,
+        env: buildManagedInstallEnv(),
+      },
     )
 
     if (result.code !== 0) {

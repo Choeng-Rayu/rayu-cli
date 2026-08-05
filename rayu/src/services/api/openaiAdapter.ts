@@ -23,6 +23,7 @@ import { hashPair } from 'src/utils/hash.js'
 import { PRODUCT_NAME } from 'src/constants/product.js'
 import type { ProviderFeatureMode } from 'src/utils/rayuConfig.js'
 import { isRotatableKeyStatus } from './keyRotation.js'
+import { providerAcceptsImages } from 'src/utils/model/providerCapabilities.js'
 import {
   blocksToText,
   imageBlockToUrl,
@@ -93,8 +94,11 @@ function imageBlockToOpenAI(block: AnyObj): AnyObj | null {
 }
 
 /** Collect OpenAI image_url parts from an Anthropic blocks array. */
-function imagePartsFrom(content: unknown): AnyObj[] {
+function imagePartsFrom(content: unknown, model?: string): AnyObj[] {
   if (!Array.isArray(content)) return []
+  // A user-defined provider may declare its endpoint text-only; sending image
+  // parts there is a 400, so drop them rather than fail the turn.
+  if (!providerAcceptsImages(model)) return []
   const parts: AnyObj[] = []
   for (const b of content as AnyObj[]) {
     const img = imageBlockToOpenAI(b)
@@ -169,7 +173,7 @@ function translateMessages(params: BetaParams): AnyObj[] {
                 ? tr.content
                 : blocksToText(tr.content),
           })
-          toolImages.push(...imagePartsFrom(tr.content))
+          toolImages.push(...imagePartsFrom(tr.content, params.model))
         }
         if (toolImages.length) {
           out.push({
@@ -183,7 +187,7 @@ function translateMessages(params: BetaParams): AnyObj[] {
         // Remaining user content: use a multimodal array when images are present,
         // otherwise a plain string (keeps simple/text-only providers happy).
         const text = blocksToText(others)
-        const images = imagePartsFrom(others)
+        const images = imagePartsFrom(others, params.model)
         if (images.length) {
           const parts: AnyObj[] = []
           if (text) parts.push({ type: 'text', text })

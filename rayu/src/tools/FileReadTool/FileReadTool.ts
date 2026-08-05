@@ -74,6 +74,8 @@ import { readFileInRange } from '../../utils/readFileInRange.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
+import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
+import { clampReadTokensToRemainingContext } from './contextBudget.js'
 import { getDefaultFileReadingLimits } from './limits.js'
 import {
   DESCRIPTION,
@@ -176,12 +178,51 @@ export class MaxFileReadTokenExceededError extends Error {
   constructor(
     public tokenCount: number,
     public maxTokens: number,
+    /**
+     * Lines actually returned by this read, when known. Lets the message carry a
+     * concrete `limit` to retry with instead of an open-ended "use offset and
+     * limit" — the model otherwise guesses, and often guesses too big again.
+     */
+    lineCount?: number,
   ) {
     super(
-      `File content (${tokenCount} tokens) exceeds maximum allowed tokens (${maxTokens}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.`,
+      `File content (${tokenCount} tokens) exceeds maximum allowed tokens (${maxTokens}). ` +
+        buildSliceHint(tokenCount, maxTokens, lineCount) +
+        `Or search for specific content with ${GREP_TOOL_NAME} instead of reading the whole file.`,
     )
     this.name = 'MaxFileReadTokenExceededError'
   }
+}
+
+/**
+ * "Read lines 1-N next" advice derived from the actual overflow ratio.
+ *
+ * Falls back to the generic wording when the line count is unknown (the caller
+ * did not measure it) or degenerate, so the message never contains a bogus
+ * number.
+ */
+function buildSliceHint(
+  tokenCount: number,
+  maxTokens: number,
+  lineCount: number | undefined,
+): string {
+  if (!lineCount || lineCount <= 1 || tokenCount <= 0) {
+    return 'Use the offset and limit parameters to read a smaller portion of the file. '
+  }
+  // 0.8 safety factor: tokens-per-line is an average, and the densest slice of a
+  // file exceeds it. Landing under the cap on the FIRST retry matters more than
+  // maximizing the slice.
+  const suggested = Math.max(
+    50,
+    Math.floor((lineCount * maxTokens * 0.8) / tokenCount),
+  )
+  if (suggested >= lineCount) {
+    return 'Use the offset and limit parameters to read a smaller portion of the file. '
+  }
+  return (
+    `This read returned ${lineCount} lines. Retry with limit=${suggested} ` +
+    `(then offset=${suggested + 1}, offset=${suggested * 2 + 1}, … to continue). `
+  )
 }
 
 // Common image extensions
@@ -346,9 +387,15 @@ export const FileReadTool = buildTool({
   },
   async prompt() {
     const limits = getDefaultFileReadingLimits()
-    const maxSizeInstruction = limits.includeMaxSizeInPrompt
-      ? `. Files larger than ${formatFileSize(limits.maxSizeBytes)} will return an error; use offset and limit for larger files`
-      : ''
+    // Default ON (an explicit `false` from the flag is the killswitch). The caps
+    // exist whether or not the model is told about them — omitting them, while
+    // OFFSET_INSTRUCTION_DEFAULT actively recommends reading whole files, is what
+    // produces a run of "exceeds maximum allowed size/tokens" errors on a large
+    // repo: the model cannot avoid a limit it does not know about.
+    const maxSizeInstruction =
+      limits.includeMaxSizeInPrompt !== false
+        ? `. A single read is capped at ${formatFileSize(limits.maxSizeBytes)} and ~${limits.maxTokens} tokens and will ERROR if the file exceeds either; for files that large, use offset and limit to read slices, or ${GREP_TOOL_NAME} to find the relevant lines first. The token cap also shrinks as the conversation grows, so prefer targeted reads over reading many whole files`
+        : ''
     const offsetInstruction = limits.targetedRangeNudge
       ? OFFSET_INSTRUCTION_TARGETED
       : OFFSET_INSTRUCTION_DEFAULT
@@ -504,7 +551,13 @@ export const FileReadTool = buildTool({
     const defaults = getDefaultFileReadingLimits()
     const maxSizeBytes =
       fileReadingLimits?.maxSizeBytes ?? defaults.maxSizeBytes
-    const maxTokens = fileReadingLimits?.maxTokens ?? defaults.maxTokens
+    // Per-call cap, then lowered to fit what is LEFT of the context window.
+    // Without this second step N individually-legal reads still overflow the
+    // window (see contextBudget.ts).
+    const maxTokens = clampReadTokensToRemainingContext(
+      fileReadingLimits?.maxTokens ?? defaults.maxTokens,
+      context,
+    )
 
     // Telemetry: track when callers override default read limits.
     // Only fires on override (low volume) — event count = override frequency.
@@ -756,6 +809,7 @@ async function validateContentTokens(
   content: string,
   ext: string,
   maxTokens?: number,
+  lineCount?: number,
 ): Promise<void> {
   const effectiveMaxTokens =
     maxTokens ?? getDefaultFileReadingLimits().maxTokens
@@ -767,7 +821,11 @@ async function validateContentTokens(
   const effectiveCount = tokenCount ?? tokenEstimate
 
   if (effectiveCount > effectiveMaxTokens) {
-    throw new MaxFileReadTokenExceededError(effectiveCount, effectiveMaxTokens)
+    throw new MaxFileReadTokenExceededError(
+      effectiveCount,
+      effectiveMaxTokens,
+      lineCount,
+    )
   }
 }
 
@@ -1027,7 +1085,7 @@ async function callInner(
       context.abortController.signal,
     )
 
-  await validateContentTokens(content, ext, maxTokens)
+  await validateContentTokens(content, ext, maxTokens, lineCount)
 
   readFileState.set(fullFilePath, {
     content,

@@ -11,13 +11,15 @@ import {
   resolveVertexProjectRegion,
 } from '../../services/api/gemini/vertexAuth.js'
 import { isGeminiVertexConfigured } from '../../utils/model/providers.js'
-import {
-  DEFAULT_VERTEX_EDIT_MODEL,
-  DEFAULT_VERTEX_IMAGE_MODEL,
-  type ImageParams,
-} from './models.js'
+import { ensureMediaModels } from '../../services/rayuAuth/mediaModels.js'
+import { defaultImageModelId, type ImageParams } from './models.js'
 
-export type GeneratedImage = { buffer: Buffer; mediaType: string }
+/** A generated image plus the Imagen model id that produced it. */
+export type GeneratedImage = {
+  buffer: Buffer
+  mediaType: string
+  modelId: string
+}
 
 /** True when Imagen-on-Vertex is configured/available (sync best-effort). */
 export function isGeminiVertexImageAvailable(): boolean {
@@ -93,12 +95,20 @@ export async function generateVertexImage(opts: {
   // Imagen is regional-only — the `global` location used for chat isn't valid
   // here, so fall back to a real region.
   const imgRegion = !region || region === 'global' ? 'us-central1' : region
+  // The Imagen model comes from the server-owned media catalog (an explicit
+  // caller id wins). A hand-typed imagen-* id the catalog doesn't list is still
+  // honoured, so a brand-new Google model works before the dashboard has it.
+  const catalog = (await ensureMediaModels()).image
   const model =
     opts.modelId && /^imagen-/i.test(opts.modelId)
       ? opts.modelId
-      : isEdit
-        ? DEFAULT_VERTEX_EDIT_MODEL
-        : DEFAULT_VERTEX_IMAGE_MODEL
+      : defaultImageModelId(catalog, 'vertex', isEdit)
+  if (!model) {
+    throw new Error(
+      'No Vertex Imagen model is available in the Rayu media catalog. Add one in the ' +
+        'dashboard (Media models), or pass an explicit imagen-* model id.',
+    )
+  }
 
   const token = await getVertexAccessToken()
   const res = await fetch(predictUrl(imgRegion, project, model), {
@@ -125,5 +135,6 @@ export async function generateVertexImage(opts: {
   return {
     buffer,
     mediaType: pred.mimeType ?? detectImageFormatFromBuffer(buffer),
+    modelId: model,
   }
 }

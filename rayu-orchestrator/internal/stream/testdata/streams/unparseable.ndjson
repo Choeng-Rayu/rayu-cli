@@ -1,4 +1,0 @@
-this is not json at all
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"recovered after the bad line"}]}}
-{not valid json{
-{"type":"result","subtype":"success","is_error":false,"result":"ok"}

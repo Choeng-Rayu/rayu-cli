@@ -64,6 +64,107 @@ export function stripTrailingWhitespace(str: string): string {
 }
 
 /**
+ * Characters that are DELETED by lenient normalization: they are invisible in
+ * the Read output the model saw, so it cannot reproduce them, yet their presence
+ * in the file makes an otherwise-correct old_string fail to match.
+ *
+ * `\r` is here for the same reason: FileEditTool normalizes CRLF→LF when it
+ * reads, but old_string can still arrive with a stray `\r` (pasted content,
+ * providers that re-emit Windows line endings).
+ */
+const LENIENT_DROP_CHARS = new Set([
+  '\r',
+  '\u200B', // zero width space
+  '\u200C', // zero width non-joiner
+  '\u200D', // zero width joiner
+  '\u2060', // word joiner
+  '\uFEFF', // BOM / zero width no-break space
+  '\u00AD', // soft hyphen
+])
+
+/**
+ * Characters that LOOK like a plain space in a terminal and are folded to one.
+ * Deliberately excludes TAB: tab↔space folding would let an indentation-style
+ * mismatch match, and the replacement would then rewrite the file's indentation
+ * — unsafe in Python, Makefiles and Go.
+ */
+const LENIENT_SPACE_CHARS = new Set([
+  '\u00A0', // no-break space
+  '\u2002', // en space
+  '\u2003', // em space
+  '\u2007', // figure space
+  '\u2009', // thin space
+  '\u200A', // hair space
+  '\u202F', // narrow no-break space
+  '\u3000', // ideographic space
+])
+
+/**
+ * Normalize for MATCHING while keeping an exact index map back to the input.
+ *
+ * Every rule is 1 char → 0 or 1 char, which is what makes `map` (normalized
+ * index → original index) exact. That matters because callers must replace the
+ * ORIGINAL bytes: returning the normalized text would silently rewrite invisible
+ * characters elsewhere in the file.
+ *
+ * Folds, in one pass: dropped invisibles, space look-alikes, curly quotes, and
+ * per-line trailing whitespace.
+ */
+function normalizeLeniently(input: string): {
+  normalized: string
+  map: number[]
+} {
+  const isTrailing = markTrailingWhitespace(input)
+  const out: string[] = []
+  const map: number[] = []
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i]!
+    if (isTrailing[i] || LENIENT_DROP_CHARS.has(ch)) continue
+    let mapped = ch
+    if (LENIENT_SPACE_CHARS.has(ch)) {
+      mapped = ' '
+    } else if (
+      ch === LEFT_SINGLE_CURLY_QUOTE ||
+      ch === RIGHT_SINGLE_CURLY_QUOTE
+    ) {
+      mapped = "'"
+    } else if (
+      ch === LEFT_DOUBLE_CURLY_QUOTE ||
+      ch === RIGHT_DOUBLE_CURLY_QUOTE
+    ) {
+      mapped = '"'
+    }
+    out.push(mapped)
+    map.push(i)
+  }
+  // Sentinel so an end index equal to normalized.length maps past the input.
+  map.push(input.length)
+  return { normalized: out.join(''), map }
+}
+
+/**
+ * Flags every index that is part of a whitespace run ending at a line break or
+ * at end of input. `\n` itself is never flagged — dropping it would let lines
+ * merge and produce false matches across line boundaries.
+ */
+function markTrailingWhitespace(input: string): boolean[] {
+  const flags = new Array<boolean>(input.length).fill(false)
+  let runStart = -1
+  for (let i = 0; i <= input.length; i++) {
+    const ch = i < input.length ? input[i] : '\n'
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\u000B' || ch === '\f') {
+      if (runStart === -1) runStart = i
+      continue
+    }
+    if (ch === '\n' && runStart !== -1) {
+      for (let j = runStart; j < i; j++) flags[j] = true
+    }
+    runStart = -1
+  }
+  return flags
+}
+
+/**
  * Finds the actual string in the file content that matches the search string,
  * accounting for quote normalization and trailing whitespace differences.
  * @param fileContent The file content to search in
@@ -116,6 +217,26 @@ export function findActualString(
     }
   }
 
+  // Last resort: fold invisible characters, space look-alikes, curly quotes,
+  // stray CRs and per-line trailing whitespace on BOTH sides at once. The tiers
+  // above each handle one difference in isolation; real failures usually combine
+  // them (e.g. a no-break space inside an indented line with trailing spaces).
+  // Index-mapped, so the returned string is the file's ORIGINAL bytes.
+  const lenientFile = normalizeLeniently(fileContent)
+  const lenientSearch = normalizeLeniently(searchString)
+  if (lenientSearch.normalized !== '') {
+    const lenientIndex = lenientFile.normalized.indexOf(
+      lenientSearch.normalized,
+    )
+    if (lenientIndex !== -1) {
+      const start = lenientFile.map[lenientIndex]
+      const end = lenientFile.map[lenientIndex + lenientSearch.normalized.length]
+      if (start !== undefined && end !== undefined && end > start) {
+        return fileContent.substring(start, end)
+      }
+    }
+  }
+
   return null
 }
 
@@ -156,6 +277,99 @@ function mapStrippedIndexToOriginal(
   }
 
   return origPos
+}
+
+/**
+ * Explains WHERE an old_string stopped matching, for the "String to replace not
+ * found in file" error.
+ *
+ * Without this the model only learns that a 70-line block failed, so it retries
+ * with the same block, or falls back to rewriting the whole file with Write — the
+ * expensive, lossy recovery. A single "line 412 differs: you sent 4 spaces of
+ * indent, the file has 6" turns that into a one-line correction.
+ *
+ * Anchors on the first non-blank line of old_string (compared with whitespace
+ * collapsed so an indentation difference still anchors), then walks forward to
+ * the first line that differs. Pure string work — no I/O.
+ */
+export function describeEditMismatch(
+  fileContent: string,
+  searchString: string,
+): string {
+  const searchLines = searchString.split('\n')
+  const fileLines = fileContent.split('\n')
+  const anchorIdx = searchLines.findIndex(line => line.trim() !== '')
+  if (anchorIdx === -1) return ''
+
+  const anchor = collapseForCompare(searchLines[anchorIdx]!)
+  const candidates: number[] = []
+  for (let i = 0; i < fileLines.length && candidates.length < 20; i++) {
+    if (collapseForCompare(fileLines[i]!) === anchor) candidates.push(i)
+  }
+
+  if (candidates.length === 0) {
+    return (
+      `\nDiagnostic: the first non-blank line of old_string is not in the file at all ` +
+      `(looked for: ${renderWhitespace(searchLines[anchorIdx]!)}). ` +
+      `The file may have changed, or this is the wrong file — Read it again and copy old_string from that output.`
+    )
+  }
+
+  // Best candidate = the one that stays line-for-line identical the longest.
+  let best = { start: candidates[0]!, matched: -1 }
+  for (const start of candidates) {
+    let matched = 0
+    while (
+      anchorIdx + matched < searchLines.length &&
+      start + matched < fileLines.length &&
+      collapseForCompare(fileLines[start + matched]!) ===
+        collapseForCompare(searchLines[anchorIdx + matched]!)
+    ) {
+      matched++
+    }
+    if (matched > best.matched) best = { start, matched }
+  }
+
+  const searchIdx = anchorIdx + best.matched
+  const fileIdx = best.start + best.matched
+  if (searchIdx >= searchLines.length) {
+    // Every supplied line matched once whitespace is collapsed, so the ONLY
+    // difference is whitespace the collapse hid: indentation width, or tabs vs
+    // spaces. Name it explicitly — it is the single most common cause.
+    const firstFileLine = fileLines[best.start] ?? ''
+    const firstSearchLine = searchLines[anchorIdx] ?? ''
+    return (
+      `\nDiagnostic: every line matches once whitespace is ignored, so old_string differs from the file ` +
+      `ONLY in indentation/whitespace (starting at file line ${best.start + 1}).\n` +
+      `  file: ${renderWhitespace(firstFileLine)}\n` +
+      `  you sent: ${renderWhitespace(firstSearchLine)}\n` +
+      `Copy the line exactly as it appears AFTER the line-number prefix in the Read output.`
+    )
+  }
+
+  return (
+    `\nDiagnostic: old_string matches the file for ${best.matched} line(s) starting at file line ${best.start + 1}, ` +
+    `then diverges.\n` +
+    `  file line ${fileIdx + 1}: ${renderWhitespace(fileLines[fileIdx] ?? '<end of file>')}\n` +
+    `  your line ${searchIdx + 1}: ${renderWhitespace(searchLines[searchIdx] ?? '')}\n` +
+    `Fix that line, or use just the first ${Math.max(1, best.matched)} matching line(s) as old_string if they are unique.`
+  )
+}
+
+/** Collapse all whitespace runs to a single space and trim, for line anchoring. */
+function collapseForCompare(line: string): string {
+  return normalizeQuotes(line).replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Render a line with whitespace made visible so an indentation difference is
+ * actually readable in the error: `·` = space, `→` = tab. Truncated so a minified
+ * line cannot flood the tool result.
+ */
+function renderWhitespace(line: string, maxLength = 160): string {
+  const clipped =
+    line.length > maxLength ? `${line.slice(0, maxLength)}…` : line
+  return `"${clipped.replaceAll('\t', '→').replaceAll(' ', '·')}"`
 }
 
 /**

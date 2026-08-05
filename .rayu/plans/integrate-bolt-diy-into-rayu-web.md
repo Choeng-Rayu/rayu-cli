@@ -1,3 +1,158 @@
+# done
+
+## Implementation record — deviations from the plan as written
+
+Verified 2026-08-01. All three services build and test green:
+`rayu-gateway` `go build ./...` + `go vet ./...` + `go test ./...` (16 packages ok);
+`rayu-backend` `npm run build` + `npm test` (23 suites / 456 tests);
+`rayu-web` `npm run typecheck` + `npm run lint` + `npm run build` + `npm test`
+(14 suites / 190 tests / 24 snapshots).
+
+Four things landed differently from the text above. Each was a deliberate call, not
+an omission:
+
+**1. `app/studio/webcontainer/connect/[id]/page.tsx` was NOT created.**
+Step 6 lists it. It was dropped because bolt's `webcontainer.connect.$id.tsx` is
+dead code *in bolt itself* — nothing in bolt.diy references `setupConnect` or that
+route, and nothing in the ported studio does either. Its entire body loads
+`https://cdn.jsdelivr.net/npm/@webcontainer/api@latest/dist/connect.js`, i.e.
+unpinned third-party script execution from a CDN. Porting it would have
+contradicted Step 10's own requirement to self-host subresources under COEP, to
+add a route no code path reaches. The four other page routes are present.
+
+**2. The chat transport lives in `studio/lib/chat/`, not `studio/lib/rayu/`.**
+Step 9 names `studio/lib/rayu/anthropicToDataStream.ts`. The actual translator is
+`studio/lib/chat/anthropicToDataStream.ts` (+ `studioChatFetch.ts`,
+`buildRequest.ts`, `modelCatalog.ts`, `limits.ts`), which keeps the SSE→data-stream
+translation next to the chat code that consumes it and leaves `lib/rayu/` as purely
+the transport/auth layer (`backendClient`, `gatewayClient`, `endpoints`, `routes`,
+`session`). Covered by `studio/lib/chat/anthropicToDataStream.test.ts`. The Step 9
+fallback (a rayu-web streaming route) was NOT needed — `app/api/` still contains
+only `auth/[...nextauth]/route.ts`, so matrix #1 holds.
+
+**3. ESLint had to be created before Step 11's `npm run lint` could pass.**
+This was a pre-existing hole, not studio fallout: `package.json` has always had
+`"lint": "next lint"` and `.github/workflows/ci.yml` has always run it, but no
+ESLint config or dependency ever existed. With no config `next lint` opens an
+interactive "How would you like to configure ESLint?" prompt, which exits 1 in CI —
+so that step could never have been green. Added `eslint@8.57.1` +
+`eslint-config-next@15.5.19` (both pinned exactly; installed with no
+`--legacy-peer-deps`, per Step 4) and `.eslintrc.json`.
+
+`next lint` only scans its default dirs, which do **not** include `studio/`, so the
+lint script is now explicit: `next lint --dir app --dir components --dir lib --dir
+studio`. Linting the vendored tree was worth it — it found two real defects:
+- `studio/components/chat/UserMessage.tsx` — the `key` prop sat on the inner
+  `<img>` instead of the `<div>` the iterator returns, so the attachment list was
+  keyless and re-created wholesale on every render. Fixed.
+- `studio/lib/stores/previews.ts` — `usePreviewStore()` is not a hook (a lazy
+  singleton accessor, no React state), but the `use` prefix made
+  `react-hooks/rules-of-hooks` reject its legitimate call inside a `.then()` in
+  `Workbench.client.tsx`. Renamed to `getPreviewStore()`.
+
+Two rule decisions, both documented in `.eslintrc.json`:
+`@next/next/no-html-link-for-pages` is **off** — a plain `<a>` to an internal route
+is load-bearing here (COOP/COEP are per-document, so crossing the `/studio`
+boundary must be a full page load), the rule cannot tell that from a mistake, and
+`studio/isolation.test.ts` already enforces the real invariant far more precisely.
+It also fired on pre-existing `/dashboard` and `/plans` links, and converting those
+to `<Link>` would change dashboard navigation from hard to soft — an explicit
+non-goal of this plan. `react/display-name` and `react/no-unescaped-entities` are
+**warn** for `studio/**` only: 73 stylistic hits in vendored code that cannot
+change behaviour, where erroring would mean editing ~70 upstream files and adding
+noise to every future bolt.diy re-sync. Rules that can indicate a real defect
+(`react-hooks/*`, `react/jsx-key`) stay at error for studio too — that is how the
+two fixes above surfaced.
+
+**4. Env documentation was missing and has been added.**
+`rayu-gateway/.env.example` was the one file the "Files created / modified" list
+names for the gateway that was still unmodified: `GATEWAY_CORS_ORIGINS` was
+undocumented there and in `RUNNING.md`, despite Step 1c requiring it be set
+explicitly. Both now document it and why studio (unlike the CLI) needs it.
+`rayu-backend/.env.example` gained `STUDIO_GIT_PROXY_EXTRA_HOSTS` with the SSRF
+rationale, and its `RAYU_PROVIDER_SECRET` entry now records that rotating it also
+invalidates every user's stored studio connection.
+`rayu-web/.env.example` already had all three `NEXT_PUBLIC_STUDIO_*` vars plus the
+API/gateway URLs.
+
+**5. `studio/shims/env.ts` was never created.**
+Step 7 names it for the 18 `import.meta.env` reads. Those are handled instead by a
+`webpack.DefinePlugin` substitution in `next.config.mjs` plus an ambient
+`studio/types/import-meta.d.ts`, which means the 18 call sites did not have to be
+edited at all. Only `client-only.tsx` and `remix-react.ts` exist in `studio/shims/`.
+
+## Defects found by independent audit and fixed
+
+A read-only reviewer re-verified the matrix without trusting the above. All the
+mechanical claims held, but three real defects were sitting behind the
+flag-disabled runtime path, where no build or unit test would reach them:
+
+**A. The git proxy could never authenticate — `/studio/git` was broken.**
+`StudioProxyTokenGuard` rejects any request without `X-Rayu-Token`, but the client
+git path never sent it: `useGit.ts` passed only `User-Agent` and an optional
+`Authorization: Basic <git creds>` into isomorphic-git's `headers`. So every
+proxied git request 401'd and no clone could start. A comment in
+`backendClient.ts` asserted the proxy "accepts the session cookie as well as a
+bearer token", which was simply untrue — the guard reads that one header and
+nothing else, and under COEP `credentialless` a cross-origin cookie would not be
+sent anyway. `useGit.ts` now attaches `X-Rayu-Token` from `getAccessToken()` (and
+redirects to sign-in when the session has lapsed); the proxy still strips the
+header before forwarding, so the Rayu token never reaches github.com. The false
+comment is corrected.
+
+**B. The preview inspector script 404'd.**
+Step 3a relocated it to `public/studio/inspector-script.js`, but
+`studio/lib/webcontainer/index.ts` still fetched `/inspector-script.js`. Because
+`fetch` does not throw on 404, `setPreviewScript()` was being handed Next's HTML
+error page to run inside every preview — silently disabling the preview
+error-forwarding it exists to provide. Path corrected and `response.ok` is now
+checked, with a real error logged on failure.
+
+**C. The git proxy followed redirects without re-validating them.**
+`redirect: 'follow'` applied the host allow-list to the first hop only, so an open
+redirect on any allow-listed host would have made the proxy fetch an arbitrary URL
+and stream the body back — a read-SSRF that the allow-list appeared to prevent.
+Replaced with `redirect: 'manual'` and a bounded loop that re-runs the full check
+on every hop via the new `requireGitRedirectTarget()` (allow-list + scheme +
+embedded-credential + private-address re-check, `MAX_REDIRECTS = 5`). A redirect on
+a body-bearing request is now reported rather than silently mishandled, since the
+streamed body cannot be replayed and git's smart-HTTP POSTs do not legitimately
+redirect. Covered by 7 new cases in `common/studio-urls.spec.ts` (38 tests in that
+file now pass).
+
+Two further audit observations were left alone deliberately:
+`requireSupabaseUrl`/`isAllowedSupabaseHost` are currently unreferenced (the
+controller hard-codes the management host, which is stronger), but they are tested
+and are the correct guard the moment a project URL is accepted from the client;
+and `/studio/supabase/keys` returns a project's API keys in plaintext, which is the
+caller's own resource behind the ownership gate, not a third-party token leak.
+
+### Verified mechanically
+Matrix #1 (`app/api` holds only the next-auth route), #2 (no first-party relative
+`/api/` calls — the only hits are the deleted-route documentation strings in
+`endpoints.ts`), #3 (typecheck clean, zero `Cannot find module '~/...'`), #8/#9/#14
+(asserted by `studio/isolation.test.ts`), #12/#13 (asserted by
+`studio.integration.spec.ts` + `common/studio-urls.spec.ts`), #17 (`styling.test.ts`
++ `verify:styling`), #18 (all three services green; `/studio` first-load JS is
+1.31 MB and sits entirely off the marketing routes, which stay at 107–164 kB
+shared — so no shared module imports `studio/`), #19 (flag gates
+`middleware.ts`, `app/studio/layout.tsx`, `NavAuth.tsx`).
+
+### NOT verifiable in a shell — needs a browser against a deployed stack
+Matrix #4 (live preflight + readable `x-rayu-credits-remaining`), #5 (streaming
+parity, abort settles partial usage), #6 (`CreditLedger` deduction,
+`UsageEvent.source == 'studio'`), #7 (BYO `/v1/proxy` free + daily-turn cap), #10
+(`WebContainer.boot()`, terminal, preview iframe), #11 (screenshot diff of
+marketing pages, Google sign-in), #16 (`isomorphic-git` clone and `jszip` export
+polyfill canaries). The code paths and static gates for these exist and are unit
+tested; the runtime assertions remain open and still gate flipping
+`NEXT_PUBLIC_STUDIO_ENABLED=true` (Step 0 / Step 10). The WebContainer commercial
+licence (Step 0) is likewise a non-code prerequisite and unverified here.
+
+--- 
+
+
+
 # Plan: Split bolt.diy across rayu-web / rayu-backend / rayu-gateway as "Rayu Studio"
 
 **Status:** Revised r3 (2026-07-31) — supersedes r2 (single-app monolith) and r1 (separate `rayu-studio/` origin)

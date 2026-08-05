@@ -13,44 +13,46 @@ import {
 export { CLIENT_REQUEST_ID_HEADER }
 
 /**
- * Environment variables for different client types:
+ * Environment variables read by the provider layer.
  *
- * Direct API:
- * - ANTHROPIC_API_KEY: Required for direct API access
+ * Every provider is now built by services/api/providerRegistry.ts, which resolves
+ * a WIRE FORMAT per (provider, model) and then an auth strategy. This comment
+ * documents only the env-var entry points; the authoritative map of
+ * kind → format → auth is the table in AGENTS.md and the docs in each module.
  *
- * AWS Bedrock:
- * - AWS credentials configured via aws-sdk defaults
- * - AWS_REGION or AWS_DEFAULT_REGION: Sets the AWS region for all models (default: us-east-1)
- * - ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION: Optional. Override AWS region specifically for the small fast model (Haiku)
+ * First-party Anthropic:
+ * - ANTHROPIC_API_KEY: direct API access
+ * - ANTHROPIC_BASE_URL: proxy override (a provider behind a proxy is NOT treated
+ *   as first-party — see utils/model/providerCapabilities.isFirstPartyRequest)
+ * - ANTHROPIC_CUSTOM_HEADERS: extra headers, FIRST-PARTY ONLY (they may carry an
+ *   Authorization credential; see anthropicTransport.ts)
  *
- * Foundry (Azure):
- * - ANTHROPIC_FOUNDRY_RESOURCE: Your Azure resource name (e.g. 'my-resource')
- *   For the full endpoint: https://{resource}.services.ai.azure.com/anthropic/v1/messages
- * - ANTHROPIC_FOUNDRY_BASE_URL: Optional. Alternative to resource - provide full base URL directly
- *   (e.g. 'https://my-resource.services.ai.azure.com')
+ * AWS Bedrock (ONE provider, format per model: Claude → Anthropic Messages,
+ * everything else → OpenAI Chat on bedrock-mantle):
+ * - AWS_BEARER_TOKEN_BEDROCK: Bedrock API key
+ * - AWS_REGION / AWS_DEFAULT_REGION: region (default us-east-1)
+ * - ANTHROPIC_BEDROCK_BASE_URL: endpoint override
  *
- * Authentication (one of the following):
- * - ANTHROPIC_FOUNDRY_API_KEY: Your Microsoft Foundry API key (if using API key auth)
- * - Azure AD authentication: If no API key is provided, uses DefaultAzureCredential
- *   which supports multiple auth methods (environment variables, managed identity,
- *   Azure CLI, etc.). See: https://docs.microsoft.com/en-us/javascript/api/@azure/identity
+ * Microsoft Azure / Foundry (ONE provider, format per model: Claude → Anthropic
+ * Messages at {resource}/anthropic, everything else → Azure OpenAI Responses at
+ * {resource}/openai/v1) — see services/api/azureFoundry.ts:
+ * - ANTHROPIC_FOUNDRY_API_KEY / AZURE_OPENAI_API_KEY: resource API key
+ * - ANTHROPIC_FOUNDRY_RESOURCE: resource name, or
+ * - ANTHROPIC_FOUNDRY_BASE_URL: full endpoint URL
+ * - Entra ID / DefaultAzureCredential auth is NOT implemented (API key only).
  *
- * Vertex AI:
- * - Model-specific region variables (highest priority):
- *   - VERTEX_REGION_CLAUDE_3_5_HAIKU: Region for Claude 3.5 Haiku model
- *   - VERTEX_REGION_CLAUDE_HAIKU_4_5: Region for Claude Haiku 4.5 model
- *   - VERTEX_REGION_CLAUDE_3_5_SONNET: Region for Claude 3.5 Sonnet model
- *   - VERTEX_REGION_CLAUDE_3_7_SONNET: Region for Claude 3.7 Sonnet model
- * - CLOUD_ML_REGION: Optional. The default GCP region to use for all models
- *   If specific model region not specified above
- * - ANTHROPIC_VERTEX_PROJECT_ID: Required. Your GCP project ID
- * - Standard GCP credentials configured via google-auth-library
+ * Google Vertex AI (ONE provider, THREE formats per model: Gemini → GenAI,
+ * Claude → Anthropic Messages, MaaS → OpenAI Chat):
+ * - ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT: GCP project
+ * - CLOUD_ML_REGION: region ('global' serves the newest Gemini models)
+ * - Standard GCP credentials via google-auth-library (ADC / interactive OAuth)
+ * - VERTEX_GEMINI_MODELS / VERTEX_CLAUDE_MODELS / VERTEX_MAAS_MODELS: override the
+ *   curated model sets (Vertex has no publisher-wide listing for third-party
+ *   publishers)
  *
- * Priority for determining region:
- * 1. Hardcoded model-specific environment variables
- * 2. Global CLOUD_ML_REGION variable
- * 3. Default region from config
- * 4. Fallback region (us-east5)
+ * OpenAI-compatible (headless/CI escape hatch, no saved provider needed):
+ * - RAYU_OPENAI_COMPATIBLE=1, RAYU_OPENAI_BASE_URL, RAYU_OPENAI_API_KEY
+ *   (these override the ACTIVE provider only — never a routed subagent's)
  */
 
 /**

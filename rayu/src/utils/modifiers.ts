@@ -1,4 +1,14 @@
+import { logForDebugging } from './debug.js'
+import { isEnvTruthy } from './envUtils.js'
+
 export type ModifierKey = 'shift' | 'command' | 'control' | 'option'
+
+/**
+ * A modifier-state read is a couple of syscalls; anything past this is a sign
+ * the native side is blocking (TCC permission evaluation, run-loop wait) and
+ * must not be allowed to run again on the Enter path.
+ */
+const SLOW_NATIVE_CALL_MS = 100
 
 /**
  * Native macOS modifier-state reader, used only to emulate Shift+Enter in
@@ -44,6 +54,15 @@ function loadNativeModifiers(): ModifiersNative | null {
   if (nativeModule !== undefined) {
     return nativeModule
   }
+  // Escape hatch. This is a synchronous native call on the Enter key path, so
+  // if it ever misbehaves on a user's machine (see the latency guard in
+  // isModifierPressed) they need a way to switch it off that does not involve
+  // downgrading. Setting this only costs Shift+Enter-for-newline in Apple
+  // Terminal; `\` + Enter still inserts a newline everywhere.
+  if (isEnvTruthy(process.env.RAYU_DISABLE_NATIVE_MODIFIERS)) {
+    nativeModule = null
+    return nativeModule
+  }
   try {
     // Kept as require() on purpose: a static import would defeat the
     // `external` config above and make the bundle depend on a module that
@@ -81,8 +100,8 @@ export function prewarmModifiers(): void {
  * Check if a specific modifier key is currently pressed (synchronous).
  *
  * Returns false — "not pressed" — whenever the answer cannot be determined
- * (non-darwin, module absent, native call failed). Callers treat this as a
- * plain keypress, which is the safe default.
+ * (non-darwin, module absent, opt-out set, native call failed or was too slow).
+ * Callers treat this as a plain keypress, which is the safe default.
  */
 export function isModifierPressed(modifier: ModifierKey): boolean {
   if (process.platform !== 'darwin') {
@@ -92,9 +111,48 @@ export function isModifierPressed(modifier: ModifierKey): boolean {
   if (typeof native?.isModifierPressed !== 'function') {
     return false
   }
+
+  const startedAt = performance.now()
   try {
     return native.isModifierPressed(modifier) === true
   } catch {
+    // A native call that throws once will throw again on the next keystroke;
+    // stop asking rather than paying for it on every Enter.
+    nativeModule = null
     return false
+  } finally {
+    // Latency guard. Reading global modifier state should take microseconds.
+    // If it doesn't, the native side is doing something expensive on the main
+    // thread — on macOS that means a TCC (Input Monitoring / Accessibility)
+    // permission evaluation, or waiting on a run loop a CLI process does not
+    // run. Because this call sits on the synchronous Enter path, a slow call
+    // stalls the entire single-threaded TUI: no input, no renders, no API
+    // dispatch. Disabling after the first offence turns a permanently frozen
+    // session into exactly one sluggish keypress.
+    const elapsedMs = performance.now() - startedAt
+    if (elapsedMs > SLOW_NATIVE_CALL_MS) {
+      nativeModule = null
+      logForDebugging(
+        `modifiers: native isModifierPressed took ${elapsedMs.toFixed(0)}ms ` +
+          `(> ${SLOW_NATIVE_CALL_MS}ms); disabling native modifier detection ` +
+          `for this session. Set RAYU_DISABLE_NATIVE_MODIFIERS=1 to skip it ` +
+          `permanently.`,
+        { level: 'warn' },
+      )
+    }
   }
+}
+
+/**
+ * Test-only: seed or reset the cached native module.
+ *
+ * Pass a fake to exercise the darwin branch (the real addon is absent in CI, so
+ * there is otherwise no way to cover the success, throwing, or slow-call
+ * paths), or `undefined` to forget the cache so the next call re-resolves.
+ */
+export function _setNativeModifiersForTesting(
+  module: ModifiersNative | null | undefined,
+): void {
+  nativeModule = module
+  prewarmed = false
 }

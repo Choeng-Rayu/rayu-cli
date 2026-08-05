@@ -3,15 +3,9 @@ import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getCanonicalName } from './model/model.js'
-import { isClaudeModelOrAlias } from './model/aliases.js'
 import { resolveAntModel } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import {
-  getAPIProvider,
-  isOpenAICompatibleActive,
-  isRayuAnthropicCompatibleActive,
-  isRayuNonAnthropicActive,
-} from './model/providers.js'
+import { getAPIProvider } from './model/providers.js'
 import {
   resolveRequestShape,
   usesTranslatedFormat,

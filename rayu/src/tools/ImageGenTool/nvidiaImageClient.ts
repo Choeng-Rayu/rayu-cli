@@ -9,14 +9,22 @@
 // SECURITY: the API key is sent only to the fixed NVIDIA hosts; never logged.
 import { getRayuApiKey } from '../../utils/rayuConfig.js'
 import { detectImageFormatFromBuffer } from '../../utils/imageResizer.js'
+import { ensureMediaModels } from '../../services/rayuAuth/mediaModels.js'
 import {
+  type ImageModel,
   type ImageParams,
   NVIDIA_IMAGE_HOST,
   NVCF_ASSET_HOST,
   resolveModel,
 } from './models.js'
 
-export type GeneratedImage = { buffer: Buffer; mediaType: string }
+/** A generated image plus the model id that actually produced it (the caller
+ *  no longer resolves the model itself, so the client reports what it used). */
+export type GeneratedImage = {
+  buffer: Buffer
+  mediaType: string
+  modelId: string
+}
 
 /** NVIDIA API key from env (preferred) or rayu config fallback. */
 export function getNvidiaApiKey(): string | null {
@@ -75,6 +83,12 @@ export async function generateImage(opts: {
   isEdit?: boolean
   apiKey?: string
   signal?: AbortSignal
+  /**
+   * Pre-resolved model, when the caller already picked one from the catalog.
+   * Omit it and the client fetches the catalog itself (cached, so this is a
+   * memory read after the first call).
+   */
+  model?: ImageModel
 }): Promise<GeneratedImage> {
   const apiKey = opts.apiKey ?? getNvidiaApiKey()
   if (!apiKey) {
@@ -83,7 +97,15 @@ export async function generateImage(opts: {
     )
   }
   const isEdit = !!opts.isEdit
-  const model = resolveModel(opts.modelId, isEdit)
+  // Server-owned catalog: which NVIDIA image models exist, and their per-model
+  // request defaults, come from the Rayu provider — not from a list in the CLI.
+  const model =
+    opts.model ??
+    resolveModel((await ensureMediaModels()).image, opts.modelId, isEdit, {
+      // This client only speaks to NVIDIA's genai host; Imagen goes through
+      // vertexImageClient, so a Vertex default must never resolve here.
+      backends: ['nvidia'],
+    })
 
   let params = opts.params
   let assetId: string | undefined
@@ -131,5 +153,9 @@ export async function generateImage(opts: {
     )
   }
   const buffer = Buffer.from(art.base64, 'base64')
-  return { buffer, mediaType: detectImageFormatFromBuffer(buffer) }
+  return {
+    buffer,
+    mediaType: detectImageFormatFromBuffer(buffer),
+    modelId: model.id,
+  }
 }

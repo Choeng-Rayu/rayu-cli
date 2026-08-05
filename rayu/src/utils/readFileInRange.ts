@@ -65,7 +65,11 @@ export class FileTooLargeError extends Error {
     public maxSizeBytes: number,
   ) {
     super(
-      `File content (${formatFileSize(sizeInBytes)}) exceeds maximum allowed size (${formatFileSize(maxSizeBytes)}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.`,
+      `File content (${formatFileSize(sizeInBytes)}) exceeds maximum allowed size (${formatFileSize(maxSizeBytes)}) — ` +
+        `about ${Math.max(2, Math.ceil(sizeInBytes / Math.max(1, maxSizeBytes)))}× the cap, so it cannot be returned in one read. ` +
+        `Either locate the region you need first (Grep for a symbol, or Bash \`wc -l\` / \`sed -n\` to inspect ranges) ` +
+        `and then Read with offset and limit, or read it in successive slices using offset and limit. ` +
+        `Do NOT retry the same call without offset and limit — it will fail identically.`,
     )
     this.name = 'FileTooLargeError'
   }

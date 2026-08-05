@@ -8,7 +8,10 @@
 // header); the gateway never charges credits on this path.
 //
 // OAuth providers (Kiro, Login-with-Gemini, Vertex, Copilot) and AWS Bedrock are
-// NOT routed — they stay direct. When the flag is off, nothing here engages.
+// NOT routed — they stay direct. The Claude.ai paid-subscription login
+// (kind:'anthropic' + anthropicAuthType:'oauth') is likewise never routed: it is
+// billed by Anthropic against the user's Pro/Max plan, so there is nothing for
+// Rayu to meter. When the flag is off, nothing here engages.
 //
 // PAID-PLAN PEER-TO-PEER (Basic and above) — OPT-IN, default OFF: the gateway
 // hop on this path exists to enforce the Free plan's daily-turn cap and to
@@ -169,9 +172,15 @@ function isGatewayCallbackEnabled(): boolean {
 function isRoutableKind(provider: RayuProvider): boolean {
   switch (provider.kind) {
     case 'openai-compatible':
-    case 'anthropic':
     case 'vertex':
       return true
+    case 'anthropic':
+      // A Claude.ai PAID SUBSCRIPTION login (anthropicAuthType:'oauth') is billed
+      // by Anthropic against the user's Pro/Max plan, not by Rayu — and its
+      // credential is a short-lived OAuth bearer, not a BYO API key. It stays
+      // DIRECT: no gateway hop, no Rayu turn accounting. Only the API-key
+      // anthropic provider is routable.
+      return provider.anthropicAuthType !== 'oauth'
     case 'bedrock':
       return !!provider.apiKey
     default:

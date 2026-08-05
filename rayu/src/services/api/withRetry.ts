@@ -42,7 +42,7 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { isRayuCreditLimitError, isRayuDailyTurnLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
+import { isRayuConcurrencyLimitError, isRayuCreditLimitError, isRayuDailyTurnLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -470,7 +470,7 @@ export async function* withRetry<T>(
 
       // For other errors, proceed with normal retry logic
       // Get retry-after header if available
-      const retryAfter = getRetryAfter(error)
+      const retryAfter = sanitizeTransientRetryAfter(error, getRetryAfter(error))
       let delayMs: number
       if (persistent && error instanceof APIError && error.status === 429) {
         persistentAttempt++
@@ -838,8 +838,39 @@ const DEFAULT_FAST_MODE_FALLBACK_HOLD_MS = 30 * 60 * 1000 // 30 minutes
 const SHORT_RETRY_THRESHOLD_MS = 20 * 1000 // 20 seconds
 const MIN_COOLDOWN_MS = 10 * 60 * 1000 // 10 minutes
 
+/**
+ * Longest Retry-After we will honor for a TRANSIENT Rayu reserve denial.
+ *
+ * The gateway answers a concurrency / request-cap denial with the same
+ * `Retry-After: <seconds-until-BILLING-PERIOD-reset>` it uses for a real credit
+ * limit — up to weeks. Retry-After normally bypasses the backoff ceiling (a
+ * server directive is worth honoring), so an unclamped value turned "you have 4
+ * requests in flight, try again in a second" into a multi-week sleep. A freed
+ * concurrency slot is a matter of seconds, so anything beyond this is ignored in
+ * favour of normal exponential backoff.
+ */
+const MAX_TRANSIENT_RETRY_AFTER_SEC = 60
+
+/**
+ * Drop an implausible Retry-After on a transient Rayu reserve denial. Every
+ * other error keeps the server's directive untouched.
+ */
+function sanitizeTransientRetryAfter(
+  error: unknown,
+  retryAfter: string | null,
+): string | null {
+  if (retryAfter === null || !isRayuConcurrencyLimitError(error)) {
+    return retryAfter
+  }
+  const seconds = parseInt(retryAfter, 10)
+  if (!isNaN(seconds) && seconds > MAX_TRANSIENT_RETRY_AFTER_SEC) {
+    return null
+  }
+  return retryAfter
+}
+
 function getRetryAfterMs(error: APIError): number | null {
-  const retryAfter = getRetryAfter(error)
+  const retryAfter = sanitizeTransientRetryAfter(error, getRetryAfter(error))
   if (retryAfter) {
     const seconds = parseInt(retryAfter, 10)
     if (!isNaN(seconds)) {

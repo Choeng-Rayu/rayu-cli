@@ -34,12 +34,7 @@ import { getMergedBetas } from './betas.js'
 import { getContextWindowForModel } from './context.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
-import {
-  getAPIProvider,
-  isFirstPartyAnthropicBaseUrl,
-  isOpenAICompatibleActive,
-  isRayuNonAnthropicActive,
-} from './model/providers.js'
+import { getAPIProvider } from './model/providers.js'
 import { isFirstPartyRequest } from './model/providerCapabilities.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'

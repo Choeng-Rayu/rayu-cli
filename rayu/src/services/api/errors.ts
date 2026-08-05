@@ -138,6 +138,51 @@ export function isMediaSizeError(raw: string): boolean {
 }
 
 /**
+ * True when the provider rejected the request because the SELECTED MODEL has no
+ * vision capability at all — as opposed to the image being too large, too many,
+ * or malformed (those are `isMediaSizeError`).
+ *
+ * This is a PROVIDER capability limit, not a Rayu bug: text-only models such as
+ * DeepSeek's chat models, most Llama/Qwen text checkpoints and many local
+ * endpoints reject any request whose content carries an image block. Each wire
+ * format words it differently, so match on the stable phrase fragments rather
+ * than one provider's exact sentence:
+ *
+ *   Anthropic Messages (DeepSeek's compatible API, rayu-hosted):
+ *     400 {"type":"error","error":{"type":"invalid_request_error",
+ *          "message":"this model does not support image input (ref: …)"}}
+ *   OpenAI Chat (NVIDIA / OpenRouter / local):
+ *     400 "… does not support image input" / "model does not support images"
+ *     400 "Invalid content type. image_url is only supported by certain models"
+ *     400 "This model does not support vision" / "vision is not supported"
+ *
+ * Status is deliberately NOT constrained to 400: some OpenAI-compatible
+ * endpoints answer 422, and the adapters translate upstream errors into an
+ * APIError whose status is whatever the upstream sent.
+ */
+export function isModelImageUnsupportedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const raw = error.message ?? ''
+  if (!raw) return false
+  const msg = raw.toLowerCase()
+  // "image input" / "images" / "vision" declared unsupported.
+  if (
+    /(does not|doesn't|don't|not) support(?:ed|s)? (?:any )?(?:image|images|image input|image_url|vision|multimodal)/.test(
+      msg,
+    ) ||
+    /(?:image|images|image_url|vision|multimodal)(?: input)? (?:is |are )?not supported/.test(
+      msg,
+    ) ||
+    // OpenAI-style: the content type itself is rejected for this model.
+    (msg.includes('image_url') && msg.includes('only supported by')) ||
+    (msg.includes('invalid content type') && msg.includes('image'))
+  ) {
+    return true
+  }
+  return false
+}
+
+/**
  * Message-level predicate: is this assistant message a media-size rejection?
  * Parallel to isPromptTooLongMessage. Checks errorDetails (the raw API error
  * string populated by the getAssistantMessageFromError branches at ~L523/560/573)
@@ -167,6 +212,20 @@ export const REPEATED_529_ERROR_MESSAGE = 'Repeated 529 Overloaded errors'
 export const CUSTOM_OFF_SWITCH_MESSAGE =
   'Opus is experiencing high load, please use /model to switch to Sonnet'
 export const API_TIMEOUT_ERROR_MESSAGE = 'Request timed out'
+
+/**
+ * True for @anthropic-ai/sdk's LOCAL "Streaming is required for operations that
+ * may take longer than 10 minutes" guard (thrown by
+ * `Anthropic.calculateNonstreamingTimeout`, see SDK_NONSTREAMING_MAX_TOKENS in
+ * claude.ts). It never reaches the network, so it carries no status and is NOT
+ * an APIError — matched on the message.
+ */
+export function isNonStreamingTokenGuardError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes('Streaming is required for operations that may take')
+  )
+}
 export function getPdfTooLargeErrorMessage(): string {
   const limits = `max ${API_PDF_MAX_PAGES} pages, ${formatFileSize(PDF_TARGET_RAW_SIZE)}`
   return getIsNonInteractiveSession()
@@ -193,6 +252,25 @@ export function getRequestTooLargeErrorMessage(): string {
   return getIsNonInteractiveSession()
     ? `Request too large (${limits}). Try with a smaller file.`
     : `Request too large (${limits}). Double press esc to go back and try with a smaller file.`
+}
+
+/**
+ * User-facing text for "this model has no vision capability".
+ *
+ * Two things the user MUST be told, because neither is obvious from the raw
+ * upstream 400:
+ *   1. It is the MODEL's limitation, not a Rayu failure — switching models fixes
+ *      it. (DeepSeek's chat models are the common case.)
+ *   2. The image is now IN the conversation history, so every following request
+ *      to the same model fails the same way until it is removed. Without a
+ *      recovery hint the session looks permanently broken.
+ */
+export function getModelImageUnsupportedErrorMessage(model: string): string {
+  const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'
+  const recovery = getIsNonInteractiveSession()
+    ? 'Re-run without the image, or pick a vision-capable model.'
+    : 'Double press esc to remove the image from your message, run /compact to drop older images from context, or switch models.'
+  return `🖼️ The model "${model}" cannot accept images — it is a text-only model, so the provider rejected the request. This is a limitation of the model, not of Rayu. Run ${switchCmd} to switch to a vision-capable model, or send text only. ${recovery}`
 }
 export const OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE =
   'Your configured provider account does not have access to Rayu.'
@@ -423,6 +501,51 @@ export function extractUnknownErrorFormat(value: unknown): string | undefined {
 }
 
 /**
+ * Reserve-denial reasons the Rayu gateway reports that are TRANSIENT — they
+ * clear on their own in seconds/minutes and say nothing about the user's credit
+ * balance.
+ *
+ * The gateway prefixes EVERY reserve denial with "credit limit reached: " (see
+ * its reserveScript reasons: "concurrency" | "requests" | "period_limit"), so a
+ * user who merely had too many requests in flight — trivially reached, since one
+ * turn can fan out to subagents, side queries and quota checks concurrently, and
+ * maxConcurrentStreams defaults to 3 — was shown "💳 You've reached your plan's
+ * credit limit for this billing period" with a reset ETA taken from the BILLING
+ * period ("in about 26 days"), while /usage showed 50% of credits unused.
+ */
+const RAYU_TRANSIENT_LIMIT_REASONS = new Set(['concurrency', 'requests'])
+
+/**
+ * The gateway's machine-readable denial reason, from the most reliable source
+ * available: the X-Rayu-Limit header, then the parsed body's `reason`, then the
+ * "credit limit reached: <reason>" suffix in the composed message.
+ */
+function rayuLimitReason(error: APIError): string | undefined {
+  const header = error.headers?.get?.('x-rayu-limit')
+  if (header) return String(header)
+  const body = (error as { error?: unknown }).error
+  if (body && typeof body === 'object' && 'reason' in body) {
+    const reason = String((body as { reason?: unknown }).reason ?? '')
+    if (reason) return reason
+  }
+  const suffix = (error.message ?? '').match(
+    /credit limit reached:\s*([a-z_]+)/i,
+  )
+  return suffix?.[1]
+}
+
+/**
+ * True when the request was refused because too many of this user's requests
+ * were already in flight (or they tripped the short-window request cap). NOT a
+ * billing state: waiting a moment and retrying succeeds.
+ */
+export function isRayuConcurrencyLimitError(error: unknown): boolean {
+  if (!(error instanceof APIError) || error.status !== 429) return false
+  const reason = rayuLimitReason(error)
+  return reason !== undefined && RAYU_TRANSIENT_LIMIT_REASONS.has(reason)
+}
+
+/**
  * True for a Rayu-hosted credit / period limit denial (gateway 429 with
  * reason:"period_limit"). This is a TERMINAL billing state for the current
  * billing period: the credit balance does not refill by retrying — the user
@@ -439,12 +562,16 @@ export function isRayuCreditLimitError(error: unknown): boolean {
   if (!(error instanceof APIError) || error.status !== 429) {
     return false
   }
+  // A transient reason is never a credit limit, whatever the message says. This
+  // check must come FIRST: the gateway's message for those reasons still starts
+  // with "credit limit reached", which the fallbacks below would match.
+  const reason = rayuLimitReason(error)
+  if (reason !== undefined) {
+    if (RAYU_TRANSIENT_LIMIT_REASONS.has(reason)) return false
+    if (reason === 'period_limit') return true
+  }
   const body = (error as { error?: unknown }).error
   if (body && typeof body === 'object') {
-    // Primary: the gateway's machine-readable discriminator.
-    if ('reason' in body && String((body as { reason?: unknown }).reason ?? '') === 'period_limit') {
-      return true
-    }
     // Fallback: the nested provider error body { error: { message } }.
     const nested = (body as { error?: unknown }).error
     if (nested && typeof nested === 'object' && 'message' in nested) {
@@ -575,8 +702,24 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // --- Rayu-hosted: Rayu's own SERVICE/provider is unavailable ---------------
-  // Scoped via isRayuHostedActive() so BYO-key providers keep their real upstream
+  // The Anthropic SDK's LOCAL non-streaming guard, not an upstream response:
+  // `beta.messages.create` throws this before sending when the request is
+  // non-streaming, `max_tokens` implies >10min of generation, and the client
+  // carries no client-level `timeout`. Rayu only ever sends non-streaming as the
+  // FALLBACK after a streaming attempt failed, so the raw SDK sentence
+  // ("Streaming is required…") points the user at the wrong thing entirely — the
+  // real problem is whatever broke the stream. claude.ts now caps max_tokens per
+  // client so this cannot fire, but an out-of-date install (or a
+  // caller-constructed SDK client) still can; say what actually happened.
+  if (isNonStreamingTokenGuardError(error)) {
+    return createAssistantAPIErrorMessage({
+      content: `${API_ERROR_MESSAGE_PREFIX}: the streaming connection dropped and the non-streaming retry could not be sent (the SDK requires streaming for long responses). Please retry. If this keeps happening, run \`rayu update\` — and check \`which -a rayu\` for a second, older install shadowing the current one.`,
+      error: 'unknown',
+      errorDetails: error instanceof Error ? error.message : undefined,
+    })
+  }
+
+  // --- Rayu-hosted: Rayu's own SERVICE/provider is unavailable ---------------  // Scoped via isRayuHostedActive() so BYO-key providers keep their real upstream
   // errors. Covers the whole "it's Rayu's side, not the customer's" family — NOT
   // the customer's plan limit (that's the credit-limit branch below). Two shapes:
   //   (a) we couldn't even reach Rayu (gateway/origin down, a Cloudflare 5xx
@@ -625,6 +768,20 @@ export function getAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       content: CUSTOM_OFF_SWITCH_MESSAGE,
       error: 'rate_limit',
+    })
+  }
+
+  // Transient gateway reserve denial (too many of this user's requests in
+  // flight, or the short-window request cap). Checked BEFORE the credit-limit
+  // branch: the gateway's message for these still begins "credit limit
+  // reached", and calling a momentary fan-out a billing problem sends the user
+  // to the pricing page for nothing. withRetry retries these, so reaching here
+  // means the retries were also exhausted.
+  if (isRayuConcurrencyLimitError(error)) {
+    return createAssistantAPIErrorMessage({
+      error: 'rate_limit',
+      content: `⏳ Too many requests in flight at once — this is a concurrency limit, not your credit balance. Please retry${getIsNonInteractiveSession() ? '' : ', or reduce parallel work (fewer subagents / smaller swarm)'}.`,
+      errorDetails: error instanceof Error ? error.message : undefined,
     })
   }
 
@@ -806,6 +963,19 @@ export function getAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       content: getPdfInvalidErrorMessage(),
       error: 'invalid_request',
+    })
+  }
+
+  // Model has no vision capability at all (text-only model given an image).
+  // MUST be checked before the size/dimension branches below: those match on
+  // "image exceeds …" / "image dimensions exceed …", which this error does not
+  // carry, but ordering it first keeps the intent explicit — a capability
+  // rejection can never be fixed by resizing.
+  if (isModelImageUnsupportedError(error)) {
+    return createAssistantAPIErrorMessage({
+      content: getModelImageUnsupportedErrorMessage(model),
+      error: 'invalid_request',
+      errorDetails: error instanceof Error ? error.message : undefined,
     })
   }
 
@@ -1199,6 +1369,11 @@ export function classifyAPIError(error: unknown): string {
     return 'api_timeout'
   }
 
+  // SDK's local non-streaming guard (see isNonStreamingTokenGuardError).
+  if (isNonStreamingTokenGuardError(error)) {
+    return 'nonstreaming_token_guard'
+  }
+
   // Check for repeated 529 errors
   if (
     error instanceof Error &&
@@ -1217,6 +1392,11 @@ export function classifyAPIError(error: unknown): string {
 
   // Rate limiting
   if (error instanceof APIError && error.status === 429) {
+    // Separate telemetry bucket: a gateway concurrency/request-cap denial is a
+    // fan-out problem, not a quota problem, and conflating them hides it.
+    if (isRayuConcurrencyLimitError(error)) {
+      return 'rayu_concurrency_limit'
+    }
     return 'rate_limit'
   }
 
@@ -1252,6 +1432,12 @@ export function classifyAPIError(error: unknown): string {
     error.message.includes('The PDF specified is password protected')
   ) {
     return 'pdf_password_protected'
+  }
+
+  // Model has no vision capability (text-only model given an image). Checked
+  // before the size branches so it is never mislabeled 'image_too_large'.
+  if (isModelImageUnsupportedError(error)) {
+    return 'image_unsupported'
   }
 
   // Image size errors
