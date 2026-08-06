@@ -1,0 +1,951 @@
+// Rayu accounts schema. Enum-like fields are modeled as String (validated at
+// the API layer via class-validator) to keep DTO/types simple and decoupled
+// from generated enums. Table/column names match the original schema.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               Int       @id @default(autoincrement())
+  email            String?   @unique @db.VarChar(320)
+  displayName      String?   @db.VarChar(191)
+  avatarUrl        String?   @db.VarChar(1024)
+  emailVerified    Boolean   @default(false)
+  role             String    @default("user") @db.VarChar(32)
+  status           String    @default("active") @db.VarChar(32)
+  passwordHash     String?   @db.VarChar(512)
+  // Stripe Customer for the card rail. A Customer is per-PERSON (not per
+  // purchase), so it lives here and is reused across every card payment, which
+  // is what lets Stripe prefill a returning buyer's details. NULL for every user
+  // who has never paid by card.
+  stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(255)
+  createdAt        DateTime  @default(now())
+  lastActiveAt     DateTime?
+
+  accounts           Account[]
+  subscriptions      Subscription[]
+  payments           Payment[]
+  feedback           Feedback[]
+  usageEvents        UsageEvent[]
+  creditLedger       CreditLedger[]
+  creditTopups       CreditTopup[]
+  promoRedemptions   PromoRedemption[]
+  telegramLink       TelegramLink?
+  telegramPairings   TelegramPairing[]
+  telegramInbound    TelegramInbound[]
+  studioConnections  StudioConnection[]
+  studioMcpConfig    StudioMcpConfig?
+  // Teams: organizations this user ADMINISTERS (created), and the org
+  // memberships (with their per-seat credit bucket) they hold. Both are empty
+  // for an individual user — team membership is opt-in and additive, so the
+  // per-user subscription/credit path above is untouched by it.
+  ownedOrganizations Organization[]            @relation("OrganizationAdmin")
+  orgMemberships     OrganizationMember[]
+  // Join links this user generated, and the join requests they filed by opening
+  // someone's link. A request is not a membership — it waits for an admin.
+  createdJoinLinks   OrganizationJoinLink[]    @relation("OrganizationJoinLinkCreator")
+  orgJoinRequests    OrganizationJoinRequest[] @relation("OrganizationJoinRequestUser")
+  // Team credit purchases this user PAID for, and the ones aimed at their own
+  // seat. Both are audit trails: the credits themselves belong to the team.
+  orgCreditPurchases OrganizationCreditTopup[] @relation("OrgCreditTopupBuyer")
+  orgCreditGrants    OrganizationCreditTopup[] @relation("OrgCreditTopupTarget")
+
+  @@map("users")
+}
+
+// OAuth / SSO identities attached to a user. Scales to any number of providers
+// (google, github, gitlab, telegram, etc.) without schema changes.
+model Account {
+  id                Int       @id @default(autoincrement())
+  userId            Int       @map("user_id")
+  provider          String    @db.VarChar(32)
+  providerAccountId String    @map("provider_account_id") @db.VarChar(191)
+  accessToken       String?   @db.Text
+  refreshToken      String?   @db.Text
+  expiresAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Plan {
+  id                   Int     @id @default(autoincrement())
+  code                 String  @unique @db.VarChar(32)
+  name                 String  @db.VarChar(191)
+  priceCents           Int     @default(0)
+  availability         String  @default("coming_soon") @db.VarChar(32)
+  limits               Json?
+  // --- Team plans ------------------------------------------------------------
+  // isTeamPlan marks a plan an ORGANIZATION buys (one payment, many members)
+  // instead of an individual. seatCredits is the DEFAULT per-member bucket quota
+  // handed out when the org's credit pool is seeded; 0 = split the pool equally
+  // across active members. Both are additive with safe defaults, so every
+  // existing plan row keeps behaving exactly as before.
+  isTeamPlan           Boolean @default(false) @map("is_team_plan")
+  seatCredits          Int     @default(0) @map("seat_credits")
+  // --- Stripe recurring headroom ---------------------------------------------
+  // UNUSED in v1, and deliberately so. Card checkout prices every line item with
+  // inline `price_data` computed from `priceCents` above, because an admin can
+  // change that price at runtime (PlansService.updatePlan) — a stored Stripe
+  // Price object would drift the moment they did. These exist only for a future
+  // recurring integration, which needs real Price objects with intervals.
+  stripeProductId      String? @unique @map("stripe_product_id") @db.VarChar(255)
+  stripePriceIdMonthly String? @map("stripe_price_id_monthly") @db.VarChar(255)
+
+  subscriptions             Subscription[]
+  payments                  Payment[]
+  organizationSubscriptions OrganizationSubscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                      Int       @id @default(autoincrement())
+  userId                  Int       @map("user_id")
+  planId                  Int       @map("plan_id")
+  status                  String    @default("active") @db.VarChar(32)
+  startedAt               DateTime  @default(now())
+  currentPeriodEnd        DateTime?
+  // --- Stripe recurring headroom ---------------------------------------------
+  // UNUSED in v1. The card rail ships as one-time Checkout payments (mode:
+  // 'payment') because that is what the rest of this system already models: an
+  // ABA/Bakong purchase is one-shot and nothing auto-renews. These columns exist
+  // so adopting Stripe Billing later is a code change rather than a second
+  // migration over the payments tables. Everything stays NULL until then.
+  stripeSubscriptionId    String?   @unique @map("stripe_subscription_id") @db.VarChar(255)
+  stripePriceId           String?   @map("stripe_price_id") @db.VarChar(255)
+  stripeStatus            String?   @map("stripe_status") @db.VarChar(32)
+  stripeCancelAtPeriodEnd Boolean?  @map("stripe_cancel_at_period_end")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id])
+
+  @@index([userId])
+  @@map("subscriptions")
+}
+
+model Payment {
+  id                      Int       @id @default(autoincrement())
+  userId                  Int       @map("user_id")
+  planId                  Int?      @map("plan_id")
+  provider                String    @default("bakong") @db.VarChar(64)
+  amountCents             Int       @default(0)
+  currency                String    @default("USD") @db.VarChar(8)
+  status                  String    @default("pending") @db.VarChar(32)
+  externalRef             String?   @db.VarChar(191)
+  md5                     String?   @unique @db.VarChar(64)
+  khqr                    String?   @db.Text
+  // Promo/discount applied at checkout (optional). promoCodeId references a
+  // PromoCode row; discountCents is how much was taken off the plan price.
+  promoCodeId             Int?      @map("promo_code_id")
+  discountCents           Int       @default(0) @map("discount_cents")
+  // Team billing: set when this payment buys an ORG-owned subscription. NULL =
+  // an individual payment (every existing row), which is why this can be added
+  // without touching any existing data or query.
+  organizationId          Int?      @map("organization_id")
+  // --- Stripe (card) rail ----------------------------------------------------
+  // All NULL for ABA/Bakong/promo rows, which is what makes the card rail purely
+  // additive. `md5` above stays the KHQR correlation key and is NULL for Stripe
+  // rows — MySQL allows any number of NULLs in a UNIQUE index, so many Stripe
+  // payments coexist under that constraint.
+  //
+  // stripeCheckoutSessionId is the webhook's lookup key (the confirmation
+  // carries the session, not our payment id) and is UNIQUE so a replayed
+  // completion can never be attributed to a second payment row.
+  stripeCheckoutSessionId String?   @unique @map("stripe_checkout_session_id") @db.VarChar(255)
+  // Indexed, not unique: `charge.refunded` arrives with the PaymentIntent/charge
+  // rather than the session, so the refund handler looks the payment up by it.
+  stripePaymentIntentId   String?   @map("stripe_payment_intent_id") @db.VarChar(255)
+  stripeChargeId          String?   @map("stripe_charge_id") @db.VarChar(255)
+  // Stored so refreshing checkout can hand back the SAME hosted Checkout page
+  // without a Stripe round trip, mirroring how `khqr` above is reused.
+  stripeCheckoutUrl       String?   @map("stripe_checkout_url") @db.Text
+  paidAt                  DateTime?
+  expiresAt               DateTime?
+  createdAt               DateTime  @default(now())
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan         Plan?         @relation(fields: [planId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([stripePaymentIntentId])
+  @@map("payments")
+}
+
+model Feedback {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  type      String   @default("other") @db.VarChar(32)
+  message   String   @db.Text
+  rating    Int?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("feedback")
+}
+
+model UsageEvent {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  provider  String   @db.VarChar(64)
+  model     String?  @db.VarChar(128)
+  tool      String?  @db.VarChar(64)
+  source    String   @default("cli") @db.VarChar(32)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, provider])
+  @@index([tool])
+  @@map("usage_events")
+}
+
+// Admin-managed registry of upstream providers Rayu resells through the
+// gateway. This is the SINGLE SOURCE OF TRUTH for routing: the gateway reads
+// these rows (no env registry) to decide the wire format, URL, and auth scheme
+// for every hosted model, so a new provider is added entirely from the admin
+// dashboard.
+//
+// SECURITY: the API key itself is NEVER stored on this row. Keys are separate
+// ProviderApiKey rows, encrypted with AES-256-GCM under RAYU_PROVIDER_SECRET, so
+// a database dump alone never yields a usable provider credential.
+model Provider {
+  id                Int      @id @default(autoincrement())
+  name              String   @unique @db.VarChar(64)
+  label             String   @db.VarChar(128)
+  // Wire format spoken by the upstream, one of common/enums PROVIDER_FORMATS:
+  // anthropic_messages | openai_chat | openai_responses | genai. The gateway
+  // translates its canonical Anthropic Messages request into this format.
+  // Stored as VARCHAR (not a DB enum) to match the rest of this schema.
+  format            String   @db.VarChar(32)
+  // Origin of the upstream API, e.g. https://api.deepseek.com. Validated
+  // (https-only, no private/loopback/metadata hosts) on write AND again in the
+  // gateway at route time — the gateway attaches a secret to this URL, so a
+  // bad value is both an SSRF and a key-exfiltration risk.
+  baseUrl           String   @db.VarChar(255)
+  // Optional path override appended to baseUrl. NULL = the format's default
+  // (e.g. anthropic_messages → /anthropic/v1/messages).
+  endpointPath      String?  @db.VarChar(191)
+  // How to present the key, one of common/enums PROVIDER_AUTH_SCHEMES:
+  // bearer | x_api_key | x_goog_api_key.
+  authScheme        String   @db.VarChar(32)
+  // Capability DEFAULTS applied to newly created models of this provider. The
+  // per-model flags on HostedModel are the authoritative ones at request time.
+  supportsReasoning Boolean  @default(false)
+  supportsImage     Boolean  @default(false)
+  // Kill switch: a disabled provider's models are hidden from users and refused
+  // by the gateway before any credit is charged (replaces the old
+  // RAYU_DISABLED_PROVIDERS env var).
+  enabled           Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  models  HostedModel[]
+  apiKeys ProviderApiKey[]
+
+  @@map("providers")
+}
+
+// One API key for a provider. Keys are stored INDIVIDUALLY (not as a
+// comma-separated blob) so each can be rotated, health-checked, disabled, and
+// cooled down on its own — which is what makes "if one key rate-limits, use the
+// next" actually work and observable.
+//
+// SECURITY: `encryptedKey` is an AES-256-GCM envelope (see common/secretBox.ts);
+// the master key lives only in RAYU_PROVIDER_SECRET, never in this database. The
+// plaintext is NEVER returned by the API — `maskedKey` exists so listing keys
+// requires no decryption at all. `keyHash` is for duplicate detection only and is
+// never exposed.
+model ProviderApiKey {
+  id            Int       @id @default(autoincrement())
+  providerId    Int       @map("provider_id")
+  label         String    @db.VarChar(64)
+  // AES-256-GCM envelope: "v1:base64(iv ‖ tag ‖ ciphertext)".
+  encryptedKey  String    @db.Text
+  // SHA-256 of the plaintext — unique per provider so the same key cannot be
+  // added twice (which would make rotation a no-op across identical keys).
+  keyHash       String    @db.VarChar(64)
+  // Display form, e.g. "sk-pro••••••••6789(51)". Safe to log and to return.
+  maskedKey     String    @db.VarChar(64)
+  // Rotation order: lower is tried first.
+  priority      Int       @default(0)
+  enabled       Boolean   @default(true)
+  // active | rate_limited | invalid | disabled — see common/enums
+  // PROVIDER_KEY_STATUSES. Written back by the gateway as it observes upstream
+  // responses, so the dashboard shows real health rather than a guess.
+  status        String    @default("active") @db.VarChar(16)
+  lastUsedAt    DateTime?
+  cooldownUntil DateTime?
+  lastError     String?   @db.VarChar(255)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, keyHash])
+  @@index([providerId, priority])
+  @@map("provider_api_keys")
+}
+
+// Catalog of upstream LLM models Rayu resells through the (Phase 2) gateway.
+// All pricing/multiplier/access is admin-editable; not hardcoded.
+model HostedModel {
+  id                         Int      @id @default(autoincrement())
+  code                       String   @unique @db.VarChar(64)
+  label                      String   @db.VarChar(128)
+  providerId                 Int      @map("provider_id")
+  upstreamModelId            String   @db.VarChar(128)
+  inputPricePer1MCents       Int      @default(0)
+  outputPricePer1MCents      Int      @default(0)
+  // --- Credit charges: what the USER is billed, per 1M tokens ----------------
+  // All four are ADMIN-ENTERED and used verbatim by the gateway. Nothing is
+  // derived from the cost prices above (those are Rayu's own cost, used only for
+  // the ledger and the profit projection), so changing a price never silently
+  // changes what a customer pays.
+  //
+  // creditMultiplier keeps its name because it is the field already published to
+  // the CLI in /me/entitlements; it is the INPUT charge. The admin UI labels it
+  // "Credit charge · input".
+  creditMultiplier           Float    @default(1)
+  outputCreditMultiplier     Float    @default(1)
+  // Charge for prompt tokens the provider served from its own cache (typically a
+  // large discount) and for cache-creation tokens (sometimes a premium).
+  cacheReadCreditMultiplier  Float    @default(0.1)
+  cacheWriteCreditMultiplier Float    @default(1)
+  allowedPlanCodes           Json?
+  // Context window in TOKENS, as the admin entered it (e.g. 200000, 1000000).
+  // NULL = "unknown", in which case the CLI keeps using its own default for the
+  // model. This is the authoritative window for a hosted model: the CLI applies
+  // it to auto-compaction, context warnings, and budget calculations, so raising
+  // it in the dashboard immediately changes client behaviour with no release.
+  contextWindow              Int?
+  // Per-model capability flags — AUTHORITATIVE at request time. The gateway
+  // rejects an image block on a model with supportsImage=false (and a
+  // `thinking` field when supportsReasoning=false) BEFORE charging credits, and
+  // exposes both flags to the CLI so it can warn the user to switch models.
+  supportsReasoning          Boolean  @default(false)
+  supportsImage              Boolean  @default(false)
+  // Model accepts tool/function definitions. Exposed to the client so it can
+  // avoid sending tools to a model that would reject them.
+  supportsTools              Boolean  @default(true)
+  enabled                    Boolean  @default(true)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@index([providerId])
+  @@map("hosted_models")
+}
+
+// Catalog of IMAGE- and VIDEO-generation models the CLI offers to users.
+//
+// Deliberately SEPARATE from hosted_models, for three reasons:
+//  1. Media models are not proxied by the gateway. The CLI calls NVIDIA / Vertex
+//     / fal directly with the user's own key, so there is no provider row, wire
+//     format, base URL, or credential to attach — a required providerId FK would
+//     mean inventing fake provider rows.
+//  2. hosted_models is what /me/entitlements publishes as the CHAT model list.
+//     Mixing flux/veo in there would put image models in the /model picker.
+//  3. The media-specific columns (family, nvcfFunctionId, estimatedSeconds) are
+//     meaningless for a chat model.
+//
+// This table is the SOURCE OF TRUTH for the CLI's image/video model lists: the
+// CLI fetches it through the gateway (GET /v1/models?media=image|video) and has
+// no hardcoded registry. Adding a model here needs no CLI release.
+model MediaModel {
+  id               Int      @id @default(autoincrement())
+  // The exact model id sent upstream (e.g. "black-forest-labs/flux.1-schnell",
+  // "veo-3.1-generate-001"). Longer than a chat code because NVIDIA/fal ids are
+  // slash-paths.
+  code             String   @unique @db.VarChar(191)
+  label            String   @db.VarChar(128)
+  // "image" | "video" — see common/enums MEDIA_TYPES.
+  mediaType        String   @db.VarChar(16)
+  // What the model can do, as a JSON string array:
+  //   image → ["generate"] | ["edit"] | both
+  //   video → ["text2video"] | ["image2video"] | both
+  // An array (not a single value) because some models genuinely do both —
+  // cosmos-predict1-5b takes an optional input image — and the CLI must be able
+  // to offer one model for both operations without a code change.
+  capabilities     Json
+  // Which upstream serves it — the CLI picks its HTTP client from this.
+  backend          String   @db.VarChar(24)
+  // Request-shape family; the CLI keys its body builder off this string.
+  family           String   @db.VarChar(32)
+  // NVCF function UUID. Only for video models on the `nvcf` backend; the legacy
+  // cosmos host needs none, which is why this is nullable rather than required.
+  nvcfFunctionId   String?  @db.VarChar(64)
+  // Rough generation time in seconds, used for the CLI's "this takes ~Ns" wait
+  // message. NULL = unknown (the CLI shows a generic message).
+  estimatedSeconds Int?
+  // Per-model request defaults merged into the family's body builder, e.g.
+  // { "cfg_scale": 0, "steps": 4 } for flux.1-schnell vs { "cfg_scale": 3.5,
+  // "steps": 50 } for flux.1-dev. This is what lets two models share one family.
+  defaultParams    Json?
+  // Plans allowed to use this model, same semantics as hosted_models. An EMPTY
+  // array means "every plan" — media generation is separately gated by the
+  // image_generation / video_generation feature flags, so an empty list here is
+  // the sensible default rather than "nobody".
+  allowedPlanCodes Json?
+  // Preferred pick for its (mediaType, backend) pair, for every capability it
+  // declares. Resolution order in the CLI: the model the user named → the
+  // isDefault model that supports the requested capability on the target backend
+  // → the lowest sortOrder model that does.
+  isDefault        Boolean  @default(false)
+  // Ascending display order in the CLI model picker.
+  sortOrder        Int      @default(0)
+  enabled          Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([mediaType, enabled])
+  @@map("media_models")
+}
+
+// Singleton global config (row id = 1). Admin-editable credit + abuse settings.
+model AppSettings {
+  id                    Int      @id @default(1)
+  baselineCreditsPer1M  Int      @default(1000)
+  // Credit top-up pricing, as the admin enters it on the Plans & Credits page:
+  // how many credits one US dollar buys (0 = top-up unavailable), and the
+  // smallest purchase allowed (default 100 = $1). The gateway reads both so the
+  // CLI can quote a price without calling the backend.
+  creditsPerDollar      Int      @default(0)
+  minTopupCents         Int      @default(100)
+  maxConcurrentStreams  Int      @default(3)
+  maxTokensPerRequest   Int      @default(0)
+  maxRequestsPer5h      Int      @default(0)
+  baselineModelCode     String?  @db.VarChar(64)
+  assumedInputRatio     Float    @default(0.67)
+  assumedUsagePercent   Int      @default(25)
+  infraCostCentsPerUser Int      @default(0)
+  updatedAt             DateTime @updatedAt
+
+  @@map("app_settings")
+}
+
+// Durable audit of credit consumption (written by the gateway in Phase 2).
+model CreditLedger {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @map("user_id")
+  modelCode      String   @db.VarChar(64)
+  inTokens       Int      @default(0)
+  outTokens      Int      @default(0)
+  credits        Int      @default(0)
+  realCostCents  Int      @default(0)
+  source         String   @default("plan") @db.VarChar(16)
+  // Team usage: the org whose credit pool paid for this row, and which member
+  // spent it. Both NULL for individual usage (every existing row), so the
+  // per-user aggregates that drive individual billing are unchanged. userId is
+  // still written for a team row (it equals memberUserId) so a member's own
+  // credit history keeps working with no query change.
+  organizationId Int?     @map("organization_id")
+  memberUserId   Int?     @map("member_user_id")
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([modelCode])
+  @@index([organizationId, createdAt])
+  @@map("credit_ledger")
+}
+
+// Pay-as-you-go credit purchases (schema only this phase; flow ships later).
+model CreditTopup {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  credits     Int      @default(0)
+  amountCents Int      @default(0)
+  status      String   @default("pending") @db.VarChar(16)
+  paymentId   Int?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("credit_topups")
+}
+
+// Every Stripe webhook event we have ever accepted. This table IS the
+// idempotency mechanism for the card rail, and it is also the forensic trail for
+// a payment dispute.
+//
+// `stripeEventId` is UNIQUE and the row is inserted BEFORE the event is
+// processed. That ordering is the whole design: Stripe retries for up to three
+// days and explicitly does not guarantee ordering or exactly-once delivery, so a
+// duplicate delivery collides on this constraint and is answered 200 without
+// re-running the grant. The insert-first order matters because a crash mid-grant
+// must not leave the event un-recorded and therefore replayable into a second
+// grant — the guarded `status='pending'` transitions in PaymentsService are the
+// second line of defense underneath this one.
+//
+// `payload` keeps the event body for support and dispute forensics (it carries
+// the presentment amount/currency, which the USD `payments` row does not). It is
+// the same class of PII already held on `users`; card numbers are never in it,
+// as Stripe only ever sends the last four digits.
+model StripeWebhookEvent {
+  id            Int       @id @default(autoincrement())
+  stripeEventId String    @unique @map("stripe_event_id") @db.VarChar(255)
+  type          String    @db.VarChar(128)
+  // 'processed' (handled) | 'ignored' (an event type we do not act on) |
+  // 'failed' (permanent error — logged, answered 200 to stop Stripe retrying a
+  // request that will never succeed).
+  status        String    @default("processed") @db.VarChar(16)
+  error         String?   @db.Text
+  payload       Json?
+  createdAt     DateTime  @default(now())
+  processedAt   DateTime?
+
+  @@index([type, createdAt])
+  @@map("stripe_webhook_events")
+}
+
+// Admin-created promo/discount codes applied when buying a paid plan.
+// - discountType 'percent' (discountValue 0-100) or 'fixed' (discountValue =
+//   cents off). Final price is clamped at 0 (a 100%-off / large fixed code
+//   yields a $0 claim, no payment).
+// - appliesToPlans: null/empty JSON array = ALL plans; else the list of plan
+//   codes it is valid for.
+// - maxRedemptions: null = unlimited; else the cap (e.g. "first 100 accounts").
+//   usedCount is incremented per successful redemption.
+// - startsAt/endsAt: optional active window. active: admin apply/end toggle.
+// All fields are admin-editable at runtime (CRUD); nothing hardcoded.
+model PromoCode {
+  id             Int       @id @default(autoincrement())
+  code           String    @unique @db.VarChar(64)
+  description    String?   @db.VarChar(255)
+  discountType   String    @default("percent") @db.VarChar(16)
+  discountValue  Int       @default(0)
+  appliesToPlans Json?
+  maxRedemptions Int?
+  usedCount      Int       @default(0)
+  startsAt       DateTime?
+  endsAt         DateTime?
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  redemptions PromoRedemption[]
+
+  @@map("promo_codes")
+}
+
+// One row per (promo code, user) redemption. Enforces one use per user per code
+// and is the source of truth for usedCount / the "first N accounts" cap.
+model PromoRedemption {
+  id            Int      @id @default(autoincrement())
+  promoCodeId   Int      @map("promo_code_id")
+  userId        Int      @map("user_id")
+  planCode      String?  @db.VarChar(32)
+  paymentId     Int?     @map("payment_id")
+  originalCents Int      @default(0)
+  discountCents Int      @default(0)
+  finalCents    Int      @default(0)
+  // 'pending' (QR issued, awaiting payment) | 'applied' (paid or $0 claimed) |
+  // 'canceled' (payment canceled/expired, frees the slot).
+  status        String   @default("pending") @db.VarChar(16)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  promoCode PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([promoCodeId, userId])
+  @@index([userId])
+  @@map("promo_redemptions")
+}
+
+// ---- Shared Telegram bot (one bot serves ALL users) ------------------------
+// The backend holds ONE bot token (RAYU_SHARED_BOT_TOKEN) and runs a single
+// getUpdates poller (Telegram allows only one consumer per token). Each chat is
+// mapped to the owning Rayu user via TelegramLink; the poller routes a chat's
+// messages into that user's TelegramInbound queue, which the CLI long-polls.
+// Outbound is relayed with the shared token, chat_id forced to the user's own
+// link (per-user isolation). Users may still bring their own bot token in the
+// CLI (BYO mode) — that path never touches these tables.
+
+// One Telegram chat bound to one Rayu user (1:1). chatId is stored as a string
+// to sidestep BigInt/JSON friction (Telegram group/channel ids exceed i32).
+model TelegramLink {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @unique @map("user_id")
+  chatId    String   @unique @map("chat_id") @db.VarChar(64)
+  username  String?  @db.VarChar(191)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("telegram_links")
+}
+
+// Short-lived, single-use pairing code. The CLI requests one, the user sends
+// `/start <code>` to the shared bot, and the poller binds that chat to the user.
+model TelegramPairing {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique @db.VarChar(32)
+  userId    Int      @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("telegram_pairings")
+}
+
+// Per-user inbound queue: raw Telegram updates routed to a user, consumed by the
+// CLI via long-poll (GET /telegram/updates?after=<id>). Rows are deleted once
+// acknowledged (or aged out by a sweep).
+model TelegramInbound {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  payload   Json
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, id])
+  @@map("telegram_inbound")
+}
+
+// Singleton (id=1) persisting the central poller's getUpdates offset so a
+// backend restart doesn't reprocess (and double-deliver) recent updates.
+model TelegramCursor {
+  id        Int      @id @default(1)
+  offset    BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("telegram_cursor")
+}
+
+// --- Rayu Studio -------------------------------------------------------------
+// Studio (the in-browser agent at rayucode.com/studio) is a pure frontend: it
+// holds no secrets and talks to this backend for everything that is not an LLM
+// call (those go to rayu-gateway). These two tables are the studio's entire
+// server-side state.
+
+// A user's credential for a third-party service the studio integrates with
+// (GitHub, GitLab, Netlify, Vercel, Supabase).
+//
+// WHY THIS TABLE EXISTS
+//
+// Upstream bolt.diy kept these tokens in a browser cookie and read them back in
+// its own server routes. That works for single-user local software but not for a
+// hosted multi-tenant deployment: a cookie-borne PAT is readable by any XSS on
+// the origin and travels on every request. Here the plaintext token is sealed
+// with AES-256-GCM (common/secretBox.ts, master key RAYU_PROVIDER_SECRET, the
+// same mechanism protecting provider_api_keys) and NEVER leaves the backend —
+// the studio sends a request, the backend attaches the token upstream.
+//
+// The API only ever returns `maskedToken`.
+model StudioConnection {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @map("user_id")
+  // github | gitlab | netlify | vercel | supabase — see common/enums
+  // STUDIO_CONNECTION_KINDS.
+  kind           String   @db.VarChar(32)
+  // AES-256-GCM envelope: "v1:base64(iv ‖ tag ‖ ciphertext)".
+  encryptedToken String   @map("encrypted_token") @db.Text
+  // Display form, e.g. "ghp_ab••••••••6789(40)". Safe to log and to return.
+  maskedToken    String   @map("masked_token") @db.VarChar(64)
+  // Non-secret metadata cached from the upstream account (login, avatar, team
+  // id, project ref…) so the settings UI can render without a round trip.
+  meta           Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One credential per service per user: reconnecting REPLACES rather than
+  // accumulating, so there is never ambiguity about which token is in use.
+  @@unique([userId, kind])
+  @@map("studio_connections")
+}
+
+// Per-user MCP (Model Context Protocol) server configuration. Upstream bolt kept
+// this in a process-global singleton, which in a multi-tenant backend would let
+// one user's servers serve another user's session.
+model StudioMcpConfig {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @unique @map("user_id")
+  // { mcpServers: { <name>: { type, url|command, ... } } }. Server URLs are
+  // re-validated against the SSRF guard on every write AND before every
+  // connection attempt — a stored row is not trusted.
+  config    Json
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("studio_mcp_config")
+}
+
+// --- Teams (one payment, many users) ----------------------------------------
+// Everything above this line is PER-USER: Subscription.userId, Payment.userId,
+// CreditLedger.userId. A team needs one payer and many spenders, so an
+// Organization owns the subscription and a credit POOL, and each member holds a
+// bucket allocated from that pool. These tables are purely ADDITIVE — an
+// individual account never touches them, and its billing path is unchanged.
+
+// A team. `ssoDomain` is what makes sign-in auto-join work: when a Google
+// Workspace ID token carries hd="company.com", the matching org ("@company.com")
+// adopts the signer as a member on the spot — no SAML, no invite round trip. It
+// is UNIQUE so two orgs can never claim the same company domain.
+model Organization {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(191)
+  // URL segment: /dashboard/team/<slug>.
+  slug      String   @unique @db.VarChar(64)
+  // "@company.com" (leading @, lowercase). NULL = invite-only team.
+  ssoDomain String?  @unique @map("sso_domain") @db.VarChar(191)
+  adminId   Int      @map("admin_id")
+  // "active" | "suspended" (super-admin oversight action).
+  status    String   @default("active") @db.VarChar(32)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  admin        User                      @relation("OrganizationAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+  members      OrganizationMember[]
+  invites      OrganizationInvite[]
+  joinLinks    OrganizationJoinLink[]
+  joinRequests OrganizationJoinRequest[]
+  subscription OrganizationSubscription?
+  creditPool   CreditPool?
+  creditTopups OrganizationCreditTopup[]
+  payments     Payment[]
+
+  @@index([adminId])
+  @@map("organizations")
+}
+
+// A user's seat in a team, with their own credit bucket. bucketQuota is the
+// per-period allowance the admin assigned; bucketCredits is what is LEFT of it.
+// Removal is a status flip (not a delete) so the audit trail — who spent the
+// team's credits — survives.
+model OrganizationMember {
+  id             Int      @id @default(autoincrement())
+  organizationId Int      @map("organization_id")
+  userId         Int      @map("user_id")
+  // "admin" | "member"
+  role           String   @default("member") @db.VarChar(32)
+  // Remaining per-seat credits for the current period.
+  bucketCredits  Int      @default(0) @map("bucket_credits")
+  // Per-period per-seat allowance; reset to this on renewal.
+  bucketQuota    Int      @default(0) @map("bucket_quota")
+  // "active" | "removed"
+  status         String   @default("active") @db.VarChar(32)
+  joinedAt       DateTime @default(now()) @map("joined_at")
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+// A pending email invite. Exists for teams WITHOUT a Google Workspace domain
+// (and for inviting a member before their first sign-in); Workspace teams get
+// auto-join instead and never need one.
+model OrganizationInvite {
+  id             Int      @id @default(autoincrement())
+  organizationId Int      @map("organization_id")
+  email          String   @db.VarChar(320)
+  role           String   @default("member") @db.VarChar(32)
+  // "pending" | "accepted" | "revoked"
+  status         String   @default("pending") @db.VarChar(32)
+  // Bearer of the accept link. Unique so a link identifies exactly one invite.
+  token          String   @unique @db.VarChar(64)
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@index([email])
+  @@map("organization_invites")
+}
+
+// A SHAREABLE join link. Unlike OrganizationInvite it is bound to no address, so
+// the admin can post it in a group chat and anyone can open it — which is exactly
+// why holding it is NOT enough to get a seat: it only lets someone FILE a request
+// (OrganizationJoinRequest) that the admin has to approve. The token is therefore
+// a "may I ask?" credential, not an entitlement, and a leaked link costs the team
+// nothing but a row the admin can reject.
+//
+// One link per team at a time (`organizationId` is unique): "regenerate" replaces
+// the token, which is the only way to make a link that already went out stop
+// working, and there is nothing to explain about which of several links is live.
+model OrganizationJoinLink {
+  id             Int       @id @default(autoincrement())
+  organizationId Int       @unique @map("organization_id")
+  // Bearer of the join URL. Unique so a link identifies exactly one team.
+  token          String    @unique @db.VarChar(64)
+  // Role granted on APPROVAL (the requester never chooses it).
+  role           String    @default("member") @db.VarChar(32)
+  // "active" | "revoked" — see ORG_JOIN_LINK_STATUSES.
+  status         String    @default("active") @db.VarChar(32)
+  // NULL = never expires. Set by default so a forgotten link stops working.
+  expiresAt      DateTime? @map("expires_at")
+  // How many requests this link has produced (shown to the admin; a spike is the
+  // signal that the link has spread further than intended).
+  useCount       Int       @default(0) @map("use_count")
+  createdById    Int       @map("created_by_id")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User                      @relation("OrganizationJoinLinkCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  requests     OrganizationJoinRequest[]
+
+  @@map("organization_join_links")
+}
+
+// Someone who opened a join link and asked to be let in. It records a real USER
+// id (not a claimed email address), because the request is filed by a signed-in
+// account — so approving it cannot possibly grant a seat to someone other than
+// the person the admin is looking at.
+//
+// One row per (org, user): a second request UPDATES the first instead of piling
+// up, so a persistent clicker cannot flood the admin's queue. Decisions are kept
+// rather than deleted, which is what lets the admin see "you rejected this person
+// last week" when they ask again.
+model OrganizationJoinRequest {
+  id             Int       @id @default(autoincrement())
+  organizationId Int       @map("organization_id")
+  userId         Int       @map("user_id")
+  // The link the request came through. NULL once that link is deleted/rotated —
+  // the request stays valid, it just loses its provenance.
+  joinLinkId     Int?      @map("join_link_id")
+  // "pending" | "approved" | "rejected" | "canceled" — ORG_JOIN_REQUEST_STATUSES.
+  status         String    @default("pending") @db.VarChar(32)
+  // Optional note from the requester ("I'm the new backend contractor").
+  message        String?   @db.VarChar(280)
+  decidedById    Int?      @map("decided_by_id")
+  decidedAt      DateTime? @map("decided_at")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                  @relation("OrganizationJoinRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  joinLink     OrganizationJoinLink? @relation(fields: [joinLinkId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([organizationId, status])
+  @@map("organization_join_requests")
+}
+
+// The ORG's subscription. Deliberately a separate table from Subscription rather
+// than a nullable userId on it: every existing query (`subscriptions WHERE
+// user_id = ?`, in both the backend and the gateway's ActivePlan) stays correct
+// and untouched, and an individual subscription can coexist with a team seat.
+model OrganizationSubscription {
+  id               Int       @id @default(autoincrement())
+  organizationId   Int       @unique @map("organization_id")
+  planId           Int       @map("plan_id")
+  // "active" | "past_due" | "canceled"
+  status           String    @default("active") @db.VarChar(32)
+  startedAt        DateTime  @default(now())
+  currentPeriodEnd DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id])
+
+  @@map("organization_subscriptions")
+}
+
+// The team's shared credit allowance for the current period. This is the HARD
+// cap on total team usage: member buckets are soft quotas carved out of it, and
+// a member whose bucket runs dry falls back to whatever the pool has left, so
+// unlimited members can join and the pool is the only limit.
+model CreditPool {
+  id             Int       @id @default(autoincrement())
+  organizationId Int       @unique @map("organization_id")
+  totalCredits   Int       @default(0) @map("total_credits")
+  usedCredits    Int       @default(0) @map("used_credits")
+  // PURCHASED credits for the CURRENT period, on top of the plan's allowance.
+  // Kept out of totalCredits on purpose: activateSubscription overwrites that
+  // column on every activation and renewal, so credits parked there would be
+  // erased (or re-gifted) by the next renewal. Held separately, the team's hard
+  // cap becomes total + extra, and because used_credits is one monotonic counter
+  // the PLAN allowance is necessarily spent first — the ordering the product
+  // calls for falls out of the data model instead of needing a second counter.
+  //
+  // Zeroed by activateSubscription: that IS the expiry ("purchased credits last
+  // until the period ends"), so no cron and no sweep job exists to drift.
+  extraCredits   Int       @default(0) @map("extra_credits")
+  periodEnd      DateTime? @map("period_end")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("credit_pools")
+}
+
+// One pay-as-you-go credit purchase made by a team admin for their team.
+//
+// Deliberately NOT a nullable organization_id on credit_topups: the individual
+// balance is DERIVED as
+//   SUM(credit_topups.credits WHERE user_id=? AND status='paid')
+//     - SUM(credit_ledger.credits WHERE source='topup')
+// in the backend AND (independently) in the gateway, so a team purchase carrying
+// the paying admin's user_id would silently inflate that admin's PERSONAL
+// balance. Same reasoning that keeps organization_subscriptions separate from
+// subscriptions.
+//
+// This table is the AUDIT + IDEMPOTENCY record; the spendable number lives in
+// credit_pools.extra_credits. The status flip pending -> paid is guarded so
+// exactly one concurrent confirmation can grant (see PaymentsService).
+model OrganizationCreditTopup {
+  id             Int       @id @default(autoincrement())
+  organizationId Int       @map("organization_id")
+  // The admin who paid. Kept for the receipt/audit trail — the credits belong to
+  // the TEAM, not to them.
+  purchasedById  Int       @map("purchased_by_id")
+  // Optional: credit this member's own bucket as well as the pool. NULL = pool
+  // only, which anyone on the team can draw once their bucket is dry. Nulled if
+  // the person is deleted; the grant itself is already recorded here.
+  targetUserId   Int?      @map("target_user_id")
+  credits        Int       @default(0)
+  amountCents    Int       @default(0) @map("amount_cents")
+  // "pending" | "paid" | "refunded" | "expired" — ORG_CREDIT_TOPUP_STATUSES.
+  status         String    @default("pending") @db.VarChar(16)
+  paymentId      Int?      @map("payment_id")
+  // The pool period this purchase was granted into, so a receipt can say when
+  // the credits stop being spendable. Informational: the enforcement is the
+  // period gate plus the reset in activateSubscription.
+  expiresAt      DateTime? @map("expires_at")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  purchasedBy  User         @relation("OrgCreditTopupBuyer", fields: [purchasedById], references: [id], onDelete: Cascade)
+  targetUser   User?        @relation("OrgCreditTopupTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status])
+  @@index([paymentId])
+  @@map("organization_credit_topups")
+}

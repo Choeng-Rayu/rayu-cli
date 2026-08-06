@@ -1,0 +1,92 @@
+// ESLint configuration for rayu-web.
+//
+// WHY THIS FILE EXISTS
+// package.json has always carried `"lint": "next lint"` and .github/workflows/ci.yml
+// has always run it, but no ESLint config or dependency was ever added. `next lint`
+// with no config drops into an interactive "How would you like to configure ESLint?"
+// prompt, which in CI (no TTY) simply exits 1. So the lint step could never pass.
+// This file makes `npm run lint` a real, non-interactive check.
+//
+// ESLint 8 + eslintrc format (not flat config) because that is what `next lint`
+// drives natively in Next 15; both are pinned exactly to avoid a silent rule-set
+// change on a future install.
+{
+  "root": true,
+  "extends": "next/core-web-vitals",
+
+  "ignorePatterns": [
+    ".next/**",
+    "node_modules/**",
+    "public/**",
+    // SVG sources for the studio's UnoCSS icon collection — data, not code.
+    "studio/icons/**"
+  ],
+
+  "rules": {
+    /*
+     * OFF DELIBERATELY — this rule wants <Link> for every internal href.
+     *
+     * In this codebase a plain <a> to an internal route is a load-bearing
+     * pattern, not an oversight: COOP/COEP are per-DOCUMENT headers, so entering
+     * or leaving /studio MUST be a full page load or WebContainer cannot boot
+     * (see next.config.mjs and studio/isolation.test.ts). This rule cannot tell a
+     * deliberate hard navigation from an accidental one, so it would fire on the
+     * exact pattern the architecture requires.
+     *
+     * The real invariant is enforced far more precisely by studio/isolation.test.ts,
+     * which asserts that no next/link and no router.push targets /studio, and that
+     * studio never imports next/link. That test is the actual guard; this rule is
+     * redundant noise on top of it.
+     *
+     * It also fires on pre-existing marketing/dashboard links
+     * (app/dashboard/page.tsx, app/plans/page.tsx). Converting those to <Link>
+     * would change dashboard navigation from hard to soft, which the studio
+     * integration plan explicitly lists as a non-goal ("do not change rayu-web's
+     * marketing/dashboard/billing behaviour").
+     */
+    "@next/next/no-html-link-for-pages": "off"
+  },
+
+  "overrides": [
+    {
+      /*
+       * studio/** is vendored from bolt.diy (MIT, see studio/LICENSE) and is still
+       * linted rather than ignored — ignoring 384 files would mean a real defect
+       * introduced while rewiring them goes unseen.
+       *
+       * Registering the @typescript-eslint plugin here is what makes that possible:
+       * the upstream files carry inline `eslint-disable @typescript-eslint/...`
+       * comments written against bolt's own config. Without the plugin loaded,
+       * ESLint reports 82 "Definition for rule ... was not found" errors — noise
+       * from unresolvable disable directives, not code problems. Loading the plugin
+       * resolves them and lets the upstream authors' intent stand.
+       */
+      "files": ["studio/**/*.ts", "studio/**/*.tsx"],
+      "plugins": ["@typescript-eslint"],
+      "rules": {
+        /*
+         * The studio is a client-rendered IDE, not a content site: it renders
+         * user/LLM-generated markup and dynamic blob previews where next/image is
+         * inapplicable. These stay off for the studio subtree only.
+         */
+        "@next/next/no-img-element": "off",
+        "jsx-a11y/alt-text": "off",
+
+        /*
+         * WARN, not ERROR, for the vendored subtree only.
+         *
+         * These two are stylistic and fire in bulk on upstream code as written
+         * (46 anonymous memo/forwardRef components, 27 raw apostrophes in copy).
+         * Neither can change behaviour, so making them blocking would mean editing
+         * ~70 vendored files for no functional gain and adding noise to every
+         * future bolt.diy re-sync. They remain visible as warnings so new code is
+         * still nudged, while the rules that CAN indicate a real defect
+         * (react-hooks/*, react/jsx-key) stay at error for studio too — that is
+         * how the misplaced key in chat/UserMessage.tsx was found.
+         */
+        "react/display-name": "warn",
+        "react/no-unescaped-entities": "warn"
+      }
+    }
+  ]
+}

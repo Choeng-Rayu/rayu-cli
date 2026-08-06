@@ -1,0 +1,60 @@
+/*
+ * Viewport shell for Rayu Studio.
+ *
+ * WHY THIS FILE EXISTS
+ *
+ * rayu-web's root layout (app/layout.tsx) wraps every page in marketing chrome:
+ * `<div class="site">` containing a nav header, the page, and a footer. That is
+ * correct for the marketing site and dashboard, but the studio is a full-viewport
+ * IDE — a nav bar above it and a footer below it would break the layout.
+ *
+ * The Next-idiomatic fix is multiple root layouts via route groups, which
+ * requires deleting app/layout.tsx and moving every existing page into a group.
+ * That would rewrite 97 relative imports across the marketing, billing, and
+ * dashboard pages — code this port is explicitly not meant to touch. So instead
+ * the studio hides the chrome with CSS that is only loaded on /studio routes
+ * (Next emits CSS per route segment, and this file is imported solely by
+ * app/studio/layout.tsx).
+ *
+ * TRADEOFF: the header and footer elements remain in the DOM on studio routes,
+ * just not rendered. On an authenticated, noindex route that costs nothing
+ * visible. If the marketing app is ever restructured into route groups, delete
+ * this file and give the studio its own root layout instead.
+ */
+
+/* Neutralise the marketing wrapper's spacing and max-width on studio routes. */
+body > .site {
+  display: block;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+body > .site > .nav,
+body > .site > footer {
+  display: none;
+}
+
+/*
+ * bolt's UI measures itself against a full-height ancestor chain, so every level
+ * from <html> down to the studio root has to be exactly the viewport.
+ */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.studio-root {
+  height: 100vh;
+  /* Fall back for browsers without dvh; dvh avoids the mobile URL-bar jump. */
+  height: 100dvh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Matches styles/index.scss so there is no flash of the marketing background. */
+  background-color: var(--bolt-elements-bg-depth-1);
+}

@@ -1,0 +1,8 @@
+{"type":"system","subtype":"init","session_id":"s1","tools":["Bash","Write","Agent"],"model":"claude"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Scaffolding the booking app for Cambodia."}]},"session_id":"s1","parent_tool_use_id":null}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"npm init -y"}}]},"session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Write","input":{"file_path":"/workspace/Dockerfile","content":"FROM node:22-bookworm-slim"}}]},"session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_3","name":"Write","input":{"file_path":"/workspace/.rayu/swarm/shared.json","content":"{\"goal\":\"booking system\"}"}}]},"session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_4","name":"Agent","input":{"subagent_type":"frontend","description":"Build the booking UI"}}]},"session_id":"s1"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"added 1 package in 1s","is_error":false}]},"session_id":"s1"}
+{"type":"result","subtype":"success","is_error":false,"result":"Done. App generated.","session_id":"s1","num_turns":6}

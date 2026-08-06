@@ -1,0 +1,9 @@
+# build artifacts
+/gateway
+*.test
+*.out
+
+# secrets — never commit real provider keys
+.env
+.env.local
+rayu/cute-girl-images/

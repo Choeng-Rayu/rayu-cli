@@ -1,0 +1,1 @@
+{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["generation failed: boom"],"session_id":"s1"}

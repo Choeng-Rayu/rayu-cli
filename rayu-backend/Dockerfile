@@ -1,0 +1,64 @@
+# ---- Builder: install all deps, generate Prisma client, compile TS ----
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+# The BUILD needs devDependencies (@nestjs/cli provides `nest`, typescript, …).
+#
+# npm omits devDependencies whenever NODE_ENV=production, and a hosting platform
+# may inject that into the build environment (Coolify does, for any variable
+# marked "available at buildtime"). The build then fails with `sh: nest: not
+# found` (exit 127) — a confusing failure whose cause is nowhere in this file.
+# NODE_ENV is pinned to development for this stage AND `--include=dev` is passed
+# explicitly, so neither an injected ENV nor an injected build ARG can strip the
+# tools the build needs. Only the runner stage is production.
+ENV NODE_ENV=development
+
+# Tolerate a flaky/slow build-host network: retry transient npm-registry fetch
+# failures (ECONNRESET/ETIMEDOUT/socket hang up) with backoff instead of failing
+# the whole image build on a single blip. Applies to every npm call in this stage.
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_factor=2 \
+    npm_config_fetch_retry_mintimeout=20000 \
+    npm_config_fetch_retry_maxtimeout=120000 \
+    npm_config_fetch_timeout=600000
+
+COPY package.json package-lock.json ./
+# Use npm ci + a persistent BuildKit npm cache. Retry up to 3 times, and fail
+# loudly if all retries are exhausted (the old loop could continue silently).
+RUN --mount=type=cache,target=/root/.npm \
+    for i in 1 2 3; do npm ci --include=dev --no-audit --no-fund && exit 0 || sleep 10; done; false
+COPY tsconfig.json tsconfig.build.json nest-cli.json ./
+COPY prisma ./prisma
+COPY src ./src
+# build = `prisma generate && nest build`. NODE_ENV is forced here too: an
+# injected `ENV NODE_ENV=production` can appear AFTER the line above (the platform
+# adds its own instructions), and nest/tsc must not see production.
+RUN NODE_ENV=development npm run build
+
+# ---- Runner: production deps + generated Prisma client ----
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production \
+    npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_factor=2 \
+    npm_config_fetch_retry_mintimeout=20000 \
+    npm_config_fetch_retry_maxtimeout=120000 \
+    npm_config_fetch_timeout=600000
+
+COPY package.json package-lock.json ./
+# Production deps include `prisma` (CLI) + `@prisma/client` so we can run
+# `migrate deploy` and the generated client at runtime.
+RUN --mount=type=cache,target=/root/.npm \
+    for i in 1 2 3; do npm ci --omit=dev --no-audit --no-fund && exit 0 || sleep 10; done; false && npm cache clean --force
+
+COPY prisma ./prisma
+# Generate the client against the production node_modules.
+RUN npx prisma generate
+
+COPY --from=builder /app/dist ./dist
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x docker-entrypoint.sh
+
+EXPOSE 4000
+# Applies migrations, then boots the API (plans are seeded on boot).
+ENTRYPOINT ["./docker-entrypoint.sh"]
