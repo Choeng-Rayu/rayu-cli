@@ -1,9 +1,0 @@
-node_modules
-.next
-out
-build
-coverage
-.env
-.env.local
-*.log
-.git
