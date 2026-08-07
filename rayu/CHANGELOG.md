@@ -2,6 +2,16 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.5.16 - 2026-08-08
+- Major first-launch experience overhaul — smoother onboarding, clearer setup flow, and a much friendlier "what's new" introduction for new users
+- Added Custom Provider support — users can now define and connect their own provider (any OpenAI/Anthropic-compatible endpoint) directly from `/connect` without patching the CLI
+- Migrated the gateway to a fully unified type system that speaks both the OpenAI Chat Completions and Anthropic Messages wire formats — every provider is now a thin transport on top of one internal IR, eliminating format-specific branches across the codebase
+- Significantly improved the Telegram bridge — better message streaming, more reliable inline keyboards, and reduced dropped messages on slow networks
+- Fixed Figma MCP integration — OAuth handshake, asset fetch, and image reference flows now work end-to-end without the previous stale-token and 404 edge cases
+- Improved the gateway cache layer — much higher cache hit rate for repeated prompts, with tiered caching for both system prompts and tool results, noticeably reducing latency and cost
+- Migrated the gateway from Go to a fully Rust implementation — lower memory footprint, faster cold start, single static binary, and a hardened async runtime for streaming under load
+- Reduced wasted tokens per request — tightened system prompt assembly, deduplicated overlapping tool descriptions, and stripped redundant boilerplate from every outbound request
+
 ## 1.5.12 - 2026-07-30
 - Improved the model selection experience — better picker UX and more reliable model resolution when switching providers
 

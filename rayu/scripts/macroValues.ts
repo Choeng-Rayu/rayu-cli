@@ -35,13 +35,13 @@ export const MACRO_VALUES = {
   // (runtime) to opt out.
   RAYU_OAUTH_DEFAULT:
     process.env.RAYU_BUILD_OAUTH ?? process.env.USE_RAYU_OAUTH ?? 'true',
-  RAYU_API_URL: process.env.RAYU_BUILD_API_URL ?? process.env.RAYU_API_URL ?? '',
+  RAYU_API_URL: process.env.RAYU_BUILD_API_URL ?? process.env.RAYU_API_URL ?? 'https://api.rayucode.com/api',
   RAYU_WEB_URL:
     process.env.RAYU_BUILD_WEB_URL ??
     process.env.RAYU_WEB_URL ??
     'https://rayucode.com',
   RAYU_GATEWAY_URL:
-    process.env.RAYU_BUILD_GATEWAY_URL ?? process.env.RAYU_GATEWAY_URL ?? '',
+    process.env.RAYU_BUILD_GATEWAY_URL ?? process.env.RAYU_GATEWAY_URL ?? 'https://gateway.rayucode.com',
 }
 
 // Rayu-owned allowlist of build-gated `feature('FLAG')` macros to ENABLE.
