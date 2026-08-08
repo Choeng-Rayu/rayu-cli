@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/rayu/rayu-cli/rayu/src/ -name model_specs* -o -name *bedrock*spec*)",
+      "Bash(echo \"USER_TYPE=$USER_TYPE\")",
+      "Bash(echo \"RAYU_USE_BEDROCK=$RAYU_USE_BEDROCK\")",
+      "Bash(echo \"RAYU_USE_VERTEX=$RAYU_USE_VERTEX\")",
+      "Bash(echo \"RAYU_USE_FOUNDRY=$RAYU_USE_FOUNDRY\")",
+      "Bash(echo \"RAYU_OPENAI_COMPATIBLE=$RAYU_OPENAI_COMPATIBLE\")",
+      "Bash(grep -rn \"200[ _]*000\\\\|200k\\\\|getContextWindowForModel\" /home/rayu/rayu-cli/rayu/src/ --include=*.ts --include=*.tsx)",
+      "Bash(node:*)",
+      "Bash(git rm:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(git rebase:*)",
+      "Bash(npx prisma:*)",
+      "Bash(DATABASE_URL=\"mysql://rayu:rayu_app_local@127.0.0.1:3306/rayu\" npx prisma db execute --url \"mysql://rayu:rayu_app_local@127.0.0.1:3306/rayu\" --stdin <<'SQL':*)",
+      "Bash(2)",
+      "Bash(cat /home/rayu/rayu-cli/rayu-gateway/internal/server/*.go)",
+      "Bash(git tag:*)",
+      "WebFetch(domain:coolify.io)",
+      "Bash(python3:*)",
+      "Bash(sshpass:*)",
+      "Bash(~/.kimi-webbridge/bin/kimi-webbridge status:*)",
+      "Bash(ls:*)",
+      "Bash(curl:*)",
+      "Read(//home/rayu/.claude/**)",
+      "Read(//home/rayu/**)",
+      "Bash(env)",
+      "Bash(PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=\"yes\" npm run test:e2e)",
+      "Bash(gh repo:*)",
+      "Bash(git revert:*)",
+      "Bash(git checkout:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(echo \"exit: $?\")",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}
