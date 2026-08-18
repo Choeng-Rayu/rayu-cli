@@ -2,6 +2,9 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.5.17 - 2026-07-31
+- Fixed a bug where credits were being double-counted, and corrected the credit calculation logic so paid-plan usage is counted exactly once
+
 ## 1.5.11 - 2026-07-30
 - Fixed a bug where Rayu CLI would hang/stuck when running inside the default macOS Terminal app — Enter and several modified key events were not being delivered when the `modifiers-napi` dependency was absent
 
