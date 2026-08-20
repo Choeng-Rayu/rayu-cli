@@ -2259,13 +2259,17 @@ function PromptInput({
       {swarmBanner ? <>
           <Text color={swarmBanner.bgColor}>
             {swarmBanner.text ? <>
-                {'─'.repeat(Math.max(0, columns - stringWidth(swarmBanner.text) - 4))}
+                {'─'.repeat(Math.max(0, columns - stringWidth(swarmBanner.text) - stringWidth(getShortModelName(mainLoopModel)) - 7))}
+                <Text dimColor>{' '}{getShortModelName(mainLoopModel)}{' '}</Text>
                 <Text backgroundColor={swarmBanner.bgColor} color="inverseText">
                   {' '}
                   {swarmBanner.text}{' '}
                 </Text>
                 {'──'}
-              </> : '─'.repeat(columns)}
+              </> : <>
+                {'─'.repeat(Math.max(0, columns - stringWidth(getShortModelName(mainLoopModel)) - 3))}
+                <Text dimColor>{' '}{getShortModelName(mainLoopModel)}{' '}</Text>
+              </>}
           </Text>
           <Box flexDirection="row" width="100%">
             <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
