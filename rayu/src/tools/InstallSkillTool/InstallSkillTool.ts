@@ -90,6 +90,9 @@ export const InstallSkillTool = buildTool({
       ? `Installing skill from ${input.source}`
       : 'Installing skill'
   },
+  renderToolUseMessage(input: Partial<Input>) {
+    return input.source ?? ''
+  },
   // Installing a skill writes executable instructions into ~/.rayu/skills and
   // changes what the model can do — gate it behind the permission system.
   async checkPermissions(_input): Promise<PermissionResult> {
