@@ -1605,15 +1605,14 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
     }
   }
 
-  // Pin the entire rayu-hosted provider's models to the very top of the picker
-  // so the hosted models are always the first choices, regardless of which
-  // provider is active. (Only has an effect when rayu-hosted is configured.)
+  // Pin BOTH Rayu providers' models to the very top of the picker so hosted
+  // models are always the first choices, regardless of which provider is active.
   // The id 'rayu-hosted' (RAYU_HOSTED_PROVIDER_ID) is inlined to avoid a
   // rayuProviders↔rayuConfig import cycle. Stable sort preserves the existing
-  // order within the rayu-hosted group and among all the other entries.
+  // order within each Rayu group and among all the other entries.
   out.sort((a, b) => {
-    const ra = a.providerId === 'rayu-hosted' ? 0 : 1
-    const rb = b.providerId === 'rayu-hosted' ? 0 : 1
+    const ra = a.providerId === 'rayu-hosted' ? 0 : a.providerId === RAYU_API_PROVIDER_ID ? 0 : 1
+    const rb = b.providerId === 'rayu-hosted' ? 0 : b.providerId === RAYU_API_PROVIDER_ID ? 0 : 1
     return ra - rb
   })
 
