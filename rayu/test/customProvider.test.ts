@@ -380,3 +380,81 @@ describe('wizard registration', () => {
     expect(supportsMultiApiKey('custom')).toBe(false)
   })
 })
+
+
+describe('per-model image capability override', () => {
+  test('keeps boolean entries in both directions', async () => {
+    const { sanitizeModelSupportsImage } = await import(
+      '../src/utils/customProvider.ts'
+    )
+    expect(
+      sanitizeModelSupportsImage({ 'deepseek-chat': true, 'gpt-4o': false }),
+    ).toEqual({ 'deepseek-chat': true, 'gpt-4o': false })
+  })
+
+  test('drops non-boolean values instead of coercing them', async () => {
+    const { sanitizeModelSupportsImage } = await import(
+      '../src/utils/customProvider.ts'
+    )
+    // Coercing "false" by truthiness would mean "yes, send images" — the exact
+    // 400 this whole feature exists to prevent.
+    expect(
+      sanitizeModelSupportsImage({
+        good: true,
+        stringy: 'false',
+        numeric: 0,
+        nested: { a: 1 },
+        nothing: null,
+      }),
+    ).toEqual({ good: true })
+  })
+
+  test('rejects a model-id key carrying the routing separator', async () => {
+    const { sanitizeModelSupportsImage } = await import(
+      '../src/utils/customProvider.ts'
+    )
+    // A NUL in a key could spoof which provider a request routes to.
+    expect(
+      sanitizeModelSupportsImage({ 'evil\u0000spoof': true, ok: true }),
+    ).toEqual({ ok: true })
+  })
+
+  test('rejects other control characters and illegal id syntax', async () => {
+    const { sanitizeModelSupportsImage } = await import(
+      '../src/utils/customProvider.ts'
+    )
+    expect(
+      sanitizeModelSupportsImage({
+        'has space': true,
+        'tab\there': true,
+        'legal-id_v2.1:latest': true,
+      }),
+    ).toEqual({ 'legal-id_v2.1:latest': true })
+  })
+
+  test('returns undefined when nothing usable remains, so the key is omitted', async () => {
+    const { sanitizeModelSupportsImage } = await import(
+      '../src/utils/customProvider.ts'
+    )
+    expect(sanitizeModelSupportsImage({})).toBeUndefined()
+    expect(sanitizeModelSupportsImage({ bad: 'nope' })).toBeUndefined()
+    expect(sanitizeModelSupportsImage(undefined)).toBeUndefined()
+    expect(sanitizeModelSupportsImage(null)).toBeUndefined()
+    expect(sanitizeModelSupportsImage([1, 2])).toBeUndefined()
+    expect(sanitizeModelSupportsImage('a string')).toBeUndefined()
+  })
+
+  test('a hand-edited providers.json entry survives a load round-trip', async () => {
+    const { sanitizeModelSupportsImage } = await import(
+      '../src/utils/customProvider.ts'
+    )
+    // The shape loadRayuConfig sanitizes on read.
+    const provider = {
+      id: 'my-endpoint',
+      kind: 'custom',
+      modelSupportsImage: { 'deepseek-chat': true, 'bad key': false },
+    } as unknown as RayuProvider
+    const clean = sanitizeModelSupportsImage(provider.modelSupportsImage)
+    expect(clean).toEqual({ 'deepseek-chat': true })
+  })
+})

@@ -17,9 +17,25 @@ import {
   unlink,
 } from './telegramConfig.js'
 import {
+  isDefinitelyNonPrivateChat,
+  isPrivateChat,
+  NON_PRIVATE_PAIRING_NOTICE,
+  NON_PRIVATE_REVOKED_NOTICE,
+  updateChatType,
+} from './telegramChatGuard.js'
+import {
+  PollBackoff,
+  reportBridgeStarted,
+  reportBridgeStopped,
+  reportLinkRevoked,
+  reportPollFailure,
+  reportPollSuccess,
+} from './telegramHealth.js'
+import {
   answerCallbackQuery,
   downloadFileAsBase64,
   editMessageText,
+  escapeHtml,
   getFile,
   getUpdates,
   isHostedMode,
@@ -45,6 +61,32 @@ import {
   isConnectSessionActive,
 } from './telegramConnect.js'
 import { StreamingMirror } from './streamingMirror.js'
+import {
+  formatSessionList,
+  handleStatusCommand,
+  handleSwitchCommand,
+  listSessionViews,
+} from './telegramSessions.js'
+import { attachedSessionId } from './telegramAttach.js'
+import {
+  describeRouteFailure,
+  routePrompt,
+  type IpcPromptPayload,
+} from './telegramRouter.js'
+import { setLeaderLinkHooks } from './telegramLeaderLink.js'
+import {
+  startSnapshotPublishing,
+  stopSnapshotPublishing,
+} from './telegramSnapshot.js'
+import {
+  handleUninstallCallback,
+  handleUninstallCommand,
+} from './telegramUninstall.js'
+import {
+  describeUninstallRun,
+  isUninstallInProgress,
+  readUninstallRun,
+} from '../cli/uninstall/uninstallState.js'
 import { buildImageQueueCommand, collectAlbumImage } from './telegramMedia.js'
 import { getHostedFile } from './telegramHostedApi.js'
 import {
@@ -65,7 +107,8 @@ import {
   showStopCard,
 } from './telegramInterrupt.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
-import { enqueue } from '../utils/messageQueueManager.js'
+import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
+import type { Command } from '../types/command.js'
 
 export interface TelegramBridgeOptions {
   token: string
@@ -135,23 +178,86 @@ export function buildTelegramCommandAliases(names: string[]): Map<string, string
   return aliases
 }
 
-/** Cached per process: the command registry is loaded once. */
-let commandAliasesPromise: Promise<Map<string, string>> | null = null
+/**
+ * Whether a command must be refused when it arrives from Telegram.
+ *
+ * DERIVED, NOT LISTED (T-8). This replaced a hand-maintained set of ~57 command
+ * names, which had two failure modes: a newly added terminal-only command was
+ * unblocked by default (it would render a React dialog in the terminal and stall
+ * the REPL queue until someone physically pressed ESC), and the list had already
+ * drifted — it named commands that no longer exist in this build while missing 13
+ * that declare `supportsNonInteractive: false`.
+ *
+ * Three rules, in order of how strong the signal is:
+ *  1. `local-jsx` — renders interactive terminal UI. This IS the queue-blocking
+ *     property, so it is the property we test.
+ *  2. `local` with `supportsNonInteractive === false` — the command itself
+ *     declares that it needs an interactive session.
+ *  3. A tiny explicit set for commands that are technically runnable but would
+ *     break the bridge carrying them (see TELEGRAM_SEMANTIC_HAZARDS).
+ *
+ * `prompt` commands (skills) and non-interactive `local` commands are allowed:
+ * they produce text and return, which is exactly what a chat can render.
+ */
+export function isBlockedFromTelegram(cmd: Command): boolean {
+  if (TELEGRAM_SEMANTIC_HAZARDS.has(cmd.name)) return true
+  if (cmd.type === 'local-jsx') return true
+  if (cmd.type === 'local' && cmd.supportsNonInteractive === false) return true
+  return false
+}
 
-function loadCommandAliases(): Promise<Map<string, string>> {
-  if (!commandAliasesPromise) {
-    commandAliasesPromise = (async () => {
+/**
+ * Commands that are structurally fine to run headless but semantically unsafe
+ * from Telegram.
+ *
+ * `logout` destroys the Rayu session that the HOSTED transport authenticates
+ * with, so running it from Telegram would tear down the connection carrying the
+ * command — the user would see the bridge die with no explanation and no way to
+ * recover it remotely. It has to be done at the terminal.
+ */
+export const TELEGRAM_SEMANTIC_HAZARDS: ReadonlySet<string> = new Set([
+  'logout',
+  // Grants THIS chat the capability to wipe the machine. If it were reachable
+  // from Telegram, the chat could raise its own privileges and every other
+  // control on the uninstall path would be decoration. Terminal only.
+  'telegram-remote-uninstall',
+])
+
+/**
+ * What the bridge needs from the command registry: the Telegram-safe-name →
+ * real-name map, and which real names are refused. Both come from one registry
+ * load.
+ */
+interface TelegramCommandPolicy {
+  aliases: Map<string, string>
+  blocked: Set<string>
+}
+
+/** Cached per process: the command registry is loaded once. */
+let commandPolicyPromise: Promise<TelegramCommandPolicy> | null = null
+
+function loadCommandPolicy(): Promise<TelegramCommandPolicy> {
+  if (!commandPolicyPromise) {
+    commandPolicyPromise = (async () => {
       try {
         const { getCommands } = await import('../commands.js')
         const { getCwd } = await import('../utils/cwd.js')
-        return buildTelegramCommandAliases((await getCommands(getCwd())).map(c => c.name))
+        const commands = await getCommands(getCwd())
+        return {
+          aliases: buildTelegramCommandAliases(commands.map(c => c.name)),
+          blocked: new Set(
+            commands.filter(isBlockedFromTelegram).map(c => c.name),
+          ),
+        }
       } catch {
-        // Registry unavailable — fall back to using names verbatim.
-        return new Map<string, string>()
+        // Registry unavailable — use names verbatim and block nothing. The REPL
+        // still refuses unknown commands, so this degrades to "no autocomplete
+        // translation" rather than to "anything goes".
+        return { aliases: new Map<string, string>(), blocked: new Set<string>() }
       }
     })()
   }
-  return commandAliasesPromise
+  return commandPolicyPromise
 }
 
 /** Extract image blocks from WrappedMessage content for Telegram sendPhoto. */
@@ -221,25 +327,6 @@ function extractVideos(message: WrappedMessage): VideoBlock[] {
 }
 
 /**
- * Commands that render interactive React UI (local-jsx type) and would block
- * the REPL's message queue if triggered from Telegram. These require physical
- * terminal interaction (ESC, arrow keys, Enter) to dismiss.
- * Excluded: /connect, /model — these have custom Telegram inline keyboard handlers.
- */
-const TELEGRAM_BLOCKED_COMMANDS = new Set([
-  'add-dir', 'agents', 'branch', 'brief', 'btw', 'chrome', 'color',
-  'config', 'context', 'copy', 'desktop', 'diff', 'doctor', 'effort',
-  'exit', 'export', 'extra-usage', 'fast', 'feedback', 'help', 'hooks',
-  'ide', 'install', 'install-github-app', 'login', 'logout', 'mcp',
-  'memory', 'mobile', 'output-style', 'passes', 'permissions', 'plan',
-  'plugin', 'privacy-settings', 'rate-limit-options', 'remote-control',
-  'remote-env', 'rename', 'resume', 'sandbox', 'session', 'skills',
-  'stats', 'status', 'tag', 'tasks', 'telegram-bot', 'terminal-setup',
-  'theme', 'think-back', 'ultraplan', 'ultrareview', 'upgrade', 'usage',
-  'web-setup',
-])
-
-/**
  * Download an inbound Telegram file and return it as base64.
  *
  * Two transports: in hosted (shared bot) mode the CLI has no bot token, so the
@@ -303,12 +390,17 @@ async function handleUpdate(
     //   perm: — permission decisions
     // Anything else falls through to the wizard handler, which always calls
     // answerCallbackQuery first (dismisses the spinner unconditionally) and
-    // returns false for unknown data — so adding further namespaces there
-    // (mdl:, cnx:, …) still requires no change here.
+    // returns false for unknown data — so adding a further namespace there
+    // (cnx:, …) still requires no change here. Note /model has no namespace at
+    // all: it renders a copyable text catalog rather than a keyboard.
     if (await handleQuestionCallback(options.token, chatId, cq.id, data)) return
     if (await handlePlanCallback(options.token, chatId, cq.id, data)) return
     if (await handleInterruptCallback(options.token, chatId, cq.id, data)) return
     if (await handlePermissionCallback(options.token, chatId, cq.id, data)) return
+    if (await handleUninstallCallback(options.token, chatId, data)) {
+      await answerCallbackQuery(options.token, cq.id)
+      return
+    }
     await handleCallbackQuery(options.token, cq.id, chatId, data)
     return
   }
@@ -319,6 +411,18 @@ async function handleUpdate(
   const chatId = message.chat.id
   const username = message.from?.username ?? message.chat.username
   const text = message.text ?? message.caption ?? ''
+
+  // T-1: retire a link whose chat is definitively not private. Covers links made
+  // before this rule existed and a private chat later migrated to a supergroup.
+  // Checked before anything else so a group can never reach the REPL queue.
+  if (
+    isDefinitelyNonPrivateChat(updateChatType(update)) &&
+    chatId === linkedChatId()
+  ) {
+    unlink()
+    await sendMessage(options.token, chatId, NON_PRIVATE_REVOKED_NOTICE)
+    return
+  }
 
   // ---- Handle photo messages ----
   if (message.photo && message.photo.length > 0) {
@@ -343,8 +447,12 @@ async function handleUpdate(
         caption: text,
         image,
         onFlush: command => {
-          enqueue(command)
-          void sendMessage(options.token, chatId, '📎 Images received — working on it.')
+          void deliverMediaToSession(
+            options.token,
+            chatId,
+            command,
+            '📎 Images received — working on it.',
+          )
         },
       })
       return
@@ -352,8 +460,12 @@ async function handleUpdate(
 
     const command = buildImageQueueCommand(text, [image])
     if (!command) return
-    enqueue(command)
-    await sendMessage(options.token, chatId, '📎 Image received — working on it.')
+    await deliverMediaToSession(
+      options.token,
+      chatId,
+      command,
+      '📎 Image received — working on it.',
+    )
     return
   }
 
@@ -384,8 +496,12 @@ async function handleUpdate(
       },
     ])
     if (!command) return
-    enqueue(command)
-    await sendMessage(options.token, chatId, '📎 Sticker received — working on it.')
+    await deliverMediaToSession(
+      options.token,
+      chatId,
+      command,
+      '📎 Sticker received — working on it.',
+    )
     return
   }
 
@@ -420,8 +536,12 @@ async function handleUpdate(
       },
     ])
     if (!command) return
-    enqueue(command)
-    await sendMessage(options.token, chatId, '📎 Image received — working on it.')
+    await deliverMediaToSession(
+      options.token,
+      chatId,
+      command,
+      '📎 Image received — working on it.',
+    )
     return
   }
 
@@ -430,10 +550,16 @@ async function handleUpdate(
 
   const { cmd, arg } = parseCommand(text)
 
-  // Pairing commands work from any chat.
+  // Pairing commands work from any PRIVATE chat.
   if (cmd === '/link' || cmd === '/start') {
     if (!arg) {
       await sendMessage(options.token, chatId, 'Send /link <token> with the token from `/telegram-bot`.')
+      return
+    }
+    // T-1: refuse before the token is consumed, so a group attempt neither burns
+    // the token nor reveals whether it was valid.
+    if (!isPrivateChat(updateChatType(update))) {
+      await sendMessage(options.token, chatId, NON_PRIVATE_PAIRING_NOTICE)
       return
     }
     const bound = consumePendingToken(arg, chatId, username)
@@ -509,17 +635,66 @@ async function handleUpdate(
     return
   }
 
+  // Session management. Answered by the bridge itself (the leader) rather than
+  // queued into a REPL, because they describe ALL local sessions — no single
+  // session could answer them.
+  if (cmd === '/sessions') {
+    const views = await listSessionViews(attachedSessionId())
+    await sendMessage(options.token, chatId, formatSessionList(views), 'HTML')
+    return
+  }
+
+  if (cmd === '/switch') {
+    await handleSwitchCommand(options.token, chatId, arg)
+    return
+  }
+
+  if (cmd === '/status') {
+    await handleStatusCommand(options.token, chatId)
+    return
+  }
+
+  // Device lifecycle. A TYPED operation (UNINSTALL_RAYU{deviceId}) — never a
+  // command string. Handled by the leader before the REPL queue so a teardown
+  // cannot be queued behind a running turn.
+  if (cmd === '/uninstall') {
+    await handleUninstallCommand(
+      options.token,
+      chatId,
+      message.from?.id ?? 0,
+      arg,
+    )
+    return
+  }
+
+  // While a teardown is running, refuse everything except progress. Placed after
+  // /uninstall (which reports progress itself) and before every other command so
+  // a queued prompt cannot race files being deleted underneath it.
+  if (isUninstallInProgress()) {
+    const run = readUninstallRun()
+    await sendMessage(
+      options.token,
+      chatId,
+      run
+        ? `⏳ RAYU is being uninstalled — commands are disabled.\n\n<pre>${escapeHtml(describeUninstallRun(run))}</pre>`
+        : '⏳ RAYU is being uninstalled — commands are disabled.',
+      'HTML',
+    )
+    return
+  }
+
   // Other slash commands → REPL command queue.
   // Block local-jsx commands that require terminal interaction (pickers, dialogs).
   // These would render a React UI in the terminal and block the message queue
   // until someone physically presses ESC/Enter at the terminal.
   if (text.startsWith('/')) {
     // Translate the Telegram-safe name back to the real command before both the
-    // blocked-list check and the enqueue — the blocked list holds real names, and
-    // the REPL can only resolve real names.
+    // blocked check and the enqueue — the policy is keyed on real names, and the
+    // REPL can only resolve real names.
     const typed = cmd.slice(1).toLowerCase()
-    const cmdName = (await loadCommandAliases()).get(typed) ?? typed
-    if (TELEGRAM_BLOCKED_COMMANDS.has(cmdName)) {
+    const policy = await loadCommandPolicy()
+    const cmdName = policy.aliases.get(typed) ?? typed
+    if (policy.blocked.has(cmdName)) {
       await sendMessage(
         options.token,
         chatId,
@@ -527,15 +702,59 @@ async function handleUpdate(
       )
       return
     }
-    enqueue({ value: arg ? `/${cmdName} ${arg}` : `/${cmdName}`, mode: 'prompt' })
-    void showStopCard(options.token, chatId)
+    await deliverToSession(
+      options.token,
+      chatId,
+      { value: arg ? `/${cmdName} ${arg}` : `/${cmdName}`, mode: 'prompt' },
+    )
     return
   }
 
-  // Plain text → new REPL turn.
-  enqueue({ value: text, mode: 'prompt' })
-  // Give the user a one-tap way out while the turn runs. Cleared on endTurn.
-  void showStopCard(options.token, chatId)
+  // Plain text → new REPL turn in the attached session.
+  await deliverToSession(options.token, chatId, { value: text, mode: 'prompt' })
+}
+
+/**
+ * Hand an image-bearing command to the attached session.
+ *
+ * Split from deliverToSession because the confirmation wording differs per media
+ * type and because these carry base64 content blocks rather than text — the
+ * payload that MAX_FRAME_BYTES is sized for. No stop card: the confirmation
+ * message already tells the user work has started, and the turn's own stop card
+ * appears when the session begins streaming.
+ */
+async function deliverMediaToSession(
+  token: string,
+  chatId: number,
+  command: { value: string | ContentBlockParam[]; mode?: string },
+  confirmation: string,
+): Promise<void> {
+  const result = await routePrompt({ value: command.value, mode: 'prompt' })
+  await sendMessage(
+    token,
+    chatId,
+    result.kind === 'delivered' ? confirmation : describeRouteFailure(result),
+  )
+}
+
+/**
+ * Hand a prompt to the attached session and report the outcome.
+ *
+ * The stop card is only shown once delivery SUCCEEDS — offering "⛔ Stop" for a
+ * turn that was never started would be a lie, and tapping it would report
+ * "nothing running" a moment later.
+ */
+async function deliverToSession(
+  token: string,
+  chatId: number,
+  payload: IpcPromptPayload,
+): Promise<void> {
+  const result = await routePrompt(payload)
+  if (result.kind !== 'delivered') {
+    await sendMessage(token, chatId, describeRouteFailure(result))
+    return
+  }
+  void showStopCard(token, chatId)
 }
 
 /**
@@ -552,6 +771,9 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
     // Built-in bridge commands always included (these come first).
     const builtins = [
       { command: 'interrupt', description: 'Stop the AI right now (like pressing Esc)' },
+      { command: 'sessions', description: 'List your open rayu-cli sessions' },
+      { command: 'switch', description: 'Drive a different session (/switch <n>)' },
+      { command: 'status', description: 'Show which session Telegram is driving' },
       { command: 'connect', description: 'Connect a provider and select a model' },
       { command: 'model', description: 'Show or set the active model (/model <name>)' },
       { command: 'provider', description: 'Show all configured providers' },
@@ -560,6 +782,10 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
 
     const fromCli = allCommands
       .filter(cmd => !cmd.isHidden)
+      // Don't advertise what we would only refuse. Offering a terminal-only
+      // command in autocomplete and then rejecting the tap is worse than not
+      // listing it, and it also frees slots against Telegram's 100-command cap.
+      .filter(cmd => !isBlockedFromTelegram(cmd))
       .map(cmd => ({
         command: toTelegramCommandName(cmd.name),
         description: (cmd.description || cmd.name).slice(0, 256),
@@ -778,6 +1004,36 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
   let running = true
   let offset = 0
   const permissionCallbacks = createTelegramPermissionCallbacks(options.token)
+  const backoff = new PollBackoff()
+
+  /**
+   * Interruptible sleep for the poll backoff. Keeping both the handle and the
+   * resolver means stop() can cancel a pending wait instead of leaving the loop
+   * parked for up to 60 s after the session has already closed — and cancelling
+   * RESOLVES the promise, so the loop wakes, sees `running === false`, and exits
+   * rather than hanging on a timer that will never fire.
+   */
+  let backoffTimer: ReturnType<typeof setTimeout> | null = null
+  let backoffResolve: (() => void) | null = null
+  const delay = (ms: number): Promise<void> =>
+    new Promise<void>(resolve => {
+      const settle = (): void => {
+        backoffTimer = null
+        backoffResolve = null
+        resolve()
+      }
+      backoffResolve = settle
+      backoffTimer = setTimeout(settle, ms)
+      try {
+        ;(backoffTimer as unknown as { unref(): void }).unref()
+      } catch {
+        // Not available in all runtimes — safe to ignore.
+      }
+    })
+  const cancelBackoff = (): void => {
+    if (backoffTimer) clearTimeout(backoffTimer)
+    backoffResolve?.()
+  }
 
   // Per-turn streaming mirror — created on startTurn(), finalized on endTurn().
   let mirror: StreamingMirror | null = null
@@ -801,27 +1057,52 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
 
   // Register CLI commands with Telegram so they appear as autocomplete.
   void registerCommandsWithTelegram(options.token)
-  // Warm the reverse alias map so the first inbound /command doesn't have to wait
-  // on the registry load.
-  void loadCommandAliases()
+  // Warm the reverse alias map + blocked set so the first inbound /command
+  // doesn't have to wait on the registry load.
+  void loadCommandPolicy()
 
   const poll = async (): Promise<void> => {
+    // T-4: every failure path used to return an empty array, so this loop had no
+    // awaited delay on failure — a down backend produced a tight spin that
+    // hammered it and burned CPU. Failures are now typed and backed off.
+    reportBridgeStarted()
     while (running) {
-      const updates = await getUpdates(options.token, offset)
-      for (const update of updates) {
-        offset = Math.max(offset, update.update_id + 1)
-        if (!running) break
-        try {
-          await handleUpdate(update, options)
-        } catch {
-          // one bad update must not kill the loop
+      const outcome = await getUpdates(options.token, offset)
+      if (!running) break
+
+      if (outcome.kind === 'ok') {
+        backoff.reset()
+        reportPollSuccess()
+        for (const update of outcome.updates) {
+          offset = Math.max(offset, update.update_id + 1)
+          if (!running) break
+          try {
+            await handleUpdate(update, options)
+          } catch {
+            // one bad update must not kill the loop
+          }
         }
+        continue
       }
+
+      // T-6: the backend says this account has no linked chat. Retrying cannot
+      // change that, so stop polling and drop the stale local binding — otherwise
+      // the CLI keeps claiming a live connection to a link that is gone. Handled
+      // before reportPollFailure so the failure is counted exactly once.
+      if (outcome.kind === 'unlinked') {
+        reportLinkRevoked()
+        unlink()
+        running = false
+        break
+      }
+
+      reportPollFailure(outcome.kind)
+      await delay(backoff.nextDelayMs(outcome.retryAfterMs))
     }
   }
   void poll()
 
-  return {
+  const handle: TelegramBridgeHandle = {
     isNoOp: false,
     permissionCallbacks,
 
@@ -926,8 +1207,40 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
 
     stop(): void {
       running = false
+      // Wake a parked backoff so the poll loop exits now instead of after the
+      // remaining delay (which can be up to 60 s).
+      cancelBackoff()
       clearInterval(heartbeatTimer)
       releaseBridgeLock()
+      // Drop the cross-process link and tell the attached session it is no
+      // longer driving the chat, so it stops forwarding permission cards into
+      // a transport that has gone away.
+      setLeaderLinkHooks(null)
+      stopSnapshotPublishing()
+      reportBridgeStopped()
     },
   }
+
+  // Give the leader link the bridge's own mirroring + permission machinery, so a
+  // remote session's turns and cards render through exactly the same code as a
+  // local session's.
+  setLeaderLinkHooks({
+    permissionCallbacks,
+    startTurn: () => handle.startTurn(),
+    onTextDelta: delta => handle.onTextDelta(delta),
+    onThinkingDelta: delta => handle.onThinkingDelta(delta),
+    endTurn: () => handle.endTurn(),
+    pushActivity: messages => handle.pushActivity(messages),
+    notifyChat: text => {
+      const chatId = linkedChatId()
+      if (chatId === undefined) return
+      void sendMessage(options.token, chatId, text).catch(() => {})
+    },
+  })
+
+  // Publish the session list for the Mini App. Leader-only: this process already
+  // knows which session is attached, and N publishers would race on one row.
+  startSnapshotPublishing()
+
+  return handle
 }

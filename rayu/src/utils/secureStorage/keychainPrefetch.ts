@@ -27,10 +27,16 @@ import {
   CREDENTIALS_SERVICE_SUFFIX,
   getMacOsKeychainStorageServiceName,
   getUsername,
+  KEYCHAIN_LOCK_CHECK_TIMEOUT_MS,
+  KEYCHAIN_LOCKED_EXIT_CODE,
   primeKeychainCacheFromPrefetch,
 } from './macOsKeychainHelpers.js'
 
-const KEYCHAIN_PREFETCH_TIMEOUT_MS = 10_000
+// `security` on an unlocked, ACL-clear keychain answers in well under a
+// second. A read still running after this bound is waiting on an interactive
+// prompt (unlock/ACL consent) — there is no value in waiting longer, and the
+// sync fallback path is bounded by the same duration.
+const KEYCHAIN_PREFETCH_TIMEOUT_MS = 5_000
 
 // Shared with auth.ts getApiKeyFromConfigOrMacOSKeychain() so it can skip its
 // sync spawn when the prefetch already landed. Distinguishing "not started" (null)
@@ -63,29 +69,60 @@ function spawnSecurity(serviceName: string): Promise<SpawnResult> {
 }
 
 /**
+ * Probe whether the login keychain is locked (`security show-keychain-info`
+ * exit code 36). Cheap and non-interactive — it never triggers a prompt.
+ * Fails OPEN (false) on any error/timeout: worst case the password reads
+ * proceed and their own bounded timeout applies.
+ */
+function spawnShowKeychainInfo(): Promise<boolean> {
+  return new Promise(resolve => {
+    execFile(
+      'security',
+      ['show-keychain-info'],
+      { encoding: 'utf-8', timeout: KEYCHAIN_LOCK_CHECK_TIMEOUT_MS },
+      err => {
+        // biome-ignore lint/nursery/noFloatingPromises: resolve() is not a floating promise
+        resolve(
+          err != null &&
+            'code' in err &&
+            err.code === KEYCHAIN_LOCKED_EXIT_CODE,
+        )
+      },
+    )
+  })
+}
+
+/**
  * Fire both keychain reads in parallel. Called at main.tsx top-level
  * immediately after startMdmRawRead(). Non-darwin is a no-op.
  */
 export function startKeychainPrefetch(): void {
   if (process.platform !== 'darwin' || prefetchPromise || isBareMode()) return
 
-  // Fire both subprocesses immediately (non-blocking). They run in parallel
-  // with each other AND with main.tsx imports. The await in Promise.all
-  // happens later via ensureKeychainPrefetchCompleted().
+  // Fire all three subprocesses immediately (non-blocking). They run in
+  // parallel with each other AND with main.tsx imports. The await happens
+  // later via ensureKeychainPrefetchCompleted().
   const oauthSpawn = spawnSecurity(
     getMacOsKeychainStorageServiceName(CREDENTIALS_SERVICE_SUFFIX),
   )
   const legacySpawn = spawnSecurity(getMacOsKeychainStorageServiceName())
+  const lockedSpawn = spawnShowKeychainInfo()
 
-  prefetchPromise = Promise.all([oauthSpawn, legacySpawn]).then(
-    ([oauth, legacy]) => {
-      // Timed-out prefetch: don't prime. Sync read/spawn will retry with its
-      // own (longer) timeout. Priming null here would shadow a key that the
-      // sync path might successfully fetch.
-      if (!oauth.timedOut) primeKeychainCacheFromPrefetch(oauth.stdout)
-      if (!legacy.timedOut) legacyApiKeyPrefetch = { stdout: legacy.stdout }
-    },
-  )
+  prefetchPromise = (async (): Promise<void> => {
+    // LOCKED login keychain (SSH sessions, lock-on-sleep): the password reads
+    // above are blocking on an interactive unlock prompt the user may never
+    // see. Waiting them out stalled `rayu` at launch on macOS. Resolve
+    // immediately without priming — the sync read path performs the same lock
+    // check and skips its own spawn, so startup proceeds on the plaintext
+    // fallback instead of freezing.
+    if (await lockedSpawn) return
+    const [oauth, legacy] = await Promise.all([oauthSpawn, legacySpawn])
+    // Timed-out prefetch: don't prime. Sync read/spawn will retry with its
+    // own (same-length) timeout. Priming null here would shadow a key that
+    // the sync path might successfully fetch.
+    if (!oauth.timedOut) primeKeychainCacheFromPrefetch(oauth.stdout)
+    if (!legacy.timedOut) legacyApiKeyPrefetch = { stdout: legacy.stdout }
+  })()
 }
 
 /**

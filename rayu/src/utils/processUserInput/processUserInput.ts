@@ -52,6 +52,10 @@ import {
   createSystemMessage,
   createUserMessage,
 } from '../messages.js'
+import {
+  imageDroppedWarning,
+  resolveImageSupport,
+} from '../model/imageCapability.js'
 import { queryCheckpoint } from '../queryProfiler.js'
 import { parseSlashCommand } from '../slashCommandParsing.js'
 import {
@@ -424,7 +428,7 @@ async function processUserInputBase(
     }),
   )
   // Collect results preserving order
-  const imageContentBlocks: ContentBlockParam[] = []
+  let imageContentBlocks: ContentBlockParam[] = []
   for (const {
     resized,
     originalDimensions,
@@ -455,6 +459,27 @@ async function processUserInputBase(
     imageContentBlocks.push(resized.block)
   }
   queryCheckpoint('query_pasted_image_processing_end')
+
+  // The active model may be text-only (deepseek-chat and friends). Sending the
+  // image would either 400 and lose the whole turn, or — for a provider with
+  // supportsImage:false — be dropped silently in the adapter, leaving the user
+  // convinced the model saw it. Drop it HERE instead and say so in yellow.
+  //
+  // Done once per submit, so a multi-request turn warns exactly once. The
+  // `[Image source: …]` metadata text is deliberately KEPT: the path lets the
+  // model still act on the file via Bash/Read even though it cannot see it.
+  let imageDropWarning: string | null = null
+  if (imageContentBlocks.length > 0) {
+    const activeModel = context.options.mainLoopModel
+    if (resolveImageSupport(activeModel) === 'no') {
+      imageDropWarning = imageDroppedWarning(activeModel ?? 'unknown')
+      logEvent('tengu_image_dropped_text_only_model', {
+        imageCount: imageContentBlocks.length,
+        proactive: true,
+      })
+      imageContentBlocks = []
+    }
+  }
 
   // Bridge-safe slash command override: mobile/web clients set bridgeOrigin
   // with skipSlashCommands still true (defense-in-depth against exit words and
@@ -526,7 +551,11 @@ async function processUserInputBase(
       isAlreadyProcessing,
       canUseTool,
     )
-    return addImageMetadataMessage(slashResult, imageMetadataTexts)
+    return addImageMetadataMessage(
+      slashResult,
+      imageMetadataTexts,
+      imageDropWarning,
+    )
   }
 
   // For slash commands, attachments will be extracted within getMessagesForSlashCommand
@@ -562,6 +591,7 @@ async function processUserInputBase(
         setToolJSX,
       ),
       imageMetadataTexts,
+      imageDropWarning,
     )
   }
 
@@ -584,7 +614,11 @@ async function processUserInputBase(
       isAlreadyProcessing,
       canUseTool,
     )
-    return addImageMetadataMessage(slashResult, imageMetadataTexts)
+    return addImageMetadataMessage(
+      slashResult,
+      imageMetadataTexts,
+      imageDropWarning,
+    )
   }
 
   // Log agent mention queries for analysis
@@ -622,6 +656,7 @@ async function processUserInputBase(
       isMeta,
     ),
     imageMetadataTexts,
+    imageDropWarning,
   )
 }
 
@@ -629,7 +664,14 @@ async function processUserInputBase(
 function addImageMetadataMessage(
   result: ProcessUserInputBaseResult,
   imageMetadataTexts: string[],
+  imageDropWarning?: string | null,
 ): ProcessUserInputBaseResult {
+  // Yellow, user-visible, exactly once per submit — every return path in
+  // processUserInput funnels through here, so this is the one place it can be
+  // attached without risking a duplicate.
+  if (imageDropWarning) {
+    result.messages.push(createSystemMessage(imageDropWarning, 'warning'))
+  }
   if (imageMetadataTexts.length > 0) {
     result.messages.push(
       createUserMessage({

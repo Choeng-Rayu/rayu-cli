@@ -29,6 +29,7 @@ RAYU is designed to be a **universal AI coding assistant** that works with any A
 7. **State Management**: Zustand-like stores for managing complex application state
 8. **Image/Video Generation**: Built-in tools for generating images and videos via AI models
 9. **Billing Integration**: Optional rayu-backend integration for centralized billing and management
+10. **External Agent Orchestration**: Launch, adopt, assign work to and stream OTHER agentic CLIs (Codex, Claude Code, OpenCode, any ACP agent) as capability-gated plugins — `/agent` and the `ExternalAgent` tool
 
 ### Technical Architecture
 
@@ -494,6 +495,98 @@ only the mechanics.
 
 **This is OPTIONAL — RAYU can run fully offline with direct API keys.**
 
+### External Agent Orchestrator
+
+**RAYU can drive OTHER agentic CLIs** — Codex, Claude Code, OpenCode, and any
+agent speaking the Agent Client Protocol — as plugins it launches, adopts,
+assigns work to, and streams. This is what makes RAYU an orchestrator rather
+than just another agent. Gated by `feature('EXTERNAL_AGENTS')`.
+
+**Surfaces:** `/agent` (user) and the `ExternalAgent` tool (model). Work becomes
+a real `external_agent` Task, so the EXISTING `/tasks` dialog and the
+TaskOutput / TaskGet / TaskList / TaskStop tools already work on it.
+
+#### The capability model — read this before touching an adapter
+
+An adapter is **not** a fixed set of mandatory methods. Five axes
+(`terminal`, `messages`, `sessions`, `process`, `permissions`) each carry a
+LEVEL (`none` | `observe` | `message` | `full`), and an optional method is how an
+adapter says "cannot".
+
+Three rules that are easy to get wrong:
+
+1. **A method that always throws is banned — lower the capability instead.** A
+   throwing stub is a lie that surfaces mid-task. If Claude Code cannot resume a
+   session from a live handle, its `sessions` level is `observe` and
+   `resumeSession` does not exist.
+2. **`handle.capabilities` is PER-INSTANCE and may be lower than
+   `adapter.capabilityCeiling`.** The ceiling describes a RAYU-launched agent;
+   an adopted or observed instance offers less. The ACP adapter derives its level
+   from the `initialize` handshake, because conforming ACP agents genuinely
+   differ.
+3. **Adoption class downgrades capabilities.** `capabilitiesForAdoption` drops
+   an `observable` instance to `messages: 'none'` and caps `terminal` at
+   `'observe'`. It never RAISES anything. This is what keeps `/agent discover`
+   honest instead of aspirational.
+
+Adoption is classified, never assumed: **MANAGED** (RAYU launched it) /
+**ADOPTABLE** (a real control channel exists — Codex `--listen` socket, OpenCode
+HTTP) / **OBSERVABLE** (read its transcript only — Claude Code exposes no
+listener, so adoption is impossible) / **UNKNOWN** (refuses to guess).
+
+#### Four independent states — do not collapse them
+
+`processState` (running) / `connectionState` (connected) / `agentState` (working)
+/ external task state (waiting-provider). A live process can be unreachable; a
+connected agent can be idle while its task waits on a provider. `resolveAdmission`
+in `core/stateMachine.ts` maps (snapshot, capabilities, request) to
+dispatch | steer | queue | resume | relaunch | reject and NEVER throws.
+
+**Task ≠ session.** One agent instance serves many tasks over one native
+session; `ExternalAgentTask.kill` interrupts the TURN, it does not stop the agent.
+
+#### Layer map — `src/externalAgents/`
+
+| Layer | Owns |
+|-------|------|
+| `core/` | types, state machine, admission, AgentManager, registries, event bus/normalizer/sinks, discovery, process scan. Must NOT import the renderer. |
+| `persistence/` | `~/.rayu` agent records, sessions, forensics, workspace leases |
+| `transport/` | JSONL reader, bidirectional JSON-RPC peer, child env allowlist |
+| `adapters/` | `codex/`, `claudeCode/`, `opencode/`, `acp/`, `stub/` + `registry.ts` |
+| `permissions/` | routes a foreign agent's approval into RAYU's own dialog |
+| `workspace/` | per-agent changed files, conflicts, worktree isolation, leases |
+| `orchestration/` | parallel / sequential / race / retry / fallback / reviewAfter |
+| `recovery/` | crash survey, relaunch-with-resume, session install/teardown |
+
+#### Non-obvious invariants (breaking these causes silent, expensive bugs)
+
+- **Registration is explicit, never a module side effect.** A self-registering
+  adapter would defeat `feature()` DCE and pull four CLIs' protocol code into
+  every bundle. Call `registerAdapters()`.
+- **Subscribe to an outcome BEFORE sending the work.** An adapter can answer
+  inside the send call; `orchestration/` splits dispatch into
+  `prepare()` then `start()` for exactly this reason.
+- **`awaitTaskOutcome` must always settle.** It watches task terminal events,
+  `agent_disconnected` (matched on agentId — disconnects carry no taskRef), an
+  abort signal, and an optional timeout. An unsettled promise is
+  indistinguishable from a hung agent.
+- **A race in a shared working tree is REFUSED.** Cancelling a loser stops
+  future work but does not revert edits already written.
+- **Never write a foreign agent's file changes into `pendingFileChanges.ts`.**
+  That store backs `/undo` and needs before-content RAYU cannot know;
+  `workspace/changeTracker.ts` stores metadata only. See its header.
+- **Recovery never relaunches automatically**, and never touches an agent whose
+  `ownerPid` belongs to another live RAYU.
+- **Permissions are brokered only when there is a real reply channel.** Otherwise
+  the user is told to answer in the agent's own terminal. Nothing is written to
+  RAYU's own permission rules.
+- **`buildChildEnv` blocks `*_API_KEY|_SECRET|_TOKEN|...`** even if an adapter
+  asks to forward them. RAYU's credentials never reach a third-party agent, and
+  RAYU's MCP servers are never handed over either.
+
+Configure extra ACP agents with the `RAYU_ACP_AGENTS` env var (JSON array of
+`{provider, command, args?}`). Kill switch: `RAYU_EXTERNAL_AGENTS=0`.
+
 ## Key File Map
 
 | Path | Purpose |
@@ -517,6 +610,10 @@ only the mechanics.
 | `src/types/` | TypeScript type definitions (15+ files) |
 | `src/skills/bundled/` | Bundled skill definitions (20+ skills) |
 | `src/telegram/` | Telegram bridge components |
+| `src/externalAgents/` | External-agent orchestrator: drive Codex / Claude Code / OpenCode / ACP CLIs (core, adapters, orchestration, recovery, workspace, permissions) |
+| `src/commands/agent/` | `/agent` command — user-facing orchestrator surface |
+| `src/tools/ExternalAgentTool/` | `ExternalAgent` tool — model-facing delegate/send/list/orchestrate |
+| `src/tasks/ExternalAgentTask/` | `external_agent` background task type |
 | `src/bridge/` | Bridge abstractions |
 | `src/coordinator/` | Multi-agent coordination |
 | `src/buddy/` | Buddy system |

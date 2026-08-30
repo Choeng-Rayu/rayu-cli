@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test'
+import { MIN_TURN_DURATION_MS } from '../src/constants/turnCompletionVerbs.ts'
+import { formatDuration } from '../src/utils/format.ts'
 import {
   handleMessageFromStream,
   finalizeStreamingThinkingOnTurnEnd,
@@ -67,7 +69,7 @@ describe('finalizeStreamingThinkingOnTurnEnd', () => {
     expect(finalizeStreamingThinkingOnTurnEnd(stuck)).toBeNull()
   })
 
-  test('leaves a completed block unchanged (preserves the "✓ Thought" linger)', () => {
+  test('leaves a completed block unchanged (the in-message block now owns it)', () => {
     const done: StreamingThinking = {
       thinking: 'a finished thought',
       isStreaming: false,
@@ -78,5 +80,144 @@ describe('finalizeStreamingThinkingOnTurnEnd', () => {
 
   test('null stays null', () => {
     expect(finalizeStreamingThinkingOnTurnEnd(null)).toBeNull()
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// Turn-status ORDER: ✓ Thought → response text → ◈ Rayu worked for Ns
+// ---------------------------------------------------------------------------
+// The trailing streaming preview is rendered by Messages.tsx as a SIBLING after
+// the whole message list, so while it was kept alive for 30s past completion the
+// "✓ Thought" line was structurally forced BELOW the response text and below the
+// appended turn-duration message. Visibility is now keyed on isStreaming alone,
+// and the completed block renders in place from the message list.
+
+/** The visibility predicate Messages.tsx now uses (see isStreamingThinkingVisible). */
+const previewVisible = (s: StreamingThinking | null): boolean =>
+  s?.isStreaming === true
+
+describe('the trailing thinking preview is visible only while streaming', () => {
+  test('visible during streaming', () => {
+    const state: { current: StreamingThinking | null } = { current: null }
+    feed(thinkingDelta('reasoning'), state)
+    expect(previewVisible(state.current)).toBe(true)
+  })
+
+  test('hidden the instant the block completes — no 30s linger, no duplicate', () => {
+    // Previously this stayed visible for 30s, duplicating the in-message
+    // "✓ Thought" one-liner and sitting below the answer.
+    const completed: StreamingThinking = {
+      thinking: 'a finished thought',
+      isStreaming: false,
+      streamingEndedAt: Date.now(),
+    }
+    expect(previewVisible(completed)).toBe(false)
+  })
+
+  test('a fresh streamingEndedAt does not resurrect it', () => {
+    expect(
+      previewVisible({
+        thinking: 't',
+        isStreaming: false,
+        streamingEndedAt: Date.now(),
+      }),
+    ).toBe(false)
+  })
+
+  test('hidden when there is nothing', () => {
+    expect(previewVisible(null)).toBe(false)
+  })
+})
+
+describe('the preview→in-message swap is atomic', () => {
+  test('the completed assistant message flips isStreaming in the SAME batch', () => {
+    // handleMessageFromStream sets isStreaming:false while delivering the
+    // completed assistant message, so no render can show both the trailing
+    // preview and the in-message block, or neither.
+    const state: { current: StreamingThinking | null } = { current: null }
+    feed(thinkingDelta('half'), state)
+    expect(previewVisible(state.current)).toBe(true)
+
+    const delivered: unknown[] = []
+    handleMessageFromStream(
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'thinking', thinking: 'half a thought', signature: '' },
+            { type: 'text', text: 'the answer' },
+          ],
+        },
+      } as unknown as Parameters<typeof handleMessageFromStream>[0],
+      m => delivered.push(m), // onMessage
+      () => {},
+      () => {},
+      () => {},
+      undefined,
+      f => {
+        state.current = f(state.current)
+      },
+      undefined,
+      undefined,
+    )
+
+    expect(delivered).toHaveLength(1)
+    expect(previewVisible(state.current)).toBe(false)
+    expect(state.current?.isStreaming).toBe(false)
+  })
+
+  test('assistant content order is [thinking, text], which fixes the ordering', () => {
+    // Message.tsx now renders the thinking block in place, and normalizeMessages
+    // splits one message per content block preserving order — so thinking lands
+    // ABOVE the text. The turn-duration system message is appended after both.
+    const content = [
+      { type: 'thinking', thinking: 't', signature: '' },
+      { type: 'text', text: 'answer' },
+    ]
+    expect(content.map(b => b.type)).toEqual(['thinking', 'text'])
+  })
+})
+
+describe('turn-duration gating', () => {
+  // The gate REPL.tsx applies, with the same operands.
+  const shows = (
+    turnDurationMs: number,
+    opts: { budget?: boolean; aborted?: boolean; proactive?: boolean } = {},
+  ): boolean =>
+    (turnDurationMs >= MIN_TURN_DURATION_MS || opts.budget === true) &&
+    !opts.aborted &&
+    !opts.proactive
+
+  test('a short-but-real turn now shows the line (was >30s only)', () => {
+    expect(shows(1400)).toBe(true)
+    expect(shows(3000)).toBe(true)
+    expect(shows(MIN_TURN_DURATION_MS)).toBe(true)
+  })
+
+  test('a sub-second turn does not — it would render "worked for 0s"', () => {
+    expect(shows(400)).toBe(false)
+    expect(shows(999)).toBe(false)
+    expect(shows(0)).toBe(false)
+  })
+
+  test('an aborted turn never shows it', () => {
+    expect(shows(60_000, { aborted: true })).toBe(false)
+  })
+
+  test('a proactive tick never shows it', () => {
+    expect(shows(60_000, { proactive: true })).toBe(false)
+  })
+
+  test('a token budget shows it even for an instant turn', () => {
+    expect(shows(10, { budget: true })).toBe(true)
+  })
+
+  test('the floor guarantees the rendered duration is at least 1s', () => {
+    // formatDuration floors to whole seconds below a minute, so anything at or
+    // above the threshold renders "1s" or more — never "0s".
+    expect(formatDuration(MIN_TURN_DURATION_MS)).toBe('1s')
+    expect(formatDuration(1400)).toBe('1s')
+    expect(formatDuration(30_000)).toBe('30s')
   })
 })

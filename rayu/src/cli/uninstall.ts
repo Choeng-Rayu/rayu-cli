@@ -1,14 +1,12 @@
 import chalk from 'chalk'
-import { rm } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { getRayuConfigHomeDir } from 'src/utils/envUtils.js'
-import { execNpmSync, buildNpmRemediation, describeNpmError } from 'src/utils/npmExec.js'
 import { writeToStdout } from 'src/utils/process.js'
-
-function execNpmUninstallSync(): void {
-  execNpmSync(['uninstall', '-g', MACRO.PACKAGE_URL], { stdio: 'inherit' })
-}
+import {
+  describePlan,
+  executeUninstall,
+  planUninstall,
+} from './uninstall/uninstallService.js'
+import { NEVER_REMOVED } from './uninstall/scopeManifest.js'
 
 /** Prompt the user with a y/n question on stdin/stdout. Returns true for yes. */
 async function confirm(question: string, defaultYes: boolean): Promise<boolean> {
@@ -30,75 +28,100 @@ async function confirm(question: string, defaultYes: boolean): Promise<boolean> 
   }
 }
 
-async function removeDataDir(dir: string): Promise<boolean> {
-  writeToStdout(`Removing configuration and data: ${dir}\n`)
-  try {
-    await rm(dir, { recursive: true, force: true })
-    return true
-  } catch {
-    return false
-  }
-}
-
+/**
+ * `rayu uninstall` — remove RAYU from this machine.
+ *
+ * Now a thin front-end over the uninstall lifecycle service, which is shared with
+ * the remote (Telegram) operation so both obey the same scope manifest and the
+ * same success criteria.
+ *
+ * Behaviour change worth knowing: this used to run `npm uninstall -g`
+ * unconditionally and report success regardless. It now DETECTS the install
+ * method first, and on a Homebrew / deb / rpm / mise / asdf / winget install it
+ * says so and prints the correct command instead of pretending to have removed
+ * something.
+ *
+ * Flags: `--yes`/`-y` (skip prompts), `--keep-data` (preserve config, provider
+ * keys, and history), `--dry-run` (print the plan and exit).
+ */
 export async function uninstall(args: string[] = []) {
   const yes = args.includes('--yes') || args.includes('-y')
   const keepData = args.includes('--keep-data')
+  const dryRun = args.includes('--dry-run')
 
-  writeToStdout(`Uninstalling Rayu CLI (${MACRO.VERSION})...\n`)
-  writeToStdout(`Running: npm uninstall -g ${MACRO.PACKAGE_URL}\n\n`)
+  const plan = await planUninstall({ keepData })
 
-  try {
-    execNpmUninstallSync()
-  } catch (err) {
+  writeToStdout(`Rayu CLI ${MACRO.VERSION}\n\n`)
+  for (const line of describePlan(plan)) writeToStdout(`${line}\n`)
+  writeToStdout('\nNever removed:\n')
+  for (const item of NEVER_REMOVED) writeToStdout(`  • ${item}\n`)
+  writeToStdout('\n')
+
+  if (dryRun) {
+    writeToStdout(chalk.dim('Dry run — nothing was changed.\n'))
+    process.exit(0)
+    return
+  }
+
+  if (plan.install.method === 'development') {
     process.stderr.write(
-      chalk.red(`\nFailed to uninstall ${MACRO.PACKAGE_URL}\n`),
-    )
-    const detail = describeNpmError(err)
-    if (detail) process.stderr.write(`${detail}\n`)
-    process.stderr.write(
-      `${buildNpmRemediation('uninstall', MACRO.PACKAGE_URL, err)}\n`,
+      chalk.yellow(
+        'Running from a source checkout — there is no installation to remove.\n',
+      ),
     )
     process.exit(1)
     return
   }
 
-  writeToStdout(
-    chalk.green(
-      `\nSuccessfully uninstalled ${MACRO.PACKAGE_URL} ${MACRO.VERSION}\n`,
-    ),
-  )
-
-  // The npm uninstall above only removes the package itself. Config, saved
-  // provider API keys, settings, and session history live separately under
-  // the Rayu config dir (~/.rayu by default, or $RAYU_CONFIG_DIR) and survive
-  // npm uninstall unless removed explicitly here.
-  const configDir = getRayuConfigHomeDir()
-  const dataExists = existsSync(configDir)
-
-  if (dataExists && !keepData) {
-    writeToStdout(
-      `\nRayu also stores configuration and data at:\n  ${configDir}\n` +
-        'This includes saved provider API keys, settings, and session history.\n',
-    )
-    const shouldRemove =
-      yes || (await confirm('Remove this configuration and data too?', false))
-
-    if (shouldRemove) {
-      const removed = await removeDataDir(configDir)
-      if (!removed || existsSync(configDir)) {
-        process.stderr.write(
-          chalk.yellow(`\nCould not fully remove ${configDir}. Remove it manually if needed.\n`),
-        )
-      } else {
-        writeToStdout(chalk.green(`Removed ${configDir}\n`))
-      }
-    } else {
-      writeToStdout(`Keeping configuration and data at ${configDir}\n`)
+  if (plan.present.length === 0 && !plan.canRemovePackage) {
+    writeToStdout('Nothing for RAYU to remove.\n')
+    if (plan.install.manualCommand) {
+      writeToStdout(`Run this to finish: ${plan.install.manualCommand}\n`)
     }
-  } else if (dataExists && keepData) {
-    writeToStdout(`\nKeeping configuration and data at ${configDir} (--keep-data)\n`)
+    process.exit(0)
+    return
   }
 
-  writeToStdout('\nThanks for using Rayu CLI!\n')
-  process.exit(0)
+  const hasUserData = plan.present.some(a => a.userData)
+  if (!yes) {
+    const question = hasUserData
+      ? 'Remove RAYU, including saved provider API keys and session history?'
+      : 'Remove RAYU?'
+    if (!(await confirm(question, false))) {
+      writeToStdout('Cancelled — nothing was changed.\n')
+      process.exit(0)
+      return
+    }
+  }
+
+  const report = await executeUninstall({ keepData })
+
+  writeToStdout('\n')
+  for (const step of report.steps) {
+    const mark = step.ok ? chalk.green('✓') : chalk.red('✗')
+    writeToStdout(`${mark} ${step.label}${step.detail ? ` — ${step.detail}` : ''}\n`)
+  }
+  writeToStdout('\n')
+
+  if (report.outcome === 'completed') {
+    writeToStdout(chalk.green('RAYU has been removed. Thanks for using Rayu CLI!\n'))
+    process.exit(0)
+    return
+  }
+
+  // PARTIAL / FAILED: say exactly what is left, so the user can finish the job.
+  process.stderr.write(
+    chalk.yellow(
+      report.outcome === 'partial'
+        ? '\nUninstall was PARTIAL — some things remain:\n'
+        : '\nUninstall FAILED — nothing was removed:\n',
+    ),
+  )
+  for (const leftover of report.leftovers) {
+    process.stderr.write(`  • ${leftover}\n`)
+  }
+  if (report.manualCommand) {
+    process.stderr.write(`\nRun this to finish: ${report.manualCommand}\n`)
+  }
+  process.exit(1)
 }

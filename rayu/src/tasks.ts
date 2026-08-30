@@ -12,6 +12,9 @@ const LocalWorkflowTask: Task | null = feature('WORKFLOW_SCRIPTS')
 const MonitorMcpTask: Task | null = feature('MONITOR_TOOL')
   ? require('./tasks/MonitorMcpTask/MonitorMcpTask.js').MonitorMcpTask
   : null
+const ExternalAgentTask: Task | null = feature('EXTERNAL_AGENTS')
+  ? require('./tasks/ExternalAgentTask/ExternalAgentTask.js').ExternalAgentTask
+  : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 /**
@@ -28,6 +31,7 @@ export function getAllTasks(): Task[] {
   ]
   if (LocalWorkflowTask) tasks.push(LocalWorkflowTask)
   if (MonitorMcpTask) tasks.push(MonitorMcpTask)
+  if (ExternalAgentTask) tasks.push(ExternalAgentTask)
   return tasks
 }
 

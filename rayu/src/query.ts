@@ -83,6 +83,7 @@ import {
   getRuntimeMainLoopModel,
   renderModelName,
 } from './utils/model/model.js'
+import { drainImageDropNotices } from './utils/model/imageCapability.js'
 import {
   doesMostRecentAssistantMessageExceed200k,
   finalContextTokensFromLastResponse,
@@ -873,6 +874,16 @@ async function* queryLoop(
             }
           }
           queryCheckpoint('query_api_streaming_end')
+
+          // A text-only model may have been discovered mid-request: the adapter
+          // retried without images rather than losing the turn, and queued a
+          // notice for us to surface. 'warning' level so it shows in yellow
+          // without verbose mode — same pattern as the model-fallback notice
+          // below. Drained here, after the request, so the warning lands next to
+          // the answer it explains.
+          for (const notice of drainImageDropNotices()) {
+            yield createSystemMessage(notice, 'warning')
+          }
 
           // Yield deferred microcompact boundary message using actual API-reported
           // token deletion count instead of client-side estimates.

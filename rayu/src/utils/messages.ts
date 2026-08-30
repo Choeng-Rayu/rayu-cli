@@ -153,6 +153,12 @@ import { formatFileSize } from './format.js'
 import { validateImagesForAPI } from './imageValidation.js'
 import { safeParseJSON } from './json.js'
 import { logError, logMCPDebug } from './log.js'
+import {
+  getToolInputParseFailure,
+  repairToolArgumentsJSON,
+  TOOL_INPUT_PARSE_FAILURE_KEY,
+  toolInputJSONErrorMessage,
+} from './toolInputRepair.js'
 import { normalizeLegacyToolName } from './permissions/permissionRuleParser.js'
 import {
   getPlanModeV2AgentCount,
@@ -2693,30 +2699,53 @@ export function normalizeContentFromAPI(
         // TODO: This needs patching as recursive fields can still be stringified
         let normalizedInput: unknown
         if (typeof contentBlock.input === 'string') {
-          const parsed = safeParseJSON(contentBlock.input)
-          if (parsed === null && contentBlock.input.length > 0) {
-            // TET/FC-v3 diagnostic: the streamed tool input JSON failed to
-            // parse. We fall back to {} which means downstream validation
-            // sees empty input. The raw prefix goes to debug log only — no
-            // PII-tagged proto column exists for it yet.
+          const parsed = safeParseJSON(contentBlock.input, false)
+          if (parsed !== null || contentBlock.input.length === 0) {
+            normalizedInput = parsed ?? {}
+          } else {
+            // Malformed tool-argument JSON. Non-Claude providers produce this
+            // routinely (fenced payloads, raw newlines inside a string,
+            // trailing commas, output truncated mid-arguments). Try a bounded,
+            // syntax-only repair before giving up.
+            //
+            // Previously this fell through to `{}`, so the tool ran with empty
+            // input and reported a schema error naming the wrong problem — the
+            // model then "fixed" arguments that were never wrong and looped.
+            const repair = repairToolArgumentsJSON(contentBlock.input)
             logEvent('tengu_tool_input_json_parse_fail', {
               toolName: sanitizeToolNameForAnalytics(contentBlock.name),
               inputLen: contentBlock.input.length,
+              recovered: repair.ok,
+              // Count, not names: the metadata schema takes no free-form strings
+              // here, and the stage names already go to the debug log below.
+              repairStageCount: repair.ok ? repair.stages.length : 0,
             })
-            if (process.env.USER_TYPE === 'ant') {
-              logForDebugging(
-                `tool input JSON parse fail: ${contentBlock.input.slice(0, 200)}`,
-                { level: 'warn' },
-              )
-            }
+            // Not gated on USER_TYPE: 3P users hit this far more often than
+            // first-party ones and need it to diagnose their provider.
+            logForDebugging(
+              `tool input JSON ${repair.ok ? `repaired (${repair.stages.join(', ')})` : 'parse fail'} for ${contentBlock.name}: ${contentBlock.input.slice(0, 200)}`,
+              { level: 'warn' },
+            )
+            normalizedInput = repair.ok
+              ? repair.value
+              : {
+                  [TOOL_INPUT_PARSE_FAILURE_KEY]: toolInputJSONErrorMessage(
+                    contentBlock.name,
+                    contentBlock.input,
+                    repair.reason,
+                  ),
+                }
           }
-          normalizedInput = parsed ?? {}
         } else {
           normalizedInput = contentBlock.input
         }
 
         // Then apply tool-specific corrections
-        if (typeof normalizedInput === 'object' && normalizedInput !== null) {
+        if (
+          typeof normalizedInput === 'object' &&
+          normalizedInput !== null &&
+          getToolInputParseFailure(normalizedInput) === undefined
+        ) {
           const tool = findToolByName(tools, contentBlock.name)
           if (tool) {
             try {
@@ -2940,6 +2969,14 @@ export type StreamingToolUse = {
 export type StreamingThinking = {
   thinking: string
   isStreaming: boolean
+  /**
+   * When the block finished streaming.
+   *
+   * No longer drives VISIBILITY — the trailing preview is shown only while
+   * `isStreaming` is true, and completed reasoning renders as in-order message
+   * content instead. Still recorded because it is the timestamp of the
+   * streaming→complete transition and callers/tests assert on it.
+   */
   streamingEndedAt?: number
 }
 
@@ -2948,17 +2985,21 @@ export type StreamingThinking = {
  *
  * On a normal turn the completion path (an assistant message carrying the
  * finished thinking block) has already flipped the state to
- * `isStreaming:false` with a `streamingEndedAt`, which the 30s auto-hide in
- * REPL then clears — so this returns it unchanged and that brief "✓ Thought"
- * linger is preserved.
+ * `isStreaming:false`, at which point Messages.tsx stops rendering the trailing
+ * preview and the finished block renders IN PLACE, above the response text. So
+ * this returns it unchanged and nothing is lost.
  *
  * But if the turn ended while a thinking block was still mid-stream — e.g. the
  * request errored ("Streaming is required…") or was aborted before the block
- * completed — the state is stuck at `isStreaming:true`. Nothing else clears it
- * (the auto-hide requires `!isStreaming`), so the animated "Thinking…" preview
- * keeps spinning below the error/turn-status and looks like the model is still
- * working. In that case we drop it to `null` so the final response/error stays
- * as the last thing on screen.
+ * completed — the state is stuck at `isStreaming:true`, and no completed
+ * assistant message will ever arrive to clear it. The animated "Thinking…"
+ * preview would keep spinning below the error and look like the model is still
+ * working, so we drop it to `null` and let the final response/error stand as the
+ * last thing on screen.
+ *
+ * (Historically this also mattered because a completed preview lingered for 30s
+ * behind a timer in REPL. That timer is gone: completed reasoning is ordinary
+ * in-order message content now.)
  */
 export function finalizeStreamingThinkingOnTurnEnd(
   current: StreamingThinking | null,

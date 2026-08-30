@@ -70,6 +70,7 @@ import { useMoreRight } from '../moreright/useMoreRight.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../components/Spinner.js';
 import { getSystemPrompt } from '../constants/prompts.js';
 import { getBrandGlyph } from '../constants/figures.js';
+import { MIN_TURN_DURATION_MS } from '../constants/turnCompletionVerbs.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
@@ -202,6 +203,11 @@ const PROACTIVE_FALSE = () => false;
 const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
 const useProactive = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/useProactive.js').useProactive : null;
 const useScheduledTasks = feature('AGENT_TRIGGERS') ? require('../hooks/useScheduledTasks.js').useScheduledTasks : null;
+// Gated require, NOT a static import: REPL.tsx is always in the bundle, so a
+// static import here would pull the whole external-agent subsystem (manager,
+// four adapters, orchestration, persistence) into every build and defeat the
+// feature's dead-code elimination.
+const installExternalAgents: typeof import('../externalAgents/recovery/session.js').installExternalAgents | null = feature('EXTERNAL_AGENTS') ? require('../externalAgents/recovery/session.js').installExternalAgents : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
@@ -848,19 +854,13 @@ export function REPL({
   const [streamingToolUses, setStreamingToolUses] = useState<StreamingToolUse[]>([]);
   const [streamingThinking, setStreamingThinking] = useState<StreamingThinking | null>(null);
 
-  // Auto-hide streaming thinking after 30 seconds of being completed
-  useEffect(() => {
-    if (streamingThinking && !streamingThinking.isStreaming && streamingThinking.streamingEndedAt) {
-      const elapsed = Date.now() - streamingThinking.streamingEndedAt;
-      const remaining = 30000 - elapsed;
-      if (remaining > 0) {
-        const timer = setTimeout(setStreamingThinking, remaining, null);
-        return () => clearTimeout(timer);
-      } else {
-        setStreamingThinking(null);
-      }
-    }
-  }, [streamingThinking]);
+  // No auto-hide timer. Completed reasoning is now rendered by the thinking
+  // block itself, in order, above the response text (Message.tsx case
+  // 'thinking'), so it belongs to history like any other content. The old 30s
+  // timer existed only to retire the trailing streaming preview, which
+  // Messages.tsx now drops the moment isStreaming goes false.
+  // finalizeStreamingThinkingOnTurnEnd still clears a preview left mid-stream by
+  // an abort or error — see its doc comment.
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   // Ref that always points to the current abort controller, used by the
   // REPL bridge to abort the active query when a remote interrupt arrives.
@@ -1191,6 +1191,20 @@ export function REPL({
     registerLeaderToolUseConfirmQueue(setToolUseConfirmQueue);
     return () => unregisterLeaderToolUseConfirmQueue();
   }, [setToolUseConfirmQueue]);
+  // Start the external-agent orchestrator for this session: event sinks, the
+  // permission broker and workspace tracking. Ordered AFTER the leader queue
+  // registration above because the broker routes a foreign agent's approvals
+  // into that same queue, so it must exist first. No-ops when the feature is
+  // not compiled in. Teardown also detaches agents and releases workspace
+  // leases, and is additionally registered with the cleanup registry so an
+  // abrupt exit still lets go cleanly.
+  useEffect(() => {
+    if (!installExternalAgents) return;
+    const teardown = installExternalAgents(setAppState);
+    return () => {
+      void teardown();
+    };
+  }, [setAppState]);
   const [messages, rawSetMessages] = useState<MessageType[]>(initialMessages ?? []);
   const messagesRef = useRef(messages);
   // Stores the willowMode variant that was shown (or false if no hint shown).
@@ -1593,7 +1607,8 @@ export function REPL({
     // nothing else clears it — the animated "Thinking…" preview would keep
     // spinning below the error/turn-status and look like it's still working.
     // On a normal turn the block already completed (isStreaming:false), so
-    // this is a no-op and the 30s "✓ Thought" linger is preserved.
+    // this is a no-op and the finished block stays in history as in-order
+    // message content.
     setStreamingThinking(finalizeStreamingThinkingOnTurnEnd);
     setSpinnerMessage(null);
     setSpinnerColor(null);
@@ -2507,6 +2522,7 @@ export function REPL({
       nestedMemoryAttachmentTriggers: new Set<string>(),
       loadedNestedMemoryPaths: loadedNestedMemoryPathsRef.current,
       dynamicSkillDirTriggers: new Set<string>(),
+      forceFreshReadPaths: new Set<string>(),
       discoveredSkillNames: discoveredSkillNamesRef.current,
       setResponseLength,
       pushApiMetricsEntry: "external" === 'ant' ? (ttftMs: number) => {
@@ -3005,11 +3021,16 @@ export function REPL({
           snapshotOutputTokensForTurn(null);
         }
 
-        // Add turn duration message for turns longer than 30s or with a budget
+        // Add the turn duration message for any turn that took at least
+        // MIN_TURN_DURATION_MS, or that carried a token budget. The threshold
+        // used to be 30s, which meant nearly every turn ended with no
+        // completion status and the user had no consistent "the response is
+        // done" signal. Floored rather than unconditional so a sub-second turn
+        // never renders "worked for 0s".
         // Skip if user aborted or if in loop mode (too noisy between ticks)
         // Defer if swarm teammates are still running (show when they finish)
         const turnDurationMs = Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current;
-        if ((turnDurationMs > 30000 || budgetInfo !== undefined) && !abortController.signal.aborted && !proactiveActive) {
+        if ((turnDurationMs >= MIN_TURN_DURATION_MS || budgetInfo !== undefined) && !abortController.signal.aborted && !proactiveActive) {
           const hasRunningSwarmAgents = getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running');
           if (hasRunningSwarmAgents) {
             // Only record start time on the first deferred turn

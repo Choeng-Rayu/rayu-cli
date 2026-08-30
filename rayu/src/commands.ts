@@ -23,6 +23,7 @@ import keep from './commands/keep/index.js'
 import mcp from './commands/mcp/index.js'
 import telegramBot from './commands/telegram-bot/index.js'
 import disconnectTelegram from './commands/telegram-bot/disconnect-index.js'
+import telegramRemoteUninstall from './commands/telegram-bot/remote-uninstall-index.js'
 import pr_comments from './commands/pr_comments/index.js'
 import rename from './commands/rename/index.js'
 import reviewDetial from './commands/review-detial/index.js'
@@ -98,6 +99,11 @@ const forkCmd = feature('FORK_SUBAGENT')
 const buddy = feature('BUDDY')
   ? (
       require('./commands/buddy/index.js') as typeof import('./commands/buddy/index.js')
+    ).default
+  : null
+const externalAgentCmd = feature('EXTERNAL_AGENTS')
+  ? (
+      require('./commands/agent/index.js') as typeof import('./commands/agent/index.js')
     ).default
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -234,6 +240,7 @@ const COMMANDS = memoize((): Command[] => [
   memory,
   telegramBot,
   disconnectTelegram,
+  telegramRemoteUninstall,
   model,
   modelSubagent,
   webfetchModel,
@@ -293,6 +300,7 @@ const COMMANDS = memoize((): Command[] => [
   sandboxToggle,
   ...(peersCmd ? [peersCmd] : []),
   tasks,
+  ...(externalAgentCmd ? [externalAgentCmd] : []),
   ...(workflowsCmd ? [workflowsCmd] : []),
   ...(torch ? [torch] : []),
   ...(process.env.USER_TYPE === 'ant' && !process.env.IS_DEMO

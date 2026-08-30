@@ -24,6 +24,12 @@ import { PRODUCT_NAME } from 'src/constants/product.js'
 import type { ProviderFeatureMode } from 'src/utils/rayuConfig.js'
 import { isRotatableKeyStatus } from './keyRotation.js'
 import { providerAcceptsImages } from 'src/utils/model/providerCapabilities.js'
+// Safe as a STATIC import: imageCapability.ts is a leaf (its own cross-layer
+// lookups are lazy requires), so this adds no cycle and no SCC.
+import {
+  notePendingImageDropNotice,
+  rememberModelRejectedImages,
+} from 'src/utils/model/imageCapability.js'
 import {
   blocksToText,
   imageBlockToUrl,
@@ -1003,6 +1009,76 @@ function withoutTools(req: AnyObj): AnyObj {
 }
 
 /**
+ * True for a 400 that means the MODEL HAS NO VISION at all — as opposed to the
+ * image+tools conflict above, which a tools-less retry fixes.
+ *
+ * Rayu's model tables cannot list every id (new checkpoints ship constantly), so
+ * an unlisted model resolves to 'unknown' and its image IS sent. When that guess
+ * is wrong the provider says so, and losing the entire turn over it is a poor
+ * trade: the user's question is usually answerable from the text alone. So we
+ * retry without images, tell the user in yellow, and remember the model for the
+ * rest of the session so the NEXT turn warns before spending a request.
+ */
+export function isModelImageUnsupported(e: unknown, req: AnyObj): boolean {
+  if (!requestHasImage(req)) return false
+  // Lazy require with a NARROW structural type, deliberately not
+  // `typeof import('./errors.js')`: that annotation is a type-level edge into
+  // errors.ts, which reaches utils/messages.ts → BashTool → the world. Pulling
+  // that SCC into the transport layer perturbs type resolution across it (it
+  // surfaced 9 unrelated errors in feature-gated attachment unions).
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { isModelImageUnsupportedError } = require('./errors.js') as {
+    isModelImageUnsupportedError: (error: unknown) => boolean
+  }
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return isModelImageUnsupportedError(
+    e instanceof Error ? e : new Error(String((e as AnyObj)?.message ?? '')),
+  )
+}
+
+/**
+ * Strip `image_url` parts from a translated OpenAI request.
+ *
+ * A message left with no parts gets `content: ''` rather than an empty array or
+ * null: Gemini's OpenAI-compatibility layer rejects null content outright, and
+ * some providers reject an empty parts array (see the note in translateMessages).
+ * A single remaining text part is collapsed back to a plain string, which is the
+ * shape every provider accepts.
+ */
+export function withoutImages(req: AnyObj): AnyObj {
+  const msgs = req.messages as AnyObj[] | undefined
+  if (!Array.isArray(msgs)) return req
+  return {
+    ...req,
+    messages: msgs.map(m => {
+      if (!Array.isArray(m.content)) return m
+      const kept = (m.content as AnyObj[]).filter(p => p?.type !== 'image_url')
+      if (kept.length === (m.content as AnyObj[]).length) return m
+      if (kept.length === 0) return { ...m, content: '' }
+      if (kept.length === 1 && kept[0]?.type === 'text') {
+        return { ...m, content: (kept[0] as AnyObj).text ?? '' }
+      }
+      return { ...m, content: kept }
+    }),
+  }
+}
+
+/**
+ * Record a discovered vision limit: remember it for the session and queue the
+ * user-facing warning for query.ts to yield.
+ */
+function noteImageUnsupported(providerId: string | undefined, model: string): void {
+  rememberModelRejectedImages(providerId, model)
+  notePendingImageDropNotice(model)
+  reportIssue(
+    'openai_adapter.model_image_unsupported',
+    'model rejected image input; retried without images',
+    { model, status: 400 },
+    'low',
+  )
+}
+
+/**
  * True for a 400 that means the *model itself* can't do tool/function calling
  * (e.g. small local Ollama models such as gemma3:1b, which report only the
  * "completion" capability). Distinct from the image+tools conflict above: here
@@ -1226,6 +1302,21 @@ function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
           throw normalizeError(e2)
         }
       }
+      if (isModelImageUnsupported(e, request)) {
+        noteImageUnsupported(config.providerId, model)
+        try {
+          const completion = (await client.chat.completions.create(
+            withoutImages(request) as never,
+            { signal },
+          )) as unknown as AnyObj
+          return toBetaMessage(completion, model)
+        } catch (e2) {
+          // The retry failed too, so this was not (only) a vision limit. Fall
+          // through to the normal error path, which surfaces the red
+          // getModelImageUnsupportedErrorMessage guidance.
+          throw normalizeError(e2)
+        }
+      }
       if (isImageToolConflict(e, request)) {
         try {
           const completion = (await client.chat.completions.create(
@@ -1290,6 +1381,18 @@ function createOpenAICompatibleClientUncached(config: OpenAICompatibleConfig) {
             { signal },
           )) as unknown as AsyncIterable<AnyObj>
         } catch (e2) {
+          throw normalizeError(e2)
+        }
+      } else if (isModelImageUnsupported(e, request)) {
+        noteImageUnsupported(config.providerId, model)
+        try {
+          oaStream = (await client.chat.completions.create(
+            withoutImages(request) as never,
+            { signal },
+          )) as unknown as AsyncIterable<AnyObj>
+        } catch (e2) {
+          // Retry failed too — not (only) a vision limit. Let the normal error
+          // path surface the red guidance.
           throw normalizeError(e2)
         }
       } else if (isImageToolConflict(e, request)) {

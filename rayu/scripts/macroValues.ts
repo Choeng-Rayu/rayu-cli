@@ -58,4 +58,5 @@ export const ENABLED_FEATURES = [
   'ULTRATHINK', // "ultrathink" keyword → high thinking effort + rainbow highlight
   'TOKEN_BUDGET', // "+500k" / "use 2M tokens" → per-turn output budget tracking
   'BUILTIN_EXPLORE_PLAN_AGENTS', // Explore + Plan built-in subagents (3P default on)
+  'EXTERNAL_AGENTS', // /agent + ExternalAgent tool: orchestrate Codex / Claude Code / OpenCode / ACP CLIs
 ] as const

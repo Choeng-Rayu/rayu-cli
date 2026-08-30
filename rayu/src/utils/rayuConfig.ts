@@ -11,6 +11,19 @@ import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
 export type ProviderKind = 'anthropic' | 'anthropic-compatible' | 'openai-compatible' | 'bedrock' | 'azure' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted' | 'custom'
+
+/**
+ * Provider id of the Rayu API-KEY provider ('rayu' — Rayu's hosted models via a
+ * `rayu_sk_live_…` key).
+ *
+ * Declared here as a literal rather than imported from rayuProviders.ts because
+ * that dependency runs ONE WAY: rayuProviders imports rayuConfig, never the
+ * reverse (see the import-cycle note in services/api/providerKeys.ts). Kept in
+ * sync with `RAYU_API_PROVIDER_ID` there, and a test asserts the two agree so a
+ * rename cannot silently split them.
+ */
+const RAYU_API_PROVIDER_ID = 'rayu'
+
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 /**
@@ -64,6 +77,22 @@ export type RayuProvider = {
    */
   supportsThinking?: boolean
   supportsImage?: boolean
+  /**
+   * Per-MODEL image capability, keyed by exact model id. Highest precedence in
+   * resolveImageSupport() — it overrides both `supportsImage` and the built-in
+   * model tables.
+   *
+   * Needed because `supportsImage` is provider-wide and one provider commonly
+   * serves both kinds of model: DeepSeek serves text-only `deepseek-chat`
+   * alongside vision `deepseek-vl`, and a Bedrock/Azure/Vertex entry serves
+   * several families at once. A provider-level boolean cannot answer for such a
+   * provider at all; only a (provider, model) pair can.
+   *
+   * Both directions are meaningful here, unlike `supportsImage`: `true` corrects
+   * a model the built-in table wrongly lists as text-only, `false` corrects the
+   * opposite. Set from /connect, or by hand in ~/.rayu/providers.json.
+   */
+  modelSupportsImage?: Record<string, boolean>
   apiKey?: string
   /**
    * How a first-party Anthropic provider (kind:'anthropic') authenticates:
@@ -250,6 +279,26 @@ export function loadRayuConfig(): RayuConfig {
     try {
       cache = JSON.parse(readFileSync(path, 'utf8')) as RayuConfig
       if (!Array.isArray(cache.providers)) cache.providers = []
+      // modelSupportsImage is a documented hand-edit point, so it is untrusted
+      // input keyed by MODEL ID — and model ids feed the
+      // `providerId\u0000model` routing string. Sanitize on read so a bad key can
+      // never reach routing, and so a non-boolean value is dropped rather than
+      // coerced (a truthy "false" would mean "send images" — the exact 400 this
+      // feature prevents). Lazy require: customProvider.ts is a leaf, but this
+      // module is imported extremely early.
+      for (const provider of cache.providers) {
+        if (provider.modelSupportsImage === undefined) continue
+        /* eslint-disable @typescript-eslint/no-require-imports */
+        const { sanitizeModelSupportsImage } = require('./customProvider.js') as {
+          sanitizeModelSupportsImage: (
+            input: unknown,
+          ) => Record<string, boolean> | undefined
+        }
+        /* eslint-enable @typescript-eslint/no-require-imports */
+        const clean = sanitizeModelSupportsImage(provider.modelSupportsImage)
+        if (clean) provider.modelSupportsImage = clean
+        else delete provider.modelSupportsImage
+      }
       maybeWarnInsecurePermissions(path)
       return cache
     } catch (e) {
@@ -698,15 +747,18 @@ export function getRayuModelContextWindow(model: string): number | null {
   if (!p || p.kind === 'anthropic') {
     return null
   }
-  // Rayu-HOSTED: the catalog is SERVER-DRIVEN, so the context window must be too.
-  // The admin sets it per model in the dashboard; it arrives via
-  // /me/entitlements and is synced into modelContextWindows by
-  // syncRayuHostedProvider. We deliberately do NOT consult the built-in
-  // KNOWN_MODEL_CONTEXT table here: a hosted model may be added or renamed at any
+  // BOTH Rayu providers: the catalog is SERVER-DRIVEN, so the context window must
+  // be too. The admin sets it per model in the dashboard; it arrives via
+  // /me/entitlements for 'rayu-hosted' (synced by syncRayuHostedProvider) and via
+  // GET {gateway}/v1/models for the API-key provider 'rayu' (synced by
+  // refreshRayuApiKeyCatalog). We deliberately do NOT consult the built-in
+  // KNOWN_MODEL_CONTEXT table here: a Rayu model may be added or renamed at any
   // time, and matching an admin's model code against hardcoded patterns is how a
-  // brand-new model silently inherits some other model's window. Unknown window →
-  // null, and the caller applies its documented default.
-  if (p.kind === 'rayu-hosted') {
+  // brand-new model silently inherits some OTHER vendor's window (a Rayu code like
+  // `deepseek-v3` would match the DeepSeek pattern even if the admin pointed it at
+  // something else entirely). Unknown window → null, and the caller applies its
+  // documented default.
+  if (p.kind === 'rayu-hosted' || p.id === RAYU_API_PROVIDER_ID) {
     const perModel = p.modelContextWindows?.[model]
     if (perModel && perModel > 0) return perModel
     // Provider-level fallback is still honoured: it is explicit local config
@@ -714,7 +766,7 @@ export function getRayuModelContextWindow(model: string): number | null {
     if (p.contextWindow && p.contextWindow > 0) return p.contextWindow
     reportIssue(
       'rayu_context.hosted_window_unset',
-      'no admin-configured context window for this Rayu-hosted model; using the client default — set it in Admin → Providers → the model row',
+      'no admin-configured context window for this Rayu model; using the client default — set it in Admin → Providers → the model row',
       { provider: p.id, model },
       'low',
     )
@@ -1204,6 +1256,21 @@ async function fetchAzureModels(p: RayuProvider): Promise<string[]> {
 }
 
 export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
+  // Rayu's own hosted models via a `rayu_sk_live_…` API key. Special-cased by ID
+  // (not kind) because the provider is kind:'anthropic-compatible' for CHAT — its
+  // baseURL points at the gateway's /anthropic surface — while the CATALOG lives
+  // on the gateway's OpenAI-shaped /v1/models. Same shape of special case as
+  // 'ollama-cloud' below. Lazy import keeps the gateway modules off the startup
+  // path and breaks the rayuConfig -> catalog -> rayuConfig import cycle.
+  if (p.id === RAYU_API_PROVIDER_ID) {
+    const { fetchRayuApiKeyCatalog } = await import(
+      '../services/api/rayuHosted/rayuApiKeyCatalog.js'
+    )
+    const result = await fetchRayuApiKeyCatalog(p.apiKey)
+    // An empty list on failure preserves whatever catalog is already cached — the
+    // caller (refreshActiveProviderModels) only overwrites on a non-empty result.
+    return result.ok ? result.models : []
+  }
   // Bedrock exposes no OpenAI-style /models endpoint; list via its control plane.
   // ONE unified catalog spanning both wire formats (Claude inference profiles +
   // the OpenAI-Chat-capable foundation models).
@@ -1308,6 +1375,15 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
       p.kind !== 'anthropic-compatible')
   )
     return []
+  // The Rayu API-key provider carries admin-set display NAMES and CONTEXT
+  // WINDOWS alongside the ids. The generic path below stores only fetchedModels,
+  // which would silently drop both on every refresh and leave /model showing bare
+  // ids and the CLI budgeting against its own default window instead of the
+  // dashboard's.
+  if (p.id === RAYU_API_PROVIDER_ID) {
+    const { models } = await refreshRayuApiKeyCatalog()
+    return models
+  }
   const models = await fetchProviderModels(p)
   if (models.length) {
     const cfg = loadRayuConfig()
@@ -1318,6 +1394,76 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
     }
   }
   return models
+}
+
+/**
+ * Refresh the Rayu API-key provider's catalog from GET {gateway}/v1/models and
+ * persist EVERYTHING the picker renders: ids, admin display names and admin
+ * context windows.
+ *
+ * Returns the model list plus whether anything actually MOVED, so a caller can
+ * re-render only when it did. `changed` covers renames and window changes too,
+ * not just added/removed models — an admin renaming a model is a visible change
+ * even though the id set is identical.
+ *
+ * Best-effort: a failed fetch leaves the existing cache untouched and reports
+ * `changed:false`, so an offline launch or a gateway blip never empties /model.
+ */
+export async function refreshRayuApiKeyCatalog(): Promise<{
+  models: string[]
+  changed: boolean
+}> {
+  const provider = loadRayuConfig().providers.find(
+    p => p.id === RAYU_API_PROVIDER_ID,
+  )
+  if (!provider?.apiKey) return { models: [], changed: false }
+  const [{ fetchRayuApiKeyCatalog }, { catalogSignature, pickRayuDefaultModels }] =
+    await Promise.all([
+      import('../services/api/rayuHosted/rayuApiKeyCatalog.js'),
+      import('../services/rayuAuth/rayuModelCatalog.js'),
+    ])
+  const result = await fetchRayuApiKeyCatalog(provider.apiKey)
+  if (!result.ok || result.models.length === 0) {
+    return { models: provider.models ?? [], changed: false }
+  }
+  const before = catalogSignature(
+    provider.models ?? [],
+    provider.modelLabels,
+    provider.modelContextWindows,
+  )
+  const after = catalogSignature(
+    result.models,
+    result.modelLabels,
+    result.modelContextWindows,
+  )
+  // Re-read inside the write so a concurrent save (e.g. the user switching model
+  // in another pane) is not clobbered by a stale snapshot.
+  const cfg = loadRayuConfig()
+  const cur = cfg.providers.find(p => p.id === RAYU_API_PROVIDER_ID)
+  if (!cur) return { models: result.models, changed: false }
+  cur.models = result.models
+  cur.fetchedModels = result.models
+  cur.modelLabels = result.modelLabels
+  cur.modelContextWindows = result.modelContextWindows
+  // Keep the default/small model POINTING AT SOMETHING REAL, in both directions:
+  //
+  //  • Drop a code the admin has since removed. Holding on to one turns every
+  //    request into a 403 "model not available", which reads like a CLI bug rather
+  //    than a catalog change. (Same reasoning as syncRayuHostedProvider.)
+  //  • BACKFILL one that was never set. A provider created from the RAYU_API_KEY
+  //    environment variable has no default model — the preset carries none,
+  //    because the catalog is not known until this fetch — and a provider with no
+  //    default model cannot serve a request. This is the first moment the real
+  //    catalog is available, so it is the right place to choose.
+  const fallback = pickRayuDefaultModels(result.models)
+  if (!cur.defaultModel || !result.models.includes(cur.defaultModel)) {
+    cur.defaultModel = fallback.defaultModel
+  }
+  if (!cur.smallFastModel || !result.models.includes(cur.smallFastModel)) {
+    cur.smallFastModel = fallback.smallFastModel
+  }
+  saveRayuConfig(cfg)
+  return { models: result.models, changed: before !== after }
 }
 
 /**

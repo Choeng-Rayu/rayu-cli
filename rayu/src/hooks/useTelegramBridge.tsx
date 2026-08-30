@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import React from 'react'
 import {
   getBotToken,
   getTelegramMode,
+  isAutoReconnectEnabled,
+  readAutoAttach,
   readTelegramConfig,
   telegramTransportKey,
 } from '../telegram/telegramConfig.js'
+import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
+import { readSessionRecords } from '../utils/concurrentSessions.js'
 import {
   initTelegramBridge,
   type TelegramBridgeHandle,
@@ -14,6 +18,19 @@ import type { ContentBlock, WrappedMessage } from '../telegram/formatActivity.js
 import { isFileChangeReviewMessage } from '../telegram/formatActivity.js'
 import { sendMessage, setHostedRouter } from '../telegram/telegramApi.js'
 import { createHostedRouter } from '../telegram/telegramTransport.js'
+import {
+  getTelegramHealthSnapshot,
+  subscribeToTelegramHealth,
+} from '../telegram/telegramHealth.js'
+import {
+  getRemotePermissionCallbacks,
+  isRemotelyAttached,
+  remoteActivity,
+  remoteStreamDelta,
+  remoteStreamEnd,
+  remoteStreamStart,
+  subscribeToRemoteBridge,
+} from '../telegram/telegramRemoteBridge.js'
 import { hasRayuSession } from '../services/rayuAuth/rayuSession.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 
@@ -103,14 +120,28 @@ export function useTelegramBridge(
       void handle.endTurn()
       const chatId = readTelegramConfig().linkedChatId
       const isHandoff = telegramTransportKey() !== builtTransport
-      // Notify the linked chat that the CLI session closed (routes via the
-      // hosted backend or directly, depending on mode). Clear the hosted router
-      // only AFTER that notice is sent so it doesn't race to Telegram directly.
+      // Notify the linked chat that this session closed (routes via the hosted
+      // backend or directly, depending on mode). Clear the hosted router only
+      // AFTER that notice is sent so it doesn't race to Telegram directly.
       // On a hand-off this goes out over the OLD token, which is exactly what
       // stops the previous bot from looking still-connected.
+      //
+      // The wording depends on what is LEFT: claiming "rayu-cli disconnected"
+      // while three other sessions are still running would be wrong, and would
+      // hide the fact that /switch can recover the chat immediately.
       const notice =
         chatId !== undefined
-          ? sendMessage(token, chatId, '🔌 Session closed — rayu-cli disconnected.').catch(() => {})
+          ? readSessionRecords()
+              .then(records => {
+                const others = records.filter(r => r.pid !== process.pid)
+                const text =
+                  others.length === 0
+                    ? '🔌 Session closed — rayu-cli disconnected.'
+                    : `🔌 This session closed. ${others.length} other session${others.length === 1 ? '' : 's'} still open — send /sessions to pick one.`
+                return sendMessage(token, chatId, text)
+              })
+              .then(() => undefined)
+              .catch(() => undefined)
           : Promise.resolve()
       handle.stop()
       void notice.finally(() => setHostedRouter(null))
@@ -128,10 +159,93 @@ export function useTelegramBridge(
     }
   }, [bridgeActive, transportKey, setAppState])
 
+  /**
+   * Auto-reconnect: reopening the session that was last driving the chat brings
+   * the bridge back without `/telegram-bot`.
+   *
+   * Gated on four things, all of which must hold:
+   *  - a link still exists (an explicit /disconnect clears both link and memory);
+   *  - auto-reconnect has not been turned off;
+   *  - the memory is within its TTL (see AUTO_ATTACH_TTL_MS); and
+   *  - THIS session is the remembered one — by id, or by cwd because /resume
+   *    mutates the session id in place.
+   *
+   * Runs once per session. If another session already holds the bridge lock this
+   * still resolves correctly: that session keeps the transport and this one gets
+   * a no-op handle.
+   */
+  useEffect(() => {
+    if (bridgeActive) return
+    if (!isAutoReconnectEnabled()) return
+    const cfg = readTelegramConfig()
+    if (cfg.linkedChatId === undefined) return
+    const remembered = readAutoAttach()
+    if (!remembered) return
+    const isRemembered =
+      remembered.sessionId === getSessionId() || remembered.cwd === getOriginalCwd()
+    if (!isRemembered) return
+    setAppState(prev => ({
+      ...prev,
+      telegramBridgeActive: true,
+      telegramTransportKey: telegramTransportKey(),
+    }))
+    // Deliberately runs only on mount: this is a one-shot decision about how the
+    // session starts, not a rule that should re-fire whenever state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /**
+   * Remote attachment (this session is driven by ANOTHER process's bridge).
+   *
+   * Ungated by `bridgeActive` on purpose: a session the user attaches with
+   * /switch may never have run /telegram-bot itself, so it has no bridge of its
+   * own — the leader tells it over IPC that it is driving the chat, and these
+   * forwarding callbacks are what make its permission prompts reachable.
+   */
+  const remoteCallbacks = useSyncExternalStore(
+    subscribeToRemoteBridge,
+    getRemotePermissionCallbacks,
+  )
+
+  useEffect(() => {
+    // Never override this session's OWN bridge callbacks: if it holds the lock
+    // it can talk to Telegram directly, which is strictly better than a hop.
+    if (bridgeActive) return
+    setAppState(prev => ({
+      ...prev,
+      telegramPermissionCallbacks: remoteCallbacks,
+    }))
+    return () => {
+      setAppState(prev =>
+        prev.telegramPermissionCallbacks === remoteCallbacks
+          ? { ...prev, telegramPermissionCallbacks: undefined }
+          : prev,
+      )
+    }
+  }, [remoteCallbacks, bridgeActive, setAppState])
+
+  /**
+   * T-6: the link can be revoked server-side at any time (the user sends
+   * /disconnect in Telegram, which the backend intercepts and never forwards).
+   * The poll loop detects that, drops the local binding and stops itself; this
+   * lowers the session latch so the footer indicator, `/telegram-bot`, and the
+   * bridge all agree there is no connection.
+   */
+  useEffect(() => {
+    if (!bridgeActive) return
+    return subscribeToTelegramHealth(() => {
+      if (getTelegramHealthSnapshot().lastFailureKind === 'unlinked') {
+        setAppState(prev => ({ ...prev, telegramBridgeActive: false }))
+      }
+    })
+  }, [bridgeActive, setAppState])
+
   // Mirror completed user/assistant messages after each turn.
   useEffect(() => {
     const handle = handleRef.current
-    if (!handle || handle.isNoOp) return
+    const remote = isRemotelyAttached()
+    // Nothing to mirror to: no local bridge and no leader driving this session.
+    if ((!handle || handle.isNoOp) && !remote) return
     const start = Math.min(lastSentIndexRef.current, messages.length)
     const fresh: WrappedMessage[] = []
     for (let i = start; i < messages.length; i++) {
@@ -140,7 +254,9 @@ export function useTelegramBridge(
       if (msg && (msg.type === 'assistant' || isTR || isFileChangeReviewMessage(msg))) fresh.push(msg)
     }
     lastSentIndexRef.current = messages.length
-    if (fresh.length > 0) handle.pushActivity(fresh)
+    if (fresh.length === 0) return
+    if (handle && !handle.isNoOp) handle.pushActivity(fresh)
+    else if (remote) remoteActivity(fresh)
   }, [messages])
 
   /**
@@ -164,12 +280,21 @@ export function useTelegramBridge(
             handle.startTurn()
           }
           handle.onTextDelta(delta)
+        } else if (isRemotelyAttached()) {
+          // No local bridge — forward to the leader, which owns the mirror and
+          // applies the same 800 ms edit throttle to remote and local turns.
+          if (!inTurnRef.current) {
+            inTurnRef.current = true
+            remoteStreamStart()
+          }
+          remoteStreamDelta(delta)
         }
       } else if (after === null) {
         accumulatedRef.current = ''
         if (inTurnRef.current) {
           inTurnRef.current = false
-          void handleRef.current?.endTurn()
+          if (handleRef.current) void handleRef.current.endTurn()
+          else if (isRemotelyAttached()) remoteStreamEnd()
         }
       }
       base(f)
