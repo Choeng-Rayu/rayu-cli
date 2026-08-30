@@ -1,8 +1,10 @@
+import { renderModelName } from '../../utils/model/model.js'
+
 /**
- * Extracts a short model name from a full model ID.
- * e.g. "us.anthropic.claude-opus-4-6" → "claude-opus-4-6"
+ * Returns a display-friendly model name that matches the format shown
+ * in the /model selection — e.g. "Opus 4.6", "Sonnet 4.6", "Haiku 4.5"
+ * for known Claude models, or the raw model ID for other providers.
  */
 export function getShortModelName(model: string): string {
-  const lastDot = model.lastIndexOf('.')
-  return lastDot >= 0 ? model.slice(lastDot + 1) : model
+  return renderModelName(model)
 }

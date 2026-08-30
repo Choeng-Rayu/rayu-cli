@@ -56,7 +56,7 @@ export type RayuCatalogFailure = 'invalid' | 'forbidden' | 'unavailable'
 export type RayuCatalogResult =
   | {
       ok: true
-      /** Sanitized model ids, sorted, in picker order. */
+      /** Sanitized model ids in gateway order (admin dashboard order). */
       models: string[]
       /** Admin display names, keyed by model id (absent when none was set). */
       modelLabels: Record<string, string>
@@ -113,7 +113,7 @@ export function parseRayuCatalog(payload: unknown): {
     })
   }
   return {
-    models: entries.map(e => e.code).sort(),
+    models: entries.map(e => e.code),
     modelLabels: hostedModelLabels(entries),
     modelContextWindows: hostedContextWindows(entries),
   }

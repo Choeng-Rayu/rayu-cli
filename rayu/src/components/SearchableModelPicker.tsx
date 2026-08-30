@@ -13,6 +13,7 @@ import { useSetAppState } from '../state/AppState.js'
 import {
   RAYU_MODEL_SEP,
   getAllProviderModelOptions,
+  refreshRayuApiKeyCatalog,
   setActiveProviderModel,
   type RayuModelChoice,
 } from '../utils/rayuConfig.js'
@@ -47,15 +48,23 @@ export function SearchableModelPicker({
   const [all, setAll] = React.useState(() => getAllProviderModelOptions())
   const [query, setQuery] = React.useState('')
 
-  // The hosted catalog is server-driven, so a model the admin added (or renamed)
+  // Both Rayu catalogs are server-driven, so a model the admin added (or renamed)
   // seconds ago may not be in the config this component just read — the launch
   // refresh is asynchronous. Refresh once on open and re-read only if the list
   // actually changed, so the picker never shows a stale catalog and never
   // re-renders for nothing.
   React.useEffect(() => {
     let alive = true
-    void refreshHostedCatalog().then((changed) => {
-      if (alive && changed) setAll(getAllProviderModelOptions())
+    // Refresh both Rayu providers in parallel: the OAuth hosted catalog and the
+    // API-key catalog. Either may be absent (no session / no key), in which case
+    // it returns false immediately.
+    void Promise.all([
+      refreshHostedCatalog(),
+      refreshRayuApiKeyCatalog().then(r => r.changed).catch(() => false),
+    ]).then(([hostedChanged, apiKeyChanged]) => {
+      if (alive && (hostedChanged || apiKeyChanged)) {
+        setAll(getAllProviderModelOptions())
+      }
     })
     return () => {
       alive = false
