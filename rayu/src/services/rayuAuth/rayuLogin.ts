@@ -27,6 +27,12 @@ import {
   writeRayuSession,
   type RayuSessionUser,
 } from './rayuSession.js'
+import {
+  clearRayuApiKeyValidation,
+  hasRayuApiKeyConfigured,
+} from './rayuApiKeyAuth.js'
+import { removeProvider } from '../../utils/rayuConfig.js'
+import { RAYU_API_PROVIDER_ID } from '../../utils/rayuProviders.js'
 
 /** Build the website login URL the browser is pointed at. Pure (testable). */
 export function buildCliLoginUrl(
@@ -158,6 +164,17 @@ export async function loginRayu(opts?: {
             // Warm the entitlements cache so feature gating is correct right
             // after login (best-effort; never blocks login).
             await refreshRayuEntitlements().catch(() => {})
+            // Rayu Auth and Rayu API key are either-or credentials. When the
+            // user signs in via OAuth, remove any previously configured API key
+            // provider so there is one clear credential in use.
+            if (hasRayuApiKeyConfigured()) {
+              try {
+                removeProvider(RAYU_API_PROVIDER_ID)
+                clearRayuApiKeyValidation()
+              } catch {
+                // best-effort — never block login on cleanup
+              }
+            }
             // Auto-activate the Rayu-hosted provider when the plan grants hosted
             // models, so paid users can use them immediately — no /connect, no key.
             try {
