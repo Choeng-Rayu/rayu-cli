@@ -12,6 +12,7 @@ import {
   saveRayuConfig,
 } from './rayuConfig.js'
 import { loadDotEnv } from './envUtils.js'
+import { getRayuGatewayBaseUrl } from '../services/rayuAuth/rayuSession.js'
 import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_PROVIDER_ID } from '../services/api/ollamaCloud.js'
 
 
@@ -154,6 +155,42 @@ export const RAYU_HOSTED_PROVIDER_ID = 'rayu-hosted'
 export const RAYU_HOSTED_PROVIDER_LABEL = 'Rayu (hosted)'
 
 /**
+ * Stable provider id for the Rayu API-KEY provider — Rayu's own hosted models
+ * reached with a `rayu_sk_live_…` key from rayucode.com/dashboard/api-keys.
+ *
+ * This is a SECOND, independent Rayu provider, deliberately separate from
+ * RAYU_HOSTED_PROVIDER_ID above:
+ *   • 'rayu-hosted' authenticates with the account JWT, is auto-registered from
+ *     /me/entitlements on /login, and is never connected by hand.
+ *   • 'rayu' (this one) authenticates with a long-lived API key the user pastes
+ *     into /connect, and works with no Rayu account session at all.
+ * Separate ids so a user can have both connected without either clobbering the
+ * other's credential — the same reasoning as 'anthropic' vs
+ * 'claude-subscription'.
+ */
+export const RAYU_API_PROVIDER_ID = 'rayu'
+
+/**
+ * Anthropic Messages base URL for the Rayu API-key provider: the gateway's
+ * `/anthropic` surface (the Anthropic SDK appends `/v1/messages`, and the
+ * gateway registers both `/anthropic/v1/messages` and its `/v1/messages`
+ * alias). Resolved at CALL time, never baked into the preset, because the
+ * gateway host comes from RAYU_GATEWAY_URL → MACRO.RAYU_GATEWAY_URL →
+ * localhost:8080 and so differs between a dev run and a published build.
+ *
+ * This intentionally mirrors `rayuHostedAnthropicBaseURL()` in
+ * services/api/rayuHosted/rayuHostedAuth.ts rather than importing it: that
+ * module statically pulls gatewayHeaders → utils/model/model → auth/settings,
+ * which would drag a large subtree onto the startup path this file sits on and
+ * risk the documented `rayuConfig ↔ rayuProviders ↔ services/*` import cycle
+ * (see services/api/providerKeys.ts). Only the dependency-light gateway-base
+ * accessor is imported here.
+ */
+export function rayuApiAnthropicBaseURL(): string {
+  return `${getRayuGatewayBaseUrl()}/anthropic`
+}
+
+/**
  * Built-in providers that support storing MULTIPLE API keys with automatic
  * rate-limit key rotation:
  *   • NVIDIA / OpenRouter — openai-compatible → rotation in openaiAdapter
@@ -294,6 +331,43 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModel: 'claude-sonnet-4-6',
     smallFastModel: 'claude-haiku-4-5-20251001',
     requiresOAuth: true,
+  },
+  {
+    // Rayu's OWN hosted models, reached with a `rayu_sk_live_…` API key created
+    // at rayucode.com/dashboard/api-keys. This is the BYO-key face of the Rayu
+    // API product (the same models the gateway serves to any OpenAI/Anthropic
+    // SDK), so it needs no Rayu account session — paste a key and go.
+    //
+    // POSITION: third, immediately after the two first-party Anthropic entries,
+    // whose lead position is asserted by test/providers.test.ts. First-run
+    // discovery does not depend on this order — RayuFirstRunSetup offers Rayu as
+    // one of only two options before /connect is ever reached.
+    //
+    // kind:'anthropic-compatible' because the gateway serves the NATIVE Anthropic
+    // Messages API at {gateway}/anthropic/v1/messages with the key as a Bearer
+    // credential. That means extended THINKING, tool use, prompt caching and the
+    // full context window map 1:1 with claude.ts and are NOT emulated through the
+    // OpenAI-compatible adapter — the same reasoning as the 'longcat' and
+    // 'ollama-cloud' presets below. It also means the whole request path already
+    // exists: resolveWireFormat → 'anthropic-messages', resolveClientTarget →
+    // 'anthropic-compatible'.
+    //
+    // No `baseURL` here ON PURPOSE: the gateway host is resolved at runtime
+    // (RAYU_GATEWAY_URL → MACRO.RAYU_GATEWAY_URL → localhost:8080), so a value
+    // baked in at module load would be wrong for a dev run or a published build.
+    // Every write path fills it from rayuApiAnthropicBaseURL() instead — and MUST,
+    // because resolveClientTarget() returns 'anthropic-compatible' without
+    // checking baseURL, so an empty one would let the Anthropic SDK fall back to
+    // api.anthropic.com and send the user's Rayu key to Anthropic.
+    //
+    // Models are FETCHED LIVE from GET {gateway}/v1/models (see
+    // fetchProviderModels), so whatever the admin has in the dashboard — ids,
+    // display names, context windows — is what /model shows, with no CLI release.
+    id: RAYU_API_PROVIDER_ID,
+    label:
+      'Rayu — hosted models (rayucode.com API key) · fetches your plan models · native thinking',
+    kind: 'anthropic-compatible',
+    envKeys: ['RAYU_API_KEY'],
   },
   {
     // LongCat — Meituan's LongCat-2.0, exposed via an Anthropic-compatible
@@ -646,6 +720,17 @@ export function migrateEnvKeysToConfig(): void {
   for (const provider of cfg.providers) {
     const preset = PROVIDER_PRESETS.find(p => p.id === provider.id)
     if (!preset) continue
+    // SECURITY (hazard 1): the Rayu API-key provider has no static preset
+    // baseURL, and resolveClientTarget() routes kind:'anthropic-compatible' to
+    // the Anthropic SDK WITHOUT checking baseURL. A provider row that somehow
+    // lost its baseURL (hand-edited config, a partial write, a row created by an
+    // older build) would therefore send the user's Rayu key to the SDK default
+    // host, api.anthropic.com. Repair it on every load rather than trusting the
+    // row.
+    if (provider.id === RAYU_API_PROVIDER_ID && !provider.baseURL) {
+      provider.baseURL = rayuApiAnthropicBaseURL()
+      changed = true
+    }
     if (!provider.baseURL && preset.baseURL) {
       provider.baseURL = preset.baseURL
       changed = true
@@ -674,7 +759,15 @@ export function migrateEnvKeysToConfig(): void {
           process.env.AWS_DEFAULT_REGION ||
           DEFAULT_BEDROCK_REGION)
       : undefined
-    const baseURL = isBedrock ? bedrockBaseURL(region as string) : preset.baseURL
+    // The Rayu API-key provider resolves its base URL at runtime for the same
+    // reason Bedrock does — it is not a fixed host. Doing it here (rather than
+    // leaving it undefined) is the hazard-1 guard on the env-import path: see the
+    // repair loop above.
+    const baseURL = isBedrock
+      ? bedrockBaseURL(region as string)
+      : preset.id === RAYU_API_PROVIDER_ID
+        ? rayuApiAnthropicBaseURL()
+        : preset.baseURL
     if (existing) {
       existing.apiKey = key
       existing.baseURL ??= baseURL
@@ -707,6 +800,7 @@ export function migrateEnvKeysToConfig(): void {
 
 /** Short, branded names keyed by provider id. */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  [RAYU_API_PROVIDER_ID]: 'Rayu',
   anthropic: 'Anthropic',
   longcat: 'LongCat',
   nvidia: 'NVIDIA',

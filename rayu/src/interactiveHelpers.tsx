@@ -123,6 +123,40 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     });
   }
 
+  // Re-check a stored Rayu API key on EVERY launch, so a key that has been
+  // revoked, has expired, or has run out of credit is caught here rather than
+  // surfacing as a failed request mid-conversation. This is what "track the user"
+  // means for a long-lived credential: unlike an account session it carries no
+  // expiry the CLI can read locally, so the gateway has to be asked.
+  //
+  // Deliberately AFTER onboarding: a first run has just set the key up and
+  // validated it, and ensureRayuApiKeyValidated() only calls out once per process,
+  // so this costs nothing on that path.
+  //
+  // FAILS OPEN. Only 'invalid' and 'no-credit' — verdicts the gateway is certain
+  // about — interrupt the user. An unreachable gateway returns 'unavailable' and
+  // is ignored: an offline laptop or a gateway blip must not lock someone out of
+  // their own session, and the request path will surface a real error if it
+  // genuinely cannot proceed.
+  //
+  // Non-interactive/--print runs never reach showSetupScreens at all, so headless
+  // usage is unaffected and a bad key there still surfaces as an API error.
+  if (!onboardingShown) {
+    const {
+      ensureRayuApiKeyValidated
+    } = await import('./services/rayuAuth/rayuApiKeyAuth.js');
+    const check = await ensureRayuApiKeyValidated().catch(() => null);
+    if (check && (check.status === 'invalid' || check.status === 'no-credit')) {
+      const {
+        RayuFirstRunSetup
+      } = await import('./components/RayuFirstRunSetup.js');
+      const notice = check.status === 'invalid' ? 'Your saved Rayu API key was rejected — it may have been revoked, expired, or regenerated.' : 'Your Rayu account has no credits left, so the saved API key cannot be used right now.';
+      await showSetupDialog(root, done => <RayuFirstRunSetup reason="relaunch" notice={notice} onDone={() => void done()} />, {
+        onChangeAppState
+      });
+    }
+  }
+
   // Always show the trust dialog in interactive sessions, regardless of permission mode.
   // The trust dialog is the workspace trust boundary — it warns about untrusted repos
   // and checks RAYU.md external includes. bypassPermissions mode

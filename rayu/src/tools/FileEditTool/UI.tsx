@@ -20,7 +20,7 @@ import { readEditContext } from '../../utils/readEditContext.js';
 import { firstLineOf } from '../../utils/stringUtils.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { FileEditOutput } from './types.js';
-import { findActualString, getPatchForEdit, preserveQuoteStyle } from './utils.js';
+import { getPatchForEdit, resolveEditStrings } from './utils.js';
 const FILE_CHANGE_REVIEW_HINT = 'Pending review appears below when Rayu finishes. Use /keep [file] or /undo [file].';
 export function userFacingName(input: Partial<{
   file_path: string;
@@ -266,15 +266,19 @@ async function loadRejectionDiff(filePath: string, oldString: string, newString:
         fileContent: undefined
       };
     }
-    const actualOld = findActualString(ctx.content, oldString) || oldString;
-    const actualNew = preserveQuoteStyle(oldString, actualOld, newString);
+    // Shared with FileEditTool.call so the previewed diff is byte-identical to
+    // what will be written — including the tier-gated quote handling.
+    const {
+      actualOldString,
+      actualNewString
+    } = resolveEditStrings(ctx.content, oldString, newString);
     const {
       patch
     } = getPatchForEdit({
       filePath,
       fileContents: ctx.content,
-      oldString: actualOld,
-      newString: actualNew,
+      oldString: actualOldString,
+      newString: actualNewString,
       replaceAll
     });
     return {

@@ -38,6 +38,7 @@ import {
   suggestPathUnderCwd,
 } from '../../utils/file.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
+import { consumeForceFreshRead } from '../../utils/fileStateCache.js'
 import { formatFileSize } from '../../utils/format.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
@@ -541,11 +542,17 @@ export const FileReadTool = buildTool({
     return { result: true }
   },
   async call(
-    { file_path, offset = 1, limit = undefined, pages },
+    input,
     context,
     _canUseTool?,
     parentMessage?,
   ) {
+    const { file_path, offset = 1, limit = undefined, pages } = input
+    // Derive from the RAW input, BEFORE the `offset = 1` default above: a full
+    // read is one where the model asked for no range at all. Stored on the
+    // readFileState entry as `fullRead` so Edit/Write can tell "the model saw
+    // the whole file" from "the model saw lines 40-80". See FileState.fullRead.
+    const isFullRead = input.offset === undefined && input.limit === undefined
     const { readFileState, fileReadingLimits } = context
 
     const defaults = getDefaultFileReadingLimits()
@@ -590,9 +597,15 @@ export const FileReadTool = buildTool({
       'tengu_read_dedup_killswitch',
       false,
     )
-    const existingState = dedupKillswitch
-      ? undefined
-      : readFileState.get(fullFilePath)
+    // An Edit/Write that just told the model to "Read it again" needs REAL
+    // content back: the dedup stub carries none, so the model would have
+    // nothing fresh to copy old_string from and would retry the same wrong
+    // string forever. One-shot — consuming it restores normal dedup.
+    const forceFresh = consumeForceFreshRead(context, fullFilePath)
+    const existingState =
+      dedupKillswitch || forceFresh
+        ? undefined
+        : readFileState.get(fullFilePath)
     // Only dedup entries that came from a prior Read (offset is always set
     // by Read). Edit/Write store offset=undefined — their readFileState
     // entry reflects post-edit mtime, so deduping against it would wrongly
@@ -657,6 +670,7 @@ export const FileReadTool = buildTool({
         readFileState,
         context,
         parentMessage?.message.id,
+        isFullRead,
       )
     } catch (error) {
       // Handle file-not-found: suggest similar files
@@ -680,6 +694,7 @@ export const FileReadTool = buildTool({
               readFileState,
               context,
               parentMessage?.message.id,
+              isFullRead,
             )
           } catch (altError) {
             if (!isENOENT(altError)) {
@@ -872,6 +887,8 @@ async function callInner(
   readFileState: ToolUseContext['readFileState'],
   context: ToolUseContext,
   messageId: string | undefined,
+  /** True when the model requested no offset/limit — see FileState.fullRead. */
+  isFullRead: boolean,
 ): Promise<{
   data: Output
   newMessages?: ReturnType<typeof createUserMessage>[]
@@ -902,6 +919,7 @@ async function callInner(
       timestamp: Math.floor(stats.mtimeMs),
       offset,
       limit,
+      fullRead: isFullRead,
     })
     context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 
@@ -1092,6 +1110,7 @@ async function callInner(
     timestamp: Math.floor(mtimeMs),
     offset,
     limit,
+    fullRead: isFullRead,
   })
   context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 

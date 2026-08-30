@@ -165,19 +165,33 @@ function markTrailingWhitespace(input: string): boolean[] {
 }
 
 /**
+ * Which normalization tier produced a match.
+ *
+ * Matters because only the `quotes` tier implies the FILE uses curly typography.
+ * The `whitespace` and `lenient` tiers also return a string that differs from
+ * what the model sent, but for reasons that have nothing to do with quotes — see
+ * resolveEditStrings for why conflating them corrupted files.
+ */
+export type EditMatchTier = 'exact' | 'quotes' | 'whitespace' | 'lenient'
+
+export type EditMatch = { matched: string; tier: EditMatchTier }
+
+/**
  * Finds the actual string in the file content that matches the search string,
- * accounting for quote normalization and trailing whitespace differences.
+ * accounting for quote normalization and trailing whitespace differences, and
+ * reports WHICH tier matched.
+ *
  * @param fileContent The file content to search in
  * @param searchString The string to search for
- * @returns The actual string found in the file, or null if not found
+ * @returns The matched file bytes plus the tier, or null if not found
  */
-export function findActualString(
+export function findActualStringMatch(
   fileContent: string,
   searchString: string,
-): string | null {
+): EditMatch | null {
   // First try exact match
   if (fileContent.includes(searchString)) {
-    return searchString
+    return { matched: searchString, tier: 'exact' }
   }
 
   // Try with normalized quotes
@@ -186,10 +200,16 @@ export function findActualString(
 
   const searchIndex = normalizedFile.indexOf(normalizedSearch)
   if (searchIndex !== -1) {
-    // Use normalizedSearch.length (not searchString.length) because curly quotes
-    // are multi-byte (3 bytes each) while straight quotes are single-byte.
-    // Using searchString.length here would extract the wrong-length substring.
-    return fileContent.substring(searchIndex, searchIndex + normalizedSearch.length)
+    // normalizeQuotes is 1 char → 1 char (curly quotes are single UTF-16 code
+    // units, like straight ones), so indices map through unchanged and
+    // normalizedSearch.length is the correct extraction length.
+    return {
+      matched: fileContent.substring(
+        searchIndex,
+        searchIndex + normalizedSearch.length,
+      ),
+      tier: 'quotes',
+    }
   }
 
   // Try with trailing whitespace stripped from each line.
@@ -212,7 +232,10 @@ export function findActualString(
         strippedIndex + strippedSearch.length,
       )
       if (originalEnd !== -1) {
-        return fileContent.substring(originalStart, originalEnd)
+        return {
+          matched: fileContent.substring(originalStart, originalEnd),
+          tier: 'whitespace',
+        }
       }
     }
   }
@@ -232,12 +255,74 @@ export function findActualString(
       const start = lenientFile.map[lenientIndex]
       const end = lenientFile.map[lenientIndex + lenientSearch.normalized.length]
       if (start !== undefined && end !== undefined && end > start) {
-        return fileContent.substring(start, end)
+        return {
+          matched: fileContent.substring(start, end),
+          tier: 'lenient',
+        }
       }
     }
   }
 
   return null
+}
+
+/**
+ * Finds the actual string in the file content that matches the search string.
+ *
+ * Thin wrapper over findActualStringMatch for callers that only need the matched
+ * bytes. Anything that also transforms new_string must use resolveEditStrings
+ * instead, so the quote handling stays tier-aware.
+ */
+export function findActualString(
+  fileContent: string,
+  searchString: string,
+): string | null {
+  return findActualStringMatch(fileContent, searchString)?.matched ?? null
+}
+
+/**
+ * Resolve the old/new strings an edit should actually apply.
+ *
+ * THE BUG THIS FIXES
+ * The three call sites that apply an edit (FileEditTool.call, and the two diff
+ * previews in UI.tsx / FileEditToolDiff.tsx) each did:
+ *
+ *     const actualOld = findActualString(content, oldString) || oldString
+ *     const actualNew = preserveQuoteStyle(oldString, actualOld, newString)
+ *
+ * and preserveQuoteStyle gates on `oldString !== actualOldString` — i.e. "the
+ * match required normalization, so the file must use curly typography". That
+ * inference is wrong for two of the four tiers: the `whitespace` and `lenient`
+ * tiers also return a differing string, for trailing spaces / no-break spaces /
+ * zero-width characters / stray CRs. When one of those matched and the matched
+ * region happened to contain any curly quote at all (a `’` in a nearby comment
+ * is enough), preserveQuoteStyle rewrote EVERY `"` and `'` in new_string to
+ * curly — and applyCurlySingleQuotes deliberately converts letter-flanked
+ * apostrophes, so `don't` became `don’t` and `'utf8'` became `‘utf8’`, written
+ * straight to disk as broken code.
+ *
+ * Non-Claude providers hit those tiers far more often (their old_string
+ * whitespace drifts more), which is why the corruption looked provider-specific.
+ *
+ * Gating on the `quotes` tier keeps the original intent — an edit matched only
+ * after folding curly quotes DOES want the file's typography preserved — while
+ * making it impossible for a whitespace-only match to touch quotes at all.
+ *
+ * Shared by all three call sites so a preview can never disagree with what gets
+ * written.
+ */
+export function resolveEditStrings(
+  fileContent: string,
+  oldString: string,
+  newString: string,
+): { actualOldString: string; actualNewString: string } {
+  const match = findActualStringMatch(fileContent, oldString)
+  const actualOldString = match?.matched ?? oldString
+  const actualNewString =
+    match?.tier === 'quotes'
+      ? preserveQuoteStyle(oldString, actualOldString, newString)
+      : newString
+  return { actualOldString, actualNewString }
 }
 
 /**

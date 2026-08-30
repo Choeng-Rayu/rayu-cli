@@ -133,6 +133,10 @@ function createToolUseContext(
     setAppState: () => {},
     messages: [],
     readFileState,
+    // Shared across calls in this process, like readFileState: an Edit rejection
+    // in one MCP tool call must force the NEXT call's Read to return real
+    // content instead of the dedup stub.
+    forceFreshReadPaths: new Set<string>(),
     setInProgressToolUseIDs: () => {},
     setResponseLength: () => {},
     updateFileHistoryState: () => {},

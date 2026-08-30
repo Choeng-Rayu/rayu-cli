@@ -378,15 +378,15 @@ const MessagesImpl = ({
   const toggleShowAllShortcut = useShortcutDisplay('transcript:toggleShowAll', 'Transcript', 'Ctrl+E');
   const normalizedMessages = useMemo(() => normalizeMessages(messages).filter(isNotEmptyMessage), [messages]);
 
-  // Check if streaming thinking should be visible (streaming or within 30s timeout)
-  const isStreamingThinkingVisible = useMemo(() => {
-    if (!streamingThinking) return false;
-    if (streamingThinking.isStreaming) return true;
-    if (streamingThinking.streamingEndedAt) {
-      return Date.now() - streamingThinking.streamingEndedAt < 30000;
-    }
-    return false;
-  }, [streamingThinking]);
+  // The trailing preview exists ONLY while the model is actively reasoning.
+  // Once the block completes, the finished thinking block renders IN PLACE
+  // (Message.tsx, above the response text) — keeping the trailing copy alive for
+  // 30s past completion is what used to pin "✓ Thought" below the answer and
+  // below the turn-duration line, and it duplicated the in-message one-liner.
+  // handleMessageFromStream flips isStreaming:false in the SAME batch as the
+  // completed assistant message, so the preview→in-message swap is atomic: no
+  // frame shows both, and no frame shows neither.
+  const isStreamingThinkingVisible = streamingThinking?.isStreaming === true;
 
   // Find the last thinking block (message UUID + content index) for hiding past thinking in transcript mode
   // When streaming thinking is visible, use a special ID that won't match any completed thinking block

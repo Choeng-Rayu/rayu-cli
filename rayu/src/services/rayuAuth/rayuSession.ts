@@ -164,16 +164,45 @@ export async function recordRayuToolUsageBestEffort(tool: string): Promise<void>
 
 /**
  * Login gate used before the first model query. Returns a user-facing message
- * when the request should be blocked (Rayu OAuth enabled but not logged in),
- * or null when the request may proceed.
+ * when the request should be blocked (Rayu OAuth enabled but no usable Rayu
+ * credential), or null when the request may proceed.
  *
- * Pure/synchronous and cheap so it is safe to call on the prompt hot path. When
- * USE_RAYU_OAUTH is off this always returns null (no behavior change).
+ * A Rayu API KEY satisfies this gate as well as an account session. The two are
+ * alternative credentials for the same product — rayucode serves its hosted
+ * models to any caller with a `rayu_sk_live_…` key — so a user who connected via
+ * /connect → Rayu is fully entitled to send a prompt and must not be told to run
+ * /login. Only INFERENCE is unlocked this way: /usage, /billing, /topup and the
+ * other account surfaces still require a real session, because they talk to the
+ * backend with a JWT.
+ *
+ * Pure/synchronous and cheap so it is safe to call on the prompt hot path — the
+ * key's verdict is read from the cached record written by the launch-time check,
+ * never fetched here. When USE_RAYU_OAUTH is off this always returns null (no
+ * behavior change).
  */
 export function rayuLoginGateMessage(): string | null {
   if (!isUseRayuOAuthEnabled()) return null
   if (hasRayuSession()) return null
-  return 'You need to sign in to use Rayu. Run /login to sign in, then send your message again.'
+  if (hasUsableRayuApiKey()) return null
+  return 'You need to sign in to use Rayu. Run /login to sign in, or /connect → Rayu to use a Rayu API key, then send your message again.'
+}
+
+/**
+ * Whether a validated Rayu API key is available, read without importing the
+ * API-key module at load time.
+ *
+ * rayuApiKeyAuth imports rayuConfig (to find the provider) and this module (for
+ * hasRayuSession), so a static import here would close a cycle. `require` keeps
+ * the gate synchronous — it is called per prompt and cannot await — and any
+ * failure degrades to "no key", i.e. the previous behaviour.
+ */
+function hasUsableRayuApiKey(): boolean {
+  try {
+    const { hasValidatedRayuApiKey } = require('./rayuApiKeyAuth.js') as typeof import('./rayuApiKeyAuth.js')
+    return hasValidatedRayuApiKey()
+  } catch {
+    return false
+  }
 }
 
 // --- HTTP (injectable for tests) -------------------------------------------

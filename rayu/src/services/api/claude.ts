@@ -27,6 +27,7 @@ import {
 } from 'src/utils/model/providers.js'
 import {
   isFirstPartyRequest,
+  providerAcceptsImages,
   usesTranslatedFormat,
 } from 'src/utils/model/providerCapabilities.js'
 import {
@@ -1322,6 +1323,27 @@ async function* queryModel(
     messagesForAPI,
     API_MAX_MEDIA_PER_REQUEST,
   )
+
+  // Drop image content when the resolved (provider, model) is text-only.
+  //
+  // The two OpenAI adapters already did this at translation time, but the NATIVE
+  // Anthropic Messages path had no such guard — so a text-only model reached
+  // through an anthropic-compatible endpoint (or one the user marked text-only in
+  // /connect) received image blocks and answered 400, losing the turn AND leaving
+  // the image in history to fail every following turn.
+  //
+  // stripImagesFromMessages substitutes an "[image]" text placeholder rather than
+  // deleting the block: a tool_result whose content array became empty is itself
+  // a 400, and the placeholder tells the model an image existed but was not
+  // visible to it. Required via lazy require — compact.ts imports this module for
+  // queryModelWithStreaming, so a static import is a cycle.
+  if (!providerAcceptsImages(options.model)) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { stripImagesFromMessages } =
+      require('../compact/compact.js') as typeof import('../compact/compact.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    messagesForAPI = stripImagesFromMessages(messagesForAPI)
+  }
 
   // Instrumentation: Track message count after normalization
   logEvent('tengu_api_after_normalize', {

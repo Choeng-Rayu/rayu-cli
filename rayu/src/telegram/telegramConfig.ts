@@ -37,7 +37,50 @@ export interface TelegramConfig {
    */
   linkedBotUsername?: string
   pendingToken?: PendingToken
+  /**
+   * The session that was last driving the chat, remembered across restarts so
+   * reopening it reconnects Telegram automatically.
+   *
+   * Distinct from `telegram-attached.json`, which is the LIVE pointer used for
+   * routing right now: that file is about "where do prompts go", this is about
+   * "should this session reconnect at all". Keeping them separate means a
+   * closed session can be forgotten for routing while still being remembered
+   * for auto-reconnect.
+   */
+  autoAttach?: {
+    sessionId: string
+    cwd: string
+    /** Epoch ms, used to expire the memory — see AUTO_ATTACH_TTL_MS. */
+    savedAt: number
+  }
+  /**
+   * Whether reopening the remembered session reconnects Telegram without
+   * `/telegram-bot`. Absent = enabled; set false to require an explicit connect
+   * every time.
+   */
+  autoReconnect?: boolean
+  /**
+   * Whether `/uninstall` from Telegram may remove RAYU from this machine.
+   *
+   * ABSENT MEANS DISABLED. This is the only setting in this file that defaults to
+   * the restrictive value, because it is the only one whose failure mode is
+   * irreversible: with it on, control of the linked Telegram account is
+   * sufficient to destroy the install and its credentials. Turning it on is
+   * therefore a decision that must be made AT THE MACHINE — see the
+   * `telegram-remote-uninstall` command, which is deliberately unreachable from
+   * Telegram itself so the chat cannot raise its own privileges.
+   */
+  allowRemoteUninstall?: boolean
 }
+
+/**
+ * How long the auto-reconnect memory is honoured.
+ *
+ * A week covers "I closed my laptop on Friday and came back Monday" while
+ * ensuring a session abandoned months ago never silently re-exposes a machine to
+ * a chat the user has forgotten about.
+ */
+export const AUTO_ATTACH_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 function configPath(): string {
   return join(getRayuConfigHomeDir(), 'telegram.json')
@@ -133,13 +176,27 @@ export function isValidBotToken(raw: string): boolean {
 }
 
 /**
- * Bot token: config-first (telegram.json → botToken), then env fallback (TELEGRAM_BOT_TOKEN).
- * This way users can paste their token into rayu-cli instead of setting an env var.
+ * The BYO bot token, from telegram.json only.
+ *
+ * DELIBERATELY NOT an env-var fallback (T-9). This used to fall back to
+ * `process.env.TELEGRAM_BOT_TOKEN`, which is the variable rayu-backend uses for
+ * the ABA *payment* bot — a different bot entirely. On any host running both
+ * (a developer machine, or a box where the backend's .env is sourced into the
+ * shell) the CLI would silently adopt the payments bot's token and start a
+ * second `getUpdates` consumer against it. Telegram allows exactly one consumer
+ * per token, so the two would steal each other's updates — producing the 409
+ * Conflict that TelegramService.onPollError warns about at length, and the
+ * "messages don't reach the CLI" / "linked successfully AND invalid" pairing
+ * symptoms that are hardest to diagnose.
+ *
+ * A user who wants a BYO bot pastes the token into `/telegram-bot`, which stores
+ * it here at 0600. Set RAYU_TELEGRAM_BOT_TOKEN to override for automation — a
+ * Rayu-namespaced variable that cannot collide with the backend's.
  */
 export function getBotToken(): string | undefined {
   const cfg = readTelegramConfig()
   if (cfg.botToken && cfg.botToken.trim().length > 0) return cfg.botToken.trim()
-  const env = process.env.TELEGRAM_BOT_TOKEN
+  const env = process.env.RAYU_TELEGRAM_BOT_TOKEN
   return env && env.trim().length > 0 ? env.trim() : undefined
 }
 
@@ -281,6 +338,68 @@ export function telegramTransportKey(): string {
 }
 
 /**
+ * Remember that this session is driving the chat, so reopening it reconnects.
+ * Called on every attach, so the memory always names the most recent session.
+ */
+export function saveAutoAttach(sessionId: string, cwd: string): void {
+  const cfg = readTelegramConfig()
+  cfg.autoAttach = { sessionId, cwd, savedAt: Date.now() }
+  writeTelegramConfig(cfg)
+}
+
+/** The remembered session, or undefined when absent or expired. */
+export function readAutoAttach(): { sessionId: string; cwd: string } | undefined {
+  const saved = readTelegramConfig().autoAttach
+  if (!saved || typeof saved.sessionId !== 'string') return undefined
+  if (Date.now() - (saved.savedAt ?? 0) > AUTO_ATTACH_TTL_MS) return undefined
+  return { sessionId: saved.sessionId, cwd: saved.cwd }
+}
+
+/** Forget the remembered session (explicit disconnect, or nothing left to hold). */
+export function clearAutoAttach(): void {
+  const cfg = readTelegramConfig()
+  if (!cfg.autoAttach) return
+  delete cfg.autoAttach
+  writeTelegramConfig(cfg)
+}
+
+/** Whether auto-reconnect is enabled. Defaults to true when unset. */
+export function isAutoReconnectEnabled(): boolean {
+  return readTelegramConfig().autoReconnect !== false
+}
+
+/** Turn auto-reconnect on or off. */
+export function setAutoReconnect(enabled: boolean): void {
+  const cfg = readTelegramConfig()
+  cfg.autoReconnect = enabled
+  writeTelegramConfig(cfg)
+}
+
+/**
+ * Whether remote uninstall over Telegram is permitted on this machine.
+ *
+ * FAILS CLOSED: anything other than an explicit `true` is a no. An absent field,
+ * a hand-edited truthy string, or a config file that failed to parse all read as
+ * disabled, because the cost of wrongly allowing this is an unrecoverable wipe.
+ */
+export function isRemoteUninstallAllowed(): boolean {
+  return readTelegramConfig().allowRemoteUninstall === true
+}
+
+/**
+ * Enable or disable remote uninstall.
+ *
+ * Callers must be local — the command that exposes this is on the Telegram
+ * blocked list, so a chat cannot grant itself the capability.
+ */
+export function setRemoteUninstallAllowed(allowed: boolean): void {
+  const cfg = readTelegramConfig()
+  if (allowed) cfg.allowRemoteUninstall = true
+  else delete cfg.allowRemoteUninstall
+  writeTelegramConfig(cfg)
+}
+
+/**
  * Forget the current link so the next connect re-pairs from scratch.
  *
  * Keeps `mode` and the BYO `botToken` — the user's *choice* of transport and
@@ -295,5 +414,9 @@ export function unlink(): void {
   delete next.linkedUsername
   delete next.linkedBotUsername
   delete next.pendingToken
+  // An unlink is an explicit "stop driving my machine from this chat", so the
+  // auto-reconnect memory must go too — otherwise reopening the remembered
+  // session would quietly re-establish exactly what the user just revoked.
+  delete next.autoAttach
   writeTelegramConfig(next)
 }

@@ -38,6 +38,13 @@ const ORIGINAL_DIR_PREFIXES = [
   'commands/model-image-generation/',
   'commands/model-video-generation/',
   'commands/ultraplan-local/',
+  // External-agent orchestrator: RAYU drives other agentic CLIs (Codex,
+  // Claude Code, OpenCode, any ACP agent) as capability-gated plugins.
+  // Entirely first-party; no upstream counterpart exists.
+  'externalAgents/',
+  'commands/agent/',
+  'tools/ExternalAgentTool/',
+  'tasks/ExternalAgentTask/',
 ]
 // First-party single-file markers (exact relative paths or basename patterns).
 const ORIGINAL_FILE_MARKERS = [

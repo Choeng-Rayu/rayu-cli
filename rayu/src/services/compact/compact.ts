@@ -142,7 +142,7 @@ const MAX_COMPACT_STREAMING_RETRIES = 2
  * tool_result content from tools). Assistant messages contain text, tool_use,
  * and thinking blocks but not images.
  */
-export function stripImagesFromMessages(messages: Message[]): Message[] {
+export function stripImagesFromMessages<T extends Message>(messages: T[]): T[] {
   return messages.map(message => {
     if (message.type !== 'user') {
       return message

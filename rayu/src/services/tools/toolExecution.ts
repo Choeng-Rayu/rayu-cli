@@ -103,6 +103,7 @@ import {
   formatError,
   formatZodValidationError,
 } from '../../utils/toolErrors.js'
+import { getToolInputParseFailure } from '../../utils/toolInputRepair.js'
 import {
   processPreMappedToolResultBlock,
   processToolResultBlock,
@@ -614,13 +615,23 @@ async function checkPermissionsAndCallTool(
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
   const parsedInput = tool.inputSchema.safeParse(input)
   if (!parsedInput.success) {
-    let errorContent = formatZodValidationError(tool.name, parsedInput.error)
+    // The arguments never parsed as JSON, so normalizeContentFromAPI stamped the
+    // real diagnosis onto the input. Report THAT: a zod schema error here would
+    // list every field as missing and send the model off fixing values that were
+    // never the problem.
+    const parseFailure = getToolInputParseFailure(input)
+    let errorContent =
+      parseFailure ?? formatZodValidationError(tool.name, parsedInput.error)
 
-    const schemaHint = buildSchemaNotSentHint(
-      tool,
-      toolUseContext.messages,
-      toolUseContext.options.tools,
-    )
+    const schemaHint = parseFailure
+      ? // The schema WAS sent; the model's JSON encoding was broken. Appending
+        // "this tool's schema may not have been sent" would misdirect.
+        null
+      : buildSchemaNotSentHint(
+          tool,
+          toolUseContext.messages,
+          toolUseContext.options.tools,
+        )
     if (schemaHint) {
       logEvent('tengu_deferred_tool_schema_not_sent', {
         toolName: sanitizeToolNameForAnalytics(tool.name),

@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
-import { memo, type ReactNode, useMemo, useRef } from 'react';
+import { memo, type ReactNode, useMemo, useRef, useSyncExternalStore } from 'react';
 import { isBridgeEnabled } from '../../bridge/bridgeEnabled.js';
 import { getBridgeStatus } from '../../bridge/bridgeStatusUtil.js';
 import { useSetPromptOverlay } from '../../context/promptOverlayContext.js';
@@ -11,6 +11,11 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../ink.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
 import { useAppState } from '../../state/AppState.js';
+import {
+  getTelegramHealthSnapshot,
+  getTelegramStatus,
+  subscribeToTelegramHealth,
+} from '../../telegram/telegramHealth.js';
 import type { ToolPermissionContext } from '../../Tool.js';
 import type { Message } from '../../types/message.js';
 import type { PromptInputMode, VimMode } from '../../types/textInputTypes.js';
@@ -144,6 +149,7 @@ function PromptInputFooter({
         <Box flexShrink={1} gap={1}>
           {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} messages={messages} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
           {"external" === 'ant' && isUndercover() && <Text dimColor>undercover</Text>}
+          <TelegramStatusIndicator />
           <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
         </Box>
       </Box>
@@ -151,6 +157,29 @@ function PromptInputFooter({
     </>;
 }
 export default memo(PromptInputFooter);
+
+/**
+ * Telegram bridge connection state, shown under the input bar.
+ *
+ * Renders NOTHING unless a Telegram bridge exists in this session, so users who
+ * have never linked never see a Telegram row. Deliberately NOT gated on
+ * feature('BRIDGE_MODE') — that flag is disabled in this build (see
+ * scripts/macroValues.ts), which is exactly why BridgeStatusIndicator below
+ * compiles to `null`.
+ *
+ * Reads the module-level health store rather than AppState: the poll loop that
+ * owns this state is plain module code with no React context, and a session that
+ * lost the bridge lock never writes to the store at all, so a no-op session
+ * correctly shows nothing.
+ */
+function TelegramStatusIndicator(): React.ReactNode {
+  const health = useSyncExternalStore(subscribeToTelegramHealth, getTelegramHealthSnapshot);
+  const status = getTelegramStatus(health);
+  if (!status) return null;
+  return <Text color={status.color} wrap="truncate">
+      {status.label}
+    </Text>;
+}
 type BridgeStatusProps = {
   bridgeSelected: boolean;
 };

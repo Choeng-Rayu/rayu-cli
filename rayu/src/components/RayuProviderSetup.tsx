@@ -33,6 +33,8 @@ import {
   GEMINI_VERTEX_PROVIDER_ID,
   DEFAULT_VERTEX_REGION,
   VERTEX_REGIONS,
+  RAYU_API_PROVIDER_ID,
+  rayuApiAnthropicBaseURL,
 } from '../utils/rayuProviders.js'
 import { getMaxStoredApiKeys } from '../utils/envUtils.js'
 import { isMultiApiKeyAllowed } from '../services/rayuAuth/multiApiKeyFeature.js'
@@ -49,6 +51,7 @@ import {
   validateCustomBaseURL,
 } from '../utils/customProvider.js'
 import { MultiApiKeyManager } from './MultiApiKeyManager.js'
+import { RayuApiKeyInput } from './RayuApiKeyInput.js'
 import { ConsoleOAuthFlow } from './ConsoleOAuthFlow.js'
 
 type Preset = ProviderPreset
@@ -64,6 +67,10 @@ type Phase =
   | 'model'
   | 'key'
   | 'keyManager'
+  // Rayu's own hosted API, authenticated with a `rayu_sk_live_…` key. A dedicated
+  // phase (not the generic 'key' one) because the key is VALIDATED against the
+  // gateway and the model catalog is fetched before anything is persisted.
+  | 'rayuKey'
   | 'region'
   | 'fetchingModels'
   | 'pickModel'
@@ -210,7 +217,15 @@ export function RayuProviderSetup({
       setPhase('copilotLogin')
     } else if (p.kind === 'genai') setPhase('genaiLogin')
     else if (p.kind === 'vertex' || p.requiresOAuth) setPhase('vertexAuth')
-    else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
+    // Rayu's own hosted API. Checked BEFORE the generic key paths below: the key
+    // is validated against the gateway and the catalog fetched before the provider
+    // is written, which the plain 'key' phase does not do. The base URL is set
+    // here (the preset carries none, because the gateway host is a runtime value).
+    else if (p.id === RAYU_API_PROVIDER_ID) {
+      setFetchError(null)
+      setBaseURL(rayuApiAnthropicBaseURL())
+      setPhase('rayuKey')
+    } else if (p.kind === 'openai-compatible' && !p.baseURL) setPhase('baseURL')
     // NVIDIA / OpenRouter with the Basic-plan multi-key entitlement: open the
     // add/remove/delete key manager. Everyone else (and locked Free users) get
     // the single-key input below.
@@ -405,6 +420,18 @@ export function RayuProviderSetup({
       // Only the negative case is stored as an override; see RayuProvider docs.
       ...(customSupportsThinking ? {} : { supportsThinking: false }),
       ...(supportsImage ? {} : { supportsImage: false }),
+      // A "yes" is recorded PER MODEL, not just as the absence of the negative
+      // provider flag. Without this, a listed model that Rayu's built-in tables
+      // classify as text-only (e.g. `deepseek-chat`) would still have its images
+      // dropped even though the user just said this endpoint accepts them —
+      // modelSupportsImage is the only tier that outranks those tables.
+      ...(supportsImage
+        ? {
+            modelSupportsImage: Object.fromEntries(
+              models.map(m => [m, true]),
+            ),
+          }
+        : {}),
     }
     upsertProvider(provider, true)
     onDone()
@@ -1744,6 +1771,21 @@ export function RayuProviderSetup({
           onChangeCursorOffset={setCursor}
         />
       </Box>
+    )
+  }
+
+  if (phase === 'rayuKey') {
+    return (
+      <RayuApiKeyInput
+        heading="Rayu API key"
+        onOutcome={outcome => {
+          // Either way the wizard is finished: on success the provider is already
+          // saved and active; on cancel the user backed out of /connect. No
+          // authChanged — an API key is not an account session.
+          void outcome
+          onDone()
+        }}
+      />
     )
   }
 

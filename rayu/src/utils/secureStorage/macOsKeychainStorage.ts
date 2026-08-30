@@ -9,6 +9,8 @@ import {
   getMacOsKeychainStorageServiceName,
   getUsername,
   KEYCHAIN_CACHE_TTL_MS,
+  KEYCHAIN_LOCK_CHECK_TIMEOUT_MS,
+  KEYCHAIN_LOCKED_EXIT_CODE,
   keychainCacheState,
 } from './macOsKeychainHelpers.js'
 import type { SecureStorage, SecureStorageData } from './types.js'
@@ -23,6 +25,16 @@ import type { SecureStorage, SecureStorageData } from './types.js'
 // accounting differences.
 const SECURITY_STDIN_LINE_LIMIT = 4096 - 64
 
+// Hard bound on every `security` spawn in this module. An UNLOCKED, ACL-clear
+// keychain answers in well under a second (~20-500ms). A spawn still running
+// after this long is waiting on an interactive prompt (keychain unlock dialog
+// or ACL consent after a binary change) that the user may never see. Waiting
+// it out inside a SYNC spawn used to freeze the whole event loop for up to
+// the 10-minute exec default — that was the macOS "rayu hangs on launch"
+// bug. Treat "still running" as "no key" and fail open to the fallback
+// storage instead.
+export const KEYCHAIN_SYNC_SPAWN_TIMEOUT_MS = 5_000
+
 export const macOsKeychainStorage = {
   name: 'keychain',
   read(): SecureStorageData | null {
@@ -31,21 +43,31 @@ export const macOsKeychainStorage = {
       return prev.data
     }
 
-    try {
-      const storageServiceName = getMacOsKeychainStorageServiceName(
-        CREDENTIALS_SERVICE_SUFFIX,
-      )
-      const username = getUsername()
-      const result = execSyncWithDefaults_DEPRECATED(
-        `security find-generic-password -a "${username}" -w -s "${storageServiceName}"`,
-      )
-      if (result) {
-        const data = jsonParse(result)
-        keychainCacheState.cache = { data, cachedAt: Date.now() }
-        return data
+    // A LOCKED login keychain cannot serve entries without an interactive
+    // unlock: `security find-generic-password` blocks on a GUI/SecurityAgent
+    // prompt until someone answers. Spawning it anyway is what froze the CLI
+    // at startup on macOS. Skip the spawn and fall through to the same
+    // stale-while-error path a failed spawn takes (the fallback plaintext
+    // storage still works, and the UI already knows how to explain the
+    // locked-keychain "Not logged in" state).
+    if (!isMacOsKeychainLocked()) {
+      try {
+        const storageServiceName = getMacOsKeychainStorageServiceName(
+          CREDENTIALS_SERVICE_SUFFIX,
+        )
+        const username = getUsername()
+        const result = execSyncWithDefaults_DEPRECATED(
+          `security find-generic-password -a "${username}" -w -s "${storageServiceName}"`,
+          { timeout: KEYCHAIN_SYNC_SPAWN_TIMEOUT_MS },
+        )
+        if (result) {
+          const data = jsonParse(result)
+          keychainCacheState.cache = { data, cachedAt: Date.now() }
+          return data
+        }
+      } catch (_e) {
+        // fall through
       }
-    } catch (_e) {
-      // fall through
     }
     // Stale-while-error: if we had a value before and the refresh failed,
     // keep serving the stale value rather than caching null. Since #23192
@@ -123,6 +145,7 @@ export const macOsKeychainStorage = {
           input: command,
           stdio: ['pipe', 'pipe', 'pipe'],
           reject: false,
+          timeout: KEYCHAIN_SYNC_SPAWN_TIMEOUT_MS,
         })
       } else {
         logForDebugging(
@@ -141,7 +164,11 @@ export const macOsKeychainStorage = {
             '-X',
             hexValue,
           ],
-          { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
+          {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            reject: false,
+            timeout: KEYCHAIN_SYNC_SPAWN_TIMEOUT_MS,
+          },
         )
       }
 
@@ -167,6 +194,7 @@ export const macOsKeychainStorage = {
       const username = getUsername()
       execSyncWithDefaults_DEPRECATED(
         `security delete-generic-password -a "${username}" -s "${storageServiceName}"`,
+        { timeout: KEYCHAIN_SYNC_SPAWN_TIMEOUT_MS },
       )
       return true
     } catch (_e) {
@@ -176,6 +204,9 @@ export const macOsKeychainStorage = {
 } satisfies SecureStorage
 
 async function doReadAsync(): Promise<SecureStorageData | null> {
+  // Same locked-keychain guard as the sync read(): do not block (here for up
+  // to the exec default timeout) on an interactive unlock prompt.
+  if (isMacOsKeychainLocked()) return null
   try {
     const storageServiceName = getMacOsKeychainStorageServiceName(
       CREDENTIALS_SERVICE_SUFFIX,
@@ -184,7 +215,11 @@ async function doReadAsync(): Promise<SecureStorageData | null> {
     const { stdout, code } = await execFileNoThrow(
       'security',
       ['find-generic-password', '-a', username, '-w', '-s', storageServiceName],
-      { useCwd: false, preserveOutputOnError: false },
+      {
+        timeout: KEYCHAIN_SYNC_SPAWN_TIMEOUT_MS,
+        useCwd: false,
+        preserveOutputOnError: false,
+      },
     )
     if (code === 0 && stdout) {
       return jsonParse(stdout.trim())
@@ -220,9 +255,10 @@ export function isMacOsKeychainLocked(): boolean {
     const result = execaSync('security', ['show-keychain-info'], {
       reject: false,
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: KEYCHAIN_LOCK_CHECK_TIMEOUT_MS,
     })
     // Exit code 36 indicates the keychain is locked
-    keychainLockedCache = result.exitCode === 36
+    keychainLockedCache = result.exitCode === KEYCHAIN_LOCKED_EXIT_CODE
   } catch {
     // If the command fails for any reason, assume keychain is not locked
     keychainLockedCache = false

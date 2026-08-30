@@ -7,6 +7,59 @@ const API_BASE = 'https://api.telegram.org'
 const MAX_MESSAGE_CHARS = 4096
 
 /**
+ * Why a poll failed. Each kind implies a different truth about the connection,
+ * which is the whole point: the old code collapsed all of them into an empty
+ * array, so the bridge could not tell "idle chat" from "backend is down" and
+ * retried instantly forever (T-4).
+ *
+ *  - `network`             — the request never reached the peer (DNS, refused,
+ *                            offline, timeout). Retryable.
+ *  - `backend-unavailable` — rayu-backend answered 5xx. Retryable.
+ *  - `rate-limited`        — 429 from the backend or Telegram. Retryable after
+ *                            the supplied delay.
+ *  - `telegram-error`      — Telegram rejected the call (4xx other than 429), or
+ *                            returned an unparseable body. Retryable.
+ *  - `auth`                — no usable Rayu session / 401. NOT retryable without
+ *                            the user signing in again.
+ *  - `unlinked`            — the backend says this account has no linked chat.
+ *                            NOT retryable: the bridge must tear down (T-6).
+ */
+export type PollFailureKind =
+  | 'network'
+  | 'backend-unavailable'
+  | 'rate-limited'
+  | 'telegram-error'
+  | 'auth'
+  | 'unlinked'
+
+/** Result of one poll attempt. */
+export type PollOutcome =
+  | { kind: 'ok'; updates: TelegramUpdate[] }
+  | {
+      kind: PollFailureKind
+      /** Server-supplied minimum delay before retrying, in ms. */
+      retryAfterMs?: number
+      /** Short, non-secret description for debug logging. */
+      detail?: string
+    }
+
+/**
+ * Error thrown by callApi so callers can classify a failure instead of parsing
+ * a message string. Never carries the bot token: `message` is built from the
+ * method name and the API's JSON body only.
+ */
+export class TelegramApiError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly retryAfterSec?: number,
+  ) {
+    super(message)
+    this.name = 'TelegramApiError'
+  }
+}
+
+/**
  * Hosted-mode routing seam. When a HostedRouter is installed (shared Rayu bot),
  * the Telegram API calls below are transparently rerouted through the backend
  * instead of api.telegram.org — so the entire bridge/connect/permissions code
@@ -14,8 +67,11 @@ const MAX_MESSAGE_CHARS = 4096
  * When null (BYO mode), everything hits Telegram directly with the user's token.
  */
 export interface HostedRouter {
-  /** Long-poll the user's inbound queue (the `offset` arg is ignored). */
-  getUpdates(offset: number): Promise<TelegramUpdate[]>
+  /**
+   * Long-poll the user's inbound queue (the `offset` arg is ignored).
+   * Returns a typed outcome so link loss and outages are distinguishable.
+   */
+  getUpdates(offset: number): Promise<PollOutcome>
   /** Relay a Bot API method (sendMessage, editMessageText, …) via the backend. */
   call(method: string, params: Record<string, unknown>): Promise<unknown>
   /** The shared bot's @username (for deep links). */
@@ -78,8 +134,13 @@ export interface TelegramUpdate {
     message_id: number
     text?: string
     caption?: string
-    chat: { id: number; username?: string; first_name?: string }
-    from?: { username?: string; first_name?: string }
+    chat: { id: number; type?: string; username?: string; first_name?: string }
+    /**
+     * Sender. `id` is the Telegram user id — used to BIND an uninstall
+     * confirmation to the person it was shown to, so a code cannot be replayed
+     * by a different account.
+     */
+    from?: { id?: number; username?: string; first_name?: string }
     /** Set when the user replies to one of our messages (force_reply prompts). */
     reply_to_message?: { message_id: number }
     /** Photo array — Telegram sends multiple sizes; last element is largest. */
@@ -104,9 +165,9 @@ export interface TelegramUpdate {
     data?: string
     message?: {
       message_id: number
-      chat: { id: number }
+      chat: { id: number; type?: string }
     }
-    from?: { username?: string; first_name?: string }
+    from?: { id?: number; username?: string; first_name?: string }
   }
 }
 
@@ -130,9 +191,39 @@ async function callApi(token: string, method: string, body: object): Promise<unk
       await new Promise(r => setTimeout(r, retryAfter * 1000 + 200))
       return callApi(token, method, body)
     }
-    throw new Error(`Telegram ${method} failed: ${JSON.stringify(json)}`)
+    throw new TelegramApiError(
+      `Telegram ${method} failed: ${JSON.stringify(json)}`,
+      res.status,
+      retryAfter,
+    )
   }
   return (json as { result?: unknown }).result
+}
+
+/**
+ * Classify a thrown error into a PollFailureKind. Keeps the mapping in one place
+ * so the BYO and hosted paths agree on what a failure means.
+ */
+export function classifyPollError(err: unknown): {
+  kind: PollFailureKind
+  retryAfterMs?: number
+  detail?: string
+} {
+  if (err instanceof TelegramApiError) {
+    const retryAfterMs = err.retryAfterSec ? err.retryAfterSec * 1000 : undefined
+    if (err.status === 429) return { kind: 'rate-limited', retryAfterMs, detail: err.message }
+    if (err.status === 401 || err.status === 403) {
+      return { kind: 'auth', detail: err.message }
+    }
+    if (err.status !== undefined && err.status >= 500) {
+      return { kind: 'backend-unavailable', detail: err.message }
+    }
+    return { kind: 'telegram-error', detail: err.message }
+  }
+  const message = err instanceof Error ? err.message : String(err)
+  // A fetch rejection (DNS failure, connection refused, offline, abort) never
+  // reached the peer, so it is a network problem rather than an API one.
+  return { kind: 'network', detail: message }
 }
 
 /** Returns the bot's @username, or undefined on failure. Used for deep-link QR. */
@@ -146,24 +237,33 @@ export async function getBotUsername(token: string): Promise<string | undefined>
   }
 }
 
-/** Long-poll for updates. Returns [] on transient failure so the caller's loop survives. */
+/**
+ * Long-poll for updates.
+ *
+ * Returns a typed PollOutcome — never a bare empty array on failure. The caller
+ * (telegramBridge's poll loop) needs to tell an idle chat apart from an outage
+ * so it can back off, and apart from a revoked link so it can tear down (T-4/T-6).
+ */
 export async function getUpdates(
   token: string,
   offset: number,
   timeoutSec = 50,
-): Promise<TelegramUpdate[]> {
+): Promise<PollOutcome> {
   if (hostedRouter) {
     try {
       return await hostedRouter.getUpdates(offset)
-    } catch {
-      return []
+    } catch (e) {
+      return classifyPollError(e)
     }
   }
   try {
     const result = await callApi(token, 'getUpdates', { offset, timeout: timeoutSec })
-    return Array.isArray(result) ? (result as TelegramUpdate[]) : []
-  } catch {
-    return []
+    return {
+      kind: 'ok',
+      updates: Array.isArray(result) ? (result as TelegramUpdate[]) : [],
+    }
+  } catch (e) {
+    return classifyPollError(e)
   }
 }
 

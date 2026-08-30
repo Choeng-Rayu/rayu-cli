@@ -144,6 +144,10 @@ import { registerCleanup } from 'src/utils/cleanupRegistry.js';
 import { eagerParseCliFlag } from 'src/utils/cliArgs.js';
 import { createEmptyAttributionState } from 'src/utils/commitAttribution.js';
 import { countConcurrentSessions, registerSession, updateSessionName } from 'src/utils/concurrentSessions.js';
+import { startSessionIpc } from 'src/ipc/sessionServer.js';
+import { registerTelegramSessionHandlers } from 'src/telegram/telegramSessionHandlers.js';
+import { startDeviceHeartbeat } from 'src/services/rayuAuth/rayuDevices.js';
+import { registerShutdownHandler } from 'src/cli/uninstall/uninstallOrchestrator.js';
 import { getCwd } from 'src/utils/cwd.js';
 import { logForDebugging, setHasFormattedOutput } from 'src/utils/debug.js';
 import { errorMessage, getErrnoCode, isENOENT, TeleportOperationError, toError } from 'src/utils/errors.js';
@@ -2445,6 +2449,22 @@ async function run(): Promise<CommanderCommand> {
       if (sessionNameArg) {
         void updateSessionName(sessionNameArg);
       }
+      // Bind this session's local IPC listener so other RAYU processes can
+      // reach it (Telegram session routing, lifecycle operations). Chained
+      // after register so the address is patched onto an existing PID file
+      // rather than racing its creation. Never throws — a session that can't
+      // bind stays fully usable, just not remotely addressable.
+      //
+      // Handlers are registered FIRST so a prompt arriving immediately after
+      // the socket binds cannot land before there is anything to answer it.
+      registerTelegramSessionHandlers();
+      registerShutdownHandler();
+      void startSessionIpc();
+      // Register this machine in the device registry so remote lifecycle
+      // operations can address it, and heartbeat so a crashed CLI stops being
+      // reported as available. No-op when signed out (BYO-bot users have no
+      // backend to register with).
+      startDeviceHeartbeat();
       void countConcurrentSessions().then(count => {
         if (count >= 2) {
           logEvent('tengu_concurrent_sessions', {

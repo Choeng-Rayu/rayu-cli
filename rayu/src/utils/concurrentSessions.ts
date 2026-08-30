@@ -18,6 +18,44 @@ import { getAgentId } from './teammate.js'
 export type SessionKind = 'interactive' | 'bg' | 'daemon' | 'daemon-worker'
 export type SessionStatus = 'busy' | 'idle' | 'waiting'
 
+/**
+ * The shape of a `~/.rayu/sessions/<pid>.json` file.
+ *
+ * Written incrementally by several callers (registerSession, updateSessionName,
+ * updateSessionBridgeId, updateTelegramSessionInfo), so every field beyond the
+ * first four is optional — a reader must cope with a file written by an older
+ * build, or by a session that has not reached a given lifecycle point yet.
+ */
+export interface SessionRecord {
+  pid: number
+  sessionId: string
+  cwd: string
+  startedAt: number
+  kind?: SessionKind
+  entrypoint?: string
+  /** User-visible label, when the session has been named. */
+  name?: string
+  /** Live activity, pushed by the REPL. */
+  status?: SessionStatus
+  waitingFor?: string
+  updatedAt?: number
+  /** Remote Control session id, for peer de-duplication. */
+  bridgeSessionId?: string | null
+  /**
+   * Address of this session's local IPC listener (Unix socket path or Windows
+   * named pipe). Present once startSessionIpc() has bound successfully.
+   */
+  ipcAddress?: string
+  /**
+   * Per-session shared secret authenticating every IPC frame.
+   *
+   * SECURITY: this is why the sessions directory is 0700. It must never be
+   * rendered to Telegram, logged, or included in a Mini App snapshot — holding
+   * it is sufficient to drive this session over IPC.
+   */
+  ipcToken?: string
+}
+
 function getSessionsDir(): string {
   return join(getRayuConfigHomeDir(), 'sessions')
 }
@@ -161,11 +199,30 @@ export async function updateSessionActivity(patch: {
 }
 
 /**
- * Count live concurrent CLI sessions (including this one).
- * Filters out stale PID files (crashed sessions) and deletes them.
- * Returns 0 on any error (conservative).
+ * Record this session's IPC listener and live status for cross-session routing.
+ *
+ * SEPARATE FROM updateSessionActivity ON PURPOSE. That function is gated behind
+ * feature('BG_SESSIONS'), which is disabled in this build — so it compiles to a
+ * no-op and cannot be used to publish anything. The Telegram bridge's session
+ * router needs these fields unconditionally, so this writer is ungated.
  */
-export async function countConcurrentSessions(): Promise<number> {
+export async function updateTelegramSessionInfo(patch: {
+  ipcAddress?: string
+  ipcToken?: string
+  status?: SessionStatus
+}): Promise<void> {
+  await updatePidFile({ ...patch, updatedAt: Date.now() })
+}
+
+/**
+ * Every live session's record, newest last, with stale files swept.
+ *
+ * Single reader for both `countConcurrentSessions` and the Telegram session
+ * router so the staleness rules can't drift apart: the strict `<pid>.json`
+ * filename guard and the WSL sweep exemption below are subtle and were both
+ * added in response to real bugs.
+ */
+export async function readSessionRecords(): Promise<SessionRecord[]> {
   const dir = getSessionsDir()
   let files: string[]
   try {
@@ -174,10 +231,10 @@ export async function countConcurrentSessions(): Promise<number> {
     if (!isFsInaccessible(e)) {
       logForDebugging(`[concurrentSessions] readdir failed: ${errorMessage(e)}`)
     }
-    return 0
+    return []
   }
 
-  let count = 0
+  const records: SessionRecord[] = []
   for (const file of files) {
     // Strict filename guard: only `<pid>.json` is a candidate. parseInt's
     // lenient prefix-parsing means `2026-03-14_notes.md` would otherwise
@@ -185,20 +242,38 @@ export async function countConcurrentSessions(): Promise<number> {
     // See anthropics/claude-code#34210.
     if (!/^\d+\.json$/.test(file)) continue
     const pid = parseInt(file.slice(0, -5), 10)
-    if (pid === process.pid) {
-      count++
-      continue
-    }
-    if (isProcessRunning(pid)) {
-      count++
-    } else if (getPlatform() !== 'wsl') {
+    const isSelf = pid === process.pid
+
+    if (!isSelf && !isProcessRunning(pid)) {
       // Stale file from a crashed session — sweep it. Skip on WSL: if
       // ~/.rayu/sessions/ is shared with Windows-native Claude (symlink
       // or RAYU_CONFIG_DIR), a Windows PID won't be probeable from WSL
-      // and we'd falsely delete a live session's file. This is just
-      // telemetry so conservative undercount is acceptable.
-      void unlink(join(dir, file)).catch(() => {})
+      // and we'd falsely delete a live session's file.
+      if (getPlatform() !== 'wsl') {
+        void unlink(join(dir, file)).catch(() => {})
+      }
+      continue
+    }
+
+    try {
+      const parsed = jsonParse(await readFile(join(dir, file), 'utf8')) as
+        | SessionRecord
+        | null
+      // A half-written file (we can be reading while another process writes)
+      // must be skipped, not surfaced as a session with undefined fields.
+      if (parsed && typeof parsed.pid === 'number') records.push(parsed)
+    } catch {
+      // Unreadable or mid-write — it will be there on the next refresh.
     }
   }
-  return count
+  return records.sort((a, b) => a.startedAt - b.startedAt)
+}
+
+/**
+ * Count live concurrent CLI sessions (including this one).
+ * Filters out stale PID files (crashed sessions) and deletes them.
+ * Returns 0 on any error (conservative).
+ */
+export async function countConcurrentSessions(): Promise<number> {
+  return (await readSessionRecords()).length
 }

@@ -1429,3 +1429,286 @@ describe('openaiAdapter multi-key rotation (rate-limit failover)', () => {
     }
   })
 })
+
+
+// ---------------------------------------------------------------------------
+// Reactive recovery when a model turns out to have no vision
+// ---------------------------------------------------------------------------
+// Rayu's model tables can never list every id, so an unlisted model resolves to
+// 'unknown' and its image IS sent. When that guess is wrong the provider says so
+// — and losing the entire turn over it is a poor trade, since the question is
+// usually answerable from the text alone. So: retry without images, warn in
+// yellow, and remember the model so the NEXT turn warns before spending a
+// request.
+
+const imageRequest = () => ({
+  model: 'mystery-model-1',
+  messages: [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'what is this?' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } },
+      ],
+    },
+  ],
+})
+
+describe('isModelImageUnsupported', () => {
+  test('true for a vision-capability rejection on a request carrying an image', async () => {
+    const { isModelImageUnsupported } = await import(
+      '../src/services/api/openaiAdapter.ts'
+    )
+    for (const message of [
+      'this model does not support image input (ref: 123)',
+      'model does not support images',
+      'Invalid content type. image_url is only supported by certain models',
+      'This model does not support vision',
+      'vision is not supported',
+    ]) {
+      const err = Object.assign(new Error(message), { status: 400 })
+      expect(isModelImageUnsupported(err, imageRequest())).toBe(true)
+    }
+  })
+
+  test('false when the request carries no image', async () => {
+    const { isModelImageUnsupported } = await import(
+      '../src/services/api/openaiAdapter.ts'
+    )
+    const err = Object.assign(
+      new Error('this model does not support image input'),
+      { status: 400 },
+    )
+    expect(
+      isModelImageUnsupported(err, {
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    ).toBe(false)
+  })
+
+  test('false for unrelated errors — a size limit is not a capability limit', async () => {
+    const { isModelImageUnsupported } = await import(
+      '../src/services/api/openaiAdapter.ts'
+    )
+    for (const message of [
+      'image exceeds 5 MB maximum',
+      'rate limit exceeded',
+      'invalid api key',
+    ]) {
+      const err = Object.assign(new Error(message), { status: 400 })
+      expect(isModelImageUnsupported(err, imageRequest())).toBe(false)
+    }
+  })
+})
+
+describe('withoutImages', () => {
+  test('drops image parts and keeps the text', async () => {
+    const { withoutImages } = await import(
+      '../src/services/api/openaiAdapter.ts'
+    )
+    const stripped = withoutImages(imageRequest())
+    const msg = (stripped.messages as any[])[0]
+    // A single remaining text part collapses to a plain string — the shape every
+    // provider accepts.
+    expect(msg.content).toBe('what is this?')
+  })
+
+  test('an image-only message becomes empty STRING content, not null or []', async () => {
+    const { withoutImages } = await import(
+      '../src/services/api/openaiAdapter.ts'
+    )
+    const stripped = withoutImages({
+      model: 'm',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,A' } },
+          ],
+        },
+      ],
+    })
+    // Gemini's OpenAI-compat layer rejects null content, and some providers
+    // reject an empty parts array.
+    expect((stripped.messages as any[])[0].content).toBe('')
+  })
+
+  test('multiple remaining parts stay an array', async () => {
+    const { withoutImages } = await import(
+      '../src/services/api/openaiAdapter.ts'
+    )
+    const stripped = withoutImages({
+      model: 'm',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'a' },
+            { type: 'image_url', image_url: { url: 'x' } },
+            { type: 'text', text: 'b' },
+          ],
+        },
+      ],
+    })
+    expect((stripped.messages as any[])[0].content).toEqual([
+      { type: 'text', text: 'a' },
+      { type: 'text', text: 'b' },
+    ])
+  })
+
+  test('string content and image-free messages are untouched', async () => {
+    const { withoutImages } = await import(
+      '../src/services/api/openaiAdapter.ts'
+    )
+    const req = {
+      model: 'm',
+      messages: [
+        { role: 'system', content: 'you are helpful' },
+        { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      ],
+    }
+    const stripped = withoutImages(req)
+    expect(stripped.messages).toEqual(req.messages)
+  })
+})
+
+describe('the retry actually happens, and warns exactly once', () => {
+  test('a vision rejection is retried without images and the turn completes', async () => {
+    const imageCaps = await import('../src/utils/model/imageCapability.ts')
+    imageCaps._resetImageCapabilitySessionCacheForTesting()
+
+    const bodies: string[] = []
+    const fakeFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body ?? '')
+      bodies.push(body)
+      if (bodies.length === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: 'this model does not support image input',
+              type: 'invalid_request_error',
+            },
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          id: 'c1',
+          choices: [
+            { message: { content: 'text-only answer' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 2 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+
+    const client = createOpenAICompatibleClient({
+      apiKey: 'k',
+      baseURL: 'https://mystery.test/v1',
+      providerId: 'mystery',
+      maxRetries: 0,
+      fetch: fakeFetch,
+    })
+
+    const result = (await client.beta.messages.create({
+      model: 'mystery-model-1',
+      max_tokens: 64,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is this?' },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'AAA',
+              },
+            },
+          ],
+        },
+      ],
+    } as never)) as any
+
+    // Two requests: the original, then the image-free retry.
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0]).toContain('image_url')
+    expect(bodies[1]).not.toContain('image_url')
+    // The turn COMPLETED rather than erroring out.
+    expect(result.content?.[0]?.text).toBe('text-only answer')
+
+    // One warning is queued for query.ts to surface, naming the model.
+    const notices = imageCaps.drainImageDropNotices()
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toContain('mystery-model-1')
+    expect(notices[0]).toContain('provider rejected the image')
+    // One-shot.
+    expect(imageCaps.drainImageDropNotices()).toEqual([])
+
+    // And the session now knows, so the NEXT turn warns proactively instead of
+    // spending another request to rediscover the same limit.
+    expect(imageCaps.resolveImageSupport('mystery-model-1')).toBe('no')
+
+    imageCaps._resetImageCapabilitySessionCacheForTesting()
+  })
+
+  test('when the retry ALSO fails, the error propagates (no silent success)', async () => {
+    const imageCaps = await import('../src/utils/model/imageCapability.ts')
+    imageCaps._resetImageCapabilitySessionCacheForTesting()
+
+    let calls = 0
+    const alwaysFails = (async () => {
+      calls++
+      return new Response(
+        JSON.stringify({
+          error: { message: 'this model does not support image input' },
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+
+    const client = createOpenAICompatibleClient({
+      apiKey: 'k',
+      baseURL: 'https://mystery2.test/v1',
+      providerId: 'mystery2',
+      maxRetries: 0,
+      fetch: alwaysFails,
+    })
+
+    // create() returns a thenable (APIPromise-like), not a real Promise, so it
+    // has to be awaited rather than handed to .rejects.
+    let threw = false
+    try {
+      await client.beta.messages.create({
+        model: 'mystery-model-2',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'q' },
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'AAA',
+                },
+              },
+            ],
+          },
+        ],
+      } as never)
+    } catch {
+      threw = true
+    }
+    expect(threw).toBe(true)
+
+    expect(calls).toBe(2)
+    imageCaps._resetImageCapabilitySessionCacheForTesting()
+  })
+})

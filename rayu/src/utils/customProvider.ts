@@ -168,3 +168,31 @@ export function parseCustomModelIds(input: string): Validation<string[]> {
   }
   return { ok: true, value: out }
 }
+
+/**
+ * Sanitize a `modelSupportsImage` map read from providers.json.
+ *
+ * Hand-editing this field is a supported way to correct a wrong entry in Rayu's
+ * built-in image-capability tables, so it must survive a round-trip — but it is
+ * still untrusted input keyed by MODEL ID, and model ids feed the
+ * `providerId\u0000model` routing string. An id carrying the NUL separator could
+ * spoof which provider a request routes to, so keys go through the same
+ * validateCustomModelId gate as typed ids.
+ *
+ * Non-boolean values are dropped rather than coerced: `"false"` coerced by
+ * truthiness would mean "yes, send images" and silently produce the 400 this
+ * whole feature exists to avoid. Returns undefined when nothing usable remains,
+ * so the caller can omit the key entirely.
+ */
+export function sanitizeModelSupportsImage(
+  input: unknown,
+): Record<string, boolean> | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const out: Record<string, boolean> = {}
+  for (const [model, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value !== 'boolean') continue
+    if (!validateCustomModelId(model).ok) continue
+    out[model] = value
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}

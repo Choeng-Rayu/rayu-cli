@@ -12,17 +12,19 @@ import { Box, Newline, Text, useTheme } from '../ink.js'
 import { useKeybindings } from '../keybindings/useKeybinding.js'
 import { env } from '../utils/env.js'
 import type { ThemeSetting } from '../utils/theme.js'
-import { RayuProviderSetup } from './RayuProviderSetup.js'
-import { hasConfiguredProvider } from '../utils/rayuConfig.js'
+import { RayuFirstRunSetup } from './RayuFirstRunSetup.js'
+import { hasRayuCredential } from '../services/rayuAuth/rayuApiKeyAuth.js'
 import { Select } from './CustomSelect/select.js'
 import { WelcomeV2 } from './LogoV2/WelcomeV2.js'
 import { PressEnterToContinue } from './PressEnterToContinue.js'
 import { ThemePicker } from './ThemePicker.js'
 import { OrderedList } from './ui/OrderedList.js'
 
-// Rayu is bring-your-own-key: every provider (OpenAI-compatible endpoints and
-// AWS Bedrock) is configured through RayuProviderSetup. There is no direct
-// Anthropic provider and no Anthropic OAuth flow.
+// Rayu's first run asks for a Rayu credential (account sign-in or a Rayu API
+// key) via RayuFirstRunSetup, which also carries an escape hatch to the full
+// provider list. Every other provider — OpenAI-compatible endpoints, Bedrock,
+// Azure, Vertex, local servers — is configured through RayuProviderSetup, either
+// from that escape hatch or from /connect at any time later.
 type StepId = 'theme' | 'provider' | 'security' | 'terminal-setup'
 
 interface OnboardingStep {
@@ -111,13 +113,20 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
   const steps: OnboardingStep[] = []
   steps.push({ id: 'theme', component: themeStep })
 
-  // Prompt for provider + API key when none is configured yet.
-  // RayuProviderSetup handles all provider kinds (openai-compatible, bedrock).
-  // Run /connect any time to add or switch providers.
-  if (!hasConfiguredProvider()) {
+  // Prompt for a Rayu credential when there is none yet.
+  //
+  // The first-run screen offers exactly two ways in — sign in to Rayu, or paste a
+  // Rayu API key — with every other provider one keystroke further on and always
+  // available later via /connect. That is deliberate: a new user should reach
+  // their first prompt without picking from a list of twenty vendors.
+  //
+  // Gated on hasRayuCredential(), NOT hasConfiguredProvider(): the latter reports
+  // true for any openai-compatible provider row even when it has no key at all,
+  // which would silently skip this step for a user who has no working credential.
+  if (!hasRayuCredential()) {
     steps.push({
       id: 'provider',
-      component: <RayuProviderSetup onDone={goToNextStep} />,
+      component: <RayuFirstRunSetup onDone={goToNextStep} />,
     })
   }
 

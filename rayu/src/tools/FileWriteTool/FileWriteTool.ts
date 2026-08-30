@@ -26,7 +26,15 @@ import {
   fileHistoryTrackEdit,
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
-import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
+import {
+  readFileNormalizedAsync,
+  readFileSyncWithMetadata,
+} from '../../utils/fileRead.js'
+import {
+  isFullViewOfFile,
+  markForceFreshRead,
+  readRequiredMessage,
+} from '../../utils/fileStateCache.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
   fetchSingleFileGitDiff,
@@ -55,10 +63,19 @@ import {
   userFacingName,
 } from './UI.js'
 
+/**
+ * Write-specific tail for readRequiredMessage.
+ *
+ * The permission clarification matters: a model that already holds edit
+ * permission reads "you must Read first" as a contradiction and retries the
+ * Write unchanged, so the requirement is stated as independent of permission.
+ */
+const WRITE_RETRY_HINT =
+  'retry Write with the complete new file content. Existing-file Write requires a fresh full Read even when edit permission is already granted.'
+
 const inputSchema = lazySchema(() =>
   z.strictObject({
-    file_path: z
-      .string()
+    file_path: z      .string()
       .describe(
         'The absolute path to the file to write (must be absolute, not relative)',
       ),
@@ -199,10 +216,14 @@ export const FileWriteTool = buildTool({
 
     const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
     if (!readTimestamp || readTimestamp.isPartialView) {
+      markForceFreshRead(toolUseContext, fullFilePath)
       return {
         result: false,
-        message:
-          'File has not been read yet. Existing-file Write requires a fresh full Read of this exact file path first, even when edit permission is already granted. Use Read without offset or limit, then retry Write with the complete new file content.',
+        message: readRequiredMessage(
+          toolUseContext.readFileState,
+          fullFilePath,
+          WRITE_RETRY_HINT,
+        ),
         errorCode: 2,
       }
     }
@@ -212,11 +233,23 @@ export const FileWriteTool = buildTool({
     // block is always reached when the file exists.
     const lastWriteTime = Math.floor(fileMtimeMs)
     if (lastWriteTime > readTimestamp.timestamp) {
-      return {
-        result: false,
-        message:
-          'File has been modified since read, either by the user or by a linter. Existing-file Write requires a fresh full Read of this exact file path first, even when edit permission is already granted. Use Read without offset or limit, then retry Write with the complete new file content.',
-        errorCode: 3,
+      // An mtime bump is not proof of a content change: format-on-save, a
+      // linter, git, a watcher or cloud sync all touch mtime while leaving the
+      // bytes identical, and on Windows the timestamp can move on its own. When
+      // the model saw the WHOLE file, comparing content settles it — matching
+      // the bypass FileEditTool has. Without this, Write rejected every such
+      // turn and told the model to re-Read, which changed nothing.
+      const unchanged =
+        isFullViewOfFile(readTimestamp) &&
+        (await readFileNormalizedAsync(fullFilePath)) === readTimestamp.content
+      if (!unchanged) {
+        markForceFreshRead(toolUseContext, fullFilePath)
+        return {
+          result: false,
+          message:
+            'File has been modified since read, either by the user or by a linter. Existing-file Write requires a fresh full Read of this exact file path first, even when edit permission is already granted. Use Read without offset or limit, then retry Write with the complete new file content.',
+          errorCode: 3,
+        }
       }
     }
 

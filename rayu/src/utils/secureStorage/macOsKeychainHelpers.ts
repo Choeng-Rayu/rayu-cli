@@ -26,6 +26,15 @@ import type { SecureStorageData } from './types.js'
 // orphan existing stored credentials.
 export const CREDENTIALS_SERVICE_SUFFIX = '-credentials'
 
+// Exit code of `security show-keychain-info` when the default keychain is
+// LOCKED. Shared by the sync lock check (macOsKeychainStorage) and the async
+// startup probe (keychainPrefetch) so the interpretation lives in one place.
+export const KEYCHAIN_LOCKED_EXIT_CODE = 36
+
+// Bound for the cheap lock probe (`security show-keychain-info`, normally
+// ~27ms). Never let a probe hang startup.
+export const KEYCHAIN_LOCK_CHECK_TIMEOUT_MS = 2_000
+
 export function getMacOsKeychainStorageServiceName(
   serviceSuffix: string = '',
 ): string {
