@@ -232,7 +232,6 @@ describe('catalog mapping', () => {
         { id: 'claude-sonnet-4', label: 'Claude Sonnet 4', contextWindow: 200000 },
       ],
     })
-<<<<<<< HEAD
     expect(out.models).toEqual(['deepseek-v3', 'claude-sonnet-4'])
     expect(out.modelLabels).toEqual({
       'deepseek-v3': 'DeepSeek V3',

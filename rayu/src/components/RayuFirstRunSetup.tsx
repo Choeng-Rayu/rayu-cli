@@ -128,7 +128,6 @@ export function RayuFirstRunSetup({
             label: 'Use a Rayu API key — paste a rayu_sk_live_… key',
             value: 'apikey',
           },
-<<<<<<< HEAD
           // The "Other provider" escape hatch is only available on a RELAUNCH
           // (broken key), not on the genuine first run. A first-run user must
           // obtain a Rayu credential; other providers can be added later via
@@ -154,33 +153,6 @@ export function RayuFirstRunSetup({
           ? 'Enter to select · Esc for other providers'
           : 'Enter to select — you can add other providers later with /connect'}
       </Text>
-=======
-          // The "Other provider" escape hatch is only available on a RELAUNCH
-          // (broken key), not on the genuine first run. A first-run user must
-          // obtain a Rayu credential; other providers can be added later via
-          // /connect. This prevents the scenario where a user skips the Rayu
-          // credential and then gets login-gated on every prompt.
-          ...(reason === 'relaunch'
-            ? [
-                {
-                  label: 'Other provider — Anthropic, OpenAI, Bedrock, local, …',
-                  value: 'other' as const,
-                },
-              ]
-            : []),
-        ]}
-        onChange={(v: string) => choose(v as Choice)}
-        // On relaunch Esc falls through to the full provider list so a user with
-        // a broken key isn't stranded. On first-run Esc is a no-op — the user
-        // must pick one of the two Rayu credential options.
-        onCancel={reason === 'relaunch' ? () => choose('other') : undefined}
-      />
-      <Text dimColor>
-        {reason === 'relaunch'
-          ? 'Enter to select · Esc for other providers'
-          : 'Enter to select — you can add other providers later with /connect'}
-      </Text>
->>>>>>> origin/main
     </Box>
   )
 }

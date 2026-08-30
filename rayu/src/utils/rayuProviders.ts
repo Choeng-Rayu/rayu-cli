@@ -800,7 +800,6 @@ export function migrateEnvKeysToConfig(): void {
 
 /** Short, branded names keyed by provider id. */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-<<<<<<< HEAD
   [RAYU_API_PROVIDER_ID]: 'Rayu API Key',
   anthropic: 'Anthropic',
   longcat: 'LongCat',
