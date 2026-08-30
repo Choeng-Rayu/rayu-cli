@@ -2,6 +2,23 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 1.6.0 - 2026-08-30
+- Introduced the **External Agent Orchestrator** — `/agent` command and `ExternalAgent` tool to discover, launch, adopt, assign work to, and stream other agentic CLIs (Codex, Claude Code, OpenCode, and any ACP agent). Supports orchestration policies (parallel/sequential/race/retry/fallback), git worktree isolation, brokered permissions, and crash recovery
+- Overhauled the **Telegram bridge** for multi-session support — list sessions with `/sessions`, switch between them with `/switch <n>`, and route prompts across processes over the new IPC layer
+- Added **Telegram bridge health monitoring** with typed poll outcomes, exponential backoff, and clear connection status (connected/reconnecting/disconnected)
+- Added **Telegram remote uninstall** — a typed device lifecycle operation gated by local opt-in, explicit device targeting, single-use confirmation tokens, and a concurrency lock
+- Added a secure **IPC (Inter-Process Communication)** layer — Unix socket protocol with per-session token auth enabling cross-session routing and multi-session coordination
+- Added the **Rayu API Key provider** (`rayu`) — authenticate with a `rayu_sk_live_…` key, with gateway validation, credential caching, and device identity registration
+- Added a streamlined **first-run setup screen** — offers Rayu sign-in or API key entry, with the full provider list one keystroke away via `/connect`
+- Added **per-model image capability detection** — knows which (provider, model) pairs accept images, replacing the old provider-wide boolean that caused silent image drops or lost turns
+- Added **tool input repair** — automatically recovers malformed tool-argument JSON from weaker models (markdown fences, raw newlines, trailing commas, truncation)
+- Added **Edit/Write tool key coercion** — transparently maps camelCase and synonym keys (e.g. `filePath` → `file_path`) so tool calls from non-Claude models work correctly
+- Improved the **file state cache** — tracks full-file reads explicitly to reduce spurious "file modified since read" warnings after formatters or git operations
+- Added **device identity** — a stable per-machine identifier for remote lifecycle operations, registered and heartbeated against the backend
+- Rewrote the **uninstall system** — modular orchestrator with scoped manifests, install-method detection, and a detached helper that finishes cleanup after RAYU exits
+- Added the active **model name in the input bar and sidebar** for better context during sessions
+- Added comprehensive test coverage for external agents, Telegram, API key auth, image capabilities, tool input repair, file edit coercion, and more
+
 ## 1.5.11 - 2026-07-30
 - Fixed a bug where Rayu CLI would hang/stuck when running inside the default macOS Terminal app — Enter and several modified key events were not being delivered when the `modifiers-napi` dependency was absent
 
