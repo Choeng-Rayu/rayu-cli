@@ -1,0 +1,42 @@
+{
+  "name": "@rayu-dev/web-bridge-client",
+  "version": "1.0.0",
+  "description": "The rayu-cli side of the rayu-backend Web Bridge: protocol mirror plus the socket.io client both workers (the rayu CLI REPL and the rayucode extension host) use to be remote-controlled from the rayu-web studio. Depends on nothing in this repository.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "snapshot:backend": "bash scripts/snapshot-backend.sh",
+    "diagnose": "node scripts/diagnose-web-bridge.mjs",
+    "verify:live": "node scripts/verify-live.mjs"
+  },
+  "//dependencies": "socket.io-client is pinned to the EXACT version rayu-backend and rayu-web use (both 4.8.3). socket.io negotiates a protocol between client and server, and a mismatched major silently fails the handshake rather than erroring usefully.",
+  "dependencies": {
+    "socket.io-client": "4.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -24,6 +24,7 @@ import mcp from './commands/mcp/index.js'
 import telegramBot from './commands/telegram-bot/index.js'
 import disconnectTelegram from './commands/telegram-bot/disconnect-index.js'
 import telegramRemoteUninstall from './commands/telegram-bot/remote-uninstall-index.js'
+import webBridge from './commands/web-bridge.js'
 import pr_comments from './commands/pr_comments/index.js'
 import rename from './commands/rename/index.js'
 import reviewDetial from './commands/review-detial/index.js'
@@ -241,6 +242,9 @@ const COMMANDS = memoize((): Command[] => [
   telegramBot,
   disconnectTelegram,
   telegramRemoteUninstall,
+  // The other remote-control surface. Sits beside the Telegram commands because the
+  // two are alternatives a user chooses between, and both can be active at once.
+  webBridge,
   model,
   modelSubagent,
   webfetchModel,

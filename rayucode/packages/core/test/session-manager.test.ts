@@ -3,15 +3,17 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { Redactor, SessionManager } from "../src/index.js";
+import { Redactor, SessionManager,
+  PROTOCOL_VERSION,
+} from "../src/index.js";
 import type {
   AgentExitInfo,
   AgentPanelHandle,
   AgentProcessFactory,
   AgentProcessLike,
   ApplyResult,
-  CliLocatorLike,
-  CliResolution,
+  EngineResolverLike,
+  EngineResolution,
   ContextOptions,
   Disposable,
   EditorAdapter,
@@ -227,12 +229,19 @@ const noopTimers: TimerProvider = {
 };
 
 function fakeResolution(
-  overrides: Partial<CliResolution> = {},
-): CliResolution {
+  overrides: Partial<EngineResolution> = {},
+): EngineResolution {
   return {
-    path: "/opt/rayu/bin/rayu",
-    version: "1.2.3",
-    belowMinimum: false,
+    enginePath: "/ext/dist/rayu.js",
+    buildInfo: {
+    engineVersion: "1.6.13",
+    engineFile: "rayu.js",
+    engineSha256: "0".repeat(64),
+    protocolVersion: PROTOCOL_VERSION,
+    gitCommit: "0".repeat(40),
+    extensionVersion: "0.0.0-test",
+    builtAt: "2026-01-01T00:00:00.000Z",
+  },
     ...overrides,
   };
 }
@@ -247,7 +256,7 @@ interface Harness {
 
 function makeHarness(
   adapter: FakeEditorAdapter,
-  resolution: CliResolution = fakeResolution(),
+  resolution: EngineResolution = fakeResolution(),
 ): Harness {
   const processes: FakeAgentProcess[] = [];
   const agentProcessFactory: AgentProcessFactory = () => {
@@ -255,11 +264,11 @@ function makeHarness(
     processes.push(proc);
     return proc;
   };
-  const cliLocator: CliLocatorLike = { resolve: async () => resolution };
+  const engineResolver: EngineResolverLike = { resolve: () => resolution };
   const manager = new SessionManager({
     adapter,
     agentProcessFactory,
-    cliLocator,
+    engineResolver,
     timers: noopTimers,
     generateRequestId: (() => {
       let n = 0;
@@ -650,7 +659,7 @@ describe("SessionManager addSelectionToPrompt (R9.5)", () => {
       adapter,
       redactor: new Redactor(["sk-SECRET"]),
       agentProcessFactory: () => new FakeAgentProcess(),
-      cliLocator: { resolve: async () => fakeResolution() },
+      engineResolver: { resolve: () => fakeResolution() },
       timers: noopTimers,
     });
 

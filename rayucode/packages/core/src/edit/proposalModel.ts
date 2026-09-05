@@ -23,7 +23,9 @@
 // while the `baseContentHash` stays pinned to the original base.
 
 import type { FileEditChange, FileEditPlan } from "../editor/adapter.js";
-import type { ToolUseBlock } from "../protocol/primitives.js";
+import type {
+  ToolUseBlock,
+} from "../protocol/contentBlocks.js";
 import { hashContent } from "./contentHash.js";
 
 /**

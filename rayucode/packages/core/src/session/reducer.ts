@@ -33,12 +33,12 @@ import type {
   StdoutMessage,
   StreamEvent,
   SystemInit,
-} from "../protocol/messages.js";
-import type { PermissionMode } from "../protocol/permissions.js";
+} from "../protocol/wire.js";
+import type { PermissionMode } from "../protocol/wire.js";
 import type {
   ApiAssistantMessage,
   RawMessageStreamEvent,
-} from "../protocol/primitives.js";
+} from "../protocol/contentBlocks.js";
 import type {
   AssistantConversationItem,
   ConversationItem,

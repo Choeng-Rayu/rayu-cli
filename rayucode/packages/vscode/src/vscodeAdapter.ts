@@ -22,6 +22,10 @@
 // The non-edit members were implemented by task 12.2; the two file-edit members
 // (applyFileEdits / readFileSnapshot) are implemented by task 12.4 below.
 
+import * as nodeFs from "node:fs";
+import * as nodePath from "node:path";
+import * as process from "node:process";
+
 import * as vscode from "vscode";
 
 import type {
@@ -41,12 +45,49 @@ import type {
 import { hashContent } from "@rayucode/core";
 
 import { collectExcludeGlobs, isIgnoredByGlobs } from "./ignoreGlob.js";
+import { panelWebviewOptions, renderPanelHtml } from "./webviewHtml.js";
 
 /** The single output channel used for all diagnostic logging (R15.3). */
 const OUTPUT_CHANNEL_NAME = "rayucode";
 
 /** Webview view type identifying the Agent_Panel surface (R3.1). */
 const AGENT_PANEL_VIEW_TYPE = "rayucode.agentPanel";
+
+/** Setting: opt in to the high-volume Control Protocol trace (R15.3). */
+const SETTING_DIAGNOSTIC_LOGGING = "rayucode.diagnosticLogging";
+
+/** Setting: permit edits/reads outside the workspace folders (default false). */
+const SETTING_ALLOW_OUTSIDE_WORKSPACE = "rayucode.allowEditsOutsideWorkspace";
+
+/** Human-readable form of the opt-in, used in the per-file failure message. */
+const SETTING_ALLOWOUTSIDE_WORKSPACE_LABEL =
+  "Rayucode: Allow Edits Outside Workspace";
+
+/**
+ * Supplies an {@link AgentPanelHandle} for a session key, or `null` to decline.
+ *
+ * Registered by the host (see {@link VSCodeAdapter.registerAgentPanelResolver})
+ * so a session can be bound to a surface OTHER than the default floating
+ * `WebviewPanel` — the Activity Bar `WebviewView` (task: Activity Bar sidebar)
+ * and the headless sink backing the `@rayucode` chat participant both plug in
+ * this way. Resolvers are consulted in registration order and the first
+ * non-`null` result wins; if every resolver declines, the adapter falls back to
+ * creating a floating panel, so existing behavior is unchanged (R3.1).
+ */
+export type AgentPanelResolver = (
+  sessionKey: string,
+) => Promise<AgentPanelHandle | null> | AgentPanelHandle | null;
+
+/**
+ * Observes every host → panel message on its way out, for ANY surface.
+ *
+ * This is the seam the status bar uses to track agent state (`setGenerating`)
+ * without the editor-agnostic core needing to know a status bar exists.
+ */
+export type PanelMessageObserver = (
+  sessionKey: string,
+  message: unknown,
+) => void;
 
 /**
  * Implements the {@link EditorAdapter} contract using the `vscode` API. Construct
@@ -57,6 +98,12 @@ const AGENT_PANEL_VIEW_TYPE = "rayucode.agentPanel";
 export class VSCodeAdapter implements EditorAdapter {
   private readonly context: vscode.ExtensionContext;
   private readonly outputChannel: vscode.OutputChannel;
+
+  /** Alternate panel surfaces, consulted in registration order (first wins). */
+  private readonly panelResolvers: AgentPanelResolver[] = [];
+
+  /** Observers of every outbound host → panel message, for any surface. */
+  private readonly panelObservers = new Set<PanelMessageObserver>();
 
   /** Cached resolution of the optional git ignore probe (see below). */
   private gitApi: GitApiLike | null | undefined;
@@ -73,21 +120,102 @@ export class VSCodeAdapter implements EditorAdapter {
   // Panel surface (R3.1)
   // --------------------------------------------------------------------------
 
+  /**
+   * Register an alternate panel surface. Resolvers are consulted (in
+   * registration order) by {@link showAgentPanel} BEFORE it falls back to
+   * creating a floating `WebviewPanel`; the first resolver returning a non-null
+   * handle wins.
+   */
+  registerAgentPanelResolver(resolver: AgentPanelResolver): Disposable {
+    this.panelResolvers.push(resolver);
+    return {
+      dispose: () => {
+        const index = this.panelResolvers.indexOf(resolver);
+        if (index >= 0) {
+          this.panelResolvers.splice(index, 1);
+        }
+      },
+    };
+  }
+
+  /**
+   * Observe every host → panel message, whichever surface it targets. Used by
+   * the status bar to mirror the agent's generating state.
+   */
+  onPanelMessage(observer: PanelMessageObserver): Disposable {
+    this.panelObservers.add(observer);
+    return {
+      dispose: () => {
+        this.panelObservers.delete(observer);
+      },
+    };
+  }
+
   async showAgentPanel(sessionKey: string): Promise<AgentPanelHandle> {
+    // Prefer a registered surface (Activity Bar view / chat sink) when one
+    // claims this session key.
+    for (const resolver of this.panelResolvers) {
+      let handle: AgentPanelHandle | null;
+      try {
+        handle = await resolver(sessionKey);
+      } catch (error) {
+        // A misbehaving resolver must never break panel opening; fall through
+        // to the next resolver (and ultimately the floating panel).
+        this.log(
+          "error",
+          `Agent panel resolver failed for "${sessionKey}": ${errorMessageOf(error)}`,
+        );
+        continue;
+      }
+      if (handle) {
+        return this.tapPanel(handle);
+      }
+    }
+
     const panel = vscode.window.createWebviewPanel(
       AGENT_PANEL_VIEW_TYPE,
       "rayucode",
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       {
-        enableScripts: true,
+        ...panelWebviewOptions(this.context.extensionUri),
         // History lives in the host (R12.2); retaining context avoids tearing
         // down the view when the user tabs away.
         retainContextWhenHidden: true,
-        localResourceRoots: [this.context.extensionUri],
       },
     );
     panel.webview.html = renderPanelHtml(panel.webview, this.context.extensionUri);
-    return new VSCodeAgentPanelHandle(sessionKey, panel);
+    return this.tapPanel(new VSCodeAgentPanelHandle(sessionKey, panel));
+  }
+
+  /**
+   * Wrap a handle so every `postMessage` is also reported to the registered
+   * {@link PanelMessageObserver}s. Observation is strictly passive: an observer
+   * throwing is swallowed and the message still reaches the panel.
+   */
+  private tapPanel(handle: AgentPanelHandle): AgentPanelHandle {
+    if (this.panelObservers.size === 0 && this.panelResolvers.length === 0) {
+      return handle;
+    }
+    const notify = (message: unknown): void => {
+      for (const observer of [...this.panelObservers]) {
+        try {
+          observer(handle.sessionKey, message);
+        } catch {
+          /* an observer must never break the panel channel */
+        }
+      }
+    };
+    return {
+      sessionKey: handle.sessionKey,
+      reveal: () => handle.reveal(),
+      postMessage: (message) => {
+        notify(message);
+        return handle.postMessage(message);
+      },
+      onDidReceiveMessage: (listener) => handle.onDidReceiveMessage(listener),
+      onDidDispose: (listener) => handle.onDidDispose(listener),
+      dispose: () => handle.dispose(),
+    };
   }
 
   // --------------------------------------------------------------------------
@@ -141,6 +269,9 @@ export class VSCodeAdapter implements EditorAdapter {
 
         const uri = this.resolveEditUri(change.path);
         const edit = new vscode.WorkspaceEdit();
+        // Was this document ALREADY open before we touched it? That decides
+        // whether the applied edit is persisted or left as a dirty buffer.
+        let wasAlreadyOpen = false;
 
         if (change.kind === "create") {
           // R6.5 — create at the workspace-relative path. With both flags false,
@@ -152,6 +283,7 @@ export class VSCodeAdapter implements EditorAdapter {
             contents: Buffer.from(change.newContent, "utf8"),
           });
         } else {
+          wasAlreadyOpen = isDocumentOpen(uri);
           // R6.4 — open-buffer-aware modify: openTextDocument yields the live
           // document for an open tab, so replacing its full range updates that
           // editor buffer in place (and otherwise edits the on-disk file).
@@ -167,6 +299,15 @@ export class VSCodeAdapter implements EditorAdapter {
         // file alone. A `false` return means the editor rejected it.
         const ok = await vscode.workspace.applyEdit(edit);
         if (ok) {
+          // R6.4/R6.5 — an approved edit must actually LAND. `applyEdit` on a
+          // text document only mutates the in-memory buffer, so a file the user
+          // did not already have open would otherwise never reach disk. Persist
+          // exactly those documents we opened ourselves; a buffer the user
+          // already had open stays dirty so the change remains reviewable and
+          // undoable in their editor.
+          if (change.kind === "modify" && !wasAlreadyOpen) {
+            await this.saveDocument(uri);
+          }
           applied.push(change.path);
         } else {
           failed.push({
@@ -309,8 +450,30 @@ export class VSCodeAdapter implements EditorAdapter {
   // --------------------------------------------------------------------------
 
   log(channel: "protocol" | "lifecycle" | "error", message: string): void {
+    // R15.3: `protocol` is the high-volume Control Protocol trace, gated behind
+    // the opt-in setting the manifest declares. Without this check the setting
+    // did nothing, and every session wrote its full protocol traffic to the
+    // channel — noise that also widens the window for a credential echoed by the
+    // agent to end up in a copied bug report.
+    if (
+      channel === "protocol" &&
+      !this.getSetting<boolean>(SETTING_DIAGNOSTIC_LOGGING, false)
+    ) {
+      return;
+    }
+
     // One channel, lines prefixed with the logical channel name.
-    this.outputChannel.appendLine(`[${channel}] ${message}`);
+    //
+    // The channel's lifetime is tied to `context.subscriptions`, so it is closed
+    // on deactivate. A late log — from a timer or an in-flight promise that
+    // outlives teardown — would otherwise throw "Channel has been closed" INTO
+    // its caller. A diagnostic sink must never do that, so a failed write is
+    // dropped.
+    try {
+      this.outputChannel.appendLine(`[${channel}] ${message}`);
+    } catch {
+      /* the channel is gone; there is nowhere left to report this */
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -394,10 +557,48 @@ export class VSCodeAdapter implements EditorAdapter {
   }
 
   /**
-   * Resolve an edit target's path to a {@link vscode.Uri}. A relative path is
-   * resolved against the FIRST workspace folder (R6.5); an absolute path is used
-   * as-is. Throws when a relative path cannot be resolved because no workspace
-   * folder is open — surfaced by `applyFileEdits` as a per-file failure (R6.6).
+   * Flush an applied `modify` to disk. Called only for documents the adapter
+   * opened itself (see {@link applyFileEdits}); a `false`/throwing save is
+   * surfaced as a per-file failure by the caller's catch (R6.6).
+   */
+  private async saveDocument(uri: vscode.Uri): Promise<void> {
+    const document = vscode.workspace.textDocuments.find(
+      (candidate) => candidate.uri.toString() === uri.toString(),
+    );
+    if (!document || !document.isDirty) {
+      // Nothing buffered to flush (the edit already hit disk).
+      return;
+    }
+    const saved = await document.save();
+    if (!saved) {
+      throw new Error("the editor could not save the applied edit to disk");
+    }
+  }
+
+  /**
+   * Resolve an edit target's path to a {@link vscode.Uri}, enforcing workspace
+   * containment.
+   *
+   * A relative path is resolved against the FIRST workspace folder (R6.5); an
+   * absolute path is used as-is. The resolved uri is then required to lie inside
+   * one of the open workspace folders.
+   *
+   * WHY THIS GUARD EXISTS. `file_path` is chosen by the AGENT, and the agent's
+   * output is influenced by whatever it reads — file contents, tool output,
+   * fetched web pages — so it must be treated as untrusted. `Uri.joinPath`
+   * normalizes `..`, so a relative `../../.bashrc` escapes the workspace, and an
+   * absolute path escapes trivially. Under `acceptEdits` or `bypassPermissions`
+   * edits are auto-approved with no prompt, which would turn that into a silent
+   * arbitrary-file-write primitive (shell profiles, SSH authorized_keys, editor
+   * configs) reachable by prompt injection. Confining writes to the workspace
+   * keeps the blast radius inside the project the user opened.
+   *
+   * Users who genuinely need to edit outside the workspace can opt in with
+   * `rayucode.allowEditsOutsideWorkspace`.
+   *
+   * @throws when a relative path cannot be resolved (no workspace folder open),
+   *   or when the resolved path escapes the workspace and the opt-in is off.
+   *   Both are surfaced by `applyFileEdits` as a per-file failure (R6.6).
    */
   private resolveEditUri(path: string): vscode.Uri {
     const uri = this.toAbsoluteUri(path);
@@ -406,7 +607,50 @@ export class VSCodeAdapter implements EditorAdapter {
         `cannot resolve workspace-relative path "${path}" without an open workspace folder`,
       );
     }
+    if (!this.isWithinWorkspace(uri)) {
+      throw new Error(
+        `refusing to touch "${uri.fsPath}" because it is outside the open workspace folders. ` +
+          `Enable "${SETTING_ALLOWOUTSIDE_WORKSPACE_LABEL}" to allow this.`,
+      );
+    }
     return uri;
+  }
+
+  /**
+   * Whether `uri` is inside one of the open workspace folders — or, when no
+   * folder is open, a document the user themselves opened. The containment
+   * opt-out short-circuits both.
+   *
+   * Every workspace folder is considered, not just the first, so a multi-root
+   * workspace behaves correctly. Comparison is done on normalized filesystem
+   * paths with a separator-aware prefix test, so a sibling directory whose name
+   * merely starts with the root's name (`/work` vs `/work-secrets`) is NOT
+   * treated as inside.
+   */
+  private isWithinWorkspace(uri: vscode.Uri): boolean {
+    if (this.getSetting<boolean>(SETTING_ALLOW_OUTSIDE_WORKSPACE, false)) {
+      return true;
+    }
+    // A non-file scheme (untitled:, vscode-remote:, …) has no comparable path.
+    if (uri.scheme !== "file") {
+      return false;
+    }
+
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 0) {
+      // No folder ⇒ no containment boundary from the workspace. Rather than
+      // refusing every edit (which would break `code somefile.txt`, a real usage
+      // mode), fall back to the narrowest defensible boundary: a file the user
+      // demonstrably opened themselves. That still denies the agent an arbitrary
+      // path of its own choosing.
+      return isDocumentOpen(uri);
+    }
+
+    return folders.some(
+      (folder) =>
+        folder.uri.scheme === "file" &&
+        isSamePathOrInside(folder.uri.fsPath, uri.fsPath),
+    );
   }
 }
 
@@ -450,80 +694,90 @@ class VSCodeAgentPanelHandle implements AgentPanelHandle {
 }
 
 // ----------------------------------------------------------------------------
-// Agent_Panel webview HTML (task 13.1)
+// Edit-application helpers (task 12.4)
 // ----------------------------------------------------------------------------
 
 /**
- * Render the Agent_Panel HTML shell. The actual UI is the bundled webview
- * front-end (`dist/webview.js` + `dist/webview.css`, built by esbuild.mjs);
- * this document only loads them under a strict, no-remote-content CSP:
+ * Whether `target` is `root` itself or lies beneath it, comparing REAL paths.
  *
- *   - `default-src 'none'` — nothing loads unless explicitly allowed below.
- *   - `script-src 'nonce-…'` — ONLY the one bundled script bearing this
- *     request's nonce may execute; no inline handlers, no remote scripts.
- *   - `style-src ${cspSource}` — only the host-served stylesheet (no inline
- *     styles, so no 'unsafe-inline').
- *   - `img-src/font-src` — host-served (+ data: images) only.
+ * Two normalizations matter here, and both are security-relevant:
  *
- * Both asset URIs are produced with {@link vscode.Webview.asWebviewUri} so they
- * resolve through the webview's locked-down resource origin (the panel's
- * `localResourceRoots` is the extension root), and no remote content is ever
- * referenced (R3.1 panel surface; supports the panel's sanitized rendering).
+ *  1. **Symlinks are dereferenced.** `path.resolve` collapses `.`/`..` but does
+ *     NOT follow links, so a symlink committed inside the workspace and pointing
+ *     at `$HOME` would otherwise satisfy a purely lexical containment check while
+ *     writing outside it. Both sides are passed through `realpath` so the check
+ *     is made on the actual filesystem location. The workspace root is resolved
+ *     too, because the root itself is often a symlink (`/tmp` → `/private/tmp` on
+ *     macOS) and resolving only one side would then reject legitimate files.
+ *
+ *  2. **Case is folded on case-insensitive filesystems** (Windows, macOS), where
+ *     a case-sensitive compare would let `/Work/x` bypass a `/work` root.
+ *
+ * `path.relative` — rather than a string prefix — keeps `/work-secrets` from
+ * counting as inside `/work`.
  */
-function renderPanelHtml(
-  webview: vscode.Webview,
-  extensionUri: vscode.Uri,
-): string {
-  const nonce = makeNonce();
-  const scriptUri = webview.asWebviewUri(
-    vscode.Uri.joinPath(extensionUri, "dist", "webview.js"),
+function isSamePathOrInside(root: string, target: string): boolean {
+  const caseInsensitive =
+    process.platform === "win32" || process.platform === "darwin";
+  const fold = (value: string): string =>
+    caseInsensitive ? value.toLowerCase() : value;
+
+  const relative = nodePath.relative(
+    fold(realPathOf(root)),
+    fold(realPathOf(target)),
   );
-  const styleUri = webview.asWebviewUri(
-    vscode.Uri.joinPath(extensionUri, "dist", "webview.css"),
-  );
-
-  const csp = [
-    `default-src 'none'`,
-    `img-src ${webview.cspSource} data:`,
-    `style-src ${webview.cspSource}`,
-    `font-src ${webview.cspSource}`,
-    `script-src 'nonce-${nonce}'`,
-  ].join("; ");
-
-  return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="${csp}" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="${styleUri.toString()}" />
-    <title>rayucode</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script nonce="${nonce}" src="${scriptUri.toString()}"></script>
-  </body>
-</html>`;
-}
-
-/** Generate a CSP nonce for the bundled webview script (task 13.1). */
-function makeNonce(): string {
-  const alphabet =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let nonce = "";
-  for (let i = 0; i < 32; i++) {
-    nonce += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+  if (relative === "") {
+    return true; // the root itself
   }
-  return nonce;
+  return !relative.startsWith("..") && !nodePath.isAbsolute(relative);
 }
 
-// ----------------------------------------------------------------------------
-// Edit-application helpers (task 12.4)
-// ----------------------------------------------------------------------------
+/**
+ * The real (symlink-resolved) absolute path of `candidate`.
+ *
+ * A `create` targets a file that does not exist yet, so `realpath` on it would
+ * fail. We therefore resolve the deepest EXISTING ancestor and re-append the
+ * remaining segments — which is sufficient, because a link can only be traversed
+ * through a path component that exists. If nothing resolves (a permission error,
+ * a vanished parent), we fall back to the lexically resolved path: that is the
+ * pre-existing behavior and still rejects plain `..`/absolute escapes.
+ */
+function realPathOf(candidate: string): string {
+  const absolute = nodePath.resolve(candidate);
+  let head = absolute;
+  const trailing: string[] = [];
+
+  for (;;) {
+    try {
+      return nodePath.join(nodeFs.realpathSync(head), ...trailing);
+    } catch {
+      const parent = nodePath.dirname(head);
+      if (parent === head) {
+        // Reached the filesystem root without resolving anything.
+        return absolute;
+      }
+      trailing.unshift(nodePath.basename(head));
+      head = parent;
+    }
+  }
+}
 
 /** Extract a human-readable message from an unknown thrown value (R6.6). */
 function errorMessageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Whether VS Code ALREADY has a text document open for `uri`. Distinguishes a
+ * buffer the user is working in (leave the applied edit dirty and reviewable,
+ * R6.4) from a file only the adapter touched (persist it, so an approved edit
+ * genuinely lands on disk).
+ */
+function isDocumentOpen(uri: vscode.Uri): boolean {
+  const target = uri.toString();
+  return vscode.workspace.textDocuments.some(
+    (document) => document.uri.toString() === target,
+  );
 }
 
 /**

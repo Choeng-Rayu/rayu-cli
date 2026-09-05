@@ -1,382 +1,846 @@
-/* Agent_Panel webview styles (task 13.1).
+/*
+ * Agent panel stylesheet.
  *
- * Loaded as an external stylesheet (dist/webview.css) via the webview's
- * `cspSource`, so the panel needs no inline styles and the CSP can keep
- * `style-src` locked to the host origin (no 'unsafe-inline'). All colors come
- * from VS Code theme variables so the panel matches the active theme. */
+ * Loaded via <link> from the webview's `cspSource`, so the panel's CSP can keep
+ * `style-src ${cspSource}` with NO 'unsafe-inline'. Nothing here may move into a
+ * style attribute in markup.
+ *
+ * Every colour is a VS Code theme variable — never a literal. That is what makes
+ * the panel follow light, dark, and high-contrast themes, and it is why contrast
+ * ratios hold: the editor guarantees its own foreground/background pairs.
+ *
+ * Interactive targets are at least 24px tall with >=8px separation. VS Code's own
+ * dense chrome sets the expectation inside the editor, so the 44px mobile touch
+ * guidance is not the right reference here.
+ */
 
 :root {
-  color-scheme: light dark;
+  --rc-gap: 8px;
+  --rc-gap-lg: 12px;
+  --rc-radius: 4px;
+  --rc-border: 1px solid var(--vscode-panel-border, transparent);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 body {
-  margin: 0;
-  padding: 0;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size, 13px);
+  line-height: 1.5;
   color: var(--vscode-foreground);
-  background: var(--vscode-editor-background);
+  background: var(--vscode-editor-background, transparent);
 }
 
-.rc-panel {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  box-sizing: border-box;
+#app {
+  height: 100%;
 }
 
-/* Header --------------------------------------------------------------- */
-.rc-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  flex: 0 0 auto;
-}
-
-.rc-model-info {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.rc-model-name {
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.rc-mode {
-  opacity: 0.7;
-  font-size: 0.85em;
-}
-
-.rc-actions {
-  display: flex;
-  gap: 6px;
-  flex: 0 0 auto;
-}
-
-/* MCP strip ------------------------------------------------------------ */
-.rc-mcp {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  font-size: 0.85em;
-  flex: 0 0 auto;
-}
-
-.rc-mcp-label {
-  opacity: 0.7;
-}
-
-.rc-mcp-chip {
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
-}
-
-.rc-mcp-failed {
-  background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
-  color: var(--vscode-errorForeground, #f48771);
-}
-
-/* Conversation --------------------------------------------------------- */
-.rc-conversation {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.rc-msg {
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
-}
-
-.rc-role {
-  font-size: 0.8em;
-  font-weight: 600;
-  opacity: 0.7;
-  margin-bottom: 4px;
-}
-
-.rc-user {
-  background: var(--vscode-input-background, rgba(128, 128, 128, 0.12));
-}
-
-.rc-user-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* Markdown ------------------------------------------------------------- */
-.rc-md {
-  word-break: break-word;
-}
-
-.rc-md p {
-  margin: 0.4em 0;
-}
-
-.rc-md h1,
-.rc-md h2,
-.rc-md h3,
-.rc-md h4,
-.rc-md h5,
-.rc-md h6 {
-  margin: 0.6em 0 0.3em;
-  line-height: 1.2;
-}
-
-.rc-md code {
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.9em;
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
-  padding: 0.1em 0.3em;
-  border-radius: 3px;
-}
-
-.rc-md pre,
-.rc-code {
-  font-family: var(--vscode-editor-font-family, monospace);
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
-  padding: 8px;
-  border-radius: 4px;
-  overflow-x: auto;
-  white-space: pre;
-  margin: 0.4em 0;
-}
-
-.rc-md pre code,
-.rc-code code {
-  background: none;
+/* Visible only to assistive technology. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.rc-md a {
-  color: var(--vscode-textLink-foreground);
-}
+/* ---------------------------------------------------------------- layout -- */
 
-.rc-cursor {
-  animation: rc-blink 1s steps(2, start) infinite;
-  opacity: 0.7;
-}
-
-@keyframes rc-blink {
-  to {
-    visibility: hidden;
-  }
-}
-
-/* Tool actions --------------------------------------------------------- */
-.rc-tool-head {
+.panel {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.9em;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 
-.rc-tool-name {
-  font-weight: 600;
-}
-
-.rc-tool-status {
-  font-size: 0.8em;
-  opacity: 0.8;
-  text-transform: uppercase;
-}
-
-.rc-status-failed {
-  color: var(--vscode-errorForeground, #f48771);
-}
-
-.rc-status-running,
-.rc-status-pending {
-  color: var(--vscode-charts-yellow, #cca700);
-}
-
-.rc-status-complete {
-  color: var(--vscode-charts-green, #89d185);
-}
-
-.rc-spinner {
-  animation: rc-blink 0.8s linear infinite;
-}
-
-/* Permission requests -------------------------------------------------- */
-.rc-perm {
-  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.4));
-}
-
-.rc-perm-head {
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.rc-perm-label {
-  font-size: 0.8em;
-  opacity: 0.7;
-  margin-top: 4px;
-}
-
-.rc-perm-controls {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.rc-perm-resolved {
-  margin-top: 6px;
-  font-size: 0.85em;
-  opacity: 0.8;
-}
-
-/* Diffs ---------------------------------------------------------------- */
-.rc-diff-file {
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.rc-diff-label {
-  font-size: 0.75em;
-  opacity: 0.7;
-  margin-top: 4px;
-}
-
-.rc-diff-before {
-  border-left: 3px solid var(--vscode-errorForeground, #f48771);
-}
-
-.rc-diff-after {
-  border-left: 3px solid var(--vscode-charts-green, #89d185);
-}
-
-/* Usage / error / notice ----------------------------------------------- */
-.rc-usage {
-  font-size: 0.8em;
-  opacity: 0.75;
-  background: none;
-  border: none;
-  padding: 2px 10px;
-}
-
-.rc-error {
-  background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
-  border-color: var(--vscode-inputValidation-errorBorder, #be1100);
-  color: var(--vscode-errorForeground, #f48771);
-}
-
-.rc-notice {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 0.9em;
-}
-
-.rc-notice-info {
-  background: var(--vscode-editorInfo-background, rgba(100, 148, 237, 0.1));
-}
-
-.rc-notice-warn {
-  background: var(--vscode-inputValidation-warningBackground, #5d4d1a);
-  color: var(--vscode-editorWarning-foreground, #cca700);
-}
-
-/* Footer / input ------------------------------------------------------- */
-.rc-footer {
+.panel-header {
   flex: 0 0 auto;
-  padding: 8px 10px;
-  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  padding: var(--rc-gap);
+  border-bottom: var(--rc-border);
 }
 
-.rc-status {
+.header-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
-  font-size: 0.85em;
+  gap: var(--rc-gap);
+  flex-wrap: wrap;
+}
+
+.header-spacer {
+  flex: 1 1 auto;
+}
+
+.model-label {
+  color: var(--vscode-descriptionForeground);
+}
+
+.model-select {
+  min-height: 24px;
+  max-width: 18rem;
+  color: var(--vscode-dropdown-foreground);
+  background: var(--vscode-dropdown-background);
+  border: 1px solid var(--vscode-dropdown-border, transparent);
+  border-radius: var(--rc-radius);
+  padding: 2px 4px;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/*
+ * Permission mode picker. Sized to its content so it does not compete with the
+ * model select for the header's width.
+ */
+.mode-select {
+  max-width: 11em;
+  padding: 1px 4px;
+  border: 1px solid var(--vscode-dropdown-border, transparent);
+  border-radius: var(--rc-radius);
+  font-family: inherit;
+  font-size: 0.9em;
+  color: var(--vscode-dropdown-foreground);
+  background: var(--vscode-dropdown-background);
+}
+
+/*
+ * The two modes that skip prompts are tinted, so "the agent will not ask before
+ * writing / running commands" is visible at a glance rather than only on reading
+ * the label. bypassPermissions gets the stronger error colour: under it a command
+ * runs with no confirmation at all.
+ */
+.mode-select.mode-acceptEdits {
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  border-color: var(--vscode-inputValidation-warningBorder, transparent);
+  background: var(--vscode-inputValidation-warningBackground);
+}
+
+.mode-select.mode-bypassPermissions {
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground));
+  border-color: var(--vscode-inputValidation-errorBorder, transparent);
+  background: var(--vscode-inputValidation-errorBackground);
+  font-weight: 600;
+}
+
+.mcp-warning {
+  margin-top: var(--rc-gap);
+  padding: 4px 6px;
+  border-radius: var(--rc-radius);
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder, transparent);
+}
+
+.transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--rc-gap);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap-lg);
+}
+
+.transcript-empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-hint {
+  color: var(--vscode-descriptionForeground);
+  text-align: center;
+  max-width: 32rem;
+}
+
+/* ------------------------------------------------------------ item shell -- */
+
+/*
+ * Visual hierarchy (step 5).
+ *
+ * Everything used to render at the same weight, so a permission request, an
+ * assistant answer and a tool's stdout competed equally for attention. The
+ * ordering below is deliberate, heaviest first:
+ *
+ *   permission request  — bordered, tinted; blocks progress          (see above)
+ *   user message        — bordered, tinted; the anchor of each turn
+ *   assistant message   — plain, full width; the content being read
+ *   tool action         — smaller, monospace, collapsed; supporting detail
+ *   usage / cost        — smallest, collapsed; reference only
+ */
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Supporting detail: set slightly smaller so it recedes behind prose. */
+.item-tool,
+.item-usage {
+  font-size: 0.95em;
+}
+
+.item-tool .tool-header {
   opacity: 0.85;
 }
 
-.rc-input-row {
+/* The assistant's answer carries no background, border or padding by design —
+   see `.assistant-text`, which sets only wrapping. Nothing is added here on
+   purpose: it is the content being read, and anything decorative around it would
+   compete with the text. */
+
+.item-user .user-text {
+  padding: 6px 8px;
+  border-radius: var(--rc-radius);
+  background: var(--vscode-textBlockQuote-background);
+  border-left: 3px solid var(--vscode-textLink-foreground);
+  /* User input is shown verbatim, so preserve its line breaks and spacing. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assistant-text {
+  overflow-wrap: anywhere;
+}
+
+.assistant-text > :first-child {
+  margin-top: 0;
+}
+
+.assistant-text > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-error,
+.error-text {
+  padding: 6px 8px;
+  border-radius: var(--rc-radius);
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground));
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder, transparent);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Streaming indicator. Honours prefers-reduced-motion below. */
+.streaming-indicator {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.streaming-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vscode-progressBar-background, var(--vscode-foreground));
+  animation: rc-pulse 1200ms ease-in-out infinite;
+}
+
+@keyframes rc-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------ tool -- */
+
+.tool-header,
+.permission-header {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  flex-wrap: wrap;
+}
+
+.tool-name {
+  font-weight: 600;
+}
+
+.tool-status {
+  font-size: 0.9em;
+  padding: 1px 6px;
+  border-radius: 9px;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+}
+
+.tool-status-error,
+.tool-status-denied {
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground));
+  background: var(--vscode-inputValidation-errorBackground);
+}
+
+.tool-command,
+.tool-input,
+.tool-output,
+.md-code-block {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--rc-radius);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 12px);
+  color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+  background: var(--vscode-textCodeBlock-background);
+  border: var(--rc-border);
+  overflow-x: auto;
+  /* A long command must stay readable rather than forcing horizontal scroll of
+     the whole panel. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-output {
+  max-height: 20rem;
+  overflow-y: auto;
+}
+
+details > summary {
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground);
+  /* A 24px target, and the native focus ring is preserved below. */
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+}
+
+.disclosure-body {
+  margin-top: 4px;
+}
+
+/* ------------------------------------------------------------ permission -- */
+
+/*
+ * A blocking request has to read as different in KIND from a tool result, not
+ * just different in wording — the old card was visually identical to any other
+ * entry, so it was routinely scrolled past while the agent sat waiting. The
+ * warning border is VS Code's own validation colour, so it stays correct under
+ * every theme including high-contrast.
+ */
+.item-permission.permission-blocking {
+  padding: var(--rc-gap);
+  border-radius: var(--rc-radius);
+  border-left: 3px solid
+    var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+  background: var(--vscode-inputValidation-warningBackground);
+}
+
+/* A decided request is a record, not a call to action: quiet it right down. */
+.item-permission.permission-decided {
+  opacity: 0.75;
+}
+
+.permission-icon {
+  color: var(--vscode-editorWarning-foreground);
+  font-weight: 700;
+}
+
+.permission-pending {
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder, transparent);
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+.permission-outcome.allowed {
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 0.9em;
+}
+
+.permission-outcome.denied {
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground));
+  background: var(--vscode-inputValidation-errorBackground);
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 0.9em;
+}
+
+.permission-actions,
+.notice-actions {
+  display: flex;
+  gap: var(--rc-gap);
+  margin-top: 4px;
+}
+
+/* On the card, Allow is the primary action and takes the room to prove it. */
+.permission-actions-stacked .btn-allow {
+  flex: 1 1 auto;
+}
+
+.permission-actions-inline {
+  margin-top: 0;
+}
+
+.permission-actions-inline .btn {
+  flex: 1 1 0;
+}
+
+/* ------------------------------------------- sticky approval bar (step 1) -- */
+
+/*
+ * Pinned above the composer, so a request cannot be scrolled out of reach. This
+ * is the fix for the reported bug: the Allow/Deny buttons already worked, but
+ * they lived only in the scrolling transcript, so a user who had scrolled up saw
+ * an apparently-hung spinner and no way to unblock it.
+ */
+.permission-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--rc-gap);
+  border: 1px solid
+    var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+  border-left-width: 3px;
+  border-radius: var(--rc-radius);
+  background: var(--vscode-inputValidation-warningBackground);
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+}
+
+.permission-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.permission-bar-icon {
+  color: var(--vscode-editorWarning-foreground);
+  font-weight: 700;
+}
+
+.permission-bar-title {
+  overflow-wrap: anywhere;
+}
+
+/* The command or path being asked about. Clamped: the full text is on the card,
+   and an unbounded command would push the input box off-screen. */
+.permission-bar-summary {
+  display: block;
+  max-height: 4.5em;
+  overflow: auto;
+  padding: 4px 6px;
+  border-radius: var(--rc-radius);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--vscode-textCodeBlock-background);
+}
+
+/* --------------------------------------------------------------- notices -- */
+
+.notice-text {
+  padding: 6px 8px;
+  border-radius: var(--rc-radius);
+  background: var(--vscode-textBlockQuote-background);
+  white-space: pre-wrap;
+}
+
+.item-notice-warn .notice-text {
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  background: var(--vscode-inputValidation-warningBackground);
+}
+
+.notice-paths {
+  margin: 4px 0 0;
+  padding-left: 1.25rem;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+/* ----------------------------------------------------------------- usage -- */
+
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-summary {
+  display: flex;
+  gap: var(--rc-gap-lg);
+  flex-wrap: wrap;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.95em;
+}
+
+.usage-cost b {
+  color: var(--vscode-foreground);
+}
+
+.usage-table,
+.md-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.usage-table th,
+.usage-table td,
+.md-table th,
+.md-table td {
+  border: var(--rc-border);
+  padding: 3px 6px;
+  text-align: left;
+}
+
+.usage-table th,
+.md-table th {
+  background: var(--vscode-keybindingTable-headerBackground, transparent);
+}
+
+/* -------------------------------------------------------------- markdown -- */
+
+.md-image-placeholder {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+.assistant-text :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0.75em 0 0.35em;
+  line-height: 1.3;
+}
+
+.assistant-text blockquote {
+  margin: 0.5em 0;
+  padding-left: 8px;
+  border-left: 3px solid var(--vscode-textBlockQuote-border, var(--vscode-panel-border));
+  color: var(--vscode-descriptionForeground);
+}
+
+.assistant-text code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+  background: var(--vscode-textCodeBlock-background);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+
+.assistant-text pre code {
+  padding: 0;
+  background: none;
+}
+
+.assistant-text a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.assistant-text a:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+
+.assistant-text li.md-task {
+  list-style: none;
+  margin-left: -1.25rem;
+}
+
+.assistant-text li.md-task input {
+  margin-right: 6px;
+}
+
+/* -------------------------------------------------------------- composer -- */
+
+.composer {
+  flex: 0 0 auto;
+  padding: var(--rc-gap);
+  border-top: var(--rc-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap);
+}
+
+.composer-row {
+  display: flex;
+  gap: var(--rc-gap);
   align-items: flex-end;
 }
 
-.rc-input {
+.prompt-input {
   flex: 1 1 auto;
   resize: vertical;
+  min-height: 48px;
+  padding: 6px 8px;
   font-family: inherit;
   font-size: inherit;
+  line-height: 1.5;
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.4));
-  border-radius: 4px;
-  padding: 6px 8px;
-  box-sizing: border-box;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: var(--rc-radius);
 }
 
-.rc-input:focus {
-  outline: 1px solid var(--vscode-focusBorder);
+.prompt-input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
 }
 
-/* Buttons -------------------------------------------------------------- */
-.rc-btn {
+/* --------------------------------------------------------------- buttons -- */
+
+.btn {
+  min-height: 26px;
+  padding: 4px 11px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: var(--rc-radius);
   font-family: inherit;
   font-size: inherit;
-  color: var(--vscode-button-foreground);
-  background: var(--vscode-button-background);
-  border: none;
-  border-radius: 4px;
-  padding: 5px 10px;
   cursor: pointer;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
 }
 
-.rc-btn:hover {
+.btn:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.btn-primary {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.btn-primary:hover:not(:disabled) {
   background: var(--vscode-button-hoverBackground);
 }
 
-.rc-btn:disabled {
+.btn-danger {
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-button-foreground));
+  background: var(--vscode-inputValidation-errorBackground);
+  border-color: var(--vscode-inputValidation-errorBorder, transparent);
+}
+
+.btn-quiet {
+  background: transparent;
+  color: var(--vscode-foreground);
+}
+
+.btn-quiet:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.btn:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.rc-deny,
-.rc-model-btn,
-.rc-new-btn,
-.rc-interrupt-btn {
-  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+/* ---------------------------------------------------------- focus & a11y -- */
+
+/*
+ * A visible focus indicator on every focusable element. Keyboard navigation is a
+ * hard requirement, and VS Code's focusBorder is the token themes are guaranteed
+ * to define with adequate contrast.
+ */
+:is(button, select, textarea, summary, a, input):focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 
-.rc-deny:hover,
-.rc-model-btn:hover,
-.rc-new-btn:hover,
-.rc-interrupt-btn:hover {
-  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+/* Respect the OS reduced-motion preference: drop the pulse to a static state. */
+@media (prefers-reduced-motion: reduce) {
+  .streaming-indicator .dot {
+    animation: none;
+    opacity: 0.8;
+  }
 }
 
-.rc-model-select {
-  font-family: inherit;
-  font-size: inherit;
-  color: var(--vscode-dropdown-foreground);
-  background: var(--vscode-dropdown-background);
-  border: 1px solid var(--vscode-dropdown-border, rgba(128, 128, 128, 0.4));
-  border-radius: 4px;
+/* High-contrast themes: make every boundary explicit. */
+@media (forced-colors: active) {
+  .item-user .user-text,
+  .tool-command,
+  .tool-input,
+  .tool-output,
+  .md-code-block,
+  .notice-text,
+  .btn {
+    border: 1px solid CanvasText;
+  }
+
+  /*
+   * Forced-colors drops the background tints these rely on, which would leave the
+   * blocking request looking like any other entry — the exact failure this change
+   * set out to fix. A border survives, so the boundary stays visible.
+   */
+  .permission-bar,
+  .item-permission.permission-blocking,
+  .permission-bar-summary,
+  .mode-select {
+    border: 1px solid CanvasText;
+  }
+}
+
+/* ------------------------------------------- provider status & progress -- */
+
+/*
+ * Rate-limit and auth notices sit in the header rather than the transcript:
+ * they describe the CURRENT connection state, not something that happened at a
+ * point in the conversation.
+ */
+.rate-limit,
+.auth-status {
+  margin-top: var(--rc-gap);
   padding: 4px 6px;
+  border-radius: var(--rc-radius);
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder, transparent);
+}
+
+.rate-limit-rejected {
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground));
+  background: var(--vscode-inputValidation-errorBackground);
+  border-color: var(--vscode-inputValidation-errorBorder, transparent);
+}
+
+.auth-status {
+  color: var(--vscode-foreground);
+  background: var(--vscode-textBlockQuote-background);
+  border-color: var(--vscode-panel-border, transparent);
+}
+
+/* Live tool progress, replaced in place above the composer. */
+.tool-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.95em;
+}
+
+.tool-progress .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vscode-progressBar-background, var(--vscode-foreground));
+  animation: rc-pulse 1200ms ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-progress .dot {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+@media (forced-colors: active) {
+  .rate-limit,
+  .auth-status {
+    border: 1px solid CanvasText;
+  }
+}
+
+/* ------------------------------------------------------------------ diff -- */
+
+/*
+ * Diff colours use VS Code's own diff-editor tokens, so added/removed regions
+ * match what the user sees in the editor's diff view. Each line ALSO carries a
+ * +/- marker and a screen-reader prefix, so the meaning never depends on colour
+ * alone — which is what keeps it usable in high-contrast themes and for
+ * colour-blind users.
+ */
+.diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap);
+}
+
+.diff-file {
+  border: var(--rc-border);
+  border-radius: var(--rc-radius);
+  overflow: hidden;
+}
+
+.diff-file-header {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  padding: 3px 6px;
+  background: var(--vscode-keybindingTable-headerBackground, var(--vscode-textBlockQuote-background));
+  border-bottom: var(--rc-border);
+}
+
+.diff-path {
+  font-family: var(--vscode-editor-font-family, monospace);
+  overflow-wrap: anywhere;
+}
+
+.diff-whole-file {
+  font-size: 0.85em;
+  padding: 0 5px;
+  border-radius: 9px;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+}
+
+.diff-hunk + .diff-hunk {
+  border-top: var(--rc-border);
+}
+
+.diff-hunk-header {
+  padding: 2px 6px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-textBlockQuote-background);
+}
+
+.diff-lines {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 12px);
+}
+
+.diff-lines td {
+  padding: 0 4px;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: none;
+}
+
+.diff-marker {
+  width: 1.2em;
+  text-align: center;
+  user-select: none;
+  color: var(--vscode-descriptionForeground);
+}
+
+.diff-add {
+  background: var(--vscode-diffEditor-insertedTextBackground, var(--vscode-diffEditor-insertedLineBackground));
+}
+
+.diff-remove {
+  background: var(--vscode-diffEditor-removedTextBackground, var(--vscode-diffEditor-removedLineBackground));
+}
+
+.diff-empty {
+  padding: 4px 6px;
+  color: var(--vscode-descriptionForeground);
+}
+
+@media (forced-colors: active) {
+  /* Background tints are dropped in forced-colors mode, so restore a visible
+     distinction from the marker column and an explicit border. */
+  .diff-add,
+  .diff-remove {
+    border-left: 3px solid CanvasText;
+  }
+  .diff-file {
+    border: 1px solid CanvasText;
+  }
 }

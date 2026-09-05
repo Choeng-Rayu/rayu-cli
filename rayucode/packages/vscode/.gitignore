@@ -1,0 +1,13 @@
+# Developer-local environment overrides — never commit real values
+.env
+.env.local
+
+# Build output
+dist/
+out/
+
+# Test harness downloads
+.vscode-test/
+
+# Packaged extension
+*.vsix

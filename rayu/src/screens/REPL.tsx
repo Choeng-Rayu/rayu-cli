@@ -48,6 +48,7 @@ import { endInteractionSpan } from '../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
 import { useTelegramBridge } from '../hooks/useTelegramBridge.js';
+import { useWebBridge } from '../hooks/useWebBridge.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
 import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
@@ -871,7 +872,8 @@ export function REPL({
   // read in the onQuery finally block to notify mobile clients that a turn ended.
   const sendBridgeResultRef = useRef<() => void>(() => {});
   // Set after handleIncomingPrompt is defined; the Telegram bridge calls
-  // Holds the Telegram streaming wrapper for onStreamingText; populated by useTelegramBridge.
+  // Holds the chained remote streaming wrappers for onStreamingText; populated by
+  // useTelegramBridge and useWebBridge. Named `tg…` for history — it carries both.
   const tgStreamingWrapRef = useRef<
     ((f: (current: string | null) => string | null) => void) | null
   >(null);
@@ -3897,7 +3899,17 @@ export function REPL({
   } = useReplBridge(messages, setMessages, abortControllerRef, commands, mainLoopModel);
   sendBridgeResultRef.current = sendBridgeResult;
   const { wrapOnStreamingText } = useTelegramBridge(messages);
-  tgStreamingWrapRef.current = wrapOnStreamingText(onStreamingText);
+  const { wrapOnStreamingText: wrapWebBridgeOnStreamingText } = useWebBridge(messages);
+  /*
+   * CHAINED, not chosen. Each wrapper keeps its own accumulator and forwards to the
+   * callback it was given, so composing them means every remote surface sees every
+   * delta. Assigning one of them to the ref instead would silently give whichever
+   * lost the streaming feed nothing at all — the session would look alive in one
+   * place and frozen mid-answer in the other.
+   */
+  tgStreamingWrapRef.current = wrapWebBridgeOnStreamingText(
+    wrapOnStreamingText(onStreamingText),
+  );
   useAfterFirstRender();
 
   // Track prompt queue usage for analytics. Fire once per transition from

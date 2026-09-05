@@ -17,7 +17,7 @@
 //
 // No `vscode` import (R13.1, R13.5).
 
-import type { PermissionMode } from "../protocol/permissions.js";
+import type { PermissionMode } from "../protocol/wire.js";
 
 /**
  * The three tool-action categories the permission policy distinguishes

@@ -48,6 +48,16 @@ Until a release exists, the updater's version check returns `null` and simply
 treats the current version as up to date (no errors). Tags containing `-`
 (e.g. `v1.2.3-beta.1`) are published as prereleases.
 
+**This is also what the website installer looks for first.**
+<https://rayucode.com/install> probes
+`releases/latest/download/rayu-cli-<platform>` and installs that standalone
+binary (verifying it against `manifest.json`) when it exists; the platform names
+are the `getPlatform()` values above, including the `-musl` variants. Until the
+first `v*` tag is pushed, every install falls back to the npm tarball + a Node
+runtime — which works everywhere, but is a ~24 MB bundle plus a Node dependency
+instead of one self-contained executable. Pushing a release is what upgrades all
+new installs to the zero-dependency path; nothing on the website needs changing.
+
 
 ## Build all platforms
 
@@ -67,9 +77,9 @@ Produces in `dist/bin/` (filenames include the version from `package.json`):
 | `rayu-darwin-x64-<version>` | macOS Intel |
 | `rayu-darwin-arm64-<version>` | macOS Apple Silicon |
 
-e.g. at version 0.1.1 the Windows binary is `rayu-windows-x64-0.1.1.exe`. The
-`install.sh`/`install.ps1` scripts pick the newest matching local binary
-automatically.
+e.g. at version 0.1.1 the Windows binary is `rayu-windows-x64-0.1.1.exe`.
+`./install.sh --local` picks the newest binary matching the host OS/arch
+automatically (see [Installing](#installing-so-rayu-is-on-path) below).
 
 ### Build only specific targets
 
@@ -125,19 +135,31 @@ inlined at build time as `MACRO.VERSION`. To cut a new version:
 
 ## Installing (so `rayu` is on PATH)
 
-Use the bundled installers — they copy the right binary to `~/.rayu/bin`
-(`%USERPROFILE%\.rayu\bin` on Windows), rename it to `rayu`, and add that dir
-to PATH:
+`install.sh` is the same script served at <https://rayucode.com/install>. Point it
+at your local build with `--local` (or `--from <path>`) and it copies the right
+binary to `~/.rayu/bin/rayu` and wires up PATH, exactly as it does for end users:
 
 ```bash
-# Linux / macOS (from the repo, after build:binaries)
-./install.sh
+# Linux / macOS, from the repo after build:binaries (or after build, for dist/rayu.js)
+./install.sh --local
 
-# Windows (PowerShell)
-.\install.ps1
+# a specific artifact
+./install.sh --from dist/bin/rayu-linux-x64-1.6.13
 ```
 
+On Windows there is no local mode: `install.ps1` always installs a published
+build. To try a local `.exe`, run it directly — it self-registers on first run
+(see below) — or copy it over `%USERPROFILE%\.rayu\bin\rayu.exe` yourself.
+
 Then open a **new** terminal and run `rayu`.
+
+Without `--local`, `./install.sh` installs the *published* release (standalone
+binary if one exists for your platform, otherwise the npm tarball) — which is
+what the one-liner on the website does:
+
+```bash
+curl -fsSL https://rayucode.com/install | bash
+```
 
 ### Windows: first-run self-registration
 

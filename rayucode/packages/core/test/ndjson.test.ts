@@ -1,7 +1,12 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { NdjsonCodec } from "../src/index.js";
+import type { DecodeFailure } from "../src/index.js";
+import {
+  MAX_DIAGNOSTIC_FRAME_CHARS,
+  NdjsonCodec,
+  truncateForDiagnostics,
+} from "../src/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -156,7 +161,7 @@ describe("NdjsonCodec round-trip", () => {
         const stream = messages.map((m) => NdjsonCodec.encode(m)).join("");
         const malformed: string[] = [];
         const decoded = NdjsonCodec.decode<Record<string, unknown>>(stream, {
-          onMalformedLine: (raw) => malformed.push(raw),
+          onDecodeFailure: (f) => malformed.push(f.frame),
         });
 
         // The codec is pure framing: `encode` is `JSON.stringify(m) + "\n"` and
@@ -190,40 +195,107 @@ describe("NdjsonCodec round-trip", () => {
 // ---------------------------------------------------------------------------
 
 describe("NdjsonCodec decoder robustness", () => {
-  it("emits valid messages in order, reports each invalid line once, and never drops a valid line after an invalid one", () => {
-    // Feature: rayucode, Property 2: For any byte stream containing a mix of valid JSON lines and invalid (non-JSON) lines in any order, the decoder emits exactly the valid messages in order, reports each invalid line once via the malformed-line callback, and never drops a valid line that follows an invalid one.
+  it("emits every valid message up to the first bad line, then latches and stops", () => {
+    // REPLACES the former property, which asserted skip-and-continue:
+    //   "reports each invalid line once, and never drops a valid line after an
+    //    invalid one"
+    //
+    // That behaviour was deliberately removed. The control protocol is
+    // request/response correlated, so a dropped frame can be the very response
+    // the UI is awaiting — skipping it leaves the panel spinning with no error.
+    // A stream that has started producing unparseable output is also, by
+    // definition, no longer speaking the protocol, so continuing to read it is
+    // guesswork (PROTOCOL.md §7, rayucode/TRIAGE.md D7).
+    //
+    // The property now asserted: the decoder yields exactly the valid messages
+    // BEFORE the first bad line, reports that one failure exactly once, and
+    // yields nothing afterwards regardless of what follows.
     fc.assert(
       fc.property(fc.array(lineSpec, { maxLength: 40 }), (lines) => {
         const stream = lines.map((l) => l.raw + "\n").join("");
-        const malformed: string[] = [];
+        const failures: DecodeFailure[] = [];
         const decoded = NdjsonCodec.decode<Record<string, unknown>>(stream, {
-          onMalformedLine: (raw) => malformed.push(raw),
+          onDecodeFailure: (failure) => failures.push(failure),
         });
 
-        const expectedValid = lines
+        const firstBad = lines.findIndex((l) => !l.valid);
+        const consumed = firstBad === -1 ? lines : lines.slice(0, firstBad);
+        const expectedValid = consumed
           .filter((l): l is Extract<LineSpec, { valid: true }> => l.valid)
-          // Compare against the platform's own JSON round-trip of each valid
-          // line, for the same reason as Property 1: the decoder yields
-          // `JSON.parse(line)`, so the expected value is the parse of that
-          // line's serialized form (`l.raw === JSON.stringify(l.message)`).
-          // This isolates the codec's framing/continuation behavior from
-          // platform-level JSON (de)serialization and is robust to the V8
-          // JSON.parse regression noted in Property 1, while still failing for
-          // any genuine framing fault (a dropped, duplicated, mis-ordered, or
-          // mis-parsed line diverges from this per-line reference).
+          // Compare against the platform's own JSON round-trip of each line, so
+          // the assertion isolates framing behaviour from JSON (de)serialisation.
           .map((l) => JSON.parse(l.raw) as Record<string, unknown>);
-        const expectedInvalid = lines
-          .filter((l) => !l.valid)
-          .map((l) => l.raw);
 
-        // Exactly the valid messages, in order (valid lines that follow invalid
-        // ones are preserved, since `decoded` matches every valid line).
         expect(decoded).toEqual(expectedValid);
-        // Each invalid line reported exactly once, in order.
-        expect(malformed).toEqual(expectedInvalid);
+
+        if (firstBad === -1) {
+          // No bad line: nothing should have been reported.
+          expect(failures).toHaveLength(0);
+        } else {
+          // Exactly ONE failure is reported, however many bad lines follow.
+          expect(failures).toHaveLength(1);
+          expect(failures[0]?.kind).toBe("json");
+        }
       }),
       { numRuns: 200 },
     );
+  });
+
+  it("yields nothing at all once it has failed, even for well-formed input", () => {
+    const failures: DecodeFailure[] = [];
+    const codec = new NdjsonCodec<Record<string, unknown>>({
+      onDecodeFailure: (f) => failures.push(f),
+    });
+
+    expect(codec.hasFailed).toBe(false);
+    expect(codec.push('{"type":"keep_alive"}\n')).toHaveLength(1);
+
+    // A bad line latches the codec.
+    expect(codec.push("this is not json\n")).toHaveLength(0);
+    expect(codec.hasFailed).toBe(true);
+    expect(failures).toHaveLength(1);
+
+    // Everything after it is ignored, and no second failure is reported — the
+    // caller is told once and is expected to tear the session down.
+    expect(codec.push('{"type":"keep_alive"}\n')).toHaveLength(0);
+    expect(codec.flush()).toHaveLength(0);
+    expect(failures).toHaveLength(1);
+  });
+
+  it("reports a schema failure with value-free issue paths", () => {
+    // The issue list must never carry payload VALUES: it is logged, and a frame
+    // can contain file contents, tool output, or credentials.
+    const failures: DecodeFailure[] = [];
+    NdjsonCodec.decode<{ type: string }>('{"type":"assistant"}\n', {
+      validate: (value) => {
+        const ok =
+          typeof value === "object" &&
+          value !== null &&
+          "message" in (value as object);
+        return ok
+          ? { ok: true, value: value as { type: string } }
+          : {
+              ok: false,
+              issues: [
+                { path: "message", code: "invalid_type", message: "required" },
+              ],
+            };
+      },
+      onDecodeFailure: (f) => failures.push(f),
+    });
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.kind).toBe("schema");
+    expect(failures[0]?.issues?.[0]?.path).toBe("message");
+    const serialized = JSON.stringify(failures[0]?.issues);
+    expect(serialized).not.toContain("assistant");
+  });
+
+  it("truncates an oversized frame for diagnostics and says so", () => {
+    const huge = "x".repeat(MAX_DIAGNOSTIC_FRAME_CHARS * 2);
+    const out = truncateForDiagnostics(huge);
+    expect(out.length).toBeLessThan(huge.length);
+    expect(out).toContain("truncated");
   });
 });
 
@@ -244,13 +316,13 @@ describe("NdjsonCodec chunk-boundary invariance", () => {
           // Feed the whole stream at once.
           const wholeMalformed: string[] = [];
           const whole = NdjsonCodec.decode<Record<string, unknown>>(stream, {
-            onMalformedLine: (raw) => wholeMalformed.push(raw),
+            onDecodeFailure: (f) => wholeMalformed.push(f.frame),
           });
 
           // Feed the same stream split at arbitrary boundaries.
           const chunkedMalformed: string[] = [];
           const codec = new NdjsonCodec<Record<string, unknown>>({
-            onMalformedLine: (raw) => chunkedMalformed.push(raw),
+            onDecodeFailure: (f) => chunkedMalformed.push(f.frame),
           });
           const chunked: Record<string, unknown>[] = [];
           for (const chunk of splitIntoChunks(stream, rawCuts)) {
@@ -335,19 +407,26 @@ describe("NdjsonCodec encode/decode examples", () => {
   it("skips blank lines without reporting them as malformed", () => {
     const malformed: string[] = [];
     const decoded = NdjsonCodec.decode('{"a":1}\n\n{"b":2}\n', {
-      onMalformedLine: (raw) => malformed.push(raw),
+      onDecodeFailure: (f) => malformed.push(f.frame),
     });
     expect(decoded).toEqual([{ a: 1 }, { b: 2 }]);
     expect(malformed).toEqual([]);
   });
 
-  it("reports a malformed line once and continues with the following valid line", () => {
-    const malformed: string[] = [];
+  it("reports a malformed line once and then STOPS, discarding what follows", () => {
+    // Previously this asserted the valid line AFTER the bad one was still
+    // yielded. That skip-and-continue behaviour was removed deliberately: a
+    // dropped frame can be the response the UI is awaiting, so continuing leaves
+    // the panel spinning with no error (PROTOCOL.md §7, TRIAGE.md D7).
+    const failures: DecodeFailure[] = [];
     const decoded = NdjsonCodec.decode('{"a":1}\nnot json\n{"b":2}\n', {
-      onMalformedLine: (raw) => malformed.push(raw),
+      onDecodeFailure: (f) => failures.push(f),
     });
-    expect(decoded).toEqual([{ a: 1 }, { b: 2 }]);
-    expect(malformed).toEqual(["not json"]);
+    // Only the message before the failure.
+    expect(decoded).toEqual([{ a: 1 }]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.kind).toBe("json");
+    expect(failures[0]?.frame).toBe("not json");
   });
 
   it("throws if push() is called after flush()", () => {

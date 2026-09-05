@@ -109,6 +109,15 @@ function removePackage(install: InstallMethodInfo): UninstallStepResult {
     // separate package step. Reported so the log shows the decision was made.
     return { label: 'native install (removed as scoped artifacts)', ok: true }
   }
+  if (install.method === 'installer') {
+    // Same shape as native: the launcher, the versioned bundles and the private
+    // Node runtime are all scoped artifacts. Running npm here would be actively
+    // wrong — it would uninstall an unrelated npm copy the user may still want.
+    return {
+      label: 'installer-managed install (removed as scoped artifacts)',
+      ok: true,
+    }
+  }
   return {
     label: `package removal skipped (${install.method})`,
     ok: false,

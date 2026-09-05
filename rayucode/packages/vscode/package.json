@@ -1,48 +1,204 @@
 {
   "name": "rayucode",
-  "displayName": "rayucode",
+  "displayName": "Rayucode",
   "version": "0.1.0",
-  "description": "rayucode VSCode_Host — VS Code extension that surfaces the Rayu CLI agent. Depends on @rayucode/core (R13.2).",
+  "description": "The Rayu AI coding agent inside VS Code — multi-provider (Anthropic, OpenAI, DeepSeek, Gemini, Ollama), BYOK, and never trained on your code.",
   "license": "UNLICENSED",
   "private": true,
   "publisher": "rayu-dev",
+  "icon": "assets/icon.png",
+  "keywords": [
+    "ai",
+    "rayu",
+    "coding-assistant",
+    "llm",
+    "multi-provider"
+  ],
   "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages",
     "Other"
   ],
+  "homepage": "https://github.com/rayu-dev/rayucode",
   "repository": {
     "type": "git",
     "url": "https://github.com/rayu-dev/rayucode.git"
   },
+  "bugs": {
+    "url": "https://github.com/rayu-dev/rayucode/issues"
+  },
   "main": "./dist/extension.js",
   "engines": {
-    "vscode": "^1.90.0",
+    "vscode": "^1.100.0",
     "node": ">=18"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Rayucode runs the Rayu agent engine bundled inside this extension, which can execute shell commands and write files in the open folder. In an untrusted workspace it still loads, but you should review every tool action before approving it, and avoid the acceptEdits/bypassPermissions permission modes.",
+      "restrictedConfigurations": [
+        "rayucode.permissionMode",
+        "rayucode.allowEditsOutsideWorkspace"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Rayucode runs a local agent process against a filesystem path, so it cannot operate on a virtual (non-file) workspace."
+    }
+  },
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:rayucode.openPanel",
     "onCommand:rayucode.addSelectionToPrompt"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rayucode",
+          "title": "Rayucode",
+          "icon": "assets/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "rayucode": [
+        {
+          "type": "webview",
+          "id": "rayucode.panel",
+          "name": "Agent",
+          "icon": "assets/icon.svg",
+          "contextualTitle": "Rayucode Agent"
+        }
+      ]
+    },
+    "chatParticipants": [
+      {
+        "id": "rayucode.agent",
+        "name": "rayucode",
+        "fullName": "Rayucode",
+        "description": "Rayu AI coding agent",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "explain",
+            "description": "Explain the selected code"
+          },
+          {
+            "name": "fix",
+            "description": "Fix bugs in selected code"
+          },
+          {
+            "name": "review",
+            "description": "Review code for issues"
+          },
+          {
+            "name": "test",
+            "description": "Generate tests for selected code"
+          }
+        ]
+      }
+    ],
     "commands": [
       {
         "command": "rayucode.openPanel",
         "title": "Open Agent Panel",
-        "category": "rayucode"
+        "category": "Rayucode"
       },
       {
         "command": "rayucode.addSelectionToPrompt",
         "title": "Add Selection to Prompt",
-        "category": "rayucode"
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.interrupt",
+        "title": "Interrupt Current Turn",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.newSession",
+        "title": "Start New Session",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.explainSelection",
+        "title": "Explain Selection",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.fixSelection",
+        "title": "Fix Selection",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.reviewSelection",
+        "title": "Review Selection",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.connectWebBridge",
+        "title": "Connect to Rayu Web Studio",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.disconnectWebBridge",
+        "title": "Disconnect from Rayu Web Studio",
+        "category": "Rayucode"
       }
     ],
-    "configuration": {
-      "title": "rayucode",
-      "properties": {
-        "rayucode.cliPath": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Explicit path to the `rayu` executable. Leave empty to resolve it from the system `PATH`."
+    "menus": {
+      "editor/context": [
+        {
+          "command": "rayucode.explainSelection",
+          "when": "editorHasSelection",
+          "group": "rayucode@1"
         },
+        {
+          "command": "rayucode.fixSelection",
+          "when": "editorHasSelection",
+          "group": "rayucode@2"
+        },
+        {
+          "command": "rayucode.reviewSelection",
+          "when": "editorHasSelection",
+          "group": "rayucode@3"
+        },
+        {
+          "command": "rayucode.addSelectionToPrompt",
+          "when": "editorHasSelection",
+          "group": "rayucode@4"
+        },
+        {
+          "command": "rayucode.openPanel",
+          "group": "rayucode@5"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "rayucode.newSession",
+          "when": "view == rayucode.panel",
+          "group": "navigation@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rayucode.explainSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "rayucode.fixSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "rayucode.reviewSelection",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Rayucode",
+      "properties": {
         "rayucode.includeActiveFile": {
           "type": "boolean",
           "default": false,
@@ -55,6 +211,7 @@
         },
         "rayucode.permissionMode": {
           "type": "string",
+          "scope": "machine",
           "enum": [
             "default",
             "acceptEdits",
@@ -70,7 +227,16 @@
             "Never prompt; deny any action that would otherwise require approval."
           ],
           "default": "default",
-          "description": "Initial permission mode for a new session."
+          "markdownDescription": "Initial permission mode for a new session.\n\nThis setting is **machine-scoped**: it can only be set in your User or Remote settings, never by a workspace. It controls which tool actions run without asking, so a repository that could set it to `bypassPermissions` would be able to execute commands unprompted."
+        },
+        "rayucode.allowEditsOutsideWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "markdownDescription": "Allow the agent's file edits to read and write paths **outside** the open workspace folders.\n\nLeave this off unless you need it. The agent chooses each `file_path`, and its output is influenced by file contents, tool output, and fetched web pages — so a prompt-injection attack could otherwise target files like `~/.bashrc` or `~/.ssh/authorized_keys`, silently when `rayucode.permissionMode` auto-approves edits.\n\nThis setting is **machine-scoped**: it can only be set in your User or Remote settings, never by a workspace, so a repository cannot switch off its own containment.",
+          "tags": [
+            "security"
+          ]
         },
         "rayucode.diagnosticLogging": {
           "type": "boolean",
@@ -87,7 +253,7 @@
     }
   },
   "scripts": {
-    "build": "node esbuild.mjs",
+    "build": "node esbuild.mjs && npm run stage:engine",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
     "test": "vitest run",
@@ -96,19 +262,29 @@
     "typecheck:tests": "tsc -p tsconfig.test.json --noEmit",
     "pretest:integration": "npm run compile-tests && npm run build",
     "test:integration": "vscode-test",
-    "package": "npm run build && vsce package --no-dependencies"
+    "package": "npm run build && vsce package --no-dependencies",
+    "stage:engine": "node scripts/generate-build-info.mjs",
+    "ls:package": "vsce ls --no-dependencies"
   },
   "dependencies": {
-    "@rayucode/core": "*"
+    "@rayucode/core": "*",
+    "marked": "^18.0.11",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "@rayu-dev/web-bridge-client": "^1.0.0"
   },
   "devDependencies": {
+    "@types/jsdom": "21.1.7",
     "@types/mocha": "^10.0.7",
     "@types/node": "^22.10.0",
-    "@types/vscode": "^1.90.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.1",
+    "@types/vscode": "^1.100.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.1",
     "@vscode/vsce": "^3.2.1",
     "esbuild": "^0.24.0",
+    "jsdom": "26.1.0",
     "mocha": "^10.7.3",
     "typescript": "^5.6.0",
     "vitest": "^2.1.8"

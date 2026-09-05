@@ -58,6 +58,17 @@ emit({
   mcp_servers: [{ name: "stub-mcp", status: "connected" }],
   slash_commands: [],
   skills: [],
+  // REQUIRED by SDKSystemMessageSchema and emitted by the real engine. They were
+  // absent here because this stub was written to match the extension's
+  // hand-copied types rather than the engine's actual schema — so the whole
+  // suite validated the extension against its own misconception
+  // (rayucode/TRIAGE.md D6). Verified against a real `system/init` frame.
+  output_style: "default",
+  plugins: [],
+  // Wire-contract version. The extension requires exact equality with its own
+  // PROTOCOL_VERSION, so a stub that omits it would fail the startup
+  // compatibility check (PROTOCOL.md §6.2).
+  protocolVersion: 1,
   apiKeySource: "none",
   cwd: process.cwd(),
   claude_code_version: "0.0.0-stub",
@@ -141,6 +152,13 @@ function finishTurn(behavior) {
     subtype: "success",
     is_error: false,
     result: `decision=${behavior}`,
+    // REQUIRED by SDKResultSuccessSchema and emitted by the real engine. Absent
+    // here because this stub was written against the extension's hand-copied
+    // `ResultMessage`, which modelled the success/error union as a single
+    // interface and omitted all three (rayucode/TRIAGE.md D3, D6).
+    duration_ms: 1234,
+    duration_api_ms: 567,
+    stop_reason: "end_turn",
     num_turns: 1,
     total_cost_usd: 0.0025,
     usage: { input_tokens: 11, output_tokens: 22 },

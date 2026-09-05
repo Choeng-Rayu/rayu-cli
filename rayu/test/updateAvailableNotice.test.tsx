@@ -175,6 +175,11 @@ describe('UpdateAvailableNotice', () => {
       'npm-global',
       'npm-local',
       'native',
+      // Installer-managed installs get the notice too: the in-session
+      // auto-updater deliberately skips them (it would swap lib/current under a
+      // live process), so the notice pointing at `rayu update` is the ONLY thing
+      // that tells these users a new version exists.
+      'installer',
       'unknown',
     ] satisfies InstallationType[]) {
       const output = await renderNotice({

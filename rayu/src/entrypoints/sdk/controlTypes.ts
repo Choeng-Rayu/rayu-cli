@@ -1,83 +1,116 @@
-// Reconstructed SDK control/protocol types — absent from the leaked source.
-//
-// These were never bundled (all consumers import them `import type`, which Bun
-// erases), so this file only exists to satisfy `tsc`. The original shapes are
-// derived from zod schemas at runtime; here they are reconstructed permissively
-// (`any`) because their exact structure is unknowable from the partial source
-// and they are purely type-level. agentSdkTypes.ts re-exports these.
-//
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+/**
+ * SDK control/protocol types — now REAL types, inferred from the Zod schemas in
+ * `@rayu-dev/agent-protocol`.
+ *
+ * ## History
+ *
+ * This file previously declared every one of these as `export type X = any`,
+ * with a header explaining that the original shapes were "unknowable from the
+ * partial source". That was the root cause of an entire class of bugs:
+ *
+ *  - The Rayucode extension could not import usable types from the engine, so it
+ *    hand-wrote a copy of the protocol. Nothing verified the copy, and it drifted
+ *    (see rayucode/TRIAGE.md D1–D3, D5, D8).
+ *  - Casts like `foo as ApiKeySource` in engine code were completely unchecked,
+ *    because casting to `any` always succeeds. That is exactly how the engine
+ *    came to emit an `apiKeySource` value its own schema rejected (TRIAGE.md D9).
+ *
+ * The shapes were never actually unknowable — they are fully determined by the
+ * Zod schemas the engine validates against at runtime. Extracting those schemas
+ * into `@rayu-dev/agent-protocol` and inferring from them gives real types with
+ * no duplication and no guesswork.
+ *
+ * Type-level only: every consumer uses `import type`, which Bun erases, so this
+ * module contributes nothing to the bundle.
+ */
 
-// --- Control protocol ---
-export type SDKControlRequest = any
-export type SDKControlResponse = any
-export type SDKControlPermissionRequest = any
-export type StdoutMessage = any
+export type {
+  // --- Control protocol ---
+  SDKControlRequest,
+  SDKControlResponse,
+  SDKControlPermissionRequest,
+  StdoutMessage,
+  StdinMessage,
+  SDKControlCancelRequest,
+  SDKControlRequestInner,
 
-// --- Status / model / session ---
-export type SDKStatus = any
-export type SDKStatusMessage = any
-export type ModelUsage = any
-export type ModelInfo = any
-export type ApiKeySource = any
-export type ExitReason = any
-export type SDKRateLimitInfo = any
-export type RewindFilesResult = any
+  // --- Additional control protocol messages ---
+  SDKControlInitializeRequest,
+  SDKControlInitializeResponse,
+  SDKControlMcpSetServersResponse,
+  SDKControlReloadPluginsResponse,
+  SDKControlInterruptRequest,
+  SDKControlSetModelRequest,
+  SDKControlSetPermissionModeRequest,
+  SDKControlMcpStatusResponse,
 
-// --- Messages ---
-export type SDKAssistantMessage = any
-export type SDKAssistantMessageError = any
-export type SDKPartialAssistantMessage = any
-export type SDKSystemMessage = any
-export type SDKCompactBoundaryMessage = any
-export type SDKToolProgressMessage = any
-export type SDKUserMessageReplay = any
+  // --- Status / model / session ---
+  SDKStatus,
+  SDKStatusMessage,
+  ModelUsage,
+  ModelInfo,
+  ApiKeySource,
+  ExitReason,
+  SDKRateLimitInfo,
+  RewindFilesResult,
 
-// --- Permissions ---
-export type PermissionMode = any
-export type PermissionResult = any
-export type PermissionUpdate = any
-export type SDKPermissionDenial = any
+  // --- Messages ---
+  SDKAssistantMessage,
+  SDKAssistantMessageError,
+  SDKPartialAssistantMessage,
+  SDKSystemMessage,
+  SDKCompactBoundaryMessage,
+  SDKToolProgressMessage,
+  SDKUserMessageReplay,
+  SDKAPIRetryMessage,
+  SDKKeepAliveMessage,
+  SDKUpdateEnvironmentVariablesMessage,
 
-// --- MCP ---
-export type McpServerStatus = any
-export type McpServerConfigForProcessTransport = any
+  // NOTE: SDKResultMessage / SDKResultSuccess / SDKResultError are exported by
+  // `./coreTypes.js`, not here. `agentSdkTypes.ts` does `export *` from BOTH
+  // modules, so exporting them in both places is an ambiguous re-export
+  // (TS2308). They live in coreTypes.ts because they are core message shapes
+  // rather than control-protocol envelopes.
 
-// --- Hooks ---
-export type HookEvent = any
-export type HookInput = any
-export type HookJSONOutput = any
-export type AsyncHookJSONOutput = any
-export type SyncHookJSONOutput = any
-export type ConfigChangeHookInput = any
-export type CwdChangedHookInput = any
-export type ElicitationHookInput = any
-export type ElicitationResultHookInput = any
-export type FileChangedHookInput = any
-export type InstructionsLoadedHookInput = any
-export type NotificationHookInput = any
-export type PermissionDeniedHookInput = any
-export type PermissionRequestHookInput = any
-export type PostCompactHookInput = any
-export type PostToolUseFailureHookInput = any
-export type PostToolUseHookInput = any
-export type PreCompactHookInput = any
-export type PreToolUseHookInput = any
-export type SessionEndHookInput = any
-export type SessionStartHookInput = any
-export type SetupHookInput = any
-export type StopFailureHookInput = any
-export type StopHookInput = any
-export type SubagentStartHookInput = any
-export type SubagentStopHookInput = any
-export type TaskCompletedHookInput = any
-export type TaskCreatedHookInput = any
-export type TeammateIdleHookInput = any
-export type UserPromptSubmitHookInput = any
+  // --- Permissions ---
+  PermissionMode,
+  PermissionResult,
+  PermissionUpdate,
+  SDKPermissionDenial,
 
-// --- Additional control protocol messages ---
-export type SDKControlInitializeRequest = any
-export type SDKControlInitializeResponse = any
-export type SDKControlMcpSetServersResponse = any
-export type SDKControlReloadPluginsResponse = any
-export type StdinMessage = any
+  // --- MCP ---
+  McpServerStatus,
+  McpServerConfigForProcessTransport,
+
+  // --- Hooks ---
+  HookEvent,
+  HookInput,
+  HookJSONOutput,
+  AsyncHookJSONOutput,
+  SyncHookJSONOutput,
+  ConfigChangeHookInput,
+  CwdChangedHookInput,
+  ElicitationHookInput,
+  ElicitationResultHookInput,
+  FileChangedHookInput,
+  InstructionsLoadedHookInput,
+  NotificationHookInput,
+  PermissionDeniedHookInput,
+  PermissionRequestHookInput,
+  PostCompactHookInput,
+  PostToolUseFailureHookInput,
+  PostToolUseHookInput,
+  PreCompactHookInput,
+  PreToolUseHookInput,
+  SessionEndHookInput,
+  SessionStartHookInput,
+  SetupHookInput,
+  StopFailureHookInput,
+  StopHookInput,
+  SubagentStartHookInput,
+  SubagentStopHookInput,
+  TaskCompletedHookInput,
+  TaskCreatedHookInput,
+  TeammateIdleHookInput,
+  UserPromptSubmitHookInput,
+} from '@rayu-dev/agent-protocol'

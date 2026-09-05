@@ -174,7 +174,7 @@ function makeHarness(
     return child;
   };
   const proc = new AgentProcess({
-    cliPath: CLI_PATH,
+    enginePath: CLI_PATH,
     cwd: WORKSPACE_ROOT,
     adapter,
     spawn,
@@ -204,14 +204,21 @@ describe("AgentProcess spawn contract", () => {
     await proc.start();
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.command).toBe(CLI_PATH);
-    expect(calls[0]!.args).toEqual([
+
+    // The COMMAND is the Node runtime hosting the extension, not the engine.
+    // Running the bundled engine with `process.execPath` means nothing has to be
+    // installed on the user's machine and there is no PATH lookup, so the
+    // extension cannot end up executing a different build than the one shipped
+    // in the VSIX. The engine is argv[1].
+    expect(calls[0]!.command).toBe(process.execPath);
+    expect(calls[0]!.args[0]).toBe(CLI_PATH);
+    expect(calls[0]!.args.slice(1)).toEqual([
       "--print",
       "--input-format=stream-json",
       "--output-format=stream-json",
       "--verbose",
     ]);
-    expect(calls[0]!.args).toEqual([...AGENT_STREAMING_ARGS]);
+    expect(calls[0]!.args).toEqual([CLI_PATH, ...AGENT_STREAMING_ARGS]);
     expect(calls[0]!.options.cwd).toBe(WORKSPACE_ROOT);
   });
 
@@ -259,16 +266,25 @@ describe("AgentProcess stdout decoding", () => {
     await proc.start();
 
     const m1: StdoutMessage = { type: "keep_alive" };
+    // A COMPLETE result frame. The previous version of this test omitted
+    // duration_ms, duration_api_ms and stop_reason, which the engine always
+    // emits and the schema requires. It passed only because nothing validated
+    // (rayucode/TRIAGE.md D3, D6) — now the decoder does, so the frame has to be
+    // the real shape.
     const m2 = {
       type: "result",
       subtype: "success",
+      duration_ms: 1234,
+      duration_api_ms: 567,
       is_error: false,
       num_turns: 1,
+      result: "done",
+      stop_reason: "end_turn",
       total_cost_usd: 0.01,
       usage: {},
       modelUsage: {},
       permission_denials: [],
-      uuid: "u-1",
+      uuid: "00000000-0000-4000-8000-000000000001",
       session_id: "s-1",
     } as unknown as StdoutMessage;
 
@@ -281,21 +297,61 @@ describe("AgentProcess stdout decoding", () => {
     expect(received).toEqual([m1, m2]);
   });
 
-  it("logs and skips a malformed stdout line, then continues (R4.3)", async () => {
+  it("reports a malformed stdout line as a session-fatal protocol failure and stops", async () => {
+    // REPLACES the former "logs and skips … then continues" expectation. R4.3 is
+    // superseded by PROTOCOL.md §7: a stream that emits a non-JSON line is no
+    // longer speaking the protocol, and because the control protocol is
+    // request/response correlated, skipping a frame can drop the very response
+    // the UI is awaiting (rayucode/TRIAGE.md D7).
     const { proc, child, adapter } = makeHarness();
     const received: StdoutMessage[] = [];
+    const failures: DecodeFailure[] = [];
     proc.onStdoutMessage((message) => received.push(message));
+    proc.onProtocolFailure((failure) => failures.push(failure));
 
     await proc.start();
 
     child.stdout.emitData('not json\n{"type":"keep_alive"}\n');
 
-    expect(received).toEqual([{ type: "keep_alive" }]);
+    // Nothing is yielded: the failure came first and latched the decoder.
+    expect(received).toEqual([]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.kind).toBe("json");
     expect(
       adapter.logs.some(
-        (l) => l.channel === "error" && /Malformed NDJSON/.test(l.message),
+        (l) =>
+          l.channel === "error" && /Protocol decode failure/.test(l.message),
       ),
     ).toBe(true);
+  });
+
+  it("withholds frame CONTENT from the log when no redactor is configured", async () => {
+    // A wire frame can carry file contents, tool output, or credentials. With no
+    // redactor injected the frame must NOT be logged — only the schema issue
+    // paths, which carry no payload values. Secure by default.
+    const secret = "sk-ant-super-secret-value";
+    const { proc, child, adapter } = makeHarness();
+    await proc.start();
+
+    child.stdout.emitData(`not json but contains ${secret}\n`);
+
+    const logged = adapter.logs.map((l) => l.message).join("\n");
+    expect(logged).toContain("Protocol decode failure");
+    expect(logged).not.toContain(secret);
+    expect(logged).toContain("Frame withheld");
+  });
+
+  it("logs the redacted frame when a redactor IS configured", async () => {
+    const { proc, child, adapter } = makeHarness({
+      redact: (text) => text.replace(/sk-[a-z-]+/g, "[REDACTED]"),
+    });
+    await proc.start();
+
+    child.stdout.emitData("not json sk-ant-secret\n");
+
+    const logged = adapter.logs.map((l) => l.message).join("\n");
+    expect(logged).toContain("[REDACTED]");
+    expect(logged).not.toContain("sk-ant-secret");
   });
 });
 

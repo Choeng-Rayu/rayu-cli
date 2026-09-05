@@ -26,7 +26,7 @@ export type {
   StdinUserMessage,
   StdoutMessage,
   StdinMessage,
-} from "./protocol/messages.js";
+} from "./protocol/wire.js";
 
 // ----------------------------------------------------------------------------
 // Protocol — control envelopes, request/response subtypes (task 1.2)
@@ -48,7 +48,7 @@ export type {
   InitializeResponse,
   McpStatusResponse,
   ContextUsageResponse,
-} from "./protocol/control.js";
+} from "./protocol/wire.js";
 
 // ----------------------------------------------------------------------------
 // Protocol — permissions (task 1.2)
@@ -60,12 +60,49 @@ export type {
   PermissionRuleValue,
   PermissionUpdate,
   PermissionToolOutput,
-} from "./protocol/permissions.js";
-export { PERMISSION_MODES, isPermissionMode } from "./protocol/permissions.js";
+} from "./protocol/wire.js";
+export { PERMISSION_MODES, isPermissionMode } from "./protocol/wire.js";
 
 // ----------------------------------------------------------------------------
-// Protocol — shared primitives (task 1.2)
+// Protocol — version contract
 // ----------------------------------------------------------------------------
+//
+// Re-exported from the single source of truth so the extension host and its
+// tests compare against the SAME constant the decode boundary uses. Without
+// this, a consumer importing from `@rayucode/core` silently got `undefined` and
+// every version comparison would have been meaningless.
+export {
+  PROTOCOL_VERSION,
+  LEGACY_PROTOCOL_VERSION,
+  StdoutMessageSchema,
+  StdinMessageSchema,
+  PermissionModeSchema,
+} from "./protocol/wire.js";
+
+// ----------------------------------------------------------------------------
+// Protocol — wire metadata types (defined in @rayu-dev/agent-protocol)
+// ----------------------------------------------------------------------------
+export type {
+  ModelUsage,
+  EffortLevel,
+  ModelInfo,
+  McpServerState,
+  McpServerStatus,
+  SlashCommand,
+  AgentInfo,
+  AccountInfo,
+  PermissionDenial,
+  AssistantError,
+} from "./protocol/wire.js";
+
+// ----------------------------------------------------------------------------
+// Protocol — local view types for OPAQUE payloads
+// ----------------------------------------------------------------------------
+//
+// The wire contract types `message`, `event` and `usage` as opaque, because
+// their shapes are owned by `@anthropic-ai/sdk`. These are this package's
+// reading views of those blobs — not competing wire definitions. See
+// protocol/contentBlocks.ts.
 export type {
   TextBlock,
   ThinkingBlock,
@@ -88,23 +125,22 @@ export type {
   MessageStopEvent,
   RawMessageStreamEvent,
   Usage,
-  ModelUsage,
-  EffortLevel,
-  ModelInfo,
-  McpServerState,
-  McpServerStatus,
-  SlashCommand,
-  AgentInfo,
-  AccountInfo,
-  PermissionDenial,
-  AssistantError,
-} from "./protocol/primitives.js";
+} from "./protocol/contentBlocks.js";
 
 // ----------------------------------------------------------------------------
 // Protocol — message type guards (task 1.2)
 // ----------------------------------------------------------------------------
 export {
+  isSystemMessage,
   isSystemInit,
+  isApiRetryMessage,
+  isStatusMessage,
+  isCompactBoundaryMessage,
+  isPostTurnSummaryMessage,
+  isToolProgressMessage,
+  isResultSuccess,
+  isResultError,
+  isKeepAlive,
   isAssistantMessage,
   isStreamEvent,
   isResultMessage,
@@ -116,9 +152,19 @@ export {
 // ----------------------------------------------------------------------------
 // Protocol — NDJSON codec (task 2.1)
 // ----------------------------------------------------------------------------
-export { NdjsonCodec } from "./protocol/ndjson.js";
+export {
+  NdjsonCodec,
+  createSchemaValidator,
+  truncateForDiagnostics,
+  MAX_DIAGNOSTIC_FRAME_CHARS,
+} from "./protocol/ndjson.js";
 export type {
-  MalformedLineHandler,
+  DecodeFailure,
+  DecodeFailureKind,
+  DecodeFailureHandler,
+  DecodeIssue,
+  ValidationResult,
+  FrameValidator,
   NdjsonCodecOptions,
 } from "./protocol/ndjson.js";
 
@@ -206,7 +252,7 @@ export type {
   AgentProcessLike,
   AgentProcessFactory,
   AgentProcessFactoryOptions,
-  CliLocatorLike,
+  EngineResolverLike,
   TimerProvider,
   PanelOutboundMessage,
 } from "./session/sessionManager.js";
@@ -247,22 +293,43 @@ export { Redactor, redactSecrets, REDACTION_PLACEHOLDER } from "./redaction/reda
 export type { RedactorOptions } from "./redaction/redactor.js";
 
 // ----------------------------------------------------------------------------
-// CLI — executable location & version resolution (task 9.1)
+// Web Bridge — remote control from the rayu-web studio
 // ----------------------------------------------------------------------------
-export {
-  CliLocator,
-  MINIMUM_RAYU_VERSION,
-  RAYU_BINARY_NAME,
-  CLI_PATH_SETTING,
-  compareVersions,
-  extractVersionToken,
-} from "./cli/cliLocator.js";
+//
+// The extension's half of the feature the rayu CLI REPL also has: the studio lists
+// every signed-in worker and routes a browser prompt to the one the user picked. Both
+// workers speak one protocol via `@rayu-dev/web-bridge-client`, so a browser tab
+// cannot tell them apart.
+//
+// Editor-agnostic like everything else here (R13.1, R13.5): the VS Code host supplies
+// the token and the activation lifecycle.
+export { WebBridgeController } from "./webBridge/webBridgeController.js";
 export type {
-  CliResolution,
-  CliLocatorOptions,
-  VersionRunner,
-  PathProbe,
-} from "./cli/cliLocator.js";
+  WebBridgeControllerOptions,
+  WebBridgeSessionHost,
+} from "./webBridge/webBridgeController.js";
+
+// ----------------------------------------------------------------------------
+// CLI — bundled engine resolution & integrity verification
+// ----------------------------------------------------------------------------
+//
+// Replaces the former `CliLocator`. The engine ships inside the VSIX, so there
+// is nothing to locate; what remains is verifying that the shipped artifact is
+// the one this extension was built against.
+export {
+  EngineResolver,
+  EngineResolutionError,
+  BUILD_INFO_FILENAME,
+  defaultEngineDistDir,
+  resolveEngineConfigDir,
+  ensureFirstRunMarkerSuppressed,
+} from "./cli/engineResolver.js";
+export type {
+  BuildInfo,
+  EngineResolution,
+  EngineResolverOptions,
+  EngineFileSystem,
+} from "./cli/engineResolver.js";
 
 // ----------------------------------------------------------------------------
 // CLI — agent process lifecycle (task 9.3)

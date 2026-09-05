@@ -61,12 +61,23 @@ export const EXIT_REASONS = [
   'bypass_permissions_disabled',
 ] as const
 
-// --- Reconstructed core SDK message types (absent from the leaked source) ---
-// Type-only, erased at build; reconstructed permissively. Imported by
-// agentSdkTypes.ts and re-exported to consumers.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type SDKMessage = any
-export type SDKResultMessage = any
-export type SDKResultSuccess = any
-export type SDKSessionInfo = any
-export type SDKUserMessage = any
+// --- Core SDK message types, inferred from the Zod schemas ------------------
+//
+// These were previously `export type X = any`, described as "absent from the
+// leaked source". They were never actually unknowable: the shapes are fully
+// determined by the Zod schemas the engine validates against at runtime. Those
+// schemas now live in `@rayu-dev/agent-protocol`, so these are real types with
+// no duplication.
+//
+// Why this matters: `any` made every cast succeed, which is how the engine came
+// to emit an `apiKeySource` value its own schema rejected, undetected
+// (rayucode/TRIAGE.md D9). It is also why the VS Code extension had to hand-copy
+// the protocol, which then drifted (TRIAGE.md D1–D3, D5, D8).
+export type {
+  SDKMessage,
+  SDKResultError,
+  SDKResultMessage,
+  SDKResultSuccess,
+  SDKSessionInfo,
+  SDKUserMessage,
+} from '@rayu-dev/agent-protocol'

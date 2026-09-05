@@ -28,5 +28,9 @@
     "fast-check": "^3.23.1",
     "typescript": "^5.6.0",
     "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@rayu-dev/agent-protocol": "^1.0.0",
+    "@rayu-dev/web-bridge-client": "^1.0.0"
   }
 }
