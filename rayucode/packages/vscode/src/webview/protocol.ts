@@ -56,6 +56,13 @@ const HOST_MESSAGE_TYPE_TABLE: Record<HostMessageType, true> = {
   editApplied: true,
   editConflict: true,
   insertPrompt: true,
+  // Newly forwarded once the protocol package made them typed and validated.
+  // Each was previously discarded by the host, which is why the panel appeared
+  // to be missing information (rayucode/TRIAGE.md D8).
+  toolProgress: true,
+  rateLimit: true,
+  authStatus: true,
+  compactBoundary: true,
 };
 
 /** All host→webview message type names (frozen runtime set). */
@@ -136,6 +143,19 @@ export interface NewSessionMessage {
 }
 
 /**
+ * Change the permission mode for subsequent tool use.
+ *
+ * The runtime equivalent of the CLI's `/permission-mode`. The host validates the
+ * string against the wire schema before applying it — the webview is a separate
+ * JS context, and this value decides whether tool actions are auto-approved, so
+ * it is never trusted as-is.
+ */
+export interface SelectPermissionModeMessage {
+  type: "selectPermissionMode";
+  mode: string;
+}
+
+/**
  * A message the webview posts back to the host. Matches exactly the cases the
  * core `SessionManager.handlePanelMessage` accepts.
  */
@@ -148,7 +168,51 @@ export type WebviewToHostMessage =
   | ConfirmConflictMessage
   | SelectModelMessage
   | OpenModelListMessage
-  | NewSessionMessage;
+  | NewSessionMessage
+  | SelectPermissionModeMessage;
+
+// ----------------------------------------------------------------------------
+// Permission modes offered in the panel
+// ----------------------------------------------------------------------------
+
+/**
+ * The permission modes the panel offers, with the wording shown to the user.
+ *
+ * A deliberate SUBSET of the wire schema's modes. The schema also carries
+ * `dontAsk`, `auto`, `bubble` and `fullManage`, which are either engine-internal
+ * or deny-by-default variants that would strand a user who picked one without
+ * understanding it. Restricting the picker does not restrict the setting: a mode
+ * outside this list, arriving from `rayucode.permissionMode`, is still displayed
+ * (see the picker's preserved-value option) and still honoured.
+ *
+ * Ordered least to most permissive so the riskiest choice is last.
+ */
+export const SELECTABLE_PERMISSION_MODES: readonly {
+  value: string;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    value: "plan",
+    label: "Plan",
+    hint: "Read and analyse only. No file edits and no commands.",
+  },
+  {
+    value: "default",
+    label: "Ask every time",
+    hint: "Prompt before each file edit and each command.",
+  },
+  {
+    value: "acceptEdits",
+    label: "Auto-accept edits",
+    hint: "Apply file edits without asking. Still prompt before commands.",
+  },
+  {
+    value: "bypassPermissions",
+    label: "Bypass all prompts",
+    hint: "Run edits AND commands with no prompt. Use only in a throwaway workspace.",
+  },
+];
 
 // ----------------------------------------------------------------------------
 // WEBVIEW → HOST — pure builders
@@ -212,6 +276,11 @@ export function openModelList(): OpenModelListMessage {
 /** Build a {@link NewSessionMessage}. */
 export function newSession(): NewSessionMessage {
   return { type: "newSession" };
+}
+
+/** Build a {@link SelectPermissionModeMessage}. */
+export function selectPermissionMode(mode: string): SelectPermissionModeMessage {
+  return { type: "selectPermissionMode", mode };
 }
 
 // ----------------------------------------------------------------------------

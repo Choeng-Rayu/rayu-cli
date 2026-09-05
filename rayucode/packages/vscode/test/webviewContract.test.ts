@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import type {
   ConversationItem,
@@ -403,6 +404,10 @@ describe("PanelViewModel.handle — host → webview dispatch", () => {
       { type: "editApplied", path: "p" },
       { type: "editConflict", paths: ["p"], requestId: "r" },
       { type: "insertPrompt", text: "x" },
+      { type: "toolProgress", toolUseId: "tu1", toolName: "Bash", elapsedSeconds: 1 },
+      { type: "rateLimit", status: "allowed" },
+      { type: "authStatus", authenticating: false },
+      { type: "compactBoundary", trigger: "auto", preTokens: 1000 },
     ];
     const handled = new Set(messages.map((m) => m.type));
     // Guard: the scripted set covers exactly the declared contract.
@@ -482,43 +487,56 @@ describe("render ordering follows host-assigned seq (R3.4)", () => {
 // Markdown rendering / sanitization (R3.7)
 // ----------------------------------------------------------------------------
 
+/**
+ * Serialise React nodes to an HTML string so the assertions below can inspect
+ * the final DOM shape. `renderMarkdown` returns React nodes (not an HTML string)
+ * — React escapes every text child by construction, so no injection sink exists.
+ * This helper exists purely for test assertions; production never takes this path.
+ */
+function renderHtml(source: string): string {
+  return renderToStaticMarkup(renderMarkdown(source) as never);
+}
+
 describe("renderMarkdown — sanitization and formatting (R3.7)", () => {
   it("escapes raw HTML so scripts cannot execute", () => {
-    const html = renderMarkdown("<script>alert(1)</script>");
+    const html = renderHtml("<script>alert(1)</script>");
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
   });
 
   it("renders fenced code blocks as monospaced pre/code, escaped", () => {
-    const html = renderMarkdown("```\n<b>x</b> & y\n```");
-    expect(html).toContain("<pre><code>");
+    const html = renderHtml("```\n<b>x</b> & y\n```");
+    // React renders <pre class="md-code-block"><code>…
+    expect(html).toContain("<pre");
+    expect(html).toContain("<code>");
     expect(html).toContain("&lt;b&gt;x&lt;/b&gt; &amp; y");
   });
 
   it("renders bold, italic, and inline code", () => {
-    expect(renderMarkdown("**b**")).toContain("<strong>b</strong>");
-    expect(renderMarkdown("*i*")).toContain("<em>i</em>");
-    expect(renderMarkdown("`c`")).toContain("<code>c</code>");
+    expect(renderHtml("**b**")).toContain("<strong>b</strong>");
+    expect(renderHtml("*i*")).toContain("<em>i</em>");
+    expect(renderHtml("`c`")).toContain("<code>c</code>");
   });
 
   it("renders headings and lists", () => {
-    expect(renderMarkdown("# Title")).toContain("<h1>Title</h1>");
-    const list = renderMarkdown("- one\n- two");
+    expect(renderHtml("# Title")).toContain("<h1>Title</h1>");
+    const list = renderHtml("- one\n- two");
     expect(list).toContain("<ul>");
-    expect(list).toContain("<li>one</li>");
+    // React wraps list-item text in a span; check that the text appears
+    expect(list).toContain("one");
   });
 
   it("allows safe link schemes and drops dangerous ones", () => {
-    expect(renderMarkdown("[ok](https://example.com)")).toContain(
+    expect(renderHtml("[ok](https://example.com)")).toContain(
       '<a href="https://example.com"',
     );
-    const danger = renderMarkdown("[x](javascript:alert(1))");
+    const danger = renderHtml("[x](javascript:alert(1))");
     expect(danger).not.toContain("<a");
     expect(danger).toContain("x");
   });
 
   it("does not treat snake_case as italic", () => {
-    expect(renderMarkdown("foo_bar_baz")).not.toContain("<em>");
+    expect(renderHtml("foo_bar_baz")).not.toContain("<em>");
   });
 });
 

@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { SessionManager } from "../src/index.js";
+import { SessionManager,
+  PROTOCOL_VERSION,
+} from "../src/index.js";
 import type {
   AgentPanelHandle,
   ApplyResult,
@@ -119,12 +121,22 @@ class FakeEditorAdapter implements EditorAdapter {
   }
 }
 
-/** Resolve the CLI straight to the stub script (skip PATH/version probing). */
-const stubCliLocator = {
-  resolve: async (): Promise<CliResolution> => ({
-    path: STUB_PATH,
-    version: "1.2.3",
-    belowMinimum: false,
+/**
+ * Point the engine resolver straight at the stub script, skipping the SHA-256
+ * integrity check (there is no build-info.json in a test tree).
+ */
+const stubEngineResolver = {
+  resolve: (): EngineResolution => ({
+    enginePath: STUB_PATH,
+    buildInfo: {
+    engineVersion: "1.6.13",
+    engineFile: "rayu.js",
+    engineSha256: "0".repeat(64),
+    protocolVersion: PROTOCOL_VERSION,
+    gitCommit: "0".repeat(40),
+    extensionVersion: "0.0.0-test",
+    builtAt: "2026-01-01T00:00:00.000Z",
+  },
   }),
 };
 
@@ -139,7 +151,7 @@ function makeManager(): { manager: SessionManager; adapter: FakeEditorAdapter } 
   });
   // NOTE: no `agentProcessFactory` override → the DEFAULT factory builds a real
   // `AgentProcess` that actually spawns the stub subprocess.
-  const manager = new SessionManager({ adapter, cliLocator: stubCliLocator });
+  const manager = new SessionManager({ adapter, engineResolver: stubEngineResolver });
   return { manager, adapter };
 }
 

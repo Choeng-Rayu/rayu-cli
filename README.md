@@ -73,11 +73,28 @@ Rayu works perfectly right out of the box. Switch models instantly mid-session w
 
 ## 💻 Quick Start
 
-Install globally:
+One command, any machine — no Node, npm or `sudo` required:
+
+```bash
+# macOS / Linux
+curl -fsSL https://rayucode.com/install | bash
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://rayucode.com/install.ps1 | iex
+```
+
+Then:
+
+```bash
+rayu
+```
+
+Already have Node ≥ 18 and would rather use npm?
 
 ```bash
 npm install -g @rayu-dev/rayu-cli
-rayu
 ```
 
 Or run instantly without installing:

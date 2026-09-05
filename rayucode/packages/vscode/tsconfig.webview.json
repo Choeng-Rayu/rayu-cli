@@ -13,7 +13,11 @@
   "compilerOptions": {
     "noEmit": true,
     "lib": ["ES2021", "DOM", "DOM.Iterable"],
-    "types": []
+    // `types: []` would also exclude @types/react, which the webview genuinely
+    // needs. React's types are listed explicitly instead, so `node` and
+    // `vscode` globals still cannot leak in.
+    "types": ["react", "react-dom"],
+    "jsx": "react-jsx"
   },
-  "include": ["src/webview/**/*.ts"]
+  "include": ["src/webview/**/*.ts", "src/webview/**/*.tsx"]
 }

@@ -29,8 +29,14 @@
 import { spawn as nodeSpawn } from "node:child_process";
 
 import type { EditorAdapter } from "../editor/adapter.js";
-import { NdjsonCodec } from "../protocol/ndjson.js";
-import type { StdinMessage, StdoutMessage } from "../protocol/messages.js";
+import type { DecodeFailure } from "../protocol/ndjson.js";
+import {
+  NdjsonCodec,
+  createSchemaValidator,
+  truncateForDiagnostics,
+} from "../protocol/ndjson.js";
+import type { StdinMessage, StdoutMessage } from "../protocol/wire.js";
+import { StdoutMessageSchema } from "../protocol/wire.js";
 
 // ----------------------------------------------------------------------------
 // Spawn contract — the minimal child-process surface the AgentProcess needs.
@@ -132,10 +138,20 @@ export type StdoutMessageListener = (message: StdoutMessage) => void;
 /** A process-exit listener. */
 export type ExitListener = (info: AgentExitInfo) => void;
 
+/**
+ * Notified of a session-fatal protocol decode failure. Fires at most once per
+ * process; the caller completes the fail-safe sequence (PROTOCOL.md §7).
+ */
+export type ProtocolFailureListener = (failure: DecodeFailure) => void;
+
 /** Construction options for an {@link AgentProcess}. */
 export interface AgentProcessOptions {
-  /** Resolved path to the Rayu CLI executable (from `CliLocator`). */
-  cliPath: string;
+  /**
+   * Absolute path to the bundled engine JavaScript file, from
+   * {@link EngineResolver}. Its integrity has already been verified against
+   * `build-info.json`.
+   */
+  enginePath: string;
   /**
    * Working directory for the child = the session workspace root (R2.3). When
    * omitted the child inherits the host process working directory.
@@ -156,6 +172,14 @@ export interface AgentProcessOptions {
   extraArgs?: readonly string[];
   /** SIGTERM→SIGKILL grace period in ms (defaults to {@link DEFAULT_TERMINATE_GRACE_MS}). */
   terminateGraceMs?: number;
+  /**
+   * Redacts secrets from text before it is logged.
+   *
+   * Supplied by the host, which knows the session's secret values. When omitted,
+   * a failed frame's CONTENT is never logged — only its schema issue paths,
+   * which carry no payload values. Secure by default.
+   */
+  redact?: (text: string) => string;
 }
 
 // ----------------------------------------------------------------------------
@@ -182,7 +206,7 @@ const defaultSpawn: SpawnFn = (command, args, options) =>
  * {@link onExit}, and tear it down with {@link terminate}.
  */
 export class AgentProcess {
-  private readonly cliPath: string;
+  private readonly enginePath: string;
   private readonly cwd: string | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private readonly adapter: Pick<EditorAdapter, "log">;
@@ -195,6 +219,14 @@ export class AgentProcess {
 
   private readonly stdoutListeners = new Set<StdoutMessageListener>();
   private readonly exitListeners = new Set<ExitListener>();
+  private readonly protocolFailureListeners =
+    new Set<ProtocolFailureListener>();
+
+  /** The single decode failure, once one has occurred. Latched, never cleared. */
+  private protocolFailure: DecodeFailure | null = null;
+
+  /** Injected secret redactor; see {@link AgentProcessOptions.redact}. */
+  private readonly redact: ((text: string) => string) | undefined;
 
   /** The spawned child, or `null` before {@link start} / after construction. */
   private child: ChildProcessLike | null = null;
@@ -213,7 +245,7 @@ export class AgentProcess {
   private terminatePromise: Promise<void> | null = null;
 
   constructor(options: AgentProcessOptions) {
-    this.cliPath = options.cliPath;
+    this.enginePath = options.enginePath;
     this.cwd = options.cwd;
     this.env = options.env ?? process.env;
     this.adapter = options.adapter;
@@ -221,15 +253,14 @@ export class AgentProcess {
     this.extraArgs = options.extraArgs ?? [];
     this.terminateGraceMs =
       options.terminateGraceMs ?? DEFAULT_TERMINATE_GRACE_MS;
+    this.redact = options.redact;
     this.codec = new NdjsonCodec<StdoutMessage>({
-      onMalformedLine: (raw, error) => {
-        // R4.3: a non-JSON stdout line is logged and skipped; decoding
-        // continues with subsequent lines.
-        this.adapter.log(
-          "error",
-          `Malformed NDJSON line on agent stdout (skipped): ${raw} — ${String(error)}`,
-        );
-      },
+      // Validate every frame against the wire schema from
+      // @rayu-dev/agent-protocol — the same schemas the engine is built from.
+      // Without this the codec only guarantees well-formed JSON, which is how
+      // protocol drift stayed invisible (rayucode/TRIAGE.md D1–D3, D5, D8).
+      validate: createSchemaValidator<StdoutMessage>(StdoutMessageSchema),
+      onDecodeFailure: (failure) => this.handleDecodeFailure(failure),
     });
   }
 
@@ -255,15 +286,29 @@ export class AgentProcess {
       return Promise.reject(new Error("AgentProcess: start() called twice"));
     }
 
-    const args = [...AGENT_STREAMING_ARGS, ...this.extraArgs];
+    // Run the bundled engine with the SAME Node runtime that hosts the
+    // extension: `process.execPath` is the VS Code / Electron Node binary, which
+    // is guaranteed present and version-compatible. Nothing has to be installed
+    // on the user's machine and there is no PATH lookup, so there is no way to
+    // end up running a different engine build than the one shipped in the VSIX.
+    //
+    // A plain `spawn` rather than `fork` on purpose: `fork` adds a Node IPC
+    // channel that this transport does not use — the protocol is NDJSON over
+    // stdin/stdout — and it would constrain the child to a Node parent for no
+    // benefit.
+    const args = [
+      this.enginePath,
+      ...AGENT_STREAMING_ARGS,
+      ...this.extraArgs,
+    ];
     this.adapter.log(
       "lifecycle",
-      `Spawning Rayu agent: ${this.cliPath} ${args.join(" ")} (cwd: ${this.cwd ?? "<inherited>"})`,
+      `Spawning Rayu engine: ${process.execPath} ${args.join(" ")} (cwd: ${this.cwd ?? "<inherited>"})`,
     );
 
     let child: ChildProcessLike;
     try {
-      child = this.spawnFn(this.cliPath, args, {
+      child = this.spawnFn(process.execPath, args, {
         cwd: this.cwd,
         env: this.env,
       });
@@ -309,6 +354,24 @@ export class AgentProcess {
     this.stdoutListeners.add(listener);
   }
 
+  /**
+   * Register a listener for a session-fatal protocol decode failure.
+   *
+   * Fires at most once. The stream has stopped speaking the protocol, so this
+   * class has already stopped decoding it. The listener must complete the
+   * fail-safe sequence in PROTOCOL.md §7 — mark the session failed, terminate
+   * the child, default-deny every pending permission request, and surface an
+   * actionable error.
+   */
+  onProtocolFailure(listener: ProtocolFailureListener): void {
+    if (this.protocolFailure !== null) {
+      // Replay to a late subscriber rather than starving it.
+      listener(this.protocolFailure);
+      return;
+    }
+    this.protocolFailureListeners.add(listener);
+  }
+
   /** Register a listener for the child's exit `{ code, signal }` (R2.5). */
   onExit(listener: ExitListener): void {
     // If the child has already exited, replay the terminal status so a late
@@ -318,6 +381,59 @@ export class AgentProcess {
       return;
     }
     this.exitListeners.add(listener);
+  }
+
+  /**
+   * Handle a session-fatal decode failure — step 1 of the fail-safe sequence
+   * (PROTOCOL.md §7): log the offending frame, REDACTED and already truncated,
+   * together with the schema issue paths.
+   *
+   * Steps 2–5 (mark the session failed, terminate the child, default-deny
+   * pending permissions, surface an actionable error) need session context this
+   * class does not have, so they run in the `onProtocolFailure` listener.
+   *
+   * The frame is redacted before it reaches the log channel because a wire frame
+   * can carry file contents, tool output, or credentials. Issue paths are safe
+   * as-is: {@link normalizeIssues} keeps only path, code, and message, never a
+   * received value.
+   */
+  private handleDecodeFailure(failure: DecodeFailure): void {
+    if (this.protocolFailure !== null) {
+      return;
+    }
+    this.protocolFailure = failure;
+
+    // A wire frame can carry file contents, tool output, or credentials, so it
+    // is only logged when a redactor was injected. With no redactor we log the
+    // issue paths alone — those carry no payload VALUES (see normalizeIssues) —
+    // rather than risk leaking a secret into the log channel. Secure by default.
+    const framePart = this.redact
+      ? ` Frame: ${truncateForDiagnostics(this.redact(failure.frame))}`
+      : " Frame withheld (no redactor configured).";
+
+    if (failure.kind === "json") {
+      this.adapter.log(
+        "error",
+        `Protocol decode failure: agent stdout produced a line that is not valid JSON. ` +
+          `The session has been abandoned — the stream is no longer speaking the protocol. ` +
+          `Cause: ${String(failure.error)}.${framePart}`,
+      );
+    } else {
+      const issues = (failure.issues ?? [])
+        .map((i) => `${i.path} (${i.code}): ${i.message}`)
+        .join(" | ");
+      this.adapter.log(
+        "error",
+        `Protocol decode failure: agent stdout frame did not match the wire schema. ` +
+          `This means the engine and extension disagree about the protocol — ` +
+          `check that the bundled engine matches build-info.json. ` +
+          `Issues: ${issues}.${framePart}`,
+      );
+    }
+
+    for (const listener of [...this.protocolFailureListeners]) {
+      listener(failure);
+    }
   }
 
   /**

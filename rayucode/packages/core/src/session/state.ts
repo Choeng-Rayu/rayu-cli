@@ -7,8 +7,13 @@
 // Type definitions only — the SessionStore/reducer logic is added by later
 // tasks.
 
-import type { ModelUsage, Usage } from "../protocol/primitives.js";
-import type { PermissionMode, PermissionToolOutput } from "../protocol/permissions.js";
+import type {
+  ModelUsage,
+} from "../protocol/wire.js";
+import type {
+  Usage,
+} from "../protocol/contentBlocks.js";
+import type { PermissionMode, PermissionToolOutput } from "../protocol/wire.js";
 
 /** Lifecycle status of a session. */
 export type SessionStatus = "starting" | "idle" | "generating" | "exited";

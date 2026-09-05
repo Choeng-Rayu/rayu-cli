@@ -77,6 +77,59 @@ function firstWorkspaceFolder(): vscode.WorkspaceFolder {
   return folder;
 }
 
+/**
+ * Store a secret, then resolve once `get()` actually reports it.
+ *
+ * `SecretStorage.store()` resolves when the main-thread write completes, but the
+ * value becomes readable through `get()` a short time later — measured at ~80ms
+ * in this harness (throwaway user-data dir, in-memory fallback storage), and
+ * occasionally seconds later under CPU contention. Neither awaiting `store()` nor
+ * awaiting `secrets.onDidChange` is sufficient: both were measured firing BEFORE
+ * the read path catches up.
+ *
+ * This is a property of the host's storage, not of the adapter under test — the
+ * adapter's `storeSecret`/`getSecret` are direct pass-throughs. So the round-trip
+ * is confirmed by re-reading until the write is visible, which keeps the test
+ * meaningful without making it a race.
+ *
+ * On exhaustion it THROWS a descriptive error rather than returning quietly, so a
+ * genuine regression (a write that never lands) is reported as exactly that
+ * instead of as a confusing stale-value diff.
+ */
+async function storeAndSettle(
+  adapter: VSCodeAdapter,
+  key: string,
+  value: string,
+): Promise<void> {
+  await adapter.storeSecret(key, value);
+
+  const deadline = Date.now() + SECRET_SETTLE_TIMEOUT_MS;
+  let observed: string | undefined;
+  for (;;) {
+    observed = await adapter.getSecret(key);
+    if (observed === value) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `secret "${key}" never became observable: after ${SECRET_SETTLE_TIMEOUT_MS}ms ` +
+          `get() still reports ${JSON.stringify(observed)} instead of ${JSON.stringify(value)}`,
+      );
+    }
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 25);
+      timer.unref?.();
+    });
+  }
+}
+
+/**
+ * Upper bound on waiting for a `SecretStorage` write to become observable. Chosen
+ * well below the suite's 60s mocha timeout so exhaustion surfaces as this
+ * helper's descriptive error rather than an opaque test timeout.
+ */
+const SECRET_SETTLE_TIMEOUT_MS = 20_000;
+
 suite("VSCodeAdapter non-edit operations (integration)", () => {
   let adapter: VSCodeAdapter;
   let context: vscode.ExtensionContext;
@@ -127,11 +180,16 @@ suite("VSCodeAdapter non-edit operations (integration)", () => {
     const key = "rayucode.itest.secret";
     const value = `value-${Date.now()}`;
 
-    await roundTripAdapter.storeSecret(key, value);
+    // `SecretStorage.store()` resolves when the write completes, but the value
+    // becomes readable through `get()` slightly later (measured at ~80ms in this
+    // harness, which backs it with in-memory fallback storage). `storeAndSettle`
+    // therefore confirms the round-trip by re-reading until the write is
+    // observable, and throws if it never is — see its doc comment.
+    await storeAndSettle(roundTripAdapter, key, value);
     assert.equal(await roundTripAdapter.getSecret(key), value);
 
     // Overwrite, and a missing key resolves to undefined.
-    await roundTripAdapter.storeSecret(key, "updated");
+    await storeAndSettle(roundTripAdapter, key, "updated");
     assert.equal(await roundTripAdapter.getSecret(key), "updated");
     assert.equal(
       await roundTripAdapter.getSecret("rayucode.itest.absent"),

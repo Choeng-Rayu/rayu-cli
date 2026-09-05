@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod/v4'
-import { lazySchema } from '../../utils/lazySchema.js'
+import { lazySchema } from './lazySchema.js'
 
 // ============================================================================
 // Usage & Model Types
@@ -55,7 +55,25 @@ export const OutputFormatSchema = lazySchema(() =>
 // ============================================================================
 
 export const ApiKeySourceSchema = lazySchema(() =>
-  z.enum(['user', 'project', 'org', 'temporary', 'oauth']),
+  z.enum([
+    // --- Values the Rayu engine ACTUALLY emits ---------------------------
+    // Ground truth: `getAnthropicApiKeyWithSource()` in
+    // rayu/src/utils/auth.ts returns exactly these three (lines 205, 211,
+    // 216), and rayu/src/utils/messages/systemInit.ts puts the result
+    // straight onto `system/init`.
+    'RAYU_ANTHROPIC_API_KEY',
+    'rayuProvider',
+    'none',
+    // --- Legacy upstream values -----------------------------------------
+    // Retained so a frame produced by an older engine still validates.
+    // Widening an enum is additive and does NOT require a PROTOCOL_VERSION
+    // bump (PROTOCOL.md §3).
+    'user',
+    'project',
+    'org',
+    'temporary',
+    'oauth',
+  ]),
 )
 
 export const ConfigScopeSchema = lazySchema(() =>
@@ -324,14 +342,39 @@ export const PermissionResultSchema = lazySchema(() =>
 
 export const PermissionModeSchema = lazySchema(() =>
   z
-    .enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'])
+    .enum([
+      // --- Externally addressable modes -------------------------------
+      'default',
+      'acceptEdits',
+      'bypassPermissions',
+      'plan',
+      'dontAsk',
+      // --- Internal modes that can still reach the wire ---------------
+      // `rayu/src/types/permissions.ts` defines
+      //   PermissionMode = ExternalPermissionMode | 'auto' | 'bubble' | 'fullManage'
+      // and `rayu/src/cli/print.ts:1066` puts that internal value straight
+      // onto a `system/status` frame. Omitting them meant a user in
+      // `fullManage` mode produced a frame the schema rejected — which, once
+      // the extension validates with safeParse, trips the fail-safe on a
+      // perfectly healthy session. Same defect class as `apiKeySource`
+      // (rayucode/TRIAGE.md D9, D10).
+      //
+      // Widening an enum is additive, so no PROTOCOL_VERSION bump
+      // (PROTOCOL.md §3).
+      'auto',
+      'bubble',
+      'fullManage',
+    ])
     .describe(
       'Permission mode for controlling how tool executions are handled. ' +
         "'default' - Standard behavior, prompts for dangerous operations. " +
         "'acceptEdits' - Auto-accept file edit operations. " +
         "'bypassPermissions' - Bypass all permission checks (requires allowDangerouslySkipPermissions). " +
         "'plan' - Planning mode, no actual tool execution. " +
-        "'dontAsk' - Don't prompt for permissions, deny if not pre-approved.",
+        "'dontAsk' - Don't prompt for permissions, deny if not pre-approved. " +
+        "'auto', 'bubble', 'fullManage' - internal modes; consumers that do " +
+        'not implement them should fall back to prompting rather than ' +
+        'auto-approving.',
     ),
 )
 
@@ -1222,20 +1265,59 @@ export const RewindFilesResultSchema = lazySchema(() =>
 // The generation script uses TypeOverrideMap to output the correct TS type references.
 // This allows us to define SDK message types in Zod while maintaining proper typing.
 
-/** Placeholder for APIUserMessage from @anthropic-ai/sdk */
-export const APIUserMessagePlaceholder = lazySchema(() => z.unknown())
+// Placeholders for types owned by `@anthropic-ai/sdk`, not by this protocol.
+//
+// Upstream generated its .d.ts through a `TypeOverrideMap` that rewrote these
+// `unknown` placeholders into real `@anthropic-ai/sdk` type references. That
+// generator is not part of this tree, and this package deliberately depends on
+// NOTHING but `zod` (WORKSPACE.md §3) — pulling in the Anthropic SDK purely for
+// type references would couple the wire contract to a provider SDK.
+//
+// So the runtime and static behaviours are stated separately and honestly:
+//
+//   runtime — permissive. These payloads are passed through verbatim and are
+//            NOT validated by this package. `z.any()` and the previous
+//            `z.unknown()` accept exactly the same inputs.
+//   static  — `any`, because the real shape is owned elsewhere. Typing them
+//            `unknown` would not add safety (nothing is validated either way)
+//            while forcing a cast at every read site in both the engine and
+//            the extension.
+//
+// Consumers that need to read into these payloads should declare their own
+// local view type. That is explicitly permitted: the ownership rule is "one
+// definition for data crossing stdin/stdout", and these are opaque blobs
+// whose shape this protocol does not define.
+//
+// biome-ignore-start lint/suspicious/noExplicitAny: shape owned by @anthropic-ai/sdk
 
-/** Placeholder for APIAssistantMessage from @anthropic-ai/sdk */
-export const APIAssistantMessagePlaceholder = lazySchema(() => z.unknown())
+/** Opaque `APIUserMessage` payload from `@anthropic-ai/sdk`. Not validated here. */
+export const APIUserMessagePlaceholder = lazySchema(() => z.any())
 
-/** Placeholder for RawMessageStreamEvent from @anthropic-ai/sdk */
-export const RawMessageStreamEventPlaceholder = lazySchema(() => z.unknown())
+/** Opaque `APIAssistantMessage` payload from `@anthropic-ai/sdk`. Not validated here. */
+export const APIAssistantMessagePlaceholder = lazySchema(() => z.any())
 
-/** Placeholder for UUID from crypto */
-export const UUIDPlaceholder = lazySchema(() => z.string())
+/** Opaque `RawMessageStreamEvent` payload from `@anthropic-ai/sdk`. Not validated here. */
+export const RawMessageStreamEventPlaceholder = lazySchema(() => z.any())
 
-/** Placeholder for NonNullableUsage (mapped type over Usage) */
-export const NonNullableUsagePlaceholder = lazySchema(() => z.unknown())
+/** Opaque `NonNullableUsage` payload (a mapped type over `Usage`). Not validated here. */
+export const NonNullableUsagePlaceholder = lazySchema(() => z.any())
+
+// biome-ignore-end lint/suspicious/noExplicitAny: shape owned by @anthropic-ai/sdk
+
+/**
+ * A UUID string, as produced by `crypto.randomUUID()`.
+ *
+ * Runtime validation is a genuine string check. The static type carries the
+ * dashed template shape that consumers already annotate against, so the value
+ * flows without a cast. The engine only ever populates these fields from
+ * `randomUUID()`.
+ */
+export const UUIDPlaceholder = lazySchema(
+  () => z.string() as unknown as z.ZodType<UUIDLike>,
+)
+
+/** The dashed UUID shape `crypto.randomUUID()` returns. */
+export type UUIDLike = `${string}-${string}-${string}-${string}-${string}`
 
 // ============================================================================
 // SDK Message Types
@@ -1446,6 +1528,13 @@ export const SDKSystemMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('init'),
+    // Wire-contract version. Consumers compare this against the
+    // PROTOCOL_VERSION they were built against and refuse to run on a
+    // mismatch. Optional on the schema so an older engine still parses —
+    // the consumer treats `undefined` as 0 and fails the compatibility
+    // check explicitly, rather than the frame failing to decode at all.
+    // See PROTOCOL.md §3 and §4.
+    protocolVersion: z.number().int().optional(),
     agents: z.array(z.string()).optional(),
     apiKeySource: ApiKeySourceSchema(),
     betas: z.array(z.string()).optional(),

@@ -32,8 +32,13 @@ import type {
   InitializeRequest,
   InitializeResponse,
   McpStatusResponse,
-} from "./control.js";
+} from "./wire.js";
 import {
+  isApiRetryMessage,
+  isAuthStatusMessage,
+  isCompactBoundaryMessage,
+  isRateLimitEvent,
+  isToolProgressMessage,
   isAssistantMessage,
   isControlCancelRequest,
   isControlRequest,
@@ -43,14 +48,19 @@ import {
   isSystemInit,
 } from "./guards.js";
 import type {
+  ApiRetryMessage,
+  AuthStatusMessage,
+  CompactBoundaryMessage,
+  RateLimitEvent,
+  ToolProgressMessage,
   AssistantMessage,
   ResultMessage,
   StdinMessage,
   StdoutMessage,
   StreamEvent,
   SystemInit,
-} from "./messages.js";
-import type { PermissionMode } from "./permissions.js";
+} from "./wire.js";
+import type { PermissionMode } from "./wire.js";
 
 // ----------------------------------------------------------------------------
 // Event payloads
@@ -97,6 +107,29 @@ export interface ControlClientEvents {
   permissionRequest: PermissionRequestEvent;
   /** A control-protocol error to render in the panel (R15.2). */
   controlError: ControlErrorEvent;
+  /**
+   * `system/api_retry` — the engine is retrying an upstream API call.
+   *
+   * Carries `error_status` (e.g. `401`) and `error` (e.g.
+   * `"authentication_failed"`), plus `attempt` / `max_retries`. Before this
+   * event existed, these frames were misrouted into `systemInit` and their
+   * contents discarded, so a user with bad credentials saw a blank panel and no
+   * error at all (rayucode/TRIAGE.md D1, D2).
+   */
+  apiRetry: ApiRetryMessage;
+  /**
+   * `tool_progress` — a long-running tool is still working.
+   *
+   * Without this the panel showed a tool as "running" with no sign of life, so a
+   * slow command was indistinguishable from a hang.
+   */
+  toolProgress: ToolProgressMessage;
+  /** `rate_limit_event` — provider quota status changed. */
+  rateLimit: RateLimitEvent;
+  /** `auth_status` — the engine started or finished authenticating. */
+  authStatus: AuthStatusMessage;
+  /** `system/compact_boundary` — the engine compacted the conversation context. */
+  compactBoundary: CompactBoundaryMessage;
 }
 
 /** A name of one of the {@link ControlClientEvents}. */
@@ -187,6 +220,11 @@ export class ControlProtocolClient {
       result: new Set(),
       permissionRequest: new Set(),
       controlError: new Set(),
+      apiRetry: new Set(),
+      toolProgress: new Set(),
+      rateLimit: new Set(),
+      authStatus: new Set(),
+      compactBoundary: new Set(),
     };
   }
 
@@ -240,6 +278,30 @@ export class ControlProtocolClient {
   handleMessage(message: StdoutMessage): void {
     if (isSystemInit(message)) {
       this.emit("systemInit", message);
+      return;
+    }
+    if (isApiRetryMessage(message)) {
+      // Surfaced as its own event. Routing this into `systemInit` — which is
+      // what happened when the guard checked only `type === "system"` — wrote
+      // `undefined` over the session's model and permission mode, and threw
+      // away the HTTP status that explains the failure (TRIAGE.md D1, D2).
+      this.emit("apiRetry", message);
+      return;
+    }
+    if (isCompactBoundaryMessage(message)) {
+      this.emit("compactBoundary", message);
+      return;
+    }
+    if (isToolProgressMessage(message)) {
+      this.emit("toolProgress", message);
+      return;
+    }
+    if (isRateLimitEvent(message)) {
+      this.emit("rateLimit", message);
+      return;
+    }
+    if (isAuthStatusMessage(message)) {
+      this.emit("authStatus", message);
       return;
     }
     if (isAssistantMessage(message)) {

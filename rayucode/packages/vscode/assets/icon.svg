@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Rayucode">
+  <!-- Rayucode fox mark, reduced to a single-weight outline.
+       VS Code masks Activity Bar icons and re-tints them per active/inactive
+       state, so this must be monochrome and stroked with `currentColor` — a
+       full-colour logo would render as a flat blob. Geometry: two ear tips, a
+       flat crown, and a semicircular muzzle (centre 12,12.1 · r 8.5). -->
+  <path d="M3.5 3.5 8.6 8.2h6.8l5.1-4.7v8.6a8.5 8.5 0 0 1-17 0z" />
+  <!-- Eyes and snout: zero-length segments rendered as dots by the round cap. -->
+  <path d="M9.2 12.1h0.01M14.8 12.1h0.01" />
+  <path d="M12 15.4v1.8" />
+</svg>

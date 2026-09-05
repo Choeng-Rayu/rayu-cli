@@ -40,8 +40,12 @@
 
 import { AgentProcess } from "../cli/agentProcess.js";
 import type { AgentExitInfo } from "../cli/agentProcess.js";
-import { CliLocator, MINIMUM_RAYU_VERSION } from "../cli/cliLocator.js";
-import type { CliResolution } from "../cli/cliLocator.js";
+import {
+  EngineResolver,
+  defaultEngineDistDir,
+  ensureFirstRunMarkerSuppressed,
+} from "../cli/engineResolver.js";
+import type { EngineResolution } from "../cli/engineResolver.js";
 import { EditProposalModel, isEditToolName } from "../edit/proposalModel.js";
 import type {
   AgentPanelHandle,
@@ -53,10 +57,21 @@ import type {
 import { PermissionCoordinator } from "../permission/coordinator.js";
 import { ControlProtocolClient } from "../protocol/controlClient.js";
 import type {
+  ApiRetryMessage,
+  RateLimitEvent,
+} from "../protocol/wire.js";
+import type {
   ControlErrorEvent,
   PermissionRequestEvent,
 } from "../protocol/controlClient.js";
-import type { CanUseToolRequest } from "../protocol/control.js";
+import type { CanUseToolRequest } from "../protocol/wire.js";
+import { isPermissionMode } from "../protocol/wire.js";
+import type { DecodeFailure } from "../protocol/ndjson.js";
+import { isResultError } from "../protocol/guards.js";
+import {
+  LEGACY_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
+} from "../protocol/wire.js";
 import type {
   AssistantMessage,
   ResultMessage,
@@ -65,15 +80,17 @@ import type {
   StdoutMessage,
   StreamEvent,
   SystemInit,
-} from "../protocol/messages.js";
-import type { PermissionMode } from "../protocol/permissions.js";
+} from "../protocol/wire.js";
+import type { PermissionMode } from "../protocol/wire.js";
 import type {
   ModelInfo,
   ModelUsage,
+} from "../protocol/wire.js";
+import type {
   RawMessageStreamEvent,
   ToolUseBlock,
   Usage,
-} from "../protocol/primitives.js";
+} from "../protocol/contentBlocks.js";
 import { Redactor } from "../redaction/redactor.js";
 import { SessionStore } from "./sessionStore.js";
 import type { SessionStoreEntry } from "./sessionStore.js";
@@ -106,13 +123,20 @@ export interface AgentProcessLike {
   writeLine(message: StdinMessage): void;
   onStdoutMessage(cb: (message: StdoutMessage) => void): void;
   onExit(cb: (info: AgentExitInfo) => void): void;
+  /**
+   * Register a listener for a session-fatal protocol decode failure.
+   *
+   * Optional so existing test doubles remain valid. The real
+   * {@link AgentProcess} always provides it.
+   */
+  onProtocolFailure?(cb: (failure: DecodeFailure) => void): void;
   terminate(): Promise<void>;
 }
 
 /** Options the SessionManager passes to the {@link AgentProcessFactory}. */
 export interface AgentProcessFactoryOptions {
-  /** Resolved Rayu CLI executable path. */
-  cliPath: string;
+  /** Verified path to the engine bundled inside the extension. */
+  enginePath: string;
   /** Session workspace root, or `undefined` to inherit (R2.3). */
   cwd: string | undefined;
   /** Diagnostic sink for the spawned process (R2.6). */
@@ -124,9 +148,12 @@ export type AgentProcessFactory = (
   options: AgentProcessFactoryOptions,
 ) => AgentProcessLike;
 
-/** Resolves the Rayu CLI executable (R1); the SessionManager only needs `resolve`. */
-export interface CliLocatorLike {
-  resolve(): Promise<CliResolution>;
+/**
+ * Resolves and verifies the bundled engine; the SessionManager only needs
+ * `resolve`. Synchronous because the digest is computed once and cached.
+ */
+export interface EngineResolverLike {
+  resolve(): EngineResolution;
 }
 
 /**
@@ -163,8 +190,13 @@ export interface SessionManagerOptions {
    * with the configured credential set.
    */
   redactor?: Redactor;
-  /** CLI locator (R1). Defaults to a {@link CliLocator} over the adapter. */
-  cliLocator?: CliLocatorLike;
+  /** Engine resolver. Defaults to an {@link EngineResolver} over {@link engineDistDir}. */
+  engineResolver?: EngineResolverLike;
+  /**
+   * Directory holding the bundled engine and `build-info.json`. Defaults to the
+   * directory containing the running extension bundle.
+   */
+  engineDistDir?: string;
   /** Agent-process factory (R2). Defaults to constructing an {@link AgentProcess}. */
   agentProcessFactory?: AgentProcessFactory;
   /** Edit proposal model (R6). Defaults to a fresh {@link EditProposalModel}. */
@@ -173,6 +205,25 @@ export interface SessionManagerOptions {
   timers?: TimerProvider;
   /** Outbound control-request id factory; forwarded to each session's client. */
   generateRequestId?: () => string;
+  /**
+   * Observer for every host → panel message, called with the same value the panel
+   * receives — that is, AFTER redaction (R15.5).
+   *
+   * Exists so a second surface can mirror the panel without the SessionManager
+   * knowing what that surface is. The Web Bridge is the first such consumer: it
+   * relays these to the rayu-web studio so a session can be watched and driven from
+   * a browser. Placed at the single `postToPanel` choke point rather than at each
+   * call site, because a mirror that misses one message type shows a conversation
+   * with a hole in it, and there are eighteen of them.
+   *
+   * Redaction order is the security-relevant part and it is not incidental: a
+   * browser is a strictly less trusted surface than a local webview, so it must
+   * never see a credential the panel would have had masked.
+   *
+   * Must not throw and must not block — it is invoked synchronously on the session's
+   * hot path. The SessionManager isolates a throw, but a slow observer is a slow UI.
+   */
+  onPanelMessage?: (sessionKey: string, message: PanelOutboundMessage) => void;
 }
 
 // ----------------------------------------------------------------------------
@@ -208,7 +259,32 @@ export type PanelOutboundMessage =
   // R9.5: stage a reference (e.g. a fenced block citing a file path + selected
   // text) into the prompt input. The webview appends it to the textarea WITHOUT
   // submitting; it is not a conversation item.
-  | { type: "insertPrompt"; text: string };
+  | { type: "insertPrompt"; text: string }
+  // Live progress for an in-flight tool call. Before this existed a slow tool
+  // was indistinguishable from a hung one (rayucode/TRIAGE.md D8).
+  | {
+      type: "toolProgress";
+      toolUseId: string;
+      toolName: string;
+      elapsedSeconds: number;
+    }
+  // Provider quota status. `resetsAt` is a Unix timestamp in seconds when present.
+  | {
+      type: "rateLimit";
+      status: "allowed" | "allowed_warning" | "rejected";
+      rateLimitType?: string;
+      utilization?: number;
+      resetsAt?: number;
+    }
+  // Authentication progress. Surfacing this is what turns a silent stall during
+  // sign-in into visible feedback.
+  | { type: "authStatus"; authenticating: boolean; error?: string }
+  // The engine compacted the conversation context, so earlier turns are summarised.
+  | {
+      type: "compactBoundary";
+      trigger: "manual" | "auto";
+      preTokens: number;
+    };
 
 // ----------------------------------------------------------------------------
 // Internal per-session runtime
@@ -259,10 +335,68 @@ interface ManagedSession {
   coordSignatures: Map<string, string>;
   /** Panel subscriptions to dispose when the panel/session goes away. */
   disposables: Disposable[];
+  /**
+   * Machine-readable reason this session was abandoned for a protocol fault, or
+   * `null` while healthy. Latched so the fail-safe sequence runs exactly once.
+   *
+   * `protocol_decode_error`  — a stdout line was not valid JSON
+   * `protocol_schema_error`  — a frame did not match the wire schema
+   * `protocol_version_mismatch` — engine and extension disagree on the version
+   */
+  protocolFailureReason:
+    | "protocol_decode_error"
+    | "protocol_schema_error"
+    | "protocol_version_mismatch"
+    | null;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Build a human-readable reason for a failed turn.
+ *
+ * The engine's `result` message is a DISCRIMINATED UNION, and the two variants
+ * carry their failure information in different places:
+ *
+ *   success ⇒ `result: string` (required); no `errors` field
+ *   error   ⇒ NO `result` field at all; `errors: string[]` (required)
+ *
+ * The pre-refactor code read `message.result ?? \`Turn ended with: ${subtype}\``
+ * against a hand-written single-interface model that declared `result?: string`
+ * and had no `errors` field whatsoever. On a real failure `result` is absent, so
+ * the reason ALWAYS fell through to the bare subtype and the actual explanation
+ * — sitting right there in `errors` — was unreachable (TRIAGE.md D3).
+ *
+ * Now that the union is modelled correctly, read whichever field the variant
+ * actually has.
+ */
+function describeResultFailure(message: ResultMessage): string {
+  if (isResultError(message)) {
+    const detail = message.errors.filter((e) => e.trim().length > 0).join("; ");
+    if (detail.length > 0) {
+      return detail;
+    }
+  } else if (typeof message.result === "string" && message.result.length > 0) {
+    // `is_error` can be true on a success-subtype result; prefer its text.
+    return message.result;
+  }
+  return `Turn ended with: ${message.subtype}`;
+}
+
+/**
+ * Narrow an untrusted value to a plain object, or `undefined`.
+ *
+ * Arrays, `null`, and primitives are rejected. Used at the webview → host trust
+ * boundary for values the host forwards to the CLI as structured payloads, where
+ * a wrong shape would be passed through rather than caught.
+ */
+function asPlainObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
 }
 
 /** The incremental text of a streaming event, or `null` when it carries none. */
@@ -323,11 +457,14 @@ export class SessionManager {
   private readonly adapter: EditorAdapter;
   private readonly sessionStore: SessionStore;
   private readonly redactor: Redactor;
-  private readonly cliLocator: CliLocatorLike;
+  private readonly engineResolver: EngineResolverLike;
   private readonly agentProcessFactory: AgentProcessFactory;
   private readonly editModel: EditProposalModel;
   private readonly timers: TimerProvider;
   private readonly generateRequestId: (() => string) | undefined;
+  private readonly onPanelMessage:
+    | ((sessionKey: string, message: PanelOutboundMessage) => void)
+    | undefined;
 
   private readonly sessions = new Map<string, ManagedSession>();
 
@@ -335,19 +472,24 @@ export class SessionManager {
     this.adapter = options.adapter;
     this.sessionStore = options.sessionStore ?? new SessionStore();
     this.redactor = options.redactor ?? new Redactor([]);
-    this.cliLocator =
-      options.cliLocator ?? new CliLocator({ adapter: options.adapter });
+    this.engineResolver =
+      options.engineResolver ??
+      new EngineResolver({
+        distDir: options.engineDistDir ?? defaultEngineDistDir(),
+        adapter: options.adapter,
+      });
     this.agentProcessFactory =
       options.agentProcessFactory ??
       ((o) =>
         new AgentProcess({
-          cliPath: o.cliPath,
+          enginePath: o.enginePath,
           cwd: o.cwd,
           adapter: o.adapter,
         }));
     this.editModel = options.editProposalModel ?? new EditProposalModel();
     this.timers = options.timers ?? defaultTimers;
     this.generateRequestId = options.generateRequestId;
+    this.onPanelMessage = options.onPanelMessage;
   }
 
   // --------------------------------------------------------------------------
@@ -455,6 +597,58 @@ export class SessionManager {
    * is surfaced (via the control-error event) and the previously effective
    * model is retained (R7.4).
    */
+  /**
+   * Change the permission mode for subsequent tool use (the runtime equivalent of
+   * the CLI's `/permission-mode`).
+   *
+   * `mode` arrives from the webview as `unknown` and is validated here rather
+   * than at the call site, so there is exactly one place where an unrecognised
+   * mode can be rejected.
+   *
+   * Order matters. The CLI is told FIRST and the local state is updated only if
+   * that succeeds: the engine is what actually decides whether it asks before
+   * running a tool, so a local mode that ran ahead of a failed request would show
+   * "Bypass all prompts" while the engine still prompted — or, in the dangerous
+   * direction, show a restrictive mode while the engine auto-approved.
+   */
+  async selectPermissionMode(sessionKey: string, mode: unknown): Promise<void> {
+    const session = this.requireSession(sessionKey);
+    if (!isPermissionMode(mode)) {
+      this.log(
+        "protocol",
+        `Ignoring unrecognised permission mode from the panel: ${String(mode)}`,
+      );
+      return;
+    }
+    if (mode === session.permissionMode) {
+      return;
+    }
+
+    try {
+      await session.client?.setPermissionMode(mode);
+      session.permissionMode = mode;
+      session.coordinator.setMode(mode);
+      this.postToPanel(session, {
+        type: "setModelInfo",
+        model: session.model,
+        permissionMode: mode,
+      });
+      this.log("lifecycle", `Permission mode set to ${mode}`);
+    } catch (error) {
+      // Keep the prior mode and tell the panel so its picker snaps back, rather
+      // than leaving it showing a mode that was never applied.
+      this.log(
+        "protocol",
+        `Permission mode change to ${mode} failed; keeping ${session.permissionMode}: ${errorMessage(error)}`,
+      );
+      this.postToPanel(session, {
+        type: "setModelInfo",
+        model: session.model,
+        permissionMode: session.permissionMode,
+      });
+    }
+  }
+
   async selectModel(sessionKey: string, model: string): Promise<void> {
     const session = this.requireSession(sessionKey);
     try {
@@ -650,6 +844,7 @@ export class SessionManager {
       conflictPlans: new Map(),
       coordSignatures: new Map(),
       disposables: [],
+      protocolFailureReason: null,
     };
     // The outbound sink reads the CURRENT child at call time, so it keeps
     // working across an agent restart that swaps `session.process`.
@@ -678,27 +873,25 @@ export class SessionManager {
    * failure with the appropriate actionable control (R1.2, R1.5, R15.1).
    */
   private async startAgent(session: ManagedSession): Promise<void> {
-    const resolution = await this.cliLocator.resolve();
-    if (resolution.path === null) {
-      // R1.2: no executable resolved — actionable, with a way to set the path.
-      const choice = await this.adapter.showActionableMessage(
-        "error",
-        "Rayu CLI was not found. Set its path in settings, or install it, then retry.",
-        ["Set path", "Retry"],
-      );
-      if (choice === "Retry") {
-        await this.startAgent(session);
-      }
+    // Resolve and integrity-check the engine shipped inside this extension.
+    // There is nothing to search for and no version negotiation: a mismatch
+    // means the VSIX is broken, not that the user has the wrong CLI, so it is a
+    // hard error rather than a prompt (PROTOCOL.md §6.1).
+    let resolution: EngineResolution;
+    try {
+      resolution = this.engineResolver.resolve();
+    } catch (error) {
+      const reason = errorMessage(error);
+      this.log("error", `Bundled Rayu engine unavailable: ${reason}`);
+      this.postToPanel(session, { type: "showError", message: reason });
+      await this.adapter.showActionableMessage("error", reason, ["OK"]);
       return;
     }
-    if (resolution.belowMinimum) {
-      // R1.5: informational; the user may continue with the incompatible build.
-      await this.adapter.showActionableMessage(
-        "warn",
-        `The Rayu CLI version ${resolution.version ?? "unknown"} is below the required ${MINIMUM_RAYU_VERSION}. You can continue, but some features may not work.`,
-        ["Continue"],
-      );
-    }
+
+    // Keep the engine's first-run welcome banner off the NDJSON stream. See
+    // ensureFirstRunMarkerSuppressed for why this is needed and why the
+    // workaround lives on the extension side (TRIAGE.md D4).
+    ensureFirstRunMarkerSuppressed({ adapter: this.adapter });
 
     // cwd = the session workspace root (R2.3); inherit when undeterminable.
     const rootContext = await this.adapter.getWorkspaceContext({});
@@ -713,12 +906,15 @@ export class SessionManager {
     session.client = client;
 
     const process = this.agentProcessFactory({
-      cliPath: resolution.path,
+      enginePath: resolution.enginePath,
       cwd,
       adapter: this.adapter,
     });
     process.onStdoutMessage((message) => this.handleStdout(session, message));
     process.onExit((info) => this.handleExit(session, info));
+    process.onProtocolFailure?.((failure) =>
+      void this.handleProtocolFailure(session, failure),
+    );
     session.process = process;
 
     try {
@@ -739,6 +935,61 @@ export class SessionManager {
         await this.startAgent(session);
       }
     }
+  }
+
+  /**
+   * Complete the fail-safe sequence for a session-fatal protocol decode failure
+   * (PROTOCOL.md §7).
+   *
+   * {@link AgentProcess} has already performed step 1 (log the frame, redacted
+   * and truncated, with the schema issue paths) and stopped decoding. This
+   * method performs steps 2–5:
+   *
+   *   2. mark the session failed with a machine-readable reason
+   *   3. terminate the child
+   *   4. default-deny every pending permission request
+   *   5. surface an actionable error in the panel
+   *
+   * Steps 3 and 4 are delegated to {@link teardownAgent}, which already denies
+   * pending permissions BEFORE terminating — the established
+   * default-deny-on-close path, not new policy.
+   *
+   * Crucially the malformed frame is NOT skipped. The control protocol is
+   * request/response correlated, so a dropped frame can be the response the UI
+   * is awaiting; skipping would leave the panel spinning forever with no error
+   * (rayucode/TRIAGE.md D7).
+   */
+  private async handleProtocolFailure(
+    session: ManagedSession,
+    failure: DecodeFailure,
+  ): Promise<void> {
+    if (session.protocolFailureReason !== null) {
+      return;
+    }
+
+    // Step 2: mark the session failed.
+    session.protocolFailureReason =
+      failure.kind === "json"
+        ? "protocol_decode_error"
+        : "protocol_schema_error";
+
+    this.postToPanel(session, { type: "setGenerating", generating: false });
+
+    // Steps 3 + 4: deny pending permissions, then terminate the child.
+    await this.teardownAgent(session);
+
+    // Step 5: a terminal, actionable error — not a transient toast the user can
+    // miss while the panel merely looks idle.
+    const detail =
+      failure.kind === "json"
+        ? "The agent produced output that is not valid JSON."
+        : "The agent produced a message that does not match the expected protocol.";
+    this.postToPanel(session, {
+      type: "showError",
+      message:
+        `${detail} The session has been stopped and any pending approvals were denied. ` +
+        `See the Rayucode log for details. Start a new session to continue.`,
+    });
   }
 
   /**
@@ -785,6 +1036,33 @@ export class SessionManager {
     client: ControlProtocolClient,
   ): void {
     client.on("systemInit", (m) => this.onSystemInit(session, m));
+    client.on("apiRetry", (m) => this.onApiRetry(session, m));
+    // Newly reachable now that the protocol package models them. Each was
+    // previously discarded, which is why the panel felt like it was missing
+    // information (rayucode/TRIAGE.md D8).
+    client.on("toolProgress", (m) =>
+      this.postToPanel(session, {
+        type: "toolProgress",
+        toolUseId: m.tool_use_id,
+        toolName: m.tool_name,
+        elapsedSeconds: m.elapsed_time_seconds,
+      }),
+    );
+    client.on("rateLimit", (m) => this.onRateLimit(session, m));
+    client.on("authStatus", (m) =>
+      this.postToPanel(session, {
+        type: "authStatus",
+        authenticating: m.isAuthenticating,
+        ...(m.error !== undefined ? { error: m.error } : {}),
+      }),
+    );
+    client.on("compactBoundary", (m) =>
+      this.postToPanel(session, {
+        type: "compactBoundary",
+        trigger: m.compact_metadata.trigger,
+        preTokens: m.compact_metadata.pre_tokens,
+      }),
+    );
     client.on("streamEvent", (m) => this.onStreamEvent(session, m));
     client.on("assistantMessage", (m) => this.onAssistantMessage(session, m));
     client.on("result", (m) => this.onResult(session, m));
@@ -793,6 +1071,18 @@ export class SessionManager {
   }
 
   private onSystemInit(session: ManagedSession, message: SystemInit): void {
+    // PROTOCOL.md §6.2 — the second of the two startup checks. The first
+    // (engine SHA-256) already ran before the spawn.
+    //
+    // The engine ships inside the VSIX, so a version mismatch means the
+    // packaging step is broken, not that the user has an old CLI. It is
+    // therefore a hard failure: continuing would mean interpreting frames whose
+    // meaning we do not actually know, which is the exact failure mode this
+    // whole refactor exists to eliminate.
+    if (!this.checkProtocolVersion(session, message)) {
+      return;
+    }
+
     session.model = message.model;
     session.permissionMode = message.permissionMode;
     session.coordinator.setMode(message.permissionMode);
@@ -806,6 +1096,51 @@ export class SessionManager {
       type: "setMcpStatus",
       servers: message.mcp_servers,
     });
+  }
+
+  /**
+   * Compare the engine's advertised `protocolVersion` against the version this
+   * extension was built with.
+   *
+   * An engine that omits the field entirely predates the contract and is treated
+   * as {@link LEGACY_PROTOCOL_VERSION} (0) rather than being given the benefit of
+   * the doubt — a pre-contract engine is precisely the case where silent drift
+   * produced the original bug class.
+   *
+   * @returns `true` when compatible; `false` after starting the fail-safe.
+   */
+  private checkProtocolVersion(
+    session: ManagedSession,
+    message: SystemInit,
+  ): boolean {
+    const engineVersion = message.protocolVersion ?? LEGACY_PROTOCOL_VERSION;
+    if (engineVersion === PROTOCOL_VERSION) {
+      return true;
+    }
+
+    const described =
+      engineVersion === LEGACY_PROTOCOL_VERSION
+        ? "did not report a protocol version at all"
+        : `reported protocol version ${engineVersion}`;
+
+    this.log(
+      "error",
+      `Protocol version mismatch: the bundled engine ${described}, but this ` +
+        `extension was built for version ${PROTOCOL_VERSION}. Refusing to continue.`,
+    );
+
+    session.protocolFailureReason = "protocol_version_mismatch";
+    this.postToPanel(session, { type: "setGenerating", generating: false });
+    void this.teardownAgent(session).then(() => {
+      this.postToPanel(session, {
+        type: "showError",
+        message:
+          `This build of Rayucode is not compatible with its bundled engine ` +
+          `(engine ${described}; extension expects ${PROTOCOL_VERSION}). ` +
+          `The session has been stopped. Reinstall the extension.`,
+      });
+    });
+    return false;
   }
 
   private onStreamEvent(session: ManagedSession, message: StreamEvent): void {
@@ -883,9 +1218,101 @@ export class SessionManager {
     if (message.is_error) {
       this.postToPanel(session, {
         type: "showError",
-        message: message.result ?? `Turn ended with: ${message.subtype}`,
+        message: describeResultFailure(message),
       });
     }
+  }
+
+  /**
+   * Surface a `system/api_retry` frame.
+   *
+   * The engine emits this each time it retries an upstream API call, carrying
+   * the HTTP status and an error classification. An authentication failure is
+   * terminal in practice — retrying a 401 with the same credentials cannot
+   * succeed — so it is reported immediately instead of leaving the user watching
+   * an idle panel.
+   *
+   * Before the protocol package existed these frames satisfied
+   * `isSystemInit()` (which checked only `type === "system"`), so they were
+   * dispatched to the init handler: the model and permission mode were
+   * overwritten with `undefined` and the status was discarded. A real run
+   * against invalid credentials produced one `system/init` followed by NINE
+   * `api_retry` frames, so that happened nine times per session and the user saw
+   * nothing (rayucode/TRIAGE.md D1, D2).
+   */
+  private onApiRetry(
+    session: ManagedSession,
+    message: ApiRetryMessage,
+  ): void {
+    const status = message.error_status;
+    const attempt = `attempt ${message.attempt}/${message.max_retries}`;
+
+    this.log(
+      "protocol",
+      `Agent API retry (${attempt}): status=${String(status)} error=${String(message.error)}`,
+    );
+
+    // A 401/403 will not resolve by retrying, so tell the user now.
+    if (
+      message.error === "authentication_failed" ||
+      status === 401 ||
+      status === 403
+    ) {
+      this.postToPanel(session, {
+        type: "showError",
+        message:
+          "Authentication failed. The agent could not sign in to the model " +
+          "provider, so this turn cannot complete. Check your API key or run " +
+          "`rayu` in a terminal to sign in, then start a new session.",
+      });
+      return;
+    }
+
+    if (message.error === "rate_limit" || status === 429) {
+      this.postToPanel(session, {
+        type: "showError",
+        message: `Rate limited by the model provider — retrying (${attempt}).`,
+      });
+      return;
+    }
+
+    if (message.error === "billing_error") {
+      this.postToPanel(session, {
+        type: "showError",
+        message:
+          "The model provider rejected the request for billing reasons. " +
+          "Check your account balance or plan limits.",
+      });
+    }
+  }
+
+  /**
+   * Surface a provider rate-limit change.
+   *
+   * `rejected` is terminal for the current turn, so it is raised as an error
+   * rather than a passive notice; a warning is informational.
+   */
+  private onRateLimit(session: ManagedSession, message: RateLimitEvent): void {
+    const info = message.rate_limit_info;
+    this.log(
+      "protocol",
+      `Rate limit ${String(info.status)}` +
+        (info.rateLimitType ? ` (${String(info.rateLimitType)})` : "") +
+        (typeof info.utilization === "number"
+          ? ` at ${Math.round(info.utilization * 100)}% utilisation`
+          : ""),
+    );
+    this.postToPanel(session, {
+      type: "rateLimit",
+      status: info.status,
+      ...(info.rateLimitType !== undefined
+        ? { rateLimitType: String(info.rateLimitType) }
+        : {}),
+      ...(typeof info.utilization === "number"
+        ? { utilization: info.utilization }
+        : {}),
+      ...(typeof info.resetsAt === "number" ? { resetsAt: info.resetsAt } : {}),
+    });
   }
 
   private onPermissionRequest(
@@ -1195,10 +1622,32 @@ export class SessionManager {
     session: ManagedSession,
     message: PanelOutboundMessage,
   ): void {
+    const redacted = this.redactDeep(message);
+
+    /*
+     * Mirror BEFORE the panel-null check, and mirror the REDACTED value.
+     *
+     * Before the check, because a session whose panel the user closed is still
+     * running — that is the point of retained sessions — and a remote viewer must
+     * keep receiving it. Gating the mirror on a local panel being open would make
+     * closing the VS Code panel silently blind the browser.
+     *
+     * The redacted value, because the browser is a less trusted surface than the
+     * local webview and must never see a credential the panel would have masked.
+     */
+    if (this.onPanelMessage) {
+      try {
+        this.onPanelMessage(session.key, redacted);
+      } catch (error) {
+        // An observer's failure is never allowed to break the session it observes.
+        this.log("error", `panel observer threw: ${errorMessage(error)}`);
+      }
+    }
+
     if (session.panel === null) {
       return;
     }
-    void session.panel.postMessage(this.redactDeep(message));
+    void session.panel.postMessage(redacted);
   }
 
   /** Write a redacted line to the diagnostic log channel (R15.5). */
@@ -1227,7 +1676,18 @@ export class SessionManager {
     if (value !== null && typeof value === "object") {
       const out: Record<string, unknown> = {};
       for (const [key, entry] of Object.entries(value)) {
-        out[key] = this.redactValue(entry);
+        // `out[key] = …` would invoke the `__proto__` SETTER for a payload that
+        // literally carries that key: the assignment would mutate `out`'s
+        // prototype instead of adding a property, and the field would vanish from
+        // the message between the agent and the panel. Defining the property
+        // explicitly keeps it an own data property, so the message stays faithful
+        // and no prototype is touched.
+        Object.defineProperty(out, key, {
+          value: this.redactValue(entry),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
       }
       return out;
     }
@@ -1272,7 +1732,12 @@ export class SessionManager {
         this.approvePermission(
           session.key,
           requestId,
-          message["updatedInput"] as Record<string, unknown> | undefined,
+          // R5.2: `updatedInput` becomes the APPROVED tool input forwarded to the
+          // CLI, so it is validated rather than cast. The webview is a separate
+          // JS context; a malformed or hostile message must not be able to
+          // replace the approved input with a non-object (which the CLI would
+          // then receive in place of the parameters the user actually reviewed).
+          asPlainObject(message["updatedInput"]),
         );
         return;
       case "denyPermission":
@@ -1293,6 +1758,14 @@ export class SessionManager {
           session.key,
           typeof message["model"] === "string" ? message["model"] : "",
         );
+        return;
+      case "selectPermissionMode":
+        // The mode decides whether tool actions are auto-approved, so the value
+        // is checked against the wire schema instead of being cast. An unknown
+        // string is dropped, never forwarded: `setMode` with an unrecognised mode
+        // would fall through the policy's checks, and the safe direction is to
+        // keep the mode already in force.
+        void this.selectPermissionMode(session.key, message["mode"]);
         return;
       case "openModelList":
         void this.requestModels(session.key);

@@ -1,0 +1,150 @@
+name: Rayucode
+
+# Builds the protocol package, the engine, and the VS Code extension in the ONE
+# order that works, then verifies the packaging invariants that keep the engine
+# and the extension in agreement.
+#
+# Build order matters and is not arbitrary (WORKSPACE.md §6): consumers resolve
+# @rayu-dev/agent-protocol through node_modules to its dist/, so it must be built
+# first. The engine and the extension both depend on it.
+#
+# Test jobs are added in Task 10, once the consolidated suite exists. This
+# pipeline deliberately starts with build + typecheck + packaging integrity,
+# which is what catches protocol drift and mis-packaging.
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "packages/agent-protocol/**"
+      - "rayucode/**"
+      - "rayu/src/entrypoints/sdk/**"
+      - "rayu/src/utils/lazySchema.ts"
+      - "rayu/src/utils/messages/systemInit.ts"
+      - "package.json"
+      - ".github/workflows/rayucode.yml"
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "packages/agent-protocol/**"
+      - "rayucode/**"
+      - "rayu/src/entrypoints/sdk/**"
+      - "rayu/src/utils/lazySchema.ts"
+      - "rayu/src/utils/messages/systemInit.ts"
+      - "package.json"
+      - ".github/workflows/rayucode.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-package:
+    name: Protocol → Engine → Extension → VSIX
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # generate-build-info.mjs records `git rev-parse HEAD`, so the commit
+          # must be real rather than a synthetic merge ref.
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # -- Step 1: the protocol package -----------------------------------
+      # Owns every wire schema. Built first because both the engine and the
+      # extension resolve it through node_modules to its dist/.
+      - name: Install workspace dependencies
+        run: npm install
+
+      - name: Assert a single zod version
+        run: |
+          echo "Two zod instances make instanceof checks and safeParse results"
+          echo "silently disagree across package boundaries (PROTOCOL.md §5)."
+          versions=$(find . -path ./rayu/node_modules -prune -o -name package.json -path '*/node_modules/zod/*' -print 2>/dev/null \
+            | xargs -r -n1 node -e 'process.stdout.write(require(process.argv[1]).version+"\n")' | sort -u)
+          echo "resolved zod version(s): ${versions:-<none>}"
+          count=$(printf '%s\n' "$versions" | grep -c . || true)
+          if [ "$count" -gt 1 ]; then
+            echo "::error::multiple zod versions resolved: $versions"
+            exit 1
+          fi
+
+      - name: Build @rayu-dev/agent-protocol
+        run: npm run build:protocol
+
+      - name: Typecheck protocol package
+        run: npm run typecheck --workspace @rayu-dev/agent-protocol
+
+      # -- Step 2: the engine ---------------------------------------------
+      - name: Install engine dependencies
+        working-directory: ./rayu
+        run: bun install
+
+      - name: Engine typecheck (against its accepted baseline)
+        working-directory: ./rayu
+        run: bun run typecheck:ci
+
+      - name: Build engine
+        working-directory: ./rayu
+        run: bun run build
+
+      # -- Step 3 + 4: core, extension, engine staging --------------------
+      - name: Typecheck rayucode
+        working-directory: ./rayucode
+        run: npm run typecheck
+
+      - name: Build rayucode (bundles extension, stages engine, writes build-info.json)
+        working-directory: ./rayucode
+        run: npm run build
+
+      # -- Packaging invariants -------------------------------------------
+      - name: Verify PROTOCOL_VERSION agreement
+        run: node .github/scripts/verify-protocol-version.mjs
+
+      - name: Verify engine digest matches build-info.json
+        run: node .github/scripts/verify-engine-digest.mjs
+
+      - name: Assert no secrets or large artifacts in the package
+        working-directory: ./rayucode/packages/vscode
+        run: |
+          files=$(npx @vscode/vsce ls --no-dependencies)
+          echo "$files"
+          if printf '%s\n' "$files" | grep -Eiq '\.env|\.pem|\.key|graphify-out|dist/bin/|node_modules'; then
+            echo "::error::the package would ship a secret or an unwanted artifact"
+            exit 1
+          fi
+          echo "package contents clean"
+
+      - name: Package VSIX
+        working-directory: ./rayucode/packages/vscode
+        run: npx @vscode/vsce package --no-dependencies
+
+      - name: Verify the packaged VSIX is self-consistent
+        run: node .github/scripts/verify-vsix.mjs
+
+      # -- Tests --------------------------------------------------------------
+      - name: Test protocol package
+        working-directory: packages/agent-protocol
+        run: npm test
+
+      - name: Test core
+        working-directory: rayucode/packages/core
+        run: npm test
+
+      - name: Test extension
+        working-directory: rayucode/packages/vscode
+        run: npm test
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: rayucode-vsix
+          path: rayucode/packages/vscode/*.vsix
+          if-no-files-found: error

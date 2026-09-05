@@ -18,13 +18,13 @@
 // The transport and history sink are injected, so the coordinator is pure and
 // editor-agnostic — no process, socket, or `vscode` dependency (R13.1, R13.5).
 
-import type { CanUseToolRequest } from "../protocol/control.js";
+import type { CanUseToolRequest } from "../protocol/wire.js";
 import type { PermissionRequestEvent } from "../protocol/controlClient.js";
-import type { StdinMessage } from "../protocol/messages.js";
+import type { StdinMessage } from "../protocol/wire.js";
 import type {
   PermissionMode,
   PermissionToolOutput,
-} from "../protocol/permissions.js";
+} from "../protocol/wire.js";
 import type {
   ConversationItem,
   PermissionRequestConversationItem,

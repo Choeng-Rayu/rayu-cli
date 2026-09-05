@@ -22,8 +22,25 @@ tsconfig.test.json
 tsconfig.webview.json
 .gitignore
 
+# Build-time scripts. generate-build-info.mjs stages the engine into dist/ and
+# writes dist/build-info.json at package time; the shipped extension only reads
+# its OUTPUT, never the script.
+scripts/**
+
 # Source maps (not needed in the shipped package)
 **/*.map
 
 # Never ship dependencies — everything is bundled
 node_modules/**
+
+# Belt-and-braces. None of these live in this package today, but the repository
+# does contain a real rayu/.env, prebuilt platform binaries under rayu/dist/bin/,
+# and a 25 MB graphify-out/graph.json. An accidental copy into this directory
+# must never reach the Marketplace.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.vsix
+**/graphify-out/**
+**/dist/bin/**

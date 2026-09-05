@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  shouldAutoApprove,
   PERMISSION_MODES,
   isAssistantMessage,
   isControlCancelRequest,
@@ -110,14 +111,39 @@ describe("StdoutMessage type guards", () => {
 });
 
 describe("PermissionMode", () => {
-  it("exposes the full set of modes", () => {
-    expect(PERMISSION_MODES).toEqual([
-      "default",
-      "acceptEdits",
-      "bypassPermissions",
-      "plan",
-      "dontAsk",
-    ]);
+  it("exposes every mode the engine can put on the wire", () => {
+    // The five EXTERNAL modes plus the three INTERNAL ones. The internal modes
+    // are included because rayu/src/cli/print.ts puts the engine's internal
+    // PermissionMode straight onto a `system/status` frame — so omitting them
+    // meant a user in `fullManage` produced a frame the schema rejected, tripping
+    // the fail-safe on a perfectly healthy session (TRIAGE.md D10.2).
+    //
+    // Derived from the schema rather than re-listed here, so this cannot drift.
+    expect([...PERMISSION_MODES].sort()).toEqual(
+      [
+        "acceptEdits",
+        "auto",
+        "bubble",
+        "bypassPermissions",
+        "default",
+        "dontAsk",
+        "fullManage",
+        "plan",
+      ].sort(),
+    );
+  });
+
+  it("never treats an internal mode as auto-approving a mutating action", () => {
+    // A consumer that does not implement an internal mode must fall back to
+    // PROMPTING, never to auto-approval. `shouldAutoApprove` compares against
+    // the two explicit auto modes, so anything else is safe by construction.
+    //
+    // Only the MUTATING categories are asserted: `read-only` is auto-approved
+    // under every mode by design, because reading cannot damage the workspace.
+    for (const mode of ["auto", "bubble", "fullManage"] as const) {
+      expect(shouldAutoApprove(mode, "edit")).toBe(false);
+      expect(shouldAutoApprove(mode, "bash")).toBe(false);
+    }
   });
 
   it("validates mode strings", () => {

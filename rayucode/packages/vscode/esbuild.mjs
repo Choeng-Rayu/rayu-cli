@@ -48,7 +48,7 @@ const extensionOptions = {
 /** Agent_Panel webview bundle (browser / IIFE, no externals). */
 /** @type {import("esbuild").BuildOptions} */
 const webviewOptions = {
-  entryPoints: ["src/webview/main.ts"],
+  entryPoints: ["src/webview/main.tsx"],
   outfile: "dist/webview.js",
   bundle: true,
   platform: "browser",
@@ -56,6 +56,11 @@ const webviewOptions = {
   target: ["es2020"],
   sourcemap: true,
   minify: true,
+  // React reads process.env.NODE_ENV; the webview has no `process`, so it is
+  // substituted at build time. "production" also drops React's dev-only warning
+  // machinery, which the panel cannot surface anyway.
+  define: { "process.env.NODE_ENV": '"production"' },
+  jsx: "automatic",
   // No externals: the webview is fully self-contained. `vscode` is reached only
   // via the runtime global `acquireVsCodeApi()`, never imported.
   external: [],

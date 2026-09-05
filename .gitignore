@@ -1,10 +1,12 @@
 # Dependencies
+node_modules/
 rayu/node_modules/
 rayu-backend/node_modules/
 rayu-web/node_modules/
 rayu-gateway/vendor/
 
 # Build outputs (generated during CI/CD, not committed)
+packages/agent-protocol/dist/
 rayu/dist/
 rayu-backend/dist/
 rayu-web/.next/
@@ -18,6 +20,7 @@ rayu/.playwright-mcp/
 # Test artifacts
 vertex-test/
 
+rayu-cli/node_modules
 # Local development
 skills/
 rayu/cute-girl-images/

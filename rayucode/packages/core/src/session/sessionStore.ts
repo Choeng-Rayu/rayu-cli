@@ -22,8 +22,8 @@
 import { ConversationReducer } from "./reducer.js";
 import type { ConversationReducerState } from "./reducer.js";
 import type { ConversationItem } from "./state.js";
-import type { StdoutMessage } from "../protocol/messages.js";
-import type { PermissionMode } from "../protocol/permissions.js";
+import type { StdoutMessage } from "../protocol/wire.js";
+import type { PermissionMode } from "../protocol/wire.js";
 
 /**
  * Reconstructs a detached snapshot of a session's history for re-rendering when

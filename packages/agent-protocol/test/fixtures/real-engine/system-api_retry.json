@@ -1,0 +1,11 @@
+{
+  "type": "system",
+  "subtype": "api_retry",
+  "attempt": 1,
+  "max_retries": 10,
+  "retry_delay_ms": 500,
+  "error_status": 401,
+  "error": "authentication_failed",
+  "session_id": "11111111-1111-4111-8111-111111111111",
+  "uuid": "00000000-0000-4000-8000-000000000005"
+}

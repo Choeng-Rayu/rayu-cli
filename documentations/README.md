@@ -13,7 +13,7 @@ switching, MCP support, and the full built-in tool suite.
 
 | # | Document | What's inside |
 |---|----------|---------------|
-| 1 | [Installation](./01-installation.md) | Requirements, build, the `rayu` binary |
+| 1 | [Installation](./01-installation.md) | The one-line installer, npm, packages, updating, uninstalling |
 | 2 | [Quickstart](./02-quickstart.md) | First run, your first conversation |
 | 3 | [Providers](./03-providers.md) | Connecting providers, `/connect`, API keys, `.env` import |
 | 4 | [Models](./04-models.md) | Searchable `/model` picker, context windows |
@@ -30,22 +30,38 @@ switching, MCP support, and the full built-in tool suite.
 | 15 | [Telegram Bot](./15-telegram-bot.md) | Linking a Telegram bot to drive the CLI remotely |
 | 16 | [Credits & limits](./credits-and-limits.md) | Plans, credits, per-model charges, and where each admin control is enforced |
 | 17 | [Deploying on Coolify](./deploy-coolify.md) | Production runbook: env vars, domains, migrations, provider-key cutover, backups |
+| 18 | [Endpoints & model fetch](./rayu-endpoints-and-model-fetch.md) | How Rayu discovers, filters, and refreshes models for both Auth and API key |
+| 19 | [How to use Rayu API key](./how-to-use-rayu-api-key.md) | Step-by-step guide for using a Rayu API key in the CLI or your own code |
 
 ## 30-second tour
 
-```bash
-# build
-cd rayu && export PATH="$HOME/.bun/bin:$PATH"
-bun install && bun run build
+Install (nothing else required — not Node, not npm, not `sudo`):
 
+```bash
+curl -fsSL https://rayucode.com/install | bash     # macOS / Linux
+```
+
+```powershell
+irm https://rayucode.com/install.ps1 | iex         # Windows
+```
+
+```bash
 # run (interactive) — on first launch, pick a provider + paste your API key
-node dist/rayu.js
+rayu
 
 # or headless, against NVIDIA
 RAYU_OPENAI_COMPATIBLE=1 \
 RAYU_OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1 \
 RAYU_OPENAI_API_KEY=nvapi-xxxxx \
-node dist/rayu.js --print --model meta/llama-3.3-70b-instruct "summarize this repo"
+rayu --print --model meta/llama-3.3-70b-instruct "summarize this repo"
+```
+
+From source instead:
+
+```bash
+cd rayu && export PATH="$HOME/.bun/bin:$PATH"
+bun install && bun run build
+node dist/rayu.js
 ```
 
 In a session:

@@ -17,6 +17,12 @@ coverage/
 *.vsix
 
 
-# Extension-host integration suite (packages/vscode)
-out/              # esbuild.test.mjs compile output (compile-tests)
-.vscode-test/     # @vscode/test-cli downloaded VS Code + user-data dir
+# Extension-host integration suite (packages/vscode).
+# NOTE: git has no inline comments — a trailing "# ..." becomes part of the
+# pattern and silently disables the rule. Keep each comment on its own line.
+
+# esbuild.test.mjs compile output (npm run compile-tests)
+out/
+
+# @vscode/test-cli downloaded VS Code build + throwaway user-data dir (~1 GB)
+.vscode-test/

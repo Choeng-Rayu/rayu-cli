@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod/v4'
-import { lazySchema } from '../../utils/lazySchema.js'
+import { lazySchema } from './lazySchema.js'
 import {
   AccountInfoSchema,
   AgentDefinitionSchema,
