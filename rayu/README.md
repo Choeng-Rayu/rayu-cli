@@ -13,6 +13,32 @@ with free model switching, full MCP support, and a complete built-in tool suite.
 
 ## Installation
 
+One command, any machine. The installer downloads the pre-bundled CLI (and a
+private Node runtime if the machine has none), so it does not depend on your
+Node/npm version or on write access to a global npm prefix:
+
+```bash
+# macOS / Linux
+curl -fsSL https://rayucode.com/install | bash
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://rayucode.com/install.ps1 | iex
+```
+
+Then start:
+
+```bash
+rayu
+```
+
+Read the script first if you prefer: <https://rayucode.com/install.sh>.
+Full details, flags and uninstall instructions:
+<https://rayucode.com/docs/01-installation>.
+
+### Via npm (needs Node >= 18)
+
 ```bash
 npm install -g @rayu-dev/rayu-cli
 ```
@@ -21,12 +47,6 @@ Or run instantly without installing:
 
 ```bash
 npx @rayu-dev/rayu-cli
-```
-
-Then start:
-
-```bash
-rayu
 ```
 
 ### Package managers
@@ -45,10 +65,14 @@ yarn global add @rayu-dev/rayu-cli
 rayu update
 ```
 
+This works for both install methods: an installer-managed install re-runs the
+installer, an npm install reinstalls from npm.
+
 Or reinstall the latest directly:
 
 ```bash
-npm install -g @rayu-dev/rayu-cli
+curl -fsSL https://rayucode.com/install | bash    # installer-managed
+npm install -g @rayu-dev/rayu-cli                 # npm-managed
 ```
 
 Prefer `rayu update`: it resolves the latest version once, installs that **exact**

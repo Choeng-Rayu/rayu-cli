@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@rayu-dev/agent-protocol'
 import { feature } from 'bun:bundle'
 import { randomUUID } from 'crypto'
 import { getSdkBetas, getSessionId } from 'src/bootstrap/state.js'
@@ -57,6 +58,12 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
   const initMessage: SDKMessage = {
     type: 'system',
     subtype: 'init',
+    // Wire-contract version, from the single source of truth. Consumers
+    // (notably the Rayucode VS Code extension) compare this against the
+    // PROTOCOL_VERSION they were built against and refuse to run on a
+    // mismatch, rather than silently misinterpreting frames. See PROTOCOL.md
+    // §3–§4 and §6.2.
+    protocolVersion: PROTOCOL_VERSION,
     cwd: getCwd(),
     session_id: getSessionId(),
     tools: inputs.tools.map(tool => sdkCompatToolName(tool.name)),

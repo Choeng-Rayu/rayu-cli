@@ -477,6 +477,20 @@ export async function deleteTask(
   }
 }
 
+/**
+ * Compare tasks by ID ascending, numeric-first (task IDs are stringified
+ * integers assigned in creation order). Falls back to string comparison for
+ * non-numeric IDs. This is the canonical display order for task lists.
+ */
+export function compareTasksByIdAsc(a: Task, b: Task): number {
+  const aNum = parseInt(a.id, 10)
+  const bNum = parseInt(b.id, 10)
+  if (!isNaN(aNum) && !isNaN(bNum)) {
+    return aNum - bNum
+  }
+  return a.id.localeCompare(b.id)
+}
+
 export async function listTasks(taskListId: string): Promise<Task[]> {
   const dir = getTasksDir(taskListId)
   let files: string[]
@@ -489,7 +503,12 @@ export async function listTasks(taskListId: string): Promise<Task[]> {
     .filter(f => f.endsWith('.json'))
     .map(f => f.replace('.json', ''))
   const results = await Promise.all(taskIds.map(id => getTask(taskListId, id)))
-  return results.filter((t): t is Task => t !== null)
+  // readdir order is filesystem-dependent and NOT guaranteed to be creation
+  // order — sort by ID so every consumer (TaskListTool output, UI, swarm
+  // coordination) sees tasks in a stable, creation-ordered sequence.
+  return results
+    .filter((t): t is Task => t !== null)
+    .sort(compareTasksByIdAsc)
 }
 
 export async function blockTask(

@@ -6,6 +6,7 @@ import { useCallback } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js';
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js';
+import { composeBridgePermissionCallbacks } from '../bridge/composeBridgePermissionCallbacks.js';
 import { Text } from '../ink.js';
 import type { ToolPermissionContext, Tool as ToolType, ToolUseContext } from '../Tool.js';
 import { consumeSpeculativeClassifierCheck, peekSpeculativeClassifierCheck } from '../tools/BashTool/bashPermissions.js';
@@ -162,7 +163,16 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                 description,
                 result,
                 awaitAutomatedChecksBeforeDialog: appState.toolPermissionContext.awaitAutomatedChecksBeforeDialog,
-                bridgeCallbacks: (feature("BRIDGE_MODE") ? appState.replBridgePermissionCallbacks : undefined) ?? appState.telegramPermissionCallbacks,
+                // Every connected remote races the local dialog, and each other. This
+                // used to be a `??` chain, which silently meant that with both the
+                // Telegram bridge and the Web Bridge connected only ONE was ever asked
+                // — the other showed no prompt at all. See
+                // composeBridgePermissionCallbacks.
+                bridgeCallbacks: composeBridgePermissionCallbacks(
+                  feature("BRIDGE_MODE") ? appState.replBridgePermissionCallbacks : undefined,
+                  appState.telegramPermissionCallbacks,
+                  appState.webBridgePermissionCallbacks,
+                ),
                 channelCallbacks: feature("KAIROS") || feature("KAIROS_CHANNELS") ? appState.channelPermissionCallbacks : undefined
               }, resolve);
               return;

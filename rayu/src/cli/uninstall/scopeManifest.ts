@@ -15,6 +15,7 @@
 
 import { resolve, sep } from 'path'
 import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { getInstallerOwnedPaths } from '../../utils/installerManifest.js'
 import { ipcSocketDir } from '../../ipc/paths.js'
 import { getNativeInstallPaths, type InstallMethod } from './installMethod.js'
 
@@ -118,6 +119,33 @@ export function buildScopeManifest(method: InstallMethod): ScopedArtifact[] {
   }
 
   // ---- Install artifacts ---------------------------------------------------
+  if (method === 'installer') {
+    // Paths recorded by https://rayucode.com/install in $RAYU_HOME/install.json.
+    // getInstallerOwnedPaths() only ever returns launcher entries as individual
+    // FILES (binDir is user-controlled via --dir) and constrains the recursive
+    // entries to $RAYU_HOME, so a hand-edited manifest cannot redirect a
+    // recursive delete.
+    const owned = getInstallerOwnedPaths()
+    for (const path of owned.files) {
+      artifacts.push({
+        path,
+        kind: 'file',
+        label: `rayu launcher / installer copy (${path})`,
+        userData: false,
+      })
+    }
+    for (const path of owned.directories) {
+      artifacts.push({
+        path,
+        kind: 'directory',
+        label: path.endsWith('runtime')
+          ? 'Private Node runtime'
+          : 'Installed bundles',
+        userData: false,
+      })
+    }
+  }
+
   if (method === 'native') {
     const native = getNativeInstallPaths()
     artifacts.push(

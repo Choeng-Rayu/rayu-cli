@@ -23,12 +23,22 @@ import { join, resolve } from 'path'
 import { getPackageManager, type PackageManager } from '../../utils/nativeInstaller/packageManagers.js'
 import { getUserBinDir, getXDGCacheHome, getXDGDataHome, getXDGStateHome } from '../../utils/xdg.js'
 import { logForDebugging } from '../../utils/debug.js'
+import {
+  isInstallerManagedInstall,
+  readInstallerManifest,
+} from '../../utils/installerManifest.js'
 
 export type InstallMethod =
   /** `npm install -g` — removable with `npm uninstall -g`. */
   | 'npm-global'
   /** The native binary installer: versions dir + ~/.local/bin symlink. */
   | 'native'
+  /**
+   * Created by the one-liner at https://rayucode.com/install: a launcher in
+   * $RAYU_HOME/bin over $RAYU_HOME/lib/current. Removable by RAYU, because every
+   * artifact is a path the installer recorded in $RAYU_HOME/install.json.
+   */
+  | 'installer'
   /** Managed by an external package manager we must not fight. */
   | 'homebrew'
   | 'winget'
@@ -148,11 +158,17 @@ function isNpmGlobalInstall(execPath: string): boolean {
  *
  * Order matters and is deliberate:
  *  1. development — never touch a source checkout;
- *  2. external package managers — they own their files, and fighting them
+ *  2. installer-managed — must precede the package-manager probe, which
+ *     inspects `process.execPath`. For a launcher install that is the *Node
+ *     binary*, so a Node installed by Homebrew/apt/mise would otherwise make
+ *     RAYU classify itself as owned by that package manager and refuse to
+ *     uninstall, printing e.g. `brew uninstall --cask rayu` for an install
+ *     Homebrew has never heard of;
+ *  3. external package managers — they own their files, and fighting them
  *     leaves a broken half-state their database still believes in;
- *  3. native binary installer;
- *  4. npm-global;
- *  5. unknown — refuse to guess.
+ *  4. native binary installer;
+ *  5. npm-global;
+ *  6. unknown — refuse to guess.
  */
 export async function detectInstallMethod(): Promise<InstallMethodInfo> {
   const execPath = process.execPath || process.argv[0] || ''
@@ -163,6 +179,25 @@ export async function detectInstallMethod(): Promise<InstallMethodInfo> {
       execPath,
       selfRemovable: false,
       reason: 'running from a source checkout — there is no installation to remove',
+    }
+  }
+
+  const installerManifest = readInstallerManifest()
+  if (isInstallerManagedInstall(installerManifest)) {
+    return {
+      method: 'installer',
+      execPath,
+      // Every artifact is enumerated in the scope manifest, so RAYU can finish
+      // the job: the launcher, the versioned bundles and the private Node
+      // runtime all live under $RAYU_HOME. No `manualCommand` — setting one
+      // makes `rayu uninstall` print "Run this to finish" after a clean
+      // removal. The only thing left behind is the PATH line in the user's
+      // shell profile, which RAYU promises never to edit (see NEVER_REMOVED)
+      // and which is inert once the launcher is gone.
+      selfRemovable: true,
+      reason:
+        `installed by ${installerManifest?.installer ?? 'the rayucode.com installer'}` +
+        (installerManifest?.method ? ` (${installerManifest.method})` : ''),
     }
   }
 
