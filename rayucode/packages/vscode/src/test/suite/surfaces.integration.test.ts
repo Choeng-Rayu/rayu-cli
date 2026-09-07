@@ -91,11 +91,10 @@ suite("rayucode V1 surfaces (integration)", () => {
     });
 
     test("revealing the Activity Bar view makes the workbench resolve it and open the session", async () => {
-      // Own the activation rather than reusing the published extension's: an
-      // earlier suite disposes the real context's subscriptions (to clean up its
-      // own adapter), which takes the published view registration with it. A
-      // fresh activate() re-registers the contributed view id, so this test does
-      // not depend on any other suite's teardown.
+      // Own the activation rather than reusing the published extension's.
+      // `activateExtension()` first releases the contributed view id the published
+      // extension holds — see releasePublishedViewRegistration() for why that is
+      // explicit rather than inherited from another suite's teardown.
       const api = activateExtension();
       try {
         const provider = api.panelProvider;
@@ -625,7 +624,7 @@ suite("rayucode V1 surfaces (integration)", () => {
  */
 function resolveExtensionUnderTest(): vscode.Extension<unknown> {
   const ext =
-    vscode.extensions.getExtension("rayu-dev.rayucode") ??
+    vscode.extensions.getExtension("RayuCode.rayucode") ??
     vscode.extensions.all.find(
       (candidate) =>
         candidate.id.endsWith(".rayucode") ||
@@ -652,7 +651,47 @@ async function waitFor<T>(
 }
 
 /** Activate with a fresh controlled context; returns the public API object. */
+/**
+ * Release the contributed view id held by the PUBLISHED extension, if it is
+ * active.
+ *
+ * `vscode.window.registerWebviewViewProvider` throws when a view id is already
+ * registered, and `registerPanelView` catches that and returns null — so a fresh
+ * `activate()` silently yields `panelProvider === null` while the published
+ * extension still holds the registration.
+ *
+ * This used to work by accident: vscodeAdapter.integration.test.ts resolved the
+ * real ExtensionContext (only so a secret-storage round-trip could run against a
+ * genuine `SecretStorage`) and its teardown disposed those subscriptions, which
+ * released the view. Deleting the dead `getSecret`/`storeSecret` seam took that
+ * side effect with it and these tests began failing on a null provider — a
+ * cross-file dependency the old comment claimed did not exist. Doing it here
+ * makes it explicit and local.
+ */
+function releasePublishedViewRegistration(): void {
+  const ext =
+    vscode.extensions.getExtension("RayuCode.rayucode") ??
+    vscode.extensions.all.find(
+      (e) =>
+        e.id.endsWith(".rayucode") ||
+        (e.packageJSON as { name?: string } | undefined)?.name === "rayucode",
+    );
+  if (!ext?.isActive) return;
+  const context = (ext.exports as { context?: { subscriptions?: unknown } } | undefined)
+    ?.context;
+  const subscriptions = context?.subscriptions;
+  if (!Array.isArray(subscriptions)) return;
+  for (const item of subscriptions.splice(0, subscriptions.length)) {
+    try {
+      (item as vscode.Disposable).dispose();
+    } catch {
+      // A already-disposed subscription is not a failure for this helper.
+    }
+  }
+}
+
 function activateExtension(): RayucodeExtensionApi {
+  releasePublishedViewRegistration();
   return activate(makeContext());
 }
 

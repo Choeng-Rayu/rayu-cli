@@ -68,8 +68,6 @@ function makeAdapter(settings: Record<string, unknown> = {}): {
     getWorkspaceContext: () => Promise.resolve({ workspaceRoot: "/w" }),
     isPathIgnored: () => Promise.resolve(false),
     registerCommand: () => ({ dispose: () => {} }),
-    getSecret: () => Promise.resolve(undefined),
-    storeSecret: () => Promise.resolve(),
     log: (_channel, message) => {
       state.logs.push(message);
     },

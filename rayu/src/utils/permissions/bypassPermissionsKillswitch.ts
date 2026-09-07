@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { useEffect, useRef } from 'react'
 import {
   type AppState,
@@ -76,7 +75,7 @@ export async function checkAndDisableAutoModeIfNeeded(
   setAppState: (f: (prev: AppState) => AppState) => void,
   fastMode?: boolean,
 ): Promise<void> {
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     if (autoModeCheckRan) {
       return
     }

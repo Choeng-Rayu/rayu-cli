@@ -17,6 +17,7 @@
 // the host received them — regardless of the order the individual `postMessage`
 // notifications happen to be observed in.
 
+import type { BackgroundTask } from "./backgroundTasks.js";
 import type {
   ConversationItem,
   ModelInfo,
@@ -68,6 +69,40 @@ export interface PanelRenderState {
   readonly models: readonly ModelInfo[];
   /** MCP server statuses, including failures (R11.2, R11.5). */
   readonly mcpServers: readonly { name: string; status: string }[];
+  /**
+   * The engine's announced capability inventory (Task 16). Previously the host
+   * discarded these three fields entirely, so the panel could only ever show a
+   * hardcoded guess at what the engine supported.
+   */
+  readonly tools: readonly string[];
+  readonly slashCommands: readonly string[];
+  readonly skills: readonly string[];
+  /**
+   * Rich command metadata from the `initialize` control response: name plus
+   * description and argument hint. `slashCommands` above carries names only,
+   * from `system/init`. Both are kept because they arrive at different times —
+   * names land with the handshake, the catalog after the first model request.
+   */
+  /**
+   * Whether a Rayu session exists, and who it belongs to.
+   *
+   * `signedIn` starts null meaning "not yet known", which is distinct from false: on
+   * first paint the panel must not claim the user is signed out before it has been told.
+   */
+  readonly signedIn: boolean | null;
+  readonly account: string | null;
+  /** Workspace files matching the current `@` mention (UI_PARITY flow 20). */
+  readonly fileMatches: readonly string[];
+  /** Background tasks the engine has reported (UI_PARITY flow 17). */
+  readonly backgroundTasks: readonly BackgroundTask[];
+  /** Active provider id and kind, e.g. "rayu-hosted". Null before the first fetch. */
+  readonly providerId: string | null;
+  readonly providerKind: string | null;
+  readonly commandCatalog: readonly {
+    name: string;
+    description: string;
+    argumentHint: string;
+  }[];
   /** The latest usage/cost summary, or `null` if none yet (R4.4). */
   readonly usage: UsageSummary | null;
   /**
@@ -147,6 +182,20 @@ export class PanelViewModel {
   private permissionMode: PermissionMode | null = null;
   private models: ModelInfo[] = [];
   private mcpServers: { name: string; status: string }[] = [];
+  private tools: string[] = [];
+  private slashCommands: string[] = [];
+  private skills: string[] = [];
+  private signedIn: boolean | null = null;
+  private account: string | null = null;
+  private fileMatches: string[] = [];
+  private backgroundTasks: BackgroundTask[] = [];
+  private providerId: string | null = null;
+  private providerKind: string | null = null;
+  private commandCatalog: {
+    name: string;
+    description: string;
+    argumentHint: string;
+  }[] = [];
   private usage: UsageSummary | null = null;
   /** One-shot prompt-input text staged by `insertPrompt` (R9.5). */
   private pendingInput: string | null = null;
@@ -187,6 +236,16 @@ export class PanelViewModel {
       permissionMode: this.permissionMode,
       models: this.models,
       mcpServers: this.mcpServers,
+      tools: this.tools,
+      slashCommands: this.slashCommands,
+      skills: this.skills,
+      signedIn: this.signedIn,
+      account: this.account,
+      fileMatches: this.fileMatches,
+      backgroundTasks: this.backgroundTasks,
+      providerId: this.providerId,
+      providerKind: this.providerKind,
+      commandCatalog: this.commandCatalog,
       usage: this.usage,
       pendingInput: this.pendingInput,
       pendingPermission: this.pendingPermission,
@@ -289,6 +348,69 @@ export class PanelViewModel {
         this.mcpServers = Array.isArray(message.servers)
           ? message.servers.filter(isMcpServer)
           : [];
+        return;
+      case "setAuthStatus":
+        this.signedIn = message.signedIn === true;
+        this.account =
+          typeof message.account === "string" && message.account.length > 0
+            ? message.account
+            : null;
+        return;
+      case "setFileMatches":
+        // Ignore a non-array and drop non-string entries: a malformed message must
+        // not put objects into a list that is rendered as text.
+        this.fileMatches = Array.isArray(message.paths)
+          ? (message.paths as unknown[]).filter(
+              (path): path is string => typeof path === "string",
+            )
+          : [];
+        return;
+      case "setBackgroundTasks":
+        this.backgroundTasks = Array.isArray(message.tasks)
+          ? (message.tasks as unknown[]).filter(
+              (task): task is BackgroundTask =>
+                typeof task === "object" &&
+                task !== null &&
+                typeof (task as { taskId?: unknown }).taskId === "string",
+            )
+          : [];
+        return;
+      case "setProvider":
+        this.providerId =
+          typeof message.providerId === "string" ? message.providerId : null;
+        this.providerKind =
+          typeof message.providerKind === "string" ? message.providerKind : null;
+        return;
+      case "setCommandCatalog":
+        // Filtered, not stored verbatim: rendered during a repaint that runs
+        // before the conversation is reconciled, so a malformed entry would throw
+        // and freeze the panel on stale content — the same trade setModelList and
+        // setMcpStatus already make.
+        this.commandCatalog = Array.isArray(message.commands)
+          ? message.commands
+              .filter(
+                (c): c is { name: string; description: string; argumentHint: string } =>
+                  typeof c === "object" &&
+                  c !== null &&
+                  typeof (c as { name?: unknown }).name === "string",
+              )
+              .map((c) => ({
+                name: c.name,
+                description: typeof c.description === "string" ? c.description : "",
+                argumentHint:
+                  typeof c.argumentHint === "string" ? c.argumentHint : "",
+              }))
+          : [];
+        return;
+      case "setCapabilities":
+        // Filtered to strings rather than stored verbatim, for the same reason
+        // setModelList is: these arrays are iterated during a repaint that runs
+        // before the conversation is reconciled, so one malformed entry would
+        // throw and freeze the panel on stale content. A malformed message
+        // degrades to an empty inventory instead.
+        this.tools = onlyStrings(message.tools);
+        this.slashCommands = onlyStrings(message.slashCommands);
+        this.skills = onlyStrings(message.skills);
         return;
       case "showError":
         this.appendNotice("warn", message.message);
@@ -579,6 +701,18 @@ function isModelOption(
 }
 
 /** Whether `value` has the two fields `dom.ts` renderMcp dereferences. */
+/**
+ * Keep only the string entries of a possibly-malformed array.
+ *
+ * The capability inventories (Task 16) are rendered during a repaint that runs
+ * before the conversation is reconciled, so a non-array or a non-string entry
+ * would throw and skip the entire paint. Degrading to a shorter list keeps the
+ * panel alive, which is the same trade setModelList and setMcpStatus already make.
+ */
+function onlyStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
 function isMcpServer(value: unknown): value is { name: string; status: string } {
   if (typeof value !== "object" || value === null) {
     return false;

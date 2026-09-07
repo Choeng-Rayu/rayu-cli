@@ -16017,15 +16017,6 @@ var VSCodeAdapter = class {
     return disposable;
   }
   // --------------------------------------------------------------------------
-  // Secret storage (R8.4, R13.3)
-  // --------------------------------------------------------------------------
-  getSecret(key) {
-    return Promise.resolve(this.context.secrets.get(key));
-  }
-  storeSecret(key, value) {
-    return Promise.resolve(this.context.secrets.store(key, value));
-  }
-  // --------------------------------------------------------------------------
   // Diagnostics (R2.6, R15.3)
   // --------------------------------------------------------------------------
   log(channel, message) {

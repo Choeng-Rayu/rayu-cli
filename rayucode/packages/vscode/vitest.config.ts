@@ -28,6 +28,12 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      // Shared library surface built from rayu/src, resolved by path rather than
+      // as an npm dependency: declaring it made npm write into rayu/node_modules
+      // and shift its typecheck baseline. See esbuild.mjs.
+      "@rayu-dev/rayu-cli/lib": fileURLToPath(
+        new URL("../../../rayu/dist/rayu-lib.js", import.meta.url),
+      ),
       vscode: fileURLToPath(new URL("./test/stubs/vscode.ts", import.meta.url)),
     },
   },

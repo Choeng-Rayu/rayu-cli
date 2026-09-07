@@ -13,7 +13,6 @@
  * initExtractMemories() in beforeEach to get a fresh closure.
  */
 
-import { feature } from 'bun:bundle'
 import { basename } from 'path'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -62,7 +61,7 @@ import {
 } from './prompts.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM')
+const teamMemPaths = RAYU_FEATURES.TEAMMEM
   ? (require('../../memdir/teamMemPaths.js') as typeof import('../../memdir/teamMemPaths.js'))
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -359,7 +358,7 @@ export function initExtractMemories(): void {
       return
     }
 
-    const teamMemoryEnabled = feature('TEAMMEM')
+    const teamMemoryEnabled = RAYU_FEATURES.TEAMMEM
       ? teamMemPaths!.isTeamMemoryEnabled()
       : false
 
@@ -400,7 +399,7 @@ export function initExtractMemories(): void {
       )
 
       const userPrompt =
-        feature('TEAMMEM') && teamMemoryEnabled
+        RAYU_FEATURES.TEAMMEM && teamMemoryEnabled
           ? buildExtractCombinedPrompt(
               newMessageCount,
               existingMemories,
@@ -465,7 +464,7 @@ export function initExtractMemories(): void {
       const memoryPaths = writtenPaths.filter(
         p => basename(p) !== ENTRYPOINT_NAME,
       )
-      const teamCount = feature('TEAMMEM')
+      const teamCount = RAYU_FEATURES.TEAMMEM
         ? count(memoryPaths, teamMemPaths!.isTeamMemPath)
         : 0
 
@@ -489,7 +488,7 @@ export function initExtractMemories(): void {
       )
       if (memoryPaths.length > 0) {
         const msg = createMemorySavedMessage(memoryPaths)
-        if (feature('TEAMMEM')) {
+        if (RAYU_FEATURES.TEAMMEM) {
           msg.teamCount = teamCount
         }
         appendSystemMessage?.(msg)

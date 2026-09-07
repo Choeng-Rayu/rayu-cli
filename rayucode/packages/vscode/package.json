@@ -1,11 +1,10 @@
 {
   "name": "rayucode",
   "displayName": "Rayucode",
-  "version": "0.1.0",
-  "description": "The Rayu AI coding agent inside VS Code — multi-provider (Anthropic, OpenAI, DeepSeek, Gemini, Ollama), BYOK, and never trained on your code.",
-  "license": "UNLICENSED",
-  "private": true,
-  "publisher": "rayu-dev",
+  "version": "0.1.1",
+  "description": "The Rayu AI coding agent inside VS Code \u2014 multi-provider (Anthropic, OpenAI, DeepSeek, Gemini, Ollama), BYOK, and never trained on your code.",
+  "license": "MIT",
+  "publisher": "RayuCode",
   "icon": "assets/icon.png",
   "keywords": [
     "ai",
@@ -145,6 +144,31 @@
         "command": "rayucode.disconnectWebBridge",
         "title": "Disconnect from Rayu Web Studio",
         "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.signIn",
+        "title": "Sign in to Rayu",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.setupProvider",
+        "title": "Add or switch AI provider (BYOK)",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.resumeSession",
+        "title": "Resume a previous session",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.addMcpServer",
+        "title": "Add an MCP server",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.removeMcpServer",
+        "title": "Remove an MCP server",
+        "category": "Rayucode"
       }
     ],
     "menus": {
@@ -233,7 +257,7 @@
           "type": "boolean",
           "default": false,
           "scope": "machine",
-          "markdownDescription": "Allow the agent's file edits to read and write paths **outside** the open workspace folders.\n\nLeave this off unless you need it. The agent chooses each `file_path`, and its output is influenced by file contents, tool output, and fetched web pages — so a prompt-injection attack could otherwise target files like `~/.bashrc` or `~/.ssh/authorized_keys`, silently when `rayucode.permissionMode` auto-approves edits.\n\nThis setting is **machine-scoped**: it can only be set in your User or Remote settings, never by a workspace, so a repository cannot switch off its own containment.",
+          "markdownDescription": "Allow the agent's file edits to read and write paths **outside** the open workspace folders.\n\nLeave this off unless you need it. The agent chooses each `file_path`, and its output is influenced by file contents, tool output, and fetched web pages \u2014 so a prompt-injection attack could otherwise target files like `~/.bashrc` or `~/.ssh/authorized_keys`, silently when `rayucode.permissionMode` auto-approves edits.\n\nThis setting is **machine-scoped**: it can only be set in your User or Remote settings, never by a workspace, so a repository cannot switch off its own containment.",
           "tags": [
             "security"
           ]
@@ -288,5 +312,6 @@
     "mocha": "^10.7.3",
     "typescript": "^5.6.0",
     "vitest": "^2.1.8"
-  }
+  },
+  "//sharedLibrary": "The shared library surface built from rayu/src is consumed by PATH, not as an npm dependency: see esbuild.mjs `alias` and tsconfig `paths` for @rayu-dev/rayu-cli/lib. Declaring it as a dependency made npm resolve rayu's tree into the workspace root, and rayu's own typecheck then walked up and picked up a NEWER shell-quote with stricter bundled types \u2014 7 new type errors in files nothing had touched. rayu is deliberately a standalone Bun project (WORKSPACE.md); consuming its BUILT artifacts by path keeps it that way, exactly as dist/rayu.js is already staged into the VSIX by file copy."
 }

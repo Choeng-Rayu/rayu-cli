@@ -48,19 +48,37 @@ export const CHAT_SESSION_PREFIX = "chat:";
  * a normal prompt — the command only frames the request, so `/fix` and "please
  * fix this" behave identically from the CLI's point of view.
  */
+/**
+ * Prompt templates for chat commands the ENGINE DOES NOT HAVE.
+ *
+ * VS Code requires chat participant commands to be declared statically in
+ * package.json, so this palette cannot be generated from the engine's runtime
+ * announcement. What it can do is stop faking commands the engine really owns.
+ *
+ * Checked against the engine's 98-command registry: of the four declared here,
+ * only `review` exists as a real command. `explain`, `fix` and `test` have no
+ * engine counterpart, so for them a prompt template is the honest implementation
+ * — they are extension-level presets, not engine commands.
+ *
+ * Anything the engine DOES announce is dispatched natively instead; see
+ * {@link buildPrompt}. RAYU_CORE_MIGRATION_PLAN.md Task 17.
+ */
 const SLASH_COMMAND_INSTRUCTIONS: Record<string, string> = {
   explain:
     "Explain the following code: what it does, how it works, and anything surprising about it. Do not modify any files.",
   fix: "Find and fix the bugs in the following code. Explain each fix you make.",
-  review:
-    "Review the following code for correctness, security, performance, and readability issues. Report findings; do not modify files unless asked.",
   test: "Write tests for the following code using the test framework already used in this project.",
 };
 
 /** The `SessionManager` surface the participant drives. */
 export type ChatSessionManager = Pick<
   SessionManager,
-  "openSession" | "submitPrompt" | "interrupt" | "closeSession"
+  | "openSession"
+  | "submitPrompt"
+  | "interrupt"
+  | "closeSession"
+  // Task 17: dispatch real engine commands instead of faking them in prose.
+  | "getAnnouncedSlashCommands"
 >;
 
 /** The adapter surface the participant needs. */
@@ -141,7 +159,10 @@ export function registerChatParticipant(
     });
 
     try {
-      await sessionManager.submitPrompt(sessionKey, buildPrompt(request));
+      await sessionManager.submitPrompt(
+        sessionKey,
+        buildPrompt(request, sessionManager.getAnnouncedSlashCommands(sessionKey)),
+      );
       if (!turn.hasStarted) {
         // `submitPrompt` returns silently when the agent could not be started —
         // it surfaces its own actionable notification — so no `setGenerating`
@@ -210,23 +231,43 @@ export function registerChatParticipant(
  *
  * Exported for unit testing — it is the whole of the request→prompt mapping.
  */
-export function buildPrompt(request: {
-  prompt: string;
-  command?: string | undefined;
-  references?: readonly { id: string; value: unknown; range?: readonly number[] | undefined }[];
-}): string {
+export function buildPrompt(
+  request: {
+    prompt: string;
+    command?: string | undefined;
+    references?: readonly { id: string; value: unknown; range?: readonly number[] | undefined }[];
+  },
+  /**
+   * The commands the engine announced in `system/init`. When the requested
+   * command is in this list it is dispatched as a real `/command`, so the
+   * engine's own registry executes it. When it is not, a prompt template is used.
+   * Defaults to empty, which reproduces the previous template-only behaviour.
+   */
+  announcedCommands: readonly string[] = [],
+): string {
   const parts: string[] = [];
 
-  const instruction = request.command
-    ? SLASH_COMMAND_INSTRUCTIONS[request.command]
-    : undefined;
-  if (instruction) {
-    parts.push(instruction);
-  }
-
+  const command = request.command;
   const text = request.prompt.trim();
-  if (text.length > 0) {
-    parts.push(text);
+
+  // Real engine command → dispatch it instead of describing it in English.
+  // The engine parses a leading `/name` from prompt text through the same path
+  // the CLI REPL uses, so this executes the actual command rather than asking the
+  // model to behave as though it had.
+  const isEngineCommand =
+    command !== undefined &&
+    (announcedCommands.includes(command) || announcedCommands.includes(`/${command}`));
+
+  if (isEngineCommand) {
+    parts.push(text.length > 0 ? `/${command} ${text}` : `/${command}`);
+  } else {
+    const instruction = command ? SLASH_COMMAND_INSTRUCTIONS[command] : undefined;
+    if (instruction) {
+      parts.push(instruction);
+    }
+    if (text.length > 0) {
+      parts.push(text);
+    }
   }
 
   const references = describeReferences(request.references ?? []);

@@ -18,7 +18,6 @@
  * elimination and pulls the entire subsystem into every bundle.
  */
 
-import { feature } from 'bun:bundle'
 import { isEnvDefinedFalsy } from '../utils/envUtils.js'
 
 /**
@@ -38,7 +37,7 @@ const DISABLE_ENV_VAR = 'RAYU_EXTERNAL_AGENTS'
  * the referenced literals and imports from external builds.
  */
 export function isExternalAgentsEnabled(): boolean {
-  return feature('EXTERNAL_AGENTS')
+  return RAYU_FEATURES.EXTERNAL_AGENTS
     ? !isEnvDefinedFalsy(process.env[DISABLE_ENV_VAR])
     : false
 }
@@ -48,7 +47,7 @@ export function isExternalAgentsEnabled(): boolean {
  * available. Commands surface this instead of failing opaquely.
  */
 export function getExternalAgentsDisabledReason(): string | null {
-  if (!feature('EXTERNAL_AGENTS')) {
+  if (!RAYU_FEATURES.EXTERNAL_AGENTS) {
     return 'External agent orchestration is not available in this build.'
   }
   return isEnvDefinedFalsy(process.env[DISABLE_ENV_VAR])

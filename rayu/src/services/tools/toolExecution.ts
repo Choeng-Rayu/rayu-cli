@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import type {
   ContentBlockParam,
   ToolResultBlockParam,
@@ -1084,7 +1083,7 @@ async function checkPermissionsAndCallTool(
     // Run PermissionDenied hooks for auto mode classifier denials.
     // If a hook returns {retry: true}, tell the model it may retry.
     if (
-      feature('TRANSCRIPT_CLASSIFIER') &&
+      RAYU_FEATURES.TRANSCRIPT_CLASSIFIER &&
       permissionDecision.decisionReason?.type === 'classifier' &&
       permissionDecision.decisionReason.classifier === 'auto-mode'
     ) {

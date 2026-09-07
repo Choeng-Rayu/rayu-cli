@@ -209,6 +209,7 @@ export type {
   ToolActionConversationItem,
   PermissionRequestConversationItem,
   UsageConversationItem,
+  FileChangeReviewConversationItem,
   ErrorConversationItem,
   ConversationItem,
   PendingPermission,

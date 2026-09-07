@@ -133,10 +133,6 @@ export interface EditorAdapter {
     handler: (...args: unknown[]) => unknown,
   ): Disposable;
 
-  // Secret storage (R8.4, R13.3)
-  getSecret(key: string): Promise<string | undefined>;
-  storeSecret(key: string, value: string): Promise<void>;
-
   // Diagnostics (R2.6, R15.3)
   log(channel: "protocol" | "lifecycle" | "error", message: string): void;
 

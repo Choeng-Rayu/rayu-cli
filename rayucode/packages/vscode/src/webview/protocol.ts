@@ -52,6 +52,12 @@ const HOST_MESSAGE_TYPE_TABLE: Record<HostMessageType, true> = {
   setModelInfo: true,
   setModelList: true,
   setMcpStatus: true,
+  setCapabilities: true,
+  setCommandCatalog: true,
+  setProvider: true,
+  setAuthStatus: true,
+  setFileMatches: true,
+  setBackgroundTasks: true,
   showError: true,
   editApplied: true,
   editConflict: true,
@@ -126,6 +132,46 @@ export interface ConfirmConflictMessage {
   requestId: string;
 }
 
+/**
+ * Reconnect a failed or disconnected MCP server (UI_PARITY flow 14).
+ *
+ * The engine owns MCP lifecycle; this asks it to retry. `mcp_reconnect` has been
+ * in the control protocol all along — the host simply never sent it, so the panel
+ * could show a server as `failed` and offer nothing to do about it.
+ */
+export interface McpReconnectMessage {
+  type: "mcpReconnect";
+  serverName: string;
+}
+
+/**
+ * Enable or disable an MCP server without discarding its configuration
+ * (UI_PARITY flow 14). Distinct from removing it: a disabled server keeps its
+ * config so re-enabling needs no re-entry.
+ */
+export interface McpToggleMessage {
+  type: "mcpToggle";
+  serverName: string;
+  enabled: boolean;
+}
+
+/**
+ * Open the proposed edit in VS Code's NATIVE diff editor (UI_PARITY flow 11).
+ *
+ * The webview already renders an inline diff (`diff.tsx`), which is right for a
+ * glance at a small change. This is for the cases the inline view serves badly —
+ * a large rewrite, a file the user wants to scroll, or a change they want to read
+ * with their own editor's syntax highlighting and folding. Rebuilding that inside
+ * the webview would be reimplementing an editor VS Code already ships.
+ *
+ * Non-destructive: opening a diff neither approves nor denies. The request stays
+ * pending until the user acts on it.
+ */
+export interface OpenDiffMessage {
+  type: "openDiff";
+  requestId: string;
+}
+
 /** Select a model for subsequent turns (R7.3). */
 export interface SelectModelMessage {
   type: "selectModel";
@@ -135,6 +181,42 @@ export interface SelectModelMessage {
 /** Ask the host for the list of available models (R7.2). */
 export interface OpenModelListMessage {
   type: "openModelList";
+}
+
+/**
+ * Add or switch the AI provider — BYOK (UI_PARITY flow 19).
+ *
+ * Served by the host, not the engine: the CLI equivalent `/connect` is a
+ * `local-jsx` Ink wizard and is filtered out of the headless command registry.
+ */
+export interface OpenProviderSetupMessage {
+  type: "openProviderSetup";
+}
+
+/**
+ * Ask the host for workspace files matching an `@` mention (UI_PARITY flow 20).
+ *
+ * The host performs the search because only it can read the workspace.
+ */
+export interface SearchFilesMessage {
+  type: "searchFiles";
+  query: string;
+}
+
+/**
+ * Start the Rayu sign-in flow.
+ *
+ * Served by the host: `/login` is a `local-jsx` command and cannot run headlessly, and
+ * the extension owns the deep-link flow.
+ */
+export interface SignInMessage {
+  type: "signIn";
+}
+
+/** Stop a running background task (UI_PARITY flow 17). */
+export interface StopTaskMessage {
+  type: "stopTask";
+  taskId: string;
 }
 
 /** Start a fresh, independent session (R12.4). */
@@ -155,6 +237,18 @@ export interface SelectPermissionModeMessage {
   mode: string;
 }
 
+/** Open a file in the VS Code editor. */
+export interface OpenFileMessage {
+  type: "openFile";
+  filePath: string;
+}
+
+/** Open a review diff for a pending changed file. */
+export interface OpenReviewDiffMessage {
+  type: "openReviewDiff";
+  filePath: string;
+}
+
 /**
  * A message the webview posts back to the host. Matches exactly the cases the
  * core `SessionManager.handlePanelMessage` accepts.
@@ -166,8 +260,17 @@ export type WebviewToHostMessage =
   | DenyPermissionMessage
   | ApproveEditMessage
   | ConfirmConflictMessage
+  | OpenDiffMessage
+  | OpenFileMessage
+  | OpenReviewDiffMessage
+  | McpReconnectMessage
+  | McpToggleMessage
   | SelectModelMessage
   | OpenModelListMessage
+  | OpenProviderSetupMessage
+  | SearchFilesMessage
+  | SignInMessage
+  | StopTaskMessage
   | NewSessionMessage
   | SelectPermissionModeMessage;
 
@@ -206,6 +309,13 @@ export const SELECTABLE_PERMISSION_MODES: readonly {
     value: "acceptEdits",
     label: "Auto-accept edits",
     hint: "Apply file edits without asking. Still prompt before commands.",
+  },
+  {
+    value: "fullManage",
+    label: "Full manage",
+    hint:
+      "Act without asking, and manage the work end to end. Requires restarting the " +
+      "session, because the engine fixes this mode's availability at launch.",
   },
   {
     value: "bypassPermissions",
@@ -258,6 +368,31 @@ export function approveEdit(requestId: string): ApproveEditMessage {
   return { type: "approveEdit", requestId };
 }
 
+/** Build an {@link OpenDiffMessage}. */
+export function openDiff(requestId: string): OpenDiffMessage {
+  return { type: "openDiff", requestId };
+}
+
+/** Build an {@link OpenFileMessage}. */
+export function openFile(filePath: string): OpenFileMessage {
+  return { type: "openFile", filePath };
+}
+
+/** Build an {@link OpenReviewDiffMessage}. */
+export function openReviewDiff(filePath: string): OpenReviewDiffMessage {
+  return { type: "openReviewDiff", filePath };
+}
+
+/** Build an {@link McpReconnectMessage}. */
+export function mcpReconnect(serverName: string): McpReconnectMessage {
+  return { type: "mcpReconnect", serverName };
+}
+
+/** Build an {@link McpToggleMessage}. */
+export function mcpToggle(serverName: string, enabled: boolean): McpToggleMessage {
+  return { type: "mcpToggle", serverName, enabled };
+}
+
 /** Build a {@link ConfirmConflictMessage}. */
 export function confirmConflict(requestId: string): ConfirmConflictMessage {
   return { type: "confirmConflict", requestId };
@@ -271,6 +406,26 @@ export function selectModel(model: string): SelectModelMessage {
 /** Build an {@link OpenModelListMessage}. */
 export function openModelList(): OpenModelListMessage {
   return { type: "openModelList" };
+}
+
+/** Build an {@link OpenProviderSetupMessage}. */
+export function openProviderSetup(): OpenProviderSetupMessage {
+  return { type: "openProviderSetup" };
+}
+
+/** Build a {@link SearchFilesMessage}. */
+export function searchFiles(query: string): SearchFilesMessage {
+  return { type: "searchFiles", query };
+}
+
+/** Build a {@link SignInMessage}. */
+export function signIn(): SignInMessage {
+  return { type: "signIn" };
+}
+
+/** Build a {@link StopTaskMessage}. */
+export function stopTask(taskId: string): StopTaskMessage {
+  return { type: "stopTask", taskId };
 }
 
 /** Build a {@link NewSessionMessage}. */

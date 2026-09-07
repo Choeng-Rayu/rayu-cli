@@ -17,7 +17,17 @@
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
+import { createRequire } from "node:module";
+
 import esbuild from "esbuild";
+
+// The shared library surface built from rayu/src, resolved by PATH — rayu is a
+// standalone Bun project and must not become an npm dependency (see esbuild.mjs
+// for what happened when it did). The integration bundler needs the same alias as
+// the extension bundler, or any test reaching auth/endpoint code fails to build.
+const LIB_ALIAS = createRequire(import.meta.url).resolve(
+  "../../../rayu/dist/rayu-lib.js",
+);
 
 const TEST_ROOT = "src/test";
 
@@ -54,6 +64,15 @@ await esbuild.build({
   // `vscode` is host-injected; `mocha` is provided by the @vscode/test-cli
   // runner (its TDD globals — suite/test/etc. — are injected, not imported).
   external: ["vscode", "mocha"],
+  alias: { "@rayu-dev/rayu-cli/lib": LIB_ALIAS },
+  // The shared library bundle is ESM and carries Bun's `require` shim,
+  // `createRequire(import.meta.url)`, because rayu/src lazily requires the npm
+  // `semver`/`yaml` packages. Inlined into this CJS output `import.meta.url` is
+  // undefined, and `createRequire(undefined)` throws at module load —
+  // "The argument 'filename' must be a file URL object … Received undefined" —
+  // taking the extension host down before any code runs. `createRequire` accepts
+  // an absolute path, so `__filename` satisfies it in CJS.
+  define: { "import.meta.url": "__filename" },
   logLevel: "info",
 });
 

@@ -26,19 +26,41 @@ That is the structural cause of the protocol-drift bug class.
 
 ```
 rayu-cli/                          <- git root, npm workspace root
-├── package.json                   <- NEW: npm workspace root (private, no version)
+├── package.json                   <- npm workspace root (private, no version)
 ├── packages/
-│   └── agent-protocol/            <- NEW: @rayu-dev/agent-protocol
-│                                     OWNS every wire schema + inferred type.
-│                                     Deps: zod only. Build: tsc. No Bun, no MACRO.
+│   ├── agent-protocol/            <- @rayu-dev/agent-protocol
+│   │                                 OWNS every wire schema + inferred type.
+│   │                                 Deps: zod only. Build: tsc. No Bun, no MACRO.
+│   └── rayu-core/                 <- NEW: @rayu-dev/rayu-core (npm workspace member)
+│                                     OWNS the shared engine: build config,
+│                                     portability, config, auth, tools, commands,
+│                                     context, MCP, query. NO terminal UI.
+│                                     Build: tsc. No react, no ink, no bun:*,
+│                                     no unguarded Bun.*.
 ├── rayu/                          <- @rayu-dev/rayu-cli (NOT in the npm workspace)
 │                                     Stays a standalone Bun project with bun.lock.
-│                                     Consumes agent-protocol as a file: devDependency.
+│                                     Ink/React terminal UI + entrypoints.
+│                                     Consumes agent-protocol AND rayu-core as
+│                                     file: devDependencies (Bun-bundled).
 └── rayucode/
     └── packages/
         ├── core/                  <- @rayucode/core   (npm workspace member)
         └── vscode/                <- rayucode         (npm workspace member)
 ```
+
+### Why `rayu-core` is a workspace member but `rayu/` is not
+
+Same split as `agent-protocol`, for the same reason. `rayu-core` is a plain
+`tsc`-built npm package that both sides resolve through `node_modules`, so it
+belongs to the workspace. `rayu/` keeps Bun and stays out (below).
+
+The CLI takes core as a **devDependency**, never a dependency: `@rayu-dev/rayu-cli`
+must keep zero runtime dependencies, and Bun bundles core's source into
+`dist/rayu.js` like any other import. The extension takes it as a real
+**dependency**, because it runs under plain Node with no bundler — which is why
+nothing in core may reach a Bun-only API unguarded. That boundary is enforced,
+not merely documented: `rayu/scripts/analyze-boundary.ts` computes the import
+closure and `cd rayu && bun run boundary` fails when it regresses.
 
 ### Why `rayu/` stays outside the npm workspace
 
@@ -61,8 +83,12 @@ other side reach across a package boundary it does not own, and placing it under
 ```mermaid
 graph LR
   AP["@rayu-dev/agent-protocol<br/>(owns wire schemas)"]
+  CORE2["@rayu-dev/rayu-core<br/>(owns the shared engine)"]
+  AP --> CORE2
   AP --> RAYU["@rayu-dev/rayu-cli<br/>(file: devDependency)"]
   AP --> CORE["@rayucode/core<br/>(dependency)"]
+  CORE2 -->|"file: devDependency<br/>Bun-bundled"| RAYU
+  CORE2 -->|"npm dependency<br/>plain Node"| CORE
   CORE --> VSC["rayucode extension<br/>(dependency)"]
   RAYU -.->|"built artifact dist/rayu.js<br/>copied at package time"| VSC
 ```
@@ -70,12 +96,22 @@ graph LR
 The critical rule: **`agent-protocol` depends on nothing in this repository.**
 Its only dependency is `zod`. It therefore cannot participate in a cycle.
 
+`rayu-core` depends only on `agent-protocol` (and `zod`, the same pinned exact
+version). It must never import from `rayu/src` or `rayucode/`, which is what
+keeps the graph acyclic as code migrates into it.
+
 The previous design sketch had `rayu/src/entrypoints/sdk/controlTypes.ts`
 importing from a *generated* `rayu/dist/` artifact that is itself built from
 `rayu/src`. That is a build-order cycle and is rejected.
 
-`rayucode` never imports `rayu/src`. It consumes the built `dist/rayu.js` as an
-opaque binary artifact, copied into the VSIX at package time.
+**Superseded by `rayu-core`:** `rayucode` previously could not import anything
+from `rayu/src`, so `rayucode/packages/vscode/src/rayuSession.ts` duplicates ~40
+lines of `rayu/src/services/rayuAuth/rayuSession.ts`. Shared engine code now has
+a legitimate home — `rayu-core` — and the duplication is retired by importing
+from there instead. The rule that stays is narrower and unchanged: `rayucode`
+never imports `rayu/src` **directly**, and still consumes the built
+`dist/rayu.js` as an opaque artifact copied into the VSIX at package time for
+execution.
 
 ## 4. Ownership rule for types
 
@@ -144,12 +180,13 @@ consumers resolve it through `node_modules` to its `dist/`.
 
 ```
 1. packages/agent-protocol   tsc            -> dist/index.js + dist/index.d.ts
-2. rayu                      bun run build  -> dist/rayu.js            (needs step 1)
-3. rayucode/packages/core    tsc            -> dist/                   (needs step 1)
-4. rayucode/packages/vscode  esbuild        -> dist/extension.js, webview.js, webview.css
+2. packages/rayu-core        tsc            -> dist/index.js + dist/index.d.ts  (needs step 1)
+3. rayu                      bun run build  -> dist/rayu.js            (needs steps 1, 2)
+4. rayucode/packages/core    tsc            -> dist/                   (needs steps 1, 2)
+5. rayucode/packages/vscode  esbuild        -> dist/extension.js, webview.js, webview.css
                              + copy rayu/dist/rayu.js
-                             + generate dist/build-info.json           (needs steps 2, 3)
-5. rayucode/packages/vscode  vsce package   -> rayucode-<version>.vsix
+                             + generate dist/build-info.json           (needs steps 3, 4)
+6. rayucode/packages/vscode  vsce package   -> rayucode-<version>.vsix
 ```
 
 The root `package.json` exposes this as one ordered script. CI (Task 7) runs the

@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import type { Message } from '../types/message.js'
 import type { Attachment } from '../utils/attachments.js'
 import { getGlobalConfig } from '../utils/config.js'
@@ -15,7 +14,7 @@ When the user addresses ${name} directly (by name), its bubble will answer. Your
 export function getCompanionIntroAttachment(
   messages: Message[] | undefined,
 ): Attachment[] {
-  if (!feature('BUDDY')) return []
+  if (!RAYU_FEATURES.BUDDY) return []
   const companion = getCompanion()
   if (!companion || getGlobalConfig().companionMuted) return []
 

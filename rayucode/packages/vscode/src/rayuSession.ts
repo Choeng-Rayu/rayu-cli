@@ -20,6 +20,9 @@
 // loosen permissions the CLI set.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
+// The shared surface built from rayu/src. One source tree, two consumers.
+import { getBakedBuildConfig, resolveEndpoints } from "@rayu-dev/rayu-cli/lib";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -34,7 +37,7 @@ const SESSION_FILE = "rayu-auth.json";
  */
 const REFRESH_SKEW_MS = 60_000;
 
-interface RayuSessionStore {
+export interface RayuSessionStore {
   accessToken: string;
   refreshToken: string;
   /** Absolute expiry of `accessToken`, epoch ms. */
@@ -53,13 +56,38 @@ function configDir(env: NodeJS.ProcessEnv): string {
   return env.RAYU_CONFIG_DIR || join(homedir(), ".rayu");
 }
 
+export function rayuSessionPath(env: NodeJS.ProcessEnv = process.env): string {
+  return sessionPath(env);
+}
+
 function sessionPath(env: NodeJS.ProcessEnv): string {
   return join(configDir(env), SESSION_FILE);
 }
 
-/** Mirrors `getRayuApiBaseUrl()` in the CLI: env override, then the dev default. */
+/**
+ * Base URL of the rayu-backend API. NOT a re-implementation any more.
+ *
+ * Delegates to the shared library built from `rayu/src`
+ * (RAYU_LIBRARY_SURFACE_DESIGN.md), so the extension and the CLI resolve
+ * endpoints through one code path. `resolveEndpoints` applies the CLI's exact
+ * precedence — runtime env → baked build value → localhost — and
+ * `getBakedBuildConfig()` supplies the values a release bakes in.
+ *
+ * This fixes a real divergence rather than merely deduplicating: the previous
+ * local version could not see `MACRO.RAYU_API_URL`, so a packaged extension fell
+ * back to localhost:4000 where the packaged CLI used the baked production host.
+ */
 export function rayuApiBaseUrl(env: NodeJS.ProcessEnv): string {
-  return (env.RAYU_API_URL || "http://localhost:4000/api").replace(/\/$/, "");
+  return resolveEndpoints(env, getBakedBuildConfig()).apiBaseUrl;
+}
+
+/**
+ * Base URL of the rayu-web site, resolved through the same shared library as
+ * {@link rayuApiBaseUrl}. Used by the in-editor sign-in flow to build the
+ * `/cli-login` URL the browser is pointed at.
+ */
+export function rayuWebBaseUrl(env: NodeJS.ProcessEnv): string {
+  return resolveEndpoints(env, getBakedBuildConfig()).webBaseUrl;
 }
 
 function read(env: NodeJS.ProcessEnv): RayuSessionStore | null {
@@ -82,6 +110,21 @@ function read(env: NodeJS.ProcessEnv): RayuSessionStore | null {
   }
 }
 
+/**
+ * Persist a session to the shared store.
+ *
+ * Exported for the in-editor sign-in flow (rayuLogin.ts). It writes the SAME
+ * ~/.rayu/rayu-auth.json the CLI uses, at 0600 — deliberately, per
+ * RAYU_CORE_MIGRATION_PLAN.md §2.3: a second credential store would mean two
+ * OAuth flows and two refresh cycles racing to rotate the same refresh token.
+ */
+export function writeRayuSession(
+  store: RayuSessionStore,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  write(env, store);
+}
+
 function write(env: NodeJS.ProcessEnv, store: RayuSessionStore): void {
   try {
     const dir = configDir(env);
@@ -96,6 +139,34 @@ function write(env: NodeJS.ProcessEnv, store: RayuSessionStore): void {
 /** True when a Rayu session has been stored, i.e. the user ran `rayu` and signed in. */
 export function hasRayuSession(env: NodeJS.ProcessEnv = process.env): boolean {
   return read(env) !== null;
+}
+
+/**
+ * The signed-in account's display name or email, for showing WHO is signed in.
+ *
+ * Returns null when signed out. The panel previously had no way to show this, so a user
+ * could not tell whether sign-in had worked.
+ *
+ * Prefers displayName, falls back to email, and returns a non-null marker object with a
+ * null `account` when a session exists but carries neither — because "signed in as
+ * someone we cannot name" is still signed in, and reporting it as signed OUT would be
+ * worse than showing no name.
+ */
+export function rayuAccountLabel(
+  env: NodeJS.ProcessEnv = process.env,
+): { account: string | null } | null {
+  const store = read(env);
+  if (store === null) return null;
+  const user = store.user as
+    | { displayName?: string | null; email?: string | null }
+    | undefined;
+  const displayName = user?.displayName?.trim();
+  if (displayName !== undefined && displayName.length > 0) {
+    return { account: displayName };
+  }
+  const email = user?.email?.trim();
+  if (email !== undefined && email.length > 0) return { account: email };
+  return { account: null };
 }
 
 /**

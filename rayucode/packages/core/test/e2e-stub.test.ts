@@ -108,10 +108,6 @@ class FakeEditorAdapter implements EditorAdapter {
   registerCommand(): Disposable {
     return { dispose: () => {} };
   }
-  async getSecret(): Promise<string | undefined> {
-    return undefined;
-  }
-  async storeSecret(): Promise<void> {}
   log(): void {}
   async showActionableMessage(): Promise<string | undefined> {
     return undefined;

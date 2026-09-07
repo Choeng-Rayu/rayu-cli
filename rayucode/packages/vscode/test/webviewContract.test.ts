@@ -400,6 +400,17 @@ describe("PanelViewModel.handle — host → webview dispatch", () => {
       { type: "setModelInfo", model: null, permissionMode: "default" },
       { type: "setModelList", models: [] },
       { type: "setMcpStatus", servers: [] },
+      // Task 16: the engine's announced capability inventory.
+      { type: "setCapabilities", tools: [], slashCommands: [], skills: [] },
+      // Task 3: the rich command catalog from the initialize response.
+      { type: "setCommandCatalog", commands: [] },
+      // The active provider, so the picker can say which backend answers.
+      { type: "setProvider", providerId: null, providerKind: null },
+      // Auth state, so the panel can say whether the user is signed in.
+      { type: "setAuthStatus", signedIn: false, account: null },
+      // Workspace files for an @ mention (flow 20) and background tasks (flow 17).
+      { type: "setFileMatches", paths: [] },
+      { type: "setBackgroundTasks", tasks: [] },
       { type: "showError", message: "e" },
       { type: "editApplied", path: "p" },
       { type: "editConflict", paths: ["p"], requestId: "r" },

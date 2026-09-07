@@ -404,4 +404,44 @@ describe("ConversationReducer examples", () => {
     expect(assistant.text).toBe("hello");
     expect(assistant.streaming).toBe(false);
   });
+
+  it("reduces file_change_review message into FileChangeReviewConversationItem", () => {
+    const reducer = new ConversationReducer();
+    const reviewMessage: StdoutMessage = {
+      type: "system",
+      subtype: "file_change_review",
+      content: "Edited 1 file +5 -2",
+      uuid: "u-review-1",
+      session_id: SESSION,
+      review: {
+        totalFiles: 1,
+        totalAdditions: 5,
+        totalRemovals: 2,
+        files: [
+          {
+            filePath: "src/app.ts",
+            displayPath: "src/app.ts",
+            additions: 5,
+            removals: 2,
+            changeCount: 1,
+            lastModified: 123456789,
+            changeIds: ["c-1"],
+          },
+        ],
+        createdAt: 123456789,
+      },
+    };
+
+    reducer.accept(reviewMessage);
+    expect(reducer.history).toHaveLength(1);
+    const item = reducer.history[0]!;
+    expect(item.kind).toBe("file_change_review");
+    if (item.kind === "file_change_review") {
+      expect(item.id).toBe("u-review-1");
+      expect(item.summary.totalFiles).toBe(1);
+      expect(item.summary.totalAdditions).toBe(5);
+      expect(item.summary.totalRemovals).toBe(2);
+      expect(item.summary.files[0]?.filePath).toBe("src/app.ts");
+    }
+  });
 });

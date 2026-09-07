@@ -32,6 +32,7 @@ import type {
   InitializeRequest,
   InitializeResponse,
   McpStatusResponse,
+  McpSetServersResponse,
 } from "./wire.js";
 import {
   isApiRetryMessage,
@@ -395,6 +396,45 @@ export class ControlProtocolClient {
   /** Request the current status of all MCP servers (R11.2). */
   mcpStatus(): Promise<McpStatusResponse> {
     return this.sendRequest<McpStatusResponse>({ subtype: "mcp_status" });
+  }
+
+  // --------------------------------------------------------------------------
+  // MCP management
+  //
+  // These requests have been part of the control protocol all along; the host
+  // simply never sent them, so the panel could show MCP status but not act on
+  // it. Surfacing them needed NO protocol change and no version bump — the
+  // schemas are `mcp_set_servers`, `mcp_reconnect` and `mcp_toggle` in
+  // @rayu-dev/agent-protocol.
+  // --------------------------------------------------------------------------
+
+  /**
+   * Replace the set of dynamically managed MCP servers.
+   *
+   * Replaces rather than merges, which is the engine's semantics: the response
+   * reports `added`, `removed` and per-server `errors`, so a caller adding one
+   * server must send the full desired set, not a delta.
+   */
+  mcpSetServers(
+    servers: Record<string, unknown>,
+  ): Promise<McpSetServersResponse> {
+    return this.sendRequest<McpSetServersResponse>({
+      subtype: "mcp_set_servers",
+      servers,
+    } as ControlRequestInner);
+  }
+
+  /** Reconnect a disconnected or failed MCP server. */
+  mcpReconnect(serverName: string): Promise<Record<string, unknown>> {
+    return this.sendRequest({ subtype: "mcp_reconnect", serverName });
+  }
+
+  /** Enable or disable an MCP server without removing its configuration. */
+  mcpToggle(
+    serverName: string,
+    enabled: boolean,
+  ): Promise<Record<string, unknown>> {
+    return this.sendRequest({ subtype: "mcp_toggle", serverName, enabled });
   }
 
   /** Initialise the session (hooks, MCP servers, prompts); `models` drives R7.2. */

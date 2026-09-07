@@ -8,12 +8,14 @@
 // tasks.
 
 import type {
+  FileChangeReviewSummary,
   ModelUsage,
+  PermissionMode,
+  PermissionToolOutput,
 } from "../protocol/wire.js";
 import type {
   Usage,
 } from "../protocol/contentBlocks.js";
-import type { PermissionMode, PermissionToolOutput } from "../protocol/wire.js";
 
 /** Lifecycle status of a session. */
 export type SessionStatus = "starting" | "idle" | "generating" | "exited";
@@ -79,6 +81,12 @@ export interface UsageConversationItem extends ConversationItemBase {
   modelUsage: Record<string, ModelUsage>;
 }
 
+/** Summary of pending file changes for review (/keep, /undo). */
+export interface FileChangeReviewConversationItem extends ConversationItemBase {
+  kind: "file_change_review";
+  summary: FileChangeReviewSummary;
+}
+
 /** An error surfaced in the conversation (R15.2). */
 export interface ErrorConversationItem extends ConversationItemBase {
   kind: "error";
@@ -92,6 +100,7 @@ export type ConversationItem =
   | ToolActionConversationItem
   | PermissionRequestConversationItem
   | UsageConversationItem
+  | FileChangeReviewConversationItem
   | ErrorConversationItem;
 
 /** A permission request awaiting a decision (R5.5 default-deny on close). */

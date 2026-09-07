@@ -32,6 +32,7 @@ import type {
   ControlCancelRequest,
   ControlRequest,
   ControlResponse,
+  FileChangeReviewMessage,
   KeepAliveMessage,
   PostTurnSummaryMessage,
   ResultError,
@@ -112,6 +113,15 @@ export function isPostTurnSummaryMessage(
 ): message is PostTurnSummaryMessage {
   return (
     typeOf(message) === "system" && subtypeOf(message) === "post_turn_summary"
+  );
+}
+
+/** Narrows to `system/file_change_review`. */
+export function isFileChangeReviewMessage(
+  message: StdoutMessage,
+): message is FileChangeReviewMessage {
+  return (
+    typeOf(message) === "system" && subtypeOf(message) === "file_change_review"
   );
 }
 

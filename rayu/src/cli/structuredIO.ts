@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import type {
   ElicitResult,
   JSONRPCMessage,
@@ -69,7 +68,7 @@ function serializeDecisionReason(
   }
 
   if (
-    (feature('BASH_CLASSIFIER') || feature('TRANSCRIPT_CLASSIFIER')) &&
+    (RAYU_FEATURES.BASH_CLASSIFIER || RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) &&
     reason.type === 'classifier'
   ) {
     return reason.reason

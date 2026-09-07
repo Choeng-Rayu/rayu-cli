@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk/index.js'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
@@ -1464,7 +1463,7 @@ function buildPendingClassifierCheck(
     return undefined
   }
   // Skip in auto mode - auto mode classifier handles all permission decisions
-  if (feature('TRANSCRIPT_CLASSIFIER') && toolPermissionContext.mode === 'auto')
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER && toolPermissionContext.mode === 'auto')
     return undefined
   if (toolPermissionContext.mode === 'bypassPermissions') return undefined
 
@@ -1502,7 +1501,7 @@ export function startSpeculativeClassifierCheck(
 ): boolean {
   // Same guards as buildPendingClassifierCheck
   if (!isClassifierPermissionsEnabled()) return false
-  if (feature('TRANSCRIPT_CLASSIFIER') && toolPermissionContext.mode === 'auto')
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER && toolPermissionContext.mode === 'auto')
     return false
   if (toolPermissionContext.mode === 'bypassPermissions') return false
   const allowDescriptions = getBashPromptAllowDescriptions(
@@ -1573,7 +1572,7 @@ export async function awaitClassifierAutoApproval(
   logClassifierResultForAnts(command, 'allow', descriptions, classifierResult)
 
   if (
-    feature('BASH_CLASSIFIER') &&
+    RAYU_FEATURES.BASH_CLASSIFIER &&
     classifierResult.matches &&
     classifierResult.confidence === 'high'
   ) {
@@ -1642,7 +1641,7 @@ export async function executeAsyncClassifierCheck(
   if (!callbacks.shouldContinue()) return
 
   if (
-    feature('BASH_CLASSIFIER') &&
+    RAYU_FEATURES.BASH_CLASSIFIER &&
     classifierResult.matches &&
     classifierResult.confidence === 'high'
   ) {
@@ -1680,14 +1679,14 @@ export async function bashToolHasPermission(
   )
   // GrowthBook killswitch for shadow mode — when off, skip the native parse
   // entirely. Computed once; feature() must stay inline in the ternary below.
-  const shadowEnabled = feature('TREE_SITTER_BASH_SHADOW')
+  const shadowEnabled = RAYU_FEATURES.TREE_SITTER_BASH_SHADOW
     ? getFeatureValue_CACHED_MAY_BE_STALE('tengu_birch_trellis', true)
     : false
   // Parse once here; the resulting AST feeds both parseForSecurityFromAst
   // and bashToolCheckCommandOperatorPermissions.
   let astRoot = injectionCheckDisabled
     ? null
-    : feature('TREE_SITTER_BASH_SHADOW') && !shadowEnabled
+    : RAYU_FEATURES.TREE_SITTER_BASH_SHADOW && !shadowEnabled
       ? null
       : await parseCommandRaw(input.command)
   let astResult: ParseForSecurityResult = astRoot
@@ -1704,7 +1703,7 @@ export async function bashToolHasPermission(
   // One event per bash call captures both divergence AND unavailability
   // reasons; module-load failures are separately covered by the
   // session-scoped tengu_tree_sitter_load event.
-  if (feature('TREE_SITTER_BASH_SHADOW')) {
+  if (RAYU_FEATURES.TREE_SITTER_BASH_SHADOW) {
     const available = astResult.kind !== 'parse-unavailable'
     let tooComplex = false
     let semanticFail = false
@@ -1757,7 +1756,7 @@ export async function bashToolHasPermission(
       decisionReason,
       message: createPermissionRequestMessage(BashTool.name, decisionReason),
       suggestions: [],
-      ...(feature('BASH_CLASSIFIER')
+      ...(RAYU_FEATURES.BASH_CLASSIFIER
         ? {
             pendingClassifierCheck: buildPendingClassifierCheck(
               input.command,
@@ -1859,7 +1858,7 @@ export async function bashToolHasPermission(
   if (
     isClassifierPermissionsEnabled() &&
     !(
-      feature('TRANSCRIPT_CLASSIFIER') &&
+      RAYU_FEATURES.TRANSCRIPT_CLASSIFIER &&
       appState.toolPermissionContext.mode === 'auto'
     )
   ) {
@@ -1957,7 +1956,7 @@ export async function bashToolHasPermission(
             reason: `Required by Bash prompt rule: "${askResult.matchedDescription}"`,
           },
           suggestions,
-          ...(feature('BASH_CLASSIFIER')
+          ...(RAYU_FEATURES.BASH_CLASSIFIER
             ? {
                 pendingClassifierCheck: buildPendingClassifierCheck(
                   input.command,
@@ -2024,7 +2023,7 @@ export async function bashToolHasPermission(
               safetyResult.message ??
               'Command contains patterns that require approval',
           },
-          ...(feature('BASH_CLASSIFIER')
+          ...(RAYU_FEATURES.BASH_CLASSIFIER
             ? {
                 pendingClassifierCheck: buildPendingClassifierCheck(
                   input.command,
@@ -2061,7 +2060,7 @@ export async function bashToolHasPermission(
       appState = context.getAppState()
       return {
         ...commandOperatorResult,
-        ...(feature('BASH_CLASSIFIER')
+        ...(RAYU_FEATURES.BASH_CLASSIFIER
           ? {
               pendingClassifierCheck: buildPendingClassifierCheck(
                 input.command,
@@ -2128,7 +2127,7 @@ export async function bashToolHasPermission(
           ),
           decisionReason,
           suggestions: [], // Don't suggest saving a potentially dangerous command
-          ...(feature('BASH_CLASSIFIER')
+          ...(RAYU_FEATURES.BASH_CLASSIFIER
             ? {
                 pendingClassifierCheck: buildPendingClassifierCheck(
                   input.command,
@@ -2319,7 +2318,7 @@ export async function bashToolHasPermission(
   if (askSubresult !== undefined && nonAllowCount === 1) {
     return {
       ...askSubresult,
-      ...(feature('BASH_CLASSIFIER')
+      ...(RAYU_FEATURES.BASH_CLASSIFIER
         ? {
             pendingClassifierCheck: buildPendingClassifierCheck(
               input.command,
@@ -2418,7 +2417,7 @@ export async function bashToolHasPermission(
     if (result.behavior === 'ask' || result.behavior === 'passthrough') {
       return {
         ...result,
-        ...(feature('BASH_CLASSIFIER')
+        ...(RAYU_FEATURES.BASH_CLASSIFIER
           ? {
               pendingClassifierCheck: buildPendingClassifierCheck(
                 input.command,
@@ -2545,7 +2544,7 @@ export async function bashToolHasPermission(
     message: createPermissionRequestMessage(BashTool.name, decisionReason),
     decisionReason,
     suggestions: suggestedUpdates,
-    ...(feature('BASH_CLASSIFIER')
+    ...(RAYU_FEATURES.BASH_CLASSIFIER
       ? {
           pendingClassifierCheck: buildPendingClassifierCheck(
             input.command,

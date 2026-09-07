@@ -844,3 +844,774 @@ details > summary {
     border: 1px solid CanvasText;
   }
 }
+
+/* Engine capability inventory (Task 16). Counts with the full list in a
+   tooltip; the tool/command inventories are far too long for the header. */
+.capabilities {
+  display: flex;
+  gap: 12px;
+  padding: 2px 8px 4px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+.capabilities span {
+  cursor: help;
+}
+
+/* Slash-command palette (UI_PARITY.md flow 10). Sits directly above the input so
+   the list and the cursor are in the same place. Capped at 8 entries by the view
+   so a 98-command engine cannot produce a full-height overlay. */
+.command-palette {
+  list-style: none;
+  margin: 0 8px 4px;
+  padding: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background);
+}
+.command-option {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.command-option:hover,
+.command-option:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  outline: 1px solid var(--vscode-focusBorder);
+}
+.command-name {
+  font-family: var(--vscode-editor-font-family);
+  white-space: nowrap;
+}
+.command-hint {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  white-space: nowrap;
+}
+.command-desc {
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* MCP server row (UI_PARITY flow 14). Replaces the old read-only warning line:
+   status comes from the engine's mcp_status, and each server carries the actions
+   the control protocol already supports. */
+.mcp-servers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 8px 4px;
+  font-size: 0.85em;
+}
+.mcp-server {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+}
+.mcp-name {
+  font-family: var(--vscode-editor-font-family);
+}
+.mcp-status {
+  color: var(--vscode-descriptionForeground);
+}
+/* Failure is the state a user must not miss; connected needs no emphasis. */
+.mcp-failed,
+.mcp-needs-auth {
+  border-color: var(--vscode-inputValidation-errorBorder);
+}
+.mcp-failed .mcp-status,
+.mcp-needs-auth .mcp-status {
+  color: var(--vscode-errorForeground);
+}
+.mcp-disabled {
+  opacity: 0.7;
+}
+.btn-mcp {
+  padding: 0 4px;
+  font-size: 0.95em;
+}
+
+/* Model + permission mode, moved from the header to sit WITH the input: both are
+   decisions made while composing, so they belong where the cursor is. */
+.composer-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 6px;
+  font-size: 0.9em;
+}
+.composer-controls .model-select,
+.composer-controls .mode-select {
+  max-width: 220px;
+}
+/* Which backend is answering. ModelInfo has no provider field; this comes from
+   the shared provider config. */
+.provider-badge {
+  padding: 0 5px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+/* Background tasks (UI_PARITY flow 17). Previously a task running in the background
+   was invisible, so there was no way to know work continued or to stop it. */
+.background-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.background-task {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.background-task-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Who is signed in, or a way to sign in. Nothing showed this before, so a user could
+   not tell whether sign-in had worked — and on first launch the engine exits without
+   emitting system/init, so the panel had nothing else to display. */
+.auth-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.auth-row-signed-out {
+  /* A prompt to act, so it must not read as incidental status text. */
+  color: var(--vscode-foreground);
+  background: var(--vscode-inputValidation-warningBackground, transparent);
+  border-top: 1px solid var(--vscode-panel-border);
+}
+.auth-account {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   Copilot-Style UI Components for Rayucode
+   ========================================================================== */
+
+/* --- Welcome / Empty State --- */
+.copilot-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px 24px;
+  text-align: center;
+  max-width: 440px;
+  margin: 0 auto;
+}
+
+.copilot-welcome-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--vscode-chat-avatarBackground, var(--vscode-badge-background, rgba(255, 255, 255, 0.08)));
+  color: var(--vscode-chat-avatarForeground, var(--vscode-textLink-foreground, #3794ff));
+  margin-bottom: 16px;
+}
+
+.copilot-welcome-avatar svg {
+  width: 22px;
+  height: 22px;
+}
+
+.copilot-welcome-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  color: var(--vscode-foreground);
+}
+
+.copilot-welcome-subtitle {
+  font-size: 13px;
+  color: var(--vscode-descriptionForeground);
+  margin: 0 0 24px 0;
+  line-height: 1.4;
+}
+
+.copilot-welcome-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.copilot-welcome-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.copilot-welcome-chip:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.copilot-welcome-chip .chip-cmd {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.2));
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.copilot-welcome-chip .chip-label {
+  color: var(--vscode-foreground);
+  flex: 1;
+}
+
+/* --- Copilot Turns (User & Assistant) --- */
+.copilot-turn {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.copilot-user-turn {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.copilot-user-avatar,
+.copilot-assistant-avatar {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.copilot-user-avatar {
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+}
+
+.copilot-user-card {
+  max-width: 88%;
+  background: var(--vscode-chat-requestBackground, var(--vscode-textBlockQuote-background, rgba(255, 255, 255, 0.05)));
+  border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-panel-border, transparent));
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.copilot-user-text {
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--vscode-foreground);
+}
+
+.copilot-assistant-turn {
+  display: flex;
+  gap: 10px;
+}
+
+.copilot-assistant-avatar {
+  background: var(--vscode-chat-avatarBackground, var(--vscode-badge-background, rgba(0, 122, 204, 0.2)));
+  color: var(--vscode-chat-avatarForeground, var(--vscode-textLink-foreground, #3794ff));
+}
+
+.copilot-sparkle-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.copilot-assistant-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.copilot-assistant-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* --- Copilot Tool Pill --- */
+.copilot-tool-pill-container {
+  margin: 6px 0;
+  width: 100%;
+}
+
+.copilot-tool-pill {
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  border-radius: 6px;
+  background: var(--vscode-sideBar-background, rgba(0, 0, 0, 0.1));
+  overflow: hidden;
+}
+
+.copilot-tool-pill-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  list-style: none;
+}
+
+.copilot-tool-pill-header::-webkit-details-marker {
+  display: none;
+}
+
+.copilot-tool-icon {
+  display: flex;
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+}
+
+.copilot-tool-summary {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
+.copilot-tool-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.copilot-tool-chevron {
+  display: flex;
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  transition: transform 120ms ease;
+}
+
+details[open] > .copilot-tool-pill-header .copilot-tool-chevron {
+  transform: rotate(90deg);
+}
+
+.copilot-tool-details {
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.15)));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--vscode-editor-background);
+}
+
+/* --- Copilot Edits Review Card --- */
+.copilot-review-card {
+  margin: 10px 0;
+  border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border, #007fd4));
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.copilot-review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  background: var(--vscode-sideBar-background, rgba(0, 0, 0, 0.1));
+}
+
+.copilot-review-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.copilot-diff-stats {
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.stat-additions {
+  color: var(--vscode-gitDecoration-addedResourceForeground, #73c991);
+}
+
+.stat-removals {
+  color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground, #f14c4c));
+}
+
+.copilot-review-actions-global {
+  display: flex;
+  gap: 6px;
+}
+
+.copilot-review-files {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.copilot-review-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  gap: 8px;
+  transition: background 100ms ease;
+}
+
+.copilot-review-file-row:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.04));
+}
+
+.copilot-review-file-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.copilot-review-file-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  cursor: pointer;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.copilot-review-file-link:hover {
+  text-decoration: underline;
+}
+
+.copilot-review-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.copilot-review-applied-badge {
+  color: var(--vscode-gitDecoration-addedResourceForeground, #73c991);
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.copilot-review-undone-badge {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Icon button */
+.btn-icon {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  padding: 3px 5px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.btn-icon:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  border-color: var(--vscode-toolbar-hoverOutline, transparent);
+}
+
+/* --- Copilot Composer Card --- */
+.copilot-composer-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.3)));
+  border-radius: 8px;
+  background: var(--vscode-input-background);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+  overflow: hidden;
+}
+
+.copilot-composer-card:focus-within {
+  border-color: var(--vscode-focusBorder, #007fd4);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
+}
+
+.copilot-composer-card .prompt-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 8px 10px;
+  resize: none;
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--vscode-input-foreground);
+  min-height: 48px;
+}
+
+.copilot-composer-card .prompt-input:focus {
+  outline: none;
+  box-shadow: none;
+  border-color: transparent;
+}
+
+.copilot-composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 6px;
+  background: var(--vscode-input-background);
+}
+
+.copilot-composer-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.copilot-pill-select-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  border-radius: 14px;
+  padding: 1px 8px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.copilot-pill-select {
+  background: transparent;
+  border: none;
+  color: var(--vscode-foreground);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  padding: 2px 0;
+}
+
+.copilot-pill-select option {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+}
+
+.copilot-pill-btn {
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  border-radius: 14px;
+  color: var(--vscode-foreground);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.copilot-pill-btn:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.1));
+}
+
+.copilot-provider-btn {
+  color: var(--vscode-descriptionForeground);
+}
+
+.copilot-composer-actions {
+  display: flex;
+  align-items: center;
+}
+
+.btn-circle {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-circle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.btn-send {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.btn-send:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.btn-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-stop {
+  background: var(--vscode-inputValidation-errorBackground, #d73a49);
+  color: #ffffff;
+}
+
+.copilot-auth-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--vscode-inputValidation-warningBackground, rgba(255, 204, 0, 0.15));
+  border: 1px solid var(--vscode-inputValidation-warningBorder, rgba(255, 204, 0, 0.4));
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+/* --- Floating Autocomplete Popover --- */
+.copilot-popover {
+  position: relative;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-focusBorder, #007fd4));
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  margin-bottom: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.copilot-popover-header {
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--vscode-descriptionForeground);
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
+.copilot-popover-list {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.copilot-popover-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+  text-align: left;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.copilot-popover-item:hover {
+  background: var(--vscode-list-focusBackground, var(--vscode-list-hoverBackground, rgba(0, 122, 204, 0.2)));
+}
+
+.popover-cmd-name {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.popover-cmd-hint {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.popover-cmd-desc {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+

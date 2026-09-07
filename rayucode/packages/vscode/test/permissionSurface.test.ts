@@ -561,10 +561,15 @@ describe("permission mode picker", () => {
   });
 
   it("orders the options least to most permissive", () => {
+    // `fullManage` sits with bypassPermissions at the permissive end: its mode config
+    // in rayu/src maps it to `external: 'bypassPermissions'`, so it acts without
+    // asking. Both are launch-time modes (see isBypassClassPermissionMode) and both
+    // require a session restart to enter.
     expect(SELECTABLE_PERMISSION_MODES.map((m) => m.value)).toEqual([
       "plan",
       "default",
       "acceptEdits",
+      "fullManage",
       "bypassPermissions",
     ]);
   });

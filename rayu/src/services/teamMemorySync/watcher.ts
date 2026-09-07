@@ -7,7 +7,6 @@
  * fs.watch so first-time writes to a fresh repo get picked up.
  */
 
-import { feature } from 'bun:bundle'
 import { type FSWatcher, watch } from 'fs'
 import { mkdir, stat } from 'fs/promises'
 import { join } from 'path'
@@ -250,7 +249,7 @@ async function startFileWatcher(teamDir: string): Promise<void> {
  * a fresh partner can sit in the bootstrap dead zone for days.
  */
 export async function startTeamMemoryWatcher(): Promise<void> {
-  if (!feature('TEAMMEM')) {
+  if (!RAYU_FEATURES.TEAMMEM) {
     return
   }
   if (!isTeamMemoryEnabled() || !isTeamMemorySyncAvailable()) {
