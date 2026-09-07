@@ -23,7 +23,14 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,8 +38,23 @@ const here = dirname(fileURLToPath(import.meta.url));
 const vscodePkgDir = resolve(here, "..");
 const repoRoot = resolve(vscodePkgDir, "..", "..", "..");
 
-const ENGINE_SOURCE = join(repoRoot, "rayu", "dist", "rayu.js");
-const ENGINE_FILENAME = "rayu.js";
+/**
+ * The engine staged into the VSIX.
+ *
+ * `rayu-vscode-host.js`, not `rayu.js`: it is built from the same `rayu/src` by
+ * `rayu/scripts/build-vscode-host.ts` and delegates to the same `main()`, so it
+ * exposes an identical tool / slash-command / skill / MCP inventory (asserted by
+ * `rayu/test/vscodeHost.test.ts`, which diffs both bundles' `system/init`). What
+ * it adds is ownership of the headless flag contract: `--print
+ * --input-format=stream-json --output-format=stream-json --verbose` is defined in
+ * the engine rather than duplicated in this repository, where a change to it
+ * could not be seen.
+ *
+ * Build it with `(cd rayu && bun run build:vscode-host)`, or `npm run build` at
+ * the repo root, whose `build:engine` produces all three rayu artifacts.
+ */
+const ENGINE_SOURCE = join(repoRoot, "rayu", "dist", "rayu-vscode-host.js");
+const ENGINE_FILENAME = "rayu-vscode-host.js";
 const DIST_DIR = join(vscodePkgDir, "dist");
 const PROTOCOL_PKG = join(repoRoot, "packages", "agent-protocol");
 
@@ -85,11 +107,24 @@ try {
   engineBytes = readFileSync(ENGINE_SOURCE);
 } catch {
   fail(
-    `the engine is missing at ${ENGINE_SOURCE}. Build it first: (cd rayu && bun run build)`,
+    `the engine is missing at ${ENGINE_SOURCE}. Build it first: (cd rayu && bun run build:vscode-host)`,
   );
 }
 
 mkdirSync(DIST_DIR, { recursive: true });
+// Remove any engine this package staged under a DIFFERENT name. `.vscodeignore`
+// ships all of dist/, so a rename would otherwise leave the previous 24 MB
+// engine in the VSIX alongside the current one — doubling the package and
+// shipping a binary nothing loads.
+for (const stale of ["rayu.js", "rayu-vscode-host.js"]) {
+  if (stale === ENGINE_FILENAME) continue;
+  const stalePath = join(DIST_DIR, stale);
+  if (existsSync(stalePath)) {
+    rmSync(stalePath);
+    console.log(`[build-info] removed stale engine dist/${stale}`);
+  }
+}
+
 const engineDest = join(DIST_DIR, ENGINE_FILENAME);
 copyFileSync(ENGINE_SOURCE, engineDest);
 

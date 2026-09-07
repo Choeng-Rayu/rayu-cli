@@ -32,10 +32,40 @@ import { AgentProcess, Redactor, SessionManager } from "@rayucode/core";
 import { loadDotEnv } from "./dotEnv.js";
 
 import { registerChatParticipant } from "./chatParticipant.js";
+import { loginRayu } from "./rayuLogin.js";
+import { RayuUriAuthBroker } from "./rayuUriAuth.js";
+import {
+  resolveLocalCommand,
+  unavailableCommandMessage,
+} from "./localCommands.js";
+import { runProviderSetup } from "./providerSetup.js";
+import {
+  describeSetServersResult,
+  parseServerSpec,
+  validateServerName,
+  withServerAdded,
+  withServerRemoved,
+  type McpServerSet,
+} from "./mcpServers.js";
+import { listSessions, sessionAge, sessionLabel } from "./sessionHistory.js";
+import { rankMentionCandidates } from "./webview/mentions.js";
+import {
+  PROPOSED_SCHEME,
+  ProposedEditContentProvider,
+  showProposedDiff,
+} from "./proposedDiff.js";
+import { hasRayuSession, rayuAccountLabel } from "./rayuSession.js";
+// Shared with the CLI: the provider config lives in ~/.rayu/config.json.
+import { getActiveProvider, upsertProvider } from "@rayu-dev/rayu-cli/lib";
 import {
   ADD_SELECTION_COMMAND,
   INTERRUPT_COMMAND,
   NEW_SESSION_COMMAND,
+  ADD_MCP_SERVER_COMMAND,
+  REMOVE_MCP_SERVER_COMMAND,
+  RESUME_SESSION_COMMAND,
+  SETUP_PROVIDER_COMMAND,
+  SIGN_IN_COMMAND,
   OPEN_PANEL_COMMAND,
 } from "./commands.js";
 import {
@@ -130,9 +160,195 @@ export function activate(context: vscode.ExtensionContext): RayucodeExtensionApi
    */
   let webBridge: WebBridgeRegistration | null = null;
 
+  // Serves the right-hand side of a proposed-edit diff from memory. Registered
+  // before the SessionManager so the hook below always has a live provider.
+  const proposedEdits = new ProposedEditContentProvider();
+  context.subscriptions.push(
+    proposedEdits,
+    vscode.workspace.registerTextDocumentContentProvider(
+      PROPOSED_SCHEME,
+      proposedEdits,
+    ),
+  );
+
   const sessionManager = new SessionManager({
     adapter,
     redactor: new Redactor(secrets),
+    // UI_PARITY flow 11: show a proposed edit in VS Code's own diff editor.
+    // Opening a diff neither approves nor denies — the request stays pending.
+    onPreviewEdit: async (requestId, plan) => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+      for (const [index, change] of plan.changes.entries()) {
+        try {
+          await showProposedDiff(proposedEdits, root, requestId, change, index);
+        } catch (error) {
+          adapter.log(
+            "error",
+            `Could not open a diff for ${change.path}: ${errorMessage(error)}`,
+          );
+        }
+      }
+    },
+    // Who is signed in, so the panel can say so. Reads the shared credential store.
+    authAccount: () => rayuAccountLabel(childEnv),
+    // The panel's "Sign in" button.
+    onSignIn: () => {
+      void vscode.commands.executeCommand(SIGN_IN_COMMAND);
+    },
+    // Confirm before escalating to a bypass-class permission mode.
+    //
+    // Required because the engine fixes `isBypassPermissionsModeAvailable` at launch,
+    // so reaching one of these modes means relaunching — which costs the current
+    // conversation. Both consequences are stated rather than implied, and the default
+    // button is Cancel.
+    confirmPermissionEscalation: async (mode) => {
+      const label = mode === "fullManage" ? "Full manage" : "Bypass all prompts";
+      const choice = await vscode.window.showWarningMessage(
+        `Switch to "${label}"?`,
+        {
+          modal: true,
+          detail:
+            `In this mode the agent edits files and runs commands WITHOUT asking first.\n\n` +
+            `The session must restart to enable it, because Rayu decides this mode's ` +
+            `availability when the engine starts. The current conversation will be cleared.`,
+        },
+        // A modal's dismissal returns undefined, which is treated as a refusal, so
+        // there is no explicit Cancel item to get wrong.
+        "Restart in this mode",
+      );
+      return choice === "Restart in this mode";
+    },
+    // Workspace file search for `@` mentions (UI_PARITY flow 20). Only the host can
+    // enumerate workspace files, so core delegates it here.
+    onSearchFiles: (sessionKey, query) => {
+      void (async () => {
+        try {
+          // `**/*` with VS Code's own exclude handling, so node_modules and
+          // .gitignore'd paths do not swamp the list. Capped because a large repo
+          // would otherwise serialise tens of thousands of paths into the webview.
+          const found = await vscode.workspace.findFiles(
+            "**/*",
+            "**/{node_modules,.git,dist,out,build,target}/**",
+            2000,
+          );
+          const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+          const paths = found.map((uri) => {
+            const full = uri.fsPath;
+            // Workspace-relative: an absolute path is unreadable in a narrow panel
+            // and is not what the agent needs to resolve the file either.
+            return root !== undefined && full.startsWith(root)
+              ? full.slice(root.length + 1)
+              : full;
+          });
+          const ranked = rankMentionCandidates(query, paths);
+          sessionManager.postFileMatches(sessionKey, ranked);
+        } catch (error) {
+          adapter.log("error", `File search failed: ${errorMessage(error)}`);
+          sessionManager.postFileMatches(sessionKey, []);
+        }
+      })();
+    },
+    // BYOK wizard, reached from the provider badge in the input bar.
+    onProviderSetup: () => {
+      void vscode.commands.executeCommand(SETUP_PROVIDER_COMMAND);
+    },
+    // Open a file in the active editor.
+    onOpenFile: (_sessionKey, filePath) => {
+      void (async () => {
+        try {
+          const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+          const fileUri = root
+            ? (filePath.startsWith("/") ? vscode.Uri.file(filePath) : vscode.Uri.joinPath(root, filePath))
+            : vscode.Uri.file(filePath);
+          await vscode.window.showTextDocument(fileUri);
+        } catch (error) {
+          adapter.log("error", `Could not open file ${filePath}: ${errorMessage(error)}`);
+        }
+      })();
+    },
+    // View diff of a modified file against git HEAD or original.
+    onOpenReviewDiff: (_sessionKey, filePath) => {
+      void (async () => {
+        try {
+          const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+          const fileUri = root
+            ? (filePath.startsWith("/") ? vscode.Uri.file(filePath) : vscode.Uri.joinPath(root, filePath))
+            : vscode.Uri.file(filePath);
+          try {
+            await vscode.commands.executeCommand("git.openChange", fileUri);
+          } catch {
+            await vscode.window.showTextDocument(fileUri);
+          }
+        } catch (error) {
+          adapter.log("error", `Could not open review diff for ${filePath}: ${errorMessage(error)}`);
+        }
+      })();
+    },
+    // Serve the commands the engine cannot: every `local-jsx` command is filtered
+    // out of the headless registry, so /login, /model, /permissions and friends
+    // would otherwise be forwarded to an engine that has never heard of them and
+    // silently do nothing. See localCommands.ts.
+    interceptPrompt: (sessionKey, text) => {
+      const action = resolveLocalCommand(text);
+      if (!action) {
+        // A command the engine does not announce is not in its headless registry:
+        // it returns success having done nothing at all. Say so rather than let it
+        // vanish, which is what "commands don't work" looked like.
+        const unavailable = unavailableCommandMessage(
+          text,
+          sessionManager.getAnnouncedSlashCommands(sessionKey),
+        );
+        if (unavailable !== null) {
+          void vscode.window.showWarningMessage(unavailable);
+          return true;
+        }
+        return false;
+      }
+      switch (action.kind) {
+        case "signIn":
+          void vscode.commands.executeCommand(SIGN_IN_COMMAND);
+          return true;
+        case "openModelList":
+          void sessionManager.requestModels(sessionKey);
+          return true;
+        case "setPermissionMode":
+          void sessionManager.selectPermissionMode(sessionKey, action.mode);
+          return true;
+        case "newSession":
+          void sessionManager.newSession(sessionKey);
+          return true;
+        case "showMcp":
+          // Status is already in the panel header; refresh it so the row is current.
+          void sessionManager.refreshMcpStatus(sessionKey);
+          return true;
+        case "notice":
+          void vscode.window.showInformationMessage(action.message);
+          return true;
+      }
+    },
+    // The active provider, read through the shared library built from rayu/src —
+    // the same getActiveProvider() the CLI's model picker uses, so the panel and
+    // the CLI cannot disagree about which backend is answering.
+    activeProvider: () => {
+      try {
+        const provider = getActiveProvider();
+        // `label` is set only for user-defined providers; built-ins take their name
+        // from the preset, so `id` is the reliable display value.
+        return provider ? { id: provider.label ?? provider.id, kind: provider.kind } : null;
+      } catch {
+        // A missing or malformed ~/.rayu/config.json must not break the panel.
+        return null;
+      }
+    },
+    // Refuse a prompt when there is no Rayu session, before an engine is
+    // spawned. The engine refuses too (rayu/src/cli/print.ts), which is the
+    // authoritative gate — this one exists so the user gets an immediate,
+    // actionable notice instead of a round-trip that returns an engine warning.
+    // The message names the command so the fix is one palette entry away.
+    authGate: () =>
+      hasRayuSession(childEnv)
+        ? null
+        : "Sign in to Rayu to use the agent. Run “Rayucode: Sign in to Rayu” from the Command Palette.",
     // The engine and its build-info.json ship inside the VSIX. Derive the
     // directory from the extension URI rather than relying on __dirname, so it
     // does not depend on how the bundle was produced.
@@ -183,6 +399,293 @@ export function activate(context: vscode.ExtensionContext): RayucodeExtensionApi
   registerCommandSafely(adapter, NEW_SESSION_COMMAND, () =>
     sessionManager.newSession(sessionKeyForActiveWorkspace()),
   );
+
+  // The deep-link sign-in broker. Registered ONCE — VS Code allows one URI
+  // handler per extension, so a per-attempt registration would break the second
+  // attempt, which is exactly what a user does when a login looks stuck.
+  const uriAuth = new RayuUriAuthBroker((message) =>
+    adapter.log("lifecycle", message),
+  );
+  // Registration is guarded because VS Code allows ONE handler per extension and
+  // throws "Protocol handler already registered for extension" on a second
+  // attempt. A single window can activate more than once — the integration suite
+  // does exactly that, and R14.5 requires a registration failure not to abort
+  // activation. Losing the deep link degrades to the loopback sign-in, which is
+  // the fallback that already exists; aborting activation would lose the panel.
+  try {
+    context.subscriptions.push(
+      vscode.window.registerUriHandler({
+        handleUri: (uri) => uriAuth.handleUri({ path: uri.path, query: uri.query }),
+      }),
+    );
+  } catch (error) {
+    adapter.log(
+      "lifecycle",
+      `deep-link sign-in unavailable: ${errorMessage(error)}. ` +
+        "Sign-in will use the loopback flow.",
+    );
+  }
+
+  // Task 15: in-editor sign-in. Writes the same ~/.rayu/rayu-auth.json the CLI
+  // reads, so this also signs in `rayu` in a terminal. The result is reported
+  // explicitly — a silent failure would leave the user believing they are signed
+  // in and then spawning an engine that is not.
+  /**
+   * The MCP servers this panel has added, which is exactly the "dynamically managed"
+   * set `mcp_set_servers` replaces.
+   *
+   * Tracked here because the request REPLACES rather than merges: sending only the
+   * server being added would disconnect all the others. Servers from `.mcp.json` or
+   * settings are outside this set and cannot be affected by it.
+   */
+  let dynamicMcpServers: McpServerSet = {};
+
+  // Resume a previous session (UI_PARITY flow 15). The transcript list is read from
+  // disk because the control protocol cannot enumerate sessions at all.
+  registerCommandSafely(adapter, RESUME_SESSION_COMMAND, async () => {
+    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (workspace === undefined) {
+      void vscode.window.showWarningMessage(
+        "Open a folder to browse its session history.",
+      );
+      return;
+    }
+
+    const sessions = await listSessions(workspace);
+    if (sessions.length === 0) {
+      void vscode.window.showInformationMessage(
+        "No previous sessions for this workspace yet.",
+      );
+      return;
+    }
+
+    const chosen = await vscode.window.showQuickPick(
+      sessions.map((summary) => ({
+        label: sessionLabel(summary),
+        description: sessionAge(summary),
+        // The id is what actually resumes; showing it aids a bug report.
+        detail: summary.sessionId,
+        summary,
+      })),
+      {
+        title: "Resume a previous session",
+        placeHolder: "This replaces the current conversation in the panel",
+        matchOnDetail: true,
+      },
+    );
+    if (!chosen) return;
+
+    const key = sessionManager.sessionKeys()[0];
+    if (key === undefined) {
+      void vscode.window.showWarningMessage(
+        "Open the Rayucode panel before resuming a session.",
+      );
+      return;
+    }
+    await sessionManager.resumeSession(key, chosen.summary.sessionId);
+  });
+
+  // Add a dynamically managed MCP server (UI_PARITY flow 14).
+  registerCommandSafely(adapter, ADD_MCP_SERVER_COMMAND, async () => {
+    const key = sessionManager.sessionKeys()[0];
+    if (key === undefined) {
+      void vscode.window.showWarningMessage(
+        "Open the Rayucode panel before managing MCP servers.",
+      );
+      return;
+    }
+
+    const name = await vscode.window.showInputBox({
+      title: "MCP server name",
+      prompt: "Letters, numbers, dashes and underscores",
+      ignoreFocusOut: true,
+      validateInput: (value) => validateServerName(value, dynamicMcpServers),
+    });
+    if (name === undefined) return;
+    const nameError = validateServerName(name, dynamicMcpServers);
+    if (nameError !== null) {
+      void vscode.window.showWarningMessage(nameError);
+      return;
+    }
+
+    const commandLine = await vscode.window.showInputBox({
+      title: `Command or URL for ${name.trim()}`,
+      prompt: "e.g. npx -y @modelcontextprotocol/server-filesystem /path, or https://…",
+      ignoreFocusOut: true,
+    });
+    if (commandLine === undefined) return;
+    const spec = parseServerSpec(commandLine);
+    if (spec === null) {
+      void vscode.window.showWarningMessage("A command or URL is required.");
+      return;
+    }
+
+    // mcp_set_servers REPLACES the dynamic set, so the whole desired set is sent.
+    const desired = withServerAdded(dynamicMcpServers, name, spec);
+    const result = await sessionManager.setMcpServers(key, desired);
+    if (result === null) {
+      void vscode.window.showWarningMessage(
+        "The engine did not accept the server change.",
+      );
+      return;
+    }
+    // Only adopt the new set once the engine has accepted it, or the tracked state
+    // would drift from reality after a failure.
+    dynamicMcpServers = desired;
+    void vscode.window.showInformationMessage(describeSetServersResult(result));
+  });
+
+  // Remove a dynamically managed MCP server (UI_PARITY flow 14).
+  registerCommandSafely(adapter, REMOVE_MCP_SERVER_COMMAND, async () => {
+    const key = sessionManager.sessionKeys()[0];
+    const names = Object.keys(dynamicMcpServers);
+    if (key === undefined || names.length === 0) {
+      void vscode.window.showInformationMessage(
+        "No panel-added MCP servers to remove. Servers from .mcp.json or settings are managed there.",
+      );
+      return;
+    }
+
+    const chosen = await vscode.window.showQuickPick(names, {
+      title: "Remove an MCP server",
+      placeHolder: "Only servers added from the panel are listed",
+    });
+    if (chosen === undefined) return;
+
+    const desired = withServerRemoved(dynamicMcpServers, chosen);
+    const result = await sessionManager.setMcpServers(key, desired);
+    if (result === null) {
+      void vscode.window.showWarningMessage(
+        "The engine did not accept the server change.",
+      );
+      return;
+    }
+    dynamicMcpServers = desired;
+    void vscode.window.showInformationMessage(describeSetServersResult(result));
+  });
+
+  // Provider setup / BYOK (UI_PARITY flow 19). The wizard's logic lives in
+  // providerSetup.ts with its VS Code interactions injected, so the decision
+  // rules are unit-testable; this is only the wiring.
+  registerCommandSafely(adapter, SETUP_PROVIDER_COMMAND, async () => {
+    await runProviderSetup({
+      isSignedIn: () => hasRayuSession(),
+      offerSignIn: () => {
+        void vscode.commands.executeCommand(SIGN_IN_COMMAND);
+      },
+      pickPreset: async (presets) => {
+        const chosen = await vscode.window.showQuickPick(
+          presets.map((preset) => ({
+            label: preset.label,
+            detail: preset.detail,
+            preset,
+          })),
+          {
+            title: "Add or switch AI provider",
+            placeHolder: "Your key is stored in ~/.rayu/config.json and shared with the CLI",
+          },
+        );
+        return chosen?.preset;
+      },
+      promptApiKey: (preset) =>
+        Promise.resolve(
+          vscode.window.showInputBox({
+            title: `${preset.label} API key`,
+            prompt: `Get one at ${preset.keyHint}`,
+            // Never echo a credential into the UI or a screen share.
+            password: true,
+            ignoreFocusOut: true,
+          }),
+        ),
+      promptModel: (preset) =>
+        Promise.resolve(
+          vscode.window.showInputBox({
+            title: `${preset.label} model`,
+            prompt: "Leave as-is to accept the default",
+            value: preset.defaultModel ?? "",
+            ignoreFocusOut: true,
+          }),
+        ),
+      // The shared writer from rayu/src — same file and validation as the CLI.
+      saveProvider: (record) => {
+        upsertProvider(record as Parameters<typeof upsertProvider>[0], true);
+      },
+      info: (message) => {
+        void vscode.window.showInformationMessage(message);
+      },
+      warn: (message) => {
+        void vscode.window.showWarningMessage(message);
+      },
+      refreshModels: () => {
+        for (const key of sessionManager.sessionKeys()) {
+          // The badge first: it reads config directly, so it updates even if the
+          // engine is not running and cannot answer a models request.
+          sessionManager.publishProvider(key);
+          void sessionManager.requestModels(key);
+        }
+      },
+    });
+  });
+
+  registerCommandSafely(adapter, SIGN_IN_COMMAND, async () => {
+    if (hasRayuSession()) {
+      const again = await vscode.window.showInformationMessage(
+        "Already signed in to Rayu.",
+        "Sign in again",
+      );
+      if (again !== "Sign in again") return;
+    }
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Signing in to Rayu — complete the login in your browser…",
+          cancellable: false,
+        },
+        async () => {
+          const openExternal = (url: string) =>
+            vscode.env.openExternal(vscode.Uri.parse(url));
+          // Only progress lines reach the channel; neither module logs a token.
+          const log = (message: string) => adapter.log("lifecycle", message);
+          try {
+            // Preferred: the vscode:// deep link. No local HTTP server, no port
+            // to bind, no firewall prompt.
+            await uriAuth.signIn({ openExternal, log });
+          } catch (error) {
+            // Fall back to the CLI's loopback flow. The deep link cannot arrive
+            // in a Remote-SSH or container window, where the browser runs on a
+            // different machine than the extension host — there the loopback
+            // server, which listens where the browser can reach it, is the only
+            // route. Rethrown failures from the fallback are the ones reported.
+            log(
+              `deep-link sign-in unavailable (${errorMessage(error)}); falling back to loopback`,
+            );
+            await loginRayu({ openExternal, log });
+          }
+        },
+      );
+      // Tell every panel who is signed in, and RESTART the engine.
+      //
+      // The restart is not cosmetic. With no credentials the engine emits the auth-gate
+      // error and exits WITHOUT ever sending `system/init`, so the panel has no model,
+      // no command catalog and a dead process. Signing in changed the credential store
+      // but nothing restarted the engine, so the panel looked exactly as before — which
+      // is why signing in appeared to do nothing at all.
+      sessionManager.publishAuthStatusEverywhere();
+      for (const key of sessionManager.sessionKeys()) {
+        // newSession() rather than openSession(): the previous process is gone, and a
+        // fresh session also clears the transcript containing the refusal message.
+        await sessionManager.newSession(key);
+      }
+      void vscode.window.showInformationMessage(
+        "Signed in to Rayu. The `rayu` CLI is signed in too — it shares this session.",
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      adapter.log("error", `rayu sign-in failed: ${reason}`);
+      void vscode.window.showErrorMessage(`Rayu sign-in failed: ${reason}`);
+    }
+  });
 
   // Selection intents backing both the lightbulb and the editor context menu.
   for (const [commandId, intent] of [

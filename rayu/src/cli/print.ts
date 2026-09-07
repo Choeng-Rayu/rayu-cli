@@ -58,6 +58,7 @@ import {
   type RequiresActionDetails,
   type SessionExternalMetadata,
 } from 'src/utils/sessionState.js'
+import { createPendingFileChangeReviewSystemMessage } from 'src/utils/pendingFileChanges.js'
 import { externalMetadataToAppState } from 'src/state/onChangeAppState.js'
 import { getInMemoryErrors, logError, logMCPDebug } from 'src/utils/log.js'
 import {
@@ -66,6 +67,7 @@ import {
 } from 'src/utils/process.js'
 import type { Stream } from 'src/utils/stream.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
+import { rayuLoginGateMessage } from 'src/services/rayuAuth/rayuSession.js'
 import {
   loadConversationForResume,
   type TurnInterruptionState,
@@ -444,6 +446,55 @@ export function canBatchWith(
     next.workload === head.workload &&
     next.isMeta === head.isMeta
   )
+}
+
+/**
+ * Whether a queued headless prompt must be refused for lack of a Rayu login.
+ *
+ * The SAME gate the interactive REPL applies in
+ * utils/processUserInput/processUserInput.ts, which headless mode had no
+ * equivalent of: `rayuLoginGateMessage()` was reachable only from the TUI input
+ * path, so ANY headless consumer — the SDK, CCR, and the Rayucode extension —
+ * could run turns while signed out.
+ *
+ * The conditions mirror the REPL's exactly:
+ *   - only `prompt` mode (task notifications and orphaned permissions are
+ *     engine-generated, not user input);
+ *   - `isMeta` prompts are system-generated (proactive ticks, teammate messages,
+ *     resource updates) and must not be gated;
+ *   - `bridgeOrigin` prompts already passed the remote client's own auth;
+ *   - slash commands are exempt, so `/login` and `/connect` stay reachable while
+ *     signed out — which is what makes the gate recoverable rather than a
+ *     lockout. `skipSlashCommands` marks a source whose text must be treated as
+ *     plain text, so such input is NOT exempt.
+ *
+ * `gate` is injected so this is unit-testable without a real session on disk.
+ *
+ * @returns the message to surface, or null to let the turn proceed.
+ */
+export function headlessLoginGateMessage(
+  command: Pick<
+    QueuedCommand,
+    'mode' | 'value' | 'isMeta' | 'bridgeOrigin' | 'skipSlashCommands'
+  >,
+  gate: () => string | null = rayuLoginGateMessage,
+): string | null {
+  if (command.mode !== 'prompt') return null
+  if (command.isMeta) return null
+  if (command.bridgeOrigin) return null
+
+  const promptText =
+    typeof command.value === 'string'
+      ? command.value
+      : command.value
+          .map(block => (block.type === 'text' ? block.text : ''))
+          .join('')
+
+  const isSlashCommand =
+    !command.skipSlashCommands && promptText.trimStart().startsWith('/')
+  if (isSlashCommand) return null
+
+  return gate()
 }
 
 export async function runHeadless(
@@ -1947,6 +1998,35 @@ function runHeadlessStreaming(
           }
           const batchUuids = batch.map(c => c.uuid).filter(u => u !== undefined)
 
+          // ── Rayu login gate ────────────────────────────────────────────────
+          //
+          // Refusal is a per-TURN error result, not a process exit: the
+          // extension keeps one long-lived session, so signing in must let the
+          // next prompt through without a restart. `SDKResultErrorSchema`
+          // already carries `errors: string[]`, and the host already renders it
+          // (sessionManager.ts surfaces `message.errors`), so this needs no
+          // protocol change. See headlessLoginGateMessage() for the conditions.
+          const loginGate = headlessLoginGateMessage(command)
+          if (loginGate) {
+            output.enqueue({
+              type: 'result',
+              subtype: 'error_during_execution',
+              duration_ms: 0,
+              duration_api_ms: 0,
+              is_error: true,
+              num_turns: 0,
+              stop_reason: null,
+              session_id: getSessionId(),
+              total_cost_usd: 0,
+              usage: EMPTY_USAGE,
+              modelUsage: {},
+              permission_denials: [],
+              errors: [loginGate],
+              uuid: randomUUID(),
+            })
+            continue
+          }
+
           // QueryEngine will emit a replay for command.uuid (the last uuid in
           // the batch) via its messagesToAck path. Emit replays here for the
           // rest so consumers that track per-uuid delivery (clank's
@@ -2218,6 +2298,12 @@ function runHeadlessStreaming(
                   heldBackResult = message
                 } else {
                   heldBackResult = null
+                  const reviewMessage = createPendingFileChangeReviewSystemMessage(
+                    currentState.pendingFileChanges,
+                  )
+                  if (reviewMessage) {
+                    output.enqueue(reviewMessage)
+                  }
                   output.enqueue(message)
                 }
               } else {
@@ -2392,6 +2478,12 @@ function runHeadlessStreaming(
       } while (waitingForAgents)
 
       if (heldBackResult) {
+        const reviewMessage = createPendingFileChangeReviewSystemMessage(
+          getAppState().pendingFileChanges,
+        )
+        if (reviewMessage) {
+          output.enqueue(reviewMessage)
+        }
         output.enqueue(heldBackResult)
         heldBackResult = null
         if (suggestionState.pendingSuggestion) {

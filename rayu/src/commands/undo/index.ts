@@ -5,7 +5,7 @@ const undo = {
   name: 'undo',
   argumentHint: '[file|all]',
   type: 'local',
-  supportsNonInteractive: false,
+  supportsNonInteractive: true,
   load: () => import('./undo.js'),
 } satisfies Command
 

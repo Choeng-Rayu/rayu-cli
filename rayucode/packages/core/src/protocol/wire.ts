@@ -70,6 +70,10 @@ export type {
   SDKCompactBoundaryMessage as CompactBoundaryMessage,
   /** `system/post_turn_summary` — a background post-turn summary. */
   SDKPostTurnSummaryMessage as PostTurnSummaryMessage,
+  /** `system/file_change_review` — summary of file changes awaiting user review (/keep, /undo). */
+  SDKFileChangeReviewMessage as FileChangeReviewMessage,
+  FileChangeReviewFile,
+  FileChangeReviewSummary,
 } from "@rayu-dev/agent-protocol";
 
 // ----------------------------------------------------------------------------
@@ -133,6 +137,7 @@ export type {
   SDKControlGetContextUsageRequest as GetContextUsageRequest,
   SDKControlInitializeResponse as InitializeResponse,
   SDKControlMcpStatusResponse as McpStatusResponse,
+  SDKControlMcpSetServersResponse as McpSetServersResponse,
   SDKControlGetContextUsageResponse as ContextUsageResponse,
 } from "@rayu-dev/agent-protocol";
 

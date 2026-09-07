@@ -1,5 +1,4 @@
 import { c as _c } from "react/compiler-runtime";
-import { feature } from 'bun:bundle';
 import { APIUserAbortError } from '@anthropic-ai/sdk/index.js';
 import * as React from 'react';
 import { useCallback } from 'react';
@@ -41,7 +40,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
           if (ctx.resolveIfAborted(resolve)) {
             return;
           }
-          if (feature("TRANSCRIPT_CLASSIFIER") && result.decisionReason?.type === "classifier" && result.decisionReason.classifier === "auto-mode") {
+          if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER && result.decisionReason?.type === "classifier" && result.decisionReason.classifier === "auto-mode") {
             setYoloClassifierApproval(toolUseID, result.decisionReason.reason);
           }
           ctx.logDecision({
@@ -75,7 +74,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                 decision: "reject",
                 source: "config"
               });
-              if (feature("TRANSCRIPT_CLASSIFIER") && result.decisionReason?.type === "classifier" && result.decisionReason.classifier === "auto-mode") {
+              if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER && result.decisionReason?.type === "classifier" && result.decisionReason.classifier === "auto-mode") {
                 recordAutoModeDenial({
                   toolName: tool.name,
                   display: description,
@@ -96,7 +95,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
               if (appState.toolPermissionContext.awaitAutomatedChecksBeforeDialog) {
                 const coordinatorDecision = await handleCoordinatorPermission({
                   ctx,
-                  ...(feature("BASH_CLASSIFIER") ? {
+                  ...(RAYU_FEATURES.BASH_CLASSIFIER ? {
                     pendingClassifierCheck: result.pendingClassifierCheck
                   } : {}),
                   updatedInput: result.updatedInput,
@@ -114,7 +113,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
               const swarmDecision = await handleSwarmWorkerPermission({
                 ctx,
                 description,
-                ...(feature("BASH_CLASSIFIER") ? {
+                ...(RAYU_FEATURES.BASH_CLASSIFIER ? {
                   pendingClassifierCheck: result.pendingClassifierCheck
                 } : {}),
                 updatedInput: result.updatedInput,
@@ -124,7 +123,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                 resolve(swarmDecision);
                 return;
               }
-              if (feature("BASH_CLASSIFIER") && result.pendingClassifierCheck && tool.name === BASH_TOOL_NAME && !appState.toolPermissionContext.awaitAutomatedChecksBeforeDialog) {
+              if (RAYU_FEATURES.BASH_CLASSIFIER && result.pendingClassifierCheck && tool.name === BASH_TOOL_NAME && !appState.toolPermissionContext.awaitAutomatedChecksBeforeDialog) {
                 const speculativePromise = peekSpeculativeClassifierCheck((input as {
                   command: string;
                 }).command);
@@ -133,7 +132,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                   if (ctx.resolveIfAborted(resolve)) {
                     return;
                   }
-                  if (raceResult.type === "result" && raceResult.result.matches && raceResult.result.confidence === "high" && feature("BASH_CLASSIFIER")) {
+                  if (raceResult.type === "result" && raceResult.result.matches && raceResult.result.confidence === "high" && RAYU_FEATURES.BASH_CLASSIFIER) {
                     consumeSpeculativeClassifierCheck((input as {
                       command: string;
                     }).command);
@@ -169,11 +168,11 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                 // — the other showed no prompt at all. See
                 // composeBridgePermissionCallbacks.
                 bridgeCallbacks: composeBridgePermissionCallbacks(
-                  feature("BRIDGE_MODE") ? appState.replBridgePermissionCallbacks : undefined,
+                  RAYU_FEATURES.BRIDGE_MODE ? appState.replBridgePermissionCallbacks : undefined,
                   appState.telegramPermissionCallbacks,
                   appState.webBridgePermissionCallbacks,
                 ),
-                channelCallbacks: feature("KAIROS") || feature("KAIROS_CHANNELS") ? appState.channelPermissionCallbacks : undefined
+                channelCallbacks: RAYU_FEATURES.KAIROS || RAYU_FEATURES.KAIROS_CHANNELS ? appState.channelPermissionCallbacks : undefined
               }, resolve);
               return;
             }

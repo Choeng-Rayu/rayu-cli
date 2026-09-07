@@ -198,12 +198,6 @@ class FakeEditorAdapter implements EditorAdapter {
     return { dispose: () => {} };
   }
 
-  async getSecret(): Promise<string | undefined> {
-    return undefined;
-  }
-
-  async storeSecret(): Promise<void> {}
-
   log(channel: "protocol" | "lifecycle" | "error", message: string): void {
     this.logs.push({ channel, message });
   }

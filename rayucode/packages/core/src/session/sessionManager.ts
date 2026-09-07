@@ -67,7 +67,7 @@ import type {
 import type { CanUseToolRequest } from "../protocol/wire.js";
 import { isPermissionMode } from "../protocol/wire.js";
 import type { DecodeFailure } from "../protocol/ndjson.js";
-import { isResultError } from "../protocol/guards.js";
+import { isFileChangeReviewMessage, isResultError } from "../protocol/guards.js";
 import {
   LEGACY_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
@@ -141,6 +141,24 @@ export interface AgentProcessFactoryOptions {
   cwd: string | undefined;
   /** Diagnostic sink for the spawned process (R2.6). */
   adapter: Pick<EditorAdapter, "log">;
+  /**
+   * A prior session id to resume (UI_PARITY flow 15).
+   *
+   * Resuming is a LAUNCH-time decision — the engine loads the transcript at startup —
+   * so it cannot be a control request and has to reach the spawn.
+   */
+  resumeSessionId?: string;
+  /**
+   * Initial permission mode, passed as `--permission-mode`.
+   *
+   * Also a LAUNCH-time decision for the bypass-class modes. `permissionSetup.ts`
+   * computes `isBypassPermissionsModeAvailable` once at startup from
+   * `(permissionMode is bypassPermissions|fullManage) || --dangerously-skip-permissions`,
+   * so a running session that started in `default` can NEVER be switched to
+   * `bypassPermissions` — the engine answers "the session was not launched with
+   * --dangerously-skip-permissions". Reaching that mode requires a relaunch.
+   */
+  permissionMode?: string;
 }
 
 /** Creates an {@link AgentProcessLike}; defaults to a real {@link AgentProcess}. */
@@ -180,6 +198,94 @@ const defaultTimers: TimerProvider = {
 
 /** Construction options for a {@link SessionManager}. */
 export interface SessionManagerOptions {
+  /**
+   * Optional hook for showing a proposed edit in the editor's own diff viewer.
+   *
+   * Supplied by the HOST because opening a diff is an editor capability and this
+   * package is editor-agnostic. Core resolves the plan — via the same
+   * `buildEditPlan` the approval path uses, so a preview cannot disagree with what
+   * approval applies — and hands the changes out.
+   */
+  onPreviewEdit?: (
+    requestId: string,
+    plan: FileEditPlan,
+  ) => void | Promise<void>;
+
+  /** Optional handler for the panel's "Sign in" button. */
+  onSignIn?: () => void;
+
+  /**
+   * Optional resolver for the signed-in account, used to show auth state in the panel.
+   *
+   * Host-supplied because it reads the credential store; this package is
+   * filesystem-agnostic. Returns null when signed out.
+   */
+  authAccount?: () => { account: string | null } | null;
+
+  /**
+   * Optional confirmation before escalating to a bypass-class permission mode.
+   *
+   * Host-supplied because it needs a modal, and because the decision is the user's:
+   * the mode stops asking before acting, and reaching it costs the current
+   * conversation. Returning false (or omitting the seam) keeps the current mode.
+   */
+  confirmPermissionEscalation?: (mode: string) => Promise<boolean>;
+
+  /**
+   * Optional workspace file search for `@` mentions (UI_PARITY flow 20).
+   *
+   * Host-supplied because only the editor can enumerate workspace files; this package
+   * is filesystem-agnostic.
+   */
+  onSearchFiles?: (sessionKey: string, query: string) => void;
+
+  /** Host-supplied file open handler. */
+  onOpenFile?: (sessionKey: string, filePath: string) => void;
+
+  /** Host-supplied file review diff viewer. */
+  onOpenReviewDiff?: (sessionKey: string, filePath: string) => void;
+
+  /**
+   * Optional handler for "add or switch AI provider" (BYOK, UI_PARITY flow 19).
+   *
+   * Host-supplied because the wizard is VS Code UI and writes to the shared
+   * `~/.rayu/config.json`, neither of which belongs in this package.
+   */
+  onProviderSetup?: (sessionKey: string) => void;
+
+  /**
+   * Optional interceptor for a submitted prompt, consulted before anything else.
+   *
+   * Returns true when the HOST handled it and core should do nothing. This exists
+   * because `rayu/src/main.tsx` filters every `local-jsx` command out of the
+   * headless registry — they render Ink dialogs and there is no terminal — so
+   * `/login`, `/model`, `/permissions` and friends reach an engine that has never
+   * heard of them and silently do nothing. A `local-jsx` command IS a dialog, and
+   * in the panel the host is what provides the dialog.
+   */
+  interceptPrompt?: (sessionKey: string, text: string) => boolean;
+
+  /**
+   * Optional resolver for the active provider, used to label the model picker.
+   *
+   * Host-supplied because it reads ~/.rayu/config.json, and this package is
+   * filesystem-agnostic.
+   */
+  activeProvider?: () => { id: string; kind: string } | null;
+
+  /**
+   * Optional pre-flight auth check, consulted before a prompt is sent.
+   *
+   * Returns a message to refuse with, or null to proceed. The HOST supplies it,
+   * because "is the user signed in" is answered by reading
+   * `~/.rayu/rayu-auth.json`, and this package is deliberately editor- and
+   * filesystem-agnostic.
+   *
+   * The engine also refuses an unauthenticated prompt (rayu/src/cli/print.ts),
+   * so this is not the only guard — it exists so the refusal is immediate and
+   * actionable instead of a round-trip that comes back as an engine warning.
+   */
+  authGate?: () => string | null;
   /** The ONLY editor dependency (R13.1, R13.4). */
   adapter: EditorAdapter;
   /** Retained conversation-history store (R12). Defaults to a fresh one. */
@@ -253,6 +359,58 @@ export type PanelOutboundMessage =
   | { type: "setModelInfo"; model: string | null; permissionMode: PermissionMode }
   | { type: "setModelList"; models: ModelInfo[] }
   | { type: "setMcpStatus"; servers: { name: string; status: string }[] }
+  // The engine announces its real capability inventory in `system/init`, and the
+  // host used to drop all three fields on the floor — the panel showed nothing
+  // while the schema had been carrying them all along. See
+  // RAYU_CORE_MIGRATION_PLAN.md Task 16; no protocol change was required.
+  | {
+      type: "setCapabilities";
+      tools: string[];
+      slashCommands: string[];
+      skills: string[];
+    }
+  // The RICH command catalog, from the `initialize` control response rather than
+  // `system/init`. system/init carries slash-command NAMES only; initialize
+  // carries name + description + argumentHint for each. The host used to request
+  // initialize purely for `models` and drop the rest, so the panel had no way to
+  // describe a command or hint its arguments.
+  | {
+      type: "setCommandCatalog";
+      commands: { name: string; description: string; argumentHint: string }[];
+    }
+  // The active provider, so the model picker can say WHICH backend answers.
+  // `ModelInfoSchema` carries no provider field, and the CLI's picker gets this
+  // from ~/.rayu/config.json — which the host reads through the shared library
+  // built from rayu/src, so the two cannot disagree.
+  | { type: "setProvider"; providerId: string | null; providerKind: string | null }
+  /**
+   * Whether a Rayu session exists, and who it belongs to.
+   *
+   * The panel had NO way to show this, so a user could not tell whether they were
+   * signed in — and on first launch the engine exits before emitting `system/init`
+   * when there are no credentials, leaving the panel with nothing to display but a
+   * meaningless "Loading…".
+   */
+  | {
+      type: "setAuthStatus";
+      signedIn: boolean;
+      /** Display name or email, whichever the account has. Null when signed out. */
+      account: string | null;
+    }
+  // Workspace files matching an `@` mention (UI_PARITY flow 20). The host runs the
+  // search because only it can read the workspace.
+  | { type: "setFileMatches"; paths: string[] }
+  // Background tasks the engine reported via `system/task_started` (UI_PARITY flow 17).
+  | {
+      type: "setBackgroundTasks";
+      tasks: {
+        taskId: string;
+        description: string;
+        taskType?: string;
+        workflowName?: string;
+        toolUseId?: string;
+      }[];
+    }
   | { type: "showError"; message: string }
   | { type: "editApplied"; path: string }
   | { type: "editConflict"; paths: string[]; requestId: string }
@@ -307,6 +465,26 @@ class SeqCounter {
 /** All live runtime for one session. */
 interface ManagedSession {
   readonly key: string;
+  /**
+   * A prior session id to resume on the NEXT launch (UI_PARITY flow 15), cleared once
+   * consumed. Not a live property of the session — the engine reads the transcript at
+   * startup, so this only ever affects a spawn.
+   */
+  resumeSessionId?: string;
+  /**
+   * Permission mode to pass at the NEXT launch, for the bypass-class modes that
+   * cannot be entered mid-session. Persists across restarts, unlike resumeSessionId,
+   * so the mode the user chose survives a crash-restart instead of silently reverting.
+   */
+  launchPermissionMode?: string;
+  /** Background tasks reported for this session (UI_PARITY flow 17). */
+  backgroundTasks: {
+    taskId: string;
+    description: string;
+    taskType?: string;
+    workflowName?: string;
+    toolUseId?: string;
+  }[];
   panel: AgentPanelHandle | null;
   process: AgentProcessLike | null;
   client: ControlProtocolClient | null;
@@ -319,6 +497,18 @@ interface ManagedSession {
   seq: SeqCounter;
   model: string | null;
   permissionMode: PermissionMode;
+  /**
+   * The engine's announced capability inventory from `system/init`.
+   *
+   * Retained rather than only forwarded, because a panel can attach after the
+   * handshake — on reload, or when a session is revealed later — and would
+   * otherwise show an empty inventory until the next engine restart.
+   */
+  tools: string[];
+  slashCommands: string[];
+  skills: string[];
+  /** Rich command metadata from the `initialize` response (name/description/hint). */
+  commandCatalog: { name: string; description: string; argumentHint: string }[];
   /** A submitted prompt is awaiting protocol activity (drives R15.4). */
   promptPending: boolean;
   /** True while an intentional close/new-session teardown is in progress (R2.5 guard). */
@@ -453,8 +643,70 @@ export function buildContextPreamble(context: {
  * calls. Construct once per extension activation with a concrete
  * {@link EditorAdapter}; drive sessions through the public methods below.
  */
+/**
+ * The permission modes whose availability is fixed at LAUNCH.
+ *
+ * `permissionSetup.ts` computes:
+ *
+ *     isBypassPermissionsModeAvailable =
+ *       (permissionMode === 'bypassPermissions' ||
+ *        permissionMode === 'fullManage' ||
+ *        allowDangerouslySkipPermissions) && !disabledByGate && !disabledBySettings
+ *
+ * once during startup. Exactly these two mode values satisfy it, which is why the list
+ * is these two and not a broader "dangerous modes" notion: `acceptEdits` and `plan`
+ * switch freely at runtime, and `dontAsk`/`auto`/`bubble` do not gate on this flag.
+ *
+ * `--dangerously-skip-permissions` is the third route, and deliberately NOT used: it is
+ * pushed FIRST into the engine's mode priority list
+ * (`if (dangerouslySkipPermissions) orderedModes.push('bypassPermissions')`), so passing
+ * it would force EVERY session to start in full bypass rather than merely making the
+ * mode reachable.
+ */
+export function isBypassClassPermissionMode(mode: string): boolean {
+  return mode === "bypassPermissions" || mode === "fullManage";
+}
+
 export class SessionManager {
   private readonly adapter: EditorAdapter;
+  /** Host-supplied pre-flight auth check; see SessionManagerOptions.authGate. */
+  private readonly authGate: (() => string | null) | undefined;
+  /** Host-supplied sign-in trigger; see SessionManagerOptions.onSignIn. */
+  private readonly onSignIn: (() => void) | undefined;
+  /** Host-supplied account resolver; see SessionManagerOptions.authAccount. */
+  private readonly authAccount:
+    | (() => { account: string | null } | null)
+    | undefined;
+  /** Host-supplied escalation confirm; see SessionManagerOptions.confirmPermissionEscalation. */
+  private readonly confirmPermissionEscalation:
+    | ((mode: string) => Promise<boolean>)
+    | undefined;
+  /** Host-supplied file search; see SessionManagerOptions.onSearchFiles. */
+  private readonly onSearchFiles:
+    | ((sessionKey: string, query: string) => void)
+    | undefined;
+  /** Host-supplied file opener; see SessionManagerOptions.onOpenFile. */
+  private readonly onOpenFile:
+    | ((sessionKey: string, filePath: string) => void)
+    | undefined;
+  /** Host-supplied review diff viewer; see SessionManagerOptions.onOpenReviewDiff. */
+  private readonly onOpenReviewDiff:
+    | ((sessionKey: string, filePath: string) => void)
+    | undefined;
+  /** Host-supplied BYOK wizard; see SessionManagerOptions.onProviderSetup. */
+  private readonly onProviderSetup: ((sessionKey: string) => void) | undefined;
+  /** Host-supplied prompt interceptor; see SessionManagerOptions.interceptPrompt. */
+  private readonly interceptPrompt:
+    | ((sessionKey: string, text: string) => boolean)
+    | undefined;
+  /** Host-supplied active-provider resolver; see SessionManagerOptions.activeProvider. */
+  private readonly activeProvider:
+    | (() => { id: string; kind: string } | null)
+    | undefined;
+  /** Host-supplied diff viewer; see SessionManagerOptions.onPreviewEdit. */
+  private readonly onPreviewEdit:
+    | ((requestId: string, plan: FileEditPlan) => void | Promise<void>)
+    | undefined;
   private readonly sessionStore: SessionStore;
   private readonly redactor: Redactor;
   private readonly engineResolver: EngineResolverLike;
@@ -470,6 +722,17 @@ export class SessionManager {
 
   constructor(options: SessionManagerOptions) {
     this.adapter = options.adapter;
+    this.authGate = options.authGate;
+    this.activeProvider = options.activeProvider;
+    this.interceptPrompt = options.interceptPrompt;
+    this.onProviderSetup = options.onProviderSetup;
+    this.onSearchFiles = options.onSearchFiles;
+    this.onOpenFile = options.onOpenFile;
+    this.onOpenReviewDiff = options.onOpenReviewDiff;
+    this.confirmPermissionEscalation = options.confirmPermissionEscalation;
+    this.authAccount = options.authAccount;
+    this.onSignIn = options.onSignIn;
+    this.onPreviewEdit = options.onPreviewEdit;
     this.sessionStore = options.sessionStore ?? new SessionStore();
     this.redactor = options.redactor ?? new Redactor([]);
     this.engineResolver =
@@ -485,6 +748,20 @@ export class SessionManager {
           enginePath: o.enginePath,
           cwd: o.cwd,
           adapter: o.adapter,
+          // `--resume <id>` must be a launch argument; the engine reads the
+          // transcript before the control protocol is available.
+          ...(o.resumeSessionId !== undefined || o.permissionMode !== undefined
+            ? {
+                extraArgs: [
+                  ...(o.resumeSessionId !== undefined
+                    ? ["--resume", o.resumeSessionId]
+                    : []),
+                  ...(o.permissionMode !== undefined
+                    ? ["--permission-mode", o.permissionMode]
+                    : []),
+                ],
+              }
+            : {}),
         }));
     this.editModel = options.editProposalModel ?? new EditProposalModel();
     this.timers = options.timers ?? defaultTimers;
@@ -524,6 +801,13 @@ export class SessionManager {
       items: this.mergedHistory(session),
     });
 
+    // Before the engine starts: with no credentials the engine exits WITHOUT emitting
+    // `system/init`, so nothing else would ever tell the panel what is going on and it
+    // would sit showing "Loading…". Publishing here means the panel always states
+    // whether the user is signed in.
+    this.publishAuthStatus(session.key);
+    this.publishProvider(session.key);
+
     if (session.process === null) {
       await this.startAgent(session);
     }
@@ -536,6 +820,21 @@ export class SessionManager {
    */
   async submitPrompt(sessionKey: string, text: string): Promise<void> {
     const session = this.requireSession(sessionKey);
+
+    // Host-served commands first: a `local-jsx` command is absent from the
+    // headless registry, so forwarding it would do nothing at all.
+    if (this.interceptPrompt?.(sessionKey, text) === true) {
+      return;
+    }
+
+    // Refuse before starting an agent: spawning a 23 MB engine to be told the
+    // user is signed out is a poor trade, and the inline notice can offer the
+    // sign-in command where an engine warning cannot.
+    const authRefusal = this.authGate?.() ?? null;
+    if (authRefusal !== null) {
+      this.postToPanel(session, { type: "showError", message: authRefusal });
+      return;
+    }
 
     if (session.process === null) {
       await this.startAgent(session);
@@ -612,6 +911,7 @@ export class SessionManager {
    * direction, show a restrictive mode while the engine auto-approved.
    */
   async selectPermissionMode(sessionKey: string, mode: unknown): Promise<void> {
+    // Kept adjacent to its only caller; see isBypassClassPermissionMode below.
     const session = this.requireSession(sessionKey);
     if (!isPermissionMode(mode)) {
       this.log(
@@ -621,6 +921,34 @@ export class SessionManager {
       return;
     }
     if (mode === session.permissionMode) {
+      return;
+    }
+
+    // The bypass-class modes cannot be entered mid-session. `permissionSetup.ts`
+    // computes `isBypassPermissionsModeAvailable` ONCE at startup from
+    // `(permissionMode is bypassPermissions|fullManage) || --dangerously-skip-permissions`,
+    // so asking a session that launched in `default` to switch is answered with
+    // "the session was not launched with --dangerously-skip-permissions". Sending it
+    // anyway is what produced that error in the panel. A relaunch is the only route.
+    if (isBypassClassPermissionMode(mode) && session.launchPermissionMode !== mode) {
+      // Ask the host first: this escalates to a mode that stops asking before it
+      // acts, and it costs the current conversation. Only the host can prompt.
+      const confirmed = (await this.confirmPermissionEscalation?.(mode)) ?? false;
+      if (!confirmed) {
+        // Snap the picker back, or it would show a mode that is not in force.
+        this.postToPanel(session, {
+          type: "setModelInfo",
+          model: session.model,
+          permissionMode: session.permissionMode,
+        });
+        return;
+      }
+      session.launchPermissionMode = mode;
+      this.log(
+        "lifecycle",
+        `Relaunching the engine with --permission-mode ${mode} (bypass-class modes are launch-time only)`,
+      );
+      await this.newSession(sessionKey);
       return;
     }
 
@@ -668,17 +996,118 @@ export class SessionManager {
     }
   }
 
-  /** Fetch the list of available models for the model picker (R7.2). */
+  /**
+   * Fetch the model list AND the command catalog for the picker (R7.2).
+   *
+   * One `initialize` round-trip carries `models`, `commands`, `agents`,
+   * `output_style` and `account`; this used to keep only `models`. The command
+   * catalog is what lets the panel show a real description and argument hint per
+   * command instead of a bare name — the extension previously hardcoded four
+   * fake commands against the engine's ~98 real ones.
+   */
   async requestModels(sessionKey: string): Promise<ModelInfo[]> {
     const session = this.requireSession(sessionKey);
     try {
       const init = await session.client?.initialize();
       const models = init?.models ?? [];
       this.postToPanel(session, { type: "setModelList", models });
+
+      // Same response, previously discarded. Defaulted defensively: an engine
+      // predating the field sends undefined, and the webview iterates this
+      // during a repaint that runs before the conversation is reconciled.
+      const commands = Array.isArray(init?.commands)
+        ? init.commands.map((c) => ({
+            name: String(c.name ?? ""),
+            description: String(c.description ?? ""),
+            argumentHint: String(c.argumentHint ?? ""),
+          }))
+        : [];
+      if (commands.length > 0) {
+        session.commandCatalog = commands;
+        this.postToPanel(session, { type: "setCommandCatalog", commands });
+      }
+
+      // Which provider these models come from, so the picker never shows models
+      // without saying what is answering them. Re-published here because the provider
+      // can change (BYOK setup) after the session opened.
+      this.publishProvider(sessionKey);
       return models;
     } catch (error) {
       this.log("protocol", `Model list request failed: ${errorMessage(error)}`);
       return [];
+    }
+  }
+
+  /**
+   * The engine's command catalog for this session, or `[]`.
+   *
+   * Richer than {@link getAnnouncedSlashCommands}, which returns names from
+   * `system/init`. Populated by {@link requestModels}'s `initialize` round-trip.
+   */
+  getCommandCatalog(
+    sessionKey: string,
+  ): readonly { name: string; description: string; argumentHint: string }[] {
+    return this.sessions.get(sessionKey)?.commandCatalog ?? [];
+  }
+
+  // --------------------------------------------------------------------------
+  // MCP management
+  //
+  // `mcp_set_servers`, `mcp_reconnect` and `mcp_toggle` were already in the
+  // control protocol; the host never sent them, so the panel could display MCP
+  // status but not act on it. No protocol change was required.
+  // --------------------------------------------------------------------------
+
+  /** Reconnect a failed or disconnected MCP server, then refresh status. */
+  async reconnectMcpServer(sessionKey: string, serverName: string): Promise<void> {
+    const session = this.requireSession(sessionKey);
+    try {
+      await session.client?.mcpReconnect(serverName);
+      await this.refreshMcpStatus(sessionKey);
+    } catch (error) {
+      this.log("protocol", `MCP reconnect failed: ${errorMessage(error)}`);
+      this.postToPanel(session, {
+        type: "showError",
+        message: `Could not reconnect MCP server "${serverName}": ${errorMessage(error)}`,
+      });
+    }
+  }
+
+  /** Enable or disable an MCP server without discarding its configuration. */
+  async toggleMcpServer(
+    sessionKey: string,
+    serverName: string,
+    enabled: boolean,
+  ): Promise<void> {
+    const session = this.requireSession(sessionKey);
+    try {
+      await session.client?.mcpToggle(serverName, enabled);
+      await this.refreshMcpStatus(sessionKey);
+    } catch (error) {
+      this.log("protocol", `MCP toggle failed: ${errorMessage(error)}`);
+      this.postToPanel(session, {
+        type: "showError",
+        message: `Could not ${enabled ? "enable" : "disable"} MCP server "${serverName}": ${errorMessage(error)}`,
+      });
+    }
+  }
+
+  /** Re-read MCP status and push it to the panel. */
+  async refreshMcpStatus(sessionKey: string): Promise<void> {
+    const session = this.requireSession(sessionKey);
+    try {
+      const status = await session.client?.mcpStatus();
+      // The response field is `mcpServers`, and it carries much more than the
+      // panel message does — per-server error text, scope, tool list and
+      // capabilities. Narrowed to {name, status} here to keep the existing
+      // setMcpStatus contract; widening it is a webview change, not a protocol one.
+      const servers = (status?.mcpServers ?? []).map((server) => ({
+        name: server.name,
+        status: server.status,
+      }));
+      this.postToPanel(session, { type: "setMcpStatus", servers });
+    } catch (error) {
+      this.log("protocol", `MCP status request failed: ${errorMessage(error)}`);
     }
   }
 
@@ -719,6 +1148,30 @@ export class SessionManager {
     if (plan) {
       await this.applyPlan(session, requestId, plan, false);
     }
+  }
+
+  /**
+   * The file changes a pending edit WOULD make, without approving anything.
+   *
+   * Reuses {@link buildEditPlan}, the same conversion `approveEdit` uses, so a
+   * preview cannot show something different from what approval applies — the
+   * point of a diff is that it is trustworthy.
+   *
+   * Deliberately non-mutating: the request stays in `pendingEdits` and the
+   * coordinator is not told anything, so the user can open the diff, close it,
+   * and still approve or deny. Returns null when the request is unknown or is not
+   * a file edit.
+   */
+  async previewEdit(
+    sessionKey: string,
+    requestId: string,
+  ): Promise<FileEditPlan | null> {
+    const session = this.requireSession(sessionKey);
+    const request = session.pendingEdits.get(requestId);
+    if (!request) {
+      return null;
+    }
+    return await this.buildEditPlan(session, request);
   }
 
   /**
@@ -836,6 +1289,11 @@ export class SessionManager {
       seq,
       model: entry.model,
       permissionMode: entry.permissionMode,
+      // Empty until the engine's system/init arrives (Task 16).
+      tools: [],
+      slashCommands: [],
+      skills: [],
+      commandCatalog: [],
       promptPending: false,
       closing: false,
       unresponsiveTimer: null,
@@ -845,6 +1303,8 @@ export class SessionManager {
       coordSignatures: new Map(),
       disposables: [],
       protocolFailureReason: null,
+      // No tasks until the engine reports one (UI_PARITY flow 17).
+      backgroundTasks: [],
     };
     // The outbound sink reads the CURRENT child at call time, so it keeps
     // working across an agent restart that swaps `session.process`.
@@ -909,7 +1369,19 @@ export class SessionManager {
       enginePath: resolution.enginePath,
       cwd,
       adapter: this.adapter,
+      ...(session.resumeSessionId !== undefined
+        ? { resumeSessionId: session.resumeSessionId }
+        : {}),
+      // Deliberately NOT cleared after use: a bypass-class mode must survive a
+      // restart, or an engine crash would silently drop the user back to `default`
+      // while the picker still showed the mode they chose.
+      ...(session.launchPermissionMode !== undefined
+        ? { permissionMode: session.launchPermissionMode }
+        : {}),
     });
+    // Consumed: a resume applies to this launch only. Leaving it set would silently
+    // re-resume the same transcript after any later restart.
+    session.resumeSessionId = undefined;
     process.onStdoutMessage((message) => this.handleStdout(session, message));
     process.onExit((info) => this.handleExit(session, info));
     process.onProtocolFailure?.((failure) =>
@@ -1027,8 +1499,85 @@ export class SessionManager {
     // Reduce/assemble into the retained history (R3.3, R4.1, R4.2, R12).
     session.entry.accept(message);
     session.seq.syncAtLeast(session.entry.state.nextSeq);
+    if (isFileChangeReviewMessage(message)) {
+      const last = session.entry.history[session.entry.history.length - 1];
+      if (last && last.kind === "file_change_review") {
+        this.postToPanel(session, { type: "addMessage", item: last });
+      }
+    }
     // Drive typed events (and host-initiated request correlation).
     session.client?.handleMessage(message);
+
+    // Background tasks (UI_PARITY flow 17). The control client models no
+    // `taskStarted` event, so the frame is read here, where every frame passes.
+    // Without this a task running in the background was completely invisible and
+    // could not be stopped.
+    this.trackBackgroundTask(session, message);
+  }
+
+  /**
+   * Maintain the background-task list from `system/task_started` frames.
+   *
+   * A frame with no `task_id` is ignored rather than listed: it could not be stopped,
+   * and an unstoppable row is worse than none. A repeated id replaces the entry, since
+   * the engine is the authority on a task's description.
+   */
+  private trackBackgroundTask(
+    session: ManagedSession,
+    message: StdoutMessage,
+  ): void {
+    const frame = message as { type?: unknown; subtype?: unknown } & Record<
+      string,
+      unknown
+    >;
+    if (frame.type !== "system" || frame.subtype !== "task_started") return;
+    const taskId = typeof frame["task_id"] === "string" ? frame["task_id"] : "";
+    if (taskId.length === 0) return;
+
+    const description =
+      typeof frame["description"] === "string" && frame["description"].length > 0
+        ? frame["description"]
+        : "Background task";
+    const next = session.backgroundTasks.filter((task) => task.taskId !== taskId);
+    next.push({
+      taskId,
+      description,
+      ...(typeof frame["task_type"] === "string"
+        ? { taskType: frame["task_type"] }
+        : {}),
+      ...(typeof frame["workflow_name"] === "string"
+        ? { workflowName: frame["workflow_name"] }
+        : {}),
+      ...(typeof frame["tool_use_id"] === "string"
+        ? { toolUseId: frame["tool_use_id"] }
+        : {}),
+    });
+    session.backgroundTasks = next;
+    this.postToPanel(session, { type: "setBackgroundTasks", tasks: next });
+  }
+
+  /**
+   * Stop a background task (UI_PARITY flow 17).
+   *
+   * The task is dropped optimistically: the engine sends no "task_stopped" frame, so
+   * waiting for confirmation would leave a stopped task displayed as running forever.
+   */
+  async stopBackgroundTask(sessionKey: string, taskId: string): Promise<void> {
+    const session = this.sessions.get(sessionKey);
+    if (session === undefined) return;
+    const client = session.client as { stopTask?: (id: string) => Promise<unknown> } | null;
+    try {
+      await client?.stopTask?.(taskId);
+    } catch (error) {
+      this.log("protocol", `stop_task failed: ${String(error)}`);
+    }
+    session.backgroundTasks = session.backgroundTasks.filter(
+      (task) => task.taskId !== taskId,
+    );
+    this.postToPanel(session, {
+      type: "setBackgroundTasks",
+      tasks: session.backgroundTasks,
+    });
   }
 
   private wireClient(
@@ -1096,6 +1645,151 @@ export class SessionManager {
       type: "setMcpStatus",
       servers: message.mcp_servers,
     });
+
+    // Task 16: `tools`, `slash_commands` and `skills` have always been part of
+    // SDKSystemMessageSchema; the host simply discarded them. Defaulted to []
+    // rather than trusted, because an engine predating a field sends undefined
+    // and the webview iterates these during a repaint that runs before the
+    // conversation is reconciled — a non-array would throw and freeze the panel
+    // on stale content, the same failure mode setModelList guards against.
+    session.tools = Array.isArray(message.tools) ? message.tools : [];
+    session.slashCommands = Array.isArray(message.slash_commands)
+      ? message.slash_commands
+      : [];
+    session.skills = Array.isArray(message.skills) ? message.skills : [];
+    this.postToPanel(session, {
+      type: "setCapabilities",
+      tools: session.tools,
+      slashCommands: session.slashCommands,
+      skills: session.skills,
+    });
+  }
+
+  /**
+   * The slash commands the engine announced for this session, or `[]`.
+   *
+   * Exposed so callers dispatch against what the engine ACTUALLY supports rather
+   * than a hardcoded guess. The extension's chat participant declares four
+   * commands in package.json — explain, fix, review, test — and only `review`
+   * exists in the engine's 98-command registry; the other three are
+   * extension-level prompt templates with no engine counterpart. Sending
+   * `/explain` to the engine would be an unknown command, so the decision has to
+   * be made against this list at runtime (RAYU_CORE_MIGRATION_PLAN.md Task 17).
+   */
+  /**
+   * The keys of every live session.
+   *
+   * Needed so a host-side change that invalidates cached engine state — adding a
+   * provider, for instance — can refresh every open panel rather than only the
+   * one that happened to be focused.
+   */
+  /**
+   * Resume a previous transcript in this session (UI_PARITY flow 15).
+   *
+   * Restarts the engine, because `--resume` is a launch argument — there is no control
+   * request that loads a transcript into a running process. The panel's retained
+   * history is cleared first so the restored conversation is not appended to whatever
+   * was already on screen.
+   */
+  async resumeSession(sessionKey: string, resumeSessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionKey);
+    if (session === undefined) return;
+    session.resumeSessionId = resumeSessionId;
+    await this.newSession(sessionKey);
+  }
+
+  /**
+   * Replace the dynamically managed MCP servers (UI_PARITY flow 14).
+   *
+   * REPLACES rather than merges — the caller must send the whole desired set. Returns
+   * the engine's report of what was added, removed and what failed, or null when there
+   * is no live client, so the caller can avoid adopting a set the engine never saw.
+   */
+  async setMcpServers(
+    sessionKey: string,
+    servers: Record<string, unknown>,
+  ): Promise<{
+    added: string[];
+    removed: string[];
+    errors: Record<string, string>;
+  } | null> {
+    const session = this.sessions.get(sessionKey);
+    const client = session?.client;
+    if (session === undefined || !client) return null;
+    try {
+      const response = await client.mcpSetServers(servers);
+      // Server status changed, so refresh the panel's view of it rather than letting
+      // the header describe a set that no longer exists.
+      void this.refreshMcpStatus(sessionKey);
+      return {
+        added: response.added ?? [],
+        removed: response.removed ?? [],
+        errors: response.errors ?? {},
+      };
+    } catch (error) {
+      this.log("protocol", `mcp_set_servers failed: ${String(error)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Push workspace file matches to a session's panel (UI_PARITY flow 20).
+   *
+   * A separate method rather than a return value from the search seam, because the
+   * search is asynchronous in the host and the panel should render whatever arrives.
+   */
+  /**
+   * Push the active provider to a session's panel.
+   *
+   * Independent of the engine on purpose: it reads the shared provider config, so the
+   * panel can name the provider even when the engine has not started — which is the
+   * case on first launch, where it exits before emitting `system/init`.
+   */
+  publishProvider(sessionKey: string): void {
+    const session = this.sessions.get(sessionKey);
+    if (session === undefined) return;
+    const provider = this.activeProvider?.() ?? null;
+    this.postToPanel(session, {
+      type: "setProvider",
+      providerId: provider?.id ?? null,
+      providerKind: provider?.kind ?? null,
+    });
+  }
+
+  /**
+   * Push the current auth state to a session's panel.
+   *
+   * Called on open and after a sign-in, because the panel cannot observe the
+   * credential store itself and otherwise keeps showing a stale state.
+   */
+  publishAuthStatus(sessionKey: string): void {
+    const session = this.sessions.get(sessionKey);
+    if (session === undefined) return;
+    const resolved = this.authAccount?.() ?? null;
+    this.postToPanel(session, {
+      type: "setAuthStatus",
+      signedIn: resolved !== null,
+      account: resolved?.account ?? null,
+    });
+  }
+
+  /** Push auth state to every open panel, after a sign-in or sign-out. */
+  publishAuthStatusEverywhere(): void {
+    for (const key of this.sessions.keys()) this.publishAuthStatus(key);
+  }
+
+  postFileMatches(sessionKey: string, paths: string[]): void {
+    const session = this.sessions.get(sessionKey);
+    if (session === undefined) return;
+    this.postToPanel(session, { type: "setFileMatches", paths });
+  }
+
+  sessionKeys(): string[] {
+    return [...this.sessions.keys()];
+  }
+
+  getAnnouncedSlashCommands(sessionKey: string): readonly string[] {
+    return this.sessions.get(sessionKey)?.slashCommands ?? [];
   }
 
   /**
@@ -1753,6 +2447,30 @@ export class SessionManager {
       case "confirmConflict":
         void this.confirmConflict(session.key, requestId);
         return;
+      case "mcpReconnect": {
+        // UI_PARITY flow 14. The engine owns MCP lifecycle; these just ask.
+        const serverName = message["serverName"];
+        if (typeof serverName === "string" && serverName.length > 0) {
+          void this.reconnectMcpServer(session.key, serverName);
+        }
+        return;
+      }
+      case "mcpToggle": {
+        const serverName = message["serverName"];
+        const enabled = message["enabled"];
+        if (typeof serverName === "string" && serverName.length > 0) {
+          void this.toggleMcpServer(session.key, serverName, enabled === true);
+        }
+        return;
+      }
+      case "openDiff":
+        // Resolve the plan here so the host receives exactly what approval would
+        // apply, then let the host render it however its editor does.
+        void (async () => {
+          const plan = await this.previewEdit(session.key, requestId);
+          if (plan) await this.onPreviewEdit?.(requestId, plan);
+        })();
+        return;
       case "selectModel":
         void this.selectModel(
           session.key,
@@ -1770,6 +2488,42 @@ export class SessionManager {
       case "openModelList":
         void this.requestModels(session.key);
         return;
+      case "stopTask": {
+        const taskId = message["taskId"];
+        if (typeof taskId === "string" && taskId.length > 0) {
+          void this.stopBackgroundTask(session.key, taskId);
+        }
+        return;
+      }
+      case "searchFiles": {
+        // Only the host can read the workspace, so this is delegated.
+        const query = message["query"];
+        this.onSearchFiles?.(session.key, typeof query === "string" ? query : "");
+        return;
+      }
+      case "signIn":
+        // Host-served: the extension owns the deep-link sign-in flow.
+        this.onSignIn?.();
+        return;
+      case "openProviderSetup":
+        // No-op when the host supplies no wizard, rather than throwing: an older
+        // host with a newer webview must degrade, not break.
+        this.onProviderSetup?.(session.key);
+        return;
+      case "openFile": {
+        const filePath = message["filePath"];
+        if (typeof filePath === "string" && filePath.length > 0) {
+          this.onOpenFile?.(session.key, filePath);
+        }
+        return;
+      }
+      case "openReviewDiff": {
+        const filePath = message["filePath"];
+        if (typeof filePath === "string" && filePath.length > 0) {
+          this.onOpenReviewDiff?.(session.key, filePath);
+        }
+        return;
+      }
       case "newSession":
         void this.newSession(session.key);
         return;

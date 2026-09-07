@@ -141,10 +141,6 @@ class FakeAdapter implements EditorAdapter {
   async readFileSnapshot(): Promise<FileSnapshot | null> {
     return null;
   }
-  async getSecret(): Promise<string | undefined> {
-    return undefined;
-  }
-  async storeSecret(): Promise<void> {}
   log(channel: "protocol" | "lifecycle" | "error", message: string): void {
     this.logs.push({ channel, message });
   }
@@ -177,7 +173,9 @@ function resolution(): EngineResolution {
   };
 }
 
-function harness() {
+function harness(
+  overrides: Partial<ConstructorParameters<typeof SessionManager>[0]> = {},
+) {
   const adapter = new FakeAdapter();
   const procs: FakeProc[] = [];
   const agentProcessFactory: AgentProcessFactory = () => {
@@ -193,6 +191,7 @@ function harness() {
     engineResolver,
     timers: noopTimers,
     generateRequestId: () => `req-${(n += 1)}`,
+    ...overrides,
   });
   return {
     manager,
@@ -282,7 +281,11 @@ describe("selectPermissionMode", () => {
     await h.manager.openSession(KEY);
     const proc = h.current();
 
-    const done = h.manager.selectPermissionMode(KEY, "bypassPermissions");
+    // `acceptEdits` rather than `bypassPermissions`: the bypass-class modes are now
+    // intercepted BEFORE a request is sent, because the engine fixes their
+    // availability at launch and would refuse them unconditionally. This test is about
+    // the engine refusing a mode that IS switchable at runtime.
+    const done = h.manager.selectPermissionMode(KEY, "acceptEdits");
     answerModeRequest(proc, false);
     await done;
 
@@ -340,5 +343,45 @@ describe("selectPermissionMode", () => {
     // case-sensitive and does not coerce, so neither a differently-cased string
     // nor an object with a matching `toString` can escalate.
     expect(proc.requestIds("set_permission_mode")).toHaveLength(0);
+  });
+
+  /*
+   * The "full manage" bug. `permissionSetup.ts` computes
+   * `isBypassPermissionsModeAvailable` ONCE at startup from
+   * `(permissionMode is bypassPermissions|fullManage) || --dangerously-skip-permissions`,
+   * and print.ts then refuses a `set_permission_mode` for bypassPermissions with
+   * "the session was not launched with --dangerously-skip-permissions". Sending the
+   * request at all is what surfaced that error, so these modes must relaunch instead.
+   */
+  it("does NOT send a request for a bypass-class mode; it relaunches", async () => {
+    const h = harness();
+    await h.manager.openSession(KEY);
+    const proc = h.current();
+
+    await h.manager.selectPermissionMode(KEY, "fullManage");
+
+    // No set_permission_mode: the engine would only refuse it.
+    expect(proc.requestIds("set_permission_mode")).toHaveLength(0);
+  });
+
+  it("keeps the current mode when the escalation is declined", async () => {
+    const h = harness({ confirmPermissionEscalation: async () => false });
+    await h.manager.openSession(KEY);
+    const proc = h.current();
+
+    await h.manager.selectPermissionMode(KEY, "bypassPermissions");
+
+    expect(proc.requestIds("set_permission_mode")).toHaveLength(0);
+    // The picker is corrected back, so it cannot show a mode never applied.
+    expect(lastAnnouncedMode(h.adapter)).toBe("default");
+  });
+
+  it("declines by default when the host supplies no confirmation", async () => {
+    // An escalation that stops the agent asking before it acts must never happen
+    // silently because a seam was left unwired.
+    const h = harness();
+    await h.manager.openSession(KEY);
+    await h.manager.selectPermissionMode(KEY, "bypassPermissions");
+    expect(lastAnnouncedMode(h.adapter)).toBe("default");
   });
 });

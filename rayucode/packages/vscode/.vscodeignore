@@ -44,3 +44,13 @@ node_modules/**
 **/*.vsix
 **/graphify-out/**
 **/dist/bin/**
+
+# Developer documentation. README.md IS shipped (the Marketplace renders it);
+# RUNNING.md is a build/deploy guide for contributors and has no place in a
+# user's installed extension.
+RUNNING.md
+
+# Release runbook for maintainers. CHANGELOG.md IS shipped (the Marketplace
+# renders it); this is not user-facing.
+PUBLISHING.md
+UI_PARITY.md

@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { relative } from 'path'
 import {
   getOriginalCwd,
@@ -29,7 +28,7 @@ import { applyPermissionRulesToPermissionContext } from './permissions.js'
 import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
+const autoModeStateModule = RAYU_FEATURES.TRANSCRIPT_CLASSIFIER
   ? (require('./autoModeState.js') as typeof import('./autoModeState.js'))
   : null
 
@@ -609,7 +608,7 @@ export function transitionPermissionMode(
     setHasExitedPlanMode(true)
   }
 
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     if (toMode === 'plan' && fromMode !== 'plan') {
       return prepareContextForPlanMode(context)
     }
@@ -714,7 +713,7 @@ export function initialPermissionModeFromCLI({
   // AutoModeOptInDialog from showing in showSetupScreens() when auto can't
   // actually be entered. autoModeFlagCli still carries intent through to
   // verifyAutoModeGateAccess, which notifies the user why.
-  const autoModeCircuitBrokenSync = feature('TRANSCRIPT_CLASSIFIER')
+  const autoModeCircuitBrokenSync = RAYU_FEATURES.TRANSCRIPT_CLASSIFIER
     ? getAutoModeEnabledStateIfCached() === 'disabled'
     : false
 
@@ -727,7 +726,7 @@ export function initialPermissionModeFromCLI({
   }
   if (permissionModeCli) {
     const parsedMode = permissionModeFromString(permissionModeCli)
-    if (feature('TRANSCRIPT_CLASSIFIER') && parsedMode === 'auto') {
+    if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER && parsedMode === 'auto') {
       if (autoModeCircuitBrokenSync) {
         logForDebugging(
           'auto mode circuit breaker active (cached) — falling back to default',
@@ -758,7 +757,7 @@ export function initialPermissionModeFromCLI({
       })
     }
     // auto from settings requires the same gate check as from CLI
-    else if (feature('TRANSCRIPT_CLASSIFIER') && settingsMode === 'auto') {
+    else if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER && settingsMode === 'auto') {
       if (autoModeCircuitBrokenSync) {
         logForDebugging(
           'auto mode circuit breaker active (cached) — falling back to default',
@@ -803,7 +802,7 @@ export function initialPermissionModeFromCLI({
     result = { mode: 'default', notification }
   }
 
-  if (feature('TRANSCRIPT_CLASSIFIER') && result.mode === 'auto') {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER && result.mode === 'auto') {
     autoModeStateModule?.setAutoModeActive(true)
   }
 
@@ -969,7 +968,7 @@ export async function initializeToolPermissionContext({
   // Dangerous permissions (like Bash(*), Bash(python:*), PowerShell(iex:*)) would auto-allow
   // before the classifier can evaluate them, defeating the purpose of safer YOLO mode
   let dangerousPermissions: DangerousPermissionInfo[] = []
-  if (feature('TRANSCRIPT_CLASSIFIER') && permissionMode === 'auto') {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER && permissionMode === 'auto') {
     dangerousPermissions = findDangerousClassifierPermissions(
       rulesFromDisk,
       parsedAllowedToolsCli,
@@ -984,7 +983,7 @@ export async function initializeToolPermissionContext({
       alwaysDenyRules: { cliArg: parsedDisallowedToolsCli },
       alwaysAskRules: {},
       isBypassPermissionsModeAvailable,
-      ...(feature('TRANSCRIPT_CLASSIFIER')
+      ...(RAYU_FEATURES.TRANSCRIPT_CLASSIFIER
         ? { isAutoModeAvailable: isAutoModeGateEnabled() }
         : {}),
     },
@@ -1432,7 +1431,7 @@ export async function checkAndDisableBypassPermissions(
 }
 
 export function isDefaultPermissionModeAuto(): boolean {
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     const settings = getSettings_DEPRECATED() || {}
     return settings.permissions?.defaultMode === 'auto'
   }
@@ -1445,7 +1444,7 @@ export function isDefaultPermissionModeAuto(): boolean {
  * Evaluated at permission-check time so it's reactive to config changes.
  */
 export function shouldPlanUseAutoMode(): boolean {
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     return (
       hasAutoModeOptIn() &&
       isAutoModeGateEnabled() &&
@@ -1465,7 +1464,7 @@ export function prepareContextForPlanMode(
 ): ToolPermissionContext {
   const currentMode = context.mode
   if (currentMode === 'plan') return context
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     const planAutoMode = shouldPlanUseAutoMode()
     if (currentMode === 'auto') {
       if (planAutoMode) {
@@ -1503,7 +1502,7 @@ export function prepareContextForPlanMode(
 export function transitionPlanAutoMode(
   context: ToolPermissionContext,
 ): ToolPermissionContext {
-  if (!feature('TRANSCRIPT_CLASSIFIER')) return context
+  if (!RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) return context
   if (context.mode !== 'plan') return context
   // Mirror prepareContextForPlanMode's entry-time exclusion — never activate
   // auto mid-plan when the user entered from a dangerous mode.

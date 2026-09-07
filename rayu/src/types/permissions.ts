@@ -6,7 +6,6 @@
  * to avoid circular dependencies.
  */
 
-import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 
 // ============================================================================
@@ -33,7 +32,7 @@ export type PermissionMode = InternalPermissionMode
 export const INTERNAL_PERMISSION_MODES = [
   ...EXTERNAL_PERMISSION_MODES,
   'fullManage',
-  ...(feature('TRANSCRIPT_CLASSIFIER') ? (['auto'] as const) : ([] as const)),
+  ...(RAYU_FEATURES.TRANSCRIPT_CLASSIFIER ? (['auto'] as const) : ([] as const)),
 ] as const satisfies readonly PermissionMode[]
 
 export const PERMISSION_MODES = INTERNAL_PERMISSION_MODES

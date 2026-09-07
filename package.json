@@ -1,7 +1,7 @@
 {
   "name": "rayu-cli-workspace",
   "version": "0.0.0",
-  "description": "Workspace root for @rayu-dev/agent-protocol, @rayu-dev/web-bridge-client and the rayucode packages. The rayu CLI (rayu/) is deliberately NOT a member — it stays a standalone Bun project. See WORKSPACE.md.",
+  "description": "Workspace root for @rayu-dev/agent-protocol, @rayu-dev/web-bridge-client and the rayucode packages. The rayu CLI (rayu/) is deliberately NOT a member \u2014 it stays a standalone Bun project. See WORKSPACE.md.",
   "license": "MIT",
   "private": true,
   "workspaces": [
@@ -10,10 +10,11 @@
   ],
   "scripts": {
     "build:protocol": "npm run build --workspace @rayu-dev/agent-protocol",
+    "build:core": "npm run build --workspace @rayu-dev/rayu-core",
     "build:web-bridge": "npm run build --workspace @rayu-dev/web-bridge-client",
-    "build:engine": "cd rayu && bun run build",
+    "build:engine": "cd rayu && bun run build && bun run build:lib && bun run build:vscode-host",
     "build:rayucode": "npm run build --workspace @rayucode/core && npm run build --workspace rayucode",
-    "build": "npm run build:protocol && npm run build:web-bridge && npm run build:engine && npm run build:rayucode",
+    "build": "npm run build:protocol && npm run build:core && npm run build:web-bridge && npm run build:engine && npm run build:rayucode",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "package": "npm run build && npm run package --workspace rayucode"
@@ -21,11 +22,12 @@
   "engines": {
     "node": ">=18"
   },
-  "//overrides": "zod is pinned to ONE exact version across the workspace. The protocol schemas and every consumer must share a single zod runtime: two instances make `instanceof` checks and safeParse results silently disagree across package boundaries. Must stay in lockstep with rayu/package.json. See PROTOCOL.md §5.",
+  "//overrides": "zod is pinned to ONE exact version across the workspace. The protocol schemas and every consumer must share a single zod runtime: two instances make `instanceof` checks and safeParse results silently disagree across package boundaries. Must stay in lockstep with rayu/package.json. See PROTOCOL.md \u00a75.",
   "overrides": {
     "zod": "4.4.3"
   },
   "devDependencies": {
     "typescript": "^5.6.0"
-  }
+  },
+  "//build:engine": "Builds BOTH rayu artifacts: dist/rayu.js (the CLI binary staged into the VSIX) and dist/rayu-lib.js + dist/types (the shared library surface the extension imports by path). build:rayucode fails without the second one."
 }

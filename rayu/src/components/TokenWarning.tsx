@@ -1,5 +1,4 @@
 import { c as _c } from "react/compiler-runtime";
-import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useSyncExternalStore } from 'react';
 import { Box, Text } from '../ink.js';
@@ -127,12 +126,12 @@ export function TokenWarning(t0) {
   let displayPercentLeft = percentLeft;
   let reactiveOnlyMode = false;
   let collapseMode = false;
-  if (feature("REACTIVE_COMPACT")) {
+  if (RAYU_FEATURES.REACTIVE_COMPACT) {
     if (getFeatureValue_CACHED_MAY_BE_STALE("tengu_cobalt_raccoon", false)) {
       reactiveOnlyMode = true;
     }
   }
-  if (feature("CONTEXT_COLLAPSE")) {
+  if (RAYU_FEATURES.CONTEXT_COLLAPSE) {
     const {
       isContextCollapseEnabled
     } = require("../services/contextCollapse/index.js") as typeof import('../services/contextCollapse/index.js');
@@ -153,7 +152,7 @@ export function TokenWarning(t0) {
     }
     displayPercentLeft = Math.max(0, t4);
   }
-  if (collapseMode && feature("CONTEXT_COLLAPSE")) {
+  if (collapseMode && RAYU_FEATURES.CONTEXT_COLLAPSE) {
     let t4;
     if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
       t4 = <Box flexDirection="row"><CollapseLabel upgradeMessage={upgradeMessage} /></Box>;

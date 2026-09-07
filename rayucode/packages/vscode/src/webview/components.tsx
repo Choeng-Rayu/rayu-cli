@@ -17,6 +17,7 @@ import { useState, type ReactNode } from "react";
 import type {
   AssistantConversationItem,
   ErrorConversationItem,
+  FileChangeReviewConversationItem,
   ModelUsage,
   PermissionRequestConversationItem,
   ToolActionConversationItem,
@@ -24,6 +25,21 @@ import type {
   UsageConversationItem,
   UserConversationItem,
 } from "@rayucode/core";
+
+import {
+  SparkleIcon,
+  UserIcon,
+  TerminalIcon,
+  EditIcon,
+  FileIcon,
+  DiffIcon,
+  CompareIcon,
+  CheckAllIcon,
+  UndoIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+} from "./icons.js";
 
 import { EditDiff, isDiffableTool } from "./diff.js";
 import { renderMarkdown } from "./markdown.js";
@@ -152,11 +168,14 @@ function ToolInputView({
 
 function UserEntry({ item }: { item: UserConversationItem }): ReactNode {
   return (
-    <Entry kind="user" label="Your message">
-      {/* The user's own text is shown verbatim rather than as markdown: it is
-          input, and re-interpreting it would misrepresent what was sent. */}
-      <div className="user-text">{item.text}</div>
-    </Entry>
+    <div className="copilot-turn copilot-user-turn" role="article" aria-label="Your message">
+      <div className="copilot-turn-avatar copilot-user-avatar" aria-hidden="true">
+        <UserIcon />
+      </div>
+      <div className="copilot-user-card">
+        <div className="user-text">{item.text}</div>
+      </div>
+    </div>
   );
 }
 
@@ -166,22 +185,25 @@ function AssistantEntry({
   item: AssistantConversationItem;
 }): ReactNode {
   return (
-    <Entry kind="assistant" label="Assistant response">
-      <div className="assistant-text">{renderMarkdown(item.text)}</div>
-      {item.streaming ? (
-        // aria-live so a screen reader announces that output is still arriving,
-        // without the caller having to poll.
-        <div className="streaming-indicator" aria-live="polite">
-          <span className="dot" aria-hidden="true" />
-          <span className="sr-only">Response in progress</span>
-        </div>
-      ) : null}
-      {item.error !== undefined ? (
-        <div className="assistant-error" role="alert">
-          {item.error}
-        </div>
-      ) : null}
-    </Entry>
+    <div className="copilot-turn copilot-assistant-turn" role="article" aria-label="Assistant response">
+      <div className="copilot-turn-avatar copilot-assistant-avatar" aria-hidden="true">
+        <SparkleIcon />
+      </div>
+      <div className="copilot-assistant-content">
+        <div className="assistant-text">{renderMarkdown(item.text)}</div>
+        {item.streaming ? (
+          <div className="streaming-indicator" aria-live="polite">
+            <span className="dot" aria-hidden="true" />
+            <span className="sr-only">Response in progress</span>
+          </div>
+        ) : null}
+        {item.error !== undefined ? (
+          <div className="assistant-error" role="alert">
+            {item.error}
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -198,28 +220,59 @@ function ToolActionEntry({
 }: {
   item: ToolActionConversationItem;
 }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const isBash = item.toolName === "Bash";
+  const isEdit = isDiffableTool(item.toolName);
   const status = TOOL_STATUS_LABEL[item.status] ?? item.status;
+  const isRunning = item.status === "running";
+
+  const preview =
+    item.command !== undefined
+      ? item.command
+      : typeof item.input["file_path"] === "string"
+        ? (item.input["file_path"] as string)
+        : typeof item.input["path"] === "string"
+          ? (item.input["path"] as string)
+          : "";
+
   return (
-    <Entry kind="tool" label={`Tool ${item.toolName}, ${status}`}>
-      <div className="tool-header">
-        <span className="tool-name">{item.toolName}</span>
-        <span className={`tool-status tool-status-${item.status}`}>{status}</span>
-      </div>
-      {/* A bash command is shown in full, never truncated: the user is being
-          asked to reason about exactly what will run. */}
-      {item.command !== undefined ? (
-        <pre className="tool-command">{item.command}</pre>
-      ) : (
-        <Collapsible summary="Input" defaultOpen={isDiffableTool(item.toolName)}>
-          <ToolInputView toolName={item.toolName} input={item.input} />
-        </Collapsible>
-      )}
-      {item.output !== undefined && item.output.length > 0 ? (
-        <Collapsible summary="Output">
-          <pre className="tool-output">{item.output}</pre>
-        </Collapsible>
+    <div className={`copilot-tool-pill-container status-${item.status}`}>
+      <button
+        type="button"
+        className="copilot-tool-pill-header"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
+        <span className="copilot-tool-icon">
+          {isBash ? <TerminalIcon /> : isEdit ? <EditIcon /> : <FileIcon />}
+        </span>
+        <span className="copilot-tool-title">
+          <span className="copilot-tool-name">{item.toolName}</span>
+          {preview ? <span className="copilot-tool-preview">{preview}</span> : null}
+        </span>
+        <span className={`copilot-tool-badge badge-${item.status}`}>
+          {isRunning ? <span className="dot pulse" /> : null}
+          {status}
+        </span>
+        <span className="copilot-tool-chevron">
+          {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
+        </span>
+      </button>
+      {open ? (
+        <div className="copilot-tool-details">
+          {item.command !== undefined ? (
+            <pre className="tool-command">{item.command}</pre>
+          ) : (
+            <ToolInputView toolName={item.toolName} input={item.input} />
+          )}
+          {item.output !== undefined && item.output.length > 0 ? (
+            <Collapsible summary="Output" defaultOpen={true}>
+              <pre className="tool-output">{item.output}</pre>
+            </Collapsible>
+          ) : null}
+        </div>
       ) : null}
-    </Entry>
+    </div>
   );
 }
 
@@ -254,6 +307,12 @@ function PermissionActions({
     );
   };
 
+  // Only file edits have a diff to show. Offered alongside Allow/Deny rather than
+  // replacing the inline diff: the inline view answers "what is this?" at a
+  // glance, this one answers "let me actually read it" in a real editor
+  // (UI_PARITY flow 11). Opening it decides nothing — the request stays pending.
+  const isEdit = isEditToolName(item.toolName);
+
   return (
     <div className={`permission-actions permission-actions-${layout}`}>
       <button type="button" className="btn btn-primary btn-allow" onClick={allow}>
@@ -266,12 +325,76 @@ function PermissionActions({
       >
         Deny
       </button>
+      {isEdit ? (
+        <button
+          type="button"
+          className="btn btn-quiet btn-diff"
+          title="Open the proposed change in the diff editor. This does not approve it."
+          onClick={() => post({ type: "openDiff", requestId: item.requestId })}
+        >
+          Open diff
+        </button>
+      ) : null}
     </div>
   );
 }
 
+/**
+ * The tools that ask the user to approve a PLAN rather than an action.
+ *
+ * `ExitPlanMode` is how the CLI's plan mode requests approval, and both the v1 and
+ * v2 tools share the name (`EXIT_PLAN_MODE_TOOL_NAME` and
+ * `EXIT_PLAN_MODE_V2_TOOL_NAME` are both 'ExitPlanMode'). Both plan tools are in
+ * the host's tool list, so once permission requests actually reach the panel these
+ * arrive like any other approval.
+ */
+const PLAN_APPROVAL_TOOLS = new Set(["ExitPlanMode", "EnterPlanMode"]);
+
+/** Whether this request is a plan review (UI_PARITY flow 16). */
+export function isPlanApproval(toolName: string): boolean {
+  return PLAN_APPROVAL_TOOLS.has(toolName);
+}
+
+/**
+ * The plan text to review, or null when this is not a plan approval.
+ *
+ * The engine puts the plan in the tool input; `plan` is the field the CLI's
+ * ExitPlanMode uses. Falls back through the other plausible carriers rather than
+ * showing an empty review, which would be worse than a generic prompt.
+ */
+export function planApprovalText(
+  item: PermissionRequestConversationItem,
+): string | null {
+  if (!isPlanApproval(item.toolName)) return null;
+  for (const field of ["plan", "content", "text"]) {
+    const value = item.input?.[field];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * A human title for the approval.
+ *
+ * "ExitPlanMode needs your approval" is technically accurate and completely
+ * unhelpful at the moment a user is being asked to review a plan.
+ */
+export function permissionTitle(toolName: string): string {
+  return isPlanApproval(toolName) ? "Review the plan" : `${toolName} needs your approval`;
+}
+
 /** One-line description of what is being asked for, for the sticky bar. */
 function permissionSummary(item: PermissionRequestConversationItem): string {
+  // A plan is prose, not a command or a path; the bar shows its first line and the
+  // full text is rendered in the card.
+  if (isPlanApproval(item.toolName)) {
+    const plan = planApprovalText(item);
+    if (plan !== null) {
+      const firstLine = plan.trim().split("\n")[0] ?? "";
+      return firstLine.length > 0 ? firstLine : "the proposed plan";
+    }
+    return "the proposed plan";
+  }
   if (item.command !== undefined && item.command.length > 0) {
     return item.command;
   }
@@ -313,7 +436,7 @@ export function PendingPermissionBar({
     <div
       className="permission-bar"
       role="alert"
-      aria-label={`${item.toolName} needs your approval`}
+      aria-label={permissionTitle(item.toolName)}
     >
       <div className="permission-bar-head">
         {/* The glyph is decorative: the adjacent text already says "needs your
@@ -322,7 +445,13 @@ export function PendingPermissionBar({
           ⚠
         </span>
         <span className="permission-bar-title">
-          <strong>{item.toolName}</strong> needs your approval
+          {isPlanApproval(item.toolName) ? (
+            <strong>Review the plan</strong>
+          ) : (
+            <>
+              <strong>{item.toolName}</strong> needs your approval
+            </>
+          )}
         </span>
         <span className="header-spacer" />
         <button type="button" className="btn btn-quiet btn-review" onClick={onReview}>
@@ -507,6 +636,118 @@ function NoticeEntry({
   );
 }
 
+function FileChangeReviewCard({
+  item,
+  post,
+}: {
+  item: FileChangeReviewConversationItem;
+  post: PostMessage;
+}): ReactNode {
+  const { summary } = item;
+  const fileCount = summary.totalFiles;
+
+  return (
+    <div className="copilot-review-card" role="region" aria-label="File changes review">
+      <div className="copilot-review-header">
+        <div className="copilot-review-title">
+          <CompareIcon />
+          <span className="copilot-review-heading">
+            Files Changed ({fileCount})
+          </span>
+          <span className="copilot-diff-stats">
+            <span className="stat-additions">+{summary.totalAdditions}</span>
+            <span className="stat-removals">-{summary.totalRemovals}</span>
+          </span>
+        </div>
+        <div className="copilot-review-global-actions">
+          <button
+            type="button"
+            className="btn btn-primary btn-sm btn-keep-all"
+            title="Accept and keep all changes (/keep)"
+            onClick={() => post({ type: "submitPrompt", text: "/keep" })}
+          >
+            <CheckAllIcon />
+            <span>Keep All</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet btn-sm btn-undo-all"
+            title="Revert all file changes (/undo all)"
+            onClick={() => post({ type: "submitPrompt", text: "/undo all" })}
+          >
+            <UndoIcon />
+            <span>Undo All</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="copilot-review-files">
+        {summary.files.map((file) => {
+          const fileName = file.displayPath.split("/").pop() ?? file.displayPath;
+          const dirPath = file.displayPath.includes("/")
+            ? file.displayPath.slice(0, file.displayPath.lastIndexOf("/"))
+            : "";
+
+          return (
+            <div key={file.filePath} className="copilot-review-file-row">
+              <button
+                type="button"
+                className="copilot-review-file-link"
+                title={`Open ${file.displayPath}`}
+                onClick={() => post({ type: "openFile", filePath: file.filePath })}
+              >
+                <FileIcon />
+                <span className="copilot-file-name">{fileName}</span>
+                {dirPath ? (
+                  <span className="copilot-file-dir">{dirPath}</span>
+                ) : null}
+              </button>
+
+              <span className="copilot-file-stats">
+                <span className="stat-additions">+{file.additions}</span>
+                <span className="stat-removals">-{file.removals}</span>
+              </span>
+
+              <div className="copilot-review-file-actions">
+                <button
+                  type="button"
+                  className="btn-icon"
+                  title="Compare Changes (diff editor)"
+                  onClick={() => post({ type: "openReviewDiff", filePath: file.filePath })}
+                >
+                  <DiffIcon />
+                </button>
+                <button
+                  type="button"
+                  className="btn-icon"
+                  title={`Keep ${fileName} (/keep)`}
+                  onClick={() => post({ type: "submitPrompt", text: `/keep ${file.filePath}` })}
+                >
+                  <CheckIcon />
+                </button>
+                <button
+                  type="button"
+                  className="btn-icon btn-icon-danger"
+                  title={`Undo ${fileName} (/undo)`}
+                  onClick={() => post({ type: "submitPrompt", text: `/undo ${file.filePath}` })}
+                >
+                  <UndoIcon />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="copilot-review-footer">
+        <span className="copilot-review-hint">
+          Use <code>/keep [file]</code> to accept or <code>/undo [file]</code> to revert
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Render one conversation entry.
  *
@@ -530,6 +771,8 @@ export function ConversationEntry({
       return <ToolActionEntry item={item} />;
     case "permission_request":
       return <PermissionEntry item={item} post={post} />;
+    case "file_change_review":
+      return <FileChangeReviewCard item={item} post={post} />;
     case "usage":
       return <UsageEntry item={item} />;
     case "error":

@@ -14,7 +14,6 @@
 //   - getWorkspaceContext   (R9.1, R9.3, R9.4)
 //   - isPathIgnored         (R9.6)
 //   - registerCommand       (R14.1, R14.4)
-//   - getSecret/storeSecret (R8.4, R13.3)
 //   - log                   (R2.6, R15.3)
 //   - showActionableMessage (R1.2, R15.1)
 //   - getSetting            (R1.1, R9.3, R9.4)
@@ -431,18 +430,6 @@ export class VSCodeAdapter implements EditorAdapter {
     // gets cleaned up on deactivate.
     this.context.subscriptions.push(disposable);
     return disposable;
-  }
-
-  // --------------------------------------------------------------------------
-  // Secret storage (R8.4, R13.3)
-  // --------------------------------------------------------------------------
-
-  getSecret(key: string): Promise<string | undefined> {
-    return Promise.resolve(this.context.secrets.get(key));
-  }
-
-  storeSecret(key: string, value: string): Promise<void> {
-    return Promise.resolve(this.context.secrets.store(key, value));
   }
 
   // --------------------------------------------------------------------------

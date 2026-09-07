@@ -24,7 +24,20 @@
 // tsconfig.json and tsconfig.webview.json); this script does the bundling.
 // Run `node esbuild.mjs` for a one-shot build or `node esbuild.mjs --watch`.
 
+import { createRequire } from "node:module";
+
 import esbuild from "esbuild";
+
+// The shared library surface built from rayu/src, resolved by PATH not by npm.
+//
+// `rayu` is deliberately a standalone Bun project (WORKSPACE.md). Declaring it as
+// an npm dependency made npm install INTO rayu/node_modules, overwriting bun's
+// pinned tree — measured: @types/react went 18.3.29 → 18.3.31, whose diagnostic
+// text renders `React.JSX.Element` instead of `JSX.Element`, and rayu's
+// typecheck baseline reported 3 phantom "new" errors in a file nothing had
+// touched. Consuming the BUILT artifact by path keeps the two dependency trees
+// separate, exactly as dist/rayu.js is already staged into the VSIX by file copy.
+const LIB_ALIAS = createRequire(import.meta.url).resolve("../../../rayu/dist/rayu-lib.js");
 
 const watch = process.argv.includes("--watch");
 
@@ -42,6 +55,16 @@ const extensionOptions = {
   // `vscode` is provided by the extension host; everything else (including the
   // ESM @rayucode/core) is bundled into the CJS output.
   external: ["vscode"],
+  // Shared library surface from rayu/src — see the note above `LIB_ALIAS`.
+  alias: { "@rayu-dev/rayu-cli/lib": LIB_ALIAS },
+  // The shared library bundle is ESM and carries Bun's `require` shim,
+  // `createRequire(import.meta.url)`, because rayu/src lazily requires the npm
+  // `semver`/`yaml` packages. Inlined into this CJS output `import.meta.url` is
+  // undefined, and `createRequire(undefined)` throws at module load —
+  // "The argument 'filename' must be a file URL object … Received undefined" —
+  // taking the extension host down before any code runs. `createRequire` accepts
+  // an absolute path, so `__filename` satisfies it in CJS.
+  define: { "import.meta.url": "__filename" },
   logLevel: "info",
 };
 

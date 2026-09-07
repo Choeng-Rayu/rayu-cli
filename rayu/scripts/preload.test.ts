@@ -3,12 +3,19 @@
 // suite is hermetic: feature/login behavior depends only on what each test sets
 // explicitly via process.env.USE_RAYU_OAUTH, never on the shipped default (which
 // is now 'true') or the ambient shell.
+import { installFeatureTable } from '@rayu-dev/rayu-core'
 import { MACRO_VALUES } from './macroValues.ts'
+import { DEV_FEATURE_TABLE } from './featureTable.ts'
 
 ;(globalThis as { MACRO?: typeof MACRO_VALUES }).MACRO = {
   ...MACRO_VALUES,
   RAYU_OAUTH_DEFAULT: 'false',
 }
+
+// Feature flags for the test runtime. All false — exactly what `feature()` from
+// `bun:bundle` returned under `bun test` before the Task 4 codemod, so no test's
+// behaviour changes. See scripts/featureTable.ts.
+installFeatureTable(DEV_FEATURE_TABLE)
 
 // Default to the external (non-Anthropic-employee) user type so ant-only code
 // paths dead-code-eliminate / no-op.

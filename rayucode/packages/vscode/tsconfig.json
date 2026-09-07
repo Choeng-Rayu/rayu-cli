@@ -1,6 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // Shared library surface from rayu/src, resolved by path (see esbuild.mjs).
+    "paths": { "@rayu-dev/rayu-cli/lib": ["../../../rayu/dist/types/entrypoints/library.d.ts"] },
     "rootDir": "./src",
     "outDir": "./dist",
     "tsBuildInfoFile": "./dist/.tsbuildinfo",

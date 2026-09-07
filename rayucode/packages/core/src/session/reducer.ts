@@ -23,12 +23,14 @@
 
 import {
   isAssistantMessage,
+  isFileChangeReviewMessage,
   isResultMessage,
   isStreamEvent,
   isSystemInit,
 } from "../protocol/guards.js";
 import type {
   AssistantMessage,
+  FileChangeReviewMessage,
   ResultMessage,
   StdoutMessage,
   StreamEvent,
@@ -42,6 +44,7 @@ import type {
 import type {
   AssistantConversationItem,
   ConversationItem,
+  FileChangeReviewConversationItem,
   UsageConversationItem,
   UserConversationItem,
 } from "./state.js";
@@ -268,6 +271,27 @@ function reduceResult(
   return { ...state, history, inProgressAssistantId: null };
 }
 
+/**
+ * `system/file_change_review`: summary of pending file changes requiring
+ * review (/keep, /undo).
+ */
+function reduceFileChangeReview(
+  state: ConversationReducerState,
+  message: FileChangeReviewMessage,
+  seq: number,
+): ConversationReducerState {
+  const item: FileChangeReviewConversationItem = {
+    kind: "file_change_review",
+    id: message.uuid ?? `review-${seq}`,
+    seq,
+    summary: message.review,
+  };
+  return {
+    ...state,
+    history: [...state.history, item],
+  };
+}
+
 /** Record the latest `session_id` seen on a message as the resumable id (R12.5). */
 function captureSessionId(
   state: ConversationReducerState,
@@ -306,6 +330,9 @@ export function reduceConversation(
   }
   if (isAssistantMessage(message)) {
     return reduceAssistant(advanced, message, seq);
+  }
+  if (isFileChangeReviewMessage(message)) {
+    return reduceFileChangeReview(advanced, message, seq);
   }
   if (isResultMessage(message)) {
     return reduceResult(advanced, message, seq);

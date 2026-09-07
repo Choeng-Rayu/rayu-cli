@@ -22,7 +22,8 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:schema-hash:update": "UPDATE_SCHEMA_HASHES=1 vitest run test/schema-hash.test.ts"
   },
   "dependencies": {
     "zod": "4.4.3"

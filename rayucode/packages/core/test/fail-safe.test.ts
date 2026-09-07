@@ -122,7 +122,6 @@ function makeHarness(): Harness {
     applyEdits: () => Promise.resolve({ applied: [], conflicts: [], failures: [] }),
     readFileSnapshot: () => Promise.resolve(null),
     isIgnored: () => Promise.resolve(false),
-    getSecret: () => Promise.resolve(undefined),
     setSecret: () => Promise.resolve(),
   } as unknown as ConstructorParameters<typeof SessionManager>[0]["adapter"];
 

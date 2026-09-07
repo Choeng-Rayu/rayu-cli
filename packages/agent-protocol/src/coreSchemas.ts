@@ -1768,6 +1768,47 @@ export const SDKFilesPersistedEventSchema = lazySchema(() =>
   }),
 )
 
+export const FileChangeReviewFileSchema = lazySchema(() =>
+  z.object({
+    filePath: z.string(),
+    displayPath: z.string(),
+    changeIds: z.array(z.string()),
+    additions: z.number(),
+    removals: z.number(),
+    hunks: z.array(z.any()).optional().default([]),
+    fileContent: z.string().optional(),
+    firstLine: z.string().nullable().optional(),
+    status: z.enum(['pending', 'kept', 'undone', 'mixed']),
+    createdAt: z.number(),
+    isCreated: z.boolean().optional().default(false),
+  }),
+)
+
+export const FileChangeReviewSummarySchema = lazySchema(() =>
+  z.object({
+    changeIds: z.array(z.string()),
+    totalFiles: z.number(),
+    totalAdditions: z.number(),
+    totalRemovals: z.number(),
+    files: z.array(FileChangeReviewFileSchema()),
+    createdAt: z.number(),
+  }),
+)
+
+export const SDKFileChangeReviewMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('file_change_review'),
+    content: z.string(),
+    level: z.string().optional(),
+    isMeta: z.boolean().optional(),
+    timestamp: z.string().optional(),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string().optional(),
+    review: FileChangeReviewSummarySchema(),
+  }),
+)
+
 export const SDKTaskNotificationMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
@@ -1935,6 +1976,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKUserMessageReplaySchema(),
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
+    SDKFileChangeReviewMessageSchema(),
     SDKPartialAssistantMessageSchema(),
     SDKCompactBoundaryMessageSchema(),
     SDKStatusMessageSchema(),

@@ -16017,15 +16017,6 @@ var VSCodeAdapter = class {
     return disposable;
   }
   // --------------------------------------------------------------------------
-  // Secret storage (R8.4, R13.3)
-  // --------------------------------------------------------------------------
-  getSecret(key) {
-    return Promise.resolve(this.context.secrets.get(key));
-  }
-  storeSecret(key, value) {
-    return Promise.resolve(this.context.secrets.store(key, value));
-  }
-  // --------------------------------------------------------------------------
   // Diagnostics (R2.6, R15.3)
   // --------------------------------------------------------------------------
   log(channel, message) {
@@ -16248,18 +16239,6 @@ function isFileNotFound(error51) {
 }
 
 // src/test/suite/vscodeAdapter.integration.test.ts
-async function resolveRealExtensionContext() {
-  const ext = vscode3.extensions.getExtension("rayu-dev.rayucode") ?? vscode3.extensions.all.find(
-    (e) => e.id.endsWith(".rayucode") || e.packageJSON?.name === "rayucode"
-  );
-  if (!ext) return void 0;
-  const api = ext.isActive ? ext.exports : await ext.activate();
-  const context = api?.context;
-  return isExtensionContext(context) ? context : void 0;
-}
-function isExtensionContext(value) {
-  return !!value && typeof value === "object" && "secrets" in value && "subscriptions" in value;
-}
 function makeMinimalContext() {
   return {
     subscriptions: [],
@@ -16271,35 +16250,12 @@ function firstWorkspaceFolder() {
   assert2.ok(folder, "integration tests require an open workspace folder");
   return folder;
 }
-async function storeAndSettle(adapter, key, value) {
-  await adapter.storeSecret(key, value);
-  const deadline = Date.now() + SECRET_SETTLE_TIMEOUT_MS;
-  let observed;
-  for (; ; ) {
-    observed = await adapter.getSecret(key);
-    if (observed === value) {
-      return;
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `secret "${key}" never became observable: after ${SECRET_SETTLE_TIMEOUT_MS}ms get() still reports ${JSON.stringify(observed)} instead of ${JSON.stringify(value)}`
-      );
-    }
-    await new Promise((resolve2) => {
-      const timer = setTimeout(resolve2, 25);
-      timer.unref?.();
-    });
-  }
-}
-var SECRET_SETTLE_TIMEOUT_MS = 2e4;
 suite("VSCodeAdapter non-edit operations (integration)", () => {
   let adapter;
   let context;
-  let realContext;
   let originalFilesExclude;
   suiteSetup(async () => {
-    realContext = await resolveRealExtensionContext();
-    context = realContext ?? makeMinimalContext();
+    context = makeMinimalContext();
     adapter = new VSCodeAdapter(context);
     originalFilesExclude = vscode3.workspace.getConfiguration().get("files.exclude");
   });
@@ -16316,23 +16272,6 @@ suite("VSCodeAdapter non-edit operations (integration)", () => {
       }
     }
     await vscode3.commands.executeCommand("workbench.action.closeAllEditors");
-  });
-  test("stores and retrieves a secret (round-trip)", async function() {
-    if (!realContext) {
-      this.skip();
-      return;
-    }
-    const roundTripAdapter = new VSCodeAdapter(realContext);
-    const key = "rayucode.itest.secret";
-    const value = `value-${Date.now()}`;
-    await storeAndSettle(roundTripAdapter, key, value);
-    assert2.equal(await roundTripAdapter.getSecret(key), value);
-    await storeAndSettle(roundTripAdapter, key, "updated");
-    assert2.equal(await roundTripAdapter.getSecret(key), "updated");
-    assert2.equal(
-      await roundTripAdapter.getSecret("rayucode.itest.absent"),
-      void 0
-    );
   });
   test("registers an invocable command and disposes it", async () => {
     const commandId = "rayucode.itest.ping";

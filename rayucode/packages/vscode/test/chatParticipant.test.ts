@@ -53,12 +53,23 @@ describe("buildPrompt", () => {
     expect(buildPrompt({ prompt: "hello there" })).toBe("hello there");
   });
 
-  it("prepends an instruction for each contributed slash command", () => {
-    for (const command of ["explain", "fix", "review", "test"]) {
+  it("prepends an instruction for the commands the engine does not have", () => {
+    // Task 17: `review` was removed from this list because it IS a real engine
+    // command (one of 98) and is now dispatched as `/review` instead of being
+    // described in English. explain/fix/test have no engine counterpart, so a
+    // prompt template remains the honest implementation for them.
+    for (const command of ["explain", "fix", "test"]) {
       const prompt = buildPrompt({ prompt: "this function", command });
-      expect(prompt).not.toBe("this function");
-      expect(prompt.endsWith("this function")).toBe(true);
+      expect(prompt, command).not.toBe("this function");
+      expect(prompt.endsWith("this function"), command).toBe(true);
     }
+  });
+
+  it("dispatches a real engine command instead of narrating it", () => {
+    // See test/slashCommands.test.ts for the full matrix.
+    expect(buildPrompt({ prompt: "this function", command: "review" }, ["review"])).toBe(
+      "/review this function",
+    );
   });
 
   it("uses a command-specific instruction", () => {
@@ -420,6 +431,10 @@ describe("registerChatParticipant", () => {
         closeSession: async (key: string) => {
           closed.push(key);
         },
+        // Task 17: the participant asks what the engine announced so it can
+        // dispatch real commands. Empty here, so these tests keep exercising the
+        // prompt-template path they were written for.
+        getAnnouncedSlashCommands: () => [],
       },
       adapter: {
         registerAgentPanelResolver: (resolver: (key: string) => unknown) => {

@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    "rootDir": "src",
+    "outDir": "dist",
+
+    // Emit BOTH JavaScript and declarations. rayu/ bundles core with Bun (JS
+    // only), but the extension consumes it as a normal npm package and needs the
+    // .d.ts — same reasoning as packages/agent-protocol, see WORKSPACE.md §2.
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+
+    // `lib` is deliberately ES2022 with NO "DOM": core must not be able to
+    // reach a browser or terminal API by accident. The VS Code extension host
+    // and the CLI are both plain Node.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": false,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules", "test"]
+}

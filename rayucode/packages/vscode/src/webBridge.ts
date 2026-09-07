@@ -16,6 +16,7 @@ import * as vscode from "vscode";
 
 import type { PanelOutboundMessage, SessionManager } from "@rayucode/core";
 import { WebBridgeController } from "@rayucode/core";
+import { SIGN_IN_COMMAND } from "./commands.js";
 import {
   resolveHostname,
   resolveMachineId,
@@ -79,12 +80,23 @@ export function registerWebBridge(
     // Checked before constructing anything so the failure is a sentence the user can
     // act on, rather than a socket that quietly never connects.
     if (!hasRayuSession(env)) {
+      // Task 15: sign-in happens in the editor now. The terminal fallback is kept
+      // because it is still the only route when the extension host cannot reach a
+      // browser — a remote/SSH window, for instance.
       const action = await vscode.window.showWarningMessage(
-        "Sign in to Rayu first: run `rayu` in a terminal and complete the login, then connect again.",
+        "Sign in to Rayu to connect to Web Studio.",
+        "Sign in",
         "Open Terminal",
       );
-      if (action === "Open Terminal") vscode.window.createTerminal("rayu").show();
-      return;
+      if (action === "Sign in") {
+        await vscode.commands.executeCommand(SIGN_IN_COMMAND);
+        if (!hasRayuSession(env)) return;
+      } else if (action === "Open Terminal") {
+        vscode.window.createTerminal("rayu").show();
+        return;
+      } else {
+        return;
+      }
     }
 
     const next = new WebBridgeController({

@@ -42,6 +42,8 @@ export interface StubStatusBarItem {
 }
 
 export interface StubRecorder {
+  /** Schemes passed to registerTextDocumentContentProvider. */
+  contentProviderSchemes: string[];
   terminals: StubTerminal[];
   statusBarItems: StubStatusBarItem[];
   executedCommands: { command: string; args: unknown[] }[];
@@ -67,6 +69,7 @@ export const recorder: StubRecorder = createRecorder();
 
 function createRecorder(): StubRecorder {
   return {
+    contentProviderSchemes: [],
     terminals: [],
     statusBarItems: [],
     executedCommands: [],
@@ -98,15 +101,23 @@ export class Uri {
   readonly scheme: string;
   readonly path: string;
   readonly fsPath: string;
+  /** Carries the proposal key for the diff content provider (proposedDiff.ts). */
+  readonly query: string;
 
-  private constructor(scheme: string, path: string) {
+  private constructor(scheme: string, path: string, query = "") {
     this.scheme = scheme;
     this.path = path;
     this.fsPath = path;
+    this.query = query;
   }
 
   static file(path: string): Uri {
     return new Uri("file", path);
+  }
+
+  /** `Uri.from({ scheme, path, query })`, as proposedDiff.ts uses. */
+  static from(parts: { scheme: string; path?: string; query?: string }): Uri {
+    return new Uri(parts.scheme, parts.path ?? "", parts.query ?? "");
   }
 
   static parse(value: string): Uri {
@@ -123,6 +134,34 @@ export class Uri {
 
   toString(): string {
     return `${this.scheme}:${this.path}`;
+  }
+}
+
+/**
+ * Minimal `vscode.EventEmitter`.
+ *
+ * Real enough for the content provider's `onDidChange`: listeners are stored and
+ * invoked synchronously, and `dispose()` drops them. Nothing under test depends
+ * on VS Code's disposal ordering.
+ */
+export class EventEmitter<T> {
+  private readonly listeners = new Set<(value: T) => void>();
+
+  readonly event = (listener: (value: T) => void): { dispose(): void } => {
+    this.listeners.add(listener);
+    return {
+      dispose: () => {
+        this.listeners.delete(listener);
+      },
+    };
+  };
+
+  fire(value: T): void {
+    for (const listener of [...this.listeners]) listener(value);
+  }
+
+  dispose(): void {
+    this.listeners.clear();
   }
 }
 
@@ -197,6 +236,9 @@ export const ConfigurationTarget = {
 // ----------------------------------------------------------------------------
 
 export const window = {
+  showTextDocument(document: unknown, _options?: unknown): Promise<unknown> {
+    return Promise.resolve(document);
+  },
   createTerminal(name: string) {
     const terminal: StubTerminal = {
       name,
@@ -325,6 +367,17 @@ export const workspace = {
   },
   asRelativePath(path: string): string {
     return path;
+  },
+  /** Records the registration; the provider itself is exercised directly. */
+  registerTextDocumentContentProvider(
+    scheme: string,
+    _provider: unknown,
+  ): { dispose(): void } {
+    recorder.contentProviderSchemes.push(scheme);
+    return { dispose: () => {} };
+  },
+  openTextDocument(uri: unknown): Promise<{ uri: unknown }> {
+    return Promise.resolve({ uri });
   },
 };
 
