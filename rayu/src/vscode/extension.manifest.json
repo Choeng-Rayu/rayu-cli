@@ -4,7 +4,7 @@
   "displayName": "Rayucode",
   "description": "The Rayu AI coding agent in VS Code — the same engine, tools, MCP servers and slash commands as the Rayu CLI.",
   "version": "0.0.0",
-  "publisher": "rayu-dev",
+  "publisher": "RayuCode",
   "icon": "media/icon.png",
   "galleryBanner": {
     "color": "#18181b",
