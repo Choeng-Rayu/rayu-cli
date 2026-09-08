@@ -29,6 +29,25 @@ import { logForDebugging } from '../utils/debug.js'
 /** Session → leader. */
 export const IPC_PERMISSION_REQUEST = 'telegram:permission-request'
 export const IPC_PERMISSION_CANCEL = 'telegram:permission-cancel'
+/**
+ * A pending request has been decided, so every attached interface should remove its
+ * copy of the card.
+ *
+ * ── WHY THIS IS SEPARATE FROM `CANCEL` ─────────────────────────────────────────
+ *
+ * `CANCEL` means the REPL withdrew the request (the tool call went away). This means a
+ * human answered it. Both require the card to disappear, but only this one implies the
+ * tool is now proceeding, and conflating them would report an abandoned request as an
+ * approved one.
+ *
+ * Needed because more than one interface can be attached at a time — the Telegram chat
+ * and the editor panel can both be showing the same card. `pendingDecisions` already
+ * guarantees the decision is applied ONCE (the handler is deleted before it runs, so a
+ * second decision for the same id finds nothing), but without this broadcast the other
+ * interfaces would keep displaying a card whose outcome is already settled, and a second
+ * click there would silently do nothing.
+ */
+export const IPC_PERMISSION_RESOLVED = 'telegram:permission-resolved'
 export const IPC_STREAM_START = 'telegram:stream-start'
 export const IPC_STREAM_DELTA = 'telegram:stream-delta'
 export const IPC_STREAM_THINKING = 'telegram:stream-thinking'
@@ -106,6 +125,14 @@ export function applyRemotePermissionDecision(payload: unknown): void {
   const handler = pendingDecisions.get(requestId)
   if (!handler) return
   pendingDecisions.delete(requestId)
+  // Announce BEFORE running the handler. The handler releases the blocked tool call,
+  // which can produce output immediately; telling the interfaces first means none of
+  // them is still offering a choice for a request that is already proceeding.
+  //
+  // Deleting the pending entry above is what makes the decision idempotent, so this
+  // broadcast reaching the interface that just decided is harmless — it removes a card
+  // that interface has already dismissed.
+  notifyIpcPeers(IPC_PERMISSION_RESOLVED, { requestId })
   handler(response)
 }
 
@@ -115,6 +142,7 @@ export function applyRemotePermissionDecision(payload: unknown): void {
 // into AppState, which is where useCanUseTool reads permission callbacks from.
 
 let remoteCallbacks: BridgePermissionCallbacks | undefined
+const attachedPeers = new Set<string>()
 const remoteChanged = createSignal()
 
 export const subscribeToRemoteBridge = remoteChanged.subscribe
@@ -137,10 +165,12 @@ export function isRemotelyAttached(): boolean {
  * decision can never arrive and leaving them would leak a tool call waiting
  * forever.
  */
-export function setRemotelyAttached(attached: boolean): void {
-  const next = attached ? (remoteCallbacks ?? createRemotePermissionCallbacks()) : undefined
+export function setRemotelyAttached(attached: boolean, peerId = 'legacy'): void {
+  if (attached) attachedPeers.add(peerId)
+  else attachedPeers.delete(peerId)
+  const next = attachedPeers.size > 0 ? (remoteCallbacks ?? createRemotePermissionCallbacks()) : undefined
   if (next === remoteCallbacks) return
-  if (!attached) pendingDecisions.clear()
+  if (!next) pendingDecisions.clear()
   remoteCallbacks = next
   remoteChanged.emit()
 }

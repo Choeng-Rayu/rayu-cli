@@ -274,6 +274,7 @@ import {
   resolveAppliedEffort,
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
+import { resolveInferenceSettings } from 'src/utils/model/inferenceSettings.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
@@ -2302,7 +2303,7 @@ function runHeadlessStreaming(
                     currentState.pendingFileChanges,
                   )
                   if (reviewMessage) {
-                    output.enqueue(reviewMessage)
+                    output.enqueue(reviewMessage as any)
                   }
                   output.enqueue(message)
                 }
@@ -2482,7 +2483,7 @@ function runHeadlessStreaming(
           getAppState().pendingFileChanges,
         )
         if (reviewMessage) {
-          output.enqueue(reviewMessage)
+          output.enqueue(reviewMessage as any)
         }
         output.enqueue(heldBackResult)
         heldBackResult = null
@@ -2999,6 +3000,8 @@ function runHeadlessStreaming(
           // notifySessionMetadataChanged that used to follow here is
           // now fired by onChangeAppState (with externalized mode name).
         } else if (message.request.subtype === 'set_model') {
+          const { invalidateRayuConfigCache } = await import('../utils/rayuConfig.js')
+          invalidateRayuConfigCache()
           const requestedModel = message.request.model ?? 'default'
           const model =
             requestedModel === 'default'
@@ -3684,6 +3687,18 @@ function runHeadlessStreaming(
           }
 
           sendControlResponseSuccess(message)
+        } else if ((message.request as any).subtype === 'set_effort') {
+          // The TUI and headless editor invoke the same action. In particular Auto
+          // must clear runtime state as well as the persisted key.
+          const { executeEffort } = await import('../utils/effortCommand.js')
+          const result = executeEffort((message.request as any).effort ?? 'auto')
+          if (result.effortUpdate) {
+            const value = result.effortUpdate.value
+            setAppState(prev => ({ ...prev, effortValue: value }))
+            sendControlResponseSuccess(message, { message: result.message })
+          } else {
+            sendControlResponseError(message, result.message)
+          }
         } else if (message.request.subtype === 'get_settings') {
           const currentAppState = getAppState()
           const model = getMainLoopModel()
@@ -3699,6 +3714,7 @@ function runHeadlessStreaming(
               // Numeric effort (ant-only) → null; SDK schema is string-level only.
               effort: typeof effort === 'string' ? effort : null,
             },
+            inference: resolveInferenceSettings(model, currentAppState.effortValue, options.thinkingConfig),
           })
         } else if (message.request.subtype === 'stop_task') {
           const { task_id: taskId } = message.request

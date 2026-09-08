@@ -27,10 +27,17 @@ export type SessionIpcHandler = (
 ) => Promise<unknown> | unknown
 
 /** Receives one notification type. */
-export type SessionIpcNotifyHandler = (payload: unknown) => void
+export type SessionIpcNotifyHandler = (payload: unknown, peerId?: string) => void
 
 const requestHandlers = new Map<string, SessionIpcHandler>()
 const notifyHandlers = new Map<string, SessionIpcNotifyHandler>()
+const disconnectHandlers = new Set<(peerId: string) => void>()
+
+/** Transport-owned identity prevents one interface from detaching another. */
+export function registerIpcDisconnectHandler(handler: (peerId: string) => void): () => void {
+  disconnectHandlers.add(handler)
+  return () => { disconnectHandlers.delete(handler) }
+}
 
 let handle: IpcServerHandle | null = null
 let token: string | null = null
@@ -84,8 +91,11 @@ export async function startSessionIpc(): Promise<void> {
           if (!handler) throw new Error(`no handler for ipc request: ${type}`)
           return handler(payload)
         },
-        onNotify: (type, payload) => {
-          notifyHandlers.get(type)?.(payload)
+        onNotify: (type, payload, peerId) => {
+          notifyHandlers.get(type)?.(payload, peerId)
+        },
+        onDisconnect: peerId => {
+          for (const handler of disconnectHandlers) handler(peerId)
         },
       })
       handle = started

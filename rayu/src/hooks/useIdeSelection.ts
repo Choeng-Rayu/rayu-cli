@@ -53,6 +53,51 @@ const SelectionChangedSchema = lazySchema(() =>
 )
 
 /**
+ * Map an editor selection notification to the shape consumers render.
+ *
+ * ── EXTRACTED SO IT CAN BE TESTED ──────────────────────────────────────────────
+ *
+ * This was a closure inside the hook's `useEffect`, which made the one interesting
+ * decision in the file — what a CLEARED selection means — unreachable from a test.
+ *
+ * ── A CLEARED SELECTION IS REPORTED, NOT DROPPED ───────────────────────────────
+ *
+ * The previous version guarded the whole body on `data.selection?.start && …?.end` and
+ * returned nothing when that failed. The caller invokes it with `selection: null` for an
+ * empty selection, so that path did nothing at all: the LAST selection stayed on screen
+ * forever. The user clicks away, deselects, and the prompt still claims "12 lines
+ * selected" — and would attach that dead selection to the next message.
+ *
+ * `filePath` is preserved on a clear because the file is still the active editor; only
+ * the selection inside it went away. `lineCount: 0` is what consumers already treat as
+ * "nothing selected".
+ */
+export function toIdeSelection(data: SelectionData): IDESelection {
+  if (data.selection?.start && data.selection?.end) {
+    const { start, end } = data.selection
+    let lineCount = end.line - start.line + 1
+    // A selection ending on character 0 stops at the START of that line, so the line
+    // itself is not selected.
+    if (end.character === 0) {
+      lineCount--
+    }
+    return {
+      lineCount,
+      lineStart: start.line,
+      text: data.text,
+      filePath: data.filePath,
+    }
+  }
+
+  return {
+    lineCount: 0,
+    lineStart: undefined,
+    text: undefined,
+    filePath: data.filePath,
+  }
+}
+
+/**
  * A hook that tracks IDE text selection information by directly registering
  * with MCP client notification handlers
  */
@@ -87,25 +132,10 @@ export function useIdeSelection(
       return
     }
 
-    // Handler function for selection changes
+    // Handler function for selection changes. The mapping — including what a cleared
+    // selection means — lives in `toIdeSelection` so it is testable.
     const selectionChangeHandler = (data: SelectionData) => {
-      if (data.selection?.start && data.selection?.end) {
-        const { start, end } = data.selection
-        let lineCount = end.line - start.line + 1
-        // If on the first character of the line, do not count the line
-        // as being selected.
-        if (end.character === 0) {
-          lineCount--
-        }
-        const selection = {
-          lineCount,
-          lineStart: start.line,
-          text: data.text,
-          filePath: data.filePath,
-        }
-
-        onSelect(selection)
-      }
+      onSelect(toIdeSelection(data))
     }
 
     // Register notification handler for selection_changed events
@@ -128,7 +158,7 @@ export function useIdeSelection(
           ) {
             // Handle selection changes
             selectionChangeHandler(selectionData as SelectionData)
-          } else if (selectionData.text !== undefined) {
+          } else if (selectionData.selection === null || selectionData.text !== undefined) {
             // Handle empty selection (when text is empty string)
             selectionChangeHandler({
               selection: null,

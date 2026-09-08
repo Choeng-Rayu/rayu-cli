@@ -18,7 +18,7 @@
  */
 import { resolve } from 'path'
 import { readFileSync } from 'node:fs'
-import { buildFeatureTable } from '@rayu-dev/rayu-core'
+import { buildFeatureTable } from '../src/core/index.js'
 import { MACRO_VALUES, ENABLED_FEATURES } from './macroValues.ts'
 
 /** Local stub modules for unpublished/internal packages. Mapped by exact specifier. */
@@ -71,7 +71,7 @@ export function buildDefines(): Record<string, string> {
   for (const [k, v] of Object.entries(MACRO_VALUES)) {
     define[`MACRO.${k}`] = JSON.stringify(v)
   }
-  // One object for @rayu-dev/rayu-core's getBakedBuildConfig(); see build.ts.
+  // One object for src/core's getBakedBuildConfig(); see build.ts.
   define['RAYU_BAKED_BUILD_CONFIG'] = JSON.stringify(MACRO_VALUES)
 
   const allFlags: string[] = JSON.parse(

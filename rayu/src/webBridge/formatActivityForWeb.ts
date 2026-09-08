@@ -14,63 +14,25 @@
  * WHAT IS MIRRORED AND WHAT IS NOT. Only messages that are FINISHED. Streaming
  * assistant text already reaches the browser token by token over `stream_delta`, so
  * re-sending the assembled message here would show every answer twice.
+ *
+ * The message-READING primitives — block extraction, result stringification,
+ * clamping, and the tool-argument field priority — live in
+ * `utils/activity/activityBlocks.ts`, shared with the VS Code webview's formatter.
+ * Only the RENDERING (flat text, one line per block) is this file's own.
  */
 
-import type { ContentBlock, WrappedMessage } from '../telegram/formatActivity.js'
+import type { WrappedMessage } from '../telegram/formatActivity.js'
+import {
+  blocksOf,
+  resultText,
+  summariseInput,
+  truncate,
+} from '../utils/activity/activityBlocks.js'
 
 /** One line of activity for the studio's transcript. */
 export interface WebActivityLine {
   kind: string
   summary: string
-}
-
-/**
- * Longest summary this module produces.
- *
- * Well under the protocol's 32 000-character cap so the client's clamp is a backstop
- * rather than the normal path. Tool output in particular can be enormous — a `Read` of
- * a large file — and a browser transcript is a place to see WHAT happened, not to read
- * the whole payload; the terminal already has that.
- */
-const MAX_SUMMARY_CHARS = 4_000
-
-function truncate(text: string): string {
-  const trimmed = text.trim()
-  if (trimmed.length <= MAX_SUMMARY_CHARS) return trimmed
-  return `${trimmed.slice(0, MAX_SUMMARY_CHARS)}…[truncated]`
-}
-
-/** Pull the block list out of a message, normalising the string shorthand. */
-function blocksOf(message: WrappedMessage): ContentBlock[] {
-  const content = message.message?.content
-  if (typeof content === 'string') {
-    return content ? [{ type: 'text', text: content }] : []
-  }
-  return Array.isArray(content) ? content : []
-}
-
-/** Stringify a tool result's `content`, which may be text, blocks, or a bare value. */
-function resultText(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map(entry => {
-        if (typeof entry === 'string') return entry
-        if (entry && typeof entry === 'object') {
-          const block = entry as ContentBlock
-          return block.text ?? ''
-        }
-        return ''
-      })
-      .filter(Boolean)
-      .join('\n')
-  }
-  if (content == null) return ''
-  try {
-    return JSON.stringify(content)
-  } catch {
-    return ''
-  }
 }
 
 /**
@@ -129,26 +91,6 @@ export function formatMessageForWeb(message: WrappedMessage): WebActivityLine[] 
   }
 
   return lines
-}
-
-/** Compact one-line rendering of a tool's arguments. */
-function summariseInput(input: unknown): string {
-  if (input == null) return ''
-  if (typeof input === 'string') return truncate(input)
-  if (typeof input !== 'object') return String(input)
-
-  const record = input as Record<string, unknown>
-  // The fields that identify WHAT a tool acted on, in the order they are most
-  // informative. A generic JSON dump buries these behind schema noise.
-  for (const key of ['command', 'file_path', 'path', 'pattern', 'url', 'prompt']) {
-    const value = record[key]
-    if (typeof value === 'string' && value) return truncate(value)
-  }
-  try {
-    return truncate(JSON.stringify(input))
-  } catch {
-    return ''
-  }
 }
 
 /** Convert a batch of REPL messages, preserving order. */

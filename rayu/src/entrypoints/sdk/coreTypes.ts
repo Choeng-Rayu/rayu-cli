@@ -66,7 +66,7 @@ export const EXIT_REASONS = [
 // These were previously `export type X = any`, described as "absent from the
 // leaked source". They were never actually unknowable: the shapes are fully
 // determined by the Zod schemas the engine validates against at runtime. Those
-// schemas now live in `@rayu-dev/agent-protocol`, so these are real types with
+// schemas now live in `src/protocol`, so these are real types with
 // no duplication.
 //
 // Why this matters: `any` made every cast succeed, which is how the engine came
@@ -80,4 +80,4 @@ export type {
   SDKResultSuccess,
   SDKSessionInfo,
   SDKUserMessage,
-} from '@rayu-dev/agent-protocol'
+} from '../../protocol/index.js'

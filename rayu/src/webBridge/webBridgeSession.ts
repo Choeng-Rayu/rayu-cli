@@ -27,7 +27,7 @@ import {
   resolveHostname,
   resolveMachineId,
   type WebBridgeConnectionState,
-} from '@rayu-dev/web-bridge-client'
+} from './client/index.js'
 
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import type { WrappedMessage } from '../telegram/formatActivity.js'

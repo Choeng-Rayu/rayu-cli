@@ -25,6 +25,9 @@ export type CatalogModelEntry = {
   label?: string | null
   /** Admin-configured context window in tokens, if any. */
   contextWindow?: number | null
+  supportsReasoning?: boolean
+  supportsImage?: boolean
+  supportsTools?: boolean
 }
 
 /**
@@ -109,4 +112,19 @@ export function pickRayuDefaultModels(models: ReadonlyArray<string>): {
   const primary = models.find(m => !SMALL_FAST_PATTERN.test(m)) ?? models[0]
   const small = models.find(m => SMALL_FAST_PATTERN.test(m)) ?? primary
   return { defaultModel: primary, smallFastModel: small }
+}
+
+/** Preserve explicit catalog capabilities; absent is unknown, never false. */
+export function hostedModelCapabilities(catalog: ReadonlyArray<CatalogModelEntry>): {
+  modelSupportsThinking: Record<string, boolean>
+  modelSupportsImage: Record<string, boolean>
+  modelSupportsTools: Record<string, boolean>
+} {
+  const map = (field: 'supportsReasoning' | 'supportsImage' | 'supportsTools') =>
+    Object.fromEntries(catalog.filter(m => typeof m[field] === 'boolean').map(m => [m.code, m[field] as boolean]))
+  return {
+    modelSupportsThinking: map('supportsReasoning'),
+    modelSupportsImage: map('supportsImage'),
+    modelSupportsTools: map('supportsTools'),
+  }
 }

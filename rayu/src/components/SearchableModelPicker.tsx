@@ -13,11 +13,10 @@ import { useSetAppState } from '../state/AppState.js'
 import {
   RAYU_MODEL_SEP,
   getAllProviderModelOptions,
-  refreshRayuApiKeyCatalog,
   setActiveProviderModel,
   type RayuModelChoice,
 } from '../utils/rayuConfig.js'
-import { refreshHostedCatalog } from '../services/rayuAuth/rayuHostedProvider.js'
+import { refreshModelPickerCatalog } from '../utils/model/refreshModelPickerCatalog.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -58,11 +57,8 @@ export function SearchableModelPicker({
     // Refresh both Rayu providers in parallel: the OAuth hosted catalog and the
     // API-key catalog. Either may be absent (no session / no key), in which case
     // it returns false immediately.
-    void Promise.all([
-      refreshHostedCatalog(),
-      refreshRayuApiKeyCatalog().then(r => r.changed).catch(() => false),
-    ]).then(([hostedChanged, apiKeyChanged]) => {
-      if (alive && (hostedChanged || apiKeyChanged)) {
+    void refreshModelPickerCatalog().then(changed => {
+      if (alive && changed) {
         setAll(getAllProviderModelOptions())
       }
     })

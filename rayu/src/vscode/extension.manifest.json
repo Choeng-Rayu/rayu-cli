@@ -1,0 +1,94 @@
+{
+  "//": "The VS Code extension manifest. It is NOT a package.json for this source tree — scripts/build-vscode.ts copies it into dist/vscode-stage/ AS package.json and injects `version` from rayu/package.json. It deliberately does not live inside src/ as a real package.json, because a nested package.json changes Node/Bun module resolution for everything beneath it, which would silently alter how the CLI bundle resolves src/vscode/** .",
+  "name": "rayucode",
+  "displayName": "Rayucode",
+  "description": "The Rayu AI coding agent in VS Code — the same engine, tools, MCP servers and slash commands as the Rayu CLI.",
+  "version": "0.0.0",
+  "publisher": "rayu-dev",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#18181b",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rayu-dev/rayu-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/rayu-dev/rayu-cli/issues"
+  },
+  "homepage": "https://rayu.dev",
+  "license": "MIT",
+  "//engines": "1.85 is the floor. Everything used here — WebviewViewProvider, asExternalUri, registerUriHandler — predates it comfortably, and a lower floor costs nothing while excluding fewer users.",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "chat",
+    "coding assistant",
+    "rayu"
+  ],
+  "//main": "CommonJS, because VS Code loads extensions with require() and has no ESM entrypoint support (microsoft/vscode#130367).",
+  "//type": "Stated explicitly, not left to Node's default. rayu/package.json declares \"type\": \"module\", so an extension.js sitting anywhere under it is treated as ESM and fails to require() with 'module is not defined in ES module scope'. Inside the VSIX this manifest is the nearest package.json, so this field is what makes the bundle load — and saying it out loud stops a future edit from re-introducing that failure.",
+  "type": "commonjs",
+  "main": "./extension.js",
+  "//activationEvents": "onView keeps activation lazy: the extension host does no work in windows where the panel is never opened. The engine child process is started later still — only when there is a turn to run.",
+  "activationEvents": [
+    "onView:rayucode.chat"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rayucode",
+          "title": "Rayucode",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "rayucode": [
+        {
+          "id": "rayucode.chat",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "rayucode.newSession",
+        "title": "New Session",
+        "category": "Rayucode",
+        "icon": "$(add)"
+      },
+      {
+        "command": "rayucode.signIn",
+        "title": "Sign In",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.signOut",
+        "title": "Sign Out",
+        "category": "Rayucode"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "rayucode.newSession",
+          "when": "view == rayucode.chat",
+          "group": "navigation@1"
+        }
+      ]
+    }
+  }
+}

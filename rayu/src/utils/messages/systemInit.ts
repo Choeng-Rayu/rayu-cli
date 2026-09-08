@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION } from '@rayu-dev/agent-protocol'
+import { PROTOCOL_VERSION } from '../../protocol/index.js'
 import { feature } from 'bun:bundle'
 import { randomUUID } from 'crypto'
 import { getSdkBetas, getSessionId } from 'src/bootstrap/state.js'

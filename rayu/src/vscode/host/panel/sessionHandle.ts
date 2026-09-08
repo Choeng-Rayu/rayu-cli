@@ -1,0 +1,1427 @@
+/**
+ * The chat session — engine lifecycle, turn streaming, and the transcript of record.
+ *
+ * ── SHAPE MIRRORS `WebBridgeHandle` ON PURPOSE ─────────────────────────────────
+ *
+ * `webBridge/webBridgeSession.ts` and `telegram/telegramBridge.ts` expose the same
+ * surface — pushActivity / startTurn / onTextDelta / onThinkingDelta / endTurn /
+ * stop / connectionState / sessionId — and its header explains why that symmetry is
+ * load-bearing: the REPL's streaming tap wraps every remote surface the same way, so
+ * a change to how turns are observed cannot land on one and miss another. This is
+ * the third such surface, and it keeps the shape.
+ *
+ * It differs in ONE way, and the difference is the whole architecture: the web and
+ * Telegram bridges observe a REPL that is already running in their own process. This
+ * one OWNS an engine child process and drives it over the control protocol. So it
+ * also owns spawn, initialize and disposal.
+ *
+ * ── THE THREE RULES INHERITED FROM THE WEB BRIDGE ──────────────────────────────
+ *
+ * 1. ONLY FINISHED MESSAGES BECOME TRANSCRIPT ENTRIES. Streaming assistant text
+ *    arrives token by token as `appendPartial`; the engine ALSO emits the assembled
+ *    message when the block completes. Forwarding both shows every answer twice.
+ *    `formatActivityForVSCode` drops streamed kinds for exactly this reason, and
+ *    settled assistant text is suppressed here while a stream for it is open.
+ *
+ * 2. AN INTERRUPT IS ACKED UNCONDITIONALLY. Even when there was nothing to stop.
+ *    A click that lands just as a turn ends must still re-enable the composer, "or a
+ *    mistimed click leaves it disabled forever".
+ *
+ * 3. LOSING THE ENGINE NEVER FABRICATES A DECISION. On exit, pending control
+ *    requests are rejected and pending inbound requests are dropped UNANSWERED.
+ *    Inventing a permission answer would be inventing consent.
+ */
+import { randomUUID } from 'node:crypto'
+
+import { EngineProcess, type EngineExitInfo } from '../engine/engineProcess.js'
+import { ControlClient, type InboundControlRequest } from '../engine/controlClient.js'
+import {
+  formatActivityForVSCode,
+  formatMessageForVSCode,
+  type VSCodeActivityBlock,
+} from './formatActivityForVSCode.js'
+import type { WrappedMessage } from '../../../telegram/formatActivity.js'
+import {
+  persistModelChoice,
+  readActiveModel,
+  type EngineModel,
+} from '../models/modelConfig.js'
+import type {
+  ReviewFileRecord,
+  ReviewHunk,
+} from '../review/fileChangeReview.js'
+import { permissionModeById } from '../../shared/permissionModes.js'
+import {
+  type EffortChoice,
+  type InferenceSettingsView,
+} from '../../shared/inferenceSettings.js'
+import type {
+  ContextUsageView,
+  ModelCatalogueView,
+  EntryId,
+  McpServerView,
+  ModelInfoView,
+  PermissionModeView,
+  ReviewFileView,
+  SlashCommandView,
+  TranscriptEntry,
+} from '../../shared/webviewProtocol.js'
+
+const DEFAULT_SLASH_COMMANDS: SlashCommandView[] = [
+  { name: 'clear', description: 'Clear current conversation' },
+  { name: 'compact', description: 'Compact conversation to save context window' },
+  { name: 'cost', description: 'Show token usage and estimated cost' },
+  { name: 'doctor', description: 'Diagnose setup and environment issues' },
+  { name: 'help', description: 'Show available slash commands and usage' },
+  { name: 'init', description: 'Initialize project-level configuration' },
+  { name: 'keep', description: 'Keep pending file changes' },
+  { name: 'model', description: 'Switch active AI model' },
+  { name: 'permissions', description: 'View or change tool permissions' },
+  { name: 'review', description: 'Review changed files awaiting approval' },
+  { name: 'undo', description: 'Revert pending file changes' },
+]
+
+export interface SessionCallbacks {
+  /** A settled entry was appended. */
+  onEntry: (entry: TranscriptEntry) => void
+  /** One streamed fragment of the open assistant entry. */
+  onPartial: (id: EntryId, kind: 'text' | 'thinking', delta: string) => void
+  /** The open streaming entry finished. */
+  onComplete: (id: EntryId) => void
+  /** Turn started or ended, so the composer can flip send/stop. */
+  onTurnState: (running: boolean) => void
+  /** The engine reported its model. */
+  onModelInfo: (info: ModelInfoView) => void
+  /** Something went wrong in a way the user should see. */
+  onError: (message: string) => void
+  /**
+   * The engine is asking permission to run a tool, and is BLOCKED until answered.
+   */
+  onPermissionRequest: (request: InboundControlRequest) => void
+  /**
+   * The engine withdrew a permission request — it resolved the decision another way.
+   * The card must be dismissed and must NOT be answered afterwards.
+   */
+  onPermissionCancelled: (requestId: string) => void
+  /**
+   * The session ended: the engine exited, was disposed, or was replaced.
+   *
+   * Pending approvals must be dismissed WITHOUT an answer. Fabricating a denial here
+   * would reject a tool the user was mid-way through approving.
+   */
+  onSessionEnded: () => void
+  /**
+   * The review card no longer has anything to review — everything was kept or undone.
+   * The UI must remove it; leaving an empty card offers actions that would do nothing.
+   */
+  onReviewCleared: (id: EntryId) => void
+  /**
+   * The recorded working set, for the host's diff reconstruction.
+   *
+   * Separate from the transcript entry because it carries the HUNKS, which stay
+   * host-side: the editor draws the diff, so the webview never needs them, and they
+   * would be a large postMessage for data it cannot use.
+   */
+  onReviewFiles?: (files: readonly ReviewFileRecord[]) => void
+  /** Thinking/effort state, after the engine acknowledged a change. */
+  onInferenceSettings?: (settings: InferenceSettingsView) => void
+  /** Slash commands available in the engine. */
+  onCommands?: (commands: SlashCommandView[]) => void
+  /** Context window usage after a turn. */
+  onContextUsage?: (usage: ContextUsageView) => void
+  /** Connected MCP servers. */
+  onMcpServers?: (servers: McpServerView[]) => void
+}
+
+export interface SessionOptions {
+  enginePath: string
+  cwd: string
+  resumeSessionId?: string
+  nodePath?: string
+  env?: Record<string, string | undefined>
+}
+
+/**
+ * Floor between mid-turn context refreshes. Context usage moves slowly relative to the
+ * event rate of a turn, so a shorter interval buys nothing and costs a round-trip per
+ * event.
+ */
+const MIN_CONTEXT_INTERVAL_MS = 2_000
+
+export class ChatSession {
+  private engine: EngineProcess | null = null
+  private control: ControlClient | null = null
+
+  /** The transcript of record. The webview is a view of this, never the owner. */
+  private readonly entries: TranscriptEntry[] = []
+
+  /** Id of the assistant entry currently being streamed into, if any. */
+  private streamingId: EntryId | null = null
+
+  /**
+   * Which content blocks already reached the UI as deltas, per assistant message id.
+   *
+   * This replaces a turn-wide "did anything stream?" flag, which was a real data-loss
+   * bug: a turn legitimately contains several assistant messages — prose, a tool call,
+   * then a follow-up answer or summary — and one flag suppressed every settled message
+   * after the first, so post-tool-call answers vanished.
+   *
+   * Keyed by `message.id` from `message_start`, which is the SAME id the settled
+   * `assistant` message carries. The value is the set of Anthropic block `index`
+   * values that produced text, and that index is the block's position in the settled
+   * message's `content` array — which is what makes this correlation exact.
+   */
+  /**
+   * The engine's raw `ModelInfo` entries, retained for capability lookups after a model
+   * change. The trimmed `catalogue` drops the capability flags, so it cannot serve this.
+   */
+  private pendingThinking: boolean | undefined
+  /** The entry currently receiving deltas from an ATTACHED session, if any. */
+  private mirrorId: EntryId | null = null
+  private readonly streamedBlocks = new Map<string, Set<number>>()
+  /** The message currently streaming, from `message_start`. */
+  private currentStreamMessageId: string | null = null
+  /** The block currently streaming, from `content_block_start`/`_delta`. */
+  private currentStreamBlockIndex: number | null = null
+  private turnRunning = false
+  /**
+   * Bumped whenever the engine is replaced (new session / resume). Async replies compare
+   * against the generation they were issued under so a late reply from a discarded engine
+   * cannot overwrite the current session's state.
+   */
+  private generation = 0
+  private contextInFlight = false
+  private contextLastFetch = 0
+  private modelInfo: ModelInfoView = { model: null, provider: null }
+  /** The engine's catalogue, kept host-side for the QuickPick. Never sent to the UI. */
+  private catalogue: EngineModel[] = []
+  public availableModels: ModelCatalogueView | null = null
+  private permissionMode: PermissionModeView = permissionModeById('default')
+
+  /**
+   * Thinking and effort as last ACKNOWLEDGED.
+   *
+   * Capability flags are filled in from the engine's ModelInfo at `initialize`;
+   * `supportsEffort: false` until then, so the control stays hidden rather than
+   * appearing and then vanishing.
+   */
+  private inference: InferenceSettingsView = {
+    supportsEffort: false,
+    supportedLevels: [],
+    effort: null,
+    effortEnvOverride: null,
+    supportsThinking: false,
+    thinkingEnabled: false,
+  }
+
+  /** Tool entries by their engine-assigned id, so results can find their call. */
+  private readonly toolsByUseId = new Map<string, EntryId>()
+
+  /**
+   * The live review card, if any.
+   *
+   * Tracked so a re-emitted summary UPDATES it. The engine sends the whole working set
+   * again each time a file is kept or undone, and appending would leave stale cards
+   * offering to act on sets that no longer exist.
+   */
+  private reviewEntryId: EntryId | null = null
+
+  private slashCommands: SlashCommandView[] = DEFAULT_SLASH_COMMANDS
+  private lastContextUsage: ContextUsageView | null = null
+  private mcpServersList: McpServerView[] = []
+
+  private starting: Promise<void> | null = null
+  private disposed = false
+
+  constructor(
+    private options: SessionOptions,
+    private readonly callbacks: SessionCallbacks,
+  ) {}
+
+  get transcript(): readonly TranscriptEntry[] {
+    return this.entries
+  }
+
+  get isTurnRunning(): boolean {
+    return this.turnRunning
+  }
+
+  get currentModelInfo(): ModelInfoView {
+    return this.control ? this.modelInfo : readActiveModel()
+  }
+
+  get commands(): readonly SlashCommandView[] {
+    return this.slashCommands
+  }
+
+  get contextUsage(): ContextUsageView | null {
+    return this.lastContextUsage
+  }
+
+  get mcpServers(): readonly McpServerView[] {
+    return this.mcpServersList
+  }
+
+  /**
+   * Send a prompt, starting the engine on first use.
+   *
+   * The engine is started HERE and not at activation: activation runs on the
+   * extension host's startup path, and a 23 MB spawn there would be charged to every
+   * window whether or not the panel is ever used.
+   */
+  async submitPrompt(text: string): Promise<void> {
+    const trimmed = text.trim()
+    if (!trimmed || this.disposed) return
+
+    this.appendEntry({ id: newId(), kind: 'prompt', text: trimmed })
+
+    try {
+      await this.ensureStarted()
+    } catch (cause) {
+      this.callbacks.onError(
+        `Could not start the Rayu engine: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+      return
+    }
+
+    this.setTurnRunning(true)
+
+    // A prompt is an ordinary `user` message on stdin — the same shape the CLI's
+    // own stream-json input uses, so it inherits queueing and slash-command parsing
+    // rather than needing a second code path.
+    const delivered = this.engine?.send({
+      type: 'user',
+      message: { role: 'user', content: trimmed },
+      parent_tool_use_id: null,
+    })
+
+    if (!delivered) {
+      this.setTurnRunning(false)
+      this.callbacks.onError('The Rayu engine is not running.')
+    }
+  }
+
+  /**
+   * Stop the running turn.
+   *
+   * Acked unconditionally by flipping turn state off regardless of what the engine
+   * says, and regardless of whether a turn was even running. See rule 2 in the
+   * header: the alternative is a composer that can never be re-enabled.
+   */
+  async interrupt(): Promise<void> {
+    const control = this.control
+    this.finishStreaming()
+    this.setTurnRunning(false)
+
+    if (!control) return
+    try {
+      await control.request('interrupt', {}, 10_000)
+    } catch {
+      // Deliberately swallowed. The user asked to stop; whether the engine
+      // acknowledged is not something they can act on, and the composer is already
+      // usable again.
+    }
+  }
+
+  /**
+   * Discard the conversation and the engine with it.
+   *
+   * A fresh child rather than a reset message: the engine holds per-session state —
+   * read-file tracking, permission decisions, MCP connections, compaction history —
+   * and there is no control request that clears all of it. A new process is the only
+   * honest "new session".
+   */
+  newSession(resumeSessionId?: string): void {
+    // Invalidate anything in flight against the outgoing engine.
+    this.generation += 1
+    this.contextLastFetch = 0
+    this.lastContextUsage = null
+    this.teardown('starting a new session')
+    this.options = { ...this.options, resumeSessionId }
+    this.entries.length = 0
+    this.toolsByUseId.clear()
+    this.streamingId = null
+    this.lastContextUsage = null
+    this.setTurnRunning(false)
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.teardown('the panel was closed')
+  }
+
+  // ── engine lifecycle ───────────────────────────────────────────────────────
+
+  private ensureStarted(): Promise<void> {
+    if (this.engine?.isRunning && this.control) return Promise.resolve()
+    // Concurrent submits must not spawn two engines.
+    this.starting ??= this.start().finally(() => {
+      this.starting = null
+    })
+    return this.starting
+  }
+
+  private async start(): Promise<void> {
+    const control: ControlClient = new ControlClient(
+      frame => this.engine?.send(frame) ?? false,
+      {
+        onMessage: message => this.handleEngineMessage(message),
+        onRequest: request => this.handleInboundRequest(request),
+        onRequestCancelled: requestId => {
+          this.callbacks.onPermissionCancelled(requestId)
+        },
+        onUnknownFrame: (declaredType, excerpt) => {
+          // A newer engine emitting a message this build does not know. Logged for
+          // diagnosis, deliberately NOT surfaced in the transcript: the user cannot
+          // act on it and it is not an error in their work.
+          console.warn(
+            `[rayucode] ignoring unrecognised "${declaredType}" frame: ${excerpt}`,
+          )
+        },
+        onProtocolError: (message, excerpt) => {
+          // Fatal by contract: the protocol is correlated, so continuing past a
+          // frame we could not read risks waiting forever on a response that was
+          // in it.
+          this.callbacks.onError(`${message} ${excerpt}`)
+          this.teardown('the engine sent an unreadable frame')
+        },
+      },
+    )
+
+    const args = this.options.resumeSessionId
+      ? ['--resume', this.options.resumeSessionId]
+      : undefined
+    const engine = new EngineProcess(
+      { ...this.options, args },
+      {
+        onFrame: frame => control.handleFrame(frame),
+        onProtocolError: error => {
+          this.callbacks.onError(`Engine stream error: ${error.message}`)
+          this.teardown('the engine stream could not be read')
+        },
+        onExit: info => this.handleExit(info),
+      },
+    )
+
+    this.engine = engine
+    this.control = control
+    engine.start()
+
+    // `initialize` is what returns the command list, the model catalogue and the
+    // account info. Failing it is not fatal to sending a prompt, so it is reported
+    // and the session continues rather than refusing to start.
+    try {
+      const response = await control.request('initialize', {}, 60_000)
+      this.applyInitialize(response)
+      if (this.pendingThinking !== undefined) {
+        await control.request('set_max_thinking_tokens', { max_thinking_tokens: this.pendingThinking ? null : 0 }, 15_000)
+      }
+      await this.refreshInferenceSettings()
+      void this.pollContextUsage(true)
+    } catch (cause) {
+      this.callbacks.onError(
+        `The engine started but did not initialise: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+    }
+  }
+
+  /** Read effective state from the same resolvers used to build CLI requests. */
+  private async refreshInferenceSettings(): Promise<void> {
+    const control = this.control, generation = this.generation
+    if (!control) return
+    const response = await control.request('get_settings', {}, 15_000)
+    if (control !== this.control || generation !== this.generation || this.disposed) return
+    const value = response.inference as InferenceSettingsView | undefined
+    if (value && typeof value.supportsThinking === 'boolean') {
+      this.inference = value
+      this.callbacks.onInferenceSettings?.(value)
+    }
+  }
+
+  private applyInitialize(response: Record<string, unknown>): void {
+    // The catalogue is retained for the picker but NEVER forwarded to the webview:
+    // measured at 712 entries against a real engine, which is a large postMessage
+    // for a list the user opens occasionally. `host/models/modelSurface.ts` renders
+    // it with a QuickPick instead.
+    const models = response.models
+    if (Array.isArray(models)) {
+      this.catalogue = models
+        .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
+        .map(m => ({
+          // `value` is the API identifier. It is NOT called `model` — reading the
+          // wrong field yields undefined and a picker full of blank rows.
+          value: typeof m.value === 'string' ? m.value : '',
+          displayName: typeof m.displayName === 'string' ? m.displayName : '',
+          description: typeof m.description === 'string' ? m.description : '',
+        }))
+        .filter(m => m.value.length > 0)
+    }
+
+    // Retain commands and notify webview
+    const commands = response.commands
+    if (Array.isArray(commands)) {
+      this.slashCommands = commands
+        .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object')
+        .map(c => ({
+          name: typeof c.name === 'string' ? c.name : '',
+          description: typeof c.description === 'string' ? c.description : '',
+        }))
+        .filter(c => c.name.length > 0)
+      this.callbacks.onCommands?.(this.slashCommands)
+    }
+
+    // The SELECTED model comes from the shared config, not from the catalogue's
+    // first entry — that would show whatever the provider happened to list first
+    // and would silently disagree with what the CLI shows.
+    this.modelInfo = readActiveModel()
+    this.callbacks.onModelInfo(this.modelInfo)
+
+
+  }
+
+  /** The engine's model catalogue, for the host-side picker. */
+  get modelCatalogue(): readonly EngineModel[] {
+    return this.catalogue
+  }
+
+  get currentPermissionMode(): PermissionModeView {
+    return this.permissionMode
+  }
+
+  /**
+   * Change the model for this session and persist the choice.
+   *
+   * Both, not either: `set_model` applies to the running child, and the config write
+   * is what makes the choice survive a new session and show up in the CLI.
+   */
+  async setModel(model: string): Promise<void> {
+    persistModelChoice(model)
+    this.modelInfo = readActiveModel()
+    this.callbacks.onModelInfo(this.modelInfo)
+
+    // Capabilities are per-MODEL, so switching model must re-derive them. Read from the
+    // retained catalogue rather than re-requesting `initialize`: the engine already told
+    // us, and a control that briefly claims the previous model's capabilities would
+    // offer a level the new model rejects.
+
+
+
+    // Only meaningful while a child is running. With no engine the config write is
+    // the whole effect, and the next session picks it up.
+    if (!this.control) return
+    try {
+      await this.control.request('set_model', { model }, 15_000)
+      await this.refreshInferenceSettings()
+      void this.pollContextUsage(true)
+    } catch (cause) {
+      this.callbacks.onError(
+        `The model was saved but the running session did not accept it: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+    }
+  }
+
+  /** Initial settings from a short-lived engine helper, before the chat engine exists. */
+  applyInitialInference(value: InferenceSettingsView): void {
+    if (this.control) return
+    this.inference = { ...value, thinkingEnabled: this.pendingThinking ?? value.thinkingEnabled }
+    this.callbacks.onInferenceSettings?.(this.inference)
+  }
+
+  get currentInference(): InferenceSettingsView {
+    return this.inference
+  }
+
+  /** Apply the shared CLI action through the engine, never as a chat prompt. */
+  async setEffort(level: EffortChoice): Promise<void> {
+    try {
+      await this.ensureStarted()
+      await this.control!.request('set_effort', { effort: level }, 15_000)
+      await this.refreshInferenceSettings()
+      void this.pollContextUsage(true)
+    } catch (cause) {
+      this.callbacks.onError(`Could not set effort: ${cause instanceof Error ? cause.message : String(cause)}`)
+    }
+  }
+
+  /**
+   * Turn extended thinking on or off for SUBSEQUENT requests.
+   *
+   * `set_max_thinking_tokens` is the engine's own operation for this. It is
+   * session-scoped by design: the current generation is left alone, which is what the
+   * CLI does too — changing it mid-stream would mean re-shaping a request already in
+   * flight.
+   *
+   * Zero disables thinking; null restores the shared model/settings default.
+   */
+  async setThinking(enabled: boolean): Promise<boolean> {
+    if (!this.control) {
+      // No engine yet: remember it so the first turn starts in the chosen state.
+      this.pendingThinking = enabled
+      this.inference = { ...this.inference, thinkingEnabled: enabled }
+      this.callbacks.onInferenceSettings?.(this.inference)
+      return true
+    }
+    try {
+      await this.control.request(
+        'set_max_thinking_tokens',
+        { max_thinking_tokens: enabled ? null : 0 },
+        15_000,
+      )
+      await this.refreshInferenceSettings()
+      return true
+    } catch (cause) {
+      this.callbacks.onError(
+        `Could not ${enabled ? 'enable' : 'disable'} thinking: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+      return false
+    }
+  }
+
+  /**
+   * Apply a permission mode.
+   *
+   * The local value is updated only AFTER the engine accepts it. Flipping the pill
+   * first would tell the user they are in "Full access" while the engine is still
+   * asking for approval on every tool — the pill has to reflect what is enforced,
+   * not what was requested.
+   */
+  async setPermissionMode(mode: PermissionModeView): Promise<boolean> {
+    if (!this.control) {
+      // No engine yet: record it so the first turn starts in the chosen mode.
+      this.permissionMode = mode
+      return true
+    }
+    try {
+      await this.control.request('set_permission_mode', { mode: mode.id }, 15_000)
+      this.permissionMode = mode
+      return true
+    } catch (cause) {
+      this.callbacks.onError(
+        `Could not switch to ${mode.label}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+      return false
+    }
+  }
+
+  private teardown(reason: string): void {
+    const wasLive = this.control !== null || this.engine !== null
+    this.control?.dispose(reason)
+    this.engine?.dispose()
+    this.control = null
+    this.engine = null
+    // Dismiss any approval card: the engine that was blocked on it is gone, so the
+    // card is a control that would do nothing when pressed.
+    if (wasLive) this.callbacks.onSessionEnded()
+  }
+
+  private handleExit(info: EngineExitInfo): void {
+    this.finishStreaming()
+    this.setTurnRunning(false)
+    this.control?.dispose('the engine exited')
+    this.control = null
+    this.engine = null
+    // The engine that was blocked on any approval card is gone. Dismiss without
+    // answering — see onSessionEnded.
+    this.callbacks.onSessionEnded()
+
+    // An expected exit is a disposal we asked for; saying so would be noise.
+    if (info.expected) return
+
+    const detail = info.stderrTail.trim()
+    this.callbacks.onError(
+      `The Rayu engine stopped unexpectedly (code ${info.code ?? 'null'}${
+        info.signal ? `, signal ${info.signal}` : ''
+      }).${detail ? ` ${detail.slice(-400)}` : ''}`,
+    )
+  }
+
+  // ── engine → transcript ────────────────────────────────────────────────────
+
+  private handleEngineMessage(message: Record<string, unknown>): void {
+    switch (message.type) {
+      case 'stream_event':
+        this.handleStreamEvent(message)
+        return
+
+      case 'result':
+        // The turn is over. The engine's own summary text is not appended: it
+        // repeats the answer the user has already read.
+        this.finishStreaming()
+        this.setTurnRunning(false)
+        void this.pollContextUsage()
+        return
+
+      case 'assistant':
+      case 'user':
+        this.handleSettledMessage(message)
+        return
+
+      case 'system':
+        this.handleSystemMessage(message)
+        return
+
+      default:
+        // Ignoring the remainder is deliberate, not an omission.
+        return
+    }
+  }
+
+  /**
+   * Surface the `system` subtypes the CLI already surfaces.
+   *
+   * ── THESE ARE THE ENGINE'S OWN OUTPUTS, NOT A SECOND ANALYSIS ──────────────────
+   *
+   * Every branch below renders something the engine already produced. There is
+   * deliberately no extra summarising pass and no recap generator here: the engine
+   * emits `post_turn_summary` itself, and a second summariser would let the panel and
+   * the terminal describe the same turn differently — while costing another analysis
+   * for information that already exists.
+   *
+   * The subtypes NOT handled — `init`, `status`, hook lifecycle, task progress — are
+   * bookkeeping with no transcript meaning, and ignoring them is a decision rather
+   * than an oversight.
+   */
+  private handleSystemMessage(message: Record<string, unknown>): void {
+    switch (message.subtype) {
+      case 'file_change_review':
+        this.handleReview(message)
+        return
+
+      case 'local_command_output': {
+        // The output of a local slash command — `/cost`, `/status`, and critically
+        // `/keep` and `/undo`, which is how the review card reports back. Without
+        // this branch those commands appeared to do nothing at all.
+        //
+        // The schema's own description says it is "displayed as assistant-style text
+        // in the transcript", so that is exactly how it is rendered.
+        const content = typeof message.content === 'string' ? message.content : ''
+        if (!content.trim()) return
+        this.finishStreaming()
+        this.appendEntry({ id: newId(), kind: 'assistant', text: content })
+        return
+      }
+
+      case 'post_turn_summary': {
+        const title = typeof message.title === 'string' ? message.title : ''
+        const description =
+          typeof message.description === 'string' ? message.description : ''
+        // Nothing to show if the engine produced neither. Rendering an empty card
+        // would imply the turn ended without an outcome.
+        if (!title && !description) return
+
+        const category = message.status_category
+        this.finishStreaming()
+        this.appendEntry({
+          id: newId(),
+          kind: 'summary',
+          title,
+          description,
+          statusCategory:
+            category === 'blocked' ||
+            category === 'waiting' ||
+            category === 'review_ready' ||
+            category === 'failed'
+              ? category
+              : 'completed',
+          statusDetail:
+            typeof message.status_detail === 'string' ? message.status_detail : '',
+          needsAction:
+            typeof message.needs_action === 'string' ? message.needs_action : '',
+          isNoteworthy: message.is_noteworthy === true,
+        })
+        return
+      }
+
+      case 'compact_boundary': {
+        // Compaction silently changes what the model can still see, so it belongs in
+        // the transcript. Without it a user who notices the assistant forgetting
+        // earlier context has no way to know why.
+        const meta = message.compact_metadata as Record<string, unknown> | undefined
+        const trigger = meta?.trigger === 'manual' ? 'manually' : 'automatically'
+        const pre = typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : null
+        this.finishStreaming()
+        this.appendEntry({
+          id: newId(),
+          kind: 'notice',
+          severity: 'info',
+          text: pre
+            ? `Context was compacted ${trigger} (was ~${pre.toLocaleString()} tokens). Earlier detail may no longer be visible to the model.`
+            : `Context was compacted ${trigger}. Earlier detail may no longer be visible to the model.`,
+        })
+        return
+      }
+
+      case 'api_retry': {
+        // A retry means the turn is still alive but slower. Silence here reads as a
+        // hang, which is the single most common reason a user gives up on a request
+        // that would have succeeded.
+        const attempt = typeof message.attempt === 'number' ? message.attempt : 0
+        const max = typeof message.max_retries === 'number' ? message.max_retries : 0
+        const status =
+          typeof message.error_status === 'number' ? ` (HTTP ${message.error_status})` : ''
+        this.appendEntry({
+          id: newId(),
+          kind: 'notice',
+          severity: 'info',
+          text: `Provider request failed${status}; retrying (attempt ${attempt} of ${max}).`,
+        })
+        return
+      }
+
+      default:
+        return
+    }
+  }
+
+  /**
+   * The working set for this turn: files changed and awaiting keep/undo.
+   *
+   * Replaces any previous card rather than appending. The engine re-emits the whole
+   * summary as files are kept or undone, so appending would leave a trail of stale
+   * cards each offering to act on a set that no longer exists.
+   */
+  private handleReview(message: Record<string, unknown>): void {
+    const review = message.review as Record<string, unknown> | undefined
+    if (!review) return
+
+    const rawFiles = Array.isArray(review.files) ? review.files : []
+
+    // The webview gets paths, stats and status. The HOST keeps hunks and change ids:
+    // the editor draws the diff, so shipping hunks to the browser would be a large
+    // postMessage for data it never renders.
+    const records: ReviewFileRecord[] = []
+    const files: ReviewFileView[] = []
+
+    for (const raw of rawFiles) {
+      if (!raw || typeof raw !== 'object') continue
+      const f = raw as Record<string, unknown>
+      const displayPath = typeof f.displayPath === 'string' ? f.displayPath : ''
+      if (!displayPath) continue
+
+      const status = f.status
+      files.push({
+        displayPath,
+        additions: typeof f.additions === 'number' ? f.additions : 0,
+        removals: typeof f.removals === 'number' ? f.removals : 0,
+        isCreated: f.isCreated === true,
+        // Straight from the engine's PendingFileChangeStatus. Unknown values fall back
+        // to 'pending', which is the only state that offers actions — erring toward
+        // "actionable" is better than hiding a change the user still has to resolve.
+        status:
+          status === 'kept' || status === 'undone' || status === 'mixed'
+            ? status
+            : 'pending',
+        changeIds: Array.isArray(f.changeIds)
+          ? f.changeIds.filter((id): id is string => typeof id === 'string')
+          : [],
+      })
+
+      records.push({
+        filePath: typeof f.filePath === 'string' ? f.filePath : displayPath,
+        displayPath,
+        changeIds: Array.isArray(f.changeIds)
+          ? f.changeIds.filter((id): id is string => typeof id === 'string')
+          : [],
+        // The RECORDED hunks. These are what the diff is reconstructed from, and what
+        // the CLI's own ReviewDetailDialog renders — not git.
+        hunks: Array.isArray(f.hunks) ? (f.hunks as ReviewHunk[]) : [],
+        isCreated: f.isCreated === true,
+      })
+    }
+
+    this.callbacks.onReviewFiles?.(records)
+
+    // Nothing left to review means the user kept or undid everything. Drop the card
+    // rather than showing an empty one.
+    if (files.length === 0) {
+      if (this.reviewEntryId) {
+        const index = this.entries.findIndex(e => e.id === this.reviewEntryId)
+        if (index !== -1) this.entries.splice(index, 1)
+        this.callbacks.onReviewCleared(this.reviewEntryId)
+        this.reviewEntryId = null
+      }
+      return
+    }
+
+    const entry: TranscriptEntry = {
+      id: this.reviewEntryId ?? newId(),
+      kind: 'review',
+      totalFiles: typeof review.totalFiles === 'number' ? review.totalFiles : files.length,
+      totalAdditions:
+        typeof review.totalAdditions === 'number' ? review.totalAdditions : 0,
+      totalRemovals: typeof review.totalRemovals === 'number' ? review.totalRemovals : 0,
+      files,
+    }
+
+    if (this.reviewEntryId) {
+      const index = this.entries.findIndex(e => e.id === this.reviewEntryId)
+      if (index !== -1) this.entries[index] = entry
+      else this.entries.push(entry)
+      this.emitEntry(entry)
+      return
+    }
+
+    this.reviewEntryId = entry.id
+    this.appendEntry(entry)
+  }
+
+  /**
+   * Route one streamed event.
+   *
+   * The engine forwards the provider's RAW stream events, so these are Anthropic's
+   * shapes. Four of them matter, and the first is what makes correlation possible:
+   *
+   *   message_start        carries `message.id` — the id the SETTLED assistant
+   *                        message will also carry, which is how we know which
+   *                        settled blocks were already streamed.
+   *   content_block_start  carries `index` — the position this block will occupy in
+   *                        the settled message's `content` array.
+   *   content_block_delta  the actual text/thinking fragments.
+   *   content_block_stop   the block is complete.
+   *
+   * `input_json_delta` for tool arguments is deliberately ignored: a half-parsed
+   * argument object is not something to render, and the complete input arrives with
+   * the settled `tool_use` block.
+   */
+  private handleStreamEvent(message: Record<string, unknown>): void {
+    const event = message.event as Record<string, unknown> | undefined
+    if (!event) return
+
+    switch (event.type) {
+      case 'message_start': {
+        const inner = event.message as Record<string, unknown> | undefined
+        const id = typeof inner?.id === 'string' ? inner.id : null
+        // A new assistant message begins. Close any open entry FIRST so a turn that
+        // produces prose, then a tool call, then more prose renders as separate
+        // answers rather than one run-on block.
+        this.finishStreaming()
+        this.currentStreamMessageId = id
+        this.currentStreamBlockIndex = null
+        if (id !== null && !this.streamedBlocks.has(id)) {
+          this.streamedBlocks.set(id, new Set())
+        }
+        return
+      }
+
+      case 'content_block_start': {
+        this.currentStreamBlockIndex =
+          typeof event.index === 'number' ? event.index : null
+        return
+      }
+
+      case 'content_block_delta': {
+        const delta = event.delta as Record<string, unknown> | undefined
+        if (!delta) return
+        // Prefer the event's own index; `content_block_start` is not guaranteed to
+        // precede every delta on every provider.
+        if (typeof event.index === 'number') this.currentStreamBlockIndex = event.index
+
+        if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+          this.recordStreamedBlock()
+          this.appendPartial('text', delta.text)
+          return
+        }
+        if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+          // Thinking is relayed live but NOT recorded as a streamed block: the
+          // settled message has no thinking text block to suppress, and recording it
+          // would suppress whatever text block happens to share the index.
+          this.appendPartial('thinking', delta.thinking)
+        }
+        return
+      }
+
+      case 'content_block_stop': {
+        this.currentStreamBlockIndex = null
+        return
+      }
+
+      default:
+        // message_delta, message_stop, ping. The turn's end is driven by the
+        // `result` frame, which is authoritative; message_stop is not, because a
+        // turn can contain several messages.
+        return
+    }
+  }
+
+  /** Note that (current message, current block) produced streamed text. */
+  private recordStreamedBlock(): void {
+    const id = this.currentStreamMessageId
+    const index = this.currentStreamBlockIndex
+    if (id === null || index === null) return
+    let set = this.streamedBlocks.get(id)
+    if (!set) {
+      set = new Set()
+      this.streamedBlocks.set(id, set)
+    }
+    set.add(index)
+  }
+
+  private appendPartial(kind: 'text' | 'thinking', delta: string): void {
+    if (delta.length === 0) return
+
+    if (this.streamingId === null) {
+      const id = newId()
+      this.streamingId = id
+      // Opened as an empty streaming entry so the UI can show the pulse dot
+      // immediately, before any text has arrived.
+      this.appendEntry({ id, kind: 'assistant', text: '', streaming: true })
+    }
+    const id = this.streamingId
+
+    // The host keeps its own copy so a re-created webview can be restored from
+    // `init` mid-turn rather than losing the partial answer.
+    const entry = this.entries.find(e => e.id === id)
+    if (entry?.kind === 'assistant' && kind === 'text') entry.text += delta
+
+    this.callbacks.onPartial(id, kind, delta)
+  }
+
+  private finishStreaming(): void {
+    const id = this.streamingId
+    if (id === null) return
+    this.streamingId = null
+
+    const entry = this.entries.find(e => e.id === id)
+    if (entry?.kind === 'assistant') entry.streaming = false
+
+    this.callbacks.onComplete(id)
+  }
+
+  /**
+   * Convert a finished engine message into transcript entries.
+   *
+   * ── SUPPRESSION IS PER BLOCK, NOT PER TURN ─────────────────────────────────────
+   *
+   * The engine emits streamed deltas AND the assembled message for the same content,
+   * so the settled copy of anything already streamed must be skipped. The obvious
+   * implementation — a turn-wide "did anything stream?" flag — is WRONG, and wrong in
+   * a way that loses data: a turn legitimately contains several assistant messages
+   * (prose, tool call, then a follow-up answer or summary), and a turn-wide flag
+   * suppresses every one of them after the first.
+   *
+   * So the check is `(message.id, block index)`. Anthropic's `index` on a stream event
+   * is the block's position in the final `content` array, which is exactly what makes
+   * this correlation exact rather than heuristic. A block that was never streamed —
+   * a summary the provider emitted whole, or content from a message with no deltas at
+   * all — is rendered, because nothing has shown it yet.
+   */
+  private handleSettledMessage(message: Record<string, unknown>): void {
+    // Settled messages and tool results are what actually grow the context window, so
+    // this is the meaningful mid-turn trigger. Throttled — a long turn produces many.
+    void this.pollContextUsage()
+
+    const inner = message.message as Record<string, unknown> | undefined
+    const messageId = typeof inner?.id === 'string' ? inner.id : null
+    const streamed = messageId ? this.streamedBlocks.get(messageId) : undefined
+
+    const blocks = formatActivityForVSCode([message as unknown as WrappedMessage])
+
+    // `formatActivityForVSCode` drops blocks with no renderable content, so its
+    // output indices do not track the wire array. The wire index is recovered by
+    // walking the original content array in parallel.
+    const wireBlocks = Array.isArray(inner?.content) ? inner.content : []
+    const textIndices: number[] = []
+    wireBlocks.forEach((b, i) => {
+      const type = (b as Record<string, unknown> | null)?.type
+      if (type === 'text') textIndices.push(i)
+    })
+    let textSeen = 0
+
+    for (const block of blocks) {
+      switch (block.kind) {
+        case 'assistant': {
+          const wireIndex = textIndices[textSeen++]
+          // Skip ONLY if this exact block already reached the UI as deltas.
+          if (
+            streamed !== undefined &&
+            wireIndex !== undefined &&
+            streamed.has(wireIndex)
+          ) {
+            break
+          }
+          // Not streamed: close any open stream so ordering reads correctly, then
+          // render it. This is the path that preserves a post-tool-call summary.
+          this.finishStreaming()
+          this.appendEntry({ id: newId(), kind: 'assistant', text: block.text })
+          break
+        }
+        case 'prompt':
+          // Already appended locally when the user submitted. The engine replays
+          // it, and appending again would show the prompt twice.
+          break
+        case 'tool_use':
+          this.appendToolCall(block)
+          break
+        case 'tool_result':
+          this.applyToolResult(block)
+          break
+      }
+    }
+  }
+
+  /**
+   * Populate the transcript from a stored session when resuming.
+   *
+   * ── WHY THIS IS NOT `applyBlocks` ───────────────────────────────────────────────
+   *
+   * The live path deliberately SKIPS `prompt` blocks, because the user's message was
+   * already appended locally at submit time and the engine echoes it back. Restored
+   * history was never appended locally, so skipping prompts here would show the
+   * assistant's replies with nothing to reply to — a transcript of one side of a
+   * conversation.
+   *
+   * Tool results are matched to their calls by `toolUseId` through the same
+   * `applyToolResult`, so a restored tool pill shows its outcome rather than spinning.
+   */
+  // ── MIRRORING AN ATTACHED CLI SESSION ──────────────────────────────────────
+  //
+  // These render a DIFFERENT process's turn into this transcript. They deliberately do
+  // not touch `turnRunning`: that flag governs whether THIS panel's engine is busy and
+  // gates the composer's send button. An attached CLI turn must not disable the
+  // composer, because the user can still type here — and conflating the two would leave
+  // the composer stuck if the remote session never reports an end.
+
+  /** An attached session began streaming an assistant turn. */
+  beginMirroredTurn(): void {
+    this.finishStreaming()
+    this.mirrorId = newId()
+    this.appendEntry({ id: this.mirrorId, kind: 'assistant', text: '' })
+  }
+
+  appendMirroredDelta(delta: string): void {
+    if (!this.mirrorId) this.beginMirroredTurn()
+    if (!this.mirrorId) return
+    this.callbacks.onPartial(this.mirrorId, 'text', delta)
+  }
+
+  /**
+   * The attached session is thinking.
+   *
+   * Content is never sent over this channel, so this can only be an indication — which is
+   * why it is a notice rather than a thinking block with no text in it.
+   */
+  markMirroredThinking(): void {
+    this.appendEntry({
+      id: newId(),
+      kind: 'notice',
+      text: 'The attached session is thinking…',
+      severity: 'info',
+    })
+  }
+
+  endMirroredTurn(): void {
+    if (this.mirrorId) this.callbacks.onComplete(this.mirrorId)
+    this.mirrorId = null
+  }
+
+  /**
+   * Render completed messages from an attached session.
+   *
+   * Goes through the SAME formatter as local output, so a mirrored turn is
+   * indistinguishable from one this panel ran — tool pills included.
+   */
+  applyMirroredActivity(messages: unknown[]): void {
+    for (const message of messages) {
+      if (!message || typeof message !== 'object') continue
+      const blocks = formatMessageForVSCode(message as never)
+      for (const block of blocks) {
+        switch (block.kind) {
+          case 'prompt':
+            // Included, unlike the live path: a prompt typed in the TERMINAL was never
+            // appended here, so skipping it would show replies with nothing to reply to.
+            this.appendEntry({ id: newId(), kind: 'prompt', text: block.text })
+            break
+          case 'assistant':
+            this.appendEntry({ id: newId(), kind: 'assistant', text: block.text })
+            break
+          case 'tool_use':
+            this.appendToolCall(block)
+            break
+          case 'tool_result':
+            this.applyToolResult(block)
+            break
+        }
+      }
+    }
+  }
+
+  restoreTranscript(blocks: VSCodeActivityBlock[]): void {
+    for (const block of blocks) {
+      switch (block.kind) {
+        case 'prompt':
+          this.appendEntry({ id: newId(), kind: 'prompt', text: block.text })
+          break
+        case 'assistant':
+          this.appendEntry({ id: newId(), kind: 'assistant', text: block.text })
+          break
+        case 'tool_use':
+          this.appendToolCall(block)
+          break
+        case 'tool_result':
+          this.applyToolResult(block)
+          break
+      }
+    }
+
+    // A restored pill whose result never made it into the file — the session was killed
+    // mid-tool — would otherwise sit on 'running' forever in a session that is not
+    // running anything.
+    this.settleUnfinishedRestoredTools()
+  }
+
+  /**
+   * Mark still-'running' restored tool pills as interrupted.
+   *
+   * Only safe for RESTORED history: nothing from a stored session is still executing.
+   * Applying this to a live session would falsely settle a tool that is genuinely working.
+   */
+  private settleUnfinishedRestoredTools(): void {
+    for (const entry of this.entries) {
+      if (entry.kind === 'tool' && entry.status === 'running') {
+        entry.status = 'error'
+        entry.output = 'This tool did not finish before the session ended.'
+        // emitEntry is an upsert — the reducer replaces by id.
+        this.emitEntry(entry)
+      }
+    }
+  }
+
+  private appendToolCall(
+    block: Extract<VSCodeActivityBlock, { kind: 'tool_use' }>,
+  ): void {
+    // A tool call arriving means the assistant's prose for this step is done, so the
+    // stream is closed before the pill so ordering reads correctly.
+    this.finishStreaming()
+
+    const id = newId()
+    if (block.toolUseId) this.toolsByUseId.set(block.toolUseId, id)
+
+    this.appendEntry({
+      id,
+      kind: 'tool',
+      toolUseId: block.toolUseId,
+      name: block.name,
+      label: block.label,
+      parameters: block.parameters,
+      status: 'running',
+      output: null,
+    })
+  }
+
+  private applyToolResult(
+    block: Extract<VSCodeActivityBlock, { kind: 'tool_result' }>,
+  ): void {
+    const entryId = block.toolUseId
+      ? this.toolsByUseId.get(block.toolUseId)
+      : undefined
+
+    const entry = entryId
+      ? this.entries.find(e => e.id === entryId)
+      : // No correlation id: attach to the most recent still-running pill. Better
+        // than dropping the result, which would leave a tool spinning forever.
+        [...this.entries].reverse().find(e => e.kind === 'tool' && e.status === 'running')
+
+    if (!entry || entry.kind !== 'tool') return
+
+    entry.status = block.isError ? 'error' : 'done'
+    entry.output = block.text
+    // Re-emitting the entry is how the webview learns it changed; the reducer
+    // replaces by id, so this is an update rather than a duplicate.
+    this.emitEntry(entry)
+  }
+
+  private handleInboundRequest(request: InboundControlRequest): void {
+    if (request.subtype === 'can_use_tool') {
+      this.callbacks.onPermissionRequest(request)
+      return
+    }
+    // `hook_callback` and `elicitation` have no UI yet. They are REFUSED rather
+    // than ignored: the engine blocks until answered, so silence would hang the
+    // turn with no indication why.
+    this.control?.respondError(
+      request.requestId,
+      `Rayucode does not support "${request.subtype}" yet.`,
+    )
+  }
+
+  /** The control client, for Task 7's permission responses. */
+  get controlClient(): ControlClient | null {
+    return this.control
+  }
+
+  /**
+   * Poll current context window usage from the engine.
+   *
+   * Run once after a turn completes, never token-by-token during streaming.
+   */
+  async pollContextUsage(force = false): Promise<ContextUsageView | null> {
+    if (!this.control || this.disposed) return null
+    // One request at a time. Without this a burst of triggers queues requests that
+    // resolve out of order, and the last to land wins regardless of which was freshest.
+    if (this.contextInFlight) return null
+
+    const now = Date.now()
+    // The throttle applies only MID-TURN. Boundary refreshes — init, resume, model
+    // change, compaction, completion — are the ones worth having promptly.
+    if (
+      !force &&
+      this.turnRunning &&
+      now - this.contextLastFetch < MIN_CONTEXT_INTERVAL_MS
+    ) {
+      return null
+    }
+
+    const generation = this.generation
+    this.contextInFlight = true
+    this.contextLastFetch = now
+
+    try {
+      const resp = await this.control.request('get_context_usage', {}, 10_000)
+      // The session was replaced or disposed while this was in flight. Applying it
+      // would show the previous conversation's usage against the new one.
+      if (generation !== this.generation || this.disposed) return null
+
+      if (typeof resp.percentage === 'number') {
+        this.lastContextUsage = {
+          percentage: resp.percentage,
+          totalTokens:
+            typeof resp.totalTokens === 'number' ? resp.totalTokens : undefined,
+          maxTokens:
+            typeof resp.rawMaxTokens === 'number' ? resp.rawMaxTokens : typeof resp.maxTokens === 'number' ? resp.maxTokens : undefined,
+          stale: false,
+        }
+        this.callbacks.onContextUsage?.(this.lastContextUsage)
+        return this.lastContextUsage
+      }
+    } catch {
+      // Unavailable rather than zero. A reading of 0% would be a confident lie; marking
+      // the last known value stale says "this was true a moment ago" instead.
+      if (generation === this.generation && this.lastContextUsage) {
+        this.lastContextUsage = { ...this.lastContextUsage, stale: true }
+        this.callbacks.onContextUsage?.(this.lastContextUsage)
+      }
+    } finally {
+      this.contextInFlight = false
+    }
+    return null
+  }
+
+  /**
+   * Fetch connected MCP servers status.
+   */
+  async getMcpStatus(): Promise<McpServerView[]> {
+    if (!this.control) return []
+    try {
+      const resp = await this.control.request('mcp_status', {}, 10_000)
+      const raw = Array.isArray(resp.mcpServers) ? resp.mcpServers : []
+      this.mcpServersList = raw
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map(s => ({
+          name: typeof s.name === 'string' ? s.name : '',
+          status: (typeof s.status === 'string'
+            ? s.status
+            : 'disconnected') as McpServerView['status'],
+          error: typeof s.error === 'string' ? s.error : undefined,
+        }))
+        .filter(s => s.name.length > 0)
+      this.callbacks.onMcpServers?.(this.mcpServersList)
+      return this.mcpServersList
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Enable or disable an MCP server.
+   */
+  async toggleMcpServer(serverName: string, enabled: boolean): Promise<boolean> {
+    if (!this.control) return false
+    try {
+      await this.control.request('mcp_toggle', { serverName, enabled }, 10_000)
+      await this.getMcpStatus()
+      return true
+    } catch (cause) {
+      this.callbacks.onError(
+        `Failed to toggle MCP server ${serverName}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+      return false
+    }
+  }
+
+  /**
+   * Reconnect a failed or disconnected MCP server.
+   *
+   * A failure surfaces an error notice rather than silently no-oping.
+   */
+  async reconnectMcpServer(serverName: string): Promise<boolean> {
+    if (!this.control) return false
+    try {
+      await this.control.request('mcp_reconnect', { serverName }, 15_000)
+      await this.getMcpStatus()
+      return true
+    } catch (cause) {
+      this.callbacks.onError(
+        `Failed to reconnect MCP server ${serverName}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+      return false
+    }
+  }
+
+  // ── transcript bookkeeping ─────────────────────────────────────────────────
+
+  private appendEntry(entry: TranscriptEntry): void {
+    this.entries.push(entry)
+    this.emitEntry(entry)
+  }
+
+  /**
+   * Hand an entry to the UI as a COPY.
+   *
+   * The host keeps mutable entries — a tool pill gains a status and output, a
+   * streaming answer gains text — and it must never hand out a reference it will
+   * later mutate. In production `postMessage` structure-clones, so aliasing would be
+   * invisible; in-process it silently shares the object, and a consumer that also
+   * applies the delta would double it. Copying here makes the boundary behave the
+   * same either way, which is also what makes it testable in-process.
+   */
+  private emitEntry(entry: TranscriptEntry): void {
+    this.callbacks.onEntry({ ...entry })
+  }
+
+  private setTurnRunning(running: boolean): void {
+    // A finished turn is a boundary worth a prompt, unthrottled reading.
+    if (this.turnRunning && !running) void this.pollContextUsage(true)
+    // Reset per-turn streaming bookkeeping on the RISING edge. Doing it on submit
+    // instead would miss a turn the engine starts on its own.
+    //
+    // The correlation map is cleared here rather than accumulated across the session:
+    // message ids are unique per turn, so keeping them would grow without bound for
+    // no benefit.
+    if (running && !this.turnRunning) {
+      this.streamedBlocks.clear()
+      this.currentStreamMessageId = null
+      this.currentStreamBlockIndex = null
+    }
+    if (this.turnRunning === running) return
+    this.turnRunning = running
+    this.callbacks.onTurnState(running)
+  }
+}
+
+function newId(): EntryId {
+  return randomUUID()
+}

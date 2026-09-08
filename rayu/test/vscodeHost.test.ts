@@ -16,7 +16,7 @@
  *     the CLI and "one source of truth" is a claim rather than a fact.
  *
  * The parity check spawns both bundles, so it is slow and skips when they are not
- * built. Build with `bun run build && bun run build:vscode-host`.
+ * built. Build with `bun run build:cli && bun run build:vscode`.
  */
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
@@ -27,7 +27,10 @@ import { buildHostArgv } from '../src/entrypoints/vscodeHost.ts'
 
 const ROOT = resolve(import.meta.dir, '..')
 const CLI = join(ROOT, 'dist/rayu.js')
-const HOST = join(ROOT, 'dist/rayu-vscode-host.js')
+// Stage 1 of `bun run build:vscode`. This is the bundle that is staged into the
+// VSIX and spawned by the extension host, so parity is asserted against the
+// artifact that actually ships.
+const HOST = join(ROOT, 'dist/vscode/engine.mjs')
 const bundlesBuilt = existsSync(CLI) && existsSync(HOST)
 
 describe('the argv contract is owned by the engine', () => {
@@ -37,8 +40,21 @@ describe('the argv contract is owned by the engine', () => {
       '--input-format=stream-json',
       '--output-format=stream-json',
       '--verbose',
+      '--include-partial-messages',
       '--permission-prompt-tool=stdio',
     ])
+  })
+
+  test('--include-partial-messages is present, or nothing ever streams', () => {
+    // The engine defaults it to FALSE (QueryEngine.ts:232) and only emits
+    // `stream_event` frames when it is set (QueryEngine.ts:820). Without it the
+    // extension's whole partial-rendering path is dead code: the answer arrives as
+    // one settled `assistant` message after the turn, so the panel sits silent and
+    // then blinks the entire reply into place.
+    //
+    // Safe to force: main.tsx:1783 rejects it unless --print and
+    // --output-format=stream-json are both present, and both are in this list.
+    expect(buildHostArgv([])).toContain('--include-partial-messages')
   })
 
   test('--permission-prompt-tool=stdio is present, or permissions never reach the host', () => {

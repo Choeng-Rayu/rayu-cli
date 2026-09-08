@@ -1,6 +1,6 @@
 /**
  * SDK control/protocol types — now REAL types, inferred from the Zod schemas in
- * `@rayu-dev/agent-protocol`.
+ * `src/protocol`.
  *
  * ## History
  *
@@ -17,7 +17,7 @@
  *
  * The shapes were never actually unknowable — they are fully determined by the
  * Zod schemas the engine validates against at runtime. Extracting those schemas
- * into `@rayu-dev/agent-protocol` and inferring from them gives real types with
+ * into `src/protocol` and inferring from them gives real types with
  * no duplication and no guesswork.
  *
  * Type-level only: every consumer uses `import type`, which Bun erases, so this
@@ -113,4 +113,4 @@ export type {
   TaskCreatedHookInput,
   TeammateIdleHookInput,
   UserPromptSubmitHookInput,
-} from '@rayu-dev/agent-protocol'
+} from '../../protocol/index.js'

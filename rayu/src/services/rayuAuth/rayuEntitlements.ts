@@ -57,6 +57,8 @@ export interface AllowedModel {
   supportsReasoning?: boolean
   /** Model accepts image content blocks (admin-declared). */
   supportsImage?: boolean
+  /** Model accepts tool calls when declared by the catalog. */
+  supportsTools?: boolean
 }
 
 export interface RayuEntitlements {

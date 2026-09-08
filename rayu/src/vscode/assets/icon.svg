@@ -1,0 +1,20 @@
+<!--
+  Activity-bar icon.
+
+  Monochrome and drawn with `currentColor` on purpose: VS Code tints activity-bar
+  icons itself to indicate active/inactive state and to satisfy the active theme,
+  including high contrast. A coloured icon fights that and looks wrong in at least
+  one of the four themes.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Cat face with pointed ears matching the cat emoji identity -->
+  <path d="M4 11V6.5L8.5 9C9.6 8.7 10.8 8.5 12 8.5s2.4.2 3.5.5L20 6.5V11c0 4.5-3.5 8-8 8s-8-3.5-8-8z" />
+  <circle cx="9" cy="13" r="0.9" fill="currentColor" />
+  <circle cx="15" cy="13" r="0.9" fill="currentColor" />
+  <path d="M11 15.2l1 .6 1-.6" />
+  <path d="M12 15.8v1.2" />
+  <path d="M2.5 12.5h3" />
+  <path d="M2.5 15l3-.5" />
+  <path d="M21.5 12.5h-3" />
+  <path d="M21.5 15l-3-.5" />
+</svg>

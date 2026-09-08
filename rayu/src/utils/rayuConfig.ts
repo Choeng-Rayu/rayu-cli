@@ -129,6 +129,9 @@ export type RayuProvider = {
   contextWindow?: number
   /** Per-model context-window (tokens) overrides, keyed by model id. */
   modelContextWindows?: Record<string, number>
+  /** Per-model declarations from the provider catalogue. Absent means unknown. */
+  modelSupportsThinking?: Record<string, boolean>
+  modelSupportsTools?: Record<string, boolean>
   /**
    * Per-model DISPLAY NAME, keyed by model id. Populated for rayu-hosted from
    * /me/entitlements (the name the Rayu admin typed), so the picker can show
@@ -1502,10 +1505,14 @@ export async function refreshAllProviderModels(): Promise<void> {
   if (dirty) saveRayuConfig(cfg)
 }
 
-/** Reset the in-memory cache (tests). */
-export function _resetRayuConfigCache(): void {
+/** Invalidate a process-local snapshot after another interface writes providers.json. */
+export function invalidateRayuConfigCache(): void {
   cache = null
+  clearContextPrepCache('rayu-config-reload')
 }
+
+/** Backwards-compatible test hook. */
+export const _resetRayuConfigCache = invalidateRayuConfigCache
 
 /** Separator encoding provider+model in a single picker value. */
 export const RAYU_MODEL_SEP = '\u0000'
@@ -1551,6 +1558,9 @@ export type RayuModelChoice = {
   label?: string
   /** Admin-configured context window in tokens, when known. */
   contextWindow?: number
+  supportsThinking?: boolean
+  supportsImage?: boolean
+  supportsTools?: boolean
 }
 
 /**
@@ -1599,6 +1609,9 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
         value,
         providerId: p.id,
         model,
+        supportsThinking: p.modelSupportsThinking?.[model],
+        supportsImage: p.modelSupportsImage?.[model],
+        supportsTools: p.modelSupportsTools?.[model],
         ...(label ? { label } : {}),
         ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
       })

@@ -1,0 +1,1287 @@
+/*
+ * Rayucode panel styles.
+ *
+ * ZERO HARDCODED COLOURS. Every colour is a `--vscode-*` variable that VS Code
+ * injects into the webview for the ACTIVE theme. That is what makes the panel
+ * correct in Light, Dark, High Contrast Dark and High Contrast Light without four
+ * stylesheets — and a single hex literal breaks exactly one of those four, usually
+ * high contrast, where it becomes an accessibility failure rather than a cosmetic
+ * one. A test in Phase 2 asserts this file contains no hex literals.
+ *
+ * Task 4 covers the shell. The transcript entries, composer, tool pills, review
+ * card and popover arrive in Tasks 6-10.
+ */
+
+:root {
+  /* Local design tokens. Sizing and spacing only — never colour. */
+  --rc-radius: 6px;
+  --rc-radius-lg: 8px;
+  --rc-gap: 8px;
+  --rc-gap-lg: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  /* The editor's own fonts, so the panel matches surrounding UI rather than
+     imposing a typeface of its own. */
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background-color: var(--vscode-sideBar-background);
+}
+
+.rc-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.rc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rc-gap);
+  padding: var(--rc-gap) var(--rc-gap-lg);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  flex: 0 0 auto;
+}
+
+.rc-header-title {
+  font-weight: 600;
+}
+
+.rc-header-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  min-width: 0;
+}
+
+.rc-header-context {
+  font-size: 0.82em;
+  padding: 1px 6px;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 999px;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.rc-header-user {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 16ch;
+}
+
+.rc-header-version {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--rc-gap-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap-lg);
+}
+
+.rc-muted {
+  color: var(--vscode-descriptionForeground);
+  margin: 0;
+}
+
+/* ── sign-in surface ─────────────────────────────────────────────────────── */
+
+.rc-signin {
+  border: 1px solid var(--vscode-editorWidget-border);
+  background-color: var(--vscode-editorWidget-background);
+  border-radius: var(--rc-radius-lg);
+  padding: calc(var(--rc-gap-lg) * 1.5) var(--rc-gap-lg);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--rc-gap);
+}
+
+.rc-signin-mark {
+  /* The chat avatar colours, so the mark reads as the same agent identity. */
+  color: var(--vscode-chat-avatarForeground, var(--vscode-foreground));
+  background-color: var(--vscode-chat-avatarBackground, var(--vscode-badge-background));
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rc-signin-title {
+  margin: 0;
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+.rc-signin-body {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
+  /* Long enough to read comfortably, short enough not to sprawl in a sidebar. */
+  max-width: 46ch;
+}
+
+.rc-signin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--rc-gap);
+  margin-top: var(--rc-gap);
+}
+
+.rc-signin-note {
+  margin: var(--rc-gap) 0 0;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ── buttons ─────────────────────────────────────────────────────────────── */
+
+.rc-button {
+  font-family: inherit;
+  font-size: inherit;
+  padding: 6px 14px;
+  border-radius: var(--rc-radius);
+  cursor: pointer;
+  border: 1px solid var(--vscode-button-border, transparent);
+  color: var(--vscode-button-secondaryForeground);
+  background-color: var(--vscode-button-secondaryBackground);
+}
+
+.rc-button:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.rc-button-primary {
+  color: var(--vscode-button-foreground);
+  background-color: var(--vscode-button-background);
+}
+
+.rc-button-primary:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+/* Keyboard focus must be visible, and it must use the editor's own focus colour
+   so it is correct in high-contrast themes rather than merely present. */
+.rc-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+/* ── transcript entries ──────────────────────────────────────────────────── */
+
+.rc-turn {
+  display: flex;
+  gap: var(--rc-gap);
+  align-items: flex-start;
+}
+
+/* The user's turn is right-aligned. The asymmetry is what makes a long transcript
+   scannable without reading it. */
+.rc-turn-user {
+  justify-content: flex-end;
+}
+
+.rc-request {
+  background-color: var(--vscode-chat-requestBackground, var(--vscode-input-background));
+  border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, transparent));
+  border-radius: var(--rc-radius-lg);
+  padding: var(--rc-gap) var(--rc-gap-lg);
+  max-width: 85%;
+  /* The user's own text, verbatim. `pre-wrap` keeps their line breaks and
+     indentation instead of collapsing whitespace. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rc-avatar {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-chat-avatarForeground, var(--vscode-foreground));
+  background-color: var(--vscode-chat-avatarBackground, var(--vscode-badge-background));
+  margin-top: 1px;
+}
+
+.rc-turn-body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* ── assistant prose ─────────────────────────────────────────────────────── */
+
+.rc-prose {
+  overflow-wrap: anywhere;
+}
+
+.rc-prose > :first-child {
+  margin-top: 0;
+}
+
+.rc-prose > :last-child {
+  margin-bottom: 0;
+}
+
+.rc-prose p,
+.rc-prose ul,
+.rc-prose ol,
+.rc-prose blockquote,
+.rc-prose pre {
+  margin: 0 0 var(--rc-gap);
+}
+
+.rc-prose code {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.92em;
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+
+.rc-prose pre {
+  font-family: var(--vscode-editor-font-family);
+  background-color: var(--vscode-textCodeBlock-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: var(--rc-radius);
+  padding: var(--rc-gap);
+  overflow-x: auto;
+}
+
+/* A code block already has the block's background; doubling it inside <pre> makes
+   the inline style read as a nested box. */
+.rc-prose pre code {
+  background: none;
+  padding: 0;
+}
+
+.rc-prose a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.rc-prose a:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+
+.rc-prose blockquote {
+  border-left: 2px solid var(--vscode-panel-border);
+  padding-left: var(--rc-gap);
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-prose table {
+  border-collapse: collapse;
+}
+
+.rc-prose th,
+.rc-prose td {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 2px 6px;
+}
+
+/* ── streaming indicator ─────────────────────────────────────────────────── */
+
+.rc-pulse {
+  display: inline-flex;
+  align-items: center;
+  height: 1em;
+}
+
+.rc-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--vscode-progressBar-background, var(--vscode-foreground));
+  animation: rc-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes rc-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ── notices ─────────────────────────────────────────────────────────────── */
+
+.rc-notice {
+  border-radius: var(--rc-radius);
+  padding: var(--rc-gap) var(--rc-gap-lg);
+  background-color: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+  color: var(--vscode-foreground);
+  overflow-wrap: anywhere;
+}
+
+.rc-notice-error {
+  background-color: var(--vscode-inputValidation-errorBackground);
+  border-color: var(--vscode-inputValidation-errorBorder);
+}
+
+/* ── tool pills ──────────────────────────────────────────────────────────── */
+
+.rc-tool {
+  font-size: 0.9em;
+  border: 1px solid var(--vscode-editorWidget-border);
+  background-color: var(--vscode-editorWidget-background);
+  border-radius: var(--rc-radius);
+  min-width: 0;
+}
+
+.rc-tool-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  padding: 5px var(--rc-gap);
+  cursor: pointer;
+  min-width: 0;
+  /* The default triangle is replaced by our own chevron, which can be rotated
+     consistently across platforms. */
+  list-style: none;
+}
+
+.rc-tool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.rc-tool-summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.rc-tool-chevron {
+  flex: 0 0 auto;
+  display: flex;
+  color: var(--vscode-descriptionForeground);
+  transition: transform 150ms ease;
+}
+
+.rc-tool[open] .rc-tool-chevron {
+  transform: rotate(90deg);
+}
+
+.rc-tool-name {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.rc-tool-label {
+  font-family: var(--vscode-editor-font-family);
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rc-tool-detail {
+  border-top: 1px solid var(--vscode-editorWidget-border);
+  padding: var(--rc-gap);
+}
+
+.rc-tool-section {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
+}
+
+.rc-tool-section:not(:first-child) {
+  margin-top: var(--rc-gap);
+}
+
+.rc-tool-pre {
+  font-family: var(--vscode-editor-font-family);
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: var(--rc-gap);
+  margin: 0;
+  /* Bounded so one enormous tool result cannot make the whole transcript
+     unscrollable. */
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rc-badge {
+  flex: 0 0 auto;
+  font-size: 0.8em;
+  border-radius: 3px;
+  padding: 0 5px;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.rc-badge-done {
+  background-color: var(--vscode-gitDecoration-addedResourceForeground);
+  color: var(--vscode-editor-background);
+}
+
+.rc-badge-error {
+  background-color: var(--vscode-gitDecoration-deletedResourceForeground);
+  color: var(--vscode-editor-background);
+}
+
+/* ── permission card ─────────────────────────────────────────────────────── */
+
+.rc-permission {
+  flex: 0 0 auto;
+  margin: 0 var(--rc-gap-lg) var(--rc-gap);
+  padding: var(--rc-gap-lg);
+  border-radius: var(--rc-radius-lg);
+  /* The warning palette, because this is a decision with consequences — not the
+     neutral widget background used for informational surfaces. */
+  background-color: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap);
+}
+
+.rc-permission-head {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+}
+
+.rc-permission-title {
+  font-weight: 600;
+}
+
+.rc-permission-label {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+}
+
+.rc-permission-body {
+  margin: 0;
+}
+
+.rc-permission-warning {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+  overflow-wrap: anywhere;
+}
+
+.rc-permission-params summary {
+  cursor: pointer;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-permission-params summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+.rc-permission-params pre {
+  margin-top: var(--rc-gap);
+}
+
+.rc-permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rc-gap);
+}
+
+/* ── review card ─────────────────────────────────────────────────────────── */
+
+.rc-review {
+  flex: 0 0 auto;
+  border: 1px solid var(--vscode-editorWidget-border);
+  background-color: var(--vscode-editorWidget-background);
+  border-radius: var(--rc-radius-lg);
+  padding: var(--rc-gap-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap);
+}
+
+.rc-review-head {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  flex-wrap: wrap;
+}
+
+.rc-review-title {
+  font-weight: 600;
+  font-size: 0.9em;
+}
+
+.rc-review-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rc-review-file {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  padding: 3px 0;
+  font-size: 0.88em;
+}
+
+.rc-review-path {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.rc-review-path:hover {
+  text-decoration: underline;
+  color: var(--vscode-textLink-activeForeground);
+}
+
+.rc-review-path:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.rc-review-action {
+  font-family: inherit;
+  font-size: 0.85em;
+  padding: 2px 8px;
+  border-radius: var(--rc-radius);
+  cursor: pointer;
+  border: 1px solid var(--vscode-button-secondaryBorder, transparent);
+  color: var(--vscode-button-secondaryForeground);
+  background-color: var(--vscode-button-secondaryBackground);
+}
+
+.rc-review-action:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.rc-review-action:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.rc-review-new {
+  font-size: 0.8em;
+  font-style: italic;
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+  padding: 0 4px;
+}
+
+.rc-diffstat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+}
+
+.rc-diffstat-add {
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.rc-diffstat-del {
+  color: var(--vscode-gitDecoration-deletedResourceForeground);
+}
+
+/* ── welcome screen ──────────────────────────────────────────────────────── */
+
+.rc-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--rc-gap);
+  padding: calc(var(--rc-gap-lg) * 2) var(--rc-gap-lg);
+}
+
+.rc-welcome-mark {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-chat-avatarForeground, var(--vscode-foreground));
+  background-color: var(--vscode-chat-avatarBackground, var(--vscode-badge-background));
+}
+
+.rc-welcome-title {
+  margin: 0;
+  font-size: 1.15em;
+  font-weight: 600;
+}
+
+.rc-welcome-body {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
+  max-width: 44ch;
+}
+
+.rc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--rc-gap);
+  margin-top: var(--rc-gap);
+}
+
+.rc-chip {
+  font-family: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 4px 12px;
+  color: var(--vscode-foreground);
+  background-color: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border);
+}
+
+.rc-chip:hover:not(:disabled) {
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.rc-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rc-chip:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+/* ── autocomplete popover ─────────────────────────────────────────────────── */
+
+.rc-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background-color: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: var(--rc-radius-lg);
+  box-shadow: 0 4px 12px var(--vscode-widget-shadow, transparent);
+  padding: 4px;
+  margin: 0;
+  list-style: none;
+  z-index: 100;
+}
+
+.rc-popover-item {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  padding: 5px 8px;
+  border-radius: var(--rc-radius);
+  cursor: pointer;
+  font-size: 0.88em;
+  color: var(--vscode-foreground);
+}
+
+.rc-popover-item:hover,
+.rc-popover-item.rc-popover-item-active {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.rc-popover-icon {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
+  color: var(--vscode-textLink-foreground);
+  width: 14px;
+  text-align: center;
+}
+
+.rc-popover-label {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 500;
+  flex: 0 0 auto;
+}
+
+.rc-popover-desc {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.rc-popover-item-active .rc-popover-desc {
+  color: inherit;
+  opacity: 0.85;
+}
+
+/* ── composer ────────────────────────────────────────────────────────────── */
+
+.rc-composer-card {
+  position: relative;
+  flex: 0 0 auto;
+  margin: 0 var(--rc-gap-lg) var(--rc-gap-lg);
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+  background-color: var(--vscode-input-background);
+  border-radius: var(--rc-radius-lg);
+  padding: var(--rc-gap);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap);
+}
+
+/* The whole card takes the focus ring, not just the textarea, because the card is
+   what reads as the input. */
+.rc-composer-card:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+
+.rc-composer-input {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-input-foreground);
+  background: transparent;
+  border: none;
+  resize: none;
+  outline: none;
+  padding: 0;
+  /* Height is set imperatively from scrollHeight; CSS cannot size a textarea to
+     its content. */
+  overflow-y: auto;
+  min-height: 1.4em;
+  line-height: 1.4;
+}
+
+.rc-composer-input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+.rc-composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  min-width: 0;
+}
+
+.rc-composer-spacer {
+  flex: 1 1 auto;
+}
+
+.rc-pill {
+  font-size: 0.82em;
+  border-radius: 999px;
+  padding: 2px 9px;
+  color: var(--vscode-foreground);
+  background-color: var(--vscode-badge-background);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 18ch;
+}
+
+.rc-pill-muted {
+  color: var(--vscode-descriptionForeground);
+  background-color: transparent;
+  border: 1px solid var(--vscode-editorWidget-border);
+}
+
+/* A pill that is also a control. Kept visually identical to a static pill so the
+   toolbar does not become a row of competing buttons, but it is a real <button> so
+   it is keyboard reachable and announced as actionable. */
+.rc-pill-button {
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rc-pill-button:hover {
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.rc-pill-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.rc-submit {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-button-foreground);
+  background-color: var(--vscode-button-background);
+}
+
+.rc-submit:hover:not(:disabled) {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+.rc-submit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.rc-submit:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+/*
+ * Respect the OS "reduce motion" setting. Any animation added later inherits this
+ * rather than each component having to remember it.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── engine post-turn summary ────────────────────────────────────────────── */
+
+.rc-summary {
+  border: 1px solid var(--vscode-editorWidget-border);
+  background-color: var(--vscode-editorWidget-background);
+  border-radius: var(--rc-radius-lg);
+  padding: var(--rc-gap-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap);
+}
+
+/* The engine's own `is_noteworthy` flag, shown as a leading accent rather than a
+   different background — the summary is still a summary, just one worth reading. */
+.rc-summary-noteworthy {
+  border-left: 3px solid var(--vscode-focusBorder);
+}
+
+.rc-summary-head {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  flex-wrap: wrap;
+}
+
+.rc-summary-title {
+  font-weight: 600;
+}
+
+.rc-summary-body,
+.rc-summary-detail,
+.rc-summary-action {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rc-summary-detail {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.92em;
+}
+
+/* `needs_action` is the one part a user scans for, so it gets the warning palette
+   rather than being folded into body text. */
+.rc-summary-action {
+  border-radius: var(--rc-radius);
+  padding: var(--rc-gap) calc(var(--rc-gap) * 1.25);
+  background-color: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+}
+
+/* Neither 'done' nor 'error' fits waiting/blocked: the turn did not fail, it needs
+   something. */
+.rc-badge-warn {
+  background-color: var(--vscode-inputValidation-warningBackground);
+  color: var(--vscode-foreground);
+}
+
+/* ── in-composer model dropdown ──────────────────────────────────────────── */
+
+.rc-dropdown {
+  position: relative;
+  min-width: 0;
+}
+
+/* Opens UPWARD. The composer sits at the bottom of the panel, so a downward menu
+   would open off-screen. */
+.rc-dropdown-panel {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  width: max(240px, 100%);
+  max-width: 92vw;
+  border: 1px solid var(--vscode-editorWidget-border);
+  background-color: var(--vscode-editorWidget-background);
+  border-radius: var(--rc-radius);
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rc-dropdown-search {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-input-foreground);
+  background-color: var(--vscode-input-background);
+  border: none;
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  outline: none;
+  padding: 6px var(--rc-gap);
+}
+
+.rc-dropdown-search:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.rc-dropdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* Bounded so a provider with hundreds of models does not fill the window. */
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.rc-dropdown-item {
+  font-family: inherit;
+  font-size: inherit;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  padding: 5px var(--rc-gap);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* One highlight class driven by both hover and arrow keys, so mouse and keyboard
+   never disagree about which row Enter would take. */
+.rc-dropdown-item-active {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.rc-dropdown-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rc-dropdown-current {
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-dropdown-item-active .rc-dropdown-current,
+.rc-dropdown-item-active .rc-dropdown-detail {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.rc-dropdown-detail {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rc-dropdown-empty {
+  margin: 0;
+  padding: var(--rc-gap);
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap);
+  align-items: flex-start;
+}
+
+.rc-dropdown-error {
+  margin: 0;
+  color: var(--vscode-errorForeground);
+}
+
+/* ── inference controls (thinking / effort) ───────────────────────────────── */
+
+/* An "on" toggle uses the button palette so it reads as active, not merely themed. */
+.rc-pill-on {
+  color: var(--vscode-button-foreground);
+  background-color: var(--vscode-button-background);
+}
+
+.rc-pill-on:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+/* Marks a setting an environment variable is pinning, so the control does not look
+   like it silently does nothing. */
+.rc-pill-pinned {
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.rc-dropdown-empty code {
+  font-family: var(--vscode-editor-font-family);
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+/* ── context-window pressure gauge ─────────────────────────────────────────── */
+
+.rc-header-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rc-ctx-bar {
+  display: inline-block;
+  width: 26px;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background-color: var(--vscode-progressBar-background);
+  opacity: 0.35;
+}
+
+.rc-ctx-fill {
+  display: block;
+  height: 100%;
+  background-color: currentColor;
+}
+
+/* Tone shifts only where the user would act differently. Never colour alone: the
+   percentage is always present, and the tooltip states the situation in words. */
+.rc-ctx-warn {
+  color: var(--vscode-editorWarning-foreground);
+}
+
+.rc-ctx-critical {
+  color: var(--vscode-editorError-foreground);
+}
+
+/* ── session history picker ────────────────────────────────────────────────── */
+
+.rc-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 24px, not the 44px touch minimum: this is a pointer-and-keyboard density
+     surface inside an editor sidebar, matching VS Code's own title-bar actions. It
+     is reachable by keyboard and has an accessible name via title. */
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  color: var(--vscode-icon-foreground);
+  background: transparent;
+  cursor: pointer;
+}
+
+.rc-icon-button:hover {
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.rc-icon-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* The header sits at the TOP, so its dropdown must open downward — the composer's
+   opens upward for the mirror-image reason. */
+.rc-dropdown-panel-below {
+  top: calc(100% + 4px);
+  bottom: auto;
+}
+
+/* A pending destructive confirmation. Uses the warning palette AND states the
+   consequence in words inside the row, so it never relies on colour. */
+.rc-dropdown-item-confirm {
+  background-color: var(--vscode-inputValidation-warningBackground);
+}
+
+.rc-dropdown-warn {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.9em;
+  color: var(--vscode-editorWarning-foreground);
+}
+
+/* ── in-panel provider setup ───────────────────────────────────────────────── */
+
+.rc-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background-color: var(--vscode-editorWidget-background);
+}
+
+.rc-setup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rc-setup-title {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 600;
+}
+
+.rc-setup-error {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+  background-color: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+}
+
+.rc-setup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rc-setup-back {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+}
+
+.rc-setup-chosen {
+  margin: 0;
+  font-weight: 600;
+}
+
+.rc-setup-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rc-setup-input {
+  padding: 4px 6px;
+  color: var(--vscode-input-foreground);
+  background-color: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.rc-setup-input:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.rc-setup-hint,
+.rc-setup-note {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.92em;
+}
+
+.rc-setup-note code {
+  font-family: var(--vscode-editor-font-family);
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.rc-setup-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ── CLI attachment ────────────────────────────────────────────────────────── */
+
+/* An active mirror is a persistent mode, so the icon carries the button palette to
+   say so. The tooltip names the session, so colour is never the only signal. */
+.rc-icon-button-on {
+  color: var(--vscode-button-foreground);
+  background-color: var(--vscode-button-background);
+}
+
+.rc-icon-button-on:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+.rc-attach-current {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.rc-dropdown-empty code {
+  font-family: var(--vscode-editor-font-family);
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: 0 3px;
+}

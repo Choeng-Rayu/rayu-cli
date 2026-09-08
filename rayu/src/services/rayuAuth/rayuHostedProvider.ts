@@ -6,6 +6,7 @@
 // provider is removed so the model picker never shows stale hosted models.
 import {
   loadRayuConfig,
+  invalidateRayuConfigCache,
   saveRayuConfig,
   type RayuProvider,
 } from '../../utils/rayuConfig.js'
@@ -15,6 +16,7 @@ import {
   catalogSignature,
   hostedContextWindows,
   hostedModelLabels,
+  hostedModelCapabilities,
 } from './rayuModelCatalog.js'
 import type { RayuEntitlements } from './rayuEntitlements.js'
 
@@ -45,6 +47,8 @@ export function syncRayuHostedProvider(
   opts?: { activate?: boolean },
 ): void {
   try {
+    // Another interface may have selected a model while the HTTP refresh ran.
+    invalidateRayuConfigCache()
     const cfg = loadRayuConfig()
     // Visibility uses the full catalog; usability uses the entitled subset.
     const catalog = ent?.hostedModels ?? ent?.allowedModels ?? []
@@ -86,6 +90,7 @@ export function syncRayuHostedProvider(
         // Display names exactly as the admin typed them, so /model can show
         // "DeepSeek V4 Pro" beside the id that goes on the wire.
         modelLabels: hostedModelLabels(catalog),
+        ...hostedModelCapabilities(catalog),
       }
       if (idx >= 0) cfg.providers[idx] = provider
       else cfg.providers.push(provider)
@@ -144,7 +149,8 @@ function hostedModelSignature(): string {
     if (!p) return ''
     // Ids + names + windows: everything the picker renders, so a rename or a
     // context-window change counts as a change too.
-    return catalogSignature(p.models ?? [], p.modelLabels, p.modelContextWindows)
+    return catalogSignature(p.models ?? [], p.modelLabels, p.modelContextWindows) +
+      JSON.stringify([p.modelSupportsThinking, p.modelSupportsImage, p.modelSupportsTools])
   } catch {
     return ''
   }

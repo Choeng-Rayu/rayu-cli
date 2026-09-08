@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react'
-import type { WebBridgeConnectionState } from '@rayu-dev/web-bridge-client'
+import type { WebBridgeConnectionState } from '../webBridge/client/index.js'
 
 import { hasRayuSession } from '../services/rayuAuth/rayuSession.js'
 import type { WrappedMessage } from '../telegram/formatActivity.js'
