@@ -98,6 +98,12 @@ export interface ChatViewHandlers {
   getMcpStatus: () => Promise<void> | void
   listSessions: () => Promise<void> | void
   resumeSession: (id: string) => Promise<void> | void
+  stopTask: (sourceSessionId: string, taskId: string) => Promise<void> | void
+  sendTaskMessage: (
+    sourceSessionId: string,
+    taskId: string,
+    text: string,
+  ) => Promise<void> | void
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -293,6 +299,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'resumeSession':
         void this.handlers.resumeSession(message.id)
+        return
+      case 'stopTask':
+        void this.handlers.stopTask(message.sourceSessionId, message.taskId)
+        return
+      case 'sendTaskMessage':
+        void this.handlers.sendTaskMessage(
+          message.sourceSessionId,
+          message.taskId,
+          message.text,
+        )
         return
       default:
         // An unknown message means host and webview were built from different

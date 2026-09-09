@@ -33,6 +33,10 @@ import { TranscriptEntryView, NoticeEntry } from './components/TranscriptEntryVi
 import { WelcomeScreen } from './components/WelcomeScreen.js'
 import { ScrollToBottomButton } from './components/ScrollToBottomButton.js'
 import { isTodoToolEntry } from './components/TodoListCard.js'
+import {
+  BackgroundTaskBar,
+  BackgroundTaskCenter,
+} from './components/BackgroundTaskCenter.js'
 
 /**
  * The bridge VS Code injects into every webview.
@@ -57,6 +61,8 @@ export function App(): JSX.Element {
   const [state, dispatch] = useReducer(chatReducer, initialChatState)
   /** Text a prompt chip put in the composer but the user has not sent. */
   const [draft, setDraft] = useState<string | null>(null)
+  const [taskCenterOpen, setTaskCenterOpen] = useState(false)
+  const [selectedTaskKey, setSelectedTaskKey] = useState<string | null>(null)
 
   useEffect(() => {
     function onMessage(event: MessageEvent<HostToWebviewMessage>): void {
@@ -84,6 +90,8 @@ export function App(): JSX.Element {
         case 'setMcpServers':
         case 'setSessions':
         case 'turnDuration':
+        case 'replaceTaskState':
+        case 'upsertTaskState':
           // The action union is the message union by construction, so the reducer
           // is the single place that decides what each one means.
           dispatch(message)
@@ -159,7 +167,31 @@ export function App(): JSX.Element {
         }
       />
 
-      <Transcript state={state} onPick={setDraft} signedOut={signedOut} />
+      <div className={`rc-main-area${taskCenterOpen ? ' rc-main-area-tasks' : ''}`}>
+        <Transcript state={state} onPick={setDraft} signedOut={signedOut} />
+        {taskCenterOpen ? (
+          <BackgroundTaskCenter
+            tasks={state.backgroundTasks}
+            supported={state.taskInspectionSupported}
+            message={state.taskInspectionMessage}
+            selectedKey={selectedTaskKey}
+            onSelect={setSelectedTaskKey}
+            onClose={() => setTaskCenterOpen(false)}
+            onStop={task => send({
+              type: 'stopTask',
+              sourceSessionId: task.sourceSessionId,
+              taskId: task.taskId,
+            })}
+            onSend={(task, text) => send({
+              type: 'sendTaskMessage',
+              sourceSessionId: task.sourceSessionId,
+              taskId: task.taskId,
+              text,
+            })}
+            permissions={state.pendingPermissions}
+          />
+        ) : null}
+      </div>
 
       {/* Pinned between the transcript and the composer: the engine is blocked, so
           this must be visible without scrolling, while the transcript it describes
@@ -186,6 +218,19 @@ export function App(): JSX.Element {
           />
         )
       ))}
+
+      <BackgroundTaskBar
+        tasks={state.backgroundTasks}
+        open={taskCenterOpen}
+        supported={state.taskInspectionSupported}
+        message={state.taskInspectionMessage}
+        onToggle={() => {
+          setTaskCenterOpen(open => !open)
+          if (!selectedTaskKey && state.backgroundTasks[0]) {
+            setSelectedTaskKey(state.backgroundTasks[0].key)
+          }
+        }}
+      />
 
       <Composer
         key={draft ?? ''}

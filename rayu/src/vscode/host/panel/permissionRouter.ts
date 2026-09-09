@@ -118,6 +118,7 @@ export class PermissionRouter {
 
     const view: PermissionRequestView = {
       requestId: request.requestId,
+      agentId: typeof inner.agent_id === 'string' ? inner.agent_id : undefined,
       toolName:
         typeof inner.display_name === 'string' ? inner.display_name : toolName,
       // Same one-line summary the tool pill uses, so the card and the pill that

@@ -136,11 +136,17 @@ export type HostToWebviewMessage =
   | { type: 'setSessions'; sessions: SessionSummaryView[] }
   /** Turn completed — formatted duration string (e.g. "5m 17s"). */
   | { type: 'turnDuration'; duration: string }
+  /** Replace the task center from the execution owner's authoritative snapshot. */
+  | { type: 'replaceTaskState'; tasks: BackgroundTaskView[]; supported: boolean; message?: string }
+  /** Insert or update one task without rebuilding the task center. */
+  | { type: 'upsertTaskState'; task: BackgroundTaskView }
 
 /** An approval the user must grant or refuse before a tool runs. */
 export interface PermissionRequestView {
   /** Correlates the answer with the engine's blocked request. */
   requestId: string
+  /** Shared subagent identity, when the request originated below a task. */
+  agentId?: string
   /** Display name where the engine gave one, else the raw tool name. */
   toolName: string
   /** One-line summary of what it would act on — the command, the path. */
@@ -304,6 +310,82 @@ export type WebviewToHostMessage =
   | { type: 'listSessions' }
   /** Resume a previous session by id. */
   | { type: 'resumeSession'; id: string }
+  /** Stop a running task through the process that owns its execution. */
+  | { type: 'stopTask'; sourceSessionId: string; taskId: string }
+  /** Send a follow-up to an agent/teammate when that task advertises the capability. */
+  | { type: 'sendTaskMessage'; sourceSessionId: string; taskId: string; text: string }
+
+export type BackgroundTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'stopped'
+
+export type BackgroundTaskType =
+  | 'local_agent'
+  | 'in_process_teammate'
+  | 'local_shell'
+  | 'remote_agent'
+  | 'external_agent'
+  | 'local_workflow'
+  | 'monitor_mcp'
+  | 'dream'
+  | 'unknown'
+
+export interface TaskActivityView {
+  id: string
+  label: string
+  toolName?: string
+  timestamp: number
+  kind?: 'tool' | 'search' | 'read' | 'thinking' | 'status'
+}
+
+export interface TaskCapabilitiesView {
+  canStop: boolean
+  canSendMessage: boolean
+  hasTranscript: boolean
+  hasOutput: boolean
+}
+
+/** Sanitized, serializable projection of the shared TaskState lifecycle. */
+export interface BackgroundTaskView {
+  /** Collision-safe key: source session plus the task's own id. */
+  key: string
+  taskId: string
+  sourceSessionId: string
+  type: BackgroundTaskType
+  rawType?: string
+  group: 'agents' | 'shells' | 'workflows' | 'remote' | 'monitors' | 'other'
+  description: string
+  prompt?: string
+  agentId?: string
+  agentName?: string
+  status: BackgroundTaskStatus
+  executionMode: 'foreground' | 'background'
+  startedAt: number
+  updatedAt: number
+  currentActivity?: string
+  recentActivities: TaskActivityView[]
+  model?: string
+  provider?: string
+  tokenCount: number
+  toolCount: number
+  result?: string
+  error?: string
+  unread: boolean
+  capabilities: TaskCapabilitiesView
+  workflowProgress?: Array<{ label: string; status?: string; detail?: string }>
+}
+
+export interface TaskDetailPage {
+  taskKey: string
+  items: TranscriptEntry[]
+  output?: string
+  cursor?: string
+  hasMore: boolean
+}
 
 /** A settled transcript entry. Mirrors the host formatter's block kinds. */
 export type TranscriptEntry =
@@ -507,6 +589,11 @@ export interface WebviewState {
   mcpServers: McpServerView[]
   /** Previous sessions for project. */
   sessions?: SessionSummaryView[]
+  /** Host-owned task state survives webview collapse and recreation. */
+  backgroundTasks?: BackgroundTaskView[]
+  /** False when an attached older CLI does not expose task inspection. */
+  taskInspectionSupported?: boolean
+  taskInspectionMessage?: string
 }
 
 /** A slash command description for the autocomplete popover. */

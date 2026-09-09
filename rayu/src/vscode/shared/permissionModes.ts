@@ -10,7 +10,8 @@
  * so the cycle logic can be tested without stubbing the editor API, which is the
  * difference between a real test and one that only proves the stub works.
  */
-export type { PermissionModeView } from './webviewProtocol.js'
+import type { PermissionModeView } from './webviewProtocol.js'
+export type { PermissionModeView }
 
 /**
  * The modes offered, in cycle order.

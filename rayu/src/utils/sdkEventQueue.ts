@@ -73,8 +73,32 @@ export type SdkEvent =
 
 const MAX_QUEUE_SIZE = 1000
 const queue: SdkEvent[] = []
+type PublishedSdkEvent = SdkEvent & { uuid: UUID; session_id: string }
+const subscribers = new Set<(event: PublishedSdkEvent) => void>()
+
+/** Observe lifecycle events in both TUI and headless modes without draining the SDK queue. */
+export function subscribeSdkEvents(
+  subscriber: (event: PublishedSdkEvent) => void,
+): () => void {
+  subscribers.add(subscriber)
+  return () => subscribers.delete(subscriber)
+}
 
 export function enqueueSdkEvent(event: SdkEvent): void {
+  if (subscribers.size > 0) {
+    const published: PublishedSdkEvent = {
+      ...event,
+      uuid: randomUUID(),
+      session_id: getSessionId(),
+    }
+    for (const subscriber of subscribers) {
+      try {
+        subscriber(published)
+      } catch {
+        // An observing UI must never interrupt task execution.
+      }
+    }
+  }
   // SDK events are only consumed (drained) in headless/streaming mode.
   // In TUI mode they would accumulate up to the cap and never be read.
   if (!getIsNonInteractiveSession()) {

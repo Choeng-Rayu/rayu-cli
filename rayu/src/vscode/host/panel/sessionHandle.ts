@@ -41,6 +41,7 @@ import {
   type VSCodeActivityBlock,
 } from './formatActivityForVSCode.js'
 import type { WrappedMessage } from '../../../telegram/formatActivity.js'
+import { loadTaskHistory, saveTaskHistory } from '../../../utils/task/taskHistory.js'
 import {
   persistModelChoice,
   readActiveModel,
@@ -57,6 +58,8 @@ import {
   type InferenceSettingsView,
 } from '../../shared/inferenceSettings.js'
 import type {
+  BackgroundTaskType,
+  BackgroundTaskView,
   ContextUsageView,
   ModelCatalogueView,
   EntryId,
@@ -160,6 +163,10 @@ export interface SessionCallbacks {
   onMcpServers?: (servers: McpServerView[]) => void
   /** Turn completed with this formatted duration (e.g. "5m 17s"). */
   onTurnDuration?: (duration: string) => void
+  /** A sanitized shared task projection changed. */
+  onTaskStateChanged?: (task: BackgroundTaskView) => void
+  /** A new/resumed session replaced the complete task set. */
+  onTaskStateReplaced?: (tasks: BackgroundTaskView[]) => void
 }
 
 export interface SessionOptions {
@@ -272,6 +279,9 @@ export class ChatSession {
   private slashCommands: SlashCommandView[] = DEFAULT_SLASH_COMMANDS
   private lastContextUsage: ContextUsageView | null = null
   private mcpServersList: McpServerView[] = []
+  /** Background work is host-owned so webview disposal cannot lose it. */
+  private readonly backgroundTaskMap = new Map<string, BackgroundTaskView>()
+  private taskHistoryWrite: Promise<void> = Promise.resolve()
 
   private starting: Promise<void> | null = null
   /** Invalidates prompts waiting for startup when stopped or replaced. */
@@ -314,6 +324,18 @@ export class ChatSession {
 
   get mcpServers(): readonly McpServerView[] {
     return this.mcpServersList
+  }
+
+  get backgroundTasks(): readonly BackgroundTaskView[] {
+    return [...this.backgroundTaskMap.values()].sort(compareBackgroundTasks)
+  }
+
+  /** Restore terminal task metadata alongside the shared transcript on resume. */
+  async restoreTaskHistory(sessionId: string, cwd = this.options.cwd): Promise<void> {
+    const restored = await loadTaskHistory(cwd, sessionId)
+    this.backgroundTaskMap.clear()
+    for (const task of restored) this.backgroundTaskMap.set(task.key, task)
+    this.callbacks.onTaskStateReplaced?.([...this.backgroundTasks])
   }
 
   /**
@@ -407,6 +429,26 @@ export class ChatSession {
     }
   }
 
+  /** Stop through the engine's shared task implementation and stale-state checks. */
+  async stopBackgroundTask(taskId: string): Promise<void> {
+    const task = [...this.backgroundTaskMap.values()].find(item => item.taskId === taskId)
+    if (!task || !task.capabilities.canStop) return
+    const control = this.control
+    if (!control) {
+      this.callbacks.onError('The Rayu engine is not running.')
+      return
+    }
+    try {
+      await control.request('stop_task', { task_id: taskId }, 15_000)
+    } catch (cause) {
+      this.callbacks.onError(
+        `Could not stop ${task.description}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+    }
+  }
+
   /**
    * Discard the conversation and the engine with it.
    *
@@ -430,6 +472,8 @@ export class ChatSession {
       ...(cwd ? { cwd } : {}),
     }
     this.entries.length = 0
+    this.backgroundTaskMap.clear()
+    this.callbacks.onTaskStateReplaced?.([])
     this.toolsByUseId.clear()
     this.streamingId = null
     this.reviewEntryId = null
@@ -516,7 +560,11 @@ export class ChatSession {
     // account info. Failing it is not fatal to sending a prompt, so it is reported
     // and the session continues rather than refusing to start.
     try {
-      const response = await control.request('initialize', {}, 60_000)
+      const response = await control.request(
+        'initialize',
+        { agentProgressSummaries: true },
+        60_000,
+      )
       if (control !== this.control || this.disposed) return
       this.applyInitialize(response)
       // Startup can materialize a provider from environment-based credentials. Read
@@ -530,6 +578,7 @@ export class ChatSession {
       // cannot carry the NUL separator used by shared cross-provider routing.
       const selectedRuntimeModel = this.selectedRuntimeModel
       const selectionEpoch = this.modelSelectionEpoch
+      let inferenceAcknowledged = false
       if (selectedRuntimeModel) {
         const modelResponse = await control.request(
           'set_model',
@@ -542,14 +591,21 @@ export class ChatSession {
           selectedRuntimeModel === this.selectedRuntimeModel
         ) {
           this.appliedRuntimeModel = selectedRuntimeModel
-          this.applyInferenceResponse(modelResponse)
+          inferenceAcknowledged = this.applyInferenceResponse(modelResponse)
         }
       }
       if (this.pendingThinking !== undefined) {
         await control.request('set_max_thinking_tokens', { max_thinking_tokens: this.pendingThinking ? null : 0 }, 15_000)
+        // set_max_thinking_tokens acknowledges the mutation but does not return the
+        // resulting capability view, so get_settings remains necessary here.
+        inferenceAcknowledged = false
       }
       if (control !== this.control || this.disposed) return
-      await this.refreshInferenceSettings()
+      // set_model already returns the effective inference state from the same
+      // resolver as get_settings. Asking for it again made first launch depend on a
+      // second control round-trip and could report a false initialization failure
+      // after the model was already applied successfully.
+      if (!inferenceAcknowledged) await this.refreshInferenceSettings()
       if (control !== this.control || this.disposed) return
       void this.pollContextUsage(true)
     } catch (cause) {
@@ -571,7 +627,7 @@ export class ChatSession {
     this.applyInferenceResponse(response)
   }
 
-  private applyInferenceResponse(response: Record<string, unknown>): void {
+  private applyInferenceResponse(response: Record<string, unknown>): boolean {
     const value = response.inference as InferenceSettingsView | undefined
     if (
       value &&
@@ -580,7 +636,9 @@ export class ChatSession {
     ) {
       this.inference = value
       this.callbacks.onInferenceSettings?.(this.inference)
+      return true
     }
+    return false
   }
 
   private applyInitialize(response: Record<string, unknown>): void {
@@ -886,6 +944,12 @@ export class ChatSession {
    */
   private handleSystemMessage(message: Record<string, unknown>): void {
     switch (message.subtype) {
+      case 'task_started':
+      case 'task_progress':
+      case 'task_notification':
+        this.handleTaskLifecycle(message)
+        return
+
       case 'file_change_review':
         this.handleReview(message)
         return
@@ -983,6 +1047,185 @@ export class ChatSession {
       default:
         return
     }
+  }
+
+  /**
+   * Project the engine's existing task lifecycle into a stable editor view.
+   *
+   * Updates are monotonic: once a task reaches a terminal state, a delayed progress
+   * frame cannot revive it. The protocol can repeat frames after reconnect/replay, so
+   * every update replaces by the composite session/task key.
+   */
+  private handleTaskLifecycle(message: Record<string, unknown>): void {
+    const taskId = typeof message.task_id === 'string' ? message.task_id : ''
+    if (!taskId) return
+    const sourceSessionId =
+      typeof message.session_id === 'string' && message.session_id
+        ? message.session_id
+        : this.options.resumeSessionId ?? 'standalone'
+    const key = `${sourceSessionId}:${taskId}`
+    const now = Date.now()
+    const existing = this.backgroundTaskMap.get(key)
+
+    if (message.subtype === 'task_started') {
+      // A duplicated/replayed start must not erase progress or revive a finished task.
+      if (existing) return
+      const rawType = typeof message.task_type === 'string' ? message.task_type : undefined
+      const type = normalizeTaskType(rawType)
+      const description =
+        typeof message.description === 'string' && message.description.trim()
+          ? message.description.trim()
+          : `Background task ${taskId}`
+      this.publishTask({
+        key,
+        taskId,
+        sourceSessionId,
+        type,
+        rawType: type === 'unknown' ? rawType : undefined,
+        group: taskGroup(type),
+        description,
+        prompt: typeof message.prompt === 'string' ? message.prompt : undefined,
+        status: 'running',
+        executionMode: 'background',
+        startedAt: now,
+        updatedAt: now,
+        currentActivity: description,
+        recentActivities: [],
+        tokenCount: 0,
+        toolCount: 0,
+        unread: false,
+        capabilities: taskCapabilities(type, true),
+      })
+      return
+    }
+
+    if (message.subtype === 'task_progress') {
+      if (existing && isTerminalBackgroundStatus(existing.status)) return
+      const usage = asRecord(message.usage)
+      const description =
+        typeof message.description === 'string' && message.description.trim()
+          ? message.description.trim()
+          : existing?.description ?? `Background task ${taskId}`
+      const summary =
+        typeof message.summary === 'string' && message.summary.trim()
+          ? message.summary.trim()
+          : undefined
+      const toolName =
+        typeof message.last_tool_name === 'string' && message.last_tool_name.trim()
+          ? message.last_tool_name.trim()
+          : undefined
+      const activityLabel = summary ?? (toolName ? `Using ${toolName}` : description)
+      const activities = appendTaskActivity(existing?.recentActivities ?? [], {
+        id: `${key}:${now}:${toolName ?? 'progress'}`,
+        label: activityLabel,
+        toolName,
+        timestamp: now,
+        kind: toolName ? 'tool' : 'status',
+      })
+      const rawType = existing?.rawType
+      const type = existing?.type ?? 'unknown'
+      this.publishTask({
+        key,
+        taskId,
+        sourceSessionId,
+        type,
+        rawType,
+        group: existing?.group ?? 'other',
+        description,
+        prompt: existing?.prompt,
+        agentId: existing?.agentId,
+        agentName: existing?.agentName,
+        status: 'running',
+        executionMode: existing?.executionMode ?? 'background',
+        startedAt:
+          existing?.startedAt ??
+          (typeof usage?.duration_ms === 'number' ? now - usage.duration_ms : now),
+        updatedAt: now,
+        currentActivity: activityLabel,
+        recentActivities: activities,
+        model: existing?.model,
+        provider: existing?.provider,
+        tokenCount:
+          typeof usage?.total_tokens === 'number'
+            ? usage.total_tokens
+            : existing?.tokenCount ?? 0,
+        toolCount:
+          typeof usage?.tool_uses === 'number'
+            ? usage.tool_uses
+            : existing?.toolCount ?? 0,
+        result: existing?.result,
+        error: existing?.error,
+        unread: existing?.unread ?? false,
+        capabilities: taskCapabilities(type, true),
+        workflowProgress: normalizeWorkflowProgress(message.workflow_progress),
+      })
+      return
+    }
+
+    if (message.subtype === 'task_notification') {
+      const status =
+        message.status === 'failed'
+          ? 'failed'
+          : message.status === 'stopped'
+            ? 'stopped'
+            : 'completed'
+      // A duplicate terminal event may enrich the record, but may not change its
+      // terminal outcome. The first owner-issued outcome wins.
+      if (existing && isTerminalBackgroundStatus(existing.status)) return
+      const summary = typeof message.summary === 'string' ? message.summary : ''
+      const type = existing?.type ?? 'unknown'
+      const usage = asRecord(message.usage)
+      this.publishTask({
+        key,
+        taskId,
+        sourceSessionId,
+        type,
+        rawType: existing?.rawType,
+        group: existing?.group ?? 'other',
+        description: existing?.description ?? (summary || `Background task ${taskId}`),
+        prompt: existing?.prompt,
+        agentId: existing?.agentId,
+        agentName: existing?.agentName,
+        status,
+        executionMode: existing?.executionMode ?? 'background',
+        startedAt:
+          existing?.startedAt ??
+          (typeof usage?.duration_ms === 'number' ? now - usage.duration_ms : now),
+        updatedAt: now,
+        currentActivity:
+          status === 'completed' ? 'Completed' : status === 'stopped' ? 'Stopped' : 'Failed',
+        recentActivities: existing?.recentActivities ?? [],
+        model: existing?.model,
+        provider: existing?.provider,
+        tokenCount:
+          typeof usage?.total_tokens === 'number'
+            ? usage.total_tokens
+            : existing?.tokenCount ?? 0,
+        toolCount:
+          typeof usage?.tool_uses === 'number'
+            ? usage.tool_uses
+            : existing?.toolCount ?? 0,
+        result: status === 'completed' ? summary : existing?.result,
+        error: status === 'failed' ? summary || 'The task failed.' : existing?.error,
+        unread: true,
+        capabilities: taskCapabilities(type, false),
+        workflowProgress: existing?.workflowProgress,
+      })
+    }
+  }
+
+  private publishTask(task: BackgroundTaskView): void {
+    this.backgroundTaskMap.set(task.key, task)
+    this.callbacks.onTaskStateChanged?.(task)
+    this.persistTaskHistory(task.sourceSessionId)
+  }
+
+  private persistTaskHistory(sourceSessionId: string): void {
+    const tasks = this.backgroundTasks.filter(item => item.sourceSessionId === sourceSessionId)
+    this.taskHistoryWrite = this.taskHistoryWrite
+      .catch(() => {})
+      .then(() => saveTaskHistory(this.options.cwd, sourceSessionId, tasks))
+      .catch(() => {})
   }
 
   /**
@@ -1398,6 +1641,28 @@ export class ChatSession {
     }
   }
 
+  /** Replace local task projection with the attached CLI owner's snapshot. */
+  applyMirroredTaskSnapshot(tasks: BackgroundTaskView[], preserveCompleted = false): void {
+    const preserved = preserveCompleted
+      ? this.backgroundTasks.filter(task => isTerminalBackgroundStatus(task.status))
+      : []
+    this.backgroundTaskMap.clear()
+    for (const task of preserved) this.backgroundTaskMap.set(task.key, task)
+    for (const task of tasks) {
+      if (!task || typeof task.key !== 'string' || typeof task.taskId !== 'string') continue
+      this.backgroundTaskMap.set(task.key, task)
+    }
+    this.callbacks.onTaskStateReplaced?.([...this.backgroundTasks])
+    for (const sourceSessionId of new Set(tasks.map(task => task.sourceSessionId))) {
+      this.persistTaskHistory(sourceSessionId)
+    }
+  }
+
+  /** Apply one shared SDK lifecycle event forwarded by an attached CLI. */
+  applyMirroredTaskEvent(event: Record<string, unknown>): void {
+    this.handleTaskLifecycle(event)
+  }
+
   restoreTranscript(blocks: VSCodeActivityBlock[]): void {
     for (const block of blocks) {
       switch (block.kind) {
@@ -1691,6 +1956,109 @@ export class ChatSession {
 
 function newId(): EntryId {
   return randomUUID()
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object'
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+function normalizeTaskType(value: string | undefined): BackgroundTaskType {
+  if (value === 'local_bash') return 'local_shell'
+  switch (value) {
+    case 'local_agent':
+    case 'in_process_teammate':
+    case 'local_shell':
+    case 'remote_agent':
+    case 'external_agent':
+    case 'local_workflow':
+    case 'monitor_mcp':
+    case 'dream':
+      return value
+    default:
+      return 'unknown'
+  }
+}
+
+function taskGroup(type: BackgroundTaskType): BackgroundTaskView['group'] {
+  switch (type) {
+    case 'local_agent':
+    case 'in_process_teammate':
+      return 'agents'
+    case 'local_shell':
+      return 'shells'
+    case 'local_workflow':
+      return 'workflows'
+    case 'remote_agent':
+    case 'external_agent':
+      return 'remote'
+    case 'monitor_mcp':
+      return 'monitors'
+    default:
+      return 'other'
+  }
+}
+
+function taskCapabilities(
+  type: BackgroundTaskType,
+  running: boolean,
+): BackgroundTaskView['capabilities'] {
+  const agent = type === 'local_agent' || type === 'in_process_teammate'
+  return {
+    canStop: running,
+    // Follow-up routing requires the execution owner's live task store. The standalone
+    // engine does not expose that operation yet, so do not render a control that lies.
+    canSendMessage: false,
+    hasTranscript: agent,
+    hasOutput: type === 'local_shell' || type === 'monitor_mcp' || type === 'local_workflow',
+  }
+}
+
+function isTerminalBackgroundStatus(status: BackgroundTaskView['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'stopped'
+}
+
+function appendTaskActivity(
+  existing: BackgroundTaskView['recentActivities'],
+  next: BackgroundTaskView['recentActivities'][number],
+): BackgroundTaskView['recentActivities'] {
+  const last = existing[existing.length - 1]
+  if (last?.label === next.label && last.toolName === next.toolName) {
+    return [...existing.slice(0, -1), next].slice(-8)
+  }
+  return [...existing, next].slice(-8)
+}
+
+function normalizeWorkflowProgress(
+  value: unknown,
+): BackgroundTaskView['workflowProgress'] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const items = value.flatMap(item => {
+    const record = asRecord(item)
+    if (!record) return []
+    const label =
+      typeof record.label === 'string'
+        ? record.label
+        : typeof record.name === 'string'
+          ? record.name
+          : typeof record.description === 'string'
+            ? record.description
+            : ''
+    if (!label) return []
+    return [{
+      label,
+      status: typeof record.status === 'string' ? record.status : undefined,
+      detail: typeof record.detail === 'string' ? record.detail : undefined,
+    }]
+  })
+  return items.length > 0 ? items : undefined
+}
+
+function compareBackgroundTasks(a: BackgroundTaskView, b: BackgroundTaskView): number {
+  const aActive = isTerminalBackgroundStatus(a.status) ? 1 : 0
+  const bActive = isTerminalBackgroundStatus(b.status) ? 1 : 0
+  return aActive - bActive || b.updatedAt - a.updatedAt
 }
 
 /** Compact duration like "7m 35s", "1h 2m", "45s". Same style as the CLI. */

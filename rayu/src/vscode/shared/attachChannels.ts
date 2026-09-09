@@ -32,6 +32,13 @@ export const IPC_STREAM_DELTA = 'telegram:stream-delta'
 export const IPC_STREAM_THINKING = 'telegram:stream-thinking'
 export const IPC_STREAM_END = 'telegram:stream-end'
 export const IPC_ACTIVITY = 'telegram:activity'
+/** Initial task capability and state snapshot request. */
+export const IPC_TASK_SNAPSHOT = 'rayucode:task-snapshot'
+/** Correlated shared task lifecycle notification. */
+export const IPC_TASK_STATE_CHANGED = 'rayucode:task-state-changed'
+/** Task controls remain owned by the attached CLI process. */
+export const IPC_TASK_STOP = 'rayucode:task-stop'
+export const IPC_TASK_MESSAGE = 'rayucode:task-message'
 
 /** Attached interface → session. */
 export const IPC_PERMISSION_DECISION = 'telegram:permission-decision'

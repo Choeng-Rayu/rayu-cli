@@ -1,6 +1,6 @@
 {
   "name": "@rayu-dev/rayu-cli",
-  "version": "1.6.23",
+  "version": "1.7.23",
   "description": "Rayu-CLI — a multi-provider AI coding CLI",
   "//": "There are deliberately NO runtime `dependencies`. scripts/build.ts bundles every import into the single published file dist/rayu.js, so nothing has to be resolvable from node_modules at runtime — the only unbundled specifiers are the optional native/OTEL modules in that script's EXTERNAL list, each guarded by a try/catch. Declaring them as dependencies anyway made `npm install -g` resolve, download and compile ~80 packages (including sharp's platform prebuilds) that the CLI never loads, which is what made a global install fail differently on every machine. Add build-time packages to devDependencies. If you ever add a module that must be require()d from node_modules at runtime, it belongs in dependencies AND in the installer's expectations (rayu-web/public/install.sh extracts only dist/rayu.js).",
   "type": "module",

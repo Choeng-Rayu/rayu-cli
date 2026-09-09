@@ -14,6 +14,7 @@
  * have, and `init` must be a full replacement rather than a merge.
  */
 import type {
+  BackgroundTaskView,
   ContextUsageView,
   EntryId,
   McpServerView,
@@ -82,6 +83,9 @@ export interface ChatState {
   /** Previous sessions for workspace. */
   /** `undefined` until first fetched; `[]` means fetched and there are none. */
   sessions: SessionSummaryView[] | undefined
+  backgroundTasks: BackgroundTaskView[]
+  taskInspectionSupported: boolean
+  taskInspectionMessage?: string
 }
 
 export const initialChatState: ChatState = {
@@ -125,6 +129,8 @@ export const initialChatState: ChatState = {
   mcpServers: [],
   workspaceFiles: [],
   sessions: undefined,
+  backgroundTasks: [],
+  taskInspectionSupported: true,
 }
 
 export type ChatAction =
@@ -150,6 +156,8 @@ export type ChatAction =
   | { type: 'setMcpServers'; servers: McpServerView[] }
   | { type: 'setSessions'; sessions: SessionSummaryView[] }
   | { type: 'turnDuration'; duration: string }
+  | { type: 'replaceTaskState'; tasks: BackgroundTaskView[]; supported: boolean; message?: string }
+  | { type: 'upsertTaskState'; task: BackgroundTaskView }
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
@@ -178,6 +186,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         mcpServers: action.state.mcpServers ?? [],
         workspaceFiles: state.workspaceFiles,
         sessions: action.state.sessions,
+        backgroundTasks: action.state.backgroundTasks ?? [],
+        taskInspectionSupported: action.state.taskInspectionSupported ?? true,
+        taskInspectionMessage: action.state.taskInspectionMessage,
       }
 
     case 'addMessage': {
@@ -357,6 +368,32 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'turnDuration':
       return { ...state, lastTurnDuration: action.duration }
+
+    case 'replaceTaskState':
+      return {
+        ...state,
+        backgroundTasks: action.tasks,
+        taskInspectionSupported: action.supported,
+        taskInspectionMessage: action.message,
+      }
+
+    case 'upsertTaskState': {
+      const index = state.backgroundTasks.findIndex(task => task.key === action.task.key)
+      if (index === -1) {
+        return { ...state, backgroundTasks: [action.task, ...state.backgroundTasks] }
+      }
+      const backgroundTasks = [...state.backgroundTasks]
+      const current = backgroundTasks[index]
+      // Do not let a late progress event revive a terminal task in the browser even
+      // if an older host happens to send events out of order.
+      const terminal = current && (
+        current.status === 'completed' || current.status === 'failed' || current.status === 'stopped'
+      )
+      const incomingActive = action.task.status === 'running' || action.task.status === 'pending'
+      if (terminal && incomingActive) return state
+      backgroundTasks[index] = action.task
+      return { ...state, backgroundTasks }
+    }
 
     default:
       return state

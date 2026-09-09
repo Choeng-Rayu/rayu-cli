@@ -44,8 +44,13 @@ import {
   IPC_STREAM_END,
   IPC_STREAM_START,
   IPC_STREAM_THINKING,
+  IPC_TASK_MESSAGE,
+  IPC_TASK_SNAPSHOT,
+  IPC_TASK_STATE_CHANGED,
+  IPC_TASK_STOP,
 } from '../../shared/attachChannels.js'
 import type { AttachTargetFrame } from '../../shared/connectProtocol.js'
+import type { BackgroundTaskView } from '../../shared/webviewProtocol.js'
 
 /**
  * A CLI session the panel could attach to.
@@ -81,6 +86,9 @@ export interface AttachmentCallbacks {
   }) => void
   /** The request was withdrawn, or answered somewhere else. Dismiss the card. */
   onPermissionDismiss: (requestId: string) => void
+  onTaskSnapshot?: (tasks: BackgroundTaskView[]) => void
+  onTaskEvent?: (event: Record<string, unknown>) => void
+  onTaskUnsupported?: (message: string) => void
   /** The CLI process went away. */
   onClosed: () => void
 }
@@ -113,6 +121,8 @@ export interface CliAttachment {
   submitPrompt: (text: string) => Promise<void>
   /** Answer a permission request the attached session raised. */
   respondPermission: (requestId: string, response: unknown) => void
+  stopTask: (taskId: string) => Promise<void>
+  sendTaskMessage: (taskId: string, text: string) => Promise<void>
   detach: () => void
 }
 
@@ -143,6 +153,24 @@ export async function attachToCliSession(
   // permission callbacks, so cards raised in the CLI reach this panel.
   connection.notify(IPC_ATTACH)
 
+  // Snapshot before relying on notifications: tasks may have started before attach.
+  try {
+    const snapshot = await connection.request(IPC_TASK_SNAPSHOT, {}) as {
+      version?: unknown
+      tasks?: unknown
+    }
+    if (snapshot.version === 1 && Array.isArray(snapshot.tasks)) {
+      callbacks.onTaskSnapshot?.(snapshot.tasks as BackgroundTaskView[])
+    } else {
+      callbacks.onTaskUnsupported?.('The attached CLI returned an incompatible task snapshot.')
+    }
+  } catch {
+    // Version skew is capability-local. Chat mirroring remains fully attached.
+    callbacks.onTaskUnsupported?.(
+      'This CLI version does not support live background-task inspection.',
+    )
+  }
+
   return {
     pid: target.pid,
     sessionId: target.sessionId,
@@ -154,6 +182,12 @@ export async function attachToCliSession(
     },
     respondPermission: (requestId, response) => {
       connection.notify(IPC_PERMISSION_DECISION, { requestId, response })
+    },
+    stopTask: async taskId => {
+      await connection.request(IPC_TASK_STOP, { taskId })
+    },
+    sendTaskMessage: async (taskId, text) => {
+      await connection.request(IPC_TASK_MESSAGE, { taskId, text })
     },
     detach: () => {
       try {
@@ -219,6 +253,17 @@ function routeNotification(
     case IPC_PERMISSION_RESOLVED: {
       const requestId = (payload as { requestId?: unknown } | null)?.requestId
       if (typeof requestId === 'string') callbacks.onPermissionDismiss(requestId)
+      return
+    }
+    case IPC_TASK_STATE_CHANGED: {
+      if (payload && typeof payload === 'object') {
+        const record = payload as Record<string, unknown>
+        if (record.version === 1 && Array.isArray(record.tasks)) {
+          callbacks.onTaskSnapshot?.(record.tasks as BackgroundTaskView[])
+        } else {
+          callbacks.onTaskEvent?.(record)
+        }
+      }
       return
     }
     default:

@@ -60,6 +60,7 @@ import {
   loadSessionTranscript,
 } from './sessionHistory.js'
 import type {
+  BackgroundTaskView,
   ModelCatalogueView,
   AttachmentView,
   ProviderSetupView,
@@ -170,6 +171,9 @@ export function activate(context: vscode.ExtensionContext): void {
   let historySessions: SessionSummaryView[] | undefined
   let attachment: AttachmentView = { available: undefined, attached: null, error: null }
   let liveAttachment: CliAttachment | null = null
+  let standaloneTaskSnapshot: BackgroundTaskView[] = []
+  let taskInspectionSupported = true
+  let taskInspectionMessage: string | undefined
 
   function postAttachment(): void {
     provider.post({ type: 'setAttachment', attachment })
@@ -217,6 +221,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
       onMcpServers: servers => provider.post({ type: 'setMcpServers', servers }),
       onTurnDuration: duration => provider.post({ type: 'turnDuration', duration }),
+      onTaskStateChanged: task => provider.post({ type: 'upsertTaskState', task }),
+      onTaskStateReplaced: tasks =>
+        provider.post({ type: 'replaceTaskState', tasks, supported: true }),
     },
   )
 
@@ -288,6 +295,8 @@ export function activate(context: vscode.ExtensionContext): void {
         providerSetup,
         attachment,
         historySessions,
+        taskInspectionSupported,
+        taskInspectionMessage,
       ),
     {
       ready: prewarmSession,
@@ -365,6 +374,8 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
 
+        standaloneTaskSnapshot = [...session.backgroundTasks]
+        await session.restoreTaskHistory(target.sessionId, target.cwd)
         const handle = await attachToCliSession(target, {
           onStreamStart: () => session.beginMirroredTurn(),
           onStreamDelta: delta => session.appendMirroredDelta(delta),
@@ -377,8 +388,22 @@ export function activate(context: vscode.ExtensionContext): void {
             ),
           // Withdrawn or answered elsewhere — either way the card must go.
           onPermissionDismiss: requestId => permissions.dismiss(requestId),
+          onTaskSnapshot: tasks => {
+            taskInspectionSupported = true
+            taskInspectionMessage = undefined
+            session.applyMirroredTaskSnapshot(tasks, true)
+          },
+          onTaskEvent: event => session.applyMirroredTaskEvent(event),
+          onTaskUnsupported: message => {
+            taskInspectionSupported = false
+            taskInspectionMessage = message
+            provider.post({ type: 'replaceTaskState', tasks: [], supported: false, message })
+          },
           onClosed: () => {
             liveAttachment = null
+            taskInspectionSupported = true
+            taskInspectionMessage = undefined
+            session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
             attachment = {
               ...attachment,
               attached: null,
@@ -407,6 +432,9 @@ export function activate(context: vscode.ExtensionContext): void {
       detachFromSession: () => {
         liveAttachment?.detach()
         liveAttachment = null
+        taskInspectionSupported = true
+        taskInspectionMessage = undefined
+        session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
         attachment = { ...attachment, attached: null, error: null }
         postAttachment()
         prewarmSession()
@@ -580,8 +608,31 @@ export function activate(context: vscode.ExtensionContext): void {
         session.newSession(id, resumeCwd)
         const restored = await loadSessionTranscript(id, resumeCwd)
         session.restoreTranscript(restored)
+        await session.restoreTaskHistory(id, resumeCwd)
         provider.syncState()
         prewarmSession()
+      },
+      stopTask: async (_sourceSessionId, taskId) => {
+        try {
+          if (liveAttachment) await liveAttachment.stopTask(taskId)
+          else await session.stopBackgroundTask(taskId)
+        } catch (cause) {
+          provider.post({
+            type: 'showError',
+            message: `Could not stop task: ${cause instanceof Error ? cause.message : String(cause)}`,
+          })
+        }
+      },
+      sendTaskMessage: async (_sourceSessionId, taskId, text) => {
+        try {
+          if (!liveAttachment) throw new Error('Follow-up messages are unavailable for this task.')
+          await liveAttachment.sendTaskMessage(taskId, text)
+        } catch (cause) {
+          provider.post({
+            type: 'showError',
+            message: cause instanceof Error ? cause.message : String(cause),
+          })
+        }
       },
     },
   )
@@ -726,6 +777,8 @@ function buildState(
   providerSetup: ProviderSetupView,
   attachment: AttachmentView,
   historySessions: SessionSummaryView[] | undefined,
+  taskInspectionSupported = true,
+  taskInspectionMessage?: string,
 ): WebviewState {
   const auth = getAuthSnapshot()
   return {
@@ -754,6 +807,9 @@ function buildState(
     // Full `init` snapshots replace webview state. Carry the host-owned history
     // list so unrelated model/auth/context syncs cannot erase an open picker.
     sessions: historySessions,
+    backgroundTasks: [...session.backgroundTasks],
+    taskInspectionSupported,
+    taskInspectionMessage,
   }
 }
 
