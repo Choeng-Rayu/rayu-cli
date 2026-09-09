@@ -40,7 +40,7 @@
   "//type": "Stated explicitly, not left to Node's default. rayu/package.json declares \"type\": \"module\", so an extension.js sitting anywhere under it is treated as ESM and fails to require() with 'module is not defined in ES module scope'. Inside the VSIX this manifest is the nearest package.json, so this field is what makes the bundle load — and saying it out loud stops a future edit from re-introducing that failure.",
   "type": "commonjs",
   "main": "./extension.js",
-  "//activationEvents": "onView keeps activation lazy: the extension host does no work in windows where the panel is never opened. The engine child process is started later still — only when there is a turn to run.",
+  "//activationEvents": "onView keeps activation lazy: the extension host does no work in windows where the panel is never opened. Once the authenticated panel mounts, it prewarms the engine while the user reads or types so the first turn can reuse it.",
   "activationEvents": [
     "onView:rayucode.chat"
   ],

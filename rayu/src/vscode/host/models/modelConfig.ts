@@ -1,5 +1,5 @@
 /**
- * Model configuration, read and written through the CLI's own helpers.
+ * Model configuration, read and written through Rayu's shared provider helpers.
  *
  * Deliberately FREE of `vscode` imports. Its sibling `modelSurface.ts` owns the
  * QuickPick and therefore needs the editor API; this half is pure config access, and
@@ -12,16 +12,18 @@
  *
  * ── WHERE THE SELECTION COMES FROM ─────────────────────────────────────────────
  *
- * `~/.rayu/providers.json`, via the same helpers `/model` writes in the CLI. So a model
- * chosen in either surface is the one both show. Taking it from the engine's catalogue
- * instead would display whatever the provider happened to list first, which is a
- * different thing and would silently disagree with the terminal.
+ * Rayucode selects an independent provider-profile directory during activation. The
+ * file schema and behavior are the same ones `/model` uses in the CLI, while each
+ * product reads and writes its own `providers.json`. Taking the selection from the
+ * engine's catalogue instead would display whatever the provider happened to list
+ * first, which is a different thing from the persisted Rayucode choice.
  */
 import {
   getActiveProvider,
   getActiveProviderModelOptions,
   getAllProviderModelOptions,
   decodeModelProvider,
+  encodeModelWithProvider,
   invalidateRayuConfigCache,
   getValidDefaultModel,
   setActiveProviderModel,
@@ -67,14 +69,31 @@ export function readActiveModel(): ModelInfoView {
 }
 
 /**
+ * Provider-qualified model used to pin a Rayucode engine session.
+ *
+ * The engine also reads shared user settings during startup. Always applying this
+ * routed value after initialization prevents a CLI `model` setting or later CLI model
+ * change from becoming Rayucode's execution provider.
+ */
+export function readActiveRuntimeModel(): string | null {
+  try {
+    const provider = getActiveProvider()
+    const model = getValidDefaultModel(provider)
+    return provider && model ? encodeModelWithProvider(provider.id, model) : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Model options that are available WITHOUT starting the engine.
  *
  * The engine's own catalogue arrives with `initialize`, which only happens on the first
  * turn — so relying on it alone would leave the model control empty until the user had
  * already sent a prompt, which is exactly when choosing a model is too late.
  *
- * `getActiveProviderModelOptions()` is the CLI's own list for the configured providers,
- * read straight from `~/.rayu/providers.json`. It returns an empty array for the
+ * `getActiveProviderModelOptions()` is the shared list for the configured providers,
+ * read from Rayucode's provider profile. It returns an empty array for the
  * `anthropic` provider kind, whose models the engine enumerates instead — so an empty
  * result here is normal and means "wait for the engine", not "no models".
  *
@@ -101,23 +120,28 @@ export function readModelOptions(): EngineModel[] {
 }
 
 /**
- * Persist a model choice to the shared config.
+ * Persist a model choice to Rayucode's provider profile.
  *
  * Written as well as sent to the engine: `set_model` applies to the running child
- * only, so without this the next session would silently revert and the CLI would never
- * see the change.
+ * only, so without this the next Rayucode session would silently revert.
  *
  * Swallows failure on purpose. If the config is not writable the engine has already
  * accepted `set_model`, so the current session honours the choice and only persistence
  * is lost — failing the whole action over that would be worse.
  */
-export function persistModelChoice(model: string): void {
+export function persistModelChoice(model: string): string {
   try {
     invalidateRayuConfigCache()
     const choice = decodeModelProvider(model)
     const providerId = choice.providerId ?? getActiveProvider()?.id
-    if (providerId) setActiveProviderModel(providerId, choice.model)
+    if (providerId) {
+      setActiveProviderModel(providerId, choice.model)
+      // A routed value pins the running session to the provider the user chose. A
+      // bare model can otherwise be resolved through unrelated shared settings.
+      return encodeModelWithProvider(providerId, choice.model)
+    }
   } catch {
     // See above.
   }
+  return model
 }

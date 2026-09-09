@@ -8,12 +8,17 @@
  */
 import { SparkleIcon } from './SparkleIcon.js'
 
-/** Deliberately capability-oriented, not feature-oriented. */
-const CHIPS: readonly string[] = [
-  'Explain this codebase',
-  'Find and fix a bug',
-  'Add tests for ',
-  'Review my changes',
+export interface PromptChipItem {
+  icon: string
+  label: string
+  prompt: string
+}
+
+const STARTER_CHIPS: readonly PromptChipItem[] = [
+  { icon: '🔍', label: 'Explain codebase', prompt: 'Explain this codebase' },
+  { icon: '🐛', label: 'Find & fix a bug', prompt: 'Find and fix a bug' },
+  { icon: '🧪', label: 'Add unit tests', prompt: 'Add tests for ' },
+  { icon: '📝', label: 'Review changes', prompt: 'Review my changes' },
 ]
 
 export function WelcomeScreen({
@@ -26,22 +31,32 @@ export function WelcomeScreen({
   return (
     <div className="rc-welcome">
       <div className="rc-welcome-mark" aria-hidden="true">
-        <SparkleIcon size={26} />
+        <SparkleIcon size={28} />
       </div>
       <h2 className="rc-welcome-title">What can I help with?</h2>
       <p className="rc-welcome-body">
-        Rayu runs the same engine, tools and MCP servers as the Rayu CLI.
+        Pair programming with multi-provider AI, autonomous tools, and full git review.
       </p>
+
+      <div className="rc-welcome-capabilities">
+        <span className="rc-welcome-badge">Multi-Provider</span>
+        <span className="rc-welcome-badge">Tool Execution</span>
+        <span className="rc-welcome-badge">Copilot Edits</span>
+        <span className="rc-welcome-badge">MCP</span>
+      </div>
+
       <div className="rc-chips">
-        {CHIPS.map(chip => (
+        {STARTER_CHIPS.map(chip => (
           <button
-            key={chip}
+            key={chip.label}
             type="button"
             className="rc-chip"
             disabled={disabled}
-            onClick={() => onPick(chip)}
+            onClick={() => onPick(chip.prompt)}
+            title={`Insert prompt: "${chip.prompt}"`}
           >
-            {chip}
+            <span className="rc-chip-icon" aria-hidden="true">{chip.icon}</span>
+            <span className="rc-chip-label">{chip.label}</span>
           </button>
         ))}
       </div>

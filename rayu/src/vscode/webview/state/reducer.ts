@@ -31,6 +31,16 @@ import type {
 import { DEFAULT_PERMISSION_MODE } from '../../shared/permissionModes.js'
 import type { InferenceSettingsView } from '../../shared/inferenceSettings.js'
 
+/**
+ * Ephemeral thinking status, derived from `appendPartial(kind:'thinking')` deltas.
+ *
+ * Tracks whether the engine is currently thinking and how long it took, without
+ * accumulating the full reasoning text (which is deliberately not rendered).
+ */
+export type ThinkingStatus =
+  | { phase: 'active'; entryId: EntryId; startedAt: number }
+  | { phase: 'done'; entryId: EntryId; durationMs: number }
+
 export interface ChatState {
   /** Null until the first `init` arrives. Distinguishes "connecting" from "empty". */
   session: WebviewState | null
@@ -61,6 +71,12 @@ export interface ChatState {
   contextUsage: ContextUsageView | null
   /** Connected MCP servers. */
   mcpServers: McpServerView[]
+  /** Live thinking status for the current streaming entry. */
+  thinking: ThinkingStatus | null
+  /** Formatted turn duration from the last completed turn (e.g. "5m 17s"). */
+  lastTurnDuration: string | null
+  /** Accumulated streamed character count for the current turn (tokens ≈ chars/4). */
+  streamedChars: number
   /** Workspace files matching current @-search. */
   workspaceFiles: string[]
   /** Previous sessions for workspace. */
@@ -86,6 +102,9 @@ export const initialChatState: ChatState = {
     supportsThinking: false,
     thinkingEnabled: false,
   },
+  thinking: null,
+  lastTurnDuration: null,
+  streamedChars: 0,
   attachment: { available: undefined, attached: null, error: null },
   providerSetup: {
     open: false,
@@ -130,6 +149,7 @@ export type ChatAction =
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   | { type: 'setMcpServers'; servers: McpServerView[] }
   | { type: 'setSessions'; sessions: SessionSummaryView[] }
+  | { type: 'turnDuration'; duration: string }
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
@@ -148,12 +168,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         permissionMode: action.state.permissionMode,
         // Restored, because the engine stays blocked across a webview re-creation.
         pendingPermissions: action.state.pendingPermissions,
+        // Thinking is ephemeral and client-timed; a re-creation restarts the clock.
+        thinking: null,
+        lastTurnDuration: null,
+        streamedChars: 0,
         notices: [],
         commands: action.state.commands ?? [],
         contextUsage: action.state.contextUsage ?? null,
         mcpServers: action.state.mcpServers ?? [],
         workspaceFiles: state.workspaceFiles,
-        sessions: action.state.sessions ?? [],
+        sessions: action.state.sessions,
       }
 
     case 'addMessage': {
@@ -180,8 +204,34 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (target?.kind !== 'assistant') return state
 
       // Thinking is relayed live but not accumulated into the visible answer.
-      // Rendering it inline would interleave reasoning with prose.
-      if (action.kind === 'thinking') return state
+      // Rendering it inline would interleave reasoning with prose. We track the
+      // status (active/done) so the UI can show "Thinking..." / "Thought for Ns".
+      if (action.kind === 'thinking') {
+        const already = state.thinking
+        if (already && already.entryId === action.id) {
+          // Already tracking this entry's thinking — just count chars.
+          return { ...state, streamedChars: state.streamedChars + action.delta.length }
+        }
+        return {
+          ...state,
+          thinking: { phase: 'active', entryId: action.id, startedAt: Date.now() },
+          streamedChars: state.streamedChars + action.delta.length,
+        }
+      }
+
+      // First text delta after thinking → finalize thinking duration.
+      let thinking = state.thinking
+      if (
+        thinking &&
+        thinking.phase === 'active' &&
+        thinking.entryId === action.id
+      ) {
+        thinking = {
+          phase: 'done',
+          entryId: action.id,
+          durationMs: Date.now() - thinking.startedAt,
+        }
+      }
 
       const entries = [...state.entries]
       entries[index] = {
@@ -189,7 +239,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         text: target.text + action.delta,
         streaming: true,
       }
-      return { ...state, entries }
+      return { ...state, entries, thinking, streamedChars: state.streamedChars + action.delta.length }
     }
 
     case 'completeMessage': {
@@ -198,13 +248,36 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const target = state.entries[index]
       if (target?.kind !== 'assistant') return state
 
+      // Finalize thinking if it was still active when the message completed
+      // (can happen if the model thought but produced no text — rare but safe).
+      let thinking = state.thinking
+      if (
+        thinking &&
+        thinking.phase === 'active' &&
+        thinking.entryId === action.id
+      ) {
+        thinking = {
+          phase: 'done',
+          entryId: action.id,
+          durationMs: Date.now() - thinking.startedAt,
+        }
+      }
+
       const entries = [...state.entries]
       entries[index] = { ...target, streaming: false }
-      return { ...state, entries }
+      return { ...state, entries, thinking }
     }
 
     case 'turnState':
-      return { ...state, turnRunning: action.running }
+      return {
+        ...state,
+        turnRunning: action.running,
+        // Clear thinking when the turn ends so the next turn starts fresh.
+        thinking: action.running ? state.thinking : null,
+        // Clear duration and char count when a new turn starts.
+        lastTurnDuration: action.running ? null : state.lastTurnDuration,
+        streamedChars: action.running ? 0 : state.streamedChars,
+      }
 
     case 'removeEntry':
       return {
@@ -281,6 +354,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'setSessions':
       return { ...state, sessions: action.sessions }
+
+    case 'turnDuration':
+      return { ...state, lastTurnDuration: action.duration }
 
     default:
       return state

@@ -113,6 +113,30 @@ describe('VS Code Activity Formatter (formatActivityForVSCode)', () => {
     }
   })
 
+  test('formats AskUserQuestion as structured questions without raw JSON parameters', () => {
+    const input = {
+      questions: [{
+        question: 'Which files?', header: 'Files', multiSelect: false,
+        options: [
+          { label: 'Text', description: 'Text files' },
+          { label: 'Python', description: 'Python files' },
+        ],
+      }],
+    }
+    const blocks = formatMessageForVSCode({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{
+        type: 'tool_use', id: 'ask_1', name: 'AskUserQuestion', input,
+      } as unknown as ContentBlock] },
+    })
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({
+      kind: 'tool_use', toolUseId: 'ask_1', name: 'AskUserQuestion',
+      label: '1 question', parameters: '', questions: input.questions,
+    })
+  })
+
   test('propagates is_error and keeps empty failed result', () => {
     const msg: WrappedMessage = {
       type: 'user',
@@ -484,9 +508,9 @@ describe('Permission mode cycling and wrapping (nextPermissionMode)', () => {
 })
 
 describe('Review command argument quoting (reviewCommand)', () => {
-  test('without path produces plain slash command', () => {
+  test('without path produces the shared all-files command', () => {
     expect(reviewCommand('keep')).toBe('/keep')
-    expect(reviewCommand('undo')).toBe('/undo')
+    expect(reviewCommand('undo')).toBe('/undo all')
   })
 
   test('path without whitespace is not quoted', () => {

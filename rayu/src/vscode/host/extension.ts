@@ -14,20 +14,22 @@
  *
  * ── WHAT ACTIVATION DELIBERATELY DOES NOT DO ───────────────────────────────────
  *
- * It does not start the engine. Activation runs on the extension host's startup
- * path, and spawning a 23 MB Node process there would add that cost to every
- * window that has this extension installed, whether or not the panel is ever
- * opened. The engine is started lazily by the session layer when there is actually
- * a turn to run.
+ * It does not start the engine during activation. Activation runs on the extension
+ * host's startup path, and spawning a 23 MB Node process there would add that cost
+ * to every window whether or not Rayucode is used. The engine is prewarmed once the
+ * authenticated chat panel mounts, so initialization happens while the user reads
+ * the panel and types instead of after their first message.
  */
 import * as vscode from 'vscode'
+import { homedir } from 'node:os'
+import { dirname } from 'node:path'
 
 import { ChatViewProvider, CHAT_VIEW_ID } from './panel/chatViewProvider.js'
 import { ChatSession } from './panel/sessionHandle.js'
 import { PermissionRouter } from './panel/permissionRouter.js'
 import { invalidateRayuConfigCache } from '../../utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from './models/modelConfig.js'
-import { nextPermissionMode } from '../shared/permissionModes.js'
+import { nextPermissionMode, permissionModeById } from '../shared/permissionModes.js'
 import { getAuthSnapshot, signOutShared } from './auth/rayuAuthBridge.js'
 import { signInFromEditor, type SignInOptions } from './auth/vscodeLogin.js'
 import { watchSharedSession } from './auth/authWatcher.js'
@@ -53,11 +55,15 @@ import {
 } from './attach/cliAttachment.js'
 import { trackEditorSelection } from './ide/editorSelection.js'
 import { startIdeServer } from './ide/ideServer.js'
-import { listWorkspaceSessions, loadSessionTranscript } from './sessionHistory.js'
+import {
+  listWorkspaceSessions,
+  loadSessionTranscript,
+} from './sessionHistory.js'
 import type {
   ModelCatalogueView,
   AttachmentView,
   ProviderSetupView,
+  SessionSummaryView,
   WebviewState,
 } from '../shared/webviewProtocol.js'
 
@@ -69,6 +75,14 @@ const COMMANDS = {
 } as const
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Provider selection and credentials belong to Rayucode, independently of the
+  // terminal CLI. General Rayu storage remains untouched, so history, sessions,
+  // skills, rules, and IDE discovery continue to be shared. The explicit override
+  // exists for the extension-host fixture and controlled portable installations.
+  process.env.RAYU_AUTH_CONFIG_DIR =
+    process.env.RAYUCODE_AUTH_CONFIG_DIR || context.globalStorageUri.fsPath
+  invalidateRayuConfigCache()
+
   const version =
     (context.extension.packageJSON as { version?: string }).version ?? '0.0.0'
 
@@ -94,8 +108,13 @@ export function activate(context: vscode.ExtensionContext): void {
     connectedProviderId: null,
     connectedModel: null,
   }
+  const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  const activeFile = vscode.window.activeTextEditor?.document.uri
+  // Never use the installed extension directory as a conversation cwd. In an empty
+  // window, prefer the active file's directory and otherwise use the user's home.
   const engineCwd =
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? context.extensionUri.fsPath
+    workspaceDir ??
+    (activeFile?.scheme === 'file' ? dirname(activeFile.fsPath) : homedir())
 
   // Declared before the session so its callbacks can post to it, and assigned
   // immediately after. The alternative — passing the provider into the session —
@@ -148,6 +167,7 @@ export function activate(context: vscode.ExtensionContext): void {
    * impossible to leak a token by posting state.
    */
   let attachTargets: AttachTargetFrame[] = []
+  let historySessions: SessionSummaryView[] | undefined
   let attachment: AttachmentView = { available: undefined, attached: null, error: null }
   let liveAttachment: CliAttachment | null = null
 
@@ -196,24 +216,49 @@ export function activate(context: vscode.ExtensionContext): void {
           stale: usage.stale,
         }),
       onMcpServers: servers => provider.post({ type: 'setMcpServers', servers }),
+      onTurnDuration: duration => provider.post({ type: 'turnDuration', duration }),
     },
   )
 
   let catalogueRefresh: Promise<void> | null = null
   let disposed = false
   context.subscriptions.push({ dispose: () => { disposed = true } })
-  function refreshModels(): Promise<void> {
+
+  /** Prewarm only when the panel is usable and standalone Rayucode owns execution. */
+  async function prewarmSession(): Promise<void> {
+    if (
+      disposed ||
+      !provider.isOpen ||
+      liveAttachment ||
+      !checkTurnAllowed().allowed
+    ) return
+
+    // The hosted refresh writes model capabilities into Rayucode's provider profile,
+    // which the engine reads at startup. Starting first can leave the child with a stale
+    // capability cache (for example, hiding effort for a thinking model).
+    const refresh = catalogueRefresh
+    if (refresh) await refresh.catch(() => {})
+    if (
+      disposed ||
+      !provider.isOpen ||
+      liveAttachment ||
+      !checkTurnAllowed().allowed
+    ) return
+    await session.warmup()
+  }
+
+  function refreshModels(model?: string): Promise<void> {
     if (catalogueRefresh) return catalogueRefresh
     catalogueRefresh = (async () => {
       invalidateRayuConfigCache()
       const previous = buildCatalogue(session)
       session.availableModels = { ...previous, loading: true, error: null }
       provider.post({ type: 'setModelCatalogue', catalogue: session.availableModels })
-      const outcome = await refreshProviderCatalogue({ enginePath, cwd: engineCwd })
+      const outcome = await refreshProviderCatalogue({ enginePath, cwd: engineCwd }, model)
       if (disposed) return
       invalidateRayuConfigCache()
       const active = readActiveModel()
-      if (outcome.inference && active.provider === outcome.activeProviderId && active.model === outcome.activeModel) {
+      if (outcome.inference && ((active.provider === outcome.activeProviderId && active.model === outcome.activeModel) || model === outcome.activeModel)) {
         session.applyInitialInference(outcome.inference)
       }
       session.availableModels = {
@@ -226,25 +271,66 @@ export function activate(context: vscode.ExtensionContext): void {
     return catalogueRefresh
   }
 
+  /** Run the editor-native login flow, then refresh the same state as the button. */
+  async function signInToRayucode(): Promise<void> {
+    await runSignIn(provider, { enginePath, cwd: engineCwd })
+    await refreshModels()
+    prewarmSession()
+  }
+
   provider = new ChatViewProvider(
     context.extensionUri,
-    () => buildState(version, session, permissions, providerSetup, attachment),
+    () =>
+      buildState(
+        version,
+        session,
+        permissions,
+        providerSetup,
+        attachment,
+        historySessions,
+      ),
     {
-      submitPrompt: text => submitPrompt(session, provider, text),
+      ready: prewarmSession,
+      submitPrompt: async text => {
+        // The CLI implementations of these commands render Ink UI and are therefore
+        // absent from the non-interactive engine. Route them to Rayucode's existing
+        // native surfaces before the sign-in gate, so `/login` is reachable while the
+        // user is signed out.
+        const hostCommand = rayucodeHostSlashCommand(text)
+        if (hostCommand === 'login') {
+          await signInToRayucode()
+          return
+        }
+        if (hostCommand === 'connect') {
+          await openProviderSetupSurface(true)
+          return
+        }
+        await submitPrompt(session, provider, text)
+      },
       interrupt: () => session.interrupt(),
       newSession: () => {
         session.newSession()
         provider.syncState()
+        prewarmSession()
       },
       permissionResponse: (requestId, decision) =>
         permissions.resolve(session.controlClient, requestId, { kind: decision }),
+      questionResponse: (requestId, answers, notes) => {
+        const result = permissions.resolveQuestions(
+          session.controlClient,
+          requestId,
+          answers,
+          notes,
+        )
+        if (result) session.recordQuestionAnswers(result.toolUseId, result.answers)
+      },
       // The WEBVIEW owns the dropdown now, so the host only applies the choice. It is
       // configuration only — nothing here touches the composer's text.
       selectModelValue: async value => {
         await session.setModel(value)
         // Finish an older in-flight fetch before requesting this selection's effective settings.
         if (catalogueRefresh) await catalogueRefresh
-        await refreshModels()
+        await refreshModels(value)
         provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
       },
       refreshModelCatalogue: refreshModels,
@@ -299,6 +385,7 @@ export function activate(context: vscode.ExtensionContext): void {
               error: 'The attached session exited.',
             }
             postAttachment()
+            prewarmSession()
           },
         })
 
@@ -322,6 +409,7 @@ export function activate(context: vscode.ExtensionContext): void {
         liveAttachment = null
         attachment = { ...attachment, attached: null, error: null }
         postAttachment()
+        prewarmSession()
       },
 
       providerSetupOpen: openProviderSetupSurface,
@@ -396,9 +484,11 @@ export function activate(context: vscode.ExtensionContext): void {
         // The running engine resolved its provider at spawn time, so it would keep using
         // the old one. A fresh child reads the new configuration and has no stale cache
         // by construction — a stronger guarantee than invalidating caches in place.
+        invalidateRayuConfigCache()
         session.newSession()
         provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
         provider.syncState()
+        prewarmSession()
       },
 
       setEffort: level => session.setEffort(level),
@@ -417,6 +507,16 @@ export function activate(context: vscode.ExtensionContext): void {
           provider.post({ type: 'setPermissionMode', mode: next })
         }
       },
+      setPermissionMode: async (modeId: string) => {
+        try {
+          const mode = permissionModeById(modeId)
+          if (mode && (await session.setPermissionMode(mode))) {
+            provider.post({ type: 'setPermissionMode', mode })
+          }
+        } catch (error) {
+          console.error('[rayucode] failed to set permission mode', error)
+        }
+      },
       // Keep/undo go through the engine's OWN /keep and /undo commands, which is the
       // mechanism `utils/pendingFileChanges.ts` implements for the CLI. The
       // `rewind_files` control request is a different thing — it rewinds everything
@@ -426,7 +526,9 @@ export function activate(context: vscode.ExtensionContext): void {
       reviewUndo: path => submitPrompt(session, provider, reviewCommand('undo', path)),
       openReviewDiff: path => openReviewDiff(review.store, path),
       openFile: path => openReviewFile(path),
-      signIn: async () => { await runSignIn(provider, { enginePath, cwd: engineCwd }); await refreshModels() },
+      signIn: async () => {
+        await signInToRayucode()
+      },
       signOut: () => runSignOut(provider),
       // Routed at the in-panel surface. This previously opened a dialog telling the
       // user to run /connect in a terminal, which is the gap this closes.
@@ -456,17 +558,30 @@ export function activate(context: vscode.ExtensionContext): void {
         provider.post({ type: 'setMcpServers', servers })
       },
       listSessions: async () => {
-        const sessions = await listWorkspaceSessions(engineCwd)
-        provider.post({ type: 'setSessions', sessions })
+        historySessions = await listWorkspaceSessions(workspaceDir)
+        provider.post({ type: 'setSessions', sessions: historySessions })
       },
       resumeSession: async (id: string) => {
         // Order matters: newSession() clears the transcript, so the restore must follow
         // it. The engine child is spawned with --resume and is the SOLE writer to the
         // session file; loadSessionTranscript only reads.
-        session.newSession(id)
-        const restored = await loadSessionTranscript(id, engineCwd)
+        const selected = historySessions?.find(item => item.id === id)
+        if (!selected) {
+          provider.post({
+            type: 'showError',
+            message: 'That history session could not be found. Refresh history and try again.',
+          })
+          return
+        }
+        // In an empty editor window the history list spans every project. Starting
+        // the engine in the selected session's cwd lets the shared UUID resume path
+        // find the same transcript the lister displayed.
+        const resumeCwd = workspaceDir ?? selected.cwd ?? engineCwd
+        session.newSession(id, resumeCwd)
+        const restored = await loadSessionTranscript(id, resumeCwd)
         session.restoreTranscript(restored)
         provider.syncState()
+        prewarmSession()
       },
     },
   )
@@ -501,17 +616,20 @@ export function activate(context: vscode.ExtensionContext): void {
     provider,
   )
 
-  // The credential is one file shared with the CLI, so it can change without this
-  // process doing anything — `rayu` in a terminal, `/login`, and the panel must
-  // notice. Without this the user signs in and the panel keeps telling them to.
+  // Login/provider helpers run in child processes and write Rayucode's profile. Watch
+  // that directory so their settled writes are reflected without reloading the window.
   context.subscriptions.push(watchSharedSession(() => {
     invalidateRayuConfigCache()
     provider.syncState()
     void refreshModels()
+    prewarmSession()
   }, () => {
+    // A Rayucode helper changed its provider catalogue. Refresh the choices while the
+    // current conversation keeps its explicit provider-qualified execution selection.
     invalidateRayuConfigCache()
     session.availableModels = null
     provider.syncState()
+    void refreshModels()
   }))
 
   if (getAuthSnapshot().signedIn) void refreshModels()
@@ -546,11 +664,11 @@ export function activate(context: vscode.ExtensionContext): void {
       // history) has no control request that clears all of it.
       session.newSession()
       provider.syncState()
+      prewarmSession()
     }),
     vscode.commands.registerCommand(COMMANDS.signIn, async () => {
       await provider.reveal()
-      await runSignIn(provider, { enginePath, cwd: engineCwd })
-      await refreshModels()
+      await signInToRayucode()
     }),
     vscode.commands.registerCommand(COMMANDS.signOut, () => runSignOut(provider)),
   )
@@ -607,6 +725,7 @@ function buildState(
   permissions: PermissionRouter,
   providerSetup: ProviderSetupView,
   attachment: AttachmentView,
+  historySessions: SessionSummaryView[] | undefined,
 ): WebviewState {
   const auth = getAuthSnapshot()
   return {
@@ -632,6 +751,9 @@ function buildState(
     commands: [...session.commands],
     contextUsage: session.contextUsage,
     mcpServers: [...session.mcpServers],
+    // Full `init` snapshots replace webview state. Carry the host-owned history
+    // list so unrelated model/auth/context syncs cannot erase an open picker.
+    sessions: historySessions,
   }
 }
 
@@ -650,13 +772,26 @@ async function submitPrompt(
 ): Promise<void> {
   const gate = checkTurnAllowed()
   if (!gate.allowed) {
-    // Resync rather than only reporting: the panel should switch to the sign-in
-    // surface, not show an error above a composer that will keep failing.
+    // Resync so the panel shows the sign-in surface and limits autocomplete to its
+    // recovery commands before reporting why this normal prompt was refused.
     provider.syncState()
     provider.post({ type: 'showError', message: gate.reason })
     return
   }
   await session.submitPrompt(text)
+}
+
+/**
+ * Parse only the commands owned by the extension host.
+ *
+ * Exact matching is intentional. Arguments belong to the CLI command parser, and a
+ * normal prompt beginning with similar text must continue to reach the model unchanged.
+ */
+function rayucodeHostSlashCommand(text: string): 'login' | 'connect' | null {
+  const command = text.trim()
+  if (command === '/login') return 'login'
+  if (command === '/connect') return 'connect'
+  return null
 }
 
 async function runSignIn(
@@ -680,11 +815,9 @@ async function runSignIn(
 }
 
 async function runSignOut(provider: ChatViewProvider): Promise<void> {
-  // One credential means one sign-out, and that is a surprise worth confirming:
-  // the user is in an editor and may not realise their terminal session goes too.
   const CONFIRM = 'Sign out'
   const choice = await vscode.window.showWarningMessage(
-    'Sign out of Rayu? This also signs out the Rayu CLI, because both share one credential.',
+    'Sign out of Rayucode?',
     { modal: true },
     CONFIRM,
   )
@@ -693,25 +826,4 @@ async function runSignOut(provider: ChatViewProvider): Promise<void> {
   signOutShared()
   provider.syncState()
   void vscode.window.showInformationMessage('Signed out of Rayu.')
-}
-
-/**
- * Point the user at the API-key route.
- *
- * A Rayu API key satisfies the sign-in gate exactly as an account session does, so
- * the signed-out screen must offer it. Configuring one is a CLI flow today
- * (`/connect`), so the honest thing is to say so rather than to render a key field
- * here that writes a provider config the CLI owns.
- */
-async function showProviderSetupHelp(): Promise<void> {
-  const RUN = 'Open Terminal'
-  const choice = await vscode.window.showInformationMessage(
-    'To use a Rayu API key instead of signing in, run `rayu` in a terminal and use /connect → Rayu. ' +
-      'The extension picks the key up automatically — both share one configuration.',
-    RUN,
-  )
-  if (choice !== RUN) return
-  const terminal = vscode.window.createTerminal('Rayu')
-  terminal.show()
-  terminal.sendText('rayu', false)
 }

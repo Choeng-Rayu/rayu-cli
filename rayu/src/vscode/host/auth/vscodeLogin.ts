@@ -1,18 +1,17 @@
 /**
  * Signing in from the editor.
  *
- * The extension's own login TRANSPORT — the one thing that is legitimately
- * per-surface. The credential it produces is shared: the login writes through
- * `rayuSession.ts` to `~/.rayu/rayu-auth.json`, so a successful sign-in here signs
- * the CLI in too.
+ * The extension's login transport reuses the shared Rayu login implementation. The
+ * credential it produces is independent: the login writes through
+ * `rayuSession.ts` to the Rayucode authentication profile selected by the extension.
+ * It does not change the terminal CLI's account session.
  *
  * ── WHY LOGIN RUNS IN A CHILD PROCESS ──────────────────────────────────────────
  *
  * `loginRayu()` is the CLI's login: a 127.0.0.1 loopback server, the `/cli/token`
  * exchange, the CSRF `state` check, the entitlements warm-up, the API-key/OAuth
  * mutual exclusion, and activating the hosted provider. All of that is exactly the
- * behaviour we want — reimplementing it would give the editor a second sign-in path
- * that could disagree with the CLI about what a successful login leaves behind.
+ * behaviour we want without duplicating authentication logic in the editor.
  *
  * But importing it here is not an option. Measured with the project's own build
  * config: `loginRayu`'s graph costs 19.7 MB and drags in React, because

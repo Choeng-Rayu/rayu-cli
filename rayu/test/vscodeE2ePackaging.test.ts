@@ -135,6 +135,17 @@ rl.on('line', (line) => {
       process.stdout.write(JSON.stringify(res) + '\\n');
       return;
     }
+
+    const defaultRes = {
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: msg.request_id,
+        response: {},
+      },
+    };
+    process.stdout.write(JSON.stringify(defaultRes) + '\\n');
+    return;
   }
 
   if (msg.type === 'user') {

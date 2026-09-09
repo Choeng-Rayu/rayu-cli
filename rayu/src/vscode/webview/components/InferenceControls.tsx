@@ -16,6 +16,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 
+
 import {
   availableEffortOptions,
   effortLabel,
@@ -26,42 +27,15 @@ import {
 export interface InferenceControlsProps {
   settings: InferenceSettingsView
   onSetEffort: (level: EffortChoice) => void
-  onSetThinking: (enabled: boolean) => void
 }
 
 export function InferenceControls({
   settings,
   onSetEffort,
-  onSetThinking,
 }: InferenceControlsProps): JSX.Element | null {
-  if (!settings.supportsEffort && !settings.supportsThinking) return null
+  if (!settings.supportsEffort) return null
 
-  return (
-    <>
-      {settings.supportsThinking ? (
-        <button
-          type="button"
-          className={`rc-pill rc-pill-button${
-            settings.thinkingEnabled ? ' rc-pill-on' : ''
-          }`}
-          aria-pressed={settings.thinkingEnabled}
-          title={
-            settings.thinkingEnabled
-              ? 'Extended thinking is on. Applies to your next message.'
-              : 'Extended thinking is off. Applies to your next message.'
-          }
-          onClick={() => onSetThinking(!settings.thinkingEnabled)}
-        >
-          <BrainIcon />
-          Thinking
-        </button>
-      ) : null}
-
-      {settings.supportsEffort ? (
-        <EffortDropdown settings={settings} onSetEffort={onSetEffort} />
-      ) : null}
-    </>
-  )
+  return <EffortDropdown settings={settings} onSetEffort={onSetEffort} />
 }
 
 function EffortDropdown({
@@ -85,10 +59,10 @@ function EffortDropdown({
   }, [open])
 
   return (
-    <div className="rc-dropdown" ref={container}>
+    <div className="rc-dropdown rc-effort-dropdown" ref={container}>
       <button
         type="button"
-        className="rc-pill rc-pill-button"
+        className={`rc-pill rc-pill-button rc-pill-effort${open ? ' rc-pill-active' : ''}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         title={
@@ -98,14 +72,21 @@ function EffortDropdown({
         }
         onClick={() => setOpen(o => !o)}
       >
-        Effort: {effortLabel(settings.effort)}
+        <EffortIcon />
+        <span className="rc-pill-label">Effort: {effortLabel(settings.effort)}</span>
         {/* An environment override outranks anything chosen here, so it is marked
             rather than left to look like a control that does nothing. */}
         {settings.effortEnvOverride ? <span className="rc-pill-pinned">·env</span> : null}
+        <ChevronIcon />
       </button>
 
       {open ? (
-        <div className="rc-dropdown-panel" role="dialog" aria-label="Reasoning effort">
+        <div className="rc-dropdown-panel rc-effort-panel" role="dialog" aria-label="Reasoning effort">
+          <div className="rc-dropdown-header">
+            <span className="rc-dropdown-title">Reasoning Effort</span>
+            <span className="rc-dropdown-subtitle">Control model thinking depth</span>
+          </div>
+
           {settings.effortEnvOverride ? (
             <p className="rc-dropdown-empty">
               <code>CLAUDE_CODE_EFFORT_LEVEL={settings.effortEnvOverride}</code> is
@@ -124,17 +105,20 @@ function EffortDropdown({
                     role="option"
                     aria-selected={isCurrent}
                     className={`rc-dropdown-item${isCurrent ? ' rc-dropdown-item-active' : ''}`}
-                    onClick={() => {
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => {
+                      e.preventDefault()
+                      e.stopPropagation()
                       setOpen(false)
                       onSetEffort(option.value)
                     }}
                   >
-                    <span className="rc-dropdown-label">
-                      {option.label}
+                    <div className="rc-dropdown-item-header">
+                      <span className="rc-dropdown-label">{option.label}</span>
                       {isCurrent ? (
-                        <span className="rc-dropdown-current"> · current</span>
+                        <span className="rc-dropdown-current">✓ Active</span>
                       ) : null}
-                    </span>
+                    </div>
                     <span className="rc-dropdown-detail">{option.description}</span>
                   </button>
                 </li>
@@ -147,10 +131,33 @@ function EffortDropdown({
   )
 }
 
-function BrainIcon(): JSX.Element {
+function EffortIcon(): JSX.Element {
   return (
-    <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" role="presentation">
-      <path d="M6 2a2.5 2.5 0 0 0-2.5 2.5v.6A2 2 0 0 0 2 7a2 2 0 0 0 1 1.73v.52A2.25 2.25 0 0 0 5.25 11.5H6V2zm4 0v9.5h.75A2.25 2.25 0 0 0 13 9.25v-.52A2 2 0 0 0 14 7a2 2 0 0 0-1.5-1.9v-.6A2.5 2.5 0 0 0 10 2zM6 12.5v.25a1.25 1.25 0 1 0 2.5 0v-.25H6zm4 0v.25a1.25 1.25 0 1 0-2.5 0v-.25H10z" />
+    <svg
+      viewBox="0 0 16 16"
+      width="11"
+      height="11"
+      fill="currentColor"
+      role="presentation"
+      className="rc-effort-icon"
+    >
+      <path d="M7.5 1v5.5H3.75L9 15V9.5h3.75L7.5 1z" />
     </svg>
   )
 }
+
+function ChevronIcon(): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="9"
+      height="9"
+      fill="currentColor"
+      role="presentation"
+      className="rc-chevron-icon"
+    >
+      <path d="M4 6l4 4 4-4H4z" />
+    </svg>
+  )
+}
+

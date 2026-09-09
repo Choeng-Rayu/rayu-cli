@@ -14,9 +14,8 @@
  *
  * So why gate here too? Because the engine's refusal arrives as a message in the
  * transcript AFTER the user has typed and sent a prompt. That reads as a failure,
- * not as a requirement. Gating in the host means the composer is disabled and the
- * sign-in surface is shown BEFORE anything is typed, and the user is told what to
- * do instead of what went wrong.
+ * not as a requirement. Gating in the host refuses normal prompts while the sign-in
+ * surface and its `/login` and `/connect` recovery commands remain available.
  *
  * The two gates consult the SAME `rayuLoginGateMessage()`, so they cannot
  * disagree — which matters, because a prompt allowed by one and refused by the

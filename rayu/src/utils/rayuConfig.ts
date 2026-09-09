@@ -5,7 +5,7 @@
 // never logged or echoed; callers reference providers by id, not by key value.
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir } from './envUtils.js'
+import { getRayuAuthConfigDir } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
@@ -250,7 +250,7 @@ export type RayuConfig = {
 const FILE_NAME = 'providers.json'
 
 function configPath(): string {
-  return join(getRayuConfigHomeDir(), FILE_NAME)
+  return join(getRayuAuthConfigDir(), FILE_NAME)
 }
 
 let cache: RayuConfig | null = null
@@ -318,7 +318,7 @@ export function loadRayuConfig(): RayuConfig {
 }
 
 export function saveRayuConfig(config: RayuConfig): void {
-  const dir = getRayuConfigHomeDir()
+  const dir = getRayuAuthConfigDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   // 0600: secrets must not be world/group readable.
   writeFileSync(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 })

@@ -45,6 +45,11 @@
  */
 import type { ControlClient, InboundControlRequest } from '../engine/controlClient.js'
 import { summariseInput } from '../../../utils/activity/activityBlocks.js'
+import {
+  buildAskUserQuestionInput,
+  parseAskUserQuestions,
+} from '../../../utils/askUserQuestion.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../../../tools/AskUserQuestionTool/prompt.js'
 import type { PermissionRequestView } from '../../shared/webviewProtocol.js'
 
 /** What the user chose. */
@@ -66,6 +71,7 @@ export interface PermissionRouterCallbacks {
 interface Pending {
   requestId: string
   toolName: string
+  toolUseId?: string
   /** Echoed back on allow — `updatedInput` is required by the engine's schema. */
   input: Record<string, unknown>
   /** Rules the engine suggested, replayed on "always allow". */
@@ -125,12 +131,17 @@ export class PermissionRouter {
       blockedPath: typeof inner.blocked_path === 'string' ? inner.blocked_path : null,
       reason:
         typeof inner.decision_reason === 'string' ? inner.decision_reason : null,
-      canAlwaysAllow: true,
+      canAlwaysAllow: toolName !== ASK_USER_QUESTION_TOOL_NAME,
+      ...(toolName === ASK_USER_QUESTION_TOOL_NAME && {
+        questionInteraction: { questions: parseAskUserQuestions(input) },
+      }),
     }
 
     this.pending.set(request.requestId, {
       requestId: request.requestId,
       toolName,
+      toolUseId:
+        typeof inner.tool_use_id === 'string' ? inner.tool_use_id : undefined,
       input,
       suggestions: Array.isArray(inner.permission_suggestions)
         ? inner.permission_suggestions
@@ -180,11 +191,15 @@ export class PermissionRouter {
       // The IPC decision payload has no "update permissions" channel, so offering
       // "always allow" here would present a choice that silently degrades to once.
       canAlwaysAllow: false,
+      ...(request.toolName === ASK_USER_QUESTION_TOOL_NAME && {
+        questionInteraction: { questions: parseAskUserQuestions(input) },
+      }),
     }
 
     this.pending.set(request.requestId, {
       requestId: request.requestId,
       toolName: request.toolName,
+      toolUseId: request.toolUseId,
       input,
       suggestions: [],
       view,
@@ -220,6 +235,12 @@ export class PermissionRouter {
   ): void {
     const entry = this.pending.get(requestId)
     if (!entry) return
+    // AskUserQuestion must be answered by the question form. A generic allow would
+    // echo the input without `answers`, which the tool interprets as an empty reply.
+    if (
+      entry.toolName === ASK_USER_QUESTION_TOOL_NAME &&
+      decision.kind !== 'deny'
+    ) return
     this.pending.delete(requestId)
     this.callbacks.onDismiss(requestId)
 
@@ -265,6 +286,35 @@ export class PermissionRouter {
           }
         : { decisionClassification: 'user_temporary' }),
     })
+  }
+
+  /** Answer AskUserQuestion through the same updatedInput contract as the CLI. */
+  resolveQuestions(
+    control: ControlClient | null,
+    requestId: string,
+    answers: Record<string, string>,
+    notes: Record<string, string>,
+  ): { toolUseId?: string; answers: Record<string, string> } | null {
+    const entry = this.pending.get(requestId)
+    if (!entry || entry.toolName !== ASK_USER_QUESTION_TOOL_NAME) return null
+
+    const updatedInput = buildAskUserQuestionInput(entry.input, answers, notes)
+    if (!updatedInput) return null
+
+    this.pending.delete(requestId)
+    this.callbacks.onDismiss(requestId)
+    const response = {
+      behavior: 'allow' as const,
+      updatedInput,
+      decisionClassification: 'user_temporary' as const,
+    }
+    if (entry.respondRemotely) entry.respondRemotely(response)
+    else control?.respond(requestId, response)
+
+    return {
+      toolUseId: entry.toolUseId,
+      answers: updatedInput.answers as Record<string, string>,
+    }
   }
 
   /**

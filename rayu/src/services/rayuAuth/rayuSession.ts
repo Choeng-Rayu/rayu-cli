@@ -6,7 +6,8 @@
 //
 // It mirrors the storage pattern of googleOAuth.ts: the session (access +
 // refresh token issued by rayu-backend after a Google OAuth login) is persisted to
-// ~/.rayu/rayu-auth.json with 0600 permissions and never logged.
+// the active authentication profile's rayu-auth.json with 0600 permissions and
+// never logged. The CLI profile defaults to ~/.rayu.
 //
 // NOTE: This is the Rayu *account* session — distinct from the Anthropic
 // "Claude AI" provider OAuth (src/utils/auth.ts), which remains untouched and
@@ -20,7 +21,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir, isEnvTruthy } from '../../utils/envUtils.js'
 
 const SESSION_FILE = 'rayu-auth.json'
 const REFRESH_SKEW_MS = 60 * 1000
@@ -88,7 +89,7 @@ export function getRayuGatewayBaseUrl(): string {
 }
 
 function sessionPath(): string {
-  return join(getRayuConfigHomeDir(), SESSION_FILE)
+  return join(getRayuAuthConfigDir(), SESSION_FILE)
 }
 
 export function readRayuSession(): RayuSessionStore | null {
@@ -102,7 +103,7 @@ export function readRayuSession(): RayuSessionStore | null {
 }
 
 export function writeRayuSession(store: RayuSessionStore): void {
-  const dir = getRayuConfigHomeDir()
+  const dir = getRayuAuthConfigDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const p = sessionPath()
   writeFileSync(p, JSON.stringify(store, null, 2), { mode: 0o600 })

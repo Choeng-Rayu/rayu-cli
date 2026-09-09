@@ -26,6 +26,79 @@ import { outputSchema } from '../src/utils/permissions/PermissionPromptToolResul
 const { ChatSession } = await import('../src/vscode/host/panel/sessionHandle.js')
 
 describe('PermissionRouter payload validation against engine outputSchema()', () => {
+  test('AskUserQuestion returns selected answers through updatedInput', () => {
+    let shown: any = null
+    let sentPayload: Record<string, unknown> | null = null
+    const control = new ControlClient(
+      frame => {
+        const value = frame as { type: string; response?: { response?: Record<string, unknown> } }
+        if (value.type === 'control_response') sentPayload = value.response?.response ?? null
+        return true
+      },
+      { onMessage() {}, onRequest() {}, onRequestCancelled() {}, onProtocolError() {} },
+    )
+    const input = {
+      questions: [{
+        question: 'Which files?', header: 'Files', multiSelect: false,
+        options: [
+          { label: 'Text', description: 'Text files', preview: 'sample.txt' },
+          { label: 'Python', description: 'Python files' },
+        ],
+      }],
+    }
+    const router = new PermissionRouter({ onShow: view => { shown = view }, onDismiss() {} })
+    control.handleFrame({
+      type: 'control_request', request_id: 'ask_request',
+      request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input, tool_use_id: 'ask_tool' },
+    })
+    router.present({
+      requestId: 'ask_request', subtype: 'can_use_tool',
+      request: { tool_name: 'AskUserQuestion', input, tool_use_id: 'ask_tool' },
+    })
+
+    expect(shown.questionInteraction.questions).toEqual(input.questions)
+    expect(shown.canAlwaysAllow).toBe(false)
+    // A generic approval is deliberately ignored; it carries no answers.
+    router.resolve(control, 'ask_request', { kind: 'allow-once' })
+    expect(sentPayload).toBeNull()
+
+    const result = router.resolveQuestions(
+      control, 'ask_request', { 'Which files?': 'Text' }, { 'Which files?': 'Use UTF-8' },
+    )
+    expect(result).toEqual({ toolUseId: 'ask_tool', answers: { 'Which files?': 'Text' } })
+    expect(outputSchema().safeParse(sentPayload).success).toBe(true)
+    expect(sentPayload).toMatchObject({
+      behavior: 'allow',
+      decisionClassification: 'user_temporary',
+      updatedInput: {
+        ...input,
+        answers: { 'Which files?': 'Text' },
+        annotations: { 'Which files?': { preview: 'sample.txt', notes: 'Use UTF-8' } },
+      },
+    })
+  })
+
+  test('AskUserQuestion attached-session response uses the same shared answer shape', () => {
+    let response: any = null
+    const input = {
+      questions: [{
+        question: 'Pick features', multiSelect: true,
+        options: [{ label: 'Tests' }, { label: 'Docs' }],
+      }],
+    }
+    const router = new PermissionRouter({ onShow() {}, onDismiss() {} })
+    router.presentMirrored(
+      { requestId: 'remote_ask', toolName: 'AskUserQuestion', input, toolUseId: 'remote_tool' },
+      value => { response = value },
+    )
+    router.resolveQuestions(
+      null, 'remote_ask', { 'Pick features': 'Tests, Docs' }, {},
+    )
+    expect(response).toMatchObject({
+      behavior: 'allow', updatedInput: { ...input, answers: { 'Pick features': 'Tests, Docs' } },
+    })
+  })
+
   test('allow-once validates against outputSchema()', () => {
     let sentPayload: Record<string, unknown> | null = null
     const control = new ControlClient(

@@ -10,7 +10,7 @@
  * an ordinary path rather than a special case, and it is how a sign-in performed in a
  * terminal reaches this UI.
  */
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
 import type {
   AttachmentView,
@@ -20,15 +20,19 @@ import type {
   WebviewState,
   WebviewToHostMessage,
 } from '../shared/webviewProtocol.js'
-import { chatReducer, initialChatState, type ChatState } from './state/reducer.js'
+import { permissionModeById } from '../shared/permissionModes.js'
+import { chatReducer, initialChatState, type ChatState, type ThinkingStatus } from './state/reducer.js'
 import { Composer } from './components/Composer.js'
 import { ProviderSetupPanel } from './components/ProviderSetupPanel.js'
 import { AttachmentControl } from './components/AttachmentControl.js'
 import { SessionHistory } from './components/SessionHistory.js'
 import { PermissionCard } from './components/PermissionCard.js'
+import { QuestionCard } from './components/QuestionCard.js'
 import { SparkleIcon } from './components/SparkleIcon.js'
 import { TranscriptEntryView, NoticeEntry } from './components/TranscriptEntryView.js'
 import { WelcomeScreen } from './components/WelcomeScreen.js'
+import { ScrollToBottomButton } from './components/ScrollToBottomButton.js'
+import { isTodoToolEntry } from './components/TodoListCard.js'
 
 /**
  * The bridge VS Code injects into every webview.
@@ -79,6 +83,7 @@ export function App(): JSX.Element {
         case 'setContextUsage':
         case 'setMcpServers':
         case 'setSessions':
+        case 'turnDuration':
           // The action union is the message union by construction, so the reducer
           // is the single place that decides what each one means.
           dispatch(message)
@@ -98,10 +103,31 @@ export function App(): JSX.Element {
 
   const session = state.session
   const signedOut = session === null || session.status === 'signed-out'
+  // The transcript remains the host-owned source of truth. Selecting its newest
+  // structured TodoWrite entry makes the list persistent across ordinary messages,
+  // webview recreation, and history resume without a second todo state to synchronize.
+  const latestTodoEntry = useMemo(() => {
+    for (let index = state.entries.length - 1; index >= 0; index -= 1) {
+      const entry = state.entries[index]
+      if (entry && isTodoToolEntry(entry)) return entry
+    }
+    return null
+  }, [state.entries])
+  const composerCommands = signedOut
+    ? state.commands.filter(command => command.name === 'login' || command.name === 'connect')
+    : state.commands
 
   const submit = useCallback((text: string) => {
     setDraft(null)
     send({ type: 'submitPrompt', text })
+  }, [])
+
+  // Stable reference: the Composer's useEffect depends on this callback, and an
+  // inline arrow would fire the effect on every App re-render — which the effect
+  // itself triggers (findFiles → fileSearchResults → workspaceFiles change →
+  // re-render → new ref → effect again). useCallback breaks that loop.
+  const findFiles = useCallback((query: string) => {
+    send({ type: 'findFiles', query })
   }, [])
 
   return (
@@ -117,6 +143,7 @@ export function App(): JSX.Element {
         hasActiveTranscript={state.entries.length > 0}
         onListSessions={() => send({ type: 'listSessions' })}
         onResumeSession={id => send({ type: 'resumeSession', id })}
+        onNewSession={() => send({ type: 'newSession' })}
       />
 
       {/* Above the transcript: it is a modal-ish task the user opened deliberately,
@@ -138,38 +165,54 @@ export function App(): JSX.Element {
           this must be visible without scrolling, while the transcript it describes
           stays readable. */}
       {state.pendingPermissions.map(request => (
-        <PermissionCard
-          key={request.requestId}
-          request={request}
-          onDecide={decision =>
-            send({ type: 'permissionResponse', requestId: request.requestId, decision })
-          }
-        />
+        request.questionInteraction ? (
+          <QuestionCard
+            key={request.requestId}
+            request={request}
+            onSubmit={(answers, notes) =>
+              send({ type: 'questionResponse', requestId: request.requestId, answers, notes })
+            }
+            onCancel={() =>
+              send({ type: 'permissionResponse', requestId: request.requestId, decision: 'deny' })
+            }
+          />
+        ) : (
+          <PermissionCard
+            key={request.requestId}
+            request={request}
+            onDecide={decision =>
+              send({ type: 'permissionResponse', requestId: request.requestId, decision })
+            }
+          />
+        )
       ))}
 
-      {signedOut ? null : (
-        <Composer
-          key={draft ?? ''}
-          initialValue={draft ?? ''}
-          disabled={false}
-          turnRunning={state.turnRunning}
-          modelInfo={state.modelInfo}
-          modelCatalogue={state.modelCatalogue}
-          inference={state.inference}
-          permissionMode={state.permissionMode}
-          commands={state.commands}
-          workspaceFiles={state.workspaceFiles}
-          onSubmit={submit}
-          onInterrupt={() => send({ type: 'interrupt' })}
-          onSelectModel={value => send({ type: 'selectModelValue', value })}
-          onRefreshModels={() => send({ type: 'refreshModelCatalogue' })}
-          onSetEffort={level => send({ type: 'setEffort', level })}
-          onSetThinking={enabled => send({ type: 'setThinking', enabled })}
-          onCyclePermissionMode={() => send({ type: 'cyclePermissionMode' })}
-          onOpenProviderSetup={() => send({ type: 'openProviderSetup' })}
-          onFindFiles={query => send({ type: 'findFiles', query })}
-        />
-      )}
+      <Composer
+        key={draft ?? ''}
+        initialValue={draft ?? ''}
+        disabled={false}
+        authenticationRequired={signedOut}
+        turnRunning={state.turnRunning}
+        modelInfo={state.modelInfo}
+        modelCatalogue={state.modelCatalogue}
+        inference={state.inference}
+        permissionMode={state.permissionMode}
+        commands={composerCommands}
+        workspaceFiles={state.workspaceFiles}
+        todoEntry={latestTodoEntry}
+        onSubmit={submit}
+        onInterrupt={() => send({ type: 'interrupt' })}
+        onSelectModel={value => send({ type: 'selectModelValue', value })}
+        onRefreshModels={() => send({ type: 'refreshModelCatalogue' })}
+        onSetEffort={level => send({ type: 'setEffort', level })}
+        onCyclePermissionMode={() => send({ type: 'cyclePermissionMode' })}
+        onSelectPermissionMode={modeId => {
+          dispatch({ type: 'setPermissionMode', mode: permissionModeById(modeId) })
+          send({ type: 'setPermissionMode', modeId })
+        }}
+        onOpenProviderSetup={() => send({ type: 'openProviderSetup' })}
+        onFindFiles={findFiles}
+      />
     </div>
   )
 }
@@ -224,6 +267,7 @@ function Header({
   onListAttachable,
   onAttach,
   onDetach,
+  onNewSession,
 }: {
   state: WebviewState | null
   contextUsage: ContextUsageView | null
@@ -235,6 +279,7 @@ function Header({
   onListAttachable: () => void
   onAttach: (pid: number) => void
   onDetach: () => void
+  onNewSession: () => void
 }): JSX.Element {
   const who = state?.identity?.displayName ?? state?.identity?.email ?? null
 
@@ -243,8 +288,19 @@ function Header({
       <span className="rc-header-title">Rayucode</span>
       <span className="rc-header-meta">
         {contextUsage ? <ContextIndicator usage={contextUsage} /> : null}
-        {/* Hidden while signed out: there is nothing to resume into, and the picker
-            would offer an action that cannot complete. */}
+        {state && state.status !== 'signed-out' ? (
+          <button
+            type="button"
+            className="rc-icon-button"
+            title="New session"
+            aria-label="New session"
+            onClick={onNewSession}
+          >
+            <PlusIcon />
+          </button>
+        ) : null}
+        {/* Attaching controls a live CLI engine, so it requires an authenticated
+            Rayucode session. Stored history itself is local and remains readable. */}
         {state && state.status !== 'signed-out' ? (
           <AttachmentControl
             attachment={attachment}
@@ -253,7 +309,7 @@ function Header({
             onDetach={onDetach}
           />
         ) : null}
-        {state && state.status !== 'signed-out' ? (
+        {state ? (
           <SessionHistory
             sessions={sessions}
             hasActiveTranscript={hasActiveTranscript}
@@ -266,6 +322,14 @@ function Header({
         {state ? <span className="rc-header-version">v{state.version}</span> : null}
       </span>
     </header>
+  )
+}
+
+function PlusIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" role="presentation">
+      <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z" />
+    </svg>
   )
 }
 
@@ -287,12 +351,23 @@ function Transcript({
 }): JSX.Element {
   const scroller = useRef<HTMLDivElement | null>(null)
   const pinned = useRef(true)
+  const [showScrollBottom, setShowScrollBottom] = useState(false)
 
   const onScroll = useCallback(() => {
     const el = scroller.current
     if (!el) return
     // 48px of slack: an exact comparison unpins on sub-pixel scroll positions.
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    pinned.current = isNearBottom
+    setShowScrollBottom(!isNearBottom && el.scrollHeight - el.clientHeight > 100)
+  }, [])
+
+  const scrollToBottom = useCallback(() => {
+    const el = scroller.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    pinned.current = true
+    setShowScrollBottom(false)
   }, [])
 
   useEffect(() => {
@@ -304,37 +379,142 @@ function Transcript({
   const session = state.session
 
   return (
-    <main
-      ref={scroller}
-      onScroll={onScroll}
-      className="rc-transcript"
-      role="log"
-      aria-live="polite"
-      aria-label="Conversation"
-    >
-      {session === null ? (
-        <p className="rc-muted">Connecting…</p>
-      ) : session.status === 'signed-out' ? (
-        <SignInView state={session} />
-      ) : state.entries.length === 0 ? (
-        <WelcomeScreen onPick={onPick} disabled={signedOut} />
-      ) : (
-        state.entries.map(entry => (
-          <TranscriptEntryView
-            key={entry.id}
-            entry={entry}
-            onKeep={path => send({ type: 'reviewKeep', path })}
-            onUndo={path => send({ type: 'reviewUndo', path })}
-            onDiff={path => send({ type: 'openReviewDiff', path })}
-            onOpen={path => send({ type: 'openFile', path })}
-          />
-        ))
-      )}
+    <div className="rc-transcript-wrapper">
+      <main
+        ref={scroller}
+        onScroll={onScroll}
+        className="rc-transcript"
+        role="log"
+        aria-live="polite"
+        aria-label="Conversation"
+      >
+        {session === null ? (
+          <p className="rc-muted">Connecting…</p>
+        ) : session.status === 'signed-out' && state.entries.length === 0 ? (
+          <SignInView state={session} />
+        ) : state.entries.length === 0 ? (
+          <WelcomeScreen onPick={onPick} disabled={signedOut} />
+        ) : (
+          <>
+            {session.status === 'signed-out' ? <SignInView state={session} /> : null}
+            {state.entries.map(entry => (
+              <TranscriptEntryView
+                key={entry.id}
+                entry={entry}
+                thinkingStatus={state.thinking}
+                onKeep={path => send({ type: 'reviewKeep', path })}
+                onUndo={path => send({ type: 'reviewUndo', path })}
+                onDiff={path => send({ type: 'openReviewDiff', path })}
+                onOpen={path => send({ type: 'openFile', path })}
+              />
+            ))}
+            {state.turnRunning || state.lastTurnDuration ? (
+              <TurnStatus
+                running={state.turnRunning}
+                thinking={state.thinking}
+                finalDuration={state.lastTurnDuration}
+                streamedChars={state.streamedChars}
+              />
+            ) : null}
+          </>
+        )}
 
-      {state.notices.map((notice, index) => (
-        <NoticeEntry key={`notice-${index}`} text={notice} severity="error" />
-      ))}
-    </main>
+        {state.notices.map((notice, index) => (
+          <NoticeEntry key={`notice-${index}`} text={notice} severity="error" />
+        ))}
+      </main>
+
+      <ScrollToBottomButton visible={showScrollBottom} onClick={scrollToBottom} />
+    </div>
+  )
+}
+
+/** Present-tense verbs for the live spinner. */
+const WORKING_VERBS = [
+  'Working', 'Cooking', 'Brewing', 'Crafting', 'Computing',
+  'Pondering', 'Building', 'Creating', 'Generating', 'Processing',
+  'Composing', 'Forging', 'Hatching', 'Tinkering', 'Crunching',
+]
+
+/** Past-tense verbs for the completion line. */
+const DONE_VERBS = [
+  'baked', 'brewed', 'churned', 'cogitated', 'cooked',
+  'crunched', 'worked', 'crafted', 'forged', 'hatched',
+]
+
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  const rs = s % 60
+  return rs > 0 ? `${m}m ${rs}s` : `${m}m`
+}
+
+/** Format chars/4 as a compact token count: "1.2k", "45", etc. */
+function formatTokens(chars: number): string {
+  const tokens = Math.round(chars / 4)
+  if (tokens < 1000) return `${tokens}`
+  const k = tokens / 1000
+  return k >= 10 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`
+}
+
+/**
+ * Unified turn status: live timer + token count while working, final on done.
+ *
+ * While running:  ● Rayu's Cooking… (1m 23s · ↑ 4.3k tokens)
+ * When done:      ✓ Rayu cooked for 5m 17s · ↑ 4.3k tokens
+ */
+function TurnStatus({
+  running,
+  thinking,
+  finalDuration,
+  streamedChars,
+}: {
+  running: boolean
+  thinking: ThinkingStatus | null
+  finalDuration: string | null
+  streamedChars: number
+}): JSX.Element {
+  const [startedAt] = useState(() => Date.now())
+  const [elapsed, setElapsed] = useState(0)
+  const [activeVerb] = useState(
+    () => WORKING_VERBS[Math.floor(Math.random() * WORKING_VERBS.length)] ?? 'Working',
+  )
+  const [doneVerb] = useState(
+    () => DONE_VERBS[Math.floor(Math.random() * DONE_VERBS.length)] ?? 'worked',
+  )
+
+  useEffect(() => {
+    if (!running) return
+    const id = setInterval(() => setElapsed(Date.now() - startedAt), 1000)
+    return () => clearInterval(id)
+  }, [running, startedAt])
+
+  const tokenStr = streamedChars > 0 ? `↑ ${formatTokens(streamedChars)} tokens` : ''
+
+  if (!running && finalDuration) {
+    return (
+      <div className="rc-working">
+        <span className="rc-thinking-check" aria-hidden="true">&#10003;</span>
+        <span className="rc-thinking-text">
+          Rayu {doneVerb} for {finalDuration}{tokenStr ? ` · ${tokenStr}` : ''}
+        </span>
+      </div>
+    )
+  }
+
+  const label = thinking?.phase === 'active' ? 'Thinking' : activeVerb
+  const stats: string[] = []
+  if (elapsed >= 1000) stats.push(formatElapsed(elapsed))
+  if (tokenStr) stats.push(tokenStr)
+
+  return (
+    <div className="rc-working" role="status" aria-live="polite">
+      <span className="rc-thinking-dot" />
+      <span className="rc-thinking-text">
+        Rayu&apos;s {label}…{stats.length > 0 ? ` (${stats.join(' · ')})` : ''}
+      </span>
+    </div>
   )
 }
 
@@ -381,7 +561,8 @@ function SignInView({ state }: { state: WebviewState }): JSX.Element {
       </div>
 
       <p className="rc-signin-note">
-        Signing in here also signs in the Rayu CLI — both share one credential.
+        Rayucode uses its own sign-in and provider credentials. Your Rayu CLI login is
+        unchanged.
       </p>
     </div>
   )

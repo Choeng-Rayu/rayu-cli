@@ -41,6 +41,10 @@ import {
   resultText,
   summariseInput,
 } from '../../../utils/activity/activityBlocks.js'
+import { parseAskUserQuestions } from '../../../utils/askUserQuestion.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../../../tools/AskUserQuestionTool/prompt.js'
+import { TODO_WRITE_TOOL_NAME } from '../../../tools/TodoWriteTool/constants.js'
+import { TodoListSchema, type TodoList } from '../../../utils/todo/types.js'
 
 /**
  * Correlation ids, which `ContentBlock` does not declare.
@@ -86,6 +90,10 @@ export type VSCodeActivityBlock =
       label: string
       /** Pretty-printed parameters for the expanded pill. */
       parameters: string
+      /** Structured questions for the dedicated interaction/result renderer. */
+      questions?: ReturnType<typeof parseAskUserQuestions>
+      /** Validated TodoWrite input for the dedicated task-list renderer. */
+      todos?: TodoList
     }
   | {
       kind: 'tool_result'
@@ -105,6 +113,23 @@ function formatParameters(input: unknown): string {
     // so degrade to no parameters rather than losing the whole block.
     return ''
   }
+}
+
+/**
+ * Read TodoWrite's input through the engine's canonical schema.
+ *
+ * Returning undefined on malformed input is deliberate: the caller then falls back
+ * to the generic tool renderer, where the raw parameters remain available for
+ * diagnosis instead of showing an empty or partly invented task list.
+ */
+function parseTodoWriteTodos(input: unknown): TodoList | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return undefined
+  }
+  const parsed = TodoListSchema().safeParse(
+    (input as Record<string, unknown>).todos,
+  )
+  return parsed.success ? parsed.data : undefined
 }
 
 /**
@@ -138,12 +163,28 @@ export function formatMessageForVSCode(
 
       case 'tool_use': {
         const name = block.name ?? 'tool'
+        const questions =
+          name === ASK_USER_QUESTION_TOOL_NAME
+            ? parseAskUserQuestions(block.input)
+            : undefined
+        const todos =
+          name === TODO_WRITE_TOOL_NAME
+            ? parseTodoWriteTodos(block.input)
+            : undefined
         blocks.push({
           kind: 'tool_use',
           toolUseId: block.id ?? null,
           name,
-          label: block.input === undefined ? '' : summariseInput(block.input),
-          parameters: formatParameters(block.input),
+          label: questions
+            ? `${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`
+            : todos
+              ? `${todos.filter(todo => todo.status === 'completed').length}/${todos.length} complete`
+            : block.input === undefined ? '' : summariseInput(block.input),
+          // Dedicated cards own these payloads. Repeating the JSON as generic
+          // parameters is the raw payload leak reported by users.
+          parameters: questions || todos ? '' : formatParameters(block.input),
+          ...(questions && { questions }),
+          ...(todos && { todos }),
         })
         break
       }

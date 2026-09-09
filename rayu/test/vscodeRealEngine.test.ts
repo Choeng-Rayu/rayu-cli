@@ -13,9 +13,11 @@ test.if(existsSync(vsix))('real packaged engine streams, runs tools, completes e
   const dir = mkdtempSync(join(tmpdir(), 'rayucode-real-engine-'))
   const provider = await startLocalProvider()
   let session: ChatSession | undefined
+  const originalConfig = process.env.RAYU_CONFIG_DIR
   try {
     expect(spawnSync('unzip', ['-q', vsix, '-d', dir]).status).toBe(0)
     const config = join(dir, 'config'); mkdirSync(config)
+    process.env.RAYU_CONFIG_DIR = config
     writeFileSync(join(config, 'providers.json'), JSON.stringify({ activeProvider: 'test', providers: [{ id: 'test', kind: 'openai-compatible', baseURL: provider.url, apiKey: 'fixture-key', defaultModel: 'test-model', fetchedModels: ['test-model'], modelContextWindows: { 'test-model': 32000 } }] }))
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ permissions: { allow: ['Read', 'Edit', 'Bash(true)'] } }))
     writeFileSync(join(dir, 'fixture.txt'), 'before\n')
@@ -58,6 +60,8 @@ test.if(existsSync(vsix))('real packaged engine streams, runs tools, completes e
     expect(session.currentInference.thinkingEnabled).toBe(true)
 
   } finally {
+    if (originalConfig !== undefined) process.env.RAYU_CONFIG_DIR = originalConfig
+    else delete process.env.RAYU_CONFIG_DIR
     session?.dispose()
     await provider.close()
     await new Promise(resolve => setTimeout(resolve, 100))

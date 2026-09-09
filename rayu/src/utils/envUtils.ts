@@ -193,6 +193,22 @@ export const getRayuConfigHomeDir = memoize(
   () => process.env.RAYU_CONFIG_DIR,
 )
 
+/**
+ * Directory for provider configuration and credentials.
+ *
+ * The CLI leaves RAYU_AUTH_CONFIG_DIR unset, so this resolves to the normal Rayu
+ * config directory and preserves its existing storage layout. Other entrypoints can
+ * select an independent authentication/provider profile without moving shared data
+ * such as sessions, skills, rules, IDE discovery locks, or conversation history.
+ */
+export const getRayuAuthConfigDir = memoize(
+  (): string => {
+    const authDir = process.env.RAYU_AUTH_CONFIG_DIR
+    return (authDir || getRayuConfigHomeDir()).normalize('NFC')
+  },
+  () => `${process.env.RAYU_AUTH_CONFIG_DIR ?? ''}\u0000${process.env.RAYU_CONFIG_DIR ?? ''}`,
+)
+
 export const getClaudeConfigHomeDir = getRayuConfigHomeDir
 
 export function getTeamsDir(): string {

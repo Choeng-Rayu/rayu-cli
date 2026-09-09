@@ -58,7 +58,10 @@ import {
   type RequiresActionDetails,
   type SessionExternalMetadata,
 } from 'src/utils/sessionState.js'
-import { createPendingFileChangeReviewSystemMessage } from 'src/utils/pendingFileChanges.js'
+import {
+  createFileChangeReviewSystemMessage,
+  createPendingFileChangeReviewSystemMessage,
+} from 'src/utils/pendingFileChanges.js'
 import { externalMetadataToAppState } from 'src/state/onChangeAppState.js'
 import { getInMemoryErrors, logError, logMCPDebug } from 'src/utils/log.js'
 import {
@@ -1061,9 +1064,43 @@ function runHeadlessStreaming(
   let inputClosed = false
   let shutdownPromptInjected = false
   let heldBackResult: StdoutMessage | null = null
+  /** Whether this stream has told clients that a pending review exists. */
+  let fileChangeReviewVisible = false
   let abortController: AbortController | undefined
   // Same queue sendRequest() enqueues to — one FIFO for everything.
   const output = structuredIO.outbound
+
+  /**
+   * Emit the complete pending-review snapshot, including the transition to empty.
+   *
+   * `createPendingFileChangeReviewSystemMessage()` correctly returns null when no
+   * changes remain. A stateful stream still has to publish that final empty snapshot,
+   * otherwise editor clients retain the last non-empty card forever after Keep all or
+   * Undo all. Avoid sending empty review events in sessions that never had a review.
+   */
+  const enqueueFileChangeReviewSnapshot = (): void => {
+    const reviewMessage = createPendingFileChangeReviewSystemMessage(
+      getAppState().pendingFileChanges,
+    )
+    if (reviewMessage) {
+      fileChangeReviewVisible = true
+      output.enqueue(reviewMessage as any)
+      return
+    }
+    if (!fileChangeReviewVisible) return
+
+    fileChangeReviewVisible = false
+    output.enqueue(
+      createFileChangeReviewSystemMessage({
+        changeIds: [],
+        totalFiles: 0,
+        totalAdditions: 0,
+        totalRemovals: 0,
+        files: [],
+        createdAt: Date.now(),
+      }) as any,
+    )
+  }
 
   // Ctrl+C in -p mode: abort the in-flight query, then shut down gracefully.
   // gracefulShutdown persists session state and flushes analytics, with a
@@ -2299,12 +2336,7 @@ function runHeadlessStreaming(
                   heldBackResult = message
                 } else {
                   heldBackResult = null
-                  const reviewMessage = createPendingFileChangeReviewSystemMessage(
-                    currentState.pendingFileChanges,
-                  )
-                  if (reviewMessage) {
-                    output.enqueue(reviewMessage as any)
-                  }
+                  enqueueFileChangeReviewSnapshot()
                   output.enqueue(message)
                 }
               } else {
@@ -2479,12 +2511,7 @@ function runHeadlessStreaming(
       } while (waitingForAgents)
 
       if (heldBackResult) {
-        const reviewMessage = createPendingFileChangeReviewSystemMessage(
-          getAppState().pendingFileChanges,
-        )
-        if (reviewMessage) {
-          output.enqueue(reviewMessage as any)
-        }
+        enqueueFileChangeReviewSnapshot()
         output.enqueue(heldBackResult)
         heldBackResult = null
         if (suggestionState.pendingSuggestion) {
@@ -3012,7 +3039,15 @@ function runHeadlessStreaming(
           notifySessionMetadataChanged({ model })
           injectModelSwitchBreadcrumbs(requestedModel, model)
 
-          sendControlResponseSuccess(message)
+          const currentAppState = getAppState()
+          sendControlResponseSuccess(message, {
+            applied: { model },
+            inference: resolveInferenceSettings(
+              model,
+              currentAppState.effortValue,
+              options.thinkingConfig,
+            ),
+          })
         } else if (message.request.subtype === 'set_max_thinking_tokens') {
           if (message.request.max_thinking_tokens === null) {
             options.thinkingConfig = undefined

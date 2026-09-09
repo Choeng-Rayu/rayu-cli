@@ -50,12 +50,19 @@ export const CHAT_VIEW_ID = 'rayucode.chat'
  * HTML, its CSP, its message plumbing — and does not also own the auth flow.
  */
 export interface ChatViewHandlers {
+  /** The panel is mounted and can benefit from background engine initialization. */
+  ready: () => Promise<void> | void
   submitPrompt: (text: string) => Promise<void> | void
   interrupt: () => Promise<void> | void
   newSession: () => Promise<void> | void
   permissionResponse: (
     requestId: string,
     decision: 'allow-once' | 'allow-always' | 'deny',
+  ) => Promise<void> | void
+  questionResponse: (
+    requestId: string,
+    answers: Record<string, string>,
+    notes: Record<string, string>,
   ) => Promise<void> | void
   selectModelValue: (value: string) => Promise<void> | void
   refreshModelCatalogue: () => Promise<void> | void
@@ -77,6 +84,7 @@ export interface ChatViewHandlers {
     model?: string,
   ) => Promise<void> | void
   cyclePermissionMode: () => Promise<void> | void
+  setPermissionMode?: (modeId: string) => Promise<void> | void
   reviewKeep: (path?: string) => Promise<void> | void
   reviewUndo: (path?: string) => Promise<void> | void
   openReviewDiff: (path: string) => Promise<void> | void
@@ -102,6 +110,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly getState: () => WebviewState,
     private readonly handlers: ChatViewHandlers,
   ) {}
+
+  /** Whether VS Code has mounted the chat view. */
+  get isOpen(): boolean {
+    return this.view !== undefined
+  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view
@@ -158,6 +171,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'ready':
         // The listener is attached; anything sent before now was dropped.
         this.syncState()
+        void this.handlers.ready()
         return
       case 'submitPrompt':
         void this.handlers.submitPrompt(message.text)
@@ -170,6 +184,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'permissionResponse':
         void this.handlers.permissionResponse(message.requestId, message.decision)
+        return
+      case 'questionResponse':
+        void this.handlers.questionResponse(
+          message.requestId,
+          message.answers,
+          message.notes,
+        )
         return
       case 'selectModelValue':
         void this.handlers.selectModelValue(message.value)
@@ -218,6 +239,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'cyclePermissionMode':
         void this.handlers.cyclePermissionMode()
+        return
+      case 'setPermissionMode':
+        void this.handlers.setPermissionMode?.(message.modeId)
         return
       case 'reviewKeep':
         void this.handlers.reviewKeep(message.path)

@@ -51,11 +51,14 @@ const MAX_RESTORED_BLOCKS = 400
  * data loss.
  */
 export async function listWorkspaceSessions(
-  workspaceDir: string,
+  workspaceDir?: string,
 ): Promise<SessionSummaryView[]> {
   try {
     const sessions = await listSessionsImpl({
-      dir: workspaceDir,
+      // An empty VS Code window has no project to filter by. Omitting `dir` uses
+      // the shared lister's all-project mode, so history remains available instead
+      // of accidentally querying the extension installation directory.
+      ...(workspaceDir ? { dir: workspaceDir } : {}),
       limit: HISTORY_LIMIT,
       includeWorktrees: true,
     })
@@ -121,7 +124,7 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
  */
 export async function loadSessionTranscript(
   sessionId: string,
-  workspaceDir: string,
+  workspaceDir?: string,
 ): Promise<VSCodeActivityBlock[]> {
   if (!validateUuid(sessionId)) return []
 

@@ -28,9 +28,19 @@ import type {
   EffortChoice,
   InferenceSettingsView,
 } from './inferenceSettings.js'
+import type { TodoItem } from '../../utils/todo/types.js'
 
 /** Stable id for a transcript entry, assigned by the host. */
 export type EntryId = string
+
+/**
+ * The TodoWrite item sent across the host/webview boundary.
+ *
+ * This is derived from the shared engine type instead of restating the fields, so a
+ * TodoWrite schema change cannot silently leave the Rayucode card on an old shape.
+ * The import is type-only and is erased from the browser bundle.
+ */
+export type TodoItemView = Pick<TodoItem, 'content' | 'status' | 'activeForm'>
 
 /** Messages the extension host sends TO the webview. */
 export type HostToWebviewMessage =
@@ -124,6 +134,8 @@ export type HostToWebviewMessage =
   | { type: 'setMcpServers'; servers: McpServerView[] }
   /** Previous sessions for project history. */
   | { type: 'setSessions'; sessions: SessionSummaryView[] }
+  /** Turn completed — formatted duration string (e.g. "5m 17s"). */
+  | { type: 'turnDuration'; duration: string }
 
 /** An approval the user must grant or refuse before a tool runs. */
 export interface PermissionRequestView {
@@ -148,6 +160,19 @@ export interface PermissionRequestView {
   reason: string | null
   /** Whether to offer "Always allow" as well as a one-off approval. */
   canAlwaysAllow: boolean
+  /** Present when the tool is AskUserQuestion and needs an answer form. */
+  questionInteraction?: {
+    questions: Array<{
+      question: string
+      header?: string
+      options: Array<{
+        label: string
+        description?: string
+        preview?: string
+      }>
+      multiSelect?: boolean
+    }>
+  }
 }
 
 /** Messages the webview sends TO the extension host. */
@@ -181,6 +206,13 @@ export type WebviewToHostMessage =
       type: 'permissionResponse'
       requestId: string
       decision: 'allow-once' | 'allow-always' | 'deny'
+    }
+  /** Answers to an AskUserQuestion request, keyed by its exact question text. */
+  | {
+      type: 'questionResponse'
+      requestId: string
+      answers: Record<string, string>
+      notes: Record<string, string>
     }
   /**
    * Apply a model choice made in the composer dropdown.
@@ -246,6 +278,8 @@ export type WebviewToHostMessage =
    * the keyboard shortcut cannot disagree about it.
    */
   | { type: 'cyclePermissionMode' }
+  /** Select a specific permission mode directly. */
+  | { type: 'setPermissionMode'; modeId: string }
   /** Start the interactive account sign-in. */
   | { type: 'signIn' }
   /** Forget the shared credential. Signs the CLI out too — one credential. */
@@ -288,6 +322,11 @@ export type TranscriptEntry =
       status: 'running' | 'done' | 'error'
       /** Result text, once it arrives. */
       output: string | null
+      /** AskUserQuestion data, retained for its compact transcript result. */
+      questions?: NonNullable<PermissionRequestView['questionInteraction']>['questions']
+      questionAnswers?: Record<string, string>
+      /** Validated TodoWrite data for the dedicated task-list renderer. */
+      todos?: TodoItemView[]
     }
   | { id: EntryId; kind: 'notice'; text: string; severity: 'info' | 'error' }
   /**
@@ -413,7 +452,7 @@ export interface PermissionModeView {
  * the whole picture cannot arrive half-applied.
  */
 export interface WebviewState {
-  /** Which surface to show. `signed-out` hides the composer entirely. */
+  /** Which surface to show. `signed-out` limits the composer to authentication commands. */
   status: 'signed-out' | 'ready'
   /**
    * Why the user is blocked, when `status` is `signed-out`. Phrased for an editor —

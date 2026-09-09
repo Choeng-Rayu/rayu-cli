@@ -207,7 +207,9 @@ function basename(p: string): string {
  * everything.
  */
 export function reviewCommand(action: 'keep' | 'undo', path?: string): string {
-  if (!path) return `/${action}`
+  // Shared CLI semantics differ here: `/keep` keeps every pending file, while
+  // `/undo` reverts only the latest edit and requires `/undo all` for the batch.
+  if (!path) return action === 'undo' ? '/undo all' : '/keep'
   const needsQuotes = /\s/.test(path)
   return needsQuotes ? `/${action} "${path}"` : `/${action} ${path}`
 }

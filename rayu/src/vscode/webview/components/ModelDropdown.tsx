@@ -57,9 +57,9 @@ export function ModelDropdown({
     // "openai · gpt-4o" is findable by provider as well as by model.
     return catalogue.options.filter(
       o =>
-        o.label.toLowerCase().includes(q) ||
-        o.value.toLowerCase().includes(q) ||
-        o.description.toLowerCase().includes(q),
+        (o.label && o.label.toLowerCase().includes(q)) ||
+        (o.value && o.value.toLowerCase().includes(q)) ||
+        Boolean(o.description && o.description.toLowerCase().includes(q)),
     )
   }, [catalogue.options, query])
 
@@ -122,31 +122,39 @@ export function ModelDropdown({
   }
 
   return (
-    <div className="rc-dropdown" ref={container}>
+    <div className="rc-dropdown rc-model-dropdown" ref={container}>
       <button
         type="button"
-        className="rc-pill rc-pill-button"
+        className={`rc-pill rc-pill-button rc-pill-model${open ? ' rc-pill-active' : ''}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => { if (!open) onRefresh(); setOpen(o => !o) }}
         title="Change model"
       >
-        {current ?? 'Default model'}
+        <ModelSparkleIcon />
+        <span className="rc-pill-label">{current ?? 'Default model'}</span>
         <ChevronIcon />
       </button>
 
       {open ? (
-        <div className="rc-dropdown-panel" role="dialog" aria-label="Select a model">
-          <input
-            ref={search}
-            className="rc-dropdown-search"
-            type="text"
-            value={query}
-            placeholder="Search models…"
-            aria-label="Search models"
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={onSearchKeyDown}
-          />
+        <div className="rc-dropdown-panel rc-model-panel" role="dialog" aria-label="Select a model">
+          <div className="rc-dropdown-header">
+            <span className="rc-dropdown-title">Model</span>
+            <span className="rc-dropdown-subtitle">Select language model for responses</span>
+          </div>
+          <div className="rc-dropdown-search-wrap">
+            <SearchIcon />
+            <input
+              ref={search}
+              className="rc-dropdown-search"
+              type="text"
+              value={query}
+              placeholder="Search models…"
+              aria-label="Search models"
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={onSearchKeyDown}
+            />
+          </div>
 
           {catalogue.loading && catalogue.options.length === 0 ? (
             <p className="rc-dropdown-empty">Loading models…</p>
@@ -179,20 +187,35 @@ export function ModelDropdown({
                       // Hover moves the highlight so mouse and keyboard agree about
                       // which row Enter would take.
                       onMouseEnter={() => setHighlight(index)}
-                      onClick={() => choose(option.value)}
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={e => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        choose(option.value)
+                      }}
                     >
-                      <span className="rc-dropdown-label">
-                        {option.label}
+                      <div className="rc-dropdown-item-header">
+                        <span className="rc-dropdown-label">{option.label}</span>
                         {isCurrent ? (
-                          <span className="rc-dropdown-current"> · current</span>
+                          <span className="rc-dropdown-current">✓ Active</span>
                         ) : null}
-                      </span>
+                      </div>
                       {option.description ? (
-                        <span className="rc-dropdown-detail">{option.description}
-                        {option.contextWindow ? ` · ${option.contextWindow.toLocaleString()} tokens` : ''}
-                        {option.supportsImage !== undefined ? ` · Images: ${option.supportsImage ? 'yes' : 'no'}` : ''}
-                        {option.supportsThinking !== undefined ? ` · Thinking: ${option.supportsThinking ? 'yes' : 'no'}` : ''}
-                        {option.supportsTools !== undefined ? ` · Tools: ${option.supportsTools ? 'yes' : 'no'}` : ''}</span>
+                        <div className="rc-dropdown-detail">
+                          <span className="rc-model-desc">{option.description}</span>
+                          {option.contextWindow ? (
+                            <span className="rc-model-tag"> · {option.contextWindow.toLocaleString()} tokens</span>
+                          ) : null}
+                          {option.supportsImage !== undefined ? (
+                            <span className="rc-model-tag"> · Images: {option.supportsImage ? 'yes' : 'no'}</span>
+                          ) : null}
+                          {option.supportsThinking !== undefined ? (
+                            <span className="rc-model-tag"> · Thinking: {option.supportsThinking ? 'yes' : 'no'}</span>
+                          ) : null}
+                          {option.supportsTools !== undefined ? (
+                            <span className="rc-model-tag"> · Tools: {option.supportsTools ? 'yes' : 'no'}</span>
+                          ) : null}
+                        </div>
                       ) : null}
                     </button>
                   </li>
@@ -203,6 +226,22 @@ export function ModelDropdown({
         </div>
       ) : null}
     </div>
+  )
+}
+
+function ModelSparkleIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" role="presentation" className="rc-model-icon">
+      <path d="M8 0a.75.75 0 0 1 .71.51l1.45 4.34a.75.75 0 0 0 .49.49l4.34 1.45a.75.75 0 0 1 0 1.42l-4.34 1.45a.75.75 0 0 0-.49.49l-1.45 4.34a.75.75 0 0 1-1.42 0l-1.45-4.34a.75.75 0 0 0-.49-.49L.51 8.21a.75.75 0 0 1 0-1.42l4.34-1.45a.75.75 0 0 0 .49-.49L6.79.51A.75.75 0 0 1 7.5 0h.5z" />
+    </svg>
+  )
+}
+
+function SearchIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" role="presentation" className="rc-search-icon">
+      <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+    </svg>
   )
 }
 

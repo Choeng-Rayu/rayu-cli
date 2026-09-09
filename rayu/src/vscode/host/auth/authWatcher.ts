@@ -1,11 +1,9 @@
 /**
- * Live sync when the OTHER surface signs in or out.
+ * Live sync when a Rayucode helper signs in, signs out, or updates providers.
  *
- * The credential is one file shared with the CLI, so it can change without this
- * process doing anything: the user runs `rayu` in a terminal and types `/login`, or
- * `/logout`. Without a watcher the panel would keep showing a stale sign-in screen
- * until the window was reloaded, and the user would reasonably conclude the
- * extension was broken — they DID sign in, after all.
+ * Provider setup and login run outside the extension host in short-lived engine
+ * children. Their writes land in Rayucode's independent profile, so the host needs a
+ * directory watcher to refresh the panel after those children finish.
  *
  * ── WHY THE DIRECTORY IS WATCHED, NOT THE FILE ─────────────────────────────────
  *
@@ -36,7 +34,7 @@ import { sessionDirPath, sessionFilePath } from './rayuAuthBridge.js'
 const DEBOUNCE_MS = 150
 
 /**
- * Watch the shared session file and call `onChange` when it settles.
+ * Watch the Rayucode profile and call the matching callback when a write settles.
  *
  * Never throws: the config directory may not exist yet, and an unwatchable
  * filesystem must degrade to "no live sync" rather than failing activation. The

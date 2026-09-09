@@ -17,7 +17,7 @@
 import { createHash } from 'crypto'
 import { userInfo } from 'os'
 import { getOauthConfig } from 'src/constants/oauth.js'
-import { getRayuConfigHomeDir } from '../envUtils.js'
+import { getRayuAuthConfigDir } from '../envUtils.js'
 import type { SecureStorageData } from './types.js'
 
 // Suffix distinguishing the OAuth credentials keychain entry from the legacy
@@ -38,8 +38,8 @@ export const KEYCHAIN_LOCK_CHECK_TIMEOUT_MS = 2_000
 export function getMacOsKeychainStorageServiceName(
   serviceSuffix: string = '',
 ): string {
-  const configDir = getRayuConfigHomeDir()
-  const isDefaultDir = !process.env.RAYU_CONFIG_DIR
+  const configDir = getRayuAuthConfigDir()
+  const isDefaultDir = !process.env.RAYU_AUTH_CONFIG_DIR && !process.env.RAYU_CONFIG_DIR
 
   // Use a hash of the config dir path to create a unique but stable suffix
   // Only add suffix for non-default directories to maintain backwards compatibility

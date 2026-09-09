@@ -42,6 +42,7 @@ describe('the argv contract is owned by the engine', () => {
       '--verbose',
       '--include-partial-messages',
       '--permission-prompt-tool=stdio',
+      '--allow-dangerously-skip-permissions',
     ])
   })
 

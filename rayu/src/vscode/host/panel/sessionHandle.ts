@@ -44,6 +44,7 @@ import type { WrappedMessage } from '../../../telegram/formatActivity.js'
 import {
   persistModelChoice,
   readActiveModel,
+  readActiveRuntimeModel,
   type EngineModel,
 } from '../models/modelConfig.js'
 import type {
@@ -67,7 +68,23 @@ import type {
   TranscriptEntry,
 } from '../../shared/webviewProtocol.js'
 
+/**
+ * Commands implemented by the editor host rather than the stream-json engine.
+ *
+ * `/login` and `/connect` are `local-jsx` commands in the CLI, so `main.tsx`
+ * deliberately removes them from a non-interactive engine.  They still have native
+ * Rayucode surfaces, and must remain in the catalogue after `initialize` replaces the
+ * startup fallback. `/logout` is included here as a startup fallback and is executed by
+ * the engine, where the shared CLI cleanup and transcript output already live.
+ */
+const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
+  { name: 'connect', description: 'Connect or configure an AI provider' },
+  { name: 'login', description: 'Sign in to your Rayu account' },
+  { name: 'logout', description: 'Sign out of your Rayu account' },
+]
+
 const DEFAULT_SLASH_COMMANDS: SlashCommandView[] = [
+  ...RAYUCODE_SLASH_COMMANDS,
   { name: 'clear', description: 'Clear current conversation' },
   { name: 'compact', description: 'Compact conversation to save context window' },
   { name: 'cost', description: 'Show token usage and estimated cost' },
@@ -80,6 +97,16 @@ const DEFAULT_SLASH_COMMANDS: SlashCommandView[] = [
   { name: 'review', description: 'Review changed files awaiting approval' },
   { name: 'undo', description: 'Revert pending file changes' },
 ]
+
+function withRayucodeSlashCommands(
+  commands: SlashCommandView[],
+): SlashCommandView[] {
+  const names = new Set(commands.map(command => command.name))
+  return [
+    ...commands,
+    ...RAYUCODE_SLASH_COMMANDS.filter(command => !names.has(command.name)),
+  ]
+}
 
 export interface SessionCallbacks {
   /** A settled entry was appended. */
@@ -131,6 +158,8 @@ export interface SessionCallbacks {
   onContextUsage?: (usage: ContextUsageView) => void
   /** Connected MCP servers. */
   onMcpServers?: (servers: McpServerView[]) => void
+  /** Turn completed with this formatted duration (e.g. "5m 17s"). */
+  onTurnDuration?: (duration: string) => void
 }
 
 export interface SessionOptions {
@@ -184,6 +213,8 @@ export class ChatSession {
   /** The block currently streaming, from `content_block_start`/`_delta`. */
   private currentStreamBlockIndex: number | null = null
   private turnRunning = false
+  /** Epoch ms when the current turn started, for the duration display. */
+  private turnStartedAt = 0
   /**
    * Bumped whenever the engine is replaced (new session / resume). Async replies compare
    * against the generation they were issued under so a late reply from a discarded engine
@@ -225,18 +256,41 @@ export class ChatSession {
    * offering to act on sets that no longer exist.
    */
   private reviewEntryId: EntryId | null = null
+  /**
+   * Buffered review entry waiting for the turn to end.
+   *
+   * The engine emits `file_change_review` mid-turn as files are modified.
+   * Showing it immediately interrupts the response flow, so we buffer here and
+   * flush on the `result` frame — the review card then appears after the
+   * assistant's prose and the post-turn summary, which is where the user
+   * expects a file-change overview.
+   */
+  private pendingReview: TranscriptEntry | null = null
+  /** The single retry notice, updated in place instead of appending per attempt. */
+  private retryNoticeId: EntryId | null = null
 
   private slashCommands: SlashCommandView[] = DEFAULT_SLASH_COMMANDS
   private lastContextUsage: ContextUsageView | null = null
   private mcpServersList: McpServerView[] = []
 
   private starting: Promise<void> | null = null
+  /** Invalidates prompts waiting for startup when stopped or replaced. */
+  private submissionEpoch = 0
+  /** Provider-qualified model explicitly selected for this Rayucode session. */
+  private selectedRuntimeModel: string | null = null
+  /** Last model the current engine acknowledged. Cleared whenever it is replaced. */
+  private appliedRuntimeModel: string | null = null
+  /** Serializes rapid picker changes so an older acknowledgement cannot win. */
+  private modelChangeQueue: Promise<void> = Promise.resolve()
+  private modelSelectionEpoch = 0
   private disposed = false
 
   constructor(
     private options: SessionOptions,
     private readonly callbacks: SessionCallbacks,
-  ) {}
+  ) {
+    this.selectedRuntimeModel = readActiveRuntimeModel()
+  }
 
   get transcript(): readonly TranscriptEntry[] {
     return this.entries
@@ -263,30 +317,57 @@ export class ChatSession {
   }
 
   /**
-   * Send a prompt, starting the engine on first use.
+   * Start the engine while the open panel is idle.
    *
-   * The engine is started HERE and not at activation: activation runs on the
-   * extension host's startup path, and a 23 MB spawn there would be charged to every
-   * window whether or not the panel is ever used.
+   * This uses the same promise as submitPrompt, so a prompt sent while initialization
+   * is still running waits for that work instead of spawning a second child.
    */
-  async submitPrompt(text: string): Promise<void> {
-    const trimmed = text.trim()
-    if (!trimmed || this.disposed) return
-
-    this.appendEntry({ id: newId(), kind: 'prompt', text: trimmed })
-
+  async warmup(): Promise<void> {
+    if (this.disposed) return
     try {
       await this.ensureStarted()
     } catch (cause) {
+      if (this.disposed) return
       this.callbacks.onError(
         `Could not start the Rayu engine: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
       )
+      this.teardown('engine warmup failed')
+    }
+  }
+
+  /**
+   * Send a prompt, reusing the prewarmed engine or waiting for its initialization.
+   */
+  async submitPrompt(text: string): Promise<void> {
+    const trimmed = text.trim()
+    if (!trimmed || this.disposed) return
+    const epoch = this.submissionEpoch
+
+    this.appendEntry({ id: newId(), kind: 'prompt', text: trimmed })
+
+    // Report work immediately, before spawning the child or waiting for its
+    // initialize response. The first startup can take noticeably longer than
+    // later turns while the packaged engine is loaded and the provider is
+    // prepared. Keeping this state transition here gives the panel a truthful
+    // progress signal for that whole interval.
+    this.setTurnRunning(true)
+
+    try {
+      await this.ensureStarted()
+    } catch (cause) {
+      if (this.disposed || epoch !== this.submissionEpoch) return
+      this.callbacks.onError(
+        `Could not start the Rayu engine: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+      this.setTurnRunning(false)
       return
     }
 
-    this.setTurnRunning(true)
+    if (this.disposed || epoch !== this.submissionEpoch) return
 
     // A prompt is an ordinary `user` message on stdin — the same shape the CLI's
     // own stream-json input uses, so it inherits queueing and slash-command parsing
@@ -311,6 +392,7 @@ export class ChatSession {
    * header: the alternative is a composer that can never be re-enabled.
    */
   async interrupt(): Promise<void> {
+    this.submissionEpoch += 1
     const control = this.control
     this.finishStreaming()
     this.setTurnRunning(false)
@@ -333,16 +415,26 @@ export class ChatSession {
    * and there is no control request that clears all of it. A new process is the only
    * honest "new session".
    */
-  newSession(resumeSessionId?: string): void {
+  newSession(resumeSessionId?: string, cwd?: string): void {
     // Invalidate anything in flight against the outgoing engine.
     this.generation += 1
+    this.modelSelectionEpoch += 1
+    this.selectedRuntimeModel = readActiveRuntimeModel()
+    this.appliedRuntimeModel = null
     this.contextLastFetch = 0
     this.lastContextUsage = null
     this.teardown('starting a new session')
-    this.options = { ...this.options, resumeSessionId }
+    this.options = {
+      ...this.options,
+      resumeSessionId,
+      ...(cwd ? { cwd } : {}),
+    }
     this.entries.length = 0
     this.toolsByUseId.clear()
     this.streamingId = null
+    this.reviewEntryId = null
+    this.pendingReview = null
+    this.callbacks.onReviewFiles?.([])
     this.lastContextUsage = null
     this.setTurnRunning(false)
   }
@@ -355,12 +447,14 @@ export class ChatSession {
   // ── engine lifecycle ───────────────────────────────────────────────────────
 
   private ensureStarted(): Promise<void> {
+    if (this.starting) return this.starting
     if (this.engine?.isRunning && this.control) return Promise.resolve()
     // Concurrent submits must not spawn two engines.
-    this.starting ??= this.start().finally(() => {
-      this.starting = null
+    const starting = this.start().finally(() => {
+      if (this.starting === starting) this.starting = null
     })
-    return this.starting
+    this.starting = starting
+    return starting
   }
 
   private async start(): Promise<void> {
@@ -394,14 +488,23 @@ export class ChatSession {
       ? ['--resume', this.options.resumeSessionId]
       : undefined
     const engine = new EngineProcess(
-      { ...this.options, args },
+      {
+        ...this.options,
+        args,
+        env: {
+          ...this.options.env,
+          RAYU_CLIENT_PRODUCT: 'rayucode',
+        },
+      },
       {
         onFrame: frame => control.handleFrame(frame),
         onProtocolError: error => {
           this.callbacks.onError(`Engine stream error: ${error.message}`)
           this.teardown('the engine stream could not be read')
         },
-        onExit: info => this.handleExit(info),
+        onExit: info => {
+          if (this.engine === engine) this.handleExit(info)
+        },
       },
     )
 
@@ -414,13 +517,43 @@ export class ChatSession {
     // and the session continues rather than refusing to start.
     try {
       const response = await control.request('initialize', {}, 60_000)
+      if (control !== this.control || this.disposed) return
       this.applyInitialize(response)
+      // Startup can materialize a provider from environment-based credentials. Read
+      // the Rayucode profile again after initialization so even that first session is
+      // pinned instead of falling through to a model saved by the terminal CLI.
+      if (!this.selectedRuntimeModel) {
+        this.selectedRuntimeModel = readActiveRuntimeModel()
+      }
+      // Reapply an explicit Rayucode selection after a crash/restart. The routed
+      // provider prefix is intentionally sent over stdin: operating-system argv
+      // cannot carry the NUL separator used by shared cross-provider routing.
+      const selectedRuntimeModel = this.selectedRuntimeModel
+      const selectionEpoch = this.modelSelectionEpoch
+      if (selectedRuntimeModel) {
+        const modelResponse = await control.request(
+          'set_model',
+          { model: selectedRuntimeModel },
+          15_000,
+        )
+        if (control !== this.control || this.disposed) return
+        if (
+          selectionEpoch === this.modelSelectionEpoch &&
+          selectedRuntimeModel === this.selectedRuntimeModel
+        ) {
+          this.appliedRuntimeModel = selectedRuntimeModel
+          this.applyInferenceResponse(modelResponse)
+        }
+      }
       if (this.pendingThinking !== undefined) {
         await control.request('set_max_thinking_tokens', { max_thinking_tokens: this.pendingThinking ? null : 0 }, 15_000)
       }
+      if (control !== this.control || this.disposed) return
       await this.refreshInferenceSettings()
+      if (control !== this.control || this.disposed) return
       void this.pollContextUsage(true)
     } catch (cause) {
+      if (control !== this.control || this.disposed) return
       this.callbacks.onError(
         `The engine started but did not initialise: ${
           cause instanceof Error ? cause.message : String(cause)
@@ -435,10 +568,18 @@ export class ChatSession {
     if (!control) return
     const response = await control.request('get_settings', {}, 15_000)
     if (control !== this.control || generation !== this.generation || this.disposed) return
+    this.applyInferenceResponse(response)
+  }
+
+  private applyInferenceResponse(response: Record<string, unknown>): void {
     const value = response.inference as InferenceSettingsView | undefined
-    if (value && typeof value.supportsThinking === 'boolean') {
+    if (
+      value &&
+      typeof value.supportsEffort === 'boolean' &&
+      typeof value.supportsThinking === 'boolean'
+    ) {
       this.inference = value
-      this.callbacks.onInferenceSettings?.(value)
+      this.callbacks.onInferenceSettings?.(this.inference)
     }
   }
 
@@ -464,13 +605,15 @@ export class ChatSession {
     // Retain commands and notify webview
     const commands = response.commands
     if (Array.isArray(commands)) {
-      this.slashCommands = commands
-        .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object')
-        .map(c => ({
-          name: typeof c.name === 'string' ? c.name : '',
-          description: typeof c.description === 'string' ? c.description : '',
-        }))
-        .filter(c => c.name.length > 0)
+      this.slashCommands = withRayucodeSlashCommands(
+        commands
+          .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object')
+          .map(c => ({
+            name: typeof c.name === 'string' ? c.name : '',
+            description: typeof c.description === 'string' ? c.description : '',
+          }))
+          .filter(c => c.name.length > 0),
+      )
       this.callbacks.onCommands?.(this.slashCommands)
     }
 
@@ -495,41 +638,83 @@ export class ChatSession {
   /**
    * Change the model for this session and persist the choice.
    *
-   * Both, not either: `set_model` applies to the running child, and the config write
-   * is what makes the choice survive a new session and show up in the CLI.
+   * `set_model` applies to the running child, and the Rayucode-profile config write
+   * makes the choice survive a new Rayucode session.
    */
   async setModel(model: string): Promise<void> {
-    persistModelChoice(model)
+    const runtimeModel = persistModelChoice(model)
+    const selectionEpoch = ++this.modelSelectionEpoch
+    this.selectedRuntimeModel = runtimeModel
     this.modelInfo = readActiveModel()
     this.callbacks.onModelInfo(this.modelInfo)
 
-    // Capabilities are per-MODEL, so switching model must re-derive them. Read from the
-    // retained catalogue rather than re-requesting `initialize`: the engine already told
-    // us, and a control that briefly claims the previous model's capabilities would
-    // offer a level the new model rejects.
-
-
-
-    // Only meaningful while a child is running. With no engine the config write is
-    // the whole effect, and the next session picks it up.
-    if (!this.control) return
-    try {
-      await this.control.request('set_model', { model }, 15_000)
-      await this.refreshInferenceSettings()
-      void this.pollContextUsage(true)
-    } catch (cause) {
-      this.callbacks.onError(
-        `The model was saved but the running session did not accept it: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-      )
+    // When the catalog already knows the model reasoning support, reflect that immediately.
+    const knownOpt = this.availableModels?.options.find(
+      o => o.value === runtimeModel || o.model === model || o.value === model
+    )
+    if (knownOpt) {
+      const supportsThinking = knownOpt.supportsThinking ?? false
+      this.inference = {
+        ...this.inference,
+        supportsThinking,
+        thinkingEnabled: supportsThinking ? (this.pendingThinking ?? true) : false,
+        supportsEffort: supportsThinking,
+      }
+      this.callbacks.onInferenceSettings?.(this.inference)
     }
+
+    const change = this.modelChangeQueue.then(async () => {
+      // A picker action can arrive while panel prewarm is still initializing.
+      // Joining it lets start() apply the latest selection exactly once.
+      const starting = this.starting
+      if (starting) await starting
+      if (
+        this.disposed ||
+        selectionEpoch !== this.modelSelectionEpoch ||
+        runtimeModel !== this.selectedRuntimeModel
+      ) return
+
+      const control = this.control
+      if (!control || this.appliedRuntimeModel === runtimeModel) return
+      try {
+        const response = await control.request(
+          'set_model',
+          { model: runtimeModel },
+          15_000,
+        )
+        if (
+          control !== this.control ||
+          selectionEpoch !== this.modelSelectionEpoch ||
+          runtimeModel !== this.selectedRuntimeModel
+        ) return
+        this.appliedRuntimeModel = runtimeModel
+        // set_model returns the effective state derived by the same resolvers
+        // that build CLI requests, so the UI never guesses capabilities.
+        if (response.inference) {
+          this.applyInferenceResponse(response)
+        } else {
+          await this.refreshInferenceSettings()
+        }
+        void this.pollContextUsage(true)
+      } catch (cause) {
+        if (selectionEpoch !== this.modelSelectionEpoch) return
+        this.callbacks.onError(
+          `The model was saved but the running session did not accept it: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+        )
+      }
+    })
+    this.modelChangeQueue = change.catch(() => {})
+    await change
   }
 
-  /** Initial settings from a short-lived engine helper, before the chat engine exists. */
+  /** Initial settings from engine helper or catalogue refresh. */
   applyInitialInference(value: InferenceSettingsView): void {
-    if (this.control) return
-    this.inference = { ...value, thinkingEnabled: this.pendingThinking ?? value.thinkingEnabled }
+    this.inference = {
+      ...value,
+      thinkingEnabled: this.pendingThinking ?? (value.supportsThinking ? value.thinkingEnabled : false),
+    }
     this.callbacks.onInferenceSettings?.(this.inference)
   }
 
@@ -614,11 +799,15 @@ export class ChatSession {
   }
 
   private teardown(reason: string): void {
+    this.submissionEpoch += 1
+    this.starting = null
     const wasLive = this.control !== null || this.engine !== null
     this.control?.dispose(reason)
     this.engine?.dispose()
     this.control = null
     this.engine = null
+    this.appliedRuntimeModel = null
+    this.setTurnRunning(false)
     // Dismiss any approval card: the engine that was blocked on it is gone, so the
     // card is a control that would do nothing when pressed.
     if (wasLive) this.callbacks.onSessionEnded()
@@ -657,6 +846,10 @@ export class ChatSession {
         // The turn is over. The engine's own summary text is not appended: it
         // repeats the answer the user has already read.
         this.finishStreaming()
+        // Flush the buffered file-change review card so it appears after the
+        // response prose and summary, not mid-turn.
+        this.flushPendingReview()
+        this.emitTurnDuration()
         this.setTurnRunning(false)
         void this.pollContextUsage()
         return
@@ -769,12 +962,21 @@ export class ChatSession {
         const max = typeof message.max_retries === 'number' ? message.max_retries : 0
         const status =
           typeof message.error_status === 'number' ? ` (HTTP ${message.error_status})` : ''
-        this.appendEntry({
-          id: newId(),
-          kind: 'notice',
-          severity: 'info',
-          text: `Provider request failed${status}; retrying (attempt ${attempt} of ${max}).`,
-        })
+        const text = `Provider request failed${status}; retrying (attempt ${attempt} of ${max}).`
+        // Update the existing retry notice in place instead of appending one per
+        // attempt, which clutters the transcript during flaky connections.
+        if (this.retryNoticeId) {
+          const index = this.entries.findIndex(e => e.id === this.retryNoticeId)
+          if (index !== -1) {
+            const updated: TranscriptEntry = { id: this.retryNoticeId, kind: 'notice', severity: 'info', text }
+            this.entries[index] = updated
+            this.emitEntry(updated)
+            return
+          }
+        }
+        const id = newId()
+        this.retryNoticeId = id
+        this.appendEntry({ id, kind: 'notice', severity: 'info', text })
         return
       }
 
@@ -844,6 +1046,7 @@ export class ChatSession {
     // Nothing left to review means the user kept or undid everything. Drop the card
     // rather than showing an empty one.
     if (files.length === 0) {
+      this.pendingReview = null
       if (this.reviewEntryId) {
         const index = this.entries.findIndex(e => e.id === this.reviewEntryId)
         if (index !== -1) this.entries.splice(index, 1)
@@ -863,16 +1066,46 @@ export class ChatSession {
       files,
     }
 
+    // Mid-turn: buffer so the card appears after the response, not during it.
+    // Each re-emission replaces the buffer with the latest file set.
+    if (this.turnRunning) {
+      this.pendingReview = entry
+      return
+    }
+
+    // Post-turn: emit immediately. This covers both the flush path (called from
+    // `result`) and keep/undo re-emissions that arrive after the turn.
+    this.emitReviewEntry(entry)
+  }
+
+  /** Put a review entry into the transcript, creating or updating as needed. */
+  private emitReviewEntry(entry: TranscriptEntry): void {
     if (this.reviewEntryId) {
       const index = this.entries.findIndex(e => e.id === this.reviewEntryId)
       if (index !== -1) this.entries[index] = entry
       else this.entries.push(entry)
       this.emitEntry(entry)
-      return
+    } else {
+      this.reviewEntryId = entry.id
+      this.appendEntry(entry)
     }
+  }
 
-    this.reviewEntryId = entry.id
-    this.appendEntry(entry)
+  /** Emit the buffered review card, if any. Called on turn end. */
+  private flushPendingReview(): void {
+    const entry = this.pendingReview
+    if (!entry) return
+    this.pendingReview = null
+    this.emitReviewEntry(entry)
+  }
+
+  /** Compute turn duration for the webview to display. */
+  private emitTurnDuration(): void {
+    if (this.turnStartedAt === 0) return
+    const ms = Date.now() - this.turnStartedAt
+    this.turnStartedAt = 0
+    if (ms < 1000) return // same 1s threshold as the CLI
+    this.callbacks.onTurnDuration?.(formatDurationCompact(ms))
   }
 
   /**
@@ -1049,6 +1282,16 @@ export class ChatSession {
           ) {
             break
           }
+          // Fallback dedup: if the block text matches the currently streaming
+          // entry, it is the settled copy of what was already shown. This
+          // covers providers that do not carry a stable message id on stream
+          // events, where the (id, index) dedup above cannot match.
+          if (this.streamingId) {
+            const current = this.entries.find(e => e.id === this.streamingId)
+            if (current?.kind === 'assistant' && current.text === block.text) {
+              break
+            }
+          }
           // Not streamed: close any open stream so ordering reads correctly, then
           // render it. This is the path that preserves a post-tool-call summary.
           this.finishStreaming()
@@ -1215,7 +1458,22 @@ export class ChatSession {
       parameters: block.parameters,
       status: 'running',
       output: null,
+      ...(block.questions && { questions: block.questions }),
+      ...(block.todos && { todos: block.todos }),
     })
+  }
+
+  /** Record answers in the tool entry without placing raw question JSON in the UI. */
+  recordQuestionAnswers(
+    toolUseId: string | undefined,
+    answers: Record<string, string>,
+  ): void {
+    if (!toolUseId) return
+    const entryId = this.toolsByUseId.get(toolUseId)
+    const entry = entryId ? this.entries.find(item => item.id === entryId) : undefined
+    if (!entry || entry.kind !== 'tool' || !entry.questions) return
+    entry.questionAnswers = { ...answers }
+    this.emitEntry(entry)
   }
 
   private applyToolResult(
@@ -1234,7 +1492,9 @@ export class ChatSession {
     if (!entry || entry.kind !== 'tool') return
 
     entry.status = block.isError ? 'error' : 'done'
-    entry.output = block.text
+    // Structured tools own their result presentation. Their generic result is a
+    // sentence generated from the same data and would duplicate the dedicated card.
+    entry.output = entry.questions || (entry.todos && !block.isError) ? null : block.text
     // Re-emitting the entry is how the webview learns it changed; the reducer
     // replaces by id, so this is an update rather than a duplicate.
     this.emitEntry(entry)
@@ -1415,6 +1675,13 @@ export class ChatSession {
       this.streamedBlocks.clear()
       this.currentStreamMessageId = null
       this.currentStreamBlockIndex = null
+      // `file_change_review` is a cumulative pending-change snapshot. Keep the live
+      // card identity across turns so /keep and /undo update that card in place. The
+      // empty snapshot clears the identity; a later independent review then gets a
+      // fresh card.
+      this.pendingReview = null
+      this.turnStartedAt = Date.now()
+      this.retryNoticeId = null
     }
     if (this.turnRunning === running) return
     this.turnRunning = running
@@ -1424,4 +1691,16 @@ export class ChatSession {
 
 function newId(): EntryId {
   return randomUUID()
+}
+
+/** Compact duration like "7m 35s", "1h 2m", "45s". Same style as the CLI. */
+function formatDurationCompact(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const remainMinutes = minutes % 60
+  return remainMinutes > 0 ? `${hours}h ${remainMinutes}m` : `${hours}h`
 }

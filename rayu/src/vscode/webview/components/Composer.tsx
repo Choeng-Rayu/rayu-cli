@@ -42,10 +42,12 @@ import type {
 } from '../../shared/webviewProtocol.js'
 import { ModelDropdown } from './ModelDropdown.js'
 import { InferenceControls } from './InferenceControls.js'
+import { PermissionDropdown } from './PermissionDropdown.js'
 import {
   AutocompletePopover,
   type AutocompleteItem,
 } from './AutocompletePopover.js'
+import { TodoListCard, type TodoToolEntry } from './TodoListCard.js'
 
 /** Tallest the input grows before it scrolls internally, in pixels. */
 const MAX_HEIGHT = 220
@@ -61,6 +63,8 @@ export interface ComposerProps {
    */
   initialValue?: string
   disabled: boolean
+  /** Signed-out mode keeps slash authentication available while hiding turn controls. */
+  authenticationRequired?: boolean
   turnRunning: boolean
   modelInfo: ModelInfoView
   modelCatalogue: ModelCatalogueView
@@ -68,13 +72,15 @@ export interface ComposerProps {
   permissionMode: PermissionModeView
   commands?: SlashCommandView[]
   workspaceFiles?: string[]
+  /** Latest TodoWrite state, pinned here until a later call replaces it. */
+  todoEntry?: TodoToolEntry | null
   onSubmit: (text: string) => void
   onInterrupt: () => void
   onSelectModel: (value: string) => void
   onRefreshModels: () => void
   onSetEffort: (level: EffortChoice) => void
-  onSetThinking: (enabled: boolean) => void
   onCyclePermissionMode: () => void
+  onSelectPermissionMode?: (modeId: string) => void
   onOpenProviderSetup: () => void
   onFindFiles?: (query: string) => void
 }
@@ -82,6 +88,7 @@ export interface ComposerProps {
 export function Composer({
   initialValue = '',
   disabled,
+  authenticationRequired = false,
   turnRunning,
   modelInfo,
   modelCatalogue,
@@ -89,13 +96,14 @@ export function Composer({
   permissionMode,
   commands,
   workspaceFiles,
+  todoEntry,
   onSubmit,
   onInterrupt,
   onSelectModel,
   onRefreshModels,
   onSetEffort,
-  onSetThinking,
   onCyclePermissionMode,
+  onSelectPermissionMode,
   onOpenProviderSetup,
   onFindFiles,
 }: ComposerProps): JSX.Element {
@@ -103,7 +111,9 @@ export function Composer({
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [dismissed, setDismissed] = useState(false)
   const [cursorPos, setCursorPos] = useState(initialValue.length)
+  const [isDragging, setIsDragging] = useState(false)
   const textarea = useRef<HTMLTextAreaElement | null>(null)
+  const dragDepth = useRef(0)
 
   const updateCursor = useCallback(() => {
     if (textarea.current) {
@@ -264,7 +274,13 @@ export function Composer({
       // Shift+Tab cycles permission mode. Checked before the Enter handling so the
       // two shortcuts cannot interfere, and `preventDefault` is required or the
       // browser moves focus out of the textarea instead.
-      if (event.key === 'Tab' && event.shiftKey && !event.ctrlKey && !event.altKey) {
+      if (
+        !authenticationRequired &&
+        event.key === 'Tab' &&
+        event.shiftKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
         event.preventDefault()
         onCyclePermissionMode()
         return
@@ -279,13 +295,129 @@ export function Composer({
       event.preventDefault()
       submit()
     },
-    [submit, onCyclePermissionMode, popoverItems, selectedIndex, applySelection],
+    [
+      submit,
+      onCyclePermissionMode,
+      authenticationRequired,
+      popoverItems,
+      selectedIndex,
+      applySelection,
+    ],
+  )
+
+  // ── Drag and drop ──────────────────────────────────────────────────────────
+  // VSCode webviews receive standard HTML5 drag events when files are dragged
+  // from the Explorer or text selections from the editor. We track drag depth
+  // (not just a boolean) because dragenter/dragleave bubble from child elements
+  // and a naive toggle would flicker the overlay on every child boundary crossed.
+  const onDragEnter = useCallback((event: React.DragEvent) => {
+    event.preventDefault()
+    dragDepth.current++
+    setIsDragging(true)
+  }, [])
+
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault()
+    // Tell the browser we accept the drop so the cursor reflects that.
+    event.dataTransfer.dropEffect = 'copy'
+  }, [])
+
+  const onDragLeave = useCallback((event: React.DragEvent) => {
+    event.preventDefault()
+    dragDepth.current--
+    if (dragDepth.current <= 0) {
+      dragDepth.current = 0
+      setIsDragging(false)
+    }
+  }, [])
+
+  // Insert text at the cursor, padding with spaces when surrounded by other
+  // text so the insertion does not run together with existing words. Shared by
+  // file drop (@path) and text drop (selection) paths.
+  const insertAtCursor = useCallback(
+    (text: string) => {
+      const before = value.slice(0, cursorPos)
+      const after = value.slice(cursorPos)
+      const needsSpaceBefore = before.length > 0 && !before.endsWith(' ')
+      const needsSpaceAfter = after.length > 0 && !after.startsWith(' ')
+      const nextValue =
+        before +
+        (needsSpaceBefore ? ' ' : '') +
+        text +
+        (needsSpaceAfter ? ' ' : '') +
+        after
+      setValue(nextValue)
+      const newCursor =
+        cursorPos +
+        text.length +
+        (needsSpaceBefore ? 1 : 0) +
+        (needsSpaceAfter ? 1 : 0)
+      setCursorPos(newCursor)
+      setTimeout(() => {
+        if (textarea.current) {
+          textarea.current.focus()
+          textarea.current.setSelectionRange(newCursor, newCursor)
+        }
+      }, 0)
+    },
+    [value, cursorPos],
+  )
+
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault()
+      dragDepth.current = 0
+      setIsDragging(false)
+
+      const dt = event.dataTransfer
+
+      // Files dragged from the VSCode Explorer (or OS file manager). Each File
+      // object carries its absolute path; we convert to a workspace-relative
+      // @-mention so the model receives a path it can resolve.
+      if (dt.files && dt.files.length > 0) {
+        const paths: string[] = []
+        for (let i = 0; i < dt.files.length; i++) {
+          const file = dt.files[i]
+          // VSCode webviews expose the file path on the File object; fall back
+          // to name for external drops (e.g. from the OS desktop).
+          const path = (file as File & { path?: string }).path ?? file.name
+          paths.push(path)
+        }
+        const insertion = paths.map(p => '@' + p).join(' ')
+        insertAtCursor(insertion)
+        return
+      }
+
+      // Text dragged from the editor (a selection) or pasted from elsewhere.
+      const text = dt.getData('text')
+      if (text) {
+        insertAtCursor(text)
+      }
+    },
+    [insertAtCursor],
   )
 
   const canSend = value.trim().length > 0 && !disabled
 
   return (
-    <div className="rc-composer-card">
+    <div
+      className={`rc-composer-card${isDragging ? ' rc-composer-drag-over' : ''}`}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {isDragging ? (
+        <div className="rc-composer-drop-overlay" aria-hidden="true">
+          <span className="rc-composer-drop-icon">@</span>
+          <span className="rc-composer-drop-text">
+            Drop to reference file
+          </span>
+        </div>
+      ) : null}
+
+      {todoEntry ? <TodoListCard entry={todoEntry} embedded /> : null}
+
       <AutocompletePopover
         items={popoverItems}
         selectedIndex={selectedIndex}
@@ -300,7 +432,11 @@ export function Composer({
         rows={1}
         disabled={disabled}
         placeholder={
-          disabled ? 'Sign in to send a message' : 'Ask Rayu to build or change something…'
+          disabled
+            ? 'Sign in to send a message'
+            : authenticationRequired
+              ? 'Type /login or /connect to sign in…'
+              : 'Ask Rayu to build or change something…'
         }
         aria-label="Message Rayu"
         onChange={event => {
@@ -314,39 +450,26 @@ export function Composer({
       />
 
       <div className="rc-composer-toolbar">
-        <button
-          type="button"
-          className="rc-pill rc-pill-button"
-          onClick={onCyclePermissionMode}
-          title={`${permissionMode.description}  (Shift+Tab to cycle)`}
-          aria-label={`Permission mode: ${permissionMode.label}. Shift+Tab to change.`}
-        >
-          <ShieldIcon />
-          {permissionMode.label}
-        </button>
+        {!authenticationRequired ? (
+          <div className="rc-composer-pills">
+            <PermissionDropdown
+              mode={permissionMode}
+              onSelect={onSelectPermissionMode ?? onCyclePermissionMode}
+              onCycle={onCyclePermissionMode}
+            />
 
-        <ModelDropdown
-          current={modelInfo.model}
-          catalogue={modelCatalogue}
-          onSelect={onSelectModel}
-          onRefresh={onRefreshModels}
-        />
+            <ModelDropdown
+              current={modelInfo.model}
+              catalogue={modelCatalogue}
+              onSelect={onSelectModel}
+              onRefresh={onRefreshModels}
+            />
 
-        <InferenceControls
-          settings={inference}
-          onSetEffort={onSetEffort}
-          onSetThinking={onSetThinking}
-        />
-
-        {modelInfo.provider ? (
-          <button
-            type="button"
-            className="rc-pill rc-pill-muted rc-pill-button"
-            onClick={onOpenProviderSetup}
-            title="Provider settings"
-          >
-            {modelInfo.provider}
-          </button>
+            <InferenceControls
+              settings={inference}
+              onSetEffort={onSetEffort}
+            />
+          </div>
         ) : null}
 
         <span className="rc-composer-spacer" />
@@ -378,18 +501,11 @@ export function Composer({
   )
 }
 
-function ShieldIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" role="presentation">
-      <path d="M8 1.5l5 2v4c0 3-2.1 5.6-5 6.9-2.9-1.3-5-3.9-5-6.9v-4l5-2z" />
-    </svg>
-  )
-}
 
 function SendIcon(): JSX.Element {
   return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" role="presentation">
-      <path d="M8 2.5l5 5H9.25v6h-2.5v-6H3l5-5z" />
+    <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" role="presentation">
+      <path d="M8 2.25l4.75 4.75h-3.5v6.5h-2.5v-6.5h-3.5L8 2.25z" />
     </svg>
   )
 }

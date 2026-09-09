@@ -99,6 +99,12 @@ const REQUIRED_FLAGS = [
   '--verbose',
   '--include-partial-messages',
   '--permission-prompt-tool=stdio',
+  // The extension manages permissions via its own UI; the engine must accept
+  // `bypassPermissions` when the user selects "Full access". Without this
+  // flag, `set_permission_mode` rejects the switch because the session was
+  // never launched with the bypass option available. This makes it AVAILABLE,
+  // not active — the session still starts in the default mode.
+  '--allow-dangerously-skip-permissions',
 ] as const
 
 /**
@@ -134,8 +140,8 @@ export function buildHostArgv(passthrough: readonly string[]): string[] {
  * editor's extension host merely to open a URL.
  *
  * So the extension host spawns THIS bundle for the one-off login instead. It is a
- * short-lived child, the code already lives here, and the credential it writes is
- * the same shared `~/.rayu/rayu-auth.json` the CLI uses.
+ * short-lived child, the code already lives here, and the credential it writes uses
+ * the Rayucode profile inherited from the extension host.
  *
  * The one part that MUST happen in the editor is opening the browser, because
  * `vscode.env.asExternalUri` is what makes a loopback callback reachable from a
@@ -228,12 +234,12 @@ async function runConnect(rawAction: string | undefined): Promise<void> {
       const active = config.getActiveProvider()
       const { resolveInferenceSettings } = await import('../utils/model/inferenceSettings.js')
       const { getInitialEffortSetting } = await import('../utils/effort.js')
-      const model = config.getValidDefaultModel(active)
+      const model = action.model ?? config.getValidDefaultModel(active)
       emit({ type: 'rayucode_connect_result', ok: true,
         catalogue: getProviderModelCatalogue(),
         inference: model ? resolveInferenceSettings(model, getInitialEffortSetting()) : undefined,
         activeProviderId: active?.id,
-        activeModel: config.getValidDefaultModel(active),
+        activeModel: model,
       })
       return
     }

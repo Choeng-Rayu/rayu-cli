@@ -19,6 +19,9 @@ export async function startLocalProvider() {
     for await (const chunk of req) raw += chunk
     const body = JSON.parse(raw); requests.push(body)
     const results = body.messages.filter((m: any) => m.role === 'tool')
+    const latestUser = [...body.messages].reverse().find((m: any) => m.role === 'user')
+    const questionTurn = JSON.stringify(latestUser?.content ?? '').includes('which file format')
+    const questionResult = results.find((m: any) => m.tool_call_id === 'ask-file-format')
     const step = results.length
     const calls = [
       { id: 'read-fixture', function: { name: 'Read', arguments: JSON.stringify({ file_path: 'fixture.txt' }) } },
@@ -33,6 +36,37 @@ export async function startLocalProvider() {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const send = (delta: unknown, finish_reason: string | null = null) => res.write(`data: ${JSON.stringify({ id: `reply-${step}`, object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`)
     send({ role: 'assistant', content: '' })
+    if (questionTurn) {
+      if (!questionResult) {
+        send({ content: 'I need your preference. ' })
+        send({ tool_calls: [{
+          index: 0,
+          id: 'ask-file-format',
+          type: 'function',
+          function: {
+            name: 'AskUserQuestion',
+            arguments: JSON.stringify({
+              questions: [{
+                question: 'Which file format should I use?',
+                header: 'File format',
+                options: [
+                  { label: 'Text files (.txt)', description: 'Create plain text files' },
+                  { label: 'Python files (.py)', description: 'Create Python source files' },
+                ],
+                multiSelect: false,
+              }],
+            }),
+          },
+        }] })
+        send({}, 'tool_calls')
+      } else {
+        const receivedAnswer = JSON.stringify(questionResult.content).includes('Text files (.txt)')
+        send({ content: receivedAnswer ? 'I received your file-format choice.' : 'The answer was missing.' })
+        send({}, 'stop')
+      }
+      res.end('data: [DONE]\n\n')
+      return
+    }
     send({ content: step === 0 ? 'Inspecting the fixture. ' : step === 3 ? 'Changed fixture.txt. ' : 'Continuing. ' })
     await new Promise(resolve => setTimeout(resolve, 40))
     if (step < calls.length) {

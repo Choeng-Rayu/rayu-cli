@@ -17,14 +17,14 @@
 // and avoid trusting a foreign/stale cache.
 //
 // Design notes:
-// - Cached in memory + persisted to ~/.rayu/rayu-entitlements.json so gating is
+// - Cached in memory + persisted in the active authentication profile so gating is
 //   correct immediately at startup (sync reads), with a background refresh that
 //   is rate-limited (cooldown) so a down backend can't cause a request storm.
 // - `rayuFeatureAllowed()` is SYNCHRONOUS and FAILS OPEN (a backend hiccup
 //   never blocks the CLI).
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { syncRayuHostedProvider } from './rayuHostedProvider.js'
 import {
   getRayuApiBaseUrl,
@@ -110,7 +110,7 @@ let fetching = false
 let lastAttempt = 0
 
 function entitlementsPath(): string {
-  return join(getRayuConfigHomeDir(), FILE)
+  return join(getRayuAuthConfigDir(), FILE)
 }
 
 function currentUserId(): number | null {
@@ -193,7 +193,7 @@ function isPaidPlan(ent: RayuEntitlements): boolean {
 
 function persist(ent: RayuEntitlements | null): void {
   try {
-    const dir = getRayuConfigHomeDir()
+    const dir = getRayuAuthConfigDir()
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     const p = entitlementsPath()
     if (ent) writeFileSync(p, JSON.stringify(ent, null, 2), { mode: 0o600 })

@@ -104,7 +104,7 @@ export type ConnectAction =
   /** Enumerate the presets. No credentials involved. */
   | { action: 'list' }
   /** Refresh the same live catalogs the CLI model picker refreshes. */
-  | { action: 'models' }
+  | { action: 'models'; model?: string }
   /**
    * Verify a credential by asking the provider for its model list, and return the
    * models on success. The same call answers "is this key valid" and "what can it

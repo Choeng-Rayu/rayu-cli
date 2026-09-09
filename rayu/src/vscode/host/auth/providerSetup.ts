@@ -71,8 +71,11 @@ export async function listAttachTargets(
 }
 
 /** Uses the engine process so provider/auth services never enter the host bundle. */
-export async function refreshProviderCatalogue(options: ProviderSetupOptions): Promise<ConnectOutcome> {
-  return runConnectChild(options, { action: 'models' })
+export async function refreshProviderCatalogue(
+  options: ProviderSetupOptions,
+  model?: string,
+): Promise<ConnectOutcome> {
+  return runConnectChild(options, { action: 'models', model })
 }
 
 /** Enumerate the providers the panel can offer. */

@@ -28,6 +28,10 @@ import {
 } from '../../rayuAuth/rayuModelCatalog.js'
 import { sanitizeRemoteModelId } from '../../../utils/rayuConfig.js'
 import { reportIssue } from '../../../utils/rayuDiagnostics.js'
+import {
+  RAYU_CLIENT_HEADER,
+  resolveRayuClientProduct,
+} from './gatewayHeaders.js'
 
 /** Matches the 15s budget the other provider catalog fetches use. */
 const CATALOG_TIMEOUT_MS = 15_000
@@ -133,7 +137,10 @@ export async function fetchRayuApiKeyCatalog(
   if (!key) return { ok: false, reason: 'invalid' }
   try {
     const res = await (globalThis.fetch as typeof fetch)(catalogURL(), {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: {
+        Authorization: `Bearer ${key}`,
+        [RAYU_CLIENT_HEADER]: resolveRayuClientProduct(),
+      },
       signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
     })
     if (!res.ok) {

@@ -1,19 +1,13 @@
 /**
  * The extension's view of the Rayu account session.
  *
- * ── ONE CREDENTIAL, TWO SURFACES ───────────────────────────────────────────────
+ * ── SHARED AUTH IMPLEMENTATION, INDEPENDENT PROFILE ────────────────────────────
  *
- * This file is the extension's OWN auth module, but it is emphatically NOT a
- * second credential store. Every read and write goes through
- * `services/rayuAuth/rayuSession.ts`, which owns `~/.rayu/rayu-auth.json` at mode
- * 0600. Sign in from the CLI and the extension is signed in; sign in from the
- * extension and the CLI is too. Whichever happens first, the other syncs.
- *
- * A second store was the obvious-looking alternative and it is a trap. The backend
- * ROTATES the refresh token on every `/cli/refresh`: two stores means two refresh
- * cycles racing over the same token, and the loser is logged out with no
- * explanation and no way to tell why. Sharing the file makes that impossible
- * rather than unlikely.
+ * Every read and write still goes through `services/rayuAuth/rayuSession.ts`, but
+ * Rayucode sets `RAYU_AUTH_CONFIG_DIR` to its VS Code global-storage directory before
+ * calling it. The CLI leaves that variable unset and continues using `~/.rayu`.
+ * Separate logins therefore have separate refresh-token lifecycles and cannot change
+ * one another's signed-in state.
  *
  * What is genuinely per-surface is the LOGIN TRANSPORT — how the browser gets
  * opened and how the callback comes back — and that lives in `vscodeLogin.ts`.
@@ -37,7 +31,7 @@ import {
   rayuLoginGateMessage,
   getValidRayuAccessToken,
 } from '../../../services/rayuAuth/rayuSession.js'
-import { getRayuConfigHomeDir } from '../../../utils/envUtils.js'
+import { getRayuAuthConfigDir } from '../../../utils/envUtils.js'
 
 /** Filename owned by `rayuSession.ts`; mirrored here only for the watcher. */
 const SESSION_FILE = 'rayu-auth.json'
@@ -85,14 +79,14 @@ const EDITOR_GATE_MESSAGE =
   'Sign in to Rayu to start a session. You can sign in with your Rayu account, ' +
   'or connect a Rayu API key instead.'
 
-/** Absolute path of the shared session file. Used by the watcher. */
+/** Absolute path of Rayucode's session file. Used by the watcher. */
 export function sessionFilePath(): string {
-  return join(getRayuConfigHomeDir(), SESSION_FILE)
+  return join(getRayuAuthConfigDir(), SESSION_FILE)
 }
 
 /** The directory holding it. Watched instead of the file — see `authWatcher.ts`. */
 export function sessionDirPath(): string {
-  return getRayuConfigHomeDir()
+  return getRayuAuthConfigDir()
 }
 
 /**
@@ -131,8 +125,7 @@ export function hasAccountSession(): boolean {
 /**
  * Forget the session.
  *
- * Writes through the shared store, so the CLI observes it too. That is the
- * intended behaviour: one credential means one sign-out.
+ * This clears Rayucode's profile only. The terminal CLI keeps its own session.
  */
 export function signOutShared(): void {
   clearRayuSession()
