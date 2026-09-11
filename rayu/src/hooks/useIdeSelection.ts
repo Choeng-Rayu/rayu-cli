@@ -7,26 +7,26 @@ import type {
 } from '../services/mcp/types.js'
 import { getConnectedIdeClient } from '../utils/ide.js'
 import { lazySchema } from '../utils/lazySchema.js'
-export type SelectionPoint = {
-  line: number
-  character: number
-}
-
-export type SelectionData = {
-  selection: {
-    start: SelectionPoint
-    end: SelectionPoint
-  } | null
-  text?: string
-  filePath?: string
-}
-
-export type IDESelection = {
-  lineCount: number
-  lineStart?: number
-  text?: string
-  filePath?: string
-}
+/**
+ * Re-exported from `utils/ideSelection.ts`, which is where the shape and the mapping now
+ * live. They moved because the Rayucode extension host needs the same arithmetic and cannot
+ * import this module: it is a separate bundle with a hard size budget and a build guard that
+ * rejects React, and reaching in here measured 19.9 MB against a 1.6 MB limit.
+ *
+ * Re-exported rather than relocated silently so every existing `useIdeSelection` import
+ * keeps working against one definition.
+ */
+export {
+  toIdeSelection,
+  type IDESelection,
+  type SelectionData,
+  type SelectionPoint,
+} from '../utils/ideSelection.js'
+import {
+  toIdeSelection,
+  type IDESelection,
+  type SelectionData,
+} from '../utils/ideSelection.js'
 
 // Define the selection changed notification schema
 const SelectionChangedSchema = lazySchema(() =>
@@ -51,51 +51,6 @@ const SelectionChangedSchema = lazySchema(() =>
     }),
   }),
 )
-
-/**
- * Map an editor selection notification to the shape consumers render.
- *
- * ── EXTRACTED SO IT CAN BE TESTED ──────────────────────────────────────────────
- *
- * This was a closure inside the hook's `useEffect`, which made the one interesting
- * decision in the file — what a CLEARED selection means — unreachable from a test.
- *
- * ── A CLEARED SELECTION IS REPORTED, NOT DROPPED ───────────────────────────────
- *
- * The previous version guarded the whole body on `data.selection?.start && …?.end` and
- * returned nothing when that failed. The caller invokes it with `selection: null` for an
- * empty selection, so that path did nothing at all: the LAST selection stayed on screen
- * forever. The user clicks away, deselects, and the prompt still claims "12 lines
- * selected" — and would attach that dead selection to the next message.
- *
- * `filePath` is preserved on a clear because the file is still the active editor; only
- * the selection inside it went away. `lineCount: 0` is what consumers already treat as
- * "nothing selected".
- */
-export function toIdeSelection(data: SelectionData): IDESelection {
-  if (data.selection?.start && data.selection?.end) {
-    const { start, end } = data.selection
-    let lineCount = end.line - start.line + 1
-    // A selection ending on character 0 stops at the START of that line, so the line
-    // itself is not selected.
-    if (end.character === 0) {
-      lineCount--
-    }
-    return {
-      lineCount,
-      lineStart: start.line,
-      text: data.text,
-      filePath: data.filePath,
-    }
-  }
-
-  return {
-    lineCount: 0,
-    lineStart: undefined,
-    text: undefined,
-    filePath: data.filePath,
-  }
-}
 
 /**
  * A hook that tracks IDE text selection information by directly registering

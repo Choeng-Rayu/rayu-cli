@@ -1,18 +1,25 @@
 /**
- * Thinking and effort controls, in the composer toolbar.
+ * The reasoning-effort control, in the composer toolbar.
  *
- * ── BOTH ARE HIDDEN WHEN THE MODEL DOES NOT SUPPORT THEM ───────────────────────
+ * ── THERE IS NO THINKING TOGGLE, BY DESIGN ─────────────────────────────────────
+ *
+ * Thinking is not optional in Rayucode: the session is spawned with the CLI's own
+ * `--thinking enabled`, so every model that supports reasoning uses it. There is
+ * therefore nothing to toggle, and this panel offers only the DEPTH of that reasoning.
+ * See `sessionHandle.initialize` for why the spawn flag is the mechanism.
+ *
+ * ── HIDDEN WHEN THE MODEL DOES NOT SUPPORT IT ──────────────────────────────────
  *
  * Not disabled — hidden. A permanently-inert control is noise, and worse, it implies the
  * feature exists for this model when it does not. The capability comes from the engine's
- * own `ModelInfo` (`supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking`),
- * so the panel offers exactly what the active model accepts.
+ * own `ModelInfo` (`supportsEffort`, `supportedEffortLevels`), so the panel offers
+ * exactly what the active model accepts.
  *
  * ── THE STATE SHOWN IS THE ACKNOWLEDGED ONE ────────────────────────────────────
  *
- * Neither control updates optimistically. `settings` only changes after the engine has
- * applied the request, so the pill can never claim "High" while the engine is still on
- * the model default. The same rule the permission-mode pill follows.
+ * The control does not update optimistically. `settings` only changes after the engine
+ * has applied the request, so the pill can never claim "High" while the engine is still
+ * on the model default. The same rule the permission-mode pill follows.
  */
 import { useEffect, useRef, useState } from 'react'
 
@@ -23,6 +30,7 @@ import {
   type EffortChoice,
   type InferenceSettingsView,
 } from '../../shared/inferenceSettings.js'
+import { ChevronIcon, EffortIcon } from './Icons.js'
 
 export interface InferenceControlsProps {
   settings: InferenceSettingsView
@@ -131,33 +139,5 @@ function EffortDropdown({
   )
 }
 
-function EffortIcon(): JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="11"
-      height="11"
-      fill="currentColor"
-      role="presentation"
-      className="rc-effort-icon"
-    >
-      <path d="M7.5 1v5.5H3.75L9 15V9.5h3.75L7.5 1z" />
-    </svg>
-  )
-}
 
-function ChevronIcon(): JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="9"
-      height="9"
-      fill="currentColor"
-      role="presentation"
-      className="rc-chevron-icon"
-    >
-      <path d="M4 6l4 4 4-4H4z" />
-    </svg>
-  )
-}
 

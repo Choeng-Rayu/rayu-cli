@@ -35,14 +35,30 @@ import type {
   InferenceSettingsView,
 } from '../../shared/inferenceSettings.js'
 import type {
+  AttachmentView,
+  ContextUsageView,
+  IdeContextView,
   ModelCatalogueView,
   ModelInfoView,
+  ImageInputView,
   PermissionModeView,
   SlashCommandView,
 } from '../../shared/webviewProtocol.js'
 import { ModelDropdown } from './ModelDropdown.js'
 import { InferenceControls } from './InferenceControls.js'
 import { PermissionDropdown } from './PermissionDropdown.js'
+import {
+  formatPathMentions,
+  insertAtCursor as insertIntoValue,
+  insertedChunk,
+  partitionDroppedFiles,
+  readImageAttachment,
+} from './composerAttachments.js'
+import { usePanelDrop } from '../usePanelDrop.js'
+import { readPastedPaths } from '../../shared/pastedPaths.js'
+import { CloseIcon, PaperclipIcon, SendIcon, StopIcon } from './Icons.js'
+import { AttachmentControl } from './AttachmentControl.js'
+import { ContextGauge } from './ContextGauge.js'
 import {
   AutocompletePopover,
   type AutocompleteItem,
@@ -51,6 +67,14 @@ import { TodoListCard, type TodoToolEntry } from './TodoListCard.js'
 
 /** Tallest the input grows before it scrolls internally, in pixels. */
 const MAX_HEIGHT = 220
+
+/**
+ * Delay before an `@` query reaches the host.
+ *
+ * Long enough to collapse a burst of typing into one workspace search, short enough that
+ * the list feels immediate once the user pauses.
+ */
+const FILE_SEARCH_DEBOUNCE_MS = 120
 
 export interface ComposerProps {
   /**
@@ -72,9 +96,23 @@ export interface ComposerProps {
   permissionMode: PermissionModeView
   commands?: SlashCommandView[]
   workspaceFiles?: string[]
+  /** The editor's current file and selection, for the context row. */
+  ideContext?: IdeContextView | null
+  /** Context-window pressure. Lives here, not the header — see ContextGauge. */
+  contextUsage?: ContextUsageView | null
+  /**
+   * Which process executes a prompt: Rayucode itself, or an attached CLI session.
+   *
+   * In the composer because it changes what SEND does, and that belongs next to the button
+   * that does it rather than in a header strip.
+   */
+  attachment?: AttachmentView
+  onListAttachable?: () => void
+  onAttachSession?: (pid: number) => void
+  onDetachSession?: () => void
   /** Latest TodoWrite state, pinned here until a later call replaces it. */
   todoEntry?: TodoToolEntry | null
-  onSubmit: (text: string) => void
+  onSubmit: (text: string, images?: ImageInputView[]) => void
   onInterrupt: () => void
   onSelectModel: (value: string) => void
   onRefreshModels: () => void
@@ -83,6 +121,23 @@ export interface ComposerProps {
   onSelectPermissionMode?: (modeId: string) => void
   onOpenProviderSetup: () => void
   onFindFiles?: (query: string) => void
+  /**
+   * Turn a `text/uri-list` payload into workspace paths.
+   *
+   * Asynchronous and host-owned: see `composerAttachments.ts` for why the webview cannot
+   * resolve a dropped file's path itself.
+   */
+  onResolveDroppedPaths?: (uriList: string) => Promise<string[]>
+  /** Open the editor's file/folder picker. Resolves empty when cancelled. */
+  onPickContextPaths?: () => Promise<string[]>
+  /**
+   * A drag entered or left the panel.
+   *
+   * Reported upward rather than drawn here: the handler accepts a drop anywhere in the panel,
+   * so the highlight has to cover the panel. Lifting the flag is cheaper than lifting the
+   * attachment state and the caret, which is what moving the handler would cost.
+   */
+  onDragStateChange?: (dragging: boolean) => void
 }
 
 export function Composer({
@@ -96,6 +151,12 @@ export function Composer({
   permissionMode,
   commands,
   workspaceFiles,
+  ideContext,
+  contextUsage,
+  attachment,
+  onListAttachable,
+  onAttachSession,
+  onDetachSession,
   todoEntry,
   onSubmit,
   onInterrupt,
@@ -106,14 +167,18 @@ export function Composer({
   onSelectPermissionMode,
   onOpenProviderSetup,
   onFindFiles,
+  onResolveDroppedPaths,
+  onPickContextPaths,
+  onDragStateChange,
 }: ComposerProps): JSX.Element {
   const [value, setValue] = useState(initialValue)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [dismissed, setDismissed] = useState(false)
   const [cursorPos, setCursorPos] = useState(initialValue.length)
-  const [isDragging, setIsDragging] = useState(false)
+  /** Images staged for the next message. Cleared on send, removable individually. */
+  const [images, setImages] = useState<ImageInputView[]>([])
+  const [attachError, setAttachError] = useState<string | null>(null)
   const textarea = useRef<HTMLTextAreaElement | null>(null)
-  const dragDepth = useRef(0)
 
   const updateCursor = useCallback(() => {
     if (textarea.current) {
@@ -148,10 +213,13 @@ export function Composer({
   const isMention = !dismissed && !isSlashCommand && mentionMatch !== null
   const fileQuery = isMention ? mentionMatch[1] : ''
 
+  // Debounced: `findFiles` runs a workspace glob in the extension host, and firing it on
+  // every keystroke of `@src/comp…` queues one search per character — each one wider than
+  // the last, so the slowest lands last and can overwrite a newer, narrower result.
   useEffect(() => {
-    if (isMention) {
-      onFindFiles?.(fileQuery)
-    }
+    if (!isMention) return
+    const id = setTimeout(() => onFindFiles?.(fileQuery), FILE_SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(id)
   }, [isMention, fileQuery, onFindFiles])
 
   const fileItems: AutocompleteItem[] = useMemo(() => {
@@ -165,7 +233,10 @@ export function Composer({
         label: f,
         description: f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : undefined,
         insertText: '@' + f + ' ',
-        kind: 'file',
+        // The host appends a trailing slash to directories it derived from file results,
+        // which is the only signal distinguishing the two — a folder and an extensionless
+        // file are otherwise identical strings.
+        kind: f.endsWith('/') ? 'folder' : 'file',
       }))
   }, [isMention, workspaceFiles, fileQuery])
 
@@ -226,10 +297,13 @@ export function Composer({
 
   const submit = useCallback(() => {
     const text = value.trim()
-    if (!text || disabled) return
-    onSubmit(text)
+    // An image with no words is a legitimate prompt — "what is this?" is implied.
+    if ((!text && images.length === 0) || disabled) return
+    onSubmit(text, images)
     setValue('')
-  }, [value, disabled, onSubmit])
+    setImages([])
+    setAttachError(null)
+  }, [value, images, disabled, onSubmit])
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -305,118 +379,254 @@ export function Composer({
     ],
   )
 
-  // ── Drag and drop ──────────────────────────────────────────────────────────
-  // VSCode webviews receive standard HTML5 drag events when files are dragged
-  // from the Explorer or text selections from the editor. We track drag depth
-  // (not just a boolean) because dragenter/dragleave bubble from child elements
-  // and a naive toggle would flicker the overlay on every child boundary crossed.
-  const onDragEnter = useCallback((event: React.DragEvent) => {
-    event.preventDefault()
-    dragDepth.current++
-    setIsDragging(true)
-  }, [])
+  // ── Attachments: paste and the context picker ──────────────────────────────
+  //
+  // Drag and drop is handled PANEL-WIDE by `usePanelDrop`, not here: a file dragged from the
+  // Explorer lands on the conversation far more often than on this strip, and handlers scoped
+  // to the card silently discarded those drops. See that hook for why the listeners are on
+  // `document` and why `dragover` must be prevented.
 
-  const onDragOver = useCallback((event: React.DragEvent) => {
-    event.preventDefault()
-    // Tell the browser we accept the drop so the cursor reflects that.
-    event.dataTransfer.dropEffect = 'copy'
-  }, [])
+  /** Insert text at the caret, padded so it cannot run into adjacent words. */
+  const insertText = useCallback(
+    (text: string) => {
+      if (!text) return
+      setValue(current => {
+        const next = insertIntoValue(current, cursorPos, text)
+        setCursorPos(next.cursor)
+        // Focus and caret are restored after paint: the value has not been committed to the
+        // DOM node yet at this point, so setting the range now would clamp to the old length.
+        setTimeout(() => {
+          textarea.current?.focus()
+          textarea.current?.setSelectionRange(next.cursor, next.cursor)
+        }, 0)
+        return next.value
+      })
+    },
+    [cursorPos],
+  )
 
-  const onDragLeave = useCallback((event: React.DragEvent) => {
-    event.preventDefault()
-    dragDepth.current--
-    if (dragDepth.current <= 0) {
-      dragDepth.current = 0
-      setIsDragging(false)
+  /** Stage image files, reporting the first one that could not be read. */
+  const attachImages = useCallback(async (files: readonly File[]) => {
+    if (files.length === 0) return
+    try {
+      const attachments = await Promise.all(files.map(readImageAttachment))
+      setAttachError(null)
+      setImages(current => [...current, ...attachments])
+    } catch (cause) {
+      // Reported inline rather than thrown away: a dropped image that silently fails to
+      // attach looks like the panel ignoring the user.
+      setAttachError(cause instanceof Error ? cause.message : 'That image could not be attached.')
     }
   }, [])
 
-  // Insert text at the cursor, padding with spaces when surrounded by other
-  // text so the insertion does not run together with existing words. Shared by
-  // file drop (@path) and text drop (selection) paths.
-  const insertAtCursor = useCallback(
-    (text: string) => {
-      const before = value.slice(0, cursorPos)
-      const after = value.slice(cursorPos)
-      const needsSpaceBefore = before.length > 0 && !before.endsWith(' ')
-      const needsSpaceAfter = after.length > 0 && !after.startsWith(' ')
-      const nextValue =
-        before +
-        (needsSpaceBefore ? ' ' : '') +
-        text +
-        (needsSpaceAfter ? ' ' : '') +
-        after
-      setValue(nextValue)
-      const newCursor =
-        cursorPos +
-        text.length +
-        (needsSpaceBefore ? 1 : 0) +
-        (needsSpaceAfter ? 1 : 0)
-      setCursorPos(newCursor)
-      setTimeout(() => {
-        if (textarea.current) {
-          textarea.current.focus()
-          textarea.current.setSelectionRange(newCursor, newCursor)
-        }
-      }, 0)
+  const insertResolvedPaths = useCallback(
+    async (uriList: string) => {
+      if (!onResolveDroppedPaths) return
+      const paths = await onResolveDroppedPaths(uriList)
+      insertText(formatPathMentions(paths))
     },
-    [value, cursorPos],
+    [onResolveDroppedPaths, insertText],
   )
 
-  const onDrop = useCallback(
-    (event: React.DragEvent) => {
-      event.preventDefault()
-      dragDepth.current = 0
-      setIsDragging(false)
+  // Panel-wide drop. The listeners live on `document` (see usePanelDrop) so a file dragged
+  // from an editor tab is accepted anywhere in the panel, not only over this strip — which is
+  // where the previous card-scoped handlers silently lost most drops. The logic stays here
+  // because this component owns the staged images and the caret; the OVERLAY is drawn by the
+  // shell, because a drop target that only highlights the composer contradicts a handler that
+  // accepts the whole panel.
+  const isDragging = usePanelDrop({
+    onPaths: uriList => void insertResolvedPaths(uriList),
+    onImages: files => void attachImages(files),
+    onText: text => {
+      // A dropped selection is usually prose, but it can equally be a path — some sources offer
+      // nothing but `text/plain`. Same rule as the terminal: if it resolves to a file, attach it;
+      // otherwise insert it verbatim.
+      const paths = readPastedPaths(text)
+      if (paths) {
+        void insertResolvedPaths(paths.join('\n'))
+        return
+      }
+      insertText(text)
+    },
+    onUnusable: names =>
+      setAttachError(
+        `${names[0] ? `“${names[0]}”` : 'That file'} was dropped without a path, so it cannot be attached. Use Add Context, or type @ to reference a workspace file.`,
+      ),
+    // VS Code took the drag before it landed. Stated plainly, with the two things that DO work,
+    // because the alternative is a drop target that lights up and then silently does nothing.
+    onIntercepted: () =>
+      setAttachError(
+        'VS Code intercepted that drag before it reached Rayucode. Hold Shift while dragging, or use Add Context / @ instead.',
+      ),
+  })
 
-      const dt = event.dataTransfer
+  useEffect(() => {
+    onDragStateChange?.(isDragging)
+  }, [isDragging, onDragStateChange])
 
-      // Files dragged from the VSCode Explorer (or OS file manager). Each File
-      // object carries its absolute path; we convert to a workspace-relative
-      // @-mention so the model receives a path it can resolve.
-      if (dt.files && dt.files.length > 0) {
-        const paths: string[] = []
-        for (let i = 0; i < dt.files.length; i++) {
-          const file = dt.files[i]
-          // VSCode webviews expose the file path on the File object; fall back
-          // to name for external drops (e.g. from the OS desktop).
-          const path = (file as File & { path?: string }).path ?? file.name
-          paths.push(path)
-        }
-        const insertion = paths.map(p => '@' + p).join(' ')
-        insertAtCursor(insertion)
+  /**
+   * Turn a path that landed in the input as TEXT into an attachment.
+   *
+   * ── WHY THIS EXISTS AS WELL AS THE DROP AND PASTE HANDLERS ───────────────────
+   *
+   * A dropped file frequently never reaches a drop handler at all. Chromium's default action for
+   * a drop onto a `<textarea>` is to insert the dragged text at the caret, so the file arrives as
+   * a bare path in the input — which is precisely what happens in a terminal, where the emulator
+   * pastes the path and the CLI recovers the file from it. Catching it here makes the editor
+   * behave like the terminal for the same gesture, and it also picks up middle-click paste and
+   * anything else that bypasses the `paste` event.
+   *
+   * ── TWO GUARDS, BOTH LOAD-BEARING ────────────────────────────────────────────
+   *
+   * 1. THE INSERTION MUST BE MORE THAN ONE CHARACTER. Typing arrives one character at a time, and
+   *    `/` on its own parses as an absolute path — without this, typing a slash would fire this.
+   * 2. THE TEXT IS ONLY REPLACED IF THE HOST RESOLVED SOMETHING. `readPastedPaths` recognises a
+   *    shape, not a file that exists; substituting on the strength of the shape alone would
+   *    delete what the user typed whenever the path was wrong. The host stats every candidate, so
+   *    an empty answer means "not a file" and the text is left exactly as it was.
+   *
+   * The replacement is located by SEARCHING for the inserted text rather than by the index it was
+   * inserted at, because the user can keep typing during the round-trip and an index goes stale.
+   */
+  const convertDroppedPathText = useCallback(
+    (before: string, after: string) => {
+      if (!onResolveDroppedPaths) return
+      const inserted = insertedChunk(before, after)
+      if (!inserted || inserted.text.trim().length < 2) return
+      const paths = readPastedPaths(inserted.text)
+      if (!paths) return
+
+      void (async () => {
+        const resolved = await onResolveDroppedPaths(paths.join('\n'))
+        if (resolved.length === 0) return
+        const mentions = formatPathMentions(resolved)
+        if (!mentions) return
+        setValue(current => {
+          const at = current.indexOf(inserted.text)
+          if (at === -1) return current
+          const next =
+            current.slice(0, at) + mentions + current.slice(at + inserted.text.length)
+          const caret = at + mentions.length
+          setCursorPos(caret)
+          // After paint, for the same reason `insertText` defers: the DOM node still holds the
+          // previous value at this point, so a range set now would be clamped to its length.
+          setTimeout(() => {
+            textarea.current?.focus()
+            textarea.current?.setSelectionRange(caret, caret)
+          }, 0)
+          return next
+        })
+      })()
+    },
+    [onResolveDroppedPaths],
+  )
+
+  /**
+   * Pasted content: a screenshot, or the path of a file copied in a file manager.
+   *
+   * ── THE PATH CASE IS HOW THE CLI'S "DRAG AND DROP" WORKS ─────────────────────
+   *
+   * Dragging a file onto a terminal produces no drop event — the terminal PASTES the path, and
+   * `hooks/usePasteHandler.ts` recovers the files from that text. This is the same handling, so
+   * copying a file and pressing Ctrl+V here attaches it exactly as dragging it into the terminal
+   * does, using the same parsing rules (`shared/pastedPaths.ts`): space-separated absolute
+   * paths, escaped spaces, quoted paths.
+   *
+   * It also gives a gesture that VS Code cannot intercept. A drag can be taken away from a
+   * webview before it arrives; a paste cannot.
+   */
+  const onPaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const files = Array.from(event.clipboardData?.files ?? [])
+      const { images: imageFiles } = partitionDroppedFiles(files)
+      if (imageFiles.length > 0) {
+        // Only prevented when there IS an image: otherwise this would swallow ordinary text
+        // pastes, which must keep the browser's own behaviour.
+        event.preventDefault()
+        void attachImages(imageFiles)
         return
       }
 
-      // Text dragged from the editor (a selection) or pasted from elsewhere.
-      const text = dt.getData('text')
-      if (text) {
-        insertAtCursor(text)
-      }
+      // `readPastedPaths` returns null for prose, which is the common case and must fall through
+      // to the browser's own paste untouched.
+      const paths = readPastedPaths(event.clipboardData?.getData('text/plain') ?? '')
+      if (!paths) return
+      event.preventDefault()
+      void insertResolvedPaths(paths.join('\n'))
     },
-    [insertAtCursor],
+    [attachImages, insertResolvedPaths],
   )
 
-  const canSend = value.trim().length > 0 && !disabled
+  const addContext = useCallback(async () => {
+    if (!onPickContextPaths) return
+    insertText(formatPathMentions(await onPickContextPaths()))
+  }, [onPickContextPaths, insertText])
+
+  /**
+   * Insert the editor's selection as an explicit `@path#Lstart-end` mention.
+   *
+   * The engine ALREADY attaches the selection to every message on its own, so this is not
+   * how the model learns about it — it is how the user pins a specific range into the words
+   * of the prompt ("refactor @src/a.ts#L10-20 to use X"), which survives them clicking
+   * elsewhere before sending. The format is the CLI's, character for character.
+   */
+  const addSelectionMention = useCallback(() => {
+    const path = ideContext?.relativePath
+    if (!path) return
+    const { lineStart, lineEnd } = ideContext
+    const range =
+      lineStart === undefined
+        ? ''
+        : lineEnd === undefined || lineEnd === lineStart
+          ? `#L${lineStart}`
+          : `#L${lineStart}-${lineEnd}`
+    insertText(`@${path}${range}`)
+  }, [ideContext, insertText])
+
+  const canSend = (value.trim().length > 0 || images.length > 0) && !disabled
 
   return (
     <div
       className={`rc-composer-card${isDragging ? ' rc-composer-drag-over' : ''}`}
-      onDragEnter={onDragEnter}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
     >
-      {isDragging ? (
-        <div className="rc-composer-drop-overlay" aria-hidden="true">
-          <span className="rc-composer-drop-icon">@</span>
-          <span className="rc-composer-drop-text">
-            Drop to reference file
-          </span>
-        </div>
-      ) : null}
+      {/* Context row: what the editor is pointing at, and what a send would attach. */}
+      <IdeContextRow context={ideContext ?? null} onAdd={addSelectionMention} />
 
       {todoEntry ? <TodoListCard entry={todoEntry} embedded /> : null}
+
+      {images.length > 0 ? (
+        <ul className="rc-attach-strip" aria-label="Attached images">
+          {images.map((image, index) => (
+            <li key={`${image.name ?? 'image'}-${index}`} className="rc-attach-chip">
+              {/*
+                Rendered from the same base64 that will be sent, so the preview cannot
+                disagree with the attachment. The CSP allows `data:` images for this.
+              */}
+              <img
+                className="rc-attach-thumb"
+                src={`data:${image.mediaType};base64,${image.data}`}
+                alt=""
+              />
+              <span className="rc-attach-name">{image.name ?? 'image'}</span>
+              <button
+                type="button"
+                className="rc-attach-remove"
+                onClick={() => setImages(current => current.filter((_, i) => i !== index))}
+                title="Remove image"
+                aria-label={`Remove ${image.name ?? 'image'}`}
+              >
+                <CloseIcon size={10} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {attachError ? (
+        <p className="rc-attach-error" role="alert">
+          {attachError}
+        </p>
+      ) : null}
 
       <AutocompletePopover
         items={popoverItems}
@@ -440,18 +650,47 @@ export function Composer({
         }
         aria-label="Message Rayu"
         onChange={event => {
-          setValue(event.target.value)
+          const next = event.target.value
+          // `value` is still the PREVIOUS value here, which is what the comparison needs.
+          convertDroppedPathText(value, next)
+          setValue(next)
           setDismissed(false)
           setCursorPos(event.target.selectionStart)
         }}
         onClick={updateCursor}
         onKeyUp={updateCursor}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
 
       <div className="rc-composer-toolbar">
         {!authenticationRequired ? (
           <div className="rc-composer-pills">
+            {onPickContextPaths ? (
+              <button
+                type="button"
+                className="rc-pill rc-pill-button rc-pill-add-context"
+                onClick={() => void addContext()}
+                title={
+                  'Add files or folders as context.\n' +
+                  'You can also drag them straight onto this panel.'
+                }
+                aria-label="Add context"
+              >
+                <PaperclipIcon size={12} />
+                <span className="rc-pill-label">Add Context</span>
+              </button>
+            ) : null}
+
+            {attachment && onListAttachable && onAttachSession && onDetachSession ? (
+              <AttachmentControl
+                attachment={attachment}
+                onList={onListAttachable}
+                onAttach={onAttachSession}
+                onDetach={onDetachSession}
+              />
+            ) : null}
+
             <PermissionDropdown
               mode={permissionMode}
               onSelect={onSelectPermissionMode ?? onCyclePermissionMode}
@@ -473,6 +712,8 @@ export function Composer({
         ) : null}
 
         <span className="rc-composer-spacer" />
+
+        {contextUsage ? <ContextGauge usage={contextUsage} /> : null}
 
         {turnRunning ? (
           <button
@@ -502,18 +743,58 @@ export function Composer({
 }
 
 
-function SendIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" role="presentation">
-      <path d="M8 2.25l4.75 4.75h-3.5v6.5h-2.5v-6.5h-3.5L8 2.25z" />
-    </svg>
-  )
-}
 
-function StopIcon(): JSX.Element {
+
+
+/**
+ * What the editor is currently pointing at.
+ *
+ * ── THIS IS DISCLOSURE, NOT A CONTROL ──────────────────────────────────────────
+ *
+ * The engine attaches the selection to the next message by itself, through the same shared
+ * attachment path the CLI uses. Without this row that happens INVISIBLY, and an answer that
+ * suddenly discusses code the user had forgotten was highlighted is indistinguishable from
+ * the model hallucinating context. So the row states what will be sent.
+ *
+ * The wording matches the CLI's own indicator — `⧉ N lines selected`, else `⧉ In <file>` —
+ * so the two surfaces describe the same editor the same way.
+ */
+function IdeContextRow({
+  context,
+  onAdd,
+}: {
+  context: IdeContextView | null
+  onAdd: () => void
+}): JSX.Element | null {
+  // Nothing open means nothing to disclose. Rendering an empty row would imply the editor
+  // connection is broken, when the common cause is simply no active editor.
+  if (!context || !context.relativePath) return null
+
+  const selected = context.lineCount > 0
+  const label = selected
+    ? `${context.lineCount} ${context.lineCount === 1 ? 'line' : 'lines'} selected`
+    : `In ${context.relativePath.split('/').pop() ?? context.relativePath}`
+
   return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" role="presentation">
-      <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" />
-    </svg>
+    <div className="rc-ide-context">
+      <span className="rc-ide-context-glyph" aria-hidden="true">
+        ⧉
+      </span>
+      <span className="rc-ide-context-label" title={context.relativePath}>
+        {label}
+      </span>
+      {/* Offered only for a real selection: pinning a whole file is what typing `@file`
+          already does, and a button that duplicates the autocomplete adds noise. */}
+      {selected ? (
+        <button
+          type="button"
+          className="rc-ide-context-add"
+          onClick={onAdd}
+          title="Insert this selection as an @-mention"
+        >
+          Add to prompt
+        </button>
+      ) : null}
+    </div>
   )
 }

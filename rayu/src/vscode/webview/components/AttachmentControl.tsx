@@ -18,6 +18,7 @@ import type {
   AttachableSessionView,
   AttachmentView,
 } from '../../shared/webviewProtocol.js'
+import { LinkIcon } from './Icons.js'
 
 export interface AttachmentControlProps {
   attachment: AttachmentView
@@ -151,10 +152,3 @@ function statusLabel(session: AttachableSessionView): string {
   return 'status unknown'
 }
 
-function LinkIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" role="presentation">
-      <path d="M6.2 9.8a2.5 2.5 0 0 1 0-3.54l2.12-2.12a2.5 2.5 0 0 1 3.54 3.54l-1.06 1.06-.71-.71 1.06-1.06a1.5 1.5 0 1 0-2.12-2.12L6.91 6.97a1.5 1.5 0 0 0 0 2.12l-.71.71zm3.6-3.6a2.5 2.5 0 0 1 0 3.54l-2.12 2.12a2.5 2.5 0 0 1-3.54-3.54l1.06-1.06.71.71-1.06 1.06a1.5 1.5 0 1 0 2.12 2.12l2.12-2.12a1.5 1.5 0 0 0 0-2.12l.71-.71z" />
-    </svg>
-  )
-}

@@ -103,7 +103,7 @@ import { assertMinVersion } from './utils/autoUpdater.js';
 import { getContextWindowForModel } from './utils/context.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
-import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace } from './utils/envUtils.js';
+import { hasNodeOption, isBareMode, isEnvDefinedFalsy, isEnvTruthy, isInProtectedNamespace } from './utils/envUtils.js';
 import { refreshExampleCommands } from './utils/exampleCommands.js';
 import type { FpsMetrics } from './utils/fpsTracker.js';
 import { getWorktreePaths } from './utils/getWorktreePaths.js';
@@ -1580,6 +1580,35 @@ async function run(): Promise<CommanderCommand> {
         }
       } catch (error) {
         logForDebugging(`[Computer Use MCP] Setup failed: ${errorMessage(error)}`);
+      }
+    }
+
+    // ── EDITOR CONNECTION FOR NON-INTERACTIVE SESSIONS ────────────────────────
+    //
+    // The interactive REPL connects to the editor through `useIDEIntegration`, a React hook.
+    // Every other consumer of this engine — the SDK, `--print`, and the Rayucode extension's
+    // engine child — therefore had NO editor connection at all, which is why a selection in
+    // the editor could not reach a headless turn.
+    //
+    // This runs the SAME discovery the interactive path runs (`findAvailableIDE`, which reads
+    // the same lockfiles) and builds the server entry with the SAME shared mapping. Nothing
+    // about the protocol is re-implemented here; the only thing that was missing was calling
+    // it. `CLAUDE_CODE_SSE_PORT` — which an editor extension sets when it spawns the engine —
+    // makes discovery pick that extension's port specifically.
+    if (getIsNonInteractiveSession() && !isEnvDefinedFalsy(process.env.CLAUDE_CODE_AUTO_CONNECT_IDE)) {
+      try {
+        const { findAvailableIDE, ideMcpServerConfig } = await import('src/utils/ide.js');
+        const ide = await findAvailableIDE();
+        if (ide) {
+          dynamicMcpConfig = {
+            ...dynamicMcpConfig,
+            ide: ideMcpServerConfig(ide)
+          };
+          logForDebugging(`[ide] headless session connected to ${ide.name} on port ${ide.port}`);
+        }
+      } catch (error) {
+        // An editor connection is an enhancement: a failure here must not stop the turn.
+        logForDebugging(`[ide] headless discovery failed: ${errorMessage(error)}`);
       }
     }
 

@@ -1,9 +1,16 @@
 /**
  * The Copilot-Edits working set.
  *
- * Files this turn changed, with per-file diff and keep/undo, plus batch actions. The
- * one transcript element the user acts on after a turn finishes, so it is styled to
- * stand out from the prose around it.
+ * Every file still recorded as changed, with per-file diff and keep/undo, plus batch
+ * actions. The one transcript element the user acts on after a turn finishes, so it is
+ * styled to stand out from the prose around it.
+ *
+ * ── THE SET IS CUMULATIVE, THE CARD IS PER-RESPONSE ────────────────────────────
+ *
+ * The host re-anchors this card under each finished response (see `flushPendingReview`),
+ * but the engine's snapshot lists everything still unresolved, not just what the latest
+ * turn touched. `changedThisTurn` is what separates the two, so a card appearing under an
+ * answer says which files that answer wrote and still lets the user resolve older ones.
  *
  * ── UNDO IS NOT STYLED AS THE DANGEROUS OPTION ─────────────────────────────────
  *
@@ -12,7 +19,11 @@
  * colour, because guessing which one the user will regret would be presumptuous, and
  * a red button trains people to hesitate over the safe path too.
  */
+import { useState } from 'react'
+
 import type { ReviewFileView, TranscriptEntry } from '../../shared/webviewProtocol.js'
+import { ChevronIcon } from './Icons.js'
+import { DiffView } from './DiffView.js'
 
 export interface ReviewCardProps {
   entry: Extract<TranscriptEntry, { kind: 'review' }>
@@ -30,6 +41,10 @@ export function FileChangeReviewCard({
   onOpen,
 }: ReviewCardProps): JSX.Element {
   const fileWord = entry.totalFiles === 1 ? 'file' : 'files'
+  const fromThisTurn = entry.files.filter(file => file.changedThisTurn).length
+  // Only worth saying when the two differ. "3 files changed · 3 in this response" is
+  // noise, and so is a count on a card whose host never set the flag.
+  const showTurnCount = fromThisTurn > 0 && fromThisTurn < entry.totalFiles
 
   return (
     <section className="rc-review" aria-label="Changed files awaiting review">
@@ -38,6 +53,11 @@ export function FileChangeReviewCard({
           <span className="rc-review-title">
             {entry.totalFiles} {fileWord} changed
           </span>
+          {showTurnCount ? (
+            <span className="rc-review-turn-count">
+              {fromThisTurn} in this response
+            </span>
+          ) : null}
           <DiffStat additions={entry.totalAdditions} removals={entry.totalRemovals} />
         </div>
         <span className="rc-composer-spacer" />
@@ -60,6 +80,8 @@ export function FileChangeReviewCard({
           <ReviewFileRow
             key={file.displayPath}
             file={file}
+            // Only worth distinguishing rows when the card actually mixes the two.
+            markCurrent={showTurnCount}
             onKeep={() => onKeep(file.displayPath)}
             onUndo={() => onUndo(file.displayPath)}
             onDiff={() => onDiff(file.displayPath)}
@@ -73,12 +95,14 @@ export function FileChangeReviewCard({
 
 function ReviewFileRow({
   file,
+  markCurrent,
   onKeep,
   onUndo,
   onDiff,
   onOpen,
 }: {
   file: ReviewFileView
+  markCurrent: boolean
   onKeep: () => void
   onUndo: () => void
   onDiff: () => void
@@ -88,10 +112,36 @@ function ReviewFileRow({
   // refuse, and a button that reliably fails is worse than no button. `mixed` stays
   // actionable: it has several recorded changes and some are still pending.
   const resolved = file.status === 'kept' || file.status === 'undone'
+  const hasDiff = (file.hunks?.length ?? 0) > 0
+  const current = markCurrent && file.changedThisTurn === true
+  /**
+   * Whether this file's diff is open in the panel.
+   *
+   * Closed by default even though the diff is right here. A turn that changed eight files
+   * would otherwise open eight diffs at once and bury the answer above them — and the
+   * point of the review card is to let the user CHOOSE what to look at. One click is a
+   * fair price for that, and it is still far less than opening an editor.
+   */
+  const [showDiff, setShowDiff] = useState(false)
 
   return (
-    <li className="rc-review-file">
+    <li className={current ? 'rc-review-file rc-review-file-current' : 'rc-review-file'}>
       <div className="rc-review-file-info">
+        {/* The disclosure sits where the file icon was, because it is now the primary
+            gesture on the row. The icon moves after it and keeps saying new-vs-modified. */}
+        {hasDiff ? (
+          <button
+            type="button"
+            className="rc-review-disclose"
+            aria-expanded={showDiff}
+            title={showDiff ? 'Hide diff' : 'Show diff'}
+            onClick={() => setShowDiff(open => !open)}
+          >
+            <ChevronIcon size={10} direction={showDiff ? 'down' : 'right'} />
+          </button>
+        ) : (
+          <span className="rc-review-disclose-spacer" aria-hidden="true" />
+        )}
         <span className="rc-review-file-icon" aria-hidden="true">
           <FileIcon isCreated={file.isCreated} />
         </span>
@@ -99,7 +149,11 @@ function ReviewFileRow({
           type="button"
           className="rc-review-path"
           onClick={onOpen}
-          title={`Open ${file.displayPath}`}
+          title={
+            current
+              ? `Open ${file.displayPath} — changed in this response`
+              : `Open ${file.displayPath}`
+          }
         >
           {file.displayPath}
         </button>
@@ -136,6 +190,18 @@ function ReviewFileRow({
           </>
         )}
       </div>
+
+      {/* Inline, under the row it belongs to. "Diff" above still opens the editor, which
+          is the authoritative and uncapped view — this is for reading without leaving the
+          conversation. */}
+      {showDiff && file.hunks ? (
+        <DiffView
+          hunks={file.hunks}
+          filePath={file.displayPath}
+          truncated={file.hunksTruncated}
+          onOpenDiff={onDiff}
+        />
+      ) : null}
     </li>
   )
 }

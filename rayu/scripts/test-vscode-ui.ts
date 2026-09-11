@@ -96,7 +96,17 @@ try {
   // The running state is posted synchronously when the host accepts a prompt. It
   // therefore covers both a still-finishing prewarm and ordinary provider work,
   // rather than leaving the first turn looking frozen.
-  await frame!.getByRole('status').getByText(/^Rayu's .+…$/).waitFor()
+  //
+  // Matched on the STABLE phase wording, not a rotating verb. The panel used to pick a random
+  // present-tense verb per turn ("Rayu's Cooking…"), which said the same thing whether the
+  // engine was waiting on a provider, editing a file, or blocked on an approval. The phases
+  // below are derived from the engine's own stream events, so this assertion also proves the
+  // progress projection is wired end to end.
+  await frame!
+    .getByRole('status')
+    .getByText(/^(Starting Rayu|Sending request|Thinking|Responding|Reading|Searching|Editing|Running tool|Waiting for approval)\b/)
+    .first()
+    .waitFor()
   await until(() => provider.requests.length > 0, 90_000)
   // Save DOM and screenshots even on failure to make UI regressions reviewable.
   const allow = frame!.getByRole('button', { name: 'Allow once', exact: true })
@@ -131,13 +141,97 @@ try {
   await native('theme', { theme: 'Default Light Modern' })
   await frame!.locator('body.vscode-light').waitFor()
   await page.screenshot({ path: join(output, 'rayucode-light.png') })
-  await frame!.getByTitle('Previous sessions', { exact: true }).click()
-  await frame!.getByRole('textbox', { name: 'Search previous sessions' }).fill('fixture')
-  const history = frame!.getByRole('option').first()
-  await history.waitFor(); await history.click(); await history.click()
+  // ── DROP HANDLING ──────────────────────────────────────────────────────────────
+  //
+  // Driven with a real `DataTransfer` through the panel's own listeners, because a NATIVE drag
+  // cannot be delivered here: VS Code blanks the webview iframe's `pointer-events` for the
+  // duration of any drag that looks like it carries a file, unless Shift is held. That was
+  // measured against this very harness — an editor-tab drag reported `pointer-events: none`
+  // and produced zero events in the frame, while the same drag with Shift reported `auto`.
+  //
+  // So what is asserted here is the half we own and can break: reading the workbench's
+  // formats, resolving them in the extension host, and inserting the mention. The Shift
+  // requirement itself belongs to VS Code and is stated in the panel's own copy.
+  await frame!.getByRole('textbox', { name: 'Message Rayu' }).fill('')
+  await frame!.evaluate((uri: string) => {
+    const transfer = new DataTransfer()
+    // Both formats, as an Explorer drag supplies them: the standard one truncated to the first
+    // uri, VS Code's internal one carrying the full list.
+    transfer.setData('text/uri-list', uri)
+    transfer.setData('application/vnd.code.uri-list', uri)
+    const init = { dataTransfer: transfer, bubbles: true, cancelable: true }
+    document.body.dispatchEvent(new DragEvent('dragenter', init))
+    document.body.dispatchEvent(new DragEvent('dragover', init))
+    document.body.dispatchEvent(new DragEvent('drop', init))
+  }, `file://${workspace}/fixture.txt`)
+  // Polled rather than passed to `until`, which takes a SYNCHRONOUS predicate — an async one
+  // would return a truthy promise on the first tick and assert nothing at all.
+  const dropDeadline = Date.now() + 15_000
+  let dropped = ''
+  while (Date.now() < dropDeadline) {
+    dropped = await frame!.getByRole('textbox', { name: 'Message Rayu' }).inputValue()
+    if (dropped === '@fixture.txt') break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (dropped !== '@fixture.txt') {
+    throw new Error(`A dropped uri-list did not become an @-mention (composer was ${JSON.stringify(dropped)})`)
+  }
+  await frame!.getByRole('textbox', { name: 'Message Rayu' }).fill('')
+
+  // A PASTED path, which is how the CLI's drag-and-drop actually arrives: dragging onto a
+  // terminal produces no drop event, the terminal pastes the path, and `utils/pastedPaths.ts`
+  // recovers it. The webview shares that module, so the same gesture works here — and unlike a
+  // drag, a paste cannot be intercepted by the workbench.
+  await frame!.evaluate((path: string) => {
+    const transfer = new DataTransfer()
+    transfer.setData('text/plain', path)
+    const textarea = document.querySelector('textarea.rc-composer-input') as HTMLTextAreaElement
+    textarea.focus()
+    textarea.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }),
+    )
+  }, `${workspace}/fixture.txt`)
+  const pasteDeadline = Date.now() + 15_000
+  let pasted = ''
+  while (Date.now() < pasteDeadline) {
+    pasted = await frame!.getByRole('textbox', { name: 'Message Rayu' }).inputValue()
+    if (pasted === '@fixture.txt') break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (pasted !== '@fixture.txt') {
+    throw new Error(`A pasted path did not become an @-mention (composer was ${JSON.stringify(pasted)})`)
+  }
+  await frame!.getByRole('textbox', { name: 'Message Rayu' }).fill('')
+
+  // The sessions surface is a real panel: the search is labelled "Search sessions" and rows are
+  // buttons grouped by recency rather than listbox options.
+  //
+  // Resuming is NO LONGER a two-click confirmation, because it is no longer destructive. The
+  // session matching this search IS the one on screen, so clicking it ACTIVATES rather than
+  // respawning — which is why no further inference may be issued.
+  await frame!.getByTitle('Sessions', { exact: true }).click()
+  await frame!.getByRole('textbox', { name: 'Search sessions' }).fill('fixture')
+  const history = frame!.locator('.rc-session-row-history, .rc-session-live-row .rc-session-row').first()
+  await history.waitFor(); await history.click()
   await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
   if (provider.requests.filter(r => r.stream).length !== 6) throw new Error('Restoring history resubmitted inference')
-  console.log('PASS: real extension host, AskUserQuestion answers, sign-in gate, hosted catalog/capabilities, keyboard model selection/draft, streaming, approval, exact diff, history, dark/light themes')
+
+  // ── CONCURRENT SESSIONS ────────────────────────────────────────────────────────
+  //
+  // The reported bug: pressing + killed the conversation that was on screen, and going back
+  // rebuilt it from the session FILE. It must now OPEN a second conversation and leave the
+  // first one intact, so switching back is a plain activation with the transcript still there.
+  await frame!.getByTitle('New session', { exact: true }).click()
+  await frame!.locator('.rc-welcome').waitFor()
+  await frame!.getByTitle('Sessions — 2 open', { exact: true }).click()
+  await frame!.getByText('Open now', { exact: true }).waitFor()
+  const live = frame!.locator('.rc-session-live-row')
+  if ((await live.count()) !== 2) throw new Error('Opening a session did not leave the previous one open')
+  // The row that is NOT on screen is the original conversation.
+  await frame!.locator('.rc-session-live-row .rc-session-row:not(.rc-session-row-active)').first().click()
+  await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
+  if (provider.requests.filter(r => r.stream).length !== 6) throw new Error('Switching sessions resubmitted inference')
+  console.log('PASS: real extension host, AskUserQuestion answers, sign-in gate, hosted catalog/capabilities, keyboard model selection/draft, streaming, approval, exact diff, concurrent sessions, dark/light themes')
 } catch (error) {
   if (existsSync(join(directory, 'runner.log'))) {
     console.error('RUNNER LOG:\n' + readFileSync(join(directory, 'runner.log'), 'utf8'))

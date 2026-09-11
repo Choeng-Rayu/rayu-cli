@@ -23,13 +23,19 @@
 import * as vscode from 'vscode'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
+import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 
 import { ChatViewProvider, CHAT_VIEW_ID } from './panel/chatViewProvider.js'
 import { ChatSession } from './panel/sessionHandle.js'
+import {
+  SessionRegistry,
+  type SessionEntry,
+} from './panel/sessionRegistry.js'
 import { PermissionRouter } from './panel/permissionRouter.js'
 import { invalidateRayuConfigCache } from '../../utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from './models/modelConfig.js'
 import { nextPermissionMode, permissionModeById } from '../shared/permissionModes.js'
+import { formatPathMentions } from '../shared/contextMentions.js'
 import { getAuthSnapshot, signOutShared } from './auth/rayuAuthBridge.js'
 import { signInFromEditor, type SignInOptions } from './auth/vscodeLogin.js'
 import { watchSharedSession } from './auth/authWatcher.js'
@@ -59,12 +65,24 @@ import {
   listWorkspaceSessions,
   loadSessionTranscript,
 } from './sessionHistory.js'
+import {
+  applySelection,
+  buildChooser,
+  describeSelection,
+  parseModelSettingCommand,
+  type ModelSettingCommand,
+} from './models/modelSettingCommands.js'
 import type {
   BackgroundTaskView,
+  LiveSessionView,
   ModelCatalogueView,
+  ModelChooserView,
+  IdeContextView,
+  SessionListView,
   AttachmentView,
   ProviderSetupView,
   SessionSummaryView,
+  ImageInputView,
   WebviewState,
 } from '../shared/webviewProtocol.js'
 
@@ -73,6 +91,8 @@ const COMMANDS = {
   newSession: 'rayucode.newSession',
   signIn: 'rayucode.signIn',
   signOut: 'rayucode.signOut',
+  addTerminalSelection: 'rayucode.addTerminalSelection',
+  addToContext: 'rayucode.addToContext',
 } as const
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -168,64 +188,227 @@ export function activate(context: vscode.ExtensionContext): void {
    * impossible to leak a token by posting state.
    */
   let attachTargets: AttachTargetFrame[] = []
-  let historySessions: SessionSummaryView[] | undefined
+  /**
+   * The sessions list AND its load state.
+   *
+   * A bare array could only say "not fetched" or "here they are", so a failed read and an
+   * empty workspace were rendered identically. The list is retained across a failure so a
+   * stale-but-real list beats blanking the surface.
+   */
+  let historySessions: SessionListView = { status: 'loading', sessions: [] }
   let attachment: AttachmentView = { available: undefined, attached: null, error: null }
   let liveAttachment: CliAttachment | null = null
   let standaloneTaskSnapshot: BackgroundTaskView[] = []
   let taskInspectionSupported = true
   let taskInspectionMessage: string | undefined
+  /**
+   * The open model chooser, if any.
+   *
+   * Held here as well as posted so `buildState` carries it: VS Code re-creates the webview
+   * freely, and a chooser the user just opened must not vanish when they collapse the panel.
+   */
+  let modelChooser: ModelChooserView | null = null
+  /** The editor's current file/selection, mirrored for `buildState`. */
+  let ideContext: IdeContextView | null = null
 
   function postAttachment(): void {
     provider.post({ type: 'setAttachment', attachment })
   }
 
-  const permissions = new PermissionRouter({
-    onShow: request => provider.post({ type: 'showPermissionRequest', request }),
-    onDismiss: requestId =>
-      provider.post({ type: 'dismissPermissionRequest', requestId }),
-  })
+  /** Set and publish the chooser in one step, so the two cannot disagree. */
+  function setModelChooser(chooser: ModelChooserView | null): void {
+    modelChooser = chooser
+    provider.post({ type: 'setModelChooser', chooser })
+  }
 
-  const session = new ChatSession(
-    { enginePath, cwd: engineCwd },
-    {
-      onEntry: entry => provider.post({ type: 'addMessage', entry }),
-      onPartial: (id, kind, delta) =>
-        provider.post({ type: 'appendPartial', id, kind, delta }),
-      onComplete: id => provider.post({ type: 'completeMessage', id }),
-      onTurnState: running => provider.post({ type: 'turnState', running }),
-      onModelInfo: info => {
-        provider.post({ type: 'setModelInfo', info })
-        // The engine's catalogue is authoritative for what the active provider can
-        // actually serve, so re-publish once it has reported.
-        provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
-      },
-      onError: message => provider.post({ type: 'showError', message }),
-      onPermissionRequest: request => permissions.present(request),
-      onPermissionCancelled: requestId => permissions.engineCancelled(requestId),
-      onSessionEnded: () => permissions.cancelAll(),
-      // The review card is the one entry that can stop existing: once everything is
-      // kept or undone there is nothing left to act on.
-      onReviewCleared: id => provider.post({ type: 'removeEntry', id }),
-      // Hunks stay host-side; the editor draws the diff from them.
-      onReviewFiles: files => review.store.replace(files),
-      onInferenceSettings: settings =>
-        provider.post({ type: 'setInferenceSettings', settings }),
-      onCommands: commands => provider.post({ type: 'setCommands', commands }),
-      onContextUsage: usage =>
-        provider.post({
-          type: 'setContextUsage',
-          percentage: usage.percentage,
-          totalTokens: usage.totalTokens,
-          maxTokens: usage.maxTokens,
-          stale: usage.stale,
+  // ── EDITOR CONNECTION ────────────────────────────────────────────────────────  //
+  // Publishes the same `~/.rayu/ide/<port>.lock` the CLI already scans for, so a `rayu`
+  // running in this window's terminal attaches to this editor and sees its selection.
+  //
+  // It is started BEFORE the session so the engine child can be pointed at it (see
+  // its `env` below): the child discovers the editor through the CLI’s own lockfile
+  // scan, and `CLAUDE_CODE_SSE_PORT` tells that scan which port is ours. Failure is still
+  // non-fatal — the connection is an enhancement, not a prerequisite — so a null handle
+  // simply means no live editor context.
+  const idePromise = startIdeServer(version)
+    .then(handle => {
+      if (!handle) return null
+      context.subscriptions.push({ dispose: () => void handle.dispose() })
+      context.subscriptions.push(
+        trackEditorSelection(handle, context_ => {
+          ideContext = context_
+          provider.post({ type: 'setIdeContext', context: context_ })
         }),
-      onMcpServers: servers => provider.post({ type: 'setMcpServers', servers }),
-      onTurnDuration: duration => provider.post({ type: 'turnDuration', duration }),
-      onTaskStateChanged: task => provider.post({ type: 'upsertTaskState', task }),
-      onTaskStateReplaced: tasks =>
-        provider.post({ type: 'replaceTaskState', tasks, supported: true }),
+      )
+      return handle
+    })
+    .catch(() => null)
+
+  /**
+   * The panel's open conversations.
+   *
+   * ── EVERY HANDLER BELOW RESOLVES THE SESSION AT CALL TIME ──────────────────────
+   *
+   * The handlers are registered once, at activation, and the conversation they must act on
+   * changes whenever the user switches. So there is deliberately no `const session`: capturing
+   * one would leave every button operating on whichever conversation happened to be open when
+   * the extension started. `current()` is the only way to reach a session from here.
+   */
+  const registry = new SessionRegistry(
+    {
+      enginePath,
+      cwd: engineCwd,
+      // Points the child's own lockfile scan at THIS window's editor connection. This is
+      // the mechanism an editor extension is expected to use — `detectIDEs` treats a
+      // matching `CLAUDE_CODE_SSE_PORT` as authoritative, which also disambiguates a
+      // workspace that has several editor windows open on it.
+      //
+      // Resolved at SPAWN time rather than here: the port is only known once the socket is
+      // bound, and awaiting that during activation would delay the whole extension for
+      // something the first turn does not need yet.
+      resolveEnv: async () => {
+        const handle = await idePromise
+        return handle ? { CLAUDE_CODE_SSE_PORT: String(handle.port) } : {}
+      },
+    },
+    {
+      // Every push is gated on `isActive`. A background conversation keeps accruing state
+      // inside its own ChatSession; it simply does not write to the panel. Activation then
+      // rebuilds the panel from that state with one `syncState()`.
+      sessionCallbacks: (entry, isActive) => ({
+        onEntry: message => {
+          if (isActive()) provider.post({ type: 'addMessage', entry: message })
+          // The live list shows a per-session label and running flag, both of which this
+          // changed — so background progress stays visible even though the transcript is not.
+          else postLiveSessions()
+        },
+        onPartial: (id, kind, delta) => {
+          if (isActive()) provider.post({ type: 'appendPartial', id, kind, delta })
+        },
+        onComplete: id => {
+          if (isActive()) provider.post({ type: 'completeMessage', id })
+        },
+        onTurnState: running => {
+          if (isActive()) provider.post({ type: 'turnState', running })
+          postLiveSessions()
+        },
+        // Only for the visible conversation: a background session's live tool output has
+        // nowhere to render and would be a message per second for nothing. Its transcript
+        // still receives the final result, and switching to it shows that.
+        onToolOutput: (id, text) => {
+          if (isActive()) provider.post({ type: 'appendToolOutput', id, text })
+        },
+        onModelInfo: info => {          if (!isActive()) return
+          provider.post({ type: 'setModelInfo', info })
+          // The engine's catalogue is authoritative for what the active provider can
+          // actually serve, so re-publish once it has reported.
+          provider.post({
+            type: 'setModelCatalogue',
+            catalogue: buildCatalogue(entry.session),
+          })
+        },
+        onError: message => {
+          // ── THE ACTIVE SESSION IS ALREADY COVERED BY ITS TRANSCRIPT ──────────────
+          //
+          // `reportError` records every failure as a `notice` entry in the failing
+          // session's own transcript, in chronological position. Posting `showError`
+          // as well would render the same failure twice for the visible conversation —
+          // once inline where it happened, once in the trailing notices list.
+          //
+          // A BACKGROUND conversation is the case the transcript cannot cover: the
+          // entry exists, but in a transcript the user is not reading, and the session
+          // they are waiting on must not fail silently. So the alert is posted only
+          // when the failing session is not the one on screen, prefixed so they know
+          // which one it was.
+          if (!isActive()) {
+            provider.post({ type: 'showError', message: `${labelOf(entry)}: ${message}` })
+          }
+        },
+        // Routed to the OWNING session's router, never the active one: a card belongs to the
+        // engine that is blocked on it.
+        onPermissionRequest: request => entry.permissions.present(request),
+        onPermissionCancelled: requestId => entry.permissions.engineCancelled(requestId),
+        onSessionEnded: () => entry.permissions.cancelAll(),
+        // The review card is the one entry that can stop existing: once everything is
+        // kept or undone there is nothing left to act on.
+        onReviewCleared: id => {
+          if (isActive()) provider.post({ type: 'removeEntry', id })
+        },
+        // Hunks stay host-side; the editor draws the diff from them. The store is a
+        // singleton, so only the visible conversation may own it — see the registry header.
+        onReviewFiles: files => {
+          if (isActive()) review.store.replace(files)
+        },
+        onInferenceSettings: settings => {
+          if (isActive()) provider.post({ type: 'setInferenceSettings', settings })
+        },
+        onPermissionMode: mode => {
+          if (isActive()) provider.post({ type: 'setPermissionMode', mode })
+        },
+        onCommands: commands => {
+          if (isActive()) provider.post({ type: 'setCommands', commands })
+        },
+        onContextUsage: usage => {
+          if (!isActive()) return
+          provider.post({
+            type: 'setContextUsage',
+            percentage: usage.percentage,
+            totalTokens: usage.totalTokens,
+            maxTokens: usage.maxTokens,
+            stale: usage.stale,
+          })
+        },
+        onMcpServers: servers => {
+          if (isActive()) provider.post({ type: 'setMcpServers', servers })
+        },
+        onTurnProgress: progress => {
+          if (isActive()) provider.post({ type: 'setTurnProgress', progress })
+        },
+        onTurnCompleted: (turnId, completion) => {
+          if (isActive()) provider.post({ type: 'turnCompleted', turnId, completion })
+        },
+        onThinking: thinking => {
+          if (isActive()) provider.post({ type: 'updateThinking', thinking })
+        },
+        onTaskStateChanged: task => {
+          if (isActive()) provider.post({ type: 'upsertTaskState', task })
+        },
+        onTaskStateReplaced: tasks => {
+          if (isActive()) {
+            provider.post({ type: 'replaceTaskState', tasks, supported: true })
+          }
+        },
+      }),
+      onShowPermission: request =>
+        provider.post({ type: 'showPermissionRequest', request }),
+      onDismissPermission: requestId =>
+        provider.post({ type: 'dismissPermissionRequest', requestId }),
+      onChanged: () => postLiveSessions(),
+      // Hand the diff store to the conversation that is now on screen, then rebuild the panel
+      // from it. One full sync is both simpler and more honest than replaying deltas.
+      onActivate: entry => {
+        review.store.replace(entry.session.reviewFiles)
+        provider.syncState()
+      },
     },
   )
+
+  /** The conversation on screen. Resolved per call — see the registry's construction. */
+  function current(): SessionEntry {
+    return registry.active
+  }
+
+  function labelOf(entry: SessionEntry): string {
+    return registry.summaries().find(item => item.key === entry.key)?.label ?? 'Session'
+  }
+
+  function postLiveSessions(): void {
+    provider.post({
+      type: 'setLiveSessions',
+      sessions: registry.summaries(),
+      activeKey: registry.activeSessionKey,
+    })
+  }
 
   let catalogueRefresh: Promise<void> | null = null
   let disposed = false
@@ -251,24 +434,25 @@ export function activate(context: vscode.ExtensionContext): void {
       liveAttachment ||
       !checkTurnAllowed().allowed
     ) return
-    await session.warmup()
+    await current().session.warmup()
   }
 
   function refreshModels(model?: string): Promise<void> {
     if (catalogueRefresh) return catalogueRefresh
     catalogueRefresh = (async () => {
       invalidateRayuConfigCache()
-      const previous = buildCatalogue(session)
-      session.availableModels = { ...previous, loading: true, error: null }
-      provider.post({ type: 'setModelCatalogue', catalogue: session.availableModels })
+      const previous = buildCatalogue(current().session)
+      const pending: ModelCatalogueView = { ...previous, loading: true, error: null }
+      current().session.availableModels = pending
+      provider.post({ type: 'setModelCatalogue', catalogue: pending })
       const outcome = await refreshProviderCatalogue({ enginePath, cwd: engineCwd }, model)
       if (disposed) return
       invalidateRayuConfigCache()
       const active = readActiveModel()
       if (outcome.inference && ((active.provider === outcome.activeProviderId && active.model === outcome.activeModel) || model === outcome.activeModel)) {
-        session.applyInitialInference(outcome.inference)
+        current().session.applyInitialInference(outcome.inference)
       }
-      session.availableModels = {
+      current().session.availableModels = {
         options: outcome.catalogue ?? previous.options,
         loading: false,
         error: outcome.ok ? null : outcome.error ?? 'Could not refresh models.',
@@ -285,22 +469,85 @@ export function activate(context: vscode.ExtensionContext): void {
     prewarmSession()
   }
 
+  /**
+   * Restart the engine so it re-reads the shared config, WITHOUT losing the conversation.
+   *
+   * `rayuConfig` is process-cached in the engine child, so a subagent or WebFetch model
+   * written here is invisible to the running engine — and there is no control request that
+   * invalidates its cache. A respawn is the only way to apply it.
+   *
+   * The respawn uses `--resume <sessionId>`, which is the same sequence `resumeSession` uses:
+   * the child reloads the conversation from the session file, and the transcript is restored
+   * from that file rather than being cleared. So the visible effect is nothing except the
+   * setting taking hold. With no session id yet there is no conversation to preserve, and
+   * the next prompt starts a correctly-configured engine on its own.
+   */
+  async function restartEngineWithResume(): Promise<void> {
+    invalidateRayuConfigCache()
+    const sessionId = current().session.engineSessionId
+    if (!sessionId) {
+      // `preserveModel` throughout: this is a RESTART of one conversation, not a new one, so
+      // it must not adopt whatever model another conversation has since selected.
+      current().session.newSession(undefined, undefined, { preserveModel: true })
+      provider.syncState()
+      prewarmSession()
+      return
+    }
+    const cwd = workspaceDir ?? engineCwd
+    current().session.newSession(sessionId, cwd, { preserveModel: true })
+    current().session.restoreTranscript(await loadSessionTranscript(sessionId, cwd))
+    await current().session.restoreTaskHistory(sessionId, cwd)
+    provider.syncState()
+    prewarmSession()
+  }
+
+  /** Show a host-owned command result in the transcript, as the CLI shows a system line. */
+  function postCommandNotice(message: string): void {
+    provider.post({ type: 'addMessage', entry: { id: `cmd-${Date.now()}`, kind: 'notice', text: message, severity: 'info' } })
+  }
+
+  async function runModelSettingCommand(command: ModelSettingCommand): Promise<void> {
+    switch (command.kind) {
+      case 'usage':
+        postCommandNotice(command.message)
+        return
+      case 'show':
+        postCommandNotice(describeSelection(command.target, command.agentType))
+        return
+      case 'reset': {
+        const notice = applySelection(command.target, null, command.agentType)
+        if (notice) postCommandNotice(notice)
+        await restartEngineWithResume()
+        return
+      }
+      case 'choose':
+        // The catalogue is what the picker lists, and it may not have been fetched yet.
+        void refreshModels()
+        setModelChooser(buildChooser(command.target, command.agentType))
+        return
+    }
+  }
+
   provider = new ChatViewProvider(
     context.extensionUri,
     () =>
       buildState(
         version,
-        session,
-        permissions,
+        current().session,
+        current().permissions,
         providerSetup,
+        modelChooser,
+        ideContext,
         attachment,
         historySessions,
+        registry.summaries(),
+        registry.activeSessionKey,
         taskInspectionSupported,
         taskInspectionMessage,
       ),
     {
       ready: prewarmSession,
-      submitPrompt: async text => {
+      submitPrompt: async (text, images) => {
         // The CLI implementations of these commands render Ink UI and are therefore
         // absent from the non-interactive engine. Route them to Rayucode's existing
         // native surfaces before the sign-in gate, so `/login` is reachable while the
@@ -314,38 +561,76 @@ export function activate(context: vscode.ExtensionContext): void {
           await openProviderSetupSurface(true)
           return
         }
-        await submitPrompt(session, provider, text)
+        // These are `local-jsx` in the CLI and therefore absent from the engine too, but
+        // unlike /login they take arguments — so they are parsed rather than matched.
+        const settingCommand = parseModelSettingCommand(text, current().session.subagentTypes)
+        if (settingCommand) {
+          await runModelSettingCommand(settingCommand)
+          return
+        }
+        if (liveAttachment && (images?.length ?? 0) > 0) {
+          provider.post({
+            type: 'showError',
+            message: 'Image attachments are unavailable while attached to a CLI session. Detach to send this image with Rayucode.',
+          })
+          return
+        }
+        if (liveAttachment) {
+          await liveAttachment.submitPrompt(text)
+          return
+        }
+        const acceptedImages = validateImageInputs(images, provider)
+        if (acceptedImages === null) return
+        await submitPrompt(current().session, provider, text, acceptedImages)
       },
-      interrupt: () => session.interrupt(),
+      interrupt: () => current().session.interrupt(),
       newSession: () => {
-        session.newSession()
+        // OPENS a conversation; it does not replace one. The previous implementation called
+        // `newSession()` on the single session, which killed a turn that was still running.
+        registry.create()
+        provider.syncState()
+        prewarmSession()
+      },
+      switchSession: key => {
+        if (registry.activate(key)) return
+        // A stale key from a list the webview fetched before a session closed. Resync rather
+        // than fail: the user pressed a row that no longer exists and needs to see why.
+        postLiveSessions()
+        provider.post({ type: 'showError', message: 'That conversation is no longer open.' })
+      },
+      closeSession: key => {
+        registry.close(key)
         provider.syncState()
         prewarmSession()
       },
       permissionResponse: (requestId, decision) =>
-        permissions.resolve(session.controlClient, requestId, { kind: decision }),
+        current().permissions.resolve(current().session.controlClient, requestId, { kind: decision }),
       questionResponse: (requestId, answers, notes) => {
-        const result = permissions.resolveQuestions(
-          session.controlClient,
+        const result = current().permissions.resolveQuestions(
+          current().session.controlClient,
           requestId,
           answers,
           notes,
         )
-        if (result) session.recordQuestionAnswers(result.toolUseId, result.answers)
+        if (result) current().session.recordQuestionAnswers(result.toolUseId, result.answers)
       },
       // The WEBVIEW owns the dropdown now, so the host only applies the choice. It is
       // configuration only — nothing here touches the composer's text.
       selectModelValue: async value => {
-        await session.setModel(value)
+        await current().session.setModel(value)
         // Finish an older in-flight fetch before requesting this selection's effective settings.
         if (catalogueRefresh) await catalogueRefresh
         await refreshModels(value)
-        provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
+        provider.post({
+          type: 'setModelCatalogue',
+          catalogue: buildCatalogue(current().session),
+        })
       },
       refreshModelCatalogue: refreshModels,
-      // Effort goes through the CLI's own /effort command; thinking through the engine's
-      // set_max_thinking_tokens. Each matches that setting's own semantics — see
-      // sessionHandle.setEffort / setThinking.
+      // Effort goes through the CLI's own `/effort` command — see sessionHandle.setEffort.
+      // Thinking has no control request: it is forced on for the whole session by the
+      // `--thinking enabled` spawn flag, which is the only mechanism that outranks the
+      // user's `alwaysThinkingEnabled` setting.
       listAttachable: async () => {
         const outcome = await listAttachTargets({ enginePath, cwd: engineCwd }, engineCwd)
         attachTargets = outcome.targets ?? []
@@ -374,26 +659,26 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
 
-        standaloneTaskSnapshot = [...session.backgroundTasks]
-        await session.restoreTaskHistory(target.sessionId, target.cwd)
+        standaloneTaskSnapshot = [...current().session.backgroundTasks]
+        await current().session.restoreTaskHistory(target.sessionId, target.cwd)
         const handle = await attachToCliSession(target, {
-          onStreamStart: () => session.beginMirroredTurn(),
-          onStreamDelta: delta => session.appendMirroredDelta(delta),
-          onStreamThinking: () => session.markMirroredThinking(),
-          onStreamEnd: () => session.endMirroredTurn(),
-          onActivity: messages => session.applyMirroredActivity(messages),
+          onStreamStart: () => current().session.beginMirroredTurn(),
+          onStreamDelta: delta => current().session.appendMirroredDelta(delta),
+          onStreamThinking: () => current().session.markMirroredThinking(),
+          onStreamEnd: () => current().session.endMirroredTurn(),
+          onActivity: messages => current().session.applyMirroredActivity(messages),
           onPermissionRequest: request =>
-            permissions.presentMirrored(request, response =>
+            current().permissions.presentMirrored(request, response =>
               liveAttachment?.respondPermission(request.requestId, response),
             ),
           // Withdrawn or answered elsewhere — either way the card must go.
-          onPermissionDismiss: requestId => permissions.dismiss(requestId),
+          onPermissionDismiss: requestId => current().permissions.dismiss(requestId),
           onTaskSnapshot: tasks => {
             taskInspectionSupported = true
             taskInspectionMessage = undefined
-            session.applyMirroredTaskSnapshot(tasks, true)
+            current().session.applyMirroredTaskSnapshot(tasks, true)
           },
-          onTaskEvent: event => session.applyMirroredTaskEvent(event),
+          onTaskEvent: event => current().session.applyMirroredTaskEvent(event),
           onTaskUnsupported: message => {
             taskInspectionSupported = false
             taskInspectionMessage = message
@@ -403,7 +688,7 @@ export function activate(context: vscode.ExtensionContext): void {
             liveAttachment = null
             taskInspectionSupported = true
             taskInspectionMessage = undefined
-            session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
+            current().session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
             attachment = {
               ...attachment,
               attached: null,
@@ -434,7 +719,7 @@ export function activate(context: vscode.ExtensionContext): void {
         liveAttachment = null
         taskInspectionSupported = true
         taskInspectionMessage = undefined
-        session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
+        current().session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
         attachment = { ...attachment, attached: null, error: null }
         postAttachment()
         prewarmSession()
@@ -513,45 +798,43 @@ export function activate(context: vscode.ExtensionContext): void {
         // the old one. A fresh child reads the new configuration and has no stale cache
         // by construction — a stronger guarantee than invalidating caches in place.
         invalidateRayuConfigCache()
-        session.newSession()
-        provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
+        current().session.newSession()
+        provider.post({
+          type: 'setModelCatalogue',
+          catalogue: buildCatalogue(current().session),
+        })
         provider.syncState()
         prewarmSession()
       },
 
-      setEffort: level => session.setEffort(level),
-      setThinking: async enabled => {
-        // The boolean result is consumed here rather than propagated: the session already
-        // reported the acknowledged state through onInferenceSettings, and surfacing a
-        // failure twice would double the notice.
-        await session.setThinking(enabled)
-      },
+      setEffort: level => current().session.setEffort(level),
       cyclePermissionMode: async () => {
-        const next = nextPermissionMode(session.currentPermissionMode.id)
-        // Only tell the webview once the engine has accepted it. Flipping the pill
-        // optimistically would claim "Full access" while the engine still asks for
-        // approval on every tool.
-        if (await session.setPermissionMode(next)) {
-          provider.post({ type: 'setPermissionMode', mode: next })
-        }
+        const next = nextPermissionMode(current().session.currentPermissionMode.id)
+        // Post either way. On success the pill moves to the accepted mode; on refusal it
+        // is snapped back to what is still enforced, because the webview applies its own
+        // optimistic update and would otherwise be left claiming a mode the engine
+        // rejected.
+        await current().session.setPermissionMode(next)
+        provider.post({ type: 'setPermissionMode', mode: current().session.currentPermissionMode })
       },
       setPermissionMode: async (modeId: string) => {
         try {
-          const mode = permissionModeById(modeId)
-          if (mode && (await session.setPermissionMode(mode))) {
-            provider.post({ type: 'setPermissionMode', mode })
-          }
+          await current().session.setPermissionMode(permissionModeById(modeId))
         } catch (error) {
           console.error('[rayucode] failed to set permission mode', error)
         }
+        // See above: the authoritative mode is published whatever the outcome.
+        provider.post({ type: 'setPermissionMode', mode: current().session.currentPermissionMode })
       },
       // Keep/undo go through the engine's OWN /keep and /undo commands, which is the
       // mechanism `utils/pendingFileChanges.ts` implements for the CLI. The
       // `rewind_files` control request is a different thing — it rewinds everything
       // since a message — and wiring a per-file button to it would revert files the
       // user had chosen to keep.
-      reviewKeep: path => submitPrompt(session, provider, reviewCommand('keep', path)),
-      reviewUndo: path => submitPrompt(session, provider, reviewCommand('undo', path)),
+      reviewKeep: path =>
+        submitPrompt(current().session, provider, reviewCommand('keep', path)),
+      reviewUndo: path =>
+        submitPrompt(current().session, provider, reviewCommand('undo', path)),
       openReviewDiff: path => openReviewDiff(review.store, path),
       openFile: path => openReviewFile(path),
       signIn: async () => {
@@ -569,31 +852,129 @@ export function activate(context: vscode.ExtensionContext): void {
             '{**/node_modules/**,**/.git/**,**/dist/**,**/.turbo/**}',
             50,
           )
-          const files = uris.map(uri => vscode.workspace.asRelativePath(uri))
-          provider.post({ type: 'fileSearchResults', query, files })
+          const files = uris.map(uri => vscode.workspace.asRelativePath(uri, false))
+          // VS Code's findFiles API returns files only. Derive their parent folders so
+          // the same @ picker can reference directories, which the shared attachment
+          // parser already knows how to expand.
+          const folders = new Set<string>()
+          for (const file of files) {
+            const parts = file.replace(/\\/g, '/').split('/')
+            for (let index = 1; index < parts.length; index += 1) {
+              const folder = `${parts.slice(0, index).join('/')}/`
+              if (!query || folder.toLowerCase().includes(query.toLowerCase())) folders.add(folder)
+            }
+          }
+          provider.post({
+            type: 'fileSearchResults',
+            query,
+            files: [...folders, ...files].slice(0, 75),
+          })
         } catch {
           provider.post({ type: 'fileSearchResults', query, files: [] })
         }
       },
-      mcpToggle: async (serverName, enabled) => {
-        await session.toggleMcpServer(serverName, enabled)
+      resolveContextPaths: async (requestId, uriList) => {
+        const uris: vscode.Uri[] = []
+        for (const line of uriList.split(/\r?\n/)) {
+          const value = line.trim()
+          if (!value || value.startsWith('#')) continue
+          try {
+            const uri = value.includes('://') ? vscode.Uri.parse(value, true) : vscode.Uri.file(value)
+            if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') continue
+            uris.push(uri)
+          } catch {
+            // A stale Explorer item or inaccessible external path is skipped while
+            // other dropped resources remain usable.
+          }
+        }
+        const paths = await contextPathsForUris(uris)
+        if (paths.length === 0) {
+          provider.post({ type: 'showError', message: 'Rayucode could not access the dropped file or folder.' })
+        }
+        provider.post({ type: 'contextPathsResolved', requestId, paths })
       },
-      mcpReconnect: async serverName => {
-        await session.reconnectMcpServer(serverName)
+      pickContextPaths: async requestId => {        const uris = await vscode.window.showOpenDialog({
+          canSelectFiles: true,
+          canSelectFolders: true,
+          canSelectMany: true,
+          openLabel: 'Add to Rayu context',
+          title: 'Add files or folders to Rayu context',
+        })
+        // A REPLY IS ALWAYS SENT, including for a cancelled dialog. The webview correlates
+        // this by `requestId` and awaits it; returning early on cancel would leave that
+        // promise pending forever, which is indistinguishable from a hung extension host.
+        // An empty list is the correct answer to "the user chose nothing", and unlike the
+        // drop path it is not an error, so nothing is reported.
+        provider.post({
+          type: 'contextPathsResolved',
+          requestId,
+          paths: uris ? await contextPathsForUris(uris) : [],
+        })
+      },
+      requestToolOutput: (requestId, entryId) => {
+        // ALWAYS replies, like the context-path requests above and for the same reason:
+        // the webview awaits this by `requestId`, so a silent path would leave its
+        // promise pending and the row stuck on "Loading…". `null` is a real answer —
+        // retention is capped, so an old result may genuinely be gone.
+        provider.post({
+          type: 'toolOutputResolved',
+          requestId,
+          text: current().session.fullToolOutput(entryId),
+        })
+      },
+      modelChooserChoice: async (target, value, agentType) => {
+        setModelChooser(null)
+        const notice = applySelection(target, value, agentType)
+        if (notice) postCommandNotice(notice)
+        // Only restart when something was actually written. A choice that resolved to no
+        // model is a no-op, and respawning for it would cost the user a reload for nothing.
+        if (notice) await restartEngineWithResume()
+      },
+      modelChooserDismiss: () => setModelChooser(null),
+      mcpToggle: async (serverName, enabled) => {
+        await current().session.toggleMcpServer(serverName, enabled)
+      },      mcpReconnect: async serverName => {
+        await current().session.reconnectMcpServer(serverName)
       },
       getMcpStatus: async () => {
-        const servers = await session.getMcpStatus()
+        const servers = await current().session.getMcpStatus()
         provider.post({ type: 'setMcpServers', servers })
       },
       listSessions: async () => {
-        historySessions = await listWorkspaceSessions(workspaceDir)
-        provider.post({ type: 'setSessions', sessions: historySessions })
+        historySessions = { ...historySessions, status: 'loading' }
+        provider.post({ type: 'setSessions', list: historySessions })
+        try {
+          historySessions = {
+            status: 'ready',
+            sessions: (await listWorkspaceSessions(workspaceDir)) ?? [],
+          }
+        } catch (cause) {
+          // Reported rather than swallowed: an unreadable history directory is something the
+          // user can act on, and silently showing "no sessions" hides a real problem.
+          historySessions = {
+            status: 'failed',
+            sessions: historySessions.sessions,
+            error: `Could not read session history: ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+          }
+        }
+        provider.post({ type: 'setSessions', list: historySessions })
       },
       resumeSession: async (id: string) => {
-        // Order matters: newSession() clears the transcript, so the restore must follow
-        // it. The engine child is spawned with --resume and is the SOLE writer to the
-        // session file; loadSessionTranscript only reads.
-        const selected = historySessions?.find(item => item.id === id)
+        // ── AN OPEN CONVERSATION IS ACTIVATED, NOT RESUMED ──────────────────────
+        //
+        // If this session is already open in the panel, its engine is alive and may be
+        // mid-turn. Respawning it with `--resume` would kill that turn and rebuild the
+        // transcript from the session FILE — which is where the raw
+        // `<command-name>/model</command-name>` breadcrumbs came from. Activation is both
+        // cheaper and lossless.
+        if (registry.findByEngineSessionId(id)) {
+          registry.activate(registry.findByEngineSessionId(id)!.key)
+          prewarmSession()
+          return
+        }
+        const selected = historySessions.sessions.find(item => item.id === id)
         if (!selected) {
           provider.post({
             type: 'showError',
@@ -605,17 +986,22 @@ export function activate(context: vscode.ExtensionContext): void {
         // the engine in the selected session's cwd lets the shared UUID resume path
         // find the same transcript the lister displayed.
         const resumeCwd = workspaceDir ?? selected.cwd ?? engineCwd
-        session.newSession(id, resumeCwd)
+        // A NEW entry rather than reusing the active one: resuming history is opening another
+        // conversation, and the one already on screen may be mid-turn. Order matters —
+        // `create()` starts with an empty transcript, so the restore follows it. The engine
+        // child is spawned with `--resume` and is the SOLE writer to the session file;
+        // `loadSessionTranscript` only reads.
+        const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd })
         const restored = await loadSessionTranscript(id, resumeCwd)
-        session.restoreTranscript(restored)
-        await session.restoreTaskHistory(id, resumeCwd)
+        entry.session.restoreTranscript(restored)
+        await entry.session.restoreTaskHistory(id, resumeCwd)
         provider.syncState()
         prewarmSession()
       },
       stopTask: async (_sourceSessionId, taskId) => {
         try {
           if (liveAttachment) await liveAttachment.stopTask(taskId)
-          else await session.stopBackgroundTask(taskId)
+          else await current().session.stopBackgroundTask(taskId)
         } catch (cause) {
           provider.post({
             type: 'showError',
@@ -637,25 +1023,18 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   )
 
-  // The engine child must die with the window. An orphan keeps its MCP server
-  // subprocesses alive, holding ports and file locks after the editor has closed.
-  context.subscriptions.push({ dispose: () => session.dispose() })
+  // The engine children must die with the window. An orphan keeps its MCP server
+  // subprocesses alive, holding ports and file locks after the editor has closed — and with
+  // several conversations open there may be several of them.
+  context.subscriptions.push({ dispose: () => registry.dispose() })
+  // The first conversation is opened HERE, not on first access. `create()` publishes through
+  // `provider`, which does not exist until the line above it — and a lazy creation triggered
+  // from inside `getState()` would re-enter `syncState()` mid-snapshot. Creating an entry does
+  // not spawn an engine; `prewarmSession()` does that once the panel is mounted.
+  registry.create()
   // Detach cleanly so the CLI session stops forwarding and drops pending decisions,
   // rather than waiting for the socket to notice the window closed.
   context.subscriptions.push({ dispose: () => liveAttachment?.detach() })
-
-  // ── EDITOR CONNECTION ────────────────────────────────────────────────────────
-  //
-  // Publishes the same `~/.rayu/ide/<port>.lock` the CLI already scans for, so a `rayu`
-  // running in this window's terminal attaches to this editor and sees its selection.
-  // Started AFTER the session so a failure here cannot prevent the panel from working —
-  // the connection is an enhancement, not a prerequisite.
-  void (async () => {
-    const ide = await startIdeServer(version)
-    if (!ide) return
-    context.subscriptions.push({ dispose: () => void ide.dispose() })
-    context.subscriptions.push(trackEditorSelection(ide))
-  })()
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, provider, {
@@ -678,7 +1057,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // A Rayucode helper changed its provider catalogue. Refresh the choices while the
     // current conversation keeps its explicit provider-qualified execution selection.
     invalidateRayuConfigCache()
-    session.availableModels = null
+    current().session.availableModels = null
     provider.syncState()
     void refreshModels()
   }))
@@ -707,13 +1086,94 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   )
 
+  // ── TERMINAL SELECTION ───────────────────────────────────────────────────────
+  //
+  // An explicit command rather than passive tracking, because stable VS Code API exposes NO
+  // way to read a terminal's selected text — there is no `Terminal.selection` getter at any
+  // version, and the extension's engine floor is 1.85. The only route is the editor's own
+  // copy command plus the clipboard, which is a user-visible side effect and therefore has to
+  // be user-initiated. A proposed API would work but could not ship to the Marketplace.
+  //
+  // The clipboard is RESTORED afterwards: silently destroying what the user had copied would
+  // be a worse bug than the feature is worth.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(COMMANDS.addTerminalSelection, async () => {
+      if (!vscode.window.activeTerminal) {
+        void vscode.window.showInformationMessage('No active terminal to copy from.')
+        return
+      }
+      const previousClipboard = await vscode.env.clipboard.readText()
+      try {
+        await vscode.commands.executeCommand('workbench.action.terminal.copySelection')
+        const selection = await vscode.env.clipboard.readText()
+        // Unchanged clipboard means nothing was selected: `copySelection` is a no-op then,
+        // and inserting the previous clipboard contents would be actively wrong.
+        if (!selection.trim() || selection === previousClipboard) {
+          void vscode.window.showInformationMessage(
+            'Select some text in the terminal first.',
+          )
+          return
+        }
+        await provider.reveal()
+        provider.post({ type: 'insertPrompt', text: fenceTerminalSelection(selection) })
+      } finally {
+        await vscode.env.clipboard.writeText(previousClipboard)
+      }
+    }),
+  )
+
+  // ── ADDING CONTEXT FROM THE TREE AND THE EDITOR ──────────────────────────────
+  //
+  // Drag and drop cannot serve a webview. VS Code blanks the panel's pointer events for the
+  // duration of any drag that looks like it carries a file — which an ordinary Explorer or
+  // editor-tab drag does — unless Shift is held, and the event that would have to be cancelled
+  // is dispatched in a frame the panel cannot reach. See `panel/dropTargetView.ts` for the
+  // measurement and for the drop strip that DOES accept a plain drag.
+  //
+  // So this menu command is not a workaround: it is the route the platform supports for the
+  // tree. It reuses the SAME resolver and the SAME `@`-mention format as every other path, so
+  // they all produce identical prompt text.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      COMMANDS.addToContext,
+      async (clicked?: vscode.Uri, selection?: vscode.Uri[]) => {
+        // `selection` is the Explorer's multi-select and is what the user means when they have
+        // several rows highlighted; `clicked` is the single row. Falling back to the active
+        // editor makes the command work from the palette, where neither argument is passed.
+        const uris =
+          selection && selection.length > 0
+            ? selection
+            : clicked
+              ? [clicked]
+              : vscode.window.activeTextEditor
+                ? [vscode.window.activeTextEditor.document.uri]
+                : []
+        if (uris.length === 0) {
+          void vscode.window.showInformationMessage(
+            'Select a file or folder to add to Rayu context.',
+          )
+          return
+        }
+        const paths = await contextPathsForUris(uris)
+        if (paths.length === 0) {
+          void vscode.window.showWarningMessage(
+            'Rayucode could not read that file or folder.',
+          )
+          return
+        }
+        await provider.reveal()
+        provider.post({ type: 'insertPrompt', text: formatPathMentions(paths) })
+      },
+    ),
+  )
+
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMANDS.newSession, async () => {
       await provider.reveal()
-      // A real reset: the engine child is replaced, because per-session state
-      // (read-file tracking, granted permissions, MCP connections, compaction
-      // history) has no control request that clears all of it.
-      session.newSession()
+      // OPENS a conversation. Whatever was on screen keeps its engine and keeps running —
+      // which is the whole difference from the previous behaviour, where this button killed
+      // the turn in flight.
+      registry.create()
       provider.syncState()
       prewarmSession()
     }),
@@ -762,6 +1222,7 @@ function buildCatalogue(session: ChatSession): ModelCatalogueView {
       value: m.value,
       label: m.displayName || m.value,
       description: m.description,
+      customerDescription: m.customerDescription,
       providerId: m.providerId, model: m.model, contextWindow: m.contextWindow,
       supportsThinking: m.supportsThinking, supportsImage: m.supportsImage, supportsTools: m.supportsTools,
     })),
@@ -775,8 +1236,12 @@ function buildState(
   session: ChatSession,
   permissions: PermissionRouter,
   providerSetup: ProviderSetupView,
+  modelChooser: ModelChooserView | null,
+  ideContext: IdeContextView | null,
   attachment: AttachmentView,
-  historySessions: SessionSummaryView[] | undefined,
+  historySessions: SessionListView,
+  liveSessions: LiveSessionView[],
+  activeSessionKey: string,
   taskInspectionSupported = true,
   taskInspectionMessage?: string,
 ): WebviewState {
@@ -799,17 +1264,24 @@ function buildState(
     modelCatalogue: buildCatalogue(session),
     inference: session.currentInference,
     providerSetup,
+    modelChooser,
     attachment,
     permissionMode: session.currentPermissionMode,
     commands: [...session.commands],
     contextUsage: session.contextUsage,
     mcpServers: [...session.mcpServers],
+    ideContext,
     // Full `init` snapshots replace webview state. Carry the host-owned history
     // list so unrelated model/auth/context syncs cannot erase an open picker.
     sessions: historySessions,
+    liveSessions,
+    activeSessionKey,
     backgroundTasks: [...session.backgroundTasks],
     taskInspectionSupported,
     taskInspectionMessage,
+    turnProgress: session.currentTurnProgress,
+    turnCompletions: { ...session.completedTurns },
+    thinkingBlocks: [...session.currentThinkingBlocks],
   }
 }
 
@@ -825,6 +1297,7 @@ async function submitPrompt(
   session: ChatSession,
   provider: ChatViewProvider,
   text: string,
+  images: ImageInputView[] = [],
 ): Promise<void> {
   const gate = checkTurnAllowed()
   if (!gate.allowed) {
@@ -834,14 +1307,97 @@ async function submitPrompt(
     provider.post({ type: 'showError', message: gate.reason })
     return
   }
-  await session.submitPrompt(text)
+  await session.submitPrompt(text, images)
+}
+
+/**
+ * Convert VS Code URIs to the same workspace-relative attachment references used
+ * by the CLI. This deliberately lives in the extension host: browser File objects
+ * do not reliably expose a path, and remote-workspace paths must go through VS Code.
+ */
+async function contextPathsForUris(uris: readonly vscode.Uri[]): Promise<string[]> {
+  const paths: string[] = []
+  for (const uri of uris) {
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      const workspace = vscode.workspace.getWorkspaceFolder(uri)
+      let display = workspace
+        ? vscode.workspace.asRelativePath(uri, false)
+        : uri.fsPath
+      display = display.replace(/\\/g, '/')
+      if (stat.type & vscode.FileType.Directory) display = `${display.replace(/\/$/, '')}/`
+      if (!paths.includes(display)) paths.push(display)
+    } catch {
+      // Leave inaccessible members out while preserving the rest of a multi-drop.
+    }
+  }
+  return paths
+}
+
+/** Validate untrusted webview image payloads before they enter the engine process. */
+function validateImageInputs(
+  images: ImageInputView[] | undefined,
+  provider: ChatViewProvider,
+): ImageInputView[] | null {
+  if (!images?.length) return []
+  if (images.length > API_MAX_MEDIA_PER_REQUEST) {
+    provider.post({
+      type: 'showError',
+      message: `A message can include at most ${API_MAX_MEDIA_PER_REQUEST} images.`,
+    })
+    return null
+  }
+
+  const supported = new Set<ImageInputView['mediaType']>([
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+  ])
+  for (const image of images) {
+    if (
+      !image ||
+      !supported.has(image.mediaType) ||
+      typeof image.data !== 'string' ||
+      image.data.length === 0 ||
+      image.data.length > API_IMAGE_MAX_BASE64_SIZE ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data) ||
+      image.data.length % 4 !== 0
+    ) {
+      provider.post({
+        type: 'showError',
+        message: `One image is invalid or exceeds the ${Math.floor(API_IMAGE_MAX_BASE64_SIZE / 1024 / 1024)} MB upload limit.`,
+      })
+      return null
+    }
+  }
+  return images
+}
+
+/**
+ * Wrap captured terminal output in a fence so the model reads it as output, not instructions.
+ *
+ * The fence length adapts to the content: terminal output legitimately contains triple
+ * backticks (a shell printing a Markdown file, for instance), and a fixed fence would be
+ * closed early by its own payload.
+ */
+function fenceTerminalSelection(selection: string): string {
+  const trimmed = selection.replace(/\s+$/, '')
+  const longestRun = Math.max(
+    2,
+    ...[...trimmed.matchAll(/`+/g)].map(match => match[0].length),
+  )
+  const fence = '`'.repeat(longestRun + 1)
+  return `Terminal output:\n${fence}\n${trimmed}\n${fence}\n`
 }
 
 /**
  * Parse only the commands owned by the extension host.
  *
- * Exact matching is intentional. Arguments belong to the CLI command parser, and a
- * normal prompt beginning with similar text must continue to reach the model unchanged.
+ * Exact matching for the argument-free ones is intentional: arguments belong to the CLI
+ * command parser, and a normal prompt beginning with similar text must continue to reach
+ * the model unchanged. The model-setting commands DO take arguments, so they are parsed by
+ * `parseModelSettingCommand`, which applies the same first-token rule.
  */
 function rayucodeHostSlashCommand(text: string): 'login' | 'connect' | null {
   const command = text.trim()

@@ -949,6 +949,16 @@ export async function runHeadless(
           message.subtype === 'post_turn_summary')
       ) &&
       message.type !== 'stream_event' &&
+      // Progress, not conversation. `lastMessage` becomes the final `--print` payload, so
+      // a frame that merely reports a running command's output so far must never land
+      // there — it can arrive while a tool is still flushing and would otherwise replace
+      // the result as the session's answer.
+      //
+      // (`tool_progress` is missing from this list for the same reason it is invisible in
+      // practice: it is gated to remote/container sessions. Left alone here rather than
+      // fixed blind, since changing it would alter remote behaviour that cannot be
+      // exercised from this surface.)
+      message.type !== 'tool_output' &&
       message.type !== 'keep_alive' &&
       message.type !== 'streamlined_text' &&
       message.type !== 'streamlined_tool_use_summary' &&

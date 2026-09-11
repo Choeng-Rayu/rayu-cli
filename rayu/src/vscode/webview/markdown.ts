@@ -147,8 +147,72 @@ marked.use({
   },
 })
 
+/**
+ * Map a file path to a registered highlight.js language, or null.
+ *
+ * Only the extensions the languages above actually cover. An unknown extension returns
+ * null and the caller escapes the text instead of highlighting it — guessing a language
+ * mis-colours code, which is worse than plain text because it looks authoritative.
+ */
+const EXTENSION_LANGUAGES: Record<string, string> = {
+  ts: 'typescript',
+  tsx: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  js: 'javascript',
+  jsx: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  py: 'python',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  json: 'json',
+  jsonc: 'json',
+  md: 'markdown',
+  markdown: 'markdown',
+  yaml: 'yaml',
+  yml: 'yaml',
+  xml: 'xml',
+  html: 'xml',
+  htm: 'xml',
+  svg: 'xml',
+  css: 'css',
+  sql: 'sql',
+  go: 'go',
+  rs: 'rust',
+  patch: 'diff',
+  diff: 'diff',
+}
+
+export function languageForPath(filePath: string): string | null {
+  const extension = filePath.split('.').pop()?.toLowerCase()
+  if (!extension) return null
+  const language = EXTENSION_LANGUAGES[extension]
+  return language && hljs.getLanguage(language) ? language : null
+}
+
+/**
+ * Highlight one line or block of code from a known file, as sanitised HTML.
+ *
+ * Shares this module's `hljs` registry and `filter` with the markdown renderer, so a
+ * language added for fenced code blocks is immediately available to diffs and there is
+ * one allowlist rather than two. Diff content is FILE content, so it is untrusted and
+ * goes through the same sanitiser as everything else.
+ *
+ * `ignoreIllegals` matters here more than for markdown: a diff row is a fragment, so it
+ * frequently is not valid standalone syntax — an unclosed brace, half a template literal.
+ * Without it highlight.js throws on exactly the rows a diff is made of.
+ */
+export function highlightCode(code: string, filePath: string): string {
+  const language = languageForPath(filePath)
+  if (!language) return escapeHtml(code)
+  return filter.process(
+    hljs.highlight(code, { language, ignoreIllegals: true }).value,
+  )
+}
+
 /** Render markdown to sanitised HTML with syntax highlighting and copy controls. */
-export function renderMarkdown(source: string): string {
-  const html = marked.parse(source) as string
+export function renderMarkdown(source: string): string {  const html = marked.parse(source) as string
   return filter.process(html)
 }

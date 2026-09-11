@@ -155,6 +155,20 @@ export class EngineProcess {
     }
     // The engine is not a terminal. Leaving these set makes it try to colour
     // output that the extension host parses as protocol.
+    //
+    // ── THESE ALSO REACH TOOL SUBPROCESSES, AND THAT IS CORRECT ────────────────
+    //
+    // A command run by `Bash` inherits this environment, so it produces no colour
+    // either. That was examined as a possible cause of the panel's plainer output and
+    // it is not one: the CLI does not force colour on for tool subprocesses anywhere,
+    // and their stdout is a pipe rather than a TTY, so well-behaved tools disable
+    // colour themselves regardless of these variables. Unsetting them here would make
+    // the panel show colour where the terminal shows none — a divergence, not parity.
+    //
+    // Output can still ARRIVE with escapes in it, when the user opts in explicitly
+    // (`--color=always`, `git -c color.ui=always`) or a file simply contains them.
+    // Those are rendered by the webview's ANSI renderer rather than shown as literal
+    // `[0;32m` noise; see `webview/ansi.ts`.
     env.NO_COLOR = '1'
     env.FORCE_COLOR = '0'
 

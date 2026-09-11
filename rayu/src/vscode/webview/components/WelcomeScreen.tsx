@@ -5,8 +5,16 @@
  * can actually do. They insert text into the composer rather than sending it, so the
  * user can edit before committing — a chip that fired immediately would be a
  * one-click way to start an unwanted turn.
+ *
+ * ── THE CAPABILITY BADGES ARE GONE ─────────────────────────────────────────────
+ *
+ * "Multi-Provider", "Tool Execution", "Copilot Edits" and "MCP" used to sit here as pills.
+ * They are marketing copy, not affordances: the user has already installed the extension and
+ * opened the panel, so they are being sold something they own. Worse, "Copilot Edits" named a
+ * feature of a different product. The one-line introduction says what this is; the chips show
+ * what to do with it.
  */
-import { SparkleIcon } from './SparkleIcon.js'
+import { RayuMark } from './Icons.js'
 
 export interface PromptChipItem {
   icon: string
@@ -31,19 +39,12 @@ export function WelcomeScreen({
   return (
     <div className="rc-welcome">
       <div className="rc-welcome-mark" aria-hidden="true">
-        <SparkleIcon size={28} />
+        <RayuMark size={28} />
       </div>
       <h2 className="rc-welcome-title">What can I help with?</h2>
       <p className="rc-welcome-body">
-        Pair programming with multi-provider AI, autonomous tools, and full git review.
+        Ask Rayu to explain, change or review the code in this workspace.
       </p>
-
-      <div className="rc-welcome-capabilities">
-        <span className="rc-welcome-badge">Multi-Provider</span>
-        <span className="rc-welcome-badge">Tool Execution</span>
-        <span className="rc-welcome-badge">Copilot Edits</span>
-        <span className="rc-welcome-badge">MCP</span>
-      </div>
 
       <div className="rc-chips">
         {STARTER_CHIPS.map(chip => (
@@ -60,6 +61,11 @@ export function WelcomeScreen({
           </button>
         ))}
       </div>
+
+      <p className="rc-welcome-hint">
+        Drag files or images onto this panel, use <strong>Add Context</strong>, type{' '}
+        <code>@</code>, or right-click a file in the Explorer.
+      </p>
     </div>
   )
 }

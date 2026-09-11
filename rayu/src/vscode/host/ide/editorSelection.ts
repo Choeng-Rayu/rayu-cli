@@ -18,6 +18,8 @@
  */
 import * as vscode from 'vscode'
 
+import { toIdeSelection } from '../../../utils/ideSelection.js'
+import type { IdeContextView } from '../../shared/webviewProtocol.js'
 import type { IdeServerHandle, SelectionPayload } from './ideServer.js'
 
 /**
@@ -29,12 +31,58 @@ const SELECTION_DEBOUNCE_MS = 150
 /** Cap on the selected text sent. A whole-file selection should not become a huge frame. */
 const MAX_SELECTION_CHARS = 32_000
 
-export function trackEditorSelection(server: IdeServerHandle): vscode.Disposable {
+/**
+ * Project the editor's selection for the composer indicator.
+ *
+ * ── THE MAPPING IS THE CLI'S, NOT A SECOND ONE ─────────────────────────────────
+ *
+ * Line counting goes through `toIdeSelection`, the same pure mapper the CLI's own indicator
+ * uses. It is the only thing that knows a selection ending on character 0 stops at the START
+ * of that line and therefore does not include it — an off-by-one that is invisible until a
+ * user notices the count is one too high.
+ *
+ * Lines are converted to 1-BASED here because that is what a human reads and what an
+ * `@path#L10-20` mention means; the editor and the notification protocol are both 0-based.
+ */
+export function projectIdeContext(
+  selection: SelectionPayload,
+): IdeContextView | null {
+  if (!selection.filePath) return null
+  const mapped = toIdeSelection({
+    selection: selection.selection ?? null,
+    text: selection.text,
+    filePath: selection.filePath,
+  })
+  const relativePath = vscode.workspace.asRelativePath(selection.filePath, false)
+  if (mapped.lineCount <= 0 || mapped.lineStart === undefined) {
+    return { filePath: selection.filePath, relativePath, lineCount: 0 }
+  }
+  return {
+    filePath: selection.filePath,
+    relativePath,
+    lineCount: mapped.lineCount,
+    lineStart: mapped.lineStart + 1,
+    lineEnd: mapped.lineStart + mapped.lineCount,
+  }
+}
+
+export function trackEditorSelection(
+  server: IdeServerHandle,
+  /**
+   * Also publish the projected view to the panel.
+   *
+   * Optional so the editor connection still works with no panel open — the engine's own
+   * attachment path does not depend on the indicator existing.
+   */
+  onContext?: (context: IdeContextView | null) => void,
+): vscode.Disposable {
   let timer: ReturnType<typeof setTimeout> | undefined
 
   function flush(): void {
     timer = undefined
-    server.broadcastSelection(readCurrentSelection())
+    const selection = readCurrentSelection()
+    server.broadcastSelection(selection)
+    onContext?.(projectIdeContext(selection))
   }
 
   function schedule(): void {

@@ -1735,8 +1735,31 @@ export const SDKToolProgressMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKAuthStatusMessageSchema = lazySchema(() =>
-  z.object({
+export const SDKToolOutputMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('tool_output'),
+      tool_use_id: z.string(),
+      tool_name: z.string(),
+      parent_tool_use_id: z.string().nullable(),
+      text: z.string(),
+      elapsed_time_seconds: z.number(),
+      total_bytes: z.number().optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe(
+      "A running tool's output so far. `text` is a CUMULATIVE SNAPSHOT of the bounded " +
+        'tail the tool already computes for its own display — not an incremental chunk — ' +
+        'so a consumer REPLACES what it holds rather than appending. That makes a dropped ' +
+        'or duplicated frame harmless, which an append-based delta could not be, and keeps ' +
+        'the per-frame size bounded by construction rather than by the consumer remembering ' +
+        'to cap it. Emitted for tools that stream (Bash, PowerShell); throttled, and ' +
+        'additive, so a consumer that ignores it behaves exactly as before.',
+    ),
+)
+
+export const SDKAuthStatusMessageSchema = lazySchema(() =>  z.object({
     type: z.literal('auth_status'),
     isAuthenticating: z.boolean(),
     output: z.array(z.string()),
@@ -1986,6 +2009,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKHookProgressMessageSchema(),
     SDKHookResponseMessageSchema(),
     SDKToolProgressMessageSchema(),
+    SDKToolOutputMessageSchema(),
     SDKAuthStatusMessageSchema(),
     SDKTaskNotificationMessageSchema(),
     SDKTaskStartedMessageSchema(),

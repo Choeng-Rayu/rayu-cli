@@ -6,12 +6,19 @@
  */
 import type { JSX } from 'react'
 
+import { FileIcon, FolderIcon } from './Icons.js'
+
 export interface AutocompleteItem {
   id: string
   label: string
   description?: string
   insertText: string
-  kind: 'command' | 'file'
+  /**
+   * `folder` is distinguished from `file` because the two are otherwise indistinguishable
+   * strings — an extensionless file and a directory look identical — and they behave
+   * differently when the engine expands the mention: a directory is walked.
+   */
+  kind: 'command' | 'file' | 'folder'
 }
 
 export interface AutocompletePopoverProps {
@@ -19,6 +26,17 @@ export interface AutocompletePopoverProps {
   selectedIndex: number
   onSelect: (item: AutocompleteItem) => void
   onHoverIndex: (index: number) => void
+}
+
+function ItemIcon({ kind }: { kind: AutocompleteItem['kind'] }): JSX.Element {
+  switch (kind) {
+    case 'command':
+      return <span className="rc-popover-glyph">/</span>
+    case 'folder':
+      return <FolderIcon size={12} />
+    case 'file':
+      return <FileIcon size={12} />
+  }
 }
 
 export function AutocompletePopover({
@@ -47,7 +65,7 @@ export function AutocompletePopover({
             onMouseEnter={() => onHoverIndex(index)}
           >
             <span className="rc-popover-icon" aria-hidden="true">
-              {item.kind === 'command' ? '/' : '@'}
+              <ItemIcon kind={item.kind} />
             </span>
             <span className="rc-popover-label">{item.label}</span>
             {item.description ? (

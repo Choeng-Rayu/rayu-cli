@@ -46,6 +46,9 @@ export interface EngineModel {
   supportsTools?: boolean
   value: string
   displayName: string
+  /** Admin-published customer summary from the Rayu catalog, when available. */
+  customerDescription?: string
+  /** Existing provider/engine detail retained for non-Rayu model sources. */
   description: string
 }
 
@@ -106,6 +109,7 @@ export function readModelOptions(): EngineModel[] {
     if (all.length) return all.map(o => ({
       value: o.value, displayName: o.label ?? o.model,
       description: `${o.providerId} · ${o.model}`,
+      customerDescription: o.description,
       providerId: o.providerId, model: o.model, contextWindow: o.contextWindow,
       supportsThinking: o.supportsThinking, supportsImage: o.supportsImage, supportsTools: o.supportsTools,
     }))

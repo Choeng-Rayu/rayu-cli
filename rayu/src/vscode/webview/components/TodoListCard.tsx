@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import type { TodoItemView, TranscriptEntry } from '../../shared/webviewProtocol.js'
+import { ChevronIcon, TaskListIcon } from './Icons.js'
 
 export type TodoToolEntry = Extract<TranscriptEntry, { kind: 'tool' }> & {
   todos: TodoItemView[]
@@ -107,21 +108,7 @@ export function TodoListCard({
   )
 }
 
-function TaskListIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
-      <path d="M2.5 3.5a1 1 0 1 1 2 0 1 1 0 0 1-2 0zM6 3h7v1H6V3zm-3.5 5a1 1 0 1 1 2 0 1 1 0 0 1-2 0zM6 7.5h7v1H6v-1zm-3.5 5a1 1 0 1 1 2 0 1 1 0 0 1-2 0zM6 12h7v1H6v-1z" />
-    </svg>
-  )
-}
 
-function ChevronIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-      <path d="M4 6l4 4 4-4H4z" />
-    </svg>
-  )
-}
 
 function TodoStatusIcon({ status }: { status: TodoItemView['status'] }): JSX.Element {
   if (status === 'completed') {

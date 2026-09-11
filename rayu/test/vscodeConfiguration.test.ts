@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { _resetRayuConfigCache } from '../src/utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from '../src/vscode/host/models/modelConfig.js'
-import { ChatSession } from '../src/vscode/host/panel/sessionHandle.js'
+import { ChatSession, engineArgsFor } from '../src/vscode/host/panel/sessionHandle.js'
 import { sessionCallbacks } from './helpers/vscodeSession.js'
 import { CONNECT_FLAG } from '../src/vscode/shared/connectProtocol.js'
 import { PERMISSION_MODES as editorModes } from '../src/vscode/shared/permissionModes.js'
@@ -39,12 +39,23 @@ test('editor permission modes are accepted by the CLI', () => {
   for (const mode of editorModes) expect(cliModes as readonly string[]).toContain(mode.id)
 })
 
-test('thinking off sends zero, not null (which resets engine defaults)', async () => {
+test('thinking is forced on by the spawn flag, never by a control request', async () => {
+  // The flag is the whole mechanism: it is the only thing that outranks a shared
+  // `alwaysThinkingEnabled: false`. Asserted on the pure argv builder so the contract is
+  // checked without spawning, and re-checked end-to-end in vscodeRealEngine.test.ts.
+  expect(engineArgsFor({})).toEqual(['--thinking', 'enabled'])
+  expect(engineArgsFor({ resumeSessionId: 'abc-123' })).toEqual([
+    '--thinking', 'enabled', '--resume', 'abc-123',
+  ])
+
+  // And nothing may quietly re-disable it: `set_max_thinking_tokens` with null would
+  // restore the settings default, and with 0 would turn thinking off outright.
   const session = new ChatSession({ enginePath: '/unused', cwd: tmpdir() }, sessionCallbacks())
-  const requests: unknown[] = []
+  const requests: unknown[][] = []
   ;(session as any).control = { request: async (...args: unknown[]) => { requests.push(args); return {} }, dispose() {} }
-  expect(await session.setThinking(false)).toBe(true)
-  expect(requests[0]).toEqual(['set_max_thinking_tokens', { max_thinking_tokens: 0 }, 15_000])
+  await session.setEffort('high')
+  expect(requests.map(([method]) => method)).not.toContain('set_max_thinking_tokens')
+  expect(session).not.toHaveProperty('setThinking')
   session.dispose()
 })
 
