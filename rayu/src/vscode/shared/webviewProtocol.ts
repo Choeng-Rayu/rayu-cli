@@ -42,6 +42,223 @@ export type EntryId = string
  */
 export type TodoItemView = Pick<TodoItem, 'content' | 'status' | 'activeForm'>
 
+/**
+ * What the engine is doing right now, as one stable label per state.
+ *
+ * ── STABLE PHASES, NOT ROTATING VERBS ──────────────────────────────────────────
+ *
+ * An earlier version of the panel picked a random present-tense verb ("Cooking",
+ * "Brewing") per turn. That reads as playful once and as noise every time after, and
+ * it actively hides information: "Cooking" is the same word whether the engine is
+ * waiting on a provider, editing a file, or blocked on an approval. These phases are
+ * derived from the engine's own stream events by the host, so the label always says
+ * which of those is true.
+ *
+ * The `waiting` phase is the one that matters most: it means the engine is BLOCKED on
+ * the user, and a spinner that keeps claiming "working" while nothing can progress is
+ * a bug the user cannot diagnose.
+ */
+export type TurnPhaseView =
+  | 'starting'
+  | 'requesting'
+  | 'thinking'
+  | 'responding'
+  | 'reading'
+  | 'searching'
+  | 'editing'
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'stopped'
+
+/**
+ * Token counts for one turn, with their provenance.
+ *
+ * ── `↑` IS INPUT AND `↓` IS OUTPUT — NOT FILESYSTEM READS AND WRITES ───────────
+ *
+ * `inputTokens` is everything sent TO the provider and `outputTokens` is everything
+ * received FROM it. The arrows in the UI mean exactly that. They must never be
+ * relabelled as reads and writes, which is a plausible-looking misreading that would
+ * make the numbers meaningless.
+ *
+ * ── INPUT INCLUDES CACHE TOKENS; OUTPUT DOES NOT ───────────────────────────────
+ *
+ * `inputTokens` is the SUM of direct input, cache-creation input and cache-read
+ * input, because all three were sent as part of the request. The two cache figures
+ * are also carried separately so the tooltip can break the total down, but adding
+ * them to the output side would double-count.
+ *
+ * ── THE `Estimated` FLAGS EXIST BECAUSE A CONFIDENT WRONG NUMBER IS WORSE ──────
+ *
+ * Not every provider reports live output usage mid-stream. When it does not, the host
+ * estimates from streamed characters using the CLI's own four-characters-per-token
+ * fallback and sets the flag, so the UI can mark the figure with `~`. At completion
+ * the authoritative `result` usage replaces the estimate and the flags clear. Showing
+ * an unmarked estimate would present a guess as a measurement.
+ */
+export interface TurnTokenUsageView {
+  /** Direct + cache-creation + cache-read input. See the note above. */
+  inputTokens: number
+  /** Provider-reported output, including reasoning tokens where it bills them as output. */
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
+  /** True while `inputTokens` has not been reported by the provider. */
+  inputEstimated: boolean
+  /** True while `outputTokens` is the chars/4 estimate rather than a reported count. */
+  outputEstimated: boolean
+}
+
+/**
+ * Live progress for the turn in flight.
+ *
+ * ── THE HOST OWNS `startTimestamp`; THE WEBVIEW OWNS THE TICK ──────────────────
+ *
+ * Elapsed time is rendered by counting from `startTimestamp` with a local one-second
+ * interval. The alternative — the host sending an updated elapsed value every second
+ * — would be one `postMessage` per second per panel for information the webview can
+ * derive, and it would restart the clock on every webview re-creation. Carrying the
+ * start instant instead means a re-created panel resumes the same count.
+ */
+export interface TurnProgressView {
+  /** Correlates with the `turnCompleted` entry that eventually replaces this. */
+  turnId: string
+  phase: TurnPhaseView
+  /** Host-resolved wording for `phase`, e.g. "Waiting for approval". */
+  label: string
+  /** Epoch ms the turn began. The webview counts from this; see above. */
+  startTimestamp: number
+  /** Tool being run, when the phase came from a tool call. */
+  toolName?: string
+  /** That tool's one-line label — the path, the command. */
+  toolLabel?: string
+  usage: TurnTokenUsageView
+}
+
+/**
+ * One provider-supplied thinking block.
+ *
+ * ── ONLY WHAT THE PROVIDER EXPLICITLY STREAMED ─────────────────────────────────
+ *
+ * `text` contains provider-supplied thinking and nothing else. Opaque
+ * `redacted_thinking` payloads, block signatures, internal prompts and hidden system
+ * reasoning are never placed here — they are not the model's visible reasoning, and
+ * some of them are not the user's to see.
+ *
+ * ── CORRELATION IS `(sourceMessageId, blockIndex)`, NOT ORDER OF ARRIVAL ───────
+ *
+ * A turn can contain several thinking blocks, and the same block arrives twice: once
+ * as live deltas and again inside the settled message. Keying on the source entry
+ * plus the block's position in the message's content array is what lets the second
+ * copy be recognised and dropped instead of rendered again. `blockIndex` is
+ * Anthropic's own `index` on the stream event, which is that position.
+ */
+export interface ThinkingEntryView {
+  /** Stable id, `thinking-<sourceMessageId>-<blockIndex>`. */
+  entryId: string
+  /** The assistant entry this reasoning belongs in front of. */
+  sourceMessageId: EntryId
+  /** Position in the settled message's `content` array. See above. */
+  blockIndex: number
+  text: string
+  /** True while deltas are still arriving. */
+  streaming: boolean
+  /** Epoch ms of the first delta, for the "Thought for Ns" duration. */
+  startTime: number
+  /** Set once `streaming` goes false. */
+  durationMs?: number
+  /** True when `text` hit the host's character bound and was cut. */
+  truncated: boolean
+}
+
+/**
+ * How a turn ended, kept per turn rather than as one global "last duration".
+ *
+ * A single latest-value field could only ever describe the most recent turn, so
+ * scrolling back showed nothing for earlier ones. Keyed by `turnId` in the host's
+ * snapshot, these survive webview re-creation and history restore.
+ *
+ * `durationMs` prefers the engine's own `duration_ms` from the `result` message and
+ * falls back to host wall-clock only when that is absent or non-finite — the engine
+ * measured the turn, the host merely observed it.
+ */
+export interface TurnCompletionEntry {
+  outcome: 'completed' | 'failed' | 'stopped'
+  durationMs: number
+  /** Authoritative usage from the `result` message where it supplied one. */
+  usage: TurnTokenUsageView
+}
+
+/**
+ * An image the user attached in the composer.
+ *
+ * `data` is RAW base64 with no `data:` URL prefix — that is the shape Anthropic's
+ * `image` content block takes, so stripping the prefix happens in the webview rather
+ * than leaving every consumer to wonder which form it has.
+ *
+ * The media types are the four the API accepts. The host re-validates the type, the
+ * count and the decoded size before any of this reaches the engine: this crosses a
+ * boundary from a browser context, so it is untrusted input regardless of which of
+ * our own code produced it.
+ */
+export interface ImageInputView {
+  /** Original filename, used only for the transcript's `[Image: …]` marker. */
+  name?: string
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+  /** Raw base64, no data-URL prefix. */
+  data: string
+}
+
+/**
+ * A model chooser opened by a slash command.
+ *
+ * ── WHY THIS IS NOT A COMPOSER CONTROL ─────────────────────────────────────────
+ *
+ * The subagent and WebFetch models are set by `/model_subagent` and `/webfetch_model`, the
+ * same commands the CLI uses. They are deliberately NOT given toolbar pills: they are rare,
+ * per-project decisions, and a permanent control for each would crowd out the three that
+ * are used every turn (permission mode, model, effort).
+ *
+ * ── HOST-OWNED, LIKE THE PROVIDER SETUP SURFACE ────────────────────────────────
+ *
+ * Carried in `WebviewState` rather than kept in local component state, so a webview that
+ * VS Code re-creates while the chooser is open does not silently lose it — the same reason
+ * `providerSetup` lives there.
+ */
+export interface ModelChooserView {
+  /** Which setting a choice writes. Also selects the wording. */
+  target: 'subagent' | 'webfetch'
+  /** Set when scoping a subagent choice to one agent type, from `/model_subagent <AGENT>`. */
+  agentType?: string
+  title: string
+  /** Cost guidance, carried through from the CLI command rather than reworded. */
+  tip: string
+  /** What is selected now, for the ✓ marker. Null when the default applies. */
+  current: string | null
+  /** Human description of what "default" means here, for the reset action. */
+  defaultNote: string
+}
+
+/**
+ * The editor's current file and selection, as the composer reports it.
+ *
+ * Mirrors what the CLI's own `IdeStatusIndicator` shows, from the same underlying data:
+ * `⧉ N lines selected`, or `⧉ In <file>` when a file is open with nothing selected. The
+ * wording is deliberately identical so the two surfaces describe the editor the same way.
+ */
+export interface IdeContextView {
+  /** Absolute path of the active file, or null when no editor is active. */
+  filePath: string | null
+  /** Workspace-relative where possible — what an @-mention would use. */
+  relativePath: string | null
+  /** 0 when nothing is selected. */
+  lineCount: number
+  /** 1-based inclusive selection bounds, when there is a selection. */
+  lineStart?: number
+  lineEnd?: number
+}
+
 /** Messages the extension host sends TO the webview. */
 export type HostToWebviewMessage =
   /**
@@ -122,8 +339,6 @@ export type HostToWebviewMessage =
   | { type: 'dismissPermissionRequest'; requestId: string }
   /** A non-fatal problem worth showing in the transcript rather than a toast. */
   | { type: 'showError'; message: string }
-  /** Remove a transcript entry by id (e.g. when a review card is cleared). */
-  | { type: 'removeEntry'; id: EntryId }
   /** Available slash commands. */
   | { type: 'setCommands'; commands: SlashCommandView[] }
   /** Matching workspace files for @-mentions. */
@@ -132,10 +347,61 @@ export type HostToWebviewMessage =
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   /** Connected MCP servers status. */
   | { type: 'setMcpServers'; servers: McpServerView[] }
-  /** Previous sessions for project history. */
-  | { type: 'setSessions'; sessions: SessionSummaryView[] }
-  /** Turn completed — formatted duration string (e.g. "5m 17s"). */
-  | { type: 'turnDuration'; duration: string }
+  /**
+   * The editor's current selection, or null when there is none.
+   *
+   * Sent so the composer can say what will be attached BEFORE the message is sent — the
+   * engine attaches it automatically, and an invisible attachment is one the user cannot
+   * account for when the answer talks about code they had forgotten was highlighted.
+   *
+   * A cleared selection is sent as `null` rather than simply not sent: the previous
+   * indicator has to go away, and "no message" is indistinguishable from "unchanged".
+   */
+  | { type: 'setIdeContext'; context: IdeContextView | null }
+  /**
+   * Put text into the composer without sending it.
+   *
+   * Used by the terminal-selection command. Deliberately does NOT submit: the captured output
+   * is context for a question the user has not written yet, and sending it alone would burn a
+   * turn on "here is some output" with no request attached.
+   */
+  | { type: 'insertPrompt'; text: string }
+  /** Previous sessions for project history, with load state. */
+  | { type: 'setSessions'; list: SessionListView }
+  /**
+   * Live progress for the turn in flight.
+   *
+   * Sent on every meaningful transition — phase change, usage update — and NOT on a
+   * timer. Elapsed seconds are derived in the webview from `startTimestamp`, so a
+   * long turn costs a handful of messages rather than one per second.
+   */
+  | { type: 'setTurnProgress'; progress: TurnProgressView }
+  /**
+   * A turn reached a terminal state, with its authoritative duration and usage.
+   *
+   * Keyed by `turnId` rather than replacing a single global value, so each turn in the
+   * transcript keeps its own completion line.
+   */
+  | { type: 'turnCompleted'; turnId: string; completion: TurnCompletionEntry }
+  /**
+   * A thinking block was created, extended, or finished.
+   *
+   * Replace-by-`entryId`, not append: the same block is sent repeatedly as it grows,
+   * and once more when it settles with its duration. Treating these as appends would
+   * render the reasoning once per delta.
+   */
+  | { type: 'updateThinking'; thinking: ThinkingEntryView }
+  /**
+   * Workspace paths resolved from a drop or a file picker.
+   *
+   * `requestId` correlates the reply with the request that asked for it, because two
+   * drops can be in flight and a resolution is asynchronous (a folder has to be
+   * stat-ed, a remote URI has to go through VS Code). An empty `paths` means nothing
+   * was accessible; the host has already reported that as an error.
+   */
+  | { type: 'contextPathsResolved'; requestId: string; paths: string[] }
+  /** Open or close the command-driven model chooser. Null closes it. */
+  | { type: 'setModelChooser'; chooser: ModelChooserView | null }
   /** Replace the task center from the execution owner's authoritative snapshot. */
   | { type: 'replaceTaskState'; tasks: BackgroundTaskView[]; supported: boolean; message?: string }
   /** Insert or update one task without rebuilding the task center. */
@@ -190,8 +456,13 @@ export type WebviewToHostMessage =
    * dropped with no error. The host must not push state until this arrives.
    */
   | { type: 'ready' }
-  /** Send a prompt. The host gates it before dispatching. */
-  | { type: 'submitPrompt'; text: string }
+  /**
+   * Send a prompt. The host gates it before dispatching.
+   *
+   * `images` carries composer attachments as raw base64. It is validated host-side
+   * before it reaches the engine — see `ImageInputView`.
+   */
+  | { type: 'submitPrompt'; text: string; images?: ImageInputView[] }
   /**
    * Stop the running turn.
    *
@@ -237,8 +508,6 @@ export type WebviewToHostMessage =
    * value as well as the persisted key and reports any environment override.
    */
   | { type: 'setEffort'; level: EffortChoice }
-  /** Turn extended thinking on or off for subsequent requests. */
-  | { type: 'setThinking'; enabled: boolean }
   /** Open or close the in-panel provider setup surface. */
   | { type: 'listAttachable' }
   | { type: 'attachToSession'; pid: number }
@@ -300,6 +569,33 @@ export type WebviewToHostMessage =
   | { type: 'openProviderSetup' }
   /** Search workspace files for @-mentions. */
   | { type: 'findFiles'; query: string }
+  /**
+   * Turn dropped resources into workspace paths the engine can resolve.
+   *
+   * `uriList` is the raw `text/uri-list` payload from the drop event. It is sent
+   * VERBATIM rather than parsed here, because only the extension host can decide what
+   * a URI means: a `vscode-remote://` resource has no local path, a folder must be
+   * recognised as one, and `File.path` — the obvious-looking shortcut — does not exist
+   * on files dropped into a webview.
+   */
+  | { type: 'resolveContextPaths'; requestId: string; uriList: string }
+  /** Open the editor's own file/folder picker and return the chosen paths. */
+  | { type: 'pickContextPaths'; requestId: string }
+  /**
+   * Apply a choice from the command-driven model chooser.
+   *
+   * `value` null means "reset to the default", which is the CLI's `default` sub-command.
+   * The host persists it through the same `rayuConfig` setters the CLI command uses, so
+   * there is one definition of where each setting lives.
+   */
+  | {
+      type: 'modelChooserChoice'
+      target: ModelChooserView['target']
+      agentType?: string
+      value: string | null
+    }
+  /** Close the chooser without changing anything. */
+  | { type: 'modelChooserDismiss' }
   /** Toggle an MCP server connection. */
   | { type: 'mcpToggle'; serverName: string; enabled: boolean }
   /** Reconnect an MCP server. */
@@ -490,6 +786,14 @@ export interface ModelOptionView {
   label: string
   /** Provider-qualified detail, e.g. "openai · gpt-4o". */
   description: string
+  /**
+   * The provider's OWN description of the model, when it published one.
+   *
+   * Separate from `description`, which this panel composes as "provider · model".
+   * Keeping them apart lets the dropdown search both and show the human sentence
+   * above the machine-readable line, instead of picking one and losing the other.
+   */
+  customerDescription?: string
   providerId?: string
   model?: string
   contextWindow?: number
@@ -578,6 +882,8 @@ export interface WebviewState {
   /** Thinking and effort, so the controls survive a webview re-creation. */
   inference: InferenceSettingsView
   providerSetup: ProviderSetupView
+  /** Open command-driven model chooser, or null. Host-owned so it survives re-creation. */
+  modelChooser: ModelChooserView | null
   attachment: AttachmentView
   /** Active permission mode, for the composer's shield pill. */
   permissionMode: PermissionModeView
@@ -587,13 +893,27 @@ export interface WebviewState {
   contextUsage: ContextUsageView | null
   /** Connected MCP servers. */
   mcpServers: McpServerView[]
-  /** Previous sessions for project. */
-  sessions?: SessionSummaryView[]
+  /** The editor's current file and selection, or null. */
+  ideContext: IdeContextView | null
+  /** Previous sessions, with load state. */
+  sessions: SessionListView
   /** Host-owned task state survives webview collapse and recreation. */
   backgroundTasks?: BackgroundTaskView[]
   /** False when an attached older CLI does not expose task inspection. */
   taskInspectionSupported?: boolean
   taskInspectionMessage?: string
+  /**
+   * Progress for the turn in flight, or null when nothing is running.
+   *
+   * In the snapshot rather than left to the next `setTurnProgress`, because VS Code
+   * re-creates the webview freely: without this, collapsing the panel mid-turn and
+   * reopening it would show an idle composer while the engine was still working.
+   */
+  turnProgress: TurnProgressView | null
+  /** Completed turns by `turnId`, so scrolling back still shows each turn's result. */
+  turnCompletions: Record<string, TurnCompletionEntry>
+  /** Thinking blocks for the whole session, restored on re-creation and on resume. */
+  thinkingBlocks: ThinkingEntryView[]
 }
 
 /** A slash command description for the autocomplete popover. */
@@ -624,6 +944,26 @@ export interface SessionSummaryView {
    * which means it came from another git worktree.
    */
   cwd?: string
+}
+
+/**
+ * The sessions list, with its load state.
+ *
+ * ── FIVE STATES, NOT AN ARRAY ──────────────────────────────────────────────────
+ *
+ * The list used to be a bare `SessionSummaryView[] | undefined`, which could express only
+ * "not fetched" and "here they are". Five outcomes actually matter and the user needs to tell
+ * them apart: still loading, none exist, none MATCH THE SEARCH, the stored history could not
+ * be parsed, and the read failed outright. An empty array cannot distinguish a fresh
+ * workspace from a broken one, and both were previously rendered as "no previous sessions".
+ *
+ * `sessions` is still carried on a failure so a stale-but-real list beats an empty one.
+ */
+export interface SessionListView {
+  status: 'loading' | 'ready' | 'failed'
+  sessions: SessionSummaryView[]
+  /** Set when `status` is `failed`. Phrased for the user, not the log. */
+  error?: string
 }
 
 /** Context window usage percentage and token counts. */

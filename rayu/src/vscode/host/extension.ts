@@ -23,6 +23,7 @@
 import * as vscode from 'vscode'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
+import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 
 import { ChatViewProvider, CHAT_VIEW_ID } from './panel/chatViewProvider.js'
 import { ChatSession } from './panel/sessionHandle.js'
@@ -59,12 +60,23 @@ import {
   listWorkspaceSessions,
   loadSessionTranscript,
 } from './sessionHistory.js'
+import {
+  applySelection,
+  buildChooser,
+  describeSelection,
+  parseModelSettingCommand,
+  type ModelSettingCommand,
+} from './models/modelSettingCommands.js'
 import type {
   BackgroundTaskView,
   ModelCatalogueView,
+  ModelChooserView,
+  IdeContextView,
+  SessionListView,
   AttachmentView,
   ProviderSetupView,
   SessionSummaryView,
+  ImageInputView,
   WebviewState,
 } from '../shared/webviewProtocol.js'
 
@@ -73,6 +85,7 @@ const COMMANDS = {
   newSession: 'rayucode.newSession',
   signIn: 'rayucode.signIn',
   signOut: 'rayucode.signOut',
+  addTerminalSelection: 'rayucode.addTerminalSelection',
 } as const
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -168,15 +181,37 @@ export function activate(context: vscode.ExtensionContext): void {
    * impossible to leak a token by posting state.
    */
   let attachTargets: AttachTargetFrame[] = []
-  let historySessions: SessionSummaryView[] | undefined
+  /**
+   * The sessions list AND its load state.
+   *
+   * A bare array could only say "not fetched" or "here they are", so a failed read and an
+   * empty workspace were rendered identically. The list is retained across a failure so a
+   * stale-but-real list beats blanking the surface.
+   */
+  let historySessions: SessionListView = { status: 'loading', sessions: [] }
   let attachment: AttachmentView = { available: undefined, attached: null, error: null }
   let liveAttachment: CliAttachment | null = null
   let standaloneTaskSnapshot: BackgroundTaskView[] = []
   let taskInspectionSupported = true
   let taskInspectionMessage: string | undefined
+  /**
+   * The open model chooser, if any.
+   *
+   * Held here as well as posted so `buildState` carries it: VS Code re-creates the webview
+   * freely, and a chooser the user just opened must not vanish when they collapse the panel.
+   */
+  let modelChooser: ModelChooserView | null = null
+  /** The editor's current file/selection, mirrored for `buildState`. */
+  let ideContext: IdeContextView | null = null
 
   function postAttachment(): void {
     provider.post({ type: 'setAttachment', attachment })
+  }
+
+  /** Set and publish the chooser in one step, so the two cannot disagree. */
+  function setModelChooser(chooser: ModelChooserView | null): void {
+    modelChooser = chooser
+    provider.post({ type: 'setModelChooser', chooser })
   }
 
   const permissions = new PermissionRouter({
@@ -185,8 +220,47 @@ export function activate(context: vscode.ExtensionContext): void {
       provider.post({ type: 'dismissPermissionRequest', requestId }),
   })
 
+  // ── EDITOR CONNECTION ────────────────────────────────────────────────────────
+  //
+  // Publishes the same `~/.rayu/ide/<port>.lock` the CLI already scans for, so a `rayu`
+  // running in this window's terminal attaches to this editor and sees its selection.
+  //
+  // It is started BEFORE the session so the engine child can be pointed at it (see
+  // its `env` below): the child discovers the editor through the CLI’s own lockfile
+  // scan, and `CLAUDE_CODE_SSE_PORT` tells that scan which port is ours. Failure is still
+  // non-fatal — the connection is an enhancement, not a prerequisite — so a null handle
+  // simply means no live editor context.
+  const idePromise = startIdeServer(version)
+    .then(handle => {
+      if (!handle) return null
+      context.subscriptions.push({ dispose: () => void handle.dispose() })
+      context.subscriptions.push(
+        trackEditorSelection(handle, context_ => {
+          ideContext = context_
+          provider.post({ type: 'setIdeContext', context: context_ })
+        }),
+      )
+      return handle
+    })
+    .catch(() => null)
+
   const session = new ChatSession(
-    { enginePath, cwd: engineCwd },
+    {
+      enginePath,
+      cwd: engineCwd,
+      // Points the child's own lockfile scan at THIS window's editor connection. This is
+      // the mechanism an editor extension is expected to use — `detectIDEs` treats a
+      // matching `CLAUDE_CODE_SSE_PORT` as authoritative, which also disambiguates a
+      // workspace that has several editor windows open on it.
+      //
+      // Resolved at SPAWN time rather than here: the port is only known once the socket is
+      // bound, and awaiting that during activation would delay the whole extension for
+      // something the first turn does not need yet.
+      resolveEnv: async () => {
+        const handle = await idePromise
+        return handle ? { CLAUDE_CODE_SSE_PORT: String(handle.port) } : {}
+      },
+    },
     {
       onEntry: entry => provider.post({ type: 'addMessage', entry }),
       onPartial: (id, kind, delta) =>
@@ -220,7 +294,10 @@ export function activate(context: vscode.ExtensionContext): void {
           stale: usage.stale,
         }),
       onMcpServers: servers => provider.post({ type: 'setMcpServers', servers }),
-      onTurnDuration: duration => provider.post({ type: 'turnDuration', duration }),
+      onTurnProgress: progress => provider.post({ type: 'setTurnProgress', progress }),
+      onTurnCompleted: (turnId, completion) =>
+        provider.post({ type: 'turnCompleted', turnId, completion }),
+      onThinking: thinking => provider.post({ type: 'updateThinking', thinking }),
       onTaskStateChanged: task => provider.post({ type: 'upsertTaskState', task }),
       onTaskStateReplaced: tasks =>
         provider.post({ type: 'replaceTaskState', tasks, supported: true }),
@@ -285,6 +362,63 @@ export function activate(context: vscode.ExtensionContext): void {
     prewarmSession()
   }
 
+  /**
+   * Restart the engine so it re-reads the shared config, WITHOUT losing the conversation.
+   *
+   * `rayuConfig` is process-cached in the engine child, so a subagent or WebFetch model
+   * written here is invisible to the running engine — and there is no control request that
+   * invalidates its cache. A respawn is the only way to apply it.
+   *
+   * The respawn uses `--resume <sessionId>`, which is the same sequence `resumeSession` uses:
+   * the child reloads the conversation from the session file, and the transcript is restored
+   * from that file rather than being cleared. So the visible effect is nothing except the
+   * setting taking hold. With no session id yet there is no conversation to preserve, and
+   * the next prompt starts a correctly-configured engine on its own.
+   */
+  async function restartEngineWithResume(): Promise<void> {
+    invalidateRayuConfigCache()
+    const sessionId = session.engineSessionId
+    if (!sessionId) {
+      session.newSession()
+      provider.syncState()
+      prewarmSession()
+      return
+    }
+    const cwd = workspaceDir ?? engineCwd
+    session.newSession(sessionId, cwd)
+    session.restoreTranscript(await loadSessionTranscript(sessionId, cwd))
+    await session.restoreTaskHistory(sessionId, cwd)
+    provider.syncState()
+    prewarmSession()
+  }
+
+  /** Show a host-owned command result in the transcript, as the CLI shows a system line. */
+  function postCommandNotice(message: string): void {
+    provider.post({ type: 'addMessage', entry: { id: `cmd-${Date.now()}`, kind: 'notice', text: message, severity: 'info' } })
+  }
+
+  async function runModelSettingCommand(command: ModelSettingCommand): Promise<void> {
+    switch (command.kind) {
+      case 'usage':
+        postCommandNotice(command.message)
+        return
+      case 'show':
+        postCommandNotice(describeSelection(command.target, command.agentType))
+        return
+      case 'reset': {
+        const notice = applySelection(command.target, null, command.agentType)
+        if (notice) postCommandNotice(notice)
+        await restartEngineWithResume()
+        return
+      }
+      case 'choose':
+        // The catalogue is what the picker lists, and it may not have been fetched yet.
+        void refreshModels()
+        setModelChooser(buildChooser(command.target, command.agentType))
+        return
+    }
+  }
+
   provider = new ChatViewProvider(
     context.extensionUri,
     () =>
@@ -293,6 +427,8 @@ export function activate(context: vscode.ExtensionContext): void {
         session,
         permissions,
         providerSetup,
+        modelChooser,
+        ideContext,
         attachment,
         historySessions,
         taskInspectionSupported,
@@ -300,7 +436,7 @@ export function activate(context: vscode.ExtensionContext): void {
       ),
     {
       ready: prewarmSession,
-      submitPrompt: async text => {
+      submitPrompt: async (text, images) => {
         // The CLI implementations of these commands render Ink UI and are therefore
         // absent from the non-interactive engine. Route them to Rayucode's existing
         // native surfaces before the sign-in gate, so `/login` is reachable while the
@@ -314,7 +450,27 @@ export function activate(context: vscode.ExtensionContext): void {
           await openProviderSetupSurface(true)
           return
         }
-        await submitPrompt(session, provider, text)
+        // These are `local-jsx` in the CLI and therefore absent from the engine too, but
+        // unlike /login they take arguments — so they are parsed rather than matched.
+        const settingCommand = parseModelSettingCommand(text, session.subagentTypes)
+        if (settingCommand) {
+          await runModelSettingCommand(settingCommand)
+          return
+        }
+        if (liveAttachment && (images?.length ?? 0) > 0) {
+          provider.post({
+            type: 'showError',
+            message: 'Image attachments are unavailable while attached to a CLI session. Detach to send this image with Rayucode.',
+          })
+          return
+        }
+        if (liveAttachment) {
+          await liveAttachment.submitPrompt(text)
+          return
+        }
+        const acceptedImages = validateImageInputs(images, provider)
+        if (acceptedImages === null) return
+        await submitPrompt(session, provider, text, acceptedImages)
       },
       interrupt: () => session.interrupt(),
       newSession: () => {
@@ -343,9 +499,10 @@ export function activate(context: vscode.ExtensionContext): void {
         provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
       },
       refreshModelCatalogue: refreshModels,
-      // Effort goes through the CLI's own /effort command; thinking through the engine's
-      // set_max_thinking_tokens. Each matches that setting's own semantics — see
-      // sessionHandle.setEffort / setThinking.
+      // Effort goes through the CLI's own `/effort` command — see sessionHandle.setEffort.
+      // Thinking has no control request: it is forced on for the whole session by the
+      // `--thinking enabled` spawn flag, which is the only mechanism that outranks the
+      // user's `alwaysThinkingEnabled` setting.
       listAttachable: async () => {
         const outcome = await listAttachTargets({ enginePath, cwd: engineCwd }, engineCwd)
         attachTargets = outcome.targets ?? []
@@ -520,12 +677,6 @@ export function activate(context: vscode.ExtensionContext): void {
       },
 
       setEffort: level => session.setEffort(level),
-      setThinking: async enabled => {
-        // The boolean result is consumed here rather than propagated: the session already
-        // reported the acknowledged state through onInferenceSettings, and surfacing a
-        // failure twice would double the notice.
-        await session.setThinking(enabled)
-      },
       cyclePermissionMode: async () => {
         const next = nextPermissionMode(session.currentPermissionMode.id)
         // Only tell the webview once the engine has accepted it. Flipping the pill
@@ -569,16 +720,77 @@ export function activate(context: vscode.ExtensionContext): void {
             '{**/node_modules/**,**/.git/**,**/dist/**,**/.turbo/**}',
             50,
           )
-          const files = uris.map(uri => vscode.workspace.asRelativePath(uri))
-          provider.post({ type: 'fileSearchResults', query, files })
+          const files = uris.map(uri => vscode.workspace.asRelativePath(uri, false))
+          // VS Code's findFiles API returns files only. Derive their parent folders so
+          // the same @ picker can reference directories, which the shared attachment
+          // parser already knows how to expand.
+          const folders = new Set<string>()
+          for (const file of files) {
+            const parts = file.replace(/\\/g, '/').split('/')
+            for (let index = 1; index < parts.length; index += 1) {
+              const folder = `${parts.slice(0, index).join('/')}/`
+              if (!query || folder.toLowerCase().includes(query.toLowerCase())) folders.add(folder)
+            }
+          }
+          provider.post({
+            type: 'fileSearchResults',
+            query,
+            files: [...folders, ...files].slice(0, 75),
+          })
         } catch {
           provider.post({ type: 'fileSearchResults', query, files: [] })
         }
       },
+      resolveContextPaths: async (requestId, uriList) => {
+        const uris: vscode.Uri[] = []
+        for (const line of uriList.split(/\r?\n/)) {
+          const value = line.trim()
+          if (!value || value.startsWith('#')) continue
+          try {
+            const uri = value.includes('://') ? vscode.Uri.parse(value, true) : vscode.Uri.file(value)
+            if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') continue
+            uris.push(uri)
+          } catch {
+            // A stale Explorer item or inaccessible external path is skipped while
+            // other dropped resources remain usable.
+          }
+        }
+        const paths = await contextPathsForUris(uris)
+        if (paths.length === 0) {
+          provider.post({ type: 'showError', message: 'Rayucode could not access the dropped file or folder.' })
+        }
+        provider.post({ type: 'contextPathsResolved', requestId, paths })
+      },
+      pickContextPaths: async requestId => {        const uris = await vscode.window.showOpenDialog({
+          canSelectFiles: true,
+          canSelectFolders: true,
+          canSelectMany: true,
+          openLabel: 'Add to Rayu context',
+          title: 'Add files or folders to Rayu context',
+        })
+        // A REPLY IS ALWAYS SENT, including for a cancelled dialog. The webview correlates
+        // this by `requestId` and awaits it; returning early on cancel would leave that
+        // promise pending forever, which is indistinguishable from a hung extension host.
+        // An empty list is the correct answer to "the user chose nothing", and unlike the
+        // drop path it is not an error, so nothing is reported.
+        provider.post({
+          type: 'contextPathsResolved',
+          requestId,
+          paths: uris ? await contextPathsForUris(uris) : [],
+        })
+      },
+      modelChooserChoice: async (target, value, agentType) => {
+        setModelChooser(null)
+        const notice = applySelection(target, value, agentType)
+        if (notice) postCommandNotice(notice)
+        // Only restart when something was actually written. A choice that resolved to no
+        // model is a no-op, and respawning for it would cost the user a reload for nothing.
+        if (notice) await restartEngineWithResume()
+      },
+      modelChooserDismiss: () => setModelChooser(null),
       mcpToggle: async (serverName, enabled) => {
         await session.toggleMcpServer(serverName, enabled)
-      },
-      mcpReconnect: async serverName => {
+      },      mcpReconnect: async serverName => {
         await session.reconnectMcpServer(serverName)
       },
       getMcpStatus: async () => {
@@ -586,14 +798,31 @@ export function activate(context: vscode.ExtensionContext): void {
         provider.post({ type: 'setMcpServers', servers })
       },
       listSessions: async () => {
-        historySessions = await listWorkspaceSessions(workspaceDir)
-        provider.post({ type: 'setSessions', sessions: historySessions })
+        historySessions = { ...historySessions, status: 'loading' }
+        provider.post({ type: 'setSessions', list: historySessions })
+        try {
+          historySessions = {
+            status: 'ready',
+            sessions: (await listWorkspaceSessions(workspaceDir)) ?? [],
+          }
+        } catch (cause) {
+          // Reported rather than swallowed: an unreadable history directory is something the
+          // user can act on, and silently showing "no sessions" hides a real problem.
+          historySessions = {
+            status: 'failed',
+            sessions: historySessions.sessions,
+            error: `Could not read session history: ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+          }
+        }
+        provider.post({ type: 'setSessions', list: historySessions })
       },
       resumeSession: async (id: string) => {
         // Order matters: newSession() clears the transcript, so the restore must follow
         // it. The engine child is spawned with --resume and is the SOLE writer to the
         // session file; loadSessionTranscript only reads.
-        const selected = historySessions?.find(item => item.id === id)
+        const selected = historySessions.sessions.find(item => item.id === id)
         if (!selected) {
           provider.post({
             type: 'showError',
@@ -643,19 +872,6 @@ export function activate(context: vscode.ExtensionContext): void {
   // Detach cleanly so the CLI session stops forwarding and drops pending decisions,
   // rather than waiting for the socket to notice the window closed.
   context.subscriptions.push({ dispose: () => liveAttachment?.detach() })
-
-  // ── EDITOR CONNECTION ────────────────────────────────────────────────────────
-  //
-  // Publishes the same `~/.rayu/ide/<port>.lock` the CLI already scans for, so a `rayu`
-  // running in this window's terminal attaches to this editor and sees its selection.
-  // Started AFTER the session so a failure here cannot prevent the panel from working —
-  // the connection is an enhancement, not a prerequisite.
-  void (async () => {
-    const ide = await startIdeServer(version)
-    if (!ide) return
-    context.subscriptions.push({ dispose: () => void ide.dispose() })
-    context.subscriptions.push(trackEditorSelection(ide))
-  })()
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, provider, {
@@ -707,9 +923,44 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   )
 
+  // ── TERMINAL SELECTION ───────────────────────────────────────────────────────
+  //
+  // An explicit command rather than passive tracking, because stable VS Code API exposes NO
+  // way to read a terminal's selected text — there is no `Terminal.selection` getter at any
+  // version, and the extension's engine floor is 1.85. The only route is the editor's own
+  // copy command plus the clipboard, which is a user-visible side effect and therefore has to
+  // be user-initiated. A proposed API would work but could not ship to the Marketplace.
+  //
+  // The clipboard is RESTORED afterwards: silently destroying what the user had copied would
+  // be a worse bug than the feature is worth.
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMANDS.newSession, async () => {
-      await provider.reveal()
+    vscode.commands.registerCommand(COMMANDS.addTerminalSelection, async () => {
+      if (!vscode.window.activeTerminal) {
+        void vscode.window.showInformationMessage('No active terminal to copy from.')
+        return
+      }
+      const previousClipboard = await vscode.env.clipboard.readText()
+      try {
+        await vscode.commands.executeCommand('workbench.action.terminal.copySelection')
+        const selection = await vscode.env.clipboard.readText()
+        // Unchanged clipboard means nothing was selected: `copySelection` is a no-op then,
+        // and inserting the previous clipboard contents would be actively wrong.
+        if (!selection.trim() || selection === previousClipboard) {
+          void vscode.window.showInformationMessage(
+            'Select some text in the terminal first.',
+          )
+          return
+        }
+        await provider.reveal()
+        provider.post({ type: 'insertPrompt', text: fenceTerminalSelection(selection) })
+      } finally {
+        await vscode.env.clipboard.writeText(previousClipboard)
+      }
+    }),
+  )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(COMMANDS.newSession, async () => {      await provider.reveal()
       // A real reset: the engine child is replaced, because per-session state
       // (read-file tracking, granted permissions, MCP connections, compaction
       // history) has no control request that clears all of it.
@@ -762,6 +1013,7 @@ function buildCatalogue(session: ChatSession): ModelCatalogueView {
       value: m.value,
       label: m.displayName || m.value,
       description: m.description,
+      customerDescription: m.customerDescription,
       providerId: m.providerId, model: m.model, contextWindow: m.contextWindow,
       supportsThinking: m.supportsThinking, supportsImage: m.supportsImage, supportsTools: m.supportsTools,
     })),
@@ -775,8 +1027,10 @@ function buildState(
   session: ChatSession,
   permissions: PermissionRouter,
   providerSetup: ProviderSetupView,
+  modelChooser: ModelChooserView | null,
+  ideContext: IdeContextView | null,
   attachment: AttachmentView,
-  historySessions: SessionSummaryView[] | undefined,
+  historySessions: SessionListView,
   taskInspectionSupported = true,
   taskInspectionMessage?: string,
 ): WebviewState {
@@ -799,17 +1053,22 @@ function buildState(
     modelCatalogue: buildCatalogue(session),
     inference: session.currentInference,
     providerSetup,
+    modelChooser,
     attachment,
     permissionMode: session.currentPermissionMode,
     commands: [...session.commands],
     contextUsage: session.contextUsage,
     mcpServers: [...session.mcpServers],
+    ideContext,
     // Full `init` snapshots replace webview state. Carry the host-owned history
     // list so unrelated model/auth/context syncs cannot erase an open picker.
     sessions: historySessions,
     backgroundTasks: [...session.backgroundTasks],
     taskInspectionSupported,
     taskInspectionMessage,
+    turnProgress: session.currentTurnProgress,
+    turnCompletions: { ...session.completedTurns },
+    thinkingBlocks: [...session.currentThinkingBlocks],
   }
 }
 
@@ -825,6 +1084,7 @@ async function submitPrompt(
   session: ChatSession,
   provider: ChatViewProvider,
   text: string,
+  images: ImageInputView[] = [],
 ): Promise<void> {
   const gate = checkTurnAllowed()
   if (!gate.allowed) {
@@ -834,14 +1094,97 @@ async function submitPrompt(
     provider.post({ type: 'showError', message: gate.reason })
     return
   }
-  await session.submitPrompt(text)
+  await session.submitPrompt(text, images)
+}
+
+/**
+ * Convert VS Code URIs to the same workspace-relative attachment references used
+ * by the CLI. This deliberately lives in the extension host: browser File objects
+ * do not reliably expose a path, and remote-workspace paths must go through VS Code.
+ */
+async function contextPathsForUris(uris: readonly vscode.Uri[]): Promise<string[]> {
+  const paths: string[] = []
+  for (const uri of uris) {
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      const workspace = vscode.workspace.getWorkspaceFolder(uri)
+      let display = workspace
+        ? vscode.workspace.asRelativePath(uri, false)
+        : uri.fsPath
+      display = display.replace(/\\/g, '/')
+      if (stat.type & vscode.FileType.Directory) display = `${display.replace(/\/$/, '')}/`
+      if (!paths.includes(display)) paths.push(display)
+    } catch {
+      // Leave inaccessible members out while preserving the rest of a multi-drop.
+    }
+  }
+  return paths
+}
+
+/** Validate untrusted webview image payloads before they enter the engine process. */
+function validateImageInputs(
+  images: ImageInputView[] | undefined,
+  provider: ChatViewProvider,
+): ImageInputView[] | null {
+  if (!images?.length) return []
+  if (images.length > API_MAX_MEDIA_PER_REQUEST) {
+    provider.post({
+      type: 'showError',
+      message: `A message can include at most ${API_MAX_MEDIA_PER_REQUEST} images.`,
+    })
+    return null
+  }
+
+  const supported = new Set<ImageInputView['mediaType']>([
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+  ])
+  for (const image of images) {
+    if (
+      !image ||
+      !supported.has(image.mediaType) ||
+      typeof image.data !== 'string' ||
+      image.data.length === 0 ||
+      image.data.length > API_IMAGE_MAX_BASE64_SIZE ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data) ||
+      image.data.length % 4 !== 0
+    ) {
+      provider.post({
+        type: 'showError',
+        message: `One image is invalid or exceeds the ${Math.floor(API_IMAGE_MAX_BASE64_SIZE / 1024 / 1024)} MB upload limit.`,
+      })
+      return null
+    }
+  }
+  return images
+}
+
+/**
+ * Wrap captured terminal output in a fence so the model reads it as output, not instructions.
+ *
+ * The fence length adapts to the content: terminal output legitimately contains triple
+ * backticks (a shell printing a Markdown file, for instance), and a fixed fence would be
+ * closed early by its own payload.
+ */
+function fenceTerminalSelection(selection: string): string {
+  const trimmed = selection.replace(/\s+$/, '')
+  const longestRun = Math.max(
+    2,
+    ...[...trimmed.matchAll(/`+/g)].map(match => match[0].length),
+  )
+  const fence = '`'.repeat(longestRun + 1)
+  return `Terminal output:\n${fence}\n${trimmed}\n${fence}\n`
 }
 
 /**
  * Parse only the commands owned by the extension host.
  *
- * Exact matching is intentional. Arguments belong to the CLI command parser, and a
- * normal prompt beginning with similar text must continue to reach the model unchanged.
+ * Exact matching for the argument-free ones is intentional: arguments belong to the CLI
+ * command parser, and a normal prompt beginning with similar text must continue to reach
+ * the model unchanged. The model-setting commands DO take arguments, so they are parsed by
+ * `parseModelSettingCommand`, which applies the same first-token rule.
  */
 function rayucodeHostSlashCommand(text: string): 'login' | 'connect' | null {
   const command = text.trim()

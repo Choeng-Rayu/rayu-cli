@@ -141,6 +141,12 @@ export type RayuProvider = {
    * from the map, and the picker then shows the id alone.
    */
   modelLabels?: Record<string, string>
+  /**
+   * Per-model customer-facing plain-text summaries, keyed by model id. Rayu
+   * catalogs populate this from the admin-managed description so the CLI and
+   * Rayucode can explain a model without exposing upstream routing details.
+   */
+  modelDescriptions?: Record<string, string>
   /** User-listed model ids selectable via /model (openai-compatible). */
   models?: string[]
   /** Models fetched live from {baseURL}/models, cached for the /model picker. */
@@ -1401,8 +1407,8 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
 
 /**
  * Refresh the Rayu API-key provider's catalog from GET {gateway}/v1/models and
- * persist EVERYTHING the picker renders: ids, admin display names and admin
- * context windows.
+ * persist EVERYTHING the picker renders: ids, admin display names, customer
+ * descriptions, and admin context windows.
  *
  * Returns the model list plus whether anything actually MOVED, so a caller can
  * re-render only when it did. `changed` covers renames and window changes too,
@@ -1433,11 +1439,13 @@ export async function refreshRayuApiKeyCatalog(): Promise<{
     provider.models ?? [],
     provider.modelLabels,
     provider.modelContextWindows,
+    provider.modelDescriptions,
   )
   const after = catalogSignature(
     result.models,
     result.modelLabels,
     result.modelContextWindows,
+    result.modelDescriptions,
   )
   // Re-read inside the write so a concurrent save (e.g. the user switching model
   // in another pane) is not clobbered by a stale snapshot.
@@ -1447,6 +1455,7 @@ export async function refreshRayuApiKeyCatalog(): Promise<{
   cur.models = result.models
   cur.fetchedModels = result.models
   cur.modelLabels = result.modelLabels
+  cur.modelDescriptions = result.modelDescriptions
   cur.modelContextWindows = result.modelContextWindows
   // Keep the default/small model POINTING AT SOMETHING REAL, in both directions:
   //
@@ -1556,6 +1565,8 @@ export type RayuModelChoice = {
    * models are just ids, which is every BYO provider.
    */
   label?: string
+  /** Admin-configured customer-facing model summary, when one is published. */
+  description?: string
   /** Admin-configured context window in tokens, when known. */
   contextWindow?: number
   supportsThinking?: boolean
@@ -1604,6 +1615,7 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
       // Name + window are carried through when the provider knows them, so the
       // picker never has to look up a per-provider table of its own.
       const label = p.modelLabels?.[model]
+      const description = p.modelDescriptions?.[model]
       const contextWindow = p.modelContextWindows?.[model]
       out.push({
         value,
@@ -1613,6 +1625,7 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
         supportsImage: p.modelSupportsImage?.[model],
         supportsTools: p.modelSupportsTools?.[model],
         ...(label ? { label } : {}),
+        ...(description ? { description } : {}),
         ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
       })
     }

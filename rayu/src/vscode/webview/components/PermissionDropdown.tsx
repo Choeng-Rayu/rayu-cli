@@ -17,6 +17,7 @@ import {
   PERMISSION_MODES,
   type PermissionModeView,
 } from '../../shared/permissionModes.js'
+import { ChevronIcon } from './Icons.js'
 
 export interface PermissionDropdownProps {
   mode: PermissionModeView
@@ -230,17 +231,3 @@ export function PermissionIcon({ mode }: { mode: string }): JSX.Element {
   }
 }
 
-function ChevronIcon(): JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="9"
-      height="9"
-      fill="currentColor"
-      role="presentation"
-      className="rc-chevron-icon"
-    >
-      <path d="M4 6l4 4 4-4H4z" />
-    </svg>
-  )
-}

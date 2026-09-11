@@ -43,8 +43,19 @@ export interface FeatureEntitlement {
 export interface AllowedModel {
   code: string
   label: string
-  provider: string
+  description?: string | null
+  /**
+   * @deprecated New backend responses omit upstream provider identity. Optional
+   * only so an older on-disk entitlement cache remains readable during rollout.
+   */
+  provider?: string
   creditMultiplier: number
+  creditPricePer1M?: {
+    input: number
+    output: number
+    cacheRead: number
+    cacheWrite: number
+  }
   /**
    * Context window in TOKENS as configured by the Rayu admin, or null/undefined
    * when they haven't set one (the CLI then falls back to its own default for the

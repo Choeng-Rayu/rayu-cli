@@ -24,8 +24,24 @@
  * is the single most likely bug in a transcript UI and the reason the web bridge
  * carries the same rule in its header.
  *
- * For the same reason `thinking` blocks are dropped: they are relayed live and
- * repeating them as settled activity would duplicate them.
+ * ── WHY `thinking` IS EMITTED, AND HOW IT AVOIDS THAT TRAP ─────────────────────
+ *
+ * `thinking` used to be dropped here on the same grounds, and that was right while
+ * reasoning was relayed live and never rendered. It is not right now that thinking is
+ * a real transcript element, because two cases have no live deltas at all:
+ *
+ *   1. RESTORE FROM HISTORY. `restoreTranscript` reads a stored session through this
+ *      formatter. There is no stream to relay, so dropping thinking here means a
+ *      resumed conversation silently loses every reasoning block it once had.
+ *   2. A PROVIDER THAT PERSISTED WITHOUT STREAMING — after a reconnect, or one that
+ *      simply does not emit `thinking_delta`. The block exists only in the settled
+ *      message.
+ *
+ * Duplication is prevented by CORRELATION rather than by suppression: the caller keys
+ * every block on `(source entry, blockIndex)` and ignores one it already holds, which
+ * is the same `(id, index)` rule the settled-text path uses. `blockIndex` is the
+ * position in the message's own content array, so it lines up with Anthropic's `index`
+ * on the stream event that produced the live copy.
  *
  * ── WHY THE HOST COMPUTES THE LABEL ────────────────────────────────────────────
  *
@@ -81,6 +97,18 @@ function clamp(text: string, limit = MAX_WEBVIEW_TEXT_CHARS): string {
 export type VSCodeActivityBlock =
   | { kind: 'prompt'; text: string }
   | { kind: 'assistant'; text: string }
+  | {
+      kind: 'thinking'
+      /**
+       * Position in the message's own `content` array.
+       *
+       * This is what correlates a settled block with the live one that already
+       * arrived — see the header. It is NOT the index within the emitted block list,
+       * which skips empty and non-renderable entries.
+       */
+      blockIndex: number
+      text: string
+    }
   | {
       kind: 'tool_use'
       /** Correlates with the matching `tool_result`. Null when the engine omitted it. */
@@ -146,7 +174,11 @@ export function formatMessageForVSCode(
 
   const blocks: VSCodeActivityBlock[] = []
 
-  for (const raw of blocksOf(message)) {
+  // The index is the block's position in the message's own content array, which is
+  // what correlates a settled thinking block with the live one. `entries()` is used
+  // rather than a counter because `blocksOf` normalises a bare string into a
+  // single-element array, and that element is still index 0.
+  for (const [wireIndex, raw] of blocksOf(message).entries()) {
     const block = raw as CorrelatedBlock
 
     switch (block.type) {
@@ -158,6 +190,13 @@ export function formatMessageForVSCode(
             ? { kind: 'prompt', text: clamp(text) }
             : { kind: 'assistant', text: clamp(text) },
         )
+        break
+      }
+
+      case 'thinking': {
+        const text = block.thinking ?? ''
+        if (!text.trim()) break
+        blocks.push({ kind: 'thinking', blockIndex: wireIndex, text: clamp(text) })
         break
       }
 
@@ -211,7 +250,9 @@ export function formatMessageForVSCode(
         break
       }
 
-      // `thinking` is relayed live as a partial; see the header.
+      // `redacted_thinking` falls through here and is deliberately never emitted: it
+      // is an opaque provider payload, not readable reasoning, and rendering it would
+      // put an unintelligible blob in the transcript.
       default:
         break
     }

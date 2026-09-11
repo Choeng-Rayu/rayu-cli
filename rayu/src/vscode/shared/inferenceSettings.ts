@@ -1,9 +1,14 @@
 /**
- * Thinking and effort, as the composer presents them.
+ * Effort, as the composer presents it.
  *
  * Dependency-free except for a type import, so it is safe in the BROWSER bundle and
  * testable without stubbing the editor. The values mirror the CLI's own resolvers in
  * `src/utils/effort.ts` — this module does not invent a second scale.
+ *
+ * Thinking itself is not represented as a choice: Rayucode forces it on for every
+ * session via the `--thinking enabled` spawn flag, so only its depth is selectable.
+ * `supportsThinking` / `thinkingEnabled` remain on the view because the engine reports
+ * them and the transcript uses them to decide whether reasoning blocks are expected.
  *
  * ── "AUTO" IS THE ABSENCE OF A VALUE, NOT A FIFTH LEVEL ────────────────────────
  *
@@ -84,7 +89,13 @@ export interface InferenceSettingsView {
   effortEnvOverride: string | null
   /** Whether the active model supports extended thinking (`modelSupportsThinking`). */
   supportsThinking: boolean
-  /** Whether thinking is currently on. */
+  /**
+   * Whether thinking is on.
+   *
+   * Effectively `supportsThinking`, because Rayucode forces thinking on for the whole
+   * session; it is kept as its own field because the engine reports it independently and
+   * a future provider could refuse despite claiming support.
+   */
   thinkingEnabled: boolean
 }
 

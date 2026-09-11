@@ -44,48 +44,214 @@ body {
   container-name: shell;
 }
 
+/*
+ * The slim session header.
+ *
+ * 4px between controls, 12px at the edges — the VS Code spacing scale. It carries only what
+ * changes as you work; identity, version and settings live in the overflow menu.
+ */
 .rc-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--rc-gap);
-  padding: var(--rc-gap) var(--rc-gap-lg);
+  gap: 4px;
+  padding: 6px var(--rc-gap-lg);
   border-bottom: 1px solid var(--vscode-panel-border);
   flex: 0 0 auto;
-}
-
-.rc-header-title {
-  font-weight: 600;
-}
-
-.rc-header-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--rc-gap);
   min-width: 0;
 }
 
-.rc-header-context {
-  font-size: 0.82em;
+.rc-header-mark {
+  flex: 0 0 auto;
+}
+
+/* Takes the slack so the buttons stay right-aligned and the title truncates, not them. */
+.rc-header-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 0.9em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rc-header-spacer {
+  flex: 0 0 auto;
+}
+
+.rc-session-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-size: 0.78em;
   padding: 1px 6px;
+  border-radius: 999px;
   background-color: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
-  border-radius: 999px;
-  font-family: var(--vscode-editor-font-family, monospace);
 }
 
-.rc-header-user {
+.rc-session-status-waiting {
+  background-color: var(--vscode-inputValidation-warningBackground);
+  color: var(--vscode-editorWarning-foreground);
+}
+
+.rc-session-status-failed {
+  background-color: var(--vscode-inputValidation-errorBackground);
+  color: var(--vscode-errorForeground);
+}
+
+.rc-session-status-completed {
+  background: none;
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+/* ── overflow menu ───────────────────────────────────────────────────────── */
+
+.rc-overflow-panel {
+  right: 0;
+  min-width: 240px;
+  max-width: 320px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rc-overflow-identity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px var(--rc-gap);
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  margin-bottom: 2px;
+}
+
+.rc-overflow-who {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 0.85em;
-  color: var(--vscode-descriptionForeground);
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 16ch;
+  text-overflow: ellipsis;
 }
 
-.rc-header-version {
-  font-size: 0.85em;
+.rc-overflow-version {
+  flex: 0 0 auto;
+  font-size: 0.78em;
   color: var(--vscode-descriptionForeground);
+}
+
+.rc-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  /* 28px interactive floor. */
+  min-height: 28px;
+  padding: 0 var(--rc-gap);
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--vscode-foreground);
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rc-overflow-item:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.rc-overflow-item:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.rc-overflow-item-danger:hover {
+  color: var(--vscode-errorForeground);
+}
+
+.rc-overflow-section {
+  padding: var(--rc-gap) var(--rc-gap) 4px;
+  border-top: 1px solid var(--vscode-editorWidget-border);
+  margin-top: 2px;
+}
+
+.rc-overflow-section-title {
+  display: block;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
+}
+
+.rc-overflow-empty {
+  margin: 0;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-overflow-mcp {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rc-overflow-mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8em;
+  min-width: 0;
+}
+
+.rc-overflow-mcp-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rc-overflow-mcp-status {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-overflow-mcp-action {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  font-size: inherit;
+}
+
+.rc-overflow-mcp-action:hover { text-decoration: underline; }
+
+/* Status is carried by BOTH the dot's colour and the adjacent word, so a theme that
+   flattens colour does not remove the information. */
+.rc-mcp-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background-color: var(--vscode-descriptionForeground);
+}
+
+.rc-mcp-connected { background-color: var(--vscode-gitDecoration-addedResourceForeground); }
+.rc-mcp-connecting { background-color: var(--vscode-editorWarning-foreground); }
+.rc-mcp-disconnected { background-color: var(--vscode-errorForeground); }
+.rc-mcp-disabled { background-color: var(--vscode-descriptionForeground); }
+
+.rc-icon-button-active {
+  background-color: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
 }
 
 .rc-transcript-wrapper {
@@ -691,6 +857,67 @@ body {
 
 /* ── thinking indicator ──────────────────────────────────────────────────── */
 
+/*
+ * The live progress glyph.
+ *
+ * A rotating arc rather than a pulsing dot: a pulse reads as "alive" but not as
+ * "advancing", and this sits next to an elapsed counter that is advancing. Built from a
+ * border so it needs no SVG and inherits the theme's progress colour.
+ */
+.rc-progress-glyph {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1.5px solid var(--vscode-progressBar-background, var(--vscode-foreground));
+  border-top-color: transparent;
+  border-right-color: transparent;
+  animation: rc-spin 0.9s linear infinite;
+}
+
+@keyframes rc-spin {
+  to { transform: rotate(360deg); }
+}
+
+/*
+ * Under reduced motion the arc must still be VISIBLE, not merely un-animated. The global
+ * reduce-motion rule only freezes the animation, which would leave a partial ring at a
+ * random angle; a complete ring reads as a deliberate status glyph instead.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .rc-progress-glyph {
+    animation: none;
+    border-top-color: var(--vscode-progressBar-background, var(--vscode-foreground));
+    border-right-color: var(--vscode-progressBar-background, var(--vscode-foreground));
+    opacity: 0.7;
+  }
+}
+
+/* Glyph for a settled or blocked turn — no motion, because nothing is progressing. */
+.rc-turn-glyph {
+  font-size: 0.85em;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.rc-turn-glyph-waiting {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--vscode-editorWarning-foreground);
+}
+
+.rc-turn-done-success .rc-turn-glyph { color: var(--vscode-gitDecoration-addedResourceForeground); }
+.rc-turn-done-error .rc-turn-glyph { color: var(--vscode-errorForeground); }
+.rc-turn-done-neutral .rc-turn-glyph { color: var(--vscode-descriptionForeground); }
+
+/* Token readouts sit in the same muted register as the rest of the status line; the
+   estimate marker is carried in the text (`~`) rather than by colour, which a
+   high-contrast theme could flatten away. */
+.rc-token-readout {
+  white-space: nowrap;
+}
+
 .rc-thinking {
   display: inline-flex;
   align-items: center;
@@ -715,6 +942,129 @@ body {
 .rc-thinking-check {
   font-size: 0.85em;
   color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+/* ── thinking block (expandable reasoning) ───────────────────────────────── */
+
+.rc-thinking-block {
+  margin-bottom: var(--rc-gap);
+  border-left: 2px solid var(--vscode-editorWidget-border);
+  padding-left: var(--rc-gap);
+}
+
+.rc-thinking-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 28px minimum target, per the accessibility floor the panel holds to. */
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.rc-thinking-header:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+/*
+ * The collapsed preview.
+ *
+ * Fixed to three lines with the newest last, so the block does not resize on every delta
+ * — a preview that grows and shrinks makes the whole transcript jump while reading.
+ */
+.rc-thinking-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 2px;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.85;
+}
+
+.rc-thinking-preview-line {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rc-thinking-body {
+  margin-top: var(--rc-gap);
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+  overflow-wrap: anywhere;
+}
+
+.rc-thinking-body > :first-child { margin-top: 0; }
+.rc-thinking-body > :last-child { margin-bottom: 0; }
+
+.rc-thinking-truncated {
+  margin: var(--rc-gap) 0 0;
+  font-size: 0.8em;
+  font-style: italic;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ── command-driven model chooser ────────────────────────────────────────── */
+
+/*
+ * Opened by `/model_subagent` and `/webfetch_model`, in the same pinned slot approvals use.
+ * These settings get no toolbar pill on purpose: they are rare, per-project decisions, and a
+ * permanent control for each would crowd out the three used every turn.
+ */
+.rc-model-chooser {
+  flex: 0 0 auto;
+  margin: 0 var(--rc-gap-lg) var(--rc-gap);
+  padding: var(--rc-gap-lg);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: var(--rc-radius-lg);
+  background-color: var(--vscode-editorWidget-background);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rc-gap);
+  /* Bounded so a long catalogue cannot push the composer off screen. */
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.rc-model-chooser-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rc-gap);
+}
+
+.rc-model-chooser-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rc-model-chooser-title {
+  margin: 0;
+  font-size: 0.95em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.rc-model-chooser-tip {
+  margin: 2px 0 0;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-model-chooser-current {
+  margin: 0;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-model-chooser-foot {
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* ── notices ─────────────────────────────────────────────────────────────── */
@@ -1497,25 +1847,6 @@ body {
   line-height: 1.45;
 }
 
-.rc-welcome-capabilities {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-  margin: 4px 0 6px;
-}
-
-.rc-welcome-badge {
-  font-size: 0.76em;
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: 999px;
-  color: var(--vscode-descriptionForeground);
-  background-color: var(--vscode-badge-background);
-  border: 1px solid var(--vscode-panel-border);
-  letter-spacing: 0.02em;
-}
-
 .rc-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1692,6 +2023,137 @@ body {
 
 .rc-composer-spacer {
   flex: 1 1 auto;
+}
+
+/* ── IDE context row ─────────────────────────────────────────────────────── */
+
+/*
+ * Discloses what the editor is pointing at, because the engine attaches the selection to the
+ * next message by itself. Styled as quiet metadata, not as a control: it is a statement of
+ * fact about the editor, and competing with the prompt for attention would be wrong.
+ */
+.rc-ide-context {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-ide-context-glyph {
+  color: var(--vscode-textLink-foreground);
+  flex: 0 0 auto;
+}
+
+.rc-ide-context-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rc-ide-context-add {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+}
+
+.rc-ide-context-add:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+
+.rc-ide-context-add:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+/* ── image attachments ──────────────────────────────────────────────────── */
+
+/*
+ * Staged images sit ABOVE the textarea, not inline in it.
+ *
+ * An image is a separate content block in the request, not text in the prompt, and showing
+ * it as a chip is what makes that legible — the user can see exactly what will be sent and
+ * remove one without editing their words.
+ */
+.rc-attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rc-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  padding: 2px 4px 2px 2px;
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-input-border));
+  border-radius: var(--rc-radius);
+  background-color: var(--vscode-editorWidget-background);
+  font-size: 0.8em;
+}
+
+.rc-attach-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex: 0 0 auto;
+}
+
+.rc-attach-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-attach-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 20px rather than the 28px interactive floor: this is a secondary action inside a
+     chip, and the chip itself is not a target. The floor applies to primary controls. */
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+}
+
+.rc-attach-remove:hover {
+  background-color: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.rc-attach-remove:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.rc-attach-error {
+  margin: 0;
+  font-size: 0.8em;
+  color: var(--vscode-errorForeground);
+}
+
+/* The slash glyph in the autocomplete list, where files and folders use real icons. */
+.rc-popover-glyph {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
 }
 
 /* ── drag and drop ──────────────────────────────────────────────────────── */
@@ -2230,39 +2692,313 @@ body {
   padding: 0 3px;
 }
 
-/* ── context-window pressure gauge ─────────────────────────────────────────── */
+/* ── approvals ───────────────────────────────────────────────────────────── */
 
-.rc-header-context {
-  display: inline-flex;
+.rc-approvals {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/*
+ * The overflow affordance for stacked approvals. Sits below the expanded card so the count is
+ * read after the thing it qualifies, and styled quietly because it is navigation, not a
+ * decision — the decisions are the buttons inside the card.
+ */
+.rc-approvals-more {
+  display: flex;
   align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  min-height: 28px;
+  margin: 0 var(--rc-gap-lg) var(--rc-gap);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  font-size: 0.82em;
+  cursor: pointer;
+}
+
+.rc-approvals-more:hover { text-decoration: underline; }
+
+.rc-approvals-more:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+/* ── activity groups ─────────────────────────────────────────────────────── */
+
+/*
+ * A run of tool calls, collapsed to one row. Replaced one pill per call, which turned a single
+ * act of looking around into eight rows of chevrons and badges.
+ */
+.rc-activity {
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: var(--rc-radius);
+  background-color: var(--vscode-editorWidget-background);
+  overflow: hidden;
+}
+
+.rc-activity-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px var(--rc-gap);
+  border: 0;
+  background: none;
+  color: var(--vscode-foreground);
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.rc-activity-head:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.rc-activity-head:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.rc-activity-chevron {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background-color: var(--vscode-descriptionForeground);
+}
+
+.rc-activity-done .rc-activity-dot {
+  background-color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.rc-activity-partial .rc-activity-dot {
+  background-color: var(--vscode-editorWarning-foreground);
+}
+
+.rc-activity-error .rc-activity-dot {
+  background-color: var(--vscode-errorForeground);
+}
+
+.rc-activity-label {
+  flex: 0 0 auto;
+}
+
+/* The newest action truncates first: the count is the stable fact, the action is context. */
+.rc-activity-latest {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+}
+
+.rc-activity-status {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-activity-error .rc-activity-status { color: var(--vscode-errorForeground); }
+.rc-activity-partial .rc-activity-status { color: var(--vscode-editorWarning-foreground); }
+
+.rc-activity-body {
+  border-top: 1px solid var(--vscode-editorWidget-border);
+  padding: var(--rc-gap);
+  display: flex;
+  flex-direction: column;
   gap: 4px;
 }
 
-.rc-ctx-bar {
-  display: inline-block;
-  width: 26px;
-  height: 4px;
-  border-radius: 2px;
+/* ── sessions surface ────────────────────────────────────────────────────── */
+
+/*
+ * Layout is driven by the breakpoints below, not here: this only describes the surface
+ * itself. Default is the narrow case — replace the conversation — because a sidebar is narrow
+ * far more often than it is wide.
+ */
+.rc-sessions {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  background-color: var(--vscode-progressBar-background);
-  opacity: 0.35;
+  border-left: 1px solid var(--vscode-panel-border);
+}
+
+.rc-sessions-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: var(--rc-gap) var(--rc-gap-lg);
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.rc-sessions-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--rc-gap) 0 var(--rc-gap-lg);
+}
+
+.rc-sessions-group + .rc-sessions-group {
+  margin-top: var(--rc-gap-lg);
+}
+
+/* Sticky so the bucket a row belongs to is still visible while scrolling past a long day. */
+.rc-sessions-group-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 4px var(--rc-gap-lg);
+  font-size: 0.72em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+  background-color: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+.rc-sessions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rc-session-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px var(--rc-gap-lg);
+  border: 0;
+  background: none;
+  color: var(--vscode-foreground);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rc-session-row:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.rc-session-row:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.rc-session-row-label {
+  font-size: 0.88em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rc-session-row-meta {
+  font-size: 0.76em;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The confirmation state is deliberately loud: the next click closes a conversation. */
+.rc-session-row-confirm {
+  background-color: var(--vscode-inputValidation-warningBackground);
+}
+
+.rc-session-row-warn {
+  font-size: 0.76em;
+  color: var(--vscode-editorWarning-foreground);
+  white-space: normal;
+}
+
+/* ── responsive: sessions and tasks ──────────────────────────────────────── */
+
+/*
+ * Below 720px the sessions surface REPLACES the conversation, and the header's Back button is
+ * the way out. There is no width at which two columns are both usable in a sidebar this
+ * narrow, and shrinking both is worse than showing one.
+ */
+@container shell (max-width: 719px) {
+  .rc-main-area-sessions > .rc-transcript-wrapper { display: none; }
+  .rc-sessions { border-left: 0; }
+}
+
+/* 720–959px: a fixed side rail. Wide enough to read a row, narrow enough to leave the
+   conversation legible. */
+@container shell (min-width: 720px) {
+  .rc-sessions {
+    flex: 0 0 260px;
+    width: 260px;
+  }
+}
+
+/* 960px and up: the rail becomes resizable within a range that keeps both readable. */
+@container shell (min-width: 960px) {
+  .rc-sessions {
+    flex: 0 0 300px;
+    width: 300px;
+    min-width: 280px;
+    max-width: 360px;
+    resize: horizontal;
+    overflow: auto;
+  }
+}
+
+/* ── context-window pressure gauge ─────────────────────────────────────────── */
+
+/*
+ * A ring, in the composer. It replaced a header bar: a horizontal bar needs horizontal room,
+ * which is what a sidebar composer has least of, and context pressure informs the message you
+ * are about to send rather than the panel as a whole.
+ */
+.rc-ctx-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-size: 0.76em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-ctx-track {
+  stroke: var(--vscode-progressBar-background);
+  opacity: 0.25;
 }
 
 .rc-ctx-fill {
-  display: block;
-  height: 100%;
-  background-color: currentColor;
+  stroke: currentColor;
 }
 
-/* Tone shifts only where the user would act differently. Never colour alone: the
-   percentage is always present, and the tooltip states the situation in words. */
-.rc-ctx-warn {
-  color: var(--vscode-editorWarning-foreground);
+.rc-ctx-value {
+  font-variant-numeric: tabular-nums;
 }
 
-.rc-ctx-critical {
-  color: var(--vscode-editorError-foreground);
-}
+/* Tone shifts only where the user would act differently. NEVER colour alone: the percentage
+   is always present and the tooltip states the situation in words. */
+.rc-ctx-ok { color: var(--vscode-descriptionForeground); }
+.rc-ctx-warn { color: var(--vscode-editorWarning-foreground); }
+.rc-ctx-critical { color: var(--vscode-editorError-foreground); }
 
 /* ── session history picker ────────────────────────────────────────────────── */
 
@@ -2434,14 +3170,6 @@ body {
 /* ── container queries / responsive adaptations ──────────────────────────── */
 
 @container shell (max-width: 340px) {
-  .rc-header-version {
-    display: none;
-  }
-
-  .rc-header-user {
-    max-width: 10ch;
-  }
-
   .rc-review-head {
     flex-direction: column;
     align-items: flex-start;
@@ -2469,10 +3197,6 @@ body {
 }
 
 @container shell (max-width: 270px) {
-  .rc-header-user {
-    display: none;
-  }
-
   .rc-header {
     padding: var(--rc-gap);
   }
@@ -2487,6 +3211,27 @@ body {
 
   .rc-turn-actions {
     flex-wrap: wrap;
+  }
+}
+
+/*
+ * ── NARROW COMPOSER: DROP LABELS, NOT CONTROLS ────────────────────────────────
+ *
+ * A sidebar composer is routinely under 340px. `max-width` on a pill TRUNCATES its text,
+ * which produced "Add Con" — worse than no label, because a clipped word reads as a bug.
+ * Controls whose icon is self-explanatory shed their label entirely and keep the accessible
+ * name in `aria-label`/`title`; the model and permission pills keep theirs, because their
+ * value IS the information.
+ */
+@container composer (max-width: 400px) {
+  /* Visually hidden, still announced: the button keeps its accessible name. */
+  .rc-pill-add-context .rc-pill-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }
 

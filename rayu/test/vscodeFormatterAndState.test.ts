@@ -57,19 +57,55 @@ describe('VS Code Activity Formatter (formatActivityForVSCode)', () => {
     expect(formatMessageForVSCode(metaMsg)).toEqual([])
   })
 
-  test('drops thinking blocks', () => {
+  test('emits thinking blocks with their wire index, and never redacted thinking', () => {
     const msg: WrappedMessage = {
       type: 'assistant',
       message: {
         role: 'assistant',
         content: [
           { type: 'thinking', thinking: 'internal reasoning' },
+          // Opaque provider payload, not readable reasoning: must not be emitted.
+          { type: 'redacted_thinking', data: 'AAAAoq==' } as unknown as ContentBlock,
           { type: 'text', text: 'Visible answer' },
         ],
       },
     }
     const blocks = formatMessageForVSCode(msg)
-    expect(blocks).toEqual([{ kind: 'assistant', text: 'Visible answer' }])
+    // blockIndex is the position in the message's own content array (0), which is what
+    // correlates this settled copy with the live delta that produced it — NOT the
+    // position within the emitted list.
+    expect(blocks).toEqual([
+      { kind: 'thinking', blockIndex: 0, text: 'internal reasoning' },
+      { kind: 'assistant', text: 'Visible answer' },
+    ])
+  })
+
+  test('carries the true wire index when earlier blocks are skipped', () => {
+    const msg: WrappedMessage = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          // Dropped for being empty, but it still occupies index 0 on the wire.
+          { type: 'text', text: '   ' },
+          { type: 'thinking', thinking: 'reasoning at index 1' },
+        ],
+      },
+    }
+    expect(formatMessageForVSCode(msg)).toEqual([
+      { kind: 'thinking', blockIndex: 1, text: 'reasoning at index 1' },
+    ])
+  })
+
+  test('drops empty or whitespace-only thinking blocks', () => {
+    const msg: WrappedMessage = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'thinking', thinking: '  \n ' }],
+      },
+    }
+    expect(formatMessageForVSCode(msg)).toEqual([])
   })
 
   test('drops empty or whitespace-only text blocks', () => {
@@ -309,6 +345,12 @@ describe('VS Code Webview Reducer (chatReducer)', () => {
       commands: [{ name: 'test', description: 'run tests' }],
       contextUsage: { percentage: 25, totalTokens: 50000, maxTokens: 200000 },
       mcpServers: [{ name: 'filesystem', status: 'connected' }],
+      sessions: { status: 'ready', sessions: [] },
+      modelChooser: null,
+      ideContext: null,
+      turnProgress: null,
+      turnCompletions: {},
+      thinkingBlocks: [],
     }
 
     const state = chatReducer(dirtyState, { type: 'init', state: newState })

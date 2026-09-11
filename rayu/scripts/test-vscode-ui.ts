@@ -96,7 +96,17 @@ try {
   // The running state is posted synchronously when the host accepts a prompt. It
   // therefore covers both a still-finishing prewarm and ordinary provider work,
   // rather than leaving the first turn looking frozen.
-  await frame!.getByRole('status').getByText(/^Rayu's .+…$/).waitFor()
+  //
+  // Matched on the STABLE phase wording, not a rotating verb. The panel used to pick a random
+  // present-tense verb per turn ("Rayu's Cooking…"), which said the same thing whether the
+  // engine was waiting on a provider, editing a file, or blocked on an approval. The phases
+  // below are derived from the engine's own stream events, so this assertion also proves the
+  // progress projection is wired end to end.
+  await frame!
+    .getByRole('status')
+    .getByText(/^(Starting Rayu|Sending request|Thinking|Responding|Reading|Searching|Editing|Running tool|Waiting for approval)\b/)
+    .first()
+    .waitFor()
   await until(() => provider.requests.length > 0, 90_000)
   // Save DOM and screenshots even on failure to make UI regressions reviewable.
   const allow = frame!.getByRole('button', { name: 'Allow once', exact: true })
@@ -131,13 +141,20 @@ try {
   await native('theme', { theme: 'Default Light Modern' })
   await frame!.locator('body.vscode-light').waitFor()
   await page.screenshot({ path: join(output, 'rayucode-light.png') })
-  await frame!.getByTitle('Previous sessions', { exact: true }).click()
-  await frame!.getByRole('textbox', { name: 'Search previous sessions' }).fill('fixture')
-  const history = frame!.getByRole('option').first()
-  await history.waitFor(); await history.click(); await history.click()
+  // The sessions surface replaced a header dropdown. It is a real panel now: the search is
+  // labelled "Search sessions", rows are buttons grouped by recency rather than listbox
+  // options, and the two-click confirmation before discarding a live conversation is
+  // preserved — which is what the double click below exercises.
+  await frame!.getByTitle('Sessions', { exact: true }).click()
+  await frame!.getByRole('textbox', { name: 'Search sessions' }).fill('fixture')
+  const history = frame!.locator('.rc-session-row').first()
+  await history.waitFor(); await history.click()
+  // First click only arms the confirmation, so the conversation must still be on screen.
+  await frame!.locator('.rc-session-row-confirm').waitFor()
+  await history.click()
   await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
   if (provider.requests.filter(r => r.stream).length !== 6) throw new Error('Restoring history resubmitted inference')
-  console.log('PASS: real extension host, AskUserQuestion answers, sign-in gate, hosted catalog/capabilities, keyboard model selection/draft, streaming, approval, exact diff, history, dark/light themes')
+  console.log('PASS: real extension host, AskUserQuestion answers, sign-in gate, hosted catalog/capabilities, keyboard model selection/draft, streaming, approval, exact diff, sessions view, dark/light themes')
 } catch (error) {
   if (existsSync(join(directory, 'runner.log'))) {
     console.error('RUNNER LOG:\n' + readFileSync(join(directory, 'runner.log'), 'utf8'))

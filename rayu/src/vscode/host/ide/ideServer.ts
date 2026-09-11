@@ -55,6 +55,18 @@ function lockfileDir(): string {
 export interface IdeServerHandle {
   /** The bound port, which is also the lockfile name. */
   port: number
+  /**
+   * The per-instance capability token.
+   *
+   * Exposed because Rayucode's OWN engine child is given it directly via `--mcp-config`
+   * rather than discovering it through the lockfile: the child is spawned by this same
+   * process, so routing it through a file it would have to scan and match by workspace is
+   * indirection with no benefit. It stays inside the extension host and the child's argv —
+   * never in webview state, never in the transcript.
+   */
+  authToken: string
+  /** Editor name, as the lockfile and the MCP config both report it. */
+  ideName: string
   dispose: () => Promise<void>
   /** Push the current editor selection to every attached engine. */
   broadcastSelection: (selection: SelectionPayload) => void
@@ -159,6 +171,8 @@ export async function startIdeServer(
 
   return {
     port,
+    authToken,
+    ideName: vscode.env.appName,
     broadcastSelection: selection => broadcast('selection_changed', selection),
     broadcastAtMention: (filePath, lineStart, lineEnd) =>
       broadcast('at_mentioned', { filePath, lineStart, lineEnd }),

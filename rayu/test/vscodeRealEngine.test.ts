@@ -19,7 +19,10 @@ test.if(existsSync(vsix))('real packaged engine streams, runs tools, completes e
     const config = join(dir, 'config'); mkdirSync(config)
     process.env.RAYU_CONFIG_DIR = config
     writeFileSync(join(config, 'providers.json'), JSON.stringify({ activeProvider: 'test', providers: [{ id: 'test', kind: 'openai-compatible', baseURL: provider.url, apiKey: 'fixture-key', defaultModel: 'test-model', fetchedModels: ['test-model'], modelContextWindows: { 'test-model': 32000 } }] }))
-    writeFileSync(join(config, 'settings.json'), JSON.stringify({ permissions: { allow: ['Read', 'Edit', 'Bash(true)'] } }))
+    // `alwaysThinkingEnabled: false` is the hostile case: without the `--thinking enabled`
+    // spawn flag the engine would resolve thinking to OFF here, and the panel has no
+    // toggle to turn it back on. Asserted below.
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ permissions: { allow: ['Read', 'Edit', 'Bash(true)'] }, alwaysThinkingEnabled: false }))
     writeFileSync(join(dir, 'fixture.txt'), 'before\n')
     const errors: string[] = [], deltas: string[] = []
     let finished = false
@@ -54,11 +57,15 @@ test.if(existsSync(vsix))('real packaged engine streams, runs tools, completes e
     expect((settings.effective as any).effortLevel).toBeUndefined()
     expect(JSON.parse(readFileSync(join(config, 'settings.json'), 'utf8')).effortLevel).toBeUndefined()
     expect(session.transcript.length).toBe(count)
-    await session.setThinking(false)
-    expect(session.currentInference.thinkingEnabled).toBe(false)
-    await session.setThinking(true)
-    expect(session.currentInference.thinkingEnabled).toBe(true)
 
+    // Thinking is forced on by `--thinking enabled` and OUTRANKS the
+    // `alwaysThinkingEnabled: false` written into settings.json above. This is the whole
+    // point of using the spawn flag instead of a `set_max_thinking_tokens` request, which
+    // would only ever restore that same settings default.
+    settings = await session.controlClient!.request('get_settings', {})
+    expect((settings.inference as any).supportsThinking).toBe(true)
+    expect((settings.inference as any).thinkingEnabled).toBe(true)
+    expect(session.currentInference.thinkingEnabled).toBe(true)
   } finally {
     if (originalConfig !== undefined) process.env.RAYU_CONFIG_DIR = originalConfig
     else delete process.env.RAYU_CONFIG_DIR

@@ -8,12 +8,12 @@
  */
 import { useCallback, useMemo, useState } from 'react'
 
-import type { TranscriptEntry } from '../../shared/webviewProtocol.js'
-import type { ThinkingStatus } from '../state/reducer.js'
+import type { ThinkingEntryView, TranscriptEntry } from '../../shared/webviewProtocol.js'
 import { renderMarkdown } from '../markdown.js'
-import { SparkleIcon } from './SparkleIcon.js'
 import { FileChangeReviewCard } from './FileChangeReviewCard.js'
 import { SummaryEntryView } from './SummaryEntryView.js'
+import { ThinkingBlock } from './ThinkingBlock.js'
+import { ChevronIcon, CopyIcon, RayuMark } from './Icons.js'
 
 /** The user's prompt. */
 export function UserEntry({ text }: { text: string }): JSX.Element {
@@ -49,11 +49,18 @@ export function UserEntry({ text }: { text: string }): JSX.Element {
 export function AssistantEntry({
   text,
   streaming,
-  thinkingStatus,
+  thinking,
 }: {
   text: string
   streaming?: boolean
-  thinkingStatus?: ThinkingStatus | null
+  /**
+   * Reasoning blocks belonging to this entry, in content order.
+   *
+   * Rendered BEFORE the prose because that is the order the provider produced them in,
+   * and because reasoning that appears after the answer it produced reads as a footnote
+   * rather than as the work that led there.
+   */
+  thinking?: readonly ThinkingEntryView[]
 }): JSX.Element {
   const [copied, setCopied] = useState(false)
 
@@ -96,10 +103,12 @@ export function AssistantEntry({
   return (
     <div className="rc-turn rc-turn-assistant">
       <div className="rc-avatar" aria-hidden="true">
-        <SparkleIcon size={14} />
+        <RayuMark size={14} />
       </div>
       <div className="rc-turn-body">
-        <ThinkingIndicator status={thinkingStatus} />
+        {thinking?.map(block => (
+          <ThinkingBlock key={block.entryId} block={block} />
+        ))}
         {text.length > 0 ? (
           // Sanitised in renderMarkdown. See that file for why the sanitiser is load-bearing.
           <div
@@ -124,35 +133,6 @@ export function AssistantEntry({
         ) : null}
       </div>
     </div>
-  )
-}
-
-function formatDuration(ms: number): string {
-  const seconds = Math.round(ms / 1000)
-  return seconds === 1 ? '1s' : `${seconds}s`
-}
-
-function ThinkingIndicator({
-  status,
-}: {
-  status?: ThinkingStatus | null
-}): JSX.Element | null {
-  if (!status) return null
-
-  if (status.phase === 'active') {
-    return (
-      <span className="rc-thinking" role="status" aria-label="Rayu is thinking">
-        <span className="rc-thinking-dot" />
-        <span className="rc-thinking-text">Thinking...</span>
-      </span>
-    )
-  }
-
-  return (
-    <span className="rc-thinking" aria-label={`Thought for ${formatDuration(status.durationMs)}`}>
-      <span className="rc-thinking-check" aria-hidden="true">&#10003;</span>
-      <span className="rc-thinking-text">Thought for {formatDuration(status.durationMs)}</span>
-    </span>
   )
 }
 
@@ -335,33 +315,20 @@ function ToolIcon({ name }: { name: string }): JSX.Element {
   )
 }
 
-function ChevronIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" role="presentation">
-      <path d="M6 4l4 4-4 4V4z" />
-    </svg>
-  )
-}
 
-function CopyIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" role="presentation">
-      <path d="M4 1.5A1.5 1.5 0 0 1 5.5 0h6A1.5 1.5 0 0 1 13 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 4 10.5v-9zm1.5-.5a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h6a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5h-6zM2 4.5A1.5 1.5 0 0 1 3.5 3H4v1h-.5a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h6a.5.5 0 0 0 .5-.5V13h1v.5A1.5 1.5 0 0 1 9.5 15h-6A1.5 1.5 0 0 1 2 13.5v-9z" />
-    </svg>
-  )
-}
 
 /** Dispatch one entry to its renderer. */
 export function TranscriptEntryView({
   entry,
-  thinkingStatus,
+  thinking,
   onKeep,
   onUndo,
   onDiff,
   onOpen,
 }: {
   entry: TranscriptEntry
-  thinkingStatus?: ThinkingStatus | null
+  /** Reasoning blocks for THIS entry, already filtered and ordered by the caller. */
+  thinking?: readonly ThinkingEntryView[]
   onKeep?: (path?: string) => void
   onUndo?: (path?: string) => void
   onDiff?: (path: string) => void
@@ -375,11 +342,7 @@ export function TranscriptEntryView({
         <AssistantEntry
           text={entry.text}
           streaming={entry.streaming}
-          thinkingStatus={
-            thinkingStatus && thinkingStatus.entryId === entry.id
-              ? thinkingStatus
-              : null
-          }
+          thinking={thinking}
         />
       )
     case 'notice':

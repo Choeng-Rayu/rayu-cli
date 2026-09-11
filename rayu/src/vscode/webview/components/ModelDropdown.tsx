@@ -20,15 +20,18 @@
  * never remounts on selection, which is why the draft is preserved rather than
  * "restored".
  *
- * ── THREE EMPTY STATES, NOT ONE ────────────────────────────────────────────────
+ * ── THE LIST ITSELF LIVES IN `ModelPickerList` ─────────────────────────────────
  *
- * Loading, failed, and genuinely-empty are distinct. Collapsing them into one blank
- * list makes a broken provider indistinguishable from an unconfigured one, and hides
- * the fact that a retry would help.
+ * This component owns the trigger pill, the open/closed state and the outside-click
+ * dismissal. Search, keyboard navigation, the row layout and the three empty states are
+ * shared with the command-driven chooser card, so both surfaces cannot disagree about what
+ * a model row looks like or what "no models" means.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { ModelCatalogueView } from '../../shared/webviewProtocol.js'
+import { ChevronIcon, ModelIcon } from './Icons.js'
+import { ModelPickerList } from './ModelPickerList.js'
 
 export interface ModelDropdownProps {
   /** The active model identifier, or null before one is known. */
@@ -45,34 +48,7 @@ export function ModelDropdown({
   onRefresh,
 }: ModelDropdownProps): JSX.Element {
   const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  const [highlight, setHighlight] = useState(0)
   const container = useRef<HTMLDivElement | null>(null)
-  const search = useRef<HTMLInputElement | null>(null)
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return catalogue.options
-    // Matches label, value and description so a provider-qualified id like
-    // "openai · gpt-4o" is findable by provider as well as by model.
-    return catalogue.options.filter(
-      o =>
-        (o.label && o.label.toLowerCase().includes(q)) ||
-        (o.value && o.value.toLowerCase().includes(q)) ||
-        Boolean(o.description && o.description.toLowerCase().includes(q)),
-    )
-  }, [catalogue.options, query])
-
-  // Keep the highlight inside the filtered list. Without this, narrowing the query
-  // leaves it pointing past the end and Enter selects nothing.
-  useEffect(() => {
-    setHighlight(h => (h >= filtered.length ? 0 : h))
-  }, [filtered.length])
-
-  useEffect(() => {
-    if (open) search.current?.focus()
-    else setQuery('')
-  }, [open])
 
   // Close on an outside click. Registered only while open so the panel does not carry
   // a document-level listener for a control nobody is using.
@@ -85,42 +61,6 @@ export function ModelDropdown({
     return () => document.removeEventListener('mousedown', onDocument)
   }, [open])
 
-  function choose(value: string): void {
-    setOpen(false)
-    // Configuration only. Deliberately does not touch the composer's text.
-    onSelect(value)
-  }
-
-  function onSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>): void {
-    switch (event.key) {
-      case 'ArrowDown':
-        event.preventDefault()
-        setHighlight(h => (filtered.length === 0 ? 0 : (h + 1) % filtered.length))
-        return
-      case 'ArrowUp':
-        event.preventDefault()
-        setHighlight(h =>
-          filtered.length === 0 ? 0 : (h - 1 + filtered.length) % filtered.length,
-        )
-        return
-      case 'Enter': {
-        event.preventDefault()
-        const picked = filtered[highlight]
-        if (picked) choose(picked.value)
-        return
-      }
-      case 'Escape':
-        event.preventDefault()
-        // Stops here rather than bubbling: Escape in the composer means something
-        // else, and closing the dropdown is the more specific intent.
-        event.stopPropagation()
-        setOpen(false)
-        return
-      default:
-        return
-    }
-  }
-
   return (
     <div className="rc-dropdown rc-model-dropdown" ref={container}>
       <button
@@ -131,7 +71,7 @@ export function ModelDropdown({
         onClick={() => { if (!open) onRefresh(); setOpen(o => !o) }}
         title="Change model"
       >
-        <ModelSparkleIcon />
+        <ModelIcon size={12} className="rc-model-icon" />
         <span className="rc-pill-label">{current ?? 'Default model'}</span>
         <ChevronIcon />
       </button>
@@ -142,113 +82,20 @@ export function ModelDropdown({
             <span className="rc-dropdown-title">Model</span>
             <span className="rc-dropdown-subtitle">Select language model for responses</span>
           </div>
-          <div className="rc-dropdown-search-wrap">
-            <SearchIcon />
-            <input
-              ref={search}
-              className="rc-dropdown-search"
-              type="text"
-              value={query}
-              placeholder="Search models…"
-              aria-label="Search models"
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={onSearchKeyDown}
-            />
-          </div>
-
-          {catalogue.loading && catalogue.options.length === 0 ? (
-            <p className="rc-dropdown-empty">Loading models…</p>
-          ) : catalogue.error ? (
-            <div className="rc-dropdown-empty">
-              <p className="rc-dropdown-error">{catalogue.error}</p>
-              <button type="button" className="rc-button" onClick={onRefresh}>
-                Try again
-              </button>
-            </div>
-          ) : catalogue.options.length === 0 ? (
-            <p className="rc-dropdown-empty">
-              No models configured yet. Connect a provider to choose one.
-            </p>
-          ) : filtered.length === 0 ? (
-            <p className="rc-dropdown-empty">No model matches “{query}”.</p>
-          ) : (
-            <ul className="rc-dropdown-list" role="listbox">
-              {filtered.map((option, index) => {
-                const isCurrent = option.value === current || option.model === current
-                return (
-                  <li key={option.value} role="none">
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={isCurrent}
-                      className={`rc-dropdown-item${
-                        index === highlight ? ' rc-dropdown-item-active' : ''
-                      }`}
-                      // Hover moves the highlight so mouse and keyboard agree about
-                      // which row Enter would take.
-                      onMouseEnter={() => setHighlight(index)}
-                      onMouseDown={e => e.stopPropagation()}
-                      onClick={e => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        choose(option.value)
-                      }}
-                    >
-                      <div className="rc-dropdown-item-header">
-                        <span className="rc-dropdown-label">{option.label}</span>
-                        {isCurrent ? (
-                          <span className="rc-dropdown-current">✓ Active</span>
-                        ) : null}
-                      </div>
-                      {option.description ? (
-                        <div className="rc-dropdown-detail">
-                          <span className="rc-model-desc">{option.description}</span>
-                          {option.contextWindow ? (
-                            <span className="rc-model-tag"> · {option.contextWindow.toLocaleString()} tokens</span>
-                          ) : null}
-                          {option.supportsImage !== undefined ? (
-                            <span className="rc-model-tag"> · Images: {option.supportsImage ? 'yes' : 'no'}</span>
-                          ) : null}
-                          {option.supportsThinking !== undefined ? (
-                            <span className="rc-model-tag"> · Thinking: {option.supportsThinking ? 'yes' : 'no'}</span>
-                          ) : null}
-                          {option.supportsTools !== undefined ? (
-                            <span className="rc-model-tag"> · Tools: {option.supportsTools ? 'yes' : 'no'}</span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
+          <ModelPickerList
+            catalogue={catalogue}
+            current={current}
+            // Configuration only. Deliberately does not touch the composer's text.
+            onChoose={option => { setOpen(false); onSelect(option.value) }}
+            onRefresh={onRefresh}
+            autoFocus={open}
+            onEscape={() => setOpen(false)}
+          />
         </div>
       ) : null}
     </div>
   )
 }
 
-function ModelSparkleIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" role="presentation" className="rc-model-icon">
-      <path d="M8 0a.75.75 0 0 1 .71.51l1.45 4.34a.75.75 0 0 0 .49.49l4.34 1.45a.75.75 0 0 1 0 1.42l-4.34 1.45a.75.75 0 0 0-.49.49l-1.45 4.34a.75.75 0 0 1-1.42 0l-1.45-4.34a.75.75 0 0 0-.49-.49L.51 8.21a.75.75 0 0 1 0-1.42l4.34-1.45a.75.75 0 0 0 .49-.49L6.79.51A.75.75 0 0 1 7.5 0h.5z" />
-    </svg>
-  )
-}
 
-function SearchIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" role="presentation" className="rc-search-icon">
-      <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
-    </svg>
-  )
-}
 
-function ChevronIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="9" height="9" fill="currentColor" role="presentation">
-      <path d="M4 6l4 4 4-4H4z" />
-    </svg>
-  )
-}

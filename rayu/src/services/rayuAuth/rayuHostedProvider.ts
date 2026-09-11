@@ -15,6 +15,7 @@ import { rayuHostedBaseURL } from '../api/rayuHosted/rayuHostedAuth.js'
 import {
   catalogSignature,
   hostedContextWindows,
+  hostedModelDescriptions,
   hostedModelLabels,
   hostedModelCapabilities,
 } from './rayuModelCatalog.js'
@@ -90,6 +91,9 @@ export function syncRayuHostedProvider(
         // Display names exactly as the admin typed them, so /model can show
         // "DeepSeek V4 Pro" beside the id that goes on the wire.
         modelLabels: hostedModelLabels(catalog),
+        // Customer-facing summaries stay separate from display names: the picker
+        // needs both the concise name and the explanatory credit/use-case text.
+        modelDescriptions: hostedModelDescriptions(catalog),
         ...hostedModelCapabilities(catalog),
       }
       if (idx >= 0) cfg.providers[idx] = provider
@@ -147,9 +151,14 @@ function hostedModelSignature(): string {
       (x) => x.id === RAYU_HOSTED_PROVIDER_ID,
     )
     if (!p) return ''
-    // Ids + names + windows: everything the picker renders, so a rename or a
-    // context-window change counts as a change too.
-    return catalogSignature(p.models ?? [], p.modelLabels, p.modelContextWindows) +
+    // Ids + names + descriptions + windows: everything the picker renders, so an
+    // admin description edit reaches an already-open picker on its next refresh.
+    return catalogSignature(
+      p.models ?? [],
+      p.modelLabels,
+      p.modelContextWindows,
+      p.modelDescriptions,
+    ) +
       JSON.stringify([p.modelSupportsThinking, p.modelSupportsImage, p.modelSupportsTools])
   } catch {
     return ''
@@ -160,4 +169,3 @@ function hostedModelSignature(): string {
 // when the Rayu API-KEY provider ('rayu') started consuming the same catalog
 // shape from GET {gateway}/v1/models. Both providers now share one
 // interpretation of an admin's dashboard edits. Imported at the top of this file.
-

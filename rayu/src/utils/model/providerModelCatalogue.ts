@@ -12,6 +12,7 @@ export function getProviderModelCatalogue() {
       value: choice.value,
       label: choice.label ?? choice.model,
       description: `${choice.providerId} · ${choice.model}`,
+      customerDescription: choice.description,
       providerId: choice.providerId,
       model: choice.model,
       contextWindow: choice.contextWindow,

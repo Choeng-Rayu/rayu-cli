@@ -24,23 +24,18 @@ import type {
   AttachmentView,
   PermissionRequestView,
   ProviderSetupView,
-  SessionSummaryView,
+  SessionListView,
+  IdeContextView,
+  ModelChooserView,
   SlashCommandView,
+  ThinkingEntryView,
   TranscriptEntry,
+  TurnCompletionEntry,
+  TurnProgressView,
   WebviewState,
 } from '../../shared/webviewProtocol.js'
 import { DEFAULT_PERMISSION_MODE } from '../../shared/permissionModes.js'
 import type { InferenceSettingsView } from '../../shared/inferenceSettings.js'
-
-/**
- * Ephemeral thinking status, derived from `appendPartial(kind:'thinking')` deltas.
- *
- * Tracks whether the engine is currently thinking and how long it took, without
- * accumulating the full reasoning text (which is deliberately not rendered).
- */
-export type ThinkingStatus =
-  | { phase: 'active'; entryId: EntryId; startedAt: number }
-  | { phase: 'done'; entryId: EntryId; durationMs: number }
 
 export interface ChatState {
   /** Null until the first `init` arrives. Distinguishes "connecting" from "empty". */
@@ -53,6 +48,8 @@ export interface ChatState {
   /** Thinking and effort, as acknowledged by the engine. */
   inference: InferenceSettingsView
   providerSetup: ProviderSetupView
+  /** Open command-driven model chooser, or null. */
+  modelChooser: ModelChooserView | null
   attachment: AttachmentView
   /** Active permission mode, for the composer's shield pill. */
   permissionMode: PermissionModeView
@@ -72,17 +69,29 @@ export interface ChatState {
   contextUsage: ContextUsageView | null
   /** Connected MCP servers. */
   mcpServers: McpServerView[]
-  /** Live thinking status for the current streaming entry. */
-  thinking: ThinkingStatus | null
-  /** Formatted turn duration from the last completed turn (e.g. "5m 17s"). */
-  lastTurnDuration: string | null
-  /** Accumulated streamed character count for the current turn (tokens ≈ chars/4). */
-  streamedChars: number
+  /** The editor's current file and selection, or null. */
+  ideContext: IdeContextView | null
+  /**
+   * Progress for the turn in flight, from the host.
+   *
+   * Retained after the turn ends — the host leaves it in place with a terminal phase —
+   * because the completion line is rendered from it. Cleared only by `init`, which is
+   * also what a new or resumed session sends.
+   */
+  turnProgress: TurnProgressView | null
+  /** Finished turns by `turnId`, carrying the engine's authoritative duration and usage. */
+  turnCompletions: Record<string, TurnCompletionEntry>
+  /**
+   * Thinking blocks by `entryId`.
+   *
+   * A map rather than a list so a re-sent block (they arrive repeatedly as they grow)
+   * replaces its predecessor instead of appending a duplicate.
+   */
+  thinkingBlocks: Record<string, ThinkingEntryView>
   /** Workspace files matching current @-search. */
   workspaceFiles: string[]
-  /** Previous sessions for workspace. */
-  /** `undefined` until first fetched; `[]` means fetched and there are none. */
-  sessions: SessionSummaryView[] | undefined
+  /** Previous sessions, with their load state. */
+  sessions: SessionListView
   backgroundTasks: BackgroundTaskView[]
   taskInspectionSupported: boolean
   taskInspectionMessage?: string
@@ -106,9 +115,10 @@ export const initialChatState: ChatState = {
     supportsThinking: false,
     thinkingEnabled: false,
   },
-  thinking: null,
-  lastTurnDuration: null,
-  streamedChars: 0,
+  thinkingBlocks: {},
+  turnProgress: null,
+  turnCompletions: {},
+  modelChooser: null,
   attachment: { available: undefined, attached: null, error: null },
   providerSetup: {
     open: false,
@@ -127,8 +137,9 @@ export const initialChatState: ChatState = {
   commands: [],
   contextUsage: null,
   mcpServers: [],
+  ideContext: null,
   workspaceFiles: [],
-  sessions: undefined,
+  sessions: { status: 'loading', sessions: [] },
   backgroundTasks: [],
   taskInspectionSupported: true,
 }
@@ -144,6 +155,7 @@ export type ChatAction =
   | { type: 'setModelCatalogue'; catalogue: ModelCatalogueView }
   | { type: 'setInferenceSettings'; settings: InferenceSettingsView }
   | { type: 'setProviderSetup'; setup: ProviderSetupView }
+  | { type: 'setModelChooser'; chooser: ModelChooserView | null }
   | { type: 'setAttachment'; attachment: AttachmentView }
   | { type: 'setPermissionMode'; mode: PermissionModeView }
   | { type: 'showPermissionRequest'; request: PermissionRequestView }
@@ -154,8 +166,11 @@ export type ChatAction =
   | { type: 'fileSearchResults'; query: string; files: string[] }
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   | { type: 'setMcpServers'; servers: McpServerView[] }
-  | { type: 'setSessions'; sessions: SessionSummaryView[] }
-  | { type: 'turnDuration'; duration: string }
+  | { type: 'setIdeContext'; context: IdeContextView | null }
+  | { type: 'setSessions'; list: SessionListView }
+  | { type: 'setTurnProgress'; progress: TurnProgressView }
+  | { type: 'turnCompleted'; turnId: string; completion: TurnCompletionEntry }
+  | { type: 'updateThinking'; thinking: ThinkingEntryView }
   | { type: 'replaceTaskState'; tasks: BackgroundTaskView[]; supported: boolean; message?: string }
   | { type: 'upsertTaskState'; task: BackgroundTaskView }
 
@@ -172,18 +187,23 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         modelCatalogue: action.state.modelCatalogue,
         inference: action.state.inference,
         providerSetup: action.state.providerSetup,
+        modelChooser: action.state.modelChooser,
         attachment: action.state.attachment,
         permissionMode: action.state.permissionMode,
         // Restored, because the engine stays blocked across a webview re-creation.
         pendingPermissions: action.state.pendingPermissions,
-        // Thinking is ephemeral and client-timed; a re-creation restarts the clock.
-        thinking: null,
-        lastTurnDuration: null,
-        streamedChars: 0,
+        // Host-owned, so a re-created panel resumes the same elapsed count, the same
+        // token totals and the same reasoning rather than restarting them at zero.
+        turnProgress: action.state.turnProgress,
+        turnCompletions: action.state.turnCompletions,
+        thinkingBlocks: Object.fromEntries(
+          action.state.thinkingBlocks.map(block => [block.entryId, block]),
+        ),
         notices: [],
         commands: action.state.commands ?? [],
         contextUsage: action.state.contextUsage ?? null,
         mcpServers: action.state.mcpServers ?? [],
+        ideContext: action.state.ideContext ?? null,
         workspaceFiles: state.workspaceFiles,
         sessions: action.state.sessions,
         backgroundTasks: action.state.backgroundTasks ?? [],
@@ -205,6 +225,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     }
 
     case 'appendPartial': {
+      // ── THINKING DELTAS ARE IGNORED HERE, DELIBERATELY ──────────────────────
+      //
+      // Reasoning text arrives as its own correlated `updateThinking` message, which
+      // carries the block's identity, its bounded text and its duration. This channel
+      // has only an entry id, so accumulating from it would build a SECOND, weaker copy
+      // of the same reasoning and the two would disagree about where a block starts and
+      // ends. See `ThinkingEntryView`.
+      if (action.kind === 'thinking') return state
+
       const index = state.entries.findIndex(e => e.id === action.id)
       // A delta for an entry we do not have means the webview was re-created
       // mid-stream and the host has not resynced yet. Dropping it is right: the
@@ -214,43 +243,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const target = state.entries[index]
       if (target?.kind !== 'assistant') return state
 
-      // Thinking is relayed live but not accumulated into the visible answer.
-      // Rendering it inline would interleave reasoning with prose. We track the
-      // status (active/done) so the UI can show "Thinking..." / "Thought for Ns".
-      if (action.kind === 'thinking') {
-        const already = state.thinking
-        if (already && already.entryId === action.id) {
-          // Already tracking this entry's thinking — just count chars.
-          return { ...state, streamedChars: state.streamedChars + action.delta.length }
-        }
-        return {
-          ...state,
-          thinking: { phase: 'active', entryId: action.id, startedAt: Date.now() },
-          streamedChars: state.streamedChars + action.delta.length,
-        }
-      }
-
-      // First text delta after thinking → finalize thinking duration.
-      let thinking = state.thinking
-      if (
-        thinking &&
-        thinking.phase === 'active' &&
-        thinking.entryId === action.id
-      ) {
-        thinking = {
-          phase: 'done',
-          entryId: action.id,
-          durationMs: Date.now() - thinking.startedAt,
-        }
-      }
-
       const entries = [...state.entries]
       entries[index] = {
         ...target,
         text: target.text + action.delta,
         streaming: true,
       }
-      return { ...state, entries, thinking, streamedChars: state.streamedChars + action.delta.length }
+      return { ...state, entries }
     }
 
     case 'completeMessage': {
@@ -259,35 +258,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const target = state.entries[index]
       if (target?.kind !== 'assistant') return state
 
-      // Finalize thinking if it was still active when the message completed
-      // (can happen if the model thought but produced no text — rare but safe).
-      let thinking = state.thinking
-      if (
-        thinking &&
-        thinking.phase === 'active' &&
-        thinking.entryId === action.id
-      ) {
-        thinking = {
-          phase: 'done',
-          entryId: action.id,
-          durationMs: Date.now() - thinking.startedAt,
-        }
-      }
-
       const entries = [...state.entries]
       entries[index] = { ...target, streaming: false }
-      return { ...state, entries, thinking }
+      return { ...state, entries }
     }
 
     case 'turnState':
       return {
         ...state,
         turnRunning: action.running,
-        // Clear thinking when the turn ends so the next turn starts fresh.
-        thinking: action.running ? state.thinking : null,
-        // Clear duration and char count when a new turn starts.
-        lastTurnDuration: action.running ? null : state.lastTurnDuration,
-        streamedChars: action.running ? 0 : state.streamedChars,
+        // `turnProgress` is deliberately NOT cleared here. The host leaves it in place
+        // with a terminal phase so the completion line can render after the turn, and on
+        // the rising edge it has already sent the next turn's `starting` progress — this
+        // message arrives second, so clearing would discard it.
       }
 
     case 'removeEntry':
@@ -309,6 +292,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'setProviderSetup':
       // The host owns this surface's state so it survives a webview re-creation.
       return { ...state, providerSetup: action.setup }
+
+    case 'setModelChooser':
+      // Host-owned for the same reason: a chooser opened by a command must survive the
+      // panel being collapsed and rebuilt.
+      return { ...state, modelChooser: action.chooser }
 
     case 'setAttachment':
       return { ...state, attachment: action.attachment }
@@ -363,11 +351,38 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'setMcpServers':
       return { ...state, mcpServers: action.servers }
 
-    case 'setSessions':
-      return { ...state, sessions: action.sessions }
+    case 'setIdeContext':
+      // Replaced outright, including with null: a cleared selection must remove the
+      // indicator, and "keep the previous value" is how a stale range gets attached.
+      return { ...state, ideContext: action.context }
 
-    case 'turnDuration':
-      return { ...state, lastTurnDuration: action.duration }
+    case 'setSessions':
+      return { ...state, sessions: action.list }
+
+    case 'setTurnProgress':
+      // Whole-value replacement: the host sends a complete snapshot each time, so there
+      // is nothing to merge and merging would risk keeping a stale tool label.
+      return { ...state, turnProgress: action.progress }
+
+    case 'turnCompleted':
+      return {
+        ...state,
+        turnCompletions: {
+          ...state.turnCompletions,
+          [action.turnId]: action.completion,
+        },
+      }
+
+    case 'updateThinking':
+      // Replace-by-entryId. The same block is re-sent as it grows and once more when it
+      // settles with its duration, so appending would render the reasoning per delta.
+      return {
+        ...state,
+        thinkingBlocks: {
+          ...state.thinkingBlocks,
+          [action.thinking.entryId]: action.thinking,
+        },
+      }
 
     case 'replaceTaskState':
       return {

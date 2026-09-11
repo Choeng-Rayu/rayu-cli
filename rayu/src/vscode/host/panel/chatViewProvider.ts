@@ -36,6 +36,7 @@ import * as vscode from 'vscode'
 import type { EffortChoice } from '../../shared/inferenceSettings.js'
 import type {
   HostToWebviewMessage,
+  ImageInputView,
   WebviewState,
   WebviewToHostMessage,
 } from '../../shared/webviewProtocol.js'
@@ -52,7 +53,7 @@ export const CHAT_VIEW_ID = 'rayucode.chat'
 export interface ChatViewHandlers {
   /** The panel is mounted and can benefit from background engine initialization. */
   ready: () => Promise<void> | void
-  submitPrompt: (text: string) => Promise<void> | void
+  submitPrompt: (text: string, images?: ImageInputView[]) => Promise<void> | void
   interrupt: () => Promise<void> | void
   newSession: () => Promise<void> | void
   permissionResponse: (
@@ -67,7 +68,6 @@ export interface ChatViewHandlers {
   selectModelValue: (value: string) => Promise<void> | void
   refreshModelCatalogue: () => Promise<void> | void
   setEffort: (level: EffortChoice) => Promise<void> | void
-  setThinking: (enabled: boolean) => Promise<void> | void
   listAttachable: () => Promise<void> | void
   attachToSession: (pid: number) => Promise<void> | void
   detachFromSession: () => Promise<void> | void
@@ -93,6 +93,15 @@ export interface ChatViewHandlers {
   signOut: () => Promise<void> | void
   openProviderSetup: () => Promise<void> | void
   findFiles: (query: string) => Promise<void> | void
+  resolveContextPaths: (requestId: string, uriList: string) => Promise<void> | void
+  pickContextPaths: (requestId: string) => Promise<void> | void
+  /** Apply a model-chooser choice. `value` null resets to the default. */
+  modelChooserChoice: (
+    target: 'subagent' | 'webfetch',
+    value: string | null,
+    agentType?: string,
+  ) => Promise<void> | void
+  modelChooserDismiss: () => Promise<void> | void
   mcpToggle: (serverName: string, enabled: boolean) => Promise<void> | void
   mcpReconnect: (serverName: string) => Promise<void> | void
   getMcpStatus: () => Promise<void> | void
@@ -180,7 +189,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         void this.handlers.ready()
         return
       case 'submitPrompt':
-        void this.handlers.submitPrompt(message.text)
+        void this.handlers.submitPrompt(message.text, message.images)
         return
       case 'interrupt':
         void this.handlers.interrupt()
@@ -206,9 +215,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'setEffort':
         void this.handlers.setEffort(message.level)
-        return
-      case 'setThinking':
-        void this.handlers.setThinking(message.enabled)
         return
 
       case 'listAttachable':
@@ -261,18 +267,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'openFile':
         void this.handlers.openFile(message.path)
         return
-      case 'reviewKeep':
-        void this.handlers.reviewKeep(message.path)
-        return
-      case 'reviewUndo':
-        void this.handlers.reviewUndo(message.path)
-        return
-      case 'openReviewDiff':
-        void this.handlers.openReviewDiff(message.path)
-        return
-      case 'openFile':
-        void this.handlers.openFile(message.path)
-        return
       case 'signIn':
         void this.handlers.signIn()
         return
@@ -284,6 +278,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'findFiles':
         void this.handlers.findFiles(message.query)
+        return
+      case 'resolveContextPaths':
+        void this.handlers.resolveContextPaths(message.requestId, message.uriList)
+        return
+      case 'pickContextPaths':
+        void this.handlers.pickContextPaths(message.requestId)
+        return
+      case 'modelChooserChoice':
+        void this.handlers.modelChooserChoice(
+          message.target,
+          message.value,
+          message.agentType,
+        )
+        return
+      case 'modelChooserDismiss':
+        void this.handlers.modelChooserDismiss()
         return
       case 'mcpToggle':
         void this.handlers.mcpToggle(message.serverName, message.enabled)

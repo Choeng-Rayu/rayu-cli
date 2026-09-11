@@ -36,6 +36,7 @@ import { randomUUID } from 'node:crypto'
 import { EngineProcess, type EngineExitInfo } from '../engine/engineProcess.js'
 import { ControlClient, type InboundControlRequest } from '../engine/controlClient.js'
 import {
+  MAX_WEBVIEW_TEXT_CHARS,
   formatActivityForVSCode,
   formatMessageForVSCode,
   type VSCodeActivityBlock,
@@ -68,7 +69,13 @@ import type {
   PermissionModeView,
   ReviewFileView,
   SlashCommandView,
+  ThinkingEntryView,
   TranscriptEntry,
+  TurnCompletionEntry,
+  TurnPhaseView,
+  TurnProgressView,
+  TurnTokenUsageView,
+  ImageInputView,
 } from '../../shared/webviewProtocol.js'
 
 /**
@@ -84,6 +91,17 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
   { name: 'connect', description: 'Connect or configure an AI provider' },
   { name: 'login', description: 'Sign in to your Rayu account' },
   { name: 'logout', description: 'Sign out of your Rayu account' },
+  // These two are `local-jsx` in the CLI for the same reason `/connect` is — they render an
+  // Ink picker — so the non-interactive engine strips them too, and Rayucode has to provide
+  // the surface. The grammar and the persistence are the CLI's; only the picker differs.
+  {
+    name: 'model_subagent',
+    description: 'Set the model used by subagents [AGENT] [show|default]',
+  },
+  {
+    name: 'webfetch_model',
+    description: 'Set the model WebFetch uses to summarize pages [show|default]',
+  },
 ]
 
 const DEFAULT_SLASH_COMMANDS: SlashCommandView[] = [
@@ -109,6 +127,34 @@ function withRayucodeSlashCommands(
     ...commands,
     ...RAYUCODE_SLASH_COMMANDS.filter(command => !names.has(command.name)),
   ]
+}
+
+/**
+ * The engine child's argv, beyond the headless flags `vscodeHost` adds for itself.
+ *
+ * Pure and exported so the flag contract is exhaustively testable without spawning a
+ * process. `buildHostArgv` in `entrypoints/vscodeHost.ts` appends the required headless
+ * flags on top of whatever this returns and never removes anything, so these survive.
+ *
+ * ── `--thinking enabled` IS NOT OPTIONAL ───────────────────────────────────────
+ *
+ * It is the CLI's own switch, and it is the ONLY mechanism that outranks
+ * `shouldEnableThinkingByDefault()` — which returns false when the user's shared settings
+ * carry `alwaysThinkingEnabled: false` or `MAX_THINKING_TOKENS=0`. The alternative, a
+ * `set_max_thinking_tokens` control request with `null`, merely restores that same
+ * settings default, so it cannot guarantee thinking is on.
+ *
+ * `enabled` is safe on every provider: `claude.ts` treats any non-`disabled` config as
+ * "thinking wanted" and then resolves adaptive-vs-budget PER MODEL, so a model that
+ * cannot do adaptive thinking gets its own default budget and a model that supports no
+ * thinking at all is sent no thinking parameter.
+ */
+export function engineArgsFor(options: {
+  resumeSessionId?: string
+}): string[] {
+  const args = ['--thinking', 'enabled']
+  if (options.resumeSessionId) args.push('--resume', options.resumeSessionId)
+  return args
 }
 
 export interface SessionCallbacks {
@@ -161,8 +207,12 @@ export interface SessionCallbacks {
   onContextUsage?: (usage: ContextUsageView) => void
   /** Connected MCP servers. */
   onMcpServers?: (servers: McpServerView[]) => void
-  /** Turn completed with this formatted duration (e.g. "5m 17s"). */
-  onTurnDuration?: (duration: string) => void
+  /** Structured live progress, derived from the same engine events as the CLI spinner. */
+  onTurnProgress?: (progress: TurnProgressView) => void
+  /** Final duration and token totals for the current turn. */
+  onTurnCompleted?: (turnId: string, completion: TurnCompletionEntry) => void
+  /** Provider-supplied thinking text. Never contains redacted/internal reasoning. */
+  onThinking?: (thinking: ThinkingEntryView) => void
   /** A sanitized shared task projection changed. */
   onTaskStateChanged?: (task: BackgroundTaskView) => void
   /** A new/resumed session replaced the complete task set. */
@@ -175,6 +225,18 @@ export interface SessionOptions {
   resumeSessionId?: string
   nodePath?: string
   env?: Record<string, string | undefined>
+  /**
+   * Extra environment resolved lazily, at spawn time.
+   *
+   * Exists for the editor connection: its port is only known once a socket has been bound,
+   * and awaiting that during `activate()` would delay the extension's activation for
+   * something no turn needs yet. The engine spawn is already asynchronous and happens later,
+   * so resolving here is both race-free and free.
+   *
+   * Must not reject — a failure to resolve optional environment cannot be allowed to stop a
+   * session from starting.
+   */
+  resolveEnv?: () => Promise<Record<string, string | undefined>>
 }
 
 /**
@@ -207,11 +269,6 @@ export class ChatSession {
    * values that produced text, and that index is the block's position in the settled
    * message's `content` array — which is what makes this correlation exact.
    */
-  /**
-   * The engine's raw `ModelInfo` entries, retained for capability lookups after a model
-   * change. The trimmed `catalogue` drops the capability flags, so it cannot serve this.
-   */
-  private pendingThinking: boolean | undefined
   /** The entry currently receiving deltas from an ATTACHED session, if any. */
   private mirrorId: EntryId | null = null
   private readonly streamedBlocks = new Map<string, Set<number>>()
@@ -222,6 +279,24 @@ export class ChatSession {
   private turnRunning = false
   /** Epoch ms when the current turn started, for the duration display. */
   private turnStartedAt = 0
+  private activeTurnId: string | null = null
+  /**
+   * The engine child's own session id, learned from its frames.
+   *
+   * Needed to restart the engine WITHOUT losing the conversation: a change that only the
+   * child's startup reads (a subagent or WebFetch model written to the shared config, which
+   * the child has already cached) requires a respawn, and respawning with `--resume <id>`
+   * is what keeps the transcript and the model's context intact.
+   */
+  private currentSessionId: string | null = null
+  /** Subagent type names from `initialize`, for `/model_subagent <AGENT>`. */
+  private agentTypes: string[] = []
+  private turnProgress: TurnProgressView | null = null
+  private readonly turnCompletions: Record<string, TurnCompletionEntry> = {}
+  private readonly thinkingBlocks = new Map<string, ThinkingEntryView>()
+  private activeThinkingKey: string | null = null
+  private currentStreamBlockType: string | null = null
+  private turnStreamedChars = 0
   /**
    * Bumped whenever the engine is replaced (new session / resume). Async replies compare
    * against the generation they were issued under so a late reply from a discarded engine
@@ -233,6 +308,10 @@ export class ChatSession {
   private modelInfo: ModelInfoView = { model: null, provider: null }
   /** The engine's catalogue, kept host-side for the QuickPick. Never sent to the UI. */
   private catalogue: EngineModel[] = []
+  /**
+   * The engine's raw `ModelInfo` entries, retained for capability lookups after a model
+   * change. The trimmed `catalogue` drops the capability flags, so it cannot serve this.
+   */
   public availableModels: ModelCatalogueView | null = null
   private permissionMode: PermissionModeView = permissionModeById('default')
 
@@ -330,6 +409,33 @@ export class ChatSession {
     return [...this.backgroundTaskMap.values()].sort(compareBackgroundTasks)
   }
 
+  get currentTurnProgress(): TurnProgressView | null {
+    return this.turnProgress ? { ...this.turnProgress, usage: { ...this.turnProgress.usage } } : null
+  }
+
+  get completedTurns(): Readonly<Record<string, TurnCompletionEntry>> {
+    return this.turnCompletions
+  }
+
+  /**
+   * The engine child's session id, or null before it has sent a frame.
+   *
+   * Null means there is nothing to resume — the engine has not started, so a restart is
+   * simply a start and no conversation can be lost.
+   */
+  get engineSessionId(): string | null {
+    return this.currentSessionId
+  }
+
+  /** Subagent type names the engine reported, for `/model_subagent <AGENT>`. */
+  get subagentTypes(): readonly string[] {
+    return this.agentTypes
+  }
+
+  get currentThinkingBlocks(): readonly ThinkingEntryView[] {
+    return [...this.thinkingBlocks.values()].map(block => ({ ...block }))
+  }
+
   /** Restore terminal task metadata alongside the shared transcript on resume. */
   async restoreTaskHistory(sessionId: string, cwd = this.options.cwd): Promise<void> {
     const restored = await loadTaskHistory(cwd, sessionId)
@@ -362,12 +468,22 @@ export class ChatSession {
   /**
    * Send a prompt, reusing the prewarmed engine or waiting for its initialization.
    */
-  async submitPrompt(text: string): Promise<void> {
+  async submitPrompt(text: string, images: ImageInputView[] = []): Promise<void> {
     const trimmed = text.trim()
-    if (!trimmed || this.disposed) return
+    if ((!trimmed && images.length === 0) || this.disposed) return
     const epoch = this.submissionEpoch
 
-    this.appendEntry({ id: newId(), kind: 'prompt', text: trimmed })
+    // The transcript intentionally records only a descriptive image marker. Keeping
+    // base64 in WebviewState or session history would retain a potentially large,
+    // private payload long after it has been sent to the engine.
+    const imageDescription = images
+      .map(image => `[Image: ${image.name || 'attachment'}]`)
+      .join(' ')
+    this.appendEntry({
+      id: newId(),
+      kind: 'prompt',
+      text: [trimmed, imageDescription].filter(Boolean).join('\n'),
+    })
 
     // Report work immediately, before spawning the child or waiting for its
     // initialize response. The first startup can take noticeably longer than
@@ -385,6 +501,7 @@ export class ChatSession {
           cause instanceof Error ? cause.message : String(cause)
         }`,
       )
+      this.completeTurn('failed')
       this.setTurnRunning(false)
       return
     }
@@ -394,15 +511,31 @@ export class ChatSession {
     // A prompt is an ordinary `user` message on stdin — the same shape the CLI's
     // own stream-json input uses, so it inherits queueing and slash-command parsing
     // rather than needing a second code path.
+    const content = images.length === 0
+      ? trimmed
+      : [
+          ...(trimmed ? [{ type: 'text' as const, text: trimmed }] : []),
+          ...images.map(image => ({
+            type: 'image' as const,
+            source: {
+              type: 'base64' as const,
+              media_type: image.mediaType,
+              data: image.data,
+            },
+          })),
+        ]
     const delivered = this.engine?.send({
       type: 'user',
-      message: { role: 'user', content: trimmed },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
     })
 
     if (!delivered) {
+      this.completeTurn('failed')
       this.setTurnRunning(false)
       this.callbacks.onError('The Rayu engine is not running.')
+    } else {
+      this.updateTurnProgress('requesting', 'Sending request')
     }
   }
 
@@ -417,6 +550,7 @@ export class ChatSession {
     this.submissionEpoch += 1
     const control = this.control
     this.finishStreaming()
+    this.completeTurn('stopped')
     this.setTurnRunning(false)
 
     if (!control) return
@@ -472,6 +606,15 @@ export class ChatSession {
       ...(cwd ? { cwd } : {}),
     }
     this.entries.length = 0
+    this.activeTurnId = null
+    // Cleared so a later configuration restart cannot resume a conversation the user has
+    // already left. It is re-learned from the new child's first frame — including when
+    // `resumeSessionId` was passed, since a resumed child reports that same id.
+    this.currentSessionId = null
+    this.turnProgress = null
+    for (const key of Object.keys(this.turnCompletions)) delete this.turnCompletions[key]
+    this.thinkingBlocks.clear()
+    this.activeThinkingKey = null
     this.backgroundTaskMap.clear()
     this.callbacks.onTaskStateReplaced?.([])
     this.toolsByUseId.clear()
@@ -528,15 +671,20 @@ export class ChatSession {
       },
     )
 
-    const args = this.options.resumeSessionId
-      ? ['--resume', this.options.resumeSessionId]
-      : undefined
+    // Thinking is forced on for every Rayucode session — see `engineArgsFor`.
+    const args = engineArgsFor(this.options)
+    // Optional, lazily-resolved environment (currently the editor connection's port). A
+    // failure here must not prevent the session from starting, so it degrades to nothing.
+    const lazyEnv = this.options.resolveEnv
+      ? await this.options.resolveEnv().catch(() => ({}))
+      : {}
     const engine = new EngineProcess(
       {
         ...this.options,
         args,
         env: {
           ...this.options.env,
+          ...lazyEnv,
           RAYU_CLIENT_PRODUCT: 'rayucode',
         },
       },
@@ -593,12 +741,6 @@ export class ChatSession {
           this.appliedRuntimeModel = selectedRuntimeModel
           inferenceAcknowledged = this.applyInferenceResponse(modelResponse)
         }
-      }
-      if (this.pendingThinking !== undefined) {
-        await control.request('set_max_thinking_tokens', { max_thinking_tokens: this.pendingThinking ? null : 0 }, 15_000)
-        // set_max_thinking_tokens acknowledges the mutation but does not return the
-        // resulting capability view, so get_settings remains necessary here.
-        inferenceAcknowledged = false
       }
       if (control !== this.control || this.disposed) return
       // set_model already returns the effective inference state from the same
@@ -675,6 +817,18 @@ export class ChatSession {
       this.callbacks.onCommands?.(this.slashCommands)
     }
 
+    // Subagent type names, for `/model_subagent <AGENT>`. Taken from the engine rather than
+    // imported from `tools/AgentTool/built-in/subagents` so the list cannot drift from what
+    // the running engine offers — and so the host bundle does not carry nine prompt modules
+    // to learn nine names.
+    const agents = response.agents
+    if (Array.isArray(agents)) {
+      this.agentTypes = agents
+        .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+        .map(a => (typeof a.name === 'string' ? a.name : ''))
+        .filter(name => name.length > 0)
+    }
+
     // The SELECTED model comes from the shared config, not from the catalogue's
     // first entry — that would show whatever the provider happened to list first
     // and would silently disagree with what the CLI shows.
@@ -715,7 +869,10 @@ export class ChatSession {
       this.inference = {
         ...this.inference,
         supportsThinking,
-        thinkingEnabled: supportsThinking ? (this.pendingThinking ?? true) : false,
+        // Thinking is forced on at spawn (`--thinking enabled`), so for any model that
+        // supports it the answer is simply "on". There is no user-facing off switch to
+        // reconcile with — see the flag's rationale in `initialize`.
+        thinkingEnabled: supportsThinking,
         supportsEffort: supportsThinking,
       }
       this.callbacks.onInferenceSettings?.(this.inference)
@@ -771,7 +928,11 @@ export class ChatSession {
   applyInitialInference(value: InferenceSettingsView): void {
     this.inference = {
       ...value,
-      thinkingEnabled: this.pendingThinking ?? (value.supportsThinking ? value.thinkingEnabled : false),
+      // The helper child that resolved these settings was NOT launched with
+      // `--thinking enabled`, so its `thinkingEnabled` reflects the user's shared
+      // settings rather than what this session will actually do. The session forces
+      // thinking on at spawn, so the only correct answer here is the capability.
+      thinkingEnabled: value.supportsThinking,
     }
     this.callbacks.onInferenceSettings?.(this.inference)
   }
@@ -789,42 +950,6 @@ export class ChatSession {
       void this.pollContextUsage(true)
     } catch (cause) {
       this.callbacks.onError(`Could not set effort: ${cause instanceof Error ? cause.message : String(cause)}`)
-    }
-  }
-
-  /**
-   * Turn extended thinking on or off for SUBSEQUENT requests.
-   *
-   * `set_max_thinking_tokens` is the engine's own operation for this. It is
-   * session-scoped by design: the current generation is left alone, which is what the
-   * CLI does too — changing it mid-stream would mean re-shaping a request already in
-   * flight.
-   *
-   * Zero disables thinking; null restores the shared model/settings default.
-   */
-  async setThinking(enabled: boolean): Promise<boolean> {
-    if (!this.control) {
-      // No engine yet: remember it so the first turn starts in the chosen state.
-      this.pendingThinking = enabled
-      this.inference = { ...this.inference, thinkingEnabled: enabled }
-      this.callbacks.onInferenceSettings?.(this.inference)
-      return true
-    }
-    try {
-      await this.control.request(
-        'set_max_thinking_tokens',
-        { max_thinking_tokens: enabled ? null : 0 },
-        15_000,
-      )
-      await this.refreshInferenceSettings()
-      return true
-    } catch (cause) {
-      this.callbacks.onError(
-        `Could not ${enabled ? 'enable' : 'disable'} thinking: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-      )
-      return false
     }
   }
 
@@ -873,6 +998,7 @@ export class ChatSession {
 
   private handleExit(info: EngineExitInfo): void {
     this.finishStreaming()
+    this.completeTurn('failed')
     this.setTurnRunning(false)
     this.control?.dispose('the engine exited')
     this.control = null
@@ -895,6 +1021,14 @@ export class ChatSession {
   // ── engine → transcript ────────────────────────────────────────────────────
 
   private handleEngineMessage(message: Record<string, unknown>): void {
+    // Every engine frame carries the session it belongs to. Recorded here — the one place
+    // all of them pass through — because restarting the engine to pick up a configuration
+    // change has to resume THIS conversation rather than start a new one, and the id is
+    // otherwise known only to the child.
+    if (typeof message.session_id === 'string' && message.session_id) {
+      this.currentSessionId = message.session_id
+    }
+
     switch (message.type) {
       case 'stream_event':
         this.handleStreamEvent(message)
@@ -907,7 +1041,7 @@ export class ChatSession {
         // Flush the buffered file-change review card so it appears after the
         // response prose and summary, not mid-turn.
         this.flushPendingReview()
-        this.emitTurnDuration()
+        this.completeTurn(message.is_error === true ? 'failed' : 'completed', message)
         this.setTurnRunning(false)
         void this.pollContextUsage()
         return
@@ -1342,13 +1476,108 @@ export class ChatSession {
     this.emitReviewEntry(entry)
   }
 
-  /** Compute turn duration for the webview to display. */
-  private emitTurnDuration(): void {
-    if (this.turnStartedAt === 0) return
-    const ms = Date.now() - this.turnStartedAt
-    this.turnStartedAt = 0
-    if (ms < 1000) return // same 1s threshold as the CLI
-    this.callbacks.onTurnDuration?.(formatDurationCompact(ms))
+  private updateTurnProgress(
+    phase: TurnPhaseView,
+    label: string,
+    toolName?: string,
+    toolLabel?: string,
+  ): void {
+    if (!this.turnRunning || !this.activeTurnId) return
+    const previous = this.turnProgress
+    this.turnProgress = {
+      turnId: this.activeTurnId,
+      phase,
+      label,
+      startTimestamp: this.turnStartedAt || Date.now(),
+      ...(toolName ? { toolName } : {}),
+      ...(toolLabel ? { toolLabel } : {}),
+      usage: previous?.usage ?? emptyTurnUsage(),
+    }
+    this.callbacks.onTurnProgress?.({
+      ...this.turnProgress,
+      usage: { ...this.turnProgress.usage },
+    })
+  }
+
+  private updateUsage(raw: Record<string, unknown> | undefined, finalOutput: boolean): void {
+    if (!raw || !this.turnProgress) return
+    const direct = finiteToken(raw.input_tokens)
+    const cacheRead = finiteToken(raw.cache_read_input_tokens)
+    const cacheCreation = finiteToken(raw.cache_creation_input_tokens)
+    const hasInput =
+      typeof raw.input_tokens === 'number' ||
+      typeof raw.cache_read_input_tokens === 'number' ||
+      typeof raw.cache_creation_input_tokens === 'number'
+    const hasOutput = typeof raw.output_tokens === 'number'
+    const output = finalOutput && hasOutput
+      ? finiteToken(raw.output_tokens)
+      : this.turnProgress.usage.outputTokens
+    const usage: TurnTokenUsageView = {
+      inputTokens: hasInput
+        ? direct + cacheRead + cacheCreation
+        : this.turnProgress.usage.inputTokens,
+      outputTokens: output,
+      cacheReadTokens: hasInput ? cacheRead : this.turnProgress.usage.cacheReadTokens,
+      cacheCreationTokens: hasInput ? cacheCreation : this.turnProgress.usage.cacheCreationTokens,
+      inputEstimated: hasInput ? false : this.turnProgress.usage.inputEstimated,
+      outputEstimated: finalOutput && hasOutput ? false : this.turnProgress.usage.outputEstimated,
+    }
+    this.turnProgress = { ...this.turnProgress, usage }
+    this.callbacks.onTurnProgress?.({ ...this.turnProgress, usage: { ...usage } })
+  }
+
+  private updateEstimatedOutput(chars: number): void {
+    if (!this.turnProgress || chars <= 0 || !this.turnProgress.usage.outputEstimated) return
+    this.turnStreamedChars += chars
+    const usage = {
+      ...this.turnProgress.usage,
+      outputTokens: Math.round(this.turnStreamedChars / 4),
+    }
+    this.turnProgress = { ...this.turnProgress, usage }
+    this.callbacks.onTurnProgress?.({ ...this.turnProgress, usage: { ...usage } })
+  }
+
+  private completeTurn(
+    outcome: TurnCompletionEntry['outcome'],
+    message?: Record<string, unknown>,
+  ): void {
+    const turnId = this.activeTurnId
+    if (!turnId || this.turnCompletions[turnId]) return
+    const rawUsage = asRecord(message?.usage)
+    const currentUsage = this.turnProgress?.usage ?? emptyTurnUsage()
+    const hasUsage = rawUsage !== undefined
+    const direct = finiteToken(rawUsage?.input_tokens)
+    const cacheRead = finiteToken(rawUsage?.cache_read_input_tokens)
+    const cacheCreation = finiteToken(rawUsage?.cache_creation_input_tokens)
+    const completion: TurnCompletionEntry = {
+      outcome,
+      durationMs:
+        typeof message?.duration_ms === 'number' && Number.isFinite(message.duration_ms)
+          ? Math.max(0, message.duration_ms)
+          : Math.max(0, Date.now() - this.turnStartedAt),
+      usage: hasUsage
+        ? {
+            inputTokens: direct + cacheRead + cacheCreation,
+            outputTokens: finiteToken(rawUsage?.output_tokens),
+            cacheReadTokens: cacheRead,
+            cacheCreationTokens: cacheCreation,
+            inputEstimated: false,
+            outputEstimated: false,
+          }
+        : { ...currentUsage },
+    }
+    this.turnCompletions[turnId] = completion
+    this.callbacks.onTurnCompleted?.(turnId, completion)
+    this.turnProgress = {
+      ...(this.turnProgress ?? {
+        turnId,
+        label: outcome === 'completed' ? 'Completed' : outcome === 'failed' ? 'Failed' : 'Stopped',
+        startTimestamp: this.turnStartedAt,
+        usage: completion.usage,
+      }),
+      phase: outcome,
+      usage: completion.usage,
+    }
   }
 
   /**
@@ -1383,6 +1612,9 @@ export class ChatSession {
         this.finishStreaming()
         this.currentStreamMessageId = id
         this.currentStreamBlockIndex = null
+        this.currentStreamBlockType = null
+        this.updateUsage(asRecord(inner?.usage), false)
+        this.updateTurnProgress('responding', 'Responding')
         if (id !== null && !this.streamedBlocks.has(id)) {
           this.streamedBlocks.set(id, new Set())
         }
@@ -1392,6 +1624,15 @@ export class ChatSession {
       case 'content_block_start': {
         this.currentStreamBlockIndex =
           typeof event.index === 'number' ? event.index : null
+        const block = asRecord(event.content_block)
+        this.currentStreamBlockType = typeof block?.type === 'string' ? block.type : null
+        if (this.currentStreamBlockType === 'thinking') {
+          this.updateTurnProgress('thinking', 'Thinking')
+        } else if (this.currentStreamBlockType === 'tool_use') {
+          const name = typeof block?.name === 'string' ? block.name : 'tool'
+          const phase = phaseForTool(name)
+          this.updateTurnProgress(phase, labelForPhase(phase), name)
+        }
         return
       }
 
@@ -1403,26 +1644,38 @@ export class ChatSession {
         if (typeof event.index === 'number') this.currentStreamBlockIndex = event.index
 
         if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+          this.finishActiveThinking()
+          this.updateTurnProgress('responding', 'Responding')
           this.recordStreamedBlock()
           this.appendPartial('text', delta.text)
+          this.updateEstimatedOutput(delta.text.length)
           return
         }
         if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
           // Thinking is relayed live but NOT recorded as a streamed block: the
           // settled message has no thinking text block to suppress, and recording it
           // would suppress whatever text block happens to share the index.
-          this.appendPartial('thinking', delta.thinking)
+          this.updateTurnProgress('thinking', 'Thinking')
+          this.appendThinking(delta.thinking)
+          this.updateEstimatedOutput(delta.thinking.length)
         }
         return
       }
 
       case 'content_block_stop': {
+        if (this.currentStreamBlockType === 'thinking') this.finishActiveThinking()
         this.currentStreamBlockIndex = null
+        this.currentStreamBlockType = null
+        return
+      }
+
+      case 'message_delta': {
+        this.updateUsage(asRecord(event.usage), true)
         return
       }
 
       default:
-        // message_delta, message_stop, ping. The turn's end is driven by the
+        // message_stop, ping. The turn's end is driven by the
         // `result` frame, which is authoritative; message_stop is not, because a
         // turn can contain several messages.
         return
@@ -1462,7 +1715,54 @@ export class ChatSession {
     this.callbacks.onPartial(id, kind, delta)
   }
 
+  private ensureStreamingEntry(): EntryId {
+    if (this.streamingId === null) {
+      const id = newId()
+      this.streamingId = id
+      this.appendEntry({ id, kind: 'assistant', text: '', streaming: true })
+    }
+    return this.streamingId
+  }
+
+  /** Preserve explicit provider thinking as its own correlated, bounded block. */
+  private appendThinking(delta: string): void {
+    if (!delta) return
+    const sourceMessageId = this.ensureStreamingEntry()
+    const blockIndex = this.currentStreamBlockIndex ?? 0
+    const key = `${sourceMessageId}:${blockIndex}`
+    let block = this.thinkingBlocks.get(key)
+    if (!block) {
+      block = {
+        entryId: `thinking-${sourceMessageId}-${blockIndex}`,
+        sourceMessageId,
+        blockIndex,
+        text: '',
+        streaming: true,
+        startTime: Date.now(),
+        truncated: false,
+      }
+      this.thinkingBlocks.set(key, block)
+    }
+    this.activeThinkingKey = key
+    const available = Math.max(0, MAX_WEBVIEW_TEXT_CHARS - block.text.length)
+    if (available > 0) block.text += delta.slice(0, available)
+    if (delta.length > available) block.truncated = true
+    this.callbacks.onThinking?.({ ...block })
+  }
+
+  private finishActiveThinking(): void {
+    const key = this.activeThinkingKey
+    if (!key) return
+    this.activeThinkingKey = null
+    const block = this.thinkingBlocks.get(key)
+    if (!block || !block.streaming) return
+    block.streaming = false
+    block.durationMs = Math.max(0, Date.now() - block.startTime)
+    this.callbacks.onThinking?.({ ...block })
+  }
+
   private finishStreaming(): void {
+    this.finishActiveThinking()
     const id = this.streamingId
     if (id === null) return
     this.streamingId = null
@@ -1512,9 +1812,36 @@ export class ChatSession {
       if (type === 'text') textIndices.push(i)
     })
     let textSeen = 0
+    // A provider may persist a thinking block without having delivered partial
+    // events (for example after reconnecting). Keep it with the immediately
+    // following assistant text rather than rendering an orphaned empty turn.
+    let settledThinkingEntryId: EntryId | null = null
 
     for (const block of blocks) {
       switch (block.kind) {
+        case 'thinking': {
+          const sourceId = this.streamingId ?? newId()
+          if (!this.streamingId) {
+            this.appendEntry({ id: sourceId, kind: 'assistant', text: '' })
+            settledThinkingEntryId = sourceId
+          }
+          const key = `${sourceId}:${block.blockIndex}`
+          if (!this.thinkingBlocks.has(key)) {
+            const thinking: ThinkingEntryView = {
+              entryId: `thinking-${sourceId}-${block.blockIndex}`,
+              sourceMessageId: sourceId,
+              blockIndex: block.blockIndex,
+              text: block.text,
+              streaming: false,
+              startTime: Date.now(),
+              durationMs: 0,
+              truncated: block.text.includes('…[truncated '),
+            }
+            this.thinkingBlocks.set(key, thinking)
+            this.callbacks.onThinking?.({ ...thinking })
+          }
+          break
+        }
         case 'assistant': {
           const wireIndex = textIndices[textSeen++]
           // Skip ONLY if this exact block already reached the UI as deltas.
@@ -1534,6 +1861,15 @@ export class ChatSession {
             if (current?.kind === 'assistant' && current.text === block.text) {
               break
             }
+          }
+          if (settledThinkingEntryId) {
+            const entry = this.entries.find(item => item.id === settledThinkingEntryId)
+            if (entry?.kind === 'assistant') {
+              entry.text = block.text
+              this.emitEntry(entry)
+            }
+            settledThinkingEntryId = null
+            break
           }
           // Not streamed: close any open stream so ordering reads correctly, then
           // render it. This is the path that preserves a post-tool-call summary.
@@ -1622,6 +1958,26 @@ export class ChatSession {
       const blocks = formatMessageForVSCode(message as never)
       for (const block of blocks) {
         switch (block.kind) {
+          case 'thinking': {
+            const sourceId = this.mirrorId ?? newId()
+            if (!this.mirrorId) {
+              this.mirrorId = sourceId
+              this.appendEntry({ id: sourceId, kind: 'assistant', text: '' })
+            }
+            const thinking: ThinkingEntryView = {
+              entryId: `thinking-${sourceId}-${block.blockIndex}`,
+              sourceMessageId: sourceId,
+              blockIndex: block.blockIndex,
+              text: block.text,
+              streaming: false,
+              startTime: Date.now(),
+              durationMs: 0,
+              truncated: block.text.includes('…[truncated '),
+            }
+            this.thinkingBlocks.set(`${sourceId}:${block.blockIndex}`, thinking)
+            this.callbacks.onThinking?.({ ...thinking })
+            break
+          }
           case 'prompt':
             // Included, unlike the live path: a prompt typed in the TERMINAL was never
             // appended here, so skipping it would show replies with nothing to reply to.
@@ -1664,15 +2020,46 @@ export class ChatSession {
   }
 
   restoreTranscript(blocks: VSCodeActivityBlock[]): void {
+    let thinkingSourceId: EntryId | null = null
     for (const block of blocks) {
       switch (block.kind) {
+        case 'thinking': {
+          if (!thinkingSourceId) {
+            thinkingSourceId = newId()
+            this.appendEntry({ id: thinkingSourceId, kind: 'assistant', text: '' })
+          }
+          const thinking: ThinkingEntryView = {
+            entryId: `thinking-${thinkingSourceId}-${block.blockIndex}`,
+            sourceMessageId: thinkingSourceId,
+            blockIndex: block.blockIndex,
+            text: block.text,
+            streaming: false,
+            startTime: Date.now(),
+            durationMs: 0,
+            truncated: block.text.includes('…[truncated '),
+          }
+          this.thinkingBlocks.set(`${thinkingSourceId}:${block.blockIndex}`, thinking)
+          this.callbacks.onThinking?.({ ...thinking })
+          break
+        }
         case 'prompt':
+          thinkingSourceId = null
           this.appendEntry({ id: newId(), kind: 'prompt', text: block.text })
           break
         case 'assistant':
-          this.appendEntry({ id: newId(), kind: 'assistant', text: block.text })
+          if (thinkingSourceId) {
+            const entry = this.entries.find(item => item.id === thinkingSourceId)
+            if (entry?.kind === 'assistant') {
+              entry.text = block.text
+              this.emitEntry(entry)
+            }
+            thinkingSourceId = null
+          } else {
+            this.appendEntry({ id: newId(), kind: 'assistant', text: block.text })
+          }
           break
         case 'tool_use':
+          thinkingSourceId = null
           this.appendToolCall(block)
           break
         case 'tool_result':
@@ -1710,6 +2097,9 @@ export class ChatSession {
     // A tool call arriving means the assistant's prose for this step is done, so the
     // stream is closed before the pill so ordering reads correctly.
     this.finishStreaming()
+
+    const phase = phaseForTool(block.name)
+    this.updateTurnProgress(phase, labelForPhase(phase), block.name, block.label || undefined)
 
     const id = newId()
     if (block.toolUseId) this.toolsByUseId.set(block.toolUseId, id)
@@ -1763,10 +2153,12 @@ export class ChatSession {
     // Re-emitting the entry is how the webview learns it changed; the reducer
     // replaces by id, so this is an update rather than a duplicate.
     this.emitEntry(entry)
+    this.updateTurnProgress('requesting', 'Waiting for response')
   }
 
   private handleInboundRequest(request: InboundControlRequest): void {
     if (request.subtype === 'can_use_tool') {
+      this.updateTurnProgress('waiting', 'Waiting for approval')
       this.callbacks.onPermissionRequest(request)
       return
     }
@@ -1940,12 +2332,26 @@ export class ChatSession {
       this.streamedBlocks.clear()
       this.currentStreamMessageId = null
       this.currentStreamBlockIndex = null
+      this.currentStreamBlockType = null
       // `file_change_review` is a cumulative pending-change snapshot. Keep the live
       // card identity across turns so /keep and /undo update that card in place. The
       // empty snapshot clears the identity; a later independent review then gets a
       // fresh card.
       this.pendingReview = null
       this.turnStartedAt = Date.now()
+      this.turnStreamedChars = 0
+      this.activeTurnId = newId()
+      this.turnProgress = {
+        turnId: this.activeTurnId,
+        phase: 'starting',
+        label: 'Starting Rayu',
+        startTimestamp: this.turnStartedAt,
+        usage: emptyTurnUsage(),
+      }
+      this.callbacks.onTurnProgress?.({
+        ...this.turnProgress,
+        usage: { ...this.turnProgress.usage },
+      })
       this.retryNoticeId = null
     }
     if (this.turnRunning === running) return
@@ -1962,6 +2368,39 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object'
     ? (value as Record<string, unknown>)
     : undefined
+}
+
+function finiteToken(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : 0
+}
+
+function emptyTurnUsage(): TurnTokenUsageView {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    inputEstimated: true,
+    outputEstimated: true,
+  }
+}
+
+function phaseForTool(name: string): TurnPhaseView {
+  const lower = name.toLowerCase()
+  if (lower.includes('read') || lower.includes('glob')) return 'reading'
+  if (lower.includes('search') || lower.includes('grep') || lower.includes('web')) return 'searching'
+  if (lower.includes('write') || lower.includes('edit') || lower.includes('patch')) return 'editing'
+  return 'running'
+}
+
+function labelForPhase(phase: TurnPhaseView): string {
+  switch (phase) {
+    case 'reading': return 'Reading'
+    case 'searching': return 'Searching'
+    case 'editing': return 'Editing'
+    case 'running': return 'Running tool'
+    default: return 'Working'
+  }
 }
 
 function normalizeTaskType(value: string | undefined): BackgroundTaskType {
@@ -2061,14 +2500,3 @@ function compareBackgroundTasks(a: BackgroundTaskView, b: BackgroundTaskView): n
   return aActive - bActive || b.updatedAt - a.updatedAt
 }
 
-/** Compact duration like "7m 35s", "1h 2m", "45s". Same style as the CLI. */
-function formatDurationCompact(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000)
-  if (totalSeconds < 60) return `${totalSeconds}s`
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  const remainMinutes = minutes % 60
-  return remainMinutes > 0 ? `${hours}h ${remainMinutes}m` : `${hours}h`
-}

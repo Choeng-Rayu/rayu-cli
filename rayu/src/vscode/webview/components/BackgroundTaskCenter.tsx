@@ -5,6 +5,7 @@ import type {
   BackgroundTaskView,
   PermissionRequestView,
 } from '../../shared/webviewProtocol.js'
+import { formatDuration } from '../../shared/turnProgress.js'
 
 type Filter = 'all' | 'active' | 'waiting' | 'completed' | 'failed'
 
@@ -284,9 +285,5 @@ function formatCount(value: number): string {
 }
 
 function formatElapsed(startedAt: number, updatedAt: number, live: boolean): string {
-  const seconds = Math.max(0, Math.floor(((live ? Date.now() : updatedAt) - startedAt) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+  return formatDuration((live ? Date.now() : updatedAt) - startedAt)
 }
