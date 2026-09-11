@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import type {
   BackgroundTaskStatus,
@@ -6,6 +6,7 @@ import type {
   PermissionRequestView,
 } from '../../shared/webviewProtocol.js'
 import { formatDuration } from '../../shared/turnProgress.js'
+import { useSecondTick } from '../useSecondTick.js'
 
 type Filter = 'all' | 'active' | 'waiting' | 'completed' | 'failed'
 
@@ -78,12 +79,10 @@ export function BackgroundTaskCenter({
 }): JSX.Element {
   const [filter, setFilter] = useState<Filter>('all')
   const [reply, setReply] = useState('')
-  const [, tick] = useState(0)
-
-  useEffect(() => {
-    const id = window.setInterval(() => tick(value => value + 1), 1000)
-    return () => window.clearInterval(id)
-  }, [])
+  // Re-render once a second so running tasks' elapsed times advance. Shared with the
+  // turn status line and the tool pills, so every duration in the panel ticks together
+  // instead of each timer drifting to its own point in the second.
+  useSecondTick(tasks.some(task => isActive(task.status)))
 
   const visible = useMemo(
     () => [...tasks]

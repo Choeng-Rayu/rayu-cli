@@ -17,6 +17,7 @@ import type {
   BackgroundTaskView,
   ContextUsageView,
   EntryId,
+  LiveSessionView,
   McpServerView,
   ModelCatalogueView,
   ModelInfoView,
@@ -61,7 +62,14 @@ export interface ChatState {
    * blocked with nothing on screen to unblock it.
    */
   pendingPermissions: PermissionRequestView[]
-  /** Non-fatal problems, newest last. Rendered inline, not as toasts. */
+  /**
+   * Alerts with no position in the visible transcript, newest last.
+   *
+   * NOT the general error channel: a failure inside a conversation arrives as a
+   * `notice` entry in `entries` and renders inline where it happened. This holds only
+   * background-session alerts and panel-level failures — see `showError` in the
+   * protocol for why those two belong outside the transcript.
+   */
   notices: string[]
   /** Available slash commands. */
   commands: SlashCommandView[]
@@ -92,6 +100,16 @@ export interface ChatState {
   workspaceFiles: string[]
   /** Previous sessions, with their load state. */
   sessions: SessionListView
+  /**
+   * Conversations the panel is holding open, newest activity first.
+   *
+   * Separate from `sessions` because these are LIVE: switching to one activates an engine
+   * that is already there — possibly mid-turn — where a history row spawns a child. See
+   * `LiveSessionView` for why the two lists cannot be merged.
+   */
+  liveSessions: LiveSessionView[]
+  /** Which live session is on screen. */
+  activeSessionKey: string
   backgroundTasks: BackgroundTaskView[]
   taskInspectionSupported: boolean
   taskInspectionMessage?: string
@@ -140,6 +158,8 @@ export const initialChatState: ChatState = {
   ideContext: null,
   workspaceFiles: [],
   sessions: { status: 'loading', sessions: [] },
+  liveSessions: [],
+  activeSessionKey: '',
   backgroundTasks: [],
   taskInspectionSupported: true,
 }
@@ -161,16 +181,17 @@ export type ChatAction =
   | { type: 'showPermissionRequest'; request: PermissionRequestView }
   | { type: 'dismissPermissionRequest'; requestId: string }
   | { type: 'showError'; message: string }
-  | { type: 'removeEntry'; id: EntryId }
   | { type: 'setCommands'; commands: SlashCommandView[] }
   | { type: 'fileSearchResults'; query: string; files: string[] }
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   | { type: 'setMcpServers'; servers: McpServerView[] }
   | { type: 'setIdeContext'; context: IdeContextView | null }
   | { type: 'setSessions'; list: SessionListView }
+  | { type: 'setLiveSessions'; sessions: LiveSessionView[]; activeKey: string }
   | { type: 'setTurnProgress'; progress: TurnProgressView }
   | { type: 'turnCompleted'; turnId: string; completion: TurnCompletionEntry }
   | { type: 'updateThinking'; thinking: ThinkingEntryView }
+  | { type: 'appendToolOutput'; id: EntryId; text: string }
   | { type: 'replaceTaskState'; tasks: BackgroundTaskView[]; supported: boolean; message?: string }
   | { type: 'upsertTaskState'; task: BackgroundTaskView }
 
@@ -206,6 +227,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ideContext: action.state.ideContext ?? null,
         workspaceFiles: state.workspaceFiles,
         sessions: action.state.sessions,
+        liveSessions: action.state.liveSessions ?? [],
+        activeSessionKey: action.state.activeSessionKey ?? '',
         backgroundTasks: action.state.backgroundTasks ?? [],
         taskInspectionSupported: action.state.taskInspectionSupported ?? true,
         taskInspectionMessage: action.state.taskInspectionMessage,
@@ -325,12 +348,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'showError':
       return { ...state, notices: [...state.notices, action.message] }
 
-    case 'removeEntry':
-      return {
-        ...state,
-        entries: state.entries.filter(e => e.id !== action.id),
-      }
-
     case 'setCommands':
       return { ...state, commands: action.commands }
 
@@ -359,6 +376,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'setSessions':
       return { ...state, sessions: action.list }
 
+    case 'setLiveSessions':
+      return { ...state, liveSessions: action.sessions, activeSessionKey: action.activeKey }
+
     case 'setTurnProgress':
       // Whole-value replacement: the host sends a complete snapshot each time, so there
       // is nothing to merge and merging would risk keeping a stale tool label.
@@ -383,6 +403,21 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           [action.thinking.entryId]: action.thinking,
         },
       }
+
+    case 'appendToolOutput': {
+      // Named `append` for symmetry with `appendPartial`, but the payload REPLACES the
+      // body: the host sends a cumulative snapshot of a bounded tail, so concatenating
+      // would repeat everything already shown on every frame. See the protocol comment.
+      const index = state.entries.findIndex(e => e.id === action.id)
+      if (index === -1) return state
+      const target = state.entries[index]
+      // Only a running row. A frame that arrives after the result must not overwrite the
+      // authoritative output with a stale tail.
+      if (target?.kind !== 'tool' || target.status !== 'running') return state
+      const entries = [...state.entries]
+      entries[index] = { ...target, output: action.text }
+      return { ...state, entries }
+    }
 
     case 'replaceTaskState':
       return {

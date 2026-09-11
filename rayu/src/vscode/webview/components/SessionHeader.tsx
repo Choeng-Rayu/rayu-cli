@@ -32,6 +32,7 @@ import {
   BackIcon,
   EllipsisIcon,
   HistoryIcon,
+  ListIcon,
   PlugIcon,
   PlusIcon,
   RayuMark,
@@ -96,6 +97,17 @@ export interface SessionHeaderProps {
   onBack?: () => void
   onNewSession: () => void
   onOpenSessions: () => void
+  /** Whether every tool row is showing its parameters and output. */
+  detailed: boolean
+  /** Flip the panel-wide detail switch — the editor's equivalent of the CLI's Ctrl+O. */
+  onToggleDetailed: () => void
+  /** How many conversations the panel is holding open, for the Sessions badge. */
+  openSessionCount: number
+  /** How many background tasks exist, for the badge on the background-work control. */
+  backgroundTaskCount: number
+  /** Whether the background-work surface is the one currently open. */
+  backgroundOpen: boolean
+  onToggleBackground: () => void
   onOpenProviderSetup: () => void
   onRefreshMcp: () => void
   onReconnectMcp: (serverName: string) => void
@@ -114,6 +126,12 @@ export function SessionHeader({
   onBack,
   onNewSession,
   onOpenSessions,
+  detailed,
+  onToggleDetailed,
+  openSessionCount,
+  backgroundTaskCount,
+  backgroundOpen,
+  onToggleBackground,
   onOpenProviderSetup,
   onRefreshMcp,
   onReconnectMcp,
@@ -186,6 +204,44 @@ export function SessionHeader({
 
       {!signedOut ? (
         <>
+          {/*
+            The clickable equivalent of the CLI's Ctrl+O. A shortcut alone would be
+            invisible in an editor panel — a keystroke nobody can discover is the same as
+            no feature — so this is a real control, and the shortcut is documented on it.
+          */}
+          <button
+            type="button"
+            className={`rc-icon-button${detailed ? ' rc-icon-button-active' : ''}`}
+            aria-pressed={detailed}
+            title={
+              detailed
+                ? 'Hide tool details (Ctrl+O)'
+                : 'Show tool parameters and output (Ctrl+O)'
+            }
+            aria-label="Toggle tool details"
+            onClick={onToggleDetailed}
+          >
+            <ListIcon size={14} />
+          </button>
+          {/* Only offered when there IS background work: an always-present control that
+              opens an empty panel teaches the user to stop pressing it. */}
+          {backgroundTaskCount > 0 ? (
+            <button
+              type="button"
+              className={`rc-icon-button rc-icon-button-badged${
+                backgroundOpen ? ' rc-icon-button-active' : ''
+              }`}
+              aria-expanded={backgroundOpen}
+              title={`Background work (${backgroundTaskCount})`}
+              aria-label={`Background work, ${backgroundTaskCount} ${
+                backgroundTaskCount === 1 ? 'task' : 'tasks'
+              }`}
+              onClick={onToggleBackground}
+            >
+              <RayuMark size={13} />
+              <span className="rc-icon-badge">{backgroundTaskCount}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className="rc-icon-button"
@@ -197,12 +253,22 @@ export function SessionHeader({
           </button>
           <button
             type="button"
-            className="rc-icon-button"
-            title="Sessions"
+            className={`rc-icon-button${openSessionCount > 1 ? ' rc-icon-button-badged' : ''}`}
+            title={
+              openSessionCount > 1
+                ? `Sessions — ${openSessionCount} open`
+                : 'Sessions'
+            }
             aria-label="Sessions"
             onClick={onOpenSessions}
           >
             <HistoryIcon size={14} />
+            {/* Only shown when more than one is open. With a single conversation the count is
+                not information, and this is the only affordance that leads back to the others
+                after pressing +. */}
+            {openSessionCount > 1 ? (
+              <span className="rc-icon-badge">{openSessionCount}</span>
+            ) : null}
           </button>
         </>
       ) : null}

@@ -50,9 +50,42 @@ test('history restores the bounded tail, tolerates a truncated record, and never
   expect((await listWorkspaceSessions(dir))[0]?.id).toBe(id)
 })
 
+test('local-command breadcrumbs are filtered out of a restored transcript', async () => {
+  // The reported symptom: going back to a session showed a user bubble containing
+  // `<command-name>/model</command-name>` and `<local-command-stdout>Set model to …`. Those
+  // are the engine's own slash-command bookkeeping, written to the session file by
+  // `injectModelSwitchBreadcrumbs`. The live path never renders them because it skips prompt
+  // blocks it already appended; restore was the only place they surfaced.
+  const dir = mkdtempSync(join(tmpdir(), 'rayucode-breadcrumb-')); dirs.push(dir)
+  process.env.RAYU_CONFIG_DIR = join(dir, 'config')
+  const id = randomUUID(), project = getProjectDir(dir)
+  mkdirSync(project, { recursive: true })
+  const record = (role: 'user' | 'assistant', content: string) =>
+    JSON.stringify({
+      type: role, uuid: randomUUID(), sessionId: id, cwd: dir,
+      timestamp: new Date(1700000000000).toISOString(),
+      message: { role, content },
+    })
+  writeFileSync(
+    join(project, `${id}.jsonl`),
+    [
+      record('user', 'real prompt'),
+      record('user', '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>rayu-hostedlongcat-2</command-args>'),
+      record('user', '<local-command-stdout>Set model to rayu-hostedlongcat-2</local-command-stdout>'),
+      record('assistant', 'real answer'),
+    ].join('\n') + '\n',
+  )
+
+  const blocks = await loadSessionTranscript(id, dir)
+  expect(blocks).toEqual([
+    { kind: 'prompt', text: 'real prompt' },
+    { kind: 'assistant', text: 'real answer' },
+  ])
+})
+
 test('only restored unfinished tools are settled', () => {
   const session = new ChatSession({ enginePath: '/unused', cwd: tmpdir() }, sessionCallbacks())
-  session.restoreTranscript([{ kind: 'tool_use', toolUseId: 'old', name: 'Bash', label: 'check', parameters: '{}' }])
+  session.restoreTranscript([{ kind: 'tool_use', toolUseId: 'old', parentToolUseId: null, name: 'Bash', label: 'check', parameters: '{}' }])
   expect(session.transcript.find(e => e.kind === 'tool')).toMatchObject({ status: 'error' })
   session.dispose()
 })

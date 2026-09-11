@@ -84,6 +84,13 @@
         "command": "rayucode.addTerminalSelection",
         "title": "Add Terminal Selection to Prompt",
         "category": "Rayucode"
+      },
+      {
+        "//": "The Explorer route. A drop CANNOT reach the chat panel from the Explorer \u2014 Rayucode contributes its own activity-bar container, so the two are never visible at the same time \u2014 which makes this the primary way to add a file from the tree, not a convenience alias for dragging.",
+        "command": "rayucode.addToContext",
+        "title": "Add to Rayu Context",
+        "category": "Rayucode",
+        "icon": "$(add)"
       }
     ],
     "menus": {
@@ -98,6 +105,24 @@
         {
           "command": "rayucode.addTerminalSelection",
           "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "rayucode.addToContext",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "rayucode.addToContext",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "rayucode.addToContext",
+          "group": "navigation@99"
         }
       ]
     }

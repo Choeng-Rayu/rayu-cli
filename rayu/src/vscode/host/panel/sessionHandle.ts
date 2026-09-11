@@ -37,6 +37,7 @@ import { EngineProcess, type EngineExitInfo } from '../engine/engineProcess.js'
 import { ControlClient, type InboundControlRequest } from '../engine/controlClient.js'
 import {
   MAX_WEBVIEW_TEXT_CHARS,
+  clamp,
   formatActivityForVSCode,
   formatMessageForVSCode,
   type VSCodeActivityBlock,
@@ -62,6 +63,7 @@ import type {
   BackgroundTaskType,
   BackgroundTaskView,
   ContextUsageView,
+  DiffHunkView,
   ModelCatalogueView,
   EntryId,
   McpServerView,
@@ -166,9 +168,27 @@ export interface SessionCallbacks {
   onComplete: (id: EntryId) => void
   /** Turn started or ended, so the composer can flip send/stop. */
   onTurnState: (running: boolean) => void
+  /** Live output for a running tool. Replaces the pill's body; never appended. */
+  onToolOutput?: (id: EntryId, text: string) => void
   /** The engine reported its model. */
   onModelInfo: (info: ModelInfoView) => void
-  /** Something went wrong in a way the user should see. */
+  /**
+   * Something went wrong in a way the user should see, in a session that may NOT be
+   * the one on screen.
+   *
+   * ── THIS IS THE CROSS-SESSION ALERT, NOT THE PRIMARY ERROR SURFACE ───────────
+   *
+   * `reportError` also records the failure as a `notice` entry in THIS session's
+   * transcript, which is where it belongs: an error has a position in the
+   * conversation, and rendering it anywhere else means a failure from turn 2 appears
+   * below turn 9 with nothing to relate it to.
+   *
+   * This callback exists for the case the transcript cannot cover — a BACKGROUND
+   * conversation failing while the user is looking at a different one. That session's
+   * transcript has the entry, but the user is not reading it, and the session they are
+   * waiting on must not fail silently. The extension therefore posts `showError` only
+   * when the failing session is not active; see its `onError` handler.
+   */
   onError: (message: string) => void
   /**
    * The engine is asking permission to run a tool, and is BLOCKED until answered.
@@ -201,6 +221,14 @@ export interface SessionCallbacks {
   onReviewFiles?: (files: readonly ReviewFileRecord[]) => void
   /** Thinking/effort state, after the engine acknowledged a change. */
   onInferenceSettings?: (settings: InferenceSettingsView) => void
+  /**
+   * The enforced permission mode changed WITHOUT the user asking for it.
+   *
+   * Fired only when a replay onto a new engine was refused, so the pill can fall back to
+   * what is actually enforced. Ordinary user-driven changes are reported by the caller
+   * that requested them.
+   */
+  onPermissionMode?: (mode: PermissionModeView) => void
   /** Slash commands available in the engine. */
   onCommands?: (commands: SlashCommandView[]) => void
   /** Context window usage after a turn. */
@@ -245,6 +273,69 @@ export interface SessionOptions {
  * event.
  */
 const MIN_CONTEXT_INTERVAL_MS = 2_000
+
+/**
+ * Total untruncated tool output the host will hold for on-demand expansion.
+ *
+ * Two megabytes is roughly sixty maximum-size clamped results, which covers scrolling
+ * back through a long agent run while staying a rounding error against the extension
+ * host's own footprint. The cost of being wrong in either direction is small and
+ * asymmetric: too low means an occasional "no longer available" message, too high means
+ * the panel quietly holds output nobody will read for the rest of the session.
+ */
+const MAX_RETAINED_OUTPUT_CHARS = 2_000_000
+
+/**
+ * Caps on the diff copy that crosses into the webview.
+ *
+ * Sized for READING, not for completeness: a change you can take in at a glance is a few
+ * hunks of a few dozen lines, and past that the diff editor is the better surface anyway.
+ * Twelve hunks of 400 lines is a worst case of a few thousand lines per file, which is a
+ * postMessage measured in tens of kilobytes rather than megabytes.
+ *
+ * These bound the WEBVIEW copy only. `reviewRecords` keeps the uncapped hunks, because the
+ * VS Code diff editor must show the whole change.
+ */
+const MAX_REVIEW_HUNKS = 12
+const MAX_REVIEW_HUNK_LINES = 400
+
+/**
+ * Cap a file's hunks for the webview, reporting whether anything was dropped.
+ *
+ * Truncation is SIGNALLED rather than silent. A diff quietly missing its tail invites the
+ * reader to conclude the change is smaller than it is, which is worse than showing less and
+ * saying so — the card offers the diff editor for the rest.
+ *
+ * Pure and module-level so the boundary conditions are testable without a session.
+ */
+function boundHunks(hunks: readonly ReviewHunk[]): {
+  hunks: DiffHunkView[]
+  truncated: boolean
+} {
+  let truncated = hunks.length > MAX_REVIEW_HUNKS
+  const bounded: DiffHunkView[] = []
+
+  for (const hunk of hunks.slice(0, MAX_REVIEW_HUNKS)) {
+    const raw = hunk as unknown as Partial<DiffHunkView>
+    const lines = Array.isArray(raw.lines)
+      ? raw.lines.filter((line): line is string => typeof line === 'string')
+      : []
+    if (lines.length > MAX_REVIEW_HUNK_LINES) truncated = true
+    bounded.push({
+      oldStart: numberOr(raw.oldStart, 1),
+      oldLines: numberOr(raw.oldLines, 0),
+      newStart: numberOr(raw.newStart, 1),
+      newLines: numberOr(raw.newLines, 0),
+      lines: lines.slice(0, MAX_REVIEW_HUNK_LINES),
+    })
+  }
+
+  return { hunks: bounded, truncated }
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
 
 export class ChatSession {
   private engine: EngineProcess | null = null
@@ -335,13 +426,64 @@ export class ChatSession {
   private readonly toolsByUseId = new Map<string, EntryId>()
 
   /**
+   * Hook entries by the engine's `hook_id`, so every frame for one execution updates
+   * the same row instead of appending one per progress tick.
+   *
+   * Never cleared per turn: hooks can outlive the turn that triggered them (an async
+   * `PostToolUse` hook reports after the turn has ended), and dropping the mapping would
+   * make its response create a second, duplicate row.
+   */
+  private readonly hooksByHookId = new Map<string, EntryId>()
+
+  /**
+   * Untruncated tool output, for rows the user may ask to expand.
+   *
+   * ── BOUNDED, AND OLDEST-FIRST EVICTION ─────────────────────────────────────────
+   *
+   * Only results that were actually truncated are stored, and only up to
+   * `MAX_RETAINED_OUTPUT_CHARS` in total across the session. Without a cap this would be
+   * an unbounded leak in exactly the sessions that need it least — a long agent run that
+   * reads dozens of large files would hold every one of them in the extension host for
+   * output nobody asked to see.
+   *
+   * `Map` iteration order is insertion order, which is what makes "evict the oldest"
+   * a single pass rather than needing a separate LRU. Oldest rather than least-recently-
+   * read because the user scrolls back through recent work, not to the top of a long
+   * session — and an evicted entry degrades to a message saying so rather than to a bug.
+   */
+  private readonly retainedToolOutput = new Map<EntryId, string>()
+  private retainedOutputChars = 0
+
+  /**
    * The live review card, if any.
    *
-   * Tracked so a re-emitted summary UPDATES it. The engine sends the whole working set
-   * again each time a file is kept or undone, and appending would leave stale cards
-   * offering to act on sets that no longer exist.
+   * Tracked so a re-emitted summary UPDATES it rather than appending a second one: the
+   * engine sends the whole working set again each time a file is kept or undone, and a
+   * trail of those would leave stale cards offering to act on sets that no longer exist.
+   *
+   * The card still MOVES — `flushPendingReview` re-anchors it under each finished
+   * response — but there is only ever one of it.
    */
   private reviewEntryId: EntryId | null = null
+  /**
+   * The turn the live card is already anchored under.
+   *
+   * `flushPendingReview` runs from both the `result` frame and the `idle` state change,
+   * whichever the engine sends first, and both belong to the same turn. Without this the
+   * second call would tear the card down and rebuild it below the completion line.
+   */
+  private reviewAnchorTurnId: string | null = null
+  /**
+   * Change ids that were already on record when the current turn started.
+   *
+   * The baseline for `ReviewFileView.changedThisTurn`. Captured on the turn's rising edge
+   * rather than recomputed per snapshot, so the flags stay put while the user keeps and
+   * undoes individual files after the turn — a file does not stop having been changed by
+   * this response because it was subsequently kept.
+   */
+  private reviewBaselineChangeIds: ReadonlySet<string> = new Set()
+  /** Every change id in the latest snapshot. Becomes the baseline at the next turn's start. */
+  private reviewKnownChangeIds: ReadonlySet<string> = new Set()
   /**
    * Buffered review entry waiting for the turn to end.
    *
@@ -351,7 +493,16 @@ export class ChatSession {
    * assistant's prose and the post-turn summary, which is where the user
    * expects a file-change overview.
    */
-  private pendingReview: TranscriptEntry | null = null
+  private pendingReview: ReviewEntry | null = null
+  /**
+   * The recorded working set, retained so it can be re-published.
+   *
+   * The diff store is a SINGLETON serving the editor's diff view, and only one session can own
+   * it at a time. When the panel switches away and back, the newly-active session has to put
+   * its own records back — otherwise the review card offers a diff reconstructed from another
+   * conversation's hunks, which would show the wrong before-content with no error anywhere.
+   */
+  private reviewRecords: readonly ReviewFileRecord[] = []
   /** The single retry notice, updated in place instead of appending per attempt. */
   private retryNoticeId: EntryId | null = null
 
@@ -373,6 +524,8 @@ export class ChatSession {
   private modelChangeQueue: Promise<void> = Promise.resolve()
   private modelSelectionEpoch = 0
   private disposed = false
+  /** Epoch ms of the last transcript append. See `lastActivityAt`. */
+  private lastEntryAt = Date.now()
 
   constructor(
     private options: SessionOptions,
@@ -456,7 +609,7 @@ export class ChatSession {
       await this.ensureStarted()
     } catch (cause) {
       if (this.disposed) return
-      this.callbacks.onError(
+      this.reportError(
         `Could not start the Rayu engine: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
@@ -496,7 +649,7 @@ export class ChatSession {
       await this.ensureStarted()
     } catch (cause) {
       if (this.disposed || epoch !== this.submissionEpoch) return
-      this.callbacks.onError(
+      this.reportError(
         `Could not start the Rayu engine: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
@@ -511,10 +664,27 @@ export class ChatSession {
     // A prompt is an ordinary `user` message on stdin — the same shape the CLI's
     // own stream-json input uses, so it inherits queueing and slash-command parsing
     // rather than needing a second code path.
+    // ── IMAGES FIRST, TEXT LAST — THIS ORDER IS LOAD-BEARING ──────────────────
+    //
+    // `processUserInputBase` reads the prompt from the LAST content block:
+    //
+    //     const lastBlock = processedBlocks[processedBlocks.length - 1]
+    //     if (lastBlock?.type === 'text') { inputString = lastBlock.text; … }
+    //     else { precedingInputBlocks = processedBlocks }
+    //
+    // So `[text, image]` leaves `inputString` null and pushes everything into
+    // `precedingInputBlocks` — the user's question is dropped and the turn arrives with no
+    // prompt, which is why the model answered "I don't see any image": it never received the
+    // question OR the attachment as a prompt.
+    //
+    // This is the CLI's own convention, not a workaround: `processSlashCommand` assembles
+    // `[...imageContentBlocks, ...precedingInputBlocks, ...result]` with the text result last,
+    // and `prependPathRefs` in `bridge/inboundAttachments.ts` documents the same rule for the
+    // web composer ("Targets the LAST text block … putting refs in block[0] means they're
+    // silently ignored for [text, image] content").
     const content = images.length === 0
       ? trimmed
       : [
-          ...(trimmed ? [{ type: 'text' as const, text: trimmed }] : []),
           ...images.map(image => ({
             type: 'image' as const,
             source: {
@@ -523,6 +693,10 @@ export class ChatSession {
               data: image.data,
             },
           })),
+          // Always present, even when the user sent only an image: a trailing text block is
+          // what makes `inputString` non-null, and an image with no prompt would otherwise
+          // reach the model as an attachment nobody asked a question about.
+          { type: 'text' as const, text: trimmed || 'Describe this image.' },
         ]
     const delivered = this.engine?.send({
       type: 'user',
@@ -533,7 +707,7 @@ export class ChatSession {
     if (!delivered) {
       this.completeTurn('failed')
       this.setTurnRunning(false)
-      this.callbacks.onError('The Rayu engine is not running.')
+      this.reportError('The Rayu engine is not running.')
     } else {
       this.updateTurnProgress('requesting', 'Sending request')
     }
@@ -550,6 +724,10 @@ export class ChatSession {
     this.submissionEpoch += 1
     const control = this.control
     this.finishStreaming()
+    // A stopped turn still changed whatever it changed before it was stopped, and those
+    // files are on disk waiting to be kept or undone. Without this the buffered card was
+    // silently discarded on the next turn's rising edge and the user was never told.
+    this.flushPendingReview()
     this.completeTurn('stopped')
     this.setTurnRunning(false)
 
@@ -569,13 +747,13 @@ export class ChatSession {
     if (!task || !task.capabilities.canStop) return
     const control = this.control
     if (!control) {
-      this.callbacks.onError('The Rayu engine is not running.')
+      this.reportError('The Rayu engine is not running.')
       return
     }
     try {
       await control.request('stop_task', { task_id: taskId }, 15_000)
     } catch (cause) {
-      this.callbacks.onError(
+      this.reportError(
         `Could not stop ${task.description}: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
@@ -587,15 +765,27 @@ export class ChatSession {
    * Discard the conversation and the engine with it.
    *
    * A fresh child rather than a reset message: the engine holds per-session state —
-   * read-file tracking, permission decisions, MCP connections, compaction history —
-   * and there is no control request that clears all of it. A new process is the only
+   * read-file tracking, permission decisions, MCP connections, compaction history — and
+   * there is no control request that clears all of it. A new process is the only
    * honest "new session".
+   *
+   * ── `preserveModel` SEPARATES TWO CALLERS THAT LOOK ALIKE ──────────────────────
+   *
+   * A genuinely NEW conversation should start on whatever model is currently configured, so
+   * the selection is re-read. A RESTART of this same conversation — which is how a subagent or
+   * WebFetch model setting is applied, since the engine caches config at spawn — must keep the
+   * model this conversation was pinned to. Re-reading there silently moved a session onto
+   * whatever another session had selected, which is the cross-contamination this flag prevents.
    */
-  newSession(resumeSessionId?: string, cwd?: string): void {
+  newSession(
+    resumeSessionId?: string,
+    cwd?: string,
+    options: { preserveModel?: boolean } = {},
+  ): void {
     // Invalidate anything in flight against the outgoing engine.
     this.generation += 1
     this.modelSelectionEpoch += 1
-    this.selectedRuntimeModel = readActiveRuntimeModel()
+    if (!options.preserveModel) this.selectedRuntimeModel = readActiveRuntimeModel()
     this.appliedRuntimeModel = null
     this.contextLastFetch = 0
     this.lastContextUsage = null
@@ -607,6 +797,12 @@ export class ChatSession {
     }
     this.entries.length = 0
     this.activeTurnId = null
+    // The transcript is gone, so nothing can ask to expand a row of it. Retained output
+    // and hook correlation would otherwise survive into a conversation that has no
+    // entries to attach them to — a leak whose size is the previous session's output.
+    this.retainedToolOutput.clear()
+    this.retainedOutputChars = 0
+    this.hooksByHookId.clear()
     // Cleared so a later configuration restart cannot resume a conversation the user has
     // already left. It is re-learned from the new child's first frame — including when
     // `resumeSessionId` was passed, since a resumed child reports that same id.
@@ -620,7 +816,11 @@ export class ChatSession {
     this.toolsByUseId.clear()
     this.streamingId = null
     this.reviewEntryId = null
+    this.reviewAnchorTurnId = null
+    this.reviewBaselineChangeIds = new Set()
+    this.reviewKnownChangeIds = new Set()
     this.pendingReview = null
+    this.reviewRecords = []
     this.callbacks.onReviewFiles?.([])
     this.lastContextUsage = null
     this.setTurnRunning(false)
@@ -715,6 +915,26 @@ export class ChatSession {
       )
       if (control !== this.control || this.disposed) return
       this.applyInitialize(response)
+      // ── REPLAY THE CHOSEN PERMISSION MODE ────────────────────────────────────
+      //
+      // A fresh child always starts in the mode its argv implied, which is `default`. So a
+      // mode the user picked before this engine existed — or before the engine it replaced
+      // was torn down — has to be re-sent, or the panel shows "Full access" while every
+      // Bash call raises an approval card. `--allow-dangerously-skip-permissions` is in
+      // `vscodeHost`'s required flags precisely so that this replay can succeed.
+      //
+      // A refusal is not swallowed: the local mode falls back to what is actually
+      // enforced and the pill is resynced, because a control that lies about being on is
+      // worse than one that admits it could not be.
+      if (this.permissionMode.id !== 'default') {
+        const desired = this.permissionMode
+        const accepted = await this.applyPermissionModeToEngine(control, desired)
+        if (control !== this.control || this.disposed) return
+        if (!accepted && this.permissionMode === desired) {
+          this.permissionMode = permissionModeById('default')
+          this.callbacks.onPermissionMode?.(this.permissionMode)
+        }
+      }
       // Startup can materialize a provider from environment-based credentials. Read
       // the Rayucode profile again after initialization so even that first session is
       // pinned instead of falling through to a model saved by the terminal CLI.
@@ -847,6 +1067,22 @@ export class ChatSession {
     return this.permissionMode
   }
 
+  /** The recorded working set, for re-publishing to the diff store on activation. */
+  get reviewFiles(): readonly ReviewFileRecord[] {
+    return this.reviewRecords
+  }
+
+  /**
+   * Epoch ms of the last transcript change.
+   *
+   * Ordering for the live-session list. Taken from the last append rather than from the engine
+   * because a session waiting on an approval is not writing anything, and it should keep its
+   * place instead of sinking to the bottom.
+   */
+  get lastActivityAt(): number {
+    return this.lastEntryAt
+  }
+
   /**
    * Change the model for this session and persist the choice.
    *
@@ -960,6 +1196,15 @@ export class ChatSession {
    * first would tell the user they are in "Full access" while the engine is still
    * asking for approval on every tool — the pill has to reflect what is enforced,
    * not what was requested.
+   *
+   * ── A MODE CHOSEN BEFORE THE ENGINE EXISTS IS STILL A PROMISE TO KEEP ──────────
+   *
+   * With no child yet there is nothing to ask, so the choice is recorded and reported as
+   * accepted. That is only honest because `start()` REPLAYS it after `initialize` — see
+   * `applyPermissionModeToEngine`. Without that replay the panel said "Full access" while
+   * a freshly spawned child sat in `default` and asked for approval on every Bash call,
+   * which is the exact bug this pairing exists to prevent. The same replay covers every
+   * engine replacement: a configuration restart, a resume, or a crash recovery.
    */
   async setPermissionMode(mode: PermissionModeView): Promise<boolean> {
     if (!this.control) {
@@ -967,9 +1212,30 @@ export class ChatSession {
       this.permissionMode = mode
       return true
     }
-    try {
-      await this.control.request('set_permission_mode', { mode: mode.id }, 15_000)
+    if (await this.applyPermissionModeToEngine(this.control, mode)) {
       this.permissionMode = mode
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Send one `set_permission_mode` to a specific control client.
+   *
+   * Takes the client rather than reading `this.control` so a replay issued during
+   * `start()` cannot land on an engine that replaced the one it was issued for.
+   *
+   * Returns false — rather than throwing — because both callers treat refusal as a state
+   * to report, not an error to propagate: the engine legitimately rejects
+   * `bypassPermissions` when settings or policy disable it, and that is information the
+   * user needs rather than a broken session.
+   */
+  private async applyPermissionModeToEngine(
+    control: ControlClient,
+    mode: PermissionModeView,
+  ): Promise<boolean> {
+    try {
+      await control.request('set_permission_mode', { mode: mode.id }, 15_000)
       return true
     } catch (cause) {
       this.callbacks.onError(
@@ -998,6 +1264,9 @@ export class ChatSession {
 
   private handleExit(info: EngineExitInfo): void {
     this.finishStreaming()
+    // Same reason as `interrupt`: a crash does not un-write the files this turn already
+    // wrote, so the review card is exactly what the user needs next.
+    this.flushPendingReview()
     this.completeTurn('failed')
     this.setTurnRunning(false)
     this.control?.dispose('the engine exited')
@@ -1051,6 +1320,14 @@ export class ChatSession {
         this.handleSettledMessage(message)
         return
 
+      case 'tool_progress':
+        this.handleToolProgress(message)
+        return
+
+      case 'tool_output':
+        this.handleToolOutput(message)
+        return
+
       case 'system':
         this.handleSystemMessage(message)
         return
@@ -1072,9 +1349,11 @@ export class ChatSession {
    * the terminal describe the same turn differently — while costing another analysis
    * for information that already exists.
    *
-   * The subtypes NOT handled — `init`, `status`, hook lifecycle, task progress — are
-   * bookkeeping with no transcript meaning, and ignoring them is a decision rather
-   * than an oversight.
+   * The subtypes NOT handled — `init`, `status`, task progress — are bookkeeping with no
+   * transcript meaning, and ignoring them is a decision rather than an oversight. Hook
+   * lifecycle frames used to be in that list and are not any more: they describe work that
+   * changes what the agent did, so a hook that blocks a tool or rewrites a file has to be
+   * visible. See `handleHookLifecycle`.
    */
   private handleSystemMessage(message: Record<string, unknown>): void {
     switch (message.subtype) {
@@ -1086,6 +1365,16 @@ export class ChatSession {
 
       case 'file_change_review':
         this.handleReview(message)
+        return
+
+      case 'hook_started':
+      case 'hook_progress':
+      case 'hook_response':
+        this.handleHookLifecycle(message)
+        return
+
+      case 'session_state_changed':
+        this.handleSessionStateChanged(message)
         return
 
       case 'local_command_output': {
@@ -1363,11 +1652,14 @@ export class ChatSession {
   }
 
   /**
-   * The working set for this turn: files changed and awaiting keep/undo.
+   * The working set: every file still recorded as changed and awaiting keep/undo.
    *
-   * Replaces any previous card rather than appending. The engine re-emits the whole
-   * summary as files are kept or undone, so appending would leave a trail of stale
+   * Replaces the live card rather than appending a second one. The engine re-emits the
+   * whole summary as files are kept or undone, so appending would leave a trail of stale
    * cards each offering to act on a set that no longer exists.
+   *
+   * The one card is not left where it first appeared, though — `flushPendingReview`
+   * re-anchors it under each response so the summary follows the conversation.
    */
   private handleReview(message: Record<string, unknown>): void {
     const review = message.review as Record<string, unknown> | undefined
@@ -1375,11 +1667,19 @@ export class ChatSession {
 
     const rawFiles = Array.isArray(review.files) ? review.files : []
 
-    // The webview gets paths, stats and status. The HOST keeps hunks and change ids:
-    // the editor draws the diff, so shipping hunks to the browser would be a large
-    // postMessage for data it never renders.
+    // ── HUNKS NOW CROSS TO THE WEBVIEW, BOUNDED ────────────────────────────────
+    //
+    // This used to send only paths, stats and status, because "the editor draws the diff".
+    // The panel draws it too now — requiring a diff editor to read a two-line change is
+    // the biggest single gap against the terminal. The original reason for withholding
+    // them was postMessage SIZE, which was a fair concern and is why both caps exist
+    // rather than why the data is withheld.
+    //
+    // The host still keeps its own copy: `reviewRecords` feeds the VS Code diff editor,
+    // which needs the complete, uncapped hunks.
     const records: ReviewFileRecord[] = []
     const files: ReviewFileView[] = []
+    const knownChangeIds = new Set<string>()
 
     for (const raw of rawFiles) {
       if (!raw || typeof raw !== 'object') continue
@@ -1388,6 +1688,13 @@ export class ChatSession {
       if (!displayPath) continue
 
       const status = f.status
+      const rawHunks = Array.isArray(f.hunks) ? (f.hunks as ReviewHunk[]) : []
+      const { hunks, truncated } = boundHunks(rawHunks)
+      const changeIds = Array.isArray(f.changeIds)
+        ? f.changeIds.filter((id): id is string => typeof id === 'string')
+        : []
+      for (const id of changeIds) knownChangeIds.add(id)
+      const changedThisTurn = this.isChangedThisTurn(changeIds)
       files.push({
         displayPath,
         additions: typeof f.additions === 'number' ? f.additions : 0,
@@ -1400,24 +1707,26 @@ export class ChatSession {
           status === 'kept' || status === 'undone' || status === 'mixed'
             ? status
             : 'pending',
-        changeIds: Array.isArray(f.changeIds)
-          ? f.changeIds.filter((id): id is string => typeof id === 'string')
-          : [],
+        changeIds,
+        ...(hunks.length > 0 ? { hunks } : {}),
+        ...(truncated ? { hunksTruncated: true } : {}),
+        ...(changedThisTurn ? { changedThisTurn: true } : {}),
       })
 
       records.push({
         filePath: typeof f.filePath === 'string' ? f.filePath : displayPath,
         displayPath,
-        changeIds: Array.isArray(f.changeIds)
-          ? f.changeIds.filter((id): id is string => typeof id === 'string')
-          : [],
-        // The RECORDED hunks. These are what the diff is reconstructed from, and what
-        // the CLI's own ReviewDetailDialog renders — not git.
-        hunks: Array.isArray(f.hunks) ? (f.hunks as ReviewHunk[]) : [],
+        changeIds,
+        // The RECORDED hunks, UNCAPPED. These are what the diff is reconstructed from, and
+        // what the CLI's own ReviewDetailDialog renders — not git. The editor's diff view
+        // must show the whole change, so the cap applies only to the webview copy.
+        hunks: rawHunks,
         isCreated: f.isCreated === true,
       })
     }
 
+    this.reviewRecords = records
+    this.reviewKnownChangeIds = knownChangeIds
     this.callbacks.onReviewFiles?.(records)
 
     // Nothing left to review means the user kept or undid everything. Drop the card
@@ -1429,11 +1738,12 @@ export class ChatSession {
         if (index !== -1) this.entries.splice(index, 1)
         this.callbacks.onReviewCleared(this.reviewEntryId)
         this.reviewEntryId = null
+        this.reviewAnchorTurnId = null
       }
       return
     }
 
-    const entry: TranscriptEntry = {
+    const entry: ReviewEntry = {
       id: this.reviewEntryId ?? newId(),
       kind: 'review',
       totalFiles: typeof review.totalFiles === 'number' ? review.totalFiles : files.length,
@@ -1455,8 +1765,37 @@ export class ChatSession {
     this.emitReviewEntry(entry)
   }
 
+  /**
+   * Whether a file's recorded changes include anything the CURRENT turn is responsible for.
+   *
+   * Any change id the turn did not start with is new work. A file reporting no ids cannot
+   * be judged and reads as not-this-turn rather than being guessed at — see
+   * `ReviewFileView.changedThisTurn`.
+   */
+  private isChangedThisTurn(changeIds: readonly string[]): boolean {
+    return changeIds.some(id => !this.reviewBaselineChangeIds.has(id))
+  }
+
+  /**
+   * Re-evaluate `changedThisTurn` against the CURRENT baseline.
+   *
+   * Needed because a card can outlive the turn that built it: when a turn changes nothing,
+   * `flushPendingReview` re-anchors the existing entry, whose flags were computed against
+   * an older baseline and would otherwise credit this response with the previous one's
+   * work. Returns the same objects when nothing changes, so a re-anchor that only moves
+   * the card does not also churn every row.
+   */
+  private retagReviewFiles(files: readonly ReviewFileView[]): ReviewFileView[] {
+    return files.map(file => {
+      const changed = this.isChangedThisTurn(file.changeIds)
+      if (changed === (file.changedThisTurn === true)) return file
+      const { changedThisTurn: _previous, ...rest } = file
+      return changed ? { ...rest, changedThisTurn: true } : rest
+    })
+  }
+
   /** Put a review entry into the transcript, creating or updating as needed. */
-  private emitReviewEntry(entry: TranscriptEntry): void {
+  private emitReviewEntry(entry: ReviewEntry): void {
     if (this.reviewEntryId) {
       const index = this.entries.findIndex(e => e.id === this.reviewEntryId)
       if (index !== -1) this.entries[index] = entry
@@ -1468,12 +1807,84 @@ export class ChatSession {
     }
   }
 
-  /** Emit the buffered review card, if any. Called on turn end. */
+  /**
+   * Anchor the review card under the response that just finished. Called on turn end.
+   *
+   * ── THE CARD MOVES, IT IS NOT LEFT WHERE IT WAS FIRST SHOWN ────────────────────
+   *
+   * `addMessage` is an upsert BY ID, so re-emitting the live card under its existing id
+   * updates it wherever it already sits. That is right for a keep/undo re-emission and
+   * wrong at a turn boundary: the card stayed pinned under the first response of the
+   * session and every later turn silently updated a card scrolled far out of view, so the
+   * user saw a file-change summary once and never again. It is the single most visible
+   * difference from the terminal, where `REPL.tsx` appends a fresh card at every turn's
+   * completion.
+   *
+   * So the old entry is REMOVED and re-appended under a fresh id, which is what actually
+   * moves it. One card, always the last thing in the finished turn.
+   *
+   * ── WHY NOT A CARD PER TURN, AS THE TERMINAL HAS ───────────────────────────────
+   *
+   * The terminal can afford a trail because each of its cards recomputes itself from the
+   * live store and renders NOTHING once its own files are resolved. The webview has no
+   * such store — the host is the only thing that knows the current statuses — so a trail
+   * here would be a row of cards frozen at whatever they said when they were emitted, all
+   * offering Keep all and Undo all over overlapping sets. Moving one live card gives the
+   * per-response summary without the staleness; `changedThisTurn` supplies the part a
+   * cumulative set would otherwise lose.
+   *
+   * ── AND WHY A FULLY RESOLVED CARD STOPS FOLLOWING ──────────────────────────────
+   *
+   * Once every file is kept or undone the card is a record, not a task, and dragging it
+   * down the transcript after every unrelated answer would be noise. It stays where it is,
+   * still updated in place. This mirrors the terminal, where a card with nothing pending
+   * renders null.
+   */
   private flushPendingReview(): void {
-    const entry = this.pendingReview
-    if (!entry) return
+    const buffered = this.pendingReview
     this.pendingReview = null
-    this.emitReviewEntry(entry)
+    const turnId = this.activeTurnId
+
+    // `result` and the `idle` state change both land here, whichever the engine sends
+    // first, and both belong to this turn. Anchoring twice would tear the card down and
+    // rebuild it below the completion line, so the second call only carries updates.
+    if (turnId && this.reviewAnchorTurnId === turnId) {
+      if (buffered) this.emitReviewEntry(buffered)
+      return
+    }
+
+    const index = this.reviewEntryId
+      ? this.entries.findIndex(e => e.id === this.reviewEntryId)
+      : -1
+    // With no new snapshot this turn, the live card is still the summary to show: the
+    // files it lists are unresolved regardless of what this turn was about.
+    const source = buffered ?? (index === -1 ? undefined : this.entries[index])
+    if (!source || source.kind !== 'review') return
+
+    // The flags on a carried-over card were computed for an EARLIER turn. Re-evaluating
+    // them here is what stops a response that changed nothing from claiming the previous
+    // response's files as its own.
+    const files = this.retagReviewFiles(source.files)
+    const actionable = files.some(
+      file => file.status === 'pending' || file.status === 'mixed',
+    )
+    const touchedThisTurn = files.some(file => file.changedThisTurn === true)
+    if (!actionable && !touchedThisTurn) {
+      if (buffered) this.emitReviewEntry({ ...buffered, files })
+      return
+    }
+
+    if (index !== -1 && this.reviewEntryId) {
+      const stale = this.reviewEntryId
+      this.entries.splice(index, 1)
+      this.reviewEntryId = null
+      this.callbacks.onReviewCleared(stale)
+    }
+
+    const anchored: ReviewEntry = { ...source, id: newId(), files }
+    this.reviewEntryId = anchored.id
+    if (turnId) this.reviewAnchorTurnId = turnId
+    this.appendEntry(anchored)
   }
 
   private updateTurnProgress(
@@ -1568,6 +1979,11 @@ export class ChatSession {
     }
     this.turnCompletions[turnId] = completion
     this.callbacks.onTurnCompleted?.(turnId, completion)
+    // Anchor the completion line where the turn actually ended. Guarded by the
+    // `turnCompletions[turnId]` early return above, so a turn can only ever produce one
+    // marker even if several code paths race to finish it.
+    this.finishStreaming()
+    this.appendEntry({ id: newId(), kind: 'turn_end', turnId })
     this.turnProgress = {
       ...(this.turnProgress ?? {
         turnId,
@@ -2103,6 +2519,7 @@ export class ChatSession {
 
     const id = newId()
     if (block.toolUseId) this.toolsByUseId.set(block.toolUseId, id)
+    const agent = this.agentLabelFor(block.parentToolUseId)
 
     this.appendEntry({
       id,
@@ -2113,9 +2530,32 @@ export class ChatSession {
       parameters: block.parameters,
       status: 'running',
       output: null,
+      startedAt: Date.now(),
+      ...(agent && { agent }),
       ...(block.questions && { questions: block.questions }),
       ...(block.todos && { todos: block.todos }),
     })
+  }
+
+  /**
+   * Name the subagent a call belongs to, from the `Task` call that spawned it.
+   *
+   * Resolved from the transcript rather than carried on the wire because the engine only
+   * reports the parent's ID: the readable name — `Task` plus its own one-line label, e.g.
+   * `Task · review the diff` — exists only in the entry this session already recorded.
+   *
+   * Returns undefined for a main-thread call, and for a parent that is not in the
+   * transcript (possible when resuming a session whose head was trimmed). A missing badge
+   * is a smaller loss than a badge naming an id the user cannot connect to anything.
+   */
+  private agentLabelFor(parentToolUseId: string | null): string | undefined {
+    if (!parentToolUseId) return undefined
+    const parentEntryId = this.toolsByUseId.get(parentToolUseId)
+    const parent = parentEntryId
+      ? this.entries.find(entry => entry.id === parentEntryId)
+      : undefined
+    if (!parent || parent.kind !== 'tool') return `Subagent`
+    return parent.label ? `${parent.name} · ${parent.label}` : parent.name
   }
 
   /** Record answers in the tool entry without placing raw question JSON in the UI. */
@@ -2129,6 +2569,224 @@ export class ChatSession {
     if (!entry || entry.kind !== 'tool' || !entry.questions) return
     entry.questionAnswers = { ...answers }
     this.emitEntry(entry)
+  }
+
+  /**
+   * A tool is still working.
+   *
+   * ── A LIVENESS SIGNAL, NOT THE CLOCK ──────────────────────────────────────────
+   *
+   * The engine emits `tool_progress` on its own cadence, which is neither once a second
+   * nor uniform across tools. Driving the pill's timer from it would make the displayed
+   * duration advance in jumps and stall whenever the engine was busy. The webview counts
+   * from the entry's `startedAt` instead; see that field's comment.
+   *
+   * What this frame is genuinely good for is the TURN STATUS LINE. A turn whose only
+   * activity is one long tool otherwise shows a phase resolved when the call started and
+   * then nothing, so a 4-minute `Bash` looks identical to a wedged engine. Refreshing the
+   * phase here keeps "Running npm test" accurate for as long as it is true — and, because
+   * the frame stops arriving when the tool stops, its absence is meaningful too.
+   *
+   * The ENTRY IS NOT RE-EMITTED. Nothing the webview renders from it has changed, and a
+   * `postMessage` per frame per tool is exactly the cost this design avoids.
+   */
+  private handleToolProgress(message: Record<string, unknown>): void {
+    const toolUseId =
+      typeof message.tool_use_id === 'string' ? message.tool_use_id : null
+    if (!toolUseId) return
+
+    const entryId = this.toolsByUseId.get(toolUseId)
+    // Unknown id: a tool from a turn this session did not record, or one whose call frame
+    // has not arrived yet. Nothing to attribute it to, so it is dropped rather than
+    // guessed at — attaching it to the newest running pill, as `applyToolResult` may do
+    // for a RESULT, would put one tool's progress on another tool's row.
+    if (!entryId) return
+    const entry = this.entries.find(item => item.id === entryId)
+    if (!entry || entry.kind !== 'tool') return
+    // Monotonic, as everywhere else: a frame that overtakes its own result must not
+    // reopen a settled call. Mirrors the terminal-status guard in `handleTaskLifecycle`.
+    if (entry.status !== 'running') return
+
+    const phase = phaseForTool(entry.name)
+    this.updateTurnProgress(
+      phase,
+      labelForPhase(phase),
+      entry.name,
+      entry.label || undefined,
+    )
+  }
+
+  /**
+   * Project one hook execution into a single, updated-in-place transcript entry.
+   *
+   * ── KEYED ON `hook_id`, NEVER APPENDED ─────────────────────────────────────────
+   *
+   * `startHookProgressInterval` emits a frame roughly every second for as long as the
+   * hook runs, so appending would produce a row per second. The first frame creates the
+   * entry and every later one replaces it.
+   *
+   * ── stdout/stderr ARE CUMULATIVE, SO THEY ARE REPLACED ─────────────────────────
+   *
+   * Each progress frame re-reads the hook's ENTIRE accumulated output and sends it whole
+   * (see `emitHookProgress`'s caller, which diffs against the last emission). Appending
+   * would repeat everything already shown on every tick.
+   *
+   * ── A RESPONSE WITH NO START STILL RENDERS ─────────────────────────────────────
+   *
+   * The engine only emits lifecycle frames while stream-json output is enabled, so a hook
+   * that began before this session attached reports only its response. Requiring a
+   * `hook_started` would silently drop exactly the frame that carries the outcome.
+   */
+  private handleHookLifecycle(message: Record<string, unknown>): void {
+    const hookId = typeof message.hook_id === 'string' ? message.hook_id : ''
+    if (!hookId) return
+
+    const subtype = message.subtype
+    const existingId = this.hooksByHookId.get(hookId)
+    const existing = existingId
+      ? this.entries.find(item => item.id === existingId)
+      : undefined
+    const current = existing?.kind === 'hook' ? existing : undefined
+
+    // Monotonic, as everywhere else: a progress frame that overtakes the response must
+    // not reopen a hook that has already reported its outcome.
+    if (current && current.status !== 'running' && subtype !== 'hook_response') return
+
+    const status: HookEntryStatus =
+      subtype === 'hook_response' ? hookOutcomeStatus(message.outcome) : 'running'
+
+    if (current) {
+      current.status = status
+      current.stdout = clamp(asString(message.stdout) ?? current.stdout)
+      current.stderr = clamp(asString(message.stderr) ?? current.stderr)
+      if (typeof message.exit_code === 'number') current.exitCode = message.exit_code
+      this.emitEntry(current)
+      return
+    }
+
+    const id = newId()
+    this.hooksByHookId.set(hookId, id)
+    this.appendEntry({
+      id,
+      kind: 'hook',
+      hookId,
+      name: asString(message.hook_name) || 'hook',
+      event: asString(message.hook_event) || 'hook',
+      status,
+      ...(typeof message.exit_code === 'number' ? { exitCode: message.exit_code } : {}),
+      stdout: clamp(asString(message.stdout) ?? ''),
+      stderr: clamp(asString(message.stderr) ?? ''),
+    })
+  }
+
+  /**
+   * The engine's own statement of whether it is working.
+   *
+   * ── THE AUTHORITATIVE TURN-OVER SIGNAL ─────────────────────────────────────────
+   *
+   * `sdkEventQueue.ts` emits this specifically so SDK consumers — it names VS Code —
+   * can tell an idle generator from a producing one, and it was never consumed here.
+   * Turn state was inferred from the `result` frame alone, so anything that ended a turn
+   * WITHOUT one left the composer showing Stop with no way back except a new session.
+   * `idle` is documented as firing after the held-back result flushes and the background
+   * agent loop exits, which makes it the last word rather than a hint.
+   *
+   * ── THE `result` PATH REMAINS, AS A FALLBACK ───────────────────────────────────
+   *
+   * It is not replaced. An older engine may not emit this frame at all, and the `result`
+   * frame carries the authoritative `duration_ms` and usage that this one does not. Both
+   * call `completeTurn`, which is idempotent per turn — the first to arrive records the
+   * completion and the second is a no-op — so the two cannot disagree or double-count.
+   *
+   * ── `requires_action` IS NOT IDLE ──────────────────────────────────────────────
+   *
+   * The turn is still open and will resume once answered, so the composer must stay in
+   * Stop mode. It becomes the `waiting` phase, which is what `isWaitingPhase` uses to
+   * show a STATIC glyph: an animated spinner would promise progress that cannot happen
+   * until the user does something.
+   */
+  private handleSessionStateChanged(message: Record<string, unknown>): void {
+    switch (message.state) {
+      case 'running':
+        this.setTurnRunning(true)
+        return
+
+      case 'requires_action':
+        // Deliberately does not touch turn state. Blocked is a kind of running.
+        this.updateTurnProgress('waiting', 'Waiting for input')
+        return
+
+      case 'idle': {
+        if (!this.turnRunning) return
+        this.finishStreaming()
+        this.flushPendingReview()
+        // No `message` argument: this frame carries neither a duration nor usage, so
+        // `completeTurn` falls back to its own wall-clock measurement and the usage it
+        // accumulated while streaming. When a `result` already arrived, its authoritative
+        // figures are already recorded and this call returns immediately.
+        this.completeTurn('completed')
+        this.setTurnRunning(false)
+        void this.pollContextUsage()
+        return
+      }
+
+      default:
+        return
+    }
+  }
+
+  /**
+   * A running tool's output so far.
+   *
+   * ── THE STREAM IS REPLACED, NEVER APPENDED ─────────────────────────────────────
+   *
+   * `text` is a cumulative snapshot of the bounded tail the tool computes for its own
+   * display, not an incremental chunk — see `SDKToolOutputMessageSchema`. So each frame
+   * REPLACES the pill's body. That is what makes a dropped or duplicated frame harmless,
+   * and it is why the body cannot grow without bound however chatty the command is.
+   *
+   * ── AND THE SETTLED RESULT REPLACES THE STREAM ─────────────────────────────────
+   *
+   * `applyToolResult` assigns `entry.output` outright, so the authoritative result
+   * overwrites whatever was streamed rather than being appended to it. Appending is the
+   * single most likely bug here and it renders a command's output twice — the same trap
+   * `appendPartial` versus `addMessage` exists to avoid for assistant text.
+   *
+   * Streamed output is deliberately NOT retained for on-demand expansion: it is a tail
+   * by construction, so there is no withheld remainder to fetch. `truncatedChars` stays
+   * unset until the settled result arrives with the full text.
+   */
+  private handleToolOutput(message: Record<string, unknown>): void {
+    const toolUseId =
+      typeof message.tool_use_id === 'string' ? message.tool_use_id : null
+    const text = asString(message.text)
+    if (!toolUseId || text === undefined) return
+
+    const entryId = this.toolsByUseId.get(toolUseId)
+    // Unknown id: dropped rather than attached to the newest running pill. A result may
+    // legitimately fall back to that, because exactly one tool can be awaiting one; a
+    // stream frame cannot, since several tools can be running and guessing would show one
+    // command's output under another's name.
+    if (!entryId) return
+    const entry = this.entries.find(item => item.id === entryId)
+    if (!entry || entry.kind !== 'tool') return
+    // Monotonic: a frame that overtakes the result must not overwrite the real output
+    // with a stale tail.
+    if (entry.status !== 'running') return
+
+    entry.output = clamp(text)
+    this.callbacks.onToolOutput?.(entry.id, entry.output)
+
+    // Keep the status line naming this tool for as long as it is actually working. This
+    // is the signal `tool_progress` was meant to provide and cannot, being gated to
+    // remote sessions — see `handleToolProgress`.
+    const phase = phaseForTool(entry.name)
+    this.updateTurnProgress(
+      phase,
+      labelForPhase(phase),
+      entry.name,
+      entry.label || undefined,
+    )
   }
 
   private applyToolResult(
@@ -2149,11 +2807,48 @@ export class ChatSession {
     entry.status = block.isError ? 'error' : 'done'
     // Structured tools own their result presentation. Their generic result is a
     // sentence generated from the same data and would duplicate the dedicated card.
-    entry.output = entry.questions || (entry.todos && !block.isError) ? null : block.text
+    const structured = entry.questions || (entry.todos && !block.isError)
+    entry.output = structured ? null : block.text
+    if (!structured && block.truncatedChars > 0 && block.fullText) {
+      entry.outputTruncatedChars = block.truncatedChars
+      this.retainToolOutput(entry.id, block.fullText)
+    }
+    if (block.toolResult) entry.toolResult = block.toolResult
     // Re-emitting the entry is how the webview learns it changed; the reducer
     // replaces by id, so this is an update rather than a duplicate.
     this.emitEntry(entry)
     this.updateTurnProgress('requesting', 'Waiting for response')
+  }
+
+  /** Store one untruncated result, evicting oldest entries to stay within the cap. */
+  private retainToolOutput(id: EntryId, text: string): void {
+    // A result larger than the entire budget is not worth evicting everything else for.
+    // The row keeps its truncated body and simply offers no expansion.
+    if (text.length > MAX_RETAINED_OUTPUT_CHARS) return
+
+    const existing = this.retainedToolOutput.get(id)
+    if (existing !== undefined) this.retainedOutputChars -= existing.length
+    this.retainedToolOutput.set(id, text)
+    this.retainedOutputChars += text.length
+
+    for (const [oldest, value] of this.retainedToolOutput) {
+      if (this.retainedOutputChars <= MAX_RETAINED_OUTPUT_CHARS) break
+      // Never evict the entry just added; it is the one most likely to be asked for.
+      if (oldest === id) continue
+      this.retainedToolOutput.delete(oldest)
+      this.retainedOutputChars -= value.length
+    }
+  }
+
+  /**
+   * The untruncated output for one row, or null when it is no longer held.
+   *
+   * Null is a legitimate answer — see the retention cap — and the caller reports it as
+   * such. Returning the truncated text instead would silently answer a different
+   * question than the one asked.
+   */
+  fullToolOutput(id: EntryId): string | null {
+    return this.retainedToolOutput.get(id) ?? null
   }
 
   private handleInboundRequest(request: InboundControlRequest): void {
@@ -2302,7 +2997,36 @@ export class ChatSession {
 
   private appendEntry(entry: TranscriptEntry): void {
     this.entries.push(entry)
+    this.lastEntryAt = Date.now()
     this.emitEntry(entry)
+  }
+
+  /**
+   * Record a failure IN THE TRANSCRIPT, then alert whoever else needs to know.
+   *
+   * ── AN ERROR HAS A POSITION IN THE CONVERSATION ────────────────────────────────
+   *
+   * Errors used to travel only as `showError`, which the webview accumulated in a
+   * separate `notices` array and rendered AFTER every transcript block. So a provider
+   * failure during turn 2 appeared below turn 9, detached from the request that caused
+   * it and from the tool calls that surrounded it. The `notice` entry kind already
+   * existed and `TranscriptEntryView` already dispatched it — the error path simply did
+   * not use it.
+   *
+   * `onError` is still called, because a transcript entry only helps a user who is
+   * READING that transcript. See the callback's own comment for the background case.
+   */
+  private reportError(message: string): void {
+    // Close any open streaming entry first, so the failure reads as having happened
+    // after the partial answer rather than interleaved with it.
+    this.finishStreaming()
+    this.appendEntry({
+      id: newId(),
+      kind: 'notice',
+      severity: 'error',
+      text: message,
+    })
+    this.callbacks.onError(message)
   }
 
   /**
@@ -2334,10 +3058,15 @@ export class ChatSession {
       this.currentStreamBlockIndex = null
       this.currentStreamBlockType = null
       // `file_change_review` is a cumulative pending-change snapshot. Keep the live
-      // card identity across turns so /keep and /undo update that card in place. The
-      // empty snapshot clears the identity; a later independent review then gets a
-      // fresh card.
+      // card identity across turns so /keep and /undo update that card in place — but
+      // `flushPendingReview` re-anchors it under this turn's response when the turn ends,
+      // so it is never left behind under an older answer. The empty snapshot clears the
+      // identity; a later independent review then gets a fresh card.
       this.pendingReview = null
+      // Freeze what was already on record: everything the coming turn reports beyond this
+      // is its own work. Captured here rather than per snapshot so the flags survive the
+      // keeps and undos that follow the turn.
+      this.reviewBaselineChangeIds = new Set(this.reviewKnownChangeIds)
       this.turnStartedAt = Date.now()
       this.turnStreamedChars = 0
       this.activeTurnId = newId()
@@ -2368,6 +3097,35 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object'
     ? (value as Record<string, unknown>)
     : undefined
+}
+
+/** A string field from an untrusted frame, or undefined when it is any other type. */
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+/** The status wording a hook entry carries. Kept in step with the protocol's union. */
+type HookEntryStatus = Extract<TranscriptEntry, { kind: 'hook' }>['status']
+
+/** The review card entry, narrowed once so the host can carry it without re-narrowing. */
+type ReviewEntry = Extract<TranscriptEntry, { kind: 'review' }>
+/**
+ * Map the engine's hook outcome onto the entry's status.
+ *
+ * `cancelled` is preserved rather than folded into `error`: the engine stopping a hook is
+ * not the hook failing, and badging it as a failure would send the user looking for a bug
+ * in their own script. An unrecognised outcome is treated as an error, because the one
+ * thing worse than a wrong badge is a hook that silently reports success.
+ */
+function hookOutcomeStatus(outcome: unknown): HookEntryStatus {
+  switch (outcome) {
+    case 'success':
+      return 'done'
+    case 'cancelled':
+      return 'cancelled'
+    default:
+      return 'error'
+  }
 }
 
 function finiteToken(value: unknown): number {

@@ -15,24 +15,35 @@
  * is "roughly when was I in this". Exact dates only help for sessions old enough that the
  * relative time stops being meaningful, which is what the Older bucket's absolute date is for.
  *
- * ── RESUMING IS DESTRUCTIVE, AND ASKS ONCE ─────────────────────────────────────
+ * ── RESUMING IS NO LONGER DESTRUCTIVE ─────────────────────────────────────────
  *
- * Resuming replaces the engine child, so the current conversation is gone. A session with a
- * transcript therefore confirms on a second click; an empty one does not, because there is
- * nothing to lose and a prompt would be a speed bump. This is the behaviour the dropdown had
- * and it is preserved deliberately.
+ * It used to replace the panel's only engine, so a session with a transcript confirmed on a
+ * second click. The panel now holds several conversations open at once, so resuming OPENS one
+ * and leaves the current one running — there is nothing to lose and therefore nothing to
+ * confirm. Open conversations are listed above the history under "Open now", where switching
+ * costs nothing at all.
  */
 import { useMemo, useState } from 'react'
 
-import type { SessionListView, SessionSummaryView } from '../../shared/webviewProtocol.js'
-import { SearchIcon } from './Icons.js'
+import type {
+  LiveSessionView,
+  SessionListView,
+  SessionSummaryView,
+} from '../../shared/webviewProtocol.js'
+import { CloseIcon, SearchIcon } from './Icons.js'
 
 export interface SessionsViewProps {
   list: SessionListView
-  /** True when the transcript has content, so resuming would discard something. */
-  hasActiveTranscript: boolean
+  /** Conversations the panel is holding open, newest activity first. */
+  liveSessions: readonly LiveSessionView[]
+  /** Which live session is on screen, so the row can say "current". */
+  activeSessionKey: string
   workspaceFolder: string
   onResume: (id: string) => void
+  /** Bring an already-open conversation to the front. Nothing is spawned or stopped. */
+  onSwitch: (key: string) => void
+  /** Close an open conversation and stop its engine. */
+  onClose: (key: string) => void
   onRetry: () => void
 }
 
@@ -69,24 +80,47 @@ export function recencyGroup(epochMs: number, now = Date.now()): GroupKey {
 
 export function SessionsView({
   list,
-  hasActiveTranscript,
+  liveSessions,
+  activeSessionKey,
   workspaceFolder,
   onResume,
+  onSwitch,
+  onClose,
   onRetry,
 }: SessionsViewProps): JSX.Element {
   const [query, setQuery] = useState('')
-  const [confirming, setConfirming] = useState<string | null>(null)
+
+  /** Live sessions the search should keep. Matched on label only — they have no branch. */
+  const visibleLive = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return liveSessions
+    return liveSessions.filter(item => item.label.toLowerCase().includes(q))
+  }, [liveSessions, query])
+
+  /**
+   * History rows for sessions that are ALSO open in the panel are hidden.
+   *
+   * The same conversation would otherwise appear twice — once as "open and running", once as
+   * a history row that offers to resume it — and the resume row would be the destructive
+   * option. Correlation is by label because a live session's engine id is not known until its
+   * child reports one, and the label is what the user reads either way.
+   */
+  const liveLabels = useMemo(
+    () => new Set(liveSessions.map(item => item.label)),
+    [liveSessions],
+  )
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return list.sessions
-    return list.sessions.filter(
+    const withoutLive = list.sessions.filter(session => !liveLabels.has(session.label))
+    if (!q) return withoutLive
+    return withoutLive.filter(
       session =>
         session.label.toLowerCase().includes(q) ||
         (session.gitBranch?.toLowerCase().includes(q) ?? false) ||
         (session.cwd?.toLowerCase().includes(q) ?? false),
     )
-  }, [list.sessions, query])
+  }, [list.sessions, liveLabels, query])
 
   const grouped = useMemo(() => {
     const buckets = new Map<GroupKey, SessionSummaryView[]>()
@@ -102,12 +136,15 @@ export function SessionsView({
     return buckets
   }, [filtered])
 
+  /**
+   * Resuming is no longer destructive, so it no longer confirms.
+   *
+   * It used to replace the only engine there was, which is why a second click was required.
+   * Now it OPENS another conversation and leaves the current one running, so a confirmation
+   * would be a speed bump guarding nothing — and, worse, would still be claiming that the
+   * current conversation is about to be closed.
+   */
   function choose(id: string): void {
-    if (hasActiveTranscript && confirming !== id) {
-      setConfirming(id)
-      return
-    }
-    setConfirming(null)
     onResume(id)
   }
 
@@ -126,6 +163,63 @@ export function SessionsView({
       </div>
 
       <div className="rc-sessions-body">
+        {/*
+          ── OPEN CONVERSATIONS COME FIRST ────────────────────────────────────────
+          They are the ones with work in flight, and switching to one is free and lossless
+          where resuming a history row costs an engine spawn. Putting them under a date
+          heading would bury "the thing you started two minutes ago" among files.
+        */}
+        {visibleLive.length > 0 ? (
+          <div className="rc-sessions-group">
+            <h3 className="rc-sessions-group-title">Open now</h3>
+            <ul className="rc-sessions-list">
+              {visibleLive.map(item => (
+                <li key={item.key} className="rc-session-live-row">
+                  <button
+                    type="button"
+                    className={`rc-session-row${
+                      item.key === activeSessionKey ? ' rc-session-row-active' : ''
+                    }`}
+                    aria-current={item.key === activeSessionKey}
+                    onClick={() => onSwitch(item.key)}
+                  >
+                    <span className="rc-session-row-label">
+                      {/* A running conversation is marked while the panel shows another one:
+                          that is the fact the previous behaviour destroyed. */}
+                      {item.running ? (
+                        <span className="rc-progress-glyph" aria-hidden="true" />
+                      ) : null}
+                      {item.label}
+                    </span>
+                    <span className="rc-session-row-meta">
+                      {item.key === activeSessionKey
+                        ? 'On screen'
+                        : item.running
+                          ? 'Running'
+                          : 'Idle'}
+                      {/* Surfaced because a blocked session cannot advance until the user
+                          comes back to it, and nothing else on screen would say so. */}
+                      {item.pendingApprovals > 0
+                        ? ` · ${item.pendingApprovals} waiting for approval`
+                        : ''}
+                      {item.model ? ` · ${item.model}` : ''}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="rc-session-close"
+                    title="Close this conversation and stop its engine"
+                    aria-label={`Close ${item.label}`}
+                    onClick={() => onClose(item.key)}
+                  >
+                    <CloseIcon size={10} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         {list.status === 'loading' && list.sessions.length === 0 ? (
           <p className="rc-dropdown-empty">Loading sessions…</p>
         ) : list.status === 'failed' ? (
@@ -157,9 +251,7 @@ export function SessionsView({
                   <li key={session.id}>
                     <button
                       type="button"
-                      className={`rc-session-row${
-                        confirming === session.id ? ' rc-session-row-confirm' : ''
-                      }`}
+                      className="rc-session-row rc-session-row-history"
                       onClick={() => choose(session.id)}
                     >
                       <span className="rc-session-row-label">{session.label}</span>
@@ -174,11 +266,6 @@ export function SessionsView({
                           ? ` · ${shortenPath(session.cwd)}`
                           : ''}
                       </span>
-                      {confirming === session.id ? (
-                        <span className="rc-session-row-warn">
-                          Click again to resume. The current conversation will be closed.
-                        </span>
-                      ) : null}
                     </button>
                   </li>
                 ))}

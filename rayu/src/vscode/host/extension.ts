@@ -27,10 +27,15 @@ import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../cons
 
 import { ChatViewProvider, CHAT_VIEW_ID } from './panel/chatViewProvider.js'
 import { ChatSession } from './panel/sessionHandle.js'
+import {
+  SessionRegistry,
+  type SessionEntry,
+} from './panel/sessionRegistry.js'
 import { PermissionRouter } from './panel/permissionRouter.js'
 import { invalidateRayuConfigCache } from '../../utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from './models/modelConfig.js'
 import { nextPermissionMode, permissionModeById } from '../shared/permissionModes.js'
+import { formatPathMentions } from '../shared/contextMentions.js'
 import { getAuthSnapshot, signOutShared } from './auth/rayuAuthBridge.js'
 import { signInFromEditor, type SignInOptions } from './auth/vscodeLogin.js'
 import { watchSharedSession } from './auth/authWatcher.js'
@@ -69,6 +74,7 @@ import {
 } from './models/modelSettingCommands.js'
 import type {
   BackgroundTaskView,
+  LiveSessionView,
   ModelCatalogueView,
   ModelChooserView,
   IdeContextView,
@@ -86,6 +92,7 @@ const COMMANDS = {
   signIn: 'rayucode.signIn',
   signOut: 'rayucode.signOut',
   addTerminalSelection: 'rayucode.addTerminalSelection',
+  addToContext: 'rayucode.addToContext',
 } as const
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -214,14 +221,7 @@ export function activate(context: vscode.ExtensionContext): void {
     provider.post({ type: 'setModelChooser', chooser })
   }
 
-  const permissions = new PermissionRouter({
-    onShow: request => provider.post({ type: 'showPermissionRequest', request }),
-    onDismiss: requestId =>
-      provider.post({ type: 'dismissPermissionRequest', requestId }),
-  })
-
-  // ── EDITOR CONNECTION ────────────────────────────────────────────────────────
-  //
+  // ── EDITOR CONNECTION ────────────────────────────────────────────────────────  //
   // Publishes the same `~/.rayu/ide/<port>.lock` the CLI already scans for, so a `rayu`
   // running in this window's terminal attaches to this editor and sees its selection.
   //
@@ -244,7 +244,17 @@ export function activate(context: vscode.ExtensionContext): void {
     })
     .catch(() => null)
 
-  const session = new ChatSession(
+  /**
+   * The panel's open conversations.
+   *
+   * ── EVERY HANDLER BELOW RESOLVES THE SESSION AT CALL TIME ──────────────────────
+   *
+   * The handlers are registered once, at activation, and the conversation they must act on
+   * changes whenever the user switches. So there is deliberately no `const session`: capturing
+   * one would leave every button operating on whichever conversation happened to be open when
+   * the extension started. `current()` is the only way to reach a session from here.
+   */
+  const registry = new SessionRegistry(
     {
       enginePath,
       cwd: engineCwd,
@@ -262,47 +272,143 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     },
     {
-      onEntry: entry => provider.post({ type: 'addMessage', entry }),
-      onPartial: (id, kind, delta) =>
-        provider.post({ type: 'appendPartial', id, kind, delta }),
-      onComplete: id => provider.post({ type: 'completeMessage', id }),
-      onTurnState: running => provider.post({ type: 'turnState', running }),
-      onModelInfo: info => {
-        provider.post({ type: 'setModelInfo', info })
-        // The engine's catalogue is authoritative for what the active provider can
-        // actually serve, so re-publish once it has reported.
-        provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
+      // Every push is gated on `isActive`. A background conversation keeps accruing state
+      // inside its own ChatSession; it simply does not write to the panel. Activation then
+      // rebuilds the panel from that state with one `syncState()`.
+      sessionCallbacks: (entry, isActive) => ({
+        onEntry: message => {
+          if (isActive()) provider.post({ type: 'addMessage', entry: message })
+          // The live list shows a per-session label and running flag, both of which this
+          // changed — so background progress stays visible even though the transcript is not.
+          else postLiveSessions()
+        },
+        onPartial: (id, kind, delta) => {
+          if (isActive()) provider.post({ type: 'appendPartial', id, kind, delta })
+        },
+        onComplete: id => {
+          if (isActive()) provider.post({ type: 'completeMessage', id })
+        },
+        onTurnState: running => {
+          if (isActive()) provider.post({ type: 'turnState', running })
+          postLiveSessions()
+        },
+        // Only for the visible conversation: a background session's live tool output has
+        // nowhere to render and would be a message per second for nothing. Its transcript
+        // still receives the final result, and switching to it shows that.
+        onToolOutput: (id, text) => {
+          if (isActive()) provider.post({ type: 'appendToolOutput', id, text })
+        },
+        onModelInfo: info => {          if (!isActive()) return
+          provider.post({ type: 'setModelInfo', info })
+          // The engine's catalogue is authoritative for what the active provider can
+          // actually serve, so re-publish once it has reported.
+          provider.post({
+            type: 'setModelCatalogue',
+            catalogue: buildCatalogue(entry.session),
+          })
+        },
+        onError: message => {
+          // ── THE ACTIVE SESSION IS ALREADY COVERED BY ITS TRANSCRIPT ──────────────
+          //
+          // `reportError` records every failure as a `notice` entry in the failing
+          // session's own transcript, in chronological position. Posting `showError`
+          // as well would render the same failure twice for the visible conversation —
+          // once inline where it happened, once in the trailing notices list.
+          //
+          // A BACKGROUND conversation is the case the transcript cannot cover: the
+          // entry exists, but in a transcript the user is not reading, and the session
+          // they are waiting on must not fail silently. So the alert is posted only
+          // when the failing session is not the one on screen, prefixed so they know
+          // which one it was.
+          if (!isActive()) {
+            provider.post({ type: 'showError', message: `${labelOf(entry)}: ${message}` })
+          }
+        },
+        // Routed to the OWNING session's router, never the active one: a card belongs to the
+        // engine that is blocked on it.
+        onPermissionRequest: request => entry.permissions.present(request),
+        onPermissionCancelled: requestId => entry.permissions.engineCancelled(requestId),
+        onSessionEnded: () => entry.permissions.cancelAll(),
+        // The review card is the one entry that can stop existing: once everything is
+        // kept or undone there is nothing left to act on.
+        onReviewCleared: id => {
+          if (isActive()) provider.post({ type: 'removeEntry', id })
+        },
+        // Hunks stay host-side; the editor draws the diff from them. The store is a
+        // singleton, so only the visible conversation may own it — see the registry header.
+        onReviewFiles: files => {
+          if (isActive()) review.store.replace(files)
+        },
+        onInferenceSettings: settings => {
+          if (isActive()) provider.post({ type: 'setInferenceSettings', settings })
+        },
+        onPermissionMode: mode => {
+          if (isActive()) provider.post({ type: 'setPermissionMode', mode })
+        },
+        onCommands: commands => {
+          if (isActive()) provider.post({ type: 'setCommands', commands })
+        },
+        onContextUsage: usage => {
+          if (!isActive()) return
+          provider.post({
+            type: 'setContextUsage',
+            percentage: usage.percentage,
+            totalTokens: usage.totalTokens,
+            maxTokens: usage.maxTokens,
+            stale: usage.stale,
+          })
+        },
+        onMcpServers: servers => {
+          if (isActive()) provider.post({ type: 'setMcpServers', servers })
+        },
+        onTurnProgress: progress => {
+          if (isActive()) provider.post({ type: 'setTurnProgress', progress })
+        },
+        onTurnCompleted: (turnId, completion) => {
+          if (isActive()) provider.post({ type: 'turnCompleted', turnId, completion })
+        },
+        onThinking: thinking => {
+          if (isActive()) provider.post({ type: 'updateThinking', thinking })
+        },
+        onTaskStateChanged: task => {
+          if (isActive()) provider.post({ type: 'upsertTaskState', task })
+        },
+        onTaskStateReplaced: tasks => {
+          if (isActive()) {
+            provider.post({ type: 'replaceTaskState', tasks, supported: true })
+          }
+        },
+      }),
+      onShowPermission: request =>
+        provider.post({ type: 'showPermissionRequest', request }),
+      onDismissPermission: requestId =>
+        provider.post({ type: 'dismissPermissionRequest', requestId }),
+      onChanged: () => postLiveSessions(),
+      // Hand the diff store to the conversation that is now on screen, then rebuild the panel
+      // from it. One full sync is both simpler and more honest than replaying deltas.
+      onActivate: entry => {
+        review.store.replace(entry.session.reviewFiles)
+        provider.syncState()
       },
-      onError: message => provider.post({ type: 'showError', message }),
-      onPermissionRequest: request => permissions.present(request),
-      onPermissionCancelled: requestId => permissions.engineCancelled(requestId),
-      onSessionEnded: () => permissions.cancelAll(),
-      // The review card is the one entry that can stop existing: once everything is
-      // kept or undone there is nothing left to act on.
-      onReviewCleared: id => provider.post({ type: 'removeEntry', id }),
-      // Hunks stay host-side; the editor draws the diff from them.
-      onReviewFiles: files => review.store.replace(files),
-      onInferenceSettings: settings =>
-        provider.post({ type: 'setInferenceSettings', settings }),
-      onCommands: commands => provider.post({ type: 'setCommands', commands }),
-      onContextUsage: usage =>
-        provider.post({
-          type: 'setContextUsage',
-          percentage: usage.percentage,
-          totalTokens: usage.totalTokens,
-          maxTokens: usage.maxTokens,
-          stale: usage.stale,
-        }),
-      onMcpServers: servers => provider.post({ type: 'setMcpServers', servers }),
-      onTurnProgress: progress => provider.post({ type: 'setTurnProgress', progress }),
-      onTurnCompleted: (turnId, completion) =>
-        provider.post({ type: 'turnCompleted', turnId, completion }),
-      onThinking: thinking => provider.post({ type: 'updateThinking', thinking }),
-      onTaskStateChanged: task => provider.post({ type: 'upsertTaskState', task }),
-      onTaskStateReplaced: tasks =>
-        provider.post({ type: 'replaceTaskState', tasks, supported: true }),
     },
   )
+
+  /** The conversation on screen. Resolved per call — see the registry's construction. */
+  function current(): SessionEntry {
+    return registry.active
+  }
+
+  function labelOf(entry: SessionEntry): string {
+    return registry.summaries().find(item => item.key === entry.key)?.label ?? 'Session'
+  }
+
+  function postLiveSessions(): void {
+    provider.post({
+      type: 'setLiveSessions',
+      sessions: registry.summaries(),
+      activeKey: registry.activeSessionKey,
+    })
+  }
 
   let catalogueRefresh: Promise<void> | null = null
   let disposed = false
@@ -328,24 +434,25 @@ export function activate(context: vscode.ExtensionContext): void {
       liveAttachment ||
       !checkTurnAllowed().allowed
     ) return
-    await session.warmup()
+    await current().session.warmup()
   }
 
   function refreshModels(model?: string): Promise<void> {
     if (catalogueRefresh) return catalogueRefresh
     catalogueRefresh = (async () => {
       invalidateRayuConfigCache()
-      const previous = buildCatalogue(session)
-      session.availableModels = { ...previous, loading: true, error: null }
-      provider.post({ type: 'setModelCatalogue', catalogue: session.availableModels })
+      const previous = buildCatalogue(current().session)
+      const pending: ModelCatalogueView = { ...previous, loading: true, error: null }
+      current().session.availableModels = pending
+      provider.post({ type: 'setModelCatalogue', catalogue: pending })
       const outcome = await refreshProviderCatalogue({ enginePath, cwd: engineCwd }, model)
       if (disposed) return
       invalidateRayuConfigCache()
       const active = readActiveModel()
       if (outcome.inference && ((active.provider === outcome.activeProviderId && active.model === outcome.activeModel) || model === outcome.activeModel)) {
-        session.applyInitialInference(outcome.inference)
+        current().session.applyInitialInference(outcome.inference)
       }
-      session.availableModels = {
+      current().session.availableModels = {
         options: outcome.catalogue ?? previous.options,
         loading: false,
         error: outcome.ok ? null : outcome.error ?? 'Could not refresh models.',
@@ -377,17 +484,19 @@ export function activate(context: vscode.ExtensionContext): void {
    */
   async function restartEngineWithResume(): Promise<void> {
     invalidateRayuConfigCache()
-    const sessionId = session.engineSessionId
+    const sessionId = current().session.engineSessionId
     if (!sessionId) {
-      session.newSession()
+      // `preserveModel` throughout: this is a RESTART of one conversation, not a new one, so
+      // it must not adopt whatever model another conversation has since selected.
+      current().session.newSession(undefined, undefined, { preserveModel: true })
       provider.syncState()
       prewarmSession()
       return
     }
     const cwd = workspaceDir ?? engineCwd
-    session.newSession(sessionId, cwd)
-    session.restoreTranscript(await loadSessionTranscript(sessionId, cwd))
-    await session.restoreTaskHistory(sessionId, cwd)
+    current().session.newSession(sessionId, cwd, { preserveModel: true })
+    current().session.restoreTranscript(await loadSessionTranscript(sessionId, cwd))
+    await current().session.restoreTaskHistory(sessionId, cwd)
     provider.syncState()
     prewarmSession()
   }
@@ -424,13 +533,15 @@ export function activate(context: vscode.ExtensionContext): void {
     () =>
       buildState(
         version,
-        session,
-        permissions,
+        current().session,
+        current().permissions,
         providerSetup,
         modelChooser,
         ideContext,
         attachment,
         historySessions,
+        registry.summaries(),
+        registry.activeSessionKey,
         taskInspectionSupported,
         taskInspectionMessage,
       ),
@@ -452,7 +563,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         // These are `local-jsx` in the CLI and therefore absent from the engine too, but
         // unlike /login they take arguments — so they are parsed rather than matched.
-        const settingCommand = parseModelSettingCommand(text, session.subagentTypes)
+        const settingCommand = parseModelSettingCommand(text, current().session.subagentTypes)
         if (settingCommand) {
           await runModelSettingCommand(settingCommand)
           return
@@ -470,33 +581,50 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const acceptedImages = validateImageInputs(images, provider)
         if (acceptedImages === null) return
-        await submitPrompt(session, provider, text, acceptedImages)
+        await submitPrompt(current().session, provider, text, acceptedImages)
       },
-      interrupt: () => session.interrupt(),
+      interrupt: () => current().session.interrupt(),
       newSession: () => {
-        session.newSession()
+        // OPENS a conversation; it does not replace one. The previous implementation called
+        // `newSession()` on the single session, which killed a turn that was still running.
+        registry.create()
+        provider.syncState()
+        prewarmSession()
+      },
+      switchSession: key => {
+        if (registry.activate(key)) return
+        // A stale key from a list the webview fetched before a session closed. Resync rather
+        // than fail: the user pressed a row that no longer exists and needs to see why.
+        postLiveSessions()
+        provider.post({ type: 'showError', message: 'That conversation is no longer open.' })
+      },
+      closeSession: key => {
+        registry.close(key)
         provider.syncState()
         prewarmSession()
       },
       permissionResponse: (requestId, decision) =>
-        permissions.resolve(session.controlClient, requestId, { kind: decision }),
+        current().permissions.resolve(current().session.controlClient, requestId, { kind: decision }),
       questionResponse: (requestId, answers, notes) => {
-        const result = permissions.resolveQuestions(
-          session.controlClient,
+        const result = current().permissions.resolveQuestions(
+          current().session.controlClient,
           requestId,
           answers,
           notes,
         )
-        if (result) session.recordQuestionAnswers(result.toolUseId, result.answers)
+        if (result) current().session.recordQuestionAnswers(result.toolUseId, result.answers)
       },
       // The WEBVIEW owns the dropdown now, so the host only applies the choice. It is
       // configuration only — nothing here touches the composer's text.
       selectModelValue: async value => {
-        await session.setModel(value)
+        await current().session.setModel(value)
         // Finish an older in-flight fetch before requesting this selection's effective settings.
         if (catalogueRefresh) await catalogueRefresh
         await refreshModels(value)
-        provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
+        provider.post({
+          type: 'setModelCatalogue',
+          catalogue: buildCatalogue(current().session),
+        })
       },
       refreshModelCatalogue: refreshModels,
       // Effort goes through the CLI's own `/effort` command — see sessionHandle.setEffort.
@@ -531,26 +659,26 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
 
-        standaloneTaskSnapshot = [...session.backgroundTasks]
-        await session.restoreTaskHistory(target.sessionId, target.cwd)
+        standaloneTaskSnapshot = [...current().session.backgroundTasks]
+        await current().session.restoreTaskHistory(target.sessionId, target.cwd)
         const handle = await attachToCliSession(target, {
-          onStreamStart: () => session.beginMirroredTurn(),
-          onStreamDelta: delta => session.appendMirroredDelta(delta),
-          onStreamThinking: () => session.markMirroredThinking(),
-          onStreamEnd: () => session.endMirroredTurn(),
-          onActivity: messages => session.applyMirroredActivity(messages),
+          onStreamStart: () => current().session.beginMirroredTurn(),
+          onStreamDelta: delta => current().session.appendMirroredDelta(delta),
+          onStreamThinking: () => current().session.markMirroredThinking(),
+          onStreamEnd: () => current().session.endMirroredTurn(),
+          onActivity: messages => current().session.applyMirroredActivity(messages),
           onPermissionRequest: request =>
-            permissions.presentMirrored(request, response =>
+            current().permissions.presentMirrored(request, response =>
               liveAttachment?.respondPermission(request.requestId, response),
             ),
           // Withdrawn or answered elsewhere — either way the card must go.
-          onPermissionDismiss: requestId => permissions.dismiss(requestId),
+          onPermissionDismiss: requestId => current().permissions.dismiss(requestId),
           onTaskSnapshot: tasks => {
             taskInspectionSupported = true
             taskInspectionMessage = undefined
-            session.applyMirroredTaskSnapshot(tasks, true)
+            current().session.applyMirroredTaskSnapshot(tasks, true)
           },
-          onTaskEvent: event => session.applyMirroredTaskEvent(event),
+          onTaskEvent: event => current().session.applyMirroredTaskEvent(event),
           onTaskUnsupported: message => {
             taskInspectionSupported = false
             taskInspectionMessage = message
@@ -560,7 +688,7 @@ export function activate(context: vscode.ExtensionContext): void {
             liveAttachment = null
             taskInspectionSupported = true
             taskInspectionMessage = undefined
-            session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
+            current().session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
             attachment = {
               ...attachment,
               attached: null,
@@ -591,7 +719,7 @@ export function activate(context: vscode.ExtensionContext): void {
         liveAttachment = null
         taskInspectionSupported = true
         taskInspectionMessage = undefined
-        session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
+        current().session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
         attachment = { ...attachment, attached: null, error: null }
         postAttachment()
         prewarmSession()
@@ -670,39 +798,43 @@ export function activate(context: vscode.ExtensionContext): void {
         // the old one. A fresh child reads the new configuration and has no stale cache
         // by construction — a stronger guarantee than invalidating caches in place.
         invalidateRayuConfigCache()
-        session.newSession()
-        provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
+        current().session.newSession()
+        provider.post({
+          type: 'setModelCatalogue',
+          catalogue: buildCatalogue(current().session),
+        })
         provider.syncState()
         prewarmSession()
       },
 
-      setEffort: level => session.setEffort(level),
+      setEffort: level => current().session.setEffort(level),
       cyclePermissionMode: async () => {
-        const next = nextPermissionMode(session.currentPermissionMode.id)
-        // Only tell the webview once the engine has accepted it. Flipping the pill
-        // optimistically would claim "Full access" while the engine still asks for
-        // approval on every tool.
-        if (await session.setPermissionMode(next)) {
-          provider.post({ type: 'setPermissionMode', mode: next })
-        }
+        const next = nextPermissionMode(current().session.currentPermissionMode.id)
+        // Post either way. On success the pill moves to the accepted mode; on refusal it
+        // is snapped back to what is still enforced, because the webview applies its own
+        // optimistic update and would otherwise be left claiming a mode the engine
+        // rejected.
+        await current().session.setPermissionMode(next)
+        provider.post({ type: 'setPermissionMode', mode: current().session.currentPermissionMode })
       },
       setPermissionMode: async (modeId: string) => {
         try {
-          const mode = permissionModeById(modeId)
-          if (mode && (await session.setPermissionMode(mode))) {
-            provider.post({ type: 'setPermissionMode', mode })
-          }
+          await current().session.setPermissionMode(permissionModeById(modeId))
         } catch (error) {
           console.error('[rayucode] failed to set permission mode', error)
         }
+        // See above: the authoritative mode is published whatever the outcome.
+        provider.post({ type: 'setPermissionMode', mode: current().session.currentPermissionMode })
       },
       // Keep/undo go through the engine's OWN /keep and /undo commands, which is the
       // mechanism `utils/pendingFileChanges.ts` implements for the CLI. The
       // `rewind_files` control request is a different thing — it rewinds everything
       // since a message — and wiring a per-file button to it would revert files the
       // user had chosen to keep.
-      reviewKeep: path => submitPrompt(session, provider, reviewCommand('keep', path)),
-      reviewUndo: path => submitPrompt(session, provider, reviewCommand('undo', path)),
+      reviewKeep: path =>
+        submitPrompt(current().session, provider, reviewCommand('keep', path)),
+      reviewUndo: path =>
+        submitPrompt(current().session, provider, reviewCommand('undo', path)),
       openReviewDiff: path => openReviewDiff(review.store, path),
       openFile: path => openReviewFile(path),
       signIn: async () => {
@@ -779,6 +911,17 @@ export function activate(context: vscode.ExtensionContext): void {
           paths: uris ? await contextPathsForUris(uris) : [],
         })
       },
+      requestToolOutput: (requestId, entryId) => {
+        // ALWAYS replies, like the context-path requests above and for the same reason:
+        // the webview awaits this by `requestId`, so a silent path would leave its
+        // promise pending and the row stuck on "Loading…". `null` is a real answer —
+        // retention is capped, so an old result may genuinely be gone.
+        provider.post({
+          type: 'toolOutputResolved',
+          requestId,
+          text: current().session.fullToolOutput(entryId),
+        })
+      },
       modelChooserChoice: async (target, value, agentType) => {
         setModelChooser(null)
         const notice = applySelection(target, value, agentType)
@@ -789,12 +932,12 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       modelChooserDismiss: () => setModelChooser(null),
       mcpToggle: async (serverName, enabled) => {
-        await session.toggleMcpServer(serverName, enabled)
+        await current().session.toggleMcpServer(serverName, enabled)
       },      mcpReconnect: async serverName => {
-        await session.reconnectMcpServer(serverName)
+        await current().session.reconnectMcpServer(serverName)
       },
       getMcpStatus: async () => {
-        const servers = await session.getMcpStatus()
+        const servers = await current().session.getMcpStatus()
         provider.post({ type: 'setMcpServers', servers })
       },
       listSessions: async () => {
@@ -819,9 +962,18 @@ export function activate(context: vscode.ExtensionContext): void {
         provider.post({ type: 'setSessions', list: historySessions })
       },
       resumeSession: async (id: string) => {
-        // Order matters: newSession() clears the transcript, so the restore must follow
-        // it. The engine child is spawned with --resume and is the SOLE writer to the
-        // session file; loadSessionTranscript only reads.
+        // ── AN OPEN CONVERSATION IS ACTIVATED, NOT RESUMED ──────────────────────
+        //
+        // If this session is already open in the panel, its engine is alive and may be
+        // mid-turn. Respawning it with `--resume` would kill that turn and rebuild the
+        // transcript from the session FILE — which is where the raw
+        // `<command-name>/model</command-name>` breadcrumbs came from. Activation is both
+        // cheaper and lossless.
+        if (registry.findByEngineSessionId(id)) {
+          registry.activate(registry.findByEngineSessionId(id)!.key)
+          prewarmSession()
+          return
+        }
         const selected = historySessions.sessions.find(item => item.id === id)
         if (!selected) {
           provider.post({
@@ -834,17 +986,22 @@ export function activate(context: vscode.ExtensionContext): void {
         // the engine in the selected session's cwd lets the shared UUID resume path
         // find the same transcript the lister displayed.
         const resumeCwd = workspaceDir ?? selected.cwd ?? engineCwd
-        session.newSession(id, resumeCwd)
+        // A NEW entry rather than reusing the active one: resuming history is opening another
+        // conversation, and the one already on screen may be mid-turn. Order matters —
+        // `create()` starts with an empty transcript, so the restore follows it. The engine
+        // child is spawned with `--resume` and is the SOLE writer to the session file;
+        // `loadSessionTranscript` only reads.
+        const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd })
         const restored = await loadSessionTranscript(id, resumeCwd)
-        session.restoreTranscript(restored)
-        await session.restoreTaskHistory(id, resumeCwd)
+        entry.session.restoreTranscript(restored)
+        await entry.session.restoreTaskHistory(id, resumeCwd)
         provider.syncState()
         prewarmSession()
       },
       stopTask: async (_sourceSessionId, taskId) => {
         try {
           if (liveAttachment) await liveAttachment.stopTask(taskId)
-          else await session.stopBackgroundTask(taskId)
+          else await current().session.stopBackgroundTask(taskId)
         } catch (cause) {
           provider.post({
             type: 'showError',
@@ -866,9 +1023,15 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   )
 
-  // The engine child must die with the window. An orphan keeps its MCP server
-  // subprocesses alive, holding ports and file locks after the editor has closed.
-  context.subscriptions.push({ dispose: () => session.dispose() })
+  // The engine children must die with the window. An orphan keeps its MCP server
+  // subprocesses alive, holding ports and file locks after the editor has closed — and with
+  // several conversations open there may be several of them.
+  context.subscriptions.push({ dispose: () => registry.dispose() })
+  // The first conversation is opened HERE, not on first access. `create()` publishes through
+  // `provider`, which does not exist until the line above it — and a lazy creation triggered
+  // from inside `getState()` would re-enter `syncState()` mid-snapshot. Creating an entry does
+  // not spawn an engine; `prewarmSession()` does that once the panel is mounted.
+  registry.create()
   // Detach cleanly so the CLI session stops forwarding and drops pending decisions,
   // rather than waiting for the socket to notice the window closed.
   context.subscriptions.push({ dispose: () => liveAttachment?.detach() })
@@ -894,7 +1057,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // A Rayucode helper changed its provider catalogue. Refresh the choices while the
     // current conversation keeps its explicit provider-qualified execution selection.
     invalidateRayuConfigCache()
-    session.availableModels = null
+    current().session.availableModels = null
     provider.syncState()
     void refreshModels()
   }))
@@ -959,12 +1122,58 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   )
 
+  // ── ADDING CONTEXT FROM THE TREE AND THE EDITOR ──────────────────────────────
+  //
+  // Drag and drop cannot serve a webview. VS Code blanks the panel's pointer events for the
+  // duration of any drag that looks like it carries a file — which an ordinary Explorer or
+  // editor-tab drag does — unless Shift is held, and the event that would have to be cancelled
+  // is dispatched in a frame the panel cannot reach. See `panel/dropTargetView.ts` for the
+  // measurement and for the drop strip that DOES accept a plain drag.
+  //
+  // So this menu command is not a workaround: it is the route the platform supports for the
+  // tree. It reuses the SAME resolver and the SAME `@`-mention format as every other path, so
+  // they all produce identical prompt text.
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMANDS.newSession, async () => {      await provider.reveal()
-      // A real reset: the engine child is replaced, because per-session state
-      // (read-file tracking, granted permissions, MCP connections, compaction
-      // history) has no control request that clears all of it.
-      session.newSession()
+    vscode.commands.registerCommand(
+      COMMANDS.addToContext,
+      async (clicked?: vscode.Uri, selection?: vscode.Uri[]) => {
+        // `selection` is the Explorer's multi-select and is what the user means when they have
+        // several rows highlighted; `clicked` is the single row. Falling back to the active
+        // editor makes the command work from the palette, where neither argument is passed.
+        const uris =
+          selection && selection.length > 0
+            ? selection
+            : clicked
+              ? [clicked]
+              : vscode.window.activeTextEditor
+                ? [vscode.window.activeTextEditor.document.uri]
+                : []
+        if (uris.length === 0) {
+          void vscode.window.showInformationMessage(
+            'Select a file or folder to add to Rayu context.',
+          )
+          return
+        }
+        const paths = await contextPathsForUris(uris)
+        if (paths.length === 0) {
+          void vscode.window.showWarningMessage(
+            'Rayucode could not read that file or folder.',
+          )
+          return
+        }
+        await provider.reveal()
+        provider.post({ type: 'insertPrompt', text: formatPathMentions(paths) })
+      },
+    ),
+  )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(COMMANDS.newSession, async () => {
+      await provider.reveal()
+      // OPENS a conversation. Whatever was on screen keeps its engine and keeps running —
+      // which is the whole difference from the previous behaviour, where this button killed
+      // the turn in flight.
+      registry.create()
       provider.syncState()
       prewarmSession()
     }),
@@ -1031,6 +1240,8 @@ function buildState(
   ideContext: IdeContextView | null,
   attachment: AttachmentView,
   historySessions: SessionListView,
+  liveSessions: LiveSessionView[],
+  activeSessionKey: string,
   taskInspectionSupported = true,
   taskInspectionMessage?: string,
 ): WebviewState {
@@ -1063,6 +1274,8 @@ function buildState(
     // Full `init` snapshots replace webview state. Carry the host-owned history
     // list so unrelated model/auth/context syncs cannot erase an open picker.
     sessions: historySessions,
+    liveSessions,
+    activeSessionKey,
     backgroundTasks: [...session.backgroundTasks],
     taskInspectionSupported,
     taskInspectionMessage,

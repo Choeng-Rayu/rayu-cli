@@ -218,23 +218,30 @@ describe('VS Code Activity Formatter (formatActivityForVSCode)', () => {
     // presentation decision in the renderer and makes it impossible to lose the
     // completion.
     expect(blocks).toHaveLength(3)
+    // `truncatedChars: 0` is present on every result now. It is what drives the
+    // "Show N more characters" action, and 0 is the honest value for output that was
+    // not withheld — the alternative, omitting it when nothing was cut, would make the
+    // absence of the field mean two different things.
     expect(blocks[0]).toEqual({
       kind: 'tool_result',
       toolUseId: 'call_fail',
       text: '',
       isError: true,
+      truncatedChars: 0,
     })
     expect(blocks[1]).toEqual({
       kind: 'tool_result',
       toolUseId: 'call_empty_success',
       text: '',
       isError: false,
+      truncatedChars: 0,
     })
     expect(blocks[2]).toEqual({
       kind: 'tool_result',
       toolUseId: 'call_success',
       text: 'Tests passed: 5/5',
       isError: false,
+      truncatedChars: 0,
     })
   })
 

@@ -61,6 +61,11 @@ export function WelcomeScreen({
           </button>
         ))}
       </div>
+
+      <p className="rc-welcome-hint">
+        Drag files or images onto this panel, use <strong>Add Context</strong>, type{' '}
+        <code>@</code>, or right-click a file in the Explorer.
+      </p>
     </div>
   )
 }

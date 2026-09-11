@@ -102,6 +102,32 @@ describe('grouping', () => {
     expect(groupTranscript([])).toEqual([])
   })
 
+  test('a subagent never shares a group with the main thread', () => {
+    // Merging them would count two different actors as one, and would hide the fact that a
+    // subagent read anything at all.
+    const blocks = groupTranscript([
+      tool('a', 'Read'),
+      tool('b', 'Read', { agent: 'Task · review the diff' }),
+      tool('c', 'Read', { agent: 'Task · review the diff' }),
+      tool('d', 'Read'),
+    ])
+    expect(blocks).toHaveLength(3)
+    expect(blocks[0]).toMatchObject({ kind: 'activity' })
+    expect(blocks[0]?.kind === 'activity' && blocks[0].agent).toBeUndefined()
+    expect(blocks[1]).toMatchObject({ kind: 'activity', agent: 'Task · review the diff' })
+    expect(blocks[1]?.kind === 'activity' && blocks[1].tools).toHaveLength(2)
+    expect(blocks[2]).toMatchObject({ kind: 'activity' })
+    expect(blocks[2]?.kind === 'activity' && blocks[2].agent).toBeUndefined()
+  })
+
+  test('two different subagents do not share a group', () => {
+    const blocks = groupTranscript([
+      tool('a', 'Read', { agent: 'Task · one' }),
+      tool('b', 'Read', { agent: 'Task · two' }),
+    ])
+    expect(blocks).toHaveLength(2)
+  })
+
   test('prompts, notices, summaries and review cards pass through untouched', () => {
     const entries: TranscriptEntry[] = [
       { id: 'p', kind: 'prompt', text: 'hi' },

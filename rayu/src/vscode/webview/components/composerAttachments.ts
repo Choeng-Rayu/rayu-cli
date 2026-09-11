@@ -100,19 +100,47 @@ export function readImageAttachment(file: File): Promise<ImageInputView> {
 /**
  * Render resolved workspace paths as `@`-mentions.
  *
- * The engine expands these itself through `processAtMentionedFiles`, including directories,
- * so this deliberately produces PLAIN TEXT rather than a bespoke attachment structure —
- * there is exactly one implementation of "what an @-mention means" and it is the CLI's.
- *
- * A path containing whitespace is left as-is: the shared parser's own token rules decide
- * what terminates a mention, and quoting here would invent a second syntax.
+ * Re-exported rather than defined here: the HOST produces the same mentions for the Explorer
+ * and editor context-menu commands, and two implementations of the format would drift. See
+ * `shared/contextMentions.ts` for why that route exists at all.
  */
-export function formatPathMentions(paths: readonly string[]): string {
-  return paths
-    .map(path => path.trim())
-    .filter(Boolean)
-    .map(path => `@${path}`)
-    .join(' ')
+export { formatPathMentions } from '../../shared/contextMentions.js'
+
+/**
+ * The text a single edit inserted, and where.
+ *
+ * Used to catch a file path that ARRIVED as text rather than as a drop payload. That is the
+ * normal outcome in two cases:
+ *
+ *   - Chromium's default action for a drop onto a `<textarea>` is to insert the dragged text at
+ *     the caret. When VS Code does not take the drag away, a dropped file therefore appears as
+ *     a plain path in the composer.
+ *   - A middle-click paste on X11, and any other route that bypasses the `paste` event.
+ *
+ * This is exactly how the CLI works — a terminal converts a drag into pasted text and
+ * `shared/pastedPaths.ts` recovers the file — so recognising it here makes the two surfaces
+ * behave the same way for the same gesture.
+ *
+ * Computed by common prefix and suffix rather than from a selection range, because the range is
+ * gone by the time React reports the change. Returns null when nothing was inserted, so an edit
+ * that only DELETES cannot be mistaken for a paste.
+ */
+export function insertedChunk(
+  before: string,
+  after: string,
+): { start: number; text: string } | null {
+  if (after.length <= before.length) return null
+  let prefix = 0
+  while (prefix < before.length && before[prefix] === after[prefix]) prefix += 1
+  let suffix = 0
+  while (
+    suffix < before.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix += 1
+  }
+  const text = after.slice(prefix, after.length - suffix)
+  return text ? { start: prefix, text } : null
 }
 
 /**

@@ -38,6 +38,8 @@ export type TranscriptBlock =
       /** Stable across re-renders: the first member's id. */
       id: string
       activity: ActivityKind
+      /** The subagent every member belongs to, or undefined for the main thread. */
+      agent?: string
       tools: ToolEntry[]
     }
 
@@ -58,7 +60,13 @@ export function activityKindFor(toolName: string): ActivityKind {
   return 'other'
 }
 
-/** Tool entries that keep their own renderer and must never be folded into a count. */
+/**
+ * Tool entries that keep their own renderer and must never be folded into a count.
+ *
+ * Hook entries need no entry here: `groupTranscript` only groups `kind: 'tool'`, and a
+ * hook is not a tool. It passes through as its own block, which is correct — a hook that
+ * ran between two reads is exactly the kind of thing a count would hide.
+ */
 function hasDedicatedRenderer(entry: ToolEntry): boolean {
   return entry.questions !== undefined || entry.todos !== undefined
 }
@@ -69,6 +77,12 @@ function hasDedicatedRenderer(entry: ToolEntry): boolean {
  * A single tool call still becomes a one-member group rather than a bare entry: one code path
  * for "how a tool renders" is worth more than saving a wrapper, and the collapsed header reads
  * correctly for one (`Read 1 file`).
+ *
+ * ── A GROUP NEVER SPANS TWO ACTORS ─────────────────────────────────────────────
+ *
+ * The `agent` must match as well as the kind. A subagent's reads and the main thread's reads
+ * are the same VERB by two different workers, and merging them yields a count that describes
+ * neither — while hiding the fact that a subagent did anything at all.
  */
 export function groupTranscript(
   entries: readonly TranscriptEntry[],
@@ -83,10 +97,20 @@ export function groupTranscript(
 
     const activity = activityKindFor(entry.name)
     const previous = blocks[blocks.length - 1]
-    if (previous?.kind === 'activity' && previous.activity === activity) {
+    if (
+      previous?.kind === 'activity' &&
+      previous.activity === activity &&
+      previous.agent === entry.agent
+    ) {
       previous.tools.push(entry)
     } else {
-      blocks.push({ kind: 'activity', id: entry.id, activity, tools: [entry] })
+      blocks.push({
+        kind: 'activity',
+        id: entry.id,
+        activity,
+        ...(entry.agent !== undefined ? { agent: entry.agent } : {}),
+        tools: [entry],
+      })
     }
   }
 

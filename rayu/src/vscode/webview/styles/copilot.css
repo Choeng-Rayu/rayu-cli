@@ -42,6 +42,8 @@ body {
   overflow: hidden;
   container-type: inline-size;
   container-name: shell;
+  /* Anchors the panel-wide drop overlay, which is absolutely positioned over everything. */
+  position: relative;
 }
 
 /*
@@ -254,6 +256,25 @@ body {
   background-color: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
 }
 
+/* Anchors the count badge to the control it counts for. */
+.rc-icon-button-badged {
+  position: relative;
+}
+
+.rc-icon-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
 .rc-transcript-wrapper {
   position: relative;
   flex: 1 1 auto;
@@ -382,6 +403,33 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--rc-gap-lg);
+}
+
+/*
+  One transcript block, culled by the browser while scrolled out of view.
+
+  `content-visibility: auto` skips layout, paint and hit-testing for off-screen blocks
+  while still reserving their real size, which is what keeps a several-hundred-turn
+  session responsive without a windowing virtualizer. Transcript rows have wildly
+  variable heights — a collapsed pill is one line, a diff is dozens — so any
+  implementation that had to ESTIMATE height would make the scrollbar jump; this one
+  never estimates a block it has already displayed.
+
+  `contain-intrinsic-size: auto 40px` is the load-bearing half. `auto` tells the browser
+  to remember each block's last measured height and reuse it while the block is skipped,
+  so scroll height stays exact. The 40px literal is only the placeholder for a block that
+  has never been on screen, chosen to match a single-line row so a fresh long transcript
+  errs toward being too short rather than too tall — undershooting settles as blocks are
+  scrolled into view, whereas overshooting leaves visible empty gaps.
+
+  `display: block` is required: this element is a flex child of `.rc-transcript`, and
+  containment on a flex item with an indeterminate size is what makes the reserved height
+  unreliable.
+*/
+.rc-block {
+  display: block;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
 }
 
 .rc-scroll-bottom {
@@ -1153,6 +1201,24 @@ body {
   padding: var(--rc-gap);
 }
 
+/*
+  Elapsed time on a RUNNING tool row.
+
+  Tabular figures so the number does not jitter sideways as it counts — a proportional
+  font makes "9s" narrower than "10s", and a value that shifts every second draws the eye
+  away from the label it sits next to. `flex: 0 0 auto` keeps it beside the status badge
+  while the label absorbs the remaining width.
+*/
+.rc-tool-elapsed {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.85;
+}
+
 .rc-tool-section-head {
   display: flex;
   align-items: center;
@@ -1201,6 +1267,65 @@ body {
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/*
+  A hook's stderr. Tinted and rule-marked rather than merely labelled: when a hook blocks
+  a tool the reason is almost always in here, and it has to be findable at a glance in a
+  panel that may be showing several hooks.
+*/
+.rc-tool-pre-stderr {
+  border-left: 2px solid var(--vscode-errorForeground);
+  color: var(--vscode-errorForeground);
+}
+
+/*
+  "Show N more characters" for output the host clamped.
+
+  A link rather than a button: it reveals more of something already on screen, so it should
+  read as continuing the output rather than as an action with consequences. Full width so
+  it is unmistakably attached to the block above it and not to the next section.
+*/
+.rc-output-more {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 3px var(--rc-gap);
+  border: none;
+  border-radius: 3px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.9em;
+  color: var(--vscode-textLink-foreground);
+}
+
+.rc-output-more:hover:not(:disabled) {
+  background-color: var(--vscode-list-hoverBackground);
+  text-decoration: underline;
+}
+
+.rc-output-more:disabled {
+  cursor: default;
+  color: var(--vscode-descriptionForeground);
+}
+
+/*
+  Hook rows sit at the transcript's left margin like tool pills, but carry a left rule in
+  the accent colour so a run of hooks is distinguishable from a run of tool calls without
+  reading either. A FAILED hook uses the error colour, because it is usually the
+  explanation for whatever the turn did not do.
+*/
+.rc-hook {
+  border-left: 2px solid var(--vscode-badge-background);
+}
+
+.rc-hook-error {
+  border-left-color: var(--vscode-errorForeground);
+}
+
+.rc-hook-cancelled {
+  opacity: 0.75;
 }
 
 .rc-badge {
@@ -1708,9 +1833,44 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Wrapping is load-bearing, not cosmetic: the expanded `DiffView` is a THIRD child of
+     this row, and without wrap it was squeezed onto the same line as the path and the
+     buttons instead of opening underneath them. */
+  flex-wrap: wrap;
   gap: var(--rc-gap);
   padding: 3px 0;
   font-size: 0.88em;
+}
+
+/* The expanded diff takes a full line of its own below the row it belongs to.
+   `flex-basis: auto` with an explicit width rather than `flex: 0 0 100%`, because the
+   narrow-container query below flips this row to `column`, where a 100% basis would mean
+   100% HEIGHT. `flex-shrink: 0` is what forces the wrap instead of letting the diff be
+   squeezed in beside the buttons. */
+.rc-review-file > .rc-diff {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+/*
+  A file the response now being read is responsible for.
+
+  An accent bar rather than a badge: the card is a list of paths a user scans, and a
+  fourth pill per row competes with `new`, the diffstat and the status badge. Applied
+  only when the card actually mixes this response's files with older ones, so it never
+  decorates every row at once. The path's tooltip carries the same fact in words, since
+  a colour alone is not information.
+*/
+.rc-review-file-current {
+  border-left: 2px solid var(--vscode-textLink-foreground);
+  padding-left: 5px;
+  margin-left: -7px;
+}
+
+.rc-review-turn-count {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
 }
 
 .rc-review-file-info {
@@ -1845,6 +2005,35 @@ body {
   color: var(--vscode-descriptionForeground);
   max-width: 44ch;
   line-height: 1.45;
+}
+
+/*
+ * The attachment hint, including the Shift requirement.
+ *
+ * Quieter than the body copy — it is reference material, not the introduction — but permanent,
+ * because the moment the user needs it is a moment this panel receives no events at all.
+ */
+.rc-welcome-hint {
+  margin: var(--rc-gap-lg) 0 0;
+  max-width: 46ch;
+  font-size: 0.84em;
+  line-height: 1.5;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-welcome-hint code,
+.rc-welcome-hint kbd {
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.95em;
+  background-color: var(--vscode-textCodeBlock-background);
+  color: var(--vscode-foreground);
+}
+
+.rc-welcome-hint strong {
+  color: var(--vscode-foreground);
+  font-weight: 600;
 }
 
 .rc-chips {
@@ -2192,6 +2381,56 @@ body {
 
 .rc-composer-drop-text {
   font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/*
+ * The PANEL-wide drop target.
+ *
+ * `pointer-events: none` is not cosmetic here: an overlay that accepted the pointer would
+ * become the drop target and cancel the drop it is advertising.
+ */
+.rc-panel-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  pointer-events: none;
+  /* Theme token only. A literal fallback would be a hardcoded colour, which the bundle
+     hygiene test rejects — and would look wrong in a high-contrast theme. */
+  background-color: var(--vscode-list-dropBackground);
+}
+
+.rc-panel-drop-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 92%;
+  padding: 14px 18px;
+  text-align: center;
+  border: 1px dashed var(--vscode-focusBorder);
+  border-radius: 10px;
+  background-color: var(--vscode-editorWidget-background);
+}
+
+.rc-panel-drop-icon {
+  font-size: 1.6em;
+  font-weight: 700;
+  color: var(--vscode-focusBorder);
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.rc-panel-drop-text {
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+.rc-panel-drop-hint {
+  font-size: 0.82em;
   color: var(--vscode-descriptionForeground);
 }
 
@@ -2796,6 +3035,31 @@ body {
   flex: 0 0 auto;
 }
 
+/*
+ * Who ran these calls.
+ *
+ * Given a badge rather than plain text because it answers a different question from the
+ * verb next to it, and because a subagent's row otherwise reads as the main thread's.
+ */
+.rc-activity-actor {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+/* A subagent's group is inset and rail-marked, so nesting is visible without a tree. */
+.rc-activity-agent {
+  margin-left: calc(var(--rc-gap) * 1.5);
+  border-left: 2px solid var(--vscode-badge-background);
+}
+
 /* The newest action truncates first: the count is the stable fact, the action is context. */
 .rc-activity-latest {
   flex: 1 1 auto;
@@ -2808,11 +3072,31 @@ body {
   font-size: 0.92em;
 }
 
+/*
+  Elapsed time for a live GROUP, measured from its earliest member. Tabular figures for
+  the same reason as the per-row timer: a width that changes every second is distracting.
+  Sits before the status so it does not displace it.
+*/
+.rc-activity-elapsed {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.85;
+}
+
 .rc-activity-status {
   flex: 0 0 auto;
   margin-left: auto;
   font-size: 0.9em;
   color: var(--vscode-descriptionForeground);
+}
+
+/* With a timer present the status no longer needs to claim the free space. */
+.rc-activity-elapsed + .rc-activity-status {
+  margin-left: var(--rc-gap);
 }
 
 .rc-activity-error .rc-activity-status { color: var(--vscode-errorForeground); }
@@ -2906,11 +3190,57 @@ body {
   outline-offset: -1px;
 }
 
+/*
+ * An OPEN conversation.
+ *
+ * The row and its close button are siblings in a flex row: nesting a button inside a button is
+ * invalid HTML and the inner one does not receive clicks reliably.
+ */
+.rc-session-live-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.rc-session-live-row .rc-session-row {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The conversation on screen. Marked, not hidden: it is still a valid row to click. */
+.rc-session-row-active {
+  background-color: var(--vscode-list-inactiveSelectionBackground);
+}
+
+.rc-session-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--rc-gap-lg);
+  border: 0;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+}
+
+.rc-session-close:hover {
+  color: var(--vscode-foreground);
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.rc-session-close:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
 .rc-session-row-label {
   font-size: 0.88em;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  /* The running glyph sits inline with the label, so they share a baseline. */
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .rc-session-row-meta {
@@ -3262,4 +3592,192 @@ body {
     max-width: 9ch;
     padding: 2px 6px;
   }
+}
+
+
+/* ── Inline diffs ──────────────────────────────────────────────────────────────
+   Rendered inside the review card and, from Task 12, inside edit tool rows. Colours come
+   from VS Code's own diff editor keys so a diff in the panel matches a diff in an editor
+   tab beside it, in whatever theme the user has chosen.
+*/
+.rc-diff {
+  margin: 4px 0 2px 0;
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: var(--vscode-textCodeBlock-background);
+}
+
+.rc-diff-body {
+  /* Bounded like tool output: one large diff must not make the transcript unscrollable.
+     `DiffView` also collapses past 60 rows, so this is the second line of defence for a
+     diff the user has deliberately expanded. */
+  max-height: 420px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size, 12px);
+  line-height: 1.5;
+}
+
+.rc-diff-row {
+  display: flex;
+  align-items: flex-start;
+  white-space: pre;
+}
+
+/*
+  Line-number gutters.
+
+  `user-select: none` is load-bearing rather than cosmetic: without it, selecting a diff to
+  paste into a commit message or an issue yields line numbers and markers interleaved with
+  every line of code. This is the DOM equivalent of the `<NoSelect>` wrapper the terminal
+  renderer puts around its own gutter, for exactly the same reason.
+*/
+.rc-diff-gutter {
+  flex: 0 0 auto;
+  min-width: 3ch;
+  padding: 0 4px;
+  text-align: right;
+  user-select: none;
+  color: var(--vscode-editorLineNumber-foreground);
+  opacity: 0.7;
+}
+
+.rc-diff-marker {
+  flex: 0 0 auto;
+  width: 2ch;
+  text-align: center;
+  user-select: none;
+  opacity: 0.8;
+}
+
+.rc-diff-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: var(--rc-gap);
+  /* Wrap rather than scroll horizontally: a long line in a narrow side panel is the common
+     case, and a horizontal scrollbar per diff is worse than a wrapped line. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: none;
+}
+
+.rc-diff-add {
+  background-color: var(--vscode-diffEditor-insertedLineBackground, var(--vscode-diffEditor-insertedTextBackground));
+}
+
+.rc-diff-remove {
+  background-color: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
+}
+
+/* Context rows carry no tint, so the changed rows are what the eye lands on. */
+.rc-diff-context .rc-diff-code {
+  opacity: 0.85;
+}
+
+.rc-diff-truncated {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  padding: 4px var(--rc-gap);
+  border-top: 1px solid var(--vscode-editorWidget-border);
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground);
+  font: inherit;
+}
+
+.rc-link-button:hover {
+  text-decoration: underline;
+}
+
+/* The review row's diff disclosure. The spacer keeps rows aligned when a file has no
+   recorded hunks, so paths do not shift left and right down the list. */
+.rc-review-disclose,
+.rc-review-disclose-spacer {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rc-review-disclose {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--vscode-icon-foreground);
+}
+
+.rc-review-disclose:hover {
+  color: var(--vscode-foreground);
+}
+
+
+/* ── Typed tool results ────────────────────────────────────────────────────────
+   Replaces the generic <pre> for tools that ship a structured payload. See
+   `ToolResultView` in shared/webviewProtocol.ts.
+*/
+.rc-tool-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rc-tool-result-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  font-size: 0.92em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-tool-result-hint {
+  font-size: 0.88em;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.85;
+}
+
+.rc-search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* Bounded like every other result body: a glob matching 200 files must not push the
+     conversation off screen. `DiffView` collapses instead; a flat list scrolls, because
+     there is no meaningful "first 60" of an alphabetical file list. */
+  max-height: 260px;
+  overflow: auto;
+}
+
+.rc-search-results li {
+  display: block;
+}
+
+.rc-search-path {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 1px 0;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.92em;
+  color: var(--vscode-textLink-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rc-search-path:hover {
+  text-decoration: underline;
 }

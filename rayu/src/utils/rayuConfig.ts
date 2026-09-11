@@ -724,12 +724,39 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
  * Priority: RAYU_CONTEXT_TOKENS env → per-model config override →
  * per-provider config default → known-model table → null (caller defaults).
  * Records a diagnostic when it falls back so unknown models surface for tuning.
+ *
+ * ── THE MODEL MAY CARRY A PROVIDER PREFIX, AND IT IS DECODED HERE ──────────────
+ *
+ * A model string can be the routed `providerId\0model` form produced by
+ * `encodeModelWithProvider`. Two callers rely on that: a subagent or swarm collaborator
+ * routed to a different provider than the active one, and the Rayucode extension, which
+ * always pins its session with the provider-qualified id.
+ *
+ * Without decoding, every lookup below was done with the ENCODED string — so
+ * `modelContextWindows['longcat-2.0']` was searched for as
+ * `modelContextWindows['rayu-hosted\0longcat-2.0']`, missed, and the caller fell back to
+ * the 200k default. A 1M model was reported as 200k, and `/context`, the autocompact
+ * threshold and the panel's gauge were all wrong together.
+ *
+ * The provider is resolved from the prefix rather than from `getActiveProvider()` for the
+ * same reason: a routed model's window belongs to ITS provider. This is the behaviour
+ * `getContextWindowForModel` already documents ("Per-MODEL, so a routed subagent gets ITS
+ * provider's window rather than the active provider's") — the decode is what makes the
+ * implementation match.
  */
 export function getRayuModelContextWindow(model: string): number | null {
   const envOverride = parseInt(process.env.RAYU_CONTEXT_TOKENS || '', 10)
   if (!isNaN(envOverride) && envOverride > 0) return envOverride
 
-  const p = getActiveProvider()
+  const decoded = decodeModelProvider(model)
+  // Bare model for every lookup: config keys, the known-model table and the Kiro catalog
+  // are all keyed by the model the provider actually serves.
+  model = decoded.model
+  const p = decoded.providerId
+    ? (loadRayuConfig().providers.find(
+        provider => provider.id === decoded.providerId,
+      ) ?? getActiveProvider())
+    : getActiveProvider()
   // Kiro: per-model context from the Kiro catalog (opus-4.7/4.8 are 1M; sonnet/
   // haiku base are 200k). Per-model config overrides still win.
   if (p?.kind === 'kiro') {

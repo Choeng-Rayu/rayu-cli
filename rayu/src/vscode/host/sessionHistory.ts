@@ -25,6 +25,11 @@ import { readFile } from 'node:fs/promises'
 
 import { listSessionsImpl, type SessionInfo } from '../../utils/listSessionsImpl.js'
 import {
+  COMMAND_NAME_TAG,
+  LOCAL_COMMAND_STDERR_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+} from '../../constants/xml.js'
+import {
   resolveSessionFilePath,
   validateUuid,
 } from '../../utils/sessionStoragePortable.js'
@@ -121,6 +126,15 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
  * Stored lines are `WrappedMessage` records — the same shape the engine streams. Feeding
  * them to `formatMessageForVSCode` means restored history renders identically to live
  * output, including tool pills, rather than through a second lossy path.
+ *
+ * ── WHAT RESTORE CANNOT RECOVER: TURN COMPLETIONS ───────────────────────────────
+ *
+ * The file holds `user` and `assistant` records only. There are no `result` records in it
+ * — verified against every session file on disk — so the per-turn `duration_ms` and the
+ * authoritative token usage that a live `result` frame carries are simply absent. That is
+ * why no `turn_end` marker is produced here: a restored turn has no completion to anchor,
+ * and inventing one would put a fabricated duration on every historical turn. See the
+ * `turn_end` comment in `shared/webviewProtocol.ts`.
  */
 export async function loadSessionTranscript(
   sessionId: string,
@@ -152,6 +166,19 @@ export async function loadSessionTranscript(
       // Only conversation turns. Summaries, file-history snapshots and attribute records
       // share the file but are not transcript content.
       if (record.type !== 'user' && record.type !== 'assistant') continue
+      // ── LOCAL-COMMAND BREADCRUMBS ARE NOT USER PROMPTS ──────────────────────────
+      //
+      // The engine records its own slash-command bookkeeping as `user` messages: running
+      // `/model` writes `<command-name>/model</command-name>…` and then
+      // `<local-command-stdout>Set model to X</local-command-stdout>`. The LIVE path never
+      // renders them, because it skips `prompt` blocks the panel already appended itself —
+      // so restoring a session was the only place they surfaced, as raw XML in a bubble
+      // attributed to the user.
+      //
+      // Filtered rather than reformatted: they are the CLI's transcript furniture, and the
+      // panel has its own notices for the same events. `QueryEngine.ts` applies the same rule
+      // for the same reason when it rebuilds a conversation.
+      if (isLocalCommandBreadcrumb(record)) continue
 
       blocks.push(...formatMessageForVSCode(record as never))
     }
@@ -166,3 +193,34 @@ export async function loadSessionTranscript(
     return []
   }
 }
+
+/**
+ * Whether a stored `user` record is the engine's own slash-command bookkeeping.
+ *
+ * The tags come from `src/constants/xml.ts`, which is the definition both the CLI and this
+ * share — matching on the literal strings here would silently stop working if a tag were
+ * renamed, and the failure mode is raw XML appearing in the transcript rather than an error.
+ *
+ * Only string content is examined. A structured content array is a real message with real
+ * blocks; the breadcrumbs are always plain strings.
+ */
+function isLocalCommandBreadcrumb(record: Record<string, unknown>): boolean {
+  const message = record.message as Record<string, unknown> | undefined
+  const content = message?.content
+  if (typeof content !== 'string') return false
+  return BREADCRUMB_TAGS.some(tag => content.includes(`<${tag}>`))
+}
+
+/**
+ * The tags that mark a message as command furniture rather than conversation.
+ *
+ * `command-name` covers the invocation half of the pair and `local-command-stdout` /
+ * `local-command-stderr` the result half. Both halves have to be listed: filtering only the
+ * output would leave `<command-name>/model</command-name>` on screen, which is the more
+ * confusing of the two because it is attributed to the user.
+ */
+const BREADCRUMB_TAGS = [
+  COMMAND_NAME_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+  LOCAL_COMMAND_STDERR_TAG,
+] as const

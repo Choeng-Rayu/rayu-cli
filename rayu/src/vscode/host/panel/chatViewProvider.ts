@@ -56,6 +56,10 @@ export interface ChatViewHandlers {
   submitPrompt: (text: string, images?: ImageInputView[]) => Promise<void> | void
   interrupt: () => Promise<void> | void
   newSession: () => Promise<void> | void
+  /** Bring an already-open conversation to the front. Nothing is spawned or stopped. */
+  switchSession: (key: string) => Promise<void> | void
+  /** Close an open conversation and stop its engine. */
+  closeSession: (key: string) => Promise<void> | void
   permissionResponse: (
     requestId: string,
     decision: 'allow-once' | 'allow-always' | 'deny',
@@ -95,6 +99,8 @@ export interface ChatViewHandlers {
   findFiles: (query: string) => Promise<void> | void
   resolveContextPaths: (requestId: string, uriList: string) => Promise<void> | void
   pickContextPaths: (requestId: string) => Promise<void> | void
+  /** Serve a tool row's untruncated output. Must always reply — see the message doc. */
+  requestToolOutput: (requestId: string, entryId: string) => Promise<void> | void
   /** Apply a model-chooser choice. `value` null resets to the default. */
   modelChooserChoice: (
     target: 'subagent' | 'webfetch',
@@ -197,6 +203,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'newSession':
         void this.handlers.newSession()
         return
+      case 'switchSession':
+        void this.handlers.switchSession(message.key)
+        return
+      case 'closeSession':
+        void this.handlers.closeSession(message.key)
+        return
       case 'permissionResponse':
         void this.handlers.permissionResponse(message.requestId, message.decision)
         return
@@ -284,6 +296,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'pickContextPaths':
         void this.handlers.pickContextPaths(message.requestId)
+        return
+      case 'requestToolOutput':
+        void this.handlers.requestToolOutput(message.requestId, message.entryId)
         return
       case 'modelChooserChoice':
         void this.handlers.modelChooserChoice(

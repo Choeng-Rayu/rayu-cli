@@ -337,7 +337,28 @@ export type HostToWebviewMessage =
    * ended, or it was answered. NOT a denial: see permissionRouter.ts.
    */
   | { type: 'dismissPermissionRequest'; requestId: string }
-  /** A non-fatal problem worth showing in the transcript rather than a toast. */
+  /**
+   * A problem that has NO position in the visible transcript.
+   *
+   * ── ORDINARY ERRORS DO NOT COME THIS WAY ───────────────────────────────────────
+   *
+   * A failure inside a conversation is recorded by the host as a `notice` TRANSCRIPT
+   * ENTRY, so it renders inline where it happened. Errors used to travel only through
+   * this message, which the webview accumulated in a separate list rendered after every
+   * block — so a failure during turn 2 appeared below turn 9, detached from the request
+   * that caused it.
+   *
+   * What remains here is the residue that genuinely has nowhere else to go:
+   *
+   *   1. A BACKGROUND conversation failed. The entry is in that session's transcript,
+   *      which the user is not looking at. See `SessionCallbacks.onError`.
+   *   2. A PANEL-LEVEL failure with no session behind it — a drop the platform would
+   *      not resolve, a switch to a conversation that has since closed, an image
+   *      attachment refused while attached to a CLI session.
+   *
+   * Both are alerts about something outside the conversation on screen, which is why
+   * rendering them outside it is correct rather than a compromise.
+   */
   | { type: 'showError'; message: string }
   /** Available slash commands. */
   | { type: 'setCommands'; commands: SlashCommandView[] }
@@ -368,6 +389,14 @@ export type HostToWebviewMessage =
   | { type: 'insertPrompt'; text: string }
   /** Previous sessions for project history, with load state. */
   | { type: 'setSessions'; list: SessionListView }
+  /**
+   * The conversations the panel currently holds open, and which one is on screen.
+   *
+   * Pushed on every change rather than fetched, because the interesting part is the RUNNING
+   * flag: a background session finishing its turn has to update the list the user is looking
+   * at, and there is nothing to poll for.
+   */
+  | { type: 'setLiveSessions'; sessions: LiveSessionView[]; activeKey: string }
   /**
    * Live progress for the turn in flight.
    *
@@ -404,8 +433,27 @@ export type HostToWebviewMessage =
   | { type: 'setModelChooser'; chooser: ModelChooserView | null }
   /** Replace the task center from the execution owner's authoritative snapshot. */
   | { type: 'replaceTaskState'; tasks: BackgroundTaskView[]; supported: boolean; message?: string }
+  /**
+   * Live output for a tool that is still running.
+   *
+   * A thin message rather than a whole re-emitted entry: nothing else about the row has
+   * changed, and a full `addMessage` per second per running tool is the cost this avoids.
+   *
+   * `text` REPLACES the row's body — it is a cumulative snapshot, not a chunk. See
+   * `handleToolOutput` on the host and `SDKToolOutputMessageSchema` on the wire.
+   */
+  | { type: 'appendToolOutput'; id: EntryId; text: string }
   /** Insert or update one task without rebuilding the task center. */
   | { type: 'upsertTaskState'; task: BackgroundTaskView }
+  /**
+   * The untruncated output for one tool row, answering `requestToolOutput`.
+   *
+   * `text` is null when the host no longer holds it: retention is capped, so a very old
+   * result may have been evicted. That is a real answer and the UI reports it — leaving
+   * the request unanswered would be indistinguishable from a hung host, which is the same
+   * reason `contextPathsResolved` is always sent.
+   */
+  | { type: 'toolOutputResolved'; requestId: string; text: string | null }
 
 /** An approval the user must grant or refuse before a tool runs. */
 export interface PermissionRequestView {
@@ -604,12 +652,31 @@ export type WebviewToHostMessage =
   | { type: 'getMcpStatus' }
   /** List previous sessions for the workspace. */
   | { type: 'listSessions' }
-  /** Resume a previous session by id. */
+  /** Resume a previous session by id. Spawns an engine child with `--resume`. */
   | { type: 'resumeSession'; id: string }
+  /**
+   * Bring an already-open session to the front.
+   *
+   * Distinct from `resumeSession`: nothing is spawned, nothing is torn down, and a turn that
+   * is mid-flight in the target keeps running. Keyed by the panel's own session key because a
+   * live session may not have learned its engine id yet.
+   */
+  | { type: 'switchSession'; key: string }
+  /** Close an open session and stop its engine. */
+  | { type: 'closeSession'; key: string }
   /** Stop a running task through the process that owns its execution. */
   | { type: 'stopTask'; sourceSessionId: string; taskId: string }
   /** Send a follow-up to an agent/teammate when that task advertises the capability. */
   | { type: 'sendTaskMessage'; sourceSessionId: string; taskId: string; text: string }
+  /**
+   * Ask for a tool row's untruncated output.
+   *
+   * Correlated by `requestId` for the same reason `resolveContextPaths` is: two rows can
+   * be expanded at once and the answer is asynchronous. The host replies to EVERY request,
+   * with null when it no longer holds the text, so the promise on the other side always
+   * settles.
+   */
+  | { type: 'requestToolOutput'; requestId: string; entryId: EntryId }
 
 export type BackgroundTaskStatus =
   | 'pending'
@@ -683,6 +750,64 @@ export interface TaskDetailPage {
   hasMore: boolean
 }
 
+/**
+ * A tool's typed result, for the tools that have a dedicated renderer.
+ *
+ * ── HOW TO ADD A TOOL ──────────────────────────────────────────────────────────
+ *
+ * 1. Add a variant here with a new `kind`.
+ * 2. Add a Zod schema and a projection in `host/panel/formatActivityForVSCode.ts`. The
+ *    typed output is ALREADY on the wire as `tool_use_result` on the settled `user`
+ *    message — no engine change is needed for any tool that populates it.
+ * 3. Add one `case` to the switch in `ToolActionEntry`.
+ *
+ * Nothing else. Malformed or absent payloads already fall through to the generic
+ * `<pre>`, so a partially-added tool degrades rather than breaks.
+ *
+ * ── WHY MOST TOOLS ARE STILL ON `<pre>` ────────────────────────────────────────
+ *
+ * A DECISION, not an omission. Edits were done first because they are what the agent
+ * spends most of its time doing and the hardest thing to read as raw text; search was
+ * added second to prove the mechanism generalises past one shape. The rest — `Read`,
+ * `Bash`, `Agent`, `LSP`, `MCP`, `ImageGen`, `ReadMcpResource`, `ListMcpResources`,
+ * `RemoteTrigger`, `Config`, `Brief`, the plan-mode and worktree tools, and
+ * `AskUserQuestion`/`TodoWrite` which already have their own cards — each have a
+ * `renderToolResultMessage` in `src/tools/<Name>/UI.tsx` worth mirroring, and are left
+ * for a later pass rather than done badly in bulk.
+ *
+ * NotebookEdit is a special case: its output carries no `structuredPatch`, so there is
+ * nothing to build a diff from. It needs its own variant, not the `edit` one.
+ */
+export type ToolResultView =
+  /**
+   * A file edit or write, as a diff.
+   *
+   * Covers `Edit` and `Write`, which both produce a `structuredPatch` over the same
+   * `filePath`. A `Write` that created the file reports `isCreated`, and its diff is
+   * naturally all additions.
+   */
+  | {
+      kind: 'edit'
+      /** Workspace-relative where the engine reported one; used for highlighting too. */
+      filePath: string
+      hunks: DiffHunkView[]
+      isCreated: boolean
+      /** True when the host dropped hunks to stay within its cap. */
+      truncated?: boolean
+    }
+  /**
+   * A file-name search — `Grep` in `files_with_matches` mode, or `Glob`.
+   *
+   * Paths only. Content matches are a different shape and would need their own variant
+   * rather than being flattened into this one.
+   */
+  | {
+      kind: 'search'
+      filenames: string[]
+      /** Total found, which may exceed `filenames.length` when the host capped it. */
+      totalCount: number
+    }
+
 /** A settled transcript entry. Mirrors the host formatter's block kinds. */
 export type TranscriptEntry =
   | { id: EntryId; kind: 'prompt'; text: string }
@@ -700,6 +825,69 @@ export type TranscriptEntry =
       status: 'running' | 'done' | 'error'
       /** Result text, once it arrives. */
       output: string | null
+      /**
+       * How many characters of output the host withheld, or absent when none.
+       *
+       * Drives the "Show N more characters" action. The full text stays host-side and is
+       * fetched on request — see `requestToolOutput` — so a large result costs a message
+       * only when someone chooses to read it, rather than being pushed into a transcript
+       * that lives for the whole session.
+       */
+      outputTruncatedChars?: number
+      /**
+       * The tool's TYPED result, for tools whose output deserves more than a `<pre>`.
+       *
+       * ── A DISCRIMINATED UNION, NOT `unknown` ───────────────────────────────────
+       *
+       * Each variant is a shape the renderer knows how to draw. Typing it means adding a
+       * tool's rendering is a compile error until the renderer handles it, rather than a
+       * payload that silently arrives and is ignored.
+       *
+       * ── ALWAYS OPTIONAL; `output` IS ALWAYS THE FALLBACK ───────────────────────
+       *
+       * Absent for most tools, and absent even for a supported tool when the payload did
+       * not validate or the engine did not send one — a SUBAGENT's tool results carry no
+       * typed output unless `preserveToolUseResults` is set. The generic `output` text is
+       * never removed, so a missing sidecar degrades to exactly the previous rendering
+       * instead of an empty row.
+       *
+       * See `webview/components/DiffView.tsx` for the renderer and the note at the bottom
+       * of this file for how to add the remaining tools.
+       */
+      toolResult?: ToolResultView
+      /**
+       * Epoch ms the call was recorded, so the UI can show how long it has been running.
+       *
+       * ── THE HOST SENDS THE INSTANT; THE WEBVIEW COUNTS ─────────────────────────
+       *
+       * The same division of labour as `TurnProgressView.startTimestamp`, for the same
+       * reason: pushing an updated elapsed value would be one message per second per
+       * running tool, for a number the webview can derive, and it would restart the count
+       * every time VS Code re-created the webview. A panel opened mid-tool resumes the
+       * real count because the instant travelled, not the duration.
+       *
+       * The engine's `tool_progress` frame also carries `elapsed_time_seconds`, and it is
+       * deliberately NOT used for the display — it arrives at the engine's cadence, not
+       * once a second, so a pill driven by it would advance in jumps. That frame is a
+       * liveness signal; this field is the clock.
+       *
+       * Optional because a transcript restored from a session file has no recorded start
+       * instant. Restored calls are settled anyway, so nothing counts.
+       */
+      startedAt?: number
+      /**
+       * The subagent this call belongs to, when it did not come from the main thread.
+       *
+       * Derived host-side from the message's `parent_tool_use_id`: the value is the label
+       * of the `Task` call that spawned the subagent, so a row can say WHOSE work it is.
+       * Absent for main-thread calls, which are the majority — an "agent: main" badge on
+       * every row would be noise.
+       *
+       * Load-bearing for grouping as well as for the badge: without it a subagent's reads
+       * merge into the main thread's reads and the count silently describes two different
+       * actors as one.
+       */
+      agent?: string
       /** AskUserQuestion data, retained for its compact transcript result. */
       questions?: NonNullable<PermissionRequestView['questionInteraction']>['questions']
       questionAnswers?: Record<string, string>
@@ -707,6 +895,90 @@ export type TranscriptEntry =
       todos?: TodoItemView[]
     }
   | { id: EntryId; kind: 'notice'; text: string; severity: 'info' | 'error' }
+  /**
+   * The point in the conversation where a turn ended.
+   *
+   * ── A POSITIONAL MARKER, NOT A COPY OF THE COMPLETION ──────────────────────────
+   *
+   * Carries only `turnId`. The facts — outcome, duration, usage — live in
+   * `WebviewState.turnCompletions`, keyed by the same id, and the renderer looks them
+   * up. Embedding them here instead would put the same completion in two places and
+   * let a restored session disagree with itself about how long a turn took.
+   *
+   * ── WHY A TRANSCRIPT ENTRY AND NOT A SINGLE TRAILING LINE ──────────────────────
+   *
+   * `turnCompletions` has always been keyed per turn, but the panel rendered exactly
+   * one completion line — for the turn in `turnProgress` — so scrolling back showed
+   * nothing for any earlier turn. The keyed store was already right; what was missing
+   * was somewhere in the transcript to anchor each line to. This is that anchor.
+   *
+   * ── RESTORED SESSIONS CARRY NO MARKERS, BECAUSE THE DATA IS NOT ON DISK ────────
+   *
+   * Only turns observed LIVE get one. Stored session files (`~/.rayu/projects/<dir>/
+   * <id>.jsonl`) record `user` and `assistant` messages and nothing else — they contain
+   * no `result` records at all, which was verified against every session file present.
+   * `duration_ms` and the authoritative usage exist only on the live `result` frame, so a
+   * resumed conversation has no completion to show for its earlier turns.
+   *
+   * Emitting markers on restore anyway would render an invisible entry at best, and
+   * tempt a future change into fabricating `✓ Completed in 0s` for every historical
+   * turn. Persisting turn results would be an engine-side change to what the session
+   * file contains; until then, absent is the honest state. `TurnEndEntry` renders
+   * nothing without a completion for the same reason.
+   */
+  | { id: EntryId; kind: 'turn_end'; turnId: string }
+  /**
+   * One hook execution, from start to outcome.
+   *
+   * ── WHY HOOKS ARE IN THE TRANSCRIPT AT ALL ─────────────────────────────────────
+   *
+   * The engine has always emitted `hook_started` / `hook_progress` / `hook_response`;
+   * nothing consumed them, so a hook that rewrote a file, blocked a tool, or failed
+   * outright was completely invisible in the panel. A user whose `PreToolUse` hook
+   * rejected an edit saw the edit not happen and had no way to learn why.
+   *
+   * ── MORE THAN THE TUI SHOWS, DELIBERATELY ──────────────────────────────────────
+   *
+   * `HookProgressMessage` in the CLI renders one dim line — "Running PostToolUse hooks…"
+   * — and routes completion detail through async attachments. That is a terminal
+   * space budget, not a decision to withhold the output: the frames carry `stdout`,
+   * `stderr` and `exit_code`, and an editor panel is somewhere a developer expects to
+   * READ a failing hook's stderr rather than go hunting for it. So the summary line
+   * matches the CLI and the detail is available behind it.
+   *
+   * ── ONE ENTRY PER `hookId`, REPLACED IN PLACE ──────────────────────────────────
+   *
+   * Progress frames repeat for the lifetime of the hook. Appending them would produce a
+   * row per second per hook. The host keys on `hookId` and updates.
+   *
+   * ── `stdout` AND `stderr` ARE CUMULATIVE SNAPSHOTS, NOT DELTAS ─────────────────
+   *
+   * `startHookProgressInterval` re-reads the hook's whole accumulated output each tick
+   * and emits it when it differs from what it last sent. So each frame carries the FULL
+   * output so far and the host must REPLACE these fields. Appending would repeat
+   * everything already shown on every tick, growing quadratically.
+   */
+  | {
+      id: EntryId
+      kind: 'hook'
+      /** The engine's own hook id. Correlates every frame for this execution. */
+      hookId: string
+      /** The configured hook's name, as the engine reports it. */
+      name: string
+      /** The lifecycle event that triggered it, e.g. `PreToolUse`. */
+      event: string
+      /**
+       * `cancelled` is kept distinct from `error`: a hook the engine stopped did not
+       * fail, and reporting it as a failure would send the user looking for a bug.
+       */
+      status: 'running' | 'done' | 'error' | 'cancelled'
+      /** Present once the hook exited. Absent while running. */
+      exitCode?: number
+      /** Full accumulated stdout, bounded. Replaced per frame — see above. */
+      stdout: string
+      /** Full accumulated stderr, bounded. Replaced per frame — see above. */
+      stderr: string
+    }
   /**
    * The engine's OWN post-turn summary.
    *
@@ -729,10 +1001,14 @@ export type TranscriptEntry =
       isNoteworthy: boolean
     }
   /**
-   * The Copilot-Edits working set: files this turn changed, pending review.
+   * The Copilot-Edits working set: every file still recorded as changed, pending review.
    *
    * Its own entry kind rather than a notice, because it is interactive and it is the
    * one transcript element the user acts on after a turn finishes.
+   *
+   * RE-ANCHORED under each response rather than left where it first appeared — see
+   * `flushPendingReview`. The card the user sees is always the last thing in the finished
+   * turn, and `ReviewFileView.changedThisTurn` says which of its files that turn produced.
    */
   | {
       id: EntryId
@@ -742,6 +1018,24 @@ export type TranscriptEntry =
       totalRemovals: number
       files: ReviewFileView[]
     }
+
+/**
+ * One hunk of a unified diff, as the engine recorded it.
+ *
+ * Mirrors the `diff` package's `StructuredPatchHunk`, which is what
+ * `FileChangeReviewFileSchema.hunks` carries — restated here rather than imported so
+ * `shared/` stays dependency-free for the browser bundle.
+ *
+ * `lines` are prefixed in the usual way: a leading space for context, `+` for an
+ * addition, `-` for a removal, `\` for the no-newline marker.
+ */
+export interface DiffHunkView {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  lines: string[]
+}
 
 /** One changed file in the review card. */
 export interface ReviewFileView {
@@ -768,6 +1062,47 @@ export interface ReviewFileView {
    * UI unable to say anything precise about what it is acting on.
    */
   changeIds: string[]
+  /**
+   * The recorded diff, bounded, for the in-panel diff view.
+   *
+   * ── THIS REVERSES AN EARLIER DECISION, DELIBERATELY ────────────────────────────
+   *
+   * `handleReview` used to keep hunks host-side, on the stated grounds that "the editor
+   * draws the diff, so shipping hunks to the browser would be a large postMessage for data
+   * it never renders". The size concern was correct and is why this is capped; the premise
+   * no longer is. Requiring a diff editor to read a two-line change is the single biggest
+   * gap against the terminal, where the diff is simply THERE the moment the edit lands.
+   *
+   * Bounded by `MAX_REVIEW_HUNKS` and `MAX_REVIEW_HUNK_LINES` host-side. `truncated` says
+   * so, because a diff silently missing its tail is worse than one that admits it. The
+   * "Open diff" action remains for the complete, authoritative view.
+   *
+   * `fileContent` is still NOT sent: it is the whole file, it is unbounded, and the diff
+   * does not need it.
+   */
+  hunks?: DiffHunkView[]
+  /** True when hunks were dropped by either cap. The card says so and offers the editor. */
+  hunksTruncated?: boolean
+  /**
+   * Whether this file was changed by the response the card is anchored under.
+   *
+   * ── WHY A CUMULATIVE CARD NEEDS THIS ───────────────────────────────────────────
+   *
+   * `file_change_review` is a snapshot of EVERYTHING still recorded, not of the turn that
+   * produced it, so by turn five the card lists all twenty files touched since the session
+   * began. Anchoring that card under each response — which is what makes it a per-response
+   * summary — would otherwise say the same thing every time and tell the user nothing about
+   * what just happened.
+   *
+   * The set cannot simply be narrowed to this turn instead: `Keep all` and `Undo all` act on
+   * what the card displays, and hiding an unresolved file from an earlier turn would leave it
+   * with no way to be resolved from the transcript.
+   *
+   * Computed host-side by comparing change ids against the set known before the turn started,
+   * so it stays stable while the user keeps and undoes individual files afterwards. Absent on
+   * entries from a host that predates it, which reads as "unknown" and simply renders nothing.
+   */
+  changedThisTurn?: boolean
 }
 
 /** The active model, for the composer toolbar. */
@@ -897,6 +1232,10 @@ export interface WebviewState {
   ideContext: IdeContextView | null
   /** Previous sessions, with load state. */
   sessions: SessionListView
+  /** Conversations the panel is holding open, including the one on screen. */
+  liveSessions?: LiveSessionView[]
+  /** Which live session is on screen. */
+  activeSessionKey?: string
   /** Host-owned task state survives webview collapse and recreation. */
   backgroundTasks?: BackgroundTaskView[]
   /** False when an attached older CLI does not expose task inspection. */
@@ -927,6 +1266,38 @@ export interface McpServerView {
   name: string
   status: 'connected' | 'connecting' | 'disconnected' | 'disabled'
   error?: string
+}
+
+/**
+ * A conversation the panel is holding OPEN, with its own engine child.
+ *
+ * ── WHY LIVE SESSIONS ARE A SEPARATE LIST FROM HISTORY ─────────────────────────
+ *
+ * `SessionSummaryView` describes a session file on disk, keyed by the engine's UUID and
+ * ordered by mtime. A live session may not have an engine id yet — the child reports it on its
+ * first frame — and its interesting facts are ones no file has: whether a turn is running,
+ * whether it is blocked on an approval, and which model it is pinned to. Folding the two
+ * together would mean either inventing an id for a session that has none, or losing the
+ * running state, and it would put "the thing you were just doing" in a bucket labelled by
+ * modification date.
+ *
+ * Switching to one of these ACTIVATES it — the engine is already there, the turn is still
+ * running — where switching to a history row RESUMES it, which spawns a child. The two are
+ * different operations with different costs, and the UI has to be able to say which is which.
+ */
+export interface LiveSessionView {
+  /** The panel's own key. Stable for the life of the session, unlike the engine's id. */
+  key: string
+  /** Derived from the first prompt, or a placeholder for a session with no prompt yet. */
+  label: string
+  /** True while this session's engine is mid-turn — including while the panel shows another. */
+  running: boolean
+  /** Approvals this session is blocked on. Nonzero means it cannot advance unattended. */
+  pendingApprovals: number
+  /** The model this session is pinned to, which is NOT necessarily the global selection. */
+  model: string | null
+  /** Epoch ms of the last transcript change, for ordering. */
+  updatedAt: number
 }
 
 /** Stored session metadata for the history palette. */

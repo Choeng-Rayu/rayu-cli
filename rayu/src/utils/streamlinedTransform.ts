@@ -178,6 +178,7 @@ export function createStreamlinedTransformer(): (
       case 'user':
       case 'stream_event':
       case 'tool_progress':
+      case 'tool_output':
       case 'auth_status':
       case 'rate_limit_event':
       case 'control_response':

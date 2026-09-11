@@ -108,6 +108,16 @@ export function SearchIcon({ size = 13, className, title }: IconProps): JSX.Elem
   )
 }
 
+/** A stacked-lines mark. Used for "show detail" and for the background-work list. */
+export function ListIcon({ size = 13, className, title }: IconProps): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" width={size} height={size} fill="currentColor" className={className} role="presentation">
+      {title ? <title>{title}</title> : null}
+      <path d="M2 3.75A.75.75 0 0 1 2.75 3h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75zm0 4A.75.75 0 0 1 2.75 7h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 7.75zm.75 3.25a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5h-6.5z" />
+    </svg>
+  )
+}
+
 export function CopyIcon({ size = 13, className, title }: IconProps): JSX.Element {
   return (
     <svg viewBox="0 0 16 16" width={size} height={size} fill="currentColor" className={className} role="presentation">
