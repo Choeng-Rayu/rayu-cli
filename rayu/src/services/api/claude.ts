@@ -236,7 +236,9 @@ import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
 import {
   RAYU_INTENDED_MODEL_HEADER,
   RAYU_LOGICAL_REQUEST_ID_HEADER,
+  RAYU_CLIENT_HEADER,
   RAYU_QUERY_SOURCE_HEADER,
+  resolveRayuClientProduct,
 } from './rayuHosted/gatewayHeaders.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
@@ -1854,6 +1856,7 @@ async function* queryModel(
         // the actual wire request; these are the caller's intent for the gateway
         // fidelity check + attribution. All X-Rayu-* are stripped upstream.
         const rayuMetaHeaders: Record<string, string> = {
+          [RAYU_CLIENT_HEADER]: resolveRayuClientProduct(),
           [RAYU_LOGICAL_REQUEST_ID_HEADER]: logicalRequestId,
         }
         {

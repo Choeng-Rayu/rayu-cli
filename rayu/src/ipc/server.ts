@@ -7,6 +7,7 @@
  */
 
 import { createServer, type Server, type Socket } from 'net'
+import { randomUUID } from 'crypto'
 import { chmodSync, unlinkSync } from 'fs'
 import { connect as netConnect } from 'net'
 import { logForDebugging } from '../utils/debug.js'
@@ -22,7 +23,8 @@ export interface IpcServerOptions {
   /** Shared secret every frame must carry. */
   token: string
   onRequest?: RequestHandler
-  onNotify?: NotifyHandler
+  onNotify?: (type: string, payload: unknown, peerId: string) => void
+  onDisconnect?: (peerId: string) => void
   /** Address override. Defaults to this process's pid-derived address. */
   address?: string
 }
@@ -71,12 +73,16 @@ export async function startIpcServer(
   const connections = new Set<IpcConnection>()
 
   const server: Server = createServer((socket: Socket) => {
+    const peerId = randomUUID()
     const connection = new IpcConnection({
       socket,
       token: options.token,
       ...(options.onRequest ? { onRequest: options.onRequest } : {}),
-      ...(options.onNotify ? { onNotify: options.onNotify } : {}),
-      onClose: () => connections.delete(connection),
+      onNotify: (type, payload) => options.onNotify?.(type, payload, peerId),
+      onClose: () => {
+        connections.delete(connection)
+        options.onDisconnect?.(peerId)
+      },
       onReject: reason =>
         logForDebugging(`[ipc] rejected frame from peer: ${reason}`),
     })

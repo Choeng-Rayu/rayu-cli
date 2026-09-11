@@ -23,6 +23,21 @@ export const RAYU_RESOLVED_MODEL_HEADER = 'x-rayu-resolved-model'
 export const RAYU_CANONICAL_MODEL_HEADER = 'x-rayu-canonical-model'
 /** Logical origin of the request (repl_main_thread, agent:*, compact, …). */
 export const RAYU_QUERY_SOURCE_HEADER = 'x-rayu-query-source'
+/** Official Rayu product surface; authentication is derived by the gateway. */
+export const RAYU_CLIENT_HEADER = 'x-rayu-client'
+
+export type RayuClientProduct = 'cli' | 'rayucode'
+
+/**
+ * The shared engine defaults to the terminal product. The VS Code host sets the
+ * explicit Rayucode value on its child process, so auth mode and product remain
+ * independent even though both products execute the same engine bundle.
+ */
+export function resolveRayuClientProduct(
+  declared: string | undefined = process.env.RAYU_CLIENT_PRODUCT,
+): RayuClientProduct {
+  return declared === 'rayucode' ? 'rayucode' : 'cli'
+}
 
 /**
  * Extract the model id from a Bedrock invoke URL. The AnthropicBedrock SDK
@@ -76,11 +91,14 @@ export function buildModelMetadataHeaders(params: {
   intended?: string | null
   logicalRequestId?: string | null
   querySource?: string | null
+  clientProduct?: RayuClientProduct
 }): Record<string, string> {
   const resolved = resolvedModelFromRequest(params.upstreamUrl, params.body)
   const canonical = resolved ? safeCanonical(resolved) : ''
   const intended = (params.intended || canonical || resolved || '').trim()
   const out: Record<string, string> = {
+    [RAYU_CLIENT_HEADER]:
+      params.clientProduct ?? resolveRayuClientProduct(),
     [RAYU_REQUEST_ID_HEADER]: params.requestId,
     [RAYU_LOGICAL_REQUEST_ID_HEADER]:
       (params.logicalRequestId || params.requestId).trim(),

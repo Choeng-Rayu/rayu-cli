@@ -58,7 +58,10 @@ import {
   type RequiresActionDetails,
   type SessionExternalMetadata,
 } from 'src/utils/sessionState.js'
-import { createPendingFileChangeReviewSystemMessage } from 'src/utils/pendingFileChanges.js'
+import {
+  createFileChangeReviewSystemMessage,
+  createPendingFileChangeReviewSystemMessage,
+} from 'src/utils/pendingFileChanges.js'
 import { externalMetadataToAppState } from 'src/state/onChangeAppState.js'
 import { getInMemoryErrors, logError, logMCPDebug } from 'src/utils/log.js'
 import {
@@ -274,6 +277,7 @@ import {
   resolveAppliedEffort,
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
+import { resolveInferenceSettings } from 'src/utils/model/inferenceSettings.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
@@ -945,6 +949,16 @@ export async function runHeadless(
           message.subtype === 'post_turn_summary')
       ) &&
       message.type !== 'stream_event' &&
+      // Progress, not conversation. `lastMessage` becomes the final `--print` payload, so
+      // a frame that merely reports a running command's output so far must never land
+      // there — it can arrive while a tool is still flushing and would otherwise replace
+      // the result as the session's answer.
+      //
+      // (`tool_progress` is missing from this list for the same reason it is invisible in
+      // practice: it is gated to remote/container sessions. Left alone here rather than
+      // fixed blind, since changing it would alter remote behaviour that cannot be
+      // exercised from this surface.)
+      message.type !== 'tool_output' &&
       message.type !== 'keep_alive' &&
       message.type !== 'streamlined_text' &&
       message.type !== 'streamlined_tool_use_summary' &&
@@ -1060,9 +1074,43 @@ function runHeadlessStreaming(
   let inputClosed = false
   let shutdownPromptInjected = false
   let heldBackResult: StdoutMessage | null = null
+  /** Whether this stream has told clients that a pending review exists. */
+  let fileChangeReviewVisible = false
   let abortController: AbortController | undefined
   // Same queue sendRequest() enqueues to — one FIFO for everything.
   const output = structuredIO.outbound
+
+  /**
+   * Emit the complete pending-review snapshot, including the transition to empty.
+   *
+   * `createPendingFileChangeReviewSystemMessage()` correctly returns null when no
+   * changes remain. A stateful stream still has to publish that final empty snapshot,
+   * otherwise editor clients retain the last non-empty card forever after Keep all or
+   * Undo all. Avoid sending empty review events in sessions that never had a review.
+   */
+  const enqueueFileChangeReviewSnapshot = (): void => {
+    const reviewMessage = createPendingFileChangeReviewSystemMessage(
+      getAppState().pendingFileChanges,
+    )
+    if (reviewMessage) {
+      fileChangeReviewVisible = true
+      output.enqueue(reviewMessage as any)
+      return
+    }
+    if (!fileChangeReviewVisible) return
+
+    fileChangeReviewVisible = false
+    output.enqueue(
+      createFileChangeReviewSystemMessage({
+        changeIds: [],
+        totalFiles: 0,
+        totalAdditions: 0,
+        totalRemovals: 0,
+        files: [],
+        createdAt: Date.now(),
+      }) as any,
+    )
+  }
 
   // Ctrl+C in -p mode: abort the in-flight query, then shut down gracefully.
   // gracefulShutdown persists session state and flushes analytics, with a
@@ -2298,12 +2346,7 @@ function runHeadlessStreaming(
                   heldBackResult = message
                 } else {
                   heldBackResult = null
-                  const reviewMessage = createPendingFileChangeReviewSystemMessage(
-                    currentState.pendingFileChanges,
-                  )
-                  if (reviewMessage) {
-                    output.enqueue(reviewMessage)
-                  }
+                  enqueueFileChangeReviewSnapshot()
                   output.enqueue(message)
                 }
               } else {
@@ -2478,12 +2521,7 @@ function runHeadlessStreaming(
       } while (waitingForAgents)
 
       if (heldBackResult) {
-        const reviewMessage = createPendingFileChangeReviewSystemMessage(
-          getAppState().pendingFileChanges,
-        )
-        if (reviewMessage) {
-          output.enqueue(reviewMessage)
-        }
+        enqueueFileChangeReviewSnapshot()
         output.enqueue(heldBackResult)
         heldBackResult = null
         if (suggestionState.pendingSuggestion) {
@@ -2999,6 +3037,8 @@ function runHeadlessStreaming(
           // notifySessionMetadataChanged that used to follow here is
           // now fired by onChangeAppState (with externalized mode name).
         } else if (message.request.subtype === 'set_model') {
+          const { invalidateRayuConfigCache } = await import('../utils/rayuConfig.js')
+          invalidateRayuConfigCache()
           const requestedModel = message.request.model ?? 'default'
           const model =
             requestedModel === 'default'
@@ -3009,7 +3049,15 @@ function runHeadlessStreaming(
           notifySessionMetadataChanged({ model })
           injectModelSwitchBreadcrumbs(requestedModel, model)
 
-          sendControlResponseSuccess(message)
+          const currentAppState = getAppState()
+          sendControlResponseSuccess(message, {
+            applied: { model },
+            inference: resolveInferenceSettings(
+              model,
+              currentAppState.effortValue,
+              options.thinkingConfig,
+            ),
+          })
         } else if (message.request.subtype === 'set_max_thinking_tokens') {
           if (message.request.max_thinking_tokens === null) {
             options.thinkingConfig = undefined
@@ -3684,6 +3732,18 @@ function runHeadlessStreaming(
           }
 
           sendControlResponseSuccess(message)
+        } else if ((message.request as any).subtype === 'set_effort') {
+          // The TUI and headless editor invoke the same action. In particular Auto
+          // must clear runtime state as well as the persisted key.
+          const { executeEffort } = await import('../utils/effortCommand.js')
+          const result = executeEffort((message.request as any).effort ?? 'auto')
+          if (result.effortUpdate) {
+            const value = result.effortUpdate.value
+            setAppState(prev => ({ ...prev, effortValue: value }))
+            sendControlResponseSuccess(message, { message: result.message })
+          } else {
+            sendControlResponseError(message, result.message)
+          }
         } else if (message.request.subtype === 'get_settings') {
           const currentAppState = getAppState()
           const model = getMainLoopModel()
@@ -3699,6 +3759,7 @@ function runHeadlessStreaming(
               // Numeric effort (ant-only) → null; SDK schema is string-level only.
               effort: typeof effort === 'string' ? effort : null,
             },
+            inference: resolveInferenceSettings(model, currentAppState.effortValue, options.thinkingConfig),
           })
         } else if (message.request.subtype === 'stop_task') {
           const { task_id: taskId } = message.request

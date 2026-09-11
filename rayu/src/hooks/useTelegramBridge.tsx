@@ -1,3 +1,4 @@
+import { composeBridgePermissionCallbacks } from '../bridge/composeBridgePermissionCallbacks.js'
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import React from 'react'
 import {
@@ -208,16 +209,14 @@ export function useTelegramBridge(
   )
 
   useEffect(() => {
-    // Never override this session's OWN bridge callbacks: if it holds the lock
-    // it can talk to Telegram directly, which is strictly better than a hop.
-    if (bridgeActive) return
-    setAppState(prev => ({
-      ...prev,
-      telegramPermissionCallbacks: remoteCallbacks,
-    }))
+    const callbacks = composeBridgePermissionCallbacks(
+      bridgeActive ? handleRef.current?.permissionCallbacks : undefined,
+      remoteCallbacks,
+    )
+    setAppState(prev => ({ ...prev, telegramPermissionCallbacks: callbacks }))
     return () => {
       setAppState(prev =>
-        prev.telegramPermissionCallbacks === remoteCallbacks
+        prev.telegramPermissionCallbacks === callbacks
           ? { ...prev, telegramPermissionCallbacks: undefined }
           : prev,
       )
@@ -256,7 +255,7 @@ export function useTelegramBridge(
     lastSentIndexRef.current = messages.length
     if (fresh.length === 0) return
     if (handle && !handle.isNoOp) handle.pushActivity(fresh)
-    else if (remote) remoteActivity(fresh)
+    if (remote) remoteActivity(fresh)
   }, [messages])
 
   /**
@@ -274,27 +273,19 @@ export function useTelegramBridge(
         const delta = after.slice(accumulatedRef.current.length)
         accumulatedRef.current = after
         const handle = handleRef.current
-        if (handle) {
-          if (!inTurnRef.current) {
-            inTurnRef.current = true
-            handle.startTurn()
-          }
-          handle.onTextDelta(delta)
-        } else if (isRemotelyAttached()) {
-          // No local bridge — forward to the leader, which owns the mirror and
-          // applies the same 800 ms edit throttle to remote and local turns.
-          if (!inTurnRef.current) {
-            inTurnRef.current = true
-            remoteStreamStart()
-          }
-          remoteStreamDelta(delta)
+        if (!inTurnRef.current) {
+          inTurnRef.current = true
+          handle?.startTurn()
+          if (isRemotelyAttached()) remoteStreamStart()
         }
+        handle?.onTextDelta(delta)
+        if (isRemotelyAttached()) remoteStreamDelta(delta)
       } else if (after === null) {
         accumulatedRef.current = ''
         if (inTurnRef.current) {
           inTurnRef.current = false
           if (handleRef.current) void handleRef.current.endTurn()
-          else if (isRemotelyAttached()) remoteStreamEnd()
+          if (isRemotelyAttached()) remoteStreamEnd()
         }
       }
       base(f)

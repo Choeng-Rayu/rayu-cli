@@ -5,7 +5,7 @@
 // never logged or echoed; callers reference providers by id, not by key value.
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir } from './envUtils.js'
+import { getRayuAuthConfigDir } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
@@ -129,6 +129,9 @@ export type RayuProvider = {
   contextWindow?: number
   /** Per-model context-window (tokens) overrides, keyed by model id. */
   modelContextWindows?: Record<string, number>
+  /** Per-model declarations from the provider catalogue. Absent means unknown. */
+  modelSupportsThinking?: Record<string, boolean>
+  modelSupportsTools?: Record<string, boolean>
   /**
    * Per-model DISPLAY NAME, keyed by model id. Populated for rayu-hosted from
    * /me/entitlements (the name the Rayu admin typed), so the picker can show
@@ -138,6 +141,12 @@ export type RayuProvider = {
    * from the map, and the picker then shows the id alone.
    */
   modelLabels?: Record<string, string>
+  /**
+   * Per-model customer-facing plain-text summaries, keyed by model id. Rayu
+   * catalogs populate this from the admin-managed description so the CLI and
+   * Rayucode can explain a model without exposing upstream routing details.
+   */
+  modelDescriptions?: Record<string, string>
   /** User-listed model ids selectable via /model (openai-compatible). */
   models?: string[]
   /** Models fetched live from {baseURL}/models, cached for the /model picker. */
@@ -247,7 +256,7 @@ export type RayuConfig = {
 const FILE_NAME = 'providers.json'
 
 function configPath(): string {
-  return join(getRayuConfigHomeDir(), FILE_NAME)
+  return join(getRayuAuthConfigDir(), FILE_NAME)
 }
 
 let cache: RayuConfig | null = null
@@ -315,7 +324,7 @@ export function loadRayuConfig(): RayuConfig {
 }
 
 export function saveRayuConfig(config: RayuConfig): void {
-  const dir = getRayuConfigHomeDir()
+  const dir = getRayuAuthConfigDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   // 0600: secrets must not be world/group readable.
   writeFileSync(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
@@ -715,12 +724,39 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
  * Priority: RAYU_CONTEXT_TOKENS env → per-model config override →
  * per-provider config default → known-model table → null (caller defaults).
  * Records a diagnostic when it falls back so unknown models surface for tuning.
+ *
+ * ── THE MODEL MAY CARRY A PROVIDER PREFIX, AND IT IS DECODED HERE ──────────────
+ *
+ * A model string can be the routed `providerId\0model` form produced by
+ * `encodeModelWithProvider`. Two callers rely on that: a subagent or swarm collaborator
+ * routed to a different provider than the active one, and the Rayucode extension, which
+ * always pins its session with the provider-qualified id.
+ *
+ * Without decoding, every lookup below was done with the ENCODED string — so
+ * `modelContextWindows['longcat-2.0']` was searched for as
+ * `modelContextWindows['rayu-hosted\0longcat-2.0']`, missed, and the caller fell back to
+ * the 200k default. A 1M model was reported as 200k, and `/context`, the autocompact
+ * threshold and the panel's gauge were all wrong together.
+ *
+ * The provider is resolved from the prefix rather than from `getActiveProvider()` for the
+ * same reason: a routed model's window belongs to ITS provider. This is the behaviour
+ * `getContextWindowForModel` already documents ("Per-MODEL, so a routed subagent gets ITS
+ * provider's window rather than the active provider's") — the decode is what makes the
+ * implementation match.
  */
 export function getRayuModelContextWindow(model: string): number | null {
   const envOverride = parseInt(process.env.RAYU_CONTEXT_TOKENS || '', 10)
   if (!isNaN(envOverride) && envOverride > 0) return envOverride
 
-  const p = getActiveProvider()
+  const decoded = decodeModelProvider(model)
+  // Bare model for every lookup: config keys, the known-model table and the Kiro catalog
+  // are all keyed by the model the provider actually serves.
+  model = decoded.model
+  const p = decoded.providerId
+    ? (loadRayuConfig().providers.find(
+        provider => provider.id === decoded.providerId,
+      ) ?? getActiveProvider())
+    : getActiveProvider()
   // Kiro: per-model context from the Kiro catalog (opus-4.7/4.8 are 1M; sonnet/
   // haiku base are 200k). Per-model config overrides still win.
   if (p?.kind === 'kiro') {
@@ -1398,8 +1434,8 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
 
 /**
  * Refresh the Rayu API-key provider's catalog from GET {gateway}/v1/models and
- * persist EVERYTHING the picker renders: ids, admin display names and admin
- * context windows.
+ * persist EVERYTHING the picker renders: ids, admin display names, customer
+ * descriptions, and admin context windows.
  *
  * Returns the model list plus whether anything actually MOVED, so a caller can
  * re-render only when it did. `changed` covers renames and window changes too,
@@ -1430,11 +1466,13 @@ export async function refreshRayuApiKeyCatalog(): Promise<{
     provider.models ?? [],
     provider.modelLabels,
     provider.modelContextWindows,
+    provider.modelDescriptions,
   )
   const after = catalogSignature(
     result.models,
     result.modelLabels,
     result.modelContextWindows,
+    result.modelDescriptions,
   )
   // Re-read inside the write so a concurrent save (e.g. the user switching model
   // in another pane) is not clobbered by a stale snapshot.
@@ -1444,6 +1482,7 @@ export async function refreshRayuApiKeyCatalog(): Promise<{
   cur.models = result.models
   cur.fetchedModels = result.models
   cur.modelLabels = result.modelLabels
+  cur.modelDescriptions = result.modelDescriptions
   cur.modelContextWindows = result.modelContextWindows
   // Keep the default/small model POINTING AT SOMETHING REAL, in both directions:
   //
@@ -1502,10 +1541,14 @@ export async function refreshAllProviderModels(): Promise<void> {
   if (dirty) saveRayuConfig(cfg)
 }
 
-/** Reset the in-memory cache (tests). */
-export function _resetRayuConfigCache(): void {
+/** Invalidate a process-local snapshot after another interface writes providers.json. */
+export function invalidateRayuConfigCache(): void {
   cache = null
+  clearContextPrepCache('rayu-config-reload')
 }
+
+/** Backwards-compatible test hook. */
+export const _resetRayuConfigCache = invalidateRayuConfigCache
 
 /** Separator encoding provider+model in a single picker value. */
 export const RAYU_MODEL_SEP = '\u0000'
@@ -1549,8 +1592,13 @@ export type RayuModelChoice = {
    * models are just ids, which is every BYO provider.
    */
   label?: string
+  /** Admin-configured customer-facing model summary, when one is published. */
+  description?: string
   /** Admin-configured context window in tokens, when known. */
   contextWindow?: number
+  supportsThinking?: boolean
+  supportsImage?: boolean
+  supportsTools?: boolean
 }
 
 /**
@@ -1594,12 +1642,17 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
       // Name + window are carried through when the provider knows them, so the
       // picker never has to look up a per-provider table of its own.
       const label = p.modelLabels?.[model]
+      const description = p.modelDescriptions?.[model]
       const contextWindow = p.modelContextWindows?.[model]
       out.push({
         value,
         providerId: p.id,
         model,
+        supportsThinking: p.modelSupportsThinking?.[model],
+        supportsImage: p.modelSupportsImage?.[model],
+        supportsTools: p.modelSupportsTools?.[model],
         ...(label ? { label } : {}),
+        ...(description ? { description } : {}),
         ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
       })
     }

@@ -48,6 +48,7 @@ import { endInteractionSpan } from '../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
 import { useTelegramBridge } from '../hooks/useTelegramBridge.js';
+import { useRayucodeTaskBridge } from '../hooks/useRayucodeTaskBridge.js';
 import { useWebBridge } from '../hooks/useWebBridge.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
@@ -3899,6 +3900,8 @@ export function REPL({
   } = useReplBridge(messages, setMessages, abortControllerRef, commands, mainLoopModel);
   sendBridgeResultRef.current = sendBridgeResult;
   const { wrapOnStreamingText } = useTelegramBridge(messages);
+  // Independent from Telegram: both interfaces may observe/control the same task owner.
+  useRayucodeTaskBridge();
   const { wrapOnStreamingText: wrapWebBridgeOnStreamingText } = useWebBridge(messages);
   /*
    * CHAINED, not chosen. Each wrapper keeps its own accumulator and forwards to the

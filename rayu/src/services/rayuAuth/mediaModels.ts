@@ -12,7 +12,7 @@
 // Caching mirrors the entitlements pattern in rayuEntitlements.ts, for the same
 // reason: the model PICKER renders synchronously, so the catalog has to be
 // readable without awaiting a network round-trip. It is held in memory, persisted
-// to ~/.rayu/rayu-media-models.json, and refreshed in the background with a
+// in the active authentication profile, and refreshed in the background with a
 // cooldown so a down gateway cannot cause a request storm.
 //
 // OFFLINE / DIRECT-KEY MODE: when USE_RAYU_OAUTH is off or the user is not signed
@@ -23,7 +23,7 @@
 // media generation runs against the user's own NVIDIA / fal / GCP credentials.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { logError } from '../../utils/log.js'
 import { fallbackMediaCatalog } from './mediaModelsFallback.js'
 import {
@@ -122,7 +122,7 @@ let fetching: Promise<MediaCatalog | null> | null = null
 let lastAttempt = 0
 
 function catalogPath(): string {
-  return join(getRayuConfigHomeDir(), FILE)
+  return join(getRayuAuthConfigDir(), FILE)
 }
 
 function currentUserId(): number | null {
@@ -158,7 +158,7 @@ function parseCatalogFile(raw: unknown): PersistedCatalog | null {
 
 function persist(catalog: PersistedCatalog | null): void {
   try {
-    const dir = getRayuConfigHomeDir()
+    const dir = getRayuAuthConfigDir()
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     const p = catalogPath()
     if (catalog) {

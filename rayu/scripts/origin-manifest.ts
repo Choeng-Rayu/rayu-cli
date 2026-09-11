@@ -45,6 +45,10 @@ const ORIGINAL_DIR_PREFIXES = [
   'commands/agent/',
   'tools/ExternalAgentTool/',
   'tasks/ExternalAgentTask/',
+  // The Rayucode VS Code extension: manifest, extension host, engine transport
+  // and the React webview UI. Entirely first-party — upstream has no editor
+  // client, and this consumes the shared engine rather than reimplementing it.
+  'vscode/',
 ]
 // First-party single-file markers (exact relative paths or basename patterns).
 const ORIGINAL_FILE_MARKERS = [

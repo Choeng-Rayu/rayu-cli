@@ -69,6 +69,10 @@ import {
   type ProcessUserInputContext,
   processUserInput,
 } from './utils/processUserInput/processUserInput.js'
+import {
+  getCurrentIdeSelection,
+  trackIdeSelection,
+} from './utils/ideSelectionTracker.js'
 import { fetchSystemPromptParts } from './utils/queryContext.js'
 import { setCwd } from './utils/Shell.js'
 import {
@@ -408,6 +412,15 @@ export class QueryEngine {
       }
     }
 
+    // The editor's current selection, when this session is attached to one.
+    //
+    // `trackIdeSelection` is called here rather than at session start because MCP clients
+    // connect asynchronously — the `ide` client may not exist yet on the first turn — and
+    // registering the handler is idempotent. This is what makes a selection in the editor
+    // reach a NON-INTERACTIVE turn: the interactive REPL gets the same value from
+    // `useIdeSelection`, and both feed the same `getSelectedLinesFromIDE` attachment.
+    trackIdeSelection(processUserInputContext.options?.mcpClients)
+
     const {
       messages: messagesFromUserInput,
       shouldQuery,
@@ -423,6 +436,7 @@ export class QueryEngine {
         messages: this.mutableMessages,
       },
       messages: this.mutableMessages,
+      ideSelection: getCurrentIdeSelection(),
       uuid: options?.uuid,
       isMeta: options?.isMeta,
       querySource: 'sdk',

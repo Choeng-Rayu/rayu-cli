@@ -1312,7 +1312,7 @@ function main(): void {
   const row = (label: string, s: ScopeCounts, pick: (c: ScopeCounts) => number) =>
     `  ${label.padEnd(46)}: ${String(pick(totals.src)).padStart(6)} ${String(pick(totals.nonSrc)).padStart(8)} ${String(pick(totals.all)).padStart(7)}`
 
-  console.log('Boundary analysis — rayu/src → @rayu-dev/rayu-core\n')
+  console.log('Boundary analysis — rayu/src → src/core\n')
   console.log(`  ${''.padEnd(46)}    src  non-src    all`)
   console.log(row('files (tsconfig include, .d.ts excluded)', totals.src, c => c.files))
   console.log(row("import 'react' (any)", totals.src, c => c.reactImporters))

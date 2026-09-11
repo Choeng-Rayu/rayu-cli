@@ -1,0 +1,27 @@
+{
+  "goal": "Remove the redundant Thinking toggle from the Rayucode VS Code extension webview and add live thinking/working status indicators (Thinking... / Thought for Ns / Working...) without rendering full thinking text. Thinking is always on; effort level controls intensity.",
+  "stack": "typescript, react, bun, browser-only webview bundle (target: browser). No Node/engine/CLI code.",
+  "flow": "Webview is a pure view rebuilt from host `init` snapshot. Reducer in src/vscode/webview/state/reducer.ts is the single source of truth. Engine already sends thinking deltas (appendPartial kind:'thinking') but the reducer drops them — no protocol or host changes needed. Track ephemeral thinking metadata in the reducer; render a status indicator in the transcript. Duration measured client-side via Date.now() on first thinking delta -> first text delta.",
+  "constraints": [
+    "Webview is browser-only: no Node APIs, no imports from src/utils or engine/CLI code",
+    "Webview state rebuilt from init — new state must live in ChatState (ephemeral UI state pattern, like workspaceFiles) or derivable from existing messages",
+    "src/vscode/shared/ is type-only and dependency-free — do not add value imports",
+    "DO NOT change CLI rendering — CLI thinking display stays as-is",
+    "Engine↔host protocol already sends thinking deltas — no protocol changes on that boundary",
+    "Do NOT accumulate or render full thinking text — status indicators only",
+    "copilot.css must contain ZERO hex literals — only --vscode-* tokens and local --rc-* sizing/spacing tokens",
+    "Reuse existing CSS classes/patterns where possible (rc-pulse-dot animation, rc-pill, rc-turn)",
+    "setThinking message type and host handler stay in place (harmless) — just stop invoking from UI"
+  ],
+  "needs": ["frontend"],
+  "cap": 5,
+  "slices": {
+    "frontend": [
+      {
+        "name": "thinking-status",
+        "task": "Remove Thinking toggle; add live Thinking/Thought-for-Ns/Working indicator; track thinking metadata in reducer; tidy input bar",
+        "area": "src/vscode/webview/**, src/vscode/shared/inferenceSettings.ts"
+      }
+    ]
+  }
+}

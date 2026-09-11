@@ -8,7 +8,7 @@
 //
 // NOTE: the TEST suite uses a separate hermetic preload (scripts/preload.test.ts,
 // wired via bunfig `[test] preload`) that forces the default OFF.
-import { installFeatureTable } from '@rayu-dev/rayu-core'
+import { installFeatureTable } from '../src/core/index.js'
 import { MACRO_VALUES } from './macroValues.ts'
 import { DEV_FEATURE_TABLE } from './featureTable.ts'
 

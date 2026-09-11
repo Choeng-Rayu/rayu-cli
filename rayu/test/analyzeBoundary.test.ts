@@ -39,6 +39,34 @@ import {
 
 let analysis: Analysis
 
+/**
+ * The Rayucode VS Code extension, excluded from the boundary snapshots below.
+ *
+ * WHY. Every exact count in this file measures the ENGINE's internal coupling —
+ * how entangled `rayu/src` is with the Ink/React terminal UI, and therefore how
+ * much of it could move behind a clean boundary. Those numbers were taken as a
+ * before/after record of a specific migration.
+ *
+ * `src/vscode/**` is not part of that graph. It is a new CONSUMER of the engine,
+ * added long afterwards, and it is *expected* to import React (the webview UI is
+ * React) and to import `vscode` (the editor API). Counting it would make every
+ * file added to the extension register as engine drift, so these assertions would
+ * fail on work that cannot possibly have changed what they measure — and the
+ * habit of bumping a number to make a test pass is how a real regression gets
+ * waved through.
+ *
+ * The extension has its own guards: the bundle-content assertions in
+ * test/vscodeBundles.test.ts check the properties that actually matter for it
+ * (extension.js react-free, webview.js free of Node builtins, dist/rayu.js free of
+ * `require("vscode")`).
+ */
+const EXTENSION_PREFIX = 'src/vscode/'
+
+/** Drop extension files from a path collection. */
+function engineOnly(files: Iterable<string>): string[] {
+  return [...files].filter(f => !f.startsWith(EXTENSION_PREFIX))
+}
+
 // 60s, not the 5s default: analyze() parses ~2400 files with the TypeScript
 // compiler API. It takes ~4s alone, which is comfortably under the default until
 // the full suite runs it in parallel with 174 other files and it tips over.
@@ -52,9 +80,14 @@ describe('analyzer sees the graph tsc sees', () => {
     // why every total is reported per scope.
     expect(analysis.files.size).toBeGreaterThan(2000)
     const src = [...analysis.files.keys()].filter(f => f.startsWith('src/'))
-    // 2189 before src/entrypoints/library.ts (the barrel the Rayucode extension
-    // imports) and src/entrypoints/vscodeHost.ts (the engine it spawns).
-    expect(src.length).toBe(2191)
+    // 2189 → 2191 when src/entrypoints/{library,vscodeHost}.ts were added.
+    // 2191 → 2204 now: library.ts was deleted (-1) with the library-surface build;
+    // 13 files were vendored in from the deleted sibling workspace packages
+    // (src/core/*, src/protocol/*, src/webBridge/client/*); and
+    // src/utils/activity/activityBlocks.ts was extracted from the web formatter.
+    //
+    // src/vscode/** is excluded — see ENGINE_ONLY below.
+    expect(engineOnly(src).length).toBe(2204)
   })
 
   test('resolves tsconfig path aliases, not just relative imports', () => {
@@ -103,10 +136,19 @@ describe('analyzer sees the graph tsc sees', () => {
 })
 
 describe('React coupling', () => {
-  test('exactly 636 files in src/ import react', () => {
+  test('exactly 636 engine files in src/ import react', () => {
     // The plan's figure, now computed. Earlier drafts said 632 (two multi-line
     // imports and two gitignored skills/ files were missed by grep).
-    expect(repoTotals(analysis).src.reactImporters).toBe(636)
+    //
+    // Computed here rather than read from repoTotals() so src/vscode/** can be
+    // excluded: the webview genuinely imports React and adding a component there
+    // is not a change to the engine's React coupling. See ENGINE_ONLY above.
+    const reactImporters = engineOnly(
+      [...analysis.files.entries()]
+        .filter(([file, facts]) => file.startsWith('src/') && facts.importsReact)
+        .map(([file]) => file),
+    )
+    expect(reactImporters.length).toBe(636)
   })
 
   test('the two non-src react importers are tests', () => {
@@ -147,13 +189,42 @@ describe('React coupling', () => {
   })
 
   test('JSX without an explicit react import would be caught', () => {
-    // tsconfig sets jsx: "react-jsx", so JSX needs no import to depend on
-    // react/jsx-runtime. Today no file relies on that, but the detector must
-    // stay wired or such a file would be misreported as pure.
-    expect(repoTotals(analysis).all.jsxWithoutReactImport).toBe(0)
-    const jsxFiles = [...analysis.files.values()].filter(f => f.usesJsx)
-    expect(jsxFiles.length).toBeGreaterThan(0) // the detector is not dead code
-    for (const f of jsxFiles) expect(f.importsReact).toBe(true)
+    // tsconfig sets jsx: "react-jsx", so JSX compiles to `react/jsx-runtime` calls
+    // with NO import — a react dependency no import-based scan can see. The detector
+    // must stay wired or such a file is misreported as pure.
+    //
+    // This asserted 0 while nothing in the repo used the automatic runtime. The
+    // Rayucode webview does (it is the modern way to write JSX, and adding a
+    // ceremonial `import React` purely to satisfy a snapshot would be worse), so the
+    // assertion now checks the property that actually matters: the detector FIRES,
+    // and everything it finds is accounted for.
+    const detected = [...analysis.files.entries()]
+      .filter(([, facts]) => facts.usesJsx && !facts.importsReact)
+      .map(([file]) => file)
+      .sort()
+
+    // Non-zero, which is what proves the detector is live rather than vacuously
+    // passing.
+    expect(detected.length).toBeGreaterThan(0)
+
+    // Every one of them is extension webview code. An ENGINE file appearing here
+    // would be a real finding: it would be React-coupled while looking pure.
+    const unexpected = engineOnly(detected)
+    expect(unexpected, 'engine files using JSX with no react import').toEqual([])
+
+    // The original form of this test asserted that EVERY JSX file imports react.
+    // That still holds for the engine, and is the property that matters there: the
+    // Ink UI is written with explicit React imports, so a pure-looking engine file
+    // containing JSX would be a misclassification.
+    const engineJsx = engineOnly(
+      [...analysis.files.entries()]
+        .filter(([, facts]) => facts.usesJsx)
+        .map(([file]) => file),
+    )
+    expect(engineJsx.length).toBeGreaterThan(0) // the detector is not dead code
+    for (const file of engineJsx) {
+      expect(analysis.files.get(file)!.importsReact, file).toBe(true)
+    }
   })
 
   test('nothing imports the ink npm package; ink coupling is the vendored fork', () => {
@@ -482,8 +553,15 @@ describe('movability is computed, and Task 4 did not unblock the boundary', () =
   test('a set of files is movable to core today', () => {
     // 293 before Task 4's codemod, 303 after. The projection made before doing
     // the work predicted exactly 303.
+    //
+    // 303 → 317 now: the 13 files vendored in from the deleted sibling packages
+    // (src/core, src/protocol, src/webBridge/client) plus the extracted
+    // src/utils/activity/activityBlocks.ts are all pure with a pure closure — they
+    // were written under exactly this boundary rule when core was a standalone
+    // package that had to run under plain Node. src/vscode/** is excluded; see
+    // ENGINE_ONLY above.
     const move = movability(analysis)
-    expect(move.movable.size).toBe(303)
+    expect(engineOnly(move.movable).length).toBe(317)
     // Sanity: everything called movable really is pure with a pure closure.
     for (const f of move.movable) {
       expect(isPure(analysis.files.get(f)!), f).toBe(true)
@@ -496,12 +574,15 @@ describe('movability is computed, and Task 4 did not unblock the boundary', () =
     // bun:bundle are still trapped in the 1618-file cycle with the UI.
     //   impure themselves : 902 → 811   (91 files became pure)
     //   movable           : 293 → 303   (+10)
-    // 813 now: src/entrypoints/{library,vscodeHost}.ts both live under a UI
+    // 813 then: src/entrypoints/{library,vscodeHost}.ts both live under a UI
     // directory (src/entrypoints/) and so count as impure by location. Neither is
     // imported by anything in src/ — they are build entrypoints.
+    // 812 now: library.ts was deleted with the library-surface build. vscodeHost.ts
+    // remains, still impure by location and still imported by nothing.
+    // src/vscode/** is excluded; see ENGINE_ONLY above.
     const move = movability(analysis)
-    expect(move.impure.size).toBe(813)
-    expect(move.movable.size).toBe(303)
+    expect(engineOnly(move.impure).length).toBe(812)
+    expect(engineOnly(move.movable).length).toBe(317)
     // The remaining 62 bun:bundle files would add little even if convertible.
     const ifRestConverted = movability(analysis, 'src/', new Set(['imports-bun-bundle']))
     expect(ifRestConverted.movable.size - move.movable.size).toBeLessThan(30)
@@ -559,8 +640,17 @@ describe('type debt is bucketed per file', () => {
     // @aws-sdk/credential-providers and @anthropic-ai/bedrock-sdk (a condition
     // services/api/providerRegistry.ts documents), and removing them traded 3 new
     // TS2307s for 8 fewer errors elsewhere.
-    expect(debt.signatures).toBe(981)
-    expect(debt.errors).toBe(1552)
+    //
+    // 981 → 982 after the baseline was re-snapshotted for the vendoring. The wire
+    // schemas now resolve from src/protocol SOURCE rather than a built .d.ts in
+    // node_modules, and the precise Zod-inferred types expose pre-existing drift
+    // the emitted declarations had widened away: print.ts branches on four control
+    // subtypes the schema does not declare (end_session, channel_enable,
+    // mcp_authenticate, mcp_oauth_callback_url), and there are two structurally
+    // different PermissionUpdate definitions. Both are recorded in the baseline as
+    // accepted debt, NOT fixed — see the note in test/buildConfigParity.test.ts.
+    expect(debt.signatures).toBe(982)
+    expect(debt.errors).toBe(1554)
     expect(debt.files).toBe(317)
   })
 

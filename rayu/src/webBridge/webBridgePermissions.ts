@@ -28,7 +28,7 @@ import type {
   BridgePermissionResponse,
 } from '../bridge/bridgePermissionCallbacks.js'
 import type { PermissionUpdate } from '../utils/permissions/PermissionUpdateSchema.js'
-import type { WebBridgePermissionRelay } from '@rayu-dev/web-bridge-client'
+import type { WebBridgePermissionRelay } from './client/index.js'
 import { logForDebugging } from '../utils/debug.js'
 
 /**

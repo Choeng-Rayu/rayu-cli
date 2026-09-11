@@ -13,11 +13,10 @@ import { useSetAppState } from '../state/AppState.js'
 import {
   RAYU_MODEL_SEP,
   getAllProviderModelOptions,
-  refreshRayuApiKeyCatalog,
   setActiveProviderModel,
   type RayuModelChoice,
 } from '../utils/rayuConfig.js'
-import { refreshHostedCatalog } from '../services/rayuAuth/rayuHostedProvider.js'
+import { refreshModelPickerCatalog } from '../utils/model/refreshModelPickerCatalog.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -58,11 +57,8 @@ export function SearchableModelPicker({
     // Refresh both Rayu providers in parallel: the OAuth hosted catalog and the
     // API-key catalog. Either may be absent (no session / no key), in which case
     // it returns false immediately.
-    void Promise.all([
-      refreshHostedCatalog(),
-      refreshRayuApiKeyCatalog().then(r => r.changed).catch(() => false),
-    ]).then(([hostedChanged, apiKeyChanged]) => {
-      if (alive && (hostedChanged || apiKeyChanged)) {
+    void refreshModelPickerCatalog().then(changed => {
+      if (alive && changed) {
         setAll(getAllProviderModelOptions())
       }
     })
@@ -78,7 +74,7 @@ export function SearchableModelPicker({
       : all.filter(o => {
           // The admin's display name is searchable too: a user who knows the
           // model as "DeepSeek V4 Pro" should not have to know its id first.
-          const hay = `${o.providerId} ${o.model} ${o.label ?? ''}`.toLowerCase()
+          const hay = `${o.providerId} ${o.model} ${o.label ?? ''} ${o.description ?? ''}`.toLowerCase()
           return q.split(/\s+/).every(t => hay.includes(t))
         })
     return list.map(o => ({
@@ -158,13 +154,15 @@ export function SearchableModelPicker({
 }
 
 /**
- * Secondary line for one picker row: who serves it, what the admin calls it, and
- * how much context it has. All three come from the provider config (for
- * rayu-hosted, straight from /me/entitlements) — the CLI has no built-in table of
- * hosted model names or windows, so a dashboard edit is reflected as-is.
+ * Secondary line for one picker row: the admin's customer-facing model summary,
+ * the Rayu provider, display name, and context window. All of it comes from the
+ * provider config (for rayu-hosted, straight from /me/entitlements), so a dashboard
+ * edit is reflected as-is without a CLI release.
  */
 export function describeModelChoice(choice: RayuModelChoice): string {
-  const parts = [choice.providerId]
+  const parts = [choice.description, choice.providerId].filter(
+    (part): part is string => Boolean(part),
+  )
   if (choice.label) parts.push(choice.label)
   if (choice.contextWindow && choice.contextWindow > 0) {
     parts.push(`${formatContextTokens(choice.contextWindow)} ctx`)

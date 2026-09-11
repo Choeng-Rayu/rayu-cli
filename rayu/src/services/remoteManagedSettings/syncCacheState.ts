@@ -22,7 +22,7 @@
  */
 
 import { join } from 'path'
-import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { readFileSync } from '../../utils/fileRead.js'
 import { stripBOM } from '../../utils/jsonRead.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
@@ -49,7 +49,7 @@ export function setEligibility(v: boolean): boolean {
 }
 
 export function getSettingsPath(): string {
-  return join(getRayuConfigHomeDir(), SETTINGS_FILENAME)
+  return join(getRayuAuthConfigDir(), SETTINGS_FILENAME)
 }
 
 // sync IO — settings pipeline is sync. fileRead and jsonRead are leaves;

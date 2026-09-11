@@ -13,7 +13,7 @@
 // Enabling the shipped four here would be defensible — arguably dev should match
 // the published binary — but it is a behaviour CHANGE and belongs in its own
 // commit with its own test run, not smuggled into a mechanical codemod.
-import { buildFeatureTable } from '@rayu-dev/rayu-core'
+import { buildFeatureTable } from '../src/core/index.js'
 import ALL_FLAGS from '../feature-flags.json' with { type: 'json' }
 
 export const DEV_FEATURE_TABLE: Record<string, boolean> = buildFeatureTable(

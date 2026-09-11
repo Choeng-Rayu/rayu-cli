@@ -21,6 +21,11 @@
  */
 
 import type { BridgePermissionResponse } from '../bridge/bridgePermissionCallbacks.js'
+import {
+  parseAskUserQuestions,
+  type AskUserQuestionItem,
+  type AskUserQuestionOption,
+} from '../utils/askUserQuestion.js'
 import { escapeHtml, type InlineKeyboard } from './telegramApi.js'
 import { interactiveTransport } from './telegramInteractive.js'
 
@@ -43,18 +48,8 @@ export type QuestionAction = 'o' | 'd' | 's' | 'x' | 'n' | 'b' | 'c'
 
 const ACTIONS = new Set<string>(['o', 'd', 's', 'x', 'n', 'b', 'c'])
 
-export interface QuestionOptionLike {
-  label: string
-  description?: string
-  preview?: string
-}
-
-export interface QuestionLike {
-  question: string
-  header?: string
-  options: QuestionOptionLike[]
-  multiSelect?: boolean
-}
+export type QuestionOptionLike = AskUserQuestionOption
+export type QuestionLike = AskUserQuestionItem
 
 export interface QuestionSession {
   requestId: string
@@ -136,36 +131,7 @@ export function parseQ(data: string):
  * trusting the shape.
  */
 export function parseQuestions(input: unknown): QuestionLike[] {
-  const raw = (input as { questions?: unknown } | undefined)?.questions
-  if (!Array.isArray(raw)) return []
-  const questions: QuestionLike[] = []
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue
-    const q = item as Record<string, unknown>
-    if (typeof q.question !== 'string' || !q.question) continue
-    const options: QuestionOptionLike[] = []
-    if (Array.isArray(q.options)) {
-      for (const optRaw of q.options) {
-        if (!optRaw || typeof optRaw !== 'object') continue
-        const opt = optRaw as Record<string, unknown>
-        if (typeof opt.label !== 'string' || !opt.label) continue
-        options.push({
-          label: opt.label,
-          ...(typeof opt.description === 'string' && {
-            description: opt.description,
-          }),
-          ...(typeof opt.preview === 'string' && { preview: opt.preview }),
-        })
-      }
-    }
-    questions.push({
-      question: q.question,
-      ...(typeof q.header === 'string' && { header: q.header }),
-      options,
-      multiSelect: q.multiSelect === true,
-    })
-  }
-  return questions
+  return parseAskUserQuestions(input)
 }
 
 export function createSession(params: {

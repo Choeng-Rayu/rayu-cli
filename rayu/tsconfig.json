@@ -16,7 +16,13 @@
     "skipLibCheck": true,
     "strict": true,
     "baseUrl": ".",
-    "types": ["node", "bun", "bun-types"],
+    // An explicit list DISABLES automatic @types/* inclusion, so every ambient
+    // package must be named here. `vscode` is listed for src/vscode/host/**,
+    // which imports the editor API. That makes the `vscode` module ambient for
+    // the whole program, so type-level isolation between the CLI and the
+    // extension is imperfect by construction — the real enforcement is the
+    // bundle guard asserting dist/rayu.js contains no require("vscode").
+    "types": ["node", "bun", "bun-types", "vscode"],
     "paths": {
       "src/*": ["./src/*"],
       "@ant/*": ["./stubs/ant/*"],

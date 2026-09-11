@@ -362,10 +362,12 @@ https://github.com/Choeng-Rayu/rayu-cli/issues
 git clone https://github.com/Choeng-Rayu/rayu-cli.git
 cd rayu-cli/rayu
 bun install
-bun run dev          # run from source
-bun run build        # bundle to dist/rayu.js
-bun test             # run tests
-bun run typecheck    # TypeScript type checking
+bun run dev             # run from source
+bun run build           # bundle CLI to dist/rayu.js (alias for build:cli)
+bun run build:cli       # build standalone CLI bundle (dist/rayu.js)
+bun run build:vscode    # build Rayucode VS Code extension (.vsix)
+bun test                # run tests
+bun run typecheck       # TypeScript type checking
 ```
 
 Built with [Bun](https://bun.sh), TypeScript, React/Ink, and a custom terminal renderer.

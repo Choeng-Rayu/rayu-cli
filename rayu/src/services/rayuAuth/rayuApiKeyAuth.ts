@@ -29,7 +29,7 @@
 import { createHash } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { loadRayuConfig, type RayuProvider } from '../../utils/rayuConfig.js'
 import { RAYU_API_PROVIDER_ID } from '../../utils/rayuProviders.js'
 import { hasRayuSession } from './rayuSession.js'
@@ -60,7 +60,7 @@ let loadedFromDisk = false
 let validatedThisProcess = false
 
 function statePath(): string {
-  return join(getRayuConfigHomeDir(), FILE)
+  return join(getRayuAuthConfigDir(), FILE)
 }
 
 /**
@@ -110,7 +110,7 @@ function persist(state: ApiKeyState | null): void {
   cache = state
   loadedFromDisk = true
   try {
-    const dir = getRayuConfigHomeDir()
+    const dir = getRayuAuthConfigDir()
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     const p = statePath()
     if (state) {

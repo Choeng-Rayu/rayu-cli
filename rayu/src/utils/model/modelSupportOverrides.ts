@@ -73,6 +73,11 @@ function providerDeclaredOverride(
       require('./providerCapabilities.js') as typeof import('./providerCapabilities.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
     const provider = resolveRequestShape(model).provider
+    const bare = model.slice(model.lastIndexOf('\u0000') + 1)
+    const declared = provider?.modelSupportsThinking?.[bare]
+    if (declared === false) return false
+    // Reasoning support does not imply adaptive/max-effort wire extensions.
+    if (declared === true && capability === 'thinking') return true
     if (provider?.supportsThinking === false) {
       // Every listed capability is a reasoning parameter.
       void capability

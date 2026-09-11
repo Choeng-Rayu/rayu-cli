@@ -7,7 +7,7 @@
  * that never runs a bridge still carries the receiver and nothing more.
  */
 
-import { registerIpcHandler, registerIpcNotifyHandler } from '../ipc/sessionServer.js'
+import { registerIpcHandler, registerIpcNotifyHandler, registerIpcDisconnectHandler } from '../ipc/sessionServer.js'
 import { enqueue } from '../utils/messageQueueManager.js'
 import { logForDebugging } from '../utils/debug.js'
 import { IPC_PROMPT, type IpcPromptPayload } from './telegramRouter.js'
@@ -67,17 +67,18 @@ export function registerTelegramSessionHandlers(): void {
   // The leader tells us when we are the session driving the chat. That is what
   // installs the forwarding permission callbacks, so permission cards from THIS
   // session reach Telegram even though the transport lives in another process.
-  registerIpcNotifyHandler(IPC_ATTACH, () => {
-    setRemotelyAttached(true)
+  registerIpcNotifyHandler(IPC_ATTACH, (_payload, peerId) => {
+    setRemotelyAttached(true, peerId)
     logForDebugging('[telegram-session] attached to the Telegram chat')
   })
 
-  registerIpcNotifyHandler(IPC_DETACH, () => {
-    setRemotelyAttached(false)
+  registerIpcNotifyHandler(IPC_DETACH, (_payload, peerId) => {
+    setRemotelyAttached(false, peerId)
     logForDebugging('[telegram-session] detached from the Telegram chat')
   })
 
   registerIpcNotifyHandler(IPC_PERMISSION_DECISION, payload => {
     applyRemotePermissionDecision(payload)
   })
+  registerIpcDisconnectHandler(peerId => setRemotelyAttached(false, peerId))
 }

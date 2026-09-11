@@ -23,11 +23,16 @@
 import { getRayuGatewayBaseUrl } from '../../rayuAuth/rayuSession.js'
 import {
   hostedContextWindows,
+  hostedModelDescriptions,
   hostedModelLabels,
   type CatalogModelEntry,
 } from '../../rayuAuth/rayuModelCatalog.js'
 import { sanitizeRemoteModelId } from '../../../utils/rayuConfig.js'
 import { reportIssue } from '../../../utils/rayuDiagnostics.js'
+import {
+  RAYU_CLIENT_HEADER,
+  resolveRayuClientProduct,
+} from './gatewayHeaders.js'
 
 /** Matches the 15s budget the other provider catalog fetches use. */
 const CATALOG_TIMEOUT_MS = 15_000
@@ -36,6 +41,7 @@ const CATALOG_TIMEOUT_MS = 15_000
 type GatewayModelItem = {
   id?: unknown
   label?: unknown
+  description?: unknown
   contextWindow?: unknown
 }
 
@@ -60,6 +66,8 @@ export type RayuCatalogResult =
       models: string[]
       /** Admin display names, keyed by model id (absent when none was set). */
       modelLabels: Record<string, string>
+      /** Customer-facing descriptions, keyed by model id (absent when unpublished). */
+      modelDescriptions: Record<string, string>
       /** Admin context windows in tokens, keyed by model id. */
       modelContextWindows: Record<string, number>
     }
@@ -95,6 +103,7 @@ function failureForStatus(status: number): RayuCatalogFailure {
 export function parseRayuCatalog(payload: unknown): {
   models: string[]
   modelLabels: Record<string, string>
+  modelDescriptions: Record<string, string>
   modelContextWindows: Record<string, number>
 } {
   const data = (payload as { data?: unknown })?.data
@@ -108,6 +117,7 @@ export function parseRayuCatalog(payload: unknown): {
     entries.push({
       code,
       label: typeof item.label === 'string' ? item.label : null,
+      description: typeof item.description === 'string' ? item.description : null,
       contextWindow:
         typeof item.contextWindow === 'number' ? item.contextWindow : null,
     })
@@ -115,6 +125,7 @@ export function parseRayuCatalog(payload: unknown): {
   return {
     models: entries.map(e => e.code),
     modelLabels: hostedModelLabels(entries),
+    modelDescriptions: hostedModelDescriptions(entries),
     modelContextWindows: hostedContextWindows(entries),
   }
 }
@@ -133,7 +144,10 @@ export async function fetchRayuApiKeyCatalog(
   if (!key) return { ok: false, reason: 'invalid' }
   try {
     const res = await (globalThis.fetch as typeof fetch)(catalogURL(), {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: {
+        Authorization: `Bearer ${key}`,
+        [RAYU_CLIENT_HEADER]: resolveRayuClientProduct(),
+      },
       signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
     })
     if (!res.ok) {

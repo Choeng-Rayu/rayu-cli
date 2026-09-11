@@ -23,8 +23,13 @@ export type CatalogModelEntry = {
   code: string
   /** Admin-typed display name, if any. */
   label?: string | null
+  /** Admin-authored customer-facing plain-text summary, if published. */
+  description?: string | null
   /** Admin-configured context window in tokens, if any. */
   contextWindow?: number | null
+  supportsReasoning?: boolean
+  supportsImage?: boolean
+  supportsTools?: boolean
 }
 
 /**
@@ -43,6 +48,24 @@ export function hostedModelLabels(
     const label = typeof m.label === 'string' ? m.label.trim() : ''
     if (!label || label === m.code) continue
     out[m.code] = label
+  }
+  return out
+}
+
+/**
+ * Build the per-model customer-description map from a catalog.
+ *
+ * Blank descriptions deliberately disappear rather than becoming a blank picker
+ * row. The backend normalizes them too, but this keeps an old or malformed
+ * cached response from degrading the UI.
+ */
+export function hostedModelDescriptions(
+  catalog: ReadonlyArray<CatalogModelEntry>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const m of catalog) {
+    const description = typeof m.description === 'string' ? m.description.trim() : ''
+    if (description) out[m.code] = description
   }
   return out
 }
@@ -79,9 +102,10 @@ export function catalogSignature(
   models: ReadonlyArray<string>,
   labels: Readonly<Record<string, string>> | undefined,
   windows: Readonly<Record<string, number>> | undefined,
+  descriptions?: Readonly<Record<string, string>>,
 ): string {
   return models
-    .map(m => `${m}|${labels?.[m] ?? ''}|${windows?.[m] ?? ''}`)
+    .map(m => `${m}|${labels?.[m] ?? ''}|${descriptions?.[m] ?? ''}|${windows?.[m] ?? ''}`)
     .join(',')
 }
 
@@ -109,4 +133,19 @@ export function pickRayuDefaultModels(models: ReadonlyArray<string>): {
   const primary = models.find(m => !SMALL_FAST_PATTERN.test(m)) ?? models[0]
   const small = models.find(m => SMALL_FAST_PATTERN.test(m)) ?? primary
   return { defaultModel: primary, smallFastModel: small }
+}
+
+/** Preserve explicit catalog capabilities; absent is unknown, never false. */
+export function hostedModelCapabilities(catalog: ReadonlyArray<CatalogModelEntry>): {
+  modelSupportsThinking: Record<string, boolean>
+  modelSupportsImage: Record<string, boolean>
+  modelSupportsTools: Record<string, boolean>
+} {
+  const map = (field: 'supportsReasoning' | 'supportsImage' | 'supportsTools') =>
+    Object.fromEntries(catalog.filter(m => typeof m[field] === 'boolean').map(m => [m.code, m[field] as boolean]))
+  return {
+    modelSupportsThinking: map('supportsReasoning'),
+    modelSupportsImage: map('supportsImage'),
+    modelSupportsTools: map('supportsTools'),
+  }
 }

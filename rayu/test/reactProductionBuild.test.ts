@@ -13,7 +13,7 @@ import { describe, expect, test } from 'bun:test'
  * drops the define from a build script.
  */
 const ROOT = join(import.meta.dir, '..')
-// scripts/build.ts and scripts/build-lib.ts both take their define map from
+// scripts/build.ts and scripts/build-vscode.ts both take their define map from
 // scripts/bundleConfig.ts, so that is where the guard applies for them. The two
 // native/binary builders still construct their own.
 const BUILD_SCRIPTS = [
@@ -23,7 +23,7 @@ const BUILD_SCRIPTS = [
 ]
 
 /** Scripts that must OBTAIN the define map rather than define NODE_ENV inline. */
-const SHARED_CONFIG_CONSUMERS = ['scripts/build.ts', 'scripts/build-lib.ts']
+const SHARED_CONFIG_CONSUMERS = ['scripts/build.ts', 'scripts/build-vscode.ts']
 
 describe('react production build define (heap-OOM regression guard)', () => {
   for (const rel of BUILD_SCRIPTS) {

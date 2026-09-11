@@ -99,6 +99,38 @@ const MAX_TOOL_PROGRESS_TRACKING_ENTRIES = 100
 const TOOL_PROGRESS_THROTTLE_MS = 30000
 const toolProgressLastSentTime = new Map<string, number>()
 
+/**
+ * Throttle for `tool_output`, kept SEPARATE from the `tool_progress` one above.
+ *
+ * `tool_progress` is throttled at 30s and gated to remote/container sessions, which is
+ * right for what it is — a coarse "still alive" ping for a remote observer. It is useless
+ * as a channel for live output: a command that finishes in 20 seconds would stream nothing
+ * at all, and one that runs for a minute would show two frames.
+ *
+ * One second is the shortest interval a human reads as continuous while still collapsing a
+ * chatty command's output into a bounded number of frames. Each frame is a cumulative
+ * snapshot of an already-bounded tail, so the cost is per-frame constant rather than
+ * growing with the command's total output.
+ */
+const TOOL_OUTPUT_THROTTLE_MS = 1000
+const toolOutputLastSentTime = new Map<string, number>()
+
+/** Record a send under an LRU-evicted cap, and say whether the throttle allows it. */
+function throttleAllows(
+  tracker: Map<string, number>,
+  key: string,
+  intervalMs: number,
+  now: number,
+): boolean {
+  if (now - (tracker.get(key) ?? 0) < intervalMs) return false
+  if (tracker.size >= MAX_TOOL_PROGRESS_TRACKING_ENTRIES) {
+    const oldest = tracker.keys().next().value
+    if (oldest !== undefined) tracker.delete(oldest)
+  }
+  tracker.set(key, now)
+  return true
+}
+
 export function* normalizeMessage(message: Message): Generator<SDKMessage> {
   switch (message.type) {
     case 'assistant':
@@ -158,6 +190,54 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         message.data.type === 'bash_progress' ||
         message.data.type === 'powershell_progress'
       ) {
+        const toolName =
+          message.data.type === 'bash_progress' ? 'Bash' : 'PowerShell'
+        // Use parentToolUseID as the key since toolUseID changes for each progress message
+        const trackingKey = message.parentToolUseID
+        const now = Date.now()
+
+        // ── LIVE OUTPUT: ADDITIVE, UNGATED, THROTTLED SEPARATELY ────────────────
+        //
+        // Emitted before the `tool_progress` block below and deliberately OUTSIDE its
+        // remote/container gate. That gate exists because a coarse 30-second liveness
+        // ping is only useful to a remote observer; live output is useful to every
+        // stream-json consumer, and an editor showing a silent pill for a two-minute
+        // build is the exact problem this frame solves.
+        //
+        // Safe to emit unconditionally because it is a NEW message type: the wire
+        // contract requires consumers to ignore types they do not know, so nothing that
+        // exists today changes behaviour. See PROTOCOL.md §3 — additive, no version bump.
+        //
+        // `output` rather than `fullOutput`: it is the bounded tail the tool already
+        // computes for its own display, so the frame size is bounded by construction and
+        // matches what the terminal shows. `fullOutput` grows without limit and is what
+        // the settled result carries.
+        const streamed = message.data.output
+        if (
+          typeof streamed === 'string' &&
+          streamed.length > 0 &&
+          throttleAllows(
+            toolOutputLastSentTime,
+            trackingKey,
+            TOOL_OUTPUT_THROTTLE_MS,
+            now,
+          )
+        ) {
+          yield {
+            type: 'tool_output',
+            tool_use_id: message.toolUseID,
+            tool_name: toolName,
+            parent_tool_use_id: message.parentToolUseID,
+            text: streamed,
+            elapsed_time_seconds: message.data.elapsedTimeSeconds,
+            ...(typeof message.data.totalBytes === 'number'
+              ? { total_bytes: message.data.totalBytes }
+              : {}),
+            session_id: getSessionId(),
+            uuid: message.uuid,
+          }
+        }
+
         // Filter bash progress to send only one per minute
         // Only emit for RAYU Remote for now
         if (
@@ -167,30 +247,19 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           break
         }
 
-        // Use parentToolUseID as the key since toolUseID changes for each progress message
-        const trackingKey = message.parentToolUseID
-        const now = Date.now()
-        const lastSent = toolProgressLastSentTime.get(trackingKey) || 0
-        const timeSinceLastSent = now - lastSent
-
         // Send if at least 30 seconds have passed since last update
-        if (timeSinceLastSent >= TOOL_PROGRESS_THROTTLE_MS) {
-          // Remove oldest entry if we're at capacity (LRU eviction)
-          if (
-            toolProgressLastSentTime.size >= MAX_TOOL_PROGRESS_TRACKING_ENTRIES
-          ) {
-            const firstKey = toolProgressLastSentTime.keys().next().value
-            if (firstKey !== undefined) {
-              toolProgressLastSentTime.delete(firstKey)
-            }
-          }
-
-          toolProgressLastSentTime.set(trackingKey, now)
+        if (
+          throttleAllows(
+            toolProgressLastSentTime,
+            trackingKey,
+            TOOL_PROGRESS_THROTTLE_MS,
+            now,
+          )
+        ) {
           yield {
             type: 'tool_progress',
             tool_use_id: message.toolUseID,
-            tool_name:
-              message.data.type === 'bash_progress' ? 'Bash' : 'PowerShell',
+            tool_name: toolName,
             parent_tool_use_id: message.parentToolUseID,
             elapsed_time_seconds: message.data.elapsedTimeSeconds,
             task_id: message.data.taskId,

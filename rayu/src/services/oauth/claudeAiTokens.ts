@@ -2,8 +2,8 @@
 //
 // This is the ONLY place the Anthropic OAuth tokens are read from or written to
 // disk. They live under the `claudeAiOauth` key of secureStorage
-// (~/.rayu/.credentials.json at mode 0600, or the macOS keychain when
-// available) — a slot entirely SEPARATE from the Rayu account JWT in
+// (the active authentication profile's .credentials.json at mode 0600, or the
+// macOS keychain when available) — a slot entirely SEPARATE from the Rayu account JWT in
 // services/rayuAuth, so `/login` (Rayu) and `/connect → Login with Claude`
 // never clobber each other.
 //
