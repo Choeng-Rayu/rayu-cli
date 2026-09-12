@@ -589,7 +589,19 @@ export class ChatSession {
     return [...this.thinkingBlocks.values()].map(block => ({ ...block }))
   }
 
-  /** Restore terminal task metadata alongside the shared transcript on resume. */
+  /**
+   * Restore task metadata alongside the shared transcript on resume.
+   *
+   * Only terminal tasks can arrive: `loadTaskHistory` refuses any other status, because a
+   * task still marked running on disk belongs to a process that has since exited and could
+   * never be advanced again. Restoring one would show a card counting up from an hour ago
+   * with a Stop button aimed at nothing.
+   *
+   * That guard used to also mean interrupted work vanished from history entirely, since a
+   * running record was written and then silently dropped on read. `settleOrphanedTasks`
+   * settles those at the moment the engine goes away, so what gets persisted is terminal
+   * and survives the round trip.
+   */
   async restoreTaskHistory(sessionId: string, cwd = this.options.cwd): Promise<void> {
     const restored = await loadTaskHistory(cwd, sessionId)
     this.backgroundTaskMap.clear()
@@ -742,8 +754,7 @@ export class ChatSession {
   }
 
   /** Stop through the engine's shared task implementation and stale-state checks. */
-  async stopBackgroundTask(taskId: string): Promise<void> {
-    const task = [...this.backgroundTaskMap.values()].find(item => item.taskId === taskId)
+  async stopBackgroundTask(taskId: string): Promise<void> {    const task = [...this.backgroundTaskMap.values()].find(item => item.taskId === taskId)
     if (!task || !task.capabilities.canStop) return
     const control = this.control
     if (!control) {
@@ -758,6 +769,44 @@ export class ChatSession {
           cause instanceof Error ? cause.message : String(cause)
         }`,
       )
+    }
+  }
+
+  /**
+   * What a background task has recorded so far, as readable text.
+   *
+   * ── WHY THIS IS FETCHED RATHER THAN STREAMED ────────────────────────────────────
+   *
+   * A background shell can record gigabytes and an agent's transcript is megabytes of JSONL.
+   * Pushing either into the panel as it arrives would spend the whole postMessage budget on
+   * output nobody has asked to read — `task_progress` already carries the one-line activity
+   * that tells the user something is happening. So the panel asks, on demand, for the tail,
+   * exactly as a tool row asks for its untruncated output.
+   *
+   * ── AND WHY THE ENGINE IS ASKED INSTEAD OF READING THE FILE HERE ────────────────
+   *
+   * The path is derived from the engine's session id and project temp dir, both of which are
+   * process state this host cannot reconstruct. See the `task_output` handler in `print.ts`.
+   *
+   * Returns null when there is no engine to ask; empty string is a real answer meaning the
+   * task recorded nothing.
+   */
+  async taskOutput(taskKey: string): Promise<{ text: string; truncated: boolean } | null> {
+    const task = this.backgroundTaskMap.get(taskKey)
+    const control = this.control
+    if (!task || !control) return null
+    const response = await control.request(
+      'task_output',
+      { task_id: task.taskId },
+      20_000,
+    )
+    const content = typeof response.content === 'string' ? response.content : ''
+    const truncated = response.truncated === true
+    return {
+      // An agent records its conversation, not console output, and raw JSONL is not
+      // something to put in front of a user.
+      text: response.format === 'transcript' ? summarizeTranscript(content) : content,
+      truncated,
     }
   }
 
@@ -1272,6 +1321,10 @@ export class ChatSession {
     this.control?.dispose('the engine exited')
     this.control = null
     this.engine = null
+    // No frame can advance a task any more — the process that would send it is gone.
+    this.settleOrphanedTasks(
+      info.expected ? 'the engine was stopped' : 'the engine stopped unexpectedly',
+    )
     // The engine that was blocked on any approval card is gone. Dismiss without
     // answering — see onSessionEnded.
     this.callbacks.onSessionEnded()
@@ -1509,10 +1562,15 @@ export class ChatSession {
         description,
         prompt: typeof message.prompt === 'string' ? message.prompt : undefined,
         status: 'running',
-        executionMode: 'background',
+        // Reported by the engine since `execution_mode` was added. `background` remains the
+        // fallback for task types that have no such distinction and for an older engine —
+        // but it is no longer applied to inline subagents, which are the common case and
+        // were all mislabelled as background work.
+        executionMode: message.execution_mode === 'foreground' ? 'foreground' : 'background',
         startedAt: now,
         updatedAt: now,
-        currentActivity: description,
+        // Deliberately NOT the description repeated: nothing is known about what the task
+        // is doing yet, and echoing its own name made the row print the same string twice.
         recentActivities: [],
         tokenCount: 0,
         toolCount: 0,
@@ -1525,10 +1583,20 @@ export class ChatSession {
     if (message.subtype === 'task_progress') {
       if (existing && isTerminalBackgroundStatus(existing.status)) return
       const usage = asRecord(message.usage)
-      const description =
+      // ── `description` ON THIS FRAME IS THE ACTIVITY, NOT THE NAME ──────────────
+      //
+      // The emitters send `progress.lastActivity?.activityDescription ?? description`, so
+      // this field carries "Reading src/index.ts" and only falls back to the task's name
+      // when no activity is known. Treating it as the name overwrote the agent's task with
+      // whatever file it had just touched — the row stopped saying which subagent this was
+      // — while the activity line fell back to a bare "Using Read" that then collapsed into
+      // a single entry in the recent list because consecutive labels matched.
+      //
+      // So the name comes from `task_started` and stays put, and this becomes the activity.
+      const reported =
         typeof message.description === 'string' && message.description.trim()
           ? message.description.trim()
-          : existing?.description ?? `Background task ${taskId}`
+          : undefined
       const summary =
         typeof message.summary === 'string' && message.summary.trim()
           ? message.summary.trim()
@@ -1537,7 +1605,13 @@ export class ChatSession {
         typeof message.last_tool_name === 'string' && message.last_tool_name.trim()
           ? message.last_tool_name.trim()
           : undefined
-      const activityLabel = summary ?? (toolName ? `Using ${toolName}` : description)
+      const description = existing?.description ?? reported ?? `Background task ${taskId}`
+      // The named activity first, then the reported one, and a tool name only when there
+      // is nothing better — `Using Grep` says less than `Searching for "foo"`.
+      const activityLabel =
+        summary ??
+        (reported && reported !== description ? reported : undefined) ??
+        (toolName ? `Using ${toolName}` : description)
       const activities = appendTaskActivity(existing?.recentActivities ?? [], {
         id: `${key}:${now}:${toolName ?? 'progress'}`,
         label: activityLabel,
@@ -1560,22 +1634,17 @@ export class ChatSession {
         agentName: existing?.agentName,
         status: 'running',
         executionMode: existing?.executionMode ?? 'background',
-        startedAt:
-          existing?.startedAt ??
-          (typeof usage?.duration_ms === 'number' ? now - usage.duration_ms : now),
+        startedAt: existing?.startedAt ?? now - countOr(usage?.duration_ms, 0),
         updatedAt: now,
         currentActivity: activityLabel,
         recentActivities: activities,
         model: existing?.model,
         provider: existing?.provider,
-        tokenCount:
-          typeof usage?.total_tokens === 'number'
-            ? usage.total_tokens
-            : existing?.tokenCount ?? 0,
-        toolCount:
-          typeof usage?.tool_uses === 'number'
-            ? usage.tool_uses
-            : existing?.toolCount ?? 0,
+        // `countOr`, not a bare typeof check: a provider that omits a usage counter makes
+        // the engine's running total NaN, NaN IS `typeof number`, and it would render as
+        // "NaN tokens". A frame that reports nothing usable leaves the last count standing.
+        tokenCount: countOr(usage?.total_tokens, existing?.tokenCount ?? 0),
+        toolCount: countOr(usage?.tool_uses, existing?.toolCount ?? 0),
         result: existing?.result,
         error: existing?.error,
         unread: existing?.unread ?? false,
@@ -1611,23 +1680,18 @@ export class ChatSession {
         agentName: existing?.agentName,
         status,
         executionMode: existing?.executionMode ?? 'background',
-        startedAt:
-          existing?.startedAt ??
-          (typeof usage?.duration_ms === 'number' ? now - usage.duration_ms : now),
+        startedAt: existing?.startedAt ?? now - countOr(usage?.duration_ms, 0),
         updatedAt: now,
         currentActivity:
           status === 'completed' ? 'Completed' : status === 'stopped' ? 'Stopped' : 'Failed',
         recentActivities: existing?.recentActivities ?? [],
         model: existing?.model,
         provider: existing?.provider,
-        tokenCount:
-          typeof usage?.total_tokens === 'number'
-            ? usage.total_tokens
-            : existing?.tokenCount ?? 0,
-        toolCount:
-          typeof usage?.tool_uses === 'number'
-            ? usage.tool_uses
-            : existing?.toolCount ?? 0,
+        // `countOr`, not a bare typeof check: a provider that omits a usage counter makes
+        // the engine's running total NaN, NaN IS `typeof number`, and it would render as
+        // "NaN tokens". A frame that reports nothing usable leaves the last count standing.
+        tokenCount: countOr(usage?.total_tokens, existing?.tokenCount ?? 0),
+        toolCount: countOr(usage?.tool_uses, existing?.toolCount ?? 0),
         result: status === 'completed' ? summary : existing?.result,
         error: status === 'failed' ? summary || 'The task failed.' : existing?.error,
         unread: true,
@@ -1641,6 +1705,42 @@ export class ChatSession {
     this.backgroundTaskMap.set(task.key, task)
     this.callbacks.onTaskStateChanged?.(task)
     this.persistTaskHistory(task.sourceSessionId)
+  }
+
+  /**
+   * Settle every task that can no longer be updated.
+   *
+   * ── A CARD THAT SAYS "RUNNING" FOREVER IS THE WORST FAILURE HERE ────────────────
+   *
+   * Task state is only ever advanced by frames from the engine child. When that child goes
+   * away mid-task — a crash, an interrupt, a restart to pick up a configuration change,
+   * the extension being updated — the last frame the panel saw was `task_started`, so the
+   * card kept saying Running, its elapsed time kept counting up from `startedAt` because
+   * the webview ticks any non-terminal task, and its Stop button aimed at a control channel
+   * that no longer existed. The user's subagent had finished half an hour earlier.
+   *
+   * `stopped` rather than `completed` or `failed`: the outcome is genuinely unknown from
+   * here. Claiming success would be a lie, and claiming failure would be one too — the work
+   * may well have finished before the engine died. `error` records why, so the card explains
+   * itself instead of just going quiet.
+   *
+   * `updatedAt` is left ALONE: `formatElapsed` measures to `updatedAt` for a settled task,
+   * so overwriting it with `now` would stretch the duration to include however long the
+   * panel took to notice. The clock stops where the last real update was.
+   */
+  private settleOrphanedTasks(reason: string): void {
+    for (const task of [...this.backgroundTaskMap.values()]) {
+      if (isTerminalBackgroundStatus(task.status)) continue
+      this.publishTask({
+        ...task,
+        status: 'stopped',
+        currentActivity: 'Interrupted',
+        error: task.error ?? `Interrupted: ${reason}`,
+        // The card stays in the list as a record, but its controls would now act on
+        // nothing at all.
+        capabilities: { ...task.capabilities, canStop: false, canSendMessage: false },
+      })
+    }
   }
 
   private persistTaskHistory(sourceSessionId: string): void {
@@ -3134,6 +3234,21 @@ function finiteToken(value: unknown): number {
     : 0
 }
 
+/**
+ * A reported count, or the fallback when the frame did not report a usable one.
+ *
+ * NaN is `typeof 'number'`, so a plain type check lets one through — and NaN reaches this
+ * boundary in practice: the engine's token total is a running sum over provider-reported
+ * usage, a translated provider can omit a counter, and `JSON.stringify(NaN)` is `null`.
+ * A frame with nothing usable must leave the previous count alone rather than reset it to
+ * zero, which is why the fallback is a parameter instead of a constant.
+ */
+function countOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : fallback
+}
+
 function emptyTurnUsage(): TurnTokenUsageView {
   return {
     inputTokens: 0,
@@ -3256,5 +3371,84 @@ function compareBackgroundTasks(a: BackgroundTaskView, b: BackgroundTaskView): n
   const aActive = isTerminalBackgroundStatus(a.status) ? 1 : 0
   const bActive = isTerminalBackgroundStatus(b.status) ? 1 : 0
   return aActive - bActive || b.updatedAt - a.updatedAt
+}
+
+/**
+ * A subagent's JSONL transcript as readable text.
+ *
+ * ── THE PARSING IS NOT REIMPLEMENTED HERE ───────────────────────────────────────
+ *
+ * Each line is the same `WrappedMessage` record the engine streams live, so it goes through
+ * `formatMessageForVSCode` — the one formatter that already knows how to name a tool, build
+ * its one-line label and clamp its result. `loadSessionTranscript` reuses it for exactly the
+ * same reason. Only the LAST step differs: this flattens the blocks to text for the task
+ * panel's output view, where the alternative would be a second parser that drifts from the
+ * first.
+ *
+ * ── WHY TEXT AND NOT TRANSCRIPT ENTRIES ─────────────────────────────────────────
+ *
+ * Entries would render with the panel's own pills and diffs, which would be better — but
+ * they are interactive elements whose actions (keep, undo, open diff, expand output) all
+ * refer to the MAIN conversation's state, and a subagent's are not there to act on. Text is
+ * honest about being a record. Upgrading later means keeping the blocks instead of joining
+ * them; nothing above this line would change.
+ */
+function summarizeTranscript(content: string): string {
+  const lines: string[] = []
+
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    if (!trimmed.startsWith('{')) {
+      // The reader's own "earlier output omitted" notice, or a tail that began mid-record.
+      lines.push(trimmed)
+      continue
+    }
+
+    let record: unknown
+    try {
+      record = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    if (!record || typeof record !== 'object') continue
+    const type = (record as { type?: unknown }).type
+    if (type !== 'user' && type !== 'assistant') continue
+
+    for (const block of formatMessageForVSCode(record as never)) {
+      switch (block.kind) {
+        case 'assistant':
+        case 'prompt':
+          if (block.text.trim()) lines.push(block.text.trim())
+          break
+        case 'thinking':
+          // Reasoning is the agent's private working, and a transcript full of it buries
+          // what the agent actually did. The count says it happened.
+          lines.push('(thinking)')
+          break
+        case 'tool_use':
+          lines.push(`▸ ${block.name}${block.label ? `  ${block.label}` : ''}`)
+          break
+        case 'tool_result': {
+          const text = block.text.trim()
+          if (!text) break
+          const prefix = block.isError ? '  ✗ ' : '  ← '
+          // Indented so a multi-line result reads as belonging to the call above it.
+          lines.push(
+            text
+              .split('\n')
+              .map((row, index) => (index === 0 ? `${prefix}${row}` : `    ${row}`))
+              .join('\n'),
+          )
+          break
+        }
+      }
+    }
+  }
+
+  // Collapse the runs of "(thinking)" a reasoning model produces between tool calls.
+  return lines
+    .filter((entry, index) => entry !== '(thinking)' || lines[index - 1] !== '(thinking)')
+    .join('\n')
 }
 

@@ -1868,6 +1868,12 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
         "meta.name from the workflow script (e.g. 'spec'). Only set when task_type is 'local_workflow'.",
       ),
     prompt: z.string().optional(),
+    execution_mode: z
+      .enum(['foreground', 'background'])
+      .optional()
+      .describe(
+        'Whether the task runs inside the turn or detached from it. Absent when the task type has no such distinction.',
+      ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1894,7 +1900,11 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
     subtype: z.literal('task_progress'),
     task_id: z.string(),
     tool_use_id: z.string().optional(),
-    description: z.string(),
+    description: z
+      .string()
+      .describe(
+        "The task's CURRENT ACTIVITY, not its name — emitters send the resolved activity description (e.g. 'Reading src/index.ts') and fall back to the task description only when no activity is known. The name is in the task_started frame.",
+      ),
     usage: z.object({
       total_tokens: z.number(),
       tool_uses: z.number(),

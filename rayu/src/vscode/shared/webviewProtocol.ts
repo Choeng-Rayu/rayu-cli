@@ -454,6 +454,20 @@ export type HostToWebviewMessage =
    * reason `contextPathsResolved` is always sent.
    */
   | { type: 'toolOutputResolved'; requestId: string; text: string | null }
+  /**
+   * A background task's recorded output, answering `requestTaskOutput`.
+   *
+   * `text` is null when it could not be read at all — no engine to ask, or the request
+   * failed — and `error` says which. An EMPTY string is a different answer: the task exists
+   * and has recorded nothing yet, which the panel states rather than treating as a failure.
+   */
+  | {
+      type: 'taskOutputResolved'
+      requestId: string
+      text: string | null
+      truncated?: boolean
+      error?: string
+    }
 
 /** An approval the user must grant or refuse before a tool runs. */
 export interface PermissionRequestView {
@@ -677,6 +691,14 @@ export type WebviewToHostMessage =
    * settles.
    */
   | { type: 'requestToolOutput'; requestId: string; entryId: EntryId }
+  /**
+   * Read what a background task has recorded — a shell's stdout, an agent's transcript.
+   *
+   * On demand rather than streamed: see `ChatSession.taskOutput`. Uses the same
+   * `requestId` correlation as the two requests above, and is answered by
+   * `taskOutputResolved` in every case, including failure.
+   */
+  | { type: 'requestTaskOutput'; requestId: string; taskKey: string }
 
 export type BackgroundTaskStatus =
   | 'pending'

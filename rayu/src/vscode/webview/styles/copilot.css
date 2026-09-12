@@ -387,6 +387,38 @@ body {
 .rc-task-reply input { flex: 1; min-width: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); padding: 5px 7px; }
 .rc-task-reply button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 4px; padding: 4px 8px; }
 
+/* What the task recorded. The one part of the detail panel that is not metadata. */
+.rc-task-output { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.rc-task-output-head { display: flex; align-items: center; gap: var(--rc-gap); }
+.rc-task-output-head h4 { margin: 0; font-size: .82em; color: var(--vscode-descriptionForeground); }
+.rc-task-output-refresh {
+  margin-left: auto;
+  color: var(--vscode-textLink-foreground);
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: .82em;
+  cursor: pointer;
+}
+.rc-task-output-refresh:disabled { color: var(--vscode-descriptionForeground); cursor: default; }
+.rc-task-output-note { font-size: .82em; color: var(--vscode-descriptionForeground); }
+/*
+  Taller than a tool row's output and its own scroller: this is the whole point of opening
+  the task, whereas a tool pill sits inside a conversation that also has to stay readable.
+*/
+.rc-task-output-pre {
+  font-family: var(--vscode-editor-font-family);
+  font-size: .86em;
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+  padding: var(--rc-gap);
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @container shell (max-width: 720px) {
   .rc-main-area-tasks > .rc-transcript-wrapper { display: none; }
   .rc-task-center { flex: 1 1 auto; width: 100%; max-width: none; min-width: 0; resize: none; border-left: 0; }
