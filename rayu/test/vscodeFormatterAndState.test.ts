@@ -169,7 +169,7 @@ describe('VS Code Activity Formatter (formatActivityForVSCode)', () => {
     expect(blocks).toHaveLength(1)
     expect(blocks[0]).toMatchObject({
       kind: 'tool_use', toolUseId: 'ask_1', name: 'AskUserQuestion',
-      label: '1 question', parameters: '', questions: input.questions,
+      label: '1 question', parameters: '', details: [], questions: input.questions,
     })
   })
 
@@ -379,6 +379,7 @@ describe('VS Code Webview Reducer (chatReducer)', () => {
       name: 'Bash',
       label: 'npm test',
       parameters: 'npm test',
+      details: [{ label: 'Command', value: 'npm test', code: true }],
       status: 'running',
       output: null,
     }
@@ -601,5 +602,154 @@ describe('Autocomplete filtering and navigation logic', () => {
     // Arrow up
     expect(nextIndex(0, -1)).toBe(3) // Wrap to end
     expect(nextIndex(2, -1)).toBe(1)
+  })
+})
+
+
+/**
+ * The expanded tool row shows NAMED FIELDS, not the model's argument object.
+ *
+ * It used to print `JSON.stringify(input, null, 2)`, which dumped a `Write`'s entire file
+ * body above its own diff, put whatever the model passed on screen unbounded, and showed the
+ * user plumbing they did not write. The terminal shows the command, the path, the pattern —
+ * the one thing the call acted on — and lets the result carry the detail.
+ */
+describe('toolDetails', () => {
+  async function details(input: unknown) {
+    const { toolDetails } = await import(
+      '../src/vscode/host/panel/formatActivityForVSCode.js'
+    )
+    return toolDetails(input)
+  }
+
+  test('a shell call reads like the CLI: command, description, and only the flags that are set', async () => {
+    expect(
+      await details({
+        command: 'cd /repo && bun test',
+        description: 'Run CLI test suite',
+        timeout: 300_000,
+        run_in_background: true,
+        replace_all: false,
+      }),
+    ).toEqual([
+      // Monospace: whitespace and punctuation are the content of a command.
+      { label: 'Command', value: 'cd /repo && bun test', code: true },
+      { label: 'Description', value: 'Run CLI test suite' },
+      // Milliseconds are the wire format, not something to read.
+      { label: 'Timeout', value: '300s' },
+      { label: 'Background', value: 'yes' },
+      // `replace_all: false` is the default and says nothing, so it is absent entirely.
+    ])
+  })
+
+  test('a search names its pattern before the path that narrows it', async () => {
+    const result = await details({ path: 'src', pattern: 'loadConfig', output_mode: 'content' })
+    // Field order is fixed by the label table, NOT by the object's key order — argument order
+    // is the model's choice and would otherwise render the same call differently per turn.
+    expect(result.map(d => d.label)).toEqual(['Pattern', 'Path', 'Mode'])
+  })
+
+  test('bulk content is reported as a size, never printed', async () => {
+    const body = 'x'.repeat(4_200)
+    const result = await details({ file_path: '/tmp/x.ts', content: body })
+    expect(result).toEqual([
+      { label: 'File', value: '/tmp/x.ts' },
+      { label: 'Content', value: '4.1 KB (see the diff below)' },
+    ])
+    expect(JSON.stringify(result)).not.toContain(body)
+  })
+
+  test("an edit shows only its file, because the diff below renders both sides", async () => {
+    expect(
+      await details({
+        file_path: '/tmp/x.ts',
+        old_string: 'a'.repeat(300),
+        new_string: 'b'.repeat(320),
+      }),
+    ).toEqual([{ label: 'File', value: '/tmp/x.ts' }])
+  })
+
+  test('a subagent brief is sized, a one-line prompt is shown', async () => {
+    const brief = 'p'.repeat(2_600)
+    const agent = await details({ subagent_type: 'Explore', description: 'Explore structure', prompt: brief })
+    expect(agent).toContainEqual({ label: 'Prompt', value: '2.5 KB' })
+    expect(JSON.stringify(agent)).not.toContain(brief)
+
+    const fetch = await details({ url: 'https://example.com', prompt: 'What is the rate limit?' })
+    expect(fetch).toContainEqual({ label: 'Prompt', value: 'What is the rate limit?' })
+  })
+
+  test('an unrecognised credential argument is hidden; a recognised one is never hidden', async () => {
+    // MCP tools arrive with schemas this code has never seen. The key is still reported, so
+    // the call stays legible, but the value is not.
+    const mcp = await details({ designId: 'DAF123', apiToken: 'live-secret-value' })
+    expect(mcp).toEqual([
+      { label: 'Design Id', value: 'DAF123' },
+      { label: 'Api Token', value: '[hidden]' },
+    ])
+    expect(JSON.stringify(mcp)).not.toContain('live-secret-value')
+
+    // A `Bash` command is deliberately NOT hidden even when it carries a token: it is the
+    // thing the user is being asked to trust, and an unreadable command is worse than a
+    // readable one. Redaction of command CONTENT is a separate question from field naming.
+    const bash = await details({ command: 'curl -H "Authorization: Bearer abc123"' })
+    expect(bash[0]!.value).toContain('Bearer abc123')
+  })
+
+  test('shapes are described, not expanded, and internal keys are dropped', async () => {
+    expect(
+      await details({ nested: { a: 1, b: 2 }, list: [1, 2, 3], _simulatedSedEdit: { x: 1 } }),
+    ).toEqual([
+      // Enough for a developer to know what was passed, without printing values that may be
+      // credentials.
+      { label: 'Nested', value: '{ a, b }' },
+      { label: 'List', value: '3 items' },
+    ])
+  })
+
+  test('a non-object argument yields no fields — the row label already carries it', async () => {
+    expect(await details('just a string')).toEqual([])
+    expect(await details(undefined)).toEqual([])
+    expect(await details(null)).toEqual([])
+    expect(await details([1, 2, 3])).toEqual([])
+  })
+})
+
+describe('the tool row label', () => {
+  async function labelFor(name: string, input: unknown) {
+    const { formatMessageForVSCode } = await import(
+      '../src/vscode/host/panel/formatActivityForVSCode.js'
+    )
+    const blocks = formatMessageForVSCode({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu-1', name, input }],
+      },
+    } as never)
+    const block = blocks.find(b => b.kind === 'tool_use')
+    if (!block || block.kind !== 'tool_use') throw new Error('no tool_use block')
+    return block
+  }
+
+  test("a subagent's header shows its description, not its whole brief", async () => {
+    const brief = 'Explore every module and report back in detail. '.repeat(60)
+    const block = await labelFor('Agent', {
+      subagent_type: 'Explore',
+      description: 'Explore codebase structure',
+      prompt: brief,
+    })
+    // `summariseInput`'s precedence ends at `prompt`, so this used to put the entire brief in
+    // the pill header. The CLI shows the one-line description.
+    expect(block.label).toBe('Explore codebase structure')
+  })
+
+  test('a command still wins over a description, and the raw arguments are still carried', async () => {
+    const block = await labelFor('Bash', { command: 'bun test', description: 'Run tests' })
+    expect(block.label).toBe('bun test')
+    expect(block.details).toContainEqual({ label: 'Command', value: 'bun test', code: true })
+    // Kept for the detailed-view toggle, so nothing is unreachable — it is simply no longer
+    // the default reading.
+    expect(JSON.parse(block.parameters).command).toBe('bun test')
   })
 })

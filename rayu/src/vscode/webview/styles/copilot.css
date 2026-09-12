@@ -1287,6 +1287,50 @@ body {
   margin-top: var(--rc-gap);
 }
 
+/*
+  A tool call's named fields — "Command", "File", "Pattern" — which replaced the raw JSON
+  argument dump. A two-column grid so the labels line up down the list and the eye can run
+  along the values, which is what the terminal's own detail views do.
+*/
+.rc-tool-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 var(--rc-gap) 0;
+  min-width: 0;
+}
+
+.rc-tool-field {
+  display: grid;
+  /* The label column sizes to the widest label, then stops growing. `minmax(0, 1fr)` on the
+     value is what lets a long command wrap instead of forcing the row wider than the panel. */
+  grid-template-columns: minmax(4.5em, max-content) minmax(0, 1fr);
+  gap: var(--rc-gap);
+  align-items: baseline;
+  font-size: 0.9em;
+}
+
+.rc-tool-field dt {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.rc-tool-field dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* A command or a pattern, where whitespace and punctuation ARE the content. */
+.rc-tool-field-code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.95em;
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+
 .rc-tool-pre {
   font-family: var(--vscode-editor-font-family);
   background-color: var(--vscode-textCodeBlock-background);

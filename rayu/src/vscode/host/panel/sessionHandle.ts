@@ -2627,6 +2627,7 @@ export class ChatSession {
       toolUseId: block.toolUseId,
       name: block.name,
       label: block.label,
+      details: block.details,
       parameters: block.parameters,
       status: 'running',
       output: null,
