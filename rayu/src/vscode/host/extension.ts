@@ -922,6 +922,29 @@ export function activate(context: vscode.ExtensionContext): void {
           text: current().session.fullToolOutput(entryId),
         })
       },
+      requestTaskOutput: async (requestId, taskKey) => {
+        // Same discipline, but the answer comes from the engine over the control channel,
+        // so this is the one request of the three that can fail for an external reason. It
+        // still always replies — with the reason, which the panel shows in place of the
+        // output rather than leaving a button that appears to do nothing.
+        try {
+          const output = await current().session.taskOutput(taskKey)
+          provider.post({
+            type: 'taskOutputResolved',
+            requestId,
+            text: output?.text ?? null,
+            truncated: output?.truncated === true,
+            ...(output ? {} : { error: 'This conversation has no running engine to ask.' }),
+          })
+        } catch (cause) {
+          provider.post({
+            type: 'taskOutputResolved',
+            requestId,
+            text: null,
+            error: cause instanceof Error ? cause.message : String(cause),
+          })
+        }
+      },
       modelChooserChoice: async (target, value, agentType) => {
         setModelChooser(null)
         const notice = applySelection(target, value, agentType)

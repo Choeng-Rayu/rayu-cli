@@ -44,6 +44,7 @@ import { isTodoToolEntry } from './components/TodoListCard.js'
 import {
   BackgroundTaskBar,
   BackgroundTaskCenter,
+  type TaskOutputResult,
 } from './components/BackgroundTaskCenter.js'
 import { RayuMark } from './components/Icons.js'
 import {
@@ -208,6 +209,27 @@ export function App(): JSX.Element {
     [],
   )
 
+  /**
+   * A background task's recorded output.
+   *
+   * Same correlation map as the tool-row request above — one mechanism for "ask the host
+   * something and await it" — but its own resolver signature, because this answer can
+   * carry a failure reason and a truncation flag rather than only text.
+   */
+  const taskOutputRequests = useRef(
+    new Map<string, (result: TaskOutputResult) => void>(),
+  )
+
+  const requestTaskOutput = useCallback(
+    (taskKey: string): Promise<TaskOutputResult> =>
+      new Promise<TaskOutputResult>(resolve => {
+        const requestId = `task-out-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        taskOutputRequests.current.set(requestId, resolve)
+        send({ type: 'requestTaskOutput', requestId, taskKey })
+      }),
+    [],
+  )
+
   useEffect(() => {
     function onMessage(event: MessageEvent<HostToWebviewMessage>): void {
       const message = event.data
@@ -226,6 +248,17 @@ export function App(): JSX.Element {
         const resolve = outputRequests.current.get(message.requestId)
         outputRequests.current.delete(message.requestId)
         resolve?.(message.text)
+        return
+      }
+
+      if (message.type === 'taskOutputResolved') {
+        const resolve = taskOutputRequests.current.get(message.requestId)
+        taskOutputRequests.current.delete(message.requestId)
+        resolve?.({
+          text: message.text,
+          truncated: message.truncated === true,
+          error: message.error,
+        })
         return
       }
 
@@ -478,6 +511,7 @@ export function App(): JSX.Element {
               text,
             })}
             permissions={state.pendingPermissions}
+            onRequestOutput={requestTaskOutput}
           />
         ) : null}
       </div>

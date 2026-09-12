@@ -102,6 +102,35 @@ export function clamp(text: string, limit = MAX_WEBVIEW_TEXT_CHARS): string {
   return `${trimmed.slice(0, limit)}\n…[truncated ${trimmed.length - limit} more characters]`
 }
 
+const SYSTEM_REMINDER_OPEN = '<system-reminder>'
+const SYSTEM_REMINDER_CLOSE = '</system-reminder>'
+
+/**
+ * Remove `<system-reminder>` blocks — context written for the model, never for a reader.
+ *
+ * ── WHY THIS IS A SECOND COPY OF AN EXISTING LOOP ───────────────────────────────
+ *
+ * `src/utils/transcriptSearch.ts` strips the same blocks with the same loop, and reusing it
+ * would mean importing that module — which pulls in `utils/messages.ts` and its dependency
+ * graph — into the EXTENSION bundle, to share eight lines of `indexOf` and `slice`. The
+ * trade is not worth it. Stated here rather than left to be discovered, so the two stay in
+ * step: they implement one rule, "drop everything between the tags, anywhere in the text".
+ *
+ * Unclosed tags are left alone rather than truncating to the end of the text: a tail that
+ * begins mid-block would otherwise lose real output that follows it.
+ */
+export function stripSystemReminders(text: string): string {
+  let result = text
+  let open = result.indexOf(SYSTEM_REMINDER_OPEN)
+  while (open >= 0) {
+    const close = result.indexOf(SYSTEM_REMINDER_CLOSE, open)
+    if (close < 0) break
+    result = result.slice(0, open) + result.slice(close + SYSTEM_REMINDER_CLOSE.length)
+    open = result.indexOf(SYSTEM_REMINDER_OPEN)
+  }
+  return result
+}
+
 /** A settled transcript entry, ready to render. */
 export type VSCodeActivityBlock =
   | { kind: 'prompt'; text: string }
@@ -379,7 +408,12 @@ export function formatMessageForVSCode(
       }
 
       case 'tool_result': {
-        const text = resultText(block.content)
+        // Engine furniture, stripped before anything measures or displays the text: the
+        // reminders are appended when a result is prepared for the MODEL, and the CLI's own
+        // renderers strip them for the same reason (`transcriptSearch.ts` calls them "Claude
+        // context, not user-visible"). Left in, they added the same ~40-word malware notice
+        // under every Read in the panel and dominated a subagent's recorded transcript.
+        const text = stripSystemReminders(resultText(block.content))
         const trimmed = text.trim()
         // ── COMPLETION AND VISIBLE OUTPUT ARE SEPARATE CONCERNS ──────────────
         //

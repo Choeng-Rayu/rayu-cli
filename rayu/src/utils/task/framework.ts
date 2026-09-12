@@ -113,6 +113,15 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
         ? (task.workflowName as string | undefined)
         : undefined,
     prompt: 'prompt' in task ? (task.prompt as string) : undefined,
+    // Only task types that HAVE the distinction carry it, read from the same flag the
+    // CLI's own projection uses (`taskProjection.ts`). Omitted rather than guessed for
+    // the rest, so a consumer can tell "foreground" from "not applicable".
+    execution_mode:
+      'isBackgrounded' in task
+        ? task.isBackgrounded === true
+          ? 'background'
+          : 'foreground'
+        : undefined,
   })
 }
 

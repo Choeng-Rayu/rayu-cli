@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
   BackgroundTaskStatus,
@@ -7,6 +7,19 @@ import type {
 } from '../../shared/webviewProtocol.js'
 import { formatDuration } from '../../shared/turnProgress.js'
 import { useSecondTick } from '../useSecondTick.js'
+import { ToolOutput } from './ToolOutput.js'
+
+/**
+ * The answer to `requestTaskOutput`.
+ *
+ * `text: null` means it could not be read — `error` says why. An empty string means the
+ * task recorded nothing, which is a different and unremarkable outcome.
+ */
+export type TaskOutputResult = {
+  text: string | null
+  truncated: boolean
+  error?: string
+}
 
 type Filter = 'all' | 'active' | 'waiting' | 'completed' | 'failed'
 
@@ -66,6 +79,7 @@ export function BackgroundTaskCenter({
   onStop,
   onSend,
   permissions,
+  onRequestOutput,
 }: {
   tasks: BackgroundTaskView[]
   supported: boolean
@@ -76,6 +90,11 @@ export function BackgroundTaskCenter({
   onStop: (task: BackgroundTaskView) => void
   onSend: (task: BackgroundTaskView, text: string) => void
   permissions: PermissionRequestView[]
+  /**
+   * Fetch what the selected task has recorded. Optional so the component still renders
+   * without it — an attached CLI owner serves task state but has no output channel.
+   */
+  onRequestOutput?: (taskKey: string) => Promise<TaskOutputResult>
 }): JSX.Element {
   const [filter, setFilter] = useState<Filter>('all')
   const [reply, setReply] = useState('')
@@ -145,7 +164,7 @@ export function BackgroundTaskCenter({
                     <StatusDot status={task.status} />
                     <span className="rc-task-row-body">
                       <span className="rc-task-row-title">{task.agentName ?? task.description}</span>
-                      <span className="rc-task-row-activity">{task.currentActivity ?? statusLabel(task.status)}</span>
+                      <span className="rc-task-row-activity">{rowActivity(task)}</span>
                       <span className="rc-task-row-meta">
                         {task.executionMode} · {formatElapsed(task.startedAt, task.updatedAt, isActive(task.status))}
                         {task.model ? ` · ${task.provider ? `${task.provider}/` : ''}${task.model}` : ''}
@@ -183,7 +202,12 @@ export function BackgroundTaskCenter({
             <div className="rc-task-stats">
               <span>{formatElapsed(selected.startedAt, selected.updatedAt, isActive(selected.status))}</span>
               <span>{selected.toolCount} tools</span>
-              <span>{formatCount(selected.tokenCount)} tokens</span>
+              {/* A count of zero here is almost always "not reported" rather than "none":
+                  tool uses are counted by the engine itself, but token totals come from the
+                  provider's PER-MESSAGE usage, and providers translated onto the Anthropic
+                  shape frequently send none (only the turn's final `result` carries them).
+                  Printing "0 tokens" presented that gap as a measurement. */}
+              <span>{selected.tokenCount ? `${formatCount(selected.tokenCount)} tokens` : 'tokens not reported'}</span>
             </div>
             {selectedPermissions.map(request => (
               <div key={request.requestId} className="rc-task-waiting-card" role="status">
@@ -199,6 +223,13 @@ export function BackgroundTaskCenter({
                   </div>
                 ))}
               </div>
+            ) : null}
+            {onRequestOutput &&
+            (selected.capabilities.hasOutput || selected.capabilities.hasTranscript) ? (
+              <TaskOutputView
+                task={selected}
+                onRequestOutput={onRequestOutput}
+              />
             ) : null}
             {selected.workflowProgress?.length ? (
               <div className="rc-task-activities">
@@ -238,6 +269,98 @@ function TaskCenterHeader({ onClose }: { onClose: () => void }): JSX.Element {
   return <header className="rc-task-center-head"><strong>Background work</strong><button type="button" onClick={onClose} aria-label="Back to main conversation">×</button></header>
 }
 
+/**
+ * What the selected background task has actually recorded.
+ *
+ * ── THE POINT OF THIS PANEL ─────────────────────────────────────────────────────
+ *
+ * Everything else here is metadata: a status, a count, a one-line activity. None of it
+ * answers "what did it find" or "what did the command print", which is the only reason to
+ * open a background task at all. A subagent's whole conversation and a shell's whole stdout
+ * are recorded on disk by the engine; this reads the tail of that.
+ *
+ * ── FETCHED ON SELECTION, REFRESHED BY HAND ─────────────────────────────────────
+ *
+ * One request per task the user selects, because selecting is a deliberate act and the
+ * whole point is to see the output without a further click. NOT polled: the tail is up to
+ * half a megabyte and a running shell would have the panel re-fetching it every second for
+ * a few new lines. `Refresh` is there for when the user wants the newest tail, and the
+ * activity line above already shows that something is happening meanwhile.
+ */
+function TaskOutputView({
+  task,
+  onRequestOutput,
+}: {
+  task: BackgroundTaskView
+  onRequestOutput: (taskKey: string) => Promise<TaskOutputResult>
+}): JSX.Element {
+  const [result, setResult] = useState<TaskOutputResult | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(
+    (key: string) => {
+      setLoading(true)
+      onRequestOutput(key)
+        .then(next => {
+          // A reply for a task the user has since navigated away from must not land in
+          // this view — `key` is captured, so compare before committing.
+          if (key === task.key) setResult(next)
+        })
+        // The host answers every request, including failures, so this is a broken channel
+        // rather than a slow one.
+        .catch(() => {
+          if (key === task.key) {
+            setResult({ text: null, truncated: false, error: 'The request failed.' })
+          }
+        })
+        .finally(() => setLoading(false))
+    },
+    [onRequestOutput, task.key],
+  )
+
+  useEffect(() => {
+    setResult(null)
+    load(task.key)
+  }, [task.key, load])
+
+  const text = result?.text
+  return (
+    <div className="rc-task-output">
+      <div className="rc-task-output-head">
+        <h4>Output</h4>
+        <button
+          type="button"
+          className="rc-task-output-refresh"
+          onClick={() => load(task.key)}
+          disabled={loading}
+        >
+          {loading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+      {result?.truncated ? (
+        <div className="rc-task-output-note">
+          Showing the end of the output — earlier lines were omitted.
+        </div>
+      ) : null}
+      {text === null ? (
+        <div className="rc-task-output-note">
+          {result?.error ?? 'The output could not be read.'}
+        </div>
+      ) : text === undefined ? (
+        <div className="rc-task-output-note">Reading…</div>
+      ) : text.trim() ? (
+        <ToolOutput text={text} className="rc-task-output-pre" />
+      ) : (
+        <div className="rc-task-output-note">
+          {isActive(task.status)
+            ? 'Nothing recorded yet.'
+            : 'This task recorded no output.'}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StatusDot({ status }: { status: BackgroundTaskStatus }): JSX.Element {
   return <span className={`rc-task-status rc-task-status-${status}`} aria-label={status} />
 }
@@ -267,6 +390,21 @@ function groupLabel(group: BackgroundTaskView['group']): string {
 
 function statusLabel(status: BackgroundTaskStatus): string {
   return ({ pending: 'Pending', running: 'Running', waiting: 'Waiting', completed: 'Completed', failed: 'Failed', stopped: 'Stopped' })[status]
+}
+
+/**
+ * The row's second line: what the task is doing, never a repeat of its first line.
+ *
+ * A task the engine has only announced has no activity yet. It used to report its own
+ * description as its activity, so the row printed the same sentence twice — once as the
+ * title and once beneath it — which read as a rendering bug and wasted the one line that
+ * could have said something. The status is the honest answer at that point.
+ */
+function rowActivity(task: BackgroundTaskView): string {
+  const title = task.agentName ?? task.description
+  const activity = task.currentActivity?.trim()
+  if (!activity || activity === title) return statusLabel(task.status)
+  return activity
 }
 
 function typeLabel(task: BackgroundTaskView): string {

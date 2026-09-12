@@ -5,7 +5,7 @@
 // never logged or echoed; callers reference providers by id, not by key value.
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getRayuAuthConfigDir } from './envUtils.js'
+import { getRayuAuthConfigDir, isUnsandboxedTestConfigAccess } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
@@ -283,6 +283,14 @@ function maybeWarnInsecurePermissions(path: string): void {
 
 export function loadRayuConfig(): RayuConfig {
   if (cache) return cache
+  // A test that has not sandboxed its config directory must not see — or later overwrite —
+  // the developer's real providers and API keys. It gets an empty config it can populate
+  // in memory, which is also what makes such a test deterministic. See
+  // `isUnsandboxedTestConfigAccess`.
+  if (isUnsandboxedTestConfigAccess()) {
+    cache = { providers: [] }
+    return cache
+  }
   const path = configPath()
   if (existsSync(path)) {
     try {
@@ -324,6 +332,14 @@ export function loadRayuConfig(): RayuConfig {
 }
 
 export function saveRayuConfig(config: RayuConfig): void {
+  // In-memory only, for the reason in `isUnsandboxedTestConfigAccess`: this file holds the
+  // user's API keys and provider endpoints, and an unsandboxed test run has destroyed both.
+  // Reads go through `cache`, so a test that writes and reads back still behaves normally.
+  if (isUnsandboxedTestConfigAccess()) {
+    cache = config
+    clearContextPrepCache('rayu-config-save')
+    return
+  }
   const dir = getRayuAuthConfigDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   // 0600: secrets must not be world/group readable.
