@@ -29,7 +29,7 @@ import { useMemo, useState } from 'react'
 import type { ThinkingEntryView } from '../../shared/webviewProtocol.js'
 import { formatDuration } from '../../shared/turnProgress.js'
 import { renderMarkdown } from '../markdown.js'
-import { ChevronIcon } from './Icons.js'
+import { ChevronIcon, ProgressGlyph } from './Icons.js'
 
 /** How many trailing reasoning lines the collapsed form shows. Matches the CLI. */
 const PREVIEW_LINES = 3
@@ -73,7 +73,7 @@ export function ThinkingBlock({
         title={expanded ? 'Hide reasoning' : 'Show reasoning'}
       >
         {block.streaming ? (
-          <span className="rc-progress-glyph" aria-hidden="true" />
+          <ProgressGlyph />
         ) : (
           <span className="rc-thinking-check" aria-hidden="true">
             &#10003;

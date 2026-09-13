@@ -35,6 +35,7 @@ import {
   ListIcon,
   PlugIcon,
   PlusIcon,
+  ProgressGlyph,
   RayuMark,
   SignOutIcon,
 } from './Icons.js'
@@ -194,7 +195,7 @@ export function SessionHeader({
           aria-live="polite"
         >
           {status === 'working' || status === 'waiting' ? (
-            <span className="rc-progress-glyph" aria-hidden="true" />
+            <ProgressGlyph />
           ) : null}
           {STATUS_LABEL[status]}
         </span>

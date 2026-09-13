@@ -40,6 +40,7 @@
  * from partial source and several `require()`d modules only disappear when a
  * `--define` folds a branch to a constant.
  */
+import { realpathSync } from 'node:fs'
 import { loadDotEnv } from '../utils/envUtils.js'
 import {
   CONNECT_FLAG,
@@ -217,6 +218,22 @@ const KEYLESS_PROVIDER_KINDS = new Set<string>([
   'copilot',
 ])
 
+/**
+ * Same rule `getOriginalCwd()` applies in `bootstrap/state.ts`: realpath then
+ * NFC-normalize, falling back to normalizing the raw path if `realpathSync` throws
+ * (path not yet resolvable, or a CloudStorage mount's per-component `lstat` EPERM).
+ * Session records written by `registerSession()` already carry a cwd normalized this
+ * way, so an attach-list comparison must normalize its own input identically or the
+ * two will never match on a workspace whose path crosses a symlink.
+ */
+function normalizeCwd(path: string): string {
+  try {
+    return realpathSync(path).normalize('NFC')
+  } catch {
+    return path.normalize('NFC')
+  }
+}
+
 async function runConnect(rawAction: string | undefined): Promise<void> {
   const emit = (frame: ConnectFrame): void => {
     process.stdout.write(`${JSON.stringify(frame)}\n`)
@@ -247,12 +264,21 @@ async function runConnect(rawAction: string | undefined): Promise<void> {
     if (action.action === 'attach-list') {
       const { readSessionRecords } = await import('../utils/concurrentSessions.js')
       const records = await readSessionRecords()
+      // `readSessionRecords()` returns each session's `cwd` exactly as the terminal CLI
+      // wrote it: realpath-resolved and NFC-normalized (`getOriginalCwd()` in
+      // `bootstrap/state.ts`). `action.cwd` SHOULD already be normalized the same way by
+      // the caller (`extension.ts`'s `engineCwdRealpath`), but normalizing it again here
+      // too is defense in depth for this comparison specifically — a caller that forgets
+      // to pre-normalize would otherwise silently filter out every session, forever, with
+      // no error to surface. Idempotent on an already-normalized path, so this costs
+      // nothing when the caller did it right.
+      const targetCwd = normalizeCwd(action.cwd)
       emit({
         type: 'rayucode_attach_targets',
         targets: records
           .filter(
             r =>
-              r.cwd === action.cwd &&
+              normalizeCwd(r.cwd) === targetCwd &&
               // Without both there is nothing to dial.
               !!r.ipcAddress &&
               !!r.ipcToken,

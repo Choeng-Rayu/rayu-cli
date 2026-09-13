@@ -26,16 +26,15 @@ import { hasRayuSession } from '../../services/rayuAuth/rayuSession.js'
 import { openBrowser } from '../../utils/browser.js'
 
 /**
- * How often the pending purchase is polled. The backend's Bakong poll is what
+ * How often the pending purchase is polled. The backend's ABA confirmation is what
  * actually confirms the payment, so this only needs to be responsive to a human
  * finishing a wallet transfer — not tight.
  */
 const POLL_INTERVAL_MS = 3000
 
-/** Payment rails offered, in the order a Cambodian user most likely wants them. */
+/** Payment rails offered to the user. */
 const RAIL_OPTIONS: { value: TopupMethod; label: string; description: string }[] = [
   { value: 'aba', label: 'ABA', description: 'Scan with ABA Mobile' },
-  { value: 'bakong', label: 'Bakong KHQR', description: 'Any KHQR-capable wallet' },
   // Opens a hosted Stripe Checkout page in the user's browser. The server
   // answers 501 until the card rail is enabled, and that message is shown
   // verbatim — so the option is always visible (not gated behind a feature
@@ -45,7 +44,7 @@ const RAIL_OPTIONS: { value: TopupMethod; label: string; description: string }[]
 
 type Phase = 'loading' | 'amount' | 'method' | 'pay' | 'done'
 
-/** Render a KHQR payload as terminal-drawable ASCII. */
+/** Render an ABA QR payload as terminal-drawable ASCII. */
 async function renderQr(payload: string): Promise<string> {
   return qrToString(payload, { type: 'terminal', small: true, errorCorrectionLevel: 'L' })
 }
@@ -136,11 +135,9 @@ function TopupFlow({
           )
           return
         }
-        if (status.status === 'expired' || status.status === 'canceled') {
+        if (['failed', 'expired', 'canceled', 'refunded'].includes(status.status)) {
           setPhase('done')
-          finish(
-            `This QR ${status.status === 'expired' ? 'expired' : 'was canceled'} before payment. Run /topup to start a new one.`,
-          )
+          finish(`Payment ${status.status}. Run /topup to start a new ABA payment.`)
         }
       })()
     }, POLL_INTERVAL_MS)
@@ -186,13 +183,13 @@ function TopupFlow({
         // Card rail: open the hosted Checkout page in the user's browser. The
         // URL is also printed below so a headless / SSH session can still pay
         // (copy-paste into a local browser). The poll loop below watches the
-        // payment row and reports paid/expired/canceled like the KHQR rails.
+        // payment row and reports paid/expired/canceled like the ABA rail.
         if (res.checkoutUrl) {
           void openBrowser(res.checkoutUrl)
         }
         return
       }
-      // KHQR rail: render the QR inline. res.qr is present for the KHQR rails;
+      // ABA rail: render the QR inline. res.qr is present for ABA;
       // guarded anyway so a misshapen response cannot crash the command.
       try {
         if (res.qr) setQrArt(await renderQr(res.qr))
@@ -222,12 +219,7 @@ function TopupFlow({
           Current top-up balance: {balance.toLocaleString()} credits
         </Text>
       )}
-      {quote.topUpEnabled === false && (
-        <Text color="warning">
-          Your plan does not spend top-up credits — buying them will not raise
-          your limit until you switch plans.
-        </Text>
-      )}
+      <Text dimColor>PAYG credits never expire and do not change your plan.</Text>
     </Box>
   )
 
@@ -323,8 +315,8 @@ function TopupFlow({
         ) : (
           <Box flexDirection="column">
             <Text dimColor>
-              Could not draw the QR here — paste this KHQR payload into your
-              wallet:
+              Could not draw the QR here — paste this ABA QR payload into ABA
+              Mobile:
             </Text>
             <Text>{purchase.qr ?? ''}</Text>
           </Box>
@@ -332,7 +324,7 @@ function TopupFlow({
         <Text dimColor>
           {purchase.method === 'stripe'
             ? `Waiting for payment confirmation${'.'.repeat(1 + ((waited / POLL_INTERVAL_MS) % 3))}`
-            : `Scan with ${purchase.method === 'aba' ? 'ABA Mobile' : 'any KHQR wallet'} · waiting for payment${'.'.repeat(1 + ((waited / POLL_INTERVAL_MS) % 3))}`}
+            : `Scan with ABA Mobile · waiting for payment${'.'.repeat(1 + ((waited / POLL_INTERVAL_MS) % 3))}`}
         </Text>
         {purchase.expiresAt && (
           <Text dimColor>

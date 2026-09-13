@@ -234,7 +234,7 @@ describe('createTopupPurchase', () => {
           credits: 5000,
           amountCents: 500,
           currency: 'USD',
-          method: 'bakong',
+          method: 'aba',
           qr: 'TESTQR',
           md5: 'md5',
           expiresAt: null,
@@ -242,10 +242,10 @@ describe('createTopupPurchase', () => {
         },
       }
     })
-    const res = await createTopupPurchase(5000, 'bakong')
+    const res = await createTopupPurchase(5000, 'aba')
     expect(isTopupError(res)).toBe(false)
     expect(seen[0]).toBe('https://api.test/api/payments/topup')
-    expect(body).toEqual({ credits: 5000, method: 'bakong' })
+    expect(body).toEqual({ credits: 5000, method: 'aba' })
     expect(res && !isTopupError(res) ? res.amountCents : null).toBe(500)
   })
 
@@ -254,7 +254,7 @@ describe('createTopupPurchase', () => {
       status: 400,
       body: { message: 'Minimum top-up is $1.00 (1,000 credits)' },
     }))
-    const res = await createTopupPurchase(10, 'bakong')
+    const res = await createTopupPurchase(10, 'aba')
     expect(isTopupError(res)).toBe(true)
     expect(isTopupError(res) ? res.message : '').toBe(
       'Minimum top-up is $1.00 (1,000 credits)',
@@ -264,7 +264,7 @@ describe('createTopupPurchase', () => {
   test('reports the 501 for the card rail instead of falling back to a QR', async () => {
     stubFetch(() => ({
       status: 501,
-      body: { message: 'Card (Stripe) top-up is not enabled on this server — use ABA or Bakong KHQR.' },
+      body: { message: 'Card (Stripe) top-up is not enabled on this server — use ABA.' },
     }))
     const res = await createTopupPurchase(5000, 'stripe')
     expect(isTopupError(res)).toBe(true)

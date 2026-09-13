@@ -46,7 +46,7 @@ import {
   BackgroundTaskCenter,
   type TaskOutputResult,
 } from './components/BackgroundTaskCenter.js'
-import { RayuMark } from './components/Icons.js'
+import { ProgressGlyph, RayuMark } from './components/Icons.js'
 import {
   SessionHeader,
   deriveSessionStatus,
@@ -863,10 +863,11 @@ function TurnStatus({ progress }: { progress: TurnProgressView }): JSX.Element {
         A static glyph while WAITING. The engine is blocked on the user there, and an
         animated spinner would claim progress that cannot happen until they answer.
       */}
-      <span
-        className={waiting ? 'rc-turn-glyph rc-turn-glyph-waiting' : 'rc-progress-glyph'}
-        aria-hidden="true"
-      />
+      {waiting ? (
+        <span className="rc-turn-glyph rc-turn-glyph-waiting" aria-hidden="true" />
+      ) : (
+        <ProgressGlyph />
+      )}
       <span className="rc-thinking-text">
         {describeTurnPhase(progress)}
         {'\u2026 '}

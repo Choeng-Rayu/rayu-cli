@@ -940,37 +940,22 @@ body {
 /*
  * The live progress glyph.
  *
- * A rotating arc rather than a pulsing dot: a pulse reads as "alive" but not as
- * "advancing", and this sits next to an elapsed counter that is advancing. Built from a
- * border so it needs no SVG and inherits the theme's progress colour.
+ * The CLI's own braille pulse text (`⠁⠇⠷⡿⣿` and back, via `useBrailleSpinner` /
+ * `ProgressGlyph` in `Icons.tsx`) — not a CSS-drawn shape. The previous version was a
+ * `border-radius` ring with one side transparent, rotating: at no point in that
+ * animation did it ever look like a complete circle, which read as perpetually
+ * unfinished rather than "advancing." This glyph genuinely reaches a solid, fully-filled
+ * cell at the midpoint of every pulse, matching the terminal's own spinner exactly.
+ * Reduced motion is handled inside `useBrailleSpinner.ts` (returns the fully-filled
+ * glyph, steady, no timer) rather than via CSS here.
  */
 .rc-progress-glyph {
-  width: 11px;
-  height: 11px;
+  display: inline-flex;
   flex: 0 0 auto;
-  border-radius: 50%;
-  border: 1.5px solid var(--vscode-progressBar-background, var(--vscode-foreground));
-  border-top-color: transparent;
-  border-right-color: transparent;
-  animation: rc-spin 0.9s linear infinite;
-}
-
-@keyframes rc-spin {
-  to { transform: rotate(360deg); }
-}
-
-/*
- * Under reduced motion the arc must still be VISIBLE, not merely un-animated. The global
- * reduce-motion rule only freezes the animation, which would leave a partial ring at a
- * random angle; a complete ring reads as a deliberate status glyph instead.
- */
-@media (prefers-reduced-motion: reduce) {
-  .rc-progress-glyph {
-    animation: none;
-    border-top-color: var(--vscode-progressBar-background, var(--vscode-foreground));
-    border-right-color: var(--vscode-progressBar-background, var(--vscode-foreground));
-    opacity: 0.7;
-  }
+  color: var(--vscode-progressBar-background, var(--vscode-foreground));
+  font-size: 0.9em;
+  font-weight: 700;
+  line-height: 1;
 }
 
 /* Glyph for a settled or blocked turn — no motion, because nothing is progressing. */
@@ -1528,23 +1513,38 @@ body {
 }
 
 .rc-todo-status-pending,
+.rc-todo-status-completed,
 .rc-todo-status-active {
-  box-sizing: border-box;
-  width: 11px;
-  height: 11px;
-  margin: 3px 1.5px 0;
-  border: 1.5px solid var(--vscode-descriptionForeground);
-  border-radius: 50%;
+  font-size: 0.8em;
+  line-height: 1;
 }
 
-.rc-todo-status-active {
-  border-color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
-  border-right-color: transparent;
-  animation: rc-todo-spin 850ms linear infinite;
+/*
+ * ◻ — `figures.squareSmall`, exactly `getTaskIcon()`'s `pending` case in the CLI's own
+ * `TaskListV2.tsx` (the terminal's real dedicated task-list component — not
+ * `StatusIcon.tsx`, which is a different, generic status icon unrelated to task rows).
+ * Undecorated, matching the CLI's `color: undefined` for this state.
+ */
+.rc-todo-status-pending {
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.8;
 }
 
-@keyframes rc-todo-spin {
-  to { transform: rotate(360deg); }
+/* ✔ — `figures.tick`, the CLI's `completed` icon, colored the same as its `success`. */
+.rc-todo-status-completed {
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+/*
+ * ◼ — `figures.squareSmallFilled`, the CLI's `in_progress` icon, colored the same as its
+ * `brand` (Rayu green in the terminal theme; mapped here onto VS Code's own progress
+ * accent so it still adapts to the active colour theme). Deliberately STATIC: the CLI
+ * does not animate this icon — `TaskItem` in `TaskListV2.tsx` keeps it a plain filled
+ * square and instead animates a SEPARATE trailing activity line (`.rc-todo-active`
+ * below), which is what actually conveys "still moving."
+ */
+.rc-todo-status-active {
+  color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
 }
 
 .rc-todo-copy {
@@ -1632,13 +1632,6 @@ body {
   background: var(--vscode-inputValidation-errorBackground);
   overflow-wrap: anywhere;
   font-size: 0.85em;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .rc-todo-status-active {
-    animation: none;
-    border-right-color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
-  }
 }
 
 /* ── permission card ─────────────────────────────────────────────────────── */

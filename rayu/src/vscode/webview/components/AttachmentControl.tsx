@@ -72,7 +72,7 @@ export function AttachmentControl({
 
       {open ? (
         <div
-          className="rc-dropdown-panel rc-dropdown-panel-below"
+          className="rc-dropdown-panel"
           role="dialog"
           aria-label="Attach to a CLI session"
         >
