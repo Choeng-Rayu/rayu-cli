@@ -36,7 +36,7 @@ import {
   latestAction,
   type ActivityKind,
 } from '../state/activityGroups.js'
-import { ChevronIcon } from './Icons.js'
+import { ChevronIcon, ProgressGlyph } from './Icons.js'
 import { ToolActionEntry } from './TranscriptEntryView.js'
 import { useSecondTick } from '../useSecondTick.js'
 
@@ -126,7 +126,7 @@ export function ActivityGroup({
           <ChevronIcon size={10} direction={expanded ? 'down' : 'right'} />
         </span>
         {live ? (
-          <span className="rc-progress-glyph" aria-hidden="true" />
+          <ProgressGlyph />
         ) : (
           <span className="rc-activity-dot" aria-hidden="true" />
         )}

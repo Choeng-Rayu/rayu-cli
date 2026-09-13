@@ -19,7 +19,15 @@
  * built. Build with `bun run build:cli && bun run build:vscode`.
  */
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -188,5 +196,117 @@ describe.if(bundlesBuilt)('the host exposes the same engine as the CLI', () => {
   test('the host needs no flags of its own, proving it owns the contract', () => {
     // The CLI required four flags above; the host was spawned with none.
     expect(hostInit).not.toBeNull()
+  })
+})
+
+
+/**
+ * `attach-list` cwd matching must survive symlink resolution.
+ *
+ * ── THE BUG THIS GUARDS ─────────────────────────────────────────────────────────
+ *
+ * The terminal CLI registers its session under `getOriginalCwd()`
+ * (`src/bootstrap/state.ts`), which is `realpathSync(cwd()).normalize('NFC')` —
+ * symlinks resolved. Before this test existed, the extension host passed VS Code's
+ * raw, unresolved `workspaceFolders[0].uri.fsPath` straight into the `attach-list`
+ * action, which filtered session records with a strict `===`. On any workspace
+ * whose path crosses a symlink, that comparison could never succeed: a session that
+ * had already exited still looked present until its stale PID file aged out, and a
+ * brand-new session run from that workspace would never be found no matter how many
+ * times the attach dropdown was reopened — because the two cwd strings simply never
+ * converged, not because anything was stale in a way a retry would fix.
+ *
+ * This test creates a REAL symlink, writes a REAL session record under the
+ * REALPATH (exactly as `registerSession()` does), then queries `attach-list`
+ * through the real spawned entrypoint using the SYMLINKED, unresolved path —
+ * reproducing the exact mismatch a symlinked VS Code workspace folder produces.
+ */
+describe('attach-list survives a symlinked workspace path', () => {
+  test('a session registered under the realpath is found when queried by its symlink', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rayu-attach-symlink-'))
+    const real = join(root, 'real-project')
+    const link = join(root, 'linked-project')
+    mkdirSync(real, { recursive: true })
+    symlinkSync(real, link)
+
+    const configDir = mkdtempSync(join(tmpdir(), 'rayu-attach-config-'))
+    const sessionsDir = join(configDir, 'sessions')
+    mkdirSync(sessionsDir, { recursive: true, mode: 0o700 })
+
+    // Exactly what `registerSession()` writes, with a REAL, currently-running pid
+    // (the test process's own) so `isProcessRunning()` does not sweep it as stale.
+    const realpathOfReal = realpathSync(real).normalize('NFC')
+    writeFileSync(
+      join(sessionsDir, `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: 'symlink-fixture-session',
+        cwd: realpathOfReal,
+        startedAt: Date.now(),
+        ipcAddress: '/tmp/does-not-need-to-exist.sock',
+        ipcToken: 'fixture-token',
+      }),
+    )
+
+    // Queried with the SYMLINKED path — what an unresolved VS Code
+    // `workspaceFolders[0].uri.fsPath` would be if the workspace folder is a symlink.
+    const proc = Bun.spawnSync(
+      ['bun', 'run', join(ROOT, 'src/entrypoints/vscodeHost.ts'),
+        '--rayucode-connect', JSON.stringify({ action: 'attach-list', cwd: link })],
+      { env: { ...process.env, RAYU_CONFIG_DIR: configDir }, stdout: 'pipe', stderr: 'pipe' },
+    )
+
+    const lines = proc.stdout.toString().split('\n').filter(Boolean)
+    const targetsFrame = lines
+      .map(l => { try { return JSON.parse(l) as Record<string, unknown> } catch { return null } })
+      .find(f => f?.type === 'rayucode_attach_targets') as { targets?: { sessionId: string }[] } | undefined
+
+    expect(proc.stderr.toString()).not.toContain('Error')
+    expect(targetsFrame, 'attach-list must emit a rayucode_attach_targets frame').toBeDefined()
+    expect(targetsFrame?.targets?.map(t => t.sessionId)).toContain('symlink-fixture-session')
+
+    rmSync(root, { recursive: true, force: true })
+    rmSync(configDir, { recursive: true, force: true })
+  })
+
+  test('a session under an unrelated cwd is still correctly excluded', async () => {
+    // Guards the other direction: normalization must not make the filter too loose
+    // and start matching sessions from a different project.
+    const root = mkdtempSync(join(tmpdir(), 'rayu-attach-unrelated-'))
+    const projectA = join(root, 'project-a')
+    const projectB = join(root, 'project-b')
+    mkdirSync(projectA, { recursive: true })
+    mkdirSync(projectB, { recursive: true })
+
+    const configDir = mkdtempSync(join(tmpdir(), 'rayu-attach-config-'))
+    const sessionsDir = join(configDir, 'sessions')
+    mkdirSync(sessionsDir, { recursive: true, mode: 0o700 })
+    writeFileSync(
+      join(sessionsDir, `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: 'unrelated-project-session',
+        cwd: realpathSync(projectA).normalize('NFC'),
+        startedAt: Date.now(),
+        ipcAddress: '/tmp/does-not-need-to-exist.sock',
+        ipcToken: 'fixture-token',
+      }),
+    )
+
+    const proc = Bun.spawnSync(
+      ['bun', 'run', join(ROOT, 'src/entrypoints/vscodeHost.ts'),
+        '--rayucode-connect', JSON.stringify({ action: 'attach-list', cwd: projectB })],
+      { env: { ...process.env, RAYU_CONFIG_DIR: configDir }, stdout: 'pipe', stderr: 'pipe' },
+    )
+
+    const lines = proc.stdout.toString().split('\n').filter(Boolean)
+    const targetsFrame = lines
+      .map(l => { try { return JSON.parse(l) as Record<string, unknown> } catch { return null } })
+      .find(f => f?.type === 'rayucode_attach_targets') as { targets?: { sessionId: string }[] } | undefined
+
+    expect(targetsFrame?.targets?.map(t => t.sessionId) ?? []).not.toContain('unrelated-project-session')
+
+    rmSync(root, { recursive: true, force: true })
+    rmSync(configDir, { recursive: true, force: true })
   })
 })

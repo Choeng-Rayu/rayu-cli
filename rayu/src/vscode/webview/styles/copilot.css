@@ -387,6 +387,38 @@ body {
 .rc-task-reply input { flex: 1; min-width: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); padding: 5px 7px; }
 .rc-task-reply button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 4px; padding: 4px 8px; }
 
+/* What the task recorded. The one part of the detail panel that is not metadata. */
+.rc-task-output { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.rc-task-output-head { display: flex; align-items: center; gap: var(--rc-gap); }
+.rc-task-output-head h4 { margin: 0; font-size: .82em; color: var(--vscode-descriptionForeground); }
+.rc-task-output-refresh {
+  margin-left: auto;
+  color: var(--vscode-textLink-foreground);
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: .82em;
+  cursor: pointer;
+}
+.rc-task-output-refresh:disabled { color: var(--vscode-descriptionForeground); cursor: default; }
+.rc-task-output-note { font-size: .82em; color: var(--vscode-descriptionForeground); }
+/*
+  Taller than a tool row's output and its own scroller: this is the whole point of opening
+  the task, whereas a tool pill sits inside a conversation that also has to stay readable.
+*/
+.rc-task-output-pre {
+  font-family: var(--vscode-editor-font-family);
+  font-size: .86em;
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+  padding: var(--rc-gap);
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @container shell (max-width: 720px) {
   .rc-main-area-tasks > .rc-transcript-wrapper { display: none; }
   .rc-task-center { flex: 1 1 auto; width: 100%; max-width: none; min-width: 0; resize: none; border-left: 0; }
@@ -908,37 +940,22 @@ body {
 /*
  * The live progress glyph.
  *
- * A rotating arc rather than a pulsing dot: a pulse reads as "alive" but not as
- * "advancing", and this sits next to an elapsed counter that is advancing. Built from a
- * border so it needs no SVG and inherits the theme's progress colour.
+ * The CLI's own braille pulse text (`⠁⠇⠷⡿⣿` and back, via `useBrailleSpinner` /
+ * `ProgressGlyph` in `Icons.tsx`) — not a CSS-drawn shape. The previous version was a
+ * `border-radius` ring with one side transparent, rotating: at no point in that
+ * animation did it ever look like a complete circle, which read as perpetually
+ * unfinished rather than "advancing." This glyph genuinely reaches a solid, fully-filled
+ * cell at the midpoint of every pulse, matching the terminal's own spinner exactly.
+ * Reduced motion is handled inside `useBrailleSpinner.ts` (returns the fully-filled
+ * glyph, steady, no timer) rather than via CSS here.
  */
 .rc-progress-glyph {
-  width: 11px;
-  height: 11px;
+  display: inline-flex;
   flex: 0 0 auto;
-  border-radius: 50%;
-  border: 1.5px solid var(--vscode-progressBar-background, var(--vscode-foreground));
-  border-top-color: transparent;
-  border-right-color: transparent;
-  animation: rc-spin 0.9s linear infinite;
-}
-
-@keyframes rc-spin {
-  to { transform: rotate(360deg); }
-}
-
-/*
- * Under reduced motion the arc must still be VISIBLE, not merely un-animated. The global
- * reduce-motion rule only freezes the animation, which would leave a partial ring at a
- * random angle; a complete ring reads as a deliberate status glyph instead.
- */
-@media (prefers-reduced-motion: reduce) {
-  .rc-progress-glyph {
-    animation: none;
-    border-top-color: var(--vscode-progressBar-background, var(--vscode-foreground));
-    border-right-color: var(--vscode-progressBar-background, var(--vscode-foreground));
-    opacity: 0.7;
-  }
+  color: var(--vscode-progressBar-background, var(--vscode-foreground));
+  font-size: 0.9em;
+  font-weight: 700;
+  line-height: 1;
 }
 
 /* Glyph for a settled or blocked turn — no motion, because nothing is progressing. */
@@ -1255,6 +1272,50 @@ body {
   margin-top: var(--rc-gap);
 }
 
+/*
+  A tool call's named fields — "Command", "File", "Pattern" — which replaced the raw JSON
+  argument dump. A two-column grid so the labels line up down the list and the eye can run
+  along the values, which is what the terminal's own detail views do.
+*/
+.rc-tool-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 var(--rc-gap) 0;
+  min-width: 0;
+}
+
+.rc-tool-field {
+  display: grid;
+  /* The label column sizes to the widest label, then stops growing. `minmax(0, 1fr)` on the
+     value is what lets a long command wrap instead of forcing the row wider than the panel. */
+  grid-template-columns: minmax(4.5em, max-content) minmax(0, 1fr);
+  gap: var(--rc-gap);
+  align-items: baseline;
+  font-size: 0.9em;
+}
+
+.rc-tool-field dt {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.rc-tool-field dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* A command or a pattern, where whitespace and punctuation ARE the content. */
+.rc-tool-field-code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.95em;
+  background-color: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+
 .rc-tool-pre {
   font-family: var(--vscode-editor-font-family);
   background-color: var(--vscode-textCodeBlock-background);
@@ -1452,23 +1513,38 @@ body {
 }
 
 .rc-todo-status-pending,
+.rc-todo-status-completed,
 .rc-todo-status-active {
-  box-sizing: border-box;
-  width: 11px;
-  height: 11px;
-  margin: 3px 1.5px 0;
-  border: 1.5px solid var(--vscode-descriptionForeground);
-  border-radius: 50%;
+  font-size: 0.8em;
+  line-height: 1;
 }
 
-.rc-todo-status-active {
-  border-color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
-  border-right-color: transparent;
-  animation: rc-todo-spin 850ms linear infinite;
+/*
+ * ◻ — `figures.squareSmall`, exactly `getTaskIcon()`'s `pending` case in the CLI's own
+ * `TaskListV2.tsx` (the terminal's real dedicated task-list component — not
+ * `StatusIcon.tsx`, which is a different, generic status icon unrelated to task rows).
+ * Undecorated, matching the CLI's `color: undefined` for this state.
+ */
+.rc-todo-status-pending {
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.8;
 }
 
-@keyframes rc-todo-spin {
-  to { transform: rotate(360deg); }
+/* ✔ — `figures.tick`, the CLI's `completed` icon, colored the same as its `success`. */
+.rc-todo-status-completed {
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+/*
+ * ◼ — `figures.squareSmallFilled`, the CLI's `in_progress` icon, colored the same as its
+ * `brand` (Rayu green in the terminal theme; mapped here onto VS Code's own progress
+ * accent so it still adapts to the active colour theme). Deliberately STATIC: the CLI
+ * does not animate this icon — `TaskItem` in `TaskListV2.tsx` keeps it a plain filled
+ * square and instead animates a SEPARATE trailing activity line (`.rc-todo-active`
+ * below), which is what actually conveys "still moving."
+ */
+.rc-todo-status-active {
+  color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
 }
 
 .rc-todo-copy {
@@ -1556,13 +1632,6 @@ body {
   background: var(--vscode-inputValidation-errorBackground);
   overflow-wrap: anywhere;
   font-size: 0.85em;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .rc-todo-status-active {
-    animation: none;
-    border-right-color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
-  }
 }
 
 /* ── permission card ─────────────────────────────────────────────────────── */

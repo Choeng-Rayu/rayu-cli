@@ -454,6 +454,20 @@ export type HostToWebviewMessage =
    * reason `contextPathsResolved` is always sent.
    */
   | { type: 'toolOutputResolved'; requestId: string; text: string | null }
+  /**
+   * A background task's recorded output, answering `requestTaskOutput`.
+   *
+   * `text` is null when it could not be read at all — no engine to ask, or the request
+   * failed — and `error` says which. An EMPTY string is a different answer: the task exists
+   * and has recorded nothing yet, which the panel states rather than treating as a failure.
+   */
+  | {
+      type: 'taskOutputResolved'
+      requestId: string
+      text: string | null
+      truncated?: boolean
+      error?: string
+    }
 
 /** An approval the user must grant or refuse before a tool runs. */
 export interface PermissionRequestView {
@@ -677,6 +691,14 @@ export type WebviewToHostMessage =
    * settles.
    */
   | { type: 'requestToolOutput'; requestId: string; entryId: EntryId }
+  /**
+   * Read what a background task has recorded — a shell's stdout, an agent's transcript.
+   *
+   * On demand rather than streamed: see `ChatSession.taskOutput`. Uses the same
+   * `requestId` correlation as the two requests above, and is answered by
+   * `taskOutputResolved` in every case, including failure.
+   */
+  | { type: 'requestTaskOutput'; requestId: string; taskKey: string }
 
 export type BackgroundTaskStatus =
   | 'pending'
@@ -820,7 +842,28 @@ export type TranscriptEntry =
       name: string
       /** One-line collapsed label — the command, the file path, the pattern. */
       label: string
-      /** Pretty-printed parameters, shown when the pill is expanded. */
+      /**
+       * The call's NAMED FIELDS, which is what the expanded row shows.
+       *
+       * ── THIS REPLACED A RAW JSON DUMP ──────────────────────────────────────────
+       *
+       * The row used to print `JSON.stringify(input, null, 2)` under a "Parameters"
+       * heading. Three things were wrong with that. It is the MODEL'S argument object —
+       * plumbing the user did not write and cannot act on. It dumps bulk payloads verbatim,
+       * so a `Write` printed the entire file body above its own diff and an `Edit` printed
+       * both sides of every replacement. And it puts whatever the model passed on screen
+       * unbounded, which is how a token in a `Bash` command or an MCP argument ends up in a
+       * screenshot pasted into an issue.
+       *
+       * The terminal never did this: it shows the command, the path, the pattern — the one
+       * thing the call acted on — and lets the RESULT carry the detail. These are that,
+       * projected host-side by `toolDetails`.
+       *
+       * `parameters` still carries the raw JSON for the detailed-view toggle, so nothing is
+       * unreachable; it is simply no longer the default reading.
+       */
+      details: ToolDetailView[]
+      /** Raw pretty-printed arguments. Shown ONLY in the detailed view — see `details`. */
       parameters: string
       status: 'running' | 'done' | 'error'
       /** Result text, once it arrives. */
@@ -1018,6 +1061,27 @@ export type TranscriptEntry =
       totalRemovals: number
       files: ReviewFileView[]
     }
+
+/**
+ * One named field of a tool call, for the expanded row.
+ *
+ * A label and a value, never a JSON fragment — see `details` on the tool entry for why the
+ * raw argument object stopped being the default reading. Deliberately flat: the point is a
+ * short list a person scans, so a nested object collapses to a shape rather than expanding
+ * into a tree.
+ */
+export interface ToolDetailView {
+  /** Human label, e.g. "Command", "File", "Pattern". */
+  label: string
+  value: string
+  /**
+   * Render in the editor's monospace font, wrapped, as a block rather than inline.
+   *
+   * For a shell command or a search pattern, where whitespace and punctuation are the
+   * content. A path or a mode reads better as prose.
+   */
+  code?: boolean
+}
 
 /**
  * One hunk of a unified diff, as the engine recorded it.

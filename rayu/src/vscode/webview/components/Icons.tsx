@@ -4,6 +4,7 @@
  * All icons render at standard 16x16 with viewBox="0 0 16 16" and fill="currentColor"
  * so they adapt cleanly to any VS Code theme.
  */
+import { useBrailleSpinner } from '../useBrailleSpinner.js'
 
 export interface IconProps {
   size?: number
@@ -245,7 +246,8 @@ export function EffortIcon({ size = 11, className, title }: IconProps): JSX.Elem
   )
 }
 
-/** The active model. A denser sparkle than the Rayu identity mark, to stay distinct from it. */
+/**
+ * The active model. A denser sparkle than the Rayu identity mark, to stay distinct from it. */
 export function ModelIcon({ size = 12, className, title }: IconProps): JSX.Element {
   return (
     <svg viewBox="0 0 16 16" width={size} height={size} fill="currentColor" className={className} role="presentation">
@@ -272,6 +274,26 @@ export function LinkIcon({ size = 12, className, title }: IconProps): JSX.Elemen
       {title ? <title>{title}</title> : null}
       <path d="M6.5 4h-2a3.5 3.5 0 0 0 0 7h2v-1h-2a2.5 2.5 0 0 1 0-5h2V4zm3 0h2a3.5 3.5 0 0 1 0 7h-2v-1h2a2.5 2.5 0 0 0 0-5h-2V4zM5 7h6v1H5V7z" />
     </svg>
+  )
+}
+
+/**
+ * The shared "something is working" indicator — replaces the old CSS `border-radius`
+ * rotating-arc dot (`.rc-progress-glyph`) at every call site that used it: the main turn
+ * status line, the session status pill, the sessions list, activity groups, and the
+ * thinking-block header.
+ *
+ * Renders the CLI's own braille pulse (`SpinnerGlyph.tsx`'s `⠁⠇⠷⡿⣿` sequence, via
+ * `useBrailleSpinner`) instead of a shape: the old arc never visually completed a cycle,
+ * where this glyph genuinely reaches a solid, fully-filled cell at the midpoint of every
+ * pulse — the same spinner the terminal shows while a turn is in flight.
+ */
+export function ProgressGlyph({ className }: { className?: string }): JSX.Element {
+  const glyph = useBrailleSpinner(true)
+  return (
+    <span className={className ?? 'rc-progress-glyph'} aria-hidden="true">
+      {glyph}
+    </span>
   )
 }
 

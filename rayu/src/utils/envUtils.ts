@@ -211,6 +211,35 @@ export const getRayuAuthConfigDir = memoize(
 
 export const getClaudeConfigHomeDir = getRayuConfigHomeDir
 
+/**
+ * Whether a config write would land in the DEVELOPER'S REAL config home during a test run.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────────
+ *
+ * `RAYU_CONFIG_DIR` is how a test redirects config at `~/.rayu` into a temp directory, and
+ * the convention is to set it in `beforeEach` and delete it in `afterEach`. Deleting it
+ * restores the DEFAULT, which is the real `~/.rayu` — so every test that runs afterwards
+ * without setting its own directory reads and writes the developer's actual configuration.
+ *
+ * That is not theoretical. It rewrote a real `providers.json`: seventeen fixture providers
+ * appended, two real API keys overwritten with a test key, two base URLs replaced with
+ * `https://y/v1` and `https://custom.example/v1`, and the active provider switched to a
+ * fixture pointing at an unreachable host — which then made the CLI unusable and filled the
+ * model picker with models that do not exist.
+ *
+ * `saveGlobalConfig` in `utils/config.ts` has guarded itself against exactly this for a long
+ * time by swapping in an in-memory object under `NODE_ENV === 'test'`. This is that same
+ * defence, shared, for the writers that lacked it.
+ *
+ * The check is deliberately narrow: a test that HAS pointed `RAYU_CONFIG_DIR` (or
+ * `RAYU_AUTH_CONFIG_DIR`) at a temp directory is sandboxed and must keep working normally,
+ * including its real disk round trips.
+ */
+export function isUnsandboxedTestConfigAccess(): boolean {
+  if (process.env.NODE_ENV !== 'test' && !process.env.BUN_TEST) return false
+  return !process.env.RAYU_CONFIG_DIR && !process.env.RAYU_AUTH_CONFIG_DIR
+}
+
 export function getTeamsDir(): string {
   return join(getRayuConfigHomeDir(), 'teams')
 }

@@ -21,6 +21,7 @@
  * the panel and types instead of after their first message.
  */
 import * as vscode from 'vscode'
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
@@ -95,6 +96,28 @@ const COMMANDS = {
   addToContext: 'rayucode.addToContext',
 } as const
 
+/**
+ * Resolve a workspace path the exact same way `getOriginalCwd()` does in
+ * `src/bootstrap/state.ts`: realpath (symlinks resolved) then NFC-normalized.
+ *
+ * This is what `~/.rayu/sessions/<pid>.json` records as `cwd` when the terminal CLI
+ * registers itself, and the attach-list handler filters session records with a strict
+ * `===` against whatever cwd it is given. Comparing an un-resolved VS Code path
+ * against a resolved CLI path is a silent, permanent mismatch — not a transient one a
+ * retry or a refresh fixes — because the two strings simply never converge. Falls back
+ * to the raw path on any `realpathSync` failure (path doesn't exist yet, or a
+ * CloudStorage mount returning EPERM on a per-component `lstat`), matching the same
+ * fallback `getOriginalCwd()` uses, so a filter that can't resolve degrades to "match
+ * literally" rather than throwing.
+ */
+function normalizeCwdForAttachLookup(path: string): string {
+  try {
+    return realpathSync(path).normalize('NFC')
+  } catch {
+    return path.normalize('NFC')
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   // Provider selection and credentials belong to Rayucode, independently of the
   // terminal CLI. General Rayu storage remains untouched, so history, sessions,
@@ -136,6 +159,18 @@ export function activate(context: vscode.ExtensionContext): void {
   const engineCwd =
     workspaceDir ??
     (activeFile?.scheme === 'file' ? dirname(activeFile.fsPath) : homedir())
+  // The terminal CLI registers its session under `getOriginalCwd()`
+  // (`src/bootstrap/state.ts`), which resolves symlinks and NFC-normalizes the path
+  // before writing `~/.rayu/sessions/<pid>.json`. `engineCwd` above is VS Code's raw
+  // `workspaceFolders[0].uri.fsPath` — never realpath'd. On any workspace whose path
+  // crosses a symlink (a home-directory symlink, a cloud-synced folder, `/tmp` vs
+  // `/private/tmp` on macOS), an exact string match between the two would silently
+  // fail: a session that just exited would still look "present" until its stale file
+  // is swept by PID, and a brand-new terminal session would never match at all, no
+  // matter how many times the attach dropdown is reopened. This is the STRING USED
+  // FOR ATTACH-LIST COMPARISON ONLY — the engine still spawns with the unresolved
+  // `engineCwd` above, since that is just a working directory, not a lookup key.
+  const engineCwdRealpath = normalizeCwdForAttachLookup(engineCwd)
 
   // Declared before the session so its callbacks can post to it, and assigned
   // immediately after. The alternative — passing the provider into the session —
@@ -632,7 +667,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // `--thinking enabled` spawn flag, which is the only mechanism that outranks the
       // user's `alwaysThinkingEnabled` setting.
       listAttachable: async () => {
-        const outcome = await listAttachTargets({ enginePath, cwd: engineCwd }, engineCwd)
+        const outcome = await listAttachTargets({ enginePath, cwd: engineCwdRealpath }, engineCwdRealpath)
         attachTargets = outcome.targets ?? []
         attachment = {
           ...attachment,
@@ -921,6 +956,29 @@ export function activate(context: vscode.ExtensionContext): void {
           requestId,
           text: current().session.fullToolOutput(entryId),
         })
+      },
+      requestTaskOutput: async (requestId, taskKey) => {
+        // Same discipline, but the answer comes from the engine over the control channel,
+        // so this is the one request of the three that can fail for an external reason. It
+        // still always replies — with the reason, which the panel shows in place of the
+        // output rather than leaving a button that appears to do nothing.
+        try {
+          const output = await current().session.taskOutput(taskKey)
+          provider.post({
+            type: 'taskOutputResolved',
+            requestId,
+            text: output?.text ?? null,
+            truncated: output?.truncated === true,
+            ...(output ? {} : { error: 'This conversation has no running engine to ask.' }),
+          })
+        } catch (cause) {
+          provider.post({
+            type: 'taskOutputResolved',
+            requestId,
+            text: null,
+            error: cause instanceof Error ? cause.message : String(cause),
+          })
+        }
       },
       modelChooserChoice: async (target, value, agentType) => {
         setModelChooser(null)

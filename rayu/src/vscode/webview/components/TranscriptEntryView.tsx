@@ -225,6 +225,30 @@ export function TurnEndEntry({
  * rather than a click handler on the summary, because that is the event that fires after the
  * browser has actually changed the attribute.
  */
+/**
+ * Whether a tool row is open: an explicit per-row choice, else the panel-wide switch.
+ *
+ * ── EXPORTED SO IT CAN BE TESTED FOR REAL ───────────────────────────────────────
+ *
+ * It was previously inline, and the test for it re-implemented the same expression — so when
+ * the rule changed, the copy kept passing and went on reporting that rows opened the way they
+ * no longer did. A rule with two definitions has none.
+ *
+ * ── NOTHING OPENS ON ITS OWN ────────────────────────────────────────────────────
+ *
+ * A row whose result was a diff used to open itself, on the reasoning that the terminal shows
+ * a diff the moment an edit lands. That holds in a terminal, where output scrolls past and is
+ * gone; it does not in a panel, where the transcript persists and is scrolled back through, so
+ * every self-opening diff is permanent height between the answer and the next question. An
+ * agent that edited eight files pushed its own conclusion off the screen.
+ */
+export function resolveToolOpen(
+  override: boolean | undefined,
+  detailed: boolean | undefined,
+): boolean {
+  return override ?? detailed === true
+}
+
 export function ToolActionEntry({
   entry,
   detailed,
@@ -259,28 +283,16 @@ export function ToolActionEntry({
   // when its text output is empty — an `Edit` whose generic result is a one-line sentence
   // still has a diff worth opening.
   const hasDetail =
-    entry.parameters.length > 0 ||
+    entry.details.length > 0 ||
     (entry.output ?? '').length > 0 ||
     entry.toolResult !== undefined
   /**
    * Whether this row is open.
    *
-   * An explicit per-row choice wins. Failing that, an EDIT opens by default and
-   * everything else stays collapsed.
-   *
-   * ── WHY EDITS ARE THE EXCEPTION ────────────────────────────────────────────────
-   *
-   * The terminal shows a diff the instant an edit lands, with no interaction, and that is
-   * the behaviour being matched — the diff is the substance of the turn, not detail about
-   * it. Requiring a click per file would mean an agent that edited four files produced
-   * four things to go and open before you could see what it did.
-   *
-   * Everything else stays collapsed because it genuinely is detail: a `Read`'s file
-   * contents or a `Bash`'s full stdout are things you consult when something looks wrong,
-   * and expanding them by default buries the answer under the work.
+   * The rule lives in `resolveToolOpen` — one definition, so a test of it is a test of what
+   * ships. `hasDetail` gates it because an empty row has nothing to open.
    */
-  const opensByDefault = detailed === true || entry.toolResult?.kind === 'edit'
-  const isOpen = (open ?? opensByDefault) && hasDetail
+  const isOpen = resolveToolOpen(open, detailed) && hasDetail
   // Shown only while running. A finished call's duration belongs to the turn's own
   // completion line, and a frozen timer on every historical pill is noise.
   const elapsed =
@@ -334,10 +346,26 @@ export function ToolActionEntry({
 
       {hasDetail ? (
         <div className="rc-tool-detail">
-          {entry.parameters.length > 0 ? (
+          {/* ── NAMED FIELDS, NOT THE ARGUMENT OBJECT ──────────────────────────────
+              The terminal shows what the call acted on — the command, the path — and lets
+              the result carry the rest. See `details` in shared/webviewProtocol.ts for why
+              the raw JSON stopped being the default reading. It is still one toggle away. */}
+          {entry.details.length > 0 ? (
+            <dl className="rc-tool-fields">
+              {entry.details.map(detail => (
+                <div className="rc-tool-field" key={detail.label}>
+                  <dt>{detail.label}</dt>
+                  <dd className={detail.code ? 'rc-tool-field-code' : undefined}>
+                    {detail.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+          {detailed && entry.parameters.length > 0 ? (
             <>
               <div className="rc-tool-section-head">
-                <span className="rc-tool-section">Parameters</span>
+                <span className="rc-tool-section">Raw arguments</span>
               </div>
               <pre className="rc-tool-pre">{entry.parameters}</pre>
             </>

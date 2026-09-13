@@ -85,7 +85,7 @@ test('local-command breadcrumbs are filtered out of a restored transcript', asyn
 
 test('only restored unfinished tools are settled', () => {
   const session = new ChatSession({ enginePath: '/unused', cwd: tmpdir() }, sessionCallbacks())
-  session.restoreTranscript([{ kind: 'tool_use', toolUseId: 'old', parentToolUseId: null, name: 'Bash', label: 'check', parameters: '{}' }])
+  session.restoreTranscript([{ kind: 'tool_use', toolUseId: 'old', parentToolUseId: null, name: 'Bash', label: 'check', parameters: '{}', details: [] }])
   expect(session.transcript.find(e => e.kind === 'tool')).toMatchObject({ status: 'error' })
   session.dispose()
 })

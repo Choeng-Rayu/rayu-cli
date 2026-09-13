@@ -347,6 +347,7 @@ import { unassignTeammateTasks } from '../utils/tasks.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { stopTask } from '../tasks/stopTask.js'
+import { getTaskOutput, getTaskOutputSize } from '../utils/task/diskOutput.js'
 import { drainSdkEvents } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
@@ -394,6 +395,38 @@ Shut down your team and prepare your final response for the user.`
 const MAX_RECEIVED_UUIDS = 10_000
 const receivedMessageUuids = new Set<UUID>()
 const receivedMessageUuidsOrder: UUID[] = []
+
+/**
+ * Cap on a single `task_output` control response.
+ *
+ * Far below `getTaskOutput`'s own 8MB default: this crosses a pipe to an editor client that
+ * then has to render it, and a background shell can legitimately record gigabytes. The tail
+ * is the part anyone wants, and the response reports the true size so the client can say
+ * how much it is not showing.
+ */
+const MAX_CONTROL_TASK_OUTPUT_BYTES = 512 * 1024
+
+/**
+ * Whether recorded output is a conversation transcript rather than console text.
+ *
+ * Used only for a task that is no longer in state — while it is, its own `type` answers
+ * this. Scans a few lines rather than just the first, because a truncated read is prefixed
+ * with a human-readable "earlier output omitted" line.
+ */
+function looksLikeTranscript(content: string): boolean {
+  for (const line of content.split('\n', 8)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const parsed = JSON.parse(trimmed) as { type?: unknown }
+      if (typeof parsed?.type === 'string') return true
+    } catch {
+      // A tail can begin mid-line. Keep looking.
+    }
+  }
+  return false
+}
 
 function trackReceivedMessageUuid(uuid: UUID): boolean {
   if (receivedMessageUuids.has(uuid)) {
@@ -3769,6 +3802,49 @@ function runHeadlessStreaming(
               setAppState,
             })
             sendControlResponseSuccess(message, {})
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'task_output') {
+          // ── WHY THE ENGINE HAS TO SERVE THIS ────────────────────────────────
+          //
+          // The output path is `getProjectTempDir()/<session>/tasks/<id>.output`, and both
+          // halves of that are process state: the temp dir is derived from the engine's own
+          // cwd resolution and the session id is memoized at first use, deliberately, so a
+          // /clear cannot orphan the files of tasks that are still running. An editor client
+          // computing the path itself would get it wrong the moment either changed — so it
+          // asks, and `getTaskOutput` (the same reader the CLI's own shell dialog uses)
+          // answers with a tail-capped read.
+          //
+          // A task whose file does not exist yet, or which has been evicted, returns empty
+          // content rather than an error: "nothing recorded" is a real answer and the client
+          // renders it as such.
+          const { task_id: taskId, max_bytes: maxBytes } = message.request
+          try {
+            const cap =
+              typeof maxBytes === 'number' && Number.isFinite(maxBytes) && maxBytes > 0
+                ? Math.min(maxBytes, MAX_CONTROL_TASK_OUTPUT_BYTES)
+                : MAX_CONTROL_TASK_OUTPUT_BYTES
+            const [content, size] = await Promise.all([
+              getTaskOutput(taskId, cap),
+              getTaskOutputSize(taskId),
+            ])
+            // An agent's output path is a SYMLINK to its transcript, so the same reader
+            // returns JSONL for agents and console text for everything else. The task's own
+            // type is the authority while it is still in state; once it has been evicted the
+            // content is all there is to go on, and a first line that parses as a record with
+            // a `type` is only ever a transcript.
+            const task = getAppState().tasks?.[taskId]
+            const isTranscript =
+              task?.type === 'local_agent' ||
+              task?.type === 'in_process_teammate' ||
+              (task === undefined && looksLikeTranscript(content))
+            sendControlResponseSuccess(message, {
+              content,
+              format: isTranscript ? 'transcript' : 'text',
+              truncated: size > cap,
+              size,
+            })
           } catch (error) {
             sendControlResponseError(message, errorMessage(error))
           }

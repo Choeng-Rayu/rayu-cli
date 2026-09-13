@@ -30,7 +30,7 @@ import type {
   SessionListView,
   SessionSummaryView,
 } from '../../shared/webviewProtocol.js'
-import { CloseIcon, SearchIcon } from './Icons.js'
+import { CloseIcon, ProgressGlyph, SearchIcon } from './Icons.js'
 
 export interface SessionsViewProps {
   list: SessionListView
@@ -187,7 +187,7 @@ export function SessionsView({
                       {/* A running conversation is marked while the panel shows another one:
                           that is the fact the previous behaviour destroyed. */}
                       {item.running ? (
-                        <span className="rc-progress-glyph" aria-hidden="true" />
+                        <ProgressGlyph />
                       ) : null}
                       {item.label}
                     </span>

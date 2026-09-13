@@ -461,6 +461,36 @@ export const SDKControlStopTaskRequestSchema = lazySchema(() =>
     .describe('Stops a running task.'),
 )
 
+export const SDKControlTaskOutputRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('task_output'),
+      task_id: z.string(),
+      max_bytes: z
+        .number()
+        .optional()
+        .describe('Cap on the tail returned. Defaults to the reader\'s own cap.'),
+    })
+    .describe(
+      "Returns the tail of a task's recorded output. Works for any task type: shells and workflows record their stdout, while an agent's output path is a symlink to its transcript, so the response says which of the two it is.",
+    ),
+)
+
+export const SDKControlTaskOutputResponseSchema = lazySchema(() =>
+  z.object({
+    content: z.string().describe('Empty when the task recorded nothing, which is not an error.'),
+    format: z
+      .enum(['text', 'transcript'])
+      .describe(
+        "'transcript' means the content is JSONL conversation records (an agent), not console output.",
+      ),
+    truncated: z
+      .boolean()
+      .describe('True when earlier output was omitted to stay under the cap.'),
+    size: z.number().describe('Total bytes on disk, so a client can tell how much it is missing.'),
+  }),
+)
+
 export const SDKControlApplyFlagSettingsRequestSchema = lazySchema(() =>
   z
     .object({
@@ -584,6 +614,7 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlMcpReconnectRequestSchema(),
     SDKControlMcpToggleRequestSchema(),
     SDKControlStopTaskRequestSchema(),
+    SDKControlTaskOutputRequestSchema(),
     SDKControlApplyFlagSettingsRequestSchema(),
     SDKControlGetSettingsRequestSchema(),
     SDKControlSetEffortRequestSchema(),

@@ -66,6 +66,16 @@ export function getTokenCountFromTracker(tracker: ProgressTracker): number {
 }
 
 /**
+ * A usage counter as a number, or 0.
+ *
+ * Providers translated onto the Anthropic shape do not all report every counter, and the
+ * type says `number` where the wire may have nothing. See `updateProgressFromMessage`.
+ */
+function finiteTokenCount(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/**
  * Resolver function that returns a human-readable activity description
  * for a given tool name and input. Used to pre-compute descriptions
  * from Tool.getActivityDescription() at recording time.
@@ -76,9 +86,19 @@ export function updateProgressFromMessage(tracker: ProgressTracker, message: Mes
     return;
   }
   const usage = message.message.usage;
-  // Keep latest input (it's cumulative in the API), sum outputs
-  tracker.latestInputTokens = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
-  tracker.cumulativeOutputTokens += usage.output_tokens;
+  // Keep latest input (it's cumulative in the API), sum outputs.
+  //
+  // Every field is coerced, because `usage` is typed as Anthropic's shape but ARRIVES from
+  // whichever provider served the subagent, and a translated response can omit a counter
+  // entirely. `undefined + 0` is NaN, NaN is sticky through the running sum, and
+  // `JSON.stringify(NaN)` is `null` — which is how `task_progress.usage.total_tokens`
+  // reached the editor panel as null and made every subagent read "0 tokens" forever.
+  // Verified against a live openai-compatible provider before this guard existed.
+  tracker.latestInputTokens =
+    finiteTokenCount(usage.input_tokens) +
+    finiteTokenCount(usage.cache_creation_input_tokens) +
+    finiteTokenCount(usage.cache_read_input_tokens);
+  tracker.cumulativeOutputTokens += finiteTokenCount(usage.output_tokens);
   // The agent is "thinking" when this turn has a thinking block but no tool call
   // yet. Cleared as soon as a tool_use (or a non-thinking turn) arrives below.
   tracker.isThinking =

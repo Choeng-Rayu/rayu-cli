@@ -12,7 +12,7 @@ import { uniq } from '../array.js'
 import { clearContextPrepCache } from '../contextPrepCache.js'
 import { logForDebugging } from '../debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'
-import { getRayuConfigHomeDir, isEnvTruthy } from '../envUtils.js'
+import { getRayuConfigHomeDir, isEnvTruthy, isUnsandboxedTestConfigAccess } from '../envUtils.js'
 import { getErrnoCode, isENOENT } from '../errors.js'
 import { writeFileSyncAndFlush_DEPRECATED } from '../file.js'
 import { readFileSync } from '../fileRead.js'
@@ -427,6 +427,13 @@ export function updateSettingsForSource(
   // Create the folder if needed
   const filePath = getSettingsFilePathForSource(source)
   if (!filePath) {
+    return { error: null }
+  }
+  // `userSettings` resolves under the config home, which for an unsandboxed test run is the
+  // developer's own `~/.rayu` — where a test writing a fixture model id left the CLI pointed
+  // at a model that does not exist. Reported as success because nothing failed: the write was
+  // deliberately not attempted. See `isUnsandboxedTestConfigAccess`.
+  if (source === 'userSettings' && isUnsandboxedTestConfigAccess()) {
     return { error: null }
   }
 

@@ -22,6 +22,7 @@ import type {
 } from '../src/vscode/shared/webviewProtocol.js'
 import { describeCompletion, tokenReadouts } from '../src/vscode/shared/turnProgress.js'
 import { groupTranscript } from '../src/vscode/webview/state/activityGroups.js'
+import { resolveToolOpen } from '../src/vscode/webview/components/TranscriptEntryView.js'
 import { parseAnsi, stripAnsi, hasAnsi } from '../src/vscode/webview/ansi.js'
 import { hunkRows, countChanges } from '../src/vscode/webview/components/DiffView.js'
 
@@ -37,6 +38,7 @@ function tool(overrides: Partial<Extract<TranscriptEntry, { kind: 'tool' }>> = {
     name: 'Bash',
     label: 'npm test',
     parameters: '{}',
+    details: [],
     status: 'running' as const,
     output: null,
     ...overrides,
@@ -288,25 +290,19 @@ describe('hook entries', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('detail overrides', () => {
-  test('an explicit choice outranks the panel switch in both directions', () => {
-    // Mirrors `ToolActionEntry`'s resolution: `open ?? opensByDefault`.
-    const resolve = (override: boolean | undefined, detailed: boolean, isEdit = false) =>
-      override ?? (detailed || isEdit)
-
-    expect(resolve(undefined, false)).toBe(false)
-    expect(resolve(undefined, true)).toBe(true)
-    // Closed by hand stays closed even with Details on — the bug was that flipping the
-    // switch remounted every row and discarded this.
-    expect(resolve(false, true)).toBe(false)
-    expect(resolve(true, false)).toBe(true)
+  test('nothing opens on its own — not even a diff', () => {
+    // The REAL resolver, not a copy of it: the previous version of this test re-implemented
+    // the expression and so kept passing after the rule changed.
+    expect(resolveToolOpen(undefined, false)).toBe(false)
+    expect(resolveToolOpen(undefined, undefined)).toBe(false)
   })
 
-  test('an edit opens by default, matching the terminal', () => {
-    const resolve = (override: boolean | undefined, detailed: boolean, isEdit: boolean) =>
-      override ?? (detailed || isEdit)
-    expect(resolve(undefined, false, true)).toBe(true)
-    // ...and can still be closed by hand.
-    expect(resolve(false, false, true)).toBe(false)
+  test('an explicit choice outranks the panel switch in both directions', () => {
+    expect(resolveToolOpen(undefined, true)).toBe(true)
+    // Closed by hand stays closed even with Details on — the bug was that flipping the
+    // switch remounted every row and discarded this.
+    expect(resolveToolOpen(false, true)).toBe(false)
+    expect(resolveToolOpen(true, false)).toBe(true)
   })
 })
 

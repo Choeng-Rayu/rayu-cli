@@ -12,6 +12,14 @@ type TaskStartedEvent = {
   task_type?: string
   workflow_name?: string
   prompt?: string
+  /**
+   * Whether the task runs inside the turn or detached from it.
+   *
+   * Absent when the task type has no such distinction. Editor clients used to assume
+   * `background` for everything, which labelled every inline subagent — the common case —
+   * as background work.
+   */
+  execution_mode?: 'foreground' | 'background'
 }
 
 type TaskProgressEvent = {
