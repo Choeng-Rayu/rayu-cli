@@ -147,11 +147,29 @@ export function rememberModelRejectedImages(
  * message (the same pattern query.ts already uses for the model-fallback
  * notice). A Set, so a turn that somehow retries twice still warns once.
  */
-const pendingImageDropNotices = new Set<string>()
+// Keyed by model, value is whether this was DISCOVERED FROM A LIVE PROVIDER
+// REJECTION (the reactive path, openaiAdapter.ts) versus already known from the
+// built-in tables BEFORE any request was sent (the proactive path, claude.ts).
+// The two wordings genuinely differ ("the provider rejected the image" is false
+// for the proactive case — no request was ever sent for the provider to reject),
+// so the flag has to travel with each entry rather than being assumed at drain
+// time. A later `true` for the same model wins (Map.set overwrites) — a live
+// rejection is strictly more specific evidence than the table's prior guess.
+const pendingImageDropNotices = new Map<string, boolean>()
 
-/** Record that the model silently lost its images, for the query loop to report. */
-export function notePendingImageDropNotice(model: string): void {
-  if (model) pendingImageDropNotices.add(stripRoutingPrefix(model))
+/**
+ * Record that the model silently lost its images, for the query loop to report.
+ *
+ * `discoveredFromProvider` defaults to `false` — the proactive, built-in-table
+ * path is the one that calls this with no explicit value most often as this
+ * grows more callers; the reactive path (`openaiAdapter.ts`) always passes
+ * `true` explicitly, since it has just observed a live rejection.
+ */
+export function notePendingImageDropNotice(
+  model: string,
+  discoveredFromProvider = false,
+): void {
+  if (model) pendingImageDropNotices.set(stripRoutingPrefix(model), discoveredFromProvider)
 }
 
 /**
@@ -160,8 +178,8 @@ export function notePendingImageDropNotice(model: string): void {
  */
 export function drainImageDropNotices(): string[] {
   if (pendingImageDropNotices.size === 0) return []
-  const out = [...pendingImageDropNotices].map(model =>
-    imageDroppedWarning(model, { discoveredFromProvider: true }),
+  const out = [...pendingImageDropNotices].map(([model, discoveredFromProvider]) =>
+    imageDroppedWarning(model, { discoveredFromProvider }),
   )
   pendingImageDropNotices.clear()
   return out

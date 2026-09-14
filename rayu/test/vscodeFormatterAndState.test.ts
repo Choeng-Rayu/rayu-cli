@@ -285,6 +285,72 @@ describe('VS Code Activity Formatter (formatActivityForVSCode)', () => {
     expect(blocks[1].kind).toBe('tool_use')
     expect(blocks[2].kind).toBe('tool_result')
   })
+
+  test('drops a task-notification instead of showing it as a prompt', () => {
+    // Regression: task-notification XML (LocalShellTask.tsx, RemoteAgentTask.tsx,
+    // externalAgents/core/eventSinks.ts, PromptInputQueuedCommands.tsx) is injected as
+    // a `user`-role text block, not typed by the person. Before this exclusion it
+    // rendered in the VS Code panel as a literal `<task-notification>...` prompt
+    // bubble instead of being recognised as engine-injected plumbing — mirroring the
+    // CLI's own dedicated handling in `UserTextMessage.tsx` / `UserAgentNotificationMessage`.
+    const msg: WrappedMessage = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: '<task-notification>\n<task-id>benxntp38</task-id>\n<tool-use-id>call_2b356938917f4e6580d6b01d</tool-use-id>\n<output-file>/tmp/claude-1000/tasks/benxntp38.output</output-file>\n<status>failed</status>\n<summary>Background command "Run CLI test suite" failed with exit code 1</summary>\n</task-notification>',
+          } as unknown as ContentBlock,
+        ],
+      },
+    }
+    expect(formatMessageForVSCode(msg)).toEqual([])
+  })
+
+  test('drops other engine-injected synthetic user text (bash/local-command output, ticks, teammate relay)', () => {
+    const synthetic = [
+      '<local-command-stdout>ok</local-command-stdout>',
+      '<local-command-stderr>err</local-command-stderr>',
+      '<local-command-caveat>note</local-command-caveat>',
+      '<bash-stdout>output</bash-stdout>',
+      '<bash-stderr>oops</bash-stderr>',
+      '<tick>1</tick>',
+      '<teammate-message from="a">hi</teammate-message>',
+    ]
+    for (const text of synthetic) {
+      const msg: WrappedMessage = {
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text } as unknown as ContentBlock] },
+      }
+      expect(formatMessageForVSCode(msg)).toEqual([])
+    }
+  })
+
+  test('a real prompt is unaffected by the exclusion', () => {
+    const msg: WrappedMessage = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: 'why did my background task fail?' } as unknown as ContentBlock] },
+    }
+    expect(formatMessageForVSCode(msg)).toEqual([
+      { kind: 'prompt', text: 'why did my background task fail?' },
+    ])
+  })
+
+  test('the same exclusion does not apply to assistant text (an assistant can legitimately discuss the tag)', () => {
+    const msg: WrappedMessage = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'The engine emits a <task-notification> tag internally.' } as unknown as ContentBlock,
+        ],
+      },
+    }
+    expect(formatMessageForVSCode(msg)).toEqual([
+      { kind: 'assistant', text: 'The engine emits a <task-notification> tag internally.' },
+    ])
+  })
 })
 
 describe('VS Code Webview Reducer (chatReducer)', () => {

@@ -151,7 +151,7 @@ export function NoticeEntry({
   severity,
 }: {
   text: string
-  severity: 'info' | 'error'
+  severity: 'info' | 'warning' | 'error'
 }): JSX.Element {
   return (
     <div

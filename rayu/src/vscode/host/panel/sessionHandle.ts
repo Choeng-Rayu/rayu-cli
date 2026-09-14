@@ -1494,6 +1494,36 @@ export class ChatSession {
         return
       }
 
+      case 'informational': {
+        // The one general-purpose notice constructor (`createSystemMessage()` in
+        // `utils/messages.ts`), used identically by the interactive REPL and the
+        // headless query loop — e.g. the "your image was silently dropped because
+        // this model is text-only" warning drained from `drainImageDropNotices()`
+        // in query.ts. This case was missing entirely until now: the frame had no
+        // matching wire schema (`SDKInformationalMessageSchema`, added alongside
+        // this case), so it failed validation in `ControlClient` and was silently
+        // discarded as unrecognised narration before ever reaching this switch —
+        // a warning the engine had already composed with clear, specific wording
+        // never reached the user, which read as a silent, unexplained failure.
+        const content = typeof message.content === 'string' ? message.content.trim() : ''
+        if (!content) return
+        const level = message.level
+        this.finishStreaming()
+        this.appendEntry({
+          id: newId(),
+          kind: 'notice',
+          // 'error' maps to the transcript's alarming red styling; everything
+          // else (the engine's 'info' and 'warning') maps to the calmer default
+          // notice styling — matching how 'warning' already read before this case
+          // existed at all (an engine 'warning' predates this case, so it is not a
+          // NEW visual distinction being introduced here, only a frame that now
+          // actually arrives instead of being dropped in transit).
+          severity: level === 'error' ? 'error' : level === 'warning' ? 'warning' : 'info',
+          text: content,
+        })
+        return
+      }
+
       case 'api_retry': {
         // A retry means the turn is still alive but slower. Silence here reads as a
         // hang, which is the single most common reason a user gives up on a request

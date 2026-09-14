@@ -200,6 +200,7 @@ export type SDKFilesPersistedEvent                = z.infer<ReturnType<typeof Co
 export type SDKHookProgressMessage                = z.infer<ReturnType<typeof Core.SDKHookProgressMessageSchema>>;
 export type SDKHookResponseMessage                = z.infer<ReturnType<typeof Core.SDKHookResponseMessageSchema>>;
 export type SDKHookStartedMessage                 = z.infer<ReturnType<typeof Core.SDKHookStartedMessageSchema>>;
+export type SDKInformationalMessage               = z.infer<ReturnType<typeof Core.SDKInformationalMessageSchema>>;
 export type SDKLocalCommandOutputMessage          = z.infer<ReturnType<typeof Core.SDKLocalCommandOutputMessageSchema>>;
 export type SDKMessage                            = z.infer<ReturnType<typeof Core.SDKMessageSchema>>;
 export type SDKPartialAssistantMessage            = z.infer<ReturnType<typeof Core.SDKPartialAssistantMessageSchema>>;
