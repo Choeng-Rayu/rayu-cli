@@ -660,18 +660,33 @@ body {
   overflow-wrap: anywhere;
 }
 
-.rc-avatar {
+/*
+ * The animated per-status avatar (SpriteAvatar.tsx) — the sole avatar in the
+ * assistant turn now; it replaced a small circular badge (fixed 22×22px, a
+ * flat background-color behind a plain glyph) that gave a simple emoji some
+ * contrast. No such fill here: this element already IS a detailed, full-color
+ * illustration, so a colored disc behind it would compete with it rather than
+ * support it. Dimensions are intentionally NOT hardcoded here: the component
+ * sets its own width/height inline from the same constants it computes the
+ * frame offset from, so the box and the sprite slice can never drift out of
+ * sync between a CSS edit and a constants edit.
+ */
+.rc-sprite-avatar {
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--vscode-chat-avatarForeground, var(--vscode-foreground));
-  background-color: var(--vscode-chat-avatarBackground, var(--vscode-badge-background));
   margin-top: 1px;
 }
+
+/*
+ * Reduced motion: `useSpriteFrame` already returns a constant 0 and starts no
+ * timer under `prefers-reduced-motion: reduce` (mirroring useBrailleSpinner's
+ * own JS-level check, for the same reason — a CSS-only freeze cannot apply when
+ * the frame is chosen in JS). This rule is a second, independent guarantee at
+ * the CSS layer: `steps()`/`animation` are never used to drive this element at
+ * all (background-position is set directly, not animated), so there is no
+ * animation for a stylesheet-only reduced-motion audit to find here — this
+ * comment exists so that absence reads as intentional, not as a rule someone
+ * forgot to write.
+ */
 
 .rc-turn-body {
   min-width: 0;

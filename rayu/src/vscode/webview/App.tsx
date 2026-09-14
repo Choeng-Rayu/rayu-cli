@@ -796,6 +796,7 @@ function Transcript({
                         ? state.turnCompletions[block.entry.turnId]
                         : undefined
                     }
+                    turnPhase={state.turnProgress?.phase}
                     onKeep={onKeep}
                     onUndo={onUndo}
                     onDiff={onDiff}

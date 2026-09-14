@@ -356,6 +356,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'webview.css'),
     )
+    // Staged as media/sprite-goose.png (see build-vscode.ts) — the animated
+    // per-status avatar's source atlas. `webview.css` is a static file with no
+    // access to `webview.asWebviewUri()`'s runtime resolution, so this cannot be
+    // a plain `url()` inside it; the resolved URI is threaded in as a CSS custom
+    // property via the inline style block below instead, which the CSP already
+    // permits ('unsafe-inline' on style-src, added for VS Code's own injected
+    // theme block — this reuses that same allowance, not a new one).
+    const spriteUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'sprite-goose.png'),
+    )
 
     // `default-src 'none'` first, then the narrowest possible allowances.
     // `style-src` needs 'unsafe-inline' because VS Code itself injects the theme
@@ -375,6 +385,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link href="${styleUri}" rel="stylesheet" />
+<style>:root { --rc-sprite-goose-url: url("${spriteUri}"); }</style>
 <title>Rayucode</title>
 </head>
 <body>

@@ -74,6 +74,14 @@ const WEBVIEW_ENTRY = 'src/vscode/webview/index.tsx'
 const MANIFEST = 'src/vscode/extension.manifest.json'
 const ICON = 'src/vscode/assets/icon.svg'
 const ICON_PNG = 'src/vscode/assets/icon.png'
+// The animated per-status avatar's source atlas — a 8×9 grid of 192×208 cells,
+// one row per animation (idle, run right/left, waving, jumping, failed,
+// waiting, running/coding, review), documented in full in
+// src/vscode/webview/spriteAtlas.ts. Same asset the CLI's own mascot banner
+// reads from (assets/spritesheet.png), staged as its own file rather than
+// referenced from the repo-root assets/ directory because only files under
+// media/ are inside the panel's `localResourceRoots` — see chatViewProvider.ts.
+const SPRITE_GOOSE = 'src/vscode/assets/sprite-goose.png'
 const README = 'src/vscode/README.md'
 const CHANGELOG = 'src/vscode/CHANGELOG.md'
 
@@ -335,6 +343,7 @@ function stagePackage(): string {
   copyFileSync(resolve(OUT_DIR, 'webview.css'), resolve(STAGE_DIR, 'media/webview.css'))
   copyFileSync(resolve(ROOT, ICON), resolve(STAGE_DIR, 'media/icon.svg'))
   copyFileSync(resolve(ROOT, ICON_PNG), resolve(STAGE_DIR, 'media/icon.png'))
+  copyFileSync(resolve(ROOT, SPRITE_GOOSE), resolve(STAGE_DIR, 'media/sprite-goose.png'))
   if (existsSync(resolve(ROOT, README))) {
     copyFileSync(resolve(ROOT, README), resolve(STAGE_DIR, 'README.md'))
   }

@@ -153,6 +153,7 @@ describe.if(artifactsPresent)('Rayucode build integrity and boundary guards', ()
       expect(output).toContain('extension/media/webview.css')
       expect(output).toContain('extension/media/icon.svg')
       expect(output).toContain('extension/media/icon.png')
+      expect(output).toContain('extension/media/sprite-goose.png')
       expect(output).toContain('extension/readme.md')
       expect(output).toContain('extension/changelog.md')
 
