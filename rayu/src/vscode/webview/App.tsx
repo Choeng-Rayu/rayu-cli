@@ -46,7 +46,7 @@ import {
   BackgroundTaskCenter,
   type TaskOutputResult,
 } from './components/BackgroundTaskCenter.js'
-import { RayuMark } from './components/Icons.js'
+import { ProgressGlyph, RayuMark } from './components/Icons.js'
 import {
   SessionHeader,
   deriveSessionStatus,
@@ -80,8 +80,6 @@ interface PersistedUiState {
   sessionsOpen?: boolean
   selectedTaskKey?: string | null
   draft?: string
-  /** Whether tool rows are showing their parameters and output. */
-  detailed?: boolean
 }
 
 function readPersistedUi(): PersistedUiState {
@@ -106,14 +104,21 @@ export function App(): JSX.Element {
   /** Which surface has replaced the conversation, if any. */
   const [sessionsOpen, setSessionsOpen] = useState(() => readPersistedUi().sessionsOpen ?? false)
   /**
-   * Whether every tool row shows its parameters and output.
+   * Whether every tool row shows its fields and output.
    *
-   * The panel-wide analogue of the CLI's Ctrl+O. Persisted because it is a reading
-   * preference rather than a transient state: a user who wants to watch the detail wants it
-   * on the next turn too, and losing it when VS Code recreates the webview would make the
-   * control feel like it had been ignored.
+   * The panel-wide analogue of the CLI's Ctrl+O.
+   *
+   * ── DELIBERATELY NOT PERSISTED ─────────────────────────────────────────────────
+   *
+   * It used to be, on the reasoning that a reading preference should survive the webview
+   * being recreated. In practice that made it a trap: one press of Ctrl+O turned every row
+   * in every future session permanently open, `vscode.setState` outlives an extension
+   * update so reinstalling did not clear it, and nothing on screen explained why the
+   * transcript was full of expanded output. The collapsed row IS the design — a one-line
+   * summary per action — so the panel starts there every time and this stays a per-session
+   * "show me everything for a moment".
    */
-  const [detailed, setDetailed] = useState(() => readPersistedUi().detailed ?? false)
+  const [detailed, setDetailed] = useState(false)
   /**
    * Tool rows the user has opened or closed BY HAND, overriding the panel switch.
    *
@@ -130,8 +135,8 @@ export function App(): JSX.Element {
    * default, an override wins over it, and flipping the switch clears the overrides so it
    * behaves like a fresh instruction rather than being silently ignored on some rows.
    *
-   * Not persisted. Which rows were open is transient reading state, unlike `detailed`
-   * itself, which is a preference.
+   * Not persisted. Which rows were open is transient reading state, and neither is the
+   * panel-wide switch any more — see `detailed`.
    */
   const [toolOverrides, setToolOverrides] = useState<Record<EntryId, boolean>>({})
 
@@ -152,10 +157,9 @@ export function App(): JSX.Element {
     vscodeApi.setState({
       sessionsOpen,
       selectedTaskKey,
-      detailed,
       ...(draft ? { draft } : {}),
     } satisfies PersistedUiState)
-  }, [sessionsOpen, selectedTaskKey, draft, detailed])
+  }, [sessionsOpen, selectedTaskKey, draft])
 
   /**
    * Ctrl+O / Cmd+O, the same gesture the CLI uses for the same thing.
@@ -859,10 +863,11 @@ function TurnStatus({ progress }: { progress: TurnProgressView }): JSX.Element {
         A static glyph while WAITING. The engine is blocked on the user there, and an
         animated spinner would claim progress that cannot happen until they answer.
       */}
-      <span
-        className={waiting ? 'rc-turn-glyph rc-turn-glyph-waiting' : 'rc-progress-glyph'}
-        aria-hidden="true"
-      />
+      {waiting ? (
+        <span className="rc-turn-glyph rc-turn-glyph-waiting" aria-hidden="true" />
+      ) : (
+        <ProgressGlyph />
+      )}
       <span className="rc-thinking-text">
         {describeTurnPhase(progress)}
         {'\u2026 '}

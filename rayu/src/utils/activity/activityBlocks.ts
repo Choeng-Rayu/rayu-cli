@@ -23,6 +23,16 @@
  */
 
 import type { ContentBlock, WrappedMessage } from '../../telegram/formatActivity.js'
+import {
+  BASH_STDERR_TAG,
+  BASH_STDOUT_TAG,
+  LOCAL_COMMAND_CAVEAT_TAG,
+  LOCAL_COMMAND_STDERR_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+  TASK_NOTIFICATION_TAG,
+  TEAMMATE_MESSAGE_TAG,
+  TICK_TAG,
+} from '../../constants/xml.js'
 
 /**
  * Longest summary these helpers produce.
@@ -48,6 +58,58 @@ export function blocksOf(message: WrappedMessage): ContentBlock[] {
     return content ? [{ type: 'text', text: content }] : []
   }
   return Array.isArray(content) ? content : []
+}
+
+/**
+ * XML tags that mark a `user`-role text block as SYNTHETIC — injected by the engine
+ * itself (a background-task completion, a piped bash result, a queued slash command,
+ * an internal tick) rather than typed by the person at the keyboard.
+ *
+ * ── WHY THIS LIST EXISTS HERE, SEPARATELY FROM THE INK RENDERER'S OWN CHECK ─────
+ *
+ * `components/messages/UserTextMessage.tsx` makes the identical distinction for the
+ * terminal, dispatching each of these tags to its own dedicated component (or, for
+ * `tick`/`local-command-caveat`, dropping it outright) instead of the plain prompt
+ * bubble. That component is Ink/React and cannot be imported from here: this module
+ * is read by the VS Code EXTENSION HOST (`formatActivityForVSCode.ts`) and by the
+ * Web Bridge (`formatActivityForWeb.ts`), neither of which can carry a terminal
+ * renderer as a dependency just to ask one question of a string.
+ *
+ * Without this, a `<task-notification>` (or any tag below) round-trips into a remote
+ * surface as a literal `{ kind: 'prompt', text: '<task-notification>...' }` — the raw
+ * XML shown as if the user had typed it — because `formatMessageForVSCode` and
+ * `formatMessageForWeb` had no way to tell it apart from a real prompt. Every tag
+ * here is one the CLI itself never shows as plain user prose; a remote transcript
+ * should not show it either.
+ *
+ * `command-message` (a `/command` invocation) and `bash-input` (a `!cmd` line) are
+ * deliberately EXCLUDED: those ARE something the user typed, just through a
+ * shorthand, and the CLI renders them as user input (`UserCommandMessage`,
+ * `UserBashInputMessage`) rather than suppressing them. Excluding them here keeps
+ * that same content visible on remote surfaces instead of silently dropping input
+ * the user is entitled to see echoed back.
+ */
+const SYNTHETIC_USER_TEXT_TAGS = [
+  TASK_NOTIFICATION_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+  LOCAL_COMMAND_STDERR_TAG,
+  LOCAL_COMMAND_CAVEAT_TAG,
+  BASH_STDOUT_TAG,
+  BASH_STDERR_TAG,
+  TICK_TAG,
+  TEAMMATE_MESSAGE_TAG,
+] as const
+
+/**
+ * True when a `user`-role text block is engine-injected plumbing, not something the
+ * user wrote — see {@link SYNTHETIC_USER_TEXT_TAGS}.
+ *
+ * Matched with a leading `<tag` (no closing `>`) rather than a full open-tag match,
+ * because `task-notification` and `teammate-message` carry attributes/children and
+ * some CLI checks (`UserTextMessage.tsx`) match the same way for that reason.
+ */
+export function isSyntheticUserText(text: string): boolean {
+  return SYNTHETIC_USER_TEXT_TAGS.some(tag => text.includes(`<${tag}`))
 }
 
 /** Stringify a tool result's `content`, which may be text, blocks, or a bare value. */

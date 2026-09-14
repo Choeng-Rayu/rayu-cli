@@ -1342,7 +1342,31 @@ async function* queryModel(
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { stripImagesFromMessages } =
       require('../compact/compact.js') as typeof import('../compact/compact.js')
+    const { contentHasImage, notePendingImageDropNotice, rememberModelRejectedImages } =
+      require('src/utils/model/imageCapability.js') as typeof import('src/utils/model/imageCapability.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
+    // ── THE WARNING MUST BE QUEUED HERE TOO, NOT ONLY ON THE REACTIVE PATH ─────
+    //
+    // `notePendingImageDropNotice`/`rememberModelRejectedImages` were previously
+    // called ONLY from `openaiAdapter.ts`'s `noteImageUnsupported()` — the
+    // REACTIVE path, triggered after a provider has already answered 400. This
+    // proactive strip (the one that actually runs for anthropic-compatible and
+    // rayu-hosted providers, decided by the built-in capability table BEFORE any
+    // request is sent) had no equivalent call, so the image was silently replaced
+    // with an "[image]" placeholder and the user was told nothing: the model
+    // correctly declined to hallucinate seeing an image, and the user correctly
+    // read that as "Rayucode never even tried to send it" — because it hadn't
+    // been told a warning existed to look for. Checking BEFORE stripping (not
+    // after) — `stripImagesFromMessages` reports nothing back to its caller
+    // about what it removed, so the presence check has to happen here.
+    if (messagesForAPI.some(m => m.type === 'user' && contentHasImage(m.message.content))) {
+      // `providerId` is accepted by `rememberModelRejectedImages` for telemetry
+      // symmetry only — its own header states it is deliberately NOT part of the
+      // lookup key — so `undefined` here matches how `openaiAdapter.ts` would
+      // call it when it has no local config to read one from.
+      rememberModelRejectedImages(undefined, options.model)
+      notePendingImageDropNotice(options.model, /* discoveredFromProvider */ false)
+    }
     messagesForAPI = stripImagesFromMessages(messagesForAPI)
   }
 

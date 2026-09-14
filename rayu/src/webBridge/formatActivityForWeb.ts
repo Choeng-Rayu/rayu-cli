@@ -24,6 +24,7 @@
 import type { WrappedMessage } from '../telegram/formatActivity.js'
 import {
   blocksOf,
+  isSyntheticUserText,
   resultText,
   summariseInput,
   truncate,
@@ -52,6 +53,10 @@ export function formatMessageForWeb(message: WrappedMessage): WebActivityLine[] 
       case 'text': {
         const text = block.text ?? ''
         if (!text.trim()) break
+        // Same exclusion as the VS Code webview formatter — a task-notification or
+        // other engine-injected text must not appear as though the user typed it.
+        // See `isSyntheticUserText` for the tag list and rationale.
+        if (message.type === 'user' && isSyntheticUserText(text)) break
         lines.push({
           kind: message.type === 'user' ? 'prompt' : 'assistant',
           summary: truncate(text),

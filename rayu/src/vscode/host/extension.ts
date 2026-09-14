@@ -21,6 +21,7 @@
  * the panel and types instead of after their first message.
  */
 import * as vscode from 'vscode'
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
@@ -95,6 +96,141 @@ const COMMANDS = {
   addToContext: 'rayucode.addToContext',
 } as const
 
+/**
+ * Resolve a workspace path the exact same way `getOriginalCwd()` does in
+ * `src/bootstrap/state.ts`: realpath (symlinks resolved) then NFC-normalized.
+ *
+ * This is what `~/.rayu/sessions/<pid>.json` records as `cwd` when the terminal CLI
+ * registers itself, and the attach-list handler filters session records with a strict
+ * `===` against whatever cwd it is given. Comparing an un-resolved VS Code path
+ * against a resolved CLI path is a silent, permanent mismatch — not a transient one a
+ * retry or a refresh fixes — because the two strings simply never converge. Falls back
+ * to the raw path on any `realpathSync` failure (path doesn't exist yet, or a
+ * CloudStorage mount returning EPERM on a per-component `lstat`), matching the same
+ * fallback `getOriginalCwd()` uses, so a filter that can't resolve degrades to "match
+ * literally" rather than throwing.
+ */
+function normalizeCwdForAttachLookup(path: string): string {
+  try {
+    return realpathSync(path).normalize('NFC')
+  } catch {
+    return path.normalize('NFC')
+  }
+}
+
+/**
+ * The `@`-mention file/folder search's query-to-glob decision, and the local filter, if
+ * any, still needed after VS Code's own glob search returns. Pure — no `vscode`
+ * dependency — so this is unit-testable directly.
+ *
+ * ── TWO BUGS, TWO FIXES, IN SEQUENCE ────────────────────────────────────────────
+ *
+ * Bug 1 (fixed first, then this fix broke a second thing): the original glob spliced
+ * the raw query straight into a pattern, `**` + `/*` + `${query}` + `*`. That breaks the
+ * instant the query contains a `/` — which happens exactly when a user drills into a
+ * folder by typing its name (`@src/vscode`) — because `/` inside a glob is a
+ * path-segment BOUNDARY, not a literal character. `**` + `/*src/vscode*` means "a
+ * segment ending in src immediately followed by a segment starting with vscode", which
+ * almost nothing satisfies. The first fix replaced the glob-based query entirely with an
+ * unbounded raw fetch (`**` + `/*`, capped at some N) followed by a plain substring
+ * filter in JS — correct for matching, but wrong for SCALE.
+ *
+ * Bug 2 (what this function actually exists to fix): on a real multi-project monorepo
+ * workspace, "everything under the workspace root" can be tens of thousands of files
+ * (confirmed: 47,317 in the reported case). `vscode.workspace.findFiles` truncates at
+ * whatever cap is passed, in whatever order its own file walker enumerates — which is
+ * NOT query-aware, so a query like "AGENTS.md" that matches files in three different
+ * sibling subprojects can have two of the three matches fall outside the truncation
+ * window entirely, before the query filter is ever applied. Raising the cap only moves
+ * the cliff edge further out; it does not remove it, and a workspace can always be
+ * bigger than whatever fixed number is chosen.
+ *
+ * The actual fix is to give VS Code's OWN search engine the query again, so it can do
+ * the deep, efficient, non-enumerating search it is built for (backed by ripgrep, not a
+ * JS array scan) — but build the glob CORRECTLY this time by splitting on the last `/`:
+ *
+ *   - No slash in the query (the common case — typing a filename or a fragment of one):
+ *     the query becomes the FILENAME portion of a scoped glob, `**` + `/*<query>*`,
+ *     glob-escaped. This recurses through every folder in the workspace at once,
+ *     efficiently, and needs no further filtering.
+ *   - A slash in the query (drilling into a folder): everything up to the LAST slash is
+ *     a literal directory path, not a fragment to fuzzy-match — the user typed or
+ *     selected that exact folder. The glob anchors to that literal path and recurses
+ *     under it (`**` + `/<dirPath>/**`), which VS Code's engine only has to search WITHIN
+ *     — a small subtree, not the whole workspace, so this stays fast even on a huge
+ *     monorepo. The portion after the last slash (if any) is then matched as a plain
+ *     substring against the scoped results, exactly as `buildFileSearchResults` already
+ *     does for the no-slash case.
+ */
+export function buildFileSearchGlob(query: string): {
+  glob: string
+  /** The leaf fragment still needing a substring match after the glob narrows scope. */
+  leafFilter: string
+} {
+  const lastSlash = query.lastIndexOf('/')
+  if (lastSlash === -1) {
+    return {
+      glob: query ? `**/*${escapeGlob(query)}*` : '**/*',
+      leafFilter: '',
+    }
+  }
+  const dirPath = query.slice(0, lastSlash)
+  const leafFilter = query.slice(lastSlash + 1)
+  return {
+    glob: `**/${escapeGlobPath(dirPath)}/**`,
+    leafFilter,
+  }
+}
+
+/** Escapes glob metacharacters in a single path segment (no `/` expected in it). */
+function escapeGlob(segment: string): string {
+  return segment.replace(/[*?[\]{}()!]/g, char => `\\${char}`)
+}
+
+/** Escapes glob metacharacters in each segment of a literal path, preserving its `/`s. */
+function escapeGlobPath(path: string): string {
+  return path.split('/').map(escapeGlob).join('/')
+}
+
+/**
+ * The `@`-mention file/folder search's local post-processing — no `vscode` dependency,
+ * so this is unit-testable directly.
+ *
+ * `relativePaths` here are already the OUTPUT of the glob built by
+ * `buildFileSearchGlob` — a set VS Code's own search has already narrowed to files
+ * relevant to the query, not the whole workspace. `leafFilter` (from the same function)
+ * is applied as a plain substring match, which is safe to do in JS now because the input
+ * set is already small: VS Code's glob did the expensive, workspace-wide part.
+ *
+ * ── FOLDERS ARE DERIVED FROM THE FULL SET, NOT THE ALREADY-FILTERED ONE ────────
+ *
+ * Parent folders are derived from every candidate BEFORE the leaf filter is applied,
+ * then filtered the same way — a query like "src" must still offer the folder "src/"
+ * itself (which contains "src") even though most of that folder's own children might
+ * not.
+ */
+export function buildFileSearchResults(
+  relativePaths: readonly string[],
+  leafFilter: string,
+  displayLimit = 75,
+): string[] {
+  const q = leafFilter.toLowerCase()
+  const matches = (candidate: string): boolean => !q || candidate.toLowerCase().includes(q)
+
+  const files = relativePaths.filter(matches)
+
+  const folders = new Set<string>()
+  for (const file of relativePaths) {
+    const parts = file.split('/')
+    for (let index = 1; index < parts.length; index += 1) {
+      const folder = `${parts.slice(0, index).join('/')}/`
+      if (matches(folder)) folders.add(folder)
+    }
+  }
+
+  return [...folders, ...files].slice(0, displayLimit)
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   // Provider selection and credentials belong to Rayucode, independently of the
   // terminal CLI. General Rayu storage remains untouched, so history, sessions,
@@ -136,6 +272,18 @@ export function activate(context: vscode.ExtensionContext): void {
   const engineCwd =
     workspaceDir ??
     (activeFile?.scheme === 'file' ? dirname(activeFile.fsPath) : homedir())
+  // The terminal CLI registers its session under `getOriginalCwd()`
+  // (`src/bootstrap/state.ts`), which resolves symlinks and NFC-normalizes the path
+  // before writing `~/.rayu/sessions/<pid>.json`. `engineCwd` above is VS Code's raw
+  // `workspaceFolders[0].uri.fsPath` — never realpath'd. On any workspace whose path
+  // crosses a symlink (a home-directory symlink, a cloud-synced folder, `/tmp` vs
+  // `/private/tmp` on macOS), an exact string match between the two would silently
+  // fail: a session that just exited would still look "present" until its stale file
+  // is swept by PID, and a brand-new terminal session would never match at all, no
+  // matter how many times the attach dropdown is reopened. This is the STRING USED
+  // FOR ATTACH-LIST COMPARISON ONLY — the engine still spawns with the unresolved
+  // `engineCwd` above, since that is just a working directory, not a lookup key.
+  const engineCwdRealpath = normalizeCwdForAttachLookup(engineCwd)
 
   // Declared before the session so its callbacks can post to it, and assigned
   // immediately after. The alternative — passing the provider into the session —
@@ -632,7 +780,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // `--thinking enabled` spawn flag, which is the only mechanism that outranks the
       // user's `alwaysThinkingEnabled` setting.
       listAttachable: async () => {
-        const outcome = await listAttachTargets({ enginePath, cwd: engineCwd }, engineCwd)
+        const outcome = await listAttachTargets({ enginePath, cwd: engineCwdRealpath }, engineCwdRealpath)
         attachTargets = outcome.targets ?? []
         attachment = {
           ...attachment,
@@ -846,28 +994,25 @@ export function activate(context: vscode.ExtensionContext): void {
       openProviderSetup: () => openProviderSetupSurface(true),
       findFiles: async (query: string) => {
         try {
-          const pattern = query ? `**/*${query}*` : '**/*'
+          // `buildFileSearchGlob` decides what to ask VS Code's own search for —
+          // scoped correctly whether or not the query contains a folder drill-down
+          // slash — so the expensive, workspace-wide part runs in VS Code's search
+          // engine, not a JS array scan over the whole workspace. See its header for
+          // why: an unbounded JS-side scan cannot scale to every monorepo size, and a
+          // bounded one silently drops matches outside whatever cap is chosen.
+          const { glob, leafFilter } = buildFileSearchGlob(query)
           const uris = await vscode.workspace.findFiles(
-            pattern,
+            glob,
             '{**/node_modules/**,**/.git/**,**/dist/**,**/.turbo/**}',
-            50,
+            2000,
           )
-          const files = uris.map(uri => vscode.workspace.asRelativePath(uri, false))
-          // VS Code's findFiles API returns files only. Derive their parent folders so
-          // the same @ picker can reference directories, which the shared attachment
-          // parser already knows how to expand.
-          const folders = new Set<string>()
-          for (const file of files) {
-            const parts = file.replace(/\\/g, '/').split('/')
-            for (let index = 1; index < parts.length; index += 1) {
-              const folder = `${parts.slice(0, index).join('/')}/`
-              if (!query || folder.toLowerCase().includes(query.toLowerCase())) folders.add(folder)
-            }
-          }
+          const relativePaths = uris.map(uri =>
+            vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/'),
+          )
           provider.post({
             type: 'fileSearchResults',
             query,
-            files: [...folders, ...files].slice(0, 75),
+            files: buildFileSearchResults(relativePaths, leafFilter),
           })
         } catch {
           provider.post({ type: 'fileSearchResults', query, files: [] })

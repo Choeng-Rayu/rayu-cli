@@ -213,6 +213,7 @@ test('a subagent tool call is attributed to the Task that spawned it', () => {
       name: 'Task',
       label: 'review the diff',
       parameters: '{}',
+      details: [],
     },
     {
       kind: 'tool_use',
@@ -221,6 +222,7 @@ test('a subagent tool call is attributed to the Task that spawned it', () => {
       name: 'Read',
       label: 'src/a.ts',
       parameters: '{}',
+      details: [],
     },
   ])
 
@@ -251,6 +253,7 @@ test('a subagent call whose parent was trimmed away still says it is a subagent'
       name: 'Read',
       label: 'src/a.ts',
       parameters: '{}',
+      details: [],
     },
   ])
 

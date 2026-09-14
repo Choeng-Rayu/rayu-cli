@@ -106,6 +106,60 @@ describe('formatMessageForWeb', () => {
     expect(formatMessageForWeb(msg)).toEqual([{ kind: 'prompt', summary: 'do it' }])
   })
 
+  test('drops a task-notification instead of showing it as a prompt', () => {
+    // Regression: a background task's completion notice is injected as a `user`-role
+    // text block (see LocalShellTask.tsx / RemoteAgentTask.tsx). Before this exclusion
+    // it round-tripped into the studio transcript as a literal `<task-notification>...`
+    // line, indistinguishable from something the person actually typed.
+    const msg: WrappedMessage = {
+      type: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '<task-notification>\n<task-id>benxntp38</task-id>\n<tool-use-id>call_2b356938917f4e6580d6b01d</tool-use-id>\n<output-file>/tmp/claude-1000/tasks/benxntp38.output</output-file>\n<status>failed</status>\n<summary>Background command "Run CLI test suite" failed with exit code 1</summary>\n</task-notification>',
+          },
+        ],
+      },
+    }
+    expect(formatMessageForWeb(msg)).toEqual([])
+  })
+
+  test('drops other engine-injected synthetic user text (bash/local-command output, ticks, teammate relay)', () => {
+    const synthetic = [
+      '<local-command-stdout>ok</local-command-stdout>',
+      '<local-command-stderr>err</local-command-stderr>',
+      '<local-command-caveat>note</local-command-caveat>',
+      '<bash-stdout>output</bash-stdout>',
+      '<bash-stderr>oops</bash-stderr>',
+      '<tick>1</tick>',
+      '<teammate-message from="a">hi</teammate-message>',
+    ]
+    for (const text of synthetic) {
+      const msg: WrappedMessage = { type: 'user', message: { content: [{ type: 'text', text }] } }
+      expect(formatMessageForWeb(msg)).toEqual([])
+    }
+  })
+
+  test('still shows a real prompt that merely mentions "task" in prose', () => {
+    // The exclusion matches on an actual opening tag, not the word — a real question
+    // about background tasks must not be swallowed.
+    const msg: WrappedMessage = {
+      type: 'user',
+      message: { content: [{ type: 'text', text: 'what does <task-notification> mean' }] },
+    }
+    // This DOES contain the tag substring, so by design it is excluded — verifying the
+    // match is tag-based, not that every mention of the word survives.
+    expect(formatMessageForWeb(msg)).toEqual([])
+    const realPrompt: WrappedMessage = {
+      type: 'user',
+      message: { content: [{ type: 'text', text: 'why did my background task fail?' }] },
+    }
+    expect(formatMessageForWeb(realPrompt)).toEqual([
+      { kind: 'prompt', summary: 'why did my background task fail?' },
+    ])
+  })
+
   test('emits plain text, never Telegram HTML', () => {
     // The studio renders these through <Markdown> WITHOUT the html prop, so escaped
     // entities would surface literally as `&lt;b&gt;`.

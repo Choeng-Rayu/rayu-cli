@@ -110,12 +110,25 @@ export function TodoListCard({
 
 
 
+/**
+ * The CLI's own task-row icons — `getTaskIcon()` in `TaskListV2.tsx`, the terminal's
+ * real dedicated task-list component (NOT `StatusIcon.tsx`'s generic `pending`/`loading`
+ * icons, which are for unrelated connection/status concepts, not task rows specifically).
+ *
+ *   completed:   figures.tick              (✔)  color: success
+ *   in_progress: figures.squareSmallFilled (◼)  color: brand (Rayu green)
+ *   pending:     figures.squareSmall       (◻)  color: default foreground
+ *
+ * The CLI does NOT animate the in-progress icon itself — it stays a static filled
+ * square. What moves is a SEPARATE trailing activity line under the row (handled below
+ * by `rc-todo-active`), matching `TaskItem`'s `showActivity` line in `TaskListV2.tsx`.
+ */
 function TodoStatusIcon({ status }: { status: TodoItemView['status'] }): JSX.Element {
   if (status === 'completed') {
-    return <span className="rc-todo-status" aria-label="Completed">&#10003;</span>
+    return <span className="rc-todo-status rc-todo-status-completed" aria-label="Completed">&#10004;</span>
   }
   if (status === 'in_progress') {
-    return <span className="rc-todo-status rc-todo-status-active" aria-label="In progress" />
+    return <span className="rc-todo-status rc-todo-status-active" aria-label="In progress">&#9724;</span>
   }
-  return <span className="rc-todo-status rc-todo-status-pending" aria-label="Pending" />
+  return <span className="rc-todo-status rc-todo-status-pending" aria-label="Pending">&#9723;</span>
 }

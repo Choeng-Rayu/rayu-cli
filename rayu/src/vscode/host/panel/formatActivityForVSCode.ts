@@ -54,6 +54,7 @@
 import type { ContentBlock, WrappedMessage } from '../../../telegram/formatActivity.js'
 import {
   blocksOf,
+  isSyntheticUserText,
   resultText,
   summariseInput,
 } from '../../../utils/activity/activityBlocks.js'
@@ -62,7 +63,7 @@ import { ASK_USER_QUESTION_TOOL_NAME } from '../../../tools/AskUserQuestionTool/
 import { TODO_WRITE_TOOL_NAME } from '../../../tools/TodoWriteTool/constants.js'
 import { TodoListSchema, type TodoList } from '../../../utils/todo/types.js'
 import { z } from 'zod'
-import type { ToolResultView } from '../../shared/webviewProtocol.js'
+import type { ToolDetailView, ToolResultView } from '../../shared/webviewProtocol.js'
 
 /**
  * Correlation ids, which `ContentBlock` does not declare.
@@ -161,6 +162,8 @@ export type VSCodeActivityBlock =
       name: string
       /** One-line collapsed label, e.g. the command or the file path. */
       label: string
+      /** Named fields for the expanded row. See `ToolDetailView`. */
+      details: ToolDetailView[]
       /** Pretty-printed parameters for the expanded pill. */
       parameters: string
       /** Structured questions for the dedicated interaction/result renderer. */
@@ -194,6 +197,257 @@ export type VSCodeActivityBlock =
     }
 
 /** Pretty-print a tool's arguments for the expanded pill, bounded. */
+/**
+ * The row's one-line label: what the call acted on.
+ *
+ * `summariseInput` is the shared definition and is used unchanged for every tool that has a
+ * command, a path, a pattern or a URL. It is wrapped only for the case it was never shaped
+ * for: a tool whose sole textual argument is a `prompt`. Its precedence ends at `prompt`, so
+ * an `Agent` call — whose prompt is a multi-page brief — put that entire brief in the pill
+ * header, where the CLI shows the one-line description instead.
+ *
+ * Fixed here rather than in `summariseInput` because that function also feeds the Telegram
+ * and web-bridge transcripts, and changing what "the summary" means for every surface to fix
+ * one surface's header is the kind of shared-code edit that produces two transcripts which
+ * disagree. See the header of `utils/activity/activityBlocks.ts`.
+ */
+function summariseLabel(input: unknown): string {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const record = input as Record<string, unknown>
+    const hasStrongerSubject = ['command', 'file_path', 'path', 'pattern', 'url'].some(
+      key => typeof record[key] === 'string' && record[key],
+    )
+    const description = record.description
+    if (!hasStrongerSubject && typeof description === 'string' && description.trim()) {
+      return description.trim()
+    }
+  }
+  return summariseInput(input)
+}
+
+/**
+ * A tool call's arguments as a short list of NAMED FIELDS.
+ *
+ * ── KEY-DRIVEN, NOT PER-TOOL ────────────────────────────────────────────────────
+ *
+ * A switch over tool names would need a new case for every tool and every rename, and would
+ * silently fall back to nothing for the ~30 MCP tools whose names are not known until a
+ * server connects. Tool INPUT KEYS are far more stable than tool names — `command`,
+ * `file_path`, `pattern`, `url` mean the same thing wherever they appear — so the labels are
+ * keyed off those, and anything unrecognised is described rather than dumped.
+ *
+ * ── THREE CLASSES OF FIELD ──────────────────────────────────────────────────────
+ *
+ * 1. NAMED: a known key with a short scalar value. Shown in full, with a label.
+ * 2. BULK: a key whose value is a payload, not an argument — a file's whole `content`, both
+ *    sides of an `Edit`. Shown as a SIZE. The result already renders the change as a diff,
+ *    so printing the body here said everything twice and buried the diff under it.
+ * 3. UNKNOWN: any other key. The NAME is shown with a shape (`{…}`, `3 items`) or a short
+ *    scalar. This is what keeps an MCP tool's arguments legible without putting a server
+ *    token on screen.
+ *
+ * Order is fixed by `DETAIL_KEY_ORDER` rather than by the object's own key order, because
+ * argument order is the model's choice and would make the same call render differently
+ * between turns.
+ */
+export function toolDetails(input: unknown): ToolDetailView[] {
+  if (input === undefined || input === null) return []
+  // A bare string argument has no field name to show. The row's label already carries it.
+  if (typeof input !== 'object' || Array.isArray(input)) return []
+
+  const record = input as Record<string, unknown>
+  const details: ToolDetailView[] = []
+  const seen = new Set<string>()
+
+  for (const key of DETAIL_KEY_ORDER) {
+    if (!(key in record)) continue
+    seen.add(key)
+    const detail = describeDetail(key, record[key])
+    if (detail) details.push(detail)
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    if (seen.has(key)) continue
+    // Internal plumbing the model never sees and the user cannot act on.
+    if (key.startsWith('_')) continue
+    const detail = describeDetail(key, value)
+    if (detail) details.push(detail)
+    if (details.length >= MAX_TOOL_DETAILS) break
+  }
+
+  return details
+}
+
+/** Known input keys, in the order they read best. Also the labels the row shows. */
+const DETAIL_LABELS: Record<string, string> = {
+  command: 'Command',
+  description: 'Description',
+  file_path: 'File',
+  notebook_path: 'Notebook',
+  // After the subject of a search: `Grep` acts on a PATTERN, and the path only narrows it.
+  pattern: 'Pattern',
+  query: 'Query',
+  path: 'Path',
+  url: 'URL',
+  glob: 'Filter',
+  type: 'File type',
+  output_mode: 'Mode',
+  offset: 'From line',
+  limit: 'Limit',
+  head_limit: 'Limit',
+  subagent_type: 'Agent',
+  model: 'Model',
+  timeout: 'Timeout',
+  run_in_background: 'Background',
+  replace_all: 'Replace all',
+  cell_id: 'Cell',
+  cell_type: 'Cell type',
+  edit_mode: 'Edit mode',
+  prompt: 'Prompt',
+  skill: 'Skill',
+  name: 'Name',
+}
+
+const DETAIL_KEY_ORDER = Object.keys(DETAIL_LABELS)
+
+/**
+ * Keys whose value is content, not an argument. Reported as a size — see `toolDetails`.
+ *
+ * `old_string`/`new_string` are absent deliberately: for an `Edit` the diff below the row
+ * renders both sides, so a pair of character counts adds nothing but height. `content` stays,
+ * because a `Write`'s result is a one-line "file created" that says nothing about how much
+ * was written.
+ */
+const BULK_KEYS = new Set(['content', 'new_source', 'edits', 'file_text'])
+
+/** Keys dropped entirely, because something else in the row already shows them better. */
+const REDUNDANT_KEYS = new Set(['old_string', 'new_string'])
+
+/** Values rendered as a block in monospace, where whitespace is part of the meaning. */
+const CODE_KEYS = new Set(['command', 'pattern', 'query'])
+
+/**
+ * Beyond this a value is a document rather than an argument, and is reported as a size.
+ *
+ * Applies to `prompt`, which is the same field on a one-line `WebFetch` question and on a
+ * subagent's full multi-page brief. The brief is reachable in the background-task panel,
+ * which is built to show it.
+ */
+const MAX_INLINE_PROMPT_CHARS = 400
+
+/** Beyond this the list stops being scannable, which is the whole point of it. */
+const MAX_TOOL_DETAILS = 12
+/** A single field is a summary, not a document. Longer values are clipped with a marker. */
+const MAX_DETAIL_VALUE_CHARS = 2_000
+
+/**
+ * Key fragments that mean the VALUE is a credential.
+ *
+ * Applied ONLY to keys outside `DETAIL_LABELS` — that is, to arguments this code does not
+ * recognise, which in practice means MCP tools whose schemas arrive at runtime. A curated key
+ * is never hidden: a `Bash` command has to be readable even when it contains a token, because
+ * the command is the thing the user is being asked to trust.
+ *
+ * Matched on the key with separators removed, so `api_key`, `apiKey` and `API-KEY` all hit.
+ * A false positive costs one hidden value; a false negative puts a live credential in a
+ * screenshot.
+ */
+const SECRET_KEY_FRAGMENTS = [
+  'token',
+  'secret',
+  'password',
+  'passwd',
+  'apikey',
+  'credential',
+  'authorization',
+  'bearer',
+  'privatekey',
+  'signature',
+  'cookie',
+]
+
+function looksSecret(key: string): boolean {
+  const normalised = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return SECRET_KEY_FRAGMENTS.some(fragment => normalised.includes(fragment))
+}
+
+function describeDetail(key: string, value: unknown): ToolDetailView | null {
+  const known = key in DETAIL_LABELS
+  const label = DETAIL_LABELS[key] ?? humaniseKey(key)
+
+  if (value === undefined || value === null) return null
+  if (REDUNDANT_KEYS.has(key)) return null
+  if (BULK_KEYS.has(key)) {
+    const size = typeof value === 'string' ? value.length : jsonLength(value)
+    return size > 0 ? { label, value: `${formatBytes(size)} (see the diff below)` } : null
+  }
+  if (!known && looksSecret(key)) {
+    // The key is reported so the call is still legible; the value is not.
+    return { label, value: '[hidden]' }
+  }
+  if (typeof value === 'boolean') {
+    // A false flag is the default and says nothing. `replace_all: false` is noise.
+    return value ? { label, value: 'yes' } : null
+  }
+  if (typeof value === 'number') {
+    return { label, value: key === 'timeout' ? formatTimeout(value) : String(value) }
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    if (key === 'prompt' && trimmed.length > MAX_INLINE_PROMPT_CHARS) {
+      return { label, value: formatBytes(trimmed.length) }
+    }
+    return {
+      label,
+      value: clampDetailValue(trimmed),
+      ...(CODE_KEYS.has(key) || trimmed.includes('\n') ? { code: true } : {}),
+    }
+  }
+  if (Array.isArray(value)) {
+    return { label, value: `${value.length} ${value.length === 1 ? 'item' : 'items'}` }
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>)
+    // The SHAPE, not the contents: enough for a developer to know what was passed, without
+    // printing values that may be credentials.
+    return { label, value: keys.length ? `{ ${keys.slice(0, 6).join(', ')} }` : '{ }' }
+  }
+  return null
+}
+
+/** `run_in_background` → "Run in background". Used for keys with no curated label. */
+function humaniseKey(key: string): string {
+  const spaced = key.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2')
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
+function clampDetailValue(value: string): string {
+  if (value.length <= MAX_DETAIL_VALUE_CHARS) return value
+  return `${value.slice(0, MAX_DETAIL_VALUE_CHARS)}…[${
+    value.length - MAX_DETAIL_VALUE_CHARS
+  } more characters]`
+}
+
+function jsonLength(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0
+  } catch {
+    return 0
+  }
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} characters`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function formatTimeout(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return String(ms)
+  return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`
+}
+
 function formatParameters(input: unknown): string {
   if (input === undefined || input === null) return ''
   if (typeof input === 'string') return clamp(input)
@@ -363,6 +617,11 @@ export function formatMessageForVSCode(
       case 'text': {
         const text = block.text ?? ''
         if (!text.trim()) break
+        // A `user`-role block can be engine-injected plumbing (a task-notification, a
+        // piped bash result, an internal tick) rather than something the person typed.
+        // Showing that as a `prompt` bubble puts raw XML in the transcript — see
+        // `isSyntheticUserText` for the full rationale and tag list.
+        if (message.type === 'user' && isSyntheticUserText(text)) break
         blocks.push(
           message.type === 'user'
             ? { kind: 'prompt', text: clamp(text) }
@@ -397,9 +656,10 @@ export function formatMessageForVSCode(
             ? `${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`
             : todos
               ? `${todos.filter(todo => todo.status === 'completed').length}/${todos.length} complete`
-            : block.input === undefined ? '' : summariseInput(block.input),
-          // Dedicated cards own these payloads. Repeating the JSON as generic
-          // parameters is the raw payload leak reported by users.
+            : block.input === undefined ? '' : summariseLabel(block.input),
+          // Dedicated cards own these payloads. Repeating them as generic fields is the
+          // raw payload leak reported by users.
+          details: questions || todos ? [] : toolDetails(block.input),
           parameters: questions || todos ? '' : formatParameters(block.input),
           ...(questions && { questions }),
           ...(todos && { todos }),

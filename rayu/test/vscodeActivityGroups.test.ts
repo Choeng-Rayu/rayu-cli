@@ -30,6 +30,7 @@ function tool(
     name,
     label: '',
     parameters: '',
+    details: [],
     status: 'done',
     output: null,
     ...overrides,
