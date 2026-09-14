@@ -1069,7 +1069,7 @@ export function withoutImages(req: AnyObj): AnyObj {
  */
 function noteImageUnsupported(providerId: string | undefined, model: string): void {
   rememberModelRejectedImages(providerId, model)
-  notePendingImageDropNotice(model)
+  notePendingImageDropNotice(model, /* discoveredFromProvider */ true)
   reportIssue(
     'openai_adapter.model_image_unsupported',
     'model rejected image input; retried without images',

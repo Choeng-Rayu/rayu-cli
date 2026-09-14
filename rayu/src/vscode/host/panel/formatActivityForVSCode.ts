@@ -54,6 +54,7 @@
 import type { ContentBlock, WrappedMessage } from '../../../telegram/formatActivity.js'
 import {
   blocksOf,
+  isSyntheticUserText,
   resultText,
   summariseInput,
 } from '../../../utils/activity/activityBlocks.js'
@@ -616,6 +617,11 @@ export function formatMessageForVSCode(
       case 'text': {
         const text = block.text ?? ''
         if (!text.trim()) break
+        // A `user`-role block can be engine-injected plumbing (a task-notification, a
+        // piped bash result, an internal tick) rather than something the person typed.
+        // Showing that as a `prompt` bubble puts raw XML in the transcript — see
+        // `isSyntheticUserText` for the full rationale and tag list.
+        if (message.type === 'user' && isSyntheticUserText(text)) break
         blocks.push(
           message.type === 'user'
             ? { kind: 'prompt', text: clamp(text) }

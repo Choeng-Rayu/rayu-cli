@@ -1607,6 +1607,44 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
   }),
 )
 
+/**
+ * A one-off informational/warning/error notice with no dedicated subtype of its
+ * own — `createSystemMessage()` in `utils/messages.ts` is the sole constructor,
+ * used both by the interactive REPL and, identically, by the headless query loop
+ * (e.g. the image-dropped-silently notice in `query.ts`, drained from
+ * `drainImageDropNotices()`).
+ *
+ * ── WHY THIS SCHEMA WAS MISSING, AND WHAT THAT COST ────────────────────────────
+ *
+ * `createSystemMessage()` predates this protocol's schema-validation boundary and
+ * was never given a corresponding wire-schema entry. Every consumer of
+ * `StdoutMessageSchema` — critically, the Rayucode extension's `ControlClient` —
+ * therefore failed to parse this frame and treated it as unrecognised one-way
+ * narration: silently dropped via `onUnknownFrame`, never reaching
+ * `sessionHandle.ts`. A warning the engine had already composed with clear,
+ * specific wording (e.g. "the model is text-only, your image was not sent") never
+ * reached the panel — the user saw nothing at all, which read as a silent failure
+ * rather than the informative degradation the message was written to be.
+ */
+export const SDKInformationalMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('informational'),
+    content: z.string(),
+    level: z.enum(['info', 'warning', 'error']),
+    // `createSystemMessage()` always sets these three — `isMeta` is always `false`
+    // (never omitted), `timestamp`/`uuid` are always generated. `session_id` is
+    // never set by that constructor at all, unlike its siblings above, so it is
+    // NOT required here — a stricter schema would reject every real instance of
+    // this frame ever produced.
+    isMeta: z.boolean(),
+    timestamp: z.string(),
+    uuid: UUIDPlaceholder(),
+    toolUseID: z.string().optional(),
+    preventContinuation: z.boolean().optional(),
+  }),
+)
+
 export const SDKStatusMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
@@ -2012,6 +2050,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKFileChangeReviewMessageSchema(),
     SDKPartialAssistantMessageSchema(),
     SDKCompactBoundaryMessageSchema(),
+    SDKInformationalMessageSchema(),
     SDKStatusMessageSchema(),
     SDKAPIRetryMessageSchema(),
     SDKLocalCommandOutputMessageSchema(),

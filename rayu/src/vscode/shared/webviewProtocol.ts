@@ -937,7 +937,7 @@ export type TranscriptEntry =
       /** Validated TodoWrite data for the dedicated task-list renderer. */
       todos?: TodoItemView[]
     }
-  | { id: EntryId; kind: 'notice'; text: string; severity: 'info' | 'error' }
+  | { id: EntryId; kind: 'notice'; text: string; severity: 'info' | 'warning' | 'error' }
   /**
    * The point in the conversation where a turn ended.
    *

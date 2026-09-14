@@ -165,6 +165,35 @@ describe('the one-shot notice channel', () => {
   test('nothing pending drains to an empty list', () => {
     expect(drainImageDropNotices()).toEqual([])
   })
+
+  test('discoveredFromProvider defaults to false — the proactive, table-known wording', () => {
+    // No second argument: this is what claude.ts's proactive strip path calls
+    // (nothing was ever sent for a provider to reject, so that wording would
+    // be false) — must default to the "is text-only" phrasing, not "the
+    // provider rejected".
+    notePendingImageDropNotice('some-text-only-model')
+    const [notice] = drainImageDropNotices()
+    expect(notice).toContain('is text-only')
+    expect(notice).not.toContain('provider rejected')
+  })
+
+  test('discoveredFromProvider: true produces the reactive, provider-rejected wording', () => {
+    // What openaiAdapter.ts's noteImageUnsupported() calls after a live 400 —
+    // a request WAS sent and WAS rejected, so this wording is accurate there.
+    notePendingImageDropNotice('some-model', true)
+    const [notice] = drainImageDropNotices()
+    expect(notice).toContain('provider rejected')
+    expect(notice).not.toContain('is text-only')
+  })
+
+  test('a later true for the same model overrides an earlier false', () => {
+    // Live evidence (a real rejection) is more specific than the table's prior
+    // guess, so it should win rather than the first call sticking.
+    notePendingImageDropNotice('flip-flop-model', false)
+    notePendingImageDropNotice('flip-flop-model', true)
+    const [notice] = drainImageDropNotices()
+    expect(notice).toContain('provider rejected')
+  })
 })
 
 describe('imageDroppedWarning wording', () => {
