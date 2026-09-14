@@ -2,6 +2,21 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 2.0.1 - 2026-09-14 (Beta)
+- **🚀 Introducing RayuCode — our new VS Code extension!** Rayu's full AI coding agent engine is now available directly inside VS Code as [RayuCode](https://marketplace.visualstudio.com/items?itemName=RayuCode.rayucode). Same tools, same providers, same skills — now with a native IDE chat panel, diff viewer, and webview UI. One engine, two products: terminal and IDE
+- **Greatly improved model support** — expanded the provider catalog with more models across Anthropic, OpenAI, Google Gemini, DeepSeek, Kimi, and OpenAI-compatible endpoints. Better model capability detection, smarter fallbacks, and more accurate context window handling
+- **Pay-as-you-go billing** — introduced a new pay-as-you-go pricing model alongside subscriptions. Top up your balance and pay only for what you use — no monthly commitment required. Perfect for occasional or variable usage
+- **More accurate credit charging** — completely reworked the credit calculation pipeline. Token counting now aligns precisely with provider billing (input/output/cache-read/cache-write tokens tracked separately), so you're charged exactly for what the model consumed — no more, no less
+- **Subscription management overhaul** — redesigned the subscription experience from the ground up: clearer plan comparison, seamless upgrades/downgrades, prorated billing, and a unified billing dashboard in rayu-web. View usage, manage your plan, and track invoices in one place
+- **Team SSO (Enterprise)** — added SAML/OIDC single-sign-on support for teams and organizations. Admins can configure Google Workspace, Okta, or any OIDC IdP so team members sign in with their existing corporate credentials — no separate Rayu accounts needed
+- **Fixed streaming interruptions** — resolved an issue where long streaming responses could silently drop tokens or terminate early under high-latency network conditions
+- **Fixed credit double-counting on retries** — credits are now correctly settled (not just reserved) after each request, eliminating the previous over-charge when the gateway retried a failed upstream call
+- **Fixed model fallback loops** — prevented infinite fallback cycles when multiple models in the chain were unavailable; the CLI now fails fast with a clear error message
+- **Fixed subscription plan change not reflecting immediately** — plan entitlements are now refreshed in real-time after a subscription change, removing the previous delay where users had to restart the session
+- **Fixed memory leak in long-running sessions** — resolved a memory accumulation issue in the Ink renderer that caused slowdowns during multi-hour coding sessions
+- **Fixed clipboard paste on Windows Terminal** — clipboard image paste now works correctly in Windows Terminal and conhost.exe, not just Windows Terminal with the new engine
+- **Fixed slash command autocomplete ordering** — commands are now ranked by relevance and frequency instead of alphabetically, so `/model`, `/connect`, and `/help` appear first
+
 ## 1.5.16 - 2026-08-08
 - Major first-launch experience overhaul — smoother onboarding, clearer setup flow, and a much friendlier "what's new" introduction for new users
 - Added Custom Provider support — users can now define and connect their own provider (any OpenAI/Anthropic-compatible endpoint) directly from `/connect` without patching the CLI
