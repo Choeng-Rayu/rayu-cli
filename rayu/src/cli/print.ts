@@ -322,7 +322,21 @@ import {
 import { asSessionId } from 'src/types/ids.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { skillChangeDetector } from '../utils/skills/skillChangeDetector.js'
-import { getCommands, clearCommandsCache } from '../commands.js'
+import {
+  getCommands,
+  clearCommandsCache,
+  filterCommandsForNonInteractive,
+} from '../commands.js'
+import {
+  projectRuntimeCommands,
+  projectRuntimeTools,
+} from '../runtime/catalog.js'
+import {
+  isRayucodeRuntime,
+  updateRayucodePreferences,
+} from '../runtime/productPreferences.js'
+import { buildRuntimeSnapshot } from '../runtime/snapshot.js'
+import type { RuntimeSnapshot } from '../protocol/index.js'
 import {
   isBareMode,
   isEnvTruthy,
@@ -571,6 +585,8 @@ export async function runHeadless(
     setupTrigger?: 'init' | 'maintenance' | undefined
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
     setSDKStatus?: (status: SDKStatus) => void
+    /** Full registry used only for first-party runtime discovery. */
+    catalogCommands?: Command[]
   },
 ): Promise<void> {
   if (
@@ -1094,6 +1110,8 @@ function runHeadlessStreaming(
     setSDKStatus?: (status: SDKStatus) => void
     promptSuggestions?: boolean | undefined
     workload?: string | undefined
+    /** Full registry used only for first-party runtime discovery. */
+    catalogCommands?: Command[]
   },
   turnInterruptionState?: TurnInterruptionState,
 ): AsyncIterable<StdoutMessage> {
@@ -1866,7 +1884,45 @@ function runHeadlessStreaming(
 
   // Mutable commands and agents for hot reloading
   let currentCommands = commands
+  let currentCatalogCommands = options.catalogCommands ?? commands
   let currentAgents = agents
+  let runtimeRevision = 0
+
+  async function currentRuntimeSnapshot() {
+    const appState = getAppState()
+    const settings = getSettings_DEPRECATED()
+    const outputStyle = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME
+    const availableOutputStyles = await getAllOutputStyles(getCwd())
+    const accountInfo = getAccountInformation()
+    const model = getMainLoopModel()
+    return buildRuntimeSnapshot({
+      revision: ++runtimeRevision,
+      product: isRayucodeRuntime() ? 'rayucode' : 'sdk',
+      sessionId: getSessionId(),
+      sessionStatus: getSessionState(),
+      commands: currentCatalogCommands,
+      tools,
+      agents: currentAgents,
+      appState,
+      mcpServers: buildMcpServerStatuses(),
+      inference: resolveInferenceSettings(
+        model,
+        appState.effortValue,
+        options.thinkingConfig,
+      ),
+      model,
+      account: {
+        email: accountInfo?.email,
+        organization: accountInfo?.organization,
+        subscriptionType: accountInfo?.subscription,
+        tokenSource: accountInfo?.tokenSource,
+        apiKeySource: accountInfo?.apiKeySource,
+        apiProvider: getAPIProvider(),
+      },
+      outputStyle,
+      availableOutputStyles: Object.keys(availableOutputStyles),
+    })
+  }
 
   // Clear all plugin-related caches, reload commands/agents/hooks.
   // Called after CLAUDE_CODE_SYNC_PLUGIN_INSTALL completes (before first query)
@@ -1885,7 +1941,8 @@ function runHeadlessStreaming(
     // Headless-specific: currentCommands/currentAgents are local mutable refs
     // captured by the query loop (REPL uses AppState instead). getCommands is
     // fresh because refreshActivePlugins cleared its cache.
-    currentCommands = await getCommands(cwd())
+    currentCatalogCommands = await getCommands(cwd())
+    currentCommands = filterCommandsForNonInteractive(currentCatalogCommands)
 
     // Preserve SDK-provided agents (--agents CLI flag or SDK initialize
     // control_request) — both inject via parseAgentsFromJson with
@@ -1942,7 +1999,8 @@ function runHeadlessStreaming(
   const unsubscribeSkillChanges = skillChangeDetector.subscribe(() => {
     clearCommandsCache()
     void getCommands(cwd()).then(newCommands => {
-      currentCommands = newCommands
+      currentCatalogCommands = newCommands
+      currentCommands = filterCommandsForNonInteractive(newCommands)
     })
   })
 
@@ -3016,18 +3074,22 @@ function runHeadlessStreaming(
             }
           }
 
+          const runtimeSnapshot = message.request.runtimeCapabilities
+            ? await currentRuntimeSnapshot()
+            : undefined
           await handleInitializeRequest(
             message.request,
             message.request_id,
             initialized,
             output,
-            commands,
+            currentCommands,
             modelInfos,
             structuredIO,
             !!options.enableAuthStatus,
             options,
-            agents,
+            currentAgents,
             getAppState,
+            runtimeSnapshot,
           )
 
           // Enable prompt suggestions in AppState when SDK consumer opts in.
@@ -3054,18 +3116,32 @@ function runHeadlessStreaming(
           if (hasCommandsInQueue()) {
             void run()
           }
+        } else if (message.request.subtype === 'get_runtime_snapshot') {
+          try {
+            sendControlResponseSuccess(message, {
+              runtime: await currentRuntimeSnapshot(),
+            })
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
         } else if (message.request.subtype === 'set_permission_mode') {
           const m = message.request // for typescript (TODO: use readonly types to avoid this)
-          setAppState(prev => ({
-            ...prev,
-            toolPermissionContext: handleSetPermissionMode(
+          setAppState(prev => {
+            const toolPermissionContext = handleSetPermissionMode(
               m,
               message.request_id,
               prev.toolPermissionContext,
               output,
-            ),
-            isUltraplanMode: m.ultraplan ?? prev.isUltraplanMode,
-          }))
+            )
+            if (isRayucodeRuntime() && toolPermissionContext.mode === m.mode) {
+              updateRayucodePreferences({ permissionMode: m.mode })
+            }
+            return {
+              ...prev,
+              toolPermissionContext,
+              isUltraplanMode: m.ultraplan ?? prev.isUltraplanMode,
+            }
+          })
           // handleSetPermissionMode sends the control_response; the
           // notifySessionMetadataChanged that used to follow here is
           // now fired by onChangeAppState (with externalized mode name).
@@ -3103,6 +3179,27 @@ function runHeadlessStreaming(
             }
           }
           sendControlResponseSuccess(message)
+        } else if (message.request.subtype === 'set_thinking') {
+          options.thinkingConfig = message.request.enabled
+            ? { type: 'adaptive' }
+            : { type: 'disabled' }
+          if (isRayucodeRuntime()) {
+            const stored = updateRayucodePreferences({
+              thinkingEnabled: message.request.enabled,
+            })
+            if (stored.error) {
+              sendControlResponseError(message, stored.error.message)
+              continue
+            }
+          }
+          const currentAppState = getAppState()
+          sendControlResponseSuccess(message, {
+            inference: resolveInferenceSettings(
+              getMainLoopModel(),
+              currentAppState.effortValue,
+              options.thinkingConfig,
+            ),
+          })
         } else if (message.request.subtype === 'mcp_status') {
           sendControlResponseSuccess(message, {
             mcpServers: buildMcpServerStatuses(),
@@ -3242,7 +3339,8 @@ function runHeadlessStreaming(
               loadAllPluginsCacheOnly(),
             ])
             if (cmdsR.status === 'fulfilled') {
-              currentCommands = cmdsR.value
+              currentCatalogCommands = cmdsR.value
+              currentCommands = filterCommandsForNonInteractive(cmdsR.value)
             } else {
               logError(cmdsR.reason)
             }
@@ -3275,7 +3373,43 @@ function runHeadlessStreaming(
               plugins,
               mcpServers: buildMcpServerStatuses(),
               error_count: r.error_count,
+              runtimeCommands: projectRuntimeCommands(currentCatalogCommands),
+              runtimeTools: projectRuntimeTools([
+                ...tools,
+                ...getAppState().mcp.tools,
+              ]),
             } satisfies SDKControlReloadPluginsResponse)
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'install_skill') {
+          try {
+            const { installSkillFromSource } = await import('../skills/installSkill.js')
+            const installed = await installSkillFromSource(message.request.source, {
+              overwrite: message.request.overwrite === true,
+            })
+            // The installer clears the shared skill/command caches. Re-read the same
+            // registry the query loop uses so the command is available immediately.
+            currentCatalogCommands = await getCommands(cwd())
+            currentCommands = filterCommandsForNonInteractive(currentCatalogCommands)
+            const appState = getAppState()
+            sendControlResponseSuccess(message, {
+              skills: installed.map(skill => ({
+                name: skill.name,
+                description: skill.description,
+                path: skill.path,
+                replaced: skill.replaced,
+              })),
+              commands: currentCommands
+                .filter(command => command.userInvocable !== false)
+                .map(command => ({
+                  name: getCommandName(command),
+                  description: formatDescriptionWithSource(command),
+                  argumentHint: command.argumentHint || '',
+                })),
+              runtimeCommands: projectRuntimeCommands(currentCatalogCommands),
+              runtimeTools: projectRuntimeTools([...tools, ...appState.mcp.tools]),
+            })
           } catch (error) {
             sendControlResponseError(message, errorMessage(error))
           }
@@ -3768,8 +3902,29 @@ function runHeadlessStreaming(
         } else if ((message.request as any).subtype === 'set_effort') {
           // The TUI and headless editor invoke the same action. In particular Auto
           // must clear runtime state as well as the persisted key.
-          const { executeEffort } = await import('../utils/effortCommand.js')
-          const result = executeEffort((message.request as any).effort ?? 'auto')
+          const requested = (message.request as any).effort as
+            | 'low'
+            | 'medium'
+            | 'high'
+            | 'max'
+            | null
+          const result = isRayucodeRuntime()
+            ? (() => {
+                const stored = updateRayucodePreferences({
+                  effort: requested ?? undefined,
+                })
+                return stored.error
+                  ? { message: `Failed to set effort level: ${stored.error.message}` }
+                  : {
+                      message: requested
+                        ? `Set Rayucode effort level to ${requested}`
+                        : 'Rayucode effort level set to auto',
+                      effortUpdate: { value: requested ?? undefined },
+                    }
+              })()
+            : (await import('../utils/effortCommand.js')).executeEffort(
+                requested ?? 'auto',
+              )
           if (result.effortUpdate) {
             const value = result.effortUpdate.value
             setAppState(prev => ({ ...prev, effortValue: value }))
@@ -4415,10 +4570,12 @@ async function handleInitializeRequest(
     appendSystemPrompt: string | undefined
     agent?: string | undefined
     userSpecifiedModel?: string | undefined
+    thinkingConfig?: ThinkingConfig
     [key: string]: unknown
   },
   agents: AgentDefinition[],
   getAppState: () => AppState,
+  runtimeSnapshot?: RuntimeSnapshot,
 ): Promise<void> {
   if (initialized) {
     output.enqueue({
@@ -4494,9 +4651,14 @@ async function handleInitializeRequest(
     }
   }
 
-  const settings = getSettings_DEPRECATED()
-  const outputStyle = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME
-  const availableOutputStyles = await getAllOutputStyles(getCwd())
+  // `runtimeSnapshot` was built from these same shared resolvers immediately before
+  // this call. Re-reading output-style files here doubled first-launch filesystem work.
+  const settings = runtimeSnapshot ? undefined : getSettings_DEPRECATED()
+  const outputStyle = runtimeSnapshot?.outputStyle ??
+    settings?.outputStyle ??
+    DEFAULT_OUTPUT_STYLE_NAME
+  const availableOutputStyleNames = runtimeSnapshot?.availableOutputStyles ??
+    Object.keys(await getAllOutputStyles(getCwd()))
 
   // Get account information
   const accountInfo = getAccountInformation()
@@ -4518,14 +4680,24 @@ async function handleInitializeRequest(
   if (request.jsonSchema) {
     setInitJsonSchema(request.jsonSchema)
   }
+  const commandsForResponse = runtimeSnapshot
+    ? runtimeSnapshot.commands.filter(command => command.available)
+    : commands
+        .filter(cmd => cmd.userInvocable !== false)
+        .map(cmd => ({
+          name: getCommandName(cmd),
+          description: formatDescriptionWithSource(cmd),
+          argumentHint: cmd.argumentHint || '',
+        }))
+
   const initResponse: SDKControlInitializeResponse = {
-    commands: commands
-      .filter(cmd => cmd.userInvocable !== false)
-      .map(cmd => ({
-        name: getCommandName(cmd),
-        description: formatDescriptionWithSource(cmd),
-        argumentHint: cmd.argumentHint || '',
-      })),
+    commands: runtimeSnapshot
+      ? commandsForResponse.map(command => ({
+          name: command.name,
+          description: command.description,
+          argumentHint: command.argumentHint,
+        }))
+      : commandsForResponse,
     agents: agents.map(agent => ({
       name: agent.agentType,
       description: agent.whenToUse,
@@ -4533,7 +4705,7 @@ async function handleInitializeRequest(
       model: agent.model === 'inherit' ? undefined : agent.model,
     })),
     output_style: outputStyle,
-    available_output_styles: Object.keys(availableOutputStyles),
+    available_output_styles: availableOutputStyleNames,
     models: modelInfos,
     account: {
       email: accountInfo?.email,
@@ -4548,6 +4720,8 @@ async function handleInitializeRequest(
     },
     pid: process.pid,
   }
+
+  if (runtimeSnapshot) initResponse.runtime = runtimeSnapshot
 
   if (isFastModeEnabled() && isFastModeAvailable()) {
     const appState = getAppState()

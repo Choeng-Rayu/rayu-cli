@@ -4,7 +4,8 @@
  * All icons render at standard 16x16 with viewBox="0 0 16 16" and fill="currentColor"
  * so they adapt cleanly to any VS Code theme.
  */
-import { useBrailleSpinner } from '../useBrailleSpinner.js'
+import type { SpriteState } from '../spriteAtlas.js'
+import { SpriteAvatar } from './SpriteAvatar.js'
 
 export interface IconProps {
   size?: number
@@ -15,11 +16,19 @@ export interface IconProps {
 /**
  * The Rayu identity mark.
  *
- * A brand asset rather than an icon: it is the one glyph in here that is not `currentColor`
- * geometry, and it must not be restyled to match the icon set. It lives in this module
- * anyway because it was previously its own file exporting a component ALSO called
- * `SparkleIcon`, which collided with the generic icon of that name — two different marks,
- * one identifier, imported from two places.
+ * Was the 🐱 emoji, rendered as text. Now a static frame of the same sprite that
+ * animates elsewhere in the panel (`SpriteAvatar`, `spriteAtlas.ts`) — the user's
+ * own ask was that no cat/emoji glyph remain anywhere, including the pure-branding
+ * spots that have no "current status" to represent (this header mark, the
+ * background-task badge, the overflow-menu identity row, the sign-in and welcome
+ * screens). `static` freezes on the idle row's first frame and never subscribes to
+ * the shared animation clock: a toolbar logo has nothing to animate, and every one
+ * of these call sites would otherwise pay for a timer subscription for no visible
+ * benefit — exactly the same reasoning `SpriteAvatar` already applies to its own
+ * `idle` state.
+ *
+ * Signature intentionally unchanged (`size`/`className`/`title`) so every existing
+ * call site needed no edit beyond this function's own body.
  *
  * `aria-hidden` by default: it appears next to the word "Rayu" or beside an assistant turn
  * that is already labelled, so announcing "Cat Logo" would be noise. Callers that use it as
@@ -27,22 +36,13 @@ export interface IconProps {
  */
 export function RayuMark({ size = 16, className, title }: IconProps): JSX.Element {
   return (
-    <span
+    <SpriteAvatar
+      state="idle"
+      static
+      size={size}
       className={className}
-      role={title ? 'img' : 'presentation'}
-      aria-label={title}
-      aria-hidden={title ? undefined : true}
-      style={{
-        fontSize: `${size}px`,
-        lineHeight: 1,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        userSelect: 'none',
-      }}
-    >
-      🐱
-    </span>
+      title={title}
+    />
   )
 }
 
@@ -278,22 +278,40 @@ export function LinkIcon({ size = 12, className, title }: IconProps): JSX.Elemen
 }
 
 /**
- * The shared "something is working" indicator — replaces the old CSS `border-radius`
- * rotating-arc dot (`.rc-progress-glyph`) at every call site that used it: the main turn
- * status line, the session status pill, the sessions list, activity groups, and the
- * thinking-block header.
+ * The shared "something is working" indicator — replaces the old braille pulse
+ * spinner (`⠁⠇⠷⡿⣿`, via `useBrailleSpinner`) at every call site that used it
+ * EXCEPT the thinking-block header (`ThinkingBlock.tsx` keeps the braille
+ * spinner: reasoning is a distinct, narrower kind of "in progress" than the
+ * turn-level activity this glyph now represents, and the user asked for that
+ * one to stay as it was).
  *
- * Renders the CLI's own braille pulse (`SpinnerGlyph.tsx`'s `⠁⠇⠷⡿⣿` sequence, via
- * `useBrailleSpinner`) instead of a shape: the old arc never visually completed a cycle,
- * where this glyph genuinely reaches a solid, fully-filled cell at the midpoint of every
- * pulse — the same spinner the terminal shows while a turn is in flight.
+ * Renders the animated sprite (`SpriteAvatar`, `spriteAtlas.ts`) at a fixed
+ * 14px — the same small-icon size already used for `RayuMark` and
+ * `.rc-todo-status` throughout this panel — instead of a character glyph, so
+ * every "AI is doing something" indicator in the panel is the same animated
+ * character rather than two unrelated visual languages for the same idea.
+ *
+ * `state` selects which row: defaults to `thinking` (the general "actively
+ * working" row) for call sites that have no more specific phase to report.
+ * Callers that DO know they are specifically blocked on the user pass
+ * `state="waiting"` explicitly (`App.tsx`'s turn status, the background-task
+ * waiting card) so the character visibly stops advancing and waits instead of
+ * animating progress that cannot happen until the user answers — the same
+ * distinction `TurnStatus` already drew with the old dashed-circle glyph.
  */
-export function ProgressGlyph({ className }: { className?: string }): JSX.Element {
-  const glyph = useBrailleSpinner(true)
+export function ProgressGlyph({
+  className,
+  state = 'thinking',
+}: {
+  className?: string
+  state?: SpriteState
+}): JSX.Element {
   return (
-    <span className={className ?? 'rc-progress-glyph'} aria-hidden="true">
-      {glyph}
-    </span>
+    <SpriteAvatar
+      state={state}
+      size={14}
+      className={className ?? 'rc-progress-glyph'}
+    />
   )
 }
 

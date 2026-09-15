@@ -612,6 +612,24 @@ export function isBridgeSafeCommand(cmd: Command): boolean {
 }
 
 /**
+ * Commands the framework-free query engine can execute without mounting Ink.
+ * Prompt commands expand to model input; local commands must explicitly opt in.
+ * Interactive JSX commands are represented by client actions instead.
+ */
+export function isNonInteractiveCommand(command: Command): boolean {
+  return (
+    (command.type === 'prompt' && !command.disableNonInteractive) ||
+    (command.type === 'local' && command.supportsNonInteractive)
+  )
+}
+
+export function filterCommandsForNonInteractive(
+  commands: readonly Command[],
+): Command[] {
+  return commands.filter(isNonInteractiveCommand)
+}
+
+/**
  * Filter commands to only include those safe for remote mode.
  * Used to pre-filter commands when rendering the REPL in --remote mode,
  * preventing local-only commands from being briefly available before

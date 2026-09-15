@@ -633,6 +633,24 @@ body {
   max-width: 100%;
 }
 
+.rc-request-delivery {
+  padding: 1px 6px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border));
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.72em;
+  line-height: 1.45;
+}
+
+.rc-request-delivery-steer {
+  color: var(--vscode-notificationsWarningIcon-foreground);
+  border-color: color-mix(
+    in srgb,
+    var(--vscode-notificationsWarningIcon-foreground) 45%,
+    transparent
+  );
+}
+
 .rc-request-copy {
   opacity: 0;
   transition: opacity 120ms ease;
@@ -660,18 +678,33 @@ body {
   overflow-wrap: anywhere;
 }
 
-.rc-avatar {
+/*
+ * The animated per-status avatar (SpriteAvatar.tsx) — the sole avatar in the
+ * assistant turn now; it replaced a small circular badge (fixed 22×22px, a
+ * flat background-color behind a plain glyph) that gave a simple emoji some
+ * contrast. No such fill here: this element already IS a detailed, full-color
+ * illustration, so a colored disc behind it would compete with it rather than
+ * support it. Dimensions are intentionally NOT hardcoded here: the component
+ * sets its own width/height inline from the same constants it computes the
+ * frame offset from, so the box and the sprite slice can never drift out of
+ * sync between a CSS edit and a constants edit.
+ */
+.rc-sprite-avatar {
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--vscode-chat-avatarForeground, var(--vscode-foreground));
-  background-color: var(--vscode-chat-avatarBackground, var(--vscode-badge-background));
   margin-top: 1px;
 }
+
+/*
+ * Reduced motion: `useSpriteFrame` already returns a constant 0 and starts no
+ * timer under `prefers-reduced-motion: reduce` (mirroring useBrailleSpinner's
+ * own JS-level check, for the same reason — a CSS-only freeze cannot apply when
+ * the frame is chosen in JS). This rule is a second, independent guarantee at
+ * the CSS layer: `steps()`/`animation` are never used to drive this element at
+ * all (background-position is set directly, not animated), so there is no
+ * animation for a stylesheet-only reduced-motion audit to find here — this
+ * comment exists so that absence reads as intentional, not as a rule someone
+ * forgot to write.
+ */
 
 .rc-turn-body {
   min-width: 0;
@@ -965,13 +998,6 @@ body {
   flex: 0 0 auto;
 }
 
-.rc-turn-glyph-waiting {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  border: 1.5px dashed var(--vscode-editorWarning-foreground);
-}
-
 .rc-turn-done-success .rc-turn-glyph { color: var(--vscode-gitDecoration-addedResourceForeground); }
 .rc-turn-done-error .rc-turn-glyph { color: var(--vscode-errorForeground); }
 .rc-turn-done-neutral .rc-turn-glyph { color: var(--vscode-descriptionForeground); }
@@ -1147,6 +1173,189 @@ body {
   background-color: var(--vscode-inputValidation-errorBackground);
   border-color: var(--vscode-inputValidation-errorBorder);
 }
+
+/* `/btw` runs as a fork and does not alter the main conversation. */
+.rc-side-question {
+  border-left: 2px solid var(--vscode-textLink-foreground);
+  border-radius: 0 var(--rc-radius) var(--rc-radius) 0;
+  background: var(--vscode-textBlockQuote-background, transparent);
+  padding: var(--rc-gap) var(--rc-gap-lg);
+}
+
+.rc-side-question-error {
+  border-left-color: var(--vscode-errorForeground);
+}
+
+.rc-side-question-heading {
+  display: flex;
+  gap: var(--rc-gap);
+  color: var(--vscode-descriptionForeground);
+  overflow-wrap: anywhere;
+}
+
+.rc-side-question-heading strong {
+  color: var(--vscode-textLink-foreground);
+}
+
+.rc-side-question-status {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  margin-top: var(--rc-gap);
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-side-question-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--vscode-progressBar-background);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: rc-spin 800ms linear infinite;
+}
+
+.rc-side-question-answer {
+  margin-top: var(--rc-gap);
+}
+
+.rc-side-question-answer > :first-child { margin-top: 0; }
+.rc-side-question-answer > :last-child { margin-bottom: 0; }
+
+@keyframes rc-spin { to { transform: rotate(360deg); } }
+
+/* ── shared runtime centre ───────────────────────────────────────────────── */
+.rc-runtime-status {
+  display: grid;
+  gap: var(--rc-gap);
+}
+
+.rc-runtime-open {
+  justify-self: end;
+  margin: 0 var(--rc-gap-lg);
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.rc-runtime-open:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.rc-runtime-open span,
+.rc-runtime-tab span {
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+
+.rc-runtime-center {
+  margin: 0 var(--rc-gap-lg) var(--rc-gap);
+  max-height: min(58vh, 560px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: var(--rc-radius-lg, 8px);
+  background: var(--vscode-editorWidget-background);
+  box-shadow: 0 6px 20px var(--vscode-widget-shadow);
+  overflow: hidden;
+}
+
+.rc-runtime-center-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: var(--rc-gap);
+  padding: var(--rc-gap-lg);
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.rc-runtime-center-subtitle,
+.rc-runtime-row-detail,
+.rc-runtime-row-meta {
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-runtime-center-subtitle,
+.rc-runtime-row-meta { font-size: 11px; }
+
+.rc-runtime-tabs {
+  display: flex;
+  gap: 2px;
+  padding: var(--rc-gap) var(--rc-gap-lg) 0;
+  overflow-x: auto;
+}
+
+.rc-runtime-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 4px 6px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.rc-runtime-tab-active {
+  color: var(--vscode-foreground);
+  border-bottom-color: var(--vscode-focusBorder);
+}
+
+.rc-runtime-search { padding: var(--rc-gap) var(--rc-gap-lg); }
+.rc-runtime-search input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 5px 7px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+}
+
+.rc-runtime-search input:focus { outline: 1px solid var(--vscode-focusBorder); }
+
+.rc-runtime-list {
+  min-height: 80px;
+  overflow: auto;
+  border-top: 1px solid var(--vscode-editorWidget-border);
+}
+
+.rc-runtime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rc-gap-lg);
+  padding: var(--rc-gap) var(--rc-gap-lg);
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.rc-runtime-row-disabled { opacity: 0.65; }
+.rc-runtime-row-copy { min-width: 0; }
+.rc-runtime-row-detail { overflow-wrap: anywhere; }
+.rc-runtime-row-title,
+.rc-runtime-row-title-static { font-family: var(--vscode-editor-font-family); }
+.rc-runtime-row-title {
+  display: block;
+  border: 0;
+  padding: 0;
+  color: var(--vscode-textLink-foreground);
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rc-runtime-row-actions,
+.rc-runtime-list-actions { display: flex; gap: var(--rc-gap); }
+.rc-runtime-list-actions { justify-content: flex-end; padding: var(--rc-gap); }
 
 /* ── tool pills ──────────────────────────────────────────────────────────── */
 
@@ -2643,6 +2852,41 @@ body {
   color: var(--vscode-button-foreground);
   background-color: var(--vscode-button-background);
   transition: transform 120ms ease, background-color 120ms ease, opacity 120ms ease;
+}
+
+.rc-delivery-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 6px;
+  background: var(--vscode-input-background);
+}
+
+.rc-delivery-option {
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.rc-delivery-option:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.rc-delivery-option-active {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.rc-delivery-option:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 
 .rc-submit:hover:not(:disabled) {

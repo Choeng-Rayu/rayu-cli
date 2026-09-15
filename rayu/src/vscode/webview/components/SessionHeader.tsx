@@ -112,6 +112,7 @@ export interface SessionHeaderProps {
   onOpenProviderSetup: () => void
   onRefreshMcp: () => void
   onReconnectMcp: (serverName: string) => void
+  onAuthenticateMcp: (serverName: string) => void
   onToggleMcp: (serverName: string, enabled: boolean) => void
   onSignOut: () => void
 }
@@ -136,6 +137,7 @@ export function SessionHeader({
   onOpenProviderSetup,
   onRefreshMcp,
   onReconnectMcp,
+  onAuthenticateMcp,
   onToggleMcp,
   onSignOut,
 }: SessionHeaderProps): JSX.Element {
@@ -195,7 +197,7 @@ export function SessionHeader({
           aria-live="polite"
         >
           {status === 'working' || status === 'waiting' ? (
-            <ProgressGlyph />
+            <ProgressGlyph state={status === 'waiting' ? 'waiting' : 'thinking'} />
           ) : null}
           {STATUS_LABEL[status]}
         </span>
@@ -331,7 +333,15 @@ export function SessionHeader({
                       <span className="rc-overflow-mcp-status">{server.status}</span>
                       {/* Reconnect is offered only where it can help. A disabled server needs
                           enabling, not reconnecting. */}
-                      {server.status === 'disconnected' ? (
+                      {server.status === 'needs-auth' ? (
+                        <button
+                          type="button"
+                          className="rc-overflow-mcp-action"
+                          onClick={() => onAuthenticateMcp(server.name)}
+                        >
+                          Authenticate
+                        </button>
+                      ) : server.status === 'failed' ? (
                         <button
                           type="button"
                           className="rc-overflow-mcp-action"

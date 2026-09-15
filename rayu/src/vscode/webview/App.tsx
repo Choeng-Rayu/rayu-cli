@@ -15,6 +15,9 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, memo } f
 import type {
   EntryId,
   ImageInputView,
+  PromptDeliveryView,
+  RuntimeSectionView,
+  ComposerControlView,
   HostToWebviewMessage,
   ThinkingEntryView,
   TurnProgressView,
@@ -25,15 +28,18 @@ import { permissionModeById } from '../shared/permissionModes.js'
 import {
   describeTurnPhase,
   formatDuration,
-  isWaitingPhase,
   tokenReadouts,
 } from '../shared/turnProgress.js'
+import { spriteStateForPhase } from './spriteAtlas.js'
 import { chatReducer, initialChatState, type ChatState } from './state/reducer.js'
 import { Composer } from './components/Composer.js'
 import { ProviderSetupPanel } from './components/ProviderSetupPanel.js'
 import { ModelChooserCard } from './components/ModelChooserCard.js'
 import { SessionsView } from './components/SessionsView.js'
 import { ApprovalStack } from './components/ApprovalStack.js'
+import { McpElicitationStack } from './components/McpElicitationStack.js'
+import { RuntimeStatusBar } from './components/RuntimeStatusBar.js'
+import { RuntimeCenter } from './components/RuntimeCenter.js'
 import { TranscriptEntryView, NoticeEntry } from './components/TranscriptEntryView.js'
 import { ActivityGroup } from './components/ActivityGroup.js'
 import { groupTranscript } from './state/activityGroups.js'
@@ -98,6 +104,12 @@ export function App(): JSX.Element {
   /** Whether a drag is currently over the panel. Owned here so the overlay can cover it. */
   const [panelDragging, setPanelDragging] = useState(false)
   const [taskCenterOpen, setTaskCenterOpen] = useState(false)
+  const [runtimeCenterOpen, setRuntimeCenterOpen] = useState(false)
+  const [runtimeSection, setRuntimeSection] = useState<RuntimeSectionView>('commands')
+  const [composerControlRequest, setComposerControlRequest] = useState<{
+    control: ComposerControlView
+    revision: number
+  } | null>(null)
   const [selectedTaskKey, setSelectedTaskKey] = useState<string | null>(
     () => readPersistedUi().selectedTaskKey ?? null,
   )
@@ -273,6 +285,25 @@ export function App(): JSX.Element {
         return
       }
 
+      if (message.type === 'openRuntimeCenter') {
+        setRuntimeSection(message.section)
+        setRuntimeCenterOpen(true)
+        return
+      }
+
+      if (message.type === 'openTaskCenter') {
+        setTaskCenterOpen(true)
+        return
+      }
+
+      if (message.type === 'openComposerControl') {
+        setComposerControlRequest(current => ({
+          control: message.control,
+          revision: (current?.revision ?? 0) + 1,
+        }))
+        return
+      }
+
       switch (message.type) {
         case 'init':
         case 'addMessage':
@@ -294,6 +325,13 @@ export function App(): JSX.Element {
         case 'fileSearchResults':
         case 'setContextUsage':
         case 'setMcpServers':
+        case 'setRuntimeCatalogue':
+        case 'setRateLimit':
+        case 'setEngineAuthStatus':
+        case 'setSessionStatus':
+        case 'setPromptSuggestion':
+        case 'showMcpElicitation':
+        case 'dismissMcpElicitation':
         case 'setIdeContext':
         case 'setSessions':
         case 'setLiveSessions':
@@ -336,9 +374,18 @@ export function App(): JSX.Element {
     ? state.commands.filter(command => command.name === 'login' || command.name === 'connect')
     : state.commands
 
-  const submit = useCallback((text: string, images?: ImageInputView[]) => {
+  const submit = useCallback((
+    text: string,
+    images?: ImageInputView[],
+    delivery?: PromptDeliveryView,
+  ) => {
     setDraft(null)
-    send({ type: 'submitPrompt', text, ...(images?.length ? { images } : {}) })
+    send({
+      type: 'submitPrompt',
+      text,
+      ...(images?.length ? { images } : {}),
+      ...(delivery ? { delivery } : {}),
+    })
   }, [])
 
   /**
@@ -385,7 +432,7 @@ export function App(): JSX.Element {
   const sessionStatus = deriveSessionStatus(
     state.turnRunning,
     state.turnProgress,
-    state.pendingPermissions.length,
+    state.pendingPermissions.length + state.mcpElicitations.length,
   )
 
   return (
@@ -444,9 +491,47 @@ export function App(): JSX.Element {
         onOpenProviderSetup={() => send({ type: 'openProviderSetup' })}
         onRefreshMcp={refreshMcp}
         onReconnectMcp={serverName => send({ type: 'mcpReconnect', serverName })}
+        onAuthenticateMcp={serverName => send({ type: 'mcpAuthenticate', serverName })}
         onToggleMcp={(serverName, enabled) => send({ type: 'mcpToggle', serverName, enabled })}
         onSignOut={() => send({ type: 'signOut' })}
       />
+
+      <RuntimeStatusBar
+        authentication={state.engineAuthStatus}
+        rateLimit={state.rateLimit}
+        resourceCount={
+          state.runtimeCommands.length +
+          state.runtimeTools.length +
+          state.runtimeAgents.length +
+          state.runtimePlugins.length +
+          state.runtimeSkills.length
+        }
+        onOpenRuntime={() => setRuntimeCenterOpen(open => !open)}
+      />
+
+      {runtimeCenterOpen ? (
+        <RuntimeCenter
+          key={runtimeSection}
+          initialSection={runtimeSection}
+          commands={state.runtimeCommands}
+          tools={state.runtimeTools}
+          mcpServers={state.mcpServers}
+          agents={state.runtimeAgents}
+          plugins={state.runtimePlugins}
+          skills={state.runtimeSkills}
+          workflows={state.runtimeWorkflows}
+          onClose={() => setRuntimeCenterOpen(false)}
+          onUseCommand={name => {
+            setDraft(`/${name} `)
+            setRuntimeCenterOpen(false)
+          }}
+          onRefreshMcp={refreshMcp}
+          onReconnectMcp={serverName => send({ type: 'mcpReconnect', serverName })}
+          onToggleMcp={(serverName, enabled) => send({ type: 'mcpToggle', serverName, enabled })}
+          onAuthenticateMcp={serverName => send({ type: 'mcpAuthenticate', serverName })}
+          onClearMcpAuth={serverName => send({ type: 'mcpClearAuth', serverName })}
+        />
+      ) : null}
 
       {/* Above the transcript: it is a modal-ish task the user opened deliberately,
           and it must not be scrolled away from mid-entry. */}
@@ -552,6 +637,19 @@ export function App(): JSX.Element {
         }
       />
 
+      <McpElicitationStack
+        requests={state.mcpElicitations}
+        onRespond={(requestId, action, content) =>
+          send({
+            type: 'mcpElicitationResponse',
+            requestId,
+            action,
+            ...(content ? { content } : {}),
+          })
+        }
+        onOpenExternal={url => send({ type: 'openExternal', url })}
+      />
+
       <BackgroundTaskBar
         tasks={state.backgroundTasks}
         open={taskCenterOpen}
@@ -584,11 +682,13 @@ export function App(): JSX.Element {
         onAttachSession={pid => send({ type: 'attachToSession', pid })}
         onDetachSession={() => send({ type: 'detachFromSession' })}
         todoEntry={latestTodoEntry}
+        promptSuggestion={state.promptSuggestion}
         onSubmit={submit}
         onInterrupt={() => send({ type: 'interrupt' })}
         onSelectModel={value => send({ type: 'selectModelValue', value })}
         onRefreshModels={() => send({ type: 'refreshModelCatalogue' })}
         onSetEffort={level => send({ type: 'setEffort', level })}
+        onSetThinking={enabled => send({ type: 'setThinking', enabled })}
         onCyclePermissionMode={() => send({ type: 'cyclePermissionMode' })}
         onSelectPermissionMode={modeId => {
           dispatch({ type: 'setPermissionMode', mode: permissionModeById(modeId) })
@@ -599,6 +699,7 @@ export function App(): JSX.Element {
         onResolveDroppedPaths={resolveDroppedPaths}
         onPickContextPaths={pickContextPaths}
         onDragStateChange={setPanelDragging}
+        controlRequest={composerControlRequest}
       />
     </div>
   )
@@ -796,6 +897,7 @@ function Transcript({
                         ? state.turnCompletions[block.entry.turnId]
                         : undefined
                     }
+                    turnPhase={state.turnProgress?.phase}
                     onKeep={onKeep}
                     onUndo={onUndo}
                     onDiff={onDiff}
@@ -855,19 +957,16 @@ function TurnStatus({ progress }: { progress: TurnProgressView }): JSX.Element {
 
   const readouts = tokenReadouts(progress.usage)
   const elapsed = Math.max(0, now - progress.startTimestamp)
-  const waiting = isWaitingPhase(progress.phase)
 
   return (
     <div className="rc-working" role="status" aria-live="polite">
       {/*
-        A static glyph while WAITING. The engine is blocked on the user there, and an
-        animated spinner would claim progress that cannot happen until they answer.
+        `spriteStateForPhase` already resolves `waiting` to its own row (the
+        character visibly stops and waits) and every working phase to its own —
+        one call covers both branches the old static-glyph-vs-spinner split
+        needed two glyph systems for.
       */}
-      {waiting ? (
-        <span className="rc-turn-glyph rc-turn-glyph-waiting" aria-hidden="true" />
-      ) : (
-        <ProgressGlyph />
-      )}
+      <ProgressGlyph state={spriteStateForPhase(progress.phase)} />
       <span className="rc-thinking-text">
         {describeTurnPhase(progress)}
         {'\u2026 '}

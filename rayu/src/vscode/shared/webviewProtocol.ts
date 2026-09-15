@@ -28,10 +28,21 @@ import type {
   EffortChoice,
   InferenceSettingsView,
 } from './inferenceSettings.js'
+import type { BackgroundTaskView } from '../../runtime/taskTypes.js'
+import type {
+  RuntimeAgentDescriptor,
+  RuntimePluginDescriptor,
+  RuntimeSkillDescriptor,
+} from '../../protocol/index.js'
 import type { TodoItem } from '../../utils/todo/types.js'
 
 /** Stable id for a transcript entry, assigned by the host. */
 export type EntryId = string
+
+/** How a composer message should join an already-running engine turn. */
+export type PromptDeliveryView = 'normal' | 'queue' | 'steer'
+export type RuntimeSectionView = 'commands' | 'tools' | 'mcp' | 'skills' | 'agents' | 'plugins'
+export type ComposerControlView = 'model' | 'effort'
 
 /**
  * The TodoWrite item sent across the host/webview boundary.
@@ -259,6 +270,68 @@ export interface IdeContextView {
   lineEnd?: number
 }
 
+export type RuntimeCommandSurfaceView =
+  | 'prompt'
+  | 'panel'
+  | 'action'
+  | 'terminal_only'
+
+export interface RuntimeCommandView extends SlashCommandView {
+  aliases: string[]
+  argumentHint: string
+  executionKind: 'prompt' | 'local' | 'local-jsx'
+  surface: RuntimeCommandSurfaceView
+  origin: string
+  available: boolean
+  unavailableReason?: string
+  workflow: boolean
+  sensitive: boolean
+}
+
+export interface RuntimeToolView {
+  name: string
+  aliases: string[]
+  source: 'builtin' | 'mcp' | 'lsp'
+  serverName?: string
+  inputSchema?: Record<string, unknown>
+  deferred: boolean
+  alwaysLoad: boolean
+  requiresUserInteraction: boolean
+}
+
+export interface RuntimeCapabilitiesView {
+  version: number
+  features: Record<string, boolean>
+}
+
+export type RuntimeAgentView = RuntimeAgentDescriptor
+export type RuntimePluginView = RuntimePluginDescriptor
+export type RuntimeSkillView = RuntimeSkillDescriptor
+
+export interface RateLimitView {
+  status: 'allowed' | 'allowed_warning' | 'rejected'
+  resetsAt?: number
+  rateLimitType?: string
+  utilization?: number
+  isUsingOverage?: boolean
+}
+
+export interface EngineAuthStatusView {
+  authenticating: boolean
+  messages: string[]
+  error?: string
+}
+
+export interface McpElicitationView {
+  requestId: string
+  serverName: string
+  message: string
+  mode: 'form' | 'url'
+  url?: string
+  elicitationId?: string
+  requestedSchema?: Record<string, unknown>
+}
+
 /** Messages the extension host sends TO the webview. */
 export type HostToWebviewMessage =
   /**
@@ -368,6 +441,26 @@ export type HostToWebviewMessage =
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   /** Connected MCP servers status. */
   | { type: 'setMcpServers'; servers: McpServerView[] }
+  | {
+      type: 'setRuntimeCatalogue'
+      capabilities: RuntimeCapabilitiesView | null
+      commands: RuntimeCommandView[]
+      tools: RuntimeToolView[]
+      agents?: RuntimeAgentView[]
+      plugins?: RuntimePluginView[]
+      skills?: RuntimeSkillView[]
+      workflows?: RuntimeSkillView[]
+    }
+  | { type: 'setRateLimit'; rateLimit: RateLimitView | null }
+  | { type: 'setEngineAuthStatus'; status: EngineAuthStatusView | null }
+  | { type: 'setSessionStatus'; status: 'idle' | 'running' | 'requires_action' }
+  | { type: 'setPromptSuggestion'; suggestion: string | null }
+  | { type: 'showMcpElicitation'; request: McpElicitationView }
+  | { type: 'dismissMcpElicitation'; requestId: string }
+  /** Open a native management surface for a local-JSX CLI command. */
+  | { type: 'openRuntimeCenter'; section: RuntimeSectionView }
+  | { type: 'openTaskCenter' }
+  | { type: 'openComposerControl'; control: ComposerControlView }
   /**
    * The editor's current selection, or null when there is none.
    *
@@ -524,7 +617,13 @@ export type WebviewToHostMessage =
    * `images` carries composer attachments as raw base64. It is validated host-side
    * before it reaches the engine — see `ImageInputView`.
    */
-  | { type: 'submitPrompt'; text: string; images?: ImageInputView[] }
+  | {
+      type: 'submitPrompt'
+      text: string
+      images?: ImageInputView[]
+      /** `queue` maps to SDK priority `next`; `steer` maps to `now`. */
+      delivery?: PromptDeliveryView
+    }
   /**
    * Stop the running turn.
    *
@@ -570,6 +669,7 @@ export type WebviewToHostMessage =
    * value as well as the persisted key and reports any environment override.
    */
   | { type: 'setEffort'; level: EffortChoice }
+  | { type: 'setThinking'; enabled: boolean }
   /** Open or close the in-panel provider setup surface. */
   | { type: 'listAttachable' }
   | { type: 'attachToSession'; pid: number }
@@ -607,6 +707,8 @@ export type WebviewToHostMessage =
   | { type: 'openReviewDiff'; path: string }
   /** Open a changed file in an editor. */
   | { type: 'openFile'; path: string }
+  /** Open an http(s) URL through VS Code after host-side scheme validation. */
+  | { type: 'openExternal'; url: string }
   /**
    * Advance to the next permission mode.
    *
@@ -619,7 +721,7 @@ export type WebviewToHostMessage =
   | { type: 'setPermissionMode'; modeId: string }
   /** Start the interactive account sign-in. */
   | { type: 'signIn' }
-  /** Forget the shared credential. Signs the CLI out too — one credential. */
+  /** Forget the Rayucode credential in its isolated VS Code profile. */
   | { type: 'signOut' }
   /**
    * Open the provider setup surface, for the bring-your-own-key path.
@@ -662,8 +764,18 @@ export type WebviewToHostMessage =
   | { type: 'mcpToggle'; serverName: string; enabled: boolean }
   /** Reconnect an MCP server. */
   | { type: 'mcpReconnect'; serverName: string }
+  | { type: 'mcpAuthenticate'; serverName: string }
+  | { type: 'mcpClearAuth'; serverName: string }
   /** Refresh MCP server status. */
   | { type: 'getMcpStatus' }
+  | {
+      type: 'mcpElicitationResponse'
+      requestId: string
+      action: 'accept' | 'decline' | 'cancel'
+      content?: Record<string, unknown>
+    }
+  | { type: 'reloadPlugins' }
+  | { type: 'installSkill'; source: string; overwrite?: boolean }
   /** List previous sessions for the workspace. */
   | { type: 'listSessions' }
   /** Resume a previous session by id. Spawns an engine child with `--resume`. */
@@ -700,69 +812,13 @@ export type WebviewToHostMessage =
    */
   | { type: 'requestTaskOutput'; requestId: string; taskKey: string }
 
-export type BackgroundTaskStatus =
-  | 'pending'
-  | 'running'
-  | 'waiting'
-  | 'completed'
-  | 'failed'
-  | 'stopped'
-
-export type BackgroundTaskType =
-  | 'local_agent'
-  | 'in_process_teammate'
-  | 'local_shell'
-  | 'remote_agent'
-  | 'external_agent'
-  | 'local_workflow'
-  | 'monitor_mcp'
-  | 'dream'
-  | 'unknown'
-
-export interface TaskActivityView {
-  id: string
-  label: string
-  toolName?: string
-  timestamp: number
-  kind?: 'tool' | 'search' | 'read' | 'thinking' | 'status'
-}
-
-export interface TaskCapabilitiesView {
-  canStop: boolean
-  canSendMessage: boolean
-  hasTranscript: boolean
-  hasOutput: boolean
-}
-
-/** Sanitized, serializable projection of the shared TaskState lifecycle. */
-export interface BackgroundTaskView {
-  /** Collision-safe key: source session plus the task's own id. */
-  key: string
-  taskId: string
-  sourceSessionId: string
-  type: BackgroundTaskType
-  rawType?: string
-  group: 'agents' | 'shells' | 'workflows' | 'remote' | 'monitors' | 'other'
-  description: string
-  prompt?: string
-  agentId?: string
-  agentName?: string
-  status: BackgroundTaskStatus
-  executionMode: 'foreground' | 'background'
-  startedAt: number
-  updatedAt: number
-  currentActivity?: string
-  recentActivities: TaskActivityView[]
-  model?: string
-  provider?: string
-  tokenCount: number
-  toolCount: number
-  result?: string
-  error?: string
-  unread: boolean
-  capabilities: TaskCapabilitiesView
-  workflowProgress?: Array<{ label: string; status?: string; detail?: string }>
-}
+export type {
+  BackgroundTaskStatus,
+  BackgroundTaskType,
+  TaskActivityView,
+  TaskCapabilitiesView,
+  BackgroundTaskView,
+} from '../../runtime/taskTypes.js'
 
 export interface TaskDetailPage {
   taskKey: string
@@ -832,8 +888,21 @@ export type ToolResultView =
 
 /** A settled transcript entry. Mirrors the host formatter's block kinds. */
 export type TranscriptEntry =
-  | { id: EntryId; kind: 'prompt'; text: string }
+  | {
+      id: EntryId
+      kind: 'prompt'
+      text: string
+      /** How a prompt entered an already-running turn. Omitted for ordinary sends. */
+      delivery?: Exclude<PromptDeliveryView, 'normal'>
+    }
   | { id: EntryId; kind: 'assistant'; text: string; streaming?: boolean }
+  | {
+      id: EntryId
+      kind: 'side_question'
+      question: string
+      status: 'answering' | 'done' | 'error'
+      answer: string | null
+    }
   | {
       id: EntryId
       kind: 'tool'
@@ -1292,6 +1361,18 @@ export interface WebviewState {
   contextUsage: ContextUsageView | null
   /** Connected MCP servers. */
   mcpServers: McpServerView[]
+  runtimeCapabilities?: RuntimeCapabilitiesView | null
+  runtimeCommands?: RuntimeCommandView[]
+  runtimeTools?: RuntimeToolView[]
+  runtimeAgents?: RuntimeAgentView[]
+  runtimePlugins?: RuntimePluginView[]
+  runtimeSkills?: RuntimeSkillView[]
+  runtimeWorkflows?: RuntimeSkillView[]
+  rateLimit?: RateLimitView | null
+  engineAuthStatus?: EngineAuthStatusView | null
+  sessionStatus?: 'idle' | 'running' | 'requires_action'
+  promptSuggestion?: string | null
+  mcpElicitations?: McpElicitationView[]
   /** The editor's current file and selection, or null. */
   ideContext: IdeContextView | null
   /** Previous sessions, with load state. */
@@ -1328,7 +1409,10 @@ export interface SlashCommandView {
 /** An MCP server's connection status. */
 export interface McpServerView {
   name: string
-  status: 'connected' | 'connecting' | 'disconnected' | 'disabled'
+  /** Exact shared engine state; presentation code must not coerce auth into disconnect. */
+  status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'
+  /** HTTP and SSE transports can own OAuth credentials; stdio transports cannot. */
+  supportsOAuth?: boolean
   error?: string
 }
 
