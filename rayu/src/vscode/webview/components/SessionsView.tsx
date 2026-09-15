@@ -185,9 +185,12 @@ export function SessionsView({
                   >
                     <span className="rc-session-row-label">
                       {/* A running conversation is marked while the panel shows another one:
-                          that is the fact the previous behaviour destroyed. */}
+                          that is the fact the previous behaviour destroyed. This list has
+                          no live phase for a session it is not displaying — only whether it
+                          is running at all — so the sprite defaults to its general working
+                          row rather than picking a specific one that would be a guess. */}
                       {item.running ? (
-                        <ProgressGlyph />
+                        <ProgressGlyph state="thinking" />
                       ) : null}
                       {item.label}
                     </span>

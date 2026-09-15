@@ -1,12 +1,8 @@
 /**
  * The reasoning-effort control, in the composer toolbar.
  *
- * ── THERE IS NO THINKING TOGGLE, BY DESIGN ─────────────────────────────────────
- *
- * Thinking is not optional in Rayucode: the session is spawned with the CLI's own
- * `--thinking enabled`, so every model that supports reasoning uses it. There is
- * therefore nothing to toggle, and this panel offers only the DEPTH of that reasoning.
- * See `sessionHandle.initialize` for why the spawn flag is the mechanism.
+ * Thinking and effort are independent Rayucode session preferences. Both are sent to
+ * the shared engine and rendered only after it acknowledges the effective value.
  *
  * ── HIDDEN WHEN THE MODEL DOES NOT SUPPORT IT ──────────────────────────────────
  *
@@ -35,27 +31,62 @@ import { ChevronIcon, EffortIcon } from './Icons.js'
 export interface InferenceControlsProps {
   settings: InferenceSettingsView
   onSetEffort: (level: EffortChoice) => void
+  onSetThinking: (enabled: boolean) => void
+  /** Incremented when a typed `/effort` command asks the dropdown to open. */
+  effortOpenRequest?: number
 }
 
 export function InferenceControls({
   settings,
   onSetEffort,
+  onSetThinking,
+  effortOpenRequest,
 }: InferenceControlsProps): JSX.Element | null {
-  if (!settings.supportsEffort) return null
+  if (!settings.supportsThinking && !settings.supportsEffort) return null
 
-  return <EffortDropdown settings={settings} onSetEffort={onSetEffort} />
+  return (
+    <>
+      {settings.supportsThinking ? (
+        <button
+          type="button"
+          className={`rc-pill rc-pill-button${settings.thinkingEnabled ? ' rc-pill-active' : ''}`}
+          aria-pressed={settings.thinkingEnabled}
+          title={`Thinking is ${settings.thinkingEnabled ? 'on' : 'off'}. Applies to your next message.`}
+          onClick={() => onSetThinking(!settings.thinkingEnabled)}
+        >
+          <EffortIcon />
+          <span className="rc-pill-label">
+            Thinking: {settings.thinkingEnabled ? 'On' : 'Off'}
+          </span>
+        </button>
+      ) : null}
+      {settings.supportsEffort ? (
+        <EffortDropdown
+          settings={settings}
+          onSetEffort={onSetEffort}
+          openRequest={effortOpenRequest}
+        />
+      ) : null}
+    </>
+  )
 }
 
 function EffortDropdown({
   settings,
   onSetEffort,
+  openRequest,
 }: {
   settings: InferenceSettingsView
   onSetEffort: (level: EffortChoice) => void
+  openRequest?: number
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const container = useRef<HTMLDivElement | null>(null)
   const options = availableEffortOptions(settings)
+
+  useEffect(() => {
+    if (openRequest) setOpen(true)
+  }, [openRequest])
 
   useEffect(() => {
     if (!open) return
@@ -138,6 +169,4 @@ function EffortDropdown({
     </div>
   )
 }
-
-
 

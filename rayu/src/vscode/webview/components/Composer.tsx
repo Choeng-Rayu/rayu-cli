@@ -15,6 +15,10 @@
  * to accept a candidate in a Japanese, Chinese or Korean input method would send a
  * half-typed prompt instead.
  *
+ * During a running turn, bare Enter uses the visible Queue/Steer choice. Queue is
+ * the safe default. Ctrl+Enter is an explicit steering shortcut and maps to the
+ * engine's `now` priority; it never masquerades as an ordinary new turn.
+ *
  * ── WHY THE HEIGHT IS SET IMPERATIVELY ─────────────────────────────────────────
  *
  * A textarea cannot size itself to its content in CSS. The measured `scrollHeight`
@@ -37,11 +41,13 @@ import type {
 import type {
   AttachmentView,
   ContextUsageView,
+  ComposerControlView,
   IdeContextView,
   ModelCatalogueView,
   ModelInfoView,
   ImageInputView,
   PermissionModeView,
+  PromptDeliveryView,
   SlashCommandView,
 } from '../../shared/webviewProtocol.js'
 import { ModelDropdown } from './ModelDropdown.js'
@@ -112,11 +118,18 @@ export interface ComposerProps {
   onDetachSession?: () => void
   /** Latest TodoWrite state, pinned here until a later call replaces it. */
   todoEntry?: TodoToolEntry | null
-  onSubmit: (text: string, images?: ImageInputView[]) => void
+  /** Engine-generated next prompt. It is inserted for editing and never auto-submitted. */
+  promptSuggestion?: string | null
+  onSubmit: (
+    text: string,
+    images?: ImageInputView[],
+    delivery?: PromptDeliveryView,
+  ) => void
   onInterrupt: () => void
   onSelectModel: (value: string) => void
   onRefreshModels: () => void
   onSetEffort: (level: EffortChoice) => void
+  onSetThinking: (enabled: boolean) => void
   onCyclePermissionMode: () => void
   onSelectPermissionMode?: (modeId: string) => void
   onOpenProviderSetup: () => void
@@ -138,6 +151,8 @@ export interface ComposerProps {
    * attachment state and the caret, which is what moving the handler would cost.
    */
   onDragStateChange?: (dragging: boolean) => void
+  /** Host-routed slash command that should open one of the in-composer controls. */
+  controlRequest?: { control: ComposerControlView; revision: number } | null
 }
 
 export function Composer({
@@ -158,11 +173,13 @@ export function Composer({
   onAttachSession,
   onDetachSession,
   todoEntry,
+  promptSuggestion,
   onSubmit,
   onInterrupt,
   onSelectModel,
   onRefreshModels,
   onSetEffort,
+  onSetThinking,
   onCyclePermissionMode,
   onSelectPermissionMode,
   onOpenProviderSetup,
@@ -170,6 +187,7 @@ export function Composer({
   onResolveDroppedPaths,
   onPickContextPaths,
   onDragStateChange,
+  controlRequest,
 }: ComposerProps): JSX.Element {
   const [value, setValue] = useState(initialValue)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -178,6 +196,8 @@ export function Composer({
   /** Images staged for the next message. Cleared on send, removable individually. */
   const [images, setImages] = useState<ImageInputView[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
+  /** Mid-turn delivery is explicit and remains selected while this composer lives. */
+  const [deliveryMode, setDeliveryMode] = useState<Extract<PromptDeliveryView, 'queue' | 'steer'>>('queue')
   const textarea = useRef<HTMLTextAreaElement | null>(null)
 
   const updateCursor = useCallback(() => {
@@ -295,15 +315,15 @@ export function Composer({
     if (!turnRunning && !disabled) textarea.current?.focus()
   }, [turnRunning, disabled])
 
-  const submit = useCallback(() => {
+  const submit = useCallback((delivery?: PromptDeliveryView) => {
     const text = value.trim()
     // An image with no words is a legitimate prompt — "what is this?" is implied.
     if ((!text && images.length === 0) || disabled) return
-    onSubmit(text, images)
+    onSubmit(text, images, delivery ?? (turnRunning ? deliveryMode : 'normal'))
     setValue('')
     setImages([])
     setAttachError(null)
-  }, [value, images, disabled, onSubmit])
+  }, [value, images, disabled, onSubmit, turnRunning, deliveryMode])
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -365,12 +385,13 @@ export function Composer({
       if (event.nativeEvent.isComposing) return
       // Newline path first, so the destructive path is the narrower one.
       if (event.shiftKey) return
-      if (event.ctrlKey || event.altKey || event.metaKey) return
+      if (event.altKey || event.metaKey) return
       event.preventDefault()
-      submit()
+      submit(turnRunning && event.ctrlKey ? 'steer' : undefined)
     },
     [
       submit,
+      turnRunning,
       onCyclePermissionMode,
       authenticationRequired,
       popoverItems,
@@ -594,6 +615,24 @@ export function Composer({
 
       {todoEntry ? <TodoListCard entry={todoEntry} embedded /> : null}
 
+      {!value && !turnRunning && promptSuggestion ? (
+        <button
+          type="button"
+          className="rc-chip"
+          title="Insert this suggested follow-up"
+          onClick={() => {
+            setValue(promptSuggestion)
+            setCursorPos(promptSuggestion.length)
+            setTimeout(() => {
+              textarea.current?.focus()
+              textarea.current?.setSelectionRange(promptSuggestion.length, promptSuggestion.length)
+            }, 0)
+          }}
+        >
+          <span className="rc-chip-label">{promptSuggestion}</span>
+        </button>
+      ) : null}
+
       {images.length > 0 ? (
         <ul className="rc-attach-strip" aria-label="Attached images">
           {images.map((image, index) => (
@@ -702,11 +741,14 @@ export function Composer({
               catalogue={modelCatalogue}
               onSelect={onSelectModel}
               onRefresh={onRefreshModels}
+              openRequest={controlRequest?.control === 'model' ? controlRequest.revision : undefined}
             />
 
             <InferenceControls
               settings={inference}
               onSetEffort={onSetEffort}
+              onSetThinking={onSetThinking}
+              effortOpenRequest={controlRequest?.control === 'effort' ? controlRequest.revision : undefined}
             />
           </div>
         ) : null}
@@ -714,6 +756,41 @@ export function Composer({
         <span className="rc-composer-spacer" />
 
         {contextUsage ? <ContextGauge usage={contextUsage} /> : null}
+
+        {turnRunning && canSend ? (
+          <div className="rc-delivery-toggle" role="group" aria-label="Message delivery">
+            <button
+              type="button"
+              className={`rc-delivery-option${deliveryMode === 'queue' ? ' rc-delivery-option-active' : ''}`}
+              aria-pressed={deliveryMode === 'queue'}
+              onClick={() => setDeliveryMode('queue')}
+              title="Queue this message for the running turn"
+            >
+              Queue
+            </button>
+            <button
+              type="button"
+              className={`rc-delivery-option${deliveryMode === 'steer' ? ' rc-delivery-option-active' : ''}`}
+              aria-pressed={deliveryMode === 'steer'}
+              onClick={() => setDeliveryMode('steer')}
+              title="Interrupt the current request and steer Rayu now (Ctrl+Enter)"
+            >
+              Steer
+            </button>
+          </div>
+        ) : null}
+
+        {turnRunning && canSend ? (
+          <button
+            type="button"
+            className="rc-submit"
+            onClick={() => submit()}
+            aria-label={deliveryMode === 'steer' ? 'Send steering message' : 'Queue message'}
+            title={deliveryMode === 'steer' ? 'Steer now (Ctrl+Enter)' : 'Queue message (Enter)'}
+          >
+            <SendIcon />
+          </button>
+        ) : null}
 
         {turnRunning ? (
           <button
@@ -729,7 +806,7 @@ export function Composer({
           <button
             type="button"
             className="rc-submit"
-            onClick={submit}
+            onClick={() => submit()}
             disabled={!canSend}
             aria-label="Send message"
             title="Send (Enter)"

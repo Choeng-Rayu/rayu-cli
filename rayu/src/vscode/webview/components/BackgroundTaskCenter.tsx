@@ -7,6 +7,7 @@ import type {
 } from '../../shared/webviewProtocol.js'
 import { formatDuration } from '../../shared/turnProgress.js'
 import { useSecondTick } from '../useSecondTick.js'
+import { ProgressGlyph } from './Icons.js'
 import { ToolOutput } from './ToolOutput.js'
 
 /**
@@ -211,6 +212,7 @@ export function BackgroundTaskCenter({
             </div>
             {selectedPermissions.map(request => (
               <div key={request.requestId} className="rc-task-waiting-card" role="status">
+                <ProgressGlyph state="waiting" />
                 Waiting for approval: {request.toolName}{request.label ? ` — ${request.label}` : ''}
               </div>
             ))}

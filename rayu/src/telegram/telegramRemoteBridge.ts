@@ -197,6 +197,28 @@ export function remoteStreamEnd(): void {
   notifyIpcPeers(IPC_STREAM_END)
 }
 
+// ---- Activity history -------------------------------------------------------
+// A bounded log of every `WrappedMessage[]` batch forwarded via remoteActivity.
+// Consumed by the IPC_CONVERSATION_SNAPSHOT handler so a newly-attached
+// extension can replay the session's existing transcript.
+//
+// Capped at MAX_ACTIVITY_HISTORY_TURNS to bound memory on long sessions.  The
+// most recent turns are kept (old ones are dropped from the front).  Each
+// entry is an opaque `unknown[]` because the WrappedMessage type lives in the
+// telegram bundle and this module must stay importable from both bundles.
+const MAX_ACTIVITY_HISTORY_TURNS = 200
+const activityHistory: unknown[][] = []
+
+/** The accumulated activity batches since the session started (or last reset). */
+export function getActivityHistory(): unknown[][] {
+  return activityHistory
+}
+
+/** Reset the history — called when a new session starts. */
+export function clearActivityHistory(): void {
+  activityHistory.length = 0
+}
+
 /**
  * Forward completed messages for the activity summary.
  *
@@ -205,5 +227,10 @@ export function remoteStreamEnd(): void {
  * are indistinguishable in the chat.
  */
 export function remoteActivity(messages: unknown[]): void {
+  // Accumulate for IPC_CONVERSATION_SNAPSHOT replay.
+  activityHistory.push(messages)
+  if (activityHistory.length > MAX_ACTIVITY_HISTORY_TURNS) {
+    activityHistory.splice(0, activityHistory.length - MAX_ACTIVITY_HISTORY_TURNS)
+  }
   notifyIpcPeers(IPC_ACTIVITY, { messages })
 }

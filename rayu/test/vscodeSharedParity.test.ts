@@ -17,7 +17,21 @@ import { summariseInput, resultText } from '../src/utils/activity/activityBlocks
 describe('shared CLI and editor contracts', () => {
   test('every attachment channel agrees with the publishing CLI', () => {
     const canonical = { ...telegram, IPC_PROMPT } as Record<string, unknown>
-    for (const [name, value] of Object.entries(channels)) expect(value as any).toBe(canonical[name])
+    // `attachChannels.ts` duplicates two different things now: the ORIGINAL
+    // `telegram:`-prefixed channels (genuinely copied from `telegram` below, so
+    // drift there is a real bug this test exists to catch) and newer
+    // `rayucode:`-prefixed channels that were introduced directly in this leaf —
+    // no Telegram module publishes or consumes them, so there is nothing in
+    // `telegram` for them to agree with.
+    //
+    // Filtered by NAME being present in `canonical`, not by the current VALUE's
+    // prefix — so a bug that renames e.g. `IPC_STREAM_START`'s value to something
+    // `rayucode:`-prefixed still gets checked (and fails, correctly) instead of
+    // silently falling out of the loop because its new value no longer matches.
+    for (const [name, value] of Object.entries(channels)) {
+      if (!(name in canonical)) continue
+      expect(value as any).toBe(canonical[name])
+    }
   })
   test('editor effort choices use the CLI scale; Auto is absent effort', () => {
     expect(EFFORT_OPTIONS.map(o => o.value)).toEqual([null, ...EFFORT_LEVELS])

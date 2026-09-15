@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import type { BackgroundTaskView } from '../../vscode/shared/webviewProtocol.js'
+import type { BackgroundTaskView } from '../../runtime/taskTypes.js'
 import { djb2Hash } from '../../core/portable/hash.js'
 import { getRayuConfigHomeDir } from '../envUtils.js'
 

@@ -15,7 +15,12 @@ import type {
   TurnCompletionEntry,
   TurnPhaseView,
 } from '../../shared/webviewProtocol.js'
-import { describeCompletion, formatDuration, tokenReadouts } from '../../shared/turnProgress.js'
+import {
+  describeCompletion,
+  formatDuration,
+  isTerminalPhase,
+  tokenReadouts,
+} from '../../shared/turnProgress.js'
 import { renderMarkdown } from '../markdown.js'
 import { spriteStateForPhase } from '../spriteAtlas.js'
 import { useSecondTick } from '../useSecondTick.js'
@@ -28,7 +33,13 @@ import { ChevronIcon, CopyIcon } from './Icons.js'
 import { ToolOutput, outputForClipboard } from './ToolOutput.js'
 
 /** The user's prompt. */
-export function UserEntry({ text }: { text: string }): JSX.Element {
+export function UserEntry({
+  text,
+  delivery,
+}: {
+  text: string
+  delivery?: 'queue' | 'steer'
+}): JSX.Element {
   const [copied, setCopied] = useState(false)
 
   const onCopy = useCallback(() => {
@@ -41,6 +52,11 @@ export function UserEntry({ text }: { text: string }): JSX.Element {
   return (
     <div className="rc-turn rc-turn-user">
       <div className="rc-request-wrap">
+        {delivery ? (
+          <span className={`rc-request-delivery rc-request-delivery-${delivery}`}>
+            {delivery === 'steer' ? 'Steered' : 'Queued'}
+          </span>
+        ) : null}
         <div className="rc-request">{text}</div>
         <button
           type="button"
@@ -174,6 +190,33 @@ export function NoticeEntry({
     >
       {text}
     </div>
+  )
+}
+
+/** A `/btw` fork. It is deliberately visually separate from the main conversation. */
+function SideQuestionEntry({
+  entry,
+}: {
+  entry: Extract<TranscriptEntry, { kind: 'side_question' }>
+}): JSX.Element {
+  return (
+    <section className={`rc-side-question rc-side-question-${entry.status}`}>
+      <div className="rc-side-question-heading">
+        <strong>/btw</strong>
+        <span>{entry.question}</span>
+      </div>
+      {entry.status === 'answering' ? (
+        <div className="rc-side-question-status" role="status" aria-live="polite">
+          <span className="rc-side-question-spinner" aria-hidden="true" />
+          Answering side question…
+        </div>
+      ) : entry.answer ? (
+        <div
+          className="rc-side-question-answer"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.answer) }}
+        />
+      ) : null}
+    </section>
   )
 }
 
@@ -775,7 +818,7 @@ export function TranscriptEntryView({
 }): JSX.Element | null {
   switch (entry.kind) {
     case 'prompt':
-      return <UserEntry text={entry.text} />
+      return <UserEntry text={entry.text} delivery={entry.delivery} />
     case 'assistant':
       return (
         <AssistantEntry
@@ -787,6 +830,8 @@ export function TranscriptEntryView({
       )
     case 'notice':
       return <NoticeEntry text={entry.text} severity={entry.severity} />
+    case 'side_question':
+      return <SideQuestionEntry entry={entry} />
     case 'turn_end':
       return <TurnEndEntry completion={turnCompletion} />
     case 'hook':

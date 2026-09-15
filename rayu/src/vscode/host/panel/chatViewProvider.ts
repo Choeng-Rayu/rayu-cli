@@ -37,6 +37,7 @@ import type { EffortChoice } from '../../shared/inferenceSettings.js'
 import type {
   HostToWebviewMessage,
   ImageInputView,
+  PromptDeliveryView,
   WebviewState,
   WebviewToHostMessage,
 } from '../../shared/webviewProtocol.js'
@@ -53,7 +54,11 @@ export const CHAT_VIEW_ID = 'rayucode.chat'
 export interface ChatViewHandlers {
   /** The panel is mounted and can benefit from background engine initialization. */
   ready: () => Promise<void> | void
-  submitPrompt: (text: string, images?: ImageInputView[]) => Promise<void> | void
+  submitPrompt: (
+    text: string,
+    images?: ImageInputView[],
+    delivery?: PromptDeliveryView,
+  ) => Promise<void> | void
   interrupt: () => Promise<void> | void
   newSession: () => Promise<void> | void
   /** Bring an already-open conversation to the front. Nothing is spawned or stopped. */
@@ -72,6 +77,7 @@ export interface ChatViewHandlers {
   selectModelValue: (value: string) => Promise<void> | void
   refreshModelCatalogue: () => Promise<void> | void
   setEffort: (level: EffortChoice) => Promise<void> | void
+
   listAttachable: () => Promise<void> | void
   attachToSession: (pid: number) => Promise<void> | void
   detachFromSession: () => Promise<void> | void
@@ -93,6 +99,7 @@ export interface ChatViewHandlers {
   reviewUndo: (path?: string) => Promise<void> | void
   openReviewDiff: (path: string) => Promise<void> | void
   openFile: (path: string) => Promise<void> | void
+  openExternal: (url: string) => Promise<void> | void
   signIn: () => Promise<void> | void
   signOut: () => Promise<void> | void
   openProviderSetup: () => Promise<void> | void
@@ -111,7 +118,16 @@ export interface ChatViewHandlers {
   modelChooserDismiss: () => Promise<void> | void
   mcpToggle: (serverName: string, enabled: boolean) => Promise<void> | void
   mcpReconnect: (serverName: string) => Promise<void> | void
+  mcpAuthenticate: (serverName: string) => Promise<void> | void
+  mcpClearAuth: (serverName: string) => Promise<void> | void
   getMcpStatus: () => Promise<void> | void
+  mcpElicitationResponse: (
+    requestId: string,
+    action: 'accept' | 'decline' | 'cancel',
+    content?: Record<string, unknown>,
+  ) => Promise<void> | void
+  reloadPlugins: () => Promise<void> | void
+  installSkill: (source: string, overwrite?: boolean) => Promise<void> | void
   listSessions: () => Promise<void> | void
   resumeSession: (id: string) => Promise<void> | void
   stopTask: (sourceSessionId: string, taskId: string) => Promise<void> | void
@@ -196,7 +212,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         void this.handlers.ready()
         return
       case 'submitPrompt':
-        void this.handlers.submitPrompt(message.text, message.images)
+        void this.handlers.submitPrompt(message.text, message.images, message.delivery)
         return
       case 'interrupt':
         void this.handlers.interrupt()
@@ -229,6 +245,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'setEffort':
         void this.handlers.setEffort(message.level)
         return
+
 
       case 'listAttachable':
         void this.handlers.listAttachable()
@@ -280,6 +297,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'openFile':
         void this.handlers.openFile(message.path)
         return
+      case 'openExternal':
+        void this.handlers.openExternal(message.url)
+        return
       case 'signIn':
         void this.handlers.signIn()
         return
@@ -320,8 +340,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'mcpReconnect':
         void this.handlers.mcpReconnect(message.serverName)
         return
+      case 'mcpAuthenticate':
+        void this.handlers.mcpAuthenticate(message.serverName)
+        return
+      case 'mcpClearAuth':
+        void this.handlers.mcpClearAuth(message.serverName)
+        return
       case 'getMcpStatus':
         void this.handlers.getMcpStatus()
+        return
+      case 'mcpElicitationResponse':
+        void this.handlers.mcpElicitationResponse(
+          message.requestId,
+          message.action,
+          message.content,
+        )
+        return
+      case 'reloadPlugins':
+        void this.handlers.reloadPlugins()
+        return
+      case 'installSkill':
+        void this.handlers.installSkill(message.source, message.overwrite)
         return
       case 'listSessions':
         void this.handlers.listSessions()

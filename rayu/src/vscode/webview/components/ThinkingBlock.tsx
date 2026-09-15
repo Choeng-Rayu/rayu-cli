@@ -29,7 +29,8 @@ import { useMemo, useState } from 'react'
 import type { ThinkingEntryView } from '../../shared/webviewProtocol.js'
 import { formatDuration } from '../../shared/turnProgress.js'
 import { renderMarkdown } from '../markdown.js'
-import { ChevronIcon, ProgressGlyph } from './Icons.js'
+import { useBrailleSpinner } from '../useBrailleSpinner.js'
+import { ChevronIcon } from './Icons.js'
 
 /** How many trailing reasoning lines the collapsed form shows. Matches the CLI. */
 const PREVIEW_LINES = 3
@@ -56,6 +57,12 @@ export function ThinkingBlock({
     [expanded, block.text],
   )
 
+  // Called unconditionally, alongside the other hooks above and before the early
+  // return below (Rules of Hooks) — `useBrailleSpinner`'s own `active` parameter is
+  // what gates whether it actually subscribes to the shared ticker, so passing
+  // `block.streaming` here is both correct and the intended usage.
+  const spinnerGlyph = useBrailleSpinner(block.streaming ?? false)
+
   if (!block.text.trim()) return null
 
   const duration =
@@ -73,7 +80,9 @@ export function ThinkingBlock({
         title={expanded ? 'Hide reasoning' : 'Show reasoning'}
       >
         {block.streaming ? (
-          <ProgressGlyph />
+          <span className="rc-progress-glyph" aria-hidden="true">
+            {spinnerGlyph}
+          </span>
         ) : (
           <span className="rc-thinking-check" aria-hidden="true">
             &#10003;

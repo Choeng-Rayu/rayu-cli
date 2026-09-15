@@ -18,6 +18,7 @@ import type {
   ContextUsageView,
   EntryId,
   LiveSessionView,
+  McpElicitationView,
   McpServerView,
   ModelCatalogueView,
   ModelInfoView,
@@ -29,6 +30,14 @@ import type {
   IdeContextView,
   ModelChooserView,
   SlashCommandView,
+  RuntimeCapabilitiesView,
+  RuntimeCommandView,
+  RuntimeToolView,
+  RuntimeAgentView,
+  RuntimePluginView,
+  RuntimeSkillView,
+  RateLimitView,
+  EngineAuthStatusView,
   ThinkingEntryView,
   TranscriptEntry,
   TurnCompletionEntry,
@@ -77,6 +86,18 @@ export interface ChatState {
   contextUsage: ContextUsageView | null
   /** Connected MCP servers. */
   mcpServers: McpServerView[]
+  runtimeCapabilities: RuntimeCapabilitiesView | null
+  runtimeCommands: RuntimeCommandView[]
+  runtimeTools: RuntimeToolView[]
+  runtimeAgents: RuntimeAgentView[]
+  runtimePlugins: RuntimePluginView[]
+  runtimeSkills: RuntimeSkillView[]
+  runtimeWorkflows: RuntimeSkillView[]
+  rateLimit: RateLimitView | null
+  engineAuthStatus: EngineAuthStatusView | null
+  sessionStatus: 'idle' | 'running' | 'requires_action'
+  promptSuggestion: string | null
+  mcpElicitations: McpElicitationView[]
   /** The editor's current file and selection, or null. */
   ideContext: IdeContextView | null
   /**
@@ -155,6 +176,18 @@ export const initialChatState: ChatState = {
   commands: [],
   contextUsage: null,
   mcpServers: [],
+  runtimeCapabilities: null,
+  runtimeCommands: [],
+  runtimeTools: [],
+  runtimeAgents: [],
+  runtimePlugins: [],
+  runtimeSkills: [],
+  runtimeWorkflows: [],
+  rateLimit: null,
+  engineAuthStatus: null,
+  sessionStatus: 'idle',
+  promptSuggestion: null,
+  mcpElicitations: [],
   ideContext: null,
   workspaceFiles: [],
   sessions: { status: 'loading', sessions: [] },
@@ -185,6 +218,22 @@ export type ChatAction =
   | { type: 'fileSearchResults'; query: string; files: string[] }
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   | { type: 'setMcpServers'; servers: McpServerView[] }
+  | {
+      type: 'setRuntimeCatalogue'
+      capabilities: RuntimeCapabilitiesView | null
+      commands: RuntimeCommandView[]
+      tools: RuntimeToolView[]
+      agents?: RuntimeAgentView[]
+      plugins?: RuntimePluginView[]
+      skills?: RuntimeSkillView[]
+      workflows?: RuntimeSkillView[]
+    }
+  | { type: 'setRateLimit'; rateLimit: RateLimitView | null }
+  | { type: 'setEngineAuthStatus'; status: EngineAuthStatusView | null }
+  | { type: 'setSessionStatus'; status: 'idle' | 'running' | 'requires_action' }
+  | { type: 'setPromptSuggestion'; suggestion: string | null }
+  | { type: 'showMcpElicitation'; request: McpElicitationView }
+  | { type: 'dismissMcpElicitation'; requestId: string }
   | { type: 'setIdeContext'; context: IdeContextView | null }
   | { type: 'setSessions'; list: SessionListView }
   | { type: 'setLiveSessions'; sessions: LiveSessionView[]; activeKey: string }
@@ -224,6 +273,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         commands: action.state.commands ?? [],
         contextUsage: action.state.contextUsage ?? null,
         mcpServers: action.state.mcpServers ?? [],
+        runtimeCapabilities: action.state.runtimeCapabilities ?? null,
+        runtimeCommands: action.state.runtimeCommands ?? [],
+        runtimeTools: action.state.runtimeTools ?? [],
+        runtimeAgents: action.state.runtimeAgents ?? [],
+        runtimePlugins: action.state.runtimePlugins ?? [],
+        runtimeSkills: action.state.runtimeSkills ?? [],
+        runtimeWorkflows: action.state.runtimeWorkflows ?? [],
+        rateLimit: action.state.rateLimit ?? null,
+        engineAuthStatus: action.state.engineAuthStatus ?? null,
+        sessionStatus: action.state.sessionStatus ?? 'idle',
+        promptSuggestion: action.state.promptSuggestion ?? null,
+        mcpElicitations: action.state.mcpElicitations ?? [],
         ideContext: action.state.ideContext ?? null,
         workspaceFiles: state.workspaceFiles,
         sessions: action.state.sessions,
@@ -367,6 +428,45 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'setMcpServers':
       return { ...state, mcpServers: action.servers }
+
+    case 'setRuntimeCatalogue':
+      return {
+        ...state,
+        runtimeCapabilities: action.capabilities,
+        runtimeCommands: action.commands,
+        runtimeTools: action.tools,
+        runtimeAgents: action.agents ?? state.runtimeAgents,
+        runtimePlugins: action.plugins ?? state.runtimePlugins,
+        runtimeSkills: action.skills ?? state.runtimeSkills,
+        runtimeWorkflows: action.workflows ?? state.runtimeWorkflows,
+      }
+
+    case 'setRateLimit':
+      return { ...state, rateLimit: action.rateLimit }
+
+    case 'setEngineAuthStatus':
+      return { ...state, engineAuthStatus: action.status }
+
+    case 'setSessionStatus':
+      return { ...state, sessionStatus: action.status }
+
+    case 'setPromptSuggestion':
+      return { ...state, promptSuggestion: action.suggestion }
+
+    case 'showMcpElicitation': {
+      const without = state.mcpElicitations.filter(
+        request => request.requestId !== action.request.requestId,
+      )
+      return { ...state, mcpElicitations: [...without, action.request] }
+    }
+
+    case 'dismissMcpElicitation':
+      return {
+        ...state,
+        mcpElicitations: state.mcpElicitations.filter(
+          request => request.requestId !== action.requestId,
+        ),
+      }
 
     case 'setIdeContext':
       // Replaced outright, including with null: a cleared selection must remove the

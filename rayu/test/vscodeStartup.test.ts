@@ -14,7 +14,10 @@ async function fixture(run: (session: ChatSession, dir: string, errors: string[]
     const reply = m => process.stdout.write(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:m.request_id,response:{}}})+'\\n');
     rl.on('line', line => {
       const m = JSON.parse(line);
-      if (m.type === 'user') fs.appendFileSync('prompts', m.message.content+'\\n');
+      if (m.type === 'user') {
+        fs.appendFileSync('prompts', m.message.content+'\\n');
+        fs.appendFileSync('prompt-frames', JSON.stringify(m)+'\\n');
+      }
       if (m.type !== 'control_request') return;
       if (m.request.subtype !== 'initialize') return reply(m);
       fs.writeFileSync('initializing', 'yes');
@@ -93,5 +96,24 @@ test('disposing during initialization clears running state without startup error
   await pending
   expect(session.isTurnRunning).toBe(false)
   expect(existsSync(join(dir, 'prompts'))).toBe(false)
+  expect(errors).toEqual([])
+}))
+
+test('normal, queued, and steering prompts use the shared queue priorities', () => fixture(async (session, dir, errors) => {
+  const warming = session.warmup()
+  await until(() => existsSync(join(dir, 'initializing')))
+  writeFileSync(join(dir, 'release'), '')
+  await warming
+
+  await session.submitPrompt('normal')
+  await session.submitPrompt('queued', [], 'queue')
+  await session.submitPrompt('steering', [], 'steer')
+  await until(() => existsSync(join(dir, 'prompt-frames')) && readFileSync(join(dir, 'prompt-frames'), 'utf8').trim().split('\n').length === 3)
+
+  const frames = readFileSync(join(dir, 'prompt-frames'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line) as { priority?: string })
+  expect(frames.map(frame => frame.priority ?? null)).toEqual([null, 'next', 'now'])
   expect(errors).toEqual([])
 }))
