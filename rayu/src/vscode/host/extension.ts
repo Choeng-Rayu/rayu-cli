@@ -1128,7 +1128,7 @@ export function activate(context: vscode.ExtensionContext): void {
       reviewUndo: path =>
         submitPrompt(current().session, provider, reviewCommand('undo', path)),
       openReviewDiff: path => openReviewDiff(review.store, path),
-      openFile: path => openReviewFile(path),
+      openFile: path => openReviewFile(review.store, path),
       openExternal: async rawUrl => {
         try {
           const url = new URL(rawUrl)

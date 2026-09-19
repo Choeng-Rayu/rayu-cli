@@ -355,8 +355,7 @@ export function renderToolResultMessage({
   filePath,
   content,
   structuredPatch,
-  type,
-  originalFile
+  type
 }: Output, _progressMessagesForMessage: ProgressMessage<ToolProgressData>[], {
   style,
   verbose
@@ -390,7 +389,7 @@ export function renderToolResultMessage({
     case 'update':
       {
         const isPlanFile = filePath.startsWith(getPlansDirectory());
-        return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={content.split('\n')[0] ?? null} fileContent={originalFile ?? undefined} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
+        return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={content.split('\n')[0] ?? null} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
       }
   }
 }

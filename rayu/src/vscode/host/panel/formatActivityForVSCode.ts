@@ -52,6 +52,7 @@
  */
 
 import type { ContentBlock, WrappedMessage } from '../../../telegram/formatActivity.js'
+import { decodeModelProvider } from '../../../utils/rayuConfig.js'
 import {
   blocksOf,
   isSyntheticUserText,
@@ -159,6 +160,23 @@ export type VSCodeActivityBlock =
        * has to be looked up in the transcript, which only the session holds.
        */
       parentToolUseId: string | null
+      /**
+       * The provider and model the SUBAGENT ran this call on.
+       *
+       * ── WHY IT IS PER-BLOCK AND NOT SESSION-GLOBAL ─────────────────────────────
+       *
+       * A subagent can be routed to a different model than the main thread — even to
+       * a different provider, concurrently (`getAgentModel`). The panel already shows
+       * the session's model in the composer, but that says nothing about a background
+       * agent burning a different, often pricier model. These two fields are carried
+       * only on subagent-attributed blocks, so a main-thread row is not decorated with
+       * the model it obviously shares with the session.
+       *
+       * Read from the subagent's own assistant frame (`message.model`), so it is the
+       * model that actually SERVED the call rather than what was requested.
+       */
+      agentProvider?: string
+      agentModel?: string
       name: string
       /** One-line collapsed label, e.g. the command or the file path. */
       label: string
@@ -500,7 +518,7 @@ const HunkSchema = z.object({
 /**
  * `Edit` and `Write` outputs, which share the fields that matter here.
  *
- * `passthrough` is deliberate: both carry more than this (`originalFile`, `content`,
+ * `passthrough` is deliberate: both carry more than this (`firstLine`, `content`,
  * `userModified`) and neither is needed to draw a diff. Requiring an exact shape would
  * break the projection every time an unrelated field was added to either tool.
  */
@@ -605,6 +623,21 @@ export function formatMessageForVSCode(
     typeof (message as { parent_tool_use_id?: unknown }).parent_tool_use_id === 'string'
       ? ((message as { parent_tool_use_id?: string }).parent_tool_use_id as string)
       : null
+  // The model that served THIS message, read once at message level for the same
+  // reason as `parentToolUseId`: it applies to every block in the message. Only
+  // meaningful for a subagent — on the main thread it is the session's own model,
+  // which the composer already reports, so it is attached only when there is a
+  // `parentToolUseId` to attribute it to.
+  //
+  // `message.model` is what the PROVIDER returned, so it is the model that actually
+  // ran the call. It can arrive provider-encoded (`providerId\u0000model`) when the
+  // subagent was routed elsewhere; `decodeModelProvider` is a no-op for a plain id,
+  // so decoding here is safe either way and keeps the two model surfaces agreeing.
+  const rawAgentModel = (message as { message?: { model?: unknown } }).message?.model
+  const agentRoute =
+    parentToolUseId && typeof rawAgentModel === 'string' && rawAgentModel.trim()
+      ? decodeModelProvider(rawAgentModel.trim())
+      : undefined
 
   // The index is the block's position in the message's own content array, which is
   // what correlates a settled thinking block with the live one. `entries()` is used
@@ -651,6 +684,10 @@ export function formatMessageForVSCode(
           kind: 'tool_use',
           toolUseId: block.id ?? null,
           parentToolUseId,
+          ...(agentRoute && {
+            agentModel: agentRoute.model,
+            ...(agentRoute.providerId && { agentProvider: agentRoute.providerId }),
+          }),
           name,
           label: questions
             ? `${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`

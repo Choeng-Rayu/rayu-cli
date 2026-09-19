@@ -36,11 +36,74 @@
  * the extension fail on machines that have no Node at all, which is most of them.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { totalmem } from 'node:os'
 
 import { NdjsonReader, type NdjsonFrameError } from './ndjsonReader.js'
 
 /** How much stderr to retain for diagnostics when the child dies. */
 const STDERR_TAIL_CHARS = 4_000
+
+/**
+ * Env var on the EXTENSION HOST that caps each engine child's V8 old-space, in MB.
+ *
+ * WHY THIS EXISTS
+ * The CLI's launcher re-execs itself with a RAM-aware `--max-old-space-size`
+ * (utils/heapLimitReexec.ts), but that path deliberately skips headless runs —
+ * and this child IS headless (`--print`), spawned via `vscodeHost.ts`, so it has
+ * always run at Node's DEFAULT heap ceiling with up to MAX_LIVE_SESSIONS of them
+ * alive at once. On a machine with modest RAM, a session that grows large (huge
+ * tool outputs, a pathological context) could therefore drag the whole system
+ * down, and the process the OOM killer takes is as likely to be VS Code itself
+ * as the child — which is exactly the "editor reloads / shuts down on long runs"
+ * failure users report.
+ *
+ * Setting this var flips the blast radius: each child OOMs ITSELF at the cap
+ * instead. `handleExit` surfaces "engine stopped unexpectedly", and the next
+ * prompt respawns with `--resume`, so the session recovers from its file while
+ * the editor survives. When unset, a RAM-proportional default is computed
+ * (50% of physical RAM / MAX_LIVE_SESSIONS, capped at 4 GB, floored at 512 MB)
+ * so the protection is always active. Override example (settings.json →
+ * terminal.integrated.env.* or the shell VS Code was launched from):
+ * RAYU_ENGINE_MAX_OLD_SPACE_MB=3072
+ */
+const ENGINE_HEAP_CAP_ENV = 'RAYU_ENGINE_MAX_OLD_SPACE_MB'
+
+/**
+ * Parses the heap-cap env value; null for anything absent or not a bare
+ * positive integer. A regex rather than parseInt because parseInt would
+ * silently accept "2048MB" and "1.5" — and a cap that is not exactly what the
+ * operator typed is worse than no cap at all.
+ */
+export function parseEngineHeapCapMB(raw: string | undefined): number | null {
+  if (!raw) return null
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) return null
+  const mb = Number.parseInt(trimmed, 10)
+  return mb > 0 ? mb : null
+}
+
+/**
+ * Compute a default per-engine heap cap when none is specified.
+ *
+ * Targets 50% of physical RAM divided by MAX_LIVE_SESSIONS (4), so 4 engines
+ * at full cap consume at most 50% of RAM, leaving headroom for VS Code, the
+ * extension host, and the OS. Capped at 4 GB (more than any single session
+ * needs) and floored at 512 MB (below which the engine cannot do useful work).
+ * Returns null on hosts where totalmem() is unavailable or nonsensical.
+ */
+const MAX_LIVE_SESSIONS_FOR_CAP = 4
+const DEFAULT_CAP_MIN_MB = 512
+const DEFAULT_CAP_MAX_MB = 4096
+const BYTES_PER_MB = 1024 * 1024
+
+export function computeDefaultEngineHeapCapMB(): number | null {
+  const totalBytes = totalmem()
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return null
+  const totalMB = Math.floor(totalBytes / BYTES_PER_MB)
+  const perChild = Math.floor((totalMB * 0.5) / MAX_LIVE_SESSIONS_FOR_CAP)
+  if (perChild < DEFAULT_CAP_MIN_MB) return null
+  return Math.min(perChild, DEFAULT_CAP_MAX_MB)
+}
 
 export interface EngineProcessOptions {
   /** Absolute path to the built `engine.mjs`. */
@@ -171,6 +234,17 @@ export class EngineProcess {
     // `[0;32m` noise; see `webview/ansi.ts`.
     env.NO_COLOR = '1'
     env.FORCE_COLOR = '0'
+
+    // Per-child heap cap — see ENGINE_HEAP_CAP_ENV. Falls back to a
+    // RAM-proportional default so engine children cannot consume all memory
+    // and OOM-kill VS Code. Applied through NODE_OPTIONS because
+    // `--max-old-space-size` only takes effect at V8 startup. An explicit
+    // flag already in NODE_OPTIONS wins.
+    const heapCapMB = parseEngineHeapCapMB(env[ENGINE_HEAP_CAP_ENV]) ?? computeDefaultEngineHeapCapMB()
+    if (heapCapMB !== null && !/--max[-_]old[-_]space[-_]size/.test(env.NODE_OPTIONS ?? '')) {
+      const flag = `--max-old-space-size=${heapCapMB}`
+      env.NODE_OPTIONS = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ${flag}` : flag
+    }
 
     const child = spawn(command, [this.options.enginePath, ...(this.options.args ?? [])], {
       cwd: this.options.cwd,

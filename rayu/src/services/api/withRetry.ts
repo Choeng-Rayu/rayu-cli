@@ -41,7 +41,7 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { isRayuConcurrencyLimitError, isRayuCreditLimitError, isRayuDailyTurnLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
+import { isRayuConcurrencyLimitError, isRayuCreditLimitError, isRayuDailyTurnLimitError, isRayuWindowLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -276,6 +276,20 @@ export async function* withRetry<T>(
       // fast-mode / transient-429 branches below.
       if (isRayuDailyTurnLimitError(error)) {
         logEvent('tengu_api_rayu_daily_turn_limit_reached', {
+          provider: getAPIProviderForStatsig(),
+        })
+        throw new CannotRetryError(error, retryContext)
+      }
+
+      // Gateway PACING window (429 reason:"weekly_limit" | "session_window_limit").
+      // Terminal for the current window, whose ETA the gateway sets to the window's
+      // own reset — up to a week away. The generic 429 path would sleep for that
+      // whole duration, which is exactly the "Retrying in 2452241 seconds" failure
+      // the credit-limit bail above already exists to prevent. The window is also
+      // user-liftable (the dashboard switch), so waiting is the wrong answer even
+      // when it would eventually work.
+      if (isRayuWindowLimitError(error)) {
+        logEvent('tengu_api_rayu_window_limit_reached', {
           provider: getAPIProviderForStatsig(),
         })
         throw new CannotRetryError(error, retryContext)

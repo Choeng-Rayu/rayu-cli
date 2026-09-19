@@ -6,6 +6,7 @@
  * reasoning are intentionally not part of the returned value.
  */
 import type { TaskState } from '../tasks/types.js'
+import { decodeModelProvider } from '../utils/rayuConfig.js'
 import type {
   BackgroundTaskType,
   BackgroundTaskView,
@@ -169,12 +170,31 @@ function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+/**
+ * Split a task's model into `[provider, model]` for display.
+ *
+ * ── THE PROVIDER ENCODING IS DELEGATED, NOT RE-IMPLEMENTED ─────────────────────
+ *
+ * A subagent routed to a provider other than the active one carries its model
+ * ENCODED as `providerId\u0000model`, via `encodeModelWithProvider`. That format is
+ * owned by `decodeModelProvider`, which is what this calls — so the decode cannot
+ * drift from the encode, and the separator constant is never restated here.
+ *
+ * It must be checked BEFORE the slash form: an encoded value contains no slash, so
+ * a slash-first split would leave the whole encoded string — NUL and all — as the
+ * model, and that is what the panel would render next to the provider.
+ *
+ * A plain `provider/model` string is still accepted afterwards, because that is what
+ * an already-decoded or hand-written value looks like.
+ */
 function splitModel(value: string | undefined): [string | undefined, string | undefined] {
   if (!value) return [undefined, undefined]
-  const separator = value.indexOf('/')
+  const decoded = decodeModelProvider(value)
+  if (decoded.providerId) return [decoded.providerId, decoded.model]
+  const separator = decoded.model.indexOf('/')
   return separator > 0
-    ? [value.slice(0, separator), value.slice(separator + 1)]
-    : [undefined, value]
+    ? [decoded.model.slice(0, separator), decoded.model.slice(separator + 1)]
+    : [undefined, decoded.model]
 }
 
 function safeResult(value: unknown): string | undefined {

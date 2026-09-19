@@ -43,7 +43,9 @@ function resultMessage(options: {
 
 const editOutput = {
   filePath: 'src/app.ts',
-  originalFile: 'const a = 1\n',
+  // The result carries only the FIRST LINE of the pre-edit file — never the whole
+  // contents — so that a tool result stored in the transcript stays small.
+  firstLine: 'const a = 1',
   oldString: 'const a = 1',
   newString: 'const a = 2',
   structuredPatch: [

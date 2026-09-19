@@ -57,6 +57,7 @@ import {
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
+import { firstLineOf } from '../../utils/stringUtils.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
 import {
   FILE_EDIT_TOOL_NAME,
@@ -582,11 +583,14 @@ export const FileEditTool = buildTool({
     }
 
     // 8. Yield result
+    // Only the first line is carried, never the whole file: this object becomes
+    // the transcript's `tool_use_result`, so the full contents would be persisted
+    // verbatim for every edit. See the field's note in `types.ts`.
     const data = {
       filePath: file_path,
       oldString: actualOldString,
       newString: new_string,
-      originalFile: originalFileContents,
+      firstLine: firstLineOf(originalFileContents),
       structuredPatch: patch,
       userModified: userModified ?? false,
       replaceAll: replace_all,

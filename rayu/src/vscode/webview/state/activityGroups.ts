@@ -40,6 +40,16 @@ export type TranscriptBlock =
       activity: ActivityKind
       /** The subagent every member belongs to, or undefined for the main thread. */
       agent?: string
+      /**
+       * The provider/model that subagent ran on.
+       *
+       * Taken from the FIRST member and not part of the split condition: grouping is
+       * keyed on `agent` alone because a group may never span two actors, and the
+       * model is a property of the actor — so every member already agrees on it and
+       * testing it per-entry could only ever reject a group that is legitimately one.
+       */
+      agentProvider?: string
+      agentModel?: string
       tools: ToolEntry[]
     }
 
@@ -109,6 +119,10 @@ export function groupTranscript(
         id: entry.id,
         activity,
         ...(entry.agent !== undefined ? { agent: entry.agent } : {}),
+        ...(entry.agentModel !== undefined ? { agentModel: entry.agentModel } : {}),
+        ...(entry.agentProvider !== undefined
+          ? { agentProvider: entry.agentProvider }
+          : {}),
         tools: [entry],
       })
     }

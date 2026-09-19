@@ -105,6 +105,11 @@ import {
   extractQuotaStatusFromError,
   extractQuotaStatusFromHeaders,
 } from '../claudeAiLimits.js'
+import {
+  publishForcedPacingLimitIfSet,
+  publishRayuPacingLimit,
+  rayuPacingLimitFromError,
+} from '../rayuAuth/rayuRateLimit.js'
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -2484,6 +2489,10 @@ async function* queryModel(
       const resp = streamResponse as unknown as Response | undefined
       if (resp) {
         extractQuotaStatusFromHeaders(resp.headers)
+        // Dev/test harness. Inert unless RAYU_FORCE_PACING_LIMIT is set, and
+        // checked here (per response) so a forced Rayu window shows up on the next
+        // turn while everything else keeps working.
+        publishForcedPacingLimitIfSet()
         // Store headers for gateway detection
         responseHeaders = resp.headers
       }
@@ -2794,6 +2803,11 @@ async function* queryModel(
 
         if (error instanceof APIError) {
           extractQuotaStatusFromError(error)
+          // Rayu gateways refuse a paced request with none of the Anthropic
+          // rate-limit headers, so the call above cannot see it. Publishing here
+          // is what surfaces it in the terminal notice and the VS Code status bar.
+          const pacing = rayuPacingLimitFromError(error)
+          if (pacing) publishRayuPacingLimit(pacing)
         }
 
         const requestId =
@@ -2849,6 +2863,10 @@ async function* queryModel(
       // Extract quota status from error headers if it's a rate limit error
       if (error instanceof APIError) {
         extractQuotaStatusFromError(error)
+        // Same as the fallback path above: a Rayu pacing refusal carries no
+        // Anthropic headers, so it is published from the Rayu reason instead.
+        const pacing = rayuPacingLimitFromError(error)
+        if (pacing) publishRayuPacingLimit(pacing)
       }
 
       // Extract requestId from stream, error header, or error body

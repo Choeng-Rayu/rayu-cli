@@ -51,6 +51,9 @@ import {
 import type { WrappedMessage } from '../../../telegram/formatActivity.js'
 import { loadTaskHistory, saveTaskHistory } from '../../../utils/task/taskHistory.js'
 import { decodeModelProvider } from '../../../utils/rayuConfig.js'
+// Host-side (Node) only: the webview cannot reach this, which is why the Rayu
+// dashboard link is resolved here and sent down with the rate-limit view.
+import { getRayuDashboardUrl } from '../../../services/rayuAuth/rayuSession.js'
 import {
   persistModelChoice,
   readActiveModel,
@@ -104,6 +107,10 @@ import type {
   RateLimitView,
   EngineAuthStatusView,
   McpElicitationView,
+} from '../../shared/webviewProtocol.js'
+import {
+  MAX_TRANSCRIPT_ENTRIES,
+  TRANSCRIPT_TRIM_STEP,
 } from '../../shared/webviewProtocol.js'
 
 /**
@@ -434,6 +441,14 @@ export class ChatSession {
   /** The transcript of record. The webview is a view of this, never the owner. */
   private readonly entries: TranscriptEntry[] = []
 
+  /**
+   * Whether the one-time "older messages were trimmed" notice has been shown for
+   * THIS conversation. Reset by `newSession()` alongside `entries`. Without the
+   * flag, every append past the cap would add another notice — and a notice is
+   * itself an append, which is the loop the flag breaks.
+   */
+  private trimNoticeShown = false
+
   /** Id of the assistant entry currently being streamed into, if any. */
   private streamingId: EntryId | null = null
 
@@ -501,7 +516,50 @@ export class ChatSession {
   private readonly thinkingBlocks = new Map<string, ThinkingEntryView>()
   private activeThinkingKey: string | null = null
   private currentStreamBlockType: string | null = null
-  private turnStreamedChars = 0
+  /**
+   * ── LIVE OUTPUT TOKENS ARE TRACKED PER MESSAGE, THEN SUMMED PER TURN ──────────
+   *
+   * The provider reports output ONE MESSAGE AT A TIME, but the panel shows a TURN,
+   * and a turn contains SEVERAL messages (prose → tool call → more prose → …).
+   * `message_delta.usage.output_tokens` is the cumulative count for the message that
+   * just ended — NOT the turn. The engine relies on the same distinction: its
+   * `updateUsage` ASSIGNS that value into a per-message accumulator
+   * (`QueryEngine`), and `accumulateUsage` SUMS it into the turn total on
+   * `message_stop`.
+   *
+   * The host used to skip that split: it wrote the per-message value straight into
+   * the turn readout and cleared `outputEstimated` doing so. Two visible bugs came
+   * from that — the count RESET DOWNWARD at every new message (the turn total
+   * replaced by one message's worth), and the live estimate FROZE for the rest of
+   * the turn, because `updateEstimatedOutput` refuses to run once the flag is clear.
+   *
+   * So the total is `completed` + the message in flight:
+   */
+  /** Output tokens from messages that have already FINISHED in this turn. */
+  private turnCompletedOutputTokens = 0
+  /** Whether any folded message contributed an ESTIMATE rather than a report. */
+  private turnOutputHasEstimate = false
+  /** Provider-reported cumulative output for the message IN FLIGHT (0 until message_delta). */
+  private messageReportedOutputTokens = 0
+  /** Characters streamed in the message IN FLIGHT, for the live estimate. */
+  private messageStreamedChars = 0
+  /**
+   * ── INPUT IS TRACKED AS ITS THREE PARTS, AND EACH ONE IS STICKY ───────────────
+   *
+   * The readout shows a SUM (direct + cache-read + cache-creation — all three were
+   * sent as part of the request), but that sum cannot be recomputed from the previous
+   * total when only one part is re-reported, so the parts are kept individually.
+   *
+   * The reason they must be kept at all is a provider quirk the engine already guards
+   * against: a `message_delta` may send EXPLICIT ZEROES for the input fields, which
+   * mean "not reported on this frame", NOT "the input is zero". `updateUsage` in
+   * `services/api/claude.ts` therefore overwrites an input field only when the value
+   * is `> 0`, with exactly that comment. The same per-field rule here is what stops a
+   * mid-turn `message_delta` from blanking the input readout.
+   */
+  private turnInputDirect = 0
+  private turnInputCacheRead = 0
+  private turnInputCacheCreation = 0
   /**
    * Bumped whenever the engine is replaced (new session / resume). Async replies compare
    * against the generation they were issued under so a late reply from a discarded engine
@@ -1105,6 +1163,7 @@ export class ChatSession {
       ...(cwd ? { cwd } : {}),
     }
     this.entries.length = 0
+    this.trimNoticeShown = false
     this.activeTurnId = null
     // The transcript is gone, so nothing can ask to expand a row of it. Retained output
     // and hook correlation would otherwise survive into a conversation that has no
@@ -1881,6 +1940,21 @@ export class ChatSession {
           ...(typeof raw.isUsingOverage === 'boolean'
             ? { isUsingOverage: raw.isUsingOverage }
             : {}),
+          // Only ever one of the two Rayu windows. Anything else is a malformed or
+          // newer event, and dropping it renders generic copy rather than claiming
+          // a window that is not the one that was hit.
+          ...(raw.rayuPacingWindow === 'weekly' || raw.rayuPacingWindow === 'session'
+            ? {
+                rayuPacingWindow: raw.rayuPacingWindow,
+                // Defaults to personal: only the explicit `team` marker changes the
+                // advice, so an older gateway that omits it keeps the switch hint.
+                rayuLimitScope: raw.rayuLimitScope === 'team' ? 'team' : 'personal',
+                // Resolved HERE, not in the webview: that bundle is
+                // browser-targeted and must not import the Node-side session
+                // helpers (fs/path) that know the Rayu web base URL.
+                rayuPacingDashboardUrl: getRayuDashboardUrl(),
+              }
+            : {}),
         }
         this.callbacks.onRateLimit?.(this.rateLimit)
         return
@@ -2252,6 +2326,20 @@ export class ChatSession {
         typeof message.description === 'string' && message.description.trim()
           ? message.description.trim()
           : `Background task ${taskId}`
+      // ── THE ROW'S MODEL IS ONLY EVER SEEDED HERE ──────────────────────────────
+      //
+      // `task_progress` and `task_notification` carry `model: existing?.model` — a
+      // carry-forward. Until this branch populated it, that carry-forward was
+      // always undefined, so a running subagent could never show which model it was
+      // using even though `BackgroundTaskView.model` exists and the webview already
+      // renders it (`BackgroundTaskCenter`). This is the one place the value enters.
+      //
+      // Decoded with `decodeModelProvider`, NOT split on a slash: a subagent routed
+      // to a provider other than the active one arrives as `providerId\u0000model`
+      // (see `getAgentModel`/`encodeModelWithProvider`), and a slash split would
+      // leave the whole encoded string as the "model".
+      const rawTaskModel = typeof message.model === 'string' ? message.model : undefined
+      const taskModel = rawTaskModel ? decodeModelProvider(rawTaskModel) : undefined
       this.publishTask({
         key,
         taskId,
@@ -2261,6 +2349,8 @@ export class ChatSession {
         group: taskGroup(type),
         description,
         prompt: typeof message.prompt === 'string' ? message.prompt : undefined,
+        model: taskModel?.model,
+        provider: taskModel?.providerId,
         status: 'running',
         // Reported by the engine since `execution_mode` was added. `background` remains the
         // fallback for task types that have no such distinction and for an older engine —
@@ -2710,42 +2800,128 @@ export class ChatSession {
     })
   }
 
-  private updateUsage(raw: Record<string, unknown> | undefined, finalOutput: boolean): void {
+  /**
+   * Fold a frame's INPUT figures into the turn's readout.
+   *
+   * ── TWO GUARDS KEPT FROM THE PREVIOUS SHAPE, DELIBERATELY ─────────────────────
+   *
+   * `hasInput` is true only when the frame actually carried an input field, so a
+   * frame that reports output alone leaves the input side untouched. And the three
+   * input fields are SUMMED because all three were sent as part of the request —
+   * cache reads and cache writes are input, not output, and adding them to the
+   * output side would double-count.
+   *
+   * OUTPUT IS NOT HANDLED HERE. It is accumulated per message and published by
+   * `publishLiveOutput`, because the provider reports it a message at a time while
+   * the panel shows a whole turn — see the field comment.
+   */
+  private updateInputUsage(raw: Record<string, unknown> | undefined): void {
     if (!raw || !this.turnProgress) return
+    // Each part updates INDEPENDENTLY, and only when the frame reports a POSITIVE
+    // value — mirroring `updateUsage` in `services/api/claude.ts`. A `0` (or an absent
+    // field) means "not reported on this frame", so it must leave the held value
+    // alone: accepting it would blank the input readout on any provider that sends
+    // explicit zeroes on `message_delta`.
+    let changed = false
     const direct = finiteToken(raw.input_tokens)
+    if (direct > 0) {
+      this.turnInputDirect = direct
+      changed = true
+    }
     const cacheRead = finiteToken(raw.cache_read_input_tokens)
+    if (cacheRead > 0) {
+      this.turnInputCacheRead = cacheRead
+      changed = true
+    }
     const cacheCreation = finiteToken(raw.cache_creation_input_tokens)
-    const hasInput =
-      typeof raw.input_tokens === 'number' ||
-      typeof raw.cache_read_input_tokens === 'number' ||
-      typeof raw.cache_creation_input_tokens === 'number'
-    const hasOutput = typeof raw.output_tokens === 'number'
-    const output = finalOutput && hasOutput
-      ? finiteToken(raw.output_tokens)
-      : this.turnProgress.usage.outputTokens
+    if (cacheCreation > 0) {
+      this.turnInputCacheCreation = cacheCreation
+      changed = true
+    }
+    if (!changed) return
     const usage: TurnTokenUsageView = {
-      inputTokens: hasInput
-        ? direct + cacheRead + cacheCreation
-        : this.turnProgress.usage.inputTokens,
-      outputTokens: output,
-      cacheReadTokens: hasInput ? cacheRead : this.turnProgress.usage.cacheReadTokens,
-      cacheCreationTokens: hasInput ? cacheCreation : this.turnProgress.usage.cacheCreationTokens,
-      inputEstimated: hasInput ? false : this.turnProgress.usage.inputEstimated,
-      outputEstimated: finalOutput && hasOutput ? false : this.turnProgress.usage.outputEstimated,
+      ...this.turnProgress.usage,
+      inputTokens:
+        this.turnInputDirect + this.turnInputCacheRead + this.turnInputCacheCreation,
+      cacheReadTokens: this.turnInputCacheRead,
+      cacheCreationTokens: this.turnInputCacheCreation,
+      inputEstimated: false,
     }
     this.turnProgress = { ...this.turnProgress, usage }
     this.callbacks.onTurnProgress?.({ ...this.turnProgress, usage: { ...usage } })
   }
 
-  private updateEstimatedOutput(chars: number): void {
-    if (!this.turnProgress || chars <= 0 || !this.turnProgress.usage.outputEstimated) return
-    this.turnStreamedChars += chars
-    const usage = {
+  /**
+   * Fold the in-flight message's output into the turn total.
+   *
+   * Reached at `message_stop` (the event the engine accumulates on) and again at the
+   * next `message_start`. Calling it twice is harmless and intentional: the fold
+   * zeroes the per-message fields, so the second call is a no-op — which is what
+   * makes a stream that skipped `message_stop` still count correctly instead of
+   * silently dropping a message's output.
+   *
+   * A provider REPORT wins over the estimate; the estimate is only used for a
+   * message that ended without one, and it marks the turn's total as approximate
+   * from then on.
+   */
+  private foldMessageOutput(): void {
+    if (this.messageReportedOutputTokens > 0) {
+      this.turnCompletedOutputTokens += this.messageReportedOutputTokens
+    } else if (this.messageStreamedChars > 0) {
+      this.turnCompletedOutputTokens += Math.round(this.messageStreamedChars / 4)
+      this.turnOutputHasEstimate = true
+    }
+    this.messageReportedOutputTokens = 0
+    this.messageStreamedChars = 0
+  }
+
+  /**
+   * Recompute and publish the turn's live output count.
+   *
+   * ── THE ESTIMATE NEVER STACKS ON A REPORT ─────────────────────────────────────
+   *
+   * For the message in flight the provider's count supersedes the characters/4
+   * estimate rather than being added to it — the two describe the SAME tokens. The
+   * estimate is what fills the gap while a message is streaming and the provider has
+   * not yet reported for it.
+   *
+   * ── THE `~` STAYS UNTIL A REPORT BACKS EVERY PART ─────────────────────────────
+   *
+   * `outputEstimated` is true while ANY contributing part is an estimate: the
+   * in-flight message before its report, or any earlier message that ended without
+   * one. It clears only when every part is provider-reported. The previous shape
+   * cleared it at the first `message_delta` — flagging an estimate as exact AND
+   * disabling the live estimate for the remainder of the turn.
+   */
+  private publishLiveOutput(): void {
+    if (!this.turnProgress) return
+    const inFlight =
+      this.messageReportedOutputTokens > 0
+        ? this.messageReportedOutputTokens
+        : Math.round(this.messageStreamedChars / 4)
+    // ── THE FLAG DESCRIBES THE NUMBER SHOWN, NOT "HAS A MESSAGE REPORTED YET" ─────
+    //
+    // The in-flight part is an estimate ONLY when text has actually been streamed
+    // without a report for it. Testing `messageReportedOutputTokens === 0` instead
+    // read a FOLDED message's cleared slot (and the quiet moment between messages) as
+    // "still estimating", which stamped `~` on a count the provider had just reported
+    // exactly. A zero here means "nothing in flight", not "in flight and unreported".
+    const inFlightEstimated =
+      this.messageStreamedChars > 0 && this.messageReportedOutputTokens === 0
+    const usage: TurnTokenUsageView = {
       ...this.turnProgress.usage,
-      outputTokens: Math.round(this.turnStreamedChars / 4),
+      outputTokens: this.turnCompletedOutputTokens + inFlight,
+      outputEstimated: this.turnOutputHasEstimate || inFlightEstimated,
     }
     this.turnProgress = { ...this.turnProgress, usage }
     this.callbacks.onTurnProgress?.({ ...this.turnProgress, usage: { ...usage } })
+  }
+
+  /** Count streamed output characters toward the in-flight message's live estimate. */
+  private updateEstimatedOutput(chars: number): void {
+    if (!this.turnProgress || chars <= 0) return
+    this.messageStreamedChars += chars
+    this.publishLiveOutput()
   }
 
   private completeTurn(
@@ -2822,6 +2998,11 @@ export class ChatSession {
       case 'message_start': {
         const inner = event.message as Record<string, unknown> | undefined
         const id = typeof inner?.id === 'string' ? inner.id : null
+        // A message that was in flight ENDED when a new one starts. Fold its output
+        // into the turn total BEFORE resetting for this message — `message_stop`
+        // normally did it already (making this a no-op), and doing it here too keeps
+        // a stream that omitted `message_stop` from dropping a whole message's worth.
+        this.foldMessageOutput()
         // A new assistant message begins. Close any open entry FIRST so a turn that
         // produces prose, then a tool call, then more prose renders as separate
         // answers rather than one run-on block.
@@ -2829,7 +3010,8 @@ export class ChatSession {
         this.currentStreamMessageId = id
         this.currentStreamBlockIndex = null
         this.currentStreamBlockType = null
-        this.updateUsage(asRecord(inner?.usage), false)
+        this.updateInputUsage(asRecord(inner?.usage))
+        this.publishLiveOutput()
         this.updateTurnProgress('responding', 'Responding')
         if (id !== null && !this.streamedBlocks.has(id)) {
           this.streamedBlocks.set(id, new Set())
@@ -2886,14 +3068,34 @@ export class ChatSession {
       }
 
       case 'message_delta': {
-        this.updateUsage(asRecord(event.usage), true)
+        const deltaUsage = asRecord(event.usage)
+        this.updateInputUsage(deltaUsage)
+        // ── THIS COUNT IS FOR THE MESSAGE, NOT THE TURN ───────────────────────────
+        //
+        // `output_tokens` here is the cumulative count for the message that is
+        // ending, so it is ASSIGNED to the per-message slot — never added to the
+        // turn total, which would double-count on the next `message_delta`, and never
+        // written into the turn readout, which is what made the number fall back at
+        // every new message. `message_stop` folds it in. Same split the engine makes.
+        const reported = finiteToken(deltaUsage?.output_tokens)
+        if (reported > 0) this.messageReportedOutputTokens = reported
+        this.publishLiveOutput()
+        return
+      }
+
+      case 'message_stop': {
+        // The message is over, so its output belongs to the turn now. This is the
+        // event the engine accumulates on; without it the turn total would only ever
+        // describe the message currently streaming.
+        this.foldMessageOutput()
+        this.publishLiveOutput()
         return
       }
 
       default:
-        // message_stop, ping. The turn's end is driven by the
-        // `result` frame, which is authoritative; message_stop is not, because a
-        // turn can contain several messages.
+        // ping, and any event a provider adds. The turn's END is driven by the
+        // `result` frame, which is authoritative — `message_stop` marks one message,
+        // not the turn, because a turn can contain several messages.
         return
     }
   }
@@ -2925,7 +3127,13 @@ export class ChatSession {
 
     // The host keeps its own copy so a re-created webview can be restored from
     // `init` mid-turn rather than losing the partial answer.
-    const entry = this.entries.find(e => e.id === id)
+    //
+    // The streaming entry is the LAST one in all but pathological interleavings,
+    // and this runs per token: checking the tail first keeps the hot path O(1)
+    // instead of an O(n) scan of a transcript that can hold a thousand entries.
+    // The full scan remains as the fallback, so behavior is identical either way.
+    const last = this.entries[this.entries.length - 1]
+    const entry = last?.id === id ? last : this.entries.find(e => e.id === id)
     if (entry?.kind === 'assistant' && kind === 'text') entry.text += delta
 
     this.callbacks.onPartial(id, kind, delta)
@@ -3476,6 +3684,13 @@ export class ChatSession {
       output: null,
       startedAt: Date.now(),
       ...(agent && { agent }),
+      // The model the subagent ran on. Carried with the agent label rather than
+      // separately because the two are the same fact — which agent, on what — and a
+      // row only ever has one when it has the other.
+      ...(block.agentModel && {
+        agentModel: block.agentModel,
+        ...(block.agentProvider && { agentProvider: block.agentProvider }),
+      }),
       ...(block.questions && { questions: block.questions }),
       ...(block.todos && { todos: block.todos }),
     })
@@ -4058,6 +4273,114 @@ export class ChatSession {
     this.entries.push(entry)
     this.lastEntryAt = Date.now()
     this.emitEntry(entry)
+    this.trimTranscript()
+  }
+
+  /**
+   * Bound the transcript of record. See MAX_TRANSCRIPT_ENTRIES in the shared
+   * protocol for the sizing rationale; the short version is that this array used
+   * to grow for the whole life of the session — every tool pill with its output,
+   * details and typed result — and a long agentic run turned it into the
+   * extension host's largest heap consumer, with no eviction path short of
+   * `newSession()`.
+   *
+   * ── WHAT MUST NEVER BE EVICTED ─────────────────────────────────────────────
+   *
+   * Eviction is oldest-first, but age is not the only criterion. Four classes of
+   * entry are load-bearing regardless of position, each because a live code path
+   * looks it up BY ID and misbehaves when it is gone:
+   *
+   *   the FIRST prompt    — `labelFor()` (sessionRegistry) and the webview's
+   *                         `deriveSessionTitle` name the conversation from it;
+   *                         losing it renames a live session mid-run.
+   *   the streaming entry — `appendPartial` finds `streamingId`/`mirrorId` in
+   *                         this array and appends deltas to it; evicting it
+   *                         silently drops the rest of the answer being written.
+   *   RUNNING tool pills  — `applyToolResult` resolves its entry through
+   *                         `toolsByUseId` and gives up when the entry is gone,
+   *                         so the tool's result would vanish from the record.
+   *   the live review card and any question still being answered — both are
+   *                         interactive: their actions (/keep, /undo, an answer)
+   *                         post back against the entry id.
+   *
+   * Settled prompts beyond the first, settled tools, old answers and notices are
+   * the evictable bulk, and they are exactly what a session accumulates thousands
+   * of. The engine's session FILE keeps everything regardless — this bounds the
+   * panel's in-memory view, not the conversation's record — so `--resume` after a
+   * restart still restores the full history.
+   */
+  private trimTranscript(): void {
+    // Quantized, not per-append: see MAX_TRANSCRIPT_ENTRIES. Trimming on every
+    // append would shift every visible row once per streamed entry.
+    if (this.entries.length <= MAX_TRANSCRIPT_ENTRIES + TRANSCRIPT_TRIM_STEP) return
+
+    const firstPromptId = this.entries.find(e => e.kind === 'prompt')?.id
+    // Kept DELIBERATELY in step with `isLiveEntry` in the webview reducer: both
+    // sides trim on the same two thresholds, so if one protected a row the other
+    // evicted they would drift apart with no way to notice. The host additionally
+    // knows the review card by id; the webview treats any card it still holds as
+    // live, and the host keeps at most one (see flushPendingReview), so those two
+    // rules coincide.
+    const isProtected = (entry: TranscriptEntry): boolean => {
+      if (entry.id === firstPromptId) return true
+      if (entry.id === this.streamingId || entry.id === this.mirrorId) return true
+      if (entry.id === this.reviewEntryId) return true
+      if (entry.kind === 'tool' && entry.status === 'running') return true
+      if (entry.kind === 'hook' && entry.status === 'running') return true
+      if (entry.kind === 'side_question' && entry.status === 'answering') return true
+      return false
+    }
+
+    const dropped = new Set<EntryId>()
+    let i = 0
+    // Splice in place: `transcript` hands out this exact array by reference (see
+    // restoreConversationState), so reassigning would strand every holder.
+    while (this.entries.length > MAX_TRANSCRIPT_ENTRIES && i < this.entries.length) {
+      const entry = this.entries[i] as TranscriptEntry
+      if (isProtected(entry)) {
+        i++
+        continue
+      }
+      dropped.add(entry.id)
+      this.entries.splice(i, 1)
+    }
+    if (dropped.size === 0) return
+
+    // Drop the sidecars keyed to evicted entries, or they outlive the rows they
+    // belong to: retained output is the biggest (up to 2 MB of it), and the
+    // correlation maps would keep growing per tool call for the whole session.
+    for (const id of dropped) {
+      const retained = this.retainedToolOutput.get(id)
+      if (retained !== undefined) {
+        this.retainedToolOutput.delete(id)
+        this.retainedOutputChars -= retained.length
+      }
+    }
+    for (const [key, block] of this.thinkingBlocks) {
+      if (dropped.has(block.sourceMessageId)) this.thinkingBlocks.delete(key)
+    }
+    for (const [key, entryId] of this.toolsByUseId) {
+      if (dropped.has(entryId)) this.toolsByUseId.delete(key)
+    }
+    for (const [key, entryId] of this.hooksByHookId) {
+      if (dropped.has(entryId)) this.hooksByHookId.delete(key)
+    }
+
+    // Tell the user once, in the transcript, that the panel let go of old rows.
+    // Silence would read as lost messages; repeating it would itself be
+    // transcript growth. The recursive appendEntry re-enters trimTranscript,
+    // which is safe: the flag is already set, and the loop above converges.
+    if (!this.trimNoticeShown) {
+      this.trimNoticeShown = true
+      this.appendEntry({
+        id: newId(),
+        kind: 'notice',
+        severity: 'info',
+        text:
+          'Older messages were hidden from the panel to keep memory usage bounded. ' +
+          'Nothing was lost — the full conversation is in the session file.',
+      })
+    }
   }
 
   /** Replace one host-owned entry and publish the same id as an upsert. */
@@ -4136,7 +4459,17 @@ export class ChatSession {
       // keeps and undos that follow the turn.
       this.reviewBaselineChangeIds = new Set(this.reviewKnownChangeIds)
       this.turnStartedAt = Date.now()
-      this.turnStreamedChars = 0
+      // The live output tally is per TURN, so it starts clean here. Left uncleared,
+      // one turn's tokens would carry into the next turn's readout.
+      this.turnCompletedOutputTokens = 0
+      this.turnOutputHasEstimate = false
+      this.messageReportedOutputTokens = 0
+      this.messageStreamedChars = 0
+      // The input parts are per-turn too. Left uncleared, the previous turn's input
+      // would be reported as this turn's until the provider re-reported.
+      this.turnInputDirect = 0
+      this.turnInputCacheRead = 0
+      this.turnInputCacheCreation = 0
       this.activeTurnId = newId()
       this.turnProgress = {
         turnId: this.activeTurnId,

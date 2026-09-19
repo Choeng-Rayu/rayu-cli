@@ -18,6 +18,11 @@ import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import collaboratorSwarm from './commands/collaborator-swarm/index.js'
 import normal from './commands/normal/index.js'
+// Hidden internal command: REPL submits it from the rate-limit notice, so the
+// user can lift Rayu's credit pacing without leaving the terminal. Named
+// `rayu-` because the Claude-era `rate-limit-options` (a subscription command
+// Rayu does not have) is asserted absent by commandRegistry.test.ts.
+import rayuLimitOptions from './commands/rayu-limit-options/index.js'
 import keybindings from './commands/keybindings/index.js'
 import keep from './commands/keep/index.js'
 import mcp from './commands/mcp/index.js'
@@ -239,6 +244,7 @@ const COMMANDS = memoize((): Command[] => [
   keep,
   mcp,
   memory,
+  rayuLimitOptions,
   telegramBot,
   disconnectTelegram,
   telegramRemoteUninstall,

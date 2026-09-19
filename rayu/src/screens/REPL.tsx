@@ -2647,6 +2647,14 @@ export function REPL({
         // Bump conversationId so Messages.tsx row keys change and
         // stale memoized rows remount with post-compact content.
         setConversationId(randomUUID());
+        // Compaction replaced all messages: old tool_use_ids will never be
+        // seen again, so the replacement state's seenIds/replacements maps
+        // can be freed. Without this they grow monotonically for the whole
+        // session — ~2 KB per persisted tool result, never reclaimed.
+        if (contentReplacementStateRef.current) {
+          contentReplacementStateRef.current.seenIds.clear();
+          contentReplacementStateRef.current.replacements.clear();
+        }
         // Compaction succeeded — clear the context-blocked flag so ticks resume
         if (feature('PROACTIVE') || feature('KAIROS')) {
           proactiveModule?.setContextBlocked(false);
@@ -3678,7 +3686,10 @@ export function REPL({
   const onSubmitRef = useRef(onSubmit);
   onSubmitRef.current = onSubmit;
   const handleOpenRateLimitOptions = useCallback(() => {
-    void onSubmitRef.current('/rate-limit-options', {
+    // Rayu's own command (see src/commands/rayu-limit-options): it offers to lift
+    // the account's credit PACING. Named apart from the Claude-era
+    // `/rate-limit-options` subscription command, which Rayu does not ship.
+    void onSubmitRef.current('/rayu-limit-options', {
       setCursorOffset: () => {},
       clearBuffer: () => {},
       resetHistory: () => {}

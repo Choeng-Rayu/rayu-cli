@@ -20,6 +20,16 @@ type TaskStartedEvent = {
    * as background work.
    */
   execution_mode?: 'foreground' | 'background'
+  /**
+   * The model this task runs on.
+   *
+   * Lets a UI show WHICH model a subagent is using while it works — a subagent can
+   * be routed to a different (often pricier) model than the main thread, and its
+   * name alone does not say so. May be provider-ENCODED (`providerId\u0000model`)
+   * when it is routed elsewhere, so decode it with `decodeModelProvider` rather
+   * than splitting on a slash. Absent for task types that record no model.
+   */
+  model?: string
 }
 
 type TaskProgressEvent = {

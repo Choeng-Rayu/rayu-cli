@@ -84,7 +84,7 @@ export class EngineManager {
 
   /** Terminate the engine child, if any. Safe to call when no child is running. */
   kill(): void {
-    this._process?.kill()
+    this._process?.dispose()
     this._process = null
   }
 
