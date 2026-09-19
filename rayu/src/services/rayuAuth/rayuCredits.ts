@@ -28,6 +28,40 @@ export interface RayuCreditStatus {
   turnsRemaining?: number | null
   turnsResetSeconds?: number
   /**
+   * PACING windows: the plan's allowance released per rolling session window and
+   * per week. `creditsPerWeek`/`creditsPer5h` are null when the plan does not set
+   * that window, which means UNCAPPED — not capped at zero.
+   *
+   * These pace the SAME credits as the period allowance, so they never change the
+   * total; they only decide how fast it can be spent. Optional throughout so an
+   * older gateway still parses.
+   */
+  creditsPerWeek?: number | null
+  weekUsedCredits?: number
+  weekRemainingCredits?: number | null
+  weekResetSeconds?: number
+  creditsPer5h?: number | null
+  windowUsedCredits?: number
+  windowRemainingCredits?: number | null
+  windowResetSeconds?: number
+  /** Length of the rolling session window, in minutes (e.g. 300 = 5h). */
+  sessionWindowMinutes?: number
+  /**
+   * Whether the pacing windows are being ENFORCED for this account:
+   * `'gated'` (they apply) or `'full_credits'` (the user turned them off with the
+   * dashboard switch, so only the period allowance applies).
+   *
+   * Absent on a gateway that predates pacing, which reads as gated — the same
+   * fail-safe direction the gateway itself takes.
+   */
+  limitMode?: 'gated' | 'full_credits' | null
+  /**
+   * `'team'` when these figures describe a TEAM allowance rather than a personal
+   * one. On a team the pacing switch is org-admin-only, so a member must be told
+   * to ask their admin rather than offered a control they cannot use.
+   */
+  scope?: 'team' | string | null
+  /**
    * The CALLING API key's own limits, when the request was authenticated with a
    * `rayu_sk_live_…` key rather than an account session. Null/absent for a JWT
    * caller, and absent entirely on a gateway that predates the field — hence
@@ -89,7 +123,58 @@ export async function fetchRayuCredits(): Promise<RayuCreditStatus | null> {
   }
 }
 
-function fmtReset(seconds: number): string {
+/** Where the pacing switch lives, for the upsell line. Kept in one place so the
+ *  text in /usage and the text in a rate-limit error cannot drift apart. */
+export const PACING_SWITCH_HINT =
+  'Turn on "use all credits" in your dashboard to keep working now.'
+
+/**
+ * Whether the plan's pacing windows are currently being enforced.
+ *
+ * `full_credits` means the user has switched them off, so the windows are still
+ * REPORTED (they keep counting) but a full or near-full window is not a reason to
+ * warn anyone — they will not be blocked by it.
+ *
+ * An absent value reads as gated, matching the gateway's own default, so a gateway
+ * that predates pacing does not get a switch UI it cannot honour.
+ *
+ * Exported so the limits projection (`rayuRateLimit`) asks the same question the
+ * `/usage` rows do, rather than re-spelling the comparison and drifting from it.
+ */
+export function isPacingEnforced(c: RayuCreditStatus): boolean {
+  return c.limitMode !== 'full_credits'
+}
+
+/** One pacing window's two lines, or nothing when the plan does not set it. */
+function windowLines(
+  label: string,
+  used: number,
+  cap: number | null | undefined,
+  resetSeconds: number | undefined,
+  extra: string | null = null,
+): string[] {
+  // A null/absent cap means UNGATED, not capped at zero — so there is no bar to
+  // draw. 0 is treated the same way, matching the gateway's fail-open rule.
+  if (cap == null || cap <= 0) return []
+  const left = Math.max(0, cap - used)
+  const lines = [
+    '',
+    `  ${label}  ${usageBar(used, cap)} ${usagePct(used, cap)}`,
+    `           ${used.toLocaleString()} / ${cap.toLocaleString()} used · ${left.toLocaleString()} left · resets in ${formatRelativeDuration(resetSeconds ?? 0)}`,
+  ]
+  if (extra) lines.push(`           ${extra}`)
+  return lines
+}
+
+/**
+ * A duration as `3d 4h` / `4h 12m` / `5m`, or `soon` when it has already passed.
+ *
+ * Exported because the rate-limit module needs the SAME arithmetic to render a
+ * pacing window's reset; two copies of a duration formatter is how two screens
+ * end up disagreeing about how long is left. Callers compose their own phrasing
+ * ("resets in …", "Resets in …").
+ */
+export function formatRelativeDuration(seconds: number): string {
   if (!seconds || seconds <= 0) return 'soon'
   const d = Math.floor(seconds / 86400)
   const h = Math.floor((seconds % 86400) / 3600)
@@ -127,27 +212,55 @@ export function formatRayuUsageSummary(c: RayuCreditStatus): string {
   if (c.periodEnd) {
     lines.push(`  Renews   ${new Date(c.periodEnd).toLocaleDateString()}`)
   }
+  const hasWindowCaps =
+    (c.creditsPer5h != null && c.creditsPer5h > 0) ||
+    (c.creditsPerWeek != null && c.creditsPerWeek > 0)
+
   if (c.creditsPerPeriod == null) {
     lines.push('')
     lines.push('  No hosted credit allowance on this plan — upgrade at /billing.')
+  } else if (isPacingEnforced(c) && hasWindowCaps) {
+    // PACED with window caps: show ONLY the Session + Weekly windows.
+    // The period total is redundant — the windows are the binding constraint.
+    const exhausted = (used: number, cap: number | null | undefined) =>
+      cap != null && cap > 0 && used >= cap ? PACING_SWITCH_HINT : null
+    lines.push(
+      ...windowLines(
+        'Session',
+        c.windowUsedCredits ?? 0,
+        c.creditsPer5h,
+        c.windowResetSeconds,
+        exhausted(c.windowUsedCredits ?? 0, c.creditsPer5h),
+      ),
+      ...windowLines(
+        'Weekly',
+        c.weekUsedCredits ?? 0,
+        c.creditsPerWeek,
+        c.weekResetSeconds,
+        exhausted(c.weekUsedCredits ?? 0, c.creditsPerWeek),
+      ),
+    )
   } else {
+    // FULL CREDITS or NO CAPS: show the period Credits bar.
     const remC = c.remainingCredits ?? 0
+    // Full-credits users opted out of pacing, so the period reset timer is noise —
+    // they already know the allowance renews with the plan. Show it only when the
+    // gateway didn't send window caps (old gateway / free plan fallback).
+    const resetSuffix = isPacingEnforced(c)
+      ? ` · resets in ${formatRelativeDuration(c.resetSeconds)}`
+      : ''
     lines.push('')
     lines.push(
       `  Credits  ${usageBar(c.usedCredits, c.creditsPerPeriod)} ${usagePct(c.usedCredits, c.creditsPerPeriod)}`,
     )
     lines.push(
-      `           ${c.usedCredits.toLocaleString()} / ${c.creditsPerPeriod.toLocaleString()} used · ${remC.toLocaleString()} left · resets in ${fmtReset(c.resetSeconds)}`,
+      `           ${c.usedCredits.toLocaleString()} / ${c.creditsPerPeriod.toLocaleString()} used · ${remC.toLocaleString()} left${resetSuffix}`,
     )
-    if (c.allowanceTokens != null) {
-      const usedT = c.usedTokens ?? 0
+    if (!isPacingEnforced(c) && hasWindowCaps) {
+      // Explicitly say the windows are off. Otherwise a user who toggled them would
+      // reasonably read their absence as a bug.
       lines.push('')
-      lines.push(
-        `  Tokens   ${usageBar(usedT, c.allowanceTokens)} ${usagePct(usedT, c.allowanceTokens)}`,
-      )
-      lines.push(
-        `           ${usedT.toLocaleString()} / ${c.allowanceTokens.toLocaleString()}`,
-      )
+      lines.push('  Pacing   off — using all credits (no session or weekly window)')
     }
   }
   if (c.maxDailyTurns != null && c.maxDailyTurns > 0) {
@@ -158,7 +271,7 @@ export function formatRayuUsageSummary(c: RayuCreditStatus): string {
       `  Daily    ${usageBar(used, c.maxDailyTurns)} ${usagePct(used, c.maxDailyTurns)}`,
     )
     lines.push(
-      `           ${used.toLocaleString()} / ${c.maxDailyTurns.toLocaleString()} turns used · ${left.toLocaleString()} left · resets in ${fmtReset(c.turnsResetSeconds ?? 0)}`,
+      `           ${used.toLocaleString()} / ${c.maxDailyTurns.toLocaleString()} turns used · ${left.toLocaleString()} left · resets in ${formatRelativeDuration(c.turnsResetSeconds ?? 0)}`,
     )
   }
   if (c.topUpEnabled) {
@@ -176,6 +289,19 @@ export function formatRayuUsageLine(c: RayuCreditStatus): string {
       return `Rayu: ${left.toLocaleString()} / ${c.maxDailyTurns.toLocaleString()} turns left today`
     }
     return `Rayu: ${c.planName || c.plan}`
+  }
+  // Lead with a window when one is the binding constraint: with a 50,000-credit
+  // period and a 625-credit session, "49,000 credits left" is true but useless if
+  // the session is empty -- the user cannot spend any of them right now.
+  if (isPacingEnforced(c)) {
+    for (const [label, used, cap] of [
+      ['session', c.windowUsedCredits ?? 0, c.creditsPer5h],
+      ['weekly', c.weekUsedCredits ?? 0, c.creditsPerWeek],
+    ] as const) {
+      if (cap != null && cap > 0 && used >= cap) {
+        return `Rayu: ${label} limit reached — turn on "use all credits" to continue`
+      }
+    }
   }
   return `Rayu: ${(c.remainingCredits ?? 0).toLocaleString()} / ${c.creditsPerPeriod.toLocaleString()} credits left`
 }

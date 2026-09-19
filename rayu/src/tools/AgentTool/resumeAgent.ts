@@ -203,6 +203,9 @@ export async function resumeAgentBackground({
     selectedAgent,
     setAppState: rootSetAppState,
     toolUseId: toolUseContext.toolUseId,
+    // A resumed agent keeps running on the model it was resolved to, so the row
+    // still reports a model rather than blanking out on resume.
+    model: resolvedAgentModel,
   })
 
   const metadata = {

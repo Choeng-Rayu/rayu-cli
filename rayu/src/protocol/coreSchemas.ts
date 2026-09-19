@@ -1410,6 +1410,17 @@ export const SDKRateLimitInfoSchema = lazySchema(() =>
         .optional(),
       isUsingOverage: z.boolean().optional(),
       surpassedThreshold: z.number().optional(),
+      /**
+       * Set when this limit came from RAYU's own credit pacing rather than from a
+       * claude.ai subscription, naming which window was reached.
+       *
+       * Optional so an older consumer still parses a newer event, and so an
+       * Anthropic-shaped limit simply omits it. A consumer that sees it should
+       * render Rayu credit-language ("allowance", "use all credits") instead of
+       * "provider rate limit": the two need different advice, and the window name
+       * is what lets it say WHICH allowance ran out.
+       */
+      rayuPacingWindow: z.enum(['weekly', 'session']).optional(),
     })
     .describe('Rate limit information for claude.ai subscription users.'),
 )
@@ -1837,7 +1848,6 @@ export const FileChangeReviewFileSchema = lazySchema(() =>
     additions: z.number(),
     removals: z.number(),
     hunks: z.array(z.any()).optional().default([]),
-    fileContent: z.string().optional(),
     firstLine: z.string().nullable().optional(),
     status: z.enum(['pending', 'kept', 'undone', 'mixed']),
     createdAt: z.number(),
@@ -1911,6 +1921,12 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
       .optional()
       .describe(
         'Whether the task runs inside the turn or detached from it. Absent when the task type has no such distinction.',
+      ),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        'The model the task runs on, so a UI can show WHICH model a subagent uses while it works. May be provider-encoded (`providerId\\u0000model`) when the subagent is routed to a different provider than the active one — decode it with decodeModelProvider, do not split on a slash. Absent when the task type records no model, and never the literal string \'inherit\' (that is a routing instruction, not a model id).',
       ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),

@@ -313,6 +313,7 @@ import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
 import {
   headlessProfilerStartTurn,
   headlessProfilerCheckpoint,
+  isHeadlessProfilerEnabled,
   logHeadlessProfilerTurn,
 } from 'src/utils/headlessProfiler.js'
 import {
@@ -365,6 +366,7 @@ import { getTaskOutput, getTaskOutputSize } from '../utils/task/diskOutput.js'
 import { drainSdkEvents } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
+import { setMemoryPressureCleanup, setUserTimingInUse, startMemoryPressureGuard } from '../utils/memoryPressureGuard.js'
 import { sleep } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 
@@ -647,6 +649,33 @@ export async function runHeadless(
     const gcTimer = setInterval(Bun.gc, 1000)
     gcTimer.unref()
   }
+
+  // Memory-pressure guardrail, matching what the interactive TUI starts in
+  // interactiveHelpers.tsx. Headless runs used to skip it entirely, which left the
+  // VS Code extension's engine child — a LONG-LIVED headless process, unlike a
+  // one-shot `--print` — with no User Timing buffer hygiene and no graceful
+  // degradation at ~80% of the heap: it simply grew until V8 OOM-killed it or the
+  // OS killed the whole editor. The guard's timer is unref'd and idempotent, so a
+  // short one-shot run pays nothing. Opt out with RAYU_MEM_GUARD=0.
+  //
+  // The headless profiler keeps `headless_*` marks on that same buffer for the
+  // WHOLE turn (read back only at turn end), so declaring itself in-use here stops
+  // the guard's 30s hygiene tick from wiping `turn_start` mid-turn and silently
+  // reporting nothing for every long turn — the exact case the guard exists for.
+  setUserTimingInUse(isHeadlessProfilerEnabled)
+  setMemoryPressureCleanup(() => {
+    // Under heap pressure, clear the same module-level caches that compaction
+    // frees. The QueryEngine's mutableMessages are trimmed by compaction itself;
+    // what the guard adds is freeing these caches BETWEEN compactions when the
+    // heap is tight — the gap that let long sessions OOM before compaction fired.
+    try {
+      const { runPostCompactCleanup } = require('../services/compact/postCompactCleanup.js') as typeof import('../services/compact/postCompactCleanup.js')
+      runPostCompactCleanup('sdk')
+    } catch {
+      // Best effort — the cleanup failing must not crash the guard.
+    }
+  })
+  startMemoryPressureGuard()
 
   // Start headless profiler for first turn
   headlessProfilerStartTurn()

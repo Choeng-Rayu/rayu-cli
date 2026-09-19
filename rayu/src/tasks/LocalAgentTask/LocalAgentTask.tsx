@@ -502,7 +502,8 @@ export function registerAsyncAgent({
   selectedAgent,
   setAppState,
   parentAbortController,
-  toolUseId
+  toolUseId,
+  model
 }: {
   agentId: string;
   description: string;
@@ -511,6 +512,16 @@ export function registerAsyncAgent({
   setAppState: SetAppState;
   parentAbortController?: AbortController;
   toolUseId?: string;
+  /**
+   * The RESOLVED model this agent runs on, from `getAgentModel` — not the agent
+   * definition's configured `model`, which can be undefined or 'inherit'.
+   *
+   * Carried onto the task so the subagent's model can be shown while it works.
+   * It may be provider-encoded (`providerId\u0000model`) when the subagent is
+   * routed to a different provider than the main thread, so consumers must decode
+   * with `decodeModelProvider` rather than splitting on a slash.
+   */
+  model?: string;
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(agentId, getAgentTranscriptPath(asAgentId(agentId)));
 
@@ -524,6 +535,9 @@ export function registerAsyncAgent({
     prompt,
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
+    // `'inherit'` is a routing instruction, not a model id. Storing it would make a
+    // reader report the literal string as this agent's model, so it is dropped here.
+    ...(model && model !== 'inherit' ? { model } : {}),
     abortController,
     retrieved: false,
     lastReportedToolCount: 0,
@@ -562,7 +576,8 @@ export function registerAgentForeground({
   selectedAgent,
   setAppState,
   autoBackgroundMs,
-  toolUseId
+  toolUseId,
+  model
 }: {
   agentId: string;
   description: string;
@@ -571,6 +586,8 @@ export function registerAgentForeground({
   setAppState: SetAppState;
   autoBackgroundMs?: number;
   toolUseId?: string;
+  /** Resolved model — see `registerAsyncAgent`. Dropped when it is 'inherit'. */
+  model?: string;
 }): {
   taskId: string;
   backgroundSignal: Promise<void>;
@@ -589,6 +606,7 @@ export function registerAgentForeground({
     prompt,
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
+    ...(model && model !== 'inherit' ? { model } : {}),
     abortController,
     unregisterCleanup,
     retrieved: false,

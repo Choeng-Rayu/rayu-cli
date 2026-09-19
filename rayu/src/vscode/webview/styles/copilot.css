@@ -1174,6 +1174,32 @@ body {
   border-color: var(--vscode-inputValidation-errorBorder);
 }
 
+/*
+ * An action inside a notice (currently: "Open dashboard" on a Rayu credit
+ * limit). Styled as a LINK rather than a button so it reads as an aside within
+ * the sentence it sits in, and inherits the notice's own colour so it stays
+ * legible against both the warning and error backgrounds.
+ */
+.rc-notice-action {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.rc-notice-action:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+
+.rc-notice-action:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
 /* `/btw` runs as a fork and does not alter the main conversation. */
 .rc-side-question {
   border-left: 2px solid var(--vscode-textLink-foreground);
@@ -3365,6 +3391,28 @@ body {
   font-size: 0.85em;
   background-color: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
+}
+
+/*
+ * Which model the subagent ran on, beside its name.
+ *
+ * A MODIFIER on `.rc-activity-actor`, not a standalone class: the box metrics
+ * (flex, truncation, padding, radius, type size) are identical, so only the parts
+ * that differ are declared here. Copied wholesale they would be a second place to
+ * fix whenever the actor badge's metrics change — and the two must stay aligned,
+ * since they sit adjacent on one row and share a baseline.
+ *
+ * Quieter than the actor badge on purpose: an outline rather than a filled chip,
+ * because it QUALIFIES the actor rather than competing with it.
+ *
+ * The compound selector, rather than source order alone, so the override holds
+ * even if these blocks are ever reordered.
+ */
+.rc-activity-actor.rc-activity-model {
+  border: 1px solid var(--vscode-badge-background);
+  background-color: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-variant-numeric: tabular-nums;
 }
 
 /* A subagent's group is inset and rail-marked, so nesting is visible without a tree. */

@@ -77,6 +77,31 @@ export function getRayuWebBaseUrl(): string {
 }
 
 /**
+ * The dashboard, where account settings live — including the credit-pacing
+ * switch ("use all credits") that the rate-limit UI directs users to.
+ *
+ * One builder rather than `${getRayuWebBaseUrl()}/dashboard` per call site: this
+ * URL is shown in a terminal error message, a browser hand-off AND the VS Code
+ * status bar, and three inlined copies is how one of them ends up with a double
+ * slash. `getRayuWebBaseUrl` already trims the trailing slash.
+ */
+export function getRayuDashboardUrl(): string {
+  return `${getRayuWebBaseUrl()}/dashboard`
+}
+
+/**
+ * The plans/pricing page, offered alongside the dashboard wherever a limit is
+ * hit ("upgrade", "see plans with a larger allowance").
+ *
+ * Sibling of [`getRayuDashboardUrl`] and for the same reason: the URL is already
+ * built at several call sites in the rate-limit copy, and one builder keeps them
+ * identical.
+ */
+export function getRayuPlansUrl(): string {
+  return `${getRayuWebBaseUrl()}/plans`
+}
+
+/**
  * Base URL of the rayu-gateway (no trailing slash, no /v1 suffix). Resolution:
  * runtime RAYU_GATEWAY_URL → baked MACRO.RAYU_GATEWAY_URL → localhost:8080.
  */

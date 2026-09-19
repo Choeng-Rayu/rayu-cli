@@ -314,6 +314,32 @@ export interface RateLimitView {
   rateLimitType?: string
   utilization?: number
   isUsingOverage?: boolean
+  /**
+   * Set when this limit is RAYU credit pacing rather than a claude.ai
+   * subscription limit, naming which window was reached.
+   *
+   * The two need DIFFERENT copy: a provider rate limit is an upstream problem the
+   * user can only wait out, while a Rayu window is the user's own allowance being
+   * released over time — and they can lift it themselves from the dashboard. The
+   * window name is what lets the status bar say WHICH allowance ran out.
+   */
+  rayuPacingWindow?: 'weekly' | 'session'
+  /**
+   * Whose Rayu pacing limit this is, when `rayuPacingWindow` is set.
+   *
+   * On a TEAM the switch is org-admin-only, so the status bar must say "ask your
+   * admin" instead of offering a button that would send a member to a setting they
+   * cannot change.
+   */
+  rayuLimitScope?: 'personal' | 'team'
+  /**
+   * Where to lift the pacing, resolved by the HOST.
+   *
+   * The URL cannot be built in the webview: that bundle is browser-targeted and
+   * must not import the Node-side session helpers (fs/path) that resolve the Rayu
+   * web base URL. The host already runs in Node, so it supplies the link.
+   */
+  rayuPacingDashboardUrl?: string
 }
 
 export interface EngineAuthStatusView {
@@ -886,6 +912,56 @@ export type ToolResultView =
       totalCount: number
     }
 
+/**
+ * How many transcript entries ONE conversation may hold, on both sides of the
+ * protocol.
+ *
+ * The host (`ChatSession.entries`) and the webview (`ChatState.entries`) each
+ * keep the full transcript for the life of the session, and neither used to have
+ * a bound: a long agentic run — thousands of tool pills, each with output,
+ * details and a typed result — grew both copies until the extension host and the
+ * webview process together exhausted the machine's RAM and VS Code was killed by
+ * the OS. Individual entries were already clamped (MAX_WEBVIEW_TEXT_CHARS on
+ * text/parameters, the diff/filename caps on a typed result); this bounds the
+ * ARRAY, the dimension nothing capped.
+ *
+ * ── WHY 200, AND WHY THE SAME NUMBER AS THE TERMINAL ───────────────────────────
+ *
+ * `Messages.tsx` reached this number the hard way for its own non-virtualized
+ * render path: ~250 KB of fiber tree per message meant ~2000 messages became
+ * "~500 MB of fibers, and per-frame write costs that push the process into a GC
+ * death spiral (observed: 59 GB RSS)". 200 is the cap it settled on.
+ *
+ * The webview is in the same position that path was — React renders EVERY entry
+ * it holds, with no windowing — so it inherits the same ceiling rather than
+ * inventing a second, unvalidated one. Oldest entries are evicted first, never
+ * the ones a live turn still needs (the streaming answer, running tools, a
+ * question mid-answer, the review card, and the FIRST prompt, which the session
+ * title is derived from).
+ *
+ * ── AND WHY EVICTION IS BATCHED, NOT PER-APPEND ────────────────────────────────
+ *
+ * Dropping the front entry on every single append shifts every visible row up by
+ * one, which is the bug `Messages.tsx` recorded as CC-941 ("dropping one message
+ * from the front on every append, shifting scrollback content") and tamed with
+ * quantized steps. Both sides here trim only once the transcript has overrun the
+ * cap by TRANSCRIPT_TRIM_STEP, then drop back to the cap — so a long stream
+ * shifts the view once per STEP entries instead of on every token, and the
+ * steady-state bound is MAX + STEP.
+ *
+ * Shared so the host and the webview cannot drift into disagreeing bounds: both
+ * trim at the same two thresholds, and a host that kept MORE than the webview
+ * would re-send entries the webview had already evicted.
+ */
+export const MAX_TRANSCRIPT_ENTRIES = 200
+
+/**
+ * How far past MAX_TRANSCRIPT_ENTRIES the transcript may grow before a trim
+ * runs, and how the two sides stay in lockstep. See MAX_TRANSCRIPT_ENTRIES for
+ * why the bound is quantized rather than enforced on every append.
+ */
+export const TRANSCRIPT_TRIM_STEP = 50
+
 /** A settled transcript entry. Mirrors the host formatter's block kinds. */
 export type TranscriptEntry =
   | {
@@ -1000,6 +1076,16 @@ export type TranscriptEntry =
        * actors as one.
        */
       agent?: string
+      /**
+       * The provider and model the SUBAGENT ran this call on, for the model badge
+       * beside the agent label. Absent on main-thread rows: the session's model is
+       * already in the composer, and repeating it on every row would be noise.
+       *
+       * Kept as two fields rather than a pre-joined label so the renderer formats it
+       * the same way the background-task row does (`provider/model`).
+       */
+      agentProvider?: string
+      agentModel?: string
       /** AskUserQuestion data, retained for its compact transcript result. */
       questions?: NonNullable<PermissionRequestView['questionInteraction']>['questions']
       questionAnswers?: Record<string, string>

@@ -122,6 +122,16 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
           ? 'background'
           : 'foreground'
         : undefined,
+    // The model this task runs on, so a UI can say WHICH model a subagent is using
+    // while it works — the agent's name alone does not tell the user that a
+    // background agent is burning a different (often pricier) model than the main
+    // thread. Same `in` guard as `prompt`/`workflowName`: only task types that
+    // actually record a model carry it.
+    //
+    // May be provider-ENCODED (`providerId\u0000model`) when the subagent is routed
+    // to a provider other than the active one, so a consumer must decode it with
+    // `decodeModelProvider` rather than splitting on a slash.
+    model: 'model' in task ? (task.model as string | undefined) : undefined,
   })
 }
 

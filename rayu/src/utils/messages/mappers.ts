@@ -248,6 +248,16 @@ export function toSDKRateLimitInfo(
     ...(limits.surpassedThreshold !== undefined && {
       surpassedThreshold: limits.surpassedThreshold,
     }),
+    // Names the Rayu pacing window, so a consumer can tell a Rayu credit limit
+    // from a claude.ai subscription limit and give the right advice.
+    ...(limits.rayuPacingWindow !== undefined && {
+      rayuPacingWindow: limits.rayuPacingWindow,
+    }),
+    // Whose limit it is: a team's pace is admin-only, so the consumer must not
+    // offer a member a switch they cannot use.
+    ...(limits.rayuLimitScope !== undefined && {
+      rayuLimitScope: limits.rayuLimitScope,
+    }),
   }
 }
 

@@ -10,7 +10,7 @@
  * an ordinary path rather than a special case, and it is how a sign-in performed in a
  * terminal reaches this UI.
  */
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, memo } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, memo } from 'react'
 
 import type {
   EntryId,
@@ -44,6 +44,7 @@ import { TranscriptEntryView, NoticeEntry } from './components/TranscriptEntryVi
 import { ActivityGroup } from './components/ActivityGroup.js'
 import { groupTranscript } from './state/activityGroups.js'
 import { useSecondTick } from './useSecondTick.js'
+import { createSessionScrollMemory } from './sessionScrollMemory.js'
 import { WelcomeScreen } from './components/WelcomeScreen.js'
 import { ScrollToBottomButton } from './components/ScrollToBottomButton.js'
 import { isTodoToolEntry } from './components/TodoListCard.js'
@@ -507,6 +508,20 @@ export function App(): JSX.Element {
           state.runtimeSkills.length
         }
         onOpenRuntime={() => setRuntimeCenterOpen(open => !open)}
+        // The Rayu pacing switch lives in the web dashboard, so the in-editor
+        // action is the same link the CLI offers. The URL comes from the HOST
+        // (which can resolve it in Node) via the rate-limit view; the webview must
+        // not import the session helpers itself. Reuses the existing openExternal
+        // channel rather than adding a host→engine round trip.
+        onOpenPacingDashboard={
+          state.rateLimit?.rayuPacingDashboardUrl
+            ? () =>
+                send({
+                  type: 'openExternal',
+                  url: state.rateLimit!.rayuPacingDashboardUrl!,
+                })
+            : undefined
+        }
       />
 
       {runtimeCenterOpen ? (
@@ -776,6 +791,15 @@ function Transcript({
   const scroller = useRef<HTMLDivElement | null>(null)
   const pinned = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
+  /**
+   * The reading position of every open conversation, keyed by the panel's session key.
+   * See `sessionScrollMemory` for why this belongs to the conversation and not the panel.
+   */
+  const scrollMemory = useRef(createSessionScrollMemory())
+  // Which conversation the next scroll should be credited to. A ref, so `onScroll` stays
+  // stable; repointed on a switch by the restore effect below, and only AFTER the restore,
+  // so an event already in flight is still credited to the conversation being left.
+  const scrollKey = useRef(state.activeSessionKey)
 
   /**
    * Reasoning blocks bucketed by the assistant entry they belong in front of.
@@ -812,7 +836,52 @@ function Transcript({
     // 48px of slack: an exact comparison unpins on sub-pixel scroll positions.
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
     pinned.current = isNearBottom
+    // Remember where this conversation was left, as it is read. Recorded here rather than
+    // on the way out, because by the time a switch is observable the content is already
+    // replaced and `scrollTop` is whatever the browser clamped it to.
+    scrollMemory.current.remember(scrollKey.current, { top: el.scrollTop, pinned: isNearBottom })
     setShowScrollBottom(!isNearBottom && el.scrollHeight - el.clientHeight > 100)  }, [])
+
+  /**
+   * Put the reader back where this conversation was left.
+   *
+   * ── A LAYOUT EFFECT, AND THAT IS THE LOAD-BEARING PART ─────────────────────────
+   *
+   * Replacing the transcript empties the scroll container for an instant, so the browser
+   * clamps `scrollTop` and queues a scroll event. A layout effect runs during the commit,
+   * before that event is dispatched: the position is restored and `scrollKey` is repointed
+   * while any in-flight event is still credited to the OUTGOING conversation. A passive
+   * effect would run after the clamp, so the outgoing conversation's remembered position
+   * would be overwritten with the clamp and coming back to it would land at the top again
+   * — the exact bug this fixes.
+   *
+   * A conversation with no remembered position opens at the newest output, which is what a
+   * fresh conversation and a first visit both want. The follow effect below is passive, so
+   * it runs after this one and cannot undo the restore: it returns early whenever the
+   * reader was not pinned, which is exactly the restored-mid-transcript case.
+   */
+  useLayoutEffect(() => {
+    if (scrollKey.current === state.activeSessionKey) return
+    scrollKey.current = state.activeSessionKey
+    const el = scroller.current
+    if (!el) return
+    const saved = scrollMemory.current.recall(state.activeSessionKey)
+    if (saved && !saved.pinned) {
+      el.scrollTop = saved.top
+      pinned.current = false
+    } else {
+      el.scrollTop = el.scrollHeight
+      pinned.current = true
+    }
+    setShowScrollBottom(!pinned.current && el.scrollHeight - el.clientHeight > 100)
+  }, [state.activeSessionKey])
+
+  // Forget conversations that are no longer open. The live list is the only key writer,
+  // so this holds the memory at the number of open conversations rather than at however
+  // many the user has ever opened.
+  useEffect(() => {
+    scrollMemory.current.retainOnly(state.liveSessions.map(session => session.key))
+  }, [state.liveSessions])
 
   const scrollToBottom = useCallback(() => {
     const el = scroller.current
@@ -874,6 +943,8 @@ function Transcript({
                   <ActivityGroup
                     activity={block.activity}
                     agent={block.agent}
+                    agentProvider={block.agentProvider}
+                    agentModel={block.agentModel}
                     tools={block.tools}
                     detailed={detailed}
                     toolOverrides={toolOverrides}
