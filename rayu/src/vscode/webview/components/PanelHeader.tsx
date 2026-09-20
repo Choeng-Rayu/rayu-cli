@@ -135,7 +135,15 @@ function PermissionIndicator({
 }): JSX.Element {
   const label = mode?.label ?? 'Permissions'
   const modeId = mode?.id ?? ''
-  const colorClass = modeId === 'allow' ? 'allow' : modeId === 'deny' ? 'deny' : 'ask'
+  const colorClass =
+    modeId === 'acceptEdits' ||
+    modeId === 'bypassPermissions' ||
+    modeId === 'fullManage' ||
+    modeId === 'orchestrator'
+      ? 'allow'
+      : modeId === 'plan'
+        ? 'deny'
+        : 'ask'
 
   return (
     <button

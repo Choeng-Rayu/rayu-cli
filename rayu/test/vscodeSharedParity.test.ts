@@ -54,10 +54,19 @@ describe('shared CLI and editor contracts', () => {
     expect(hostSource).toContain('passthrough.includes(LOGIN_FLAG)')
     expect(hostSource).toContain('passthrough.indexOf(CONNECT_FLAG)')
   })
-  test('editor permission modes are a subset of and recognized by the CLI permission modes', () => {
+  test('editor permission modes match CLI modes, with internal modes kept internal', () => {
     for (const mode of editorModes) {
       expect((cliModes as readonly string[]).includes(mode.id)).toBe(true)
-      expect(isExternalPermissionMode(mode.id as any)).toBe(true)
+      expect(isExternalPermissionMode(mode.id as any)).toBe(
+        !['fullManage', 'orchestrator'].includes(mode.id),
+      )
     }
+    expect(editorModes.find(mode => mode.id === 'fullManage')?.label).toBe(
+      'Full Manage',
+    )
+    expect(editorModes.find(mode => mode.id === 'orchestrator')?.label).toBe(
+      'Orchestrator',
+    )
+    expect(editorModes.some(mode => mode.id === 'bypassPermissions')).toBe(false)
   })
 })

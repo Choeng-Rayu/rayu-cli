@@ -938,6 +938,7 @@ export async function initializeToolPermissionContext({
   const isBypassPermissionsModeAvailable =
     (permissionMode === 'bypassPermissions' ||
       permissionMode === 'fullManage' ||
+      permissionMode === 'orchestrator' ||
       allowDangerouslySkipPermissions) &&
     !growthBookDisableBypassPermissionsMode &&
     !settingsDisableBypassPermissionsMode

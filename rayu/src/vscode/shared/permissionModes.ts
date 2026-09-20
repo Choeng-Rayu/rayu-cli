@@ -17,19 +17,15 @@ export type { PermissionModeView }
  * The modes offered, in cycle order.
  *
  * A SUBSET of the protocol's enum, and the omissions are deliberate. The schema also
- * accepts `dontAsk` plus the internal `auto`, `bubble` and `fullManage`; those are not
- * offered because a mode the user cannot reason about is worse than one fewer option,
- * and `bypassPermissions` is already the escape hatch for "stop asking".
+ * accepts `dontAsk`, `bypassPermissions`, plus the internal `auto` and `bubble`;
+ * those are not offered. Rayucode presents the CLI's Full Manage mode instead
+ * of a duplicate Full access entry. Orchestrator remains a separate choice and
+ * uses Full Manage's execution semantics while adding the delegation-only role.
  *
  * Ordered least to most permissive, so Shift+Tab escalates predictably instead of
  * jumping between unrelated behaviours.
  */
 export const PERMISSION_MODES: readonly PermissionModeView[] = [
-  {
-    id: 'plan',
-    label: 'Plan',
-    description: 'Read and analyse only. No edits, no commands.',
-  },
   {
     id: 'default',
     label: 'Ask',
@@ -41,14 +37,24 @@ export const PERMISSION_MODES: readonly PermissionModeView[] = [
     description: 'Apply file edits without asking. Still asks for commands.',
   },
   {
-    id: 'bypassPermissions',
-    label: 'Full access',
-    description: 'Run everything without asking. Use with care.',
+    id: 'plan',
+    label: 'Plan',
+    description: 'Read and analyse only. No edits, no commands.',
+  },
+  {
+    id: 'fullManage',
+    label: 'Full Manage',
+    description: 'Run all non-interactive tools without asking.',
+  },
+  {
+    id: 'orchestrator',
+    label: 'Orchestrator',
+    description: 'Full access for delegated workers; the main agent only coordinates.',
   },
 ]
 
 /** The mode the panel starts in, matching the engine's own default. */
-export const DEFAULT_PERMISSION_MODE = PERMISSION_MODES[1] as PermissionModeView
+export const DEFAULT_PERMISSION_MODE = PERMISSION_MODES[0] as PermissionModeView
 
 /**
  * Step to the next mode, wrapping.
@@ -65,5 +71,10 @@ export function nextPermissionMode(current: string): PermissionModeView {
 
 /** Resolve an id to its view, falling back to the default for anything unknown. */
 export function permissionModeById(id: string): PermissionModeView {
+  // Migrate the old Rayucode label/value to the single full-control mode now
+  // exposed by the editor. The CLI still owns both protocol identifiers.
+  if (id === 'bypassPermissions') {
+    return PERMISSION_MODES.find(m => m.id === 'fullManage') ?? DEFAULT_PERMISSION_MODE
+  }
   return PERMISSION_MODES.find(m => m.id === id) ?? DEFAULT_PERMISSION_MODE
 }

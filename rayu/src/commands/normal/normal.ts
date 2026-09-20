@@ -1,12 +1,15 @@
-import { getSwarmMode, setSwarmModeUpdater } from '../../utils/swarmMode.js'
+import {
+  getOrchestratorMode,
+  setOrchestratorModeUpdater,
+} from '../../utils/orchestratorMode.js'
 
 export const call: LocalCommandCall = async (_args, context) => {
-  const wasOn = getSwarmMode(context.getAppState())
-  context.setAppState(setSwarmModeUpdater(false))
+  const wasOn = getOrchestratorMode(context.getAppState())
+  context.setAppState(setOrchestratorModeUpdater(false))
   return {
     type: 'text',
     value: wasOn
-      ? 'Exited collaborator_swarm mode — back to normal mode.'
+      ? 'Exited Orchestrator mode — back to normal mode.'
       : 'Already in normal mode.',
   }
 }

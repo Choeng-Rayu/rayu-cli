@@ -117,8 +117,8 @@ test('a permission mode chosen before the engine exists is replayed onto it', as
   )
   sessions.push(session)
 
-  // Exactly the reported sequence: pick Full access on a cold panel, THEN start.
-  expect(await session.setPermissionMode(permissionModeById('bypassPermissions'))).toBe(true)
+  // Exactly the reported sequence: pick Full Manage on a cold panel, THEN start.
+  expect(await session.setPermissionMode(permissionModeById('fullManage'))).toBe(true)
   await session.warmup()
   await until(() =>
     framesFrom(logPath).some(entry => entry.frame.request?.subtype === 'set_permission_mode'),
@@ -129,12 +129,12 @@ test('a permission mode chosen before the engine exists is replayed onto it', as
     .filter(Boolean)
   const modes = requests.filter((r: any) => r.subtype === 'set_permission_mode')
   expect(modes).toHaveLength(1)
-  expect(modes[0].mode).toBe('bypassPermissions')
+  expect(modes[0].mode).toBe('fullManage')
   // Ordering matters: the mode has to be in force before the child can be handed a turn.
   expect(requests.findIndex((r: any) => r.subtype === 'initialize')).toBeLessThan(
     requests.findIndex((r: any) => r.subtype === 'set_permission_mode'),
   )
-  expect(session.currentPermissionMode.id).toBe('bypassPermissions')
+  expect(session.currentPermissionMode.id).toBe('fullManage')
 })
 
 test('a refused replay falls back to the mode that is actually enforced', async () => {
@@ -151,7 +151,7 @@ test('a refused replay falls back to the mode that is actually enforced', async 
   )
   sessions.push(session)
 
-  await session.setPermissionMode(permissionModeById('bypassPermissions'))
+  await session.setPermissionMode(permissionModeById('fullManage'))
   await session.warmup()
   await until(() =>
     framesFrom(logPath).some(entry => entry.frame.request?.subtype === 'set_permission_mode'),
@@ -161,7 +161,7 @@ test('a refused replay falls back to the mode that is actually enforced', async 
   // The pill must not be left claiming a mode the engine rejected.
   expect(session.currentPermissionMode.id).toBe('default')
   expect(reported).toEqual(['default'])
-  expect(errors.join(' ')).toContain('Full access')
+  expect(errors.join(' ')).toContain('Full Manage')
 })
 
 test('the mode survives an engine replacement', async () => {

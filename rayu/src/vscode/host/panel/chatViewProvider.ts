@@ -115,6 +115,8 @@ export interface ChatViewHandlers {
     value: string | null,
     agentType?: string,
   ) => Promise<void> | void
+  /** Change only the scope displayed by the open subagent chooser. */
+  modelChooserTarget: (agentType?: string) => Promise<void> | void
   modelChooserDismiss: () => Promise<void> | void
   mcpToggle: (serverName: string, enabled: boolean) => Promise<void> | void
   mcpReconnect: (serverName: string) => Promise<void> | void
@@ -330,6 +332,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           message.value,
           message.agentType,
         )
+        return
+      case 'modelChooserTarget':
+        void this.handlers.modelChooserTarget(message.agentType)
         return
       case 'modelChooserDismiss':
         void this.handlers.modelChooserDismiss()

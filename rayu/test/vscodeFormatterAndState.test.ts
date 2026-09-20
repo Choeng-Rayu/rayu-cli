@@ -607,18 +607,19 @@ describe('VS Code Webview Reducer (chatReducer)', () => {
 
 describe('Permission mode cycling and wrapping (nextPermissionMode)', () => {
   test('cycles through modes in order and wraps back to start', () => {
-    expect(nextPermissionMode('plan').id).toBe('default')
     expect(nextPermissionMode('default').id).toBe('acceptEdits')
-    expect(nextPermissionMode('acceptEdits').id).toBe('bypassPermissions')
-    expect(nextPermissionMode('bypassPermissions').id).toBe('plan')
+    expect(nextPermissionMode('acceptEdits').id).toBe('plan')
+    expect(nextPermissionMode('plan').id).toBe('fullManage')
+    expect(nextPermissionMode('fullManage').id).toBe('orchestrator')
+    expect(nextPermissionMode('orchestrator').id).toBe('default')
   })
 
   test('unknown id restarts cycle cleanly at first mode', () => {
-    expect(nextPermissionMode('unknown_internal_mode').id).toBe('plan')
+    expect(nextPermissionMode('unknown_internal_mode').id).toBe('default')
   })
 
   test('permissionModeById resolves correctly with fallback', () => {
-    expect(permissionModeById('bypassPermissions').id).toBe('bypassPermissions')
+    expect(permissionModeById('bypassPermissions').id).toBe('fullManage')
     expect(permissionModeById('not_a_mode')).toBe(DEFAULT_PERMISSION_MODE)
   })
 })

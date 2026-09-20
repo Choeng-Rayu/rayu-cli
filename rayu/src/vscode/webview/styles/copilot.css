@@ -1104,7 +1104,7 @@ body {
 /* ── command-driven model chooser ────────────────────────────────────────── */
 
 /*
- * Opened by `/model_subagent` and `/webfetch_model`, in the same pinned slot approvals use.
+ * Opened by `/subagent_models` and `/webfetch_model`, in the same pinned slot approvals use.
  * These settings get no toolbar pill on purpose: they are rare, per-project decisions, and a
  * permanent control for each would crowd out the three used every turn.
  */
@@ -1151,6 +1151,53 @@ body {
   margin: 0;
   font-size: 0.82em;
   color: var(--vscode-descriptionForeground);
+}
+
+.rc-model-chooser-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rc-model-chooser-scope-label {
+  font-size: 0.78em;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rc-model-chooser-scope-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rc-model-chooser-scope-option {
+  appearance: none;
+  border: 1px solid var(--vscode-button-secondaryBackground);
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  font: inherit;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.rc-model-chooser-scope-option:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.rc-model-chooser-scope-option-active {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.rc-model-chooser-scope-option:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
 }
 
 .rc-model-chooser-foot {
@@ -2827,6 +2874,14 @@ body {
   background-color: var(--vscode-editorError-foreground, var(--vscode-badge-foreground));
 }
 
+.rc-mode-dot-fullManage {
+  background-color: var(--vscode-editorError-foreground, var(--vscode-badge-foreground));
+}
+
+.rc-mode-dot-orchestrator {
+  background-color: var(--vscode-charts-orange, var(--vscode-badge-foreground));
+}
+
 .rc-pill-mode-plan {
   border-color: var(--vscode-charts-purple, var(--vscode-editorWidget-border));
 }
@@ -2841,6 +2896,14 @@ body {
 
 .rc-pill-mode-bypassPermissions {
   border-color: var(--vscode-editorError-foreground, var(--vscode-editorWidget-border));
+}
+
+.rc-pill-mode-fullManage {
+  border-color: var(--vscode-editorError-foreground, var(--vscode-editorWidget-border));
+}
+
+.rc-pill-mode-orchestrator {
+  border-color: var(--vscode-charts-orange, var(--vscode-editorWidget-border));
 }
 
 /* ── model and effort pills ──────────────────────────────────────────────── */

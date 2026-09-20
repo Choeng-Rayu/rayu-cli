@@ -351,7 +351,8 @@ export const PermissionModeSchema = lazySchema(() =>
       'dontAsk',
       // --- Internal modes that can still reach the wire ---------------
       // `rayu/src/types/permissions.ts` defines
-      //   PermissionMode = ExternalPermissionMode | 'auto' | 'bubble' | 'fullManage'
+      //   PermissionMode = ExternalPermissionMode | 'auto' | 'bubble' |
+      //                    'fullManage' | 'orchestrator'
       // and `rayu/src/cli/print.ts:1066` puts that internal value straight
       // onto a `system/status` frame. Omitting them meant a user in
       // `fullManage` mode produced a frame the schema rejected — which, once
@@ -364,6 +365,7 @@ export const PermissionModeSchema = lazySchema(() =>
       'auto',
       'bubble',
       'fullManage',
+      'orchestrator',
     ])
     .describe(
       'Permission mode for controlling how tool executions are handled. ' +
@@ -372,7 +374,7 @@ export const PermissionModeSchema = lazySchema(() =>
         "'bypassPermissions' - Bypass all permission checks (requires allowDangerouslySkipPermissions). " +
         "'plan' - Planning mode, no actual tool execution. " +
         "'dontAsk' - Don't prompt for permissions, deny if not pre-approved. " +
-        "'auto', 'bubble', 'fullManage' - internal modes; consumers that do " +
+        "'auto', 'bubble', 'fullManage', 'orchestrator' - internal modes; consumers that do " +
         'not implement them should fall back to prompting rather than ' +
         'auto-approving.',
     ),
