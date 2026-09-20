@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 
 import { builtInCommandNames } from '../src/commands.ts'
+import installGitHubApp from '../src/commands/install-github-app/index.ts'
+import { projectRuntimeCommands } from '../src/runtime/catalog.ts'
 
 describe('Rayu command registry', () => {
   test('removes Claude account auth and subscription commands', () => {
@@ -20,7 +22,6 @@ describe('Rayu command registry', () => {
       'chrome',
       'desktop',
       'mobile',
-      'install-github-app',
       'install-slack-app',
       'remote-env',
     ]) {
@@ -39,6 +40,7 @@ describe('Rayu command registry', () => {
       'status',
       'login',
       'logout',
+      'install-github-app',
     ]) {
       expect(names.has(name)).toBe(true)
     }
@@ -57,5 +59,12 @@ describe('Rayu command registry', () => {
     expect(names.has('subagent_models')).toBe(true)
     expect(names.has('model_subagent')).toBe(true)
     expect(names.has('subagent_model')).toBe(true)
+  })
+
+  test('marks the Ink GitHub setup wizard as terminal-only in Rayucode', () => {
+    const [descriptor] = projectRuntimeCommands([installGitHubApp])
+
+    expect(descriptor?.surface).toBe('terminal_only')
+    expect(descriptor?.available).toBe(false)
   })
 })

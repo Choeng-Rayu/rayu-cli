@@ -41,6 +41,15 @@ const define: Record<string, string> = {
   'process.env.RAYU_COMMIT_EMAIL': JSON.stringify(
     process.env.RAYU_COMMIT_EMAIL ?? 'noreply@rayu.dev',
   ),
+  'process.env.RAYU_GITHUB_APP_INSTALL_URL': JSON.stringify(
+    process.env.RAYU_GITHUB_APP_INSTALL_URL ?? '',
+  ),
+  'process.env.RAYU_GITHUB_ACTION_REF': JSON.stringify(
+    process.env.RAYU_GITHUB_ACTION_REF ?? '',
+  ),
+  'process.env.RAYU_GITHUB_ACTION_DOCS_URL': JSON.stringify(
+    process.env.RAYU_GITHUB_ACTION_DOCS_URL ?? '',
+  ),
 }
 for (const [k, v] of Object.entries(MACRO_VALUES)) {
   define[`MACRO.${k}`] = JSON.stringify(v)
