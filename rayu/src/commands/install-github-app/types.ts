@@ -6,6 +6,7 @@ export type InstallGitHubAppStep =
   | 'choose-repo'
   | 'install-app'
   | 'select-workflows'
+  | 'credential'
   | 'api-key'
   | 'creating'
   | 'success'
