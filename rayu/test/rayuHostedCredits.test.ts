@@ -69,13 +69,13 @@ const status = (over: Partial<RayuCreditStatus> = {}): RayuCreditStatus => ({
 })
 
 describe('rayu usage formatter', () => {
-  test('paid plan summary shows plan/price + credits + tokens + topup', () => {
+  test('paid plan summary shows plan/price + credits + topup', () => {
     const s = formatRayuUsageSummary(status())
     expect(s).toContain('Rayu Plan Usage')
     expect(s).toContain('Pro ($10/mo)')
     expect(s).toContain('1 / 50 used')
     expect(s).toContain('49 left')
-    expect(s).toContain('5,000,000')
+    expect(s).not.toContain('Tokens')
     expect(s).toContain('Top-up')
   })
 
@@ -133,6 +133,126 @@ describe('rayu usage formatter', () => {
         }),
       ),
     ).toBe('Rayu: 38 / 50 turns left today')
+  })
+})
+
+/**
+ * The pacing windows: a plan allowance released over a rolling session window and
+ * a week. These pace the SAME credits as the period, so the summary must show both
+ * without implying the totals have changed.
+ */
+describe('rayu usage formatter — pacing windows', () => {
+  const windowed = (over: Partial<RayuCreditStatus> = {}) =>
+    status({
+      creditsPer5h: 625,
+      windowUsedCredits: 200,
+      windowRemainingCredits: 425,
+      windowResetSeconds: 3600,
+      creditsPerWeek: 12_500,
+      weekUsedCredits: 5_000,
+      weekRemainingCredits: 7_500,
+      weekResetSeconds: 259_200,
+      sessionWindowMinutes: 300,
+      limitMode: 'gated',
+      ...over,
+    })
+
+  test('paced users see only Session + Weekly, not the period Credits bar', () => {
+    const s = formatRayuUsageSummary(windowed())
+    expect(s).toContain('Session')
+    expect(s).toContain('200 / 625 used')
+    expect(s).toContain('425 left')
+    expect(s).toContain('Weekly')
+    expect(s).toContain('5,000 / 12,500 used')
+    // The period Credits bar is hidden for paced users — the windows are
+    // the binding constraint, and the total is redundant.
+    expect(s).not.toContain('Credits')
+    expect(s).not.toContain('1 / 50 used')
+  })
+
+  test('a plan without window caps shows no window rows', () => {
+    // Absent caps mean UNGATED, so there is no bar to draw -- and drawing a
+    // zero-filled one would read as "you are blocked".
+    const s = formatRayuUsageSummary(status())
+    expect(s).not.toContain('Session')
+    expect(s).not.toContain('Weekly')
+  })
+
+  test('an exhausted window points at the dashboard switch', () => {
+    const s = formatRayuUsageSummary(
+      windowed({ windowUsedCredits: 625, windowRemainingCredits: 0 }),
+    )
+    expect(s).toContain('0 left')
+    expect(s).toContain('use all credits')
+  })
+
+  test('a half-full window gives no switch hint', () => {
+    expect(formatRayuUsageSummary(windowed())).not.toContain('use all credits')
+  })
+
+  /**
+   * With the switch ON the windows are still counted, but a full one is not a
+   * reason to warn anyone -- they will not be blocked by it. Showing an empty bar
+   * plus a "turn it on" hint to someone who already turned it on would be nonsense.
+   */
+  test('full-credits mode shows Credits bar without reset timer, no windows', () => {
+    const s = formatRayuUsageSummary(
+      windowed({
+        limitMode: 'full_credits',
+        windowUsedCredits: 625,
+        weekUsedCredits: 12_500,
+      }),
+    )
+    // Credits bar is shown (they opted out of pacing, so the period total matters).
+    expect(s).toContain('1 / 50 used')
+    // But no reset timer — they already know the allowance renews with the plan.
+    expect(s).not.toContain('resets in')
+    // The "Pacing off" line explains why windows are absent.
+    expect(s).toContain('using all credits')
+    expect(s).not.toContain('use all credits" in your dashboard')
+    expect(s).not.toContain('Session')
+    expect(s).not.toContain('Weekly')
+  })
+
+  /**
+   * The compact line leads with a window when one is the binding constraint: with
+   * a large period balance and an empty session, "49 credits left" is true but
+   * useless.
+   */
+  test('compact line reports an exhausted window over the period balance', () => {
+    expect(
+      formatRayuUsageLine(
+        windowed({ windowUsedCredits: 625, weekUsedCredits: 12_500 }),
+      ),
+    ).toBe('Rayu: session limit reached — turn on "use all credits" to continue')
+  })
+
+  test('compact line falls back to the period balance when no window binds', () => {
+    expect(formatRayuUsageLine(windowed())).toBe('Rayu: 49 / 50 credits left')
+  })
+
+  test('compact line ignores a full window when the switch is off', () => {
+    expect(
+      formatRayuUsageLine(
+        windowed({
+          limitMode: 'full_credits',
+          windowUsedCredits: 625,
+          weekUsedCredits: 12_500,
+        }),
+      ),
+    ).toBe('Rayu: 49 / 50 credits left')
+  })
+
+  /**
+   * An older gateway returns none of these fields. It must render exactly as it
+   * did before pacing existed — no switch hint, no "windows off" line.
+   */
+  test('a gateway that predates pacing renders as before', () => {
+    const s = formatRayuUsageSummary(status())
+    expect(s).toContain('1 / 50 used')
+    expect(s).not.toContain('Pacing')
+    expect(s).not.toContain('use all credits')
+    expect(formatRayuUsageLine(status())).toBe('Rayu: 49 / 50 credits left')
   })
 })
 

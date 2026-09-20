@@ -530,7 +530,7 @@ describe('offline fallback (no gateway)', () => {
     // could pick a model that vanishes the moment they sign in.
     const catalog = getCachedMediaModels()
     const { MEDIA_MODEL_SEED } = (await import(
-      '../../rayu-backend/src/media-models/media-models.constants.ts'
+      '../../../rayucode/rayu-backend/src/media-models/media-models.constants.ts'
     )) as { MEDIA_MODEL_SEED: Array<{ code: string; family: string }> }
     const seeded = new Map(MEDIA_MODEL_SEED.map((m) => [m.code, m]))
     for (const m of [...catalog.image, ...catalog.video]) {

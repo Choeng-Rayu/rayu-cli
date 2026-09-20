@@ -16,8 +16,13 @@ import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
-import collaboratorSwarm from './commands/collaborator-swarm/index.js'
+import orchestrator from './commands/orchestrator/index.js'
 import normal from './commands/normal/index.js'
+// Hidden internal command: REPL submits it from the rate-limit notice, so the
+// user can lift Rayu's credit pacing without leaving the terminal. Named
+// `rayu-` because the Claude-era `rate-limit-options` (a subscription command
+// Rayu does not have) is asserted absent by commandRegistry.test.ts.
+import rayuLimitOptions from './commands/rayu-limit-options/index.js'
 import keybindings from './commands/keybindings/index.js'
 import keep from './commands/keep/index.js'
 import mcp from './commands/mcp/index.js'
@@ -155,7 +160,6 @@ import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
 import modelSubagent from './commands/model-subagent/index.js'
 import webfetchModel from './commands/webfetch-model/index.js'
-import collaboratorModel from './commands/collaborator-model/index.js'
 import modelImageGeneration from './commands/model-image-generation/index.js'
 import modelVideoGeneration from './commands/model-video-generation/index.js'
 import tag from './commands/tag/index.js'
@@ -239,6 +243,7 @@ const COMMANDS = memoize((): Command[] => [
   keep,
   mcp,
   memory,
+  rayuLimitOptions,
   telegramBot,
   disconnectTelegram,
   telegramRemoteUninstall,
@@ -248,7 +253,6 @@ const COMMANDS = memoize((): Command[] => [
   model,
   modelSubagent,
   webfetchModel,
-  collaboratorModel,
   modelImageGeneration,
   modelVideoGeneration,
   connect,
@@ -277,7 +281,7 @@ const COMMANDS = memoize((): Command[] => [
   mascot,
   brand,
   review,
-  collaboratorSwarm,
+  orchestrator,
   normal,
   ultraplanLocal,
   ultrareviewLocal,
@@ -609,6 +613,24 @@ export function isBridgeSafeCommand(cmd: Command): boolean {
   if (cmd.type === 'local-jsx') return false
   if (cmd.type === 'prompt') return true
   return BRIDGE_SAFE_COMMANDS.has(cmd)
+}
+
+/**
+ * Commands the framework-free query engine can execute without mounting Ink.
+ * Prompt commands expand to model input; local commands must explicitly opt in.
+ * Interactive JSX commands are represented by client actions instead.
+ */
+export function isNonInteractiveCommand(command: Command): boolean {
+  return (
+    (command.type === 'prompt' && !command.disableNonInteractive) ||
+    (command.type === 'local' && command.supportsNonInteractive)
+  )
+}
+
+export function filterCommandsForNonInteractive(
+  commands: readonly Command[],
+): Command[] {
+  return commands.filter(isNonInteractiveCommand)
 }
 
 /**

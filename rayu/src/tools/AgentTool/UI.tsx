@@ -32,7 +32,7 @@ import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 import { getAgentModel } from '../../utils/model/agent.js';
 import { decodeModelProvider, getActiveProvider } from '../../utils/rayuConfig.js';
 import { getBuiltInAgents } from './builtInAgents.js';
-import { getAgentKind, getCollaboratorDisplayName, getCollaboratorRole } from './built-in/agentDisplayMeta.js';
+import { getAgentKind } from './built-in/agentDisplayMeta.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 
 /**
@@ -52,7 +52,7 @@ const THINKING_TEXT = 'thinking…';
 
 /** True when the most recent progress message is the agent reasoning (a
  * thinking block) and it hasn't emitted a tool call yet. Used to show a
- * lightweight "thinking…" status on a subagent/collaborator progress line. */
+ * lightweight "thinking…" status on a subagent progress line. */
 function isAgentCurrentlyThinking(progressMessages: ProgressMessage<Progress>[]): boolean {
   const last = progressMessages.findLast(m => hasProgressMessage(m.data));
   if (!last || !hasProgressMessage(last.data)) {
@@ -457,21 +457,16 @@ export function renderToolUseMessage({
   return description;
 }
 /**
- * Kind/role label for an agent tool-use line: collaborators show their role
- * (e.g. "Frontend Specialist · collaborator"), subagents show "subagent",
- * everything else is undefined. Shared by the single and grouped renderers.
+ * Kind label for an agent tool-use line. All built-in child agents are shown as
+ * subagents; the planner is the only remaining specialist type.
  */
 export function getAgentLineKindLabel(subagentType?: string): string | undefined {
   const kind = getAgentKind(subagentType);
-  if (kind === 'collaborator') {
-    const role = getCollaboratorRole(subagentType);
-    return role ? `${role} · collaborator` : 'collaborator';
-  }
   if (kind === 'subagent') {
     return 'subagent';
   }
   // Built-in helper agents (Explore, general-purpose, …) are subagents too —
-  // surface the role so their line shows role · model · provider like collaborators.
+  // surface the role so their line shows role · model · provider.
   if (subagentType && getBuiltInAgents().some(a => a.agentType === subagentType)) {
     return 'subagent';
   }
@@ -479,19 +474,19 @@ export function getAgentLineKindLabel(subagentType?: string): string | undefined
 }
 
 /**
- * The effective model + provider display for a sub/collaborator tool-use line,
+ * The effective model + provider display for a subagent tool-use line,
  * formatted as "<model> · <provider>". Prefers an explicitly-passed model;
  * otherwise resolves the built-in agent's effective model (incl. inherited).
  * The provider is decoded from a cross-provider selection, else the active
- * provider. Returns undefined for non-swarm agents with no explicit model.
+ * provider. Returns undefined when no model can be resolved.
  */
 export function getAgentLineModel(subagentType?: string, toolModel?: string): string | undefined {
   let modelStr: string | undefined;
   if (toolModel) {
     modelStr = toolModel;
   } else if (subagentType) {
-    // Resolve the model for ANY built-in agent (Explore, general-purpose, …),
-    // not just swarm collaborators, so each subagent shows its model · provider.
+    // Resolve the model for any built-in agent (Explore, general-purpose, …)
+    // so each subagent shows its model · provider.
     const agent = getBuiltInAgents().find(a => a.agentType === subagentType);
     if (agent) {
       try {
@@ -528,7 +523,7 @@ export function renderToolUseTag(input: Partial<{
         <Text dimColor>{kindLabel}</Text>
       </Box>);
   }
-  // Show the resolved model · provider for swarm + built-in agents (Explore,
+  // Show the resolved model · provider for built-in agents (Explore,
   // general-purpose, …) so the user can see what each subagent runs on.
   const modelName = getAgentLineModel(input.subagent_type, input.model);
   if (modelName) {
@@ -873,9 +868,7 @@ export function userFacingName(input: Partial<{
     if (input.subagent_type === 'worker') {
       return 'Agent';
     }
-    // Collaborators get a friendly persona name (e.g. 'Somnang'); subagents keep
-    // their type name.
-    return getCollaboratorDisplayName(input.subagent_type) ?? input.subagent_type;
+    return input.subagent_type;
   }
   return 'Agent';
 }

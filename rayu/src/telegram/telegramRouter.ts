@@ -19,6 +19,7 @@
 
 import { getSessionId } from '../bootstrap/state.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
+import type { QueuePriority } from '../types/textInputTypes.js'
 import { ensureLeaderLink } from './telegramLeaderLink.js'
 import { readSessionRecords, type SessionRecord } from '../utils/concurrentSessions.js'
 import { isProcessRunning } from '../utils/genericProcessUtils.js'
@@ -40,6 +41,21 @@ export interface IpcPromptPayload {
   value: string | ContentBlockParam[]
   /** Queue mode, mirroring QueuedCommand.mode. */
   mode: 'prompt' | 'task-notification'
+  /** Optional SDK delivery priority (`now` steers, `next` queues). */
+  priority?: QueuePriority
+  /**
+   * Caller-generated correlation id, additive and optional so an older peer on
+   * either end of this request simply omits it. Two prompts with identical text
+   * sent close together are otherwise indistinguishable once they round-trip
+   * back as a mirrored activity echo — matching by text alone picks the OLDEST
+   * unconsumed match, which is correct only while echoes arrive in the same
+   * order the prompts were sent. The ack below carries this same id back so the
+   * caller can confirm which specific submission was queued, even though the
+   * value is not yet threaded through to the later activity echo itself (that
+   * requires `commandLifecycle.ts` and the bridge's message filter to carry it
+   * too, which is a separate, larger change).
+   */
+  operationId?: string
 }
 
 /** Why a prompt could not be delivered. */

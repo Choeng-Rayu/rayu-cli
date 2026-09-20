@@ -96,12 +96,10 @@ const outputSchema = lazySchema(() =>
     structuredPatch: z
       .array(hunkSchema())
       .describe('Diff patch showing the changes'),
-    originalFile: z
-      .string()
-      .nullable()
-      .describe(
-        'The original file content before the write (null for new files)',
-      ),
+    // No `originalFile` here. It existed only to feed the `fileContent` render
+    // prop, which reaches the native color renderer — and that renderer is a stub
+    // in Rayu (`expectColorDiff()` is null), so the bytes were never read by
+    // anyone. The diff's `firstLine` comes from `content`, which is needed anyway.
     gitDiff: gitDiffSchema().optional(),
   }),
 )
@@ -412,7 +410,6 @@ export const FileWriteTool = buildTool({
         filePath: file_path,
         content,
         structuredPatch: patch,
-        originalFile: oldContent,
         ...(gitDiff && { gitDiff }),
       }
       recordPendingFileChange(context, {
@@ -449,7 +446,6 @@ export const FileWriteTool = buildTool({
       filePath: file_path,
       content,
       structuredPatch: [],
-      originalFile: null,
       ...(gitDiff && { gitDiff }),
     }
 

@@ -54,7 +54,10 @@ export type FileChangeReviewFile = {
   additions: number
   removals: number
   hunks: StructuredPatchHunk[]
-  fileContent: string
+  // No `fileContent`. Every file in the review summary had its full new contents
+  // attached here and nothing ever read them — the diff card renders from `hunks`
+  // and the language from `firstLine`. The summary is emitted as a system message,
+  // so those contents were serialized into the transcript for each reviewed file.
   firstLine: string | null
   status: PendingFileChangeStatus | 'mixed'
   createdAt: number
@@ -337,7 +340,6 @@ export function buildFileChangeReviewSummary(
       additions,
       removals,
       hunks,
-      fileContent: newContent,
       firstLine: newContent.split(/\r?\n/, 1)[0] ?? null,
       status: group.status,
       createdAt: group.createdAt,

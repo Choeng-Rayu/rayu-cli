@@ -19,9 +19,9 @@ type Props = {
   shouldAnimate: boolean
   lastToolInfo?: string | null
   hideType?: boolean
-  /** Kind/role label, e.g. "Frontend Specialist · collaborator" or "subagent". */
+  /** Kind/role label, such as "subagent". */
   roleLabel?: string
-  /** Effective model display name for this sub/collaborator. */
+  /** Effective model display name for this subagent. */
   modelLabel?: string
 }
 
@@ -90,7 +90,7 @@ export function AgentProgressLine({
               )}
             </>
           )}
-          {/* role + model for swarm agents (collaborators/subagents) */}
+          {/* role + model for child agents */}
           {roleLabel && <Text dimColor>{' \xB7 '}{roleLabel}</Text>}
           {modelLabel && <Text dimColor>{' \xB7 '}{modelLabel}</Text>}
           {!isBackgrounded && (

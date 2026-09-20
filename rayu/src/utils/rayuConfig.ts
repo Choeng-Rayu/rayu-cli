@@ -207,10 +207,9 @@ export type RayuConfig = {
   activeProvider?: string
   providers: RayuProvider[]
   /**
-   * Globally-configured model for built-in subagents (the Agent tool). Lets the
-   * subagent run on a DIFFERENT provider than the main agent (e.g. main on
-   * Bedrock/Claude, subagents on NVIDIA's fast model). When unset, subagents
-   * default to the main provider's instant/small-fast model.
+   * Globally-configured model for spawned Agent-tool workers. It may use a
+   * DIFFERENT provider than the main agent (e.g. main on Bedrock/Claude,
+   * workers on NVIDIA). When unset, each agent uses its built-in default.
    *
    * Shaped as a single selection for now; kept as an object so it can grow into
    * per-specialty selections later (e.g. subagentsBySpecialty) without a
@@ -221,9 +220,9 @@ export type RayuConfig = {
     model: string
   }
   /**
-   * Per-agent overrides keyed by agent type (e.g. 'backend'). Takes
+   * Per-agent overrides keyed by agent type (e.g. 'general-purpose'). Takes
    * precedence over the global `subagent` selection for that agent. Lets each
-   * specialist run on its own provider/model (set via /model_subagent <AGENT>).
+   * worker run on its own provider/model (set via /subagent_models <AGENT>).
    */
   subagentByAgent?: Record<string, { providerId: string; model: string }>
   /**
@@ -246,8 +245,8 @@ export type RayuConfig = {
    */
   webFetchModel?: string
   /**
-   * Opt-in project profile name for the specialist swarm (e.g. 'cambodia').
-   * When set, the matching locale/stack fragments are injected into PA/DB/MOB.
+   * Opt-in project profile name for the Orchestrator planner (e.g. 'cambodia').
+   * When set, the matching locale fragment is injected into the planner.
    * Unset → no locale bias (the 'default' profile). See built-in/profiles.ts.
    */
   projectProfile?: string
@@ -428,9 +427,9 @@ export function setActiveProviderModel(providerId: string, model: string): void 
 }
 
 /**
- * The globally-configured subagent model selection (provider + model), or
- * undefined when the user hasn't set one (subagents then default to the main
- * provider's instant model — see resolveSubagentExecution in model/agent code).
+ * The globally-configured spawned-agent model selection (provider + model), or
+ * undefined when the user has not set one. A named agent override takes
+ * precedence over this global value.
  */
 export function getSubagentSelection(
   agentType?: string,
@@ -450,8 +449,8 @@ export function getSubagentSelection(
 
 /**
  * The per-agent subagent override ONLY (ignores the global default). Used by
- * model resolution to decide whether an explicit /model_subagent or
- * /collaborator_model selection should override an agent's hardcoded model
+ * model resolution to decide whether an explicit per-agent model selection
+ * should override an agent's hardcoded model
  * (including 'inherit'), while leaving fork/inherit agents untouched when the
  * user hasn't configured that specific agent type.
  */
@@ -468,10 +467,11 @@ export function getPerAgentSubagentSelection(
 }
 
 /**
- * Persist a subagent model selection (set via /model_subagent). With no
- * agentType, sets the GLOBAL default for all subagents. With an agentType
- * (e.g. 'backend'), sets a per-agent override. Does NOT change the active
- * (main) provider — subagents can run on a different provider concurrently.
+ * Persist an Agent-tool worker model selection (set via /subagent_models).
+ * With no agentType, sets the GLOBAL model for all spawned agents. With an
+ * agentType (e.g. 'general-purpose'), sets a per-agent override. This does NOT
+ * change the main conversational model; spawned agents may run on a different
+ * provider concurrently.
  */
 export function setSubagentSelection(
   providerId: string,
@@ -488,8 +488,8 @@ export function setSubagentSelection(
 }
 
 /**
- * Clear a subagent selection. With no agentType, clears the global default.
- * With an agentType, clears just that specialist's override.
+ * Clear a spawned-agent selection. With no agentType, clears the global value.
+ * With an agentType, clears only that agent's override.
  */
 export function clearSubagentSelection(agentType?: string): void {
   const cfg = loadRayuConfig()

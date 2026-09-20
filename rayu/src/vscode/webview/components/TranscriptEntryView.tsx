@@ -13,19 +13,33 @@ import type {
   ToolResultView,
   TranscriptEntry,
   TurnCompletionEntry,
+  TurnPhaseView,
 } from '../../shared/webviewProtocol.js'
-import { describeCompletion, formatDuration, tokenReadouts } from '../../shared/turnProgress.js'
+import {
+  describeCompletion,
+  formatDuration,
+  isTerminalPhase,
+  tokenReadouts,
+} from '../../shared/turnProgress.js'
 import { renderMarkdown } from '../markdown.js'
+import { spriteStateForPhase } from '../spriteAtlas.js'
 import { useSecondTick } from '../useSecondTick.js'
 import { DiffView, countChanges } from './DiffView.js'
 import { FileChangeReviewCard } from './FileChangeReviewCard.js'
+import { SpriteAvatar } from './SpriteAvatar.js'
 import { SummaryEntryView } from './SummaryEntryView.js'
 import { ThinkingBlock } from './ThinkingBlock.js'
-import { ChevronIcon, CopyIcon, RayuMark } from './Icons.js'
+import { ChevronIcon, CopyIcon } from './Icons.js'
 import { ToolOutput, outputForClipboard } from './ToolOutput.js'
 
 /** The user's prompt. */
-export function UserEntry({ text }: { text: string }): JSX.Element {
+export function UserEntry({
+  text,
+  delivery,
+}: {
+  text: string
+  delivery?: 'queue' | 'steer'
+}): JSX.Element {
   const [copied, setCopied] = useState(false)
 
   const onCopy = useCallback(() => {
@@ -38,6 +52,11 @@ export function UserEntry({ text }: { text: string }): JSX.Element {
   return (
     <div className="rc-turn rc-turn-user">
       <div className="rc-request-wrap">
+        {delivery ? (
+          <span className={`rc-request-delivery rc-request-delivery-${delivery}`}>
+            {delivery === 'steer' ? 'Steered' : 'Queued'}
+          </span>
+        ) : null}
         <div className="rc-request">{text}</div>
         <button
           type="button"
@@ -59,6 +78,7 @@ export function AssistantEntry({
   text,
   streaming,
   thinking,
+  phase,
 }: {
   text: string
   streaming?: boolean
@@ -70,12 +90,24 @@ export function AssistantEntry({
    * rather than as the work that led there.
    */
   thinking?: readonly ThinkingEntryView[]
+  /**
+   * The turn's live phase, ONLY while this is the actively streaming entry — a
+   * settled historical entry has no current phase, because nothing about it is
+   * currently happening. Drives which row of the animated avatar shows: while
+   * `streaming` is true this becomes the sprite's animated state, and while it
+   * is false (or `phase` is absent — an older transcript restored before this
+   * field existed) the avatar falls back to a fixed `idle` frame rather than
+   * animating a state that is not actually live anymore.
+   */
+  phase?: TurnPhaseView
 }): JSX.Element {
   const [copied, setCopied] = useState(false)
 
   // Re-parsing markdown on every delta is the hot path of a streaming transcript;
   // memoising on the text keeps a long answer from re-rendering the whole tree per token.
   const html = useMemo(() => renderMarkdown(text), [text])
+
+  const spriteState = streaming && phase ? spriteStateForPhase(phase) : 'idle'
 
   // Event delegation for code block copy buttons inside rendered HTML
   const handleProseClick = useCallback((event: React.MouseEvent) => {
@@ -111,9 +143,7 @@ export function AssistantEntry({
 
   return (
     <div className="rc-turn rc-turn-assistant">
-      <div className="rc-avatar" aria-hidden="true">
-        <RayuMark size={14} />
-      </div>
+      <SpriteAvatar state={spriteState} />
       <div className="rc-turn-body">
         {thinking?.map(block => (
           <ThinkingBlock key={block.entryId} block={block} />
@@ -160,6 +190,33 @@ export function NoticeEntry({
     >
       {text}
     </div>
+  )
+}
+
+/** A `/btw` fork. It is deliberately visually separate from the main conversation. */
+function SideQuestionEntry({
+  entry,
+}: {
+  entry: Extract<TranscriptEntry, { kind: 'side_question' }>
+}): JSX.Element {
+  return (
+    <section className={`rc-side-question rc-side-question-${entry.status}`}>
+      <div className="rc-side-question-heading">
+        <strong>/btw</strong>
+        <span>{entry.question}</span>
+      </div>
+      {entry.status === 'answering' ? (
+        <div className="rc-side-question-status" role="status" aria-live="polite">
+          <span className="rc-side-question-spinner" aria-hidden="true" />
+          Answering side question…
+        </div>
+      ) : entry.answer ? (
+        <div
+          className="rc-side-question-answer"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.answer) }}
+        />
+      ) : null}
+    </section>
   )
 }
 
@@ -722,6 +779,7 @@ export function TranscriptEntryView({
   onToggleTool,
   onRequestToolOutput,
   turnCompletion,
+  turnPhase,
   onKeep,
   onUndo,
   onDiff,
@@ -744,6 +802,15 @@ export function TranscriptEntryView({
    * lives in the reducer; this component stays a pure function of its props.
    */
   turnCompletion?: TurnCompletionEntry
+  /**
+   * The live turn's current phase, for the animated avatar — same reasoning as
+   * `turnCompletion` just above: `state.turnProgress` is host-owned reducer state, so
+   * the caller reads it once and passes the one field this component actually needs,
+   * rather than this component reaching into global state itself. Only meaningful for
+   * an `entry.kind === 'assistant'` row that is ALSO the actively streaming one — see
+   * `AssistantEntry`'s own `phase` prop doc for why a settled entry ignores it.
+   */
+  turnPhase?: TurnPhaseView
   onKeep?: (path?: string) => void
   onUndo?: (path?: string) => void
   onDiff?: (path: string) => void
@@ -751,17 +818,20 @@ export function TranscriptEntryView({
 }): JSX.Element | null {
   switch (entry.kind) {
     case 'prompt':
-      return <UserEntry text={entry.text} />
+      return <UserEntry text={entry.text} delivery={entry.delivery} />
     case 'assistant':
       return (
         <AssistantEntry
           text={entry.text}
           streaming={entry.streaming}
           thinking={thinking}
+          phase={turnPhase}
         />
       )
     case 'notice':
       return <NoticeEntry text={entry.text} severity={entry.severity} />
+    case 'side_question':
+      return <SideQuestionEntry entry={entry} />
     case 'turn_end':
       return <TurnEndEntry completion={turnCompletion} />
     case 'hook':

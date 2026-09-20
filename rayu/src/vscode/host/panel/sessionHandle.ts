@@ -32,6 +32,12 @@
  *    Inventing a permission answer would be inventing consent.
  */
 import { randomUUID } from 'node:crypto'
+import {
+  RuntimeAgentDescriptorSchema,
+  RuntimeBackgroundTaskSchema,
+  RuntimePluginDescriptorSchema,
+  RuntimeSkillDescriptorSchema,
+} from '../../../protocol/index.js'
 
 import { EngineProcess, type EngineExitInfo } from '../engine/engineProcess.js'
 import { ControlClient, type InboundControlRequest } from '../engine/controlClient.js'
@@ -44,6 +50,10 @@ import {
 } from './formatActivityForVSCode.js'
 import type { WrappedMessage } from '../../../telegram/formatActivity.js'
 import { loadTaskHistory, saveTaskHistory } from '../../../utils/task/taskHistory.js'
+import { decodeModelProvider } from '../../../utils/rayuConfig.js'
+// Host-side (Node) only: the webview cannot reach this, which is why the Rayu
+// dashboard link is resolved here and sent down with the rate-limit view.
+import { getRayuDashboardUrl } from '../../../services/rayuAuth/rayuSession.js'
 import {
   persistModelChoice,
   readActiveModel,
@@ -55,6 +65,15 @@ import type {
   ReviewHunk,
 } from '../review/fileChangeReview.js'
 import { permissionModeById } from '../../shared/permissionModes.js'
+import {
+  readRayucodePreferences,
+  updateRayucodePreferences,
+} from '../../../runtime/productPreferences.js'
+import {
+  groupFor as taskGroup,
+  normalizeType as normalizeTaskType,
+  taskCapabilities,
+} from '../../../runtime/taskProjection.js'
 import {
   type EffortChoice,
   type InferenceSettingsView,
@@ -78,6 +97,20 @@ import type {
   TurnProgressView,
   TurnTokenUsageView,
   ImageInputView,
+  PromptDeliveryView,
+  RuntimeCapabilitiesView,
+  RuntimeCommandView,
+  RuntimeToolView,
+  RuntimeAgentView,
+  RuntimePluginView,
+  RuntimeSkillView,
+  RateLimitView,
+  EngineAuthStatusView,
+  McpElicitationView,
+} from '../../shared/webviewProtocol.js'
+import {
+  MAX_TRANSCRIPT_ENTRIES,
+  TRANSCRIPT_TRIM_STEP,
 } from '../../shared/webviewProtocol.js'
 
 /**
@@ -93,12 +126,25 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
   { name: 'connect', description: 'Connect or configure an AI provider' },
   { name: 'login', description: 'Sign in to your Rayu account' },
   { name: 'logout', description: 'Sign out of your Rayu account' },
+  {
+    name: 'btw',
+    description: 'Ask a quick side question without interrupting the main conversation',
+  },
+  { name: 'reload-plugins', description: 'Reload installed plugins, skills, and agents' },
+  { name: 'install-skill', description: 'Install a skill from GitHub, a URL, or a local path' },
+  { name: 'mcp', description: 'Manage MCP servers and authentication' },
+  { name: 'skills', description: 'Browse available skills and workflows' },
+  { name: 'plugin', description: 'Inspect and manage installed plugins' },
+  { name: 'agents', description: 'Browse available agents' },
+  { name: 'tasks', description: 'Inspect foreground and background tasks' },
+  { name: 'workflows', description: 'Browse available workflows' },
+  { name: 'effort', description: 'Set effort level [low|medium|high|max|auto]' },
   // These two are `local-jsx` in the CLI for the same reason `/connect` is — they render an
   // Ink picker — so the non-interactive engine strips them too, and Rayucode has to provide
   // the surface. The grammar and the persistence are the CLI's; only the picker differs.
   {
-    name: 'model_subagent',
-    description: 'Set the model used by subagents [AGENT] [show|default]',
+    name: 'subagent_models',
+    description: 'Set the model used by all agents or one agent [AGENT] [show|default]',
   },
   {
     name: 'webfetch_model',
@@ -138,7 +184,7 @@ function withRayucodeSlashCommands(
  * process. `buildHostArgv` in `entrypoints/vscodeHost.ts` appends the required headless
  * flags on top of whatever this returns and never removes anything, so these survive.
  *
- * ── `--thinking enabled` IS NOT OPTIONAL ───────────────────────────────────────
+ * ── THE PRODUCT CHOICE IS AN EXPLICIT SPAWN FLAG ───────────────────────────────
  *
  * It is the CLI's own switch, and it is the ONLY mechanism that outranks
  * `shouldEnableThinkingByDefault()` — which returns false when the user's shared settings
@@ -153,10 +199,43 @@ function withRayucodeSlashCommands(
  */
 export function engineArgsFor(options: {
   resumeSessionId?: string
+  thinkingEnabled?: boolean
 }): string[] {
-  const args = ['--thinking', 'enabled']
+  const args = [
+    '--thinking',
+    options.thinkingEnabled === false ? 'disabled' : 'enabled',
+  ]
   if (options.resumeSessionId) args.push('--resume', options.resumeSessionId)
   return args
+}
+
+/**
+ * Per-tool usage statistics accumulated during the session.
+ *
+ * `callCount` counts every `tool_use` block; `successCount` / `failureCount`
+ * count settled `tool_result` blocks.  The ratio informs the status bar.
+ */
+export interface ToolUsageStats {
+  toolName: string
+  callCount: number
+  successCount: number
+  failureCount: number
+}
+
+/**
+ * What `snapshotConversationState`/`restoreConversationState` carry across an
+ * attach/detach cycle. See the header on `snapshotConversationState` for exactly
+ * why this list is narrower than `newSession()`'s full reset — it mirrors only
+ * what `applyMirroredActivity`'s own dispatch is able to mutate.
+ */
+export interface ConversationStateSnapshot {
+  entries: TranscriptEntry[]
+  thinkingBlocks: Map<string, ThinkingEntryView>
+  toolsByUseId: Map<string, EntryId>
+  activeThinkingKey: string | null
+  mirrorId: EntryId | null
+  retainedToolOutput: Map<EntryId, string>
+  retainedOutputChars: number
 }
 
 export interface SessionCallbacks {
@@ -245,6 +324,24 @@ export interface SessionCallbacks {
   onTaskStateChanged?: (task: BackgroundTaskView) => void
   /** A new/resumed session replaced the complete task set. */
   onTaskStateReplaced?: (tasks: BackgroundTaskView[]) => void
+  /** Full shared runtime catalogue from initialize. */
+  onRuntimeCatalogue?: (
+    capabilities: RuntimeCapabilitiesView | null,
+    commands: RuntimeCommandView[],
+    tools: RuntimeToolView[],
+    resources: {
+      agents: RuntimeAgentView[]
+      plugins: RuntimePluginView[]
+      skills: RuntimeSkillView[]
+      workflows: RuntimeSkillView[]
+    },
+  ) => void
+  onRateLimit?: (rateLimit: RateLimitView | null) => void
+  onEngineAuthStatus?: (status: EngineAuthStatusView | null) => void
+  onSessionStatus?: (status: 'idle' | 'running' | 'requires_action') => void
+  onPromptSuggestion?: (suggestion: string | null) => void
+  onMcpElicitation?: (request: McpElicitationView) => void
+  onMcpElicitationCancelled?: (requestId: string) => void
 }
 
 export interface SessionOptions {
@@ -344,6 +441,14 @@ export class ChatSession {
   /** The transcript of record. The webview is a view of this, never the owner. */
   private readonly entries: TranscriptEntry[] = []
 
+  /**
+   * Whether the one-time "older messages were trimmed" notice has been shown for
+   * THIS conversation. Reset by `newSession()` alongside `entries`. Without the
+   * flag, every append past the cap would add another notice — and a notice is
+   * itself an append, which is the loop the flag breaks.
+   */
+  private trimNoticeShown = false
+
   /** Id of the assistant entry currently being streamed into, if any. */
   private streamingId: EntryId | null = null
 
@@ -362,6 +467,30 @@ export class ChatSession {
    */
   /** The entry currently receiving deltas from an ATTACHED session, if any. */
   private mirrorId: EntryId | null = null
+  /**
+   * The id of the most-recently COMPLETED mirrored assistant entry.
+   *
+   * Set when `endMirroredTurn()` closes a streaming entry; cleared when
+   * `applyMirroredActivity` consumes the settled copy of that same turn.
+   * This lets the activity handler skip the settled text that was already
+   * rendered character-by-character via the streaming path, preventing the
+   * duplicate-message bug where each assistant reply appears twice.
+   */
+  private lastMirroredEntryId: EntryId | null = null
+  /**
+   * Prompts already rendered after an attached CLI acknowledged queueing them.
+   * The CLI later mirrors the same human message in its completed activity batch;
+   * retaining this small FIFO lets that echo be correlated instead of duplicated.
+   *
+   * `operationId` is carried alongside `text` so two prompts with identical text
+   * sent close together stay distinguishable — matching by text alone always
+   * picks the OLDEST unconsumed entry, which is only correct while echoes arrive
+   * in the same order the prompts were sent. It is optional because the CLI does
+   * not yet stamp this id onto the LATER activity echo itself (that requires
+   * `commandLifecycle.ts` and the bridge's own message filter to carry it too);
+   * today it only strengthens what `submitPrompt`'s ack itself can confirm.
+   */
+  private readonly mirroredPendingPrompts: Array<{ text: string; operationId?: string }> = []
   private readonly streamedBlocks = new Map<string, Set<number>>()
   /** The message currently streaming, from `message_start`. */
   private currentStreamMessageId: string | null = null
@@ -380,14 +509,57 @@ export class ChatSession {
    * is what keeps the transcript and the model's context intact.
    */
   private currentSessionId: string | null = null
-  /** Subagent type names from `initialize`, for `/model_subagent <AGENT>`. */
+  /** Agent type names from `initialize`, for `/subagent_models <AGENT>`. */
   private agentTypes: string[] = []
   private turnProgress: TurnProgressView | null = null
   private readonly turnCompletions: Record<string, TurnCompletionEntry> = {}
   private readonly thinkingBlocks = new Map<string, ThinkingEntryView>()
   private activeThinkingKey: string | null = null
   private currentStreamBlockType: string | null = null
-  private turnStreamedChars = 0
+  /**
+   * ── LIVE OUTPUT TOKENS ARE TRACKED PER MESSAGE, THEN SUMMED PER TURN ──────────
+   *
+   * The provider reports output ONE MESSAGE AT A TIME, but the panel shows a TURN,
+   * and a turn contains SEVERAL messages (prose → tool call → more prose → …).
+   * `message_delta.usage.output_tokens` is the cumulative count for the message that
+   * just ended — NOT the turn. The engine relies on the same distinction: its
+   * `updateUsage` ASSIGNS that value into a per-message accumulator
+   * (`QueryEngine`), and `accumulateUsage` SUMS it into the turn total on
+   * `message_stop`.
+   *
+   * The host used to skip that split: it wrote the per-message value straight into
+   * the turn readout and cleared `outputEstimated` doing so. Two visible bugs came
+   * from that — the count RESET DOWNWARD at every new message (the turn total
+   * replaced by one message's worth), and the live estimate FROZE for the rest of
+   * the turn, because `updateEstimatedOutput` refuses to run once the flag is clear.
+   *
+   * So the total is `completed` + the message in flight:
+   */
+  /** Output tokens from messages that have already FINISHED in this turn. */
+  private turnCompletedOutputTokens = 0
+  /** Whether any folded message contributed an ESTIMATE rather than a report. */
+  private turnOutputHasEstimate = false
+  /** Provider-reported cumulative output for the message IN FLIGHT (0 until message_delta). */
+  private messageReportedOutputTokens = 0
+  /** Characters streamed in the message IN FLIGHT, for the live estimate. */
+  private messageStreamedChars = 0
+  /**
+   * ── INPUT IS TRACKED AS ITS THREE PARTS, AND EACH ONE IS STICKY ───────────────
+   *
+   * The readout shows a SUM (direct + cache-read + cache-creation — all three were
+   * sent as part of the request), but that sum cannot be recomputed from the previous
+   * total when only one part is re-reported, so the parts are kept individually.
+   *
+   * The reason they must be kept at all is a provider quirk the engine already guards
+   * against: a `message_delta` may send EXPLICIT ZEROES for the input fields, which
+   * mean "not reported on this frame", NOT "the input is zero". `updateUsage` in
+   * `services/api/claude.ts` therefore overwrites an input field only when the value
+   * is `> 0`, with exactly that comment. The same per-field rule here is what stops a
+   * mid-turn `message_delta` from blanking the input readout.
+   */
+  private turnInputDirect = 0
+  private turnInputCacheRead = 0
+  private turnInputCacheCreation = 0
   /**
    * Bumped whenever the engine is replaced (new session / resume). Async replies compare
    * against the generation they were issued under so a late reply from a discarded engine
@@ -404,7 +576,11 @@ export class ChatSession {
    * change. The trimmed `catalogue` drops the capability flags, so it cannot serve this.
    */
   public availableModels: ModelCatalogueView | null = null
-  private permissionMode: PermissionModeView = permissionModeById('default')
+  private permissionMode: PermissionModeView = permissionModeById(
+    readRayucodePreferences().permissionMode ?? 'default',
+  )
+  private thinkingPreference =
+    readRayucodePreferences().thinkingEnabled ?? true
 
   /**
    * Thinking and effort as last ACKNOWLEDGED.
@@ -424,6 +600,13 @@ export class ChatSession {
 
   /** Tool entries by their engine-assigned id, so results can find their call. */
   private readonly toolsByUseId = new Map<string, EntryId>()
+
+  /**
+   * Per-tool usage counters.  Accumulated every time a tool call completes
+   * (i.e. a `tool_result` arrives).  Never cleared within a session so the
+   * panel can show cumulative statistics for the whole conversation.
+   */
+  private readonly toolStats = new Map<string, ToolUsageStats>()
 
   /**
    * Hook entries by the engine's `hook_id`, so every frame for one execution updates
@@ -509,6 +692,24 @@ export class ChatSession {
   private slashCommands: SlashCommandView[] = DEFAULT_SLASH_COMMANDS
   private lastContextUsage: ContextUsageView | null = null
   private mcpServersList: McpServerView[] = []
+  private runtimeCapabilities: RuntimeCapabilitiesView | null = null
+  /** Highest coherent runtime revision accepted from the current engine generation. */
+  private runtimeRevision = 0
+  private runtimeCommandList: RuntimeCommandView[] = []
+  private runtimeToolList: RuntimeToolView[] = []
+  private runtimeAgentList: RuntimeAgentView[] = []
+  private runtimePluginList: RuntimePluginView[] = []
+  private runtimeSkillList: RuntimeSkillView[] = []
+  private runtimeWorkflowList: RuntimeSkillView[] = []
+  private rateLimit: RateLimitView | null = null
+  private engineAuthStatus: EngineAuthStatusView | null = null
+  private executionStatus: 'idle' | 'running' | 'requires_action' = 'idle'
+  private promptSuggestion: string | null = null
+  private readonly mcpElicitations = new Map<string, McpElicitationView>()
+  /** Unknown narration is reported once per kind, with a hard cap for forward compatibility. */
+  private readonly reportedUnknownEvents = new Set<string>()
+  /** Deduplicates one-way summary/persistence events replayed after a reconnect. */
+  private readonly seenNarrativeEventIds = new Set<string>()
   /** Background work is host-owned so webview disposal cannot lose it. */
   private readonly backgroundTaskMap = new Map<string, BackgroundTaskView>()
   private taskHistoryWrite: Promise<void> = Promise.resolve()
@@ -532,6 +733,7 @@ export class ChatSession {
     private readonly callbacks: SessionCallbacks,
   ) {
     this.selectedRuntimeModel = readActiveRuntimeModel()
+    this.modelInfo = readActiveModel()
   }
 
   get transcript(): readonly TranscriptEntry[] {
@@ -543,7 +745,7 @@ export class ChatSession {
   }
 
   get currentModelInfo(): ModelInfoView {
-    return this.control ? this.modelInfo : readActiveModel()
+    return this.modelInfo
   }
 
   get commands(): readonly SlashCommandView[] {
@@ -556,6 +758,54 @@ export class ChatSession {
 
   get mcpServers(): readonly McpServerView[] {
     return this.mcpServersList
+  }
+
+  get currentRuntimeCapabilities(): RuntimeCapabilitiesView | null {
+    return this.runtimeCapabilities
+  }
+
+  get runtimeCommands(): readonly RuntimeCommandView[] {
+    return this.runtimeCommandList
+  }
+
+  get runtimeTools(): readonly RuntimeToolView[] {
+    return this.runtimeToolList
+  }
+
+  get runtimeAgents(): readonly RuntimeAgentView[] {
+    return this.runtimeAgentList
+  }
+
+  get runtimePlugins(): readonly RuntimePluginView[] {
+    return this.runtimePluginList
+  }
+
+  get runtimeSkills(): readonly RuntimeSkillView[] {
+    return this.runtimeSkillList
+  }
+
+  get runtimeWorkflows(): readonly RuntimeSkillView[] {
+    return this.runtimeWorkflowList
+  }
+
+  get currentRateLimit(): RateLimitView | null {
+    return this.rateLimit
+  }
+
+  get currentEngineAuthStatus(): EngineAuthStatusView | null {
+    return this.engineAuthStatus
+  }
+
+  get currentExecutionStatus(): 'idle' | 'running' | 'requires_action' {
+    return this.executionStatus
+  }
+
+  get currentPromptSuggestion(): string | null {
+    return this.promptSuggestion
+  }
+
+  get pendingMcpElicitations(): readonly McpElicitationView[] {
+    return [...this.mcpElicitations.values()]
   }
 
   get backgroundTasks(): readonly BackgroundTaskView[] {
@@ -580,7 +830,7 @@ export class ChatSession {
     return this.currentSessionId
   }
 
-  /** Subagent type names the engine reported, for `/model_subagent <AGENT>`. */
+  /** Agent type names the engine reported, for `/subagent_models <AGENT>`. */
   get subagentTypes(): readonly string[] {
     return this.agentTypes
   }
@@ -633,7 +883,11 @@ export class ChatSession {
   /**
    * Send a prompt, reusing the prewarmed engine or waiting for its initialization.
    */
-  async submitPrompt(text: string, images: ImageInputView[] = []): Promise<void> {
+  async submitPrompt(
+    text: string,
+    images: ImageInputView[] = [],
+    delivery: PromptDeliveryView = 'normal',
+  ): Promise<void> {
     const trimmed = text.trim()
     if ((!trimmed && images.length === 0) || this.disposed) return
     const epoch = this.submissionEpoch
@@ -648,6 +902,7 @@ export class ChatSession {
       id: newId(),
       kind: 'prompt',
       text: [trimmed, imageDescription].filter(Boolean).join('\n'),
+      ...(delivery === 'normal' ? {} : { delivery }),
     })
 
     // Report work immediately, before spawning the child or waiting for its
@@ -714,6 +969,11 @@ export class ChatSession {
       type: 'user',
       message: { role: 'user', content },
       parent_tool_use_id: null,
+      ...(delivery === 'steer'
+        ? { priority: 'now' as const }
+        : delivery === 'queue'
+          ? { priority: 'next' as const }
+          : {}),
     })
 
     if (!delivered) {
@@ -722,6 +982,60 @@ export class ChatSession {
       this.reportError('The Rayu engine is not running.')
     } else {
       this.updateTurnProgress('requesting', 'Sending request')
+    }
+  }
+
+  /**
+   * Ask the engine's shared `/btw` fork without entering the main command queue.
+   *
+   * The CLI uses `runSideQuestion` for this operation. The stream-json engine exposes
+   * that exact implementation as `side_question`, so the extension must call it rather
+   * than sending `/btw` as model-visible text.
+   */
+  async askSideQuestion(
+    question: string,
+    request?: (question: string) => Promise<string>,
+  ): Promise<void> {
+    const trimmed = question.trim()
+    const id = newId()
+    this.appendEntry({
+      id,
+      kind: 'side_question',
+      question: trimmed,
+      status: trimmed ? 'answering' : 'error',
+      answer: trimmed ? null : 'Usage: /btw <your question>',
+    })
+    if (!trimmed || this.disposed) return
+
+    try {
+      // Attached mode supplies its own requester and the CLI remains the execution
+      // owner. Starting Rayucode's dormant standalone engine here would waste memory
+      // and could read different credentials/model settings.
+      if (!request) await this.ensureStarted()
+      if (this.disposed) return
+      const responseText = request
+        ? await request(trimmed)
+        : await this.control
+            ?.request('side_question', { question: trimmed }, null)
+            .then(response => typeof response.response === 'string' ? response.response : '')
+      if (this.disposed) return
+      const answer = responseText?.trim() ?? ''
+      this.replaceEntry(id, {
+        id,
+        kind: 'side_question',
+        question: trimmed,
+        status: answer ? 'done' : 'error',
+        answer: answer || 'The side question returned no answer.',
+      })
+    } catch (cause) {
+      if (this.disposed) return
+      this.replaceEntry(id, {
+        id,
+        kind: 'side_question',
+        question: trimmed,
+        status: 'error',
+        answer: cause instanceof Error ? cause.message : String(cause),
+      })
     }
   }
 
@@ -834,7 +1148,11 @@ export class ChatSession {
     // Invalidate anything in flight against the outgoing engine.
     this.generation += 1
     this.modelSelectionEpoch += 1
-    if (!options.preserveModel) this.selectedRuntimeModel = readActiveRuntimeModel()
+    if (!options.preserveModel) {
+      this.selectedRuntimeModel = readActiveRuntimeModel()
+      this.modelInfo = readActiveModel()
+      this.callbacks.onModelInfo(this.modelInfo)
+    }
     this.appliedRuntimeModel = null
     this.contextLastFetch = 0
     this.lastContextUsage = null
@@ -845,6 +1163,7 @@ export class ChatSession {
       ...(cwd ? { cwd } : {}),
     }
     this.entries.length = 0
+    this.trimNoticeShown = false
     this.activeTurnId = null
     // The transcript is gone, so nothing can ask to expand a row of it. Retained output
     // and hook correlation would otherwise survive into a conversation that has no
@@ -862,6 +1181,8 @@ export class ChatSession {
     this.activeThinkingKey = null
     this.backgroundTaskMap.clear()
     this.callbacks.onTaskStateReplaced?.([])
+    this.promptSuggestion = null
+    this.callbacks.onPromptSuggestion?.(null)
     this.toolsByUseId.clear()
     this.streamingId = null
     this.reviewEntryId = null
@@ -900,7 +1221,11 @@ export class ChatSession {
         onMessage: message => this.handleEngineMessage(message),
         onRequest: request => this.handleInboundRequest(request),
         onRequestCancelled: requestId => {
-          this.callbacks.onPermissionCancelled(requestId)
+          if (this.mcpElicitations.delete(requestId)) {
+            this.callbacks.onMcpElicitationCancelled?.(requestId)
+          } else {
+            this.callbacks.onPermissionCancelled(requestId)
+          }
         },
         onUnknownFrame: (declaredType, excerpt) => {
           // A newer engine emitting a message this build does not know. Logged for
@@ -921,7 +1246,10 @@ export class ChatSession {
     )
 
     // Thinking is forced on for every Rayucode session — see `engineArgsFor`.
-    const args = engineArgsFor(this.options)
+    const args = engineArgsFor({
+      ...this.options,
+      thinkingEnabled: this.thinkingPreference,
+    })
     // Optional, lazily-resolved environment (currently the editor connection's port). A
     // failure here must not prevent the session from starting, so it degrades to nothing.
     const lazyEnv = this.options.resolveEnv
@@ -935,6 +1263,10 @@ export class ChatSession {
           ...this.options.env,
           ...lazyEnv,
           RAYU_CLIENT_PRODUCT: 'rayucode',
+          // Opt into the shared SDK lifecycle stream. The host already handles these
+          // frames; without the flag queued/steered follow-ups can start after a result
+          // while the composer still claims the session is idle.
+          CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
         },
       },
       {
@@ -951,6 +1283,7 @@ export class ChatSession {
 
     this.engine = engine
     this.control = control
+    this.runtimeRevision = 0
     engine.start()
 
     // `initialize` is what returns the command list, the model catalogue and the
@@ -959,16 +1292,20 @@ export class ChatSession {
     try {
       const response = await control.request(
         'initialize',
-        { agentProgressSummaries: true },
+        {
+          agentProgressSummaries: true,
+          promptSuggestions: true,
+          runtimeCapabilities: true,
+        },
         60_000,
       )
       if (control !== this.control || this.disposed) return
-      this.applyInitialize(response)
+      let inferenceAcknowledged = this.applyInitialize(response)
       // ── REPLAY THE CHOSEN PERMISSION MODE ────────────────────────────────────
       //
       // A fresh child always starts in the mode its argv implied, which is `default`. So a
       // mode the user picked before this engine existed — or before the engine it replaced
-      // was torn down — has to be re-sent, or the panel shows "Full access" while every
+      // was torn down — has to be re-sent, or the panel shows "Full Manage" while every
       // Bash call raises an approval card. `--allow-dangerously-skip-permissions` is in
       // `vscodeHost`'s required flags precisely so that this replay can succeed.
       //
@@ -995,7 +1332,6 @@ export class ChatSession {
       // cannot carry the NUL separator used by shared cross-provider routing.
       const selectedRuntimeModel = this.selectedRuntimeModel
       const selectionEpoch = this.modelSelectionEpoch
-      let inferenceAcknowledged = false
       if (selectedRuntimeModel) {
         const modelResponse = await control.request(
           'set_model',
@@ -1052,7 +1388,7 @@ export class ChatSession {
     return false
   }
 
-  private applyInitialize(response: Record<string, unknown>): void {
+  private applyInitialize(response: Record<string, unknown>): boolean {
     // The catalogue is retained for the picker but NEVER forwarded to the webview:
     // measured at 712 entries against a real engine, which is a large postMessage
     // for a list the user opens occasionally. `host/models/modelSurface.ts` renders
@@ -1086,7 +1422,12 @@ export class ChatSession {
       this.callbacks.onCommands?.(this.slashCommands)
     }
 
-    // Subagent type names, for `/model_subagent <AGENT>`. Taken from the engine rather than
+    const runtime = asRecord(response.runtime)
+    const inferenceAcknowledged = runtime
+      ? this.applyRuntimeSnapshot(runtime)
+      : false
+
+    // Agent type names, for `/subagent_models <AGENT>`. Taken from the engine rather than
     // imported from `tools/AgentTool/built-in/subagents` so the list cannot drift from what
     // the running engine offers — and so the host bundle does not carry nine prompt modules
     // to learn nine names.
@@ -1101,10 +1442,96 @@ export class ChatSession {
     // The SELECTED model comes from the shared config, not from the catalogue's
     // first entry — that would show whatever the provider happened to list first
     // and would silently disagree with what the CLI shows.
-    this.modelInfo = readActiveModel()
+    const active = readActiveModel()
+    const pinned = this.selectedRuntimeModel
+      ? decodeModelProvider(this.selectedRuntimeModel)
+      : null
+    this.modelInfo = pinned
+      ? {
+          model: pinned.model,
+          provider: pinned.providerId ?? active.provider,
+        }
+      : active
     this.callbacks.onModelInfo(this.modelInfo)
+    return inferenceAcknowledged
+  }
 
+  private applyRuntimeSnapshot(runtime: Record<string, unknown>): boolean {
+    const revision = finiteNumber(runtime.revision)
+    // Snapshot requests can overtake a slow catalogue refresh. Never let an older
+    // response replace newer commands, tools, tasks, or inference state.
+    if (revision !== undefined && revision <= this.runtimeRevision) return false
+    if (revision !== undefined) this.runtimeRevision = revision
+    const capabilities = asRecord(runtime.capabilities)
+    const features = capabilities ? asRecord(capabilities.features) : null
+    this.runtimeCapabilities =
+      capabilities && typeof capabilities.version === 'number' && features
+        ? {
+            version: capabilities.version,
+            features: Object.fromEntries(
+              Object.entries(features).filter((entry): entry is [string, boolean] =>
+                typeof entry[1] === 'boolean',
+              ),
+            ),
+          }
+        : null
 
+    this.runtimeCommandList = mapRuntimeRows(runtime.commands, toRuntimeCommandView)
+    this.runtimeToolList = mapRuntimeRows(runtime.tools, toRuntimeToolView)
+    this.runtimeAgentList = mapRuntimeRows(runtime.agents, toRuntimeAgentView)
+    this.runtimePluginList = mapRuntimeRows(runtime.plugins, toRuntimePluginView)
+    this.runtimeSkillList = mapRuntimeRows(runtime.skills, toRuntimeSkillView)
+    this.runtimeWorkflowList = mapRuntimeRows(runtime.workflows, toRuntimeSkillView)
+    this.publishRuntimeCatalogue()
+
+    if (Array.isArray(runtime.tasks)) {
+      this.applyMirroredTaskSnapshot(
+        runtime.tasks
+          .map(toBackgroundTaskView)
+          .filter((task): task is BackgroundTaskView => task !== null),
+        true,
+      )
+    }
+    if (Array.isArray(runtime.mcpServers)) this.applyMcpServers(runtime.mcpServers)
+    const inference = asRecord(runtime.inference)
+    const inferenceAcknowledged = inference
+      ? this.applyInferenceResponse({ inference })
+      : false
+    const session = asRecord(runtime.session)
+    if (
+      session &&
+      (session.status === 'idle' ||
+        session.status === 'running' ||
+        session.status === 'requires_action')
+    ) {
+      this.executionStatus = session.status
+      this.callbacks.onSessionStatus?.(session.status)
+    }
+    return inferenceAcknowledged
+  }
+
+  private publishRuntimeCatalogue(): void {
+    this.callbacks.onRuntimeCatalogue?.(
+      this.runtimeCapabilities,
+      [...this.runtimeCommandList],
+      [...this.runtimeToolList],
+      {
+        agents: [...this.runtimeAgentList],
+        plugins: [...this.runtimePluginList],
+        skills: [...this.runtimeSkillList],
+        workflows: [...this.runtimeWorkflowList],
+      },
+    )
+  }
+
+  private async refreshRuntimeSnapshot(): Promise<void> {
+    const control = this.control
+    const generation = this.generation
+    if (!control || this.disposed) return
+    const response = await control.request('get_runtime_snapshot', {}, 30_000)
+    if (control !== this.control || generation !== this.generation || this.disposed) return
+    const runtime = asRecord(response.runtime)
+    if (runtime) this.applyRuntimeSnapshot(runtime)
   }
 
   /** The engine's model catalogue, for the host-side picker. */
@@ -1142,7 +1569,15 @@ export class ChatSession {
     const runtimeModel = persistModelChoice(model)
     const selectionEpoch = ++this.modelSelectionEpoch
     this.selectedRuntimeModel = runtimeModel
-    this.modelInfo = readActiveModel()
+    const persisted = readActiveModel()
+    const selected = decodeModelProvider(runtimeModel)
+    // Keep the per-session selection even if persistence is unavailable. The running
+    // engine can still accept it, and another session must not replace this label by
+    // changing a process-global provider cache.
+    this.modelInfo = {
+      model: persisted.model ?? selected.model,
+      provider: persisted.provider ?? selected.providerId ?? this.modelInfo.provider,
+    }
     this.callbacks.onModelInfo(this.modelInfo)
 
     // When the catalog already knows the model reasoning support, reflect that immediately.
@@ -1154,10 +1589,7 @@ export class ChatSession {
       this.inference = {
         ...this.inference,
         supportsThinking,
-        // Thinking is forced on at spawn (`--thinking enabled`), so for any model that
-        // supports it the answer is simply "on". There is no user-facing off switch to
-        // reconcile with — see the flag's rationale in `initialize`.
-        thinkingEnabled: supportsThinking,
+        thinkingEnabled: supportsThinking && this.thinkingPreference,
         supportsEffort: supportsThinking,
       }
       this.callbacks.onInferenceSettings?.(this.inference)
@@ -1211,14 +1643,7 @@ export class ChatSession {
 
   /** Initial settings from engine helper or catalogue refresh. */
   applyInitialInference(value: InferenceSettingsView): void {
-    this.inference = {
-      ...value,
-      // The helper child that resolved these settings was NOT launched with
-      // `--thinking enabled`, so its `thinkingEnabled` reflects the user's shared
-      // settings rather than what this session will actually do. The session forces
-      // thinking on at spawn, so the only correct answer here is the capability.
-      thinkingEnabled: value.supportsThinking,
-    }
+    this.inference = { ...value }
     this.callbacks.onInferenceSettings?.(this.inference)
   }
 
@@ -1238,11 +1663,108 @@ export class ChatSession {
     }
   }
 
+
+  /** Reload plugins through the engine that owns this session, then refresh its catalogues. */
+  async reloadPlugins(): Promise<void> {
+    try {
+      await this.ensureStarted()
+      const response = await this.control!.request('reload_plugins', {}, 60_000)
+      this.applyRefreshedCatalogues(response)
+      await this.refreshRuntimeSnapshot()
+      const plugins = Array.isArray(response.plugins) ? response.plugins.length : 0
+      const agents = Array.isArray(response.agents) ? response.agents.length : 0
+      const errors = finiteNumber(response.error_count) ?? 0
+      this.appendEntry({
+        id: newId(),
+        kind: 'notice',
+        severity: errors > 0 ? 'warning' : 'info',
+        text: `Reloaded ${plugins} ${plugins === 1 ? 'plugin' : 'plugins'} and ${agents} ${agents === 1 ? 'agent' : 'agents'}${errors > 0 ? ` with ${errors} ${errors === 1 ? 'error' : 'errors'}` : ''}.`,
+      })
+    } catch (cause) {
+      this.reportError(
+        `Could not reload plugins: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
+  }
+
+  /** Install through the shared skill installer and make its commands live immediately. */
+  async installSkill(source: string, overwrite = false): Promise<void> {
+    const trimmed = source.trim()
+    if (!trimmed) {
+      this.reportError('Provide a GitHub repository, URL, or local skill path.')
+      return
+    }
+    try {
+      await this.ensureStarted()
+      const response = await this.control!.request(
+        'install_skill',
+        { source: trimmed, overwrite },
+        120_000,
+      )
+      this.applyRefreshedCatalogues(response)
+      await this.refreshRuntimeSnapshot()
+      const skills = Array.isArray(response.skills)
+        ? response.skills
+            .map(asRecord)
+            .filter((skill): skill is Record<string, unknown> => skill !== undefined)
+        : []
+      const names = skills.map(skill => asString(skill.name)).filter(isPresentString)
+      this.appendEntry({
+        id: newId(),
+        kind: 'notice',
+        severity: 'info',
+        text: names.length > 0
+          ? `Installed ${names.map(name => `/${name}`).join(', ')}. The ${names.length === 1 ? 'skill is' : 'skills are'} available now.`
+          : 'Skill installation completed and the command catalogue was refreshed.',
+      })
+    } catch (cause) {
+      this.reportError(
+        `Could not install skill: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
+  }
+
+  private applyRefreshedCatalogues(response: Record<string, unknown>): void {
+    if (Array.isArray(response.commands)) {
+      this.slashCommands = withRayucodeSlashCommands(
+        response.commands
+          .map(asRecord)
+          .filter((command): command is Record<string, unknown> => command !== undefined)
+          .map(command => ({
+            name: asString(command.name) ?? '',
+            description: asString(command.description) ?? '',
+          }))
+          .filter(command => command.name.length > 0),
+      )
+      this.callbacks.onCommands?.([...this.slashCommands])
+    }
+    if (Array.isArray(response.agents)) {
+      this.agentTypes = response.agents
+        .map(asRecord)
+        .filter((agent): agent is Record<string, unknown> => agent !== undefined)
+        .map(agent => asString(agent.name))
+        .filter(isPresentString)
+    }
+    if (Array.isArray(response.mcpServers)) this.applyMcpServers(response.mcpServers)
+
+    if (Array.isArray(response.runtimeCommands)) {
+      this.runtimeCommandList = response.runtimeCommands
+        .map(toRuntimeCommandView)
+        .filter((command): command is RuntimeCommandView => command !== null)
+    }
+    if (Array.isArray(response.runtimeTools)) {
+      this.runtimeToolList = response.runtimeTools
+        .map(toRuntimeToolView)
+        .filter((tool): tool is RuntimeToolView => tool !== null)
+    }
+    this.publishRuntimeCatalogue()
+  }
+
   /**
    * Apply a permission mode.
    *
    * The local value is updated only AFTER the engine accepts it. Flipping the pill
-   * first would tell the user they are in "Full access" while the engine is still
+   * first would tell the user they are in "Full Manage" while the engine is still
    * asking for approval on every tool — the pill has to reflect what is enforced,
    * not what was requested.
    *
@@ -1250,7 +1772,7 @@ export class ChatSession {
    *
    * With no child yet there is nothing to ask, so the choice is recorded and reported as
    * accepted. That is only honest because `start()` REPLAYS it after `initialize` — see
-   * `applyPermissionModeToEngine`. Without that replay the panel said "Full access" while
+   * `applyPermissionModeToEngine`. Without that replay the panel said "Full Manage" while
    * a freshly spawned child sat in `default` and asked for approval on every Bash call,
    * which is the exact bug this pairing exists to prevent. The same replay covers every
    * engine replacement: a configuration restart, a resume, or a crash recovery.
@@ -1258,11 +1780,22 @@ export class ChatSession {
   async setPermissionMode(mode: PermissionModeView): Promise<boolean> {
     if (!this.control) {
       // No engine yet: record it so the first turn starts in the chosen mode.
+      const stored = updateRayucodePreferences({ permissionMode: mode.id })
+      if (stored.error) {
+        this.callbacks.onError(`Could not save ${mode.label}: ${stored.error.message}`)
+        return false
+      }
       this.permissionMode = mode
       return true
     }
     if (await this.applyPermissionModeToEngine(this.control, mode)) {
       this.permissionMode = mode
+      // The engine writes the same product-scoped profile after accepting. Repeating the
+      // idempotent write here covers a child that exits immediately after acknowledgement.
+      const stored = updateRayucodePreferences({ permissionMode: mode.id })
+      if (stored.error) {
+        this.callbacks.onError(`Could not save ${mode.label}: ${stored.error.message}`)
+      }
       return true
     }
     return false
@@ -1305,6 +1838,10 @@ export class ChatSession {
     this.control = null
     this.engine = null
     this.appliedRuntimeModel = null
+    for (const requestId of this.mcpElicitations.keys()) {
+      this.callbacks.onMcpElicitationCancelled?.(requestId)
+    }
+    this.mcpElicitations.clear()
     this.setTurnRunning(false)
     // Dismiss any approval card: the engine that was blocked on it is gone, so the
     // card is a control that would do nothing when pressed.
@@ -1381,12 +1918,92 @@ export class ChatSession {
         this.handleToolOutput(message)
         return
 
+      case 'rate_limit_event': {
+        const raw = asRecord(message.rate_limit_info) ?? {}
+        const status = raw.status
+        if (
+          status !== 'allowed' &&
+          status !== 'allowed_warning' &&
+          status !== 'rejected'
+        ) return
+        this.rateLimit = {
+          status,
+          ...(finiteNumber(raw.resetsAt) !== undefined
+            ? { resetsAt: finiteNumber(raw.resetsAt) }
+            : {}),
+          ...(asString(raw.rateLimitType)
+            ? { rateLimitType: asString(raw.rateLimitType) }
+            : {}),
+          ...(finiteNumber(raw.utilization) !== undefined
+            ? { utilization: finiteNumber(raw.utilization) }
+            : {}),
+          ...(typeof raw.isUsingOverage === 'boolean'
+            ? { isUsingOverage: raw.isUsingOverage }
+            : {}),
+          // Only ever one of the two Rayu windows. Anything else is a malformed or
+          // newer event, and dropping it renders generic copy rather than claiming
+          // a window that is not the one that was hit.
+          ...(raw.rayuPacingWindow === 'weekly' || raw.rayuPacingWindow === 'session'
+            ? {
+                rayuPacingWindow: raw.rayuPacingWindow,
+                // Defaults to personal: only the explicit `team` marker changes the
+                // advice, so an older gateway that omits it keeps the switch hint.
+                rayuLimitScope: raw.rayuLimitScope === 'team' ? 'team' : 'personal',
+                // Resolved HERE, not in the webview: that bundle is
+                // browser-targeted and must not import the Node-side session
+                // helpers (fs/path) that know the Rayu web base URL.
+                rayuPacingDashboardUrl: getRayuDashboardUrl(),
+              }
+            : {}),
+        }
+        this.callbacks.onRateLimit?.(this.rateLimit)
+        return
+      }
+
+      case 'auth_status': {
+        this.engineAuthStatus = {
+          authenticating: message.isAuthenticating === true,
+          messages: Array.isArray(message.output)
+            ? message.output
+                .filter((line): line is string => typeof line === 'string')
+                .slice(-20)
+                .map(line => clamp(line))
+            : [],
+          ...(asString(message.error) ? { error: clamp(asString(message.error)!) } : {}),
+        }
+        this.callbacks.onEngineAuthStatus?.(this.engineAuthStatus)
+        return
+      }
+
+      case 'prompt_suggestion': {
+        const suggestion = asString(message.suggestion)?.trim() || null
+        this.promptSuggestion = suggestion
+        this.callbacks.onPromptSuggestion?.(suggestion)
+        return
+      }
+
+      case 'tool_use_summary':
+        this.appendEngineActivitySummary(message, asString(message.summary))
+        return
+
+      case 'streamlined_tool_use_summary':
+        this.appendEngineActivitySummary(message, asString(message.tool_summary))
+        return
+
+      case 'streamlined_text': {
+        const value = asString(message.text)?.trim()
+        if (!value || this.hasSeenNarrativeEvent(message)) return
+        this.finishStreaming()
+        this.appendEntry({ id: newId(), kind: 'assistant', text: value })
+        return
+      }
+
       case 'system':
         this.handleSystemMessage(message)
         return
 
       default:
-        // Ignoring the remainder is deliberate, not an omission.
+        this.reportUnknownEvent(`message:${asString(message.type) ?? 'unknown'}`)
         return
     }
   }
@@ -1402,14 +2019,63 @@ export class ChatSession {
    * the terminal describe the same turn differently — while costing another analysis
    * for information that already exists.
    *
-   * The subtypes NOT handled — `init`, `status`, task progress — are bookkeeping with no
-   * transcript meaning, and ignoring them is a decision rather than an oversight. Hook
-   * lifecycle frames used to be in that list and are not any more: they describe work that
-   * changes what the agent did, so a hook that blocks a tool or rewrites a file has to be
-   * visible. See `handleHookLifecycle`.
+   * State-only subtypes update the host projection without adding transcript noise. Hook
+   * lifecycle frames are visible because they describe work that changes what the agent did;
+   * a hook that blocks a tool or rewrites a file has to be inspectable. See
+   * `handleHookLifecycle`.
    */
   private handleSystemMessage(message: Record<string, unknown>): void {
     switch (message.subtype) {
+      case 'init': {
+        const permissionMode = asString(message.permissionMode)
+        if (
+          permissionMode === 'default' ||
+          permissionMode === 'acceptEdits' ||
+          permissionMode === 'bypassPermissions' ||
+          permissionMode === 'fullManage' ||
+          permissionMode === 'orchestrator' ||
+          permissionMode === 'plan' ||
+          permissionMode === 'auto' ||
+          permissionMode === 'dontAsk'
+        ) {
+          this.permissionMode = permissionModeById(permissionMode)
+          this.callbacks.onPermissionMode?.(this.permissionMode)
+        }
+        const model = asString(message.model)
+        if (model) {
+          const routed = decodeModelProvider(model)
+          this.modelInfo = {
+            model: routed.model,
+            provider: routed.providerId ?? this.modelInfo.provider,
+          }
+          this.callbacks.onModelInfo(this.modelInfo)
+        }
+        return
+      }
+
+      case 'status': {
+        const permissionMode = asString(message.permissionMode)
+        if (
+          permissionMode === 'default' ||
+          permissionMode === 'acceptEdits' ||
+          permissionMode === 'bypassPermissions' ||
+          permissionMode === 'fullManage' ||
+          permissionMode === 'orchestrator' ||
+          permissionMode === 'plan' ||
+          permissionMode === 'auto' ||
+          permissionMode === 'dontAsk'
+        ) {
+          this.permissionMode = permissionModeById(permissionMode)
+          this.callbacks.onPermissionMode?.(this.permissionMode)
+        }
+        if (message.status === 'compacting') {
+          this.updateTurnProgress('running', 'Compacting context')
+        } else if (message.status === null) {
+          void this.pollContextUsage(true)
+        }
+        return
+      }
+
       case 'task_started':
       case 'task_progress':
       case 'task_notification':
@@ -1494,6 +2160,47 @@ export class ChatSession {
         return
       }
 
+      case 'files_persisted': {
+        if (this.hasSeenNarrativeEvent(message)) return
+        const files = Array.isArray(message.files) ? message.files : []
+        const failed = Array.isArray(message.failed) ? message.failed : []
+        if (files.length === 0 && failed.length === 0) return
+        const text = [
+          files.length > 0
+            ? `Saved ${files.length} changed ${files.length === 1 ? 'file' : 'files'} to the session.`
+            : '',
+          failed.length > 0
+            ? `${failed.length} ${failed.length === 1 ? 'file could' : 'files could'} not be saved.`
+            : '',
+        ].filter(Boolean).join(' ')
+        this.appendEntry({
+          id: newId(),
+          kind: 'notice',
+          severity: failed.length > 0 ? 'warning' : 'info',
+          text,
+        })
+        return
+      }
+
+      case 'elicitation_complete': {
+        const elicitationId = asString(message.elicitation_id)
+        if (!elicitationId) return
+        for (const [requestId, request] of this.mcpElicitations) {
+          if (request.elicitationId !== elicitationId) continue
+          this.mcpElicitations.delete(requestId)
+          this.callbacks.onMcpElicitationCancelled?.(requestId)
+        }
+        if (this.hasSeenNarrativeEvent(message)) return
+        const server = asString(message.mcp_server_name) ?? 'MCP server'
+        this.appendEntry({
+          id: newId(),
+          kind: 'notice',
+          severity: 'info',
+          text: `${server} completed the requested interaction.`,
+        })
+        return
+      }
+
       case 'informational': {
         // The one general-purpose notice constructor (`createSystemMessage()` in
         // `utils/messages.ts`), used identically by the interactive REPL and the
@@ -1551,8 +2258,49 @@ export class ChatSession {
       }
 
       default:
+        this.reportUnknownEvent(`system:${asString(message.subtype) ?? 'unknown'}`)
         return
     }
+  }
+
+  private appendEngineActivitySummary(
+    message: Record<string, unknown>,
+    summary: string | undefined,
+  ): void {
+    const text = summary?.trim()
+    if (!text || this.hasSeenNarrativeEvent(message)) return
+    this.appendEntry({
+      id: newId(),
+      kind: 'notice',
+      severity: 'info',
+      text,
+    })
+  }
+
+  private hasSeenNarrativeEvent(message: Record<string, unknown>): boolean {
+    const eventId = asString(message.uuid)
+    if (!eventId) return false
+    if (this.seenNarrativeEventIds.has(eventId)) return true
+    this.seenNarrativeEventIds.add(eventId)
+    // Narrative event IDs only protect against short reconnect/replay windows.
+    while (this.seenNarrativeEventIds.size > 512) {
+      const oldest = this.seenNarrativeEventIds.values().next().value
+      if (typeof oldest !== 'string') break
+      this.seenNarrativeEventIds.delete(oldest)
+    }
+    return false
+  }
+
+  private reportUnknownEvent(kind: string): void {
+    if (this.reportedUnknownEvents.has(kind) || this.reportedUnknownEvents.size >= 12) return
+    this.reportedUnknownEvents.add(kind)
+    console.warn(`[rayucode] no presentation is registered for engine event "${kind}"`)
+    this.appendEntry({
+      id: newId(),
+      kind: 'notice',
+      severity: 'info',
+      text: `Rayu reported ${kind.replace(':', ' ')} activity that this extension version cannot display.`,
+    })
   }
 
   /**
@@ -1582,6 +2330,20 @@ export class ChatSession {
         typeof message.description === 'string' && message.description.trim()
           ? message.description.trim()
           : `Background task ${taskId}`
+      // ── THE ROW'S MODEL IS ONLY EVER SEEDED HERE ──────────────────────────────
+      //
+      // `task_progress` and `task_notification` carry `model: existing?.model` — a
+      // carry-forward. Until this branch populated it, that carry-forward was
+      // always undefined, so a running subagent could never show which model it was
+      // using even though `BackgroundTaskView.model` exists and the webview already
+      // renders it (`BackgroundTaskCenter`). This is the one place the value enters.
+      //
+      // Decoded with `decodeModelProvider`, NOT split on a slash: a subagent routed
+      // to a provider other than the active one arrives as `providerId\u0000model`
+      // (see `getAgentModel`/`encodeModelWithProvider`), and a slash split would
+      // leave the whole encoded string as the "model".
+      const rawTaskModel = typeof message.model === 'string' ? message.model : undefined
+      const taskModel = rawTaskModel ? decodeModelProvider(rawTaskModel) : undefined
       this.publishTask({
         key,
         taskId,
@@ -1591,6 +2353,8 @@ export class ChatSession {
         group: taskGroup(type),
         description,
         prompt: typeof message.prompt === 'string' ? message.prompt : undefined,
+        model: taskModel?.model,
+        provider: taskModel?.providerId,
         status: 'running',
         // Reported by the engine since `execution_mode` was added. `background` remains the
         // fallback for task types that have no such distinction and for an older engine —
@@ -2040,42 +2804,128 @@ export class ChatSession {
     })
   }
 
-  private updateUsage(raw: Record<string, unknown> | undefined, finalOutput: boolean): void {
+  /**
+   * Fold a frame's INPUT figures into the turn's readout.
+   *
+   * ── TWO GUARDS KEPT FROM THE PREVIOUS SHAPE, DELIBERATELY ─────────────────────
+   *
+   * `hasInput` is true only when the frame actually carried an input field, so a
+   * frame that reports output alone leaves the input side untouched. And the three
+   * input fields are SUMMED because all three were sent as part of the request —
+   * cache reads and cache writes are input, not output, and adding them to the
+   * output side would double-count.
+   *
+   * OUTPUT IS NOT HANDLED HERE. It is accumulated per message and published by
+   * `publishLiveOutput`, because the provider reports it a message at a time while
+   * the panel shows a whole turn — see the field comment.
+   */
+  private updateInputUsage(raw: Record<string, unknown> | undefined): void {
     if (!raw || !this.turnProgress) return
+    // Each part updates INDEPENDENTLY, and only when the frame reports a POSITIVE
+    // value — mirroring `updateUsage` in `services/api/claude.ts`. A `0` (or an absent
+    // field) means "not reported on this frame", so it must leave the held value
+    // alone: accepting it would blank the input readout on any provider that sends
+    // explicit zeroes on `message_delta`.
+    let changed = false
     const direct = finiteToken(raw.input_tokens)
+    if (direct > 0) {
+      this.turnInputDirect = direct
+      changed = true
+    }
     const cacheRead = finiteToken(raw.cache_read_input_tokens)
+    if (cacheRead > 0) {
+      this.turnInputCacheRead = cacheRead
+      changed = true
+    }
     const cacheCreation = finiteToken(raw.cache_creation_input_tokens)
-    const hasInput =
-      typeof raw.input_tokens === 'number' ||
-      typeof raw.cache_read_input_tokens === 'number' ||
-      typeof raw.cache_creation_input_tokens === 'number'
-    const hasOutput = typeof raw.output_tokens === 'number'
-    const output = finalOutput && hasOutput
-      ? finiteToken(raw.output_tokens)
-      : this.turnProgress.usage.outputTokens
+    if (cacheCreation > 0) {
+      this.turnInputCacheCreation = cacheCreation
+      changed = true
+    }
+    if (!changed) return
     const usage: TurnTokenUsageView = {
-      inputTokens: hasInput
-        ? direct + cacheRead + cacheCreation
-        : this.turnProgress.usage.inputTokens,
-      outputTokens: output,
-      cacheReadTokens: hasInput ? cacheRead : this.turnProgress.usage.cacheReadTokens,
-      cacheCreationTokens: hasInput ? cacheCreation : this.turnProgress.usage.cacheCreationTokens,
-      inputEstimated: hasInput ? false : this.turnProgress.usage.inputEstimated,
-      outputEstimated: finalOutput && hasOutput ? false : this.turnProgress.usage.outputEstimated,
+      ...this.turnProgress.usage,
+      inputTokens:
+        this.turnInputDirect + this.turnInputCacheRead + this.turnInputCacheCreation,
+      cacheReadTokens: this.turnInputCacheRead,
+      cacheCreationTokens: this.turnInputCacheCreation,
+      inputEstimated: false,
     }
     this.turnProgress = { ...this.turnProgress, usage }
     this.callbacks.onTurnProgress?.({ ...this.turnProgress, usage: { ...usage } })
   }
 
-  private updateEstimatedOutput(chars: number): void {
-    if (!this.turnProgress || chars <= 0 || !this.turnProgress.usage.outputEstimated) return
-    this.turnStreamedChars += chars
-    const usage = {
+  /**
+   * Fold the in-flight message's output into the turn total.
+   *
+   * Reached at `message_stop` (the event the engine accumulates on) and again at the
+   * next `message_start`. Calling it twice is harmless and intentional: the fold
+   * zeroes the per-message fields, so the second call is a no-op — which is what
+   * makes a stream that skipped `message_stop` still count correctly instead of
+   * silently dropping a message's output.
+   *
+   * A provider REPORT wins over the estimate; the estimate is only used for a
+   * message that ended without one, and it marks the turn's total as approximate
+   * from then on.
+   */
+  private foldMessageOutput(): void {
+    if (this.messageReportedOutputTokens > 0) {
+      this.turnCompletedOutputTokens += this.messageReportedOutputTokens
+    } else if (this.messageStreamedChars > 0) {
+      this.turnCompletedOutputTokens += Math.round(this.messageStreamedChars / 4)
+      this.turnOutputHasEstimate = true
+    }
+    this.messageReportedOutputTokens = 0
+    this.messageStreamedChars = 0
+  }
+
+  /**
+   * Recompute and publish the turn's live output count.
+   *
+   * ── THE ESTIMATE NEVER STACKS ON A REPORT ─────────────────────────────────────
+   *
+   * For the message in flight the provider's count supersedes the characters/4
+   * estimate rather than being added to it — the two describe the SAME tokens. The
+   * estimate is what fills the gap while a message is streaming and the provider has
+   * not yet reported for it.
+   *
+   * ── THE `~` STAYS UNTIL A REPORT BACKS EVERY PART ─────────────────────────────
+   *
+   * `outputEstimated` is true while ANY contributing part is an estimate: the
+   * in-flight message before its report, or any earlier message that ended without
+   * one. It clears only when every part is provider-reported. The previous shape
+   * cleared it at the first `message_delta` — flagging an estimate as exact AND
+   * disabling the live estimate for the remainder of the turn.
+   */
+  private publishLiveOutput(): void {
+    if (!this.turnProgress) return
+    const inFlight =
+      this.messageReportedOutputTokens > 0
+        ? this.messageReportedOutputTokens
+        : Math.round(this.messageStreamedChars / 4)
+    // ── THE FLAG DESCRIBES THE NUMBER SHOWN, NOT "HAS A MESSAGE REPORTED YET" ─────
+    //
+    // The in-flight part is an estimate ONLY when text has actually been streamed
+    // without a report for it. Testing `messageReportedOutputTokens === 0` instead
+    // read a FOLDED message's cleared slot (and the quiet moment between messages) as
+    // "still estimating", which stamped `~` on a count the provider had just reported
+    // exactly. A zero here means "nothing in flight", not "in flight and unreported".
+    const inFlightEstimated =
+      this.messageStreamedChars > 0 && this.messageReportedOutputTokens === 0
+    const usage: TurnTokenUsageView = {
       ...this.turnProgress.usage,
-      outputTokens: Math.round(this.turnStreamedChars / 4),
+      outputTokens: this.turnCompletedOutputTokens + inFlight,
+      outputEstimated: this.turnOutputHasEstimate || inFlightEstimated,
     }
     this.turnProgress = { ...this.turnProgress, usage }
     this.callbacks.onTurnProgress?.({ ...this.turnProgress, usage: { ...usage } })
+  }
+
+  /** Count streamed output characters toward the in-flight message's live estimate. */
+  private updateEstimatedOutput(chars: number): void {
+    if (!this.turnProgress || chars <= 0) return
+    this.messageStreamedChars += chars
+    this.publishLiveOutput()
   }
 
   private completeTurn(
@@ -2152,6 +3002,11 @@ export class ChatSession {
       case 'message_start': {
         const inner = event.message as Record<string, unknown> | undefined
         const id = typeof inner?.id === 'string' ? inner.id : null
+        // A message that was in flight ENDED when a new one starts. Fold its output
+        // into the turn total BEFORE resetting for this message — `message_stop`
+        // normally did it already (making this a no-op), and doing it here too keeps
+        // a stream that omitted `message_stop` from dropping a whole message's worth.
+        this.foldMessageOutput()
         // A new assistant message begins. Close any open entry FIRST so a turn that
         // produces prose, then a tool call, then more prose renders as separate
         // answers rather than one run-on block.
@@ -2159,7 +3014,8 @@ export class ChatSession {
         this.currentStreamMessageId = id
         this.currentStreamBlockIndex = null
         this.currentStreamBlockType = null
-        this.updateUsage(asRecord(inner?.usage), false)
+        this.updateInputUsage(asRecord(inner?.usage))
+        this.publishLiveOutput()
         this.updateTurnProgress('responding', 'Responding')
         if (id !== null && !this.streamedBlocks.has(id)) {
           this.streamedBlocks.set(id, new Set())
@@ -2216,14 +3072,34 @@ export class ChatSession {
       }
 
       case 'message_delta': {
-        this.updateUsage(asRecord(event.usage), true)
+        const deltaUsage = asRecord(event.usage)
+        this.updateInputUsage(deltaUsage)
+        // ── THIS COUNT IS FOR THE MESSAGE, NOT THE TURN ───────────────────────────
+        //
+        // `output_tokens` here is the cumulative count for the message that is
+        // ending, so it is ASSIGNED to the per-message slot — never added to the
+        // turn total, which would double-count on the next `message_delta`, and never
+        // written into the turn readout, which is what made the number fall back at
+        // every new message. `message_stop` folds it in. Same split the engine makes.
+        const reported = finiteToken(deltaUsage?.output_tokens)
+        if (reported > 0) this.messageReportedOutputTokens = reported
+        this.publishLiveOutput()
+        return
+      }
+
+      case 'message_stop': {
+        // The message is over, so its output belongs to the turn now. This is the
+        // event the engine accumulates on; without it the turn total would only ever
+        // describe the message currently streaming.
+        this.foldMessageOutput()
+        this.publishLiveOutput()
         return
       }
 
       default:
-        // message_stop, ping. The turn's end is driven by the
-        // `result` frame, which is authoritative; message_stop is not, because a
-        // turn can contain several messages.
+        // ping, and any event a provider adds. The turn's END is driven by the
+        // `result` frame, which is authoritative — `message_stop` marks one message,
+        // not the turn, because a turn can contain several messages.
         return
     }
   }
@@ -2255,7 +3131,13 @@ export class ChatSession {
 
     // The host keeps its own copy so a re-created webview can be restored from
     // `init` mid-turn rather than losing the partial answer.
-    const entry = this.entries.find(e => e.id === id)
+    //
+    // The streaming entry is the LAST one in all but pathological interleavings,
+    // and this runs per token: checking the tail first keeps the hot path O(1)
+    // instead of an O(n) scan of a transcript that can hold a thousand entries.
+    // The full scan remains as the fallback, so behavior is identical either way.
+    const last = this.entries[this.entries.length - 1]
+    const entry = last?.id === id ? last : this.entries.find(e => e.id === id)
     if (entry?.kind === 'assistant' && kind === 'text') entry.text += delta
 
     this.callbacks.onPartial(id, kind, delta)
@@ -2488,8 +3370,35 @@ export class ChatSession {
   }
 
   endMirroredTurn(): void {
-    if (this.mirrorId) this.callbacks.onComplete(this.mirrorId)
+    if (this.mirrorId) {
+      this.callbacks.onComplete(this.mirrorId)
+      this.lastMirroredEntryId = this.mirrorId
+    }
     this.mirrorId = null
+  }
+
+  /** Show a prompt as soon as the attached CLI acknowledges that it was queued. */
+  recordMirroredPrompt(
+    text: string,
+    delivery: PromptDeliveryView = 'normal',
+    operationId?: string,
+  ): void {
+    const trimmed = text.trim()
+    if (!trimmed || this.disposed) return
+    this.mirroredPendingPrompts.push({ text: trimmed, ...(operationId ? { operationId } : {}) })
+    // Bound version-skewed sessions that never mirror completed activity.
+    if (this.mirroredPendingPrompts.length > 50) this.mirroredPendingPrompts.shift()
+    this.appendEntry({
+      id: newId(),
+      kind: 'prompt',
+      text: trimmed,
+      ...(delivery === 'normal' ? {} : { delivery }),
+    })
+  }
+
+  resetMirroredPromptTracking(): void {
+    this.mirroredPendingPrompts.length = 0
+    this.lastMirroredEntryId = null
   }
 
   /**
@@ -2527,11 +3436,50 @@ export class ChatSession {
           case 'prompt':
             // Included, unlike the live path: a prompt typed in the TERMINAL was never
             // appended here, so skipping it would show replies with nothing to reply to.
+            // A prompt sent FROM Rayucode was rendered as soon as the CLI acknowledged
+            // queueing it. Consume its later activity echo instead of showing it twice.
+            //
+            // `block` has no `operationId` today — the CLI does not yet stamp the id it
+            // acknowledged onto the resulting mirrored message (see the comment on
+            // `mirroredPendingPrompts` above). Matching is by text only until that round
+            // trip exists; the `pending.operationId` field above is populated regardless,
+            // ready for the day this branch has an id on `block` to prefer instead.
+            {
+              const pendingIndex = this.mirroredPendingPrompts.findIndex(
+                pending => pending.text === block.text.trim(),
+              )
+              if (pendingIndex !== -1) {
+                this.mirroredPendingPrompts.splice(pendingIndex, 1)
+                break
+              }
+            }
             this.appendEntry({ id: newId(), kind: 'prompt', text: block.text })
             break
-          case 'assistant':
+          case 'assistant': {
+            // If this is the settled copy of a turn that was already streamed
+            // character-by-character, the entry is already in the transcript —
+            // skip it to prevent duplicates.  We consume `lastMirroredEntryId`
+            // on the FIRST assistant block of the batch (one stream = one settled
+            // assistant message) and then fall through normally for any further
+            // assistant blocks in the same activity batch.
+            if (this.lastMirroredEntryId) {
+              const existing = this.entries.find(e => e.id === this.lastMirroredEntryId)
+              this.lastMirroredEntryId = null
+              if (existing?.kind === 'assistant') {
+                // Update the text in-place to the authoritative settled value
+                // (the streamed copy may have a trailing whitespace difference).
+                if (existing.text !== block.text) {
+                  existing.text = block.text
+                  this.emitEntry(existing)
+                }
+                break
+              }
+              // If the entry wasn't found (session reset between stream and activity),
+              // fall through and render normally.
+            }
             this.appendEntry({ id: newId(), kind: 'assistant', text: block.text })
             break
+          }
           case 'tool_use':
             this.appendToolCall(block)
             break
@@ -2563,6 +3511,80 @@ export class ChatSession {
   /** Apply one shared SDK lifecycle event forwarded by an attached CLI. */
   applyMirroredTaskEvent(event: Record<string, unknown>): void {
     this.handleTaskLifecycle(event)
+  }
+
+  /**
+   * Capture exactly the state `applyMirroredActivity` is known to mutate, so it can be
+   * put back after detaching. This is NOT a general session snapshot — `newSession()`
+   * resets a longer list of fields (review state, prompt suggestions, context usage,
+   * inference settings, `currentSessionId`, `hooksByHookId`, ...), none of which
+   * `applyMirroredActivity`'s dispatch touches: it only ever reaches `appendEntry`,
+   * `thinkingBlocks`, `toolsByUseId`, `mirrorId`/`activeThinkingKey`, and — through
+   * `applyToolResult` → `retainToolOutput` — the retained-output map and its byte
+   * counter. Capturing more than that would silently start restoring fields nothing
+   * here ever changes, which is a correctness risk of its own (papering over drift
+   * between this method and whatever mutates those fields next).
+   */
+  snapshotConversationState(): ConversationStateSnapshot {
+    return {
+      entries: [...this.entries],
+      thinkingBlocks: new Map(this.thinkingBlocks),
+      toolsByUseId: new Map(this.toolsByUseId),
+      activeThinkingKey: this.activeThinkingKey,
+      mirrorId: this.mirrorId,
+      retainedToolOutput: new Map(this.retainedToolOutput),
+      retainedOutputChars: this.retainedOutputChars,
+    }
+  }
+
+  /** All accumulated per-tool usage statistics for this session. */
+  getToolStats(): ToolUsageStats[] {
+    return Array.from(this.toolStats.values())
+  }
+
+  /**
+   * Increment the call counter for `toolName`.
+   * Called from `appendToolCall` when a tool_use block arrives.
+   */
+  private recordToolCall(toolName: string): void {
+    const existing = this.toolStats.get(toolName)
+    if (existing) {
+      existing.callCount++
+    } else {
+      this.toolStats.set(toolName, { toolName, callCount: 1, successCount: 0, failureCount: 0 })
+    }
+  }
+
+  /**
+   * Increment success/failure counters for the tool identified by `toolUseId`.
+   * Called from `applyToolResult` when a tool_result block arrives.
+   */
+  private recordToolResult(toolName: string, isError: boolean): void {
+    const stats = this.toolStats.get(toolName)
+    if (!stats) return
+    if (isError) stats.failureCount++
+    else stats.successCount++
+  }
+
+  /**
+   * Put back a snapshot taken before an attachment started. `entries.length = 0` then
+   * `push(...)` rather than reassigning `this.entries`, because `transcript` returns
+   * this exact array by reference — replacing it would leave any caller still holding
+   * the old reference (e.g. `restoreTranscript`'s local iteration) looking at a stale
+   * copy instead of the one the rest of the class now mutates.
+   */
+  restoreConversationState(snapshot: ConversationStateSnapshot): void {
+    this.entries.length = 0
+    this.entries.push(...snapshot.entries)
+    this.thinkingBlocks.clear()
+    for (const [key, value] of snapshot.thinkingBlocks) this.thinkingBlocks.set(key, value)
+    this.toolsByUseId.clear()
+    for (const [key, value] of snapshot.toolsByUseId) this.toolsByUseId.set(key, value)
+    this.activeThinkingKey = snapshot.activeThinkingKey
+    this.mirrorId = snapshot.mirrorId
+    this.retainedToolOutput.clear()
+    for (const [key, value] of snapshot.retainedToolOutput) this.retainedToolOutput.set(key, value)
+    this.retainedOutputChars = snapshot.retainedOutputChars
   }
 
   restoreTranscript(blocks: VSCodeActivityBlock[]): void {
@@ -2651,6 +3673,9 @@ export class ChatSession {
     if (block.toolUseId) this.toolsByUseId.set(block.toolUseId, id)
     const agent = this.agentLabelFor(block.parentToolUseId)
 
+    // Track per-tool call count for the stats panel.
+    this.recordToolCall(block.name)
+
     this.appendEntry({
       id,
       kind: 'tool',
@@ -2663,6 +3688,13 @@ export class ChatSession {
       output: null,
       startedAt: Date.now(),
       ...(agent && { agent }),
+      // The model the subagent ran on. Carried with the agent label rather than
+      // separately because the two are the same fact — which agent, on what — and a
+      // row only ever has one when it has the other.
+      ...(block.agentModel && {
+        agentModel: block.agentModel,
+        ...(block.agentProvider && { agentProvider: block.agentProvider }),
+      }),
       ...(block.questions && { questions: block.questions }),
       ...(block.todos && { todos: block.todos }),
     })
@@ -2839,15 +3871,21 @@ export class ChatSession {
   private handleSessionStateChanged(message: Record<string, unknown>): void {
     switch (message.state) {
       case 'running':
+        this.executionStatus = 'running'
+        this.callbacks.onSessionStatus?.('running')
         this.setTurnRunning(true)
         return
 
       case 'requires_action':
+        this.executionStatus = 'requires_action'
+        this.callbacks.onSessionStatus?.('requires_action')
         // Deliberately does not touch turn state. Blocked is a kind of running.
         this.updateTurnProgress('waiting', 'Waiting for input')
         return
 
       case 'idle': {
+        this.executionStatus = 'idle'
+        this.callbacks.onSessionStatus?.('idle')
         if (!this.turnRunning) return
         this.finishStreaming()
         this.flushPendingReview()
@@ -2935,6 +3973,9 @@ export class ChatSession {
 
     if (!entry || entry.kind !== 'tool') return
 
+    // Track success/failure counts for the stats panel.
+    this.recordToolResult(entry.name, block.isError)
+
     entry.status = block.isError ? 'error' : 'done'
     // Structured tools own their result presentation. Their generic result is a
     // sentence generated from the same data and would duplicate the dedicated card.
@@ -2988,13 +4029,60 @@ export class ChatSession {
       this.callbacks.onPermissionRequest(request)
       return
     }
-    // `hook_callback` and `elicitation` have no UI yet. They are REFUSED rather
-    // than ignored: the engine blocks until answered, so silence would hang the
-    // turn with no indication why.
+    if (request.subtype === 'elicitation') {
+      const raw = request.request
+      const serverName = asString(raw.mcp_server_name)
+      const message = asString(raw.message)
+      if (!serverName || !message) {
+        this.control?.respondError(request.requestId, 'The MCP elicitation was malformed.')
+        return
+      }
+      const view: McpElicitationView = {
+        requestId: request.requestId,
+        serverName,
+        message: clamp(message),
+        mode: raw.mode === 'url' ? 'url' : 'form',
+        ...(asString(raw.url) ? { url: asString(raw.url) } : {}),
+        ...(asString(raw.elicitation_id)
+          ? { elicitationId: asString(raw.elicitation_id) }
+          : {}),
+        ...(asRecord(raw.requested_schema)
+          ? { requestedSchema: asRecord(raw.requested_schema) }
+          : {}),
+      }
+      this.mcpElicitations.set(request.requestId, view)
+      this.updateTurnProgress('waiting', `Waiting for ${serverName}`)
+      this.callbacks.onMcpElicitation?.(view)
+      return
+    }
+    // Hook callbacks are executable SDK callbacks, not user questions. Rayucode does
+    // not register callback IDs, so returning an explicit error is safer than leaving
+    // the shared engine blocked forever or asking a user to fabricate hook output.
     this.control?.respondError(
       request.requestId,
-      `Rayucode does not support "${request.subtype}" yet.`,
+      request.subtype === 'hook_callback'
+        ? 'Rayucode has no registered handler for this hook callback.'
+        : `Rayucode does not support "${request.subtype}" yet.`,
     )
+  }
+
+  /** Resolve an MCP form/URL interaction exactly once through the correlated control pipe. */
+  respondMcpElicitation(
+    requestId: string,
+    action: 'accept' | 'decline' | 'cancel',
+    content?: Record<string, unknown>,
+  ): boolean {
+    const request = this.mcpElicitations.get(requestId)
+    const control = this.control
+    if (!request || !control || !control.isAwaitingResponse(requestId)) return false
+    this.mcpElicitations.delete(requestId)
+    control.respond(requestId, {
+      action,
+      ...(action === 'accept' && content ? { content } : {}),
+    })
+    this.callbacks.onMcpElicitationCancelled?.(requestId)
+    if (this.turnRunning) this.updateTurnProgress('requesting', 'Continuing request')
+    return true
   }
 
   /** The control client, for Task 7's permission responses. */
@@ -3067,21 +4155,25 @@ export class ChatSession {
     try {
       const resp = await this.control.request('mcp_status', {}, 10_000)
       const raw = Array.isArray(resp.mcpServers) ? resp.mcpServers : []
-      this.mcpServersList = raw
-        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-        .map(s => ({
-          name: typeof s.name === 'string' ? s.name : '',
-          status: (typeof s.status === 'string'
-            ? s.status
-            : 'disconnected') as McpServerView['status'],
-          error: typeof s.error === 'string' ? s.error : undefined,
-        }))
-        .filter(s => s.name.length > 0)
-      this.callbacks.onMcpServers?.(this.mcpServersList)
+      this.applyMcpServers(raw)
       return this.mcpServersList
     } catch {
       return []
     }
+  }
+
+  private applyMcpServers(raw: unknown[]): void {
+    this.mcpServersList = raw
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map(s => ({
+          name: typeof s.name === 'string' ? s.name : '',
+          status: normalizeMcpStatus(s.status),
+          supportsOAuth:
+            asRecord(s.config)?.type === 'http' || asRecord(s.config)?.type === 'sse',
+          error: typeof s.error === 'string' ? s.error : undefined,
+        }))
+        .filter(s => s.name.length > 0)
+      this.callbacks.onMcpServers?.(this.mcpServersList)
   }
 
   /**
@@ -3124,10 +4216,182 @@ export class ChatSession {
     }
   }
 
+  /** Start the shared MCP OAuth flow and return only its public hand-off state. */
+  async authenticateMcpServer(serverName: string): Promise<{
+    authUrl?: string
+    requiresUserAction: boolean
+  } | null> {
+    try {
+      await this.ensureStarted()
+      const response = await this.control!.request(
+        'mcp_authenticate',
+        { serverName },
+        30_000,
+      )
+      return {
+        ...(asString(response.authUrl) ? { authUrl: asString(response.authUrl) } : {}),
+        requiresUserAction: response.requiresUserAction === true,
+      }
+    } catch (cause) {
+      this.reportError(
+        `Could not authenticate ${serverName}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+      return null
+    }
+  }
+
+  /** Finish a manual OAuth redirect, then reconnect so its tools become live. */
+  async completeMcpAuthentication(serverName: string, callbackUrl: string): Promise<boolean> {
+    try {
+      await this.control!.request(
+        'mcp_oauth_callback_url',
+        { serverName, callbackUrl },
+        120_000,
+      )
+      return await this.reconnectMcpServer(serverName)
+    } catch (cause) {
+      this.reportError(
+        `Could not finish ${serverName} authentication: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+      return false
+    }
+  }
+
+  async clearMcpAuthentication(serverName: string): Promise<boolean> {
+    try {
+      await this.ensureStarted()
+      await this.control!.request('mcp_clear_auth', { serverName }, 30_000)
+      await this.getMcpStatus()
+      return true
+    } catch (cause) {
+      this.reportError(
+        `Could not clear ${serverName} authentication: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+      return false
+    }
+  }
+
   // ── transcript bookkeeping ─────────────────────────────────────────────────
 
   private appendEntry(entry: TranscriptEntry): void {
     this.entries.push(entry)
+    this.lastEntryAt = Date.now()
+    this.emitEntry(entry)
+    this.trimTranscript()
+  }
+
+  /**
+   * Bound the transcript of record. See MAX_TRANSCRIPT_ENTRIES in the shared
+   * protocol for the sizing rationale; the short version is that this array used
+   * to grow for the whole life of the session — every tool pill with its output,
+   * details and typed result — and a long agentic run turned it into the
+   * extension host's largest heap consumer, with no eviction path short of
+   * `newSession()`.
+   *
+   * ── WHAT MUST NEVER BE EVICTED ─────────────────────────────────────────────
+   *
+   * Eviction is oldest-first, but age is not the only criterion. Four classes of
+   * entry are load-bearing regardless of position, each because a live code path
+   * looks it up BY ID and misbehaves when it is gone:
+   *
+   *   the FIRST prompt    — `labelFor()` (sessionRegistry) and the webview's
+   *                         `deriveSessionTitle` name the conversation from it;
+   *                         losing it renames a live session mid-run.
+   *   the streaming entry — `appendPartial` finds `streamingId`/`mirrorId` in
+   *                         this array and appends deltas to it; evicting it
+   *                         silently drops the rest of the answer being written.
+   *   RUNNING tool pills  — `applyToolResult` resolves its entry through
+   *                         `toolsByUseId` and gives up when the entry is gone,
+   *                         so the tool's result would vanish from the record.
+   *   the live review card and any question still being answered — both are
+   *                         interactive: their actions (/keep, /undo, an answer)
+   *                         post back against the entry id.
+   *
+   * Settled prompts beyond the first, settled tools, old answers and notices are
+   * the evictable bulk, and they are exactly what a session accumulates thousands
+   * of. The engine's session FILE keeps everything regardless — this bounds the
+   * panel's in-memory view, not the conversation's record — so `--resume` after a
+   * restart still restores the full history.
+   */
+  private trimTranscript(): void {
+    // Quantized, not per-append: see MAX_TRANSCRIPT_ENTRIES. Trimming on every
+    // append would shift every visible row once per streamed entry.
+    if (this.entries.length <= MAX_TRANSCRIPT_ENTRIES + TRANSCRIPT_TRIM_STEP) return
+
+    const firstPromptId = this.entries.find(e => e.kind === 'prompt')?.id
+    // Kept DELIBERATELY in step with `isLiveEntry` in the webview reducer: both
+    // sides trim on the same two thresholds, so if one protected a row the other
+    // evicted they would drift apart with no way to notice. The host additionally
+    // knows the review card by id; the webview treats any card it still holds as
+    // live, and the host keeps at most one (see flushPendingReview), so those two
+    // rules coincide.
+    const isProtected = (entry: TranscriptEntry): boolean => {
+      if (entry.id === firstPromptId) return true
+      if (entry.id === this.streamingId || entry.id === this.mirrorId) return true
+      if (entry.id === this.reviewEntryId) return true
+      if (entry.kind === 'tool' && entry.status === 'running') return true
+      if (entry.kind === 'hook' && entry.status === 'running') return true
+      if (entry.kind === 'side_question' && entry.status === 'answering') return true
+      return false
+    }
+
+    const dropped = new Set<EntryId>()
+    let i = 0
+    // Splice in place: `transcript` hands out this exact array by reference (see
+    // restoreConversationState), so reassigning would strand every holder.
+    while (this.entries.length > MAX_TRANSCRIPT_ENTRIES && i < this.entries.length) {
+      const entry = this.entries[i] as TranscriptEntry
+      if (isProtected(entry)) {
+        i++
+        continue
+      }
+      dropped.add(entry.id)
+      this.entries.splice(i, 1)
+    }
+    if (dropped.size === 0) return
+
+    // Drop the sidecars keyed to evicted entries, or they outlive the rows they
+    // belong to: retained output is the biggest (up to 2 MB of it), and the
+    // correlation maps would keep growing per tool call for the whole session.
+    for (const id of dropped) {
+      const retained = this.retainedToolOutput.get(id)
+      if (retained !== undefined) {
+        this.retainedToolOutput.delete(id)
+        this.retainedOutputChars -= retained.length
+      }
+    }
+    for (const [key, block] of this.thinkingBlocks) {
+      if (dropped.has(block.sourceMessageId)) this.thinkingBlocks.delete(key)
+    }
+    for (const [key, entryId] of this.toolsByUseId) {
+      if (dropped.has(entryId)) this.toolsByUseId.delete(key)
+    }
+    for (const [key, entryId] of this.hooksByHookId) {
+      if (dropped.has(entryId)) this.hooksByHookId.delete(key)
+    }
+
+    // Tell the user once, in the transcript, that the panel let go of old rows.
+    // Silence would read as lost messages; repeating it would itself be
+    // transcript growth. The recursive appendEntry re-enters trimTranscript,
+    // which is safe: the flag is already set, and the loop above converges.
+    if (!this.trimNoticeShown) {
+      this.trimNoticeShown = true
+      this.appendEntry({
+        id: newId(),
+        kind: 'notice',
+        severity: 'info',
+        text:
+          'Older messages were hidden from the panel to keep memory usage bounded. ' +
+          'Nothing was lost — the full conversation is in the session file.',
+      })
+    }
+  }
+
+  /** Replace one host-owned entry and publish the same id as an upsert. */
+  private replaceEntry(id: EntryId, entry: TranscriptEntry): void {
+    const index = this.entries.findIndex(candidate => candidate.id === id)
+    if (index === -1) return
+    this.entries[index] = entry
     this.lastEntryAt = Date.now()
     this.emitEntry(entry)
   }
@@ -3199,7 +4463,17 @@ export class ChatSession {
       // keeps and undos that follow the turn.
       this.reviewBaselineChangeIds = new Set(this.reviewKnownChangeIds)
       this.turnStartedAt = Date.now()
-      this.turnStreamedChars = 0
+      // The live output tally is per TURN, so it starts clean here. Left uncleared,
+      // one turn's tokens would carry into the next turn's readout.
+      this.turnCompletedOutputTokens = 0
+      this.turnOutputHasEstimate = false
+      this.messageReportedOutputTokens = 0
+      this.messageStreamedChars = 0
+      // The input parts are per-turn too. Left uncleared, the previous turn's input
+      // would be reported as this turn's until the provider re-reported.
+      this.turnInputDirect = 0
+      this.turnInputCacheRead = 0
+      this.turnInputCacheCreation = 0
       this.activeTurnId = newId()
       this.turnProgress = {
         turnId: this.activeTurnId,
@@ -3233,6 +4507,99 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 /** A string field from an untrusted frame, or undefined when it is any other type. */
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+function isPresentString(value: string | undefined): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
+}
+
+function toRuntimeCommandView(value: unknown): RuntimeCommandView | null {
+  const record = asRecord(value)
+  if (!record || typeof record.name !== 'string' || typeof record.description !== 'string') {
+    return null
+  }
+  const executionKind = record.executionKind
+  const surface = record.surface
+  if (
+    executionKind !== 'prompt' && executionKind !== 'local' && executionKind !== 'local-jsx'
+  ) return null
+  if (
+    surface !== 'prompt' && surface !== 'panel' && surface !== 'action' && surface !== 'terminal_only'
+  ) return null
+  return {
+    name: record.name,
+    description: record.description,
+    aliases: stringArray(record.aliases),
+    argumentHint: asString(record.argumentHint) ?? '',
+    executionKind,
+    surface,
+    origin: asString(record.origin) ?? 'builtin',
+    available: record.available === true,
+    ...(asString(record.unavailableReason)
+      ? { unavailableReason: asString(record.unavailableReason) }
+      : {}),
+    workflow: record.workflow === true,
+    sensitive: record.sensitive === true,
+  }
+}
+
+function toRuntimeToolView(value: unknown): RuntimeToolView | null {
+  const record = asRecord(value)
+  const source = record?.source
+  if (
+    !record ||
+    typeof record.name !== 'string' ||
+    (source !== 'builtin' && source !== 'mcp' && source !== 'lsp')
+  ) return null
+  return {
+    name: record.name,
+    aliases: stringArray(record.aliases),
+    source,
+    ...(asString(record.serverName) ? { serverName: asString(record.serverName) } : {}),
+    ...(asRecord(record.inputSchema) ? { inputSchema: asRecord(record.inputSchema) } : {}),
+    deferred: record.deferred === true,
+    alwaysLoad: record.alwaysLoad === true,
+    requiresUserInteraction: record.requiresUserInteraction === true,
+  }
+}
+
+function mapRuntimeRows<T>(
+  value: unknown,
+  project: (item: unknown) => T | null,
+): T[] {
+  return Array.isArray(value)
+    ? value.map(project).filter((item): item is T => item !== null)
+    : []
+}
+
+function toRuntimeAgentView(value: unknown): RuntimeAgentView | null {
+  const parsed = RuntimeAgentDescriptorSchema().safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
+function toRuntimePluginView(value: unknown): RuntimePluginView | null {
+  const parsed = RuntimePluginDescriptorSchema().safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
+function toRuntimeSkillView(value: unknown): RuntimeSkillView | null {
+  const parsed = RuntimeSkillDescriptorSchema().safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
+function toBackgroundTaskView(value: unknown): BackgroundTaskView | null {
+  const parsed = RuntimeBackgroundTaskSchema().safeParse(value)
+  return parsed.success ? parsed.data : null
 }
 
 /** The status wording a hook entry carries. Kept in step with the protocol's union. */
@@ -3307,59 +4674,21 @@ function labelForPhase(phase: TurnPhaseView): string {
   }
 }
 
-function normalizeTaskType(value: string | undefined): BackgroundTaskType {
-  if (value === 'local_bash') return 'local_shell'
-  switch (value) {
-    case 'local_agent':
-    case 'in_process_teammate':
-    case 'local_shell':
-    case 'remote_agent':
-    case 'external_agent':
-    case 'local_workflow':
-    case 'monitor_mcp':
-    case 'dream':
-      return value
-    default:
-      return 'unknown'
-  }
-}
-
-function taskGroup(type: BackgroundTaskType): BackgroundTaskView['group'] {
-  switch (type) {
-    case 'local_agent':
-    case 'in_process_teammate':
-      return 'agents'
-    case 'local_shell':
-      return 'shells'
-    case 'local_workflow':
-      return 'workflows'
-    case 'remote_agent':
-    case 'external_agent':
-      return 'remote'
-    case 'monitor_mcp':
-      return 'monitors'
-    default:
-      return 'other'
-  }
-}
-
-function taskCapabilities(
-  type: BackgroundTaskType,
-  running: boolean,
-): BackgroundTaskView['capabilities'] {
-  const agent = type === 'local_agent' || type === 'in_process_teammate'
-  return {
-    canStop: running,
-    // Follow-up routing requires the execution owner's live task store. The standalone
-    // engine does not expose that operation yet, so do not render a control that lies.
-    canSendMessage: false,
-    hasTranscript: agent,
-    hasOutput: type === 'local_shell' || type === 'monitor_mcp' || type === 'local_workflow',
-  }
-}
-
 function isTerminalBackgroundStatus(status: BackgroundTaskView['status']): boolean {
   return status === 'completed' || status === 'failed' || status === 'stopped'
+}
+
+function normalizeMcpStatus(value: unknown): McpServerView['status'] {
+  // An unrecognized status string means a newer engine sent a value this build predates,
+  // not that the server failed. Defaulting to 'pending' keeps the row looking "in
+  // progress" (forward-compatible) instead of surfacing a false hard failure to the user.
+  return value === 'connected' ||
+    value === 'failed' ||
+    value === 'needs-auth' ||
+    value === 'pending' ||
+    value === 'disabled'
+    ? value
+    : 'pending'
 }
 
 function appendTaskActivity(
@@ -3482,4 +4811,3 @@ function summarizeTranscript(content: string): string {
     .filter((entry, index) => entry !== '(thinking)' || lines[index - 1] !== '(thinking)')
     .join('\n')
 }
-

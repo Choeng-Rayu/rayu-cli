@@ -289,6 +289,7 @@ describe('VSIX packaging and version synchronization', () => {
     expect(list).toContain('extension/media/webview.css')
     expect(list).toContain('extension/media/icon.svg')
     expect(list).toContain('extension/media/icon.png')
+    expect(list).toContain('extension/media/sprite-goose.png')
     expect(list).toContain('extension/readme.md')
     expect(list).toContain('extension/changelog.md')
 

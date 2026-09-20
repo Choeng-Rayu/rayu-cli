@@ -52,6 +52,8 @@ const STATUS_TEXT = {
 export function ActivityGroup({
   activity,
   agent,
+  agentProvider,
+  agentModel,
   tools,
   detailed,
   toolOverrides,
@@ -63,6 +65,9 @@ export function ActivityGroup({
   activity: ActivityKind
   /** The subagent that ran these calls, when it was not the main thread. */
   agent?: string
+  /** Provider/model that subagent ran on, shown beside its name. */
+  agentProvider?: string
+  agentModel?: string
   tools: ToolEntry[]
   /** Expand every member's parameters and output. */
   detailed?: boolean
@@ -126,7 +131,11 @@ export function ActivityGroup({
           <ChevronIcon size={10} direction={expanded ? 'down' : 'right'} />
         </span>
         {live ? (
-          <ProgressGlyph />
+          // A tool call is running — the editing/running row (the laptop/sparkles
+          // frame) reads correctly here specifically because this group IS tool
+          // execution, unlike the general "thinking" default used where no more
+          // specific activity is known.
+          <ProgressGlyph state="running" />
         ) : (
           <span className="rc-activity-dot" aria-hidden="true" />
         )}
@@ -136,6 +145,19 @@ export function ActivityGroup({
         {agent ? (
           <span className="rc-activity-actor" title={agent}>
             {agent}
+          </span>
+        ) : null}
+        {/* WHICH model the subagent ran on. A background agent can be routed to a
+            different — often pricier — model than the main thread, so its name alone
+            does not tell the user what is actually being spent. Formatted exactly
+            like the background-task row so the two surfaces agree. */}
+        {agentModel ? (
+          <span
+            className="rc-activity-actor rc-activity-model"
+            title={`Model: ${agentProvider ? `${agentProvider}/` : ''}${agentModel}`}
+          >
+            {agentProvider ? `${agentProvider}/` : ''}
+            {agentModel}
           </span>
         ) : null}
         {newest ? <span className="rc-activity-latest">{newest}</span> : null}

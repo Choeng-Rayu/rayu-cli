@@ -39,6 +39,8 @@ export interface ModelDropdownProps {
   catalogue: ModelCatalogueView
   onSelect: (value: string) => void
   onRefresh: () => void
+  /** Incremented when a typed `/model` command asks this control to open. */
+  openRequest?: number
 }
 
 export function ModelDropdown({
@@ -46,9 +48,16 @@ export function ModelDropdown({
   catalogue,
   onSelect,
   onRefresh,
+  openRequest,
 }: ModelDropdownProps): JSX.Element {
   const [open, setOpen] = useState(false)
   const container = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!openRequest) return
+    setOpen(true)
+    onRefresh()
+  }, [openRequest])
 
   // Close on an outside click. Registered only while open so the panel does not carry
   // a document-level listener for a control nobody is using.
@@ -96,6 +105,5 @@ export function ModelDropdown({
     </div>
   )
 }
-
 
 

@@ -94,9 +94,13 @@ export interface RayuEntitlements {
   /**
    * Paid-plan credit allowance from the backend (`/me/entitlements`). This is a
    * per-billing-period balance consumed by the gateway — 1 credit =
-   * (1e6 / baselineCreditsPer1M) tokens. The legacy windowed fields
-   * (creditsPerWeek/creditsPer5h) are gone; the gateway is the billing source of
-   * truth and reports live usage via GET /v1/credits.
+   * (1e6 / baselineCreditsPer1M) tokens.
+   *
+   * The PACING windows (`plans.limits.creditsPerWeek`/`creditsPer5h`) are NOT
+   * mirrored here, deliberately: the gateway owns them and reports both the caps
+   * and the live per-window usage on `GET /v1/credits`, which is what
+   * `rayuCredits.ts` reads. Adding them to this cache would create a second,
+   * staler copy of numbers the gateway already owns.
    */
   creditAllowance?: {
     creditsPerPeriod: number | null

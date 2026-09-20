@@ -14,7 +14,7 @@ const desktop = {
   type: 'local-jsx',
   name: 'desktop',
   aliases: ['app'],
-  description: 'Continue the current session in Claude Desktop',
+  description: 'Continue the current session in Rayucode Desktop',
   availability: ['claude-ai'],
   isEnabled: isSupportedPlatform,
   get isHidden() {

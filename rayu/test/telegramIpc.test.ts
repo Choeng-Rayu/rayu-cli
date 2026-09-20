@@ -855,6 +855,49 @@ describe('parsePromptPayload', () => {
     ).toEqual({ value: blocks, mode: 'task-notification' })
   })
 
+  test.each(['now', 'next', 'later'] as const)(
+    'preserves the shared %s queue priority',
+    priority => {
+      expect(parsePromptPayload({ value: 'follow up', mode: 'prompt', priority })).toEqual({
+        value: 'follow up',
+        mode: 'prompt',
+        priority,
+      })
+    },
+  )
+
+  test('rejects an unknown queue priority', () => {
+    expect(() =>
+      parsePromptPayload({ value: 'follow up', mode: 'prompt', priority: 'urgent' }),
+    ).toThrow(/priority/)
+  })
+
+  test('preserves an operationId when the caller supplies one', () => {
+    expect(
+      parsePromptPayload({ value: 'hello', mode: 'prompt', operationId: 'op-123' }),
+    ).toEqual({ value: 'hello', mode: 'prompt', operationId: 'op-123' })
+  })
+
+  test('omits operationId entirely when the caller predates it', () => {
+    // An older panel build has no operationId to send at all — the field must be
+    // genuinely absent from the parsed result, not present-and-undefined, so a
+    // downstream `'operationId' in prompt` check reads the version gap correctly.
+    const parsed = parsePromptPayload({ value: 'hello', mode: 'prompt' })
+    expect('operationId' in parsed).toBe(false)
+  })
+
+  test('rejects an empty-string operationId', () => {
+    expect(() =>
+      parsePromptPayload({ value: 'hello', mode: 'prompt', operationId: '' }),
+    ).toThrow(/operationId/)
+  })
+
+  test('rejects a non-string operationId', () => {
+    expect(() =>
+      parsePromptPayload({ value: 'hello', mode: 'prompt', operationId: 42 }),
+    ).toThrow(/operationId/)
+  })
+
   test.each<[string, unknown]>([
     ['a non-object', 'just a string'],
     ['null', null],

@@ -68,6 +68,14 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
 
+// Message-count safety net for large-context models. With a 1M-token context
+// window the token threshold is ~967K, so sessions can accumulate thousands
+// of messages (observed: 3037 messages / 25 MB with zero compactions) before
+// hitting it. Each message is 3-5x its JSON size in V8 heap, so 800+ messages
+// is tens of MB of live objects. This cap catches that case without affecting
+// normal 200K sessions (which compact at ~150-300 messages).
+const AUTO_COMPACT_MESSAGE_COUNT_CAP = 800
+
 export function getAutoCompactThreshold(model: string): number {
   const effectiveContextWindow = getEffectiveContextWindowSize(model)
 
@@ -226,7 +234,7 @@ export async function shouldAutoCompact(
   const effectiveWindow = getEffectiveContextWindowSize(model)
 
   logForDebugging(
-    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
+    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow} messages=${messages.length}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
   )
 
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
@@ -234,7 +242,23 @@ export async function shouldAutoCompact(
     model,
   )
 
-  return isAboveAutoCompactThreshold
+  if (isAboveAutoCompactThreshold) return true
+
+  // Safety net: for large-context models (e.g. 1M tokens) the token threshold
+  // is so high that it may never fire, letting the in-memory messages array
+  // grow unbounded. A hard message-count cap prevents OOM in sessions that
+  // would otherwise never compact. The count is generous enough that it never
+  // fires for normal 200K-context sessions (those compact well before 800
+  // messages), but catches the 1M+ case where 3000+ messages accumulated with
+  // zero compactions.
+  if (messages.length >= AUTO_COMPACT_MESSAGE_COUNT_CAP) {
+    logForDebugging(
+      `autocompact: message count ${messages.length} ≥ ${AUTO_COMPACT_MESSAGE_COUNT_CAP} — forcing compaction`,
+    )
+    return true
+  }
+
+  return false
 }
 
 export async function autoCompactIfNeeded(

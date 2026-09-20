@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import type { TodoItemView, TranscriptEntry } from '../../shared/webviewProtocol.js'
 import { ChevronIcon, TaskListIcon } from './Icons.js'
+import { SpriteAvatar } from './SpriteAvatar.js'
 
 export type TodoToolEntry = Extract<TranscriptEntry, { kind: 'tool' }> & {
   todos: TodoItemView[]
@@ -120,15 +121,28 @@ export function TodoListCard({
  *   pending:     figures.squareSmall       (◻)  color: default foreground
  *
  * The CLI does NOT animate the in-progress icon itself — it stays a static filled
- * square. What moves is a SEPARATE trailing activity line under the row (handled below
- * by `rc-todo-active`), matching `TaskItem`'s `showActivity` line in `TaskListV2.tsx`.
+ * square. What moves there is a SEPARATE trailing activity line under the row (handled
+ * below by `rc-todo-active`), matching `TaskItem`'s `showActivity` line in `TaskListV2.tsx`.
+ *
+ * The PANEL's `in_progress` row diverges from that CLI convention on explicit request:
+ * it renders the animated sprite locked to the editing/running row (row 7, the
+ * laptop/sparkles frame) rather than a static square — a task actually in progress is
+ * exactly the "the character is at its laptop, working" moment the sprite atlas has a
+ * row for, and unlike the CLI's fixed-width terminal cell, a 14px inline glyph here costs
+ * nothing extra to animate. This is NOT phase-driven (a todo item carries no
+ * `TurnPhaseView` of its own — `TodoItemView.status` is a plain three-state enum): it is
+ * a fixed state for the one status value, same as `completed`/`pending` are fixed glyphs.
  */
 function TodoStatusIcon({ status }: { status: TodoItemView['status'] }): JSX.Element {
   if (status === 'completed') {
     return <span className="rc-todo-status rc-todo-status-completed" aria-label="Completed">&#10004;</span>
   }
   if (status === 'in_progress') {
-    return <span className="rc-todo-status rc-todo-status-active" aria-label="In progress">&#9724;</span>
+    return (
+      <span className="rc-todo-status rc-todo-status-active" role="img" aria-label="In progress">
+        <SpriteAvatar state="running" size={14} />
+      </span>
+    )
   }
   return <span className="rc-todo-status rc-todo-status-pending" aria-label="Pending">&#9723;</span>
 }

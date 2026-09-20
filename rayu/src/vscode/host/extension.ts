@@ -27,7 +27,7 @@ import { dirname } from 'node:path'
 import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 
 import { ChatViewProvider, CHAT_VIEW_ID } from './panel/chatViewProvider.js'
-import { ChatSession } from './panel/sessionHandle.js'
+import { ChatSession, type ConversationStateSnapshot } from './panel/sessionHandle.js'
 import {
   SessionRegistry,
   type SessionEntry,
@@ -84,6 +84,7 @@ import type {
   ProviderSetupView,
   SessionSummaryView,
   ImageInputView,
+  PromptDeliveryView,
   WebviewState,
 } from '../shared/webviewProtocol.js'
 
@@ -347,6 +348,15 @@ export function activate(context: vscode.ExtensionContext): void {
   let attachment: AttachmentView = { available: undefined, attached: null, error: null }
   let liveAttachment: CliAttachment | null = null
   let standaloneTaskSnapshot: BackgroundTaskView[] = []
+  /**
+   * What the standalone session's transcript/thinking/tool-correlation/retained-output
+   * looked like right before this attach began. `null` while nothing is attached — the
+   * only state genuinely worth restoring is what `applyMirroredActivity` can mutate; see
+   * `snapshotConversationState`'s header for why this is narrower than a full session
+   * snapshot (context usage, inference settings, and review state are never touched by
+   * the mirrored path, so they need no capture here at all).
+   */
+  let standaloneConversationSnapshot: ConversationStateSnapshot | null = null
   let taskInspectionSupported = true
   let taskInspectionMessage: string | undefined
   /**
@@ -526,6 +536,35 @@ export function activate(context: vscode.ExtensionContext): void {
             provider.post({ type: 'replaceTaskState', tasks, supported: true })
           }
         },
+        onRuntimeCatalogue: (capabilities, commands, tools, resources) => {
+          if (isActive()) {
+            provider.post({
+              type: 'setRuntimeCatalogue',
+              capabilities,
+              commands,
+              tools,
+              ...resources,
+            })
+          }
+        },
+        onRateLimit: rateLimit => {
+          if (isActive()) provider.post({ type: 'setRateLimit', rateLimit })
+        },
+        onEngineAuthStatus: status => {
+          if (isActive()) provider.post({ type: 'setEngineAuthStatus', status })
+        },
+        onSessionStatus: status => {
+          if (isActive()) provider.post({ type: 'setSessionStatus', status })
+        },
+        onPromptSuggestion: suggestion => {
+          if (isActive()) provider.post({ type: 'setPromptSuggestion', suggestion })
+        },
+        onMcpElicitation: request => {
+          if (isActive()) provider.post({ type: 'showMcpElicitation', request })
+        },
+        onMcpElicitationCancelled: requestId => {
+          if (isActive()) provider.post({ type: 'dismissMcpElicitation', requestId })
+        },
       }),
       onShowPermission: request =>
         provider.post({ type: 'showPermissionRequest', request }),
@@ -556,6 +595,24 @@ export function activate(context: vscode.ExtensionContext): void {
       sessions: registry.summaries(),
       activeKey: registry.activeSessionKey,
     })
+  }
+
+  /**
+   * Put the standalone session's transcript back the way it was before this
+   * attachment started, then re-derive the panel from it — the same "one full sync
+   * is simpler and more honest than replaying deltas" rule `onActivate` already
+   * uses when switching which conversation is on screen. Tasks are restored
+   * separately by the caller because `standaloneTaskSnapshot`/`applyMirroredTaskSnapshot`
+   * predates this function and already has its own preserve-completed semantics.
+   */
+  function restoreStandaloneConversation(): void {
+    if (standaloneConversationSnapshot) {
+      current().session.restoreConversationState(standaloneConversationSnapshot)
+      standaloneConversationSnapshot = null
+    }
+    current().session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
+    review.store.replace(current().session.reviewFiles)
+    provider.syncState()
   }
 
   let catalogueRefresh: Promise<void> | null = null
@@ -671,7 +728,13 @@ export function activate(context: vscode.ExtensionContext): void {
       case 'choose':
         // The catalogue is what the picker lists, and it may not have been fetched yet.
         void refreshModels()
-        setModelChooser(buildChooser(command.target, command.agentType))
+        setModelChooser(
+          buildChooser(
+            command.target,
+            command.agentType,
+            current().session.subagentTypes,
+          ),
+        )
         return
     }
   }
@@ -695,7 +758,7 @@ export function activate(context: vscode.ExtensionContext): void {
       ),
     {
       ready: prewarmSession,
-      submitPrompt: async (text, images) => {
+      submitPrompt: async (text, images, delivery = 'normal') => {
         // The CLI implementations of these commands render Ink UI and are therefore
         // absent from the non-interactive engine. Route them to Rayucode's existing
         // native surfaces before the sign-in gate, so `/login` is reachable while the
@@ -709,11 +772,81 @@ export function activate(context: vscode.ExtensionContext): void {
           await openProviderSetupSurface(true)
           return
         }
+        if (hostCommand === 'logout') {
+          await runSignOut(provider)
+          return
+        }
+        if (hostCommand === 'reload-plugins') {
+          await current().session.reloadPlugins()
+          return
+        }
+        const runtimeSection = rayucodeRuntimeSectionCommand(text)
+        if (runtimeSection === 'tasks') {
+          provider.post({ type: 'openTaskCenter' })
+          return
+        }
+        const inferenceCommand = parseRayucodeInferenceCommand(text)
+        if (inferenceCommand?.kind === 'open') {
+          provider.post({ type: 'openComposerControl', control: inferenceCommand.control })
+          return
+        }
+        if (inferenceCommand?.kind === 'effort') {
+          await current().session.setEffort(inferenceCommand.level)
+          return
+        }
+        if (inferenceCommand?.kind === 'model') {
+          await current().session.setModel(inferenceCommand.model)
+          await refreshModels(inferenceCommand.model)
+          provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(current().session) })
+          return
+        }
+        if (runtimeSection) {
+          provider.post({ type: 'openRuntimeCenter', section: runtimeSection })
+          return
+        }
+        const skillInstall = parseSkillInstallCommand(text)
+        if (skillInstall) {
+          await current().session.installSkill(skillInstall.source, skillInstall.overwrite)
+          return
+        }
         // These are `local-jsx` in the CLI and therefore absent from the engine too, but
         // unlike /login they take arguments — so they are parsed rather than matched.
         const settingCommand = parseModelSettingCommand(text, current().session.subagentTypes)
         if (settingCommand) {
           await runModelSettingCommand(settingCommand)
+          return
+        }
+        const sideQuestion = parseSideQuestionCommand(text)
+        if (sideQuestion !== null) {
+          // An attached CLI owns authentication and execution. Its account may be
+          // valid while standalone Rayucode is signed out, so only apply the local
+          // sign-in gate when the local engine will answer the side question.
+          if (!liveAttachment) {
+            const gate = checkTurnAllowed()
+            if (!gate.allowed) {
+              provider.syncState()
+              provider.post({ type: 'showError', message: gate.reason })
+              return
+            }
+          }
+          if (liveAttachment) {
+            const attachment = liveAttachment
+            await current().session.askSideQuestion(
+              sideQuestion,
+              question => {
+                if (attachment.capabilities?.features.sideQuestions === false) {
+                  return Promise.reject(
+                    new Error(
+                      'The attached CLI does not support /btw. Update it and reattach to use this.',
+                    ),
+                  )
+                }
+                return attachment.askSideQuestion(question)
+              },
+            )
+          } else {
+            await current().session.askSideQuestion(sideQuestion)
+          }
           return
         }
         if (liveAttachment && (images?.length ?? 0) > 0) {
@@ -724,12 +857,22 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
         if (liveAttachment) {
-          await liveAttachment.submitPrompt(text)
+          try {
+            const operationId = await liveAttachment.submitPrompt(text, delivery)
+            current().session.recordMirroredPrompt(text, delivery, operationId)
+          } catch (cause) {
+            provider.post({
+              type: 'showError',
+              message: `The attached CLI did not accept the message: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            })
+          }
           return
         }
         const acceptedImages = validateImageInputs(images, provider)
         if (acceptedImages === null) return
-        await submitPrompt(current().session, provider, text, acceptedImages)
+        await submitPrompt(current().session, provider, text, acceptedImages, delivery)
       },
       interrupt: () => current().session.interrupt(),
       newSession: () => {
@@ -775,10 +918,9 @@ export function activate(context: vscode.ExtensionContext): void {
         })
       },
       refreshModelCatalogue: refreshModels,
-      // Effort goes through the CLI's own `/effort` command — see sessionHandle.setEffort.
-      // Thinking has no control request: it is forced on for the whole session by the
-      // `--thinking enabled` spawn flag, which is the only mechanism that outranks the
-      // user's `alwaysThinkingEnabled` setting.
+      // Both settings are acknowledged by the owning engine before the controls update.
+      // Rayucode persists them in its product profile, separate from the terminal CLI.
+
       listAttachable: async () => {
         const outcome = await listAttachTargets({ enginePath, cwd: engineCwdRealpath }, engineCwdRealpath)
         attachTargets = outcome.targets ?? []
@@ -795,6 +937,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // would interleave unrelated conversations with no way to tell them apart.
         liveAttachment?.detach()
         liveAttachment = null
+        current().session.resetMirroredPromptTracking()
 
         const target = attachTargets.find(t => t.pid === pid)
         if (!target) {
@@ -808,6 +951,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         standaloneTaskSnapshot = [...current().session.backgroundTasks]
+        standaloneConversationSnapshot = current().session.snapshotConversationState()
         await current().session.restoreTaskHistory(target.sessionId, target.cwd)
         const handle = await attachToCliSession(target, {
           onStreamStart: () => current().session.beginMirroredTurn(),
@@ -836,7 +980,7 @@ export function activate(context: vscode.ExtensionContext): void {
             liveAttachment = null
             taskInspectionSupported = true
             taskInspectionMessage = undefined
-            current().session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
+            restoreStandaloneConversation()
             attachment = {
               ...attachment,
               attached: null,
@@ -865,9 +1009,10 @@ export function activate(context: vscode.ExtensionContext): void {
       detachFromSession: () => {
         liveAttachment?.detach()
         liveAttachment = null
+        current().session.resetMirroredPromptTracking()
         taskInspectionSupported = true
         taskInspectionMessage = undefined
-        current().session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
+        restoreStandaloneConversation()
         attachment = { ...attachment, attached: null, error: null }
         postAttachment()
         prewarmSession()
@@ -956,6 +1101,11 @@ export function activate(context: vscode.ExtensionContext): void {
       },
 
       setEffort: level => current().session.setEffort(level),
+      mcpElicitationResponse: (requestId, action, content) => {
+        current().session.respondMcpElicitation(requestId, action, content)
+      },
+      reloadPlugins: () => current().session.reloadPlugins(),
+      installSkill: (source, overwrite) => current().session.installSkill(source, overwrite),
       cyclePermissionMode: async () => {
         const next = nextPermissionMode(current().session.currentPermissionMode.id)
         // Post either way. On success the pill moves to the accepted mode; on refusal it
@@ -984,7 +1134,21 @@ export function activate(context: vscode.ExtensionContext): void {
       reviewUndo: path =>
         submitPrompt(current().session, provider, reviewCommand('undo', path)),
       openReviewDiff: path => openReviewDiff(review.store, path),
-      openFile: path => openReviewFile(path),
+      openFile: path => openReviewFile(review.store, path),
+      openExternal: async rawUrl => {
+        try {
+          const url = new URL(rawUrl)
+          if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+            throw new Error('Only http(s) URLs can be opened.')
+          }
+          await vscode.env.openExternal(vscode.Uri.parse(url.toString()))
+        } catch (cause) {
+          provider.post({
+            type: 'showError',
+            message: cause instanceof Error ? cause.message : 'That URL could not be opened.',
+          })
+        }
+      },
       signIn: async () => {
         await signInToRayucode()
       },
@@ -1098,11 +1262,43 @@ export function activate(context: vscode.ExtensionContext): void {
         // model is a no-op, and respawning for it would cost the user a reload for nothing.
         if (notice) await restartEngineWithResume()
       },
+      modelChooserTarget: agentType => {
+        if (modelChooser?.target !== 'subagent') return
+        setModelChooser(
+          buildChooser('subagent', agentType, current().session.subagentTypes),
+        )
+      },
       modelChooserDismiss: () => setModelChooser(null),
       mcpToggle: async (serverName, enabled) => {
         await current().session.toggleMcpServer(serverName, enabled)
-      },      mcpReconnect: async serverName => {
+      },
+      mcpReconnect: async serverName => {
         await current().session.reconnectMcpServer(serverName)
+      },
+      mcpAuthenticate: async serverName => {
+        const auth = await current().session.authenticateMcpServer(serverName)
+        if (!auth) return
+        if (!auth.requiresUserAction) {
+          await current().session.getMcpStatus()
+          return
+        }
+        if (!auth.authUrl) {
+          provider.post({ type: 'showError', message: `${serverName} did not provide an authentication URL.` })
+          return
+        }
+        await vscode.env.openExternal(vscode.Uri.parse(auth.authUrl))
+        const callbackUrl = await vscode.window.showInputBox({
+          title: `Finish ${serverName} authentication`,
+          prompt: 'After signing in, paste the full redirect URL here.',
+          ignoreFocusOut: true,
+          password: true,
+        })
+        if (callbackUrl?.trim()) {
+          await current().session.completeMcpAuthentication(serverName, callbackUrl.trim())
+        }
+      },
+      mcpClearAuth: async serverName => {
+        await current().session.clearMcpAuthentication(serverName)
       },
       getMcpStatus: async () => {
         const servers = await current().session.getMcpStatus()
@@ -1438,6 +1634,18 @@ function buildState(
     commands: [...session.commands],
     contextUsage: session.contextUsage,
     mcpServers: [...session.mcpServers],
+    runtimeCapabilities: session.currentRuntimeCapabilities,
+    runtimeCommands: [...session.runtimeCommands],
+    runtimeTools: [...session.runtimeTools],
+    runtimeAgents: [...session.runtimeAgents],
+    runtimePlugins: [...session.runtimePlugins],
+    runtimeSkills: [...session.runtimeSkills],
+    runtimeWorkflows: [...session.runtimeWorkflows],
+    rateLimit: session.currentRateLimit,
+    engineAuthStatus: session.currentEngineAuthStatus,
+    sessionStatus: session.currentExecutionStatus,
+    promptSuggestion: session.currentPromptSuggestion,
+    mcpElicitations: [...session.pendingMcpElicitations],
     ideContext,
     // Full `init` snapshots replace webview state. Carry the host-owned history
     // list so unrelated model/auth/context syncs cannot erase an open picker.
@@ -1466,6 +1674,7 @@ async function submitPrompt(
   provider: ChatViewProvider,
   text: string,
   images: ImageInputView[] = [],
+  delivery: PromptDeliveryView = 'normal',
 ): Promise<void> {
   const gate = checkTurnAllowed()
   if (!gate.allowed) {
@@ -1475,7 +1684,48 @@ async function submitPrompt(
     provider.post({ type: 'showError', message: gate.reason })
     return
   }
-  await session.submitPrompt(text, images)
+  await session.submitPrompt(text, images, delivery)
+}
+
+/** Return the `/btw` argument, including an empty argument for the usage card. */
+function parseSideQuestionCommand(text: string): string | null {
+  const match = /^\s*\/btw(?:\s+([\s\S]*))?\s*$/.exec(text)
+  return match ? (match[1] ?? '').trim() : null
+}
+
+/** Map interactive CLI catalog commands onto their native Rayucode management view. */
+function rayucodeRuntimeSectionCommand(
+  text: string,
+): import('../shared/webviewProtocol.js').RuntimeSectionView | 'tasks' | null {
+  const command = text.trim().toLowerCase()
+  if (command === '/mcp') return 'mcp'
+  if (command === '/skills' || command === '/workflows') return 'skills'
+  if (command === '/plugin' || command === '/plugins') return 'plugins'
+  if (command === '/agents') return 'agents'
+  if (command === '/tasks') return 'tasks'
+  return null
+}
+
+type RayucodeInferenceCommand =
+  | { kind: 'open'; control: 'model' | 'effort' }
+  | { kind: 'model'; model: string }
+  | { kind: 'effort'; level: import('../shared/inferenceSettings.js').EffortChoice }
+
+function parseRayucodeInferenceCommand(text: string): RayucodeInferenceCommand | null {
+  const match = /^\s*\/(model|effort)(?:\s+([^\s]+))?\s*$/i.exec(text)
+  if (!match) return null
+  const command = match[1]!.toLowerCase()
+  const value = match[2]
+  if (!value) return { kind: 'open', control: command as 'model' | 'effort' }
+  if (command === 'model') return { kind: 'model', model: value }
+  const effort = value.toLowerCase()
+  if (effort === 'auto') return { kind: 'effort', level: null }
+  if (effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'max') {
+    return { kind: 'effort', level: effort }
+  }
+  // Recognised command with an invalid argument: opening the authoritative list is
+  // more useful than sending the malformed slash command to the model.
+  return { kind: 'open', control: 'effort' }
 }
 
 /**
@@ -1567,11 +1817,27 @@ function fenceTerminalSelection(selection: string): string {
  * the model unchanged. The model-setting commands DO take arguments, so they are parsed by
  * `parseModelSettingCommand`, which applies the same first-token rule.
  */
-function rayucodeHostSlashCommand(text: string): 'login' | 'connect' | null {
+function rayucodeHostSlashCommand(
+  text: string,
+): 'login' | 'connect' | 'logout' | 'reload-plugins' | null {
   const command = text.trim()
   if (command === '/login') return 'login'
   if (command === '/connect') return 'connect'
+  if (command === '/logout') return 'logout'
+  if (command === '/reload-plugins') return 'reload-plugins'
   return null
+}
+
+function parseSkillInstallCommand(
+  text: string,
+): { source: string; overwrite: boolean } | null {
+  const match = /^\/install-skill(?:\s+([\s\S]*))?$/.exec(text.trim())
+  if (!match) return null
+  const tokens = (match[1] ?? '').split(/\s+/).filter(Boolean)
+  return {
+    source: tokens.filter(token => token !== '--overwrite').join(' '),
+    overwrite: tokens.includes('--overwrite'),
+  }
 }
 
 async function runSignIn(

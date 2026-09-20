@@ -1,8 +1,8 @@
-// Shared fragments for Tier-3 subagents.
+// Shared fragments for built-in specialist subagents.
 //
 // Subagents are EPHEMERAL: spawned with a fresh session, no memory of the past,
 // no future. They receive a self-contained task packet, do exactly one job, and
-// return a concise result to the caller (the Orchestrator or a Collaborator).
+// return a concise result to the caller (normally the Orchestrator).
 // They never write to the shared project state directly — results flow back
 // through the caller.
 

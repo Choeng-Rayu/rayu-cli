@@ -39,16 +39,41 @@ let interval: ReturnType<typeof setInterval> | null = null
 // -Infinity so the first crossing always fires (now - (-Infinity) > debounce).
 let lastMitigationAt = Number.NEGATIVE_INFINITY
 let cleanupFn: (() => void) | null = null
+let userTimingFn: (() => boolean) | null = null
 
 /** On by default for interactive sessions; opt out with RAYU_MEM_GUARD=0. */
 export function isMemoryGuardEnabled(): boolean {
   return !isEnvDefinedFalsy(process.env.RAYU_MEM_GUARD)
 }
 
+/**
+ * Register (or clear, with null) a predicate answering "is a profiler that
+ * depends on the User Timing buffer active right now?".
+ *
+ * The same shape as `setMemoryPressureCleanup` below, and for the same reason:
+ * this module is a leaf utility that must not import the profilers to know
+ * about them. The owner of the marks declares them in use.
+ *
+ * WHY THIS EXISTS: `clearUserTimingBuffer` clears the buffer WHOLESALE
+ * (`perf.clearMarks()` with no name), so a profiler keeping marks across a long
+ * turn loses them mid-turn to the routine hygiene tick. The headless profiler —
+ * the one that runs in the `--print` engine the VS Code extension spawns —
+ * records `turn_start` and reads it back at the END of the turn, so a turn
+ * longer than the 30s tick silently reported nothing. That is exactly the
+ * long-turn case the guard was added for, which is why the two must not
+ * disagree.
+ */
+export function setUserTimingInUse(fn: (() => boolean) | null): void {
+  userTimingFn = fn
+}
+
 /** True when a profiler that depends on the User Timing buffer is active, so
  *  the routine clear must be skipped to avoid wiping its marks mid-turn. */
 function userTimingInUse(): boolean {
-  return isEnvTruthy(process.env.CLAUDE_CODE_PROFILE_QUERY)
+  return (
+    isEnvTruthy(process.env.CLAUDE_CODE_PROFILE_QUERY) ||
+    (userTimingFn?.() ?? false)
+  )
 }
 
 /**
@@ -169,4 +194,5 @@ export function _resetMemoryPressureGuardForTest(): void {
   stopMemoryPressureGuard()
   lastMitigationAt = Number.NEGATIVE_INFINITY
   cleanupFn = null
+  userTimingFn = null
 }

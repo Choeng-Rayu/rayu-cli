@@ -4,7 +4,7 @@
 // to support an IP/legal review of the fork:
 //
 //   ORIGINAL   — first-party Rayu work (features the maintainer added):
-//                collaborator swarm, image/video generation, Telegram bridge,
+//                Orchestrator mode, image/video generation, Telegram bridge,
 //                the Rayu gateway/account layer, and Rayu-branded config/UI.
 //   GENERATED  — machine-generated code (protobuf schemas, etc.).
 //   DERIVATIVE — the Claude Code core this project was forked from (the CLI
@@ -30,7 +30,7 @@ const OUT = join(ROOT, 'ORIGIN_MANIFEST.md')
 const ORIGINAL_DIR_PREFIXES = [
   'utils/swarm/',
   'coordinator/',
-  'tools/AgentTool/built-in/collaborators/',
+  'commands/orchestrator/',
   'tools/ImageGenTool/',
   'tools/VideoGenTool/',
   'telegram/',
@@ -58,6 +58,7 @@ const ORIGINAL_FILE_MARKERS = [
   'utils/rayuConfig.ts',
   'utils/rayuProviders.ts',
   'utils/agentSwarmsEnabled.ts',
+  'utils/orchestratorMode.ts',
   'components/RayuProviderSetup.tsx',
 ]
 

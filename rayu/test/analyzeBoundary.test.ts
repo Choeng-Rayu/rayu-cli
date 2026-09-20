@@ -85,9 +85,18 @@ describe('analyzer sees the graph tsc sees', () => {
     // 13 files were vendored in from the deleted sibling workspace packages
     // (src/core/*, src/protocol/*, src/webBridge/client/*); and
     // src/utils/activity/activityBlocks.ts was extracted from the web formatter.
-    //
+    // 2204 → 2218: +14 files from the Rayucode attach/detach protocol extension
+    // (src/runtime/*, src/vscode/shared/{attachProtocol,commandProtocol}.ts,
+    //  src/vscode/host/panel/{engineManager,ipcBridge,sessionController,commandRegistry}.ts).
+    // 2218 → 2221: +3 files for Rayu credit-paced limits —
+    // src/services/rayuAuth/rayuRateLimit.ts (parse/describe/publish),
+    // src/commands/rayu-limit-options/{index.ts,rayu-limit-options.tsx} (the menu
+    // offered when a session or weekly window blocks a turn).
+    // 2221 → 2201: Orchestrator migration added its command + mode helper (+2)
+    // and removed the two legacy commands, swarm state/context/routing helpers,
+    // five domain personas, and eight retired specialists (-22 net).
     // src/vscode/** is excluded — see ENGINE_ONLY below.
-    expect(engineOnly(src).length).toBe(2204)
+    expect(engineOnly(src).length).toBe(2201)
   })
 
   test('resolves tsconfig path aliases, not just relative imports', () => {
@@ -136,9 +145,16 @@ describe('analyzer sees the graph tsc sees', () => {
 })
 
 describe('React coupling', () => {
-  test('exactly 636 engine files in src/ import react', () => {
+  test('exactly 637 engine files in src/ import react', () => {
     // The plan's figure, now computed. Earlier drafts said 632 (two multi-line
     // imports and two gitignored skills/ files were missed by grep).
+    // 636 → 637: one new engine file in src/runtime/ transitively pulls in React
+    // through the protocol/session state chain.
+    // 637 → 638: src/commands/rayu-limit-options/rayu-limit-options.tsx is a
+    // terminal-UI command (Ink renders through React), which is exactly the kind
+    // of engine file that is expected to import it — see the UI-free assertions
+    // below for the ones that must not.
+    // 638 → 637: the React-based /collaborator_model command was removed.
     //
     // Computed here rather than read from repoTotals() so src/vscode/** can be
     // excluded: the webview genuinely imports React and adding a component there
@@ -148,7 +164,7 @@ describe('React coupling', () => {
         .filter(([file, facts]) => file.startsWith('src/') && facts.importsReact)
         .map(([file]) => file),
     )
-    expect(reactImporters.length).toBe(636)
+    expect(reactImporters.length).toBe(637)
   })
 
   test('the two non-src react importers are tests', () => {
@@ -560,8 +576,10 @@ describe('movability is computed, and Task 4 did not unblock the boundary', () =
     // were written under exactly this boundary rule when core was a standalone
     // package that had to run under plain Node. src/vscode/** is excluded; see
     // ENGINE_ONLY above.
+    // 317 → 320: src/runtime/{productPreferences,taskProjection,taskTypes}.ts are
+    // pure and closed, written with the same portability rule.
     const move = movability(analysis)
-    expect(engineOnly(move.movable).length).toBe(317)
+    expect(engineOnly(move.movable).length).toBe(320)
     // Sanity: everything called movable really is pure with a pure closure.
     for (const f of move.movable) {
       expect(isPure(analysis.files.get(f)!), f).toBe(true)
@@ -579,10 +597,16 @@ describe('movability is computed, and Task 4 did not unblock the boundary', () =
     // imported by anything in src/ — they are build entrypoints.
     // 812 now: library.ts was deleted with the library-surface build. vscodeHost.ts
     // remains, still impure by location and still imported by nothing.
-    // src/vscode/** is excluded; see ENGINE_ONLY above.
+    // 812 → 813: src/runtime/snapshot.ts pulls in AppState which drags in React,
+    // making it impure. src/vscode/** is excluded; see ENGINE_ONLY above.
+    // 813 → 814: src/commands/rayu-limit-options/rayu-limit-options.tsx, a
+    // terminal-UI command that imports React (Ink) — impure by nature, like every
+    // other file under src/components/.
+    // 814 → 813: removing the React-based /collaborator_model command removes
+    // one impure engine file; the replacement /orchestrator prompt is UI-free.
     const move = movability(analysis)
-    expect(engineOnly(move.impure).length).toBe(812)
-    expect(engineOnly(move.movable).length).toBe(317)
+    expect(engineOnly(move.impure).length).toBe(813)
+    expect(engineOnly(move.movable).length).toBe(320)
     // The remaining 62 bun:bundle files would add little even if convertible.
     const ifRestConverted = movability(analysis, 'src/', new Set(['imports-bun-bundle']))
     expect(ifRestConverted.movable.size - move.movable.size).toBeLessThan(30)
@@ -649,8 +673,10 @@ describe('type debt is bucketed per file', () => {
     // mcp_authenticate, mcp_oauth_callback_url), and there are two structurally
     // different PermissionUpdate definitions. Both are recorded in the baseline as
     // accepted debt, NOT fixed — see the note in test/buildConfigParity.test.ts.
-    expect(debt.signatures).toBe(982)
-    expect(debt.errors).toBe(1554)
+    // 982 → 969: the new src/runtime/ files and updated sessionHandle.ts resolve
+    // 13 pre-existing implicit-any/missing-type signatures.
+    expect(debt.signatures).toBe(969)
+    expect(debt.errors).toBe(1540)
     expect(debt.files).toBe(317)
   })
 

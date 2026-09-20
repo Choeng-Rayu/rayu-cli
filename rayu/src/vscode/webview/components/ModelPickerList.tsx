@@ -1,7 +1,7 @@
 /**
  * The searchable model list. One implementation, two hosts.
  *
- * Extracted from `ModelDropdown` when the `/model_subagent` and `/webfetch_model` commands
+ * Extracted from `ModelDropdown` when the `/subagent_models` and `/webfetch_model` commands
  * needed the same list in a different container. Copying it would have meant two search
  * predicates, two sets of keyboard bindings and two definitions of what "no models" looks
  * like — and the three empty states below are exactly the kind of detail that gets

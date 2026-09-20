@@ -22,7 +22,7 @@ import { isEnvTruthy } from './utils/envUtils.js';
 import { type FpsMetrics, FpsTracker } from './utils/fpsTracker.js';
 import { setMemProbeFpsTracker, startMemProbeIfEnabled } from './utils/memProbe.js';
 import { startInteractiveHeapDumpMonitor } from './utils/interactiveHeapDumpMonitor.js';
-import { startMemoryPressureGuard } from './utils/memoryPressureGuard.js';
+import { setMemoryPressureCleanup, startMemoryPressureGuard } from './utils/memoryPressureGuard.js';
 import { updateGithubRepoPathMapping } from './utils/githubRepoPathMapping.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import type { PermissionMode } from './utils/permissions/PermissionMode.js';
@@ -330,6 +330,14 @@ export function getRenderContext(exitOnCtrlC: boolean): {
   // Memory-pressure guardrail: periodically clears Node's User Timing buffer
   // (the perf-measure leak class) and, at ~80% of the heap limit, runs cleanup
   // + GC to degrade gracefully instead of OOM-crashing. Opt out RAYU_MEM_GUARD=0.
+  setMemoryPressureCleanup(() => {
+    try {
+      const { runPostCompactCleanup } = require('./services/compact/postCompactCleanup.js') as typeof import('./services/compact/postCompactCleanup.js');
+      runPostCompactCleanup();
+    } catch {
+      // Best effort.
+    }
+  });
   startMemoryPressureGuard();
 
   // Bench mode: when set, append per-frame phase timings as JSONL for

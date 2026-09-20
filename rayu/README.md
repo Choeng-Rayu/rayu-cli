@@ -148,7 +148,7 @@ Inside a session, type `/` to see all slash commands:
 |---------|--------------|
 | `/connect` | Add or switch providers (type → key → model) |
 | `/model` | Search and switch models across all providers |
-| `/model_subagent` | Set a separate model for sub-agents |
+| `/subagent_models [AGENT]` | Set the model for all spawned agents or one named agent (`/model_subagent` remains an alias) |
 | `/help` | List all slash commands with descriptions |
 | `/config` | View and edit configuration |
 | `/brandmark` | Customize the brand glyph and spinner style |

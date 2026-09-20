@@ -36,6 +36,7 @@
  * disk. That is exact rather than approximate: the engine has already written the
  * post-edit content, and a hunk records both sides of every line it touched.
  */
+import { homedir } from 'node:os'
 import * as vscode from 'vscode'
 
 import { reversePatch, type ReviewHunk } from './reversePatch.js'
@@ -93,7 +94,11 @@ export class ReviewStore implements vscode.TextDocumentContentProvider {
     if (!record) throw new Error('This review is no longer available.')
     if (record.isCreated) return ''
 
-    const target = resolveReviewPath(record.displayPath)
+    // The record's absolute `filePath` — not `displayPath` — because this is the file
+    // the hunks are reverse-applied to, so it must be the exact file the engine wrote.
+    // A wrong location here produced an empty/garbage left side, or the "could not be
+    // located" error, for the same `~/`-and-wrong-base reasons as the open path.
+    const target = resolveReviewFileUri(record)
     if (!target) throw new Error('The review file could not be located.')
 
     try {
@@ -132,14 +137,50 @@ function preEditUri(record: Pick<ReviewFileRecord, 'displayPath'>): vscode.Uri {
   )
 }
 
+/** True when `p` is already an absolute filesystem path on any platform. */
+function isAbsolutePath(p: string): boolean {
+  return p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\')
+}
+
 /**
  * Resolve a path the engine reported into a workspace URI.
  *
- * The engine reports display paths, which may be workspace-relative or absolute.
- * Trying only one form would silently fail for the other.
+ * ── THREE FORMS, BECAUSE `getDisplayPath` PRODUCES THREE ───────────────────────
+ *
+ * The engine reports `displayPath` from `getDisplayPath` (`utils/file.ts`), which
+ * returns, in order:
+ *
+ *   1. `relative(getCwd(), absolutePath)` — when the file is under the ENGINE's cwd
+ *      and the result does not start with `..`;
+ *   2. `~/…` — when it is not (anywhere else under the user's home directory);
+ *   3. the absolute path — when it is under neither.
+ *
+ * All three must be handled. The `~/` form is the one that used to break outright:
+ * it is neither absolute nor workspace-relative, so it was joined onto the
+ * workspace folder as a literal directory named `~` and the file was never found.
+ *
+ * ── WHY THIS IS ONLY THE FALLBACK ──────────────────────────────────────────────
+ *
+ * Forms 1 and 2 are relative to the ENGINE's cwd, which is NOT necessarily the
+ * first workspace folder — a session can be started with its own `cwd` (the panel
+ * passes one), and a multi-root workspace has several. Joining form 1 onto
+ * `workspaceFolders[0]` therefore points at the wrong file whenever the two differ.
+ *
+ * `resolveReviewFileUri` is the primary path because it uses the absolute path the
+ * engine actually edited; this function serves only when that is unavailable.
  */
 export function resolveReviewPath(displayPath: string): vscode.Uri | null {
-  if (displayPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(displayPath)) {
+  if (displayPath === '~') return vscode.Uri.file(homedir())
+  // `~/…` — expanded against the real home directory. The separator is normalized
+  // because `getDisplayPath` builds this with `path.sep`, so a Windows-produced
+  // `~\a\b` must still resolve through `joinPath` on any host.
+  if (displayPath.startsWith('~/') || displayPath.startsWith('~\\')) {
+    return vscode.Uri.joinPath(
+      vscode.Uri.file(homedir()),
+      displayPath.slice(2).replace(/\\/g, '/'),
+    )
+  }
+  if (isAbsolutePath(displayPath)) {
     return vscode.Uri.file(displayPath)
   }
   const folder = vscode.workspace.workspaceFolders?.[0]
@@ -147,9 +188,46 @@ export function resolveReviewPath(displayPath: string): vscode.Uri | null {
   return vscode.Uri.joinPath(folder.uri, displayPath)
 }
 
-/** Open a changed file in an editor. */
-export async function openReviewFile(displayPath: string): Promise<void> {
-  const uri = resolveReviewPath(displayPath)
+/**
+ * Resolve a review record to the file it describes.
+ *
+ * ── THE ABSOLUTE PATH IS AUTHORITATIVE ────────────────────────────────────────
+ *
+ * A record carries `filePath`, which the engine sends as the ABSOLUTE path it
+ * actually wrote (`pendingFileChanges.ts` runs it through `expandPath`). That is
+ * the one value that needs no interpretation, so it is tried first and the
+ * `displayPath` heuristics are only a fallback for a frame that omitted it.
+ *
+ * Deriving the location from `displayPath` instead is what produced "the file was
+ * not found": the relative base is the engine's cwd, not the workspace folder.
+ */
+export function resolveReviewFileUri(
+  record: Pick<ReviewFileRecord, 'filePath' | 'displayPath'>,
+): vscode.Uri | null {
+  if (record.filePath && isAbsolutePath(record.filePath)) {
+    return vscode.Uri.file(record.filePath)
+  }
+  // A relative `filePath` (or none) — fall back to the display path, and to
+  // `filePath` itself when it is the only thing present.
+  return resolveReviewPath(record.displayPath || record.filePath)
+}
+
+/**
+ * Open a changed file in an editor.
+ *
+ * Takes the store so it can resolve through the record's ABSOLUTE `filePath`
+ * rather than re-deriving the location from the display path — see
+ * `resolveReviewFileUri` for why that distinction is the difference between the
+ * file opening and "the file was not found".
+ */
+export async function openReviewFile(
+  store: ReviewStore,
+  displayPath: string,
+): Promise<void> {
+  const record = store.get(displayPath)
+  const uri = record
+    ? resolveReviewFileUri(record)
+    : resolveReviewPath(displayPath)
   if (!uri) {
     void vscode.window.showWarningMessage(
       `Rayu could not locate ${displayPath} in this workspace.`,
@@ -169,7 +247,14 @@ export async function openReviewDiff(
   store: ReviewStore,
   displayPath: string,
 ): Promise<void> {
-  const uri = resolveReviewPath(displayPath)
+  // The record is looked up FIRST now, because it — not the display path — is what
+  // knows where the file actually is. Resolving before the lookup meant the diff's
+  // RIGHT side was located by the same display-path guess that fails for a `~/` path
+  // or a session whose cwd is not the first workspace folder.
+  const record = store.get(displayPath)
+  const uri = record
+    ? resolveReviewFileUri(record)
+    : resolveReviewPath(displayPath)
   if (!uri) {
     void vscode.window.showWarningMessage(
       `Rayu could not locate ${displayPath} in this workspace.`,
@@ -177,7 +262,6 @@ export async function openReviewDiff(
     return
   }
 
-  const record = store.get(displayPath)
   if (!record) {
     // No recorded change: nothing to diff against. Opening the file is more useful
     // than an empty diff implying nothing changed.

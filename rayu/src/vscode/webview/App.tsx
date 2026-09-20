@@ -10,11 +10,14 @@
  * an ordinary path rather than a special case, and it is how a sign-in performed in a
  * terminal reaches this UI.
  */
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, memo } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, memo } from 'react'
 
 import type {
   EntryId,
   ImageInputView,
+  PromptDeliveryView,
+  RuntimeSectionView,
+  ComposerControlView,
   HostToWebviewMessage,
   ThinkingEntryView,
   TurnProgressView,
@@ -25,19 +28,24 @@ import { permissionModeById } from '../shared/permissionModes.js'
 import {
   describeTurnPhase,
   formatDuration,
-  isWaitingPhase,
   tokenReadouts,
 } from '../shared/turnProgress.js'
+import { spriteStateForPhase } from './spriteAtlas.js'
 import { chatReducer, initialChatState, type ChatState } from './state/reducer.js'
 import { Composer } from './components/Composer.js'
 import { ProviderSetupPanel } from './components/ProviderSetupPanel.js'
 import { ModelChooserCard } from './components/ModelChooserCard.js'
 import { SessionsView } from './components/SessionsView.js'
 import { ApprovalStack } from './components/ApprovalStack.js'
+import { McpElicitationStack } from './components/McpElicitationStack.js'
+import { RuntimeStatusBar } from './components/RuntimeStatusBar.js'
+import { RuntimeCenter } from './components/RuntimeCenter.js'
 import { TranscriptEntryView, NoticeEntry } from './components/TranscriptEntryView.js'
 import { ActivityGroup } from './components/ActivityGroup.js'
 import { groupTranscript } from './state/activityGroups.js'
 import { useSecondTick } from './useSecondTick.js'
+import { createSessionScrollMemory } from './sessionScrollMemory.js'
+import { promptHistoryFromTranscript } from './promptHistory.js'
 import { WelcomeScreen } from './components/WelcomeScreen.js'
 import { ScrollToBottomButton } from './components/ScrollToBottomButton.js'
 import { isTodoToolEntry } from './components/TodoListCard.js'
@@ -98,6 +106,12 @@ export function App(): JSX.Element {
   /** Whether a drag is currently over the panel. Owned here so the overlay can cover it. */
   const [panelDragging, setPanelDragging] = useState(false)
   const [taskCenterOpen, setTaskCenterOpen] = useState(false)
+  const [runtimeCenterOpen, setRuntimeCenterOpen] = useState(false)
+  const [runtimeSection, setRuntimeSection] = useState<RuntimeSectionView>('commands')
+  const [composerControlRequest, setComposerControlRequest] = useState<{
+    control: ComposerControlView
+    revision: number
+  } | null>(null)
   const [selectedTaskKey, setSelectedTaskKey] = useState<string | null>(
     () => readPersistedUi().selectedTaskKey ?? null,
   )
@@ -273,6 +287,25 @@ export function App(): JSX.Element {
         return
       }
 
+      if (message.type === 'openRuntimeCenter') {
+        setRuntimeSection(message.section)
+        setRuntimeCenterOpen(true)
+        return
+      }
+
+      if (message.type === 'openTaskCenter') {
+        setTaskCenterOpen(true)
+        return
+      }
+
+      if (message.type === 'openComposerControl') {
+        setComposerControlRequest(current => ({
+          control: message.control,
+          revision: (current?.revision ?? 0) + 1,
+        }))
+        return
+      }
+
       switch (message.type) {
         case 'init':
         case 'addMessage':
@@ -294,6 +327,13 @@ export function App(): JSX.Element {
         case 'fileSearchResults':
         case 'setContextUsage':
         case 'setMcpServers':
+        case 'setRuntimeCatalogue':
+        case 'setRateLimit':
+        case 'setEngineAuthStatus':
+        case 'setSessionStatus':
+        case 'setPromptSuggestion':
+        case 'showMcpElicitation':
+        case 'dismissMcpElicitation':
         case 'setIdeContext':
         case 'setSessions':
         case 'setLiveSessions':
@@ -335,10 +375,23 @@ export function App(): JSX.Element {
   const composerCommands = signedOut
     ? state.commands.filter(command => command.name === 'login' || command.name === 'connect')
     : state.commands
+  const promptHistory = useMemo(
+    () => promptHistoryFromTranscript(state.entries),
+    [state.entries],
+  )
 
-  const submit = useCallback((text: string, images?: ImageInputView[]) => {
+  const submit = useCallback((
+    text: string,
+    images?: ImageInputView[],
+    delivery?: PromptDeliveryView,
+  ) => {
     setDraft(null)
-    send({ type: 'submitPrompt', text, ...(images?.length ? { images } : {}) })
+    send({
+      type: 'submitPrompt',
+      text,
+      ...(images?.length ? { images } : {}),
+      ...(delivery ? { delivery } : {}),
+    })
   }, [])
 
   /**
@@ -385,7 +438,7 @@ export function App(): JSX.Element {
   const sessionStatus = deriveSessionStatus(
     state.turnRunning,
     state.turnProgress,
-    state.pendingPermissions.length,
+    state.pendingPermissions.length + state.mcpElicitations.length,
   )
 
   return (
@@ -444,9 +497,61 @@ export function App(): JSX.Element {
         onOpenProviderSetup={() => send({ type: 'openProviderSetup' })}
         onRefreshMcp={refreshMcp}
         onReconnectMcp={serverName => send({ type: 'mcpReconnect', serverName })}
+        onAuthenticateMcp={serverName => send({ type: 'mcpAuthenticate', serverName })}
         onToggleMcp={(serverName, enabled) => send({ type: 'mcpToggle', serverName, enabled })}
         onSignOut={() => send({ type: 'signOut' })}
       />
+
+      <RuntimeStatusBar
+        authentication={state.engineAuthStatus}
+        rateLimit={state.rateLimit}
+        resourceCount={
+          state.runtimeCommands.length +
+          state.runtimeTools.length +
+          state.runtimeAgents.length +
+          state.runtimePlugins.length +
+          state.runtimeSkills.length
+        }
+        onOpenRuntime={() => setRuntimeCenterOpen(open => !open)}
+        // The Rayu pacing switch lives in the web dashboard, so the in-editor
+        // action is the same link the CLI offers. The URL comes from the HOST
+        // (which can resolve it in Node) via the rate-limit view; the webview must
+        // not import the session helpers itself. Reuses the existing openExternal
+        // channel rather than adding a host→engine round trip.
+        onOpenPacingDashboard={
+          state.rateLimit?.rayuPacingDashboardUrl
+            ? () =>
+                send({
+                  type: 'openExternal',
+                  url: state.rateLimit!.rayuPacingDashboardUrl!,
+                })
+            : undefined
+        }
+      />
+
+      {runtimeCenterOpen ? (
+        <RuntimeCenter
+          key={runtimeSection}
+          initialSection={runtimeSection}
+          commands={state.runtimeCommands}
+          tools={state.runtimeTools}
+          mcpServers={state.mcpServers}
+          agents={state.runtimeAgents}
+          plugins={state.runtimePlugins}
+          skills={state.runtimeSkills}
+          workflows={state.runtimeWorkflows}
+          onClose={() => setRuntimeCenterOpen(false)}
+          onUseCommand={name => {
+            setDraft(`/${name} `)
+            setRuntimeCenterOpen(false)
+          }}
+          onRefreshMcp={refreshMcp}
+          onReconnectMcp={serverName => send({ type: 'mcpReconnect', serverName })}
+          onToggleMcp={(serverName, enabled) => send({ type: 'mcpToggle', serverName, enabled })}
+          onAuthenticateMcp={serverName => send({ type: 'mcpAuthenticate', serverName })}
+          onClearMcpAuth={serverName => send({ type: 'mcpClearAuth', serverName })}
+        />
+      ) : null}
 
       {/* Above the transcript: it is a modal-ish task the user opened deliberately,
           and it must not be scrolled away from mid-entry. */}
@@ -537,6 +642,12 @@ export function App(): JSX.Element {
               value,
             })
           }
+          onTargetChange={agentType =>
+            send({
+              type: 'modelChooserTarget',
+              ...(agentType ? { agentType } : {}),
+            })
+          }
           onDismiss={() => send({ type: 'modelChooserDismiss' })}
           onRefresh={() => send({ type: 'refreshModelCatalogue' })}
         />
@@ -550,6 +661,19 @@ export function App(): JSX.Element {
         onDecide={(requestId, decision) =>
           send({ type: 'permissionResponse', requestId, decision })
         }
+      />
+
+      <McpElicitationStack
+        requests={state.mcpElicitations}
+        onRespond={(requestId, action, content) =>
+          send({
+            type: 'mcpElicitationResponse',
+            requestId,
+            action,
+            ...(content ? { content } : {}),
+          })
+        }
+        onOpenExternal={url => send({ type: 'openExternal', url })}
       />
 
       <BackgroundTaskBar
@@ -576,6 +700,8 @@ export function App(): JSX.Element {
         inference={state.inference}
         permissionMode={state.permissionMode}
         commands={composerCommands}
+        agents={state.runtimeAgents}
+        promptHistory={promptHistory}
         workspaceFiles={state.workspaceFiles}
         ideContext={state.ideContext}
         contextUsage={state.contextUsage}
@@ -584,11 +710,13 @@ export function App(): JSX.Element {
         onAttachSession={pid => send({ type: 'attachToSession', pid })}
         onDetachSession={() => send({ type: 'detachFromSession' })}
         todoEntry={latestTodoEntry}
+        promptSuggestion={state.promptSuggestion}
         onSubmit={submit}
         onInterrupt={() => send({ type: 'interrupt' })}
         onSelectModel={value => send({ type: 'selectModelValue', value })}
         onRefreshModels={() => send({ type: 'refreshModelCatalogue' })}
         onSetEffort={level => send({ type: 'setEffort', level })}
+        onSetThinking={enabled => send({ type: 'setThinking', enabled })}
         onCyclePermissionMode={() => send({ type: 'cyclePermissionMode' })}
         onSelectPermissionMode={modeId => {
           dispatch({ type: 'setPermissionMode', mode: permissionModeById(modeId) })
@@ -599,6 +727,7 @@ export function App(): JSX.Element {
         onResolveDroppedPaths={resolveDroppedPaths}
         onPickContextPaths={pickContextPaths}
         onDragStateChange={setPanelDragging}
+        controlRequest={composerControlRequest}
       />
     </div>
   )
@@ -675,6 +804,15 @@ function Transcript({
   const scroller = useRef<HTMLDivElement | null>(null)
   const pinned = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
+  /**
+   * The reading position of every open conversation, keyed by the panel's session key.
+   * See `sessionScrollMemory` for why this belongs to the conversation and not the panel.
+   */
+  const scrollMemory = useRef(createSessionScrollMemory())
+  // Which conversation the next scroll should be credited to. A ref, so `onScroll` stays
+  // stable; repointed on a switch by the restore effect below, and only AFTER the restore,
+  // so an event already in flight is still credited to the conversation being left.
+  const scrollKey = useRef(state.activeSessionKey)
 
   /**
    * Reasoning blocks bucketed by the assistant entry they belong in front of.
@@ -711,7 +849,52 @@ function Transcript({
     // 48px of slack: an exact comparison unpins on sub-pixel scroll positions.
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
     pinned.current = isNearBottom
+    // Remember where this conversation was left, as it is read. Recorded here rather than
+    // on the way out, because by the time a switch is observable the content is already
+    // replaced and `scrollTop` is whatever the browser clamped it to.
+    scrollMemory.current.remember(scrollKey.current, { top: el.scrollTop, pinned: isNearBottom })
     setShowScrollBottom(!isNearBottom && el.scrollHeight - el.clientHeight > 100)  }, [])
+
+  /**
+   * Put the reader back where this conversation was left.
+   *
+   * ── A LAYOUT EFFECT, AND THAT IS THE LOAD-BEARING PART ─────────────────────────
+   *
+   * Replacing the transcript empties the scroll container for an instant, so the browser
+   * clamps `scrollTop` and queues a scroll event. A layout effect runs during the commit,
+   * before that event is dispatched: the position is restored and `scrollKey` is repointed
+   * while any in-flight event is still credited to the OUTGOING conversation. A passive
+   * effect would run after the clamp, so the outgoing conversation's remembered position
+   * would be overwritten with the clamp and coming back to it would land at the top again
+   * — the exact bug this fixes.
+   *
+   * A conversation with no remembered position opens at the newest output, which is what a
+   * fresh conversation and a first visit both want. The follow effect below is passive, so
+   * it runs after this one and cannot undo the restore: it returns early whenever the
+   * reader was not pinned, which is exactly the restored-mid-transcript case.
+   */
+  useLayoutEffect(() => {
+    if (scrollKey.current === state.activeSessionKey) return
+    scrollKey.current = state.activeSessionKey
+    const el = scroller.current
+    if (!el) return
+    const saved = scrollMemory.current.recall(state.activeSessionKey)
+    if (saved && !saved.pinned) {
+      el.scrollTop = saved.top
+      pinned.current = false
+    } else {
+      el.scrollTop = el.scrollHeight
+      pinned.current = true
+    }
+    setShowScrollBottom(!pinned.current && el.scrollHeight - el.clientHeight > 100)
+  }, [state.activeSessionKey])
+
+  // Forget conversations that are no longer open. The live list is the only key writer,
+  // so this holds the memory at the number of open conversations rather than at however
+  // many the user has ever opened.
+  useEffect(() => {
+    scrollMemory.current.retainOnly(state.liveSessions.map(session => session.key))
+  }, [state.liveSessions])
 
   const scrollToBottom = useCallback(() => {
     const el = scroller.current
@@ -773,6 +956,8 @@ function Transcript({
                   <ActivityGroup
                     activity={block.activity}
                     agent={block.agent}
+                    agentProvider={block.agentProvider}
+                    agentModel={block.agentModel}
                     tools={block.tools}
                     detailed={detailed}
                     toolOverrides={toolOverrides}
@@ -796,6 +981,7 @@ function Transcript({
                         ? state.turnCompletions[block.entry.turnId]
                         : undefined
                     }
+                    turnPhase={state.turnProgress?.phase}
                     onKeep={onKeep}
                     onUndo={onUndo}
                     onDiff={onDiff}
@@ -855,19 +1041,16 @@ function TurnStatus({ progress }: { progress: TurnProgressView }): JSX.Element {
 
   const readouts = tokenReadouts(progress.usage)
   const elapsed = Math.max(0, now - progress.startTimestamp)
-  const waiting = isWaitingPhase(progress.phase)
 
   return (
     <div className="rc-working" role="status" aria-live="polite">
       {/*
-        A static glyph while WAITING. The engine is blocked on the user there, and an
-        animated spinner would claim progress that cannot happen until they answer.
+        `spriteStateForPhase` already resolves `waiting` to its own row (the
+        character visibly stops and waits) and every working phase to its own —
+        one call covers both branches the old static-glyph-vs-spinner split
+        needed two glyph systems for.
       */}
-      {waiting ? (
-        <span className="rc-turn-glyph rc-turn-glyph-waiting" aria-hidden="true" />
-      ) : (
-        <ProgressGlyph />
-      )}
+      <ProgressGlyph state={spriteStateForPhase(progress.phase)} />
       <span className="rc-thinking-text">
         {describeTurnPhase(progress)}
         {'\u2026 '}

@@ -78,7 +78,7 @@ export function renderToolUseMessage({
 export function renderToolResultMessage({
   filePath,
   structuredPatch,
-  originalFile
+  firstLine
 }: FileEditOutput, _progressMessagesForMessage: ProgressMessage[], {
   style,
   verbose
@@ -88,7 +88,10 @@ export function renderToolResultMessage({
 }): React.ReactNode {
   // For plan files, show /plan hint above the diff
   const isPlanFile = filePath.startsWith(getPlansDirectory());
-  return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={originalFile.split('\n')[0] ?? null} fileContent={originalFile} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
+  // `firstLine` comes from the result rather than being sliced off the original
+  // contents here — the full contents are no longer carried in the result at all.
+  // `?? null` normalizes an old transcript record, which has no `firstLine` at all.
+  return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={firstLine ?? null} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
 }
 export function renderToolUseRejectedMessage(input: {
   file_path: string;

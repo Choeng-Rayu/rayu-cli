@@ -36,7 +36,7 @@ export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
 /**
  * Resolve the provider + model a (default) subagent should run on, for
  * multi-provider mode. Precedence:
- *  1. The user's configured subagent selection (/model_subagent), which may
+ *  1. The user's configured agent selection (/subagent_models), which may
  *     target a DIFFERENT provider than the main agent.
  *  2. Otherwise the MAIN (active) provider's instant/small-fast model — so the
  *     subagent defaults to a cheap/fast model on the same provider, never the
@@ -98,37 +98,59 @@ export function getAgentModel(
   permissionMode?: PermissionMode,
   agentType?: string,
 ): string {
-  // Rayu multi-provider subagent routing. When a non-Anthropic provider is
-  // active and the caller hasn't pinned an explicit model (no env override, no
-  // tool-specified model, and the agent uses the built-in default — undefined
-  // or 'haiku'), resolve the configured subagent selection. If it targets a
-  // different provider than the active one, encode provider+model so the
-  // request routes to that provider concurrently. 'inherit' is left untouched
-  // so fork/inherit agents keep the parent's exact model.
+  // Rayu multi-provider agent routing. A selection saved by /subagent_models
+  // applies to every spawned Agent-tool worker, including definitions whose
+  // built-in default is `inherit` (for example general-purpose). A named
+  // selection wins because getSubagentSelection(agentType) checks it before the
+  // global selection. Environment and per-call overrides retain higher
+  // precedence. If the selected provider differs from the active provider, the
+  // encoded provider+model route sends that worker to the selected provider.
   const usesBuiltinDefault =
     agentModel === undefined || agentModel.toLowerCase() === 'haiku'
-  // A PER-AGENT /model_subagent or /collaborator_model override wins over the
-  // agent's hardcoded default model — including 'inherit'. This lets
-  // collaborators default to 'inherit' (from the orchestrator) yet stay
-  // user-configurable per agent. A purely GLOBAL selection still only overrides
-  // the builtin defaults (undefined / 'haiku'), so fork/inherit agents without
-  // an explicit per-agent override keep the parent's exact model.
-  let hasPerAgentSelection = false
-  if (agentType) {
-    try {
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      const { getPerAgentSubagentSelection } =
-        require('../rayuConfig.js') as typeof import('../rayuConfig.js')
-      /* eslint-enable @typescript-eslint/no-require-imports */
-      hasPerAgentSelection = !!getPerAgentSubagentSelection(agentType)
-    } catch {
-      hasPerAgentSelection = false
-    }
+  let configuredSelection:
+    | { providerId: string; model: string }
+    | undefined
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getSubagentSelection } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    configuredSelection = getSubagentSelection(agentType)
+  } catch {
+    configuredSelection = undefined
   }
+
   if (
     !process.env.CLAUDE_CODE_SUBAGENT_MODEL &&
     !toolSpecifiedModel &&
-    (usesBuiltinDefault || hasPerAgentSelection) &&
+    configuredSelection
+  ) {
+    if (!isModelAllowed(configuredSelection.model)) {
+      return getRuntimeMainLoopModel({
+        permissionMode: permissionMode ?? 'default',
+        mainLoopModel: parentModel,
+        exceeds200kTokens: false,
+      })
+    }
+
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { encodeModelWithProvider, getActiveProvider } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return configuredSelection.providerId !== getActiveProvider()?.id
+      ? encodeModelWithProvider(
+          configuredSelection.providerId,
+          configuredSelection.model,
+        )
+      : configuredSelection.model
+  }
+
+  // With no saved choice, non-Anthropic agents using a built-in default still
+  // fall back to the active provider's instant/small-fast model.
+  if (
+    !process.env.CLAUDE_CODE_SUBAGENT_MODEL &&
+    !toolSpecifiedModel &&
+    usesBuiltinDefault &&
     isRayuNonAnthropicActive()
   ) {
     const sub = resolveSubagentExecution(agentType)
@@ -202,12 +224,12 @@ export function getAgentModel(
     })
   }
 
-  // Callback-to-inherit: a per-agent model choice (set via /model_subagent or
-  // /collaborator_model, or a hardcoded agent default) that the admin-configured
+  // Callback-to-inherit: an agent model choice (set via /subagent_models or
+  // a hardcoded agent default) that the admin-configured
   // availableModels allowlist no longer permits — e.g. the allowlist was
   // tightened after the selection was saved — must NOT be sent to the API.
   // Silently resolve as 'inherit' instead of forwarding a disallowed model
-  // string, so the subagent/collaborator falls back to the orchestrator's
+  // string, so the subagent falls back to the Orchestrator's
   // own (already-allowed) model rather than failing the whole spawn.
   // toolSpecifiedModel is handled above this point and is intentionally not
   // covered by this fallback — it's an explicit, single-call override the

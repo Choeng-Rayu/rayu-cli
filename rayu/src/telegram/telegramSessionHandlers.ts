@@ -34,7 +34,7 @@ export function parsePromptPayload(payload: unknown): IpcPromptPayload {
   if (typeof payload !== 'object' || payload === null) {
     throw new Error('prompt payload must be an object')
   }
-  const { value, mode } = payload as Partial<IpcPromptPayload>
+  const { value, mode, priority, operationId } = payload as Partial<IpcPromptPayload>
   const hasValue =
     (typeof value === 'string' && value.length > 0) ||
     (Array.isArray(value) && value.length > 0)
@@ -44,7 +44,18 @@ export function parsePromptPayload(payload: unknown): IpcPromptPayload {
   if (mode !== 'prompt' && mode !== 'task-notification') {
     throw new Error('prompt payload has an unsupported `mode`')
   }
-  return { value: value as IpcPromptPayload['value'], mode }
+  if (priority !== undefined && priority !== 'now' && priority !== 'next' && priority !== 'later') {
+    throw new Error('prompt payload has an unsupported `priority`')
+  }
+  if (operationId !== undefined && (typeof operationId !== 'string' || !operationId)) {
+    throw new Error('prompt payload has an invalid `operationId`')
+  }
+  return {
+    value: value as IpcPromptPayload['value'],
+    mode,
+    ...(priority ? { priority } : {}),
+    ...(operationId ? { operationId } : {}),
+  }
 }
 
 /**
@@ -57,11 +68,13 @@ export function registerTelegramSessionHandlers(): void {
 
   registerIpcHandler(IPC_PROMPT, payload => {
     const prompt = parsePromptPayload(payload)
-    enqueue({ value: prompt.value, mode: prompt.mode })
+    enqueue({ value: prompt.value, mode: prompt.mode, priority: prompt.priority })
     logForDebugging(`[telegram-session] enqueued remote prompt (${prompt.mode})`)
     // The ack only means "queued", never "answered" — the turn's output travels
-    // back separately as streamed mirror traffic.
-    return { queued: true }
+    // back separately as streamed mirror traffic. `operationId` is echoed back
+    // unchanged so the caller can confirm which submission this ack belongs to;
+    // an older peer that never sent one gets an ack with no `operationId` field.
+    return { queued: true, ...(prompt.operationId ? { operationId: prompt.operationId } : {}) }
   })
 
   // The leader tells us when we are the session driving the chat. That is what

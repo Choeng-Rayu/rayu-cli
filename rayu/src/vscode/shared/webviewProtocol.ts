@@ -28,10 +28,21 @@ import type {
   EffortChoice,
   InferenceSettingsView,
 } from './inferenceSettings.js'
+import type { BackgroundTaskView } from '../../runtime/taskTypes.js'
+import type {
+  RuntimeAgentDescriptor,
+  RuntimePluginDescriptor,
+  RuntimeSkillDescriptor,
+} from '../../protocol/index.js'
 import type { TodoItem } from '../../utils/todo/types.js'
 
 /** Stable id for a transcript entry, assigned by the host. */
 export type EntryId = string
+
+/** How a composer message should join an already-running engine turn. */
+export type PromptDeliveryView = 'normal' | 'queue' | 'steer'
+export type RuntimeSectionView = 'commands' | 'tools' | 'mcp' | 'skills' | 'agents' | 'plugins'
+export type ComposerControlView = 'model' | 'effort'
 
 /**
  * The TodoWrite item sent across the host/webview boundary.
@@ -215,7 +226,7 @@ export interface ImageInputView {
  *
  * ── WHY THIS IS NOT A COMPOSER CONTROL ─────────────────────────────────────────
  *
- * The subagent and WebFetch models are set by `/model_subagent` and `/webfetch_model`, the
+ * Agent and WebFetch models are set by `/subagent_models` and `/webfetch_model`, the
  * same commands the CLI uses. They are deliberately NOT given toolbar pills: they are rare,
  * per-project decisions, and a permanent control for each would crowd out the three that
  * are used every turn (permission mode, model, effort).
@@ -229,8 +240,10 @@ export interface ImageInputView {
 export interface ModelChooserView {
   /** Which setting a choice writes. Also selects the wording. */
   target: 'subagent' | 'webfetch'
-  /** Set when scoping a subagent choice to one agent type, from `/model_subagent <AGENT>`. */
+  /** Set when scoping a choice to one agent type, from `/subagent_models <AGENT>`. */
   agentType?: string
+  /** Agent scopes offered by the chooser. Only present for the subagent setting. */
+  agentTypes?: string[]
   title: string
   /** Cost guidance, carried through from the CLI command rather than reworded. */
   tip: string
@@ -257,6 +270,94 @@ export interface IdeContextView {
   /** 1-based inclusive selection bounds, when there is a selection. */
   lineStart?: number
   lineEnd?: number
+}
+
+export type RuntimeCommandSurfaceView =
+  | 'prompt'
+  | 'panel'
+  | 'action'
+  | 'terminal_only'
+
+export interface RuntimeCommandView extends SlashCommandView {
+  aliases: string[]
+  argumentHint: string
+  executionKind: 'prompt' | 'local' | 'local-jsx'
+  surface: RuntimeCommandSurfaceView
+  origin: string
+  available: boolean
+  unavailableReason?: string
+  workflow: boolean
+  sensitive: boolean
+}
+
+export interface RuntimeToolView {
+  name: string
+  aliases: string[]
+  source: 'builtin' | 'mcp' | 'lsp'
+  serverName?: string
+  inputSchema?: Record<string, unknown>
+  deferred: boolean
+  alwaysLoad: boolean
+  requiresUserInteraction: boolean
+}
+
+export interface RuntimeCapabilitiesView {
+  version: number
+  features: Record<string, boolean>
+}
+
+export type RuntimeAgentView = RuntimeAgentDescriptor
+export type RuntimePluginView = RuntimePluginDescriptor
+export type RuntimeSkillView = RuntimeSkillDescriptor
+
+export interface RateLimitView {
+  status: 'allowed' | 'allowed_warning' | 'rejected'
+  resetsAt?: number
+  rateLimitType?: string
+  utilization?: number
+  isUsingOverage?: boolean
+  /**
+   * Set when this limit is RAYU credit pacing rather than a claude.ai
+   * subscription limit, naming which window was reached.
+   *
+   * The two need DIFFERENT copy: a provider rate limit is an upstream problem the
+   * user can only wait out, while a Rayu window is the user's own allowance being
+   * released over time — and they can lift it themselves from the dashboard. The
+   * window name is what lets the status bar say WHICH allowance ran out.
+   */
+  rayuPacingWindow?: 'weekly' | 'session'
+  /**
+   * Whose Rayu pacing limit this is, when `rayuPacingWindow` is set.
+   *
+   * On a TEAM the switch is org-admin-only, so the status bar must say "ask your
+   * admin" instead of offering a button that would send a member to a setting they
+   * cannot change.
+   */
+  rayuLimitScope?: 'personal' | 'team'
+  /**
+   * Where to lift the pacing, resolved by the HOST.
+   *
+   * The URL cannot be built in the webview: that bundle is browser-targeted and
+   * must not import the Node-side session helpers (fs/path) that resolve the Rayu
+   * web base URL. The host already runs in Node, so it supplies the link.
+   */
+  rayuPacingDashboardUrl?: string
+}
+
+export interface EngineAuthStatusView {
+  authenticating: boolean
+  messages: string[]
+  error?: string
+}
+
+export interface McpElicitationView {
+  requestId: string
+  serverName: string
+  message: string
+  mode: 'form' | 'url'
+  url?: string
+  elicitationId?: string
+  requestedSchema?: Record<string, unknown>
 }
 
 /** Messages the extension host sends TO the webview. */
@@ -368,6 +469,26 @@ export type HostToWebviewMessage =
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   /** Connected MCP servers status. */
   | { type: 'setMcpServers'; servers: McpServerView[] }
+  | {
+      type: 'setRuntimeCatalogue'
+      capabilities: RuntimeCapabilitiesView | null
+      commands: RuntimeCommandView[]
+      tools: RuntimeToolView[]
+      agents?: RuntimeAgentView[]
+      plugins?: RuntimePluginView[]
+      skills?: RuntimeSkillView[]
+      workflows?: RuntimeSkillView[]
+    }
+  | { type: 'setRateLimit'; rateLimit: RateLimitView | null }
+  | { type: 'setEngineAuthStatus'; status: EngineAuthStatusView | null }
+  | { type: 'setSessionStatus'; status: 'idle' | 'running' | 'requires_action' }
+  | { type: 'setPromptSuggestion'; suggestion: string | null }
+  | { type: 'showMcpElicitation'; request: McpElicitationView }
+  | { type: 'dismissMcpElicitation'; requestId: string }
+  /** Open a native management surface for a local-JSX CLI command. */
+  | { type: 'openRuntimeCenter'; section: RuntimeSectionView }
+  | { type: 'openTaskCenter' }
+  | { type: 'openComposerControl'; control: ComposerControlView }
   /**
    * The editor's current selection, or null when there is none.
    *
@@ -524,7 +645,13 @@ export type WebviewToHostMessage =
    * `images` carries composer attachments as raw base64. It is validated host-side
    * before it reaches the engine — see `ImageInputView`.
    */
-  | { type: 'submitPrompt'; text: string; images?: ImageInputView[] }
+  | {
+      type: 'submitPrompt'
+      text: string
+      images?: ImageInputView[]
+      /** `queue` maps to SDK priority `next`; `steer` maps to `now`. */
+      delivery?: PromptDeliveryView
+    }
   /**
    * Stop the running turn.
    *
@@ -570,6 +697,7 @@ export type WebviewToHostMessage =
    * value as well as the persisted key and reports any environment override.
    */
   | { type: 'setEffort'; level: EffortChoice }
+  | { type: 'setThinking'; enabled: boolean }
   /** Open or close the in-panel provider setup surface. */
   | { type: 'listAttachable' }
   | { type: 'attachToSession'; pid: number }
@@ -607,6 +735,8 @@ export type WebviewToHostMessage =
   | { type: 'openReviewDiff'; path: string }
   /** Open a changed file in an editor. */
   | { type: 'openFile'; path: string }
+  /** Open an http(s) URL through VS Code after host-side scheme validation. */
+  | { type: 'openExternal'; url: string }
   /**
    * Advance to the next permission mode.
    *
@@ -619,7 +749,7 @@ export type WebviewToHostMessage =
   | { type: 'setPermissionMode'; modeId: string }
   /** Start the interactive account sign-in. */
   | { type: 'signIn' }
-  /** Forget the shared credential. Signs the CLI out too — one credential. */
+  /** Forget the Rayucode credential in its isolated VS Code profile. */
   | { type: 'signOut' }
   /**
    * Open the provider setup surface, for the bring-your-own-key path.
@@ -656,14 +786,26 @@ export type WebviewToHostMessage =
       agentType?: string
       value: string | null
     }
+  /** Change the scope of an open subagent-model chooser without applying a model. */
+  | { type: 'modelChooserTarget'; agentType?: string }
   /** Close the chooser without changing anything. */
   | { type: 'modelChooserDismiss' }
   /** Toggle an MCP server connection. */
   | { type: 'mcpToggle'; serverName: string; enabled: boolean }
   /** Reconnect an MCP server. */
   | { type: 'mcpReconnect'; serverName: string }
+  | { type: 'mcpAuthenticate'; serverName: string }
+  | { type: 'mcpClearAuth'; serverName: string }
   /** Refresh MCP server status. */
   | { type: 'getMcpStatus' }
+  | {
+      type: 'mcpElicitationResponse'
+      requestId: string
+      action: 'accept' | 'decline' | 'cancel'
+      content?: Record<string, unknown>
+    }
+  | { type: 'reloadPlugins' }
+  | { type: 'installSkill'; source: string; overwrite?: boolean }
   /** List previous sessions for the workspace. */
   | { type: 'listSessions' }
   /** Resume a previous session by id. Spawns an engine child with `--resume`. */
@@ -700,69 +842,13 @@ export type WebviewToHostMessage =
    */
   | { type: 'requestTaskOutput'; requestId: string; taskKey: string }
 
-export type BackgroundTaskStatus =
-  | 'pending'
-  | 'running'
-  | 'waiting'
-  | 'completed'
-  | 'failed'
-  | 'stopped'
-
-export type BackgroundTaskType =
-  | 'local_agent'
-  | 'in_process_teammate'
-  | 'local_shell'
-  | 'remote_agent'
-  | 'external_agent'
-  | 'local_workflow'
-  | 'monitor_mcp'
-  | 'dream'
-  | 'unknown'
-
-export interface TaskActivityView {
-  id: string
-  label: string
-  toolName?: string
-  timestamp: number
-  kind?: 'tool' | 'search' | 'read' | 'thinking' | 'status'
-}
-
-export interface TaskCapabilitiesView {
-  canStop: boolean
-  canSendMessage: boolean
-  hasTranscript: boolean
-  hasOutput: boolean
-}
-
-/** Sanitized, serializable projection of the shared TaskState lifecycle. */
-export interface BackgroundTaskView {
-  /** Collision-safe key: source session plus the task's own id. */
-  key: string
-  taskId: string
-  sourceSessionId: string
-  type: BackgroundTaskType
-  rawType?: string
-  group: 'agents' | 'shells' | 'workflows' | 'remote' | 'monitors' | 'other'
-  description: string
-  prompt?: string
-  agentId?: string
-  agentName?: string
-  status: BackgroundTaskStatus
-  executionMode: 'foreground' | 'background'
-  startedAt: number
-  updatedAt: number
-  currentActivity?: string
-  recentActivities: TaskActivityView[]
-  model?: string
-  provider?: string
-  tokenCount: number
-  toolCount: number
-  result?: string
-  error?: string
-  unread: boolean
-  capabilities: TaskCapabilitiesView
-  workflowProgress?: Array<{ label: string; status?: string; detail?: string }>
-}
+export type {
+  BackgroundTaskStatus,
+  BackgroundTaskType,
+  TaskActivityView,
+  TaskCapabilitiesView,
+  BackgroundTaskView,
+} from '../../runtime/taskTypes.js'
 
 export interface TaskDetailPage {
   taskKey: string
@@ -830,10 +916,73 @@ export type ToolResultView =
       totalCount: number
     }
 
+/**
+ * How many transcript entries ONE conversation may hold, on both sides of the
+ * protocol.
+ *
+ * The host (`ChatSession.entries`) and the webview (`ChatState.entries`) each
+ * keep the full transcript for the life of the session, and neither used to have
+ * a bound: a long agentic run — thousands of tool pills, each with output,
+ * details and a typed result — grew both copies until the extension host and the
+ * webview process together exhausted the machine's RAM and VS Code was killed by
+ * the OS. Individual entries were already clamped (MAX_WEBVIEW_TEXT_CHARS on
+ * text/parameters, the diff/filename caps on a typed result); this bounds the
+ * ARRAY, the dimension nothing capped.
+ *
+ * ── WHY 200, AND WHY THE SAME NUMBER AS THE TERMINAL ───────────────────────────
+ *
+ * `Messages.tsx` reached this number the hard way for its own non-virtualized
+ * render path: ~250 KB of fiber tree per message meant ~2000 messages became
+ * "~500 MB of fibers, and per-frame write costs that push the process into a GC
+ * death spiral (observed: 59 GB RSS)". 200 is the cap it settled on.
+ *
+ * The webview is in the same position that path was — React renders EVERY entry
+ * it holds, with no windowing — so it inherits the same ceiling rather than
+ * inventing a second, unvalidated one. Oldest entries are evicted first, never
+ * the ones a live turn still needs (the streaming answer, running tools, a
+ * question mid-answer, the review card, and the FIRST prompt, which the session
+ * title is derived from).
+ *
+ * ── AND WHY EVICTION IS BATCHED, NOT PER-APPEND ────────────────────────────────
+ *
+ * Dropping the front entry on every single append shifts every visible row up by
+ * one, which is the bug `Messages.tsx` recorded as CC-941 ("dropping one message
+ * from the front on every append, shifting scrollback content") and tamed with
+ * quantized steps. Both sides here trim only once the transcript has overrun the
+ * cap by TRANSCRIPT_TRIM_STEP, then drop back to the cap — so a long stream
+ * shifts the view once per STEP entries instead of on every token, and the
+ * steady-state bound is MAX + STEP.
+ *
+ * Shared so the host and the webview cannot drift into disagreeing bounds: both
+ * trim at the same two thresholds, and a host that kept MORE than the webview
+ * would re-send entries the webview had already evicted.
+ */
+export const MAX_TRANSCRIPT_ENTRIES = 200
+
+/**
+ * How far past MAX_TRANSCRIPT_ENTRIES the transcript may grow before a trim
+ * runs, and how the two sides stay in lockstep. See MAX_TRANSCRIPT_ENTRIES for
+ * why the bound is quantized rather than enforced on every append.
+ */
+export const TRANSCRIPT_TRIM_STEP = 50
+
 /** A settled transcript entry. Mirrors the host formatter's block kinds. */
 export type TranscriptEntry =
-  | { id: EntryId; kind: 'prompt'; text: string }
+  | {
+      id: EntryId
+      kind: 'prompt'
+      text: string
+      /** How a prompt entered an already-running turn. Omitted for ordinary sends. */
+      delivery?: Exclude<PromptDeliveryView, 'normal'>
+    }
   | { id: EntryId; kind: 'assistant'; text: string; streaming?: boolean }
+  | {
+      id: EntryId
+      kind: 'side_question'
+      question: string
+      status: 'answering' | 'done' | 'error'
+      answer: string | null
+    }
   | {
       id: EntryId
       kind: 'tool'
@@ -931,6 +1080,16 @@ export type TranscriptEntry =
        * actors as one.
        */
       agent?: string
+      /**
+       * The provider and model the SUBAGENT ran this call on, for the model badge
+       * beside the agent label. Absent on main-thread rows: the session's model is
+       * already in the composer, and repeating it on every row would be noise.
+       *
+       * Kept as two fields rather than a pre-joined label so the renderer formats it
+       * the same way the background-task row does (`provider/model`).
+       */
+      agentProvider?: string
+      agentModel?: string
       /** AskUserQuestion data, retained for its compact transcript result. */
       questions?: NonNullable<PermissionRequestView['questionInteraction']>['questions']
       questionAnswers?: Record<string, string>
@@ -1220,11 +1379,17 @@ export interface ModelCatalogueView {
  * A permission mode as the composer presents it.
  *
  * `id` is the wire value for `set_permission_mode`; `label` and `description` are
- * editor phrasing. The engine's enum also has internal modes (`auto`, `bubble`,
- * `fullManage`) that are deliberately not offered — see `shared/permissionModes.ts`.
+ * editor phrasing. The engine's enum also has internal modes (`auto`, `bubble`)
+ * that are deliberately not offered — see `shared/permissionModes.ts`.
  */
 export interface PermissionModeView {
-  id: 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions'
+  id:
+    | 'plan'
+    | 'default'
+    | 'acceptEdits'
+    | 'bypassPermissions'
+    | 'fullManage'
+    | 'orchestrator'
   label: string
   description: string
 }
@@ -1292,6 +1457,18 @@ export interface WebviewState {
   contextUsage: ContextUsageView | null
   /** Connected MCP servers. */
   mcpServers: McpServerView[]
+  runtimeCapabilities?: RuntimeCapabilitiesView | null
+  runtimeCommands?: RuntimeCommandView[]
+  runtimeTools?: RuntimeToolView[]
+  runtimeAgents?: RuntimeAgentView[]
+  runtimePlugins?: RuntimePluginView[]
+  runtimeSkills?: RuntimeSkillView[]
+  runtimeWorkflows?: RuntimeSkillView[]
+  rateLimit?: RateLimitView | null
+  engineAuthStatus?: EngineAuthStatusView | null
+  sessionStatus?: 'idle' | 'running' | 'requires_action'
+  promptSuggestion?: string | null
+  mcpElicitations?: McpElicitationView[]
   /** The editor's current file and selection, or null. */
   ideContext: IdeContextView | null
   /** Previous sessions, with load state. */
@@ -1328,7 +1505,10 @@ export interface SlashCommandView {
 /** An MCP server's connection status. */
 export interface McpServerView {
   name: string
-  status: 'connected' | 'connecting' | 'disconnected' | 'disabled'
+  /** Exact shared engine state; presentation code must not coerce auth into disconnect. */
+  status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'
+  /** HTTP and SSE transports can own OAuth credentials; stdio transports cannot. */
+  supportsOAuth?: boolean
   error?: string
 }
 

@@ -83,7 +83,7 @@ const baseInputSchema = lazySchema(() => z.object({
   description: z.string().describe('A short (3-5 word) description of the task'),
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
-  model: z.string().optional().describe("Optional model override for this agent (an alias like 'sonnet'/'opus'/'haiku', or a provider-specific model id). Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, the configured subagent model, or inherits from the parent."),
+  model: z.string().optional().describe("Optional model override for this agent (an alias like 'sonnet'/'opus'/'haiku', or a provider-specific model id). Takes precedence over /subagent_models and the agent definition's model. If omitted, uses the named/global agent selection, then the definition default or parent model."),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -694,7 +694,9 @@ export const AgentTool = buildTool({
         // Don't link to parent's abort controller -- background agents should
         // survive when the user presses ESC to cancel the main thread.
         // They are killed explicitly via chat:killAgents.
-        toolUseId: toolUseContext.toolUseId
+        toolUseId: toolUseContext.toolUseId,
+        // Recorded so the UI can show which model this agent runs on while it works.
+        model: resolvedAgentModel
       });
 
       // Register name → agentId for SendMessage routing. Post-registerAsyncAgent
@@ -823,7 +825,9 @@ export const AgentTool = buildTool({
             selectedAgent,
             setAppState: rootSetAppState,
             toolUseId: toolUseContext.toolUseId,
-            autoBackgroundMs: getAutoBackgroundMs() || undefined
+            autoBackgroundMs: getAutoBackgroundMs() || undefined,
+            // Recorded so the UI can show which model this agent runs on while it works.
+            model: resolvedAgentModel
           });
           foregroundTaskId = registration.taskId;
           backgroundPromise = registration.backgroundSignal.then(() => ({

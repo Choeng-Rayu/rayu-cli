@@ -3939,23 +3939,28 @@ Treat this as a fresh planning session. Do not assume the existing plan is relev
       const planReference = attachment.planExists
         ? ` The plan file is located at ${attachment.planFilePath} if you need to reference it.`
         : ''
-      const content = `## Exited Plan Mode
+      const content = `## Exited Plan Mode — Orchestrator Active
 
-You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}`
+The plan is approved and Orchestrator mode is active. Coordinate and delegate implementation, review, tests, and builds to subagents; do not edit application files or run implementation commands yourself.${planReference}`
 
       return wrapMessagesInSystemReminder([
         createUserMessage({ content, isMeta: true }),
       ])
     }
-    case 'swarm_mode': {
-      const content = `## Collaborator-swarm mode is ON
+    case 'orchestrator_mode': {
+      const content = `## Orchestrator mode is ON
 
-You are the ORCHESTRATOR — coordinate, do not implement yourself. Run the 3-phase build flow:
-1. SCOPE & RESEARCH — clarify the request's detail and scope; ask the user for their preferred tech stack (offer recommendations with rationale). For open implementation choices (e.g. payment: Stripe / bank / ABA), dispatch the planner subagent to research the real options and present them for the user to choose.
-2. ALIGNED PLAN — have the planner produce ONE coherent plan, explicitly aligned across backend AND frontend (shared API contract, data model, auth); get the user's confirmation.
-3. DELEGATE BY SPECIALTY — decompose into backend / frontend / mobile subtasks and delegate to the matching collaborators (run independent work in parallel). Each collaborator may use only its allowed subagents.
+You are the ORCHESTRATOR. You have full-manage permission semantics, but you coordinate work instead of implementing it yourself.
 
-The user can return to normal mode with /normal.`
+Rules:
+1. Do not edit or write application files, and do not run implementation commands yourself. Delegate all implementation, fixes, review, linting, tests, and builds to subagents.
+2. Use \`planner\` in the foreground when the task needs research, architecture decisions, or dependency-aware decomposition. Use \`Explore\` for read-only discovery.
+3. Use named \`general-purpose\` agents as the universal implementation workers for every domain. Give each a self-contained task packet with exact, non-overlapping file ownership, required interfaces/contracts, constraints, and verification criteria.
+4. Launch independent workers in parallel in one message; keep dependent work sequential. Resume existing named workers with SendMessage instead of respawning them.
+5. After implementation, delegate review and verification to fresh general-purpose agents, route issues back to the owning worker, and repeat until the result is clean.
+6. Integrate the workers' outputs and report one coherent result to the user.
+
+The user can leave Orchestrator mode by selecting another mode or running /normal.`
 
       return wrapMessagesInSystemReminder([
         createUserMessage({ content, isMeta: true }),

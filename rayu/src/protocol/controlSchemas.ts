@@ -68,10 +68,198 @@ export const SDKControlInitializeRequestSchema = lazySchema(() =>
       agents: z.record(z.string(), AgentDefinitionSchema()).optional(),
       promptSuggestions: z.boolean().optional(),
       agentProgressSummaries: z.boolean().optional(),
+      runtimeCapabilities: z
+        .boolean()
+        .optional()
+        .describe(
+          'Requests the shared runtime catalogue and initial state projection. Additive and ignored by older engines.',
+        ),
     })
     .describe(
       'Initializes the SDK session with hooks, MCP servers, and agent configuration.',
     ),
+)
+
+export const RuntimeCapabilitiesSchema = lazySchema(() =>
+  z.object({
+    version: z.literal(1),
+    features: z.record(z.string(), z.boolean()),
+  }),
+)
+
+export const RuntimeCommandDescriptorSchema = lazySchema(() =>
+  z.object({
+    name: z.string(),
+    aliases: z.array(z.string()),
+    description: z.string(),
+    argumentHint: z.string(),
+    executionKind: z.enum(['prompt', 'local', 'local-jsx']),
+    surface: z.enum(['prompt', 'panel', 'action', 'terminal_only']),
+    origin: z.string(),
+    available: z.boolean(),
+    unavailableReason: z.string().optional(),
+    workflow: z.boolean(),
+    sensitive: z.boolean(),
+  }),
+)
+
+export const RuntimeToolDescriptorSchema = lazySchema(() =>
+  z.object({
+    name: z.string(),
+    aliases: z.array(z.string()),
+    source: z.enum(['builtin', 'mcp', 'lsp']),
+    serverName: z.string().optional(),
+    inputSchema: z.record(z.string(), z.unknown()).optional(),
+    deferred: z.boolean(),
+    alwaysLoad: z.boolean(),
+    requiresUserInteraction: z.boolean(),
+  }),
+)
+
+export const RuntimeAgentDescriptorSchema = lazySchema(() =>
+  z.object({
+    name: z.string(),
+    description: z.string(),
+    source: z.string(),
+    model: z.string().optional(),
+    background: z.boolean(),
+    tools: z.array(z.string()),
+    disallowedTools: z.array(z.string()),
+    skills: z.array(z.string()),
+    plugin: z.string().optional(),
+  }),
+)
+
+export const RuntimePluginDescriptorSchema = lazySchema(() =>
+  z.object({
+    name: z.string(),
+    description: z.string(),
+    version: z.string().optional(),
+    source: z.string(),
+    enabled: z.boolean(),
+    builtin: z.boolean(),
+    components: z.array(
+      z.enum(['commands', 'agents', 'skills', 'hooks', 'mcp', 'lsp', 'settings']),
+    ),
+  }),
+)
+
+export const RuntimeSkillDescriptorSchema = lazySchema(() =>
+  z.object({
+    name: z.string(),
+    description: z.string(),
+    source: z.string(),
+    version: z.string().optional(),
+    workflow: z.boolean(),
+    context: z.enum(['inline', 'fork']).optional(),
+    agent: z.string().optional(),
+  }),
+)
+
+export const RuntimeTaskActivitySchema = lazySchema(() =>
+  z.object({
+    id: z.string(),
+    label: z.string(),
+    toolName: z.string().optional(),
+    timestamp: z.number(),
+    kind: z.enum(['tool', 'search', 'read', 'thinking', 'status']).optional(),
+  }),
+)
+
+export const RuntimeTaskCapabilitiesSchema = lazySchema(() =>
+  z.object({
+    canStop: z.boolean(),
+    canSendMessage: z.boolean(),
+    hasTranscript: z.boolean(),
+    hasOutput: z.boolean(),
+  }),
+)
+
+export const RuntimeBackgroundTaskSchema = lazySchema(() =>
+  z.object({
+    key: z.string(),
+    taskId: z.string(),
+    sourceSessionId: z.string(),
+    type: z.enum([
+      'local_agent',
+      'in_process_teammate',
+      'local_shell',
+      'remote_agent',
+      'external_agent',
+      'local_workflow',
+      'monitor_mcp',
+      'dream',
+      'unknown',
+    ]),
+    rawType: z.string().optional(),
+    group: z.enum(['agents', 'shells', 'workflows', 'remote', 'monitors', 'other']),
+    description: z.string(),
+    prompt: z.string().optional(),
+    agentId: z.string().optional(),
+    agentName: z.string().optional(),
+    status: z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'stopped']),
+    executionMode: z.enum(['foreground', 'background']),
+    startedAt: z.number(),
+    updatedAt: z.number(),
+    currentActivity: z.string().optional(),
+    recentActivities: z.array(RuntimeTaskActivitySchema()),
+    model: z.string().optional(),
+    provider: z.string().optional(),
+    tokenCount: z.number(),
+    toolCount: z.number(),
+    result: z.string().optional(),
+    error: z.string().optional(),
+    unread: z.boolean(),
+    capabilities: RuntimeTaskCapabilitiesSchema(),
+    workflowProgress: z.array(z.object({
+      label: z.string(),
+      status: z.string().optional(),
+      detail: z.string().optional(),
+    })).optional(),
+  }),
+)
+
+export const RuntimeInferenceSnapshotSchema = lazySchema(() =>
+  z.object({
+    model: z.string(),
+    supportsEffort: z.boolean(),
+    supportedLevels: z.array(z.enum(['low', 'medium', 'high', 'max'])),
+    effort: z.union([z.enum(['low', 'medium', 'high', 'max']), z.number()]).nullable(),
+    effortEnvOverride: z.string().nullable(),
+    supportsThinking: z.boolean(),
+    thinkingEnabled: z.boolean(),
+  }),
+)
+
+export const RuntimeSnapshotSchema = lazySchema(() =>
+  z.object({
+    capabilities: RuntimeCapabilitiesSchema(),
+    revision: z.number().int().nonnegative(),
+    product: z.enum(['cli', 'rayucode', 'sdk']),
+    session: z.object({
+      id: z.string(),
+      status: z.enum(['idle', 'running', 'requires_action']),
+    }),
+    commands: z.array(RuntimeCommandDescriptorSchema()),
+    tools: z.array(RuntimeToolDescriptorSchema()),
+    agents: z.array(RuntimeAgentDescriptorSchema()),
+    plugins: z.array(RuntimePluginDescriptorSchema()),
+    skills: z.array(RuntimeSkillDescriptorSchema()),
+    workflows: z.array(RuntimeSkillDescriptorSchema()),
+    tasks: z.array(RuntimeBackgroundTaskSchema()),
+    mcpServers: z.array(McpServerStatusSchema()),
+    inference: RuntimeInferenceSnapshotSchema(),
+    account: AccountInfoSchema(),
+    outputStyle: z.string(),
+    availableOutputStyles: z.array(z.string()),
+    permissionMode: PermissionModeSchema(),
+    bridges: z.object({
+      telegramAttached: z.boolean(),
+      webBridgeEnabled: z.boolean(),
+      webBridgeConnected: z.boolean(),
+      remoteSessionConnected: z.boolean(),
+    }),
+  }),
 )
 
 export const SDKControlInitializeResponseSchema = lazySchema(() =>
@@ -88,6 +276,11 @@ export const SDKControlInitializeResponseSchema = lazySchema(() =>
         .optional()
         .describe('@internal CLI process PID for tmux socket isolation'),
       fast_mode_state: FastModeStateSchema().optional(),
+      runtime: RuntimeSnapshotSchema()
+        .optional()
+        .describe(
+          'Shared runtime snapshot requested by non-terminal first-party clients.',
+        ),
     })
     .describe(
       'Response from session initialization with available commands, models, and account info.',
@@ -426,10 +619,28 @@ export const SDKControlReloadPluginsResponseSchema = lazySchema(() =>
       ),
       mcpServers: z.array(McpServerStatusSchema()),
       error_count: z.number(),
+      runtimeCommands: z.array(z.unknown()).optional(),
+      runtimeTools: z.array(z.unknown()).optional(),
     })
     .describe(
       'Refreshed commands, agents, plugins, and MCP server status after reload.',
     ),
+)
+
+export const SDKControlInstallSkillRequestSchema = lazySchema(() =>
+  z.object({
+    subtype: z.literal('install_skill'),
+    source: z.string().min(1),
+    overwrite: z.boolean().optional(),
+  }),
+)
+
+export const SDKControlGetRuntimeSnapshotRequestSchema = lazySchema(() =>
+  z.object({ subtype: z.literal('get_runtime_snapshot') }),
+)
+
+export const SDKControlGetRuntimeSnapshotResponseSchema = lazySchema(() =>
+  z.object({ runtime: RuntimeSnapshotSchema() }),
 )
 
 export const SDKControlMcpReconnectRequestSchema = lazySchema(() =>
@@ -507,6 +718,52 @@ export const SDKControlSetEffortRequestSchema = lazySchema(() =>
     subtype: z.literal('set_effort'),
     effort: z.enum(['low', 'medium', 'high', 'max']).nullable(),
   }),
+)
+
+export const SDKControlSetThinkingRequestSchema = lazySchema(() =>
+  z.object({
+    subtype: z.literal('set_thinking'),
+    enabled: z.boolean(),
+  }),
+)
+
+// Runtime operations already implemented by the shared headless engine. Keeping
+// them in the canonical union makes first-party clients validate the same frames
+// the engine handles instead of relying on casts in individual consumers.
+export const SDKControlEndSessionRequestSchema = lazySchema(() =>
+  z.object({ subtype: z.literal('end_session'), reason: z.string().optional() }),
+)
+export const SDKControlChannelEnableRequestSchema = lazySchema(() =>
+  z.object({ subtype: z.literal('channel_enable'), serverName: z.string() }),
+)
+export const SDKControlMcpAuthenticateRequestSchema = lazySchema(() =>
+  z.object({ subtype: z.literal('mcp_authenticate'), serverName: z.string() }),
+)
+export const SDKControlMcpOAuthCallbackRequestSchema = lazySchema(() =>
+  z.object({
+    subtype: z.literal('mcp_oauth_callback_url'),
+    serverName: z.string(),
+    callbackUrl: z.string(),
+  }),
+)
+export const SDKControlMcpClearAuthRequestSchema = lazySchema(() =>
+  z.object({ subtype: z.literal('mcp_clear_auth'), serverName: z.string() }),
+)
+export const SDKControlGenerateSessionTitleRequestSchema = lazySchema(() =>
+  z.object({
+    subtype: z.literal('generate_session_title'),
+    description: z.string(),
+    persist: z.boolean().optional(),
+  }),
+)
+export const SDKControlSideQuestionRequestSchema = lazySchema(() =>
+  z.object({ subtype: z.literal('side_question'), question: z.string() }),
+)
+export const SDKControlRemoteControlRequestSchema = lazySchema(() =>
+  z.object({ subtype: z.literal('remote_control'), enabled: z.boolean() }),
+)
+export const SDKControlSetProactiveRequestSchema = lazySchema(() =>
+  z.object({ subtype: z.literal('set_proactive'), enabled: z.boolean() }),
 )
 
 export const SDKControlGetSettingsRequestSchema = lazySchema(() =>
@@ -611,6 +868,8 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlSeedReadStateRequestSchema(),
     SDKControlMcpSetServersRequestSchema(),
     SDKControlReloadPluginsRequestSchema(),
+    SDKControlInstallSkillRequestSchema(),
+    SDKControlGetRuntimeSnapshotRequestSchema(),
     SDKControlMcpReconnectRequestSchema(),
     SDKControlMcpToggleRequestSchema(),
     SDKControlStopTaskRequestSchema(),
@@ -618,6 +877,16 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlApplyFlagSettingsRequestSchema(),
     SDKControlGetSettingsRequestSchema(),
     SDKControlSetEffortRequestSchema(),
+    SDKControlSetThinkingRequestSchema(),
+    SDKControlEndSessionRequestSchema(),
+    SDKControlChannelEnableRequestSchema(),
+    SDKControlMcpAuthenticateRequestSchema(),
+    SDKControlMcpOAuthCallbackRequestSchema(),
+    SDKControlMcpClearAuthRequestSchema(),
+    SDKControlGenerateSessionTitleRequestSchema(),
+    SDKControlSideQuestionRequestSchema(),
+    SDKControlRemoteControlRequestSchema(),
+    SDKControlSetProactiveRequestSchema(),
     SDKControlElicitationRequestSchema(),
   ]),
 )

@@ -15,6 +15,10 @@
  * to accept a candidate in a Japanese, Chinese or Korean input method would send a
  * half-typed prompt instead.
  *
+ * During a running turn, bare Enter uses the visible Queue/Steer choice. Queue is
+ * the safe default. Ctrl+Enter is an explicit steering shortcut and maps to the
+ * engine's `now` priority; it never masquerades as an ordinary new turn.
+ *
  * ── WHY THE HEIGHT IS SET IMPERATIVELY ─────────────────────────────────────────
  *
  * A textarea cannot size itself to its content in CSS. The measured `scrollHeight`
@@ -37,13 +41,30 @@ import type {
 import type {
   AttachmentView,
   ContextUsageView,
+  ComposerControlView,
   IdeContextView,
   ModelCatalogueView,
   ModelInfoView,
   ImageInputView,
   PermissionModeView,
+  PromptDeliveryView,
+  RuntimeAgentView,
   SlashCommandView,
 } from '../../shared/webviewProtocol.js'
+import {
+  AGENT_MODEL_COMMAND_NAMES,
+  applyAgentModelTarget,
+  describeConfigurableAgent,
+  matchAgentModelTarget,
+  matchingAgentModelTargets,
+} from '../../../utils/model/agentModelTargets.js'
+import {
+  canNavigatePromptHistoryDown,
+  canNavigatePromptHistoryUp,
+  navigatePromptHistoryDown,
+  navigatePromptHistoryUp,
+  type PromptHistoryNavigation,
+} from '../promptHistory.js'
 import { ModelDropdown } from './ModelDropdown.js'
 import { InferenceControls } from './InferenceControls.js'
 import { PermissionDropdown } from './PermissionDropdown.js'
@@ -95,6 +116,10 @@ export interface ComposerProps {
   inference: InferenceSettingsView
   permissionMode: PermissionModeView
   commands?: SlashCommandView[]
+  /** Runtime names extend the built-in agent scopes in model-command autocomplete. */
+  agents?: RuntimeAgentView[]
+  /** Reusable prompts, newest first, derived from the current/restored transcript. */
+  promptHistory?: string[]
   workspaceFiles?: string[]
   /** The editor's current file and selection, for the context row. */
   ideContext?: IdeContextView | null
@@ -112,11 +137,18 @@ export interface ComposerProps {
   onDetachSession?: () => void
   /** Latest TodoWrite state, pinned here until a later call replaces it. */
   todoEntry?: TodoToolEntry | null
-  onSubmit: (text: string, images?: ImageInputView[]) => void
+  /** Engine-generated next prompt. It is inserted for editing and never auto-submitted. */
+  promptSuggestion?: string | null
+  onSubmit: (
+    text: string,
+    images?: ImageInputView[],
+    delivery?: PromptDeliveryView,
+  ) => void
   onInterrupt: () => void
   onSelectModel: (value: string) => void
   onRefreshModels: () => void
   onSetEffort: (level: EffortChoice) => void
+  onSetThinking: (enabled: boolean) => void
   onCyclePermissionMode: () => void
   onSelectPermissionMode?: (modeId: string) => void
   onOpenProviderSetup: () => void
@@ -138,6 +170,8 @@ export interface ComposerProps {
    * attachment state and the caret, which is what moving the handler would cost.
    */
   onDragStateChange?: (dragging: boolean) => void
+  /** Host-routed slash command that should open one of the in-composer controls. */
+  controlRequest?: { control: ComposerControlView; revision: number } | null
 }
 
 export function Composer({
@@ -150,6 +184,8 @@ export function Composer({
   inference,
   permissionMode,
   commands,
+  agents,
+  promptHistory,
   workspaceFiles,
   ideContext,
   contextUsage,
@@ -158,11 +194,13 @@ export function Composer({
   onAttachSession,
   onDetachSession,
   todoEntry,
+  promptSuggestion,
   onSubmit,
   onInterrupt,
   onSelectModel,
   onRefreshModels,
   onSetEffort,
+  onSetThinking,
   onCyclePermissionMode,
   onSelectPermissionMode,
   onOpenProviderSetup,
@@ -170,6 +208,7 @@ export function Composer({
   onResolveDroppedPaths,
   onPickContextPaths,
   onDragStateChange,
+  controlRequest,
 }: ComposerProps): JSX.Element {
   const [value, setValue] = useState(initialValue)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -178,7 +217,10 @@ export function Composer({
   /** Images staged for the next message. Cleared on send, removable individually. */
   const [images, setImages] = useState<ImageInputView[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
+  /** Mid-turn delivery is explicit and remains selected while this composer lives. */
+  const [deliveryMode, setDeliveryMode] = useState<Extract<PromptDeliveryView, 'queue' | 'steer'>>('queue')
   const textarea = useRef<HTMLTextAreaElement | null>(null)
+  const historyNavigation = useRef<PromptHistoryNavigation | null>(null)
 
   const updateCursor = useCallback(() => {
     if (textarea.current) {
@@ -207,10 +249,45 @@ export function Composer({
       }))
   }, [isSlashCommand, commands, slashQuery])
 
+  const agentTargetMatch = dismissed
+    ? null
+    : matchAgentModelTarget(value, cursorPos)
+  const isAgentTarget = agentTargetMatch !== null
+  const agentTargetItems: AutocompleteItem[] = useMemo(() => {
+    if (!agentTargetMatch) return []
+    const query = agentTargetMatch.query.toLowerCase()
+    const agentItems: AutocompleteItem[] = matchingAgentModelTargets(
+      value,
+      cursorPos,
+      (agents ?? []).map(agent => agent.name),
+    ).map(agentType => ({
+      id: `agent-model-target-${agentType}`,
+      label: agentType,
+      description: describeConfigurableAgent(agentType),
+      insertText: agentType,
+      kind: 'agent',
+    }))
+    const globalMatches =
+      query === '' || 'all'.startsWith(query) || 'default'.startsWith(query)
+    return globalMatches
+      ? [
+          {
+            id: 'agent-model-target-all',
+            label: 'All agents',
+            description: 'Set the global default for every agent',
+            insertText: '',
+            kind: 'agent',
+          },
+          ...agentItems,
+        ]
+      : agentItems
+  }, [isAgentTarget, agentTargetMatch, value, cursorPos, agents])
+
   // Check if @-mention is triggered: '@' anywhere preceded by start of line or whitespace
   const textBeforeCursor = value.slice(0, cursorPos)
   const mentionMatch = /(?:^|\s)@([^\s]*)$/.exec(textBeforeCursor)
-  const isMention = !dismissed && !isSlashCommand && mentionMatch !== null
+  const isMention =
+    !dismissed && !isSlashCommand && !isAgentTarget && mentionMatch !== null
   const fileQuery = isMention ? mentionMatch[1] : ''
 
   // Debounced: `findFiles` runs a workspace glob in the extension host, and firing it on
@@ -240,17 +317,40 @@ export function Composer({
       }))
   }, [isMention, workspaceFiles, fileQuery])
 
-  const popoverItems = isSlashCommand ? slashItems : isMention ? fileItems : []
+  const popoverItems = isSlashCommand
+    ? slashItems
+    : isAgentTarget
+      ? agentTargetItems
+      : isMention
+        ? fileItems
+        : []
 
   useEffect(() => {
     setSelectedIndex(0)
   }, [popoverItems.length])
 
+  const submit = useCallback((delivery?: PromptDeliveryView) => {
+    const text = value.trim()
+    // An image with no words is a legitimate prompt — "what is this?" is implied.
+    if ((!text && images.length === 0) || disabled) return
+    onSubmit(text, images, delivery ?? (turnRunning ? deliveryMode : 'normal'))
+    historyNavigation.current = null
+    setValue('')
+    setImages([])
+    setAttachError(null)
+  }, [value, images, disabled, onSubmit, turnRunning, deliveryMode])
+
   const applySelection = useCallback(
     (item: AutocompleteItem) => {
+      historyNavigation.current = null
       if (item.kind === 'command') {
+        const continuesWithAgentTargets =
+          matchAgentModelTarget(item.insertText, item.insertText.length) !== null
         setValue(item.insertText)
-        setDismissed(true)
+        setCursorPos(item.insertText.length)
+        // `/subagent_models ` has a second autocomplete stage: selecting the slash
+        // command should immediately reveal agent scopes instead of closing the list.
+        setDismissed(!continuesWithAgentTargets)
         setTimeout(() => {
           if (textarea.current) {
             textarea.current.focus()
@@ -259,6 +359,22 @@ export function Composer({
               item.insertText.length,
             )
           }
+        }, 0)
+      } else if (item.id === 'agent-model-target-all') {
+        setDismissed(true)
+        submit()
+      } else if (item.kind === 'agent') {
+        const result = applyAgentModelTarget(value, cursorPos, item.label)
+        if (!result) return
+        setValue(result.input)
+        setCursorPos(result.cursorOffset)
+        setDismissed(true)
+        setTimeout(() => {
+          textarea.current?.focus()
+          textarea.current?.setSelectionRange(
+            result.cursorOffset,
+            result.cursorOffset,
+          )
         }, 0)
       } else {
         const tokenStart = cursorPos - fileQuery.length - 1
@@ -277,7 +393,7 @@ export function Composer({
         }, 0)
       }
     },
-    [cursorPos, fileQuery, value],
+    [cursorPos, fileQuery, value, submit],
   )
 
   // useLayoutEffect, not useEffect: resizing after paint makes the box visibly jump
@@ -295,20 +411,32 @@ export function Composer({
     if (!turnRunning && !disabled) textarea.current?.focus()
   }, [turnRunning, disabled])
 
-  const submit = useCallback(() => {
-    const text = value.trim()
-    // An image with no words is a legitimate prompt — "what is this?" is implied.
-    if ((!text && images.length === 0) || disabled) return
-    onSubmit(text, images)
-    setValue('')
-    setImages([])
-    setAttachError(null)
-  }, [value, images, disabled, onSubmit])
-
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // Autocomplete navigation intercepts Arrow keys, Enter and Escape
       if (popoverItems.length > 0) {
+        const exactAgentModelCommand =
+          isSlashCommand &&
+          (AGENT_MODEL_COMMAND_NAMES as readonly string[]).includes(
+            value.slice(1).toLowerCase(),
+          )
+        if (
+          exactAgentModelCommand &&
+          event.key === 'Enter' &&
+          !event.nativeEvent.isComposing &&
+          !event.shiftKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !event.metaKey
+        ) {
+          // An exact command means the user is executing it, not asking to expand
+          // its primary-name suggestion. This opens the global model picker in one Enter.
+          event.preventDefault()
+          event.stopPropagation()
+          setDismissed(true)
+          submit()
+          return
+        }
         if (event.key === 'ArrowDown') {
           event.preventDefault()
           setSelectedIndex(prev => (prev + 1) % popoverItems.length)
@@ -345,6 +473,46 @@ export function Composer({
         }
       }
 
+      // Match the CLI: history is a fallback only when Up/Down cannot move to
+      // another logical line. Autocomplete above always owns the arrows first.
+      if (
+        !event.nativeEvent.isComposing &&
+        !event.shiftKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+        event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+      ) {
+        const cursor = event.currentTarget.selectionStart
+        const result =
+          event.key === 'ArrowUp'
+            ? canNavigatePromptHistoryUp(value, cursor)
+              ? navigatePromptHistoryUp(
+                  historyNavigation.current,
+                  value,
+                  promptHistory ?? [],
+                )
+              : null
+            : canNavigatePromptHistoryDown(value, cursor)
+              ? navigatePromptHistoryDown(historyNavigation.current)
+              : null
+        if (result) {
+          event.preventDefault()
+          historyNavigation.current = result.navigation
+          setValue(result.value)
+          setCursorPos(result.cursorOffset)
+          setDismissed(true)
+          setTimeout(() => {
+            textarea.current?.setSelectionRange(
+              result.cursorOffset,
+              result.cursorOffset,
+            )
+          }, 0)
+          return
+        }
+      }
+
       // Shift+Tab cycles permission mode. Checked before the Enter handling so the
       // two shortcuts cannot interfere, and `preventDefault` is required or the
       // browser moves focus out of the textarea instead.
@@ -365,17 +533,21 @@ export function Composer({
       if (event.nativeEvent.isComposing) return
       // Newline path first, so the destructive path is the narrower one.
       if (event.shiftKey) return
-      if (event.ctrlKey || event.altKey || event.metaKey) return
+      if (event.altKey || event.metaKey) return
       event.preventDefault()
-      submit()
+      submit(turnRunning && event.ctrlKey ? 'steer' : undefined)
     },
     [
       submit,
+      turnRunning,
       onCyclePermissionMode,
       authenticationRequired,
       popoverItems,
       selectedIndex,
       applySelection,
+      isSlashCommand,
+      value,
+      promptHistory,
     ],
   )
 
@@ -390,6 +562,7 @@ export function Composer({
   const insertText = useCallback(
     (text: string) => {
       if (!text) return
+      historyNavigation.current = null
       setValue(current => {
         const next = insertIntoValue(current, cursorPos, text)
         setCursorPos(next.cursor)
@@ -594,6 +767,25 @@ export function Composer({
 
       {todoEntry ? <TodoListCard entry={todoEntry} embedded /> : null}
 
+      {!value && !turnRunning && promptSuggestion ? (
+        <button
+          type="button"
+          className="rc-chip"
+          title="Insert this suggested follow-up"
+          onClick={() => {
+            historyNavigation.current = null
+            setValue(promptSuggestion)
+            setCursorPos(promptSuggestion.length)
+            setTimeout(() => {
+              textarea.current?.focus()
+              textarea.current?.setSelectionRange(promptSuggestion.length, promptSuggestion.length)
+            }, 0)
+          }}
+        >
+          <span className="rc-chip-label">{promptSuggestion}</span>
+        </button>
+      ) : null}
+
       {images.length > 0 ? (
         <ul className="rc-attach-strip" aria-label="Attached images">
           {images.map((image, index) => (
@@ -653,6 +845,7 @@ export function Composer({
           const next = event.target.value
           // `value` is still the PREVIOUS value here, which is what the comparison needs.
           convertDroppedPathText(value, next)
+          historyNavigation.current = null
           setValue(next)
           setDismissed(false)
           setCursorPos(event.target.selectionStart)
@@ -702,11 +895,14 @@ export function Composer({
               catalogue={modelCatalogue}
               onSelect={onSelectModel}
               onRefresh={onRefreshModels}
+              openRequest={controlRequest?.control === 'model' ? controlRequest.revision : undefined}
             />
 
             <InferenceControls
               settings={inference}
               onSetEffort={onSetEffort}
+              onSetThinking={onSetThinking}
+              effortOpenRequest={controlRequest?.control === 'effort' ? controlRequest.revision : undefined}
             />
           </div>
         ) : null}
@@ -714,6 +910,41 @@ export function Composer({
         <span className="rc-composer-spacer" />
 
         {contextUsage ? <ContextGauge usage={contextUsage} /> : null}
+
+        {turnRunning && canSend ? (
+          <div className="rc-delivery-toggle" role="group" aria-label="Message delivery">
+            <button
+              type="button"
+              className={`rc-delivery-option${deliveryMode === 'queue' ? ' rc-delivery-option-active' : ''}`}
+              aria-pressed={deliveryMode === 'queue'}
+              onClick={() => setDeliveryMode('queue')}
+              title="Queue this message for the running turn"
+            >
+              Queue
+            </button>
+            <button
+              type="button"
+              className={`rc-delivery-option${deliveryMode === 'steer' ? ' rc-delivery-option-active' : ''}`}
+              aria-pressed={deliveryMode === 'steer'}
+              onClick={() => setDeliveryMode('steer')}
+              title="Interrupt the current request and steer Rayu now (Ctrl+Enter)"
+            >
+              Steer
+            </button>
+          </div>
+        ) : null}
+
+        {turnRunning && canSend ? (
+          <button
+            type="button"
+            className="rc-submit"
+            onClick={() => submit()}
+            aria-label={deliveryMode === 'steer' ? 'Send steering message' : 'Queue message'}
+            title={deliveryMode === 'steer' ? 'Steer now (Ctrl+Enter)' : 'Queue message (Enter)'}
+          >
+            <SendIcon />
+          </button>
+        ) : null}
 
         {turnRunning ? (
           <button
@@ -729,7 +960,7 @@ export function Composer({
           <button
             type="button"
             className="rc-submit"
-            onClick={submit}
+            onClick={() => submit()}
             disabled={!canSend}
             aria-label="Send message"
             title="Send (Enter)"

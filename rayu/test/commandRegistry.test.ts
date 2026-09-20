@@ -43,4 +43,19 @@ describe('Rayu command registry', () => {
       expect(names.has(name)).toBe(true)
     }
   })
+
+  test('exposes Orchestrator and removes the legacy collaborator commands', () => {
+    const names = builtInCommandNames()
+    expect(names.has('orchestrator')).toBe(true)
+    expect(names.has('normal')).toBe(true)
+    expect(names.has('collaborator_swarm')).toBe(false)
+    expect(names.has('collaborator_model')).toBe(false)
+  })
+
+  test('exposes the all-agent model command', () => {
+    const names = builtInCommandNames()
+    expect(names.has('subagent_models')).toBe(true)
+    expect(names.has('model_subagent')).toBe(true)
+    expect(names.has('subagent_model')).toBe(true)
+  })
 })
