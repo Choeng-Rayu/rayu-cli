@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { WorkflowMultiselectDialog } from '../../components/WorkflowMultiselectDialog.js'
+import { Select } from '../../components/CustomSelect/index.js'
 import {
   GITHUB_ACTION_SETUP_DOCS_URL,
   getRayuGitHubIntegrationConfig,
@@ -11,12 +12,18 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Link, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import { getRayuApiKeyProvider } from '../../services/rayuAuth/rayuApiKeyAuth.js'
+import {
+  getRayuApiBaseUrl,
+  getValidRayuAccessToken,
+  hasRayuSession,
+} from '../../services/rayuAuth/rayuSession.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import { openBrowser } from '../../utils/browser.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { getGithubRepo } from '../../utils/git.js'
 import TextInput from '../../components/TextInput.js'
 import { setupGitHubActions } from './setupGitHubActions.js'
+import { provisionGitHubActionsCredential } from './rayuGitHubCredential.js'
 import type { State, Workflow } from './types.js'
 
 type Props = {
@@ -197,15 +204,23 @@ function InstallGitHubApp({ onDone }: Props): React.ReactNode {
       ...previous,
       selectedWorkflows: workflows,
       secretExists,
-      step: 'api-key',
+      step: 'credential',
     }))
   }
 
-  async function runSetup(): Promise<void> {
+  async function runSetup(
+    credential: 'account' | 'automatic' | 'keep' | string,
+  ): Promise<void> {
     if (!integration) return
-    const typedKey = state.apiKey.trim()
-    const apiKey = typedKey || (state.secretExists ? null : existingApiKey)
-    if (!apiKey && !state.secretExists) {
+    const apiKey =
+      credential === 'keep'
+        ? null
+        : credential === 'automatic'
+          ? existingApiKey
+          : credential === 'account'
+            ? null
+            : credential.trim()
+    if (!apiKey && credential !== 'account' && credential !== 'keep') {
       setInputError(
         'Enter a Rayu API key. Create one at rayucode.com/dashboard/api-keys.',
       )
@@ -218,9 +233,29 @@ function InstallGitHubApp({ onDone }: Props): React.ReactNode {
       progress: 'Starting Rayu GitHub setup',
     }))
     try {
+      let resolvedApiKey = apiKey
+      if (credential === 'account') {
+        setState(previous => ({
+          ...previous,
+          progress: 'Authorizing with your Rayu account',
+        }))
+        const accessToken = await getValidRayuAccessToken()
+        if (!accessToken) {
+          throw new Error('Your Rayu session expired. Run /login, then try again.')
+        }
+        setState(previous => ({
+          ...previous,
+          progress: 'Creating a repository credential from your Rayu account',
+        }))
+        resolvedApiKey = await provisionGitHubActionsCredential({
+          repoName: state.selectedRepoName,
+          apiBaseUrl: getRayuApiBaseUrl(),
+          accessToken,
+        })
+      }
       const result = await setupGitHubActions({
         repoName: state.selectedRepoName,
-        apiKey,
+        apiKey: resolvedApiKey,
         secretName: RAYU_GITHUB_SECRET_NAME,
         selectedWorkflows: state.selectedWorkflows,
         config: integration,
@@ -242,6 +277,15 @@ function InstallGitHubApp({ onDone }: Props): React.ReactNode {
             : 'GitHub Actions setup failed.',
       }))
     }
+  }
+
+  function selectCredential(value: string): void {
+    if (value === 'manual') {
+      setCursorOffset(0)
+      setState(previous => ({ ...previous, step: 'api-key', apiKey: '' }))
+      return
+    }
+    void runSetup(value)
   }
 
   switch (state.step) {
@@ -338,6 +382,41 @@ function InstallGitHubApp({ onDone }: Props): React.ReactNode {
           onSubmit={workflows => void selectWorkflows(workflows)}
         />
       )
+    case 'credential': {
+      const options: Array<{ label: string; value: string }> = []
+      if (hasRayuSession()) {
+        options.push({
+          label: 'Use signed-in Rayu account (Recommended)',
+          value: 'account',
+        })
+      }
+      if (state.secretExists) {
+        options.push({
+          label: `Keep existing ${RAYU_GITHUB_SECRET_NAME}`,
+          value: 'keep',
+        })
+      }
+      if (existingApiKey) {
+        options.push({
+          label: 'Use current Rayu API key',
+          value: 'automatic',
+        })
+      }
+      options.push({ label: 'Enter a Rayu API key manually', value: 'manual' })
+      return (
+        <Panel title="Choose Rayu authentication">
+          <Text>
+            Rayu account authentication creates a dedicated credential for this
+            repository. Your login token is never stored in GitHub.
+          </Text>
+          <Select
+            options={options}
+            onChange={value => selectCredential(String(value))}
+          />
+          <Text dimColor>Enter to continue · Esc to cancel</Text>
+        </Panel>
+      )
+    }
     case 'api-key':
       return (
         <Panel title="Configure the Rayu API key">
@@ -364,7 +443,7 @@ function InstallGitHubApp({ onDone }: Props): React.ReactNode {
                 setState(previous => ({ ...previous, apiKey: value }))
                 setInputError(null)
               }}
-              onSubmit={() => void runSetup()}
+              onSubmit={() => void runSetup(state.apiKey)}
               focus
               mask="*"
               placeholder={

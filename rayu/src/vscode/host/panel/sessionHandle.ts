@@ -127,6 +127,10 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
   { name: 'login', description: 'Sign in to your Rayu account' },
   { name: 'logout', description: 'Sign out of your Rayu account' },
   {
+    name: 'install-github-app',
+    description: 'Set up Rayu GitHub Actions for a repository',
+  },
+  {
     name: 'btw',
     description: 'Ask a quick side question without interrupting the main conversation',
   },
