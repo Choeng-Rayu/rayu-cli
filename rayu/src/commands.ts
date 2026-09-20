@@ -156,6 +156,7 @@ import memoize from 'lodash-es/memoize.js'
 import exit from './commands/exit/index.js'
 import exportCommand from './commands/export/index.js'
 import connect from './commands/connect/index.js'
+import installGitHubApp from './commands/install-github-app/index.js'
 import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
 import modelSubagent from './commands/model-subagent/index.js'
@@ -256,6 +257,7 @@ const COMMANDS = memoize((): Command[] => [
   modelImageGeneration,
   modelVideoGeneration,
   connect,
+  installGitHubApp,
   installSkill,
   outputStyle,
   plugin,

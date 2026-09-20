@@ -1,5 +1,23 @@
-// Restored to satisfy rayu's type-only imports (full source not in the leak).
-// Permissive aliases avoid fabricating a wrong shape. SAFE: type-only.
-export type State = any
-export type Warning = any
-export type Workflow = any
+export type Workflow = 'rayu' | 'rayu-review'
+
+export type InstallGitHubAppStep =
+  | 'configuration'
+  | 'checking-github'
+  | 'choose-repo'
+  | 'install-app'
+  | 'select-workflows'
+  | 'api-key'
+  | 'creating'
+  | 'success'
+  | 'error'
+
+export type State = {
+  step: InstallGitHubAppStep
+  selectedRepoName: string
+  selectedWorkflows: Workflow[]
+  apiKey: string
+  secretExists: boolean
+  progress: string
+  error?: string
+  pullRequestUrl?: string
+}
