@@ -1154,7 +1154,7 @@ export async function checkRuleBasedPermissions(
   return null
 }
 
-// Exported for unit testing the mode-gating logic (fullManage/bypass vs the
+// Exported for unit testing the mode-gating logic (fullManage/Orchestrator vs the
 // requiresUserInteraction guard). Not part of the public permission API — use
 // hasPermissionsToUseTool.
 export async function hasPermissionsToUseToolInner(
@@ -1168,8 +1168,9 @@ export async function hasPermissionsToUseToolInner(
 
   let appState = context.getAppState()
 
-  // 0. fullManage mode: allow everything unconditionally without any permission
-  // checks — EXCEPT tools that require user interaction (AskUserQuestion,
+  // 0. fullManage and Orchestrator modes: allow everything unconditionally
+  // without permission checks — EXCEPT tools that require user interaction
+  // (AskUserQuestion,
   // ExitPlanMode, ReviewArtifact). Auto-"allowing" an interactive tool has no
   // user input to synthesize, so it would execute with empty input and its
   // dialog would never render (e.g. AskUserQuestion resolves "answered" with
@@ -1177,7 +1178,8 @@ export async function hasPermissionsToUseToolInner(
   // interactive 'ask' the UI needs — matching how bypassPermissions already
   // handles these tools.
   if (
-    appState.toolPermissionContext.mode === 'fullManage' &&
+    (appState.toolPermissionContext.mode === 'fullManage' ||
+      appState.toolPermissionContext.mode === 'orchestrator') &&
     !tool.requiresUserInteraction?.()
   ) {
     return {
@@ -1185,7 +1187,7 @@ export async function hasPermissionsToUseToolInner(
       updatedInput: input,
       decisionReason: {
         type: 'mode',
-        mode: 'fullManage',
+        mode: appState.toolPermissionContext.mode,
       },
     }
   }

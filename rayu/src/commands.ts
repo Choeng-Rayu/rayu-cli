@@ -16,7 +16,7 @@ import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
-import collaboratorSwarm from './commands/collaborator-swarm/index.js'
+import orchestrator from './commands/orchestrator/index.js'
 import normal from './commands/normal/index.js'
 // Hidden internal command: REPL submits it from the rate-limit notice, so the
 // user can lift Rayu's credit pacing without leaving the terminal. Named
@@ -160,7 +160,6 @@ import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
 import modelSubagent from './commands/model-subagent/index.js'
 import webfetchModel from './commands/webfetch-model/index.js'
-import collaboratorModel from './commands/collaborator-model/index.js'
 import modelImageGeneration from './commands/model-image-generation/index.js'
 import modelVideoGeneration from './commands/model-video-generation/index.js'
 import tag from './commands/tag/index.js'
@@ -254,7 +253,6 @@ const COMMANDS = memoize((): Command[] => [
   model,
   modelSubagent,
   webfetchModel,
-  collaboratorModel,
   modelImageGeneration,
   modelVideoGeneration,
   connect,
@@ -283,7 +281,7 @@ const COMMANDS = memoize((): Command[] => [
   mascot,
   brand,
   review,
-  collaboratorSwarm,
+  orchestrator,
   normal,
   ultraplanLocal,
   ultrareviewLocal,

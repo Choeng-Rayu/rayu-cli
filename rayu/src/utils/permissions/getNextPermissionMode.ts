@@ -58,6 +58,9 @@ export function getNextPermissionMode(
       return 'fullManage'
 
     case 'fullManage':
+      return 'orchestrator'
+
+    case 'orchestrator':
       if (canCycleToAuto(toolPermissionContext)) {
         return 'auto'
       }

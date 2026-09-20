@@ -13,15 +13,23 @@ mock.module('../src/utils/model/modelAllowlist.ts', () => ({
 }))
 
 let dir: string
+let previousConfigDir: string | undefined
+let previousAuthConfigDir: string | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'rayu-agent-model-'))
+  previousConfigDir = process.env.RAYU_CONFIG_DIR
+  previousAuthConfigDir = process.env.RAYU_AUTH_CONFIG_DIR
+  delete process.env.RAYU_AUTH_CONFIG_DIR
   process.env.RAYU_CONFIG_DIR = dir
   process.env.RAYU_DIAGNOSTICS_NO_FILE = '1'
   disallowedModels = new Set()
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
-  delete process.env.RAYU_CONFIG_DIR
+  if (previousConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
+  else process.env.RAYU_CONFIG_DIR = previousConfigDir
+  if (previousAuthConfigDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+  else process.env.RAYU_AUTH_CONFIG_DIR = previousAuthConfigDir
   delete process.env.RAYU_OPENAI_COMPATIBLE
   delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
 })
@@ -97,7 +105,7 @@ describe('getAgentModel: callback-to-inherit on a disallowed per-agent override'
     await fresh()
     disallowedModels.add('opus')
     const { getAgentModel } = await import('../src/utils/model/agent.ts')
-    // 'backend' collaborator was pinned to 'opus' (e.g. via /collaborator_model),
+    // A worker was pinned to 'opus' via its per-agent model selection,
     // but the admin allowlist no longer permits it -> falls back to inherit,
     // i.e. the exact same result 'inherit' itself would produce.
     const withOverride = getAgentModel('opus', 'claude-sonnet-4-6', undefined, 'default', 'backend')

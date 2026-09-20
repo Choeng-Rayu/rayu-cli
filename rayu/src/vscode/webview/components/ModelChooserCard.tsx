@@ -1,5 +1,5 @@
 /**
- * The model chooser opened by `/model_subagent` and `/webfetch_model`.
+ * The model chooser opened by `/subagent_models` and `/webfetch_model`.
  *
  * Pinned above the composer, in the same slot approvals use, because it is a decision the
  * user just asked for and must not be scrolled away from. It reuses `ModelPickerList`, so
@@ -21,6 +21,8 @@ export interface ModelChooserCardProps {
   catalogue: ModelCatalogueView
   /** null resets to the default. */
   onChoose: (value: string | null) => void
+  /** Switch between the global setting and one named agent. */
+  onTargetChange?: (agentType?: string) => void
   onDismiss: () => void
   onRefresh: () => void
 }
@@ -29,6 +31,7 @@ export function ModelChooserCard({
   chooser,
   catalogue,
   onChoose,
+  onTargetChange,
   onDismiss,
   onRefresh,
 }: ModelChooserCardProps): JSX.Element {
@@ -49,6 +52,40 @@ export function ModelChooserCard({
           <CloseIcon size={12} />
         </button>
       </header>
+
+      {chooser.target === 'subagent' && chooser.agentTypes?.length ? (
+        <div className="rc-model-chooser-scope">
+          <span className="rc-model-chooser-scope-label">Apply to</span>
+          <div
+            className="rc-model-chooser-scope-options"
+            role="group"
+            aria-label="Agent model scope"
+          >
+            <button
+              type="button"
+              className={`rc-model-chooser-scope-option${chooser.agentType ? '' : ' rc-model-chooser-scope-option-active'}`}
+              aria-pressed={!chooser.agentType}
+              onClick={() => onTargetChange?.()}
+            >
+              All agents
+            </button>
+            {chooser.agentTypes.map(agentType => {
+              const active = chooser.agentType === agentType
+              return (
+                <button
+                  key={agentType}
+                  type="button"
+                  className={`rc-model-chooser-scope-option${active ? ' rc-model-chooser-scope-option-active' : ''}`}
+                  aria-pressed={active}
+                  onClick={() => onTargetChange?.(agentType)}
+                >
+                  {agentType}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
 
       <p className="rc-model-chooser-current">
         {chooser.current

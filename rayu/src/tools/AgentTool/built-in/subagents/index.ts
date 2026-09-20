@@ -1,27 +1,8 @@
-// Tier-3 subagents: ephemeral, one-shot specialists the Orchestrator AND
-// Collaborators can dispatch for atomic plan/generate/audit/fix/deploy jobs.
+// The planner is the only specialist subagent. Orchestrator mode delegates all
+// implementation, review, and verification work to general-purpose workers.
 import type { BuiltInAgentDefinition } from '../../loadAgentsDir.js'
-import { ASSET_GENERATION_SUBAGENT } from './asset-generation.js'
-import { BACKEND_DESIGN_SUBAGENT } from './backend-design.js'
-import { BUILDER_SUBAGENT } from './builder.js'
-import { DESIGN_SUBAGENT } from './design.js'
-import { FIX_SUBAGENT } from './fix.js'
-import { GLOBAL_SETUP_SUBAGENT } from './global-setup.js'
-import { LINTER_SUBAGENT } from './linter.js'
 import { PLANNER_SUBAGENT } from './planner.js'
-import { REVIEW_SUBAGENT } from './review.js'
 
-/** All Tier-3 subagents, in rough pipeline order. */
-export const SUBAGENTS: BuiltInAgentDefinition[] = [
-  PLANNER_SUBAGENT,
-  DESIGN_SUBAGENT,
-  BACKEND_DESIGN_SUBAGENT,
-  GLOBAL_SETUP_SUBAGENT,
-  ASSET_GENERATION_SUBAGENT,
-  BUILDER_SUBAGENT,
-  REVIEW_SUBAGENT,
-  FIX_SUBAGENT,
-  LINTER_SUBAGENT,
-]
+export const SUBAGENTS: BuiltInAgentDefinition[] = [PLANNER_SUBAGENT]
 
 export const SUBAGENT_TYPES: string[] = SUBAGENTS.map(a => a.agentType)

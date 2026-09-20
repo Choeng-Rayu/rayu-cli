@@ -33,8 +33,8 @@ export function SearchableModelPicker({
   onDone: OnDone
   /**
    * Optional selection handler. When provided, the picker calls this instead of
-   * setting the MAIN active provider/model — used by /model_subagent to persist
-   * the subagent selection (a possibly different provider) without touching the
+   * setting the MAIN active provider/model — used by /subagent_models to persist
+   * an agent selection (possibly on a different provider) without touching the
    * main agent. Receives the decoded providerId + model.
    */
   onSelectModel?: (providerId: string, model: string) => void

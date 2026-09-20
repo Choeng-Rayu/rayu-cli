@@ -728,7 +728,13 @@ export function activate(context: vscode.ExtensionContext): void {
       case 'choose':
         // The catalogue is what the picker lists, and it may not have been fetched yet.
         void refreshModels()
-        setModelChooser(buildChooser(command.target, command.agentType))
+        setModelChooser(
+          buildChooser(
+            command.target,
+            command.agentType,
+            current().session.subagentTypes,
+          ),
+        )
         return
     }
   }
@@ -1255,6 +1261,12 @@ export function activate(context: vscode.ExtensionContext): void {
         // Only restart when something was actually written. A choice that resolved to no
         // model is a no-op, and respawning for it would cost the user a reload for nothing.
         if (notice) await restartEngineWithResume()
+      },
+      modelChooserTarget: agentType => {
+        if (modelChooser?.target !== 'subagent') return
+        setModelChooser(
+          buildChooser('subagent', agentType, current().session.subagentTypes),
+        )
       },
       modelChooserDismiss: () => setModelChooser(null),
       mcpToggle: async (serverName, enabled) => {

@@ -18,7 +18,7 @@ export interface AutocompleteItem {
    * strings — an extensionless file and a directory look identical — and they behave
    * differently when the engine expands the mention: a directory is walked.
    */
-  kind: 'command' | 'file' | 'folder'
+  kind: 'command' | 'agent' | 'file' | 'folder'
 }
 
 export interface AutocompletePopoverProps {
@@ -32,6 +32,8 @@ function ItemIcon({ kind }: { kind: AutocompleteItem['kind'] }): JSX.Element {
   switch (kind) {
     case 'command':
       return <span className="rc-popover-glyph">/</span>
+    case 'agent':
+      return <span className="rc-popover-glyph">*</span>
     case 'folder':
       return <FolderIcon size={12} />
     case 'file':

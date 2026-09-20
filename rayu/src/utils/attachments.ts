@@ -576,7 +576,7 @@ export type Attachment =
       planExists: boolean
     }
   | {
-      type: 'swarm_mode'
+      type: 'orchestrator_mode'
     }
   | {
       type: 'auto_mode'
@@ -881,7 +881,9 @@ export async function getAttachments(
     // replaces it; see src/services/skillSearch/prefetch.ts.
     maybe('plan_mode', () => getPlanModeAttachments(messages, toolUseContext)),
     maybe('plan_mode_exit', () => getPlanModeExitAttachment(toolUseContext)),
-    maybe('swarm_mode', () => getSwarmModeAttachment(messages, toolUseContext)),
+    maybe('orchestrator_mode', () =>
+      getOrchestratorModeAttachment(messages, toolUseContext),
+    ),
     ...(feature('TRANSCRIPT_CLASSIFIER')
       ? [
           maybe('auto_mode', () =>
@@ -1244,21 +1246,21 @@ async function getPlanModeAttachments(
 }
 
 /**
- * Returns a swarm_mode reminder while the session is in collaborator-swarm
- * mode. Fires once per human turn (not on every intermediate tool round) to
- * keep the orchestrator role active without spamming tokens.
+ * Returns an orchestrator_mode reminder while Orchestrator mode is
+ * active. Fires once per human turn to keep the delegation-only role active
+ * without repeating it on every intermediate tool round.
  */
-async function getSwarmModeAttachment(
+async function getOrchestratorModeAttachment(
   messages: Message[] | undefined,
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
-  // Orchestrator-only: never inject the "you are the orchestrator" reminder
-  // into a spawned subagent/collaborator (they have an agentId). swarmMode is a
-  // main-session concept.
+  // Never inject the main-agent role into a spawned worker.
   if (toolUseContext.agentId) {
     return []
   }
-  if (!toolUseContext.getAppState().swarmMode) {
+  if (
+    toolUseContext.getAppState().toolPermissionContext.mode !== 'orchestrator'
+  ) {
     return []
   }
   // Only attach at the start of a genuine human turn — during the tool loop the
@@ -1273,7 +1275,7 @@ async function getSwarmModeAttachment(
       return []
     }
   }
-  return [{ type: 'swarm_mode' }]
+  return [{ type: 'orchestrator_mode' }]
 }
 
 /**

@@ -45,6 +45,7 @@ import { ActivityGroup } from './components/ActivityGroup.js'
 import { groupTranscript } from './state/activityGroups.js'
 import { useSecondTick } from './useSecondTick.js'
 import { createSessionScrollMemory } from './sessionScrollMemory.js'
+import { promptHistoryFromTranscript } from './promptHistory.js'
 import { WelcomeScreen } from './components/WelcomeScreen.js'
 import { ScrollToBottomButton } from './components/ScrollToBottomButton.js'
 import { isTodoToolEntry } from './components/TodoListCard.js'
@@ -374,6 +375,10 @@ export function App(): JSX.Element {
   const composerCommands = signedOut
     ? state.commands.filter(command => command.name === 'login' || command.name === 'connect')
     : state.commands
+  const promptHistory = useMemo(
+    () => promptHistoryFromTranscript(state.entries),
+    [state.entries],
+  )
 
   const submit = useCallback((
     text: string,
@@ -637,6 +642,12 @@ export function App(): JSX.Element {
               value,
             })
           }
+          onTargetChange={agentType =>
+            send({
+              type: 'modelChooserTarget',
+              ...(agentType ? { agentType } : {}),
+            })
+          }
           onDismiss={() => send({ type: 'modelChooserDismiss' })}
           onRefresh={() => send({ type: 'refreshModelCatalogue' })}
         />
@@ -689,6 +700,8 @@ export function App(): JSX.Element {
         inference={state.inference}
         permissionMode={state.permissionMode}
         commands={composerCommands}
+        agents={state.runtimeAgents}
+        promptHistory={promptHistory}
         workspaceFiles={state.workspaceFiles}
         ideContext={state.ideContext}
         contextUsage={state.contextUsage}

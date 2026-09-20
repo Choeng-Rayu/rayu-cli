@@ -7,7 +7,7 @@
  * from the user, made switching from "Ask" to "Plan" require 3 clicks, and prevented
  * users from seeing what each mode actually permits before choosing it.
  *
- * This dropdown lets the user click to inspect all 4 modes with their descriptions,
+ * This dropdown lets the user inspect every mode with its description,
  * choose one directly with mouse or keyboard, while retaining Shift+Tab in the composer
  * as a fast-path cycle shortcut.
  */
@@ -203,6 +203,8 @@ export function PermissionIcon({ mode }: { mode: string }): JSX.Element {
         </svg>
       )
     case 'bypassPermissions':
+    case 'fullManage':
+    case 'orchestrator':
       return (
         <svg
           viewBox="0 0 16 16"
@@ -230,4 +232,3 @@ export function PermissionIcon({ mode }: { mode: string }): JSX.Element {
       )
   }
 }
-

@@ -97,12 +97,12 @@ changing a provider means editing that one file:
 - `resolveClientTarget(provider, model)` — which client implementation serves it,
   or `'unsupported'` when credentials/endpoint are missing. **Pure.**
 - `buildClient(provider, opts)` — a thin executor over that decision. Used for the
-  MAIN agent and for any subagent/collaborator routed elsewhere, so a provider is
+  MAIN agent and for any subagent routed elsewhere, so a provider is
   registered exactly once.
 
 **Cross-provider routing.** A request model may carry a `providerId\u0000model`
 prefix (`rayuConfig.encodeModelWithProvider`, produced by `utils/model/agent.ts`)
-so a subagent or swarm collaborator runs on a DIFFERENT provider than the active
+so a subagent or delegated worker runs on a DIFFERENT provider than the active
 one, concurrently. `services/api/client.ts` decodes it to pick the transport, and
 `utils/model/providerCapabilities.ts` decodes the same string to shape the request
 — use `resolveRequestShape(model)` / `usesTranslatedFormat(model)` /

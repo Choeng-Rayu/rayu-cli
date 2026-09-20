@@ -48,8 +48,23 @@ import type {
   ImageInputView,
   PermissionModeView,
   PromptDeliveryView,
+  RuntimeAgentView,
   SlashCommandView,
 } from '../../shared/webviewProtocol.js'
+import {
+  AGENT_MODEL_COMMAND_NAMES,
+  applyAgentModelTarget,
+  describeConfigurableAgent,
+  matchAgentModelTarget,
+  matchingAgentModelTargets,
+} from '../../../utils/model/agentModelTargets.js'
+import {
+  canNavigatePromptHistoryDown,
+  canNavigatePromptHistoryUp,
+  navigatePromptHistoryDown,
+  navigatePromptHistoryUp,
+  type PromptHistoryNavigation,
+} from '../promptHistory.js'
 import { ModelDropdown } from './ModelDropdown.js'
 import { InferenceControls } from './InferenceControls.js'
 import { PermissionDropdown } from './PermissionDropdown.js'
@@ -101,6 +116,10 @@ export interface ComposerProps {
   inference: InferenceSettingsView
   permissionMode: PermissionModeView
   commands?: SlashCommandView[]
+  /** Runtime names extend the built-in agent scopes in model-command autocomplete. */
+  agents?: RuntimeAgentView[]
+  /** Reusable prompts, newest first, derived from the current/restored transcript. */
+  promptHistory?: string[]
   workspaceFiles?: string[]
   /** The editor's current file and selection, for the context row. */
   ideContext?: IdeContextView | null
@@ -165,6 +184,8 @@ export function Composer({
   inference,
   permissionMode,
   commands,
+  agents,
+  promptHistory,
   workspaceFiles,
   ideContext,
   contextUsage,
@@ -199,6 +220,7 @@ export function Composer({
   /** Mid-turn delivery is explicit and remains selected while this composer lives. */
   const [deliveryMode, setDeliveryMode] = useState<Extract<PromptDeliveryView, 'queue' | 'steer'>>('queue')
   const textarea = useRef<HTMLTextAreaElement | null>(null)
+  const historyNavigation = useRef<PromptHistoryNavigation | null>(null)
 
   const updateCursor = useCallback(() => {
     if (textarea.current) {
@@ -227,10 +249,45 @@ export function Composer({
       }))
   }, [isSlashCommand, commands, slashQuery])
 
+  const agentTargetMatch = dismissed
+    ? null
+    : matchAgentModelTarget(value, cursorPos)
+  const isAgentTarget = agentTargetMatch !== null
+  const agentTargetItems: AutocompleteItem[] = useMemo(() => {
+    if (!agentTargetMatch) return []
+    const query = agentTargetMatch.query.toLowerCase()
+    const agentItems: AutocompleteItem[] = matchingAgentModelTargets(
+      value,
+      cursorPos,
+      (agents ?? []).map(agent => agent.name),
+    ).map(agentType => ({
+      id: `agent-model-target-${agentType}`,
+      label: agentType,
+      description: describeConfigurableAgent(agentType),
+      insertText: agentType,
+      kind: 'agent',
+    }))
+    const globalMatches =
+      query === '' || 'all'.startsWith(query) || 'default'.startsWith(query)
+    return globalMatches
+      ? [
+          {
+            id: 'agent-model-target-all',
+            label: 'All agents',
+            description: 'Set the global default for every agent',
+            insertText: '',
+            kind: 'agent',
+          },
+          ...agentItems,
+        ]
+      : agentItems
+  }, [isAgentTarget, agentTargetMatch, value, cursorPos, agents])
+
   // Check if @-mention is triggered: '@' anywhere preceded by start of line or whitespace
   const textBeforeCursor = value.slice(0, cursorPos)
   const mentionMatch = /(?:^|\s)@([^\s]*)$/.exec(textBeforeCursor)
-  const isMention = !dismissed && !isSlashCommand && mentionMatch !== null
+  const isMention =
+    !dismissed && !isSlashCommand && !isAgentTarget && mentionMatch !== null
   const fileQuery = isMention ? mentionMatch[1] : ''
 
   // Debounced: `findFiles` runs a workspace glob in the extension host, and firing it on
@@ -260,17 +317,40 @@ export function Composer({
       }))
   }, [isMention, workspaceFiles, fileQuery])
 
-  const popoverItems = isSlashCommand ? slashItems : isMention ? fileItems : []
+  const popoverItems = isSlashCommand
+    ? slashItems
+    : isAgentTarget
+      ? agentTargetItems
+      : isMention
+        ? fileItems
+        : []
 
   useEffect(() => {
     setSelectedIndex(0)
   }, [popoverItems.length])
 
+  const submit = useCallback((delivery?: PromptDeliveryView) => {
+    const text = value.trim()
+    // An image with no words is a legitimate prompt — "what is this?" is implied.
+    if ((!text && images.length === 0) || disabled) return
+    onSubmit(text, images, delivery ?? (turnRunning ? deliveryMode : 'normal'))
+    historyNavigation.current = null
+    setValue('')
+    setImages([])
+    setAttachError(null)
+  }, [value, images, disabled, onSubmit, turnRunning, deliveryMode])
+
   const applySelection = useCallback(
     (item: AutocompleteItem) => {
+      historyNavigation.current = null
       if (item.kind === 'command') {
+        const continuesWithAgentTargets =
+          matchAgentModelTarget(item.insertText, item.insertText.length) !== null
         setValue(item.insertText)
-        setDismissed(true)
+        setCursorPos(item.insertText.length)
+        // `/subagent_models ` has a second autocomplete stage: selecting the slash
+        // command should immediately reveal agent scopes instead of closing the list.
+        setDismissed(!continuesWithAgentTargets)
         setTimeout(() => {
           if (textarea.current) {
             textarea.current.focus()
@@ -279,6 +359,22 @@ export function Composer({
               item.insertText.length,
             )
           }
+        }, 0)
+      } else if (item.id === 'agent-model-target-all') {
+        setDismissed(true)
+        submit()
+      } else if (item.kind === 'agent') {
+        const result = applyAgentModelTarget(value, cursorPos, item.label)
+        if (!result) return
+        setValue(result.input)
+        setCursorPos(result.cursorOffset)
+        setDismissed(true)
+        setTimeout(() => {
+          textarea.current?.focus()
+          textarea.current?.setSelectionRange(
+            result.cursorOffset,
+            result.cursorOffset,
+          )
         }, 0)
       } else {
         const tokenStart = cursorPos - fileQuery.length - 1
@@ -297,7 +393,7 @@ export function Composer({
         }, 0)
       }
     },
-    [cursorPos, fileQuery, value],
+    [cursorPos, fileQuery, value, submit],
   )
 
   // useLayoutEffect, not useEffect: resizing after paint makes the box visibly jump
@@ -315,20 +411,32 @@ export function Composer({
     if (!turnRunning && !disabled) textarea.current?.focus()
   }, [turnRunning, disabled])
 
-  const submit = useCallback((delivery?: PromptDeliveryView) => {
-    const text = value.trim()
-    // An image with no words is a legitimate prompt — "what is this?" is implied.
-    if ((!text && images.length === 0) || disabled) return
-    onSubmit(text, images, delivery ?? (turnRunning ? deliveryMode : 'normal'))
-    setValue('')
-    setImages([])
-    setAttachError(null)
-  }, [value, images, disabled, onSubmit, turnRunning, deliveryMode])
-
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // Autocomplete navigation intercepts Arrow keys, Enter and Escape
       if (popoverItems.length > 0) {
+        const exactAgentModelCommand =
+          isSlashCommand &&
+          (AGENT_MODEL_COMMAND_NAMES as readonly string[]).includes(
+            value.slice(1).toLowerCase(),
+          )
+        if (
+          exactAgentModelCommand &&
+          event.key === 'Enter' &&
+          !event.nativeEvent.isComposing &&
+          !event.shiftKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !event.metaKey
+        ) {
+          // An exact command means the user is executing it, not asking to expand
+          // its primary-name suggestion. This opens the global model picker in one Enter.
+          event.preventDefault()
+          event.stopPropagation()
+          setDismissed(true)
+          submit()
+          return
+        }
         if (event.key === 'ArrowDown') {
           event.preventDefault()
           setSelectedIndex(prev => (prev + 1) % popoverItems.length)
@@ -365,6 +473,46 @@ export function Composer({
         }
       }
 
+      // Match the CLI: history is a fallback only when Up/Down cannot move to
+      // another logical line. Autocomplete above always owns the arrows first.
+      if (
+        !event.nativeEvent.isComposing &&
+        !event.shiftKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+        event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+      ) {
+        const cursor = event.currentTarget.selectionStart
+        const result =
+          event.key === 'ArrowUp'
+            ? canNavigatePromptHistoryUp(value, cursor)
+              ? navigatePromptHistoryUp(
+                  historyNavigation.current,
+                  value,
+                  promptHistory ?? [],
+                )
+              : null
+            : canNavigatePromptHistoryDown(value, cursor)
+              ? navigatePromptHistoryDown(historyNavigation.current)
+              : null
+        if (result) {
+          event.preventDefault()
+          historyNavigation.current = result.navigation
+          setValue(result.value)
+          setCursorPos(result.cursorOffset)
+          setDismissed(true)
+          setTimeout(() => {
+            textarea.current?.setSelectionRange(
+              result.cursorOffset,
+              result.cursorOffset,
+            )
+          }, 0)
+          return
+        }
+      }
+
       // Shift+Tab cycles permission mode. Checked before the Enter handling so the
       // two shortcuts cannot interfere, and `preventDefault` is required or the
       // browser moves focus out of the textarea instead.
@@ -397,6 +545,9 @@ export function Composer({
       popoverItems,
       selectedIndex,
       applySelection,
+      isSlashCommand,
+      value,
+      promptHistory,
     ],
   )
 
@@ -411,6 +562,7 @@ export function Composer({
   const insertText = useCallback(
     (text: string) => {
       if (!text) return
+      historyNavigation.current = null
       setValue(current => {
         const next = insertIntoValue(current, cursorPos, text)
         setCursorPos(next.cursor)
@@ -621,6 +773,7 @@ export function Composer({
           className="rc-chip"
           title="Insert this suggested follow-up"
           onClick={() => {
+            historyNavigation.current = null
             setValue(promptSuggestion)
             setCursorPos(promptSuggestion.length)
             setTimeout(() => {
@@ -692,6 +845,7 @@ export function Composer({
           const next = event.target.value
           // `value` is still the PREVIOUS value here, which is what the comparison needs.
           convertDroppedPathText(value, next)
+          historyNavigation.current = null
           setValue(next)
           setDismissed(false)
           setCursorPos(event.target.selectionStart)

@@ -24,7 +24,12 @@ export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number]
 
 // Exhaustive mode union for typechecking. The user-addressable runtime set
 // is INTERNAL_PERMISSION_MODES below.
-export type InternalPermissionMode = ExternalPermissionMode | 'auto' | 'bubble' | 'fullManage'
+export type InternalPermissionMode =
+  | ExternalPermissionMode
+  | 'auto'
+  | 'bubble'
+  | 'fullManage'
+  | 'orchestrator'
 export type PermissionMode = InternalPermissionMode
 
 // Runtime validation set: modes that are user-addressable (settings.json
@@ -32,6 +37,7 @@ export type PermissionMode = InternalPermissionMode
 export const INTERNAL_PERMISSION_MODES = [
   ...EXTERNAL_PERMISSION_MODES,
   'fullManage',
+  'orchestrator',
   ...(RAYU_FEATURES.TRANSCRIPT_CLASSIFIER ? (['auto'] as const) : ([] as const)),
 ] as const satisfies readonly PermissionMode[]
 

@@ -226,7 +226,7 @@ export interface ImageInputView {
  *
  * ── WHY THIS IS NOT A COMPOSER CONTROL ─────────────────────────────────────────
  *
- * The subagent and WebFetch models are set by `/model_subagent` and `/webfetch_model`, the
+ * Agent and WebFetch models are set by `/subagent_models` and `/webfetch_model`, the
  * same commands the CLI uses. They are deliberately NOT given toolbar pills: they are rare,
  * per-project decisions, and a permanent control for each would crowd out the three that
  * are used every turn (permission mode, model, effort).
@@ -240,8 +240,10 @@ export interface ImageInputView {
 export interface ModelChooserView {
   /** Which setting a choice writes. Also selects the wording. */
   target: 'subagent' | 'webfetch'
-  /** Set when scoping a subagent choice to one agent type, from `/model_subagent <AGENT>`. */
+  /** Set when scoping a choice to one agent type, from `/subagent_models <AGENT>`. */
   agentType?: string
+  /** Agent scopes offered by the chooser. Only present for the subagent setting. */
+  agentTypes?: string[]
   title: string
   /** Cost guidance, carried through from the CLI command rather than reworded. */
   tip: string
@@ -784,6 +786,8 @@ export type WebviewToHostMessage =
       agentType?: string
       value: string | null
     }
+  /** Change the scope of an open subagent-model chooser without applying a model. */
+  | { type: 'modelChooserTarget'; agentType?: string }
   /** Close the chooser without changing anything. */
   | { type: 'modelChooserDismiss' }
   /** Toggle an MCP server connection. */
@@ -1375,11 +1379,17 @@ export interface ModelCatalogueView {
  * A permission mode as the composer presents it.
  *
  * `id` is the wire value for `set_permission_mode`; `label` and `description` are
- * editor phrasing. The engine's enum also has internal modes (`auto`, `bubble`,
- * `fullManage`) that are deliberately not offered — see `shared/permissionModes.ts`.
+ * editor phrasing. The engine's enum also has internal modes (`auto`, `bubble`)
+ * that are deliberately not offered — see `shared/permissionModes.ts`.
  */
 export interface PermissionModeView {
-  id: 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions'
+  id:
+    | 'plan'
+    | 'default'
+    | 'acceptEdits'
+    | 'bypassPermissions'
+    | 'fullManage'
+    | 'orchestrator'
   label: string
   description: string
 }

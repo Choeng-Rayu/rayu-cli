@@ -41,7 +41,8 @@ function isPermissionMode(value: unknown): value is PermissionMode {
     value === 'bubble' ||
     value === 'delegate' ||
     value === 'dontAsk' ||
-    value === 'fullManage'
+    value === 'fullManage' ||
+    value === 'orchestrator'
   )
 }
 

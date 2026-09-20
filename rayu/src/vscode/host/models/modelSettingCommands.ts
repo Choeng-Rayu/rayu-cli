@@ -1,5 +1,5 @@
 /**
- * `/model_subagent` and `/webfetch_model`, as Rayucode implements them.
+ * `/subagent_models` and `/webfetch_model`, as Rayucode implements them.
  *
  * ── WHY THE HOST OWNS THESE AT ALL ─────────────────────────────────────────────
  *
@@ -14,7 +14,7 @@
  *
  * `parseModelSettingCommand` is a pure function over the typed text. That matters because
  * the one thing that must not break here is the fall-through: a prompt that merely begins
- * with `/model_subagent…` and is not one of these commands has to reach the model unchanged.
+ * with `/subagent_models…` and is not one of these commands has to reach the model unchanged.
  * A pure parser is exhaustively testable without an editor, a config file or an engine.
  */
 import {
@@ -24,6 +24,10 @@ import {
   setSubagentSelection,
   setWebFetchModelSelection,
 } from '../../../utils/rayuConfig.js'
+import {
+  AGENT_MODEL_COMMAND_NAMES,
+  getConfigurableAgentTypes,
+} from '../../../utils/model/agentModelTargets.js'
 import type { ModelChooserView } from '../../shared/webviewProtocol.js'
 
 /** The CLI's own reset and inspect keywords, matched case-insensitively as it does. */
@@ -40,13 +44,13 @@ const WEBFETCH_DEFAULT_NOTE =
   "the active provider\u2019s instant/small-fast model (i.e. your current model)"
 
 const SUBAGENT_GLOBAL_DEFAULT_NOTE =
-  "the main provider\u2019s instant/small-fast model"
+  'each agent uses its built-in default'
 
 const SUBAGENT_AGENT_DEFAULT_NOTE =
-  'the global subagent model, else the main provider\u2019s instant model'
+  'the global agent model, else its built-in default'
 
 const SUBAGENT_COST_TIP =
-  'Subagents run frequently — a large model here costs more and is usually overkill for small subtasks.'
+  'Agents can run frequently — a large global model costs more and is usually overkill for small tasks.'
 
 const WEBFETCH_COST_TIP =
   'WebFetch summarizes fetched pages — a small/instant model is usually enough and cheaper.'
@@ -83,7 +87,11 @@ export function parseModelSettingCommand(
   const name = rawName?.slice(1).toLowerCase()
 
   const target: ModelSettingTarget | null =
-    name === 'model_subagent' ? 'subagent' : name === 'webfetch_model' ? 'webfetch' : null
+    name && (AGENT_MODEL_COMMAND_NAMES as readonly string[]).includes(name)
+      ? 'subagent'
+      : name === 'webfetch_model'
+        ? 'webfetch'
+        : null
   if (!target) return null
 
   if (target === 'webfetch') {
@@ -98,10 +106,11 @@ export function parseModelSettingCommand(
     }
   }
 
-  // `/model_subagent [AGENT] [show|default]` — the first token may be an agent type,
+  // `/subagent_models [AGENT] [show|default]` — the first token may be an agent type,
   // resolved case-insensitively exactly as the CLI resolves it.
+  const agentTypes = getConfigurableAgentTypes(knownAgentTypes)
   const first = rest[0] ?? ''
-  const agentType = knownAgentTypes.find(a => a.toLowerCase() === first.toLowerCase())
+  const agentType = agentTypes.find(a => a.toLowerCase() === first.toLowerCase())
   const sub = (agentType ? rest[1] ?? '' : first).toLowerCase()
 
   if (!sub) return { kind: 'choose', target, ...(agentType ? { agentType } : {}) }
@@ -112,8 +121,8 @@ export function parseModelSettingCommand(
     kind: 'usage',
     target,
     message:
-      `Unknown argument "${sub}". Usage: /model_subagent [AGENT] [show|default].` +
-      (knownAgentTypes.length > 0 ? ` Subagents: ${knownAgentTypes.join(', ')}.` : ''),
+      `Unknown argument "${sub}". Usage: /subagent_models [AGENT] [show|default].` +
+      ` Agents: ${agentTypes.join(', ')}.`,
   }
 }
 
@@ -148,16 +157,22 @@ export function defaultNoteFor(
 export function buildChooser(
   target: ModelSettingTarget,
   agentType?: string,
+  knownAgentTypes: readonly string[] = [],
 ): ModelChooserView {
+  const agentTypes =
+    target === 'subagent'
+      ? getConfigurableAgentTypes(knownAgentTypes)
+      : undefined
   return {
     target,
     ...(agentType ? { agentType } : {}),
+    ...(agentTypes ? { agentTypes } : {}),
     title:
       target === 'webfetch'
         ? 'Select a model for WebFetch (page summarization)'
         : agentType
           ? `Select a model for ${agentType}`
-          : 'Select a model for subagents (global default)',
+          : 'Select a model for all agents (global default)',
     tip: target === 'webfetch' ? WEBFETCH_COST_TIP : SUBAGENT_COST_TIP,
     current: currentSelectionValue(target, agentType),
     defaultNote: defaultNoteFor(target, agentType),
@@ -175,7 +190,7 @@ export function describeSelection(
       ? `WebFetch model: ${label}`
       : `WebFetch model: default (${WEBFETCH_DEFAULT_NOTE})`
   }
-  const subject = agentType ? `${agentType} subagent` : 'subagent'
+  const subject = agentType ? `${agentType} agent` : 'all agents'
   return label
     ? `${subject} model: ${label}`
     : `${subject} model: default (${defaultNoteFor(target, agentType)})`
@@ -191,7 +206,7 @@ export function describeReset(
   }
   return agentType
     ? `${agentType} model reset to default (uses ${SUBAGENT_AGENT_DEFAULT_NOTE}).`
-    : `Global subagent model reset to default (${SUBAGENT_GLOBAL_DEFAULT_NOTE}).`
+    : `Global agent model reset to default (${SUBAGENT_GLOBAL_DEFAULT_NOTE}).`
 }
 
 /**
@@ -236,6 +251,6 @@ export function applySelection(
     return null
   }
   setSubagentSelection(providerId, model, agentType)
-  const subject = agentType ? `${agentType} subagent` : 'subagent'
+  const subject = agentType ? `${agentType} agent` : 'all agents'
   return `${subject} model: ${model} (${providerId})`
 }

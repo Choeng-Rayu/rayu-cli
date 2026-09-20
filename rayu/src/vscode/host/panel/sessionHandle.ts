@@ -143,8 +143,8 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
   // Ink picker — so the non-interactive engine strips them too, and Rayucode has to provide
   // the surface. The grammar and the persistence are the CLI's; only the picker differs.
   {
-    name: 'model_subagent',
-    description: 'Set the model used by subagents [AGENT] [show|default]',
+    name: 'subagent_models',
+    description: 'Set the model used by all agents or one agent [AGENT] [show|default]',
   },
   {
     name: 'webfetch_model',
@@ -509,7 +509,7 @@ export class ChatSession {
    * is what keeps the transcript and the model's context intact.
    */
   private currentSessionId: string | null = null
-  /** Subagent type names from `initialize`, for `/model_subagent <AGENT>`. */
+  /** Agent type names from `initialize`, for `/subagent_models <AGENT>`. */
   private agentTypes: string[] = []
   private turnProgress: TurnProgressView | null = null
   private readonly turnCompletions: Record<string, TurnCompletionEntry> = {}
@@ -830,7 +830,7 @@ export class ChatSession {
     return this.currentSessionId
   }
 
-  /** Subagent type names the engine reported, for `/model_subagent <AGENT>`. */
+  /** Agent type names the engine reported, for `/subagent_models <AGENT>`. */
   get subagentTypes(): readonly string[] {
     return this.agentTypes
   }
@@ -1305,7 +1305,7 @@ export class ChatSession {
       //
       // A fresh child always starts in the mode its argv implied, which is `default`. So a
       // mode the user picked before this engine existed — or before the engine it replaced
-      // was torn down — has to be re-sent, or the panel shows "Full access" while every
+      // was torn down — has to be re-sent, or the panel shows "Full Manage" while every
       // Bash call raises an approval card. `--allow-dangerously-skip-permissions` is in
       // `vscodeHost`'s required flags precisely so that this replay can succeed.
       //
@@ -1427,7 +1427,7 @@ export class ChatSession {
       ? this.applyRuntimeSnapshot(runtime)
       : false
 
-    // Subagent type names, for `/model_subagent <AGENT>`. Taken from the engine rather than
+    // Agent type names, for `/subagent_models <AGENT>`. Taken from the engine rather than
     // imported from `tools/AgentTool/built-in/subagents` so the list cannot drift from what
     // the running engine offers — and so the host bundle does not carry nine prompt modules
     // to learn nine names.
@@ -1764,7 +1764,7 @@ export class ChatSession {
    * Apply a permission mode.
    *
    * The local value is updated only AFTER the engine accepts it. Flipping the pill
-   * first would tell the user they are in "Full access" while the engine is still
+   * first would tell the user they are in "Full Manage" while the engine is still
    * asking for approval on every tool — the pill has to reflect what is enforced,
    * not what was requested.
    *
@@ -1772,7 +1772,7 @@ export class ChatSession {
    *
    * With no child yet there is nothing to ask, so the choice is recorded and reported as
    * accepted. That is only honest because `start()` REPLAYS it after `initialize` — see
-   * `applyPermissionModeToEngine`. Without that replay the panel said "Full access" while
+   * `applyPermissionModeToEngine`. Without that replay the panel said "Full Manage" while
    * a freshly spawned child sat in `default` and asked for approval on every Bash call,
    * which is the exact bug this pairing exists to prevent. The same replay covers every
    * engine replacement: a configuration restart, a resume, or a crash recovery.
@@ -2032,6 +2032,8 @@ export class ChatSession {
           permissionMode === 'default' ||
           permissionMode === 'acceptEdits' ||
           permissionMode === 'bypassPermissions' ||
+          permissionMode === 'fullManage' ||
+          permissionMode === 'orchestrator' ||
           permissionMode === 'plan' ||
           permissionMode === 'auto' ||
           permissionMode === 'dontAsk'
@@ -2057,6 +2059,8 @@ export class ChatSession {
           permissionMode === 'default' ||
           permissionMode === 'acceptEdits' ||
           permissionMode === 'bypassPermissions' ||
+          permissionMode === 'fullManage' ||
+          permissionMode === 'orchestrator' ||
           permissionMode === 'plan' ||
           permissionMode === 'auto' ||
           permissionMode === 'dontAsk'

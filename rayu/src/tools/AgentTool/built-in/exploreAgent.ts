@@ -75,7 +75,7 @@ export const EXPLORE_AGENT: BuiltInAgentDefinition = {
   baseDir: 'built-in',
   // Fast default ('haiku' = the small/fast tier). On non-Anthropic providers
   // this resolves to that provider's instant model; overridable per-agent via
-  // /model_subagent. Env override still wins. Explore is read-only and does NOT
+  // /subagent_models. Env override still wins. Explore is read-only and does NOT
   // use extended thinking (see runAgent.ts thinking gate).
   model: process.env.RAYU_EXPLORE_AGENT_MODEL || 'haiku',
   // Explore is a fast read-only search agent — it doesn't need commit/PR/lint

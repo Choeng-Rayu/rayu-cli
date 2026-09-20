@@ -17,7 +17,6 @@ import {
 } from '../../Tool.js'
 import { formatAgentId, generateRequestId } from '../../utils/agentId.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
-import { logForDebugging } from '../../utils/debug.js'
 import {
   findInProcessTeammateTaskId,
   setAwaitingPlanApproval,
@@ -38,7 +37,6 @@ import {
 } from '../../utils/teammate.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
-import { TEAM_CREATE_TOOL_NAME } from '../TeamCreateTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from './constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_PROMPT } from './prompt.js'
 import {
@@ -317,88 +315,37 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     // Ensure mode is changed when exiting plan mode.
     // This handles cases where permission flow didn't set the mode
     // (e.g., when PermissionRequest hook auto-approves without providing updatedPermissions).
-    const appState = context.getAppState()
-    // Compute gate-off fallback before setAppState so we can notify the user.
-    // Circuit breaker defense: if prePlanMode was an auto-like mode but the
-    // gate is now off (circuit breaker or settings disable), restore to
-    // 'default' instead. Without this, ExitPlanMode would bypass the circuit
-    // breaker by calling setAutoModeActive(true) directly.
-    let gateFallbackNotification: string | null = null
-    if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
-      const prePlanRaw = appState.toolPermissionContext.prePlanMode ?? 'default'
-      if (
-        prePlanRaw === 'auto' &&
-        !(permissionSetupModule?.isAutoModeGateEnabled() ?? false)
-      ) {
-        const reason =
-          permissionSetupModule?.getAutoModeUnavailableReason() ??
-          'circuit-breaker'
-        gateFallbackNotification =
-          permissionSetupModule?.getAutoModeUnavailableNotification(reason) ??
-          'auto mode unavailable'
-        logForDebugging(
-          `[auto-mode gate @ ExitPlanModeV2Tool] prePlanMode=${prePlanRaw} ` +
-            `but gate is off (reason=${reason}) — falling back to default on plan exit`,
-          { level: 'warn' },
-        )
-      }
-    }
-    if (gateFallbackNotification) {
-      context.addNotification?.({
-        key: 'auto-mode-gate-plan-exit-fallback',
-        text: `plan exit → default · ${gateFallbackNotification}`,
-        priority: 'immediate',
-        color: 'warning',
-        timeoutMs: 10000,
-      })
-    }
-
     context.setAppState(prev => {
       if (prev.toolPermissionContext.mode !== 'plan') return prev
       setHasExitedPlanMode(true)
       setNeedsPlanModeExitAttachment(true)
-      let restoreMode = prev.toolPermissionContext.prePlanMode ?? 'default'
+      // A confirmed plan enters Orchestrator mode. This intentionally uses the
+      // fullManage-equivalent permission behavior so delegated workers can implement and
+      // verify without interrupting the orchestration loop for approvals.
       if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
-        if (
-          restoreMode === 'auto' &&
-          !(permissionSetupModule?.isAutoModeGateEnabled() ?? false)
-        ) {
-          restoreMode = 'default'
-        }
-        const finalRestoringAuto = restoreMode === 'auto'
         // Capture pre-restore state — isAutoModeActive() is the authoritative
         // signal (prePlanMode/strippedDangerousRules are stale after
         // transitionPlanAutoMode deactivates mid-plan).
         const autoWasUsedDuringPlan =
           autoModeStateModule?.isAutoModeActive() ?? false
-        autoModeStateModule?.setAutoModeActive(finalRestoringAuto)
-        if (autoWasUsedDuringPlan && !finalRestoringAuto) {
+        autoModeStateModule?.setAutoModeActive(false)
+        if (autoWasUsedDuringPlan) {
           setNeedsAutoModeExitAttachment(true)
         }
       }
-      // If restoring to a non-auto mode and permissions were stripped (either
-      // from entering plan from auto, or from shouldPlanUseAutoMode),
-      // restore them. If restoring to auto, keep them stripped.
-      const restoringToAuto = restoreMode === 'auto'
+      // Orchestrator is not auto mode, so restore any rules stripped while
+      // planning before applying Orchestrator's fullManage-equivalent semantics.
       let baseContext = prev.toolPermissionContext
-      if (restoringToAuto) {
-        baseContext =
-          permissionSetupModule?.stripDangerousPermissionsForAutoMode(
-            baseContext,
-          ) ?? baseContext
-      } else if (prev.toolPermissionContext.strippedDangerousRules) {
+      if (prev.toolPermissionContext.strippedDangerousRules) {
         baseContext =
           permissionSetupModule?.restoreDangerousPermissions(baseContext) ??
           baseContext
       }
       return {
         ...prev,
-        // Plan confirmed (exiting plan mode → coding) → enter the persistent,
-        // session-wide collaborator-swarm orchestrator mode. /normal exits.
-        swarmMode: true,
         toolPermissionContext: {
           ...baseContext,
-          mode: restoreMode,
+          mode: 'orchestrator',
           prePlanMode: undefined,
         },
       }
@@ -464,13 +411,14 @@ Request ID: ${requestId}`,
     if (!plan || plan.trim() === '') {
       return {
         type: 'tool_result',
-        content: 'User has approved exiting plan mode. You can now proceed.',
+        content:
+          'User has approved exiting plan mode. Orchestrator mode is now active: coordinate and delegate all implementation and verification; do not code or run implementation commands yourself.',
         tool_use_id: toolUseID,
       }
     }
 
     const teamHint = hasTaskTool
-      ? `\n\nIf this plan can be broken down into multiple independent tasks, consider using the ${TEAM_CREATE_TOOL_NAME} tool to create a team and parallelize the work.`
+      ? '\n\nDispatch independent, named general-purpose workers in parallel with exact non-overlapping ownership. Keep dependent packets sequential and resume existing workers with SendMessage.'
       : ''
 
     // Always include the plan — extractApprovedPlan() in the Ultraplan CCR
@@ -482,10 +430,10 @@ Request ID: ${requestId}`,
 
     return {
       type: 'tool_result',
-      content: `User has approved your plan. You can now start coding. Start with updating your todo list if applicable
+      content: `User has approved your plan and Orchestrator mode is now active. Do not implement it yourself. Delegate every implementation and verification packet to subagents, coordinate their dependencies, and integrate their results.${teamHint}
 
 Your plan has been saved to: ${filePath}
-You can refer back to it if needed during implementation.${teamHint}
+Use it as the contract for delegated implementation.
 
 ## ${planLabel}:
 ${plan}`,

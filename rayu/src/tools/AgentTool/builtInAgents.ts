@@ -6,7 +6,6 @@ import { RAYU_CODE_GUIDE_AGENT } from './built-in/rayuCodeGuideAgent.js'
 import { EXPLORE_AGENT } from './built-in/exploreAgent.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { SUBAGENTS } from './built-in/subagents/index.js'
-import { COLLABORATORS } from './built-in/collaborators/index.js'
 import { STATUSLINE_SETUP_AGENT } from './built-in/statuslineSetup.js'
 import { VERIFICATION_AGENT } from './built-in/verificationAgent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
@@ -62,19 +61,13 @@ export function getBuiltInAgents(): AgentDefinition[] {
     agents.push(RAYU_CODE_GUIDE_AGENT)
   }
 
-  // Tier-3 subagents (planner / design / global-setup / asset-generation / review /
-  // fix / linter): ephemeral one-shot specialists the orchestrator AND
-  // collaborators dispatch. Available for non-SDK entrypoints; per-agent model
-  // via /model_subagent. Opt out with RAYU_DISABLE_SPECIALIST_AGENTS=1.
+  // The planner is the only specialist subagent. Orchestrator mode uses
+  // general-purpose agents for implementation, review, and verification.
   if (
     isNonSdkEntrypoint &&
     !isEnvTruthy(process.env.RAYU_DISABLE_SPECIALIST_AGENTS)
   ) {
     agents.push(...SUBAGENTS)
-    // Tier-2 Collaborators (frontend/backend/mobile/security/deploy): semi-
-    // persistent domain implementers the orchestrator delegates to (e.g. via
-    // /collaborator_swarm). Per-collaborator model via /collaborator_model.
-    agents.push(...COLLABORATORS)
   }
 
   if (
