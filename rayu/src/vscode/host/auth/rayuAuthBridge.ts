@@ -30,6 +30,7 @@ import {
   readRayuSession,
   rayuLoginGateMessage,
   getValidRayuAccessToken,
+  getRayuApiBaseUrl,
 } from '../../../services/rayuAuth/rayuSession.js'
 import { getRayuAuthConfigDir } from '../../../utils/envUtils.js'
 
@@ -138,4 +139,9 @@ export function signOutShared(): void {
  */
 export async function getAccessTokenForHost(): Promise<string | null> {
   return await getValidRayuAccessToken()
+}
+
+/** Backend origin for host-side authenticated calls. Never exposed to the webview. */
+export function getApiBaseUrlForHost(): string {
+  return getRayuApiBaseUrl()
 }

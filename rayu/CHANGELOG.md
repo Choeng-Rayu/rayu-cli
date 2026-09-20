@@ -2,11 +2,15 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 2.0.13 - 2026-09-21 (Beta)
+- **RayuCode on GitHub** — you can now connect RayuCode to GitHub and put it to work on your pull requests. Install it as a GitHub App, pick the repositories you want in scope, and RayuCode reviews incoming PRs right where your team already works — leaving inline findings, summaries, and suggested fixes as review comments, no local setup required
+- **Run RayuCode as a GitHub bot in your hub repo** — designate a "hub" repository and RayuCode becomes a standing bot there. It listens for new PRs and issues, responds to mentions, and can act as the central review and triage agent for the whole organization — one bot, every repo that points at the hub
+
 ## 2.0.12 - 2026-09-20 (Beta)
 - **Orchestrator mode is now the default** — the CLI now ships with the orchestrator as the built-in coordination layer. Plan, build, review, and run multi-agent workflows end-to-end from a single session, with parallel/sequential/race policies, retry/fallback, and git worktree isolation all wired in by default
 - **Reusable messages in VS Code** — RayuCode now supports saved, reusable prompt messages. Build a library of your most-used prompts and invoke them instantly from the IDE chat panel, with variable interpolation for project-specific context
 - **Collaborator swarm migrated to orchestrator** — the standalone `/collaborator_swarm` command has been retired and its capabilities fully absorbed into the orchestrator. Domain-specialized agents (backend, frontend, mobile, security, deploy) are now orchestrated through the unified `/agent` workflow with better task routing and shared context
-- **Rayu GitHub setup command restored** — `/install-github-app` now creates Rayu-branded `@rayu` and automated review workflows using `RAYU_API_KEY`, with trusted-actor guards and publisher-configured Rayu GitHub App and Action endpoints
+- **Rayu GitHub setup command restored** — `/install-github-app` now creates Rayu-branded `@rayu` and automated review workflows, defaults to securely provisioning a repository credential from the signed-in Rayu account (with manual API keys still supported), and uses trusted-actor guards plus publisher-configured Rayu GitHub App and Action endpoints
 
 ## 2.0.1 - 2026-09-14 (Beta)
 - **🚀 Introducing RayuCode — our new VS Code extension!** Rayu's full AI coding agent engine is now available directly inside VS Code as [RayuCode](https://marketplace.visualstudio.com/items?itemName=RayuCode.rayucode). Same tools, same providers, same skills — now with a native IDE chat panel, diff viewer, and webview UI. One engine, two products: terminal and IDE

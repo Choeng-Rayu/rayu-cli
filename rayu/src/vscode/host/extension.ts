@@ -37,7 +37,13 @@ import { invalidateRayuConfigCache } from '../../utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from './models/modelConfig.js'
 import { nextPermissionMode, permissionModeById } from '../shared/permissionModes.js'
 import { formatPathMentions } from '../shared/contextMentions.js'
-import { getAuthSnapshot, signOutShared } from './auth/rayuAuthBridge.js'
+import {
+  getAccessTokenForHost,
+  getApiBaseUrlForHost,
+  getAuthSnapshot,
+  hasAccountSession,
+  signOutShared,
+} from './auth/rayuAuthBridge.js'
 import { signInFromEditor, type SignInOptions } from './auth/vscodeLogin.js'
 import { watchSharedSession } from './auth/authWatcher.js'
 import { checkTurnAllowed } from './auth/signInGate.js'
@@ -62,6 +68,7 @@ import {
 } from './attach/cliAttachment.js'
 import { trackEditorSelection } from './ide/editorSelection.js'
 import { startIdeServer } from './ide/ideServer.js'
+import { runGitHubSetupFromEditor } from './github/githubSetup.js'
 import {
   listWorkspaceSessions,
   loadSessionTranscript,
@@ -778,6 +785,14 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (hostCommand === 'reload-plugins') {
           await current().session.reloadPlugins()
+          return
+        }
+        if (hostCommand === 'install-github-app') {
+          await runGitHubSetupFromEditor(workspaceDir, {
+            signedIn: hasAccountSession(),
+            apiBaseUrl: getApiBaseUrlForHost(),
+            getAccessToken: getAccessTokenForHost,
+          })
           return
         }
         const runtimeSection = rayucodeRuntimeSectionCommand(text)
@@ -1819,12 +1834,19 @@ function fenceTerminalSelection(selection: string): string {
  */
 function rayucodeHostSlashCommand(
   text: string,
-): 'login' | 'connect' | 'logout' | 'reload-plugins' | null {
+):
+  | 'login'
+  | 'connect'
+  | 'logout'
+  | 'reload-plugins'
+  | 'install-github-app'
+  | null {
   const command = text.trim()
   if (command === '/login') return 'login'
   if (command === '/connect') return 'connect'
   if (command === '/logout') return 'logout'
   if (command === '/reload-plugins') return 'reload-plugins'
+  if (command === '/install-github-app') return 'install-github-app'
   return null
 }
 
