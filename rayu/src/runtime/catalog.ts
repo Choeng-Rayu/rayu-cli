@@ -21,6 +21,7 @@ export const RAYUCODE_TERMINAL_ONLY_COMMANDS = new Set([
   'quit',
   'statusline',
   'thinkback-play',
+  'install-github-app',
 ])
 
 const PANEL_COMMANDS = new Set([

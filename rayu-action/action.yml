@@ -1,0 +1,43 @@
+name: RayuCode Agentic
+description: Run RayuCode as a GitHub pull-request reviewer or coding assistant.
+author: RayuCode
+
+branding:
+  icon: code
+  color: purple
+
+inputs:
+  rayu_api_key:
+    description: Rayu API key used only by the Rayu process.
+    required: true
+  github_token:
+    description: Job-scoped GitHub token used to comment and publish approved changes.
+    required: true
+  mode:
+    description: Run mode. Supported values are assistant and review.
+    required: false
+    default: assistant
+  pull_request_number:
+    description: Pull request number for review mode.
+    required: false
+  rayu_version:
+    description: Published @rayu-dev/rayu-cli version or npm dist-tag.
+    required: false
+    default: latest
+  model:
+    description: Optional Rayu model override.
+    required: false
+  max_turns:
+    description: Maximum Rayu agent turns.
+    required: false
+    default: "25"
+
+outputs:
+  result:
+    description: Rayu's final response.
+  pull_request_url:
+    description: Pull request created for an issue-based assistant request, when applicable.
+
+runs:
+  using: node20
+  main: src/index.mjs

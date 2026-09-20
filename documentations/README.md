@@ -30,6 +30,7 @@ switching, MCP support, and the full built-in tool suite.
 | 15 | [Telegram Bot](./15-telegram-bot.md) | Linking a Telegram bot to drive the CLI remotely |
 | 16 | [Credits & limits](./credits-and-limits.md) | Plans, credits, per-model charges, and where each admin control is enforced |
 | 17 | [Deploying on Coolify](./deploy-coolify.md) | Production runbook: env vars, domains, migrations, provider-key cutover, backups |
+| 18 | [GitHub integration](./18-github-actions.md) | Install the `@rayu` assistant and automated pull-request review workflows |
 | 18 | [Endpoints & model fetch](./rayu-endpoints-and-model-fetch.md) | How Rayu discovers, filters, and refreshes models for both Auth and API key |
 | 19 | [How to use Rayu API key](./how-to-use-rayu-api-key.md) | Step-by-step guide for using a Rayu API key in the CLI or your own code |
 
