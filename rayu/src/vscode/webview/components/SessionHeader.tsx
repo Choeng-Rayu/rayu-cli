@@ -24,6 +24,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import type {
   McpServerView,
+  McpConnectionUiView,
   TranscriptEntry,
   TurnProgressView,
 } from '../../shared/webviewProtocol.js'
@@ -37,6 +38,7 @@ import {
   PlusIcon,
   ProgressGlyph,
   RayuMark,
+  SignInIcon,
   SignOutIcon,
 } from './Icons.js'
 
@@ -92,11 +94,14 @@ export interface SessionHeaderProps {
   identity: { email: string | null; displayName: string | null } | null
   version: string
   title: string | null
+  activeSessionKey: string
   status: SessionStatus
   mcpServers: readonly McpServerView[]
+  mcpConnectionUi: McpConnectionUiView
   /** Shown only while a sub-surface (sessions, task details) has replaced the conversation. */
   onBack?: () => void
   onNewSession: () => void
+  onRename: (title: string) => void
   onOpenSessions: () => void
   /** Whether every tool row is showing its parameters and output. */
   detailed: boolean
@@ -111,9 +116,11 @@ export interface SessionHeaderProps {
   onToggleBackground: () => void
   onOpenProviderSetup: () => void
   onRefreshMcp: () => void
+  onOpenMcp: () => void
   onReconnectMcp: (serverName: string) => void
   onAuthenticateMcp: (serverName: string) => void
   onToggleMcp: (serverName: string, enabled: boolean) => void
+  onSignIn: () => void
   onSignOut: () => void
 }
 
@@ -123,10 +130,13 @@ export function SessionHeader({
   identity,
   version,
   title,
+  activeSessionKey,
   status,
   mcpServers,
+  mcpConnectionUi,
   onBack,
   onNewSession,
+  onRename,
   onOpenSessions,
   detailed,
   onToggleDetailed,
@@ -136,13 +146,41 @@ export function SessionHeader({
   onToggleBackground,
   onOpenProviderSetup,
   onRefreshMcp,
+  onOpenMcp,
   onReconnectMcp,
   onAuthenticateMcp,
   onToggleMcp,
+  onSignIn,
   onSignOut,
 }: SessionHeaderProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [editingTitle, setEditingTitle] = useState<string | null>(null)
+  const cancelTitleEdit = useRef(false)
+  const titleInput = useRef<HTMLInputElement | null>(null)
   const container = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (editingTitle !== null) titleInput.current?.select()
+  }, [editingTitle !== null])
+
+  // Switching conversations dismisses transient header UI without remounting the whole
+  // header. Keying this component left stale DOM siblings behind in VS Code's webview.
+  useEffect(() => {
+    cancelTitleEdit.current = false
+    setEditingTitle(null)
+    setMenuOpen(false)
+  }, [activeSessionKey])
+
+  function finishTitleEdit(value: string): void {
+    if (cancelTitleEdit.current) {
+      cancelTitleEdit.current = false
+      setEditingTitle(null)
+      return
+    }
+    const next = value.trim()
+    setEditingTitle(null)
+    if (next && next !== title) onRename(next)
+  }
 
   // Registered only while open, so a closed menu costs no document listener.
   useEffect(() => {
@@ -168,6 +206,7 @@ export function SessionHeader({
   }, [menuOpen, onRefreshMcp])
 
   const who = identity?.displayName ?? identity?.email ?? null
+  const connectedMcp = mcpServers.filter(server => server.status === 'connected').length
 
   return (
     <header className="rc-header" ref={container}>
@@ -185,9 +224,32 @@ export function SessionHeader({
         <RayuMark size={14} className="rc-header-mark" />
       )}
 
-      <span className="rc-header-title" title={title ?? undefined}>
-        {title ?? 'New conversation'}
-      </span>
+      {editingTitle !== null ? (
+        <input
+          ref={titleInput}
+          className="rc-header-title rc-header-title-input"
+          aria-label="Conversation name"
+          value={editingTitle}
+          maxLength={200}
+          onChange={event => setEditingTitle(event.target.value)}
+          onBlur={event => finishTitleEdit(event.currentTarget.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+            if (event.key === 'Escape') {
+              cancelTitleEdit.current = true
+              event.currentTarget.blur()
+            }
+          }}
+        />
+      ) : ready && title ? (
+        <button type="button" className="rc-header-title rc-header-title-editable"
+          title={`${title} — click to edit`} aria-label={`Conversation name: ${title}. Click to edit`}
+          onClick={() => setEditingTitle(title)}>
+          {title}
+        </button>
+      ) : (
+        <span className="rc-header-title">{title ?? 'New conversation'}</span>
+      )}
 
       {/* `idle` is not rendered: a pill that says "Ready" on every fresh panel is furniture. */}
       {ready && status !== 'idle' ? (
@@ -204,6 +266,15 @@ export function SessionHeader({
       ) : null}
 
       <span className="rc-header-spacer" />
+
+      {(connectedMcp > 0 || mcpConnectionUi.auth?.stage === 'waiting') ? (
+        <button type="button" className="rc-icon-button rc-icon-button-badged" onClick={onOpenMcp}
+          title={connectedMcp > 0 ? `${connectedMcp} MCP server${connectedMcp === 1 ? '' : 's'} connected` : 'MCP authorization in progress'}
+          aria-label={connectedMcp > 0 ? `${connectedMcp} MCP server${connectedMcp === 1 ? '' : 's'} connected` : 'MCP authorization in progress'}>
+          <PlugIcon size={14} />
+          {connectedMcp > 0 ? <span className="rc-icon-badge">{connectedMcp}</span> : <span className="rc-header-mcp-pending" aria-hidden="true" />}
+        </button>
+      ) : null}
 
       {!signedOut ? (
         <>
@@ -312,12 +383,17 @@ export function SessionHeader({
 
             <div className="rc-overflow-section">
               <span className="rc-overflow-section-title">MCP servers</span>
-              {/*
-                Three states, kept apart: not yet fetched, fetched-and-none, and a list. An
-                empty list rendered as "none configured" while the fetch was still in flight
-                would be a confident wrong answer.
-              */}
-              {mcpServers.length === 0 ? (
+              <button type="button" className="rc-overflow-mcp-action" onClick={() => {
+                setMenuOpen(false)
+                onOpenMcp()
+              }}>View connections</button>
+              {mcpConnectionUi.load === 'idle' ? (
+                <p className="rc-overflow-empty">Connection status has not been checked yet.</p>
+              ) : mcpConnectionUi.load === 'loading' ? (
+                <p className="rc-overflow-empty">Checking connections…</p>
+              ) : mcpConnectionUi.load === 'error' ? (
+                <p className="rc-overflow-empty" role="alert">Could not check connections. <button type="button" className="rc-overflow-mcp-action" onClick={onRefreshMcp}>Retry</button></p>
+              ) : mcpServers.length === 0 ? (
                 <p className="rc-overflow-empty">No MCP servers connected.</p>
               ) : (
                 <ul className="rc-overflow-mcp">
@@ -365,7 +441,20 @@ export function SessionHeader({
               )}
             </div>
 
-            {!signedOut ? (
+            {signedOut ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-overflow-item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onSignIn()
+                }}
+              >
+                <SignInIcon size={13} />
+                Sign in
+              </button>
+            ) : (
               <button
                 type="button"
                 role="menuitem"
@@ -378,7 +467,7 @@ export function SessionHeader({
                 <SignOutIcon size={13} />
                 Sign out
               </button>
-            ) : null}
+            )}
           </div>
         ) : null}
       </div>

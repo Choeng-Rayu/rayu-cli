@@ -81,4 +81,26 @@ describe('Rayucode MCP server status normalization', () => {
     expect(servers[0]!.status).toBe('pending')
     session.dispose()
   })
+
+  test('status transport errors are not displayed as an empty server list', async () => {
+    const { session } = sessionWithMcpResponse([])
+    ;(session as any).control.request = async () => { throw new Error('connection lost') }
+    expect(session.getMcpStatus()).rejects.toThrow('connection lost')
+    session.dispose()
+  })
+
+  test('manual OAuth callback reconnects Canva and refreshes its public status', async () => {
+    const { session } = sessionWithMcpResponse([])
+    const requests: string[] = []
+    ;(session as any).control.request = async (subtype: string) => {
+      requests.push(subtype)
+      return subtype === 'mcp_status'
+        ? { mcpServers: [{ name: 'canva', status: 'connected', config: { type: 'http' } }] }
+        : {}
+    }
+    expect(await session.completeMcpAuthentication('canva', 'http://127.0.0.1/callback?code=fixture')).toBe(true)
+    expect(requests).toEqual(['mcp_oauth_callback_url', 'mcp_reconnect', 'mcp_status'])
+    expect(session.mcpServers[0]).toMatchObject({ name: 'canva', status: 'connected', supportsOAuth: true })
+    session.dispose()
+  })
 })

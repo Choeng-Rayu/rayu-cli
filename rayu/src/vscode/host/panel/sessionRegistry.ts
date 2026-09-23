@@ -70,6 +70,7 @@ export interface SessionEntry {
   readonly session: ChatSession
   /** This conversation's approval cards. See the header for why it is not shared. */
   readonly permissions: PermissionRouter
+  customTitle: string | null
 }
 
 export class SessionRegistry {
@@ -104,7 +105,7 @@ export class SessionRegistry {
    * This is the whole point of the module: the previous implementation's "new session" was a
    * teardown of the only session there was.
    */
-  create(options: { resumeSessionId?: string; cwd?: string } = {}): SessionEntry {
+  create(options: { resumeSessionId?: string; cwd?: string; customTitle?: string } = {}): SessionEntry {
     this.retireForCapacity()
 
     const key = `panel-${++this.counter}`
@@ -119,7 +120,7 @@ export class SessionRegistry {
       // the session. The alternative — a settable `entry` field on the session — would let a
       // callback fire against a half-built entry.
       this.callbacks.sessionCallbacks(
-        { get key() { return key }, get session() { return entry.session }, get permissions() { return entry.permissions } },
+        { get key() { return key }, get session() { return entry.session }, get permissions() { return entry.permissions }, get customTitle() { return entry.customTitle }, set customTitle(value) { entry.customTitle = value } },
         () => this.activeKey === key,
       ),
     )
@@ -137,7 +138,7 @@ export class SessionRegistry {
       },
     })
 
-    entry = { key, session, permissions }
+    entry = { key, session, permissions, customTitle: options.customTitle ?? null }
     this.entries.push(entry)
     this.activeKey = key
     this.callbacks.onActivate(entry)
@@ -166,6 +167,14 @@ export class SessionRegistry {
     return (
       this.entries.find(entry => entry.session.engineSessionId === sessionId) ?? null
     )
+  }
+
+  setTitle(key: string, title: string): boolean {
+    const entry = this.entries.find(item => item.key === key)
+    if (!entry) return false
+    entry.customTitle = title
+    this.callbacks.onChanged()
+    return true
   }
 
   /**
@@ -202,6 +211,7 @@ export class SessionRegistry {
       .sort((a, b) => b.session.lastActivityAt - a.session.lastActivityAt)
       .map(entry => ({
         key: entry.key,
+        ...(entry.session.engineSessionId ? { sessionId: entry.session.engineSessionId } : {}),
         label: labelFor(entry),
         running: entry.session.isTurnRunning,
         pendingApprovals: entry.permissions.snapshot().length,
@@ -248,6 +258,7 @@ export class SessionRegistry {
  * blank — an unlabelled row is unclickable in practice.
  */
 function labelFor(entry: SessionEntry): string {
+  if (entry.customTitle) return entry.customTitle
   const prompt = entry.session.transcript.find(item => item.kind === 'prompt')
   if (prompt?.kind === 'prompt') {
     const line = prompt.text.split('\n').map(part => part.trim()).find(Boolean)

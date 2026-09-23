@@ -10,7 +10,7 @@
  * an ordinary path rather than a special case, and it is how a sign-in performed in a
  * terminal reaches this UI.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, memo } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, memo, type MutableRefObject } from 'react'
 
 import type {
   EntryId,
@@ -44,7 +44,7 @@ import { TranscriptEntryView, NoticeEntry } from './components/TranscriptEntryVi
 import { ActivityGroup } from './components/ActivityGroup.js'
 import { groupTranscript } from './state/activityGroups.js'
 import { useSecondTick } from './useSecondTick.js'
-import { createSessionScrollMemory } from './sessionScrollMemory.js'
+import { createSessionScrollMemory, createScrollSwitchTracker } from './sessionScrollMemory.js'
 import { promptHistoryFromTranscript } from './promptHistory.js'
 import { WelcomeScreen } from './components/WelcomeScreen.js'
 import { ScrollToBottomButton } from './components/ScrollToBottomButton.js'
@@ -117,6 +117,7 @@ export function App(): JSX.Element {
   )
   /** Which surface has replaced the conversation, if any. */
   const [sessionsOpen, setSessionsOpen] = useState(() => readPersistedUi().sessionsOpen ?? false)
+  const captureReadingRef = useRef<() => void>(() => {})
   /**
    * Whether every tool row shows its fields and output.
    *
@@ -327,6 +328,7 @@ export function App(): JSX.Element {
         case 'fileSearchResults':
         case 'setContextUsage':
         case 'setMcpServers':
+        case 'setMcpConnectionUi':
         case 'setRuntimeCatalogue':
         case 'setRateLimit':
         case 'setEngineAuthStatus':
@@ -434,7 +436,7 @@ export function App(): JSX.Element {
     send({ type: 'getMcpStatus' })
   }, [])
 
-  const sessionTitle = useMemo(() => deriveSessionTitle(state.entries), [state.entries])
+  const sessionTitle = state.customTitle ?? deriveSessionTitle(state.entries)
   const sessionStatus = deriveSessionStatus(
     state.turnRunning,
     state.turnProgress,
@@ -442,7 +444,7 @@ export function App(): JSX.Element {
   )
 
   return (
-    <div className={`rc-shell${panelDragging ? ' rc-shell-drag-over' : ''}`}>
+    <div className={`rc-shell${panelDragging ? ' rc-shell-drag-over' : ''}${runtimeCenterOpen ? ' rc-shell-runtime-open' : ''}`}>
       {/*
         The drop target covers the PANEL, because the handler does. An overlay confined to
         the composer strip was the visible half of the original bug: a drop on the
@@ -462,22 +464,28 @@ export function App(): JSX.Element {
             </span>
           </div>
         </div>
-      ) : null}      <SessionHeader
+      ) : null}
+      <SessionHeader
         ready={session !== null}
         signedOut={signedOut}
         identity={session?.identity ?? null}
         version={session?.version ?? ''}
         title={sessionTitle}
+        activeSessionKey={state.activeSessionKey}
+        onRename={title => send({ type: 'renameSession', key: state.activeSessionKey, title })}
         status={sessionStatus}
         mcpServers={state.mcpServers}
+        mcpConnectionUi={state.mcpConnectionUi}
         onBack={sessionsOpen ? () => setSessionsOpen(false) : undefined}
         onNewSession={() => {
+          captureReadingRef.current()
           // A new session invalidates selections that referred to the old one.
           setSessionsOpen(false)
           setSelectedTaskKey(null)
           send({ type: 'newSession' })
         }}
         onOpenSessions={() => {
+          if (!sessionsOpen) captureReadingRef.current()
           setSessionsOpen(open => !open)
           // Refetched on every open: sessions accumulate from the CLI and other windows
           // while the panel sits idle, so a cached list goes stale invisibly.
@@ -496,9 +504,14 @@ export function App(): JSX.Element {
         }}
         onOpenProviderSetup={() => send({ type: 'openProviderSetup' })}
         onRefreshMcp={refreshMcp}
+        onOpenMcp={() => {
+          setRuntimeSection('mcp')
+          setRuntimeCenterOpen(true)
+        }}
         onReconnectMcp={serverName => send({ type: 'mcpReconnect', serverName })}
         onAuthenticateMcp={serverName => send({ type: 'mcpAuthenticate', serverName })}
         onToggleMcp={(serverName, enabled) => send({ type: 'mcpToggle', serverName, enabled })}
+        onSignIn={() => send({ type: 'signIn' })}
         onSignOut={() => send({ type: 'signOut' })}
       />
 
@@ -512,6 +525,7 @@ export function App(): JSX.Element {
           state.runtimePlugins.length +
           state.runtimeSkills.length
         }
+        open={runtimeCenterOpen}
         onOpenRuntime={() => setRuntimeCenterOpen(open => !open)}
         // The Rayu pacing switch lives in the web dashboard, so the in-editor
         // action is the same link the CLI offers. The URL comes from the HOST
@@ -536,6 +550,7 @@ export function App(): JSX.Element {
           commands={state.runtimeCommands}
           tools={state.runtimeTools}
           mcpServers={state.mcpServers}
+          mcpConnectionUi={state.mcpConnectionUi}
           agents={state.runtimeAgents}
           plugins={state.runtimePlugins}
           skills={state.runtimeSkills}
@@ -550,6 +565,7 @@ export function App(): JSX.Element {
           onToggleMcp={(serverName, enabled) => send({ type: 'mcpToggle', serverName, enabled })}
           onAuthenticateMcp={serverName => send({ type: 'mcpAuthenticate', serverName })}
           onClearMcpAuth={serverName => send({ type: 'mcpClearAuth', serverName })}
+          onPasteMcpCallback={serverName => send({ type: 'mcpPasteCallback', serverName })}
         />
       ) : null}
 
@@ -573,6 +589,8 @@ export function App(): JSX.Element {
       >
         <Transcript
           state={state}
+          sessionsOpen={sessionsOpen}
+          captureReadingRef={captureReadingRef}
           onPick={setDraft}
           signedOut={signedOut}
           detailed={detailed}
@@ -734,37 +752,16 @@ export function App(): JSX.Element {
 }
 
 /**
- * One transcript block, skipped by the browser while off-screen.
+ * One memoized transcript block.
  *
- * ── WHY NOT A WINDOWING VIRTUALIZER ────────────────────────────────────────────
+ * The host bounds restored history to its newest 400 blocks. Keeping those blocks in normal
+ * layout gives the scroller an exact height even when messages, diffs, and tool results vary
+ * dramatically in size. Do not add `content-visibility` here: Chromium substitutes an
+ * intrinsic placeholder for unseen blocks, then moves the bottom as they become visible.
+ * That made long histories appear to load another page whenever the user scrolled down.
  *
- * The usual fix for a long list is to render only the visible slice and pad with spacers.
- * That needs each row's height, and transcript rows have no predictable one: a tool pill is
- * a line until it is expanded, a diff is as tall as its hunks, a thinking block grows while
- * it streams. Estimating those wrongly makes the scrollbar jump under the user's cursor and
- * fights the auto-scroll pinning, and getting them right means measuring every row and
- * re-measuring on every toggle.
- *
- * `content-visibility: auto` gets the expensive part for free. The browser skips layout,
- * paint and hit-testing for blocks scrolled out of view while still accounting for their
- * real size, so scroll height stays exact, nothing jumps, and variable heights need no
- * estimate at all. Chromium has supported it since 85; the floor here is VS Code 1.85,
- * which ships Chromium 114.
- *
- * `contain-intrinsic-size: auto <n>px` is what makes it safe: `auto` tells the browser to
- * remember each block's LAST MEASURED height and reuse it while skipped, so a block that
- * has been seen once keeps its true size. The literal is only the first guess for a block
- * that has never been on screen.
- *
- * ── `React.memo` COVERS WHAT THE BROWSER CANNOT ────────────────────────────────
- *
- * `content-visibility` removes layout cost, not reconciliation cost — React still walks
- * every block on every state change, and a streaming answer changes state per token. Memo
- * makes that walk stop at blocks whose props are identical, which is all of them except
- * the one being appended to. The two together are why this is cheap without windowing.
- *
- * Correctness over aggression, deliberately: more rows exist in the DOM than a windowing
- * implementation would keep, and in exchange nothing can mis-measure or jump.
+ * Memoization still matters during streaming: only the block being appended to reconciles,
+ * while completed blocks with identical props stop here.
  */
 const TranscriptBlock = memo(function TranscriptBlock({
   children,
@@ -783,6 +780,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
  */
 function Transcript({
   state,
+  sessionsOpen,
+  captureReadingRef,
   onPick,
   signedOut,
   detailed,
@@ -791,6 +790,8 @@ function Transcript({
   onRequestToolOutput,
 }: {
   state: ChatState
+  sessionsOpen: boolean
+  captureReadingRef: MutableRefObject<() => void>
   onPick: (text: string) => void
   signedOut: boolean
   /** Panel-wide detail switch, forwarded to every tool row. */
@@ -812,7 +813,91 @@ function Transcript({
   // Which conversation the next scroll should be credited to. A ref, so `onScroll` stays
   // stable; repointed on a switch by the restore effect below, and only AFTER the restore,
   // so an event already in flight is still credited to the conversation being left.
-  const scrollKey = useRef(state.activeSessionKey)
+  const scrollSwitch = useRef(createScrollSwitchTracker(state.activeSessionKey))
+  const suppressScroll = useRef(false)
+  const pendingCapture = useRef(false)
+  const bottomSettleRevision = useRef(0)
+
+  /**
+   * Keep a restored conversation pinned through its first layout frames. Text blocks now
+   * lay out eagerly, so scrollHeight is authoritative; fonts, images, and expandable content
+   * can still make a small late adjustment after the transcript first becomes visible.
+   */
+  const settleAtBottom = useCallback(() => {
+    const el = scroller.current
+    if (!el) return
+    const revision = ++bottomSettleRevision.current
+    let previousHeight = -1
+    let frame = 0
+    let stableFrames = 0
+    suppressScroll.current = true
+    pinned.current = true
+
+    const align = (): void => {
+      if (revision !== bottomSettleRevision.current || !pinned.current) return
+      const height = el.scrollHeight
+      el.scrollTop = height
+      frame += 1
+      stableFrames = height === previousHeight ? stableFrames + 1 : 0
+      previousHeight = height
+
+      if (frame < 4 || (frame < 12 && stableFrames < 2)) {
+        requestAnimationFrame(align)
+        return
+      }
+      suppressScroll.current = false
+      pendingCapture.current = false
+      scrollMemory.current.remember(scrollSwitch.current.key, {
+        top: el.scrollTop,
+        pinned: true,
+      })
+    }
+
+    align()
+  }, [])
+
+  /** Restore a saved non-bottom position after the same initial layout settling. */
+  const settleAtPosition = useCallback((top: number) => {
+    const el = scroller.current
+    if (!el) return
+    const revision = ++bottomSettleRevision.current
+    let previousHeight = -1
+    let frame = 0
+    let stableFrames = 0
+    suppressScroll.current = true
+    pinned.current = false
+
+    const align = (): void => {
+      if (revision !== bottomSettleRevision.current || pinned.current) return
+      const height = el.scrollHeight
+      el.scrollTop = top
+      frame += 1
+      stableFrames = height === previousHeight ? stableFrames + 1 : 0
+      previousHeight = height
+
+      if (frame < 4 || (frame < 12 && stableFrames < 2)) {
+        requestAnimationFrame(align)
+        return
+      }
+      suppressScroll.current = false
+      pendingCapture.current = false
+      scrollMemory.current.remember(scrollSwitch.current.key, {
+        top: el.scrollTop,
+        pinned: false,
+      })
+      setShowScrollBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 100)
+    }
+
+    align()
+  }, [])
+
+  captureReadingRef.current = () => {
+    const el = scroller.current
+    if (!el || el.getClientRects().length === 0) return
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    scrollMemory.current.remember(scrollSwitch.current.key, { top: el.scrollTop, pinned: isNearBottom })
+    pendingCapture.current = true
+  }
 
   /**
    * Reasoning blocks bucketed by the assistant entry they belong in front of.
@@ -845,14 +930,15 @@ function Transcript({
 
   const onScroll = useCallback(() => {
     const el = scroller.current
-    if (!el) return
+    if (!el || el.getClientRects().length === 0 || suppressScroll.current || pendingCapture.current) return
     // 48px of slack: an exact comparison unpins on sub-pixel scroll positions.
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
     pinned.current = isNearBottom
+    if (!isNearBottom) bottomSettleRevision.current += 1
     // Remember where this conversation was left, as it is read. Recorded here rather than
     // on the way out, because by the time a switch is observable the content is already
     // replaced and `scrollTop` is whatever the browser clamped it to.
-    scrollMemory.current.remember(scrollKey.current, { top: el.scrollTop, pinned: isNearBottom })
+    scrollMemory.current.remember(scrollSwitch.current.key, { top: el.scrollTop, pinned: isNearBottom })
     setShowScrollBottom(!isNearBottom && el.scrollHeight - el.clientHeight > 100)  }, [])
 
   /**
@@ -874,20 +960,23 @@ function Transcript({
    * reader was not pinned, which is exactly the restored-mid-transcript case.
    */
   useLayoutEffect(() => {
-    if (scrollKey.current === state.activeSessionKey) return
-    scrollKey.current = state.activeSessionKey
     const el = scroller.current
     if (!el) return
+    if (!scrollSwitch.current.shouldRestore(state.activeSessionKey, el.getClientRects().length > 0)) {
+      if (!sessionsOpen && pendingCapture.current) {
+        requestAnimationFrame(() => { pendingCapture.current = false })
+      }
+      return
+    }
+    suppressScroll.current = true
     const saved = scrollMemory.current.recall(state.activeSessionKey)
     if (saved && !saved.pinned) {
-      el.scrollTop = saved.top
-      pinned.current = false
+      settleAtPosition(saved.top)
     } else {
-      el.scrollTop = el.scrollHeight
-      pinned.current = true
+      settleAtBottom()
     }
     setShowScrollBottom(!pinned.current && el.scrollHeight - el.clientHeight > 100)
-  }, [state.activeSessionKey])
+  }, [state.activeSessionKey, sessionsOpen, state.entries, settleAtBottom, settleAtPosition])
 
   // Forget conversations that are no longer open. The live list is the only key writer,
   // so this holds the memory at the number of open conversations rather than at however
@@ -918,9 +1007,8 @@ function Transcript({
    */
   useEffect(() => {
     if (!pinned.current) return
-    const el = scroller.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [state.entries, state.notices, state.thinkingBlocks, state.turnProgress])
+    settleAtBottom()
+  }, [state.entries, state.notices, state.thinkingBlocks, state.turnProgress, settleAtBottom])
 
   // Hoisted out of the render loop: an inline arrow is a new function every render, so
   // every block's props would differ and `TranscriptBlock`'s memo would never hit.

@@ -65,6 +65,7 @@ export interface ChatViewHandlers {
   switchSession: (key: string) => Promise<void> | void
   /** Close an open conversation and stop its engine. */
   closeSession: (key: string) => Promise<void> | void
+  renameSession: (key: string | undefined, id: string | undefined, title?: string) => Promise<void> | void
   permissionResponse: (
     requestId: string,
     decision: 'allow-once' | 'allow-always' | 'deny',
@@ -121,6 +122,7 @@ export interface ChatViewHandlers {
   mcpToggle: (serverName: string, enabled: boolean) => Promise<void> | void
   mcpReconnect: (serverName: string) => Promise<void> | void
   mcpAuthenticate: (serverName: string) => Promise<void> | void
+  mcpPasteCallback: (serverName: string) => Promise<void> | void
   mcpClearAuth: (serverName: string) => Promise<void> | void
   getMcpStatus: () => Promise<void> | void
   mcpElicitationResponse: (
@@ -227,6 +229,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'closeSession':
         void this.handlers.closeSession(message.key)
+        return
+      case 'renameSession':
+        void this.handlers.renameSession(message.key, message.id, message.title)
         return
       case 'permissionResponse':
         void this.handlers.permissionResponse(message.requestId, message.decision)
@@ -347,6 +352,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'mcpAuthenticate':
         void this.handlers.mcpAuthenticate(message.serverName)
+        return
+      case 'mcpPasteCallback':
+        void this.handlers.mcpPasteCallback(message.serverName)
         return
       case 'mcpClearAuth':
         void this.handlers.mcpClearAuth(message.serverName)

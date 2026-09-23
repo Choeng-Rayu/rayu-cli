@@ -28,6 +28,7 @@ import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../cons
 
 import { ChatViewProvider, CHAT_VIEW_ID } from './panel/chatViewProvider.js'
 import { ChatSession, type ConversationStateSnapshot } from './panel/sessionHandle.js'
+import { watchMcpConnection } from './panel/mcpConnectionUi.js'
 import {
   SessionRegistry,
   type SessionEntry,
@@ -72,6 +73,7 @@ import { runGitHubSetupFromEditor } from './github/githubSetup.js'
 import {
   listWorkspaceSessions,
   loadSessionTranscript,
+  renameWorkspaceSession,
 } from './sessionHistory.js'
 import {
   applySelection,
@@ -93,6 +95,7 @@ import type {
   ImageInputView,
   PromptDeliveryView,
   WebviewState,
+  McpConnectionUiView,
 } from '../shared/webviewProtocol.js'
 
 /** Command ids, kept in one place so the manifest and the code cannot drift. */
@@ -352,6 +355,9 @@ export function activate(context: vscode.ExtensionContext): void {
    * stale-but-real list beats blanking the surface.
    */
   let historySessions: SessionListView = { status: 'loading', sessions: [] }
+  let mcpUi: McpConnectionUiView = { load: 'idle', error: null, auth: null }
+  let mcpUiSessionKey = ''
+  let mcpFlowId = 0
   let attachment: AttachmentView = { available: undefined, attached: null, error: null }
   let liveAttachment: CliAttachment | null = null
   let standaloneTaskSnapshot: BackgroundTaskView[] = []
@@ -581,6 +587,10 @@ export function activate(context: vscode.ExtensionContext): void {
       // Hand the diff store to the conversation that is now on screen, then rebuild the panel
       // from it. One full sync is both simpler and more honest than replaying deltas.
       onActivate: entry => {
+        if (mcpUiSessionKey !== entry.key) {
+          mcpUi = { load: 'idle', error: null, auth: null }
+          mcpUiSessionKey = entry.key
+        }
         review.store.replace(entry.session.reviewFiles)
         provider.syncState()
       },
@@ -590,6 +600,32 @@ export function activate(context: vscode.ExtensionContext): void {
   /** The conversation on screen. Resolved per call — see the registry's construction. */
   function current(): SessionEntry {
     return registry.active
+  }
+
+  function showMcpUi(entry: SessionEntry, next: McpConnectionUiView): void {
+    if (registry.activeSessionKey !== entry.key) return
+    mcpUiSessionKey = entry.key
+    mcpUi = next
+    provider.post({ type: 'setMcpConnectionUi', connection: next })
+  }
+
+  async function refreshMcp(entry = current()): Promise<void> {
+    showMcpUi(entry, { ...mcpUi, load: 'loading', error: null })
+    try {
+      const servers = await entry.session.getMcpStatus()
+      if (registry.activeSessionKey !== entry.key) return
+      provider.post({ type: 'setMcpServers', servers })
+      const auth = mcpUi.auth?.stage === 'connected' &&
+        !servers.some(server => server.name === mcpUi.auth?.serverName && server.status === 'connected')
+        ? null : mcpUi.auth
+      showMcpUi(entry, { ...mcpUi, load: 'ready', error: null, auth })
+    } catch (cause) {
+      showMcpUi(entry, {
+        ...mcpUi,
+        load: 'error',
+        error: cause instanceof Error ? cause.message : String(cause),
+      })
+    }
   }
 
   function labelOf(entry: SessionEntry): string {
@@ -760,6 +796,8 @@ export function activate(context: vscode.ExtensionContext): void {
         historySessions,
         registry.summaries(),
         registry.activeSessionKey,
+        mcpUi,
+        current().customTitle,
         taskInspectionSupported,
         taskInspectionMessage,
       ),
@@ -908,6 +946,45 @@ export function activate(context: vscode.ExtensionContext): void {
         registry.close(key)
         provider.syncState()
         prewarmSession()
+      },
+      renameSession: async (key, id, suppliedTitle) => {
+        const entry = key
+          ? registry.all.find(item => item.key === key)
+          : id ? registry.findByEngineSessionId(id) : undefined
+        const selected = id ? historySessions.sessions.find(item => item.id === id) : undefined
+        const sessionId = entry?.session.engineSessionId ?? id
+        if (!sessionId || (!entry && !selected)) {
+          provider.post({ type: 'showError', message: 'Send a message before naming this conversation, or refresh session history.' })
+          return
+        }
+        const previous = entry?.customTitle ?? selected?.customTitle ?? (entry ? labelOf(entry) : selected?.label ?? '')
+        const title = suppliedTitle ?? await vscode.window.showInputBox({
+          title: 'Rename conversation',
+          prompt: 'This name is shared with Rayu CLI session history.',
+          value: previous,
+          ignoreFocusOut: true,
+          validateInput: value => {
+            const trimmed = value.trim()
+            return !trimmed || trimmed.length > 120 || /[\r\n\u0000-\u001f]/.test(trimmed)
+              ? 'Use a single-line name of 1–120 characters.' : null
+          },
+        })
+        if (title === undefined) return
+        try {
+          const trimmed = title.trim()
+          await renameWorkspaceSession(sessionId, trimmed, selected?.cwd ?? workspaceDir ?? engineCwd)
+          if (entry) registry.setTitle(entry.key, trimmed)
+          historySessions = {
+            ...historySessions,
+            sessions: historySessions.sessions.map(item => item.id === sessionId
+              ? { ...item, label: trimmed, customTitle: trimmed, lastModified: Date.now() }
+              : item),
+          }
+          provider.post({ type: 'setSessions', list: historySessions })
+          provider.syncState()
+        } catch (cause) {
+          provider.post({ type: 'showError', message: `Could not rename session: ${cause instanceof Error ? cause.message : String(cause)}` })
+        }
       },
       permissionResponse: (requestId, decision) =>
         current().permissions.resolve(current().session.controlClient, requestId, { kind: decision }),
@@ -1286,38 +1363,93 @@ export function activate(context: vscode.ExtensionContext): void {
       modelChooserDismiss: () => setModelChooser(null),
       mcpToggle: async (serverName, enabled) => {
         await current().session.toggleMcpServer(serverName, enabled)
+        await refreshMcp()
       },
       mcpReconnect: async serverName => {
         await current().session.reconnectMcpServer(serverName)
+        await refreshMcp()
       },
       mcpAuthenticate: async serverName => {
-        const auth = await current().session.authenticateMcpServer(serverName)
-        if (!auth) return
-        if (!auth.requiresUserAction) {
-          await current().session.getMcpStatus()
+        const entry = current()
+        const flowId = ++mcpFlowId
+        showMcpUi(entry, {
+          load: 'ready', error: null,
+          auth: { serverName, stage: 'opening' },
+        })
+        const auth = await entry.session.authenticateMcpServer(serverName)
+        if (flowId !== mcpFlowId) return
+        if (!auth) {
+          showMcpUi(entry, { load: 'ready', error: null, auth: {
+            serverName, stage: 'error', message: 'Could not start authentication. Try again.',
+          } })
           return
         }
-        if (!auth.authUrl) {
-          provider.post({ type: 'showError', message: `${serverName} did not provide an authentication URL.` })
-          return
+        if (auth.requiresUserAction) {
+          if (!auth.authUrl) {
+            showMcpUi(entry, { ...mcpUi, auth: {
+              serverName, stage: 'error', message: 'The server did not provide an authentication URL.',
+            } })
+            return
+          }
+          let opened = false
+          try {
+            opened = await vscode.env.openExternal(vscode.Uri.parse(auth.authUrl))
+          } catch {
+            opened = false
+          }
+          if (!opened) {
+            showMcpUi(entry, { ...mcpUi, auth: {
+              serverName, stage: 'error', message: 'Could not open the browser. Retry authentication.',
+            } })
+            return
+          }
         }
-        await vscode.env.openExternal(vscode.Uri.parse(auth.authUrl))
+        showMcpUi(entry, { ...mcpUi, auth: {
+          serverName, stage: auth.requiresUserAction ? 'waiting' : 'finishing',
+        } })
+        const outcome = await watchMcpConnection({
+          serverName,
+          read: () => entry.session.getMcpStatus(),
+          isCurrent: () => flowId === mcpFlowId && !disposed,
+          onStatus: servers => {
+            if (registry.activeSessionKey === entry.key) {
+              provider.post({ type: 'setMcpServers', servers: [...servers] })
+            }
+          },
+        })
+        if (outcome === 'cancelled') return
+        const message = outcome === 'timeout'
+          ? 'Still waiting for browser authorization. If the callback did not reach this editor, paste its redirect URL.'
+          : outcome === 'failed' ? 'The MCP server did not connect. Check its status and retry.' : undefined
+        showMcpUi(entry, { ...mcpUi, auth: {
+          serverName, stage: outcome === 'connected' ? 'connected' : 'error',
+          ...(message ? { message } : {}),
+        } })
+      },
+      mcpPasteCallback: async serverName => {
+        const entry = current()
         const callbackUrl = await vscode.window.showInputBox({
           title: `Finish ${serverName} authentication`,
-          prompt: 'After signing in, paste the full redirect URL here.',
+          prompt: 'Paste the full browser redirect URL only if automatic connection did not complete.',
           ignoreFocusOut: true,
           password: true,
         })
         if (callbackUrl?.trim()) {
-          await current().session.completeMcpAuthentication(serverName, callbackUrl.trim())
+          showMcpUi(entry, { ...mcpUi, auth: { serverName, stage: 'finishing' } })
+          const connected = await entry.session.completeMcpAuthentication(serverName, callbackUrl.trim())
+          ++mcpFlowId
+          await refreshMcp(entry)
+          showMcpUi(entry, { ...mcpUi, auth: {
+            serverName, stage: connected ? 'connected' : 'error',
+            ...(!connected ? { message: 'Could not complete authentication. Check the redirect URL and retry.' } : {}),
+          } })
         }
       },
       mcpClearAuth: async serverName => {
         await current().session.clearMcpAuthentication(serverName)
       },
       getMcpStatus: async () => {
-        const servers = await current().session.getMcpStatus()
-        provider.post({ type: 'setMcpServers', servers })
+        await refreshMcp()
       },
       listSessions: async () => {
         historySessions = { ...historySessions, status: 'loading' }
@@ -1370,7 +1502,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // `create()` starts with an empty transcript, so the restore follows it. The engine
         // child is spawned with `--resume` and is the SOLE writer to the session file;
         // `loadSessionTranscript` only reads.
-        const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd })
+        const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd, customTitle: selected.customTitle })
         const restored = await loadSessionTranscript(id, resumeCwd)
         entry.session.restoreTranscript(restored)
         await entry.session.restoreTaskHistory(id, resumeCwd)
@@ -1621,6 +1753,8 @@ function buildState(
   historySessions: SessionListView,
   liveSessions: LiveSessionView[],
   activeSessionKey: string,
+  mcpConnectionUi: McpConnectionUiView,
+  customTitle: string | null,
   taskInspectionSupported = true,
   taskInspectionMessage?: string,
 ): WebviewState {
@@ -1649,6 +1783,8 @@ function buildState(
     commands: [...session.commands],
     contextUsage: session.contextUsage,
     mcpServers: [...session.mcpServers],
+    mcpConnectionUi,
+    customTitle,
     runtimeCapabilities: session.currentRuntimeCapabilities,
     runtimeCommands: [...session.runtimeCommands],
     runtimeTools: [...session.runtimeTools],

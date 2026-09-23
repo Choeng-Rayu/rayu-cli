@@ -124,6 +124,26 @@ try {
   if (await frame!.locator('.rc-tool-name').getByText('AskUserQuestion', { exact: true }).count()) {
     throw new Error('AskUserQuestion exposed raw parameters instead of the question form')
   }
+  const visibleHeaders = await frame!.locator('.rc-header').count()
+  if (visibleHeaders !== 1) {
+    const headerShape = await frame!.evaluate(() => ({
+      rootChildren: Array.from(document.querySelector('#root')!.children).map(node => ({ tag: node.tagName, className: node.className })),
+      headers: Array.from(document.querySelectorAll('.rc-header')).map(node => ({
+        parentClass: node.parentElement?.className,
+        title: node.querySelector('.rc-header-title')?.textContent,
+      })),
+      scripts: document.scripts.length,
+    }))
+    throw new Error(`Expected one chat header, found ${visibleHeaders}: ${JSON.stringify(headerShape)}`)
+  }
+  const rayucodeFrames: Array<{ url: string; headers: number }> = []
+  for (const candidatePage of browser!.contexts().flatMap(context => context.pages())) {
+    for (const candidate of candidatePage.frames()) {
+      const headers = await candidate.locator('.rc-header').count().catch(() => 0)
+      if (headers) rayucodeFrames.push({ url: candidate.url(), headers })
+    }
+  }
+  if (rayucodeFrames.length !== 1) throw new Error(`Expected one Rayucode webview, found ${JSON.stringify(rayucodeFrames)}`)
   const output = join(root, 'dist/test-results'); mkdirSync(output, { recursive: true })
   await page.screenshot({ path: join(output, 'rayucode-dark.png') })
   await frame!.getByRole('button', { name: 'Diff', exact: true }).first().click()
@@ -211,10 +231,102 @@ try {
   // respawning — which is why no further inference may be issued.
   await frame!.getByTitle('Sessions', { exact: true }).click()
   await frame!.getByRole('textbox', { name: 'Search sessions' }).fill('fixture')
+  const streamsBeforeSwitch = provider.requests.filter(r => r.stream).length
   const history = frame!.locator('.rc-session-row-history, .rc-session-live-row .rc-session-row').first()
   await history.waitFor(); await history.click()
   await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
-  if (provider.requests.filter(r => r.stream).length !== 6) throw new Error('Restoring history resubmitted inference')
+  if (provider.requests.filter(r => r.stream).length !== streamsBeforeSwitch) throw new Error('Restoring history resubmitted inference')
+
+  await frame!.getByRole('button', { name: /^Conversation name:/ }).click()
+  const renameInput = frame!.getByRole('textbox', { name: 'Conversation name' })
+  await renameInput.fill('Canva session check')
+  await renameInput.press('Enter')
+  await frame!.getByText('Canva session check', { exact: true }).first().waitFor()
+  if (await frame!.getByRole('button', { name: /^Rename / }).count()) throw new Error('A separate Rename button remains in the chat UI')
+  await frame!.getByRole('button', { name: /^Conversation name:/ }).click()
+  await frame!.getByRole('textbox', { name: 'Conversation name' }).fill('Unsaved title')
+  await frame!.getByRole('textbox', { name: 'Conversation name' }).press('Escape')
+  await frame!.getByRole('button', { name: 'Conversation name: Canva session check. Click to edit' }).waitFor()
+
+  await input.fill('/mcp')
+  await frame!.getByRole('button', { name: 'Send message' }).click()
+  await frame!.getByRole('tab', { name: /^MCP / }).waitFor()
+  await frame!.getByRole('button', { name: 'Refresh connections' }).waitFor()
+  const runtimeLayout = await frame!.evaluate(() => {
+    const shell = document.querySelector('.rc-shell') as HTMLElement
+    shell.style.width = '300px'
+    const center = document.querySelector('.rc-runtime-center') as HTMLElement
+    const composer = document.querySelector('.rc-composer-card') as HTMLElement
+    const transcript = document.querySelector('.rc-main-area') as HTMLElement
+    const navigation = document.querySelector('.rc-runtime-tabs') as HTMLElement
+    const search = document.querySelector('.rc-runtime-search') as HTMLElement
+    const list = document.querySelector('.rc-runtime-list') as HTMLElement
+    const result = {
+      overflow: center.scrollWidth - center.clientWidth,
+      transcriptDisplay: getComputedStyle(transcript).display,
+      centerBottom: center.getBoundingClientRect().bottom,
+      composerTop: composer.getBoundingClientRect().top,
+      navigationHeight: navigation.getBoundingClientRect().height,
+      searchHeight: search.getBoundingClientRect().height,
+      listTop: list.getBoundingClientRect().top,
+      searchBottom: search.getBoundingClientRect().bottom,
+    }
+    shell.style.width = ''
+    return result
+  })
+  if (runtimeLayout.overflow > 1) throw new Error(`MCP center overflows a 300px sidebar by ${runtimeLayout.overflow}px`)
+  if (runtimeLayout.transcriptDisplay !== 'none') throw new Error('Runtime center still squeezes a second chat surface below it')
+  if (runtimeLayout.centerBottom > runtimeLayout.composerTop + 1) throw new Error(`Runtime center overlaps the composer: ${JSON.stringify(runtimeLayout)}`)
+  if (runtimeLayout.navigationHeight < 24) throw new Error(`Runtime navigation was vertically hidden: ${JSON.stringify(runtimeLayout)}`)
+  if (runtimeLayout.searchHeight < 30 || runtimeLayout.listTop < runtimeLayout.searchBottom - 1) throw new Error(`Runtime search overlaps its navigation or results: ${JSON.stringify(runtimeLayout)}`)
+  await frame!.getByRole('button', { name: 'Close runtime center' }).click()
+
+  // Background work uses the same fixed-controls/scrolling-results layout. A compact fixture
+  // catches the regression without depending on a provider deciding to launch a subagent.
+  const taskLayout = await frame!.evaluate(() => {
+    const fixture = document.createElement('aside')
+    fixture.className = 'rc-task-center'
+    fixture.style.cssText = 'position:absolute;left:-10000px;top:0;width:300px;height:180px;min-width:0;max-width:none;'
+    fixture.innerHTML = `
+      <header class="rc-task-center-head"><strong>Background work</strong><button>×</button></header>
+      <div class="rc-task-filters">${['All', 'Active', 'Waiting', 'Completed', 'Failed'].map(label => `<button class="rc-task-filter">${label}</button>`).join('')}</div>
+      <div class="rc-task-center-scroll"><div style="height:800px">Task results</div></div>`
+    document.querySelector('.rc-shell')!.append(fixture)
+    const head = fixture.querySelector('.rc-task-center-head') as HTMLElement
+    const filters = fixture.querySelector('.rc-task-filters') as HTMLElement
+    const scroll = fixture.querySelector('.rc-task-center-scroll') as HTMLElement
+    const result = {
+      headHeight: head.getBoundingClientRect().height,
+      filterHeight: filters.getBoundingClientRect().height,
+      headShrink: getComputedStyle(head).flexShrink,
+      filterShrink: getComputedStyle(filters).flexShrink,
+      scrollGrow: getComputedStyle(scroll).flexGrow,
+      scrollHeight: scroll.scrollHeight,
+      clientHeight: scroll.clientHeight,
+    }
+    fixture.remove()
+    return result
+  })
+  if (taskLayout.headHeight < 38 || taskLayout.filterHeight < 24) throw new Error(`Background-work controls were vertically hidden: ${JSON.stringify(taskLayout)}`)
+  if (taskLayout.headShrink !== '0' || taskLayout.filterShrink !== '0' || taskLayout.scrollGrow !== '1') throw new Error(`Background-work flex layout is unsafe: ${JSON.stringify(taskLayout)}`)
+  if (taskLayout.scrollHeight <= taskLayout.clientHeight) throw new Error(`Background-work results do not scroll: ${JSON.stringify(taskLayout)}`)
+
+  // Force a long scrollable chat in the narrow sidebar and leave it mid-transcript.
+  // The sessions surface hides this element; returning must restore its reading position.
+  await frame!.evaluate(() => {
+    const el = document.querySelector('.rc-transcript') as HTMLElement
+    el.style.maxHeight = '90px'
+    el.style.flex = '0 0 90px'
+  })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  await frame!.evaluate(() => {
+    const el = document.querySelector('.rc-transcript') as HTMLElement
+    el.scrollTop = 30
+    el.dispatchEvent(new Event('scroll', { bubbles: true }))
+  })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  const beforeNew = await frame!.evaluate(() => (document.querySelector('.rc-transcript') as HTMLElement).scrollTop)
+  if (beforeNew < 20) throw new Error('Transcript fixture was not scrollable')
 
   // ── CONCURRENT SESSIONS ────────────────────────────────────────────────────────
   //
@@ -230,7 +342,72 @@ try {
   // The row that is NOT on screen is the original conversation.
   await frame!.locator('.rc-session-live-row .rc-session-row:not(.rc-session-row-active)').first().click()
   await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
-  if (provider.requests.filter(r => r.stream).length !== 6) throw new Error('Switching sessions resubmitted inference')
+  const restored = await frame!.evaluate(() => {
+    const el = document.querySelector('.rc-transcript') as HTMLElement
+    return { top: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, style: el.getAttribute('style') }
+  })
+  if (Math.abs(restored.top - beforeNew) > 5) throw new Error(`Switching sessions lost reading position: ${beforeNew} → ${JSON.stringify(restored)}`)
+  if (provider.requests.filter(r => r.stream).length !== streamsBeforeSwitch) throw new Error('Switching sessions resubmitted inference')
+  if (await frame!.locator('.rc-header').count() !== 1) throw new Error('Switching sessions duplicated the chat header')
+
+  // Close the live conversation and open it from history again. This is the true first-open
+  // resume path: the host loads the transcript asynchronously, and it must land at the newest
+  // message rather than leaving the browser at scrollTop 0.
+  await frame!.getByTitle('Sessions — 2 open', { exact: true }).click()
+  await frame!.getByRole('button', { name: 'Close Canva session check' }).click()
+  const historicalSession = frame!.locator('.rc-session-row-history').filter({ hasText: 'Canva session check' })
+  await historicalSession.waitFor()
+  await historicalSession.click()
+  await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
+  await frame!.waitForTimeout(150)
+  const firstOpenHistory = await frame!.evaluate(() => {
+    const el = document.querySelector('.rc-transcript') as HTMLElement
+    return { top: el.scrollTop, max: el.scrollHeight - el.clientHeight }
+  })
+  if (firstOpenHistory.max > 5 && firstOpenHistory.max - firstOpenHistory.top > 5) {
+    throw new Error(`A first-open history session did not start at its latest message: ${JSON.stringify(firstOpenHistory)}`)
+  }
+
+  // A restored history can contain up to 400 variable-height blocks. They must all take part
+  // in the first layout; deferred intrinsic placeholders make scrollHeight grow as each new
+  // viewport is revealed, so a user has to scroll to the apparent bottom over and over.
+  const longHistoryLayout = await frame!.evaluate(async () => {
+    const probe = document.createElement('div')
+    probe.className = 'rc-transcript'
+    probe.style.cssText = 'position:absolute;inset:0 auto auto 0;width:280px;height:160px;opacity:.01;pointer-events:none;z-index:10000;'
+    for (let index = 0; index < 400; index += 1) {
+      const block = document.createElement('div')
+      block.className = 'rc-block'
+      block.style.cssText = `height:${50 + (index % 7) * 11}px;flex:0 0 auto;`
+      probe.append(block)
+    }
+    document.querySelector('.rc-shell')!.append(probe)
+    const firstBlockStyle = getComputedStyle(probe.firstElementChild!)
+    probe.scrollTop = probe.scrollHeight
+    await new Promise<void>(resolve => {
+      let frames = 0
+      const next = (): void => {
+        frames += 1
+        if (frames >= 12) resolve()
+        else requestAnimationFrame(next)
+      }
+      requestAnimationFrame(next)
+    })
+    const result = {
+      top: probe.scrollTop,
+      max: probe.scrollHeight - probe.clientHeight,
+      contentVisibility: firstBlockStyle.contentVisibility,
+      containIntrinsicBlockSize: firstBlockStyle.containIntrinsicBlockSize,
+    }
+    probe.remove()
+    return result
+  })
+  if (longHistoryLayout.contentVisibility !== 'visible') {
+    throw new Error(`Long history still defers unseen message layout: ${JSON.stringify(longHistoryLayout)}`)
+  }
+  if (longHistoryLayout.max - longHistoryLayout.top > 1) {
+    throw new Error(`Long history bottom moved after initial scroll: ${JSON.stringify(longHistoryLayout)}`)
+  }
   console.log('PASS: real extension host, AskUserQuestion answers, sign-in gate, hosted catalog/capabilities, keyboard model selection/draft, streaming, approval, exact diff, concurrent sessions, dark/light themes')
 } catch (error) {
   if (existsSync(join(directory, 'runner.log'))) {

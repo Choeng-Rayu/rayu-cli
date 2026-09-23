@@ -77,6 +77,38 @@ body {
   text-overflow: ellipsis;
 }
 
+.rc-header-title-editable {
+  border: 0;
+  padding: 2px 0;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  font-family: inherit;
+  cursor: text;
+}
+
+.rc-header-title-editable:hover { text-decoration: underline dotted; }
+.rc-header-title-editable:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.rc-header-title-input {
+  box-sizing: border-box;
+  padding: 1px 3px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 3px;
+  outline: none;
+}
+
+.rc-header-mcp-pending {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vscode-editorWarning-foreground);
+}
+
 .rc-header-spacer {
   flex: 0 0 auto;
 }
@@ -114,6 +146,9 @@ body {
   right: 0;
   min-width: 240px;
   max-width: 320px;
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 4px;
   display: flex;
   flex-direction: column;
@@ -342,14 +377,19 @@ body {
   border-left: 1px solid var(--vscode-panel-border);
 }
 
-.rc-task-center-head { min-height: 38px; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--vscode-panel-border); }
+.rc-task-center-head { flex: 0 0 auto; min-height: 38px; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--vscode-panel-border); }
 .rc-task-center-head button { color: var(--vscode-foreground); background: transparent; border: 0; font: inherit; font-size: 1.25em; cursor: pointer; border-radius: 4px; }
 .rc-task-center-head button:hover { background: var(--vscode-toolbar-hoverBackground); }
-.rc-task-filters { display: flex; gap: 3px; padding: 6px 8px; overflow-x: auto; border-bottom: 1px solid var(--vscode-panel-border); }
+.rc-task-filters { flex: 0 0 auto; display: flex; gap: 3px; padding: 6px 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; border-bottom: 1px solid var(--vscode-panel-border); }
 .rc-task-filter { color: var(--vscode-descriptionForeground); background: transparent; border: 0; border-radius: 4px; font: inherit; font-size: .82em; padding: 3px 6px; cursor: pointer; }
 .rc-task-filter:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
 .rc-task-filter-on { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
-.rc-task-center-scroll { overflow: auto; min-height: 0; }
+.rc-task-center-scroll { flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; min-height: 0; }
+.rc-task-center-scroll, .rc-task-detail, .rc-task-detail-head > div { min-width: 0; }
+.rc-task-detail-head strong, .rc-task-detail-sub, .rc-task-result, .rc-task-error,
+.rc-task-prompt > div, .rc-task-activity-line, .rc-task-waiting-card {
+  overflow-wrap: anywhere;
+}
 .rc-task-empty { padding: 18px 12px; color: var(--vscode-descriptionForeground); }
 .rc-task-group > h3 { margin: 0; padding: 8px 10px 4px; color: var(--vscode-descriptionForeground); font-size: .78em; text-transform: uppercase; letter-spacing: .04em; }
 .rc-task-group > h3 span { font-weight: 400; }
@@ -438,30 +478,17 @@ body {
 }
 
 /*
-  One transcript block, culled by the browser while scrolled out of view.
+  Restored transcripts are already bounded to their newest 400 blocks by the host, and
+  `TranscriptBlock` is memoized to avoid reconciling unchanged rows while streaming.
 
-  `content-visibility: auto` skips layout, paint and hit-testing for off-screen blocks
-  while still reserving their real size, which is what keeps a several-hundred-turn
-  session responsive without a windowing virtualizer. Transcript rows have wildly
-  variable heights — a collapsed pill is one line, a diff is dozens — so any
-  implementation that had to ESTIMATE height would make the scrollbar jump; this one
-  never estimates a block it has already displayed.
-
-  `contain-intrinsic-size: auto 40px` is the load-bearing half. `auto` tells the browser
-  to remember each block's last measured height and reuse it while the block is skipped,
-  so scroll height stays exact. The 40px literal is only the placeholder for a block that
-  has never been on screen, chosen to match a single-line row so a fresh long transcript
-  errs toward being too short rather than too tall — undershooting settles as blocks are
-  scrolled into view, whereas overshooting leaves visible empty gaps.
-
-  `display: block` is required: this element is a flex child of `.rc-transcript`, and
-  containment on a flex item with an indeterminate size is what makes the reserved height
-  unreliable.
+  Keep every restored block in normal layout. `content-visibility: auto` used to assign a
+  40px placeholder to unseen variable-height messages. On a long first-open conversation,
+  the browser replaced those placeholders only as the user scrolled, repeatedly moving the
+  real bottom and making the history look paginated. Exact layout is required here so one
+  scroll-to-bottom really reaches the newest message.
 */
 .rc-block {
   display: block;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 40px;
 }
 
 .rc-scroll-bottom {
@@ -580,6 +607,28 @@ body {
 
 .rc-button:hover {
   background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* Link-like actions must opt out of the browser's native button skin. Without this,
+   VS Code renders controls such as Runtime Close as a bright platform-default rectangle. */
+.rc-text-button {
+  border: 0;
+  border-radius: 3px;
+  padding: 2px 4px;
+  color: var(--vscode-textLink-foreground);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.rc-text-button:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.rc-text-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
 }
 
 .rc-button-primary {
@@ -1303,6 +1352,9 @@ body {
 }
 
 .rc-runtime-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   justify-self: end;
   margin: 0 var(--rc-gap-lg);
   border: 0;
@@ -1318,6 +1370,11 @@ body {
 .rc-runtime-open:hover {
   color: var(--vscode-foreground);
   background: var(--vscode-toolbar-hoverBackground);
+}
+
+.rc-runtime-open-active {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
 }
 
 .rc-runtime-open span,
@@ -1340,7 +1397,20 @@ body {
   overflow: hidden;
 }
 
+/* Runtime is a primary surface, not a card that squeezes a second copy of the chat below it. */
+.rc-shell-runtime-open .rc-runtime-center {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.rc-shell-runtime-open .rc-main-area,
+.rc-shell-runtime-open .rc-task-bar {
+  display: none;
+}
+
 .rc-runtime-center-head {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: start;
@@ -1359,10 +1429,13 @@ body {
 .rc-runtime-row-meta { font-size: 11px; }
 
 .rc-runtime-tabs {
+  flex: 0 0 auto;
   display: flex;
   gap: 2px;
   padding: var(--rc-gap) var(--rc-gap-lg) 0;
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
 
 .rc-runtime-tab {
@@ -1384,7 +1457,7 @@ body {
   border-bottom-color: var(--vscode-focusBorder);
 }
 
-.rc-runtime-search { padding: var(--rc-gap) var(--rc-gap-lg); }
+.rc-runtime-search { flex: 0 0 auto; padding: var(--rc-gap) var(--rc-gap-lg); }
 .rc-runtime-search input {
   width: 100%;
   box-sizing: border-box;
@@ -1397,7 +1470,8 @@ body {
 .rc-runtime-search input:focus { outline: 1px solid var(--vscode-focusBorder); }
 
 .rc-runtime-list {
-  min-height: 80px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   border-top: 1px solid var(--vscode-editorWidget-border);
 }
@@ -1413,6 +1487,7 @@ body {
 
 .rc-runtime-row-disabled { opacity: 0.65; }
 .rc-runtime-row-copy { min-width: 0; }
+.rc-runtime-row-actions { flex-wrap: wrap; justify-content: flex-end; }
 .rc-runtime-row-detail { overflow-wrap: anywhere; }
 .rc-runtime-row-title,
 .rc-runtime-row-title-static { font-family: var(--vscode-editor-font-family); }
@@ -3656,6 +3731,10 @@ body {
   outline-offset: -1px;
 }
 
+.rc-runtime-mcp-state { padding: 8px 12px; color: var(--vscode-descriptionForeground); }
+.rc-runtime-mcp-state { overflow-wrap: anywhere; }
+.rc-runtime-mcp-state .rc-text-button { margin: 4px 8px 0 0; }
+
 .rc-session-row-label {
   font-size: 0.88em;
   overflow: hidden;
@@ -3924,6 +4003,35 @@ body {
 /* ── container queries / responsive adaptations ──────────────────────────── */
 
 @container shell (max-width: 340px) {
+  .rc-header { gap: 2px; }
+
+  .rc-runtime-center { margin-inline: var(--rc-gap); max-height: min(70vh, 560px); }
+  .rc-runtime-center-head { padding: var(--rc-gap); }
+  .rc-runtime-center-head > div { min-width: 0; }
+  .rc-runtime-center-subtitle { overflow-wrap: anywhere; }
+  .rc-runtime-tabs { padding-inline: var(--rc-gap); }
+  .rc-runtime-search { padding-inline: var(--rc-gap); }
+  .rc-runtime-row { align-items: flex-start; flex-wrap: wrap; padding-inline: var(--rc-gap); }
+  .rc-runtime-row-copy { flex: 1 1 100%; overflow-wrap: anywhere; }
+  .rc-runtime-row-actions { width: 100%; justify-content: flex-start; }
+  .rc-runtime-list-actions { justify-content: flex-start; flex-wrap: wrap; }
+  .rc-runtime-mcp-state { padding-inline: var(--rc-gap); }
+
+  .rc-overflow-panel { min-width: 0; width: min(320px, calc(100cqw - 16px)); box-sizing: border-box; }
+  .rc-overflow-mcp-row { flex-wrap: wrap; }
+  .rc-overflow-mcp-name { flex-basis: calc(100% - 16px); }
+  .rc-overflow-mcp-status { margin-left: 11px; }
+
+  .rc-task-bar { flex-wrap: wrap; margin-inline: var(--rc-gap); }
+  .rc-task-bar-activity { flex-basis: 100%; order: 1; }
+  .rc-task-filter { flex: 1 1 auto; }
+  .rc-task-filters { flex-wrap: wrap; overflow-x: visible; }
+  .rc-task-detail, .rc-task-row { padding-inline: var(--rc-gap); }
+
+  .rc-signin { padding-inline: var(--rc-gap); }
+  .rc-signin-actions { width: 100%; }
+  .rc-signin-actions .rc-button { width: 100%; }
+
   .rc-review-head {
     flex-direction: column;
     align-items: flex-start;

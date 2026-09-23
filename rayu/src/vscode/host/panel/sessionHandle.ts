@@ -825,13 +825,16 @@ export class ChatSession {
   }
 
   /**
-   * The engine child's session id, or null before it has sent a frame.
+   * The conversation's engine session id.
    *
-   * Null means there is nothing to resume — the engine has not started, so a restart is
-   * simply a start and no conversation can be lost.
+   * A resumed conversation already has an authoritative id before its child sends a frame:
+   * it is the id passed to `--resume`. Returning null in that interval made the sessions UI
+   * show the same conversation twice (Open now + history), and choosing the history copy
+   * spawned another child that looked like the conversation had reloaded. Fresh conversations
+   * still return null until their engine reports the newly-created id.
    */
   get engineSessionId(): string | null {
-    return this.currentSessionId
+    return this.currentSessionId ?? this.options.resumeSessionId ?? null
   }
 
   /** Agent type names the engine reported, for `/subagent_models <AGENT>`. */
@@ -1175,9 +1178,9 @@ export class ChatSession {
     this.retainedToolOutput.clear()
     this.retainedOutputChars = 0
     this.hooksByHookId.clear()
-    // Cleared so a later configuration restart cannot resume a conversation the user has
-    // already left. It is re-learned from the new child's first frame — including when
-    // `resumeSessionId` was passed, since a resumed child reports that same id.
+    // Clear the id learned from the outgoing child. `engineSessionId` still exposes an
+    // explicitly requested resume id immediately, while a fresh conversation remains unknown
+    // until its new child reports one.
     this.currentSessionId = null
     this.turnProgress = null
     for (const key of Object.keys(this.turnCompletions)) delete this.turnCompletions[key]
@@ -4155,15 +4158,12 @@ export class ChatSession {
    * Fetch connected MCP servers status.
    */
   async getMcpStatus(): Promise<McpServerView[]> {
-    if (!this.control) return []
-    try {
-      const resp = await this.control.request('mcp_status', {}, 10_000)
-      const raw = Array.isArray(resp.mcpServers) ? resp.mcpServers : []
-      this.applyMcpServers(raw)
-      return this.mcpServersList
-    } catch {
-      return []
-    }
+    await this.ensureStarted()
+    if (!this.control) throw new Error('The MCP engine is not available.')
+    const resp = await this.control.request('mcp_status', {}, 10_000)
+    const raw = Array.isArray(resp.mcpServers) ? resp.mcpServers : []
+    this.applyMcpServers(raw)
+    return this.mcpServersList
   }
 
   private applyMcpServers(raw: unknown[]): void {

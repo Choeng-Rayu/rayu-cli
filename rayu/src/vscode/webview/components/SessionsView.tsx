@@ -101,18 +101,17 @@ export function SessionsView({
    * History rows for sessions that are ALSO open in the panel are hidden.
    *
    * The same conversation would otherwise appear twice — once as "open and running", once as
-   * a history row that offers to resume it — and the resume row would be the destructive
-   * option. Correlation is by label because a live session's engine id is not known until its
-   * child reports one, and the label is what the user reads either way.
+   * a history row that offers to resume it. Correlation is by engine session id once
+   * reported; two unrelated sessions may have the same user-chosen title.
    */
-  const liveLabels = useMemo(
-    () => new Set(liveSessions.map(item => item.label)),
+  const liveIds = useMemo(
+    () => new Set(liveSessions.map(item => item.sessionId).filter(Boolean)),
     [liveSessions],
   )
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const withoutLive = list.sessions.filter(session => !liveLabels.has(session.label))
+    const withoutLive = list.sessions.filter(session => !liveIds.has(session.id))
     if (!q) return withoutLive
     return withoutLive.filter(
       session =>
@@ -120,7 +119,7 @@ export function SessionsView({
         (session.gitBranch?.toLowerCase().includes(q) ?? false) ||
         (session.cwd?.toLowerCase().includes(q) ?? false),
     )
-  }, [list.sessions, liveLabels, query])
+  }, [list.sessions, liveIds, query])
 
   const grouped = useMemo(() => {
     const buckets = new Map<GroupKey, SessionSummaryView[]>()
@@ -251,7 +250,7 @@ export function SessionsView({
               <h3 className="rc-sessions-group-title">{group.title}</h3>
               <ul className="rc-sessions-list">
                 {sessions.map(session => (
-                  <li key={session.id}>
+                  <li key={session.id} className="rc-session-live-row">
                     <button
                       type="button"
                       className="rc-session-row rc-session-row-history"

@@ -337,6 +337,36 @@ test('switching back activates the existing engine instead of respawning it', as
   expect(activations[activations.length - 1]).toBe(first.key)
 })
 
+test('a resumed conversation is recognized as open before its engine sends a frame', () => {
+  const dir = tempDir()
+  const { registry } = makeRegistry(dir)
+  sessions.push(registry)
+
+  const resumed = registry.create({ resumeSessionId: 'history-session-123' })
+
+  // The session list uses this id to hide the duplicate history row, and the resume handler
+  // uses it to activate this entry instead of spawning another child.
+  expect(resumed.session.engineSessionId).toBe('history-session-123')
+  expect(registry.findByEngineSessionId('history-session-123')).toBe(resumed)
+  expect(registry.summaries()).toContainEqual(expect.objectContaining({
+    key: resumed.key,
+    sessionId: 'history-session-123',
+  }))
+})
+
+test('an open conversation keeps its custom name when switching away and back', () => {
+  const dir = tempDir()
+  const { registry } = makeRegistry(dir)
+  sessions.push(registry)
+  const first = registry.create()
+  first.session.restoreTranscript([{ kind: 'prompt', text: 'Original prompt' }])
+  expect(registry.setTitle(first.key, 'Canva research')).toBe(true)
+  const second = registry.create()
+  registry.activate(first.key)
+  expect(registry.summaries().find(item => item.key === first.key)?.label).toBe('Canva research')
+  expect(registry.summaries().find(item => item.key === second.key)?.label).toBe('New conversation')
+})
+
 test('only the active session writes to the panel', async () => {
   const dir = tempDir()
   const { registry, posts } = makeRegistry(dir)
