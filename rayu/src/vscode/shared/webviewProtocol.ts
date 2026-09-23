@@ -469,6 +469,7 @@ export type HostToWebviewMessage =
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   /** Connected MCP servers status. */
   | { type: 'setMcpServers'; servers: McpServerView[] }
+  | { type: 'setMcpConnectionUi'; connection: McpConnectionUiView }
   | {
       type: 'setRuntimeCatalogue'
       capabilities: RuntimeCapabilitiesView | null
@@ -795,6 +796,7 @@ export type WebviewToHostMessage =
   /** Reconnect an MCP server. */
   | { type: 'mcpReconnect'; serverName: string }
   | { type: 'mcpAuthenticate'; serverName: string }
+  | { type: 'mcpPasteCallback'; serverName: string }
   | { type: 'mcpClearAuth'; serverName: string }
   /** Refresh MCP server status. */
   | { type: 'getMcpStatus' }
@@ -820,6 +822,7 @@ export type WebviewToHostMessage =
   | { type: 'switchSession'; key: string }
   /** Close an open session and stop its engine. */
   | { type: 'closeSession'; key: string }
+  | { type: 'renameSession'; key?: string; id?: string; title?: string }
   /** Stop a running task through the process that owns its execution. */
   | { type: 'stopTask'; sourceSessionId: string; taskId: string }
   /** Send a follow-up to an agent/teammate when that task advertises the capability. */
@@ -1457,6 +1460,9 @@ export interface WebviewState {
   contextUsage: ContextUsageView | null
   /** Connected MCP servers. */
   mcpServers: McpServerView[]
+  mcpConnectionUi?: McpConnectionUiView
+  /** Custom title saved in the shared session transcript, if one exists. */
+  customTitle?: string | null
   runtimeCapabilities?: RuntimeCapabilitiesView | null
   runtimeCommands?: RuntimeCommandView[]
   runtimeTools?: RuntimeToolView[]
@@ -1512,6 +1518,17 @@ export interface McpServerView {
   error?: string
 }
 
+/** VS Code-only progress for status loading and the browser OAuth handoff. */
+export interface McpConnectionUiView {
+  load: 'idle' | 'loading' | 'ready' | 'error'
+  error: string | null
+  auth: {
+    serverName: string
+    stage: 'opening' | 'waiting' | 'finishing' | 'connected' | 'error'
+    message?: string
+  } | null
+}
+
 /**
  * A conversation the panel is holding OPEN, with its own engine child.
  *
@@ -1532,6 +1549,8 @@ export interface McpServerView {
 export interface LiveSessionView {
   /** The panel's own key. Stable for the life of the session, unlike the engine's id. */
   key: string
+  /** Known immediately for resumed sessions, otherwise after the engine's first frame. */
+  sessionId?: string
   /** Derived from the first prompt, or a placeholder for a session with no prompt yet. */
   label: string
   /** True while this session's engine is mid-turn — including while the panel shows another. */
@@ -1549,6 +1568,7 @@ export interface SessionSummaryView {
   id: string
   /** Custom /title, else generated summary, else first prompt, else a short id. */
   label: string
+  customTitle?: string
   /** Epoch ms. Drives the ordering and the relative time on the row. */
   lastModified: number
   /** Epoch ms, when the transcript's first timestamp was parseable. */

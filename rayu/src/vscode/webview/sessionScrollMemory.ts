@@ -73,3 +73,25 @@ export function createSessionScrollMemory(): SessionScrollMemory {
     },
   }
 }
+
+/** Tracks a transcript hidden by the narrow sessions view across a session switch. */
+export function createScrollSwitchTracker(initialKey: string): {
+  readonly key: string
+  shouldRestore(nextKey: string, visible: boolean): boolean
+} {
+  let key = initialKey
+  let wasHidden = false
+  return {
+    get key() { return key },
+    shouldRestore(nextKey, visible) {
+      if (!visible) {
+        wasHidden = true
+        return false
+      }
+      if (key === nextKey && !wasHidden) return false
+      key = nextKey
+      wasHidden = false
+      return true
+    },
+  }
+}

@@ -19,9 +19,23 @@
  */
 import { describe, expect, test } from 'bun:test'
 
-import { createSessionScrollMemory } from '../src/vscode/webview/sessionScrollMemory.js'
+import { createSessionScrollMemory, createScrollSwitchTracker } from '../src/vscode/webview/sessionScrollMemory.js'
 
 describe('session scroll memory', () => {
+  test('a hidden transcript restores the selected chat only after it becomes visible', () => {
+    const tracker = createScrollSwitchTracker('panel-1')
+    const memory = createSessionScrollMemory()
+    memory.remember('panel-1', { top: 4200, pinned: false })
+    expect(tracker.shouldRestore('panel-1', false)).toBe(false)
+    expect(tracker.shouldRestore('panel-2', false)).toBe(false)
+    expect(tracker.key).toBe('panel-1')
+    expect(tracker.shouldRestore('panel-2', true)).toBe(true)
+    expect(tracker.key).toBe('panel-2')
+    memory.remember('panel-2', { top: 100, pinned: false })
+    expect(tracker.shouldRestore('panel-1', true)).toBe(true)
+    expect(memory.recall(tracker.key)).toEqual({ top: 4200, pinned: false })
+  })
+
   test('an unseen conversation has no position, so it opens at the newest output', () => {
     const memory = createSessionScrollMemory()
     expect(memory.recall('panel-1')).toBeUndefined()

@@ -7,12 +7,14 @@ export function RuntimeStatusBar({
   authentication,
   rateLimit,
   resourceCount,
+  open,
   onOpenRuntime,
   onOpenPacingDashboard,
 }: {
   authentication: EngineAuthStatusView | null
   rateLimit: RateLimitView | null
   resourceCount: number
+  open: boolean
   onOpenRuntime: () => void
   /**
    * Opens the dashboard, where the pacing switch lives. Absent when the host did
@@ -25,7 +27,8 @@ export function RuntimeStatusBar({
   const rateMessage = describeRateLimit(rateLimit)
   return (
     <div className="rc-runtime-status" aria-live="polite">
-      <button type="button" className="rc-runtime-open" onClick={onOpenRuntime}>
+      <button type="button" className={`rc-runtime-open${open ? ' rc-runtime-open-active' : ''}`}
+        aria-expanded={open} aria-controls="rayucode-runtime-center" onClick={onOpenRuntime}>
         Runtime <span>{resourceCount}</span>
       </button>
       {authMessage ? (

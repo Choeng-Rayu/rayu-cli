@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type {
   McpServerView,
+  McpConnectionUiView,
   RuntimeAgentView,
   RuntimeCommandView,
   RuntimePluginView,
@@ -15,6 +16,7 @@ export function RuntimeCenter({
   commands,
   tools,
   mcpServers,
+  mcpConnectionUi,
   agents,
   plugins,
   skills,
@@ -26,11 +28,13 @@ export function RuntimeCenter({
   onToggleMcp,
   onAuthenticateMcp,
   onClearMcpAuth,
+  onPasteMcpCallback,
 }: {
   initialSection: RuntimeSectionView
   commands: RuntimeCommandView[]
   tools: RuntimeToolView[]
   mcpServers: McpServerView[]
+  mcpConnectionUi: McpConnectionUiView
   agents: RuntimeAgentView[]
   plugins: RuntimePluginView[]
   skills: RuntimeSkillView[]
@@ -42,9 +46,13 @@ export function RuntimeCenter({
   onToggleMcp: (serverName: string, enabled: boolean) => void
   onAuthenticateMcp: (serverName: string) => void
   onClearMcpAuth: (serverName: string) => void
+  onPasteMcpCallback: (serverName: string) => void
 }): JSX.Element {
   const [tab, setTab] = useState<RuntimeSectionView>(initialSection)
   const [query, setQuery] = useState('')
+  useEffect(() => {
+    if (tab === 'mcp') onRefreshMcp()
+  }, [tab, onRefreshMcp])
   const needle = query.trim().toLowerCase()
   const matches = (parts: Array<string | undefined>) =>
     !needle || parts.some(part => part?.toLowerCase().includes(needle))
@@ -60,7 +68,7 @@ export function RuntimeCenter({
   }), [commands, tools, mcpServers, skills, workflows, agents, plugins])
 
   return (
-    <section className="rc-runtime-center" aria-label="Rayu runtime">
+    <section id="rayucode-runtime-center" className="rc-runtime-center" aria-label="Rayu runtime">
       <header className="rc-runtime-center-head">
         <div>
           <strong>Rayu runtime</strong>
@@ -129,6 +137,37 @@ export function RuntimeCenter({
             <div className="rc-runtime-list-actions">
               <button type="button" className="rc-text-button" onClick={onRefreshMcp}>Refresh connections</button>
             </div>
+            {mcpConnectionUi.load === 'loading' ? (
+              <p className="rc-runtime-mcp-state" role="status">Checking MCP connections…</p>
+            ) : null}
+            {mcpConnectionUi.load === 'idle' ? (
+              <p className="rc-runtime-mcp-state" role="status">Loading MCP connections…</p>
+            ) : null}
+            {mcpConnectionUi.load === 'error' ? (
+              <div className="rc-runtime-mcp-state" role="alert">
+                Could not check MCP connections: {mcpConnectionUi.error ?? 'Unknown error.'}
+                <button type="button" className="rc-text-button" onClick={onRefreshMcp}>Retry</button>
+              </div>
+            ) : null}
+            {mcpConnectionUi.auth ? (
+              <div className="rc-runtime-mcp-state" role="status">
+                <strong>{mcpConnectionUi.auth.serverName}</strong>: {authStageLabel(mcpConnectionUi.auth.stage)}
+                {mcpConnectionUi.auth.message ? <p>{mcpConnectionUi.auth.message}</p> : null}
+                {mcpConnectionUi.auth.stage === 'waiting' || mcpConnectionUi.auth.stage === 'error' ? (
+                  <button type="button" className="rc-text-button" onClick={() => onPasteMcpCallback(mcpConnectionUi.auth!.serverName)}>
+                    Paste redirect URL
+                  </button>
+                ) : null}
+                {mcpConnectionUi.auth.stage === 'error' ? (
+                  <button type="button" className="rc-text-button" onClick={() => onAuthenticateMcp(mcpConnectionUi.auth!.serverName)}>
+                    Retry authentication
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {mcpConnectionUi.load === 'ready' && mcpServers.length === 0 ? (
+              <p className="rc-runtime-mcp-state">No MCP servers are connected in this session.</p>
+            ) : null}
             {mcpServers.filter(server => matches([server.name, server.status, server.error])).map(server => (
               <RuntimeRow
                 key={server.name}
@@ -195,6 +234,16 @@ export function RuntimeCenter({
       </div>
     </section>
   )
+}
+
+function authStageLabel(stage: NonNullable<McpConnectionUiView['auth']>['stage']): string {
+  switch (stage) {
+    case 'opening': return 'Opening browser authorization…'
+    case 'waiting': return 'Waiting for browser authorization…'
+    case 'finishing': return 'Finishing authentication…'
+    case 'connected': return 'Connected.'
+    case 'error': return 'Connection needs attention.'
+  }
 }
 
 function RuntimeRow({

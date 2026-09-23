@@ -22,6 +22,7 @@
  * which the scan knew about.
  */
 import { open, type FileHandle } from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
 
 import { listSessionsImpl, type SessionInfo } from '../../utils/listSessionsImpl.js'
 import {
@@ -90,6 +91,7 @@ function toView(info: SessionInfo): SessionSummaryView {
   return {
     id: info.sessionId,
     label,
+    ...(info.customTitle ? { customTitle: info.customTitle } : {}),
     // The list is ordered by recency, so that is what the row shows. `createdAt` is kept
     // separately for the tooltip rather than conflated with it.
     lastModified: info.lastModified,
@@ -98,6 +100,30 @@ function toView(info: SessionInfo): SessionSummaryView {
     // Present only when it differs from the workspace — i.e. a worktree. Then the row can
     // say WHERE the session came from, which is the only reason it is here.
     cwd: info.cwd,
+  }
+}
+
+/** Persist a user title with the same metadata writers used by CLI `/rename`. */
+export async function renameWorkspaceSession(
+  sessionId: string,
+  title: string,
+  workspaceDir?: string,
+): Promise<void> {
+  if (!validateUuid(sessionId)) throw new Error('Invalid session ID.')
+  const name = title.trim()
+  if (!name || name.length > 120 || /[\r\n\u0000-\u001f]/.test(name)) {
+    throw new Error('Use a single-line session name of 1–120 characters.')
+  }
+  const resolved = await resolveSessionFilePath(sessionId, workspaceDir)
+  if (!resolved) throw new Error('The session transcript could not be found.')
+  // Same custom-title JSONL entry consumed by the CLI lister and `/rename`, without
+  // pulling the 20 MB terminal session-storage graph into the extension host.
+  // O_APPEND is one write per metadata line, even while a live engine owns the transcript.
+  const handle = await open(resolved.filePath, fsConstants.O_WRONLY | fsConstants.O_APPEND)
+  try {
+    await handle.write(JSON.stringify({ type: 'custom-title', customTitle: name, sessionId }) + '\n')
+  } finally {
+    await handle.close()
   }
 }
 

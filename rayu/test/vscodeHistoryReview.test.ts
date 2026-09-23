@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { reversePatch } from '../src/vscode/host/review/reversePatch.js'
-import { loadSessionTranscript, listWorkspaceSessions } from '../src/vscode/host/sessionHistory.js'
+import { loadSessionTranscript, listWorkspaceSessions, renameWorkspaceSession } from '../src/vscode/host/sessionHistory.js'
 import { getProjectDir } from '../src/utils/sessionStoragePortable.js'
 import { ChatSession } from '../src/vscode/host/panel/sessionHandle.js'
 import { sessionCallbacks } from './helpers/vscodeSession.js'
@@ -48,6 +48,22 @@ test('history restores the bounded tail, tolerates a truncated record, and never
   expect(blocks.at(-1)).toMatchObject({ kind: 'assistant', text: 'message 409' })
   expect(readFileSync(file, 'utf8')).toBe(raw)
   expect((await listWorkspaceSessions(dir))[0]?.id).toBe(id)
+})
+
+test('renaming a stored session uses the CLI custom-title metadata format', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rayucode-rename-')); dirs.push(dir)
+  process.env.RAYU_CONFIG_DIR = join(dir, 'config')
+  const id = randomUUID(), project = getProjectDir(dir)
+  mkdirSync(project, { recursive: true })
+  const file = join(project, `${id}.jsonl`)
+  writeFileSync(file, JSON.stringify({ type: 'user', sessionId: id, cwd: dir,
+    timestamp: new Date().toISOString(), message: { role: 'user', content: 'First prompt' } }) + '\n')
+
+  await renameWorkspaceSession(id, 'Canva research', dir)
+  const last = JSON.parse(readFileSync(file, 'utf8').trim().split('\n').at(-1)!)
+  expect(last).toEqual({ type: 'custom-title', customTitle: 'Canva research', sessionId: id })
+  expect((await listWorkspaceSessions(dir))[0]).toMatchObject({ id, label: 'Canva research', customTitle: 'Canva research' })
+  expect(renameWorkspaceSession('not-a-uuid', 'Bad', dir)).rejects.toThrow('Invalid session ID')
 })
 
 test('local-command breadcrumbs are filtered out of a restored transcript', async () => {
@@ -143,4 +159,3 @@ test('listWorkspaceSessions respects label precedence and newest-first ordering'
   const s3 = found.find(s => s.id === id3)
   expect(s3?.label).toBe('only prompt three')
 })
-

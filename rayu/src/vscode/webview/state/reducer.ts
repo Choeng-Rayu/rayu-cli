@@ -189,6 +189,8 @@ export interface ChatState {
   contextUsage: ContextUsageView | null
   /** Connected MCP servers. */
   mcpServers: McpServerView[]
+  mcpConnectionUi: import('../../shared/webviewProtocol.js').McpConnectionUiView
+  customTitle: string | null
   runtimeCapabilities: RuntimeCapabilitiesView | null
   runtimeCommands: RuntimeCommandView[]
   runtimeTools: RuntimeToolView[]
@@ -279,6 +281,8 @@ export const initialChatState: ChatState = {
   commands: [],
   contextUsage: null,
   mcpServers: [],
+  mcpConnectionUi: { load: 'idle', error: null, auth: null },
+  customTitle: null,
   runtimeCapabilities: null,
   runtimeCommands: [],
   runtimeTools: [],
@@ -321,6 +325,7 @@ export type ChatAction =
   | { type: 'fileSearchResults'; query: string; files: string[] }
   | { type: 'setContextUsage'; percentage: number; totalTokens?: number; maxTokens?: number; stale?: boolean }
   | { type: 'setMcpServers'; servers: McpServerView[] }
+  | { type: 'setMcpConnectionUi'; connection: import('../../shared/webviewProtocol.js').McpConnectionUiView }
   | {
       type: 'setRuntimeCatalogue'
       capabilities: RuntimeCapabilitiesView | null
@@ -387,6 +392,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         commands: action.state.commands ?? [],
         contextUsage: action.state.contextUsage ?? null,
         mcpServers: action.state.mcpServers ?? [],
+        mcpConnectionUi: action.state.mcpConnectionUi ?? { load: 'idle', error: null, auth: null },
+        customTitle: action.state.customTitle ?? null,
         runtimeCapabilities: action.state.runtimeCapabilities ?? null,
         runtimeCommands: action.state.runtimeCommands ?? [],
         runtimeTools: action.state.runtimeTools ?? [],
@@ -554,6 +561,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'setMcpServers':
       return { ...state, mcpServers: action.servers }
+
+    case 'setMcpConnectionUi':
+      return { ...state, mcpConnectionUi: action.connection }
 
     case 'setRuntimeCatalogue':
       return {
