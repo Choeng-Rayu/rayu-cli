@@ -4,7 +4,7 @@
  * The Telegram bridge's `formatActivity.ts` does the same job for a different target,
  * and this is deliberately NOT a call into it. That formatter emits Telegram HTML:
  * `<b>`, `<code>`, escaped entities, emoji icons chosen for a chat client. The studio
- * renders these strings as TEXT (see rayu-web/studio/components/remote/RemoteChat.tsx,
+ * renders these strings as TEXT (see rayu-studio/app/components/remote/RemoteChat.tsx,
  * which passes `<Markdown>` without the `html` prop), so reusing it would put literal
  * `&lt;b&gt;` in the browser and would keep every future Telegram formatting tweak
  * silently coupled to the web UI.

@@ -14,6 +14,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { headlessLoginGateMessage } from '../src/cli/print.ts'
+import { StdinMessageSchema } from '../src/protocol/index.ts'
 import type { QueuedCommand } from '../src/types/textInputTypes.ts'
 
 const GATE = 'You need to sign in to use Rayu.'
@@ -127,6 +128,16 @@ describe('engine-generated input is not user input, so it is not gated', () => {
     expect(
       headlessLoginGateMessage(cmd({ bridgeOrigin: true }), signedOut),
     ).toBeNull()
+  })
+
+  test('the stream-json protocol preserves the bridge-origin marker from VS Code', () => {
+    const parsed = StdinMessageSchema().parse({
+      type: 'user',
+      message: { role: 'user', content: 'hello from Studio' },
+      parent_tool_use_id: null,
+      bridge_origin: true,
+    })
+    expect(parsed).toMatchObject({ type: 'user', bridge_origin: true })
   })
 
   test.each(['task-notification', 'orphaned-permission'] as const)(

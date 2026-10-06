@@ -39,23 +39,29 @@ test('editor permission modes are accepted by the CLI', () => {
   for (const mode of editorModes) expect(cliModes as readonly string[]).toContain(mode.id)
 })
 
-test('thinking is forced on by the spawn flag, never by a control request', async () => {
-  // The flag is the whole mechanism: it is the only thing that outranks a shared
+test('thinking defaults on by the spawn flag, and a toggle never uses set_max_thinking_tokens', async () => {
+  // The flag is the whole default mechanism: it is the only thing that outranks a shared
   // `alwaysThinkingEnabled: false`. Asserted on the pure argv builder so the contract is
   // checked without spawning, and re-checked end-to-end in vscodeRealEngine.test.ts.
   expect(engineArgsFor({})).toEqual(['--thinking', 'enabled'])
   expect(engineArgsFor({ resumeSessionId: 'abc-123' })).toEqual([
     '--thinking', 'enabled', '--resume', 'abc-123',
   ])
+  expect(engineArgsFor({ thinkingEnabled: false })).toEqual(['--thinking', 'disabled'])
 
   // And nothing may quietly re-disable it: `set_max_thinking_tokens` with null would
-  // restore the settings default, and with 0 would turn thinking off outright.
+  // restore the settings default, and with 0 would turn thinking off outright. The
+  // user's own toggle goes through `set_thinking`, which replaces the config outright.
   const session = new ChatSession({ enginePath: '/unused', cwd: tmpdir() }, sessionCallbacks())
   const requests: unknown[][] = []
+  ;(session as any).starting = Promise.resolve()
+  ;(session as any).engine = { isRunning: true, send: () => true, dispose: () => {} }
   ;(session as any).control = { request: async (...args: unknown[]) => { requests.push(args); return {} }, dispose() {} }
   await session.setEffort('high')
-  expect(requests.map(([method]) => method)).not.toContain('set_max_thinking_tokens')
-  expect(session).not.toHaveProperty('setThinking')
+  await session.setThinking(false)
+  const methods = requests.map(([method]) => method)
+  expect(methods).not.toContain('set_max_thinking_tokens')
+  expect(requests).toContainEqual(['set_thinking', { enabled: false }, 15_000])
   session.dispose()
 })
 

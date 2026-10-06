@@ -37,6 +37,9 @@ test.if(existsSync(VSIX_PATH))('packaged engine starts under Node inside the ext
     const extensionDir = join(directory, 'extension')
     const manifest = JSON.parse(readFileSync(join(extensionDir, 'package.json'), 'utf8'))
     expect(manifest.type).toBe('commonjs')
+    // An agent that runs commands and loads the workspace .env must never run in
+    // Restricted Mode; declared explicitly so it cannot be flipped by accident.
+    expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(false)
     // Discover the shipped filename so this also reproduces the original .js bug.
     const engines = readdirSync(extensionDir).filter(name => /^engine\.m?js$/.test(name))
     expect(engines).toHaveLength(1)
@@ -77,6 +80,27 @@ describe.if(artifactsPresent)('Rayucode build integrity and boundary guards', ()
     test('stays strictly under the 1,600,000 byte purity budget', () => {
       const MAX_HOST_BYTES = 1_600_000
       expect(extensionJs.length).toBeLessThanOrEqual(MAX_HOST_BYTES)
+    })
+
+    test('does not bundle the Anthropic API client', () => {
+      // The host makes no API calls; the engine child does. One root-entry import of
+      // '@anthropic-ai/sdk' (utils/errors.ts, for an `instanceof`) once shipped the whole
+      // client — ~390 KB, a quarter of this budget. Import narrow entries such as
+      // '@anthropic-ai/sdk/error.js' from anything the host can reach.
+      expect(extensionJs).not.toMatch(/^\/\/ \S*node_modules\/@anthropic-ai\/sdk\/client\.m?js$/m)
+      expect(extensionJs).not.toMatch(/^\/\/ \S*node_modules\/@anthropic-ai\/sdk\/index\.m?js$/m)
+      // A string only the client contains, so the guard still holds if this bundle is
+      // ever minified and loses its module-path comments.
+      expect(extensionJs).not.toContain('dangerouslyAllowBrowser')
+    })
+
+    test('ships zod with English messages only (the engine keeps every translation)', () => {
+      // `zodEnglishLocalesOnlyPlugin` in scripts/bundleConfig.ts, applied by the host build
+      // alone. The behaviour is exercised in test/vscodeZodLocales.test.ts; this checks the
+      // real artifact, so dropping the plugin from build-vscode.ts is caught too.
+      expect(extensionJs).toContain('Invalid input: expected ')
+      expect(extensionJs).not.toContain('Ungültige Eingabe')
+      expect(engineJs).toContain('Ungültige Eingabe')
     })
   })
 
@@ -127,6 +151,25 @@ describe.if(artifactsPresent)('Rayucode build integrity and boundary guards', ()
       const cliJs = readFileSync(CLI_PATH, 'utf8')
       expect(/require\(\s*["']vscode["']\s*\)/.test(cliJs)).toBe(false)
       expect(/from\s+["']vscode["']/.test(cliJs)).toBe(false)
+    })
+  })
+
+  describe('one copy of the API client’s error classes per bundle', () => {
+    // `isAbortError` (utils/errors.ts) recognises the client's abort by `instanceof`. That
+    // only works while each bundle holds ONE copy of those classes: an ESM import of
+    // '@anthropic-ai/sdk' would add `core/error.mjs` beside `core/error.js`, and a user's
+    // Esc would then surface as an API error. Counting markers also fails closed: a
+    // minified bundle has none, which fails here instead of passing vacuously.
+    const copies = (text: string): number =>
+      text.match(/^\/\/ \S*node_modules\/@anthropic-ai\/sdk\/core\/error\.m?js$/gm)?.length ?? 0
+
+    test('extension.js and engine.mjs', () => {
+      expect(copies(extensionJs)).toBe(1)
+      expect(copies(engineJs)).toBe(1)
+    })
+
+    test.if(existsSync(CLI_PATH))('dist/rayu.js', () => {
+      expect(copies(readFileSync(CLI_PATH, 'utf8'))).toBe(1)
     })
   })
 

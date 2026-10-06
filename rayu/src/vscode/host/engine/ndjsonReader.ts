@@ -86,8 +86,26 @@ function excerptOf(text: string): string {
  * is not silently discarded.
  */
 export class NdjsonReader {
-  /** Text seen since the last newline. */
-  private buffer = ''
+  /**
+   * Text seen since the last newline, as the chunks it arrived in.
+   *
+   * Kept as parts and joined once, when the newline arrives. The previous single
+   * string was appended to and then searched from its START on every chunk, so a
+   * large frame was rescanned (and, for a rope string, re-flattened) once per 64 KB
+   * chunk — quadratic, measured at ~650 ms of blocked extension host for one 16 MiB
+   * frame. Now each byte is scanned once.
+   */
+  private parts: string[] = []
+  private pendingChars = 0
+  /**
+   * Text after a frame whose `onFrame` THREW, not yet scanned for newlines.
+   *
+   * The exception still propagates (a handler bug must be visible), but the frames that
+   * followed it in the same chunk are kept and delivered by the next `push()`/`end()`,
+   * as the single-buffer reader did. Losing them would be worse than the bug: one of
+   * them may be the correlated response the panel is waiting on.
+   */
+  private unscanned = ''
   private failed = false
 
   constructor(private readonly callbacks: NdjsonReaderCallbacks) {}
@@ -95,30 +113,37 @@ export class NdjsonReader {
   /** Feed one chunk. Safe to call with a partial frame, or with several at once. */
   push(chunk: string): void {
     if (this.failed) return
-
-    this.buffer += chunk
-
-    // Guarded BEFORE splitting: a stream with no newline at all never enters the
-    // drain loop, so the ceiling has to be checked against the raw buffer.
-    if (this.buffer.length > MAX_FRAME_BYTES) {
-      this.fail(
-        new NdjsonFrameError(
-          'frame-too-large',
-          `A single frame exceeded ${MAX_FRAME_BYTES} bytes without a newline. ` +
-            'The stream is not newline-delimited JSON.',
-          excerptOf(this.buffer.slice(0, EXCERPT_CHARS * 2)),
-        ),
-      )
-      return
+    if (this.unscanned) {
+      chunk = this.unscanned + chunk
+      this.unscanned = ''
     }
 
-    let newlineAt = this.buffer.indexOf('\n')
+    let start = 0
+    let newlineAt = chunk.indexOf('\n')
     while (newlineAt !== -1) {
-      const line = this.buffer.slice(0, newlineAt)
-      this.buffer = this.buffer.slice(newlineAt + 1)
-      this.emit(line)
+      const head = chunk.slice(start, newlineAt)
+      if (this.exceedsCeiling(head)) return
+      const line = this.parts.length > 0 ? this.parts.join('') + head : head
+      this.parts = []
+      this.pendingChars = 0
+      start = newlineAt + 1
+      try {
+        this.emit(line)
+      } catch (error) {
+        this.unscanned = chunk.slice(start)
+        throw error
+      }
       if (this.failed) return
-      newlineAt = this.buffer.indexOf('\n')
+      newlineAt = chunk.indexOf('\n', start)
+    }
+
+    if (start < chunk.length) {
+      const rest = start === 0 ? chunk : chunk.slice(start)
+      // Guarded on the UNTERMINATED remainder: a stream with no newline at all never
+      // reaches the loop above, so the ceiling has to be checked here too.
+      if (this.exceedsCeiling(rest)) return
+      this.parts.push(rest)
+      this.pendingChars += rest.length
     }
   }
 
@@ -131,11 +156,32 @@ export class NdjsonReader {
    */
   end(): void {
     if (this.failed) return
-    if (this.buffer.length > 0) {
-      const line = this.buffer
-      this.buffer = ''
+    if (this.unscanned) {
+      // Frames left behind by a throwing handler: deliver them before the tail.
+      this.push('')
+      if (this.failed) return
+    }
+    if (this.pendingChars > 0) {
+      const line = this.parts.join('')
+      this.parts = []
+      this.pendingChars = 0
       this.emit(line)
     }
+  }
+
+  /** Fail the stream when the current frame would grow past MAX_FRAME_BYTES. */
+  private exceedsCeiling(addition: string): boolean {
+    if (this.pendingChars + addition.length <= MAX_FRAME_BYTES) return false
+    const sample = this.parts[0] ?? addition
+    this.fail(
+      new NdjsonFrameError(
+        'frame-too-large',
+        `A single frame exceeded ${MAX_FRAME_BYTES} bytes without a newline. ` +
+          'The stream is not newline-delimited JSON.',
+        excerptOf(sample.slice(0, EXCERPT_CHARS * 2)),
+      ),
+    )
+    return true
   }
 
   private emit(line: string): void {
@@ -166,7 +212,9 @@ export class NdjsonReader {
 
   private fail(error: NdjsonFrameError): void {
     this.failed = true
-    this.buffer = ''
+    this.parts = []
+    this.pendingChars = 0
+    this.unscanned = ''
     this.callbacks.onError(error)
   }
 }

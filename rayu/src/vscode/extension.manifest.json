@@ -44,6 +44,13 @@
   "activationEvents": [
     "onView:rayucode.chat"
   ],
+  "//capabilities": "Declared rather than left to the default (which VS Code documents as the same `false`) so the choice is explicit and cannot be flipped by accident. The engine is an agent: it executes commands, edits files, starts the workspace's MCP servers and plugins, and loads the workspace .env (which can redirect API endpoints). None of that is safe in a folder the user has not trusted, so Rayucode stays disabled in Restricted Mode.",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Rayucode runs an AI agent that executes commands, edits files, and loads this folder's .env, MCP servers and plugins. Trust the folder to enable it."
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [

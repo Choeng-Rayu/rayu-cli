@@ -34,7 +34,9 @@ import type { ModelOptionView } from './webviewProtocol.js'
  * action and exit".
  *
  * A flag rather than a separate entrypoint, so `build:vscode` keeps emitting one
- * engine bundle. The action itself is a JSON argument that follows this flag.
+ * engine bundle. The action itself is JSON written to the child's STDIN — never an
+ * argument, because `validate`/`save` carry an API key and argv is readable by every
+ * local user through the process table.
  */
 export const CONNECT_FLAG = '--rayucode-connect'
 

@@ -75,6 +75,7 @@ import {
   taskCapabilities,
 } from '../../../runtime/taskProjection.js'
 import {
+  EFFORT_OPTIONS,
   type EffortChoice,
   type InferenceSettingsView,
 } from '../../shared/inferenceSettings.js'
@@ -137,6 +138,7 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
   { name: 'reload-plugins', description: 'Reload installed plugins, skills, and agents' },
   { name: 'install-skill', description: 'Install a skill from GitHub, a URL, or a local path' },
   { name: 'mcp', description: 'Manage MCP servers and authentication' },
+  { name: 'web-bridge', description: 'Connect this worker to Studio Remote [status|off|pair]' },
   { name: 'skills', description: 'Browse available skills and workflows' },
   { name: 'plugin', description: 'Inspect and manage installed plugins' },
   { name: 'agents', description: 'Browse available agents' },
@@ -211,6 +213,11 @@ export function engineArgsFor(options: {
   ]
   if (options.resumeSessionId) args.push('--resume', options.resumeSessionId)
   return args
+}
+
+/** A persisted Rayucode effort as the panel's choice. Absent or unrecognised is Auto. */
+function effortChoiceOf(level: unknown): EffortChoice {
+  return EFFORT_OPTIONS.find(option => option.value === level)?.value ?? null
 }
 
 /**
@@ -580,23 +587,25 @@ export class ChatSession {
    * change. The trimmed `catalogue` drops the capability flags, so it cannot serve this.
    */
   public availableModels: ModelCatalogueView | null = null
+  /** Read once: each read is a synchronous file read + parse on the extension host. */
+  private readonly initialPreferences = readRayucodePreferences()
   private permissionMode: PermissionModeView = permissionModeById(
-    readRayucodePreferences().permissionMode ?? 'default',
+    this.initialPreferences.permissionMode ?? 'default',
   )
-  private thinkingPreference =
-    readRayucodePreferences().thinkingEnabled ?? true
+  private thinkingPreference = this.initialPreferences.thinkingEnabled ?? true
 
   /**
    * Thinking and effort as last ACKNOWLEDGED.
    *
    * Capability flags are filled in from the engine's ModelInfo at `initialize`;
    * `supportsEffort: false` until then, so the control stays hidden rather than
-   * appearing and then vanishing.
+   * appearing and then vanishing. Until an engine exists, `effort` and thinking follow
+   * the persisted Rayucode choices — see `adoptPersistedChoices`.
    */
   private inference: InferenceSettingsView = {
     supportsEffort: false,
     supportedLevels: [],
-    effort: null,
+    effort: effortChoiceOf(this.initialPreferences.effort),
     effortEnvOverride: null,
     supportsThinking: false,
     thinkingEnabled: false,
@@ -752,6 +761,11 @@ export class ChatSession {
     return this.modelInfo
   }
 
+  /** The provider-qualified model this conversation runs (or will run), if known. */
+  get runtimeModel(): string | null {
+    return this.selectedRuntimeModel
+  }
+
   get commands(): readonly SlashCommandView[] {
     return this.slashCommands
   }
@@ -894,6 +908,7 @@ export class ChatSession {
     text: string,
     images: ImageInputView[] = [],
     delivery: PromptDeliveryView = 'normal',
+    bridgeOrigin = false,
   ): Promise<void> {
     const trimmed = text.trim()
     if ((!trimmed && images.length === 0) || this.disposed) return
@@ -976,6 +991,7 @@ export class ChatSession {
       type: 'user',
       message: { role: 'user', content },
       parent_tool_use_id: null,
+      ...(bridgeOrigin ? { bridge_origin: true } : {}),
       ...(delivery === 'steer'
         ? { priority: 'now' as const }
         : delivery === 'queue'
@@ -1252,7 +1268,11 @@ export class ChatSession {
       },
     )
 
-    // Thinking is forced on for every Rayucode session — see `engineArgsFor`.
+    // Thinking follows the Rayucode preference (on unless the user turned it off) — see
+    // `engineArgsFor`. A running engine changes it with `set_thinking` (`setThinking`).
+    // A NEW engine starts from what is persisted now, which another conversation may have
+    // changed since this one was created — the engine reads effort the same way.
+    if (this.adoptPersistedChoices()) this.callbacks.onInferenceSettings?.(this.inference)
     const args = engineArgsFor({
       ...this.options,
       thinkingEnabled: this.thinkingPreference,
@@ -1587,7 +1607,12 @@ export class ChatSession {
     }
     this.callbacks.onModelInfo(this.modelInfo)
 
-    // When the catalog already knows the model reasoning support, reflect that immediately.
+    // When the catalog already knows the model's thinking support, reflect that immediately.
+    // Effort support is NOT guessed from it: the two diverge (translated providers accept
+    // effort without advertising thinking; Sonnet 4.5 thinks but rejects effort), and the
+    // guess also kept the previous model's `supportedLevels`, so it could hide the pill or
+    // offer an Auto-only list until — or, for a re-selected model, instead of — the
+    // engine's acknowledgement below.
     const knownOpt = this.availableModels?.options.find(
       o => o.value === runtimeModel || o.model === model || o.value === model
     )
@@ -1597,7 +1622,6 @@ export class ChatSession {
         ...this.inference,
         supportsThinking,
         thinkingEnabled: supportsThinking && this.thinkingPreference,
-        supportsEffort: supportsThinking,
       }
       this.callbacks.onInferenceSettings?.(this.inference)
     }
@@ -1648,10 +1672,54 @@ export class ChatSession {
     await change
   }
 
-  /** Initial settings from engine helper or catalogue refresh. */
+  /**
+   * Capabilities from a catalogue refresh, merged over this session's choices.
+   *
+   * The refresh runs in a separate helper process (`--rayucode-connect models`) and is
+   * authoritative for CAPABILITIES only — it can be newer than the capability cache the
+   * running engine loaded at spawn. Its `effort` and `thinkingEnabled` are derived from
+   * the terminal CLI's settings, which Rayucode never writes, so taking them verbatim
+   * reverted the pill to Auto every time the model dropdown opened, a model was picked,
+   * or the user signed in. The choice stays the engine-acknowledged one, or — before an
+   * engine exists — the persisted one a new engine would start with. An environment
+   * override is the exception: it outranks every choice, and the refresh reports it
+   * faithfully.
+   */
   applyInitialInference(value: InferenceSettingsView): void {
-    this.inference = { ...value }
+    this.adoptPersistedChoices()
+    this.inference = {
+      ...value,
+      effort: value.effortEnvOverride !== null ? value.effort : this.inference.effort,
+      thinkingEnabled: value.supportsThinking && this.thinkingPreference,
+    }
     this.callbacks.onInferenceSettings?.(this.inference)
+  }
+
+  /**
+   * Re-read the persisted effort and thinking choices while this conversation has no engine.
+   *
+   * Both are PRODUCT-wide, persisted in the Rayucode profile. Without an engine, the values
+   * that matter are the ones a new engine would start with — what is persisted NOW, which
+   * another conversation may have changed since this one was created. A running engine's
+   * acknowledged values win instead, so this does nothing once one exists. Returns whether
+   * the shown state changed. One small synchronous file read.
+   */
+  private adoptPersistedChoices(): boolean {
+    if (this.control) return false
+    const persisted = readRayucodePreferences()
+    if (persisted.thinkingEnabled !== undefined) {
+      this.thinkingPreference = persisted.thinkingEnabled
+    }
+    const effort =
+      this.inference.effortEnvOverride !== null
+        ? this.inference.effort
+        : effortChoiceOf(persisted.effort)
+    const thinkingEnabled = this.inference.supportsThinking && this.thinkingPreference
+    if (effort === this.inference.effort && thinkingEnabled === this.inference.thinkingEnabled) {
+      return false
+    }
+    this.inference = { ...this.inference, effort, thinkingEnabled }
+    return true
   }
 
   get currentInference(): InferenceSettingsView {
@@ -1667,6 +1735,34 @@ export class ChatSession {
       void this.pollContextUsage(true)
     } catch (cause) {
       this.callbacks.onError(`Could not set effort: ${cause instanceof Error ? cause.message : String(cause)}`)
+    }
+  }
+
+  /**
+   * Turn extended thinking on or off for this session, through the engine.
+   *
+   * `set_thinking` replaces the engine's thinking config outright and persists the choice
+   * in the Rayucode profile. It is deliberately NOT `set_max_thinking_tokens`, whose `null`
+   * would only restore the shared CLI settings default (see `engineArgsFor`). The pill
+   * changes only when the engine acknowledges, like effort.
+   */
+  async setThinking(enabled: boolean): Promise<void> {
+    try {
+      await this.ensureStarted()
+      const control = this.control
+      const generation = this.generation
+      if (!control) return
+      const response = await control.request('set_thinking', { enabled }, 15_000)
+      if (control !== this.control || generation !== this.generation || this.disposed) return
+      // A respawn (crash recovery, resume) passes `--thinking` from this, so it follows.
+      this.thinkingPreference = enabled
+      if (!this.applyInferenceResponse(response)) await this.refreshInferenceSettings()
+    } catch (cause) {
+      this.callbacks.onError(
+        `Could not turn thinking ${enabled ? 'on' : 'off'}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
     }
   }
 

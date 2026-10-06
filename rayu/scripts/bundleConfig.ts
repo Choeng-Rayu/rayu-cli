@@ -112,6 +112,33 @@ export function makeStubPlugin(): import('bun').BunPlugin {
   }
 }
 
+/**
+ * Bundle only zod's English locale. For the VS Code extension host bundle ONLY.
+ *
+ * `zod/v4` re-exports every translation as a namespace (`export * as locales from
+ * "../locales/index.js"`), which cannot be tree-shaken once `z` is used as a value, so
+ * ~211 KB of translations reached `extension.js` unused. This swaps that one relative
+ * import, from inside zod, for stubs/zod-locales/index.ts, which keeps `en` — zod's
+ * default error map, imported separately by `classic/external.js` — so messages are
+ * unchanged. Matched on the importer, so no other `../locales/index.js` is affected.
+ *
+ * Not part of `sharedBuildOptions()`: the engine and CLI keep every locale, because they
+ * run arbitrary plugin and tool code that might select one.
+ */
+export function zodEnglishLocalesOnlyPlugin(): import('bun').BunPlugin {
+  const stub = resolve(import.meta.dir, '../stubs/zod-locales/index.ts')
+  return {
+    name: 'zod-english-locales-only',
+    setup(build) {
+      build.onResolve({ filter: /^\.\.\/locales\/index\.js$/ }, args =>
+        /[\\/]node_modules[\\/]zod[\\/]v4[\\/](?:classic|core|mini)[\\/]/.test(args.importer)
+          ? { path: stub }
+          : undefined,
+      )
+    },
+  }
+}
+
 /** Everything common to a rayu bundle, minus entrypoint/outdir/naming/banner. */
 export function sharedBuildOptions(): Omit<
   Parameters<typeof Bun.build>[0],

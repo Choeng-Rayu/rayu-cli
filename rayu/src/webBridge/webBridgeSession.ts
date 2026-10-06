@@ -1,7 +1,7 @@
 /**
  * The rayu-cli REPL's Web Bridge session.
  *
- * Makes THIS terminal session drivable from the rayu-web studio: the studio lists every
+ * Makes THIS terminal session drivable from standalone Rayu Studio: Studio lists every
  * signed-in worker, and a prompt typed in the browser lands in this REPL's input queue
  * as though it had been typed here. The rayucode extension is the other worker and
  * speaks the identical protocol, so a browser tab cannot tell them apart.
@@ -32,7 +32,8 @@ import {
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import type { WrappedMessage } from '../telegram/formatActivity.js'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
-import { getRayuApiBaseUrl, getValidRayuAccessToken } from '../services/rayuAuth/rayuSession.js'
+import { getRayuApiBaseUrl } from '../services/rayuAuth/rayuSession.js'
+import { getWebBridgeToken } from './guestPairing.js'
 import { getRayuConfigHomeDir } from '../utils/envUtils.js'
 import { interruptActiveTurn, isTurnInterruptible } from '../utils/activeTurn.js'
 import { clearCommandQueue, enqueue, hasCommandsInQueue } from '../utils/messageQueueManager.js'
@@ -98,7 +99,7 @@ export function initWebBridge(options: WebBridgeOptions = {}): WebBridgeHandle {
 
   const client = new WebBridgeClient({
     apiBaseUrl: getRayuApiBaseUrl(),
-    getToken: getValidRayuAccessToken,
+    getToken: getWebBridgeToken,
     hello: {
       // Persisted under the CLI's own config home, so `RAYU_CONFIG_DIR` isolation
       // gives an isolated machine identity too rather than leaking into `~/.rayu`.
@@ -118,7 +119,10 @@ export function initWebBridge(options: WebBridgeOptions = {}): WebBridgeHandle {
          * also means a prompt sent while a turn is running QUEUES rather than being
          * dropped, which matches what happens when the user types during a turn.
          */
-        enqueue({ value: prompt.text, mode: 'prompt' })
+        // The socket was approved for this worker, so only this remote prompt
+        // bypasses the account login gate. The existing bridge-safe command
+        // allowlist still governs slash commands.
+        enqueue({ value: prompt.text, mode: 'prompt', bridgeOrigin: true, skipSlashCommands: true })
         logForDebugging(`[web-bridge] queued remote prompt (${prompt.text.length} chars)`)
       },
 

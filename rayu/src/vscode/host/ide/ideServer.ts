@@ -27,8 +27,8 @@
  * anything that merely knows the port. Three deliberate constraints:
  *
  *   1. Bound to 127.0.0.1 only — never reachable off the machine.
- *   2. Every connection must present the lockfile's `authToken`. A connection without it
- *      is closed before any message is processed.
+ *   2. Every connection must present the lockfile's `authToken`. An upgrade without it
+ *      is refused with a 401 before it becomes a WebSocket at all.
  *   3. The lockfile is written with mode 0600, so the token is readable only by this
  *      user. The token IS the capability; file permissions are what protect it.
  *
@@ -41,7 +41,9 @@ import { getRayuConfigHomeDir } from '../../../utils/envUtils.js'
 import { join } from 'node:path'
 
 import * as vscode from 'vscode'
-import { WebSocketServer, type WebSocket } from 'ws'
+import type { WebSocket, WebSocketServer } from 'ws'
+
+import { isAuthorizedUpgrade, listenOnEphemeralPort } from './ideSocket.js'
 
 /**
  * Where the CLI looks. `~/.rayu/ide` is Rayu's own directory; the CLI also scans
@@ -58,11 +60,10 @@ export interface IdeServerHandle {
   /**
    * The per-instance capability token.
    *
-   * Exposed because Rayucode's OWN engine child is given it directly via `--mcp-config`
-   * rather than discovering it through the lockfile: the child is spawned by this same
-   * process, so routing it through a file it would have to scan and match by workspace is
-   * indirection with no benefit. It stays inside the extension host and the child's argv —
-   * never in webview state, never in the transcript.
+   * Rayucode's own engine child does not receive it directly: it is pointed at this
+   * server with `CLAUDE_CODE_SSE_PORT` and reads the token from the 0600 lockfile, the
+   * same discovery path the terminal CLI uses. Never put it in argv (world-readable
+   * through the process table), webview state, or the transcript.
    */
   authToken: string
   /** Editor name, as the lockfile and the MCP config both report it. */
@@ -97,7 +98,7 @@ export async function startIdeServer(
 
   let server: WebSocketServer
   try {
-    server = await listenOnEphemeralPort()
+    server = await listenOnEphemeralPort(authToken)
   } catch {
     return null
   }
@@ -110,15 +111,9 @@ export async function startIdeServer(
   }
 
   server.on('connection', (socket, request) => {
-    // Reject before processing anything. The token may arrive as a header (what the CLI's
-    // WebSocket transport sends) or as a query parameter, so both are accepted.
-    const header = request.headers['x-claude-code-ide-authorization'] ?? request.headers['x-rayu-ide-auth']
-    const provided =
-      (Array.isArray(header) ? header[0] : header) ??
-      new URL(request.url ?? '/', 'http://localhost').searchParams.get('token') ??
-      undefined
-
-    if (provided !== authToken) {
+    // `verifyClient` already refused the upgrade for a wrong token; re-checked here so
+    // the access control does not depend on one option staying configured.
+    if (!isAuthorizedUpgrade(request, authToken)) {
       socket.close(1008, 'unauthorized')
       return
     }
@@ -253,19 +248,4 @@ function handleMessage(socket: WebSocket, raw: string, version: string): void {
         // Peer went away.
       }
   }
-}
-
-/**
- * Bind port 0 and resolve once listening.
- *
- * `WebSocketServer` reports bind failures via the `error` event, not a throw, so the
- * promise has to bridge both.
- */
-function listenOnEphemeralPort(): Promise<WebSocketServer> {
-  return new Promise((resolve, reject) => {
-    // 127.0.0.1 explicitly: the default would accept connections from the network.
-    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
-    server.once('listening', () => resolve(server))
-    server.once('error', reject)
-  })
 }

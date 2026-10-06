@@ -1,8 +1,8 @@
 /**
- * `/web-bridge` — connect this session to the rayu-web studio, or disconnect it.
+ * `/web-bridge` — connect this session to the standalone Rayu Studio, or disconnect it.
  *
  * The CLI counterpart of the studio's remote page: once connected, this session appears
- * in the picker at /studio/remote and can be prompted, interrupted, and have its tool
+ * in the picker at /remote and can be prompted, interrupted, and have its tool
  * approvals answered from a browser.
  *
  * A COMMAND RATHER THAN A SETTING, ON PURPOSE. Connecting grants a browser tab the
@@ -14,9 +14,17 @@
 
 import type { Command, LocalCommandCall } from '../types/command.js'
 import {
-  getRayuWebBaseUrl,
-  hasRayuSession,
+  getRayuStudioRemoteUrl,
+  getValidRayuAccessToken,
 } from '../services/rayuAuth/rayuSession.js'
+import {
+  beginGuestPairing,
+  guestPairingStatus,
+  stopGuestPairing,
+} from '../webBridge/guestPairing.js'
+import { getOriginalCwd } from '../bootstrap/state.js'
+import { getRayuConfigHomeDir } from '../utils/envUtils.js'
+import { resolveHostname, resolveMachineId } from '../webBridge/client/machineId.js'
 
 /**
  * Human-readable rendering of the socket state.
@@ -53,39 +61,43 @@ const call: LocalCommandCall = async (args, context) => {
   const arg = args.trim().toLowerCase()
   const state = context.getAppState()
   const active = state.webBridgeActive === true
+  const guest = guestPairingStatus()
 
   // --- status ---------------------------------------------------------------
   if (arg === 'status') {
     if (!active) {
+      if (guest?.status === 'waiting') return { type: 'text', value: `Waiting for Studio approval. Scan or open ${guest.url}` }
+      if (guest?.status === 'error') return { type: 'text', value: `Web bridge pairing failed: ${guest.error}` }
       return {
         type: 'text',
         value:
-          'Web bridge: disconnected\nUse "/web-bridge" to connect this session to the Rayu web studio.',
+          'Web bridge: disconnected\nUse "/web-bridge" to connect this session to Rayu Studio.',
       }
     }
     return {
       type: 'text',
       value: isUsable(state.webBridgeConnection)
-        ? `Web bridge: connected\nOpen ${getRayuWebBaseUrl()}/studio/remote to drive this session.`
+        ? `Web bridge: connected\nOpen ${getRayuStudioRemoteUrl()} to drive this session.`
         : `Web bridge: ${describeConnection(state.webBridgeConnection)}`,
     }
   }
 
   // --- disconnect -----------------------------------------------------------
   if (arg === 'off' || arg === 'stop' || arg === 'disconnect') {
-    if (!active) {
+    if (!active && !guest) {
       return { type: 'text', value: 'Web bridge is not connected.' }
     }
+    stopGuestPairing()
     // Lowering the flag is the whole teardown: useWebBridge's effect owns the socket's
     // lifetime and its cleanup stops the client and clears the permission callbacks.
     context.setAppState(s => ({ ...s, webBridgeActive: false }))
     return { type: 'text', value: 'Web bridge disconnected.' }
   }
 
-  if (arg && arg !== 'on' && arg !== 'connect') {
+  if (arg && arg !== 'on' && arg !== 'connect' && arg !== 'pair') {
     return {
       type: 'text',
-      value: 'Usage: /web-bridge [status|off]',
+      value: 'Usage: /web-bridge [status|off|pair]',
     }
   }
 
@@ -94,21 +106,43 @@ const call: LocalCommandCall = async (args, context) => {
     return {
       type: 'text',
       value: isUsable(state.webBridgeConnection)
-        ? `Web bridge is already connected.\nOpen ${getRayuWebBaseUrl()}/studio/remote to drive this session.`
+        ? `Web bridge is already connected.\nOpen ${getRayuStudioRemoteUrl()} to drive this session.`
         : `Web bridge is ${describeConnection(state.webBridgeConnection)}.\nUse "/web-bridge off" then "/web-bridge" to retry.`,
     }
   }
 
-  /*
-   * Checked here, before the flag is raised, so the failure is a sentence the user can
-   * act on. Letting the hook discover it instead would raise the flag, connect nothing,
-   * and lower the flag again — a flicker with no explanation.
-   */
-  if (!hasRayuSession()) {
-    return {
-      type: 'text',
-      value:
-        'You are not signed in to Rayu.\nRun "/login" first, then "/web-bridge" again.',
+  if (arg === 'pair' || !(await getValidRayuAccessToken())) {
+    try {
+      const cwd = getOriginalCwd() ?? process.cwd()
+      const pairing = await beginGuestPairing(
+        () => context.setAppState(s => ({ ...s, webBridgeActive: true, webBridgeConnection: 'connecting' })),
+        () => {},
+        {
+          machineId: resolveMachineId(getRayuConfigHomeDir()),
+          hostname: resolveHostname(),
+          cwd,
+          pid: process.pid,
+          sessionLabel: `rayu CLI — ${cwd.split(/[\\/]/).filter(Boolean).pop() ?? 'session'}`,
+        },
+      )
+      const { toString: qrToString } = await import('qrcode')
+      const qr = await qrToString(pairing.url, { type: 'utf8', small: true, errorCorrectionLevel: 'L' })
+      return {
+        type: 'text',
+        value: [
+          'Scan this QR code with a device signed into Rayu Studio, then approve this machine:',
+          qr,
+          pairing.url,
+          '',
+          'This grants Web Bridge control for this worker session only; it does not sign the worker into Rayu.',
+          'Use "/web-bridge status" to check, or "/web-bridge off" to cancel.',
+        ].join('\n'),
+      }
+    } catch (error) {
+      return {
+        type: 'text',
+        value: `Could not start Studio pairing: ${error instanceof Error ? error.message : String(error)}`,
+      }
     }
   }
 
@@ -121,9 +155,9 @@ const call: LocalCommandCall = async (args, context) => {
   return {
     type: 'text',
     value: [
-      'Connecting this session to the Rayu web studio…',
+      'Connecting this session to Rayu Studio…',
       '',
-      `Open ${getRayuWebBaseUrl()}/studio/remote and pick this machine to send prompts,`,
+      `Open ${getRayuStudioRemoteUrl()} and pick this machine to send prompts,`,
       'approve tool calls, and interrupt turns from your browser.',
       '',
       'The connection lasts for this session only. Use "/web-bridge off" to stop it.',
@@ -134,7 +168,7 @@ const call: LocalCommandCall = async (args, context) => {
 const webBridge = {
   type: 'local',
   name: 'web-bridge',
-  description: 'Drive this CLI session from the Rayu web studio',
+  description: 'Drive this CLI session from Rayu Studio',
   // Pointless outside an interactive session: the bridge's whole purpose is to relay a
   // live REPL, and a one-shot `--print` run has finished before a browser could attach.
   supportsNonInteractive: false,
