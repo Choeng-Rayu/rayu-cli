@@ -48,6 +48,22 @@ import {
   type ConnectFrame,
 } from '../vscode/shared/connectProtocol.js'
 import { LOGIN_FLAG, type LoginFrame } from '../vscode/shared/loginProtocol.js'
+import { PAIRING_QR_FLAG } from '../vscode/shared/pairingProtocol.js'
+
+async function renderPairingQr(): Promise<void> {
+  let input = ''
+  for await (const chunk of process.stdin) {
+    input += String(chunk)
+    if (input.length > 4096) throw new Error('Pairing URL is too long')
+  }
+  const parsed = JSON.parse(input) as { url?: unknown }
+  if (typeof parsed.url !== 'string' || !/^https?:\/\//.test(parsed.url)) {
+    throw new Error('Invalid pairing URL')
+  }
+  const { toDataURL } = await import('qrcode')
+  const image = await toDataURL(parsed.url, { errorCorrectionLevel: 'L', margin: 2, width: 280 })
+  process.stdout.write(`${JSON.stringify({ image })}\n`)
+}
 
 // Load .env before anything else runs, matching cli.tsx. A workspace .env is how
 // a developer points the engine at a local backend, and the extension forwards
@@ -234,13 +250,15 @@ function normalizeCwd(path: string): string {
   }
 }
 
-async function runConnect(rawAction: string | undefined): Promise<void> {
+async function runConnect(inlineAction: string | undefined): Promise<void> {
   const emit = (frame: ConnectFrame): void => {
     process.stdout.write(`${JSON.stringify(frame)}\n`)
   }
 
   try {
-    const action = parseConnectAction(rawAction)
+    // Read INSIDE the try, so a stdin failure is reported as a result frame like any other
+    // error rather than escaping as an unhandled rejection.
+    const action = parseConnectAction(inlineAction ?? (await readConnectActionFromStdin()))
     const providers = await import('../utils/rayuProviders.js')
     const config = await import('../utils/rayuConfig.js')
 
@@ -494,11 +512,42 @@ async function probeCredential(candidate: {
 
 function parseConnectAction(raw: string | undefined): ConnectAction {
   if (!raw) throw new Error('No provider-setup action was supplied.')
-  const parsed: unknown = JSON.parse(raw)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // Deliberately NOT the parser's message: V8 quotes the input it choked on, and this
+    // input can carry an API key. The message is shown in the editor.
+    throw new Error('Malformed provider-setup action.')
+  }
   if (!parsed || typeof parsed !== 'object' || typeof (parsed as ConnectAction).action !== 'string') {
     throw new Error('Malformed provider-setup action.')
   }
   return parsed as ConnectAction
+}
+
+/** Far above any real action (ids, a key, a URL, a path), far below a memory problem. */
+const MAX_CONNECT_ACTION_CHARS = 64 * 1024
+
+/**
+ * The provider-setup action, as the extension host sends it: on stdin.
+ *
+ * `validate`/`save` carry an API key, and argv is world-readable through the process
+ * table, so the host never puts the action there. Throws on oversized input; the caller
+ * (`runConnect`) reports any error as a result frame.
+ */
+async function readConnectActionFromStdin(): Promise<string | undefined> {
+  // Decoded by the stream, not per chunk: a multi-byte character (a non-ASCII workspace
+  // path) split across two chunks would otherwise be corrupted.
+  process.stdin.setEncoding('utf8')
+  let input = ''
+  for await (const chunk of process.stdin) {
+    input += chunk as string
+    if (input.length > MAX_CONNECT_ACTION_CHARS) {
+      throw new Error('The provider-setup action is too large.')
+    }
+  }
+  return input.trim() || undefined
 }
 
 async function main(): Promise<void> {
@@ -512,10 +561,17 @@ async function main(): Promise<void> {
     return
   }
 
+  if (passthrough.includes(PAIRING_QR_FLAG)) {
+    await renderPairingQr()
+    return
+  }
+
   // Provider setup short-circuits for the same reasons. It also must not inherit the
   // engine's provider resolution, since the whole point is to change it.
   const connectAt = passthrough.indexOf(CONNECT_FLAG)
   if (connectAt !== -1) {
+    // An inline argument is still accepted for direct invocation (tests, debugging);
+    // the extension host always uses stdin — see `readConnectActionFromStdin`.
     await runConnect(passthrough[connectAt + 1])
     return
   }

@@ -631,6 +631,19 @@ export interface PermissionRequestView {
   }
 }
 
+/**
+ * What actually crosses `webview.postMessage`: one message, or one frame of them.
+ *
+ * Streaming produces several messages PER TOKEN (a text delta, a cumulative thinking
+ * snapshot, two progress snapshots). The host merges those per ~frame and delivers the
+ * survivors as one `batch`, so the webview handles them in a single task and React
+ * commits once instead of once per message. Kept out of `HostToWebviewMessage` so the
+ * reducer's action union — which IS that message union — never sees an envelope.
+ */
+export type HostToWebviewEnvelope =
+  | HostToWebviewMessage
+  | { type: 'batch'; messages: HostToWebviewMessage[] }
+
 /** Messages the webview sends TO the extension host. */
 export type WebviewToHostMessage =
   /**

@@ -127,4 +127,107 @@ describe('the sprite avatar asset survives the real CSP the panel serves', () =>
     expect(cspNonce).toBeTruthy()
     expect(cspNonce).toBe(scriptNonce)
   })
+
+  test('render() allows no remote images and a fresh unguessable nonce per load', () => {
+    // A remote image is the classic prompt-injection exfiltration channel: a URL whose
+    // query string carries conversation data, fetched the moment it renders.
+    const extensionUri = FakeUri.file('/fake/extension/root')
+    const provider = new ChatViewProvider(extensionUri as never, () => ({}) as never, {} as never)
+    const first = fakeWebview()
+    const second = fakeWebview()
+    provider.resolveWebviewView(first as never)
+    provider.resolveWebviewView(second as never)
+
+    const imgSrc = first.webview.html.match(/img-src ([^;"]+)/)?.[1] ?? ''
+    expect(imgSrc).not.toContain('https:')
+    expect(imgSrc).not.toContain('http:')
+    expect(imgSrc).not.toContain('*')
+
+    const nonceOf = (html: string) => html.match(/script-src 'nonce-([A-Za-z0-9]+)'/)?.[1]
+    expect(nonceOf(first.webview.html)?.length).toBeGreaterThanOrEqual(32)
+    expect(nonceOf(first.webview.html)).not.toBe(nonceOf(second.webview.html))
+  })
+})
+
+
+/**
+ * Delivery wiring: what `post()` and `syncState()` put on the real `webview.postMessage`.
+ *
+ * Here rather than in its own file because this file owns the `vscode` mock that
+ * `ChatViewProvider` needs. Bun's module mocks are process-wide, so a second file mocking
+ * `vscode` with a different shape can break whichever of the two loads first.
+ */
+describe('ChatViewProvider delivery to the webview', () => {
+  function liveView(): {
+    view: unknown
+    posted: unknown[]
+    disposeView: () => void
+  } {
+    const posted: unknown[] = []
+    let onDispose: () => void = () => {}
+    const { webview } = fakeWebview()
+    const view = {
+      webview: {
+        ...webview,
+        postMessage: (message: unknown) => {
+          posted.push(message)
+          return Promise.resolve(true)
+        },
+      },
+      onDidDispose: (callback: () => void) => {
+        onDispose = callback
+      },
+    }
+    return { view, posted, disposeView: () => onDispose() }
+  }
+
+  function provider() {
+    return new ChatViewProvider(
+      FakeUri.file('/fake/extension/root') as never,
+      () => ({ marker: 'state' }) as never,
+      {} as never,
+    )
+  }
+
+  test('streamed deltas arrive merged, and before the init snapshot that follows them', () => {
+    const panel = provider()
+    const { view, posted } = liveView()
+    panel.resolveWebviewView(view as never)
+
+    panel.post({ type: 'appendPartial', id: 'a', kind: 'text', delta: 'Hel' })
+    panel.post({ type: 'appendPartial', id: 'a', kind: 'text', delta: 'lo' })
+    // Held for the frame: one per-token message each would be the cost being removed.
+    expect(posted).toEqual([])
+
+    // `init` replaces the transcript. The deltas it already contains must land before it,
+    // or the webview would append them to the fresh snapshot a second time.
+    panel.syncState()
+    expect(posted).toEqual([
+      { type: 'appendPartial', id: 'a', kind: 'text', delta: 'Hello' },
+      { type: 'init', state: { marker: 'state' } },
+    ])
+    panel.dispose()
+  })
+
+  test('held deltas are dropped with their view, never delivered to its replacement', async () => {
+    const panel = provider()
+    const first = liveView()
+    panel.resolveWebviewView(first.view as never)
+
+    panel.post({ type: 'appendPartial', id: 'a', kind: 'text', delta: 'held' })
+    first.disposeView()
+    panel.post({ type: 'appendPartial', id: 'a', kind: 'text', delta: 'after' })
+    expect(panel.isOpen).toBe(false)
+
+    // VS Code recreates the view. It starts from `init`; the old view's held deltas must
+    // not be flushed into it when the merge timer fires.
+    const second = liveView()
+    panel.resolveWebviewView(second.view as never)
+    // Well past the 33 ms merge window, so an armed timer would have fired by now.
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    expect(first.posted).toEqual([])
+    expect(second.posted).toEqual([])
+    panel.dispose()
+  })
 })

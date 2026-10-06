@@ -1350,6 +1350,8 @@ const SDKUserMessageContentSchema = lazySchema(() =>
     isSynthetic: z.boolean().optional(),
     tool_use_result: z.unknown().optional(),
     priority: z.enum(['now', 'next', 'later']).optional(),
+    // Set only by a host that already authenticated a remote bridge prompt.
+    bridge_origin: z.boolean().optional(),
     timestamp: z
       .string()
       .optional()

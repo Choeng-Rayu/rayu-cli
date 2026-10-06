@@ -16,6 +16,7 @@
 import type { BridgePermissionCallbacks, BridgePermissionResponse } from '../bridge/bridgePermissionCallbacks.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { EXIT_PLAN_MODE_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
+import { isInteractionTool } from '../utils/permissions/interactionTools.js'
 import {
   answerCallbackQuery,
   editMessageWithInlineKeyboard,
@@ -39,21 +40,11 @@ import {
 } from './telegramPlanApproval.js'
 
 /**
- * Tools whose "permission" is really a form: the decision only means anything
- * when it carries the filled-in input (AskUserQuestion `answers`, ExitPlanMode
- * plan approval, ReviewArtifact `selected`). Persisting an allow rule for these
- * would auto-approve every future call with an EMPTY payload — silently
- * breaking them even in the terminal — so "Always allow" is not offered.
+ * Tools whose "permission" is really a form — see utils/permissions/interactionTools.ts.
+ * "Always allow" is never offered for them. Re-exported so existing importers of this
+ * module keep working.
  */
-const INTERACTION_TOOLS = new Set<string>([
-  ASK_USER_QUESTION_TOOL_NAME,
-  EXIT_PLAN_MODE_TOOL_NAME,
-  'ReviewArtifact',
-])
-
-export function isInteractionTool(toolName: string): boolean {
-  return INTERACTION_TOOLS.has(toolName)
-}
+export { isInteractionTool }
 
 type ResponseHandler = (r: BridgePermissionResponse) => void
 
@@ -133,7 +124,7 @@ function responseFor(action: PermAction, toolName: string): BridgePermissionResp
 
 /**
  * The decision buttons. Two per row keeps the card compact on mobile.
- * "Always allow" is omitted for interaction tools — see INTERACTION_TOOLS.
+ * "Always allow" is omitted for interaction tools — see isInteractionTool.
  */
 function permissionKeyboard(shortId: string, toolName = ''): InlineKeyboard {
   const first = [

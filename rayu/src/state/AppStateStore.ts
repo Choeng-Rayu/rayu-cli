@@ -450,7 +450,7 @@ export type AppState = DeepImmutable<{
   // Telegram bot permission callbacks — permission prompts sent to the linked chat.
   telegramPermissionCallbacks?: BridgePermissionCallbacks
   /**
-   * Web Bridge permission callbacks — permission prompts sent to the rayu-web studio.
+   * Web Bridge permission callbacks — permission prompts sent to Rayu Studio.
    *
    * SEPARATE from `telegramPermissionCallbacks` rather than sharing one slot, because
    * both remotes can be connected at once and both must be offered the decision. They

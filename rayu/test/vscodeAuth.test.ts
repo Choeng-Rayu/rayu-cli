@@ -26,11 +26,15 @@ import { watchSharedSession } from '../src/vscode/host/auth/authWatcher.js'
 describe('VS Code Auth Bridge and Sign-in Gate', () => {
   let testConfigDir: string
   const originalConfigDir = process.env.RAYU_CONFIG_DIR
+  const originalAuthConfigDir = process.env.RAYU_AUTH_CONFIG_DIR
   const originalOAuthEnv = process.env.USE_RAYU_OAUTH
 
   beforeEach(() => {
     testConfigDir = mkdtempSync(join(tmpdir(), 'rayucode-auth-test-'))
     process.env.RAYU_CONFIG_DIR = testConfigDir
+    // The auth profile directory overrides RAYU_CONFIG_DIR. Keep the shared
+    // session bridge pointed at this disposable directory for the whole test.
+    process.env.RAYU_AUTH_CONFIG_DIR = testConfigDir
     process.env.USE_RAYU_OAUTH = 'true'
   })
 
@@ -39,6 +43,11 @@ describe('VS Code Auth Bridge and Sign-in Gate', () => {
       process.env.RAYU_CONFIG_DIR = originalConfigDir
     } else {
       delete process.env.RAYU_CONFIG_DIR
+    }
+    if (originalAuthConfigDir !== undefined) {
+      process.env.RAYU_AUTH_CONFIG_DIR = originalAuthConfigDir
+    } else {
+      delete process.env.RAYU_AUTH_CONFIG_DIR
     }
     if (originalOAuthEnv !== undefined) {
       process.env.USE_RAYU_OAUTH = originalOAuthEnv

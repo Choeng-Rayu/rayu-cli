@@ -3211,9 +3211,9 @@ function runHeadlessStreaming(
           }
           sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'set_thinking') {
-          options.thinkingConfig = message.request.enabled
-            ? { type: 'adaptive' }
-            : { type: 'disabled' }
+          // Persist BEFORE applying, as set_effort does. The caller treats an error as
+          // "nothing changed" (Rayucode keeps its pill), so a refused write must leave the
+          // running config alone — applying first made the engine and the panel disagree.
           if (isRayucodeRuntime()) {
             const stored = updateRayucodePreferences({
               thinkingEnabled: message.request.enabled,
@@ -3223,6 +3223,9 @@ function runHeadlessStreaming(
               continue
             }
           }
+          options.thinkingConfig = message.request.enabled
+            ? { type: 'adaptive' }
+            : { type: 'disabled' }
           const currentAppState = getAppState()
           sendControlResponseSuccess(message, {
             inference: resolveInferenceSettings(
@@ -4360,6 +4363,7 @@ function runHeadlessStreaming(
         value: await resolveAndPrepend(message, message.message.content),
         uuid: message.uuid,
         priority: message.priority,
+        bridgeOrigin: message.bridge_origin === true,
       })
       // Increment prompt count for attribution tracking and save snapshot
       // The snapshot persists promptCount so it survives compaction

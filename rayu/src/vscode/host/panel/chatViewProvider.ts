@@ -23,14 +23,20 @@
  * 2. NO SECRETS CROSS THE BOUNDARY. The host holds the access token and never
  *    sends it in a message. The webview learns only whether the user is signed in.
  *
- * ── WHY `retainContextWhenHidden` IS NOT SET ───────────────────────────────────
+ * ── WHY `retainContextWhenHidden` IS SET (see its registration in extension.ts) ──
  *
- * It keeps the whole DOM and JS heap alive while the panel is collapsed, for every
- * window, forever. The state that must survive lives in the HOST, which owns the
- * engine process anyway, so the panel can be rebuilt from an `init` message. The
- * `ready` handshake exists precisely so that rebuild is a normal path rather than
- * a special case.
+ * It keeps the webview's DOM and JS heap alive while the panel is collapsed. That costs
+ * memory, but the alternative costs more where users feel it: without it VS Code destroys
+ * the panel on every sidebar switch, so showing it again re-parses the bundle and
+ * re-renders the whole transcript, and whatever only the webview knows — the half-typed
+ * prompt, attachments, scroll position, expanded rows — is lost. The retained heap is
+ * bounded instead: transcript, thinking and tool output are capped
+ * (MAX_TRANSCRIPT_ENTRIES, MAX_WEBVIEW_TEXT_CHARS) and streaming updates are merged per
+ * frame (messageCoalescer.ts). The `ready` handshake still makes a full rebuild from the
+ * host's state (window reload, a webview VS Code chose to discard) an ordinary path.
  */
+import { randomBytes } from 'node:crypto'
+
 import * as vscode from 'vscode'
 
 import type { EffortChoice } from '../../shared/inferenceSettings.js'
@@ -41,6 +47,7 @@ import type {
   WebviewState,
   WebviewToHostMessage,
 } from '../../shared/webviewProtocol.js'
+import { MessageCoalescer } from './messageCoalescer.js'
 
 /** Matches the view id contributed in `extension.manifest.json`. */
 export const CHAT_VIEW_ID = 'rayucode.chat'
@@ -78,6 +85,7 @@ export interface ChatViewHandlers {
   selectModelValue: (value: string) => Promise<void> | void
   refreshModelCatalogue: () => Promise<void> | void
   setEffort: (level: EffortChoice) => Promise<void> | void
+  setThinking: (enabled: boolean) => Promise<void> | void
 
   listAttachable: () => Promise<void> | void
   attachToSession: (pid: number) => Promise<void> | void
@@ -145,6 +153,10 @@ export interface ChatViewHandlers {
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
   private readonly disposables: vscode.Disposable[] = []
+  /** Merges per-token streaming messages into one delivery per frame. */
+  private readonly outbox = new MessageCoalescer(envelope => {
+    void this.view?.webview.postMessage(envelope)
+  })
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -179,6 +191,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     view.onDidDispose(() => {
       this.view = undefined
+      // Anything held was for the view that just went away; a new one starts from `init`.
+      this.outbox.clear()
       for (const d of this.disposables.splice(0)) d.dispose()
     })
   }
@@ -187,7 +201,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   post(message: HostToWebviewMessage): void {
     // Not an error worth surfacing: the user collapsed the panel. State is
     // re-sent on the next `ready`, which is why that handshake exists.
-    void this.view?.webview.postMessage(message)
+    if (!this.view) return
+    this.outbox.post(message)
   }
 
   /** Send the current snapshot, e.g. after a sign-in state change. */
@@ -205,6 +220,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   dispose(): void {
+    this.outbox.clear()
     for (const d of this.disposables.splice(0)) d.dispose()
   }
 
@@ -251,6 +267,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return
       case 'setEffort':
         void this.handlers.setEffort(message.level)
+        return
+      case 'setThinking':
+        void this.handlers.setThinking(message.enabled)
         return
 
 
@@ -422,9 +441,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // `default-src 'none'` first, then the narrowest possible allowances.
     // `style-src` needs 'unsafe-inline' because VS Code itself injects the theme
     // variable block inline; that is the editor's own style element, not content.
+    // `img-src` has no `https:`: nothing in the panel loads a remote image, and a
+    // remote image is the classic prompt-injection exfiltration channel (a URL whose
+    // query string carries conversation data). The markdown sanitiser already drops
+    // `<img>`; this keeps that true even if its allowlist ever regresses.
     const csp = [
       "default-src 'none'",
-      `img-src ${webview.cspSource} https: data:`,
+      `img-src ${webview.cspSource} data:`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `font-src ${webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
@@ -453,13 +476,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
  *
  * Regenerated on every `render()` rather than cached: a nonce reused across loads
  * could be embedded in content captured from an earlier one, which defeats the
- * point of having it.
+ * point of having it. From the CSPRNG, not `Math.random()`, whose output is
+ * predictable from earlier values — a guessable nonce is no nonce. Hex so the value
+ * is safe inside both the CSP header and the attribute.
  */
 function createNonce(): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  let nonce = ''
-  for (let i = 0; i < 32; i++) {
-    nonce += alphabet.charAt(Math.floor(Math.random() * alphabet.length))
-  }
-  return nonce
+  return randomBytes(16).toString('hex')
 }

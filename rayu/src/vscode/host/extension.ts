@@ -36,6 +36,7 @@ import {
 import { PermissionRouter } from './panel/permissionRouter.js'
 import { invalidateRayuConfigCache } from '../../utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from './models/modelConfig.js'
+import { CatalogueRefresher } from './models/catalogueRefresh.js'
 import { nextPermissionMode, permissionModeById } from '../shared/permissionModes.js'
 import { formatPathMentions } from '../shared/contextMentions.js'
 import {
@@ -48,6 +49,10 @@ import {
 import { signInFromEditor, type SignInOptions } from './auth/vscodeLogin.js'
 import { watchSharedSession } from './auth/authWatcher.js'
 import { checkTurnAllowed } from './auth/signInGate.js'
+import { beginGuestPairing, guestPairingStatus, stopGuestPairing } from '../../webBridge/guestPairing.js'
+import { resolveHostname } from '../../webBridge/client/index.js'
+import { VSCodeWebBridge, vscodeBridgeMachineId } from './webBridge/vscodeWebBridge.js'
+import { showBridgePairingPanel } from './webBridge/pairingPanel.js'
 import {
   openReviewDiff,
   openReviewFile,
@@ -300,6 +305,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // immediately after. The alternative — passing the provider into the session —
   // would make the session depend on the webview, which is backwards.
   let provider: ChatViewProvider
+  let webBridge: { entry: SessionEntry; handle: VSCodeWebBridge } | null = null
 
   // Cards are dismissed, never auto-answered, when they stop being answerable. See
   // permissionRouter.ts: fabricating a denial would reject a tool the user was
@@ -448,18 +454,23 @@ export function activate(context: vscode.ExtensionContext): void {
       // rebuilds the panel from that state with one `syncState()`.
       sessionCallbacks: (entry, isActive) => ({
         onEntry: message => {
+          if (webBridge?.entry === entry) webBridge.handle.onEntry(message)
           if (isActive()) provider.post({ type: 'addMessage', entry: message })
           // The live list shows a per-session label and running flag, both of which this
           // changed — so background progress stays visible even though the transcript is not.
           else postLiveSessions()
         },
         onPartial: (id, kind, delta) => {
-          if (isActive()) provider.post({ type: 'appendPartial', id, kind, delta })
+          if (webBridge?.entry === entry) webBridge.handle.onPartial(id, kind, delta)
+          // Text only: the webview builds reasoning from `updateThinking` and drops thinking
+          // deltas on arrival (see the reducer), so posting them is pure IPC overhead.
+          if (isActive() && kind === 'text') provider.post({ type: 'appendPartial', id, kind, delta })
         },
         onComplete: id => {
           if (isActive()) provider.post({ type: 'completeMessage', id })
         },
         onTurnState: running => {
+          if (webBridge?.entry === entry) webBridge.handle.onTurnState(running)
           if (isActive()) provider.post({ type: 'turnState', running })
           postLiveSessions()
         },
@@ -497,8 +508,14 @@ export function activate(context: vscode.ExtensionContext): void {
         },
         // Routed to the OWNING session's router, never the active one: a card belongs to the
         // engine that is blocked on it.
-        onPermissionRequest: request => entry.permissions.present(request),
-        onPermissionCancelled: requestId => entry.permissions.engineCancelled(requestId),
+        onPermissionRequest: request => {
+          entry.permissions.present(request)
+          if (webBridge?.entry === entry) webBridge.handle.onPermissionRequest(request)
+        },
+        onPermissionCancelled: requestId => {
+          entry.permissions.engineCancelled(requestId)
+          if (webBridge?.entry === entry) webBridge.handle.onPermissionDismiss(requestId)
+        },
         onSessionEnded: () => entry.permissions.cancelAll(),
         // The review card is the one entry that can stop existing: once everything is
         // kept or undone there is nothing left to act on.
@@ -581,8 +598,10 @@ export function activate(context: vscode.ExtensionContext): void {
       }),
       onShowPermission: request =>
         provider.post({ type: 'showPermissionRequest', request }),
-      onDismissPermission: requestId =>
-        provider.post({ type: 'dismissPermissionRequest', requestId }),
+      onDismissPermission: requestId => {
+        webBridge?.handle.onPermissionDismiss(requestId)
+        provider.post({ type: 'dismissPermissionRequest', requestId })
+      },
       onChanged: () => postLiveSessions(),
       // Hand the diff store to the conversation that is now on screen, then rebuild the panel
       // from it. One full sync is both simpler and more honest than replaying deltas.
@@ -600,6 +619,79 @@ export function activate(context: vscode.ExtensionContext): void {
   /** The conversation on screen. Resolved per call — see the registry's construction. */
   function current(): SessionEntry {
     return registry.active
+  }
+
+  async function connectWebBridge(entry: SessionEntry): Promise<void> {
+    webBridge?.handle.stop()
+    const handle = new VSCodeWebBridge(entry.session, entry.permissions, engineCwd, state => {
+      if (state === 'connected') {
+        void vscode.window.showInformationMessage('Rayucode is connected to Studio Remote.')
+      } else if (state === 'error') {
+        void vscode.window.showWarningMessage('Studio Remote could not connect. Run /web-bridge status for details.')
+      }
+    })
+    webBridge = { entry, handle }
+    if (!(await handle.connect())) {
+      handle.stop()
+      webBridge = null
+      void vscode.window.showErrorMessage('Studio Remote could not obtain a bridge credential. Retry /web-bridge.')
+    }
+  }
+
+  async function runWebBridgeCommand(argument: string): Promise<void> {
+    const command = argument.toLowerCase()
+    if (command === 'status') {
+      const pending = guestPairingStatus()
+      const text = webBridge
+        ? `Studio Remote: ${webBridge.handle.state}`
+        : pending?.status === 'waiting'
+          ? `Waiting for Studio approval: ${pending.url}`
+          : pending?.status === 'error'
+            ? `Studio pairing failed: ${pending.error}`
+            : 'Studio Remote is off. Run /web-bridge to connect.'
+      void vscode.window.showInformationMessage(text)
+      return
+    }
+    if (command === 'off') {
+      webBridge?.handle.stop()
+      webBridge = null
+      stopGuestPairing()
+      void vscode.window.showInformationMessage('Studio Remote disconnected.')
+      return
+    }
+    if (command !== '' && command !== 'on' && command !== 'pair') {
+      void vscode.window.showErrorMessage('Usage: /web-bridge [status|off|pair]')
+      return
+    }
+    if (webBridge && command !== 'pair') {
+      void vscode.window.showInformationMessage(`Studio Remote is ${webBridge.handle.state}.`)
+      return
+    }
+    const token = command === 'pair' ? null : await getAccessTokenForHost()
+    if (token) {
+      await connectWebBridge(current())
+      return
+    }
+    webBridge?.handle.stop()
+    webBridge = null
+    stopGuestPairing()
+    const entry = current()
+    try {
+      const pairing = await beginGuestPairing(
+        () => void connectWebBridge(entry),
+        message => void vscode.window.showErrorMessage(`Studio pairing failed: ${message}`),
+        {
+          machineId: vscodeBridgeMachineId(engineCwd),
+          hostname: resolveHostname(),
+          cwd: engineCwd,
+          pid: process.pid,
+          sessionLabel: `Rayucode VS Code — ${engineCwd.split(/[\\/]/).filter(Boolean).pop() ?? 'workspace'}`,
+        },
+      )
+      await showBridgePairingPanel(enginePath, pairing.url, pairing.expiresAt)
+    } catch (error) {
+      void vscode.window.showErrorMessage(`Could not start Studio pairing: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   function showMcpUi(entry: SessionEntry, next: McpConnectionUiView): void {
@@ -658,9 +750,20 @@ export function activate(context: vscode.ExtensionContext): void {
     provider.syncState()
   }
 
-  let catalogueRefresh: Promise<void> | null = null
   let disposed = false
   context.subscriptions.push({ dispose: () => { disposed = true } })
+
+  /** Model-catalogue refreshes. The rules for which conversation they answer are in its module. */
+  const catalogueRefresher = new CatalogueRefresher<ChatSession>({
+    catalogueFor: session => buildCatalogue(session),
+    fetch: model => refreshProviderCatalogue({ enginePath, cwd: engineCwd }, model),
+    readPersistedModel: readActiveModel,
+    isActive: session => current().session === session,
+    post: catalogue => provider.post({ type: 'setModelCatalogue', catalogue }),
+    invalidate: invalidateRayuConfigCache,
+    isDisposed: () => disposed,
+    onSettled: () => provider.syncState(),
+  })
 
   /** Prewarm only when the panel is usable and standalone Rayucode owns execution. */
   async function prewarmSession(): Promise<void> {
@@ -674,7 +777,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // The hosted refresh writes model capabilities into Rayucode's provider profile,
     // which the engine reads at startup. Starting first can leave the child with a stale
     // capability cache (for example, hiding effort for a thinking model).
-    const refresh = catalogueRefresh
+    const refresh = catalogueRefresher.pending
     if (refresh) await refresh.catch(() => {})
     if (
       disposed ||
@@ -685,29 +788,14 @@ export function activate(context: vscode.ExtensionContext): void {
     await current().session.warmup()
   }
 
-  function refreshModels(model?: string): Promise<void> {
-    if (catalogueRefresh) return catalogueRefresh
-    catalogueRefresh = (async () => {
-      invalidateRayuConfigCache()
-      const previous = buildCatalogue(current().session)
-      const pending: ModelCatalogueView = { ...previous, loading: true, error: null }
-      current().session.availableModels = pending
-      provider.post({ type: 'setModelCatalogue', catalogue: pending })
-      const outcome = await refreshProviderCatalogue({ enginePath, cwd: engineCwd }, model)
-      if (disposed) return
-      invalidateRayuConfigCache()
-      const active = readActiveModel()
-      if (outcome.inference && ((active.provider === outcome.activeProviderId && active.model === outcome.activeModel) || model === outcome.activeModel)) {
-        current().session.applyInitialInference(outcome.inference)
-      }
-      current().session.availableModels = {
-        options: outcome.catalogue ?? previous.options,
-        loading: false,
-        error: outcome.ok ? null : outcome.error ?? 'Could not refresh models.',
-      }
-      provider.syncState()
-    })().finally(() => { catalogueRefresh = null })
-    return catalogueRefresh
+  /**
+   * Refresh the catalogue for `target`, asking about `model` (or the target's own model).
+   *
+   * Callers acting on a user's choice pass the conversation they captured when the user
+   * acted; the default is right only for refreshes not tied to a choice.
+   */
+  function refreshModels(model?: string, target: ChatSession = current().session): Promise<void> {
+    return catalogueRefresher.refresh(target, model)
   }
 
   /** Run the editor-native login flow, then refresh the same state as the button. */
@@ -804,6 +892,11 @@ export function activate(context: vscode.ExtensionContext): void {
     {
       ready: prewarmSession,
       submitPrompt: async (text, images, delivery = 'normal') => {
+        const bridgeCommand = /^\s*\/web-bridge(?:\s+(\S+))?\s*$/.exec(text)
+        if (bridgeCommand) {
+          await runWebBridgeCommand(bridgeCommand[1] ?? '')
+          return
+        }
         // The CLI implementations of these commands render Ink UI and are therefore
         // absent from the non-interactive engine. Route them to Rayucode's existing
         // native surfaces before the sign-in gate, so `/login` is reachable while the
@@ -848,9 +941,13 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
         if (inferenceCommand?.kind === 'model') {
-          await current().session.setModel(inferenceCommand.model)
-          await refreshModels(inferenceCommand.model)
-          provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(current().session) })
+          // Captured now: the user may switch conversations before `setModel` settles.
+          const session = current().session
+          await session.setModel(inferenceCommand.model)
+          await refreshModels(inferenceCommand.model, session)
+          if (current().session === session) {
+            provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
+          }
           return
         }
         if (runtimeSection) {
@@ -943,6 +1040,11 @@ export function activate(context: vscode.ExtensionContext): void {
         provider.post({ type: 'showError', message: 'That conversation is no longer open.' })
       },
       closeSession: key => {
+        if (webBridge?.entry.key === key) {
+          webBridge.handle.stop()
+          webBridge = null
+          stopGuestPairing()
+        }
         registry.close(key)
         provider.syncState()
         prewarmSession()
@@ -1000,14 +1102,17 @@ export function activate(context: vscode.ExtensionContext): void {
       // The WEBVIEW owns the dropdown now, so the host only applies the choice. It is
       // configuration only — nothing here touches the composer's text.
       selectModelValue: async value => {
-        await current().session.setModel(value)
-        // Finish an older in-flight fetch before requesting this selection's effective settings.
-        if (catalogueRefresh) await catalogueRefresh
-        await refreshModels(value)
-        provider.post({
-          type: 'setModelCatalogue',
-          catalogue: buildCatalogue(current().session),
-        })
+        // Captured now: the user may switch conversations before `setModel` settles. The
+        // refresher queues this behind any refresh already running for something else.
+        const session = current().session
+        await session.setModel(value)
+        await refreshModels(value, session)
+        if (current().session === session) {
+          provider.post({
+            type: 'setModelCatalogue',
+            catalogue: buildCatalogue(session),
+          })
+        }
       },
       refreshModelCatalogue: refreshModels,
       // Both settings are acknowledged by the owning engine before the controls update.
@@ -1193,6 +1298,7 @@ export function activate(context: vscode.ExtensionContext): void {
       },
 
       setEffort: level => current().session.setEffort(level),
+      setThinking: enabled => current().session.setThinking(enabled),
       mcpElicitationResponse: (requestId, action, content) => {
         current().session.respondMcpElicitation(requestId, action, content)
       },
@@ -1538,6 +1644,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // subprocesses alive, holding ports and file locks after the editor has closed — and with
   // several conversations open there may be several of them.
   context.subscriptions.push({ dispose: () => registry.dispose() })
+  context.subscriptions.push({ dispose: () => { webBridge?.handle.stop(); stopGuestPairing() } })
   // The first conversation is opened HERE, not on first access. `create()` publishes through
   // `provider`, which does not exist until the line above it — and a lazy creation triggered
   // from inside `getState()` would re-enter `syncState()` mid-snapshot. Creating an entry does

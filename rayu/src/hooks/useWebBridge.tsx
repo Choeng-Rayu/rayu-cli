@@ -1,5 +1,5 @@
 /**
- * Web Bridge hook — makes this REPL session drivable from the rayu-web studio.
+ * Web Bridge hook — makes this REPL session drivable from standalone Rayu Studio.
  *
  * A deliberate mirror of `useTelegramBridge`, and the symmetry is the point: both
  * remotes are observed through the same three seams, so a change to how turns are
@@ -21,6 +21,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { WebBridgeConnectionState } from '../webBridge/client/index.js'
 
 import { hasRayuSession } from '../services/rayuAuth/rayuSession.js'
+import { hasGuestBridgeToken, stopGuestPairing } from '../webBridge/guestPairing.js'
 import type { WrappedMessage } from '../telegram/formatActivity.js'
 import { isFileChangeReviewMessage } from '../telegram/formatActivity.js'
 import { initWebBridge, type WebBridgeHandle } from '../webBridge/webBridgeSession.js'
@@ -54,15 +55,16 @@ export function useWebBridge(
     if (!bridgeActive) return
 
     /*
-     * A signed-in Rayu account is the whole authorisation model: the socket presents
-     * that account's JWT and the backend routes only to sessions owned by it.
+     * A worker needs either its own Rayu account session or an approved Studio
+     * pairing. A pairing token can authenticate only the Web Bridge CLI socket;
+     * it is not an account or hosted-model credential.
      *
      * Checked here rather than inside the client so the flag is lowered too — leaving
      * `webBridgeActive` true while nothing is connected would make the footer claim a
      * connection that does not exist, and `/web-bridge` would then report it as
      * already on.
      */
-    if (!hasRayuSession()) {
+    if (!hasRayuSession() && !hasGuestBridgeToken()) {
       setAppState(prev => ({ ...prev, webBridgeActive: false }))
       return
     }
@@ -82,6 +84,7 @@ export function useWebBridge(
     return () => {
       void handle.endTurn()
       handle.stop()
+      stopGuestPairing()
       handleRef.current = null
       lastSentIndexRef.current = 0
       inTurnRef.current = false

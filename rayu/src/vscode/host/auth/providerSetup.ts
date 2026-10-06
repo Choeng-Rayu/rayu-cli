@@ -17,10 +17,11 @@ import type { ModelOptionView } from '../../shared/webviewProtocol.js'
  *
  * ── CREDENTIALS ────────────────────────────────────────────────────────────────
  *
- * An API key travels host → child ONLY, as an argument to a child this host spawned.
- * No frame carries one back, so a key cannot reach the webview, the transcript,
- * persisted webview state, or a log line. `describeAction()` exists so progress and
- * error reporting never has to stringify the action itself.
+ * An API key travels host → child ONLY, on the stdin of a child this host spawned —
+ * never in its argv, which every local user can read from the process table. No frame
+ * carries one back, so a key cannot reach the webview, the transcript, persisted
+ * webview state, or a log line. `describeAction()` exists so progress and error
+ * reporting never has to stringify the action itself.
  */
 import { spawn } from 'node:child_process'
 
@@ -138,9 +139,14 @@ function runConnectChild(
     let presets: ConnectPresetView[] | undefined
     let targets: AttachTargetFrame[] | undefined
 
+    // ── THE ACTION GOES OVER STDIN, NEVER ARGV ───────────────────────────────────
+    //
+    // `validate` and `save` carry the user's API key. A process's argv is readable by
+    // EVERY local user (`ps`, `/proc/<pid>/cmdline`) for as long as it runs, and these
+    // helpers run for a network round-trip. Stdin is private to the two processes.
     const child = spawn(
       process.execPath,
-      [options.enginePath, CONNECT_FLAG, JSON.stringify(action)],
+      [options.enginePath, CONNECT_FLAG],
       {
         cwd: options.cwd,
         env: {
@@ -151,10 +157,14 @@ function runConnectChild(
           NO_COLOR: '1',
           FORCE_COLOR: '0',
         },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       },
     )
+    // A helper that dies before reading raises EPIPE here; without a listener that error
+    // would be thrown on the extension host. The `close` handler below reports the exit.
+    child.stdin.on('error', () => {})
+    child.stdin.end(JSON.stringify(action))
 
     function finish(outcome: ConnectOutcome): void {
       if (settled) return

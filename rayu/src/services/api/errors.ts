@@ -813,7 +813,7 @@ export function getAssistantMessageFromError(
     ) {
       return createAssistantAPIErrorMessage({
         error: 'unknown',
-        content: `⚠️ Can't reach Rayu right now — the service may be temporarily down, or your connection dropped. Please try again in a little while.`,
+        content: `⚠️ Can't reach Rayu right now — the model may be temporarily reach to high valume, or your connection dropped. Please change model or try again in a little while.`,
       })
     }
     // (b) Reached Rayu but the provider/origin returned a server error (5xx).

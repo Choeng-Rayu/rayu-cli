@@ -134,7 +134,7 @@ export interface WebBridgeClientOptions {
  *
  * `getRayuApiBaseUrl()` yields something like `https://rayucode.com/api`, while
  * socket.io wants an ORIGIN plus a separate `path`. Mirrors `bridgeOrigin()` in
- * rayu-web/studio/lib/webBridge/webBridgeTypes.ts.
+ * rayu-studio/app/lib/webBridge/webBridgeTypes.ts.
  */
 export function bridgeOrigin(apiBaseUrl: string): string {
   try {

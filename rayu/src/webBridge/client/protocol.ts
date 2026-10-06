@@ -3,7 +3,7 @@
  *
  * A DELIBERATE MIRROR of rayu-backend/src/web-bridge/web-bridge.types.ts, and the
  * third copy of it — the browser holds the second in
- * rayu-web/studio/lib/webBridge/webBridgeTypes.ts. That file's header explains the
+ * rayu-studio/app/lib/webBridge/webBridgeTypes.ts. That file's header explains the
  * choice and it applies here for the same reason: rayu-cli and rayu-backend deploy
  * and version independently, so a shared module would be a build-time coupling
  * between two things that are only ever coupled at runtime. A CLI cannot be blocked
@@ -16,9 +16,11 @@
  * released services, where version skew is normal operation.
  *
  * The copy is not trusted to stay correct by inspection: test/protocolParity.test.ts
- * reads the backend file and asserts every constant here matches it. If these ever
- * drift the symptom is an event that arrives and is silently ignored — the failure
- * mode a test has to catch, because nothing about it looks like an error at runtime.
+ * asserts every constant here literally and, when rayu-backend is checked out
+ * alongside (or RAYU_BACKEND_DIR points at it), against the backend file itself. If
+ * these ever drift the symptom is an event that arrives and is silently ignored — the
+ * failure mode a test has to catch, because nothing about it looks like an error at
+ * runtime.
  *
  * WHAT LIVES HERE: event names, payload shapes, and the size caps the backend
  * enforces. Nothing else. No socket, no auth, no I/O — so the parity test and the

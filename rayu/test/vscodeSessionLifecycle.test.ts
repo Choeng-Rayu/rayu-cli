@@ -478,3 +478,33 @@ test('closing the visible conversation leaves another one visible', async () => 
   expect(registry.all).toHaveLength(1)
   expect(registry.activeSessionKey).toBe(registry.all[0]!.key)
 })
+
+
+test('a new engine starts with the thinking choice persisted now, not at construction', async () => {
+  // Thinking is a product-wide choice. A conversation created before another one turned
+  // thinking off used to spawn its engine with `--thinking enabled` regardless, because it
+  // only read the profile once, when it was created.
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir)
+  const savedAuthDir = process.env.RAYU_AUTH_CONFIG_DIR
+  process.env.RAYU_AUTH_CONFIG_DIR = dir
+  try {
+    const preferences = join(dir, 'rayucode-preferences.json')
+    writeFileSync(preferences, JSON.stringify({ thinkingEnabled: true }))
+    const session = new ChatSession(
+      { enginePath, cwd: dir, nodePath: process.execPath },
+      sessionCallbacks(),
+    )
+    sessions.push(session)
+
+    writeFileSync(preferences, JSON.stringify({ thinkingEnabled: false }))
+    await session.warmup()
+    await until(() => framesFrom(logPath).length > 0)
+
+    const argv = framesFrom(logPath)[0]!.argv
+    expect(argv[argv.indexOf('--thinking') + 1]).toBe('disabled')
+  } finally {
+    if (savedAuthDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+    else process.env.RAYU_AUTH_CONFIG_DIR = savedAuthDir
+  }
+})

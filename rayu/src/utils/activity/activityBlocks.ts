@@ -3,7 +3,7 @@
  *
  * WHY THESE ARE SHARED BUT THE FORMATTERS ARE NOT
  * rayu has three remote surfaces and each renders differently: Telegram wants
- * HTML (`<b>`, `<code>`, escaped entities, chat-client emoji), the rayu-web studio
+ * HTML (`<b>`, `<code>`, escaped entities, chat-client emoji), Rayu Studio
  * wants plain text it can pass to `<Markdown>`, and the VS Code webview wants
  * STRUCTURED blocks it can draw as expandable tool pills and diff cards. Sharing a
  * formatter across those would mean one surface's formatting choices leaking into

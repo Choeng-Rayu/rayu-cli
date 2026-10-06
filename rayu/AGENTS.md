@@ -395,7 +395,7 @@ Whatever RAYU is doing — CLI session or VS Code extension, doesn't matter, it'
 - `src/services/rayuAuth/` — the whole integration surface: `rayuSession.ts` (auth session + base URLs for both the backend and the gateway — `RAYU_API_URL` / `RAYU_GATEWAY_URL`), `rayuLogin.ts`, `rayuEntitlements.ts` (what the current plan allows), `rayuCredits.ts` / `rayuTopup.ts` (balance and purchasing), `rayuModelCatalog.ts` / `rayuPlansCatalog.ts` (what `rayu-backend` publishes), `rayuHostedProvider.ts` (the client that talks to `rayu-gateway-rust`), `rayuDevices.ts`, `rayuFeatureUsage.ts`.
 - `src/commands/billing/` — the `/billing` command, reading plan/credit state from `rayu-backend`.
 - `src/services/api/providerRegistry.ts` — `rayu-hosted` is one `ProviderKind` among others; picking it is what routes a session's model traffic through `rayu-gateway-rust` instead of directly to a provider.
-- `src/webBridge/` + `src/commands/web-bridge.ts` (`/web-bridge`) — connects a running session (CLI **or** VS Code — both implement the identical protocol) outbound to `rayu-backend`'s relay so `rayu-web`'s Studio (`/studio/remote`) can attach to and drive it live. This is a distinct feature from `src/bridge/` (Claude Code's own upstream claude.ai remote-control) — don't conflate the two just because both are called "bridge."
+- `src/webBridge/` + `src/commands/web-bridge.ts` (`/web-bridge`) — connects a running session (CLI **or** VS Code — both implement the identical protocol) outbound to `rayu-backend`'s relay so the standalone `rayu-studio` app (`studio.rayucode.com/remote`) can attach to and drive it live. This is a distinct feature from `src/bridge/` (Claude Code's own upstream claude.ai remote-control) — don't conflate the two just because both are called "bridge."
 - `src/vscode/host/auth/vscodeLogin.ts` — the VS Code-specific half of signing in; it completes against the same `rayu-backend` accounts as the CLI's `/login`, via `rayu-web`'s `/vscode-login` device-code page.
 
 **Before touching anything in this area:** confirm which of the three services actually owns the behavior you're changing before assuming it's local to this codebase. A "usage isn't updating" or "wrong plan limit" bug is very often a `rayu-backend` or `rayu-gateway-rust` data issue, not a bug in `src/services/rayuAuth/`. Read that sibling codebase's own `AGENTS.md`/`README.md` before changing cross-service behavior.
@@ -427,7 +427,7 @@ Whatever RAYU is doing — CLI session or VS Code extension, doesn't matter, it'
 | `src/types/` | TypeScript type definitions (15+ files) |
 | `src/skills/bundled/` | Bundled skill definitions (20+ skills) |
 | `src/telegram/` | Telegram bridge components |
-| `src/webBridge/` | Rayu Web Bridge client (CLI/VS Code ↔ rayu-backend ↔ rayu-web Studio remote-control) |
+| `src/webBridge/` | Rayu Web Bridge client (CLI/VS Code ↔ rayu-backend ↔ standalone rayu-studio remote-control) |
 | `src/externalAgents/` | External-agent orchestrator: drive Codex / Claude Code / OpenCode / ACP CLIs (core, adapters, orchestration, recovery, workspace, permissions) |
 | `src/commands/agent/` | `/agent` command — user-facing orchestrator surface |
 | `src/tools/ExternalAgentTool/` | `ExternalAgent` tool — model-facing delegate/send/list/orchestrate |

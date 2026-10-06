@@ -20,15 +20,22 @@ test.if(existsSync(vsix))('real packaged engine streams, runs tools, completes e
     process.env.RAYU_CONFIG_DIR = config
     writeFileSync(join(config, 'providers.json'), JSON.stringify({ activeProvider: 'test', providers: [{ id: 'test', kind: 'openai-compatible', baseURL: provider.url, apiKey: 'fixture-key', defaultModel: 'test-model', fetchedModels: ['test-model'], modelContextWindows: { 'test-model': 32000 } }] }))
     // `alwaysThinkingEnabled: false` is the hostile case: without the `--thinking enabled`
-    // spawn flag the engine would resolve thinking to OFF here, and the panel has no
-    // toggle to turn it back on. Asserted below.
+    // spawn flag the engine would resolve thinking to OFF here. Asserted below, along with
+    // the panel's own toggle.
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ permissions: { allow: ['Read', 'Edit', 'Bash(true)'] }, alwaysThinkingEnabled: false }))
     writeFileSync(join(dir, 'fixture.txt'), 'before\n')
     const errors: string[] = [], deltas: string[] = []
     let finished = false
     session = new ChatSession({
       enginePath: join(dir, 'extension/engine.mjs'), cwd: dir, nodePath: 'node',
-      env: { RAYU_CONFIG_DIR: config, USE_RAYU_OAUTH: 'false', RAYU_EXTERNAL_AGENTS: '0' },
+      env: {
+        RAYU_CONFIG_DIR: config,
+        // Pinned so the preference writes below (effort, thinking) stay in this temp dir
+        // even when the test runner inherits an RAYU_AUTH_CONFIG_DIR from its shell.
+        RAYU_AUTH_CONFIG_DIR: config,
+        USE_RAYU_OAUTH: 'false',
+        RAYU_EXTERNAL_AGENTS: '0',
+      },
     }, sessionCallbacks({
       onError: error => errors.push(error),
       onPartial: (_id, kind, delta) => { if (kind === 'text') deltas.push(delta) },
@@ -66,6 +73,31 @@ test.if(existsSync(vsix))('real packaged engine streams, runs tools, completes e
     expect((settings.inference as any).supportsThinking).toBe(true)
     expect((settings.inference as any).thinkingEnabled).toBe(true)
     expect(session.currentInference.thinkingEnabled).toBe(true)
+
+    // The panel's Thinking pill: `set_thinking` replaces the config outright, so it turns
+    // thinking off and back on even against that hostile shared setting.
+    await session.setThinking(false)
+    expect(session.currentInference.thinkingEnabled).toBe(false)
+    settings = await session.controlClient!.request('get_settings', {})
+    expect((settings.inference as any).thinkingEnabled).toBe(false)
+    await session.setThinking(true)
+    expect(session.currentInference.thinkingEnabled).toBe(true)
+    settings = await session.controlClient!.request('get_settings', {})
+    expect((settings.inference as any).thinkingEnabled).toBe(true)
+    expect(errors).toEqual([])
+
+    // A refused preference write must change NOTHING. The engine persists before it
+    // applies, so it keeps thinking on, matching the pill the panel keeps on a refusal.
+    // Renaming the new profile over a directory is a deterministic write failure.
+    const preferences = join(config, 'rayucode-preferences.json')
+    expect(existsSync(preferences)).toBe(true)
+    rmSync(preferences)
+    mkdirSync(preferences)
+    await session.setThinking(false)
+    expect(errors.at(-1)).toContain('Could not turn thinking off')
+    expect(session.currentInference.thinkingEnabled).toBe(true)
+    settings = await session.controlClient!.request('get_settings', {})
+    expect((settings.inference as any).thinkingEnabled).toBe(true)
   } finally {
     if (originalConfig !== undefined) process.env.RAYU_CONFIG_DIR = originalConfig
     else delete process.env.RAYU_CONFIG_DIR

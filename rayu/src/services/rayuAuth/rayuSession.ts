@@ -76,6 +76,29 @@ export function getRayuWebBaseUrl(): string {
   return base.replace(/\/$/, '')
 }
 
+/** Standalone Studio origin, where the Web Bridge remote-control page lives. */
+export function getRayuStudioBaseUrl(): string {
+  const configured = process.env.RAYU_STUDIO_URL?.trim()
+  if (configured) return configured.replace(/\/+$/, '')
+
+  // From-source development uses the local Studio alongside the local web app.
+  // Published builds use the production web URL and therefore the production Studio.
+  try {
+    const web = new URL(getRayuWebBaseUrl())
+    if (web.hostname === 'localhost' || web.hostname === '127.0.0.1') {
+      return `${web.protocol}//${web.hostname}:5173`
+    }
+  } catch {
+    // A malformed web URL must not produce a malformed Studio link.
+  }
+
+  return 'https://studio.rayucode.com'
+}
+
+export function getRayuStudioRemoteUrl(): string {
+  return `${getRayuStudioBaseUrl()}/remote`
+}
+
 /**
  * The dashboard, where account settings live — including the credit-pacing
  * switch ("use all credits") that the rate-limit UI directs users to.

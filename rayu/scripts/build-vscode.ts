@@ -49,7 +49,7 @@ import {
   readFileSync,
 } from 'node:fs'
 import { resolve } from 'node:path'
-import { sharedBuildOptions, EXTERNAL } from './bundleConfig.ts'
+import { sharedBuildOptions, EXTERNAL, zodEnglishLocalesOnlyPlugin } from './bundleConfig.ts'
 import pkg from '../package.json' with { type: 'json' }
 
 const ROOT = resolve(import.meta.dir, '..')
@@ -157,8 +157,10 @@ async function buildEngine(): Promise<void> {
 //
 // CommonJS, because VS Code loads extensions with `require()` and has no ESM
 // entrypoint support (microsoft/vscode#130367, #209560). `sharedBuildOptions()`
-// emits ESM for the CLI, so `format` is overridden here — one of only two
-// deviations, the other being `vscode` in `external`.
+// emits ESM for the CLI, so `format` is overridden here — one of only three
+// deviations, the others being `vscode` in `external` and the plugin that keeps
+// only zod's English locale (`zodEnglishLocalesOnlyPlugin`, ~211 KB of unused
+// translations otherwise parsed on every activation).
 //
 // `vscode` MUST be external: it is not a package on disk, it is injected by the
 // editor at load time. Bundling it is impossible; leaving it external is what
@@ -172,12 +174,14 @@ async function buildEngine(): Promise<void> {
 async function buildExtensionHost(): Promise<void> {
   step(`extension.js  ← ${HOST_ENTRY}  (cjs, vscode external)`)
 
+  const shared = sharedBuildOptions()
   const result = await Bun.build({
-    ...sharedBuildOptions(),
+    ...shared,
     entrypoints: [HOST_ENTRY],
     outdir: OUT_DIR,
     format: 'cjs',
     external: [...EXTERNAL, 'vscode'],
+    plugins: [...(shared.plugins ?? []), zodEnglishLocalesOnlyPlugin()],
     naming: 'extension.js',
   })
 
@@ -223,8 +227,11 @@ async function buildExtensionHost(): Promise<void> {
   // order of magnitude below a real leak (which was 19.7 MB, i.e. 12× this). If a
   // new import blows it, the fix is to move that work into the engine child — see
   // src/vscode/host/auth/vscodeLogin.ts, which spawns it for exactly this reason —
-  // not to raise this number.
-  const MAX_HOST_BYTES = 1_600_000
+  // not to raise this number. The opt-in Studio Remote feature is one deliberate
+  // exception: its socket.io transport runs in the extension host to bridge the
+  // editor's live permission/stream callbacks. The QR encoder still runs in the
+  // engine child, and the host bundle was inspected for React/Ink imports.
+  const MAX_HOST_BYTES = 1_700_000
   if (text.length > MAX_HOST_BYTES) {
     fail(
       `extension.js is ${kb(text.length)}, over the ${kb(MAX_HOST_BYTES)} budget.\n\n` +

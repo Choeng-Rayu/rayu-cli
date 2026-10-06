@@ -4,14 +4,22 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 
 let dir: string
+const originalConfigDir = process.env.RAYU_CONFIG_DIR
+const originalAuthConfigDir = process.env.RAYU_AUTH_CONFIG_DIR
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'rayu-auth-'))
   process.env.RAYU_CONFIG_DIR = dir
+  // Auth storage has higher precedence than RAYU_CONFIG_DIR. Isolate both so
+  // these tests can never read or mutate the developer's VS Code session.
+  process.env.RAYU_AUTH_CONFIG_DIR = dir
   delete process.env.USE_RAYU_OAUTH
 })
 afterEach(async () => {
   rmSync(dir, { recursive: true, force: true })
-  delete process.env.RAYU_CONFIG_DIR
+  if (originalConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
+  else process.env.RAYU_CONFIG_DIR = originalConfigDir
+  if (originalAuthConfigDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+  else process.env.RAYU_AUTH_CONFIG_DIR = originalAuthConfigDir
   delete process.env.USE_RAYU_OAUTH
   const m = await import('../src/services/rayuAuth/rayuSession.ts')
   m._setRayuFetchForTesting(null)

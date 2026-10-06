@@ -18,6 +18,7 @@ import type {
   PromptDeliveryView,
   RuntimeSectionView,
   ComposerControlView,
+  HostToWebviewEnvelope,
   HostToWebviewMessage,
   ThinkingEntryView,
   TurnProgressView,
@@ -25,6 +26,7 @@ import type {
   WebviewToHostMessage,
 } from '../shared/webviewProtocol.js'
 import { permissionModeById } from '../shared/permissionModes.js'
+import { sameBlockProps } from './blockProps.js'
 import {
   describeTurnPhase,
   formatDuration,
@@ -250,8 +252,19 @@ export function App(): JSX.Element {
   )
 
   useEffect(() => {
-    function onMessage(event: MessageEvent<HostToWebviewMessage>): void {
-      const message = event.data
+    // One frame of coalesced streaming updates arrives as a `batch` (see the host's
+    // messageCoalescer). Handling it inside this single event lets React commit every
+    // update in it together instead of once per message.
+    function onMessage(event: MessageEvent<HostToWebviewEnvelope>): void {
+      const data = event.data
+      if (data.type === 'batch') {
+        for (const message of data.messages) handle(message)
+        return
+      }
+      handle(data)
+    }
+
+    function handle(message: HostToWebviewMessage): void {
 
       // Correlated reply, not transcript state: hand it back to whoever asked.
       if (message.type === 'contextPathsResolved') {
@@ -761,15 +774,25 @@ export function App(): JSX.Element {
  * That made long histories appear to load another page whenever the user scrolled down.
  *
  * Memoization still matters during streaming: only the block being appended to reconciles,
- * while completed blocks with identical props stop here.
+ * while completed blocks with identical props stop here. The comparison looks at the
+ * props of the row INSIDE the block — `children` itself is a new element every render,
+ * so comparing it (what plain `memo` does) never matched; see `sameBlockProps`.
  */
-const TranscriptBlock = memo(function TranscriptBlock({
-  children,
-}: {
-  children: React.ReactNode
-}): JSX.Element {
-  return <div className="rc-block">{children}</div>
-})
+const TranscriptBlock = memo(
+  function TranscriptBlock({
+    children,
+  }: {
+    children: React.ReactElement
+  }): JSX.Element {
+    return <div className="rc-block">{children}</div>
+  },
+  (previous, next) =>
+    previous.children.type === next.children.type &&
+    sameBlockProps(
+      previous.children.props as Record<string, unknown>,
+      next.children.props as Record<string, unknown>,
+    ),
+)
 
 /**
  * The scrolling conversation.
@@ -1069,7 +1092,14 @@ function Transcript({
                         ? state.turnCompletions[block.entry.turnId]
                         : undefined
                     }
-                    turnPhase={state.turnProgress?.phase}
+                    turnPhase={
+                      // Only the streaming assistant row animates by phase; a settled row
+                      // ignores it. Passing it to every row re-rendered the whole
+                      // transcript on each phase change (every tool call).
+                      block.entry.kind === 'assistant' && block.entry.streaming
+                        ? state.turnProgress?.phase
+                        : undefined
+                    }
                     onKeep={onKeep}
                     onUndo={onUndo}
                     onDiff={onDiff}
