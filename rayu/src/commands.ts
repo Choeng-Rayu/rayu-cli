@@ -130,6 +130,7 @@ import bridgeKick from './commands/bridge-kick.js'
 import version from './commands/version.js'
 import sandboxToggle from './commands/sandbox-toggle/index.js'
 import contactMe from './commands/contactMe/index.js'
+import feedback from './commands/feedback/index.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
 import billing from './commands/billing/index.js'
@@ -273,6 +274,7 @@ const COMMANDS = memoize((): Command[] => [
   status,
   statusline,
   contactMe,
+  feedback,
   login,
   logout,
   billing,
