@@ -437,6 +437,8 @@ describe('init', () => {
       oauthEnabled: false,
       version: '1.0.0',
       workspaceFolder: '/tmp',
+      surface: 'sidebar',
+      surfaceBinding: null,
       transcript: [{ id: 'p1', kind: 'prompt', text: 'fresh' }],
       turnRunning: false,
       pendingPermissions: [],

@@ -335,11 +335,11 @@ export class PermissionRouter {
    * Called when the panel closes, the engine exits, or a new session starts. See rule
    * 2 in the header: fabricating a denial here would reject a tool the user was
    * mid-way through approving, and would look exactly like the model giving up.
+   * `mirroredOnly` preserves local-engine requests when an IPC attachment disconnects.
    */
-  cancelAll(): void {
-    for (const requestId of [...this.pending.keys()]) {
-      this.pending.delete(requestId)
-      this.callbacks.onDismiss(requestId)
+  cancelAll(mirroredOnly = false): void {
+    for (const [requestId, request] of [...this.pending]) {
+      if (!mirroredOnly || request.respondRemotely) this.dismiss(requestId)
     }
   }
 }

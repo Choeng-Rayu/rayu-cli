@@ -18,18 +18,23 @@
  * Every `ChatSession` keeps its own transcript, turn state, thinking blocks, tasks and review
  * records internally; the callbacks are purely a PUSH channel to the webview. That is what
  * makes this cheap: a background session's callbacks are dropped, its state keeps accruing,
- * and activation is a full `syncState()` from the session that just came to the front. There
+ * and activation is a full `syncSessionSurfaces()` that re-posts the init snapshot to the
+ * surfaces bound to the session that just came to the front. There
  * is no second copy of anything and no reconciliation step.
  *
- * Two host-side singletons are exceptions that need explicit handover, and both would be
- * silent-wrong-answer bugs if they were not:
+ * The PERMISSION ROUTER is a per-session exception, and getting it wrong would be a
+ * silent-wrong-answer bug:
  *
  *   the PERMISSION ROUTER — one per session, because a card belongs to the engine that is
  *     blocked on it. A shared router would offer the foreground user a decision on a
  *     background conversation's tool, and answering it would allow a tool they never saw.
- *   the DIFF STORE — a genuine singleton serving the editor's diff view. The active session
- *     re-publishes its own recorded hunks on activation; without that, a review card would
- *     reconstruct "before" content from another conversation's edits.
+ *     Its callbacks now carry their OWNING entry, so a card is routed to the surfaces
+ *     showing THAT conversation rather than to whatever happens to be on screen.
+ *
+ * The DIFF STORE used to be a second such singleton, hand-published on activation. It is
+ * now keyed by `(sessionKey, displayPath)` (see `review/fileChangeReview.ts`), so each
+ * conversation reconstructs "before" content from its own recorded hunks — no handover,
+ * and no cross-session collision when two conversations edit the same file.
  *
  * ── SESSIONS ARE BOUNDED, AND THE BOUND IS ABOUT PROCESSES ─────────────────────
  *
@@ -54,13 +59,23 @@ export const MAX_LIVE_SESSIONS = 4
 export interface RegistryCallbacks {
   /** Build the callbacks for one session. `isActive` gates every push to the webview. */
   sessionCallbacks: (entry: SessionEntry, isActive: () => boolean) => SessionCallbacks
-  /** Show an approval card. Only ever called for the active session. */
-  onShowPermission: (request: PermissionRequestView) => void
-  onDismissPermission: (requestId: string) => void
+  /**
+   * Show an approval card, tagged with the conversation that raised it. Called for a
+   * background conversation too — its card belongs in ITS tab, not the foreground one.
+   */
+  onShowPermission: (entry: SessionEntry, request: PermissionRequestView) => void
+  /** Remove an approval card, tagged with the conversation that raised it. */
+  onDismissPermission: (entry: SessionEntry, requestId: string) => void
   /** The active session changed, or a live session's summary did. */
   onChanged: () => void
-  /** Hand the diff store over to the newly active session's recorded hunks. */
+  /** The active (sidebar-bound) session changed. */
   onActivate: (entry: SessionEntry) => void
+  /**
+   * An entry is being retired — evicted for capacity, or explicitly closed. Fired
+   * immediately before its engine is disposed. Used to close the conversation's editor
+   * tab; callers must treat it as idempotent.
+   */
+  onRetire?: (entry: SessionEntry) => void
 }
 
 /** One open conversation. */
@@ -126,15 +141,15 @@ export class SessionRegistry {
     )
     const permissions = new PermissionRouter({
       onShow: request => {
-        // A background session's card is NOT shown. The engine stays blocked, which is
-        // correct: it is waiting for a human, and the human is looking at another
-        // conversation. The live list reports the block so it is not invisible.
-        if (this.activeKey === key) this.callbacks.onShowPermission(request)
-        else this.callbacks.onChanged()
+        // The card is routed to the surfaces showing THIS conversation — a background
+        // tab must render its own approval card, so the active key no longer gates it.
+        // `onChanged()` still fires so the live list's pending-approval count is fresh.
+        this.callbacks.onShowPermission(entry, request)
+        this.callbacks.onChanged()
       },
       onDismiss: requestId => {
-        if (this.activeKey === key) this.callbacks.onDismissPermission(requestId)
-        else this.callbacks.onChanged()
+        this.callbacks.onDismissPermission(entry, requestId)
+        this.callbacks.onChanged()
       },
     })
 
@@ -169,6 +184,16 @@ export class SessionRegistry {
     )
   }
 
+  /** The open conversation with this panel key, or null when it is unknown. */
+  byKey(key: string): SessionEntry | null {
+    return this.entries.find(entry => entry.key === key) ?? null
+  }
+
+  /** True while a conversation with this panel key is open. */
+  has(key: string): boolean {
+    return this.entries.some(entry => entry.key === key)
+  }
+
   setTitle(key: string, title: string): boolean {
     const entry = this.entries.find(item => item.key === key)
     if (!entry) return false
@@ -188,6 +213,9 @@ export class SessionRegistry {
     const index = this.entries.findIndex(entry => entry.key === key)
     if (index === -1) return
     const [entry] = this.entries.splice(index, 1)
+    // The conversation is gone: close its editor tab BEFORE the engine is disposed, so
+    // the surfaces can be torn down while the entry is still identifiable.
+    if (entry) this.callbacks.onRetire?.(entry)
     entry?.permissions.cancelAll()
     entry?.session.dispose()
     // Closing the visible conversation has to leave SOMETHING visible. The most recently
@@ -245,6 +273,9 @@ export class SessionRegistry {
       if (!idle) return
       const index = this.entries.indexOf(idle)
       this.entries.splice(index, 1)
+      // An eviction is a retirement too: close the idle conversation's tab, then its
+      // engine. Only ever an IDLE session (see the policy above), so nothing mid-turn.
+      this.callbacks.onRetire?.(idle)
       idle.session.dispose()
     }
   }

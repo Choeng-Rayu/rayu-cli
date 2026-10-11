@@ -26,13 +26,20 @@ import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 
-import { ChatViewProvider, CHAT_VIEW_ID } from './panel/chatViewProvider.js'
+import { CHAT_VIEW_ID } from './panel/chatViewProvider.js'
 import { ChatSession, type ConversationStateSnapshot } from './panel/sessionHandle.js'
 import { watchMcpConnection } from './panel/mcpConnectionUi.js'
 import {
   SessionRegistry,
   type SessionEntry,
 } from './panel/sessionRegistry.js'
+import { SurfaceRegistry } from './panel/surfaceRegistry.js'
+import {
+  dispatchWebviewMessage,
+  type ChatViewHandlers,
+  type SurfaceScope,
+} from './panel/webviewDispatch.js'
+import { SESSION_PANEL_VIEW_TYPE, type ChatSurface } from './panel/webviewSurface.js'
 import { PermissionRouter } from './panel/permissionRouter.js'
 import { invalidateRayuConfigCache } from '../../utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from './models/modelConfig.js'
@@ -47,6 +54,10 @@ import {
   signOutShared,
 } from './auth/rayuAuthBridge.js'
 import { signInFromEditor, type SignInOptions } from './auth/vscodeLogin.js'
+import {
+  RAYU_FEEDBACK_MAX_MESSAGE,
+  submitRayuFeedback,
+} from '../../services/rayuAuth/rayuFeedback.js'
 import { watchSharedSession } from './auth/authWatcher.js'
 import { checkTurnAllowed } from './auth/signInGate.js'
 import { beginGuestPairing, guestPairingStatus, stopGuestPairing } from '../../webBridge/guestPairing.js'
@@ -71,6 +82,7 @@ import {
   attachToCliSession,
   toAttachableView,
   type CliAttachment,
+  type AttachmentCallbacks,
 } from './attach/cliAttachment.js'
 import { trackEditorSelection } from './ide/editorSelection.js'
 import { startIdeServer } from './ide/ideServer.js'
@@ -89,6 +101,7 @@ import {
 } from './models/modelSettingCommands.js'
 import type {
   BackgroundTaskView,
+  ChatSurfaceKind,
   LiveSessionView,
   ModelCatalogueView,
   ModelChooserView,
@@ -99,6 +112,7 @@ import type {
   SessionSummaryView,
   ImageInputView,
   PromptDeliveryView,
+  SurfaceBindingView,
   WebviewState,
   McpConnectionUiView,
 } from '../shared/webviewProtocol.js'
@@ -110,6 +124,7 @@ const COMMANDS = {
   signOut: 'rayucode.signOut',
   addTerminalSelection: 'rayucode.addTerminalSelection',
   addToContext: 'rayucode.addToContext',
+  feedback: 'rayucode.feedback',
 } as const
 
 /**
@@ -301,10 +316,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // `engineCwd` above, since that is just a working directory, not a lookup key.
   const engineCwdRealpath = normalizeCwdForAttachLookup(engineCwd)
 
-  // Declared before the session so its callbacks can post to it, and assigned
-  // immediately after. The alternative — passing the provider into the session —
-  // would make the session depend on the webview, which is backwards.
-  let provider: ChatViewProvider
+  // ── SURFACES ─────────────────────────────────────────────────────────────────
+  // The chat now lives on several surfaces at once: the sidebar view and one editor
+  // tab per open conversation. `surfaces` (constructed below, after the registry)
+  // owns them all — fan-out, per-session routing, and the serializer's revival.
+  // `sidebar` is the sidebar surface handle, held only for the few host actions that
+  // are genuinely sidebar-shaped (reveal, insertPrompt, the sidebar's own snapshot).
+  let sidebar: ChatSurface | undefined
+  let surfaces: SurfaceRegistry
   let webBridge: { entry: SessionEntry; handle: VSCodeWebBridge } | null = null
 
   // Cards are dismissed, never auto-answered, when they stop being answerable. See
@@ -324,7 +343,7 @@ export function activate(context: vscode.ExtensionContext): void {
    */
   async function openProviderSetupSurface(open: boolean): Promise<void> {
     providerSetup = { ...providerSetup, open, error: null }
-    provider.post({ type: 'setProviderSetup', setup: providerSetup })
+    surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
     if (!open) return
 
     // Fetched once. The preset list is static for a given install, so refetching would
@@ -332,7 +351,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (providerSetup.presets !== undefined) return
 
     providerSetup = { ...providerSetup, busy: true, busyMessage: 'Loading providers…' }
-    provider.post({ type: 'setProviderSetup', setup: providerSetup })
+    surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
 
     const outcome = await listProviderPresets({ enginePath, cwd: engineCwd })
     providerSetup = {
@@ -342,7 +361,7 @@ export function activate(context: vscode.ExtensionContext): void {
       presets: outcome.presets ?? [],
       error: outcome.ok ? null : (outcome.error ?? 'Could not load providers.'),
     }
-    provider.post({ type: 'setProviderSetup', setup: providerSetup })
+    surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
   }
 
   /**
@@ -365,19 +384,17 @@ export function activate(context: vscode.ExtensionContext): void {
   let mcpUiSessionKey = ''
   let mcpFlowId = 0
   let attachment: AttachmentView = { available: undefined, attached: null, error: null }
-  let liveAttachment: CliAttachment | null = null
-  let standaloneTaskSnapshot: BackgroundTaskView[] = []
-  /**
-   * What the standalone session's transcript/thinking/tool-correlation/retained-output
-   * looked like right before this attach began. `null` while nothing is attached — the
-   * only state genuinely worth restoring is what `applyMirroredActivity` can mutate; see
-   * `snapshotConversationState`'s header for why this is narrower than a full session
-   * snapshot (context usage, inference settings, and review state are never touched by
-   * the mirrored path, so they need no capture here at all).
-   */
-  let standaloneConversationSnapshot: ConversationStateSnapshot | null = null
-  let taskInspectionSupported = true
-  let taskInspectionMessage: string | undefined
+  // The handle, restoration snapshots, and capability state have the same owner.
+  // A pending attachment also owns its session, so it cannot start a local turn.
+  let liveAttachment: {
+    entry: SessionEntry
+    target: AttachTargetFrame
+    handle: CliAttachment | null
+    conversation: ConversationStateSnapshot
+    tasks: BackgroundTaskView[]
+    taskInspectionSupported: boolean
+    taskInspectionMessage?: string
+  } | null = null
   /**
    * The open model chooser, if any.
    *
@@ -389,13 +406,24 @@ export function activate(context: vscode.ExtensionContext): void {
   let ideContext: IdeContextView | null = null
 
   function postAttachment(): void {
-    provider.post({ type: 'setAttachment', attachment })
+    for (const entry of registry.all) {
+      surfaces.postToSession(entry.key, { type: 'setAttachment', attachment: attachmentForEntry(entry) })
+    }
+  }
+
+  function attachedFor(sessionKey: string): typeof liveAttachment {
+    return liveAttachment?.entry.key === sessionKey ? liveAttachment : null
+  }
+
+  function attachmentForEntry(entry: SessionEntry): AttachmentView {
+    const owned = attachedFor(entry.key)
+    return { ...attachment, attached: owned?.handle ? toAttachableView(owned.target) : null }
   }
 
   /** Set and publish the chooser in one step, so the two cannot disagree. */
   function setModelChooser(chooser: ModelChooserView | null): void {
     modelChooser = chooser
-    provider.post({ type: 'setModelChooser', chooser })
+    surfaces.broadcast({ type: 'setModelChooser', chooser })
   }
 
   // ── EDITOR CONNECTION ────────────────────────────────────────────────────────  //
@@ -414,7 +442,7 @@ export function activate(context: vscode.ExtensionContext): void {
       context.subscriptions.push(
         trackEditorSelection(handle, context_ => {
           ideContext = context_
-          provider.post({ type: 'setIdeContext', context: context_ })
+          surfaces.broadcast({ type: 'setIdeContext', context: context_ })
         }),
       )
       return handle
@@ -424,17 +452,24 @@ export function activate(context: vscode.ExtensionContext): void {
   /**
    * The panel's open conversations.
    *
-   * ── EVERY HANDLER BELOW RESOLVES THE SESSION AT CALL TIME ──────────────────────
+   * ── EVERY PUSH BELOW IS ROUTED, NOT GATED ─────────────────────────────────────
    *
-   * The handlers are registered once, at activation, and the conversation they must act on
-   * changes whenever the user switches. So there is deliberately no `const session`: capturing
-   * one would leave every button operating on whichever conversation happened to be open when
-   * the extension started. `current()` is the only way to reach a session from here.
+   * A conversation keeps its own transcript, turn state and cards inside its
+   * `ChatSession`; the callbacks here are purely a PUSH channel to the surfaces.
+   * Each push is routed by `surfaces.postToSession(entry.key, …)`, which reaches the
+   * conversation's editor tab and — while that conversation is the active one — the
+   * sidebar, WITHOUT an `isActive()` gate: a background tab must keep streaming.
+   * A conversation with no surface showing it still accrues state, and the next
+   * full sync reconstructs it.
    */
+  // Login writes credentials before it finishes preparing the hosted provider.
+  // Keep all new engines behind that complete handoff, including the first prompt.
+  let signInPending: Promise<void> | null = null
   const registry = new SessionRegistry(
     {
       enginePath,
       cwd: engineCwd,
+      prepareStartup: waitForStartupPreparation,
       // Points the child's own lockfile scan at THIS window's editor connection. This is
       // the mechanism an editor extension is expected to use — `detectIDEs` treats a
       // matching `CLAUDE_CODE_SSE_PORT` as authoritative, which also disambiguates a
@@ -449,61 +484,69 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     },
     {
-      // Every push is gated on `isActive`. A background conversation keeps accruing state
-      // inside its own ChatSession; it simply does not write to the panel. Activation then
-      // rebuilds the panel from that state with one `syncState()`.
-      sessionCallbacks: (entry, isActive) => ({
+      // No `isActive` gate: every push is routed to this conversation's surfaces —
+      // see the registry construction comment above.
+      sessionCallbacks: (entry, _isActive) => ({
         onEntry: message => {
           if (webBridge?.entry === entry) webBridge.handle.onEntry(message)
-          if (isActive()) provider.post({ type: 'addMessage', entry: message })
-          // The live list shows a per-session label and running flag, both of which this
-          // changed — so background progress stays visible even though the transcript is not.
-          else postLiveSessions()
+          surfaces.postToSession(entry.key, { type: 'addMessage', entry: message })
+          // The live list shows a per-session label and running flag, both of which an
+          // entry can change — so it is refreshed alongside the push.
+          postLiveSessions()
         },
         onPartial: (id, kind, delta) => {
           if (webBridge?.entry === entry) webBridge.handle.onPartial(id, kind, delta)
           // Text only: the webview builds reasoning from `updateThinking` and drops thinking
           // deltas on arrival (see the reducer), so posting them is pure IPC overhead.
-          if (isActive() && kind === 'text') provider.post({ type: 'appendPartial', id, kind, delta })
+          if (kind === 'text') surfaces.postToSession(entry.key, { type: 'appendPartial', id, kind, delta })
         },
         onComplete: id => {
-          if (isActive()) provider.post({ type: 'completeMessage', id })
+          surfaces.postToSession(entry.key, { type: 'completeMessage', id })
         },
         onTurnState: running => {
           if (webBridge?.entry === entry) webBridge.handle.onTurnState(running)
-          if (isActive()) provider.post({ type: 'turnState', running })
+          surfaces.postToSession(entry.key, { type: 'turnState', running })
           postLiveSessions()
         },
-        // Only for the visible conversation: a background session's live tool output has
-        // nowhere to render and would be a message per second for nothing. Its transcript
-        // still receives the final result, and switching to it shows that.
+        // A running tool's live output goes to the conversation's surfaces — a
+        // background tab's tool row is exactly where it renders.
         onToolOutput: (id, text) => {
-          if (isActive()) provider.post({ type: 'appendToolOutput', id, text })
+          surfaces.postToSession(entry.key, { type: 'appendToolOutput', id, text })
         },
-        onModelInfo: info => {          if (!isActive()) return
-          provider.post({ type: 'setModelInfo', info })
+        onModelInfo: info => {
+          surfaces.postToSession(entry.key, { type: 'setModelInfo', info })
           // The engine's catalogue is authoritative for what the active provider can
           // actually serve, so re-publish once it has reported.
-          provider.post({
+          surfaces.postToSession(entry.key, {
             type: 'setModelCatalogue',
             catalogue: buildCatalogue(entry.session),
           })
         },
+        onSessionIdChanged: () => {
+          postSurfaceBinding(entry)
+          postLiveSessions()
+        },
         onError: message => {
-          // ── THE ACTIVE SESSION IS ALREADY COVERED BY ITS TRANSCRIPT ──────────────
+          // ── A SESSION WITH A VISIBLE SURFACE IS ALREADY COVERED BY ITS TRANSCRIPT ─
           //
           // `reportError` records every failure as a `notice` entry in the failing
           // session's own transcript, in chronological position. Posting `showError`
-          // as well would render the same failure twice for the visible conversation —
-          // once inline where it happened, once in the trailing notices list.
+          // as well would render the same failure twice — once inline where it
+          // happened, once in the trailing notices list — for any surface showing
+          // that conversation.
           //
-          // A BACKGROUND conversation is the case the transcript cannot cover: the
-          // entry exists, but in a transcript the user is not reading, and the session
-          // they are waiting on must not fail silently. So the alert is posted only
-          // when the failing session is not the one on screen, prefixed so they know
-          // which one it was.
-          if (!isActive()) {
-            provider.post({ type: 'showError', message: `${labelOf(entry)}: ${message}` })
+          // A conversation NO surface is showing is the case the transcript cannot
+          // cover: the entry exists, but in a transcript the user is not reading, and
+          // the session they are waiting on must not fail silently. So the alert is
+          // posted to the ACTIVE session's surfaces — where the user is — prefixed
+          // so they know which conversation it was about. Routing it to
+          // `postToSession(entry.key, …)` would deliver it to nobody: no surface is
+          // bound to that key at this point.
+          if (!surfaces.panelFor(entry.key) && registry.activeSessionKey !== entry.key) {
+            surfaces.postToSession(registry.activeSessionKey, {
+              type: 'showError',
+              message: `${labelOf(entry)}: ${message}`,
+            })
           }
         },
         // Routed to the OWNING session's router, never the active one: a card belongs to the
@@ -520,25 +563,24 @@ export function activate(context: vscode.ExtensionContext): void {
         // The review card is the one entry that can stop existing: once everything is
         // kept or undone there is nothing left to act on.
         onReviewCleared: id => {
-          if (isActive()) provider.post({ type: 'removeEntry', id })
+          surfaces.postToSession(entry.key, { type: 'removeEntry', id })
         },
-        // Hunks stay host-side; the editor draws the diff from them. The store is a
-        // singleton, so only the visible conversation may own it — see the registry header.
+        // Hunks stay host-side; the editor draws the diff from them. The store is
+        // keyed by (sessionKey, displayPath), so every conversation owns its records.
         onReviewFiles: files => {
-          if (isActive()) review.store.replace(files)
+          review.store.replace(entry.key, files)
         },
         onInferenceSettings: settings => {
-          if (isActive()) provider.post({ type: 'setInferenceSettings', settings })
+          surfaces.postToSession(entry.key, { type: 'setInferenceSettings', settings })
         },
         onPermissionMode: mode => {
-          if (isActive()) provider.post({ type: 'setPermissionMode', mode })
+          surfaces.postToSession(entry.key, { type: 'setPermissionMode', mode })
         },
         onCommands: commands => {
-          if (isActive()) provider.post({ type: 'setCommands', commands })
+          surfaces.postToSession(entry.key, { type: 'setCommands', commands })
         },
         onContextUsage: usage => {
-          if (!isActive()) return
-          provider.post({
+          surfaces.postToSession(entry.key, {
             type: 'setContextUsage',
             percentage: usage.percentage,
             totalTokens: usage.totalTokens,
@@ -547,76 +589,305 @@ export function activate(context: vscode.ExtensionContext): void {
           })
         },
         onMcpServers: servers => {
-          if (isActive()) provider.post({ type: 'setMcpServers', servers })
+          surfaces.postToSession(entry.key, { type: 'setMcpServers', servers })
         },
         onTurnProgress: progress => {
-          if (isActive()) provider.post({ type: 'setTurnProgress', progress })
+          surfaces.postToSession(entry.key, { type: 'setTurnProgress', progress })
         },
         onTurnCompleted: (turnId, completion) => {
-          if (isActive()) provider.post({ type: 'turnCompleted', turnId, completion })
+          surfaces.postToSession(entry.key, { type: 'turnCompleted', turnId, completion })
         },
         onThinking: thinking => {
-          if (isActive()) provider.post({ type: 'updateThinking', thinking })
+          surfaces.postToSession(entry.key, { type: 'updateThinking', thinking })
         },
         onTaskStateChanged: task => {
-          if (isActive()) provider.post({ type: 'upsertTaskState', task })
+          surfaces.postToSession(entry.key, { type: 'upsertTaskState', task })
         },
         onTaskStateReplaced: tasks => {
-          if (isActive()) {
-            provider.post({ type: 'replaceTaskState', tasks, supported: true })
-          }
+          surfaces.postToSession(entry.key, { type: 'replaceTaskState', tasks, supported: true })
         },
         onRuntimeCatalogue: (capabilities, commands, tools, resources) => {
-          if (isActive()) {
-            provider.post({
-              type: 'setRuntimeCatalogue',
-              capabilities,
-              commands,
-              tools,
-              ...resources,
-            })
-          }
+          surfaces.postToSession(entry.key, {
+            type: 'setRuntimeCatalogue',
+            capabilities,
+            commands,
+            tools,
+            ...resources,
+          })
         },
         onRateLimit: rateLimit => {
-          if (isActive()) provider.post({ type: 'setRateLimit', rateLimit })
+          surfaces.postToSession(entry.key, { type: 'setRateLimit', rateLimit })
         },
         onEngineAuthStatus: status => {
-          if (isActive()) provider.post({ type: 'setEngineAuthStatus', status })
+          surfaces.postToSession(entry.key, { type: 'setEngineAuthStatus', status })
         },
         onSessionStatus: status => {
-          if (isActive()) provider.post({ type: 'setSessionStatus', status })
+          surfaces.postToSession(entry.key, { type: 'setSessionStatus', status })
         },
         onPromptSuggestion: suggestion => {
-          if (isActive()) provider.post({ type: 'setPromptSuggestion', suggestion })
+          surfaces.postToSession(entry.key, { type: 'setPromptSuggestion', suggestion })
         },
         onMcpElicitation: request => {
-          if (isActive()) provider.post({ type: 'showMcpElicitation', request })
+          surfaces.postToSession(entry.key, { type: 'showMcpElicitation', request })
         },
         onMcpElicitationCancelled: requestId => {
-          if (isActive()) provider.post({ type: 'dismissMcpElicitation', requestId })
+          surfaces.postToSession(entry.key, { type: 'dismissMcpElicitation', requestId })
         },
       }),
-      onShowPermission: request =>
-        provider.post({ type: 'showPermissionRequest', request }),
-      onDismissPermission: requestId => {
-        webBridge?.handle.onPermissionDismiss(requestId)
-        provider.post({ type: 'dismissPermissionRequest', requestId })
+      onShowPermission: (entry, request) => {
+        // Unconditional and entry-carrying: a background tab must render its OWN
+        // approval card, and the card belongs to the surfaces showing THAT
+        // conversation — never to whatever happens to be on screen.
+        surfaces.postToSession(entry.key, { type: 'showPermissionRequest', request })
       },
-      onChanged: () => postLiveSessions(),
-      // Hand the diff store to the conversation that is now on screen, then rebuild the panel
-      // from it. One full sync is both simpler and more honest than replaying deltas.
+      onDismissPermission: (entry, requestId) => {
+        // Gated like `onPermissionCancelled` above: a card's dismissal reaches the
+        // bridge only when THAT conversation is the bridged one, so a card answered
+        // in another tab cannot dismiss anything on the remote.
+        if (webBridge?.entry === entry) webBridge.handle.onPermissionDismiss(requestId)
+        surfaces.postToSession(entry.key, { type: 'dismissPermissionRequest', requestId })
+      },
+      onChanged: () => {
+        postLiveSessions()
+        // The changed key is not carried, so every tab title is recomputed from the
+        // current labels — cheap, idempotent, and never stale.
+        for (const entry of registry.all) {
+          surfaces.updateTitle(entry.key)
+          postSurfaceBinding(entry)
+        }
+      },
+      // The active (sidebar-bound) session changed. One full sync is both simpler and
+      // more honest than replaying deltas. The review store is per-session now and is
+      // fed by `onReviewFiles`, so nothing is handed over on activation.
       onActivate: entry => {
         if (mcpUiSessionKey !== entry.key) {
           mcpUi = { load: 'idle', error: null, auth: null }
           mcpUiSessionKey = entry.key
         }
-        review.store.replace(entry.session.reviewFiles)
-        provider.syncState()
+        syncSessionSurfaces(entry.key)
+      },
+      // Retired — evicted for capacity, or explicitly closed. Close its tab before
+      // its engine goes away, and drop its review records. Idempotent.
+      onRetire: entry => {
+        if (attachedFor(entry.key)) detachAttachment(null, false)
+        surfaces.closePanel(entry.key)
+        review.store.clear(entry.key)
       },
     },
   )
 
-  /** The conversation on screen. Resolved per call — see the registry's construction. */
+  // ── THE SURFACE REGISTRY ─────────────────────────────────────────────────────
+  // Owns the sidebar view and every editor session tab. Panels are bound to one
+  // session for their life and are never gated; the sidebar renders
+  // `registry.activeSessionKey`. See `panel/surfaceRegistry.ts`.
+  //
+  // ── WHY THE SIDEBAR'S SNAPSHOT IS POSTED BY THIS FILE, NOT BY syncSidebar ────
+  //
+  // `stateFor` below builds PANEL-flavoured snapshots (`surface: 'panel'`, with a
+  // revival binding), which is what a tab must receive. The registry's
+  // `syncSidebar()` funnels through the SAME `stateFor`, so a sidebar init built
+  // there would carry panel chrome — hiding the sessions list and showing a
+  // close-tab action in the sidebar. The sidebar therefore gets every full init
+  // from `buildSidebarState()` posted directly (`syncSidebarState`), and every
+  // `surfaces.syncSession` call site is wrapped (`syncSessionSurfaces`,
+  // `openSessionTab`, the serializer callback) to re-post the sidebar's own
+  // flavour right after the registry's internal sidebar sync. Message-level
+  // pushes (`postToSession`, `broadcast`) are unaffected: only `init` is flavoured.
+  let lastRevivedSessionKey = ''
+  let revivedNeedsRestore = false
+  surfaces = new SurfaceRegistry({
+    extensionUri: context.extensionUri,
+    // The sidebar's binding follows the registry's active key, exactly as before:
+    // activation (a tab gaining focus, a conversation being created) rebinds it.
+    activeSidebarKey: () => registry.activeSessionKey,
+    // Panel-flavoured by design — see the block comment above.
+    stateFor: sessionKey => buildStateForKey(sessionKey, 'panel'),
+    onMessage: (kind, sessionKey, message) => {
+      const scope = scopeFor(kind, sessionKey)
+      if (message.type === 'ready') {
+        // The listener is attached; anything sent before now was dropped. The
+        // surface's snapshot is (re)sent HERE — then `handlers.ready` warms the
+        // engine for the conversation the surface is bound to.
+        if (kind === 'sidebar') syncSidebarState()
+        else syncSessionSurfaces(sessionKey)
+        dispatchWebviewMessage(message, scope, handlers)
+        return
+      }
+      // A surface whose conversation is gone (its tab is closing, or its key is
+      // stale) must act on nothing — except the three requests that exist to work
+      // without a live conversation.
+      if (
+        !registry.has(sessionKey) &&
+        message.type !== 'openSessionPanel' &&
+        message.type !== 'resumeSessionPanel' &&
+        message.type !== 'listSessions'
+      ) {
+        return
+      }
+      dispatchWebviewMessage(message, scope, handlers)
+    },
+    // A tab gaining focus makes its conversation the active one, which rebinds
+    // the sidebar (`onActivate` → the full sidebar sync).
+    onPanelFocused: sessionKey => {
+      registry.activate(sessionKey)
+    },
+    onPanelClosed: sessionKey => {
+      surfaces.updateTitle(sessionKey)
+    },
+    titleFor: sessionKey => {
+      const entry = registry.byKey(sessionKey)
+      return entry ? labelOf(entry) : 'Session'
+    },
+    // Resolve a restored tab's revival state. NEVER THROWS: a missing transcript
+    // or an unknown id degrades to a fresh conversation (see the plan's risk
+    // register) — a failed deserialize would leave the tab blank with no path back.
+    reviveBind: restored => {
+      revivedNeedsRestore = false
+      try {
+        if (restored.sessionId) {
+          // Already open: bind to it rather than respawning, which would kill a
+          // turn that is still running in the existing conversation.
+          const existing = registry.findByEngineSessionId(restored.sessionId)
+          if (existing) {
+            lastRevivedSessionKey = existing.key
+            return existing.key
+          }
+          const entry = registry.create({
+            resumeSessionId: restored.sessionId,
+            cwd: restored.cwd ?? engineCwd,
+            ...(restored.customTitle ? { customTitle: restored.customTitle } : {}),
+          })
+          revivedNeedsRestore = true
+          lastRevivedSessionKey = entry.key
+          return entry.key
+        }
+        const entry = registry.create({
+          ...(restored.customTitle ? { customTitle: restored.customTitle } : {}),
+        })
+        lastRevivedSessionKey = entry.key
+        return entry.key
+      } catch {
+        const entry = registry.create()
+        lastRevivedSessionKey = entry.key
+        return entry.key
+      }
+    },
+  })
+
+  /** The conversation the sending surface is bound to; null only for a stale key. */
+  function entryFor(sessionKey: string): SessionEntry | null {
+    return registry.byKey(sessionKey)
+  }
+
+  /**
+   * Everything a handler needs to act on the surface that sent a message: replies
+   * go to THAT surface only, and a resync rebuilds THAT conversation's surfaces.
+   */
+  function scopeFor(kind: ChatSurfaceKind, sessionKey: string): SurfaceScope {
+    return {
+      kind,
+      sessionKey,
+      reply: message => surfaces.postToSurface(kind, sessionKey, message),
+      resync: () => syncSessionSurfaces(sessionKey),
+    }
+  }
+
+  /** The registry key of a conversation, for routing its catalogue refresh. */
+  function keyForSession(session: ChatSession): string | undefined {
+    return registry.all.find(item => item.session === session)?.key
+  }
+
+  /** The snapshot for one conversation, flavoured for the surface rendering it. */
+  function stateForEntry(entry: SessionEntry, surface: ChatSurfaceKind): WebviewState {
+    const owned = attachedFor(entry.key)
+    return buildState(
+      version,
+      entry.session,
+      entry.permissions,
+      providerSetup,
+      modelChooser,
+      ideContext,
+      attachmentForEntry(entry),
+      historySessions,
+      registry.summaries(),
+      surface === 'panel' ? entry.key : registry.activeSessionKey,
+      mcpUi,
+      entry.customTitle,
+      owned?.taskInspectionSupported ?? true,
+      owned?.taskInspectionMessage,
+      surface,
+      surface === 'panel' ? surfaceBindingFor(entry) : null,
+    )
+  }
+
+  function surfaceBindingFor(entry: SessionEntry): SurfaceBindingView {
+    return {
+      sessionKey: entry.key,
+      sessionId: entry.session.engineSessionId ?? undefined,
+      cwd: entry.session.workingDirectory,
+      customTitle: entry.customTitle ?? undefined,
+    }
+  }
+
+  function postSurfaceBinding(entry: SessionEntry): void {
+    surfaces.postToSurface('panel', entry.key, { type: 'setSurfaceBinding', binding: surfaceBindingFor(entry) })
+  }
+
+  /** The snapshot for a key, or null when the registry no longer knows it. */
+  function buildStateForKey(sessionKey: string, surface: ChatSurfaceKind): WebviewState | null {
+    const entry = registry.byKey(sessionKey)
+    return entry ? stateForEntry(entry, surface) : null
+  }
+
+  /** The sidebar's snapshot: sidebar-flavoured, from the conversation it is bound to. */
+  function buildSidebarState(): WebviewState {
+    return stateForEntry(registry.active, 'sidebar')
+  }
+
+  /** Full init to the sidebar, from the snapshot BUILT FOR THE SIDEBAR. */
+  function syncSidebarState(): void {
+    sidebar?.postState(buildSidebarState())
+  }
+
+  /**
+   * `surfaces.syncSession` plus the sidebar correction. The registry's internal
+   * sidebar sync builds from the panel-flavoured `stateFor`, so when the synced key
+   * is also the sidebar's binding the sidebar is re-posted its own flavour right
+   * after — the last init a surface receives is the one that counts.
+   */
+  function syncSessionSurfaces(sessionKey: string): void {
+    surfaces.syncSession(sessionKey)
+    if (registry.activeSessionKey === sessionKey) syncSidebarState()
+  }
+
+  /** `surfaces.openPanel` plus the same sidebar correction as `syncSessionSurfaces`. */
+  function openSessionTab(sessionKey: string): void {
+    surfaces.openPanel(sessionKey)
+    if (registry.activeSessionKey === sessionKey) syncSidebarState()
+  }
+
+  /**
+   * A window-global state change (sign-in, provider save, the auth watcher) must
+   * reach every surface with a fresh snapshot — the sidebar once, and every open
+   * tab with its own panel-flavoured one.
+   */
+  function resyncAllSurfaces(): void {
+    syncSidebarState()
+    for (const entry of registry.all) {
+      surfaces.panelFor(entry.key)?.postState(stateForEntry(entry, 'panel'))
+    }
+  }
+
+  /** Reveal the sidebar chat, opening its container if it has never been mounted. */
+  async function revealSidebar(): Promise<void> {
+    if (sidebar) {
+      await sidebar.reveal()
+      return
+    }
+    await vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`)
+  }
+
+  /** The conversation on screen — the sidebar's binding. Resolved per call. */
   function current(): SessionEntry {
     return registry.active
   }
@@ -638,7 +909,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
-  async function runWebBridgeCommand(argument: string): Promise<void> {
+  /**
+   * The `/web-bridge` command surface. `entry` is the conversation the command was
+   * sent from — captured by the caller at submit time, so a switch mid-flow cannot
+   * rebind the bridge to a different conversation.
+   */
+  async function runWebBridgeCommand(argument: string, entry: SessionEntry): Promise<void> {
     const command = argument.toLowerCase()
     if (command === 'status') {
       const pending = guestPairingStatus()
@@ -669,13 +945,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const token = command === 'pair' ? null : await getAccessTokenForHost()
     if (token) {
-      await connectWebBridge(current())
+      await connectWebBridge(entry)
       return
     }
     webBridge?.handle.stop()
     webBridge = null
     stopGuestPairing()
-    const entry = current()
     try {
       const pairing = await beginGuestPairing(
         () => void connectWebBridge(entry),
@@ -695,18 +970,20 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   function showMcpUi(entry: SessionEntry, next: McpConnectionUiView): void {
+    // One MCP connection flow at a time, anchored to the active conversation — see
+    // the `mcpUiSessionKey`/`mcpFlowId` guards around it.
     if (registry.activeSessionKey !== entry.key) return
     mcpUiSessionKey = entry.key
     mcpUi = next
-    provider.post({ type: 'setMcpConnectionUi', connection: next })
+    surfaces.postToSession(entry.key, { type: 'setMcpConnectionUi', connection: next })
   }
 
-  async function refreshMcp(entry = current()): Promise<void> {
+  async function refreshMcp(entry: SessionEntry): Promise<void> {
     showMcpUi(entry, { ...mcpUi, load: 'loading', error: null })
     try {
       const servers = await entry.session.getMcpStatus()
       if (registry.activeSessionKey !== entry.key) return
-      provider.post({ type: 'setMcpServers', servers })
+      surfaces.postToSession(entry.key, { type: 'setMcpServers', servers })
       const auth = mcpUi.auth?.stage === 'connected' &&
         !servers.some(server => server.name === mcpUi.auth?.serverName && server.status === 'connected')
         ? null : mcpUi.auth
@@ -725,67 +1002,99 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   function postLiveSessions(): void {
-    provider.post({
+    // The live list is window-global: every surface renders it, so it broadcasts.
+    surfaces.broadcast({
       type: 'setLiveSessions',
       sessions: registry.summaries(),
       activeKey: registry.activeSessionKey,
     })
   }
 
-  /**
-   * Put the standalone session's transcript back the way it was before this
-   * attachment started, then re-derive the panel from it — the same "one full sync
-   * is simpler and more honest than replaying deltas" rule `onActivate` already
-   * uses when switching which conversation is on screen. Tasks are restored
-   * separately by the caller because `standaloneTaskSnapshot`/`applyMirroredTaskSnapshot`
-   * predates this function and already has its own preserve-completed semantics.
-   */
-  function restoreStandaloneConversation(): void {
-    if (standaloneConversationSnapshot) {
-      current().session.restoreConversationState(standaloneConversationSnapshot)
-      standaloneConversationSnapshot = null
-    }
-    current().session.applyMirroredTaskSnapshot(standaloneTaskSnapshot)
-    review.store.replace(current().session.reviewFiles)
-    provider.syncState()
+  /** Clear ownership before disconnecting, so late callbacks cannot affect a replacement. */
+  function detachAttachment(error: string | null = null, warmup = true): void {
+    const owned = liveAttachment
+    if (!owned) return
+    liveAttachment = null
+    owned.handle?.detach()
+    attachment = { ...attachment, attached: null, error }
+    // Retirement has already removed the entry. Do not ask the sidebar for its
+    // active key until the registry finishes selecting the replacement.
+    if (!registry.has(owned.entry.key)) return
+    owned.entry.permissions.cancelAll(true)
+    owned.entry.session.resetMirroredPromptTracking()
+    owned.entry.session.restoreConversationState(owned.conversation)
+    owned.entry.session.applyMirroredTaskSnapshot(owned.tasks)
+    review.store.replace(owned.entry.key, owned.entry.session.reviewFiles)
+    syncSessionSurfaces(owned.entry.key)
+    if (warmup) void prewarmSession(owned.entry)
+    postAttachment()
   }
 
   let disposed = false
   context.subscriptions.push({ dispose: () => { disposed = true } })
 
-  /** Model-catalogue refreshes. The rules for which conversation they answer are in its module. */
+  /**
+   * Model-catalogue refreshes. The rules for which conversation they answer are in
+   * its module. The refresher serialises runs, so the target key stashed by
+   * `catalogueFor` — called synchronously at each run's start — is the exact key
+   * that run's `post`/`onSettled` must route to.
+   */
+  let refreshTargetKey = ''
   const catalogueRefresher = new CatalogueRefresher<ChatSession>({
-    catalogueFor: session => buildCatalogue(session),
+    // ALSO the routing stash: the refresher calls this at the start of each
+    // (serialized) run, so it captures the run's target before any await.
+    catalogueFor: session => {
+      refreshTargetKey = keyForSession(session) ?? ''
+      return buildCatalogue(session)
+    },
     fetch: model => refreshProviderCatalogue({ enginePath, cwd: engineCwd }, model),
     readPersistedModel: readActiveModel,
-    isActive: session => current().session === session,
-    post: catalogue => provider.post({ type: 'setModelCatalogue', catalogue }),
+    // "On screen" now means any surface is showing the conversation: its tab, or
+    // the sidebar while it is the active one.
+    isActive: session => {
+      const key = keyForSession(session)
+      return key !== undefined && (surfaces.hasPanel(key) || registry.activeSessionKey === key)
+    },
+    post: catalogue => surfaces.postToSession(refreshTargetKey, { type: 'setModelCatalogue', catalogue }),
     invalidate: invalidateRayuConfigCache,
     isDisposed: () => disposed,
-    onSettled: () => provider.syncState(),
+    onSettled: () => syncSessionSurfaces(refreshTargetKey),
   })
 
-  /** Prewarm only when the panel is usable and standalone Rayucode owns execution. */
-  async function prewarmSession(): Promise<void> {
+  /** Prompts and warmups use the same prerequisites before reading provider config. */
+  async function waitForStartupPreparation(): Promise<void> {
+    await signInPending
+    const refresh = catalogueRefresher.pending
+    if (refresh) await refresh
+    invalidateRayuConfigCache()
+  }
+
+  /** Prewarm only when a surface is usable and standalone Rayucode owns execution. */
+  async function prewarmSession(entry: SessionEntry = current()): Promise<void> {
     if (
       disposed ||
-      !provider.isOpen ||
-      liveAttachment ||
+      !surfaces.isOpen ||
+      attachedFor(entry.key) ||
       !checkTurnAllowed().allowed
     ) return
 
     // The hosted refresh writes model capabilities into Rayucode's provider profile,
     // which the engine reads at startup. Starting first can leave the child with a stale
     // capability cache (for example, hiding effort for a thinking model).
-    const refresh = catalogueRefresher.pending
-    if (refresh) await refresh.catch(() => {})
+    try {
+      await waitForStartupPreparation()
+    } catch {
+      // Login/catalogue callers own their errors. A failed preparation must not
+      // become an unhandled rejection from this background warmup.
+      return
+    }
     if (
       disposed ||
-      !provider.isOpen ||
-      liveAttachment ||
+      !surfaces.isOpen ||
+      attachedFor(entry.key) ||
       !checkTurnAllowed().allowed
     ) return
-    await current().session.warmup()
+    await entry.session.warmup()
   }
 
   /**
@@ -794,15 +1103,27 @@ export function activate(context: vscode.ExtensionContext): void {
    * Callers acting on a user's choice pass the conversation they captured when the user
    * acted; the default is right only for refreshes not tied to a choice.
    */
-  function refreshModels(model?: string, target: ChatSession = current().session): Promise<void> {
+  function refreshModels(model?: string, target: ChatSession = registry.active.session): Promise<void> {
     return catalogueRefresher.refresh(target, model)
   }
 
   /** Run the editor-native login flow, then refresh the same state as the button. */
-  async function signInToRayucode(): Promise<void> {
-    await runSignIn(provider, { enginePath, cwd: engineCwd })
-    await refreshModels()
-    prewarmSession()
+  async function signInToRayucode(entry: SessionEntry): Promise<void> {
+    if (signInPending) return signInPending
+    let succeeded = false
+    const pending = (async () => {
+      if (!await runSignIn(resyncAllSurfaces, { enginePath, cwd: engineCwd })) return
+      invalidateRayuConfigCache()
+      await refreshModels(undefined, entry.session)
+      succeeded = true
+    })()
+    signInPending = pending
+    try {
+      await pending
+    } finally {
+      if (signInPending === pending) signInPending = null
+    }
+    if (succeeded) await prewarmSession(entry)
   }
 
   /**
@@ -818,83 +1139,84 @@ export function activate(context: vscode.ExtensionContext): void {
    * setting taking hold. With no session id yet there is no conversation to preserve, and
    * the next prompt starts a correctly-configured engine on its own.
    */
-  async function restartEngineWithResume(): Promise<void> {
+  async function restartEngineWithResume(entry: SessionEntry): Promise<void> {
     invalidateRayuConfigCache()
-    const sessionId = current().session.engineSessionId
+    const sessionId = entry.session.engineSessionId
     if (!sessionId) {
       // `preserveModel` throughout: this is a RESTART of one conversation, not a new one, so
       // it must not adopt whatever model another conversation has since selected.
-      current().session.newSession(undefined, undefined, { preserveModel: true })
-      provider.syncState()
-      prewarmSession()
+      entry.session.newSession(undefined, undefined, { preserveModel: true })
+      syncSessionSurfaces(entry.key)
+      prewarmSession(entry)
       return
     }
     const cwd = workspaceDir ?? engineCwd
-    current().session.newSession(sessionId, cwd, { preserveModel: true })
-    current().session.restoreTranscript(await loadSessionTranscript(sessionId, cwd))
-    await current().session.restoreTaskHistory(sessionId, cwd)
-    provider.syncState()
-    prewarmSession()
+    entry.session.newSession(sessionId, cwd, { preserveModel: true })
+    entry.session.restoreTranscript(await loadSessionTranscript(sessionId, cwd))
+    await entry.session.restoreTaskHistory(sessionId, cwd)
+    syncSessionSurfaces(entry.key)
+    prewarmSession(entry)
   }
 
   /** Show a host-owned command result in the transcript, as the CLI shows a system line. */
-  function postCommandNotice(message: string): void {
-    provider.post({ type: 'addMessage', entry: { id: `cmd-${Date.now()}`, kind: 'notice', text: message, severity: 'info' } })
+  function postCommandNotice(sessionKey: string, message: string): void {
+    surfaces.postToSession(sessionKey, {
+      type: 'addMessage',
+      entry: { id: `cmd-${Date.now()}`, kind: 'notice', text: message, severity: 'info' },
+    })
   }
 
-  async function runModelSettingCommand(command: ModelSettingCommand): Promise<void> {
+  async function runModelSettingCommand(command: ModelSettingCommand, entry: SessionEntry): Promise<void> {
     switch (command.kind) {
       case 'usage':
-        postCommandNotice(command.message)
+        postCommandNotice(entry.key, command.message)
         return
       case 'show':
-        postCommandNotice(describeSelection(command.target, command.agentType))
+        postCommandNotice(entry.key, describeSelection(command.target, command.agentType))
         return
       case 'reset': {
         const notice = applySelection(command.target, null, command.agentType)
-        if (notice) postCommandNotice(notice)
-        await restartEngineWithResume()
+        if (notice) postCommandNotice(entry.key, notice)
+        await restartEngineWithResume(entry)
         return
       }
       case 'choose':
         // The catalogue is what the picker lists, and it may not have been fetched yet.
-        void refreshModels()
+        void refreshModels(undefined, entry.session)
         setModelChooser(
           buildChooser(
             command.target,
             command.agentType,
-            current().session.subagentTypes,
+            entry.session.subagentTypes,
           ),
         )
         return
     }
   }
 
-  provider = new ChatViewProvider(
-    context.extensionUri,
-    () =>
-      buildState(
-        version,
-        current().session,
-        current().permissions,
-        providerSetup,
-        modelChooser,
-        ideContext,
-        attachment,
-        historySessions,
-        registry.summaries(),
-        registry.activeSessionKey,
-        mcpUi,
-        current().customTitle,
-        taskInspectionSupported,
-        taskInspectionMessage,
-      ),
-    {
-      ready: prewarmSession,
-      submitPrompt: async (text, images, delivery = 'normal') => {
+  /**
+   * The webview→host handlers. Every method takes the originating `scope` first
+   * and resolves the conversation from IT — never from the globally-active one —
+   * so a background tab's buttons act on the conversation that tab is bound to.
+   * Dispatch lives in `webviewDispatch.ts`; this is the host's implementation.
+   */
+  const handlers: ChatViewHandlers = {
+      ready: scope => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) prewarmSession(entry)
+      },
+      submitPrompt: async (scope, text, images, delivery = 'normal') => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        const owned = attachedFor(entry.key)
+        if (owned && !owned.handle) {
+          scope.reply({ type: 'showError', message: 'The CLI connection is still opening. Try again once it connects.' })
+          return
+        }
+        const cli = owned?.handle
         const bridgeCommand = /^\s*\/web-bridge(?:\s+(\S+))?\s*$/.exec(text)
         if (bridgeCommand) {
-          await runWebBridgeCommand(bridgeCommand[1] ?? '')
+          await runWebBridgeCommand(bridgeCommand[1] ?? '', entry)
           return
         }
         // The CLI implementations of these commands render Ink UI and are therefore
@@ -903,7 +1225,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // user is signed out.
         const hostCommand = rayucodeHostSlashCommand(text)
         if (hostCommand === 'login') {
-          await signInToRayucode()
+          await signInToRayucode(entry)
           return
         }
         if (hostCommand === 'connect') {
@@ -911,11 +1233,11 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
         if (hostCommand === 'logout') {
-          await runSignOut(provider)
+          await runSignOut(resyncAllSurfaces)
           return
         }
         if (hostCommand === 'reload-plugins') {
-          await current().session.reloadPlugins()
+          await entry.session.reloadPlugins()
           return
         }
         if (hostCommand === 'install-github-app') {
@@ -928,42 +1250,42 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const runtimeSection = rayucodeRuntimeSectionCommand(text)
         if (runtimeSection === 'tasks') {
-          provider.post({ type: 'openTaskCenter' })
+          scope.reply({ type: 'openTaskCenter' })
           return
         }
         const inferenceCommand = parseRayucodeInferenceCommand(text)
         if (inferenceCommand?.kind === 'open') {
-          provider.post({ type: 'openComposerControl', control: inferenceCommand.control })
+          scope.reply({ type: 'openComposerControl', control: inferenceCommand.control })
           return
         }
         if (inferenceCommand?.kind === 'effort') {
-          await current().session.setEffort(inferenceCommand.level)
+          await entry.session.setEffort(inferenceCommand.level)
           return
         }
         if (inferenceCommand?.kind === 'model') {
           // Captured now: the user may switch conversations before `setModel` settles.
-          const session = current().session
+          // The catalogue is posted to THIS conversation's surfaces, so it lands right
+          // regardless of any switch.
+          const session = entry.session
           await session.setModel(inferenceCommand.model)
           await refreshModels(inferenceCommand.model, session)
-          if (current().session === session) {
-            provider.post({ type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
-          }
+          surfaces.postToSession(entry.key, { type: 'setModelCatalogue', catalogue: buildCatalogue(session) })
           return
         }
         if (runtimeSection) {
-          provider.post({ type: 'openRuntimeCenter', section: runtimeSection })
+          scope.reply({ type: 'openRuntimeCenter', section: runtimeSection })
           return
         }
         const skillInstall = parseSkillInstallCommand(text)
         if (skillInstall) {
-          await current().session.installSkill(skillInstall.source, skillInstall.overwrite)
+          await entry.session.installSkill(skillInstall.source, skillInstall.overwrite)
           return
         }
         // These are `local-jsx` in the CLI and therefore absent from the engine too, but
         // unlike /login they take arguments — so they are parsed rather than matched.
-        const settingCommand = parseModelSettingCommand(text, current().session.subagentTypes)
+        const settingCommand = parseModelSettingCommand(text, entry.session.subagentTypes)
         if (settingCommand) {
-          await runModelSettingCommand(settingCommand)
+          await runModelSettingCommand(settingCommand, entry)
           return
         }
         const sideQuestion = parseSideQuestionCommand(text)
@@ -971,47 +1293,46 @@ export function activate(context: vscode.ExtensionContext): void {
           // An attached CLI owns authentication and execution. Its account may be
           // valid while standalone Rayucode is signed out, so only apply the local
           // sign-in gate when the local engine will answer the side question.
-          if (!liveAttachment) {
+          if (!cli) {
             const gate = checkTurnAllowed()
             if (!gate.allowed) {
-              provider.syncState()
-              provider.post({ type: 'showError', message: gate.reason })
+              scope.resync()
+              scope.reply({ type: 'showError', message: gate.reason })
               return
             }
           }
-          if (liveAttachment) {
-            const attachment = liveAttachment
-            await current().session.askSideQuestion(
+          if (cli) {
+            await entry.session.askSideQuestion(
               sideQuestion,
               question => {
-                if (attachment.capabilities?.features.sideQuestions === false) {
+                if (cli.capabilities?.features.sideQuestions === false) {
                   return Promise.reject(
                     new Error(
                       'The attached CLI does not support /btw. Update it and reattach to use this.',
                     ),
                   )
                 }
-                return attachment.askSideQuestion(question)
+                return cli.askSideQuestion(question)
               },
             )
           } else {
-            await current().session.askSideQuestion(sideQuestion)
+            await entry.session.askSideQuestion(sideQuestion)
           }
           return
         }
-        if (liveAttachment && (images?.length ?? 0) > 0) {
-          provider.post({
+        if (cli && (images?.length ?? 0) > 0) {
+          scope.reply({
             type: 'showError',
             message: 'Image attachments are unavailable while attached to a CLI session. Detach to send this image with Rayucode.',
           })
           return
         }
-        if (liveAttachment) {
+        if (cli) {
           try {
-            const operationId = await liveAttachment.submitPrompt(text, delivery)
-            current().session.recordMirroredPrompt(text, delivery, operationId)
+            const operationId = await cli.submitPrompt(text, delivery)
+            if (liveAttachment === owned) entry.session.recordMirroredPrompt(text, delivery, operationId)
           } catch (cause) {
-            provider.post({
+            scope.reply({
               type: 'showError',
               message: `The attached CLI did not accept the message: ${
                 cause instanceof Error ? cause.message : String(cause)
@@ -1020,43 +1341,69 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           return
         }
-        const acceptedImages = validateImageInputs(images, provider)
+        const acceptedImages = validateImageInputs(images, scope)
         if (acceptedImages === null) return
-        await submitPrompt(current().session, provider, text, acceptedImages, delivery)
+        await submitPrompt(entry.session, scope, text, acceptedImages, delivery)
       },
-      interrupt: () => current().session.interrupt(),
+      interrupt: scope => {
+        const entry = entryFor(scope.sessionKey)
+        if (attachedFor(scope.sessionKey)) {
+          scope.reply({ type: 'showError', message: 'Stop this turn in the attached CLI terminal. Its connection does not support interruption.' })
+          return
+        }
+        if (entry) entry.session.interrupt()
+      },
       newSession: () => {
-        // OPENS a conversation; it does not replace one. The previous implementation called
-        // `newSession()` on the single session, which killed a turn that was still running.
-        registry.create()
-        provider.syncState()
-        prewarmSession()
+        // OPENS a conversation as its own editor tab; it does not replace one. The
+        // previous implementation called `newSession()` on the single session, which
+        // killed a turn that was still running.
+        const entry = registry.create()
+        openSessionTab(entry.key)
+        prewarmSession(entry)
       },
-      switchSession: key => {
-        if (registry.activate(key)) return
-        // A stale key from a list the webview fetched before a session closed. Resync rather
-        // than fail: the user pressed a row that no longer exists and needs to see why.
-        postLiveSessions()
-        provider.post({ type: 'showError', message: 'That conversation is no longer open.' })
+      // Sidebar intent: open (or focus) the conversation's editor tab. The sidebar
+      // binding follows through the tab's focus → `registry.activate`.
+      switchSession: (scope, key) => {
+        if (!registry.has(key)) {
+          // A stale key from a list the webview fetched before a session closed. Resync rather
+          // than fail: the user pressed a row that no longer exists and needs to see why.
+          postLiveSessions()
+          scope.reply({ type: 'showError', message: 'That conversation is no longer open.' })
+          return
+        }
+        openSessionTab(key)
       },
-      closeSession: key => {
+      // Same intent as switchSession, for surfaces that ask for the tab explicitly.
+      openSessionPanel: (scope, key) => {
+        if (!registry.has(key)) {
+          postLiveSessions()
+          scope.reply({ type: 'showError', message: 'That conversation is no longer open.' })
+          return
+        }
+        openSessionTab(key)
+      },
+      closeSession: (scope, key) => {
         if (webBridge?.entry.key === key) {
           webBridge.handle.stop()
           webBridge = null
           stopGuestPairing()
         }
+        // Close the MESSAGE key's tab: a sidebar row can close a conversation other
+        // than its own binding. `registry.close` fires `onRetire`, which closes the
+        // same tab idempotently — the explicit close keeps the tab from rendering a
+        // retired conversation for even one frame.
+        surfaces.closePanel(key)
         registry.close(key)
-        provider.syncState()
         prewarmSession()
       },
-      renameSession: async (key, id, suppliedTitle) => {
+      renameSession: async (scope, key, id, suppliedTitle) => {
         const entry = key
           ? registry.all.find(item => item.key === key)
           : id ? registry.findByEngineSessionId(id) : undefined
         const selected = id ? historySessions.sessions.find(item => item.id === id) : undefined
         const sessionId = entry?.session.engineSessionId ?? id
         if (!sessionId || (!entry && !selected)) {
-          provider.post({ type: 'showError', message: 'Send a message before naming this conversation, or refresh session history.' })
+          scope.reply({ type: 'showError', message: 'Send a message before naming this conversation, or refresh session history.' })
           return
         }
         const previous = entry?.customTitle ?? selected?.customTitle ?? (entry ? labelOf(entry) : selected?.label ?? '')
@@ -1075,6 +1422,8 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           const trimmed = title.trim()
           await renameWorkspaceSession(sessionId, trimmed, selected?.cwd ?? workspaceDir ?? engineCwd)
+          // `setTitle` fires `onChanged`, which refreshes the live list and the
+          // renamed conversation's tab title.
           if (entry) registry.setTitle(entry.key, trimmed)
           historySessions = {
             ...historySessions,
@@ -1082,39 +1431,49 @@ export function activate(context: vscode.ExtensionContext): void {
               ? { ...item, label: trimmed, customTitle: trimmed, lastModified: Date.now() }
               : item),
           }
-          provider.post({ type: 'setSessions', list: historySessions })
-          provider.syncState()
+          surfaces.broadcast({ type: 'setSessions', list: historySessions })
+          if (entry) syncSessionSurfaces(entry.key)
         } catch (cause) {
-          provider.post({ type: 'showError', message: `Could not rename session: ${cause instanceof Error ? cause.message : String(cause)}` })
+          scope.reply({ type: 'showError', message: `Could not rename session: ${cause instanceof Error ? cause.message : String(cause)}` })
         }
       },
-      permissionResponse: (requestId, decision) =>
-        current().permissions.resolve(current().session.controlClient, requestId, { kind: decision }),
-      questionResponse: (requestId, answers, notes) => {
-        const result = current().permissions.resolveQuestions(
-          current().session.controlClient,
+      permissionResponse: (scope, requestId, decision) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        entry.permissions.resolve(entry.session.controlClient, requestId, { kind: decision })
+      },
+      questionResponse: (scope, requestId, answers, notes) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        const result = entry.permissions.resolveQuestions(
+          entry.session.controlClient,
           requestId,
           answers,
           notes,
         )
-        if (result) current().session.recordQuestionAnswers(result.toolUseId, result.answers)
+        if (result) entry.session.recordQuestionAnswers(result.toolUseId, result.answers)
       },
       // The WEBVIEW owns the dropdown now, so the host only applies the choice. It is
       // configuration only — nothing here touches the composer's text.
-      selectModelValue: async value => {
-        // Captured now: the user may switch conversations before `setModel` settles. The
-        // refresher queues this behind any refresh already running for something else.
-        const session = current().session
+      selectModelValue: async (scope, value) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        // Captured now: the user may switch conversations before `setModel` settles.
+        // The refresher queues this behind any refresh already running for something
+        // else, and the catalogue is posted to THIS conversation's surfaces, so it
+        // lands right regardless of any switch.
+        const session = entry.session
         await session.setModel(value)
         await refreshModels(value, session)
-        if (current().session === session) {
-          provider.post({
-            type: 'setModelCatalogue',
-            catalogue: buildCatalogue(session),
-          })
-        }
+        surfaces.postToSession(entry.key, {
+          type: 'setModelCatalogue',
+          catalogue: buildCatalogue(session),
+        })
       },
-      refreshModelCatalogue: refreshModels,
+      refreshModelCatalogue: async scope => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) await refreshModels(undefined, entry.session)
+      },
       // Both settings are acknowledged by the owning engine before the controls update.
       // Rayucode persists them in its product profile, separate from the terminal CLI.
 
@@ -1129,95 +1488,87 @@ export function activate(context: vscode.ExtensionContext): void {
         postAttachment()
       },
 
-      attachToSession: async (pid: number) => {
-        // Replace any existing attachment: mirroring two sessions into one transcript
-        // would interleave unrelated conversations with no way to tell them apart.
-        liveAttachment?.detach()
-        liveAttachment = null
-        current().session.resetMirroredPromptTracking()
-
+      attachToSession: async (scope, pid: number) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
         const target = attachTargets.find(t => t.pid === pid)
         if (!target) {
           attachment = {
             ...attachment,
-            attached: null,
             error: 'That session is no longer running. Refresh the list.',
           }
           postAttachment()
           return
         }
 
-        standaloneTaskSnapshot = [...current().session.backgroundTasks]
-        standaloneConversationSnapshot = current().session.snapshotConversationState()
-        await current().session.restoreTaskHistory(target.sessionId, target.cwd)
-        const handle = await attachToCliSession(target, {
-          onStreamStart: () => current().session.beginMirroredTurn(),
-          onStreamDelta: delta => current().session.appendMirroredDelta(delta),
-          onStreamThinking: () => current().session.markMirroredThinking(),
-          onStreamEnd: () => current().session.endMirroredTurn(),
-          onActivity: messages => current().session.applyMirroredActivity(messages),
-          onPermissionRequest: request =>
-            current().permissions.presentMirrored(request, response =>
-              liveAttachment?.respondPermission(request.requestId, response),
-            ),
-          // Withdrawn or answered elsewhere — either way the card must go.
-          onPermissionDismiss: requestId => current().permissions.dismiss(requestId),
-          onTaskSnapshot: tasks => {
-            taskInspectionSupported = true
-            taskInspectionMessage = undefined
-            current().session.applyMirroredTaskSnapshot(tasks, true)
-          },
-          onTaskEvent: event => current().session.applyMirroredTaskEvent(event),
-          onTaskUnsupported: message => {
-            taskInspectionSupported = false
-            taskInspectionMessage = message
-            provider.post({ type: 'replaceTaskState', tasks: [], supported: false, message })
-          },
-          onClosed: () => {
-            liveAttachment = null
-            taskInspectionSupported = true
-            taskInspectionMessage = undefined
-            restoreStandaloneConversation()
-            attachment = {
-              ...attachment,
-              attached: null,
-              error: 'The attached session exited.',
-            }
-            postAttachment()
-            prewarmSession()
-          },
-        })
-
-        if (!handle) {
-          attachment = {
-            ...attachment,
-            attached: null,
-            error: 'Could not connect to that session. It may have just exited.',
-          }
-          postAttachment()
-          return
+        detachAttachment(null, false)
+        entry.session.resetMirroredPromptTracking()
+        const owned = {
+          entry, target, handle: null as CliAttachment | null,
+          conversation: entry.session.snapshotConversationState(),
+          tasks: [...entry.session.backgroundTasks],
+          taskInspectionSupported: true,
+          taskInspectionMessage: undefined as string | undefined,
         }
-
-        liveAttachment = handle
-        attachment = { ...attachment, attached: toAttachableView(target), error: null }
-        postAttachment()
+        liveAttachment = owned
+        const isCurrent = () => liveAttachment === owned
+        const ifCurrent = <Args extends unknown[]>(callback: (...args: Args) => void) =>
+          (...args: Args): void => { if (isCurrent()) callback(...args) }
+        const callbacks: AttachmentCallbacks = {
+          onStreamStart: ifCurrent(() => entry.session.beginMirroredTurn()),
+          onStreamDelta: ifCurrent(delta => entry.session.appendMirroredDelta(delta)),
+          onStreamThinking: ifCurrent(() => entry.session.markMirroredThinking()),
+          onStreamEnd: ifCurrent(() => entry.session.endMirroredTurn()),
+          onActivity: ifCurrent(messages => entry.session.applyMirroredActivity(messages)),
+          onPermissionRequest: ifCurrent(request =>
+            entry.permissions.presentMirrored(request, response => {
+              if (isCurrent()) owned.handle?.respondPermission(request.requestId, response)
+            }),
+          ),
+          // Withdrawn or answered elsewhere — either way the card must go.
+          onPermissionDismiss: ifCurrent(requestId => entry.permissions.dismiss(requestId)),
+          onTaskSnapshot: ifCurrent(tasks => {
+            owned.taskInspectionSupported = true
+            owned.taskInspectionMessage = undefined
+            entry.session.applyMirroredTaskSnapshot(tasks, true)
+          }),
+          onTaskEvent: ifCurrent(event => entry.session.applyMirroredTaskEvent(event)),
+          onTaskUnsupported: ifCurrent(message => {
+            owned.taskInspectionSupported = false
+            owned.taskInspectionMessage = message
+            surfaces.postToSession(entry.key, { type: 'replaceTaskState', tasks: [], supported: false, message })
+          }),
+          onClosed: ifCurrent(() => detachAttachment('The attached session exited.')),
+        }
+        try {
+          await entry.session.restoreTaskHistory(target.sessionId, target.cwd, isCurrent)
+          if (!isCurrent()) return
+          const handle = await attachToCliSession(target, callbacks)
+          if (!isCurrent()) {
+            handle?.detach()
+            return
+          }
+          if (!handle) {
+            detachAttachment('Could not connect to that session. It may have just exited.')
+            return
+          }
+          owned.handle = handle
+          attachment = { ...attachment, error: null }
+          postAttachment()
+        } catch (cause) {
+          if (isCurrent()) detachAttachment(
+            `Could not connect to that session: ${cause instanceof Error ? cause.message : String(cause)}`,
+          )
+        }
       },
 
-      detachFromSession: () => {
-        liveAttachment?.detach()
-        liveAttachment = null
-        current().session.resetMirroredPromptTracking()
-        taskInspectionSupported = true
-        taskInspectionMessage = undefined
-        restoreStandaloneConversation()
-        attachment = { ...attachment, attached: null, error: null }
-        postAttachment()
-        prewarmSession()
+      detachFromSession: scope => {
+        if (attachedFor(scope.sessionKey)) detachAttachment()
       },
 
-      providerSetupOpen: openProviderSetupSurface,
+      providerSetupOpen: (scope, open) => openProviderSetupSurface(open),
 
-      providerSetupValidate: async (providerId, apiKey, baseURL) => {
+      providerSetupValidate: async (scope, providerId, apiKey, baseURL) => {
         providerSetup = {
           ...providerSetup,
           busy: true,
@@ -1225,7 +1576,7 @@ export function activate(context: vscode.ExtensionContext): void {
           error: null,
           discoveredModels: null,
         }
-        provider.post({ type: 'setProviderSetup', setup: providerSetup })
+        surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
 
         const outcome = await validateProvider(
           { enginePath, cwd: engineCwd },
@@ -1242,17 +1593,19 @@ export function activate(context: vscode.ExtensionContext): void {
           discoveredModels: outcome.ok ? (outcome.models ?? []) : null,
           error: outcome.ok ? null : (outcome.error ?? 'Could not verify credentials.'),
         }
-        provider.post({ type: 'setProviderSetup', setup: providerSetup })
+        surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
       },
 
-      providerSetupSave: async (providerId, apiKey, baseURL, model) => {
+      providerSetupSave: async (scope, providerId, apiKey, baseURL, model) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
         providerSetup = {
           ...providerSetup,
           busy: true,
           busyMessage: 'Saving provider…',
           error: null,
         }
-        provider.post({ type: 'setProviderSetup', setup: providerSetup })
+        surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
 
         const outcome = await saveProvider(
           { enginePath, cwd: engineCwd },
@@ -1269,7 +1622,7 @@ export function activate(context: vscode.ExtensionContext): void {
             busyMessage: null,
             error: outcome.error ?? 'Could not save the provider.',
           }
-          provider.post({ type: 'setProviderSetup', setup: providerSetup })
+          surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
           return
         }
 
@@ -1282,58 +1635,79 @@ export function activate(context: vscode.ExtensionContext): void {
           connectedProviderId: outcome.activeProviderId ?? providerId,
           connectedModel: outcome.activeModel ?? null,
         }
-        provider.post({ type: 'setProviderSetup', setup: providerSetup })
+        surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
 
         // The running engine resolved its provider at spawn time, so it would keep using
         // the old one. A fresh child reads the new configuration and has no stale cache
         // by construction — a stronger guarantee than invalidating caches in place.
         invalidateRayuConfigCache()
-        current().session.newSession()
-        provider.post({
+        entry.session.newSession()
+        surfaces.postToSession(entry.key, {
           type: 'setModelCatalogue',
-          catalogue: buildCatalogue(current().session),
+          catalogue: buildCatalogue(entry.session),
         })
-        provider.syncState()
-        prewarmSession()
+        syncSessionSurfaces(entry.key)
+        prewarmSession(entry)
       },
 
-      setEffort: level => current().session.setEffort(level),
-      setThinking: enabled => current().session.setThinking(enabled),
-      mcpElicitationResponse: (requestId, action, content) => {
-        current().session.respondMcpElicitation(requestId, action, content)
+      setEffort: (scope, level) => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) entry.session.setEffort(level)
       },
-      reloadPlugins: () => current().session.reloadPlugins(),
-      installSkill: (source, overwrite) => current().session.installSkill(source, overwrite),
-      cyclePermissionMode: async () => {
-        const next = nextPermissionMode(current().session.currentPermissionMode.id)
+      setThinking: (scope, enabled) => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) entry.session.setThinking(enabled)
+      },
+      mcpElicitationResponse: (scope, requestId, action, content) => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) entry.session.respondMcpElicitation(requestId, action, content)
+      },
+      reloadPlugins: scope => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) entry.session.reloadPlugins()
+      },
+      installSkill: (scope, source, overwrite) => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) entry.session.installSkill(source, overwrite)
+      },
+      cyclePermissionMode: async scope => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        const next = nextPermissionMode(entry.session.currentPermissionMode.id)
         // Post either way. On success the pill moves to the accepted mode; on refusal it
         // is snapped back to what is still enforced, because the webview applies its own
         // optimistic update and would otherwise be left claiming a mode the engine
         // rejected.
-        await current().session.setPermissionMode(next)
-        provider.post({ type: 'setPermissionMode', mode: current().session.currentPermissionMode })
+        await entry.session.setPermissionMode(next)
+        surfaces.postToSession(entry.key, { type: 'setPermissionMode', mode: entry.session.currentPermissionMode })
       },
-      setPermissionMode: async (modeId: string) => {
+      setPermissionMode: async (scope, modeId: string) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
         try {
-          await current().session.setPermissionMode(permissionModeById(modeId))
+          await entry.session.setPermissionMode(permissionModeById(modeId))
         } catch (error) {
           console.error('[rayucode] failed to set permission mode', error)
         }
         // See above: the authoritative mode is published whatever the outcome.
-        provider.post({ type: 'setPermissionMode', mode: current().session.currentPermissionMode })
+        surfaces.postToSession(entry.key, { type: 'setPermissionMode', mode: entry.session.currentPermissionMode })
       },
       // Keep/undo go through the engine's OWN /keep and /undo commands, which is the
       // mechanism `utils/pendingFileChanges.ts` implements for the CLI. The
       // `rewind_files` control request is a different thing — it rewinds everything
       // since a message — and wiring a per-file button to it would revert files the
       // user had chosen to keep.
-      reviewKeep: path =>
-        submitPrompt(current().session, provider, reviewCommand('keep', path)),
-      reviewUndo: path =>
-        submitPrompt(current().session, provider, reviewCommand('undo', path)),
-      openReviewDiff: path => openReviewDiff(review.store, path),
-      openFile: path => openReviewFile(review.store, path),
-      openExternal: async rawUrl => {
+      reviewKeep: (scope, path) => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) void submitPrompt(entry.session, scope, reviewCommand('keep', path))
+      },
+      reviewUndo: (scope, path) => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) void submitPrompt(entry.session, scope, reviewCommand('undo', path))
+      },
+      openReviewDiff: (scope, path) => openReviewDiff(review.store, scope.sessionKey, path),
+      openFile: (scope, path) => openReviewFile(review.store, scope.sessionKey, path),
+      openExternal: async (scope, rawUrl) => {
         try {
           const url = new URL(rawUrl)
           if (url.protocol !== 'https:' && url.protocol !== 'http:') {
@@ -1341,20 +1715,22 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           await vscode.env.openExternal(vscode.Uri.parse(url.toString()))
         } catch (cause) {
-          provider.post({
+          scope.reply({
             type: 'showError',
             message: cause instanceof Error ? cause.message : 'That URL could not be opened.',
           })
         }
       },
-      signIn: async () => {
-        await signInToRayucode()
+      signIn: async scope => {
+        // Global by nature (auth is window state), but the post-sign-in refresh and
+        // prewarm target the conversation the sign-in surface is bound to.
+        await signInToRayucode(entryFor(scope.sessionKey) ?? registry.active)
       },
-      signOut: () => runSignOut(provider),
+      signOut: () => runSignOut(resyncAllSurfaces),
       // Routed at the in-panel surface. This previously opened a dialog telling the
       // user to run /connect in a terminal, which is the gap this closes.
       openProviderSetup: () => openProviderSetupSurface(true),
-      findFiles: async (query: string) => {
+      findFiles: async (scope, query: string) => {
         try {
           // `buildFileSearchGlob` decides what to ask VS Code's own search for —
           // scoped correctly whether or not the query contains a folder drill-down
@@ -1371,16 +1747,16 @@ export function activate(context: vscode.ExtensionContext): void {
           const relativePaths = uris.map(uri =>
             vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/'),
           )
-          provider.post({
+          scope.reply({
             type: 'fileSearchResults',
             query,
             files: buildFileSearchResults(relativePaths, leafFilter),
           })
         } catch {
-          provider.post({ type: 'fileSearchResults', query, files: [] })
+          scope.reply({ type: 'fileSearchResults', query, files: [] })
         }
       },
-      resolveContextPaths: async (requestId, uriList) => {
+      resolveContextPaths: async (scope, requestId, uriList) => {
         const uris: vscode.Uri[] = []
         for (const line of uriList.split(/\r?\n/)) {
           const value = line.trim()
@@ -1396,11 +1772,12 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const paths = await contextPathsForUris(uris)
         if (paths.length === 0) {
-          provider.post({ type: 'showError', message: 'Rayucode could not access the dropped file or folder.' })
+          scope.reply({ type: 'showError', message: 'Rayucode could not access the dropped file or folder.' })
         }
-        provider.post({ type: 'contextPathsResolved', requestId, paths })
+        scope.reply({ type: 'contextPathsResolved', requestId, paths })
       },
-      pickContextPaths: async requestId => {        const uris = await vscode.window.showOpenDialog({
+      pickContextPaths: async (scope, requestId) => {
+        const uris = await vscode.window.showOpenDialog({
           canSelectFiles: true,
           canSelectFolders: true,
           canSelectMany: true,
@@ -1412,31 +1789,42 @@ export function activate(context: vscode.ExtensionContext): void {
         // promise pending forever, which is indistinguishable from a hung extension host.
         // An empty list is the correct answer to "the user chose nothing", and unlike the
         // drop path it is not an error, so nothing is reported.
-        provider.post({
+        scope.reply({
           type: 'contextPathsResolved',
           requestId,
           paths: uris ? await contextPathsForUris(uris) : [],
         })
       },
-      requestToolOutput: (requestId, entryId) => {
+      requestToolOutput: (scope, requestId, entryId) => {
         // ALWAYS replies, like the context-path requests above and for the same reason:
         // the webview awaits this by `requestId`, so a silent path would leave its
         // promise pending and the row stuck on "Loading…". `null` is a real answer —
         // retention is capped, so an old result may genuinely be gone.
-        provider.post({
+        const entry = entryFor(scope.sessionKey)
+        scope.reply({
           type: 'toolOutputResolved',
           requestId,
-          text: current().session.fullToolOutput(entryId),
+          text: entry ? entry.session.fullToolOutput(entryId) : null,
         })
       },
-      requestTaskOutput: async (requestId, taskKey) => {
+      requestTaskOutput: async (scope, requestId, taskKey) => {
         // Same discipline, but the answer comes from the engine over the control channel,
         // so this is the one request of the three that can fail for an external reason. It
         // still always replies — with the reason, which the panel shows in place of the
         // output rather than leaving a button that appears to do nothing.
         try {
-          const output = await current().session.taskOutput(taskKey)
-          provider.post({
+          const entry = entryFor(scope.sessionKey)
+          if (!entry) {
+            scope.reply({
+              type: 'taskOutputResolved',
+              requestId,
+              text: null,
+              error: 'This conversation is no longer open.',
+            })
+            return
+          }
+          const output = await entry.session.taskOutput(taskKey)
+          scope.reply({
             type: 'taskOutputResolved',
             requestId,
             text: output?.text ?? null,
@@ -1444,7 +1832,7 @@ export function activate(context: vscode.ExtensionContext): void {
             ...(output ? {} : { error: 'This conversation has no running engine to ask.' }),
           })
         } catch (cause) {
-          provider.post({
+          scope.reply({
             type: 'taskOutputResolved',
             requestId,
             text: null,
@@ -1452,31 +1840,40 @@ export function activate(context: vscode.ExtensionContext): void {
           })
         }
       },
-      modelChooserChoice: async (target, value, agentType) => {
+      modelChooserChoice: async (scope, target, value, agentType) => {
+        // The chooser is window-global state (broadcast), so a choice applies to the
+        // ACTIVE conversation — the same conversation the notice is recorded on.
         setModelChooser(null)
         const notice = applySelection(target, value, agentType)
-        if (notice) postCommandNotice(notice)
         // Only restart when something was actually written. A choice that resolved to no
         // model is a no-op, and respawning for it would cost the user a reload for nothing.
-        if (notice) await restartEngineWithResume()
+        if (!notice) return
+        postCommandNotice(registry.activeSessionKey, notice)
+        await restartEngineWithResume(registry.active)
       },
-      modelChooserTarget: agentType => {
+      modelChooserTarget: (scope, agentType) => {
         if (modelChooser?.target !== 'subagent') return
+        const entry = entryFor(scope.sessionKey) ?? registry.active
         setModelChooser(
-          buildChooser('subagent', agentType, current().session.subagentTypes),
+          buildChooser('subagent', agentType, entry.session.subagentTypes),
         )
       },
       modelChooserDismiss: () => setModelChooser(null),
-      mcpToggle: async (serverName, enabled) => {
-        await current().session.toggleMcpServer(serverName, enabled)
-        await refreshMcp()
+      mcpToggle: async (scope, serverName, enabled) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        await entry.session.toggleMcpServer(serverName, enabled)
+        await refreshMcp(entry)
       },
-      mcpReconnect: async serverName => {
-        await current().session.reconnectMcpServer(serverName)
-        await refreshMcp()
+      mcpReconnect: async (scope, serverName) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        await entry.session.reconnectMcpServer(serverName)
+        await refreshMcp(entry)
       },
-      mcpAuthenticate: async serverName => {
-        const entry = current()
+      mcpAuthenticate: async (scope, serverName) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
         const flowId = ++mcpFlowId
         showMcpUi(entry, {
           load: 'ready', error: null,
@@ -1519,7 +1916,7 @@ export function activate(context: vscode.ExtensionContext): void {
           isCurrent: () => flowId === mcpFlowId && !disposed,
           onStatus: servers => {
             if (registry.activeSessionKey === entry.key) {
-              provider.post({ type: 'setMcpServers', servers: [...servers] })
+              surfaces.postToSession(entry.key, { type: 'setMcpServers', servers: [...servers] })
             }
           },
         })
@@ -1532,8 +1929,9 @@ export function activate(context: vscode.ExtensionContext): void {
           ...(message ? { message } : {}),
         } })
       },
-      mcpPasteCallback: async serverName => {
-        const entry = current()
+      mcpPasteCallback: async (scope, serverName) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
         const callbackUrl = await vscode.window.showInputBox({
           title: `Finish ${serverName} authentication`,
           prompt: 'Paste the full browser redirect URL only if automatic connection did not complete.',
@@ -1551,15 +1949,17 @@ export function activate(context: vscode.ExtensionContext): void {
           } })
         }
       },
-      mcpClearAuth: async serverName => {
-        await current().session.clearMcpAuthentication(serverName)
+      mcpClearAuth: async (scope, serverName) => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) await entry.session.clearMcpAuthentication(serverName)
       },
-      getMcpStatus: async () => {
-        await refreshMcp()
+      getMcpStatus: async scope => {
+        const entry = entryFor(scope.sessionKey)
+        if (entry) await refreshMcp(entry)
       },
       listSessions: async () => {
         historySessions = { ...historySessions, status: 'loading' }
-        provider.post({ type: 'setSessions', list: historySessions })
+        surfaces.broadcast({ type: 'setSessions', list: historySessions })
         try {
           historySessions = {
             status: 'ready',
@@ -1576,107 +1976,177 @@ export function activate(context: vscode.ExtensionContext): void {
             }`,
           }
         }
-        provider.post({ type: 'setSessions', list: historySessions })
+        surfaces.broadcast({ type: 'setSessions', list: historySessions })
       },
-      resumeSession: async (id: string) => {
-        // ── AN OPEN CONVERSATION IS ACTIVATED, NOT RESUMED ──────────────────────
-        //
-        // If this session is already open in the panel, its engine is alive and may be
-        // mid-turn. Respawning it with `--resume` would kill that turn and rebuild the
-        // transcript from the session FILE — which is where the raw
-        // `<command-name>/model</command-name>` breadcrumbs came from. Activation is both
-        // cheaper and lossless.
-        if (registry.findByEngineSessionId(id)) {
-          registry.activate(registry.findByEngineSessionId(id)!.key)
-          prewarmSession()
-          return
-        }
-        const selected = historySessions.sessions.find(item => item.id === id)
-        if (!selected) {
-          provider.post({
-            type: 'showError',
-            message: 'That history session could not be found. Refresh history and try again.',
-          })
-          return
-        }
-        // In an empty editor window the history list spans every project. Starting
-        // the engine in the selected session's cwd lets the shared UUID resume path
-        // find the same transcript the lister displayed.
-        const resumeCwd = workspaceDir ?? selected.cwd ?? engineCwd
-        // A NEW entry rather than reusing the active one: resuming history is opening another
-        // conversation, and the one already on screen may be mid-turn. Order matters —
-        // `create()` starts with an empty transcript, so the restore follows it. The engine
-        // child is spawned with `--resume` and is the SOLE writer to the session file;
-        // `loadSessionTranscript` only reads.
-        const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd, customTitle: selected.customTitle })
-        const restored = await loadSessionTranscript(id, resumeCwd)
-        entry.session.restoreTranscript(restored)
-        await entry.session.restoreTaskHistory(id, resumeCwd)
-        provider.syncState()
-        prewarmSession()
-      },
-      stopTask: async (_sourceSessionId, taskId) => {
+      // The sidebar's quick-chat fallback path — the sidebar's history rows send
+      // `resumeSessionPanel`; both resume the stored conversation as a tab.
+      resumeSession: (scope, id) => resumeStoredSession(scope, id),
+      resumeSessionPanel: (scope, id) => resumeStoredSession(scope, id),
+      stopTask: async (scope, _sourceSessionId, taskId) => {
         try {
-          if (liveAttachment) await liveAttachment.stopTask(taskId)
-          else await current().session.stopBackgroundTask(taskId)
+          const owned = attachedFor(scope.sessionKey)
+          if (owned && !owned.handle) throw new Error('The attached CLI is still connecting.')
+          const cli = owned?.handle
+          if (cli) await cli.stopTask(taskId)
+          else {
+            const entry = entryFor(scope.sessionKey)
+            if (!entry) return
+            await entry.session.stopBackgroundTask(taskId)
+          }
         } catch (cause) {
-          provider.post({
+          scope.reply({
             type: 'showError',
             message: `Could not stop task: ${cause instanceof Error ? cause.message : String(cause)}`,
           })
         }
       },
-      sendTaskMessage: async (_sourceSessionId, taskId, text) => {
+      sendTaskMessage: async (scope, _sourceSessionId, taskId, text) => {
         try {
-          if (!liveAttachment) throw new Error('Follow-up messages are unavailable for this task.')
-          await liveAttachment.sendTaskMessage(taskId, text)
+          const cli = attachedFor(scope.sessionKey)?.handle
+          if (!cli) throw new Error('Follow-up messages are unavailable for this task.')
+          await cli.sendTaskMessage(taskId, text)
         } catch (cause) {
-          provider.post({
+          scope.reply({
             type: 'showError',
             message: cause instanceof Error ? cause.message : String(cause),
           })
         }
       },
-    },
-  )
+  }
+
+  /**
+   * Resume a stored conversation as its own editor tab — the flow both
+   * `resumeSession` (the sidebar's fallback) and `resumeSessionPanel` (the
+   * sidebar's history rows) run.
+   *
+   * ── AN OPEN CONVERSATION IS OPENED, NOT RESUMED ─────────────────────────────
+   *
+   * If this session is already open, its engine is alive and may be mid-turn.
+   * Respawning it with `--resume` would kill that turn and rebuild the transcript
+   * from the session FILE — which is where the raw
+   * `<command-name>/model</command-name>` breadcrumbs came from. Opening the
+   * existing tab is both cheaper and lossless.
+   */
+  async function resumeStoredSession(scope: SurfaceScope, id: string): Promise<void> {
+    const existing = registry.findByEngineSessionId(id)
+    if (existing) {
+      openSessionTab(existing.key)
+      prewarmSession(existing)
+      return
+    }
+    const selected = historySessions.sessions.find(item => item.id === id)
+    if (!selected) {
+      scope.reply({
+        type: 'showError',
+        message: 'That history session could not be found. Refresh history and try again.',
+      })
+      return
+    }
+    // In an empty editor window the history list spans every project. Starting
+    // the engine in the selected session's cwd lets the shared UUID resume path
+    // find the same transcript the lister displayed.
+    const resumeCwd = workspaceDir ?? selected.cwd ?? engineCwd
+    // A NEW entry rather than reusing the active one: resuming history is opening another
+    // conversation, and the one already on screen may be mid-turn. Order matters —
+    // `create()` starts with an empty transcript, so the restore happens BEFORE the
+    // tab opens and the tab's first init carries the restored transcript. The engine
+    // child is spawned with `--resume` and is the SOLE writer to the session file;
+    // `loadSessionTranscript` only reads.
+    const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd, customTitle: selected.customTitle })
+    entry.session.restoreTranscript(await loadSessionTranscript(id, resumeCwd))
+    await entry.session.restoreTaskHistory(id, resumeCwd)
+    openSessionTab(entry.key)
+    prewarmSession(entry)
+  }
 
   // The engine children must die with the window. An orphan keeps its MCP server
   // subprocesses alive, holding ports and file locks after the editor has closed — and with
   // several conversations open there may be several of them.
   context.subscriptions.push({ dispose: () => registry.dispose() })
   context.subscriptions.push({ dispose: () => { webBridge?.handle.stop(); stopGuestPairing() } })
-  // The first conversation is opened HERE, not on first access. `create()` publishes through
-  // `provider`, which does not exist until the line above it — and a lazy creation triggered
-  // from inside `getState()` would re-enter `syncState()` mid-snapshot. Creating an entry does
-  // not spawn an engine; `prewarmSession()` does that once the panel is mounted.
+  // The first conversation is opened HERE, not on first access: a lazy creation triggered
+  // from inside a snapshot build (the sidebar's `activeSessionKey`) would re-enter the
+  // sync mid-snapshot. Creating an entry does not spawn an engine; `prewarmSession()`
+  // does that once a surface mounts.
   registry.create()
   // Detach cleanly so the CLI session stops forwarding and drops pending decisions,
   // rather than waiting for the socket to notice the window closed.
-  context.subscriptions.push({ dispose: () => liveAttachment?.detach() })
+  context.subscriptions.push({ dispose: () => detachAttachment(null, false) })
 
+  // The registry builds and owns the sidebar surface — see `surfaceRegistry.ts`'s
+  // header for why a second provider here would race it for the same view.
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, provider, {
-      // Without this VS Code tears the DOM down and rebuilds it on every
-      // collapse/expand. The state itself lives in the host either way; this
-      // only avoids paying for a React remount on a panel toggle.
-      webviewOptions: { retainContextWhenHidden: true },
+    vscode.window.registerWebviewViewProvider(
+      CHAT_VIEW_ID,
+      { resolveWebviewView: view => { sidebar = surfaces.attachSidebar(view) } },
+      {
+        // Without this VS Code tears the DOM down and rebuilds it on every
+        // collapse/expand. The state itself lives in the host either way; this
+        // only avoids paying for a React remount on a panel toggle.
+        webviewOptions: { retainContextWhenHidden: true },
+      },
+    ),
+    surfaces,
+  )
+
+  // ── SESSION TAB REVIVAL ──────────────────────────────────────────────────────
+  // A window reload destroys every `SessionPanel`, but the editor remembers the
+  // tabs and each tab's webview state (written by the webview via `setState`,
+  // sourced from `surfaceBinding`). The serializer rebinds each restored tab:
+  // `reviveBind` resolves the binding, and the transcript is restored HERE —
+  // the engine child rebuilds its own state from the session file, but the
+  // HOST's transcript only fills from an explicit `restoreTranscript`.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer(SESSION_PANEL_VIEW_TYPE, {
+      deserializeWebviewPanel: async (panel, state) => {
+        const restored = (state ?? {}) as Partial<SurfaceBindingView>
+        // `reviveBind` runs synchronously inside the call, so the shared revive
+        // flags are correct the instant it returns — but a SECOND tab's
+        // deserialize can interleave across the await below and overwrite them
+        // before this one resumes. Capture per-call, before yielding.
+        const revived = surfaces.reviveFromState(panel, restored)
+        const sessionKey = lastRevivedSessionKey
+        const needsRestore = revivedNeedsRestore
+        await revived
+        const entry = registry.byKey(sessionKey)
+        if (needsRestore && entry && restored.sessionId) {
+          try {
+            const resumeCwd = restored.cwd ?? workspaceDir ?? engineCwd
+            entry.session.restoreTranscript(await loadSessionTranscript(restored.sessionId, resumeCwd))
+            await entry.session.restoreTaskHistory(restored.sessionId, resumeCwd)
+          } catch {
+            // Never throw out of deserialize: an unreadable transcript degrades
+            // the tab to a fresh conversation rather than failing activation.
+          }
+        }
+        if (entry) {
+          // Re-init with the restored transcript, and correct the sidebar (the
+          // registry's internal sync built it a panel-flavoured snapshot).
+          syncSessionSurfaces(sessionKey)
+          prewarmSession(entry)
+        }
+      },
     }),
-    provider,
   )
 
   // Login/provider helpers run in child processes and write Rayucode's profile. Watch
   // that directory so their settled writes are reflected without reloading the window.
   context.subscriptions.push(watchSharedSession(() => {
     invalidateRayuConfigCache()
-    provider.syncState()
+    // Sign-in state is window-global: every surface gets a fresh snapshot.
+    resyncAllSurfaces()
+    // The auth file can arrive while the login child is still preparing providers.
+    // signInToRayucode owns the final refresh and prewarm for that transaction.
+    if (signInPending) return
     void refreshModels()
     prewarmSession()
   }, () => {
     // A Rayucode helper changed its provider catalogue. Refresh the choices while the
     // current conversation keeps its explicit provider-qualified execution selection.
     invalidateRayuConfigCache()
-    current().session.availableModels = null
-    provider.syncState()
+    registry.active.session.availableModels = null
+    resyncAllSurfaces()
+    if (signInPending) return
     void refreshModels()
   }))
 
@@ -1697,7 +2167,7 @@ export function activate(context: vscode.ExtensionContext): void {
           const token = params.get('token')
           if (token || code) {
             void vscode.window.showInformationMessage('Rayu authentication received.')
-            provider.syncState()
+            resyncAllSurfaces()
           }
         }
       },
@@ -1732,8 +2202,8 @@ export function activate(context: vscode.ExtensionContext): void {
           )
           return
         }
-        await provider.reveal()
-        provider.post({ type: 'insertPrompt', text: fenceTerminalSelection(selection) })
+        await revealSidebar()
+        sidebar?.post({ type: 'insertPrompt', text: fenceTerminalSelection(selection) })
       } finally {
         await vscode.env.clipboard.writeText(previousClipboard)
       }
@@ -1779,27 +2249,100 @@ export function activate(context: vscode.ExtensionContext): void {
           )
           return
         }
-        await provider.reveal()
-        provider.post({ type: 'insertPrompt', text: formatPathMentions(paths) })
+        await revealSidebar()
+        sidebar?.post({ type: 'insertPrompt', text: formatPathMentions(paths) })
       },
     ),
   )
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMANDS.newSession, async () => {
-      await provider.reveal()
-      // OPENS a conversation. Whatever was on screen keeps its engine and keeps running —
-      // which is the whole difference from the previous behaviour, where this button killed
-      // the turn in flight.
-      registry.create()
-      provider.syncState()
-      prewarmSession()
+      // OPENS a conversation as its own editor tab. Whatever was on screen keeps its
+      // engine and keeps running — which is the whole difference from the previous
+      // behaviour, where this button killed the turn in flight.
+      const entry = registry.create()
+      openSessionTab(entry.key)
+      prewarmSession(entry)
     }),
     vscode.commands.registerCommand(COMMANDS.signIn, async () => {
-      await provider.reveal()
-      await signInToRayucode()
+      await revealSidebar()
+      await signInToRayucode(registry.active)
     }),
-    vscode.commands.registerCommand(COMMANDS.signOut, () => runSignOut(provider)),
+    vscode.commands.registerCommand(COMMANDS.signOut, () => runSignOut(resyncAllSurfaces)),
+  )
+
+  // ── SEND FEEDBACK ─────────────────────────────────────────────────────────────
+  //
+  // The editor-native mirror of the CLI's `/feedback`: QuickPick → InputBox →
+  // optional rating, then the SAME `submitRayuFeedback` client the CLI uses, so the
+  // request contract lives in exactly one place. Feedback is an ACCOUNT action (it
+  // needs a Rayu JWT), so a signed-out user is offered the sign-in flow the `signIn`
+  // command runs rather than a form that would fail on submit.
+  async function runFeedbackCommand(): Promise<void> {
+    if (!hasAccountSession()) {
+      const action = await vscode.window.showWarningMessage(
+        'Sign in to Rayu to send feedback.',
+        'Sign In',
+      )
+      if (action === 'Sign In') await signInToRayucode(registry.active)
+      return
+    }
+
+    const typePick = await vscode.window.showQuickPick(
+      [
+        { label: 'Bug', description: 'Something is broken or misbehaves', value: 'bug' as const },
+        { label: 'Idea', description: 'A feature request or improvement', value: 'idea' as const },
+        { label: 'Other', description: 'Anything else', value: 'other' as const },
+      ],
+      { title: 'RayuCode: Send Feedback', placeHolder: 'What kind of feedback is this?' },
+    )
+    if (!typePick) return
+
+    const message = await vscode.window.showInputBox({
+      title: 'RayuCode: Send Feedback',
+      prompt: `Describe it (up to ${RAYU_FEEDBACK_MAX_MESSAGE.toLocaleString()} characters)`,
+      placeHolder: 'Tell us what happened…',
+      ignoreFocusOut: true,
+      validateInput: value => {
+        if (!value.trim()) return 'Enter a message'
+        if (value.length > RAYU_FEEDBACK_MAX_MESSAGE) {
+          return `Keep it under ${RAYU_FEEDBACK_MAX_MESSAGE.toLocaleString()} characters`
+        }
+        return undefined
+      },
+    })
+    if (message === undefined) return
+
+    const ratingPick = await vscode.window.showQuickPick(
+      [
+        { label: '5', description: 'Excellent', value: 5 },
+        { label: '4', description: 'Good', value: 4 },
+        { label: '3', description: 'Okay', value: 3 },
+        { label: '2', description: 'Poor', value: 2 },
+        { label: '1', description: 'Terrible', value: 1 },
+        { label: 'Skip', description: 'No rating', value: undefined },
+      ],
+      { title: 'RayuCode: Send Feedback', placeHolder: 'Rate RayuCode overall (optional)' },
+    )
+    if (!ratingPick) return
+
+    const result = await submitRayuFeedback({
+      type: typePick.value,
+      message,
+      rating: ratingPick.value,
+      source: 'vscode',
+    })
+    if (result.ok) {
+      void vscode.window.showInformationMessage(
+        'Thanks — your feedback was sent to the Rayu team.',
+      )
+    } else {
+      void vscode.window.showErrorMessage(`Could not send feedback: ${result.error}`)
+    }
+  }
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(COMMANDS.feedback, () => runFeedbackCommand()),
   )
 }
 
@@ -1864,6 +2407,15 @@ function buildState(
   customTitle: string | null,
   taskInspectionSupported = true,
   taskInspectionMessage?: string,
+  /**
+   * Which surface this snapshot renders — a panel hides its in-panel session
+   * switcher and persists its binding; the sidebar keeps both. The caller knows
+   * which surface it is building for; the webview decides its chrome from the
+   * snapshot alone and never infers it from the message channel.
+   */
+  surface: ChatSurfaceKind = 'sidebar',
+  /** What a restored panel must re-bind to. Null on the sidebar. */
+  surfaceBinding: SurfaceBindingView | null = null,
 ): WebviewState {
   const auth = getAuthSnapshot()
   return {
@@ -1910,6 +2462,8 @@ function buildState(
     sessions: historySessions,
     liveSessions,
     activeSessionKey,
+    surface,
+    surfaceBinding,
     backgroundTasks: [...session.backgroundTasks],
     taskInspectionSupported,
     taskInspectionMessage,
@@ -1929,17 +2483,18 @@ function buildState(
  */
 async function submitPrompt(
   session: ChatSession,
-  provider: ChatViewProvider,
+  scope: SurfaceScope,
   text: string,
   images: ImageInputView[] = [],
   delivery: PromptDeliveryView = 'normal',
 ): Promise<void> {
   const gate = checkTurnAllowed()
   if (!gate.allowed) {
-    // Resync so the panel shows the sign-in surface and limits autocomplete to its
-    // recovery commands before reporting why this normal prompt was refused.
-    provider.syncState()
-    provider.post({ type: 'showError', message: gate.reason })
+    // Resync so the surfaces showing this conversation present the sign-in gate
+    // and limit autocomplete to its recovery commands before reporting why this
+    // normal prompt was refused.
+    scope.resync()
+    scope.reply({ type: 'showError', message: gate.reason })
     return
   }
   await session.submitPrompt(text, images, delivery)
@@ -2013,11 +2568,11 @@ async function contextPathsForUris(uris: readonly vscode.Uri[]): Promise<string[
 /** Validate untrusted webview image payloads before they enter the engine process. */
 function validateImageInputs(
   images: ImageInputView[] | undefined,
-  provider: ChatViewProvider,
+  scope: SurfaceScope,
 ): ImageInputView[] | null {
   if (!images?.length) return []
   if (images.length > API_MAX_MEDIA_PER_REQUEST) {
-    provider.post({
+    scope.reply({
       type: 'showError',
       message: `A message can include at most ${API_MAX_MEDIA_PER_REQUEST} images.`,
     })
@@ -2040,7 +2595,7 @@ function validateImageInputs(
       !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data) ||
       image.data.length % 4 !== 0
     ) {
-      provider.post({
+      scope.reply({
         type: 'showError',
         message: `One image is invalid or exceeds the ${Math.floor(API_IMAGE_MAX_BASE64_SIZE / 1024 / 1024)} MB upload limit.`,
       })
@@ -2105,14 +2660,19 @@ function parseSkillInstallCommand(
   }
 }
 
+/**
+ * Run the sign-in and re-derive every surface. `resync` is injected so this stays
+ * host-agnostic: sign-in state is window-global, so EVERY surface — the sidebar
+ * and every open tab — gets a fresh snapshot, not just the one that was clicked.
+ */
 async function runSignIn(
-  provider: ChatViewProvider,
+  resync: () => void,
   engine: SignInOptions,
-): Promise<void> {
+): Promise<boolean> {
   const outcome = await signInFromEditor(engine)
-  // Resync either way: on success the panel must unlock, and on failure it must
-  // stop showing whatever in-progress state the click implied.
-  provider.syncState()
+  // Resync either way: on success every surface must unlock, and on failure they
+  // must stop showing whatever in-progress state the click implied.
+  resync()
 
   if (outcome.ok) {
     void vscode.window.showInformationMessage(
@@ -2120,12 +2680,14 @@ async function runSignIn(
         ? `Signed in to Rayu as ${outcome.displayName}.`
         : 'Signed in to Rayu.',
     )
-    return
+    return true
   }
   void vscode.window.showErrorMessage(`Rayu sign-in failed: ${outcome.error}`)
+  return false
 }
 
-async function runSignOut(provider: ChatViewProvider): Promise<void> {
+/** Sign out and re-derive every surface — sign-out state is window-global. */
+async function runSignOut(resync: () => void): Promise<void> {
   const CONFIRM = 'Sign out'
   const choice = await vscode.window.showWarningMessage(
     'Sign out of Rayucode?',
@@ -2135,6 +2697,6 @@ async function runSignOut(provider: ChatViewProvider): Promise<void> {
   if (choice !== CONFIRM) return
 
   signOutShared()
-  provider.syncState()
+  resync()
   void vscode.window.showInformationMessage('Signed out of Rayu.')
 }

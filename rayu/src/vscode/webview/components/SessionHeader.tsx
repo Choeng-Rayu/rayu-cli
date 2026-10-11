@@ -23,6 +23,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type {
+  ChatSurfaceKind,
   McpServerView,
   McpConnectionUiView,
   TranscriptEntry,
@@ -31,6 +32,7 @@ import type {
 import { isTerminalPhase, isWaitingPhase } from '../../shared/turnProgress.js'
 import {
   BackIcon,
+  CloseIcon,
   EllipsisIcon,
   HistoryIcon,
   ListIcon,
@@ -95,6 +97,17 @@ export interface SessionHeaderProps {
   version: string
   title: string | null
   activeSessionKey: string
+  /**
+   * Which surface this header belongs to.
+   *
+   * A panel is bound to exactly one session, so the in-panel session switcher (button and
+   * count) is meaningless there and is replaced by a close action. The sidebar keeps both.
+   *
+   * Optional, defaulting to `'sidebar'`: that is the pre-tabs chrome, so an existing caller
+   * (e.g. a static render in a test) keeps compiling and rendering exactly as before. App
+   * always passes the real value.
+   */
+  surface?: ChatSurfaceKind
   status: SessionStatus
   mcpServers: readonly McpServerView[]
   mcpConnectionUi: McpConnectionUiView
@@ -103,6 +116,11 @@ export interface SessionHeaderProps {
   onNewSession: () => void
   onRename: (title: string) => void
   onOpenSessions: () => void
+  /**
+   * Panel only: close this session (and stop its engine). Shown in place of the sessions
+   * switcher, which a panel has no use for. Optional for the same reason as `surface`.
+   */
+  onCloseTab?: () => void
   /** Whether every tool row is showing its parameters and output. */
   detailed: boolean
   /** Flip the panel-wide detail switch — the editor's equivalent of the CLI's Ctrl+O. */
@@ -131,6 +149,7 @@ export function SessionHeader({
   version,
   title,
   activeSessionKey,
+  surface = 'sidebar',
   status,
   mcpServers,
   mcpConnectionUi,
@@ -138,6 +157,7 @@ export function SessionHeader({
   onNewSession,
   onRename,
   onOpenSessions,
+  onCloseTab,
   detailed,
   onToggleDetailed,
   openSessionCount,
@@ -325,25 +345,39 @@ export function SessionHeader({
           >
             <PlusIcon size={14} />
           </button>
-          <button
-            type="button"
-            className={`rc-icon-button${openSessionCount > 1 ? ' rc-icon-button-badged' : ''}`}
-            title={
-              openSessionCount > 1
-                ? `Sessions — ${openSessionCount} open`
-                : 'Sessions'
-            }
-            aria-label="Sessions"
-            onClick={onOpenSessions}
-          >
-            <HistoryIcon size={14} />
-            {/* Only shown when more than one is open. With a single conversation the count is
-                not information, and this is the only affordance that leads back to the others
-                after pressing +. */}
-            {openSessionCount > 1 ? (
-              <span className="rc-icon-badge">{openSessionCount}</span>
-            ) : null}
-          </button>
+          {/* A panel is bound to one session, so the switcher and its count say nothing
+              there; it gets a close action instead. The sidebar keeps the switcher. */}
+          {surface === 'panel' ? (
+            <button
+              type="button"
+              className="rc-icon-button"
+              title="Close session"
+              aria-label="Close session"
+              onClick={() => onCloseTab?.()}
+            >
+              <CloseIcon size={14} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={`rc-icon-button${openSessionCount > 1 ? ' rc-icon-button-badged' : ''}`}
+              title={
+                openSessionCount > 1
+                  ? `Sessions — ${openSessionCount} open`
+                  : 'Sessions'
+              }
+              aria-label="Sessions"
+              onClick={onOpenSessions}
+            >
+              <HistoryIcon size={14} />
+              {/* Only shown when more than one is open. With a single conversation the count is
+                  not information, and this is the only affordance that leads back to the others
+                  after pressing +. */}
+              {openSessionCount > 1 ? (
+                <span className="rc-icon-badge">{openSessionCount}</span>
+              ) : null}
+            </button>
+          )}
         </>
       ) : null}
 

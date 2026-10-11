@@ -35,17 +35,29 @@ const { sessionCallbacks, until } = await import('./helpers/vscodeSession.js')
  * `refuse` names a subtype to answer with an error, so the "engine rejected the mode"
  * branch can be exercised without disabling bypass in real settings.
  */
-function writeFakeEngine(dir: string, options: { refuse?: string } = {}): {
+function writeFakeEngine(dir: string, options: {
+  refuse?: string
+  startupFailures?: number
+  initializeDelayMs?: number
+  exitOnPrompt?: boolean
+  stderrSuffix?: string
+} = {}): {
   enginePath: string
   logPath: string
+  startsPath: string
 } {
   const enginePath = join(dir, 'engine.mjs')
   const logPath = join(dir, 'frames.log')
+  const startsPath = join(dir, 'starts.log')
   writeFileSync(
     enginePath,
-    `import { appendFileSync } from 'node:fs'
+    `import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 const LOG = ${JSON.stringify(logPath)}
 const REFUSE = ${JSON.stringify(options.refuse ?? null)}
+const STARTS = ${JSON.stringify(startsPath)}
+const attempt = existsSync(STARTS) ? readFileSync(STARTS, 'utf8').trim().split('\\n').length + 1 : 1
+appendFileSync(STARTS, process.pid + '\\n')
+const crash = () => { process.stderr.write('fixture: provider profile is not ready\\n' + ${JSON.stringify(options.stderrSuffix ?? '')}); process.exit(23) }
 let buffer = ''
 process.stdin.setEncoding('utf8')
 process.stdin.on('data', chunk => {
@@ -58,8 +70,10 @@ process.stdin.on('data', chunk => {
     let frame
     try { frame = JSON.parse(line) } catch { continue }
     appendFileSync(LOG, JSON.stringify({ argv: process.argv.slice(2), frame }) + '\\n')
+    if (frame.type === 'user' && ${options.exitOnPrompt ?? false}) crash()
     if (frame.type !== 'control_request') continue
     const subtype = frame.request?.subtype
+    if (subtype === 'initialize' && attempt <= ${options.startupFailures ?? 0}) crash()
     if (subtype === REFUSE) {
       process.stdout.write(JSON.stringify({
         type: 'control_response',
@@ -72,10 +86,12 @@ process.stdin.on('data', chunk => {
       : subtype === 'get_settings'
         ? { inference: { supportsEffort: false, supportedLevels: [], effort: null, effortEnvOverride: null, supportsThinking: true, thinkingEnabled: true } }
         : {}
-    process.stdout.write(JSON.stringify({
+    const respond = () => process.stdout.write(JSON.stringify({
       type: 'control_response',
       response: { subtype: 'success', request_id: frame.request_id, response: payload },
     }) + '\\n')
+    if (subtype === 'initialize') setTimeout(respond, ${options.initializeDelayMs ?? 0})
+    else respond()
   }
 })
 // Keep the child alive until it is killed, as the real engine does.
@@ -83,7 +99,7 @@ setInterval(() => {}, 1000)
 `,
     'utf8',
   )
-  return { enginePath, logPath }
+  return { enginePath, logPath, startsPath }
 }
 
 function framesFrom(logPath: string): Array<{ argv: string[]; frame: any }> {
@@ -106,6 +122,152 @@ function tempDir(): string {
 afterEach(() => {
   for (const session of sessions.splice(0)) session.dispose()
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+test('first prompt and concurrent warmups preserve a startup crash once in the transcript', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir, {
+    startupFailures: 1,
+    stderrSuffix: '    at fixtureStartup (engine.mjs:1:1)\n'.repeat(30),
+  })
+  const errors: string[] = []
+  const session = new ChatSession(
+    { enginePath, cwd: dir, nodePath: process.execPath },
+    sessionCallbacks({ onError: message => errors.push(message) }),
+  )
+  sessions.push(session)
+
+  await Promise.all([session.warmup(), session.warmup(), session.submitPrompt('hi')])
+
+  const notices = session.transcript.filter(entry => entry.kind === 'notice')
+  expect(notices).toHaveLength(1)
+  expect(notices[0]?.severity).toBe('error')
+  expect(notices[0]?.text).toContain('code 23')
+  expect(notices[0]?.text).toContain('fixture: provider profile is not ready')
+  expect(errors).toHaveLength(1)
+  expect(errors[0]).not.toContain('engine is not running')
+  expect(session.controlClient).toBeNull()
+  expect(session.isTurnRunning).toBe(false)
+  expect(framesFrom(logPath).filter(entry => entry.frame.type === 'user')).toHaveLength(0)
+
+  // A failed first child must not poison this extension window until VS Code reloads.
+  await session.submitPrompt('hi again')
+  await until(() => framesFrom(logPath).some(entry => entry.frame.type === 'user'))
+  expect(framesFrom(logPath).filter(entry => entry.frame.type === 'user')).toHaveLength(1)
+  expect(errors).toHaveLength(1)
+  expect(session.controlClient).not.toBeNull()
+})
+
+test('a refused initialize fails startup instead of delivering a prompt to an unready engine', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir, { refuse: 'initialize' })
+  const session = new ChatSession(
+    { enginePath, cwd: dir, nodePath: process.execPath },
+    sessionCallbacks(),
+  )
+  sessions.push(session)
+  await Promise.all([session.warmup(), session.submitPrompt('hi')])
+  const notices = session.transcript.filter(entry => entry.kind === 'notice')
+  expect(notices).toHaveLength(1)
+  expect(notices[0]?.severity).toBe('error')
+  expect(notices[0]?.text).toContain('refused by fixture')
+  expect(framesFrom(logPath).filter(entry => entry.frame.type === 'user')).toHaveLength(0)
+  expect(session.controlClient).toBeNull()
+  expect(session.isTurnRunning).toBe(false)
+})
+
+test('first prompt shares warmup and waits for login preparation before spawning', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath, startsPath } = writeFakeEngine(dir, { initializeDelayMs: 75 })
+  let finishPreparation!: () => void
+  const preparation = new Promise<void>(resolve => { finishPreparation = resolve })
+  let preparations = 0
+  const session = new ChatSession({
+    enginePath, cwd: dir, nodePath: process.execPath,
+    prepareStartup: () => { preparations++; return preparation },
+  }, sessionCallbacks())
+  sessions.push(session)
+  const pending = Promise.all([session.warmup(), session.warmup(), session.submitPrompt('hi')])
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(session.isTurnRunning).toBe(true)
+  expect(existsSync(startsPath)).toBe(false)
+  finishPreparation()
+  await pending
+  await until(() => framesFrom(logPath).some(entry => entry.frame.type === 'user'))
+  expect(preparations).toBe(1)
+  expect(readFileSync(startsPath, 'utf8').trim().split('\n')).toHaveLength(1)
+  const frames = framesFrom(logPath)
+  expect(frames.filter(entry => entry.frame.request?.subtype === 'initialize')).toHaveLength(1)
+  expect(frames.filter(entry => entry.frame.type === 'user')).toHaveLength(1)
+  expect(frames.at(-1)?.frame).toMatchObject({ type: 'user', message: { content: 'hi' } })
+})
+
+test.each([
+  ['login', 'dispose'], ['login', 'newSession'],
+  ['environment', 'dispose'], ['environment', 'newSession'],
+] as const)('no child spawns during %s preparation after %s', async (phase, action) => {
+  const dir = tempDir()
+  const { enginePath, startsPath } = writeFakeEngine(dir)
+  let finishPreparation!: () => void
+  const preparation = new Promise<void>(resolve => { finishPreparation = resolve })
+  let requested = false
+  const prepare = async () => { requested = true; await preparation }
+  const session = new ChatSession({
+    enginePath, cwd: dir, nodePath: process.execPath,
+    ...(phase === 'login' ? { prepareStartup: prepare } : {
+      resolveEnv: async () => { await prepare(); return {} },
+    }),
+  }, sessionCallbacks())
+  sessions.push(session)
+  const pending = session.warmup()
+  await until(() => requested)
+  session[action]()
+  finishPreparation()
+  await pending
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(existsSync(startsPath)).toBe(false)
+  expect(session.controlClient).toBeNull()
+})
+
+test('late startup preparation from a replaced session cannot overwrite its new engine', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath, startsPath } = writeFakeEngine(dir)
+  let finishOldEnvironment!: (value: Record<string, string>) => void
+  const oldEnvironment = new Promise<Record<string, string>>(resolve => { finishOldEnvironment = resolve })
+  let preparations = 0
+  const session = new ChatSession({
+    enginePath, cwd: dir, nodePath: process.execPath,
+    resolveEnv: () => ++preparations === 1 ? oldEnvironment : Promise.resolve({}),
+  }, sessionCallbacks())
+  sessions.push(session)
+  const oldWarmup = session.warmup()
+  await until(() => preparations === 1)
+  session.newSession()
+  await session.warmup()
+  const newControl = session.controlClient
+  finishOldEnvironment({})
+  await oldWarmup
+  expect(session.controlClient).toBe(newControl)
+  await session.submitPrompt('hi')
+  await until(() => framesFrom(logPath).some(entry => entry.frame.type === 'user'))
+  expect(readFileSync(startsPath, 'utf8').trim().split('\n')).toHaveLength(1)
+  expect(session.transcript.filter(entry => entry.kind === 'notice')).toHaveLength(0)
+})
+
+test('a crash after startup keeps the underlying stderr in the visible transcript', async () => {
+  const dir = tempDir()
+  const { enginePath } = writeFakeEngine(dir, { exitOnPrompt: true })
+  const errors: string[] = []
+  const session = new ChatSession({ enginePath, cwd: dir, nodePath: process.execPath },
+    sessionCallbacks({ onError: message => errors.push(message) }))
+  sessions.push(session)
+  await session.warmup()
+  await session.submitPrompt('hi')
+  await until(() => errors.length > 0)
+  const notices = session.transcript.filter(entry => entry.kind === 'notice')
+  expect(notices).toHaveLength(1)
+  expect(notices[0]?.severity).toBe('error')
+  expect(notices[0]?.text).toContain('fixture: provider profile is not ready')
 })
 
 test('a permission mode chosen before the engine exists is replayed onto it', async () => {
@@ -278,7 +440,7 @@ const { SessionRegistry, MAX_LIVE_SESSIONS } = await import(
 function makeRegistry(dir: string) {
   const { enginePath, logPath } = writeFakeEngine(dir)
   const posts: string[] = []
-  const shown: string[] = []
+  const shown: Array<{ key: string; requestId: string }> = []
   const activations: string[] = []
   const registry = new SessionRegistry(
     { enginePath, cwd: dir, nodePath: process.execPath },
@@ -290,8 +452,14 @@ function makeRegistry(dir: string) {
           },
           onPermissionRequest: request => entry.permissions.present(request),
         }),
-      onShowPermission: request => shown.push(request.requestId),
-      onDismissPermission: requestId => shown.splice(shown.indexOf(requestId), 1),
+      // The callbacks carry their OWNING entry and fire unconditionally: a background
+      // conversation's card belongs in ITS tab, so the active key no longer gates it.
+      onShowPermission: (entry, request) =>
+        shown.push({ key: entry.key, requestId: request.requestId }),
+      onDismissPermission: (_entry, requestId) => {
+        const index = shown.findIndex(card => card.requestId === requestId)
+        if (index !== -1) shown.splice(index, 1)
+      },
       onChanged: () => {},
       onActivate: entry => activations.push(entry.key),
     },
@@ -384,7 +552,7 @@ test('only the active session writes to the panel', async () => {
   expect(first.session.transcript).toHaveLength(2)
 })
 
-test('a background approval is not shown, and is not answered either', async () => {
+test('a background approval is shown on ITS conversation, and is not auto-answered', async () => {
   const dir = tempDir()
   const { registry, shown } = makeRegistry(dir)
   sessions.push(registry)
@@ -392,15 +560,16 @@ test('a background approval is not shown, and is not answered either', async () 
   const first = registry.create()
   registry.create()
 
-  // A card raised by a background conversation. Suppressing it is correct — the user is
-  // looking elsewhere — but it must NOT be auto-answered: that would grant or refuse consent
-  // nobody gave. The engine stays blocked and the live list reports it.
+  // A card raised by a background conversation is routed to THAT conversation — a background
+  // tab must render its own card. It is never suppressed, but it must also NOT be
+  // auto-answered: that would grant or refuse consent nobody gave. The engine stays blocked
+  // and the live list reports it.
   first.permissions.present({
     requestId: 'req-1',
     request: { tool_name: 'Bash', input: { command: 'rm -rf /' } },
   } as never)
 
-  expect(shown).toEqual([])
+  expect(shown).toEqual([{ key: first.key, requestId: 'req-1' }])
   expect(first.permissions.hasPending).toBe(true)
   expect(registry.summaries().find(s => s.key === first.key)?.pendingApprovals).toBe(1)
 

@@ -112,6 +112,24 @@ function requestGc(): void {
   }
 }
 
+/** Read actual heap pressure without running cleanup or changing debounce state. */
+export function getHeapPressure(
+  getHeapUsed: () => number = () => process.memoryUsage().heapUsed,
+  getHeapLimit: () => number = () => getHeapStatistics().heap_size_limit,
+): { heapUsed: number; heapLimit: number; isHigh: boolean } {
+  const heapLimit = getHeapLimit()
+  const heapUsed = getHeapUsed()
+  return {
+    heapUsed,
+    heapLimit,
+    isHigh:
+      Number.isFinite(heapLimit) &&
+      Number.isFinite(heapUsed) &&
+      heapLimit > 0 &&
+      heapUsed >= heapLimit * HEAP_HIGH_WATER_FRACTION,
+  }
+}
+
 /**
  * Run one memory-pressure check. Below the high-water mark this only clears the
  * User Timing buffer (unless a profiler needs it). At/above the mark it always
@@ -125,8 +143,8 @@ export function checkMemoryPressure(
   now: () => number = () => Date.now(),
   clearTiming: () => void = clearUserTimingBuffer,
 ): boolean {
-  const limit = getHeapLimit()
-  const used = getHeapUsed()
+  const { heapLimit: limit, heapUsed: used, isHigh: overMark } =
+    getHeapPressure(getHeapUsed, getHeapLimit)
 
   // Routine hygiene every tick: bound the User Timing buffer without disturbing
   // an active profiler (which relies on its marks persisting across the turn).
@@ -135,7 +153,6 @@ export function checkMemoryPressure(
     clearTiming()
   }
 
-  const overMark = limit > 0 && used >= limit * HEAP_HIGH_WATER_FRACTION
   if (!overMark) {
     return false
   }

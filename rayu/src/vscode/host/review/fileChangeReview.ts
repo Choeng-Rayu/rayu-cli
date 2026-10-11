@@ -40,6 +40,7 @@ import { homedir } from 'node:os'
 import * as vscode from 'vscode'
 
 import { reversePatch, type ReviewHunk } from './reversePatch.js'
+import { PRE_EDIT_SCHEME, buildPreEditUri, parsePreEditUri } from './reviewUri.js'
 
 // Re-exported so consumers have one import site for the review types.
 export type { ReviewHunk }
@@ -53,32 +54,48 @@ export interface ReviewFileRecord {
   isCreated: boolean
 }
 
-/** The scheme the pre-edit virtual documents are served under. */
-const PRE_EDIT_SCHEME = 'rayucode-pre-edit'
-
 /**
  * Holds the current working set so a diff request can find its hunks.
  *
  * The webview only needs paths, stats and status; shipping hunks there would be a
  * large `postMessage` for data the browser never renders — the editor draws the diff.
+ *
+ * Records are keyed by `(sessionKey, displayPath)`, NOT by display path alone: two
+ * conversations editing the same file each keep their OWN pre-edit snapshot, so a diff
+ * opened from one tab cannot reconstruct "before" content from the other. See
+ * `reviewUri.ts` for the URI shape that carries the session key to the provider.
  */
 export class ReviewStore implements vscode.TextDocumentContentProvider {
-  private readonly byDisplayPath = new Map<string, ReviewFileRecord>()
+  private readonly bySession = new Map<string, Map<string, ReviewFileRecord>>()
   private readonly changed = new vscode.EventEmitter<vscode.Uri>()
 
   readonly onDidChange = this.changed.event
 
-  /** Replace the working set. The engine re-sends the whole summary on every change. */
-  replace(files: readonly ReviewFileRecord[]): void {
-    this.byDisplayPath.clear()
-    for (const f of files) this.byDisplayPath.set(f.displayPath, f)
+  /**
+   * Replace ONE session's working set. The engine re-sends the whole summary on every
+   * change.
+   */
+  replace(sessionKey: string, files: readonly ReviewFileRecord[]): void {
+    const records = new Map<string, ReviewFileRecord>()
+    for (const f of files) records.set(f.displayPath, f)
+    this.bySession.set(sessionKey, records)
     // Any open pre-edit document is now stale — the file on disk changed, so the
-    // reconstruction would produce a different result.
-    for (const f of files) this.changed.fire(preEditUri(f))
+    // reconstruction would produce a different result. Fired PER URI because VS Code
+    // invalidates a virtual document by its URI, and each session's URIs are distinct.
+    for (const f of files) this.changed.fire(preEditUri(sessionKey, f.displayPath))
   }
 
-  get(displayPath: string): ReviewFileRecord | undefined {
-    return this.byDisplayPath.get(displayPath)
+  get(sessionKey: string, displayPath: string): ReviewFileRecord | undefined {
+    return this.bySession.get(sessionKey)?.get(displayPath)
+  }
+
+  /** Drop one session's records — e.g. when its conversation is retired. */
+  clear(sessionKey: string): void {
+    const records = this.bySession.get(sessionKey)
+    if (!records) return
+    this.bySession.delete(sessionKey)
+    // Invalidate any open pre-edit document for the records just removed.
+    for (const f of records.values()) this.changed.fire(preEditUri(sessionKey, f.displayPath))
   }
 
   /**
@@ -89,8 +106,11 @@ export class ReviewStore implements vscode.TextDocumentContentProvider {
    * file did not exist".
    */
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-    const displayPath = uri.query
-    const record = this.byDisplayPath.get(displayPath)
+    // `toString(true)` skips VS Code's percent-encoding of the query, so the raw
+    // display path placed there by `preEditUri` is recovered unchanged — the same value
+    // the previous single-session implementation read from `uri.query`.
+    const parsed = parsePreEditUri(uri.toString(true))
+    const record = parsed ? this.get(parsed.sessionKey, parsed.displayPath) : undefined
     if (!record) throw new Error('This review is no longer available.')
     if (record.isCreated) return ''
 
@@ -111,7 +131,7 @@ export class ReviewStore implements vscode.TextDocumentContentProvider {
 
   dispose(): void {
     this.changed.dispose()
-    this.byDisplayPath.clear()
+    this.bySession.clear()
   }
 }
 
@@ -128,13 +148,11 @@ export function registerReviewStore(): {
   return { store, disposable }
 }
 
-function preEditUri(record: Pick<ReviewFileRecord, 'displayPath'>): vscode.Uri {
+function preEditUri(sessionKey: string, displayPath: string): vscode.Uri {
   // The path segment carries the basename so the diff tab title reads naturally; the
-  // query carries the key, because a display path may contain characters that do not
-  // survive being a URI path.
-  return vscode.Uri.parse(
-    `${PRE_EDIT_SCHEME}:${encodeURIComponent(basename(record.displayPath))}?${record.displayPath}`,
-  )
+  // query carries the display path, because a display path may contain characters that
+  // do not survive being a URI path. `reviewUri.ts` owns the exact layout.
+  return vscode.Uri.parse(buildPreEditUri(sessionKey, displayPath))
 }
 
 /** True when `p` is already an absolute filesystem path on any platform. */
@@ -222,9 +240,10 @@ export function resolveReviewFileUri(
  */
 export async function openReviewFile(
   store: ReviewStore,
+  sessionKey: string,
   displayPath: string,
 ): Promise<void> {
-  const record = store.get(displayPath)
+  const record = store.get(sessionKey, displayPath)
   const uri = record
     ? resolveReviewFileUri(record)
     : resolveReviewPath(displayPath)
@@ -245,13 +264,14 @@ export async function openReviewFile(
  */
 export async function openReviewDiff(
   store: ReviewStore,
+  sessionKey: string,
   displayPath: string,
 ): Promise<void> {
   // The record is looked up FIRST now, because it — not the display path — is what
   // knows where the file actually is. Resolving before the lookup meant the diff's
   // RIGHT side was located by the same display-path guess that fails for a `~/` path
   // or a session whose cwd is not the first workspace folder.
-  const record = store.get(displayPath)
+  const record = store.get(sessionKey, displayPath)
   const uri = record
     ? resolveReviewFileUri(record)
     : resolveReviewPath(displayPath)
@@ -271,7 +291,7 @@ export async function openReviewDiff(
 
   await vscode.commands.executeCommand(
     'vscode.diff',
-    preEditUri(record),
+    preEditUri(sessionKey, record.displayPath),
     uri,
     `${basename(displayPath)} — Rayu changes`,
     { preview: true },

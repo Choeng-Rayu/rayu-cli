@@ -16,7 +16,7 @@
     2. Otherwise download the published npm tarball straight from the registry
        and extract the single pre-bundled file (dist/rayu.js). No npm, no
        dependency resolution, no node-gyp, no admin rights.
-    3. Run it with the system Node when it is >= 18, otherwise unpack a private
+    3. Run it with the system Node when it is >= 22, otherwise unpack a private
        checksum-verified Node into %USERPROFILE%\.rayu\runtime.
     4. Install into %USERPROFILE%\.rayu\bin and add that to the *user* PATH.
 
@@ -41,7 +41,7 @@
 .EXAMPLE
   # With options, download first (piping to iex cannot forward arguments):
   irm https://rayucode.com/install.ps1 -OutFile install.ps1
-  .\install.ps1 -Version 1.6.13
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 1.6.13
 #>
 [CmdletBinding()]
 param(
@@ -80,7 +80,9 @@ $InstallerUrl = if ($env:RAYU_INSTALLER_URL) { $env:RAYU_INSTALLER_URL } else { 
 
 $NodeVersion = if ($env:RAYU_NODE_VERSION) { $env:RAYU_NODE_VERSION } else { 'v22.20.0' }
 $NodeDist = 'https://nodejs.org/dist'
-$MinNodeMajor = 18
+# Bundled dependencies use modern syntax (including RegExp /v). Use a supported
+# LTS runtime rather than accepting Node 18, which cannot even parse the bundle.
+$MinNodeMajor = 22
 
 $RayuHome = if ($env:RAYU_HOME) { $env:RAYU_HOME } else { Join-Path $env:USERPROFILE '.rayu' }
 $BinDir = if ($Dir) { $Dir } else { Join-Path $RayuHome 'bin' }
@@ -564,6 +566,9 @@ function Install-PrivateNode {
 
   $exe = Join-Path $target 'node.exe'
   if (-not (Test-Path $exe)) { Die "the downloaded Node runtime is missing node.exe" }
+  if ((Get-NodeMajor $exe) -lt $MinNodeMajor) {
+    Die "the downloaded Node runtime cannot start or is too old (need >= $MinNodeMajor).`nRemove any RAYU_NODE_VERSION override and re-run this installer."
+  }
   $script:NodeExe = $exe
   Write-Ok "Node $(& $exe --version) installed privately in $target"
 }
@@ -589,11 +594,10 @@ function Resolve-Node {
 }
 
 function Write-ModuleMarker([string]$Dir) {
-  # dist/rayu.js is an ES module. Without package.json {"type":"module"} Node
-  # parses .js as CommonJS and dies with "Cannot use import statement outside a
-  # module" on Node 18/20 — i.e. Windows installs via nvm/winget and the
-  # pre-installed Node that ships with many CI images.
-  $content = "{\n  `"type`": `"module`",\n  `"//`": `"Required so Node loads rayu.js as an ES module on Node < 22.7.`"\n}\n"
+  # dist/rayu.js is an ES module. Declare its format explicitly rather than
+  # depending on Node's version-specific automatic syntax detection.
+  # PowerShell uses backtick escapes; \n would be literal text and invalid JSON.
+  $content = @{ type = 'module' } | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path $Dir 'package.json'), $content)
 }
 
@@ -717,6 +721,46 @@ exit /b %ERRORLEVEL%
   } catch { Write-Warn "could not save a local installer copy ($($_.Exception.Message))" }
 }
 
+function Get-RayuVersion([string]$ExePath) {
+  # PowerShell 5.1 treats redirected native stderr as error records. Capture
+  # every line before checking the exit code, even when the caller uses Stop
+  # or PowerShell 7's native-command error preference. These are function-local.
+  $ErrorActionPreference = 'Continue'
+  $PSNativeCommandUseErrorActionPreference = $false
+  try {
+    $output = @(& $ExePath --version 2>&1)
+    $exitCode = $LASTEXITCODE
+  } catch {
+    Die "'$ExePath --version' could not start: $($_.Exception.Message)"
+  }
+  $lines = @($output | ForEach-Object { $_.ToString() })
+  $versions = @($lines | Where-Object {
+    $_ -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?(?:\s|$)'
+  })
+  if ($exitCode -ne 0 -or $versions.Count -eq 0) {
+    $details = if ($lines.Count) { $lines -join "`n" } else { '(no output)' }
+    Die "'$ExePath --version' failed (exit code $exitCode):`n$details`nPlease report this at https://github.com/$GithubRepo/issues"
+  }
+  return $versions[0]
+}
+
+function Write-InstallMetadata {
+  New-Item -ItemType Directory -Force -Path $RayuHome | Out-Null
+  # Serialize paths rather than interpolating them into JSON: Windows
+  # backslashes need escaping. WriteAllText uses UTF-8 without a BOM, which
+  # keeps Unicode profile names intact and lets the CLI use JSON.parse.
+  $metadata = [ordered]@{
+    installer = 'rayucode.com/install.ps1'
+    method = $script:InstallMethod
+    version = $script:InstalledVersion
+    platform = $NativePlatform
+    binDir = $BinDir
+    node = $(if ($script:NodeExe) { $script:NodeExe } else { 'embedded' })
+    installedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+  } | ConvertTo-Json
+  [IO.File]::WriteAllText((Join-Path $RayuHome 'install.json'), $metadata)
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -734,21 +778,14 @@ if (Try-InstallNative) {
   Install-FromTarball
 }
 
+# Verify before recording a successful install or changing the user's PATH.
+Write-Step 'verifying the install'
+$exePath = if ($script:InstallMethod -eq 'native') { Join-Path $BinDir 'rayu.exe' } else { Join-Path $BinDir 'rayu.cmd' }
+$reported = Get-RayuVersion $exePath
+
 # Metadata + the marker the npm postinstall writes, so the CLI does not replay
 # its "installed successfully" banner (this script already said it).
-New-Item -ItemType Directory -Force -Path $RayuHome | Out-Null
-$nodeForMeta = if ($script:NodeExe) { $script:NodeExe } else { 'embedded' }
-@"
-{
-  "installer": "rayucode.com/install.ps1",
-  "method": "$($script:InstallMethod)",
-  "version": "$($script:InstalledVersion)",
-  "platform": "$NativePlatform",
-  "binDir": "$BinDir",
-  "node": "$nodeForMeta",
-  "installedAt": "$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
-}
-"@ | Set-Content -Path (Join-Path $RayuHome 'install.json') -Encoding ASCII
+Write-InstallMetadata
 
 $cfgDir = if ($env:RAYU_CONFIG_DIR) { $env:RAYU_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.rayu' }
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
@@ -765,15 +802,6 @@ if (-not $NoModifyPath) {
   $pathAdded = Add-ToUserPath $BinDir
   # Make `rayu` usable in *this* session too, not just new terminals.
   if (-not $pathActive) { $env:Path = "$BinDir;$env:Path" }
-}
-
-# Verify
-Write-Step 'verifying the install'
-$exePath = if ($script:InstallMethod -eq 'native') { Join-Path $BinDir 'rayu.exe' } else { Join-Path $BinDir 'rayu.cmd' }
-try {
-  $reported = (& $exePath --version 2>&1 | Select-Object -First 1)
-} catch {
-  Die "'$exePath --version' failed: $($_.Exception.Message)`nPlease report this at https://github.com/$GithubRepo/issues"
 }
 
 $methodLabel = switch ($script:InstallMethod) {
@@ -803,7 +831,7 @@ Write-Info '  Start Rayu:'
 Write-Host '      rayu' -ForegroundColor Cyan
 Write-Info ''
 Write-Host '  update     rayu update   (or re-run this installer)' -ForegroundColor DarkGray
-Write-Host "  uninstall  & `"$BinDir\.rayu-installer.ps1`" -Uninstall" -ForegroundColor DarkGray
+Write-Host "  uninstall  powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$BinDir\.rayu-installer.ps1`" -Uninstall" -ForegroundColor DarkGray
 Write-Host '  docs       https://rayucode.com/docs' -ForegroundColor DarkGray
 Write-Info ''
 

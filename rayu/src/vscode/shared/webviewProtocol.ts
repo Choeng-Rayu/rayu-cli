@@ -360,6 +360,38 @@ export interface McpElicitationView {
   requestedSchema?: Record<string, unknown>
 }
 
+/**
+ * Which surface is rendering a `WebviewState`.
+ *
+ * A panel hides the in-panel session switcher (it is bound to exactly one session);
+ * the sidebar keeps it. Carried on the state rather than inferred from the message
+ * channel so the webview can decide its chrome from the snapshot alone.
+ */
+export type ChatSurfaceKind = 'sidebar' | 'panel'
+
+/**
+ * What a restored panel must re-bind to after a window reload.
+ *
+ * ── WHY THIS IS PERSISTED BY THE WEBVIEW, NOT THE HOST ─────────────────────────
+ *
+ * The serializer's revival state IS whatever the webview last wrote via `setState`
+ * (see `WebviewPanelSerializer`). The host cannot stash it, because the panel it
+ * belonged to no longer exists across a reload. So the webview mirrors these fields
+ * out of `surfaceBinding` on `init` and `setSurfaceBinding`, and `reviveBind` reads them
+ * back. Every field is optional: a missing transcript still degrades to a fresh
+ * session rather than throwing.
+ */
+export interface SurfaceBindingView {
+  /** The host's stable key for the session (`panel-N`). */
+  sessionKey: string
+  /** The engine's own session id, once the child reported it. */
+  sessionId?: string
+  /** The working directory the session ran in, so a resume lands in the right place. */
+  cwd?: string
+  /** A custom /title, carried so the revived tab keeps its name. */
+  customTitle?: string
+}
+
 /** Messages the extension host sends TO the webview. */
 export type HostToWebviewMessage =
   /**
@@ -371,6 +403,8 @@ export type HostToWebviewMessage =
    * CLI signs in or out underneath us.
    */
   | { type: 'init'; state: WebviewState }
+  /** A panel's revival binding changed without replacing its live transcript. */
+  | { type: 'setSurfaceBinding'; binding: SurfaceBindingView }
   /**
    * A SETTLED transcript entry — a finished message, not a fragment.
    *
@@ -833,6 +867,23 @@ export type WebviewToHostMessage =
    * live session may not have learned its engine id yet.
    */
   | { type: 'switchSession'; key: string }
+  /**
+   * Open or focus a LIVE session as its own editor tab.
+   *
+   * Sent from the sidebar (whose rows carry live keys). Distinct from `switchSession`,
+   * which switches the surface the sender is IN: this asks the host to create a NEW
+   * panel bound to `key`, or reveal the one already bound to it. Nothing is spawned or
+   * stopped, because the session is already running.
+   */
+  | { type: 'openSessionPanel'; key: string }
+  /**
+   * Resume a STORED session as its own editor tab.
+   *
+   * Sent from the sidebar's history list. Spawns an engine child with `--resume` and
+   * opens a panel for it — the tab equivalent of the old `resumeSession`, which remains
+   * in the union for the sidebar's own quick-chat fallback path.
+   */
+  | { type: 'resumeSessionPanel'; id: string }
   /** Close an open session and stop its engine. */
   | { type: 'closeSession'; key: string }
   | { type: 'renameSession'; key?: string; id?: string; title?: string }
@@ -1496,6 +1547,20 @@ export interface WebviewState {
   liveSessions?: LiveSessionView[]
   /** Which live session is on screen. */
   activeSessionKey?: string
+  /**
+   * Which surface is rendering this state. See `ChatSurfaceKind`.
+   *
+   * REQUIRED: the only constructor is the host's `buildState`, which always knows
+   * which surface it is building for. A panel hides its in-panel switcher.
+   */
+  surface: ChatSurfaceKind
+  /**
+   * What a restored panel must re-bind to. Null on the sidebar.
+   *
+   * The webview persists this (see `SurfaceBindingView`) so the panel serializer can
+   * revive the tab after a window reload.
+   */
+  surfaceBinding: SurfaceBindingView | null
   /** Host-owned task state survives webview collapse and recreation. */
   backgroundTasks?: BackgroundTaskView[]
   /** False when an attached older CLI does not expose task inspection. */

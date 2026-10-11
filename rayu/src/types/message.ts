@@ -220,11 +220,26 @@ export type SystemLocalCommandMessage = SystemMessageBase & {
   level: SystemMessageLevel
 }
 
+/** Inputs used by the shared engine when automatic compaction was triggered. */
+export type AutoCompactDecision = {
+  model: string
+  contextWindow: number
+  effectiveContextWindow: number
+  threshold: number
+  tokenCount: number
+  messageCount: number
+  querySource?: string
+} & (
+  | { reason: 'token_threshold' }
+  | { reason: 'heap_pressure'; heapUsed: number; heapLimit: number }
+)
+
 export type CompactMetadata = {
   trigger: 'manual' | 'auto'
   preTokens: number
   userContext?: string
   messagesSummarized?: number
+  autoCompact?: AutoCompactDecision
 }
 
 export type SystemCompactBoundaryMessage = SystemMessageBase & {
