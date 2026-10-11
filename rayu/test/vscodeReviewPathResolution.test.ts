@@ -124,7 +124,7 @@ describe('the record\'s absolute filePath wins over the display path', () => {
 describe('the store hands the record to the resolver', () => {
   test('a record retrieved by displayPath carries its absolute filePath', () => {
     const store = new ReviewStore()
-    store.replace([
+    store.replace('panel-1', [
       {
         filePath: '/real/session/dir/src/a.ts',
         displayPath: 'src/a.ts',
@@ -133,13 +133,13 @@ describe('the store hands the record to the resolver', () => {
         isCreated: false,
       },
     ])
-    const record = store.get('src/a.ts')
+    const record = store.get('panel-1', 'src/a.ts')
     expect(record).toBeDefined()
     expect(fsPath(resolveReviewFileUri(record!))).toBe('/real/session/dir/src/a.ts')
   })
 
   test('an unknown displayPath has no record, so the fallback path is used', () => {
     const store = new ReviewStore()
-    expect(store.get('nope.ts')).toBeUndefined()
+    expect(store.get('panel-1', 'nope.ts')).toBeUndefined()
   })
 })

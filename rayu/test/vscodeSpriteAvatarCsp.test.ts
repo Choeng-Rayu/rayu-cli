@@ -3,19 +3,19 @@
  *
  * ── WHY THIS IS WORTH A TEST, NOT JUST A REVIEW ────────────────────────────────
  *
- * `chatViewProvider.ts`'s `render()` is `private`, and every other assertion so
- * far about it (CSS hygiene, VSIX contents in `test/vscodeBundles.test.ts`) is
- * indirect — none of them render the ACTUAL HTML the panel would load and check
- * it against the ACTUAL Content-Security-Policy header on the SAME string. A
- * webview whose img-src forgot `webview.cspSource`, or whose sprite URI used a
- * scheme the policy does not list, would look correct in isolated review and
- * still silently fail to display a single pixel in a real editor — exactly the
- * kind of gap a static read cannot catch and a real render can.
+ * Every other assertion so far about the HTML (CSS hygiene, VSIX contents in
+ * `test/vscodeBundles.test.ts`) is indirect — none of them render the ACTUAL HTML
+ * the panel would load and check it against the ACTUAL Content-Security-Policy
+ * header on the SAME string. A webview whose img-src forgot `webview.cspSource`, or
+ * whose sprite URI used a scheme the policy does not list, would look correct in
+ * isolated review and still silently fail to display a single pixel in a real
+ * editor — exactly the kind of gap a static read cannot catch and a real render can.
  *
- * This drives `ChatViewProvider.resolveWebviewView()` — the one path that calls
- * `render()` — through a minimal mock of `vscode.WebviewView`/`vscode.Uri` that
- * implements only what that path touches, and inspects the real returned HTML
- * string.
+ * The one place that assembles the HTML is `renderWebviewHtml` in
+ * `webviewSurface.ts`; this drives it through `ChatViewProvider.resolveWebviewView()`,
+ * the real sidebar path that calls it, using a minimal mock of
+ * `vscode.WebviewView`/`vscode.Uri` that implements only what that path touches, and
+ * inspects the real returned HTML string.
  */
 import { describe, expect, mock, test } from 'bun:test'
 
@@ -69,11 +69,9 @@ function fakeWebview(): {
 describe('the sprite avatar asset survives the real CSP the panel serves', () => {
   test('render() emits an img-src that covers the injected sprite URI scheme', () => {
     const extensionUri = FakeUri.file('/fake/extension/root')
-    const provider = new ChatViewProvider(
-      extensionUri as never,
-      () => ({}) as never,
-      {} as never,
-    )
+    const provider = new ChatViewProvider(extensionUri as never, {
+      onMessage: () => {},
+    })
 
     const view = fakeWebview()
     provider.resolveWebviewView(view as never)
@@ -113,7 +111,9 @@ describe('the sprite avatar asset survives the real CSP the panel serves', () =>
     // working" — the nonce-gated script-src and the style-src that already carries
     // 'unsafe-inline' for the sprite var's own inline <style> tag.
     const extensionUri = FakeUri.file('/fake/extension/root')
-    const provider = new ChatViewProvider(extensionUri as never, () => ({}) as never, {} as never)
+    const provider = new ChatViewProvider(extensionUri as never, {
+      onMessage: () => {},
+    })
     const view = fakeWebview()
     provider.resolveWebviewView(view as never)
     const html = view.webview.html
@@ -132,7 +132,9 @@ describe('the sprite avatar asset survives the real CSP the panel serves', () =>
     // A remote image is the classic prompt-injection exfiltration channel: a URL whose
     // query string carries conversation data, fetched the moment it renders.
     const extensionUri = FakeUri.file('/fake/extension/root')
-    const provider = new ChatViewProvider(extensionUri as never, () => ({}) as never, {} as never)
+    const provider = new ChatViewProvider(extensionUri as never, {
+      onMessage: () => {},
+    })
     const first = fakeWebview()
     const second = fakeWebview()
     provider.resolveWebviewView(first as never)
@@ -151,7 +153,7 @@ describe('the sprite avatar asset survives the real CSP the panel serves', () =>
 
 
 /**
- * Delivery wiring: what `post()` and `syncState()` put on the real `webview.postMessage`.
+ * Delivery wiring: what `post()` and `postState()` put on the real `webview.postMessage`.
  *
  * Here rather than in its own file because this file owns the `vscode` mock that
  * `ChatViewProvider` needs. Bun's module mocks are process-wide, so a second file mocking
@@ -182,11 +184,9 @@ describe('ChatViewProvider delivery to the webview', () => {
   }
 
   function provider() {
-    return new ChatViewProvider(
-      FakeUri.file('/fake/extension/root') as never,
-      () => ({ marker: 'state' }) as never,
-      {} as never,
-    )
+    return new ChatViewProvider(FakeUri.file('/fake/extension/root') as never, {
+      onMessage: () => {},
+    })
   }
 
   test('streamed deltas arrive merged, and before the init snapshot that follows them', () => {
@@ -201,7 +201,7 @@ describe('ChatViewProvider delivery to the webview', () => {
 
     // `init` replaces the transcript. The deltas it already contains must land before it,
     // or the webview would append them to the fresh snapshot a second time.
-    panel.syncState()
+    panel.postState({ marker: 'state' } as never)
     expect(posted).toEqual([
       { type: 'appendPartial', id: 'a', kind: 'text', delta: 'Hello' },
       { type: 'init', state: { marker: 'state' } },

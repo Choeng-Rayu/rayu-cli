@@ -131,6 +131,8 @@ function webviewState(transcript: TranscriptEntry[]): WebviewState {
     oauthEnabled: true,
     version: '0.0.0-test',
     workspaceFolder: null,
+    surface: 'sidebar',
+    surfaceBinding: null,
     transcript,
     turnRunning: false,
     pendingPermissions: [],

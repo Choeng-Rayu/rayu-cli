@@ -15,6 +15,7 @@
  */
 import type {
   BackgroundTaskView,
+  ChatSurfaceKind,
   ContextUsageView,
   EntryId,
   LiveSessionView,
@@ -38,6 +39,7 @@ import type {
   RuntimeSkillView,
   RateLimitView,
   EngineAuthStatusView,
+  SurfaceBindingView,
   ThinkingEntryView,
   TranscriptEntry,
   TurnCompletionEntry,
@@ -236,6 +238,20 @@ export interface ChatState {
   liveSessions: LiveSessionView[]
   /** Which live session is on screen. */
   activeSessionKey: string
+  /**
+   * Which surface this state belongs to — a panel hides its in-panel session switcher.
+   *
+   * Copied from `WebviewState.surface` on `init`; never derived from a message channel,
+   * so the chrome decision comes from the snapshot alone.
+   */
+  surface: ChatSurfaceKind
+  /**
+   * What a restored panel must re-bind to. Null on the sidebar.
+   *
+   * Mirrored into `PersistedUiState` by App's `setState` effect so the panel serializer can
+   * revive the tab; a FULL replacement like the rest of this state.
+   */
+  surfaceBinding: SurfaceBindingView | null
   backgroundTasks: BackgroundTaskView[]
   taskInspectionSupported: boolean
   taskInspectionMessage?: string
@@ -300,12 +316,17 @@ export const initialChatState: ChatState = {
   sessions: { status: 'loading', sessions: [] },
   liveSessions: [],
   activeSessionKey: '',
+  // Before the first `init` there is no session to be a panel for; the sidebar's chrome
+  // (which is the default) is the safe assumption, and `init` overwrites both fields.
+  surface: 'sidebar',
+  surfaceBinding: null,
   backgroundTasks: [],
   taskInspectionSupported: true,
 }
 
 export type ChatAction =
   | { type: 'init'; state: WebviewState }
+  | { type: 'setSurfaceBinding'; binding: SurfaceBindingView }
   | { type: 'addMessage'; entry: TranscriptEntry }
   | { type: 'appendPartial'; id: EntryId; kind: 'text' | 'thinking'; delta: string }
   | { type: 'completeMessage'; id: EntryId }
@@ -410,11 +431,25 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         workspaceFiles: state.workspaceFiles,
         sessions: action.state.sessions,
         liveSessions: action.state.liveSessions ?? [],
-        activeSessionKey: action.state.activeSessionKey ?? '',
+        activeSessionKey: action.state.surface === 'panel'
+          ? action.state.surfaceBinding?.sessionKey ?? action.state.activeSessionKey ?? ''
+          : action.state.activeSessionKey ?? '',
+        // REQUIRED on the wire, so copied straight through — a panel must never inherit the
+        // sidebar's chrome, and the sidebar must not inherit a panel's binding.
+        surface: action.state.surface,
+        surfaceBinding: action.state.surfaceBinding,
         backgroundTasks: action.state.backgroundTasks ?? [],
         taskInspectionSupported: action.state.taskInspectionSupported ?? true,
         taskInspectionMessage: action.state.taskInspectionMessage,
       }
+    }
+
+    case 'setSurfaceBinding': {
+      const previous = state.surfaceBinding
+      if (state.surface !== 'panel' || previous?.sessionKey !== action.binding.sessionKey) return state
+      if (previous.sessionId === action.binding.sessionId && previous.cwd === action.binding.cwd &&
+          previous.customTitle === action.binding.customTitle) return state
+      return { ...state, surfaceBinding: action.binding }
     }
 
     case 'addMessage': {
@@ -613,7 +648,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, sessions: action.list }
 
     case 'setLiveSessions':
-      return { ...state, liveSessions: action.sessions, activeSessionKey: action.activeKey }
+      return {
+        ...state,
+        liveSessions: action.sessions,
+        activeSessionKey: state.surface === 'panel'
+          ? state.surfaceBinding?.sessionKey ?? state.activeSessionKey
+          : action.activeKey,
+      }
 
     case 'setTurnProgress':
       // Whole-value replacement: the host sends a complete snapshot each time, so there

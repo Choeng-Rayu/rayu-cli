@@ -2,7 +2,7 @@ import { markPostCompaction } from 'src/bootstrap/state.js'
 import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
-import type { Message } from '../../types/message.js'
+import type { AutoCompactDecision, Message } from '../../types/message.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -10,6 +10,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
+import { getHeapPressure } from '../../utils/memoryPressureGuard.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
@@ -68,13 +69,9 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
 
-// Message-count safety net for large-context models. With a 1M-token context
-// window the token threshold is ~967K, so sessions can accumulate thousands
-// of messages (observed: 3037 messages / 25 MB with zero compactions) before
-// hitting it. Each message is 3-5x its JSON size in V8 heap, so 800+ messages
-// is tens of MB of live objects. This cap catches that case without affecting
-// normal 200K sessions (which compact at ~150-300 messages).
-const AUTO_COMPACT_MESSAGE_COUNT_CAP = 800
+// A long history is only eligible for emergency compaction when measured heap
+// pressure is also high. Record count alone must not compact a mostly empty window.
+const MIN_MESSAGES_FOR_HEAP_PRESSURE_COMPACT = 800
 
 export function getAutoCompactThreshold(model: string): number {
   const effectiveContextWindow = getEffectiveContextWindowSize(model)
@@ -164,7 +161,7 @@ export function isAutoCompactEnabled(): boolean {
   return userConfig.autoCompactEnabled
 }
 
-export async function shouldAutoCompact(
+async function getAutoCompactDecision(
   messages: Message[],
   model: string,
   querySource?: QuerySource,
@@ -172,11 +169,11 @@ export async function shouldAutoCompact(
   // pre-snip context, so tokenCountWithEstimation can't see the savings.
   // Subtract the rough-delta that snip already computed.
   snipTokensFreed = 0,
-): Promise<boolean> {
+): Promise<AutoCompactDecision | null> {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
   if (querySource === 'session_memory' || querySource === 'compact') {
-    return false
+    return null
   }
   // marble_origami is the ctx-agent — if ITS context blows up and
   // autocompact fires, runPostCompactCleanup calls resetContextCollapse()
@@ -185,12 +182,12 @@ export async function shouldAutoCompact(
   // external builds (it's in excluded-strings.txt).
   if (RAYU_FEATURES.CONTEXT_COLLAPSE) {
     if (querySource === 'marble_origami') {
-      return false
+      return null
     }
   }
 
   if (!isAutoCompactEnabled()) {
-    return false
+    return null
   }
 
   // Reactive-only mode: suppress proactive autocompact, let reactive compact
@@ -201,7 +198,7 @@ export async function shouldAutoCompact(
   // still tries session memory first. Revisit if reactive-only graduates.
   if (RAYU_FEATURES.REACTIVE_COMPACT) {
     if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_raccoon', false)) {
-      return false
+      return null
     }
   }
 
@@ -225,7 +222,7 @@ export async function shouldAutoCompact(
       require('../contextCollapse/index.js') as typeof import('../contextCollapse/index.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
     if (isContextCollapseEnabled()) {
-      return false
+      return null
     }
   }
 
@@ -234,31 +231,59 @@ export async function shouldAutoCompact(
   const effectiveWindow = getEffectiveContextWindowSize(model)
 
   logForDebugging(
-    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow} messages=${messages.length}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
+    `autocompact: model=${JSON.stringify(model)} source=${querySource ?? 'unknown'} tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow} messages=${messages.length}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
   )
 
-  const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
-    tokenCount,
-    model,
-  )
-
-  if (isAboveAutoCompactThreshold) return true
-
-  // Safety net: for large-context models (e.g. 1M tokens) the token threshold
-  // is so high that it may never fire, letting the in-memory messages array
-  // grow unbounded. A hard message-count cap prevents OOM in sessions that
-  // would otherwise never compact. The count is generous enough that it never
-  // fires for normal 200K-context sessions (those compact well before 800
-  // messages), but catches the 1M+ case where 3000+ messages accumulated with
-  // zero compactions.
-  if (messages.length >= AUTO_COMPACT_MESSAGE_COUNT_CAP) {
+  let trigger:
+    | { reason: 'token_threshold' }
+    | { reason: 'heap_pressure'; heapUsed: number; heapLimit: number }
+  if (tokenCount >= threshold) {
+    trigger = { reason: 'token_threshold' }
+  } else {
+    // Internal records include tool calls and split streaming blocks. A large
+    // count is not evidence of context exhaustion; require actual heap pressure
+    // to retain the OOM fallback without routinely discarding low-token history.
+    if (messages.length < MIN_MESSAGES_FOR_HEAP_PRESSURE_COMPACT) return null
+    const { heapUsed, heapLimit, isHigh } = getHeapPressure()
+    if (!isHigh) return null
+    trigger = { reason: 'heap_pressure', heapUsed, heapLimit }
     logForDebugging(
-      `autocompact: message count ${messages.length} ≥ ${AUTO_COMPACT_MESSAGE_COUNT_CAP} — forcing compaction`,
+      `autocompact: reason=heap_pressure heapUsed=${heapUsed} heapLimit=${heapLimit} messages=${messages.length}`,
     )
-    return true
   }
 
-  return false
+  return {
+    ...trigger,
+    model,
+    contextWindow: getContextWindowForModel(model, getSdkBetas()),
+    effectiveContextWindow: effectiveWindow,
+    threshold,
+    tokenCount,
+    messageCount: messages.length,
+    querySource,
+  }
+}
+
+export async function shouldAutoCompact(
+  messages: Message[],
+  model: string,
+  querySource?: QuerySource,
+  snipTokensFreed = 0,
+): Promise<boolean> {
+  return (
+    (await getAutoCompactDecision(messages, model, querySource, snipTokensFreed)) !== null
+  )
+}
+
+function recordAutoCompactDecision(
+  result: CompactionResult,
+  decision: AutoCompactDecision,
+): void {
+  if (result.boundaryMarker.subtype === 'compact_boundary') {
+    // Persist the original trigger inputs with the boundary, even when debug
+    // logging is off or summary generation changes the last-response usage.
+    result.boundaryMarker.compactMetadata.autoCompact = decision
+  }
 }
 
 export async function autoCompactIfNeeded(
@@ -288,14 +313,14 @@ export async function autoCompactIfNeeded(
   }
 
   const model = toolUseContext.options.mainLoopModel
-  const shouldCompact = await shouldAutoCompact(
+  const decision = await getAutoCompactDecision(
     messages,
     model,
     querySource,
     snipTokensFreed,
   )
 
-  if (!shouldCompact) {
+  if (!decision) {
     return { wasCompacted: false }
   }
 
@@ -303,7 +328,7 @@ export async function autoCompactIfNeeded(
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
     previousCompactTurnId: tracking?.turnId,
-    autoCompactThreshold: getAutoCompactThreshold(model),
+    autoCompactThreshold: decision.threshold,
     querySource,
   }
 
@@ -315,6 +340,7 @@ export async function autoCompactIfNeeded(
     model,
   )
   if (sessionMemoryResult) {
+    recordAutoCompactDecision(sessionMemoryResult, decision)
     // Reset lastSummarizedMessageId since session memory compaction prunes messages
     // and the old message UUID will no longer exist after the REPL replaces messages
     setLastSummarizedMessageId(undefined)
@@ -343,6 +369,7 @@ export async function autoCompactIfNeeded(
       true, // isAutoCompact
       recompactionInfo,
     )
+    recordAutoCompactDecision(compactionResult, decision)
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array

@@ -4,7 +4,7 @@
  * ── WHY THIS IS KEYED BY CONVERSATION ─────────────────────────────────────────
  *
  * The panel renders one transcript at a time and the host REPLACES it wholesale on
- * every `init` (see `syncState`). Switching conversations therefore rebuilds the
+ * every `init` (posted via `postState`). Switching conversations therefore rebuilds the
  * scroll container's children, and the browser leaves the reader at the top of a
  * transcript they had already read — they then have to scroll back down. The
  * reading position and the follow-pin are properties of a CONVERSATION, not of the

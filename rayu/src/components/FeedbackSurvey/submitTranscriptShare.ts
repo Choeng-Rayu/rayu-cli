@@ -1,112 +1,46 @@
-import axios from 'axios'
-import { readFile, stat } from 'fs/promises'
-import type { Message } from '../../types/message.js'
-import { checkAndRefreshOAuthTokenIfNeeded } from '../../utils/auth.js'
+// ── LOCALLY DISABLED: NO TRANSCRIPT LEAVES THE MACHINE ──────────────────────────
+//
+// This module used to POST the (redacted) conversation — plus every subagent
+// transcript and the raw JSONL session file — to
+// https://api.anthropic.com/api/claude_code_shared_session_transcripts, authenticated
+// with the *Anthropic provider key* from `getAuthHeaders()`. That is an upstream
+// Claude Code leftover, not a Rayu endpoint, and our users' session data must never
+// be sent to Anthropic as a side effect of answering a feedback survey.
+//
+// The outbound call is therefore gone. `submitTranscriptShare` is kept as a local
+// NO-OP with its original signature and return contract (`{ success, transcriptId? }`)
+// so the survey call sites in `useFeedbackSurvey.ts` and `useMemorySurvey.tsx` keep
+// compiling and simply do nothing instead of exfiltrating a transcript.
 import { logForDebugging } from '../../utils/debug.js'
-import { errorMessage } from '../../utils/errors.js'
-import { getAuthHeaders, getUserAgent } from '../../utils/http.js'
-import { normalizeMessagesForAPI } from '../../utils/messages.js'
-import {
-  extractAgentIdsFromMessages,
-  getTranscriptPath,
-  loadSubagentTranscripts,
-  MAX_TRANSCRIPT_READ_BYTES,
-} from '../../utils/sessionStorage.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
-import { redactSensitiveInfo } from '../../utils/redactSensitiveInfo.js'
+import type { Message } from '../../types/message.js'
 
-type TranscriptShareResult = {
-  success: boolean
-  transcriptId?: string
-}
-
+/**
+ * Why a transcript share was requested. Retained verbatim for call-site
+ * compatibility (`useFeedbackSurvey.ts` imports this type).
+ */
 export type TranscriptShareTrigger =
   | 'bad_feedback_survey'
   | 'good_feedback_survey'
   | 'frustration'
   | 'memory_survey'
 
+export type TranscriptShareResult = {
+  success: boolean
+  transcriptId?: string
+}
+
+/**
+ * Formerly uploaded a redacted transcript to Anthropic. Now a deliberate no-op:
+ * nothing is read from disk, nothing is sent over the network, and the result
+ * reports that no transcript was shared.
+ */
 export async function submitTranscriptShare(
-  messages: Message[],
-  trigger: TranscriptShareTrigger,
-  appearanceId: string,
+  _messages: Message[],
+  _trigger: TranscriptShareTrigger,
+  _appearanceId: string,
 ): Promise<TranscriptShareResult> {
-  try {
-    logForDebugging('Collecting transcript for sharing', { level: 'info' })
-
-    const transcript = normalizeMessagesForAPI(messages)
-
-    // Collect subagent transcripts
-    const agentIds = extractAgentIdsFromMessages(messages)
-    const subagentTranscripts = await loadSubagentTranscripts(agentIds)
-
-    // Read raw JSONL transcript (with size guard to prevent OOM)
-    let rawTranscriptJsonl: string | undefined
-    try {
-      const transcriptPath = getTranscriptPath()
-      const { size } = await stat(transcriptPath)
-      if (size <= MAX_TRANSCRIPT_READ_BYTES) {
-        rawTranscriptJsonl = await readFile(transcriptPath, 'utf-8')
-      } else {
-        logForDebugging(
-          `Skipping raw transcript read: file too large (${size} bytes)`,
-          { level: 'warn' },
-        )
-      }
-    } catch {
-      // File may not exist
-    }
-
-    const data = {
-      trigger,
-      version: MACRO.VERSION,
-      platform: process.platform,
-      transcript,
-      subagentTranscripts:
-        Object.keys(subagentTranscripts).length > 0
-          ? subagentTranscripts
-          : undefined,
-      rawTranscriptJsonl,
-    }
-
-    const content = redactSensitiveInfo(jsonStringify(data))
-
-    await checkAndRefreshOAuthTokenIfNeeded()
-
-    const authResult = getAuthHeaders()
-    if (authResult.error) {
-      return { success: false }
-    }
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'User-Agent': getUserAgent(),
-      ...authResult.headers,
-    }
-
-    const response = await axios.post(
-      'https://api.anthropic.com/api/claude_code_shared_session_transcripts',
-      { content, appearance_id: appearanceId },
-      {
-        headers,
-        timeout: 30000,
-      },
-    )
-
-    if (response.status === 200 || response.status === 201) {
-      const result = response.data
-      logForDebugging('Transcript shared successfully', { level: 'info' })
-      return {
-        success: true,
-        transcriptId: result?.transcript_id,
-      }
-    }
-
-    return { success: false }
-  } catch (err) {
-    logForDebugging(errorMessage(err), {
-      level: 'error',
-    })
-    return { success: false }
-  }
+  logForDebugging('Transcript sharing is disabled; skipping upload', {
+    level: 'info',
+  })
+  return { success: false }
 }

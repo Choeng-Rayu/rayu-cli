@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, memo, type MutableRefObject } from 'react'
 
 import type {
+  ChatSurfaceKind,
   EntryId,
   ImageInputView,
   PromptDeliveryView,
@@ -90,6 +91,21 @@ interface PersistedUiState {
   sessionsOpen?: boolean
   selectedTaskKey?: string | null
   draft?: string
+  /**
+   * The panel's revival key, mirrored from `state.surfaceBinding`.
+   *
+   * ── WRITTEN ONLY BY A PANEL, NEVER BY THE SIDEBAR ───────────────────────────────
+   *
+   * VS Code hands the panel serializer whatever this webview last wrote via `setState`,
+   * so the binding MUST be here for a reloaded tab to re-bind its session (see
+   * `SurfaceBindingView`). The sidebar's `surfaceBinding` is always null, and a sidebar
+   * must not write these keys at all: were it to write nulls, a later `setState` from the
+   * same surface could not re-add a binding it never had — see the effect for the guard.
+   */
+  sessionKey?: string
+  sessionId?: string
+  cwd?: string
+  customTitle?: string
 }
 
 function readPersistedUi(): PersistedUiState {
@@ -170,13 +186,31 @@ export function App(): JSX.Element {
 
   // One write per change, covering every persisted field: `setState` REPLACES rather than
   // merges, so writing them separately would have each field erase the others.
+  //
+  // ── THE BINDING IS WRITTEN ONLY WHEN THERE IS ONE ───────────────────────────────
+  //
+  // `surfaceBinding` is the panel's revival key — the serializer reads it back after a
+  // reload — and it is null on the sidebar. Spreading the four fields unconditionally
+  // would have the sidebar write `sessionKey: undefined`, and because `setState` REPLACES,
+  // an absent key vanishes. That is harmless for the sidebar's own slot, but the guard
+  // keeps the invariant explicit: only a panel's snapshot ever carries a binding, so only
+  // a panel ever writes these keys.
+  const surfaceBinding = state.surfaceBinding
   useEffect(() => {
     vscodeApi.setState({
       sessionsOpen,
       selectedTaskKey,
       ...(draft ? { draft } : {}),
+      ...(surfaceBinding
+        ? {
+            sessionKey: surfaceBinding.sessionKey,
+            ...(surfaceBinding.sessionId !== undefined ? { sessionId: surfaceBinding.sessionId } : {}),
+            ...(surfaceBinding.cwd !== undefined ? { cwd: surfaceBinding.cwd } : {}),
+            ...(surfaceBinding.customTitle !== undefined ? { customTitle: surfaceBinding.customTitle } : {}),
+          }
+        : {}),
     } satisfies PersistedUiState)
-  }, [sessionsOpen, selectedTaskKey, draft])
+  }, [sessionsOpen, selectedTaskKey, draft, surfaceBinding])
 
   /**
    * Ctrl+O / Cmd+O, the same gesture the CLI uses for the same thing.
@@ -322,6 +356,7 @@ export function App(): JSX.Element {
 
       switch (message.type) {
         case 'init':
+        case 'setSurfaceBinding':
         case 'addMessage':
         case 'appendPartial':
         case 'completeMessage':
@@ -377,6 +412,11 @@ export function App(): JSX.Element {
 
   const session = state.session
   const signedOut = session === null || session.status === 'signed-out'
+  // Which surface this webview is. A panel is bound to exactly one session and must not
+  // offer the in-panel switcher; the sidebar keeps it. Read from the snapshot the host
+  // built for this surface, never inferred from the message channel.
+  const surface: ChatSurfaceKind = session?.surface ?? 'sidebar'
+  const isPanel = surface === 'panel'
   // The transcript remains the host-owned source of truth. Selecting its newest
   // structured TodoWrite entry makes the list persistent across ordinary messages,
   // webview recreation, and history resume without a second todo state to synchronize.
@@ -485,7 +525,14 @@ export function App(): JSX.Element {
         version={session?.version ?? ''}
         title={sessionTitle}
         activeSessionKey={state.activeSessionKey}
-        onRename={title => send({ type: 'renameSession', key: state.activeSessionKey, title })}
+        surface={surface}
+        onCloseTab={() => {
+          // Keyed off the panel's own binding, not `activeSessionKey`: a panel is bound to
+          // exactly one session for its life, and its tab must close THAT one.
+          const key = surfaceBinding?.sessionKey
+          if (key) send({ type: 'closeSession', key })
+        }}
+        onRename={title => send({ type: 'renameSession', key: surfaceBinding?.sessionKey ?? state.activeSessionKey, title })}
         status={sessionStatus}
         mcpServers={state.mcpServers}
         mcpConnectionUi={state.mcpConnectionUi}
@@ -611,21 +658,26 @@ export function App(): JSX.Element {
           onToggleTool={toggleTool}
           onRequestToolOutput={requestToolOutput}
         />
-        {sessionsOpen ? (
+        {sessionsOpen && !isPanel ? (
           <SessionsView
             list={state.sessions}
             liveSessions={state.liveSessions}
             activeSessionKey={state.activeSessionKey}
             workspaceFolder={session?.workspaceFolder ?? ''}
+            // A history row OPENS its own editor tab (the host spawns the engine with
+            // `--resume`). The list is deliberately left open: opening several is the point,
+            // and the tab destroys nothing here. The old `resumeSession` switched THIS surface
+            // destructively, which is no longer what a history row means.
             onResume={id => {
-              setSessionsOpen(false)
               setSelectedTaskKey(null)
-              send({ type: 'resumeSession', id })
+              send({ type: 'resumeSessionPanel', id })
             }}
+            // A live row opens/focuses its tab. Again no `setSessionsOpen(false)` — the list
+            // stays so the user can open several without reopening it each time. The host
+            // focuses the new panel, which rebinds this sidebar to that session.
             onSwitch={key => {
-              setSessionsOpen(false)
               setSelectedTaskKey(null)
-              send({ type: 'switchSession', key })
+              send({ type: 'openSessionPanel', key })
             }}
             onClose={key => send({ type: 'closeSession', key })}
             onRetry={() => send({ type: 'listSessions' })}

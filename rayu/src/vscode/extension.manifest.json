@@ -42,7 +42,9 @@
   "main": "./extension.js",
   "//activationEvents": "onView keeps activation lazy: the extension host does no work in windows where the panel is never opened. Once the authenticated panel mounts, it prewarms the engine while the user reads or types so the first turn can reuse it.",
   "activationEvents": [
-    "onView:rayucode.chat"
+    "onView:rayucode.chat",
+    "onCommand:rayucode.newSession",
+    "onWebviewPanel:rayucode.sessionChat"
   ],
   "//capabilities": "Declared rather than left to the default (which VS Code documents as the same `false`) so the choice is explicit and cannot be flipped by accident. The engine is an agent: it executes commands, edits files, starts the workspace's MCP servers and plugins, and loads the workspace .env (which can redirect API endpoints). None of that is safe in a folder the user has not trusted, so Rayucode stays disabled in Restricted Mode.",
   "capabilities": {
@@ -86,6 +88,12 @@
         "command": "rayucode.signOut",
         "title": "Sign Out",
         "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.feedback",
+        "title": "Send Feedback",
+        "category": "Rayucode",
+        "icon": "$(comment-discussion)"
       },
       {
         "command": "rayucode.addTerminalSelection",

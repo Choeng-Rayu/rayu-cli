@@ -262,6 +262,8 @@ export interface SessionCallbacks {
   onToolOutput?: (id: EntryId, text: string) => void
   /** The engine reported its model. */
   onModelInfo: (info: ModelInfoView) => void
+  /** The engine's authoritative id changed; panels must persist it for revival. */
+  onSessionIdChanged?: (sessionId: string | null) => void
   /**
    * Something went wrong in a way the user should see, in a session that may NOT be
    * the one on screen.
@@ -361,6 +363,8 @@ export interface SessionOptions {
   resumeSessionId?: string
   nodePath?: string
   env?: Record<string, string | undefined>
+  /** Finish login and provider preparation before a new engine reads its profile. */
+  prepareStartup?: () => Promise<void>
   /**
    * Extra environment resolved lazily, at spawn time.
    *
@@ -851,6 +855,10 @@ export class ChatSession {
     return this.currentSessionId ?? this.options.resumeSessionId ?? null
   }
 
+  get workingDirectory(): string {
+    return this.options.cwd
+  }
+
   /** Agent type names the engine reported, for `/subagent_models <AGENT>`. */
   get subagentTypes(): readonly string[] {
     return this.agentTypes
@@ -873,8 +881,13 @@ export class ChatSession {
    * settles those at the moment the engine goes away, so what gets persisted is terminal
    * and survives the round trip.
    */
-  async restoreTaskHistory(sessionId: string, cwd = this.options.cwd): Promise<void> {
+  async restoreTaskHistory(
+    sessionId: string,
+    cwd = this.options.cwd,
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
     const restored = await loadTaskHistory(cwd, sessionId)
+    if (this.disposed || !isCurrent()) return
     this.backgroundTaskMap.clear()
     for (const task of restored) this.backgroundTaskMap.set(task.key, task)
     this.callbacks.onTaskStateReplaced?.([...this.backgroundTasks])
@@ -888,17 +901,8 @@ export class ChatSession {
    */
   async warmup(): Promise<void> {
     if (this.disposed) return
-    try {
-      await this.ensureStarted()
-    } catch (cause) {
-      if (this.disposed) return
-      this.reportError(
-        `Could not start the Rayu engine: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-      )
-      this.teardown('engine warmup failed')
-    }
+    // Startup owns failure reporting, once, even when a prompt shares this warmup.
+    await this.ensureStarted().catch(() => {})
   }
 
   /**
@@ -936,15 +940,9 @@ export class ChatSession {
 
     try {
       await this.ensureStarted()
-    } catch (cause) {
-      if (this.disposed || epoch !== this.submissionEpoch) return
-      this.reportError(
-        `Could not start the Rayu engine: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-      )
-      this.completeTurn('failed')
-      this.setTurnRunning(false)
+    } catch {
+      // ensureStarted records the cause and resets the failed child. Sending another
+      // prompt can start a fresh engine without reloading the extension window.
       return
     }
 
@@ -1168,6 +1166,7 @@ export class ChatSession {
     cwd?: string,
     options: { preserveModel?: boolean } = {},
   ): void {
+    const previousSessionId = this.engineSessionId
     // Invalidate anything in flight against the outgoing engine.
     this.generation += 1
     this.modelSelectionEpoch += 1
@@ -1198,6 +1197,9 @@ export class ChatSession {
     // explicitly requested resume id immediately, while a fresh conversation remains unknown
     // until its new child reports one.
     this.currentSessionId = null
+    if (this.engineSessionId !== previousSessionId) {
+      this.callbacks.onSessionIdChanged?.(this.engineSessionId)
+    }
     this.turnProgress = null
     for (const key of Object.keys(this.turnCompletions)) delete this.turnCompletions[key]
     this.thinkingBlocks.clear()
@@ -1230,14 +1232,33 @@ export class ChatSession {
     if (this.starting) return this.starting
     if (this.engine?.isRunning && this.control) return Promise.resolve()
     // Concurrent submits must not spawn two engines.
-    const starting = this.start().finally(() => {
+    const epoch = this.submissionEpoch
+    const starting = this.start(epoch).catch(cause => {
+      if (!this.disposed && epoch === this.submissionEpoch) {
+        this.reportError(`Could not start the Rayu engine: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`)
+        this.completeTurn('failed')
+        this.teardown('engine startup failed')
+      }
+      throw cause
+    }).finally(() => {
       if (this.starting === starting) this.starting = null
     })
     this.starting = starting
     return starting
   }
 
-  private async start(): Promise<void> {
+  private async start(epoch: number): Promise<void> {
+    await this.options.prepareStartup?.()
+    if (this.disposed || epoch !== this.submissionEpoch) return
+    // The editor connection is optional; login/provider preparation above is not.
+    const lazyEnv = this.options.resolveEnv
+      ? await this.options.resolveEnv().catch(() => ({}))
+      : {}
+    if (this.disposed || epoch !== this.submissionEpoch) return
+
+    let startupFailure: Error | null = null
     const control: ControlClient = new ControlClient(
       frame => this.engine?.send(frame) ?? false,
       {
@@ -1262,7 +1283,7 @@ export class ChatSession {
           // Fatal by contract: the protocol is correlated, so continuing past a
           // frame we could not read risks waiting forever on a response that was
           // in it.
-          this.callbacks.onError(`${message} ${excerpt}`)
+          this.reportError(`${message} ${excerpt}`)
           this.teardown('the engine sent an unreadable frame')
         },
       },
@@ -1277,11 +1298,6 @@ export class ChatSession {
       ...this.options,
       thinkingEnabled: this.thinkingPreference,
     })
-    // Optional, lazily-resolved environment (currently the editor connection's port). A
-    // failure here must not prevent the session from starting, so it degrades to nothing.
-    const lazyEnv = this.options.resolveEnv
-      ? await this.options.resolveEnv().catch(() => ({}))
-      : {}
     const engine = new EngineProcess(
       {
         ...this.options,
@@ -1299,11 +1315,13 @@ export class ChatSession {
       {
         onFrame: frame => control.handleFrame(frame),
         onProtocolError: error => {
-          this.callbacks.onError(`Engine stream error: ${error.message}`)
+          this.reportError(`Engine stream error: ${error.message}`)
           this.teardown('the engine stream could not be read')
         },
         onExit: info => {
-          if (this.engine === engine) this.handleExit(info)
+          if (this.engine === engine) {
+            startupFailure = this.handleExit(info, this.starting !== null)
+          }
         },
       },
     )
@@ -1313,9 +1331,17 @@ export class ChatSession {
     this.runtimeRevision = 0
     engine.start()
 
+    const isCurrent = (): boolean => {
+      if (this.disposed || epoch !== this.submissionEpoch) return false
+      if (startupFailure) throw startupFailure
+      if (control !== this.control || !engine.isRunning) {
+        throw new Error('The Rayu engine exited before startup completed.')
+      }
+      return true
+    }
     // `initialize` is what returns the command list, the model catalogue and the
-    // account info. Failing it is not fatal to sending a prompt, so it is reported
-    // and the session continues rather than refusing to start.
+    // account info. A rejected initialization must reject startup too: a child that
+    // died here cannot receive the first prompt.
     try {
       const response = await control.request(
         'initialize',
@@ -1326,7 +1352,7 @@ export class ChatSession {
         },
         60_000,
       )
-      if (control !== this.control || this.disposed) return
+      if (!isCurrent()) return
       let inferenceAcknowledged = this.applyInitialize(response)
       // ── REPLAY THE CHOSEN PERMISSION MODE ────────────────────────────────────
       //
@@ -1342,7 +1368,7 @@ export class ChatSession {
       if (this.permissionMode.id !== 'default') {
         const desired = this.permissionMode
         const accepted = await this.applyPermissionModeToEngine(control, desired)
-        if (control !== this.control || this.disposed) return
+        if (!isCurrent()) return
         if (!accepted && this.permissionMode === desired) {
           this.permissionMode = permissionModeById('default')
           this.callbacks.onPermissionMode?.(this.permissionMode)
@@ -1365,7 +1391,7 @@ export class ChatSession {
           { model: selectedRuntimeModel },
           15_000,
         )
-        if (control !== this.control || this.disposed) return
+        if (!isCurrent()) return
         if (
           selectionEpoch === this.modelSelectionEpoch &&
           selectedRuntimeModel === this.selectedRuntimeModel
@@ -1374,21 +1400,17 @@ export class ChatSession {
           inferenceAcknowledged = this.applyInferenceResponse(modelResponse)
         }
       }
-      if (control !== this.control || this.disposed) return
+      if (!isCurrent()) return
       // set_model already returns the effective inference state from the same
       // resolver as get_settings. Asking for it again made first launch depend on a
       // second control round-trip and could report a false initialization failure
       // after the model was already applied successfully.
       if (!inferenceAcknowledged) await this.refreshInferenceSettings()
-      if (control !== this.control || this.disposed) return
+      if (!isCurrent()) return
       void this.pollContextUsage(true)
     } catch (cause) {
-      if (control !== this.control || this.disposed) return
-      this.callbacks.onError(
-        `The engine started but did not initialise: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-      )
+      if (this.disposed || epoch !== this.submissionEpoch) return
+      throw startupFailure ?? cause
     }
   }
 
@@ -1951,7 +1973,7 @@ export class ChatSession {
     if (wasLive) this.callbacks.onSessionEnded()
   }
 
-  private handleExit(info: EngineExitInfo): void {
+  private handleExit(info: EngineExitInfo, duringStartup = false): Error | null {
     this.finishStreaming()
     // Same reason as `interrupt`: a crash does not un-write the files this turn already
     // wrote, so the review card is exactly what the user needs next.
@@ -1961,6 +1983,7 @@ export class ChatSession {
     this.control?.dispose('the engine exited')
     this.control = null
     this.engine = null
+    this.appliedRuntimeModel = null
     // No frame can advance a task any more — the process that would send it is gone.
     this.settleOrphanedTasks(
       info.expected ? 'the engine was stopped' : 'the engine stopped unexpectedly',
@@ -1970,14 +1993,18 @@ export class ChatSession {
     this.callbacks.onSessionEnded()
 
     // An expected exit is a disposal we asked for; saying so would be noise.
-    if (info.expected) return
+    if (info.expected) return null
 
     const detail = info.stderrTail.trim()
-    this.callbacks.onError(
+    const failure = new Error(
       `The Rayu engine stopped unexpectedly (code ${info.code ?? 'null'}${
         info.signal ? `, signal ${info.signal}` : ''
-      }).${detail ? ` ${detail.slice(-400)}` : ''}`,
+      }).${detail ? `\n${detail}` : ''}`,
     )
+    // During startup the shared promise reports this cause once to every caller.
+    // Later crashes must also be transcript entries: visible surfaces rely on them.
+    if (!duringStartup) this.reportError(failure.message)
+    return failure
   }
 
   // ── engine → transcript ────────────────────────────────────────────────────
@@ -1988,7 +2015,11 @@ export class ChatSession {
     // change has to resume THIS conversation rather than start a new one, and the id is
     // otherwise known only to the child.
     if (typeof message.session_id === 'string' && message.session_id) {
+      const previousSessionId = this.engineSessionId
       this.currentSessionId = message.session_id
+      if (this.engineSessionId !== previousSessionId) {
+        this.callbacks.onSessionIdChanged?.(this.engineSessionId)
+      }
     }
 
     switch (message.type) {

@@ -39,8 +39,15 @@ export interface SessionsViewProps {
   /** Which live session is on screen, so the row can say "current". */
   activeSessionKey: string
   workspaceFolder: string
+  /**
+   * Resume a STORED session as its own editor tab. The host spawns an engine child with
+   * `--resume`; this surface is not switched or emptied — see `onSwitch`.
+   */
   onResume: (id: string) => void
-  /** Bring an already-open conversation to the front. Nothing is spawned or stopped. */
+  /**
+   * Open/focus a LIVE conversation's editor tab. Nothing is spawned or stopped here: the
+   * session is already running, so the host only creates or reveals its panel.
+   */
   onSwitch: (key: string) => void
   /** Close an open conversation and stop its engine. */
   onClose: (key: string) => void

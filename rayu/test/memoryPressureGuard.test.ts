@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import {
   HEAP_HIGH_WATER_FRACTION,
   checkMemoryPressure,
+  getHeapPressure,
   isMemoryGuardEnabled,
   setMemoryPressureCleanup,
   setUserTimingInUse,
@@ -29,6 +30,20 @@ describe('memoryPressureGuard', () => {
 
   test('high-water fraction constant is 0.8', () => {
     expect(HEAP_HIGH_WATER_FRACTION).toBe(0.8)
+  })
+
+  test('heap pressure uses the actual limit and does not run cleanup', () => {
+    let cleanupCalls = 0
+    setMemoryPressureCleanup(() => { cleanupCalls++ })
+    expect(getHeapPressure(() => 0.79 * GB, () => GB).isHigh).toBe(false)
+    expect(getHeapPressure(() => 0.8 * GB, () => GB)).toEqual({
+      heapUsed: 0.8 * GB, heapLimit: GB, isHigh: true,
+    })
+    expect(cleanupCalls).toBe(0)
+  })
+
+  test.each([0, -1, NaN, Infinity])('unavailable or invalid heap limit %s does not trigger emergency compaction', limit => {
+    expect(getHeapPressure(() => GB, () => limit).isHigh).toBe(false)
   })
 
   test('below the high-water mark: clears timing, no cleanup, returns false', () => {

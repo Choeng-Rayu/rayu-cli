@@ -302,6 +302,8 @@ describe('reducer: init restores host-owned progress and reasoning', () => {
       oauthEnabled: true,
       version: '1.7.23',
       workspaceFolder: '/tmp/project',
+      surface: 'sidebar',
+      surfaceBinding: null,
       transcript: [{ id: 'entry-1', kind: 'assistant', text: 'answer' }],
       turnRunning: true,
       pendingPermissions: [],
