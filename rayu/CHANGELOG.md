@@ -2,6 +2,11 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 2.2.17 - 2026-10-17 (Beta)
+- **Sessions now open as editor tabs** — every RayuCode conversation opens in its own editor tab, so you can run several side by side and switch between them without interrupting a turn that is already in flight
+- **The sidebar is now the agent's management hub** — it shows your session list, background tasks, MCP servers, provider setup and sign-in instead of a second copy of the chat. The conversation itself — transcript and composer — lives in the session's editor tab, so it appears in exactly one place
+- **Fixed the sidebar duplicating and reloading the chat** — the sidebar could briefly render the open conversation and re-lay-out whenever you created or switched sessions; it now stays on the management view and updates in place
+
 ## 2.0.13 - 2026-09-21 (Beta)
 - **RayuCode on GitHub** — you can now connect RayuCode to GitHub and put it to work on your pull requests. Install it as a GitHub App, pick the repositories you want in scope, and RayuCode reviews incoming PRs right where your team already works — leaving inline findings, summaries, and suggested fixes as review comments, no local setup required
 - **Run RayuCode as a GitHub bot in your hub repo** — designate a "hub" repository and RayuCode becomes a standing bot there. It listens for new PRs and issues, responds to mentions, and can act as the central review and triage agent for the whole organization — one bot, every repo that points at the hub

@@ -668,7 +668,7 @@ export function activate(context: vscode.ExtensionContext): void {
           mcpUi = { load: 'idle', error: null, auth: null }
           mcpUiSessionKey = entry.key
         }
-        syncSessionSurfaces(entry.key)
+        surfaces.syncSession(entry.key)
       },
       // Retired — evicted for capacity, or explicitly closed. Close its tab before
       // its engine goes away, and drop its review records. Idempotent.
@@ -696,18 +696,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // session for their life and are never gated; the sidebar renders
   // `registry.activeSessionKey`. See `panel/surfaceRegistry.ts`.
   //
-  // ── WHY THE SIDEBAR'S SNAPSHOT IS POSTED BY THIS FILE, NOT BY syncSidebar ────
+  // ── ONE SNAPSHOT BUILDER, PARAMETERISED BY SURFACE ────────────────────────────
   //
-  // `stateFor` below builds PANEL-flavoured snapshots (`surface: 'panel'`, with a
-  // revival binding), which is what a tab must receive. The registry's
-  // `syncSidebar()` funnels through the SAME `stateFor`, so a sidebar init built
-  // there would carry panel chrome — hiding the sessions list and showing a
-  // close-tab action in the sidebar. The sidebar therefore gets every full init
-  // from `buildSidebarState()` posted directly (`syncSidebarState`), and every
-  // `surfaces.syncSession` call site is wrapped (`syncSessionSurfaces`,
-  // `openSessionTab`, the serializer callback) to re-post the sidebar's own
-  // flavour right after the registry's internal sidebar sync. Message-level
-  // pushes (`postToSession`, `broadcast`) are unaffected: only `init` is flavoured.
+  // `stateFor` takes the surface it is building for, so the registry posts each
+  // surface its OWN flavour: a panel gets `surface: 'panel'` (with a revival
+  // binding), the sidebar gets `surface: 'sidebar'`. The webview decides its whole
+  // chrome from that one field, so a sidebar init in the panel flavour would mount
+  // the conversation in the sidebar. Message-level pushes (`postToSession`,
+  // `broadcast`) are unaffected: only `init` is flavoured.
   let lastRevivedSessionKey = ''
   let revivedNeedsRestore = false
   // Prompt text parked for a tab whose webview has not said `ready` yet — see
@@ -720,17 +716,17 @@ export function activate(context: vscode.ExtensionContext): void {
     // The sidebar's binding follows the registry's active key, exactly as before:
     // activation (a tab gaining focus, a conversation being created) rebinds it.
     activeSidebarKey: () => registry.activeSessionKey,
-    // Panel-flavoured by design — see the block comment above.
-    stateFor: sessionKey => buildStateForKey(sessionKey, 'panel'),
+    // Built per surface — see the block comment above.
+    stateFor: (sessionKey, surface) => buildStateForKey(sessionKey, surface),
     onMessage: (kind, sessionKey, message) => {
       const scope = scopeFor(kind, sessionKey)
       if (message.type === 'ready') {
         // The listener is attached; anything sent before now was dropped. The
         // surface's snapshot is (re)sent HERE — then `handlers.ready` warms the
         // engine for the conversation the surface is bound to.
-        if (kind === 'sidebar') syncSidebarState()
+        if (kind === 'sidebar') surfaces.syncSidebar()
         else {
-          syncSessionSurfaces(sessionKey)
+          surfaces.syncSession(sessionKey)
           const queued = pendingTabInserts.get(sessionKey)
           if (queued) {
             pendingTabInserts.delete(sessionKey)
@@ -817,7 +813,7 @@ export function activate(context: vscode.ExtensionContext): void {
       kind,
       sessionKey,
       reply: message => surfaces.postToSurface(kind, sessionKey, message),
-      resync: () => syncSessionSurfaces(sessionKey),
+      resync: () => surfaces.syncSession(sessionKey),
     }
   }
 
@@ -868,33 +864,6 @@ export function activate(context: vscode.ExtensionContext): void {
     return entry ? stateForEntry(entry, surface) : null
   }
 
-  /** The sidebar's snapshot: sidebar-flavoured, from the conversation it is bound to. */
-  function buildSidebarState(): WebviewState {
-    return stateForEntry(registry.active, 'sidebar')
-  }
-
-  /** Full init to the sidebar, from the snapshot BUILT FOR THE SIDEBAR. */
-  function syncSidebarState(): void {
-    sidebar?.postState(buildSidebarState())
-  }
-
-  /**
-   * `surfaces.syncSession` plus the sidebar correction. The registry's internal
-   * sidebar sync builds from the panel-flavoured `stateFor`, so when the synced key
-   * is also the sidebar's binding the sidebar is re-posted its own flavour right
-   * after — the last init a surface receives is the one that counts.
-   */
-  function syncSessionSurfaces(sessionKey: string): void {
-    surfaces.syncSession(sessionKey)
-    if (registry.activeSessionKey === sessionKey) syncSidebarState()
-  }
-
-  /** `surfaces.openPanel` plus the same sidebar correction as `syncSessionSurfaces`. */
-  function openSessionTab(sessionKey: string): void {
-    surfaces.openPanel(sessionKey)
-    if (registry.activeSessionKey === sessionKey) syncSidebarState()
-  }
-
   /**
    * Deliver prompt text to a conversation's composer — the one place a prompt is typed,
    * now that the sidebar is a management hub with no composer of its own.
@@ -908,7 +877,7 @@ export function activate(context: vscode.ExtensionContext): void {
    */
   function insertPromptIntoTab(sessionKey: string, text: string): void {
     const existed = surfaces.hasPanel(sessionKey)
-    openSessionTab(sessionKey)
+    surfaces.openPanel(sessionKey)
     if (existed) {
       surfaces.postToSurface('panel', sessionKey, { type: 'insertPrompt', text })
       return
@@ -924,7 +893,7 @@ export function activate(context: vscode.ExtensionContext): void {
    * tab with its own panel-flavoured one.
    */
   function resyncAllSurfaces(): void {
-    syncSidebarState()
+    surfaces.syncSidebar()
     for (const entry of registry.all) {
       surfaces.panelFor(entry.key)?.postState(stateForEntry(entry, 'panel'))
     }
@@ -1095,7 +1064,7 @@ export function activate(context: vscode.ExtensionContext): void {
     owned.entry.session.restoreConversationState(owned.conversation)
     owned.entry.session.applyMirroredTaskSnapshot(owned.tasks)
     review.store.replace(owned.entry.key, owned.entry.session.reviewFiles)
-    syncSessionSurfaces(owned.entry.key)
+    surfaces.syncSession(owned.entry.key)
     if (warmup) void prewarmSession(owned.entry)
     postAttachment()
   }
@@ -1128,7 +1097,7 @@ export function activate(context: vscode.ExtensionContext): void {
     post: catalogue => surfaces.postToSession(refreshTargetKey, { type: 'setModelCatalogue', catalogue }),
     invalidate: invalidateRayuConfigCache,
     isDisposed: () => disposed,
-    onSettled: () => syncSessionSurfaces(refreshTargetKey),
+    onSettled: () => surfaces.syncSession(refreshTargetKey),
   })
 
   /** Prompts and warmups use the same prerequisites before reading provider config. */
@@ -1216,7 +1185,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // `preserveModel` throughout: this is a RESTART of one conversation, not a new one, so
       // it must not adopt whatever model another conversation has since selected.
       entry.session.newSession(undefined, undefined, { preserveModel: true })
-      syncSessionSurfaces(entry.key)
+      surfaces.syncSession(entry.key)
       prewarmSession(entry)
       return
     }
@@ -1224,7 +1193,7 @@ export function activate(context: vscode.ExtensionContext): void {
     entry.session.newSession(sessionId, cwd, { preserveModel: true })
     entry.session.restoreTranscript(await loadSessionTranscript(sessionId, cwd))
     await entry.session.restoreTaskHistory(sessionId, cwd)
-    syncSessionSurfaces(entry.key)
+    surfaces.syncSession(entry.key)
     prewarmSession(entry)
   }
 
@@ -1428,7 +1397,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // previous implementation called `newSession()` on the single session, which
         // killed a turn that was still running.
         const entry = registry.create()
-        openSessionTab(entry.key)
+        surfaces.openPanel(entry.key)
         prewarmSession(entry)
       },
       // Sidebar intent: open (or focus) the conversation's editor tab. The sidebar
@@ -1441,7 +1410,7 @@ export function activate(context: vscode.ExtensionContext): void {
           scope.reply({ type: 'showError', message: 'That conversation is no longer open.' })
           return
         }
-        openSessionTab(key)
+        surfaces.openPanel(key)
       },
       // Same intent as switchSession, for surfaces that ask for the tab explicitly.
       openSessionPanel: (scope, key) => {
@@ -1450,7 +1419,7 @@ export function activate(context: vscode.ExtensionContext): void {
           scope.reply({ type: 'showError', message: 'That conversation is no longer open.' })
           return
         }
-        openSessionTab(key)
+        surfaces.openPanel(key)
       },
       // The sidebar's Runtime Center has no composer to type into, so "use command"
       // means "put it in the active conversation's tab". The active key is the right
@@ -1504,7 +1473,7 @@ export function activate(context: vscode.ExtensionContext): void {
               : item),
           }
           surfaces.broadcast({ type: 'setSessions', list: historySessions })
-          if (entry) syncSessionSurfaces(entry.key)
+          if (entry) surfaces.syncSession(entry.key)
         } catch (cause) {
           scope.reply({ type: 'showError', message: `Could not rename session: ${cause instanceof Error ? cause.message : String(cause)}` })
         }
@@ -1718,7 +1687,7 @@ export function activate(context: vscode.ExtensionContext): void {
           type: 'setModelCatalogue',
           catalogue: buildCatalogue(entry.session),
         })
-        syncSessionSurfaces(entry.key)
+        surfaces.syncSession(entry.key)
         prewarmSession(entry)
       },
 
@@ -2102,7 +2071,7 @@ export function activate(context: vscode.ExtensionContext): void {
   async function resumeStoredSession(scope: SurfaceScope, id: string): Promise<void> {
     const existing = registry.findByEngineSessionId(id)
     if (existing) {
-      openSessionTab(existing.key)
+      surfaces.openPanel(existing.key)
       prewarmSession(existing)
       return
     }
@@ -2127,7 +2096,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd, customTitle: selected.customTitle })
     entry.session.restoreTranscript(await loadSessionTranscript(id, resumeCwd))
     await entry.session.restoreTaskHistory(id, resumeCwd)
-    openSessionTab(entry.key)
+    surfaces.openPanel(entry.key)
     prewarmSession(entry)
   }
 
@@ -2192,9 +2161,9 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         }
         if (entry) {
-          // Re-init with the restored transcript, and correct the sidebar (the
-          // registry's internal sync built it a panel-flavoured snapshot).
-          syncSessionSurfaces(sessionKey)
+          // Re-init with the restored transcript: `syncSession` gives the panel its
+          // panel-flavoured snapshot and the sidebar its own, each surface correctly built.
+          surfaces.syncSession(sessionKey)
           prewarmSession(entry)
         }
       },
@@ -2334,7 +2303,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // engine and keeps running — which is the whole difference from the previous
       // behaviour, where this button killed the turn in flight.
       const entry = registry.create()
-      openSessionTab(entry.key)
+      surfaces.openPanel(entry.key)
       prewarmSession(entry)
     }),
     vscode.commands.registerCommand(COMMANDS.signIn, async () => {
