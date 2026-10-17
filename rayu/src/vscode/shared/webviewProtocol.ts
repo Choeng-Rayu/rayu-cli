@@ -890,6 +890,15 @@ export type WebviewToHostMessage =
    */
   | { type: 'openSessionPanel'; key: string }
   /**
+   * Open the ACTIVE session's editor tab with a slash command pre-typed in its composer.
+   *
+   * Sent from the sidebar's Runtime Center, which is a management surface with no composer
+   * of its own: "use this command" means "put it where commands are typed" — the active
+   * conversation's tab. The host opens (or focuses) the tab and delivers the text there,
+   * so the command is one keystroke away instead of silently vanishing.
+   */
+  | { type: 'useCommandInTab'; name: string }
+  /**
    * Resume a STORED session as its own editor tab.
    *
    * Sent from the sidebar's history list. Spawns an engine child with `--resume` and

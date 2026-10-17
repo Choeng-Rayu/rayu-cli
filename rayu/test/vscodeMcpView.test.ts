@@ -40,13 +40,14 @@ test('the MCP view distinguishes a failed status check from no connections', () 
   expect(html).not.toContain('No MCP servers are connected')
 })
 
-test('the header shows Canva as connected', () => {
+test('the panel header shows the conversation title and Canva as connected', () => {
   const html = renderToStaticMarkup(createElement(SessionHeader, {
     ready: true, signedOut: false, identity: null, version: 'test', title: 'Canva session', activeSessionKey: 'test-session',
+    surface: 'panel',
     status: 'idle', mcpServers: [canva],
     mcpConnectionUi: { load: 'ready', error: null, auth: null },
-    onNewSession: noop, onRename: noop, onOpenSessions: noop,
-    detailed: false, onToggleDetailed: noop, openSessionCount: 1,
+    onNewSession: noop, onRename: noop, onCloseTab: noop,
+    detailed: false, onToggleDetailed: noop,
     backgroundTaskCount: 0, backgroundOpen: false, onToggleBackground: noop,
     onOpenProviderSetup: noop, onRefreshMcp: noop, onOpenMcp: noop,
     onReconnectMcp: noop, onAuthenticateMcp: noop, onToggleMcp: noop,
@@ -54,5 +55,30 @@ test('the header shows Canva as connected', () => {
   }))
   expect(html).toContain('Canva session')
   expect(html).toContain('rc-icon-badge">1</span>')
+  expect(html).toContain('1 MCP server connected')
+})
+
+// The sidebar is the management hub: its header carries no per-conversation chrome —
+// no title, no status, no detail switch — only agent-level actions. This pins that
+// split, because a title leaking back in is exactly the "duplicate of the tab" bug
+// the redesign removed.
+test('the sidebar header is management chrome only: no title, no close, but new session', () => {
+  const html = renderToStaticMarkup(createElement(SessionHeader, {
+    ready: true, signedOut: false, identity: null, version: 'test', title: 'Canva session', activeSessionKey: 'test-session',
+    surface: 'sidebar',
+    status: 'working', mcpServers: [canva],
+    mcpConnectionUi: { load: 'ready', error: null, auth: null },
+    onNewSession: noop, onRename: noop, onCloseTab: noop,
+    detailed: false, onToggleDetailed: noop,
+    backgroundTaskCount: 0, backgroundOpen: false, onToggleBackground: noop,
+    onOpenProviderSetup: noop, onRefreshMcp: noop, onOpenMcp: noop,
+    onReconnectMcp: noop, onAuthenticateMcp: noop, onToggleMcp: noop,
+    onSignIn: noop, onSignOut: noop,
+  }))
+  expect(html).not.toContain('Canva session')
+  expect(html).not.toContain('Working')
+  expect(html).not.toContain('Toggle tool details')
+  expect(html).not.toContain('Close session')
+  expect(html).toContain('New session')
   expect(html).toContain('1 MCP server connected')
 })

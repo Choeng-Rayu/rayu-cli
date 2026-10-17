@@ -320,8 +320,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // The chat now lives on several surfaces at once: the sidebar view and one editor
   // tab per open conversation. `surfaces` (constructed below, after the registry)
   // owns them all — fan-out, per-session routing, and the serializer's revival.
-  // `sidebar` is the sidebar surface handle, held only for the few host actions that
-  // are genuinely sidebar-shaped (reveal, insertPrompt, the sidebar's own snapshot).
+  // The sidebar is the management hub; conversations live in their tabs, and prompt
+  // text is delivered to the active conversation's tab (`insertPromptIntoTab`).
+  // `sidebar` is the sidebar surface handle, held only for the few host actions
+  // that are genuinely sidebar-shaped (reveal, the sidebar's own snapshot).
   let sidebar: ChatSurface | undefined
   let surfaces: SurfaceRegistry
   let webBridge: { entry: SessionEntry; handle: VSCodeWebBridge } | null = null
@@ -680,6 +682,10 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (attachedFor(entry.key)) detachAttachment(null, false)
         surfaces.closePanel(entry.key)
+        // Text parked for a tab that never reached `ready` — its session is gone, so
+        // the flush will never come. Without this, closing a just-created tab would
+        // leave its queue entry behind forever.
+        pendingTabInserts.delete(entry.key)
         review.store.clear(entry.key)
       },
     },
@@ -704,6 +710,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // pushes (`postToSession`, `broadcast`) are unaffected: only `init` is flavoured.
   let lastRevivedSessionKey = ''
   let revivedNeedsRestore = false
+  // Prompt text parked for a tab whose webview has not said `ready` yet — see
+  // `insertPromptIntoTab`. Keyed by session key; flushed (and cleared) the moment
+  // the panel announces itself, so a just-created tab still receives what was
+  // meant for it instead of silently dropping it.
+  const pendingTabInserts = new Map<string, string[]>()
   surfaces = new SurfaceRegistry({
     extensionUri: context.extensionUri,
     // The sidebar's binding follows the registry's active key, exactly as before:
@@ -718,7 +729,16 @@ export function activate(context: vscode.ExtensionContext): void {
         // surface's snapshot is (re)sent HERE — then `handlers.ready` warms the
         // engine for the conversation the surface is bound to.
         if (kind === 'sidebar') syncSidebarState()
-        else syncSessionSurfaces(sessionKey)
+        else {
+          syncSessionSurfaces(sessionKey)
+          const queued = pendingTabInserts.get(sessionKey)
+          if (queued) {
+            pendingTabInserts.delete(sessionKey)
+            for (const text of queued) {
+              surfaces.postToSurface('panel', sessionKey, { type: 'insertPrompt', text })
+            }
+          }
+        }
         dispatchWebviewMessage(message, scope, handlers)
         return
       }
@@ -876,6 +896,29 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   /**
+   * Deliver prompt text to a conversation's composer — the one place a prompt is typed,
+   * now that the sidebar is a management hub with no composer of its own.
+   *
+   * ── WHY A JUST-CREATED TAB NEEDS THE QUEUE ──────────────────────────────────
+   *
+   * `postMessage` to a webview whose React listener has not attached yet is dropped by
+   * the platform — the same race `ready` exists to solve. An already-open tab is safe to
+   * post to directly; one this call just created is not, so its text is parked in
+   * `pendingTabInserts` and flushed when the panel announces itself.
+   */
+  function insertPromptIntoTab(sessionKey: string, text: string): void {
+    const existed = surfaces.hasPanel(sessionKey)
+    openSessionTab(sessionKey)
+    if (existed) {
+      surfaces.postToSurface('panel', sessionKey, { type: 'insertPrompt', text })
+      return
+    }
+    const queue = pendingTabInserts.get(sessionKey) ?? []
+    queue.push(text)
+    pendingTabInserts.set(sessionKey, queue)
+  }
+
+  /**
    * A window-global state change (sign-in, provider save, the auth watcher) must
    * reach every surface with a fresh snapshot — the sidebar once, and every open
    * tab with its own panel-flavoured one.
@@ -887,7 +930,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
-  /** Reveal the sidebar chat, opening its container if it has never been mounted. */
+  /** Reveal the sidebar (the sign-in gate), opening its container if never mounted. */
   async function revealSidebar(): Promise<void> {
     if (sidebar) {
       await sidebar.reveal()
@@ -1408,6 +1451,13 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
         openSessionTab(key)
+      },
+      // The sidebar's Runtime Center has no composer to type into, so "use command"
+      // means "put it in the active conversation's tab". The active key is the right
+      // target — it is the conversation the user last touched, and the sidebar's own
+      // state is bound to it.
+      useCommandInTab: (_scope, name) => {
+        insertPromptIntoTab(registry.active.key, `/${name} `)
       },
       closeSession: (scope, key) => {
         // Close the MESSAGE key's tab: a sidebar row can close a conversation other
@@ -2224,8 +2274,9 @@ export function activate(context: vscode.ExtensionContext): void {
           )
           return
         }
-        await revealSidebar()
-        sidebar?.post({ type: 'insertPrompt', text: fenceTerminalSelection(selection) })
+        // The sidebar is a management hub with no composer, so the selection goes to the
+        // ACTIVE conversation's tab — the one place a prompt is typed.
+        insertPromptIntoTab(registry.active.key, fenceTerminalSelection(selection))
       } finally {
         await vscode.env.clipboard.writeText(previousClipboard)
       }
@@ -2271,8 +2322,8 @@ export function activate(context: vscode.ExtensionContext): void {
           )
           return
         }
-        await revealSidebar()
-        sidebar?.post({ type: 'insertPrompt', text: formatPathMentions(paths) })
+        // Same target as the terminal selection: the active conversation's composer.
+        insertPromptIntoTab(registry.active.key, formatPathMentions(paths))
       },
     ),
   )

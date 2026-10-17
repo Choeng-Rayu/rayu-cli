@@ -67,7 +67,7 @@
       "rayucode": [
         {
           "id": "rayucode.chat",
-          "name": "Chat",
+          "name": "Sessions",
           "type": "webview"
         }
       ]

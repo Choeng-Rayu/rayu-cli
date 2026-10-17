@@ -31,10 +31,8 @@ import type {
 } from '../../shared/webviewProtocol.js'
 import { isTerminalPhase, isWaitingPhase } from '../../shared/turnProgress.js'
 import {
-  BackIcon,
   CloseIcon,
   EllipsisIcon,
-  HistoryIcon,
   ListIcon,
   PlugIcon,
   PlusIcon,
@@ -100,22 +98,20 @@ export interface SessionHeaderProps {
   /**
    * Which surface this header belongs to.
    *
-   * A panel is bound to exactly one session, so the in-panel session switcher (button and
-   * count) is meaningless there and is replaced by a close action. The sidebar keeps both.
+   * A panel is bound to exactly one session and hosts the conversation, so it carries the
+   * title, status and detail switch. The sidebar is the management hub: its header keeps
+   * only the agent-level actions — new session, background work, MCP, account.
    *
-   * Optional, defaulting to `'sidebar'`: that is the pre-tabs chrome, so an existing caller
-   * (e.g. a static render in a test) keeps compiling and rendering exactly as before. App
-   * always passes the real value.
+   * Optional, defaulting to `'sidebar'`: that keeps an existing caller (e.g. a static
+   * render in a test) compiling and rendering the hub header. App always passes the real
+   * value.
    */
   surface?: ChatSurfaceKind
   status: SessionStatus
   mcpServers: readonly McpServerView[]
   mcpConnectionUi: McpConnectionUiView
-  /** Shown only while a sub-surface (sessions, task details) has replaced the conversation. */
-  onBack?: () => void
   onNewSession: () => void
   onRename: (title: string) => void
-  onOpenSessions: () => void
   /**
    * Panel only: close this session (and stop its engine). Shown in place of the sessions
    * switcher, which a panel has no use for. Optional for the same reason as `surface`.
@@ -125,8 +121,6 @@ export interface SessionHeaderProps {
   detailed: boolean
   /** Flip the panel-wide detail switch — the editor's equivalent of the CLI's Ctrl+O. */
   onToggleDetailed: () => void
-  /** How many conversations the panel is holding open, for the Sessions badge. */
-  openSessionCount: number
   /** How many background tasks exist, for the badge on the background-work control. */
   backgroundTaskCount: number
   /** Whether the background-work surface is the one currently open. */
@@ -153,14 +147,11 @@ export function SessionHeader({
   status,
   mcpServers,
   mcpConnectionUi,
-  onBack,
   onNewSession,
   onRename,
-  onOpenSessions,
   onCloseTab,
   detailed,
   onToggleDetailed,
-  openSessionCount,
   backgroundTaskCount,
   backgroundOpen,
   onToggleBackground,
@@ -173,6 +164,12 @@ export function SessionHeader({
   onSignIn,
   onSignOut,
 }: SessionHeaderProps): JSX.Element {
+  // The sidebar is the management hub: its header carries the actions that manage the
+  // agent (new session, background work, MCP, account) and nothing that describes one
+  // conversation — the title, status, transcript-detail switch and sessions switcher
+  // all belong to the conversation's own tab. `surface` defaults to `'sidebar'`, so a
+  // bare render without the prop compiles and renders the hub header.
+  const isSidebar = surface === 'sidebar'
   const [menuOpen, setMenuOpen] = useState(false)
   const [editingTitle, setEditingTitle] = useState<string | null>(null)
   const cancelTitleEdit = useRef(false)
@@ -230,21 +227,9 @@ export function SessionHeader({
 
   return (
     <header className="rc-header" ref={container}>
-      {onBack ? (
-        <button
-          type="button"
-          className="rc-icon-button"
-          onClick={onBack}
-          title="Back to conversation"
-          aria-label="Back to conversation"
-        >
-          <BackIcon size={14} />
-        </button>
-      ) : (
-        <RayuMark size={14} className="rc-header-mark" />
-      )}
+      <RayuMark size={14} className="rc-header-mark" />
 
-      {editingTitle !== null ? (
+      {isSidebar ? null : editingTitle !== null ? (
         <input
           ref={titleInput}
           className="rc-header-title rc-header-title-input"
@@ -272,7 +257,7 @@ export function SessionHeader({
       )}
 
       {/* `idle` is not rendered: a pill that says "Ready" on every fresh panel is furniture. */}
-      {ready && status !== 'idle' ? (
+      {!isSidebar && ready && status !== 'idle' ? (
         <span
           className={`rc-session-status rc-session-status-${status}`}
           role="status"
@@ -302,23 +287,27 @@ export function SessionHeader({
             The clickable equivalent of the CLI's Ctrl+O. A shortcut alone would be
             invisible in an editor panel — a keystroke nobody can discover is the same as
             no feature — so this is a real control, and the shortcut is documented on it.
+            Panels only: the switch governs transcript rows, and the sidebar shows none.
           */}
-          <button
-            type="button"
-            className={`rc-icon-button${detailed ? ' rc-icon-button-active' : ''}`}
-            aria-pressed={detailed}
-            title={
-              detailed
-                ? 'Hide tool details (Ctrl+O)'
-                : 'Show tool parameters and output (Ctrl+O)'
-            }
-            aria-label="Toggle tool details"
-            onClick={onToggleDetailed}
-          >
-            <ListIcon size={14} />
-          </button>
+          {!isSidebar ? (
+            <button
+              type="button"
+              className={`rc-icon-button${detailed ? ' rc-icon-button-active' : ''}`}
+              aria-pressed={detailed}
+              title={
+                detailed
+                  ? 'Hide tool details (Ctrl+O)'
+                  : 'Show tool parameters and output (Ctrl+O)'
+              }
+              aria-label="Toggle tool details"
+              onClick={onToggleDetailed}
+            >
+              <ListIcon size={14} />
+            </button>
+          ) : null}
           {/* Only offered when there IS background work: an always-present control that
-              opens an empty panel teaches the user to stop pressing it. */}
+              opens an empty panel teaches the user to stop pressing it. Shown on the
+              sidebar too — background work is exactly what the hub manages. */}
           {backgroundTaskCount > 0 ? (
             <button
               type="button"
@@ -336,6 +325,7 @@ export function SessionHeader({
               <span className="rc-icon-badge">{backgroundTaskCount}</span>
             </button>
           ) : null}
+          {/* The hub's primary action: a new conversation opens as its own editor tab. */}
           <button
             type="button"
             className="rc-icon-button"
@@ -345,8 +335,9 @@ export function SessionHeader({
           >
             <PlusIcon size={14} />
           </button>
-          {/* A panel is bound to one session, so the switcher and its count say nothing
-              there; it gets a close action instead. The sidebar keeps the switcher. */}
+          {/* A panel is bound to one session, so it gets a close action. The sidebar needs
+              neither a switcher nor a close: its whole body IS the sessions list, and
+              closing a conversation is that list's own row action. */}
           {surface === 'panel' ? (
             <button
               type="button"
@@ -357,27 +348,7 @@ export function SessionHeader({
             >
               <CloseIcon size={14} />
             </button>
-          ) : (
-            <button
-              type="button"
-              className={`rc-icon-button${openSessionCount > 1 ? ' rc-icon-button-badged' : ''}`}
-              title={
-                openSessionCount > 1
-                  ? `Sessions — ${openSessionCount} open`
-                  : 'Sessions'
-              }
-              aria-label="Sessions"
-              onClick={onOpenSessions}
-            >
-              <HistoryIcon size={14} />
-              {/* Only shown when more than one is open. With a single conversation the count is
-                  not information, and this is the only affordance that leads back to the others
-                  after pressing +. */}
-              {openSessionCount > 1 ? (
-                <span className="rc-icon-badge">{openSessionCount}</span>
-              ) : null}
-            </button>
-          )}
+          ) : null}
         </>
       ) : null}
 

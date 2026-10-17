@@ -68,6 +68,11 @@ export interface ChatViewHandlers {
   ) => Promise<void> | void
   /** Open/focus a LIVE session as its own editor tab (no spawn, no teardown). */
   openSessionPanel: (scope: SurfaceScope, key: string) => Promise<void> | void
+  /**
+   * Put a slash command in the ACTIVE session's tab — the sidebar's route for "use this
+   * command", since the hub has no composer of its own.
+   */
+  useCommandInTab: (scope: SurfaceScope, name: string) => Promise<void> | void
   /** Resume a STORED session as its own editor tab. */
   resumeSessionPanel: (scope: SurfaceScope, id: string) => Promise<void> | void
   permissionResponse: (
@@ -203,6 +208,9 @@ export function dispatchWebviewMessage(
       return
     case 'openSessionPanel':
       void handlers.openSessionPanel(scope, message.key)
+      return
+    case 'useCommandInTab':
+      void handlers.useCommandInTab(scope, message.name)
       return
     case 'resumeSessionPanel':
       void handlers.resumeSessionPanel(scope, message.id)
