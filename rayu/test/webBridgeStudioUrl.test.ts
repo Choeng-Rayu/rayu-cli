@@ -80,16 +80,20 @@ describe('standalone Studio Web Bridge link', () => {
     })
   })
 
-  test('offers QR pairing when the account login cannot be refreshed', async () => {
+  test.each([
+    { argument: '', expired: true },
+    { argument: 'pair', expired: false },
+  ])('offers QR pairing with argument "$argument" and expired login $expired', async ({ argument, expired }) => {
     temporaryAuthDir = mkdtempSync(join(tmpdir(), 'rayu-bridge-auth-'))
     process.env.RAYU_AUTH_CONFIG_DIR = temporaryAuthDir
     writeRayuSession({
       accessToken: 'expired-access-token',
       refreshToken: 'invalid-refresh-token',
-      expiresAt: Date.now() - 60_000,
+      expiresAt: Date.now() + (expired ? -60_000 : 3_600_000),
       user: { id: 2, email: null, displayName: null, avatarUrl: null, role: 'user' },
     })
     _setRayuFetchForTesting(async () => new Response('Invalid refresh token', { status: 401 }))
+    let cancelled: unknown
     globalThis.fetch = (async (_input, init) => {
       const path = String(_input)
       if (path.endsWith('/begin')) {
@@ -101,7 +105,10 @@ describe('standalone Studio Web Bridge link', () => {
         }), { status: 201 })
       }
       if (path.endsWith('/poll')) return new Response(JSON.stringify({ status: 'pending' }))
-      if (path.endsWith('/cancel')) return new Response(null, { status: 201 })
+      if (path.endsWith('/cancel')) {
+        cancelled = JSON.parse(String(init?.body))
+        return new Response(null, { status: 201 })
+      }
       throw new Error(`Unexpected request: ${String(init?.method)}`)
     }) as typeof fetch
 
@@ -114,15 +121,63 @@ describe('standalone Studio Web Bridge link', () => {
     } as unknown as LocalJSXCommandContext
     const { call } = await webBridge.load()
 
-    const result = await call('', context)
+    const result = await call(argument, context)
 
     expect(result.type).toBe('text')
     if (result.type === 'text') {
       expect(result.value).toContain('Scan this QR code')
       expect(result.value).toContain('/remote?pair=challenge_')
+      expect(result.value).toContain('QR code expires at')
+      expect(result.value).not.toContain('verifier_')
     }
     expect(changed).toBe(false)
     const status = await call('status', context)
     if (status.type === 'text') expect(status.value).toContain('Waiting for Studio approval')
+    await call('off', context)
+    expect(cancelled).toEqual({
+      id: 'pairing-1234567890',
+      verifier: 'verifier_abcdefghijklmnopqrstuvwxyz123456',
+    })
+    const stopped = await call('status', context)
+    if (stopped.type === 'text') expect(stopped.value).toContain('disconnected')
+  })
+
+  test('keeps the account connection and advertises the QR alternative', async () => {
+    temporaryAuthDir = mkdtempSync(join(tmpdir(), 'rayu-bridge-auth-'))
+    process.env.RAYU_AUTH_CONFIG_DIR = temporaryAuthDir
+    writeRayuSession({
+      accessToken: 'valid-account-token',
+      refreshToken: 'refresh-token',
+      expiresAt: Date.now() + 3_600_000,
+      user: { id: 2, email: null, displayName: null, avatarUrl: null, role: 'user' },
+    })
+    globalThis.fetch = (async () => {
+      throw new Error('Account connection must not start QR pairing')
+    }) as unknown as typeof fetch
+    let nextState: Record<string, unknown> = { webBridgeActive: false }
+    const context = {
+      getAppState: () => nextState,
+      setAppState: (update: (state: typeof nextState) => typeof nextState) => {
+        nextState = update(nextState)
+      },
+    } as unknown as LocalJSXCommandContext
+    const { call } = await webBridge.load()
+    const result = await call('', context)
+
+    expect(nextState).toMatchObject({ webBridgeActive: true, webBridgeConnection: 'connecting' })
+    if (result.type === 'text') expect(result.value).toContain('/web-bridge pair')
+  })
+
+  test('explains how to switch an active account connection to QR pairing', async () => {
+    const { call } = await webBridge.load()
+    const context = {
+      getAppState: () => ({ webBridgeActive: true, webBridgeConnection: 'connected' }),
+    } as unknown as LocalJSXCommandContext
+    const result = await call('pair', context)
+
+    if (result.type === 'text') {
+      expect(result.value).toContain('/web-bridge off')
+      expect(result.value).toContain('/web-bridge pair')
+    }
   })
 })

@@ -42,8 +42,19 @@ export interface SurfaceRegistryDeps {
   extensionUri: vscode.Uri
   /** The sidebar's currently-bound key (registry.activeSessionKey). */
   activeSidebarKey: () => string
-  /** Full snapshot for a session key, or null when unknown. */
-  stateFor: (sessionKey: string) => WebviewState | null
+  /**
+   * Full snapshot for a session key on a given surface, or null when unknown.
+   *
+   * ── WHY THE SURFACE IS A PARAMETER, NOT BAKED IN ───────────────────────────────
+   *
+   * A snapshot carries `surface`, and the webview decides its entire chrome from that one
+   * field — a panel renders the transcript and composer, the sidebar renders the sessions
+   * hub. The registry is the only place that knows WHICH surface it is building for, so it
+   * must say so here. When this was hard-wired to `'panel'`, `syncSidebar()` built the
+   * sidebar's init from the panel builder, and the sidebar briefly mounted the whole
+   * conversation before a corrective re-post arrived — the duplicate-chat-and-reload bug.
+   */
+  stateFor: (sessionKey: string, surface: ChatSurfaceKind) => WebviewState | null
   /** A webview→host message, tagged with the origin surface. */
   onMessage: (kind: ChatSurfaceKind, sessionKey: string, message: WebviewToHostMessage) => void
   onPanelFocused: (sessionKey: string) => void
@@ -72,10 +83,9 @@ export class SurfaceRegistry {
     // A re-resolved view replaces the previous sidebar surface outright; release the
     // old one's listeners so they cannot both fire for one view.
     this.sidebar?.dispose()
-    // No snapshot builder is wired into the provider on purpose: `stateFor` is
-    // PANEL-flavoured (see extension.ts's sidebar-init note), so a provider-built
-    // sidebar init would hide the sessions list and show a close-tab action. The
-    // host posts every sidebar init itself, through `postState`.
+    // No snapshot builder is wired into the provider on purpose: the host owns every
+    // sidebar init and posts it through `postState`, built by the registry's
+    // `syncSidebar()` from a sidebar-flavoured snapshot (see the `stateFor` dep).
     const surface = new ChatViewProvider(this.deps.extensionUri, {
       onMessage: message => this.deps.onMessage('sidebar', this.deps.activeSidebarKey(), message),
     })
@@ -157,14 +167,14 @@ export class SurfaceRegistry {
 
   /** Full init to the panel for key + the sidebar iff bound to key. */
   syncSession(sessionKey: string): void {
-    const state = this.deps.stateFor(sessionKey)
+    const state = this.deps.stateFor(sessionKey, 'panel')
     if (state) this.panels.get(sessionKey)?.postState(state)
     if (this.deps.activeSidebarKey() === sessionKey) this.syncSidebar()
   }
 
-  /** Full init to the sidebar from its bound key. */
+  /** Full init to the sidebar, built in the SIDEBAR's own flavour. */
   syncSidebar(): void {
-    const state = this.deps.stateFor(this.deps.activeSidebarKey())
+    const state = this.deps.stateFor(this.deps.activeSidebarKey(), 'sidebar')
     if (state) this.sidebar?.postState(state)
   }
 

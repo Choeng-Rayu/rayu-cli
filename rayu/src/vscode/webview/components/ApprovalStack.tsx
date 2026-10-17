@@ -19,6 +19,7 @@ import { useState } from 'react'
 
 import type { PermissionRequestView } from '../../shared/webviewProtocol.js'
 import { PermissionCard } from './PermissionCard.js'
+import { PlanApprovalCard } from './PlanApprovalCard.js'
 import { QuestionCard } from './QuestionCard.js'
 import { ChevronIcon } from './Icons.js'
 
@@ -59,6 +60,12 @@ export function ApprovalStack({
               onAnswerQuestions(request.requestId, answers, notes)
             }
             onCancel={() => onDecide(request.requestId, 'deny')}
+          />
+        ) : request.planApproval ? (
+          <PlanApprovalCard
+            key={request.requestId}
+            request={request}
+            onDecide={decision => onDecide(request.requestId, decision)}
           />
         ) : (
           <PermissionCard

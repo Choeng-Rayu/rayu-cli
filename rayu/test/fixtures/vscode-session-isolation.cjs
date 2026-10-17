@@ -31,13 +31,29 @@ function createPanel() {
   panels.push(panel)
   return panel
 }
+/** The sidebar `WebviewView` provider, captured at registration so it can be resolved. */
+let sidebarProvider
+/** A `WebviewView` for the sidebar, capturing everything the host posts to it. */
+function createSidebarView() {
+  const received = emitter(), disposed = emitter()
+  const view = {
+    messages: [],
+    webview: { options: {}, cspSource: 'test:', asWebviewUri: uri => uri,
+      postMessage: message => { view.messages.push(message); return Promise.resolve(true) },
+      onDidReceiveMessage: received.event },
+    onDidDispose: disposed.event,
+    show: () => {},
+  }
+  return view
+}
 let serializer
 const vscode = {
   EventEmitter: class { constructor() { Object.assign(this, emitter()) } },
   Uri: { file: fileUri, joinPath: (base, ...parts) => fileUri(path.join(base.fsPath, ...parts)),
     parse: value => ({ ...fileUri(value), toString: () => value }) },
   ViewColumn: { Active: -1 }, FileType: { File: 1, Directory: 2 },
-  window: { createWebviewPanel: createPanel, registerWebviewViewProvider: disposable,
+  window: { createWebviewPanel: createPanel,
+    registerWebviewViewProvider: (_id, provider) => { sidebarProvider = provider; return disposable() },
     registerWebviewPanelSerializer: (_type, value) => { serializer = value; return disposable() },
     registerUriHandler: disposable, onDidChangeActiveTextEditor: disposable,
     onDidChangeTextEditorSelection: disposable, showInformationMessage: async () => undefined,
@@ -203,6 +219,24 @@ async function run() {
   const sidebar = host.chatReducer({ ...host.initialChatState, surface: 'sidebar' },
     { type: 'setLiveSessions', sessions: [], activeKey: 'sidebar-target' })
   assert.equal(sidebar.activeSessionKey, 'sidebar-target', 'sidebar still follows global active key')
+
+  // The sidebar must receive a SIDEBAR-flavoured snapshot. It used to be built from the
+  // panel snapshot builder, so the sidebar briefly mounted the conversation — a duplicate
+  // of the editor tab — and re-laid-out as the flavour flipped back (the "whole UI reload").
+  const sidebarView = createSidebarView()
+  sidebarProvider.resolveWebviewView(sidebarView)
+  sidebarView.messages.length = 0
+  const activeEntry = host.registry.active
+  const activePanel = open(activeEntry)
+  activePanel.messages.length = 0
+  host.surfaces.syncSession(activeEntry.key)
+  const sidebarInit = sidebarView.messages.filter(message => message.type === 'init').at(-1)
+  assert.ok(sidebarInit, 'the sidebar must receive an init for the active session')
+  assert.equal(sidebarInit.state.surface, 'sidebar',
+    'the sidebar must never receive a panel-flavoured snapshot')
+  const panelInit = activePanel.messages.filter(message => message.type === 'init').at(-1)
+  assert.ok(panelInit, 'the tab must receive an init for its own session')
+  assert.equal(panelInit.state.surface, 'panel', 'a tab must still receive a panel-flavoured snapshot')
   console.log('session isolation checks passed')
 }
 async function runFirstLogin() {

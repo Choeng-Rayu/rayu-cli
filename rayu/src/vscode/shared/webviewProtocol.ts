@@ -663,6 +663,19 @@ export interface PermissionRequestView {
       multiSelect?: boolean
     }>
   }
+  /**
+   * Present when the tool is ExitPlanMode and the plan file had content.
+   *
+   * `normalizeToolInput` injects the full plan into the tool input before the
+   * permission request crosses, so the card can render it as markdown instead of
+   * dumping the input JSON. `label` and `parameters` are suppressed alongside —
+   * the dedicated card owns the payload, the same rule `questionInteraction` follows.
+   */
+  planApproval?: {
+    plan: string
+    /** Where the engine saved the plan, when it reported a path. */
+    planFilePath?: string
+  }
 }
 
 /**
@@ -877,6 +890,15 @@ export type WebviewToHostMessage =
    */
   | { type: 'openSessionPanel'; key: string }
   /**
+   * Open the ACTIVE session's editor tab with a slash command pre-typed in its composer.
+   *
+   * Sent from the sidebar's Runtime Center, which is a management surface with no composer
+   * of its own: "use this command" means "put it where commands are typed" — the active
+   * conversation's tab. The host opens (or focuses) the tab and delivers the text there,
+   * so the command is one keystroke away instead of silently vanishing.
+   */
+  | { type: 'useCommandInTab'; name: string }
+  /**
    * Resume a STORED session as its own editor tab.
    *
    * Sent from the sidebar's history list. Spawns an engine child with `--resume` and
@@ -981,6 +1003,19 @@ export type ToolResultView =
       filenames: string[]
       /** Total found, which may exceed `filenames.length` when the host capped it. */
       totalCount: number
+    }
+  /**
+   * An approved (or agent-submitted) plan, as markdown.
+   *
+   * `ExitPlanMode`'s result embeds the whole plan in its text; this variant lets the
+   * pill render that plan as markdown — the same sanitised pipeline assistant prose
+   * uses — instead of raw `#`-prefixed text in a `<pre>`.
+   */
+  | {
+      kind: 'plan'
+      plan: string
+      /** Where the engine saved it, when it reported a path. */
+      filePath?: string
     }
 
 /**

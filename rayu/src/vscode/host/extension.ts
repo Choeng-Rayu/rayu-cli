@@ -320,11 +320,15 @@ export function activate(context: vscode.ExtensionContext): void {
   // The chat now lives on several surfaces at once: the sidebar view and one editor
   // tab per open conversation. `surfaces` (constructed below, after the registry)
   // owns them all — fan-out, per-session routing, and the serializer's revival.
-  // `sidebar` is the sidebar surface handle, held only for the few host actions that
-  // are genuinely sidebar-shaped (reveal, insertPrompt, the sidebar's own snapshot).
+  // The sidebar is the management hub; conversations live in their tabs, and prompt
+  // text is delivered to the active conversation's tab (`insertPromptIntoTab`).
+  // `sidebar` is the sidebar surface handle, held only for the few host actions
+  // that are genuinely sidebar-shaped (reveal, the sidebar's own snapshot).
   let sidebar: ChatSurface | undefined
   let surfaces: SurfaceRegistry
   let webBridge: { entry: SessionEntry; handle: VSCodeWebBridge } | null = null
+  let pairingEntry: SessionEntry | null = null
+  let webBridgeCommandGeneration = 0
 
   // Cards are dismissed, never auto-answered, when they stop being answerable. See
   // permissionRouter.ts: fabricating a denial would reject a tool the user was
@@ -664,13 +668,24 @@ export function activate(context: vscode.ExtensionContext): void {
           mcpUi = { load: 'idle', error: null, auth: null }
           mcpUiSessionKey = entry.key
         }
-        syncSessionSurfaces(entry.key)
+        surfaces.syncSession(entry.key)
       },
       // Retired — evicted for capacity, or explicitly closed. Close its tab before
       // its engine goes away, and drop its review records. Idempotent.
       onRetire: entry => {
+        if (webBridge?.entry.key === entry.key || pairingEntry?.key === entry.key) {
+          webBridgeCommandGeneration++
+          webBridge?.handle.stop()
+          webBridge = null
+          pairingEntry = null
+          stopGuestPairing()
+        }
         if (attachedFor(entry.key)) detachAttachment(null, false)
         surfaces.closePanel(entry.key)
+        // Text parked for a tab that never reached `ready` — its session is gone, so
+        // the flush will never come. Without this, closing a just-created tab would
+        // leave its queue entry behind forever.
+        pendingTabInserts.delete(entry.key)
         review.store.clear(entry.key)
       },
     },
@@ -681,35 +696,45 @@ export function activate(context: vscode.ExtensionContext): void {
   // session for their life and are never gated; the sidebar renders
   // `registry.activeSessionKey`. See `panel/surfaceRegistry.ts`.
   //
-  // ── WHY THE SIDEBAR'S SNAPSHOT IS POSTED BY THIS FILE, NOT BY syncSidebar ────
+  // ── ONE SNAPSHOT BUILDER, PARAMETERISED BY SURFACE ────────────────────────────
   //
-  // `stateFor` below builds PANEL-flavoured snapshots (`surface: 'panel'`, with a
-  // revival binding), which is what a tab must receive. The registry's
-  // `syncSidebar()` funnels through the SAME `stateFor`, so a sidebar init built
-  // there would carry panel chrome — hiding the sessions list and showing a
-  // close-tab action in the sidebar. The sidebar therefore gets every full init
-  // from `buildSidebarState()` posted directly (`syncSidebarState`), and every
-  // `surfaces.syncSession` call site is wrapped (`syncSessionSurfaces`,
-  // `openSessionTab`, the serializer callback) to re-post the sidebar's own
-  // flavour right after the registry's internal sidebar sync. Message-level
-  // pushes (`postToSession`, `broadcast`) are unaffected: only `init` is flavoured.
+  // `stateFor` takes the surface it is building for, so the registry posts each
+  // surface its OWN flavour: a panel gets `surface: 'panel'` (with a revival
+  // binding), the sidebar gets `surface: 'sidebar'`. The webview decides its whole
+  // chrome from that one field, so a sidebar init in the panel flavour would mount
+  // the conversation in the sidebar. Message-level pushes (`postToSession`,
+  // `broadcast`) are unaffected: only `init` is flavoured.
   let lastRevivedSessionKey = ''
   let revivedNeedsRestore = false
+  // Prompt text parked for a tab whose webview has not said `ready` yet — see
+  // `insertPromptIntoTab`. Keyed by session key; flushed (and cleared) the moment
+  // the panel announces itself, so a just-created tab still receives what was
+  // meant for it instead of silently dropping it.
+  const pendingTabInserts = new Map<string, string[]>()
   surfaces = new SurfaceRegistry({
     extensionUri: context.extensionUri,
     // The sidebar's binding follows the registry's active key, exactly as before:
     // activation (a tab gaining focus, a conversation being created) rebinds it.
     activeSidebarKey: () => registry.activeSessionKey,
-    // Panel-flavoured by design — see the block comment above.
-    stateFor: sessionKey => buildStateForKey(sessionKey, 'panel'),
+    // Built per surface — see the block comment above.
+    stateFor: (sessionKey, surface) => buildStateForKey(sessionKey, surface),
     onMessage: (kind, sessionKey, message) => {
       const scope = scopeFor(kind, sessionKey)
       if (message.type === 'ready') {
         // The listener is attached; anything sent before now was dropped. The
         // surface's snapshot is (re)sent HERE — then `handlers.ready` warms the
         // engine for the conversation the surface is bound to.
-        if (kind === 'sidebar') syncSidebarState()
-        else syncSessionSurfaces(sessionKey)
+        if (kind === 'sidebar') surfaces.syncSidebar()
+        else {
+          surfaces.syncSession(sessionKey)
+          const queued = pendingTabInserts.get(sessionKey)
+          if (queued) {
+            pendingTabInserts.delete(sessionKey)
+            for (const text of queued) {
+              surfaces.postToSurface('panel', sessionKey, { type: 'insertPrompt', text })
+            }
+          }
+        }
         dispatchWebviewMessage(message, scope, handlers)
         return
       }
@@ -788,7 +813,7 @@ export function activate(context: vscode.ExtensionContext): void {
       kind,
       sessionKey,
       reply: message => surfaces.postToSurface(kind, sessionKey, message),
-      resync: () => syncSessionSurfaces(sessionKey),
+      resync: () => surfaces.syncSession(sessionKey),
     }
   }
 
@@ -839,31 +864,27 @@ export function activate(context: vscode.ExtensionContext): void {
     return entry ? stateForEntry(entry, surface) : null
   }
 
-  /** The sidebar's snapshot: sidebar-flavoured, from the conversation it is bound to. */
-  function buildSidebarState(): WebviewState {
-    return stateForEntry(registry.active, 'sidebar')
-  }
-
-  /** Full init to the sidebar, from the snapshot BUILT FOR THE SIDEBAR. */
-  function syncSidebarState(): void {
-    sidebar?.postState(buildSidebarState())
-  }
-
   /**
-   * `surfaces.syncSession` plus the sidebar correction. The registry's internal
-   * sidebar sync builds from the panel-flavoured `stateFor`, so when the synced key
-   * is also the sidebar's binding the sidebar is re-posted its own flavour right
-   * after — the last init a surface receives is the one that counts.
+   * Deliver prompt text to a conversation's composer — the one place a prompt is typed,
+   * now that the sidebar is a management hub with no composer of its own.
+   *
+   * ── WHY A JUST-CREATED TAB NEEDS THE QUEUE ──────────────────────────────────
+   *
+   * `postMessage` to a webview whose React listener has not attached yet is dropped by
+   * the platform — the same race `ready` exists to solve. An already-open tab is safe to
+   * post to directly; one this call just created is not, so its text is parked in
+   * `pendingTabInserts` and flushed when the panel announces itself.
    */
-  function syncSessionSurfaces(sessionKey: string): void {
-    surfaces.syncSession(sessionKey)
-    if (registry.activeSessionKey === sessionKey) syncSidebarState()
-  }
-
-  /** `surfaces.openPanel` plus the same sidebar correction as `syncSessionSurfaces`. */
-  function openSessionTab(sessionKey: string): void {
+  function insertPromptIntoTab(sessionKey: string, text: string): void {
+    const existed = surfaces.hasPanel(sessionKey)
     surfaces.openPanel(sessionKey)
-    if (registry.activeSessionKey === sessionKey) syncSidebarState()
+    if (existed) {
+      surfaces.postToSurface('panel', sessionKey, { type: 'insertPrompt', text })
+      return
+    }
+    const queue = pendingTabInserts.get(sessionKey) ?? []
+    queue.push(text)
+    pendingTabInserts.set(sessionKey, queue)
   }
 
   /**
@@ -872,13 +893,13 @@ export function activate(context: vscode.ExtensionContext): void {
    * tab with its own panel-flavoured one.
    */
   function resyncAllSurfaces(): void {
-    syncSidebarState()
+    surfaces.syncSidebar()
     for (const entry of registry.all) {
       surfaces.panelFor(entry.key)?.postState(stateForEntry(entry, 'panel'))
     }
   }
 
-  /** Reveal the sidebar chat, opening its container if it has never been mounted. */
+  /** Reveal the sidebar (the sign-in gate), opening its container if never mounted. */
   async function revealSidebar(): Promise<void> {
     if (sidebar) {
       await sidebar.reveal()
@@ -893,6 +914,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   async function connectWebBridge(entry: SessionEntry): Promise<void> {
+    if (!registry.has(entry.key)) return
     webBridge?.handle.stop()
     const handle = new VSCodeWebBridge(entry.session, entry.permissions, engineCwd, state => {
       if (state === 'connected') {
@@ -902,7 +924,9 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
     webBridge = { entry, handle }
-    if (!(await handle.connect())) {
+    const connected = await handle.connect()
+    if (webBridge?.handle !== handle) return
+    if (!connected) {
       handle.stop()
       webBridge = null
       void vscode.window.showErrorMessage('Studio Remote could not obtain a bridge credential. Retry /web-bridge.')
@@ -920,22 +944,26 @@ export function activate(context: vscode.ExtensionContext): void {
       const pending = guestPairingStatus()
       const text = webBridge
         ? `Studio Remote: ${webBridge.handle.state}`
-        : pending?.status === 'waiting'
-          ? `Waiting for Studio approval: ${pending.url}`
-          : pending?.status === 'error'
-            ? `Studio pairing failed: ${pending.error}`
-            : 'Studio Remote is off. Run /web-bridge to connect.'
+        : pending?.status === 'starting'
+          ? 'Creating a Studio pairing QR code…'
+          : pending?.status === 'waiting'
+            ? `Waiting for Studio approval: ${pending.url}`
+            : pending?.status === 'error'
+              ? `Studio pairing failed: ${pending.error}`
+              : 'Studio Remote is off. Run /web-bridge to connect.'
       void vscode.window.showInformationMessage(text)
       return
     }
-    if (command === 'off') {
+    if (command === 'off' || command === 'stop' || command === 'disconnect') {
+      webBridgeCommandGeneration++
       webBridge?.handle.stop()
       webBridge = null
+      pairingEntry = null
       stopGuestPairing()
       void vscode.window.showInformationMessage('Studio Remote disconnected.')
       return
     }
-    if (command !== '' && command !== 'on' && command !== 'pair') {
+    if (command !== '' && command !== 'on' && command !== 'connect' && command !== 'pair') {
       void vscode.window.showErrorMessage('Usage: /web-bridge [status|off|pair]')
       return
     }
@@ -943,17 +971,27 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage(`Studio Remote is ${webBridge.handle.state}.`)
       return
     }
+    const commandGeneration = ++webBridgeCommandGeneration
+    pairingEntry = entry
     const token = command === 'pair' ? null : await getAccessTokenForHost()
+    if (commandGeneration !== webBridgeCommandGeneration || !registry.has(entry.key)) return
     if (token) {
+      stopGuestPairing()
+      pairingEntry = null
       await connectWebBridge(entry)
       return
     }
     webBridge?.handle.stop()
     webBridge = null
     stopGuestPairing()
+    pairingEntry = entry
     try {
       const pairing = await beginGuestPairing(
-        () => void connectWebBridge(entry),
+        () => {
+          if (!registry.has(entry.key)) { stopGuestPairing(); return }
+          pairingEntry = null
+          void connectWebBridge(entry)
+        },
         message => void vscode.window.showErrorMessage(`Studio pairing failed: ${message}`),
         {
           machineId: vscodeBridgeMachineId(engineCwd),
@@ -965,6 +1003,7 @@ export function activate(context: vscode.ExtensionContext): void {
       )
       await showBridgePairingPanel(enginePath, pairing.url, pairing.expiresAt)
     } catch (error) {
+      if (!registry.has(entry.key) || (error instanceof Error && (error.name === 'AbortError' || error.message === 'Studio pairing was cancelled'))) return
       void vscode.window.showErrorMessage(`Could not start Studio pairing: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -1025,7 +1064,7 @@ export function activate(context: vscode.ExtensionContext): void {
     owned.entry.session.restoreConversationState(owned.conversation)
     owned.entry.session.applyMirroredTaskSnapshot(owned.tasks)
     review.store.replace(owned.entry.key, owned.entry.session.reviewFiles)
-    syncSessionSurfaces(owned.entry.key)
+    surfaces.syncSession(owned.entry.key)
     if (warmup) void prewarmSession(owned.entry)
     postAttachment()
   }
@@ -1058,7 +1097,7 @@ export function activate(context: vscode.ExtensionContext): void {
     post: catalogue => surfaces.postToSession(refreshTargetKey, { type: 'setModelCatalogue', catalogue }),
     invalidate: invalidateRayuConfigCache,
     isDisposed: () => disposed,
-    onSettled: () => syncSessionSurfaces(refreshTargetKey),
+    onSettled: () => surfaces.syncSession(refreshTargetKey),
   })
 
   /** Prompts and warmups use the same prerequisites before reading provider config. */
@@ -1146,7 +1185,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // `preserveModel` throughout: this is a RESTART of one conversation, not a new one, so
       // it must not adopt whatever model another conversation has since selected.
       entry.session.newSession(undefined, undefined, { preserveModel: true })
-      syncSessionSurfaces(entry.key)
+      surfaces.syncSession(entry.key)
       prewarmSession(entry)
       return
     }
@@ -1154,7 +1193,7 @@ export function activate(context: vscode.ExtensionContext): void {
     entry.session.newSession(sessionId, cwd, { preserveModel: true })
     entry.session.restoreTranscript(await loadSessionTranscript(sessionId, cwd))
     await entry.session.restoreTaskHistory(sessionId, cwd)
-    syncSessionSurfaces(entry.key)
+    surfaces.syncSession(entry.key)
     prewarmSession(entry)
   }
 
@@ -1358,7 +1397,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // previous implementation called `newSession()` on the single session, which
         // killed a turn that was still running.
         const entry = registry.create()
-        openSessionTab(entry.key)
+        surfaces.openPanel(entry.key)
         prewarmSession(entry)
       },
       // Sidebar intent: open (or focus) the conversation's editor tab. The sidebar
@@ -1371,7 +1410,7 @@ export function activate(context: vscode.ExtensionContext): void {
           scope.reply({ type: 'showError', message: 'That conversation is no longer open.' })
           return
         }
-        openSessionTab(key)
+        surfaces.openPanel(key)
       },
       // Same intent as switchSession, for surfaces that ask for the tab explicitly.
       openSessionPanel: (scope, key) => {
@@ -1380,14 +1419,16 @@ export function activate(context: vscode.ExtensionContext): void {
           scope.reply({ type: 'showError', message: 'That conversation is no longer open.' })
           return
         }
-        openSessionTab(key)
+        surfaces.openPanel(key)
+      },
+      // The sidebar's Runtime Center has no composer to type into, so "use command"
+      // means "put it in the active conversation's tab". The active key is the right
+      // target — it is the conversation the user last touched, and the sidebar's own
+      // state is bound to it.
+      useCommandInTab: (_scope, name) => {
+        insertPromptIntoTab(registry.active.key, `/${name} `)
       },
       closeSession: (scope, key) => {
-        if (webBridge?.entry.key === key) {
-          webBridge.handle.stop()
-          webBridge = null
-          stopGuestPairing()
-        }
         // Close the MESSAGE key's tab: a sidebar row can close a conversation other
         // than its own binding. `registry.close` fires `onRetire`, which closes the
         // same tab idempotently — the explicit close keeps the tab from rendering a
@@ -1432,7 +1473,7 @@ export function activate(context: vscode.ExtensionContext): void {
               : item),
           }
           surfaces.broadcast({ type: 'setSessions', list: historySessions })
-          if (entry) syncSessionSurfaces(entry.key)
+          if (entry) surfaces.syncSession(entry.key)
         } catch (cause) {
           scope.reply({ type: 'showError', message: `Could not rename session: ${cause instanceof Error ? cause.message : String(cause)}` })
         }
@@ -1646,7 +1687,7 @@ export function activate(context: vscode.ExtensionContext): void {
           type: 'setModelCatalogue',
           catalogue: buildCatalogue(entry.session),
         })
-        syncSessionSurfaces(entry.key)
+        surfaces.syncSession(entry.key)
         prewarmSession(entry)
       },
 
@@ -2030,7 +2071,7 @@ export function activate(context: vscode.ExtensionContext): void {
   async function resumeStoredSession(scope: SurfaceScope, id: string): Promise<void> {
     const existing = registry.findByEngineSessionId(id)
     if (existing) {
-      openSessionTab(existing.key)
+      surfaces.openPanel(existing.key)
       prewarmSession(existing)
       return
     }
@@ -2055,7 +2096,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd, customTitle: selected.customTitle })
     entry.session.restoreTranscript(await loadSessionTranscript(id, resumeCwd))
     await entry.session.restoreTaskHistory(id, resumeCwd)
-    openSessionTab(entry.key)
+    surfaces.openPanel(entry.key)
     prewarmSession(entry)
   }
 
@@ -2120,9 +2161,9 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         }
         if (entry) {
-          // Re-init with the restored transcript, and correct the sidebar (the
-          // registry's internal sync built it a panel-flavoured snapshot).
-          syncSessionSurfaces(sessionKey)
+          // Re-init with the restored transcript: `syncSession` gives the panel its
+          // panel-flavoured snapshot and the sidebar its own, each surface correctly built.
+          surfaces.syncSession(sessionKey)
           prewarmSession(entry)
         }
       },
@@ -2202,8 +2243,9 @@ export function activate(context: vscode.ExtensionContext): void {
           )
           return
         }
-        await revealSidebar()
-        sidebar?.post({ type: 'insertPrompt', text: fenceTerminalSelection(selection) })
+        // The sidebar is a management hub with no composer, so the selection goes to the
+        // ACTIVE conversation's tab — the one place a prompt is typed.
+        insertPromptIntoTab(registry.active.key, fenceTerminalSelection(selection))
       } finally {
         await vscode.env.clipboard.writeText(previousClipboard)
       }
@@ -2249,8 +2291,8 @@ export function activate(context: vscode.ExtensionContext): void {
           )
           return
         }
-        await revealSidebar()
-        sidebar?.post({ type: 'insertPrompt', text: formatPathMentions(paths) })
+        // Same target as the terminal selection: the active conversation's composer.
+        insertPromptIntoTab(registry.active.key, formatPathMentions(paths))
       },
     ),
   )
@@ -2261,7 +2303,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // engine and keeps running — which is the whole difference from the previous
       // behaviour, where this button killed the turn in flight.
       const entry = registry.create()
-      openSessionTab(entry.key)
+      surfaces.openPanel(entry.key)
       prewarmSession(entry)
     }),
     vscode.commands.registerCommand(COMMANDS.signIn, async () => {

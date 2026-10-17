@@ -18,7 +18,7 @@
  * Every `ChatSession` keeps its own transcript, turn state, thinking blocks, tasks and review
  * records internally; the callbacks are purely a PUSH channel to the webview. That is what
  * makes this cheap: a background session's callbacks are dropped, its state keeps accruing,
- * and activation is a full `syncSessionSurfaces()` that re-posts the init snapshot to the
+ * and activation is a full `surfaces.syncSession()` that re-posts the init snapshot to the
  * surfaces bound to the session that just came to the front. There
  * is no second copy of anything and no reconciliation step.
  *

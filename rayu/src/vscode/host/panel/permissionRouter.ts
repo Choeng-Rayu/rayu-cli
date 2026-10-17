@@ -50,6 +50,7 @@ import {
   parseAskUserQuestions,
 } from '../../../utils/askUserQuestion.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../../tools/AskUserQuestionTool/prompt.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants.js'
 import type { PermissionRequestView } from '../../shared/webviewProtocol.js'
 
 /** What the user chose. */
@@ -60,6 +61,29 @@ export type PermissionDecision =
   | { kind: 'allow-always' }
   /** Refuse. */
   | { kind: 'deny' }
+
+/**
+ * The plan content of an ExitPlanMode request, when there is one.
+ *
+ * `normalizeToolInput` injects the plan file's contents into `input.plan` before the
+ * `can_use_tool` request crosses, so the approval card can render the plan as markdown
+ * rather than showing the input JSON — which is the entire plan on one escaped line.
+ * Undefined for every other tool, and for ExitPlanMode when the plan file was empty.
+ */
+function planApprovalOf(
+  toolName: string,
+  input: Record<string, unknown>,
+): PermissionRequestView['planApproval'] | undefined {
+  if (toolName !== EXIT_PLAN_MODE_V2_TOOL_NAME) return undefined
+  const plan = typeof input.plan === 'string' ? input.plan : undefined
+  if (!plan || !plan.trim()) return undefined
+  const planFilePath =
+    typeof input.planFilePath === 'string' ? input.planFilePath : undefined
+  return {
+    plan,
+    ...(planFilePath && { planFilePath }),
+  }
+}
 
 export interface PermissionRouterCallbacks {
   /** Show an approval card. */
@@ -116,6 +140,10 @@ export class PermissionRouter {
         ? (inner.input as Record<string, unknown>)
         : {}
 
+    // A plan approval renders its own card from the plan itself; the generic label
+    // and parameter dump would put the whole plan on screen as escaped JSON.
+    const planApproval = planApprovalOf(toolName, input)
+
     const view: PermissionRequestView = {
       requestId: request.requestId,
       agentId: typeof inner.agent_id === 'string' ? inner.agent_id : undefined,
@@ -123,8 +151,8 @@ export class PermissionRouter {
         typeof inner.display_name === 'string' ? inner.display_name : toolName,
       // Same one-line summary the tool pill uses, so the card and the pill that
       // follows it describe the action identically.
-      label: summariseInput(input),
-      parameters: prettyParameters(input),
+      label: planApproval ? '' : summariseInput(input),
+      parameters: planApproval ? '' : prettyParameters(input),
       description: typeof inner.description === 'string' ? inner.description : null,
       // Surfaced because it is usually the reason the engine could not decide by
       // itself — a path outside the workspace — which is exactly what the user
@@ -136,6 +164,7 @@ export class PermissionRouter {
       ...(toolName === ASK_USER_QUESTION_TOOL_NAME && {
         questionInteraction: { questions: parseAskUserQuestions(input) },
       }),
+      ...(planApproval && { planApproval }),
     }
 
     this.pending.set(request.requestId, {
@@ -181,11 +210,13 @@ export class PermissionRouter {
         ? (request.input as Record<string, unknown>)
         : {}
 
+    const planApproval = planApprovalOf(request.toolName, input)
+
     const view: PermissionRequestView = {
       requestId: request.requestId,
       toolName: request.toolName,
-      label: summariseInput(input),
-      parameters: prettyParameters(input),
+      label: planApproval ? '' : summariseInput(input),
+      parameters: planApproval ? '' : prettyParameters(input),
       description: request.description ?? null,
       blockedPath: null,
       reason: null,
@@ -195,6 +226,7 @@ export class PermissionRouter {
       ...(request.toolName === ASK_USER_QUESTION_TOOL_NAME && {
         questionInteraction: { questions: parseAskUserQuestions(input) },
       }),
+      ...(planApproval && { planApproval }),
     }
 
     this.pending.set(request.requestId, {

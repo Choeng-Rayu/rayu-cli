@@ -485,7 +485,38 @@ function ToolResultBody({
       )
     case 'search':
       return <SearchResultView result={result} onOpenFile={onOpenFile} />
+    case 'plan':
+      return <PlanResultView result={result} />
   }
+}
+
+/**
+ * The plan an ExitPlanMode call settled on, rendered as markdown.
+ *
+ * The generic output body shows the model-facing text raw — which for this tool
+ * embeds the whole plan behind `## Approved Plan:`. The typed result replaces that
+ * (never joins it — the caller drops `entry.output`), the same rule the diff result
+ * follows, so the plan reads like it did in the approval card instead of like a
+ * `.md` file pasted into a terminal.
+ */
+function PlanResultView({
+  result,
+}: {
+  result: Extract<ToolResultView, { kind: 'plan' }>
+}): JSX.Element {
+  const html = useMemo(() => renderMarkdown(result.plan), [result.plan])
+  return (
+    <div className="rc-tool-result">
+      <div className="rc-tool-result-summary">Plan approved</div>
+      <div
+        className="rc-prose rc-plan-result"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+      {result.filePath ? (
+        <div className="rc-tool-result-hint">Saved to {result.filePath}</div>
+      ) : null}
+    </div>
+  )
 }
 
 /** Compact record of an answered AskUserQuestion interaction. */

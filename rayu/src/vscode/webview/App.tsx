@@ -88,7 +88,6 @@ const vscodeApi = acquireVsCodeApi()
  * they had half-typed. Losing a draft to a panel collapse is the most annoying of those.
  */
 interface PersistedUiState {
-  sessionsOpen?: boolean
   selectedTaskKey?: string | null
   draft?: string
   /**
@@ -133,8 +132,6 @@ export function App(): JSX.Element {
   const [selectedTaskKey, setSelectedTaskKey] = useState<string | null>(
     () => readPersistedUi().selectedTaskKey ?? null,
   )
-  /** Which surface has replaced the conversation, if any. */
-  const [sessionsOpen, setSessionsOpen] = useState(() => readPersistedUi().sessionsOpen ?? false)
   const captureReadingRef = useRef<() => void>(() => {})
   /**
    * Whether every tool row shows its fields and output.
@@ -198,7 +195,6 @@ export function App(): JSX.Element {
   const surfaceBinding = state.surfaceBinding
   useEffect(() => {
     vscodeApi.setState({
-      sessionsOpen,
       selectedTaskKey,
       ...(draft ? { draft } : {}),
       ...(surfaceBinding
@@ -210,7 +206,7 @@ export function App(): JSX.Element {
           }
         : {}),
     } satisfies PersistedUiState)
-  }, [sessionsOpen, selectedTaskKey, draft, surfaceBinding])
+  }, [selectedTaskKey, draft, surfaceBinding])
 
   /**
    * Ctrl+O / Cmd+O, the same gesture the CLI uses for the same thing.
@@ -412,11 +408,21 @@ export function App(): JSX.Element {
 
   const session = state.session
   const signedOut = session === null || session.status === 'signed-out'
-  // Which surface this webview is. A panel is bound to exactly one session and must not
-  // offer the in-panel switcher; the sidebar keeps it. Read from the snapshot the host
+  // Which surface this webview is. A panel is bound to exactly one session and hosts the
+  // conversation; the sidebar is the management hub (sessions, history, tasks, MCP,
+  // provider setup, sign-in) and deliberately renders NO transcript or composer, so a
+  // conversation never appears on two surfaces at once. Read from the snapshot the host
   // built for this surface, never inferred from the message channel.
   const surface: ChatSurfaceKind = session?.surface ?? 'sidebar'
   const isPanel = surface === 'panel'
+
+  // The sidebar IS the sessions surface, so its history is fetched as soon as the
+  // surface is known — panels fetch theirs behind the header's sessions toggle. Once,
+  // not on every re-render: `isPanel` flips only when the host's init identifies this
+  // webview, and the list itself updates through `setSessions` broadcasts.
+  useEffect(() => {
+    if (!isPanel) send({ type: 'listSessions' })
+  }, [isPanel])
   // The transcript remains the host-owned source of truth. Selecting its newest
   // structured TodoWrite entry makes the list persistent across ordinary messages,
   // webview recreation, and history resume without a second todo state to synchronize.
@@ -496,8 +502,44 @@ export function App(): JSX.Element {
     state.pendingPermissions.length + state.mcpElicitations.length,
   )
 
+  /**
+   * The sessions list — the sidebar's main surface.
+   *
+   * Built once here rather than inline in the JSX so the row behaviours (open a live
+   * tab, resume history, close) stay in one place, right beside the comment explaining
+   * what each one does.
+   */
+  const sessionsList = (
+    <SessionsView
+      list={state.sessions}
+      liveSessions={state.liveSessions}
+      activeSessionKey={state.activeSessionKey}
+      workspaceFolder={session?.workspaceFolder ?? ''}
+      // A history row OPENS its own editor tab (the host spawns the engine with
+      // `--resume`). The list is deliberately left open: opening several is the point,
+      // and the tab destroys nothing here. The old `resumeSession` switched THIS surface
+      // destructively, which is no longer what a history row means.
+      onResume={id => {
+        setSelectedTaskKey(null)
+        send({ type: 'resumeSessionPanel', id })
+      }}
+      // A live row opens/focuses its tab. The list stays put: opening several without
+      // reopening the sidebar each time is the point.
+      onSwitch={key => {
+        setSelectedTaskKey(null)
+        send({ type: 'openSessionPanel', key })
+      }}
+      onClose={key => send({ type: 'closeSession', key })}
+      onRetry={() => send({ type: 'listSessions' })}
+    />
+  )
+
   return (
-    <div className={`rc-shell${panelDragging ? ' rc-shell-drag-over' : ''}${runtimeCenterOpen ? ' rc-shell-runtime-open' : ''}`}>
+    <div
+      className={`rc-shell${panelDragging ? ' rc-shell-drag-over' : ''}${
+        runtimeCenterOpen ? ' rc-shell-runtime-open' : ''
+      }${isPanel ? '' : ' rc-shell-sidebar'}`}
+    >
       {/*
         The drop target covers the PANEL, because the handler does. An overlay confined to
         the composer strip was the visible half of the original bug: a drop on the
@@ -536,24 +578,14 @@ export function App(): JSX.Element {
         status={sessionStatus}
         mcpServers={state.mcpServers}
         mcpConnectionUi={state.mcpConnectionUi}
-        onBack={sessionsOpen ? () => setSessionsOpen(false) : undefined}
         onNewSession={() => {
           captureReadingRef.current()
           // A new session invalidates selections that referred to the old one.
-          setSessionsOpen(false)
           setSelectedTaskKey(null)
           send({ type: 'newSession' })
         }}
-        onOpenSessions={() => {
-          if (!sessionsOpen) captureReadingRef.current()
-          setSessionsOpen(open => !open)
-          // Refetched on every open: sessions accumulate from the CLI and other windows
-          // while the panel sits idle, so a cached list goes stale invisibly.
-          send({ type: 'listSessions' })
-        }}
         detailed={detailed}
         onToggleDetailed={() => setDetailed(current => !current)}
-        openSessionCount={state.liveSessions.length}
         backgroundTaskCount={state.backgroundTasks.length}
         backgroundOpen={taskCenterOpen}
         onToggleBackground={() => {
@@ -617,7 +649,11 @@ export function App(): JSX.Element {
           workflows={state.runtimeWorkflows}
           onClose={() => setRuntimeCenterOpen(false)}
           onUseCommand={name => {
-            setDraft(`/${name} `)
+            // A panel types the command where it stands. The sidebar has no composer,
+            // so "use" means "put this in the active conversation's tab" — the host
+            // opens/focuses it and delivers the text there.
+            if (isPanel) setDraft(`/${name} `)
+            else send({ type: 'useCommandInTab', name })
             setRuntimeCenterOpen(false)
           }}
           onRefreshMcp={refreshMcp}
@@ -642,47 +678,29 @@ export function App(): JSX.Element {
         }
       />
 
-      <div
-        className={`rc-main-area${taskCenterOpen ? ' rc-main-area-tasks' : ''}${
-          sessionsOpen ? ' rc-main-area-sessions' : ''
-        }`}
-      >
-        <Transcript
-          state={state}
-          sessionsOpen={sessionsOpen}
-          captureReadingRef={captureReadingRef}
-          onPick={setDraft}
-          signedOut={signedOut}
-          detailed={detailed}
-          toolOverrides={toolOverrides}
-          onToggleTool={toggleTool}
-          onRequestToolOutput={requestToolOutput}
-        />
-        {sessionsOpen && !isPanel ? (
-          <SessionsView
-            list={state.sessions}
-            liveSessions={state.liveSessions}
-            activeSessionKey={state.activeSessionKey}
-            workspaceFolder={session?.workspaceFolder ?? ''}
-            // A history row OPENS its own editor tab (the host spawns the engine with
-            // `--resume`). The list is deliberately left open: opening several is the point,
-            // and the tab destroys nothing here. The old `resumeSession` switched THIS surface
-            // destructively, which is no longer what a history row means.
-            onResume={id => {
-              setSelectedTaskKey(null)
-              send({ type: 'resumeSessionPanel', id })
-            }}
-            // A live row opens/focuses its tab. Again no `setSessionsOpen(false)` — the list
-            // stays so the user can open several without reopening it each time. The host
-            // focuses the new panel, which rebinds this sidebar to that session.
-            onSwitch={key => {
-              setSelectedTaskKey(null)
-              send({ type: 'openSessionPanel', key })
-            }}
-            onClose={key => send({ type: 'closeSession', key })}
-            onRetry={() => send({ type: 'listSessions' })}
+      <div className={`rc-main-area${taskCenterOpen ? ' rc-main-area-tasks' : ''}`}>
+        {isPanel ? (
+          <Transcript
+            state={state}
+            captureReadingRef={captureReadingRef}
+            onPick={setDraft}
+            signedOut={signedOut}
+            detailed={detailed}
+            toolOverrides={toolOverrides}
+            onToggleTool={toggleTool}
+            onRequestToolOutput={requestToolOutput}
           />
-        ) : null}
+        ) : (
+          // ── THE SIDEBAR IS THE MANAGEMENT HUB ─────────────────────────────
+          // No transcript, no composer: a conversation lives in exactly one place —
+          // its editor tab — and selecting a row here OPENS that tab. What stays
+          // is what manages the agent: the sessions list, the sign-in gate when
+          // signed out, and (via the header) tasks, MCP and provider setup.
+          <>
+            {signedOut && session !== null ? <SignInView state={session} /> : null}
+            {sessionsList}
+          </>
+        )}
         {taskCenterOpen ? (
           <BackgroundTaskCenter
             tasks={state.backgroundTasks}
@@ -710,8 +728,9 @@ export function App(): JSX.Element {
 
       {/* Pinned between the transcript and the composer: the engine is blocked, so
           this must be visible without scrolling, while the transcript it describes
-          stays readable. */}
-      {state.modelChooser ? (
+          stays readable. Panels only — the sidebar has no transcript or composer for
+          the chooser to sit among; a model is picked in the conversation's tab. */}
+      {isPanel && state.modelChooser ? (
         <ModelChooserCard
           chooser={state.modelChooser}
           catalogue={state.modelCatalogue}
@@ -759,59 +778,68 @@ export function App(): JSX.Element {
         onOpenExternal={url => send({ type: 'openExternal', url })}
       />
 
-      <BackgroundTaskBar
-        tasks={state.backgroundTasks}
-        open={taskCenterOpen}
-        supported={state.taskInspectionSupported}
-        message={state.taskInspectionMessage}
-        onToggle={() => {
-          setTaskCenterOpen(open => !open)
-          if (!selectedTaskKey && state.backgroundTasks[0]) {
-            setSelectedTaskKey(state.backgroundTasks[0].key)
-          }
-        }}
-      />
+      {/* Panels only: a strip about THIS conversation's work, sitting on the composer
+          it interrupts. The sidebar reaches the task center through the header badge. */}
+      {isPanel ? (
+        <BackgroundTaskBar
+          tasks={state.backgroundTasks}
+          open={taskCenterOpen}
+          supported={state.taskInspectionSupported}
+          message={state.taskInspectionMessage}
+          onToggle={() => {
+            setTaskCenterOpen(open => !open)
+            if (!selectedTaskKey && state.backgroundTasks[0]) {
+              setSelectedTaskKey(state.backgroundTasks[0].key)
+            }
+          }}
+        />
+      ) : null}
 
-      <Composer
-        key={draft ?? ''}
-        initialValue={draft ?? ''}
-        disabled={false}
-        authenticationRequired={signedOut}
-        turnRunning={state.turnRunning}
-        modelInfo={state.modelInfo}
-        modelCatalogue={state.modelCatalogue}
-        inference={state.inference}
-        permissionMode={state.permissionMode}
-        commands={composerCommands}
-        agents={state.runtimeAgents}
-        promptHistory={promptHistory}
-        workspaceFiles={state.workspaceFiles}
-        ideContext={state.ideContext}
-        contextUsage={state.contextUsage}
-        attachment={state.attachment}
-        onListAttachable={() => send({ type: 'listAttachable' })}
-        onAttachSession={pid => send({ type: 'attachToSession', pid })}
-        onDetachSession={() => send({ type: 'detachFromSession' })}
-        todoEntry={latestTodoEntry}
-        promptSuggestion={state.promptSuggestion}
-        onSubmit={submit}
-        onInterrupt={() => send({ type: 'interrupt' })}
-        onSelectModel={value => send({ type: 'selectModelValue', value })}
-        onRefreshModels={() => send({ type: 'refreshModelCatalogue' })}
-        onSetEffort={level => send({ type: 'setEffort', level })}
-        onSetThinking={enabled => send({ type: 'setThinking', enabled })}
-        onCyclePermissionMode={() => send({ type: 'cyclePermissionMode' })}
-        onSelectPermissionMode={modeId => {
-          dispatch({ type: 'setPermissionMode', mode: permissionModeById(modeId) })
-          send({ type: 'setPermissionMode', modeId })
-        }}
-        onOpenProviderSetup={() => send({ type: 'openProviderSetup' })}
-        onFindFiles={findFiles}
-        onResolveDroppedPaths={resolveDroppedPaths}
-        onPickContextPaths={pickContextPaths}
-        onDragStateChange={setPanelDragging}
-        controlRequest={composerControlRequest}
-      />
+      {/* Panels only — THE WHOLE POINT of the sidebar redesign: the conversation, and
+          the place you type into it, exist solely in the session's editor tab. Rendering
+          them here too is what made the sidebar a duplicate of the tab. */}
+      {isPanel ? (
+        <Composer
+          key={draft ?? ''}
+          initialValue={draft ?? ''}
+          disabled={false}
+          authenticationRequired={signedOut}
+          turnRunning={state.turnRunning}
+          modelInfo={state.modelInfo}
+          modelCatalogue={state.modelCatalogue}
+          inference={state.inference}
+          permissionMode={state.permissionMode}
+          commands={composerCommands}
+          agents={state.runtimeAgents}
+          promptHistory={promptHistory}
+          workspaceFiles={state.workspaceFiles}
+          ideContext={state.ideContext}
+          contextUsage={state.contextUsage}
+          attachment={state.attachment}
+          onListAttachable={() => send({ type: 'listAttachable' })}
+          onAttachSession={pid => send({ type: 'attachToSession', pid })}
+          onDetachSession={() => send({ type: 'detachFromSession' })}
+          todoEntry={latestTodoEntry}
+          promptSuggestion={state.promptSuggestion}
+          onSubmit={submit}
+          onInterrupt={() => send({ type: 'interrupt' })}
+          onSelectModel={value => send({ type: 'selectModelValue', value })}
+          onRefreshModels={() => send({ type: 'refreshModelCatalogue' })}
+          onSetEffort={level => send({ type: 'setEffort', level })}
+          onSetThinking={enabled => send({ type: 'setThinking', enabled })}
+          onCyclePermissionMode={() => send({ type: 'cyclePermissionMode' })}
+          onSelectPermissionMode={modeId => {
+            dispatch({ type: 'setPermissionMode', mode: permissionModeById(modeId) })
+            send({ type: 'setPermissionMode', modeId })
+          }}
+          onOpenProviderSetup={() => send({ type: 'openProviderSetup' })}
+          onFindFiles={findFiles}
+          onResolveDroppedPaths={resolveDroppedPaths}
+          onPickContextPaths={pickContextPaths}
+          onDragStateChange={setPanelDragging}
+          controlRequest={composerControlRequest}
+        />
+      ) : null}
     </div>
   )
 }
@@ -855,7 +883,6 @@ const TranscriptBlock = memo(
  */
 function Transcript({
   state,
-  sessionsOpen,
   captureReadingRef,
   onPick,
   signedOut,
@@ -865,7 +892,6 @@ function Transcript({
   onRequestToolOutput,
 }: {
   state: ChatState
-  sessionsOpen: boolean
   captureReadingRef: MutableRefObject<() => void>
   onPick: (text: string) => void
   signedOut: boolean
@@ -1038,7 +1064,7 @@ function Transcript({
     const el = scroller.current
     if (!el) return
     if (!scrollSwitch.current.shouldRestore(state.activeSessionKey, el.getClientRects().length > 0)) {
-      if (!sessionsOpen && pendingCapture.current) {
+      if (pendingCapture.current) {
         requestAnimationFrame(() => { pendingCapture.current = false })
       }
       return
@@ -1051,7 +1077,7 @@ function Transcript({
       settleAtBottom()
     }
     setShowScrollBottom(!pinned.current && el.scrollHeight - el.clientHeight > 100)
-  }, [state.activeSessionKey, sessionsOpen, state.entries, settleAtBottom, settleAtPosition])
+  }, [state.activeSessionKey, state.entries, settleAtBottom, settleAtPosition])
 
   // Forget conversations that are no longer open. The live list is the only key writer,
   // so this holds the memory at the number of open conversations rather than at however

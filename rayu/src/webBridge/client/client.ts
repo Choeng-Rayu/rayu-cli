@@ -184,6 +184,8 @@ export class WebBridgeClient {
   private state: WebBridgeConnectionState = "idle";
   private currentSessionId: string | null = null;
   private closed = false;
+  private generation = 0;
+  private connecting: Promise<boolean> | null = null;
 
   /** callIds already delivered to the host, newest last. See ANSWERED_CALL_MEMORY. */
   private readonly answered: string[] = [];
@@ -223,9 +225,18 @@ export class WebBridgeClient {
    */
   async connect(): Promise<boolean> {
     if (this.socket) return true;
+    if (this.connecting) return this.connecting;
     this.closed = false;
+    const generation = this.generation;
+    this.connecting = this.open(generation).finally(() => {
+      if (generation === this.generation) this.connecting = null;
+    });
+    return this.connecting;
+  }
 
+  private async open(generation: number): Promise<boolean> {
     const token = await this.safeToken();
+    if (this.closed || generation !== this.generation) return false;
     if (!token) {
       this.setState("error");
       return false;
@@ -237,7 +248,11 @@ export class WebBridgeClient {
       path: WEB_BRIDGE_WS_PATH,
       // The handshake payload, not a query parameter: a token in the URL ends up in
       // proxy access logs on every reconnect.
-      auth: { token },
+      auth: (done: (credentials: object) => void) => {
+        void this.safeToken().then(fresh => {
+          if (!this.closed && generation === this.generation) done({ token: fresh ?? "" });
+        });
+      },
       // WebSocket only. The polling fallback would work, but each poll re-sends the
       // whole handshake including the token, and a long-lived CLI has no reason to
       // degrade to it — a failure to upgrade is something to see, not to paper over.
@@ -267,6 +282,8 @@ export class WebBridgeClient {
    */
   stop(): void {
     this.closed = true;
+    this.generation++;
+    this.connecting = null;
     this.clearHelloTimer();
     const socket = this.socket;
     this.socket = null;
@@ -437,7 +454,7 @@ export class WebBridgeClient {
       this.currentSessionId = null;
       this.clearHelloTimer();
       // `io client disconnect` is our own stop() and is not a fault.
-      this.setState(reason === "io client disconnect" ? "idle" : "reconnecting");
+      this.setState(reason === "io client disconnect" ? "idle" : reason === "io server disconnect" ? "error" : "reconnecting");
       this.log(`disconnected: ${reason}`);
     });
 
@@ -446,19 +463,7 @@ export class WebBridgeClient {
       this.log(`connect error: ${error.message}`);
     });
 
-    /*
-     * Refresh the token before each reconnect attempt.
-     *
-     * Without this, a CLI that loses its connection for longer than the token's
-     * lifetime retries forever with a token the server will never accept again —
-     * reconnecting successfully at the transport layer and being disconnected at the
-     * handshake, indefinitely.
-     */
-    socket.io.on("reconnect_attempt", () => {
-      void this.safeToken().then((token) => {
-        if (token && this.socket) this.socket.auth = { token };
-      });
-    });
+    // The async auth callback waits for a fresh token BEFORE every handshake.
 
     socket.on(CLI_COMMAND.HELLO_ACK, (payload: unknown) => {
       const ack = payload as HelloAck | undefined;
@@ -647,17 +652,19 @@ export class WebBridgeClient {
    */
   private async refreshAndReconnect(): Promise<void> {
     if (this.closed) return;
+    const socket = this.socket;
+    const generation = this.generation;
     const token = await this.safeToken();
-    if (this.closed) return;
+    if (this.closed || generation !== this.generation || socket !== this.socket) return;
     if (!token) {
       this.log("token refresh failed — bridge going offline");
+      socket?.disconnect();
+      this.currentSessionId = null;
       this.setState("error");
       return;
     }
-    const socket = this.socket;
     if (!socket) return;
     this.setState("reconnecting");
-    socket.auth = { token };
     socket.disconnect();
     socket.connect();
   }

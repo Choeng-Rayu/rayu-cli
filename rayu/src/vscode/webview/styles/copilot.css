@@ -2058,6 +2058,45 @@ body {
   gap: var(--rc-gap);
 }
 
+/* ── ExitPlanMode plan approval ───────────────────────────────────────────── */
+
+/*
+ * A plan can be arbitrarily long, so the body scrolls rather than stretching the
+ * card past the composer — the same bound the question card places on its form.
+ * The card itself stays as tall as its content up to that cap.
+ */
+.rc-plan-card {
+  max-height: min(70vh, 620px);
+}
+
+.rc-plan-subtitle {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.rc-plan-body {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--rc-gap);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: var(--rc-radius);
+  background-color: var(--vscode-editorWidget-background);
+}
+
+.rc-plan-path {
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  overflow-wrap: anywhere;
+}
+
+/* The approved plan echoed in the transcript pill. Bounded with the pill, not the
+   card, so a long plan scrolls inside the expansion instead of growing the row. */
+.rc-plan-result {
+  max-height: 420px;
+  overflow: auto;
+}
+
 /* ── AskUserQuestion ─────────────────────────────────────────────────────── */
 
 .rc-question-card {
@@ -3765,37 +3804,31 @@ body {
   white-space: normal;
 }
 
-/* ── responsive: sessions and tasks ──────────────────────────────────────── */
+/* ── the sidebar as management hub ─────────────────────────────────────────── */
 
 /*
- * Below 720px the sessions surface REPLACES the conversation, and the header's Back button is
- * the way out. There is no width at which two columns are both usable in a sidebar this
- * narrow, and shrinking both is worse than showing one.
+ * The sidebar hosts no conversation. Its main area is the sessions list — with the
+ * sign-in card above it while signed out — stacked, never side by side, and the
+ * list fills the width (there is no transcript beside it to share it with).
  */
-@container shell (max-width: 719px) {
-  .rc-main-area-sessions > .rc-transcript-wrapper { display: none; }
-  .rc-sessions { border-left: 0; }
+.rc-shell-sidebar .rc-main-area {
+  flex-direction: column;
 }
 
-/* 720–959px: a fixed side rail. Wide enough to read a row, narrow enough to leave the
-   conversation legible. */
-@container shell (min-width: 720px) {
-  .rc-sessions {
-    flex: 0 0 260px;
-    width: 260px;
-  }
+.rc-shell-sidebar .rc-sessions {
+  border-left: 0;
 }
 
-/* 960px and up: the rail becomes resizable within a range that keeps both readable. */
-@container shell (min-width: 960px) {
-  .rc-sessions {
-    flex: 0 0 300px;
-    width: 300px;
-    min-width: 280px;
-    max-width: 360px;
-    resize: horizontal;
-    overflow: auto;
-  }
+.rc-shell-sidebar .rc-signin {
+  margin: var(--rc-gap) var(--rc-gap-lg) 0;
+}
+
+/* Tasks replace the hub's list the same way they replace a narrow panel's transcript:
+   the opened center is the thing being read, and splitting the height between two
+   scrollers makes both unusable. */
+.rc-shell-sidebar .rc-main-area-tasks > .rc-sessions,
+.rc-shell-sidebar .rc-main-area-tasks > .rc-signin {
+  display: none;
 }
 
 /* ── context-window pressure gauge ─────────────────────────────────────────── */

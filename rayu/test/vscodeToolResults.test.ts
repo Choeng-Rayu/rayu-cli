@@ -188,6 +188,37 @@ describe('projectToolResult — search', () => {
   })
 })
 
+describe('projectToolResult — plan', () => {
+  test('an ExitPlanMode output becomes a plan sidecar carrying the plan verbatim', () => {
+    const result = projectToolResult({
+      plan: '## Implementation\n1. Do the thing',
+      isAgent: false,
+      filePath: '.rayu/plans/plan-x.md',
+      hasTaskTool: true,
+    })
+    if (result?.kind !== 'plan') throw new Error('unreachable')
+    expect(result.plan).toBe('## Implementation\n1. Do the thing')
+    expect(result.filePath).toBe('.rayu/plans/plan-x.md')
+  })
+
+  test('a plan awaiting leader approval stays generic — that text is the instruction', () => {
+    expect(
+      projectToolResult({
+        plan: '## Plan',
+        isAgent: true,
+        filePath: '.rayu/plans/plan-y.md',
+        awaitingLeaderApproval: true,
+      }),
+    ).toBeUndefined()
+  })
+
+  test('an empty plan does not project', () => {
+    expect(
+      projectToolResult({ plan: '', isAgent: false }),
+    ).toBeUndefined()
+  })
+})
+
 describe('projectToolResult — degradation', () => {
   test.each([
     ['undefined', undefined],

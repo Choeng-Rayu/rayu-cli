@@ -61,6 +61,7 @@ import {
 } from '../../../utils/activity/activityBlocks.js'
 import { parseAskUserQuestions } from '../../../utils/askUserQuestion.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../../tools/AskUserQuestionTool/prompt.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from '../../../tools/TodoWriteTool/constants.js'
 import { TodoListSchema, type TodoList } from '../../../utils/todo/types.js'
 import { z } from 'zod'
@@ -540,6 +541,23 @@ const SearchResultSchema = z
   .passthrough()
 
 /**
+ * `ExitPlanMode`'s output, which carries the plan the user just reviewed.
+ *
+ * `awaitingLeaderApproval` is excluded on purpose: that result's generic text —
+ * "submitted to the team lead, wait for approval" — is the instruction the
+ * SUBAGENT still needs to read, so replacing it with the plan would hide the
+ * only part it can act on.
+ */
+const PlanResultSchema = z
+  .object({
+    plan: z.string(),
+    isAgent: z.boolean(),
+    filePath: z.string().optional(),
+    awaitingLeaderApproval: z.boolean().optional(),
+  })
+  .passthrough()
+
+/**
  * Project a tool's typed output into a renderable result, or undefined.
  *
  * ── THE TYPED OUTPUT IS ALREADY ON THE WIRE ────────────────────────────────────
@@ -591,6 +609,19 @@ export function projectToolResult(raw: unknown): ToolResultView | undefined {
       kind: 'search',
       filenames: search.data.filenames.slice(0, MAX_RESULT_FILENAMES),
       totalCount: search.data.numFiles ?? search.data.filenames.length,
+    }
+  }
+
+  const planResult = PlanResultSchema.safeParse(raw)
+  if (
+    planResult.success &&
+    planResult.data.plan.trim() &&
+    planResult.data.awaitingLeaderApproval !== true
+  ) {
+    return {
+      kind: 'plan',
+      plan: clamp(planResult.data.plan),
+      ...(planResult.data.filePath ? { filePath: planResult.data.filePath } : {}),
     }
   }
 
@@ -680,6 +711,11 @@ export function formatMessageForVSCode(
           name === TODO_WRITE_TOOL_NAME
             ? parseTodoWriteTodos(block.input)
             : undefined
+        // A plan exit carries the whole plan in its injected `input.plan`; the
+        // dedicated approval card owns that payload, so the pill states what
+        // happened instead of dumping the plan as JSON.
+        const isPlanExit = name === EXIT_PLAN_MODE_V2_TOOL_NAME
+        const dedicatedCard = Boolean(questions) || Boolean(todos) || isPlanExit
         blocks.push({
           kind: 'tool_use',
           toolUseId: block.id ?? null,
@@ -693,11 +729,13 @@ export function formatMessageForVSCode(
             ? `${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`
             : todos
               ? `${todos.filter(todo => todo.status === 'completed').length}/${todos.length} complete`
-            : block.input === undefined ? '' : summariseLabel(block.input),
+              : isPlanExit
+                ? 'Present plan for approval'
+                : block.input === undefined ? '' : summariseLabel(block.input),
           // Dedicated cards own these payloads. Repeating them as generic fields is the
           // raw payload leak reported by users.
-          details: questions || todos ? [] : toolDetails(block.input),
-          parameters: questions || todos ? '' : formatParameters(block.input),
+          details: dedicatedCard ? [] : toolDetails(block.input),
+          parameters: dedicatedCard ? '' : formatParameters(block.input),
           ...(questions && { questions }),
           ...(todos && { todos }),
         })

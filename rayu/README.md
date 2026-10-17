@@ -59,6 +59,26 @@ yarn global add @rayu-dev/rayu-cli
 
 ---
 
+## Studio Remote
+
+Control a running CLI session from Rayu Studio. There are two connection options:
+
+- **QR code:** run `/web-bridge pair` in the CLI, scan the QR code with your phone
+  camera (or open its link), sign in to Studio, and choose **Approve machine**.
+  This also works when the CLI is signed in. The QR code expires after five minutes.
+- **Rayu account:** sign in to the same Rayu account in the CLI and Studio, then
+  run `/web-bridge` to connect directly.
+
+Select the machine on Studio's **Remote** page to send prompts, approve tool calls,
+and interrupt turns. QR pairing grants control of that running worker; it does
+not sign the worker into Rayu or provide credentials for hosted models.
+
+Use `/web-bridge status` to check the connection and `/web-bridge off` to cancel
+pairing or disconnect. If already connected, disconnect before starting QR pairing.
+Closing the CLI also ends remote control for that session.
+
+---
+
 ## Update
 
 ```bash
