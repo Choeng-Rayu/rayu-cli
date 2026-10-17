@@ -14,6 +14,11 @@ curl -fsSL https://rayucode.com/install | bash
 irm https://rayucode.com/install.ps1 | iex
 ```
 
+Run this in **Windows PowerShell 5.1 or PowerShell 7** on Windows 10/11.
+A regular PowerShell window is enough; administrator access is not required.
+The installer adds Rayu to the current window's `PATH`, so you can immediately
+check it with `rayu --version`. Reopen any other terminals to pick up the change.
+
 Then open a new terminal and run:
 
 ```bash
@@ -32,8 +37,9 @@ running it if you prefer: <https://rayucode.com/install.sh>
 3. Otherwise downloads the published npm tarball **directly from the registry**
    and extracts the single pre-bundled file (`dist/rayu.js`). There is no
    dependency resolution and nothing is compiled.
-4. Uses your system Node when it is **>= 18**; otherwise it unpacks a private,
-   checksum-verified Node runtime into `~/.rayu/runtime` that only Rayu uses.
+4. On Windows, uses your system Node when it is **>= 22**; otherwise it unpacks
+   a private, checksum-verified Node runtime into `~/.rayu/runtime` that only
+   Rayu uses. The macOS/Linux installer currently accepts system Node >= 18.
 5. Installs the launcher into `~/.rayu/bin` — never a system directory — and adds
    that directory to your `PATH` (`.bashrc`, `.zshrc`, `.profile`,
    `config.fish`, or the Windows user `PATH`).
@@ -101,8 +107,11 @@ cannot forward arguments, download the script first:
 
 ```powershell
 irm https://rayucode.com/install.ps1 -OutFile install.ps1
-.\install.ps1 -Version 1.6.13
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 1.6.13
 ```
+
+This applies the execution policy only to that installer process. It also works
+when the current window blocks running downloaded `.ps1` files.
 
 ## Updating
 
@@ -121,7 +130,7 @@ curl -fsSL https://rayucode.com/install | bash -s -- --uninstall
 ```
 
 ```powershell
-& "$env:USERPROFILE\.rayu\bin\.rayu-installer.ps1" -Uninstall
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.rayu\bin\.rayu-installer.ps1" -Uninstall
 ```
 
 This removes the launcher, the versioned bundles, the private Node runtime and
@@ -136,7 +145,7 @@ them with `rm -rf ~/.rayu` if you want a clean slate.
 npm install -g @rayu-dev/rayu-cli
 ```
 
-Requires Node >= 18 and a writable global npm prefix. If you hit `EACCES`, point
+Use Node 22 or newer and a writable global npm prefix. If you hit `EACCES`, point
 npm at a directory you own instead of using `sudo`:
 
 ```bash

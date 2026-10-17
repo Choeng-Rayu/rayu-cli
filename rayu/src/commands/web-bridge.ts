@@ -66,12 +66,13 @@ const call: LocalCommandCall = async (args, context) => {
   // --- status ---------------------------------------------------------------
   if (arg === 'status') {
     if (!active) {
+      if (guest?.status === 'starting') return { type: 'text', value: 'Creating a Studio pairing QR code…' }
       if (guest?.status === 'waiting') return { type: 'text', value: `Waiting for Studio approval. Scan or open ${guest.url}` }
       if (guest?.status === 'error') return { type: 'text', value: `Web bridge pairing failed: ${guest.error}` }
       return {
         type: 'text',
         value:
-          'Web bridge: disconnected\nUse "/web-bridge" to connect this session to Rayu Studio.',
+          'Web bridge: disconnected\nUse "/web-bridge" to connect with your Rayu account, or "/web-bridge pair" to connect with a QR code.',
       }
     }
     return {
@@ -103,6 +104,12 @@ const call: LocalCommandCall = async (args, context) => {
 
   // --- connect --------------------------------------------------------------
   if (active) {
+    if (arg === 'pair') {
+      return {
+        type: 'text',
+        value: 'Web bridge is already active. Run "/web-bridge off", then "/web-bridge pair" to connect with a QR code.',
+      }
+    }
     return {
       type: 'text',
       value: isUsable(state.webBridgeConnection)
@@ -134,6 +141,7 @@ const call: LocalCommandCall = async (args, context) => {
           qr,
           pairing.url,
           '',
+          `QR code expires at ${new Date(pairing.expiresAt).toLocaleTimeString()}. Run "/web-bridge pair" again after it expires.`,
           'This grants Web Bridge control for this worker session only; it does not sign the worker into Rayu.',
           'Use "/web-bridge status" to check, or "/web-bridge off" to cancel.',
         ].join('\n'),
@@ -146,6 +154,7 @@ const call: LocalCommandCall = async (args, context) => {
     }
   }
 
+  stopGuestPairing()
   context.setAppState(s => ({
     ...s,
     webBridgeActive: true,
@@ -161,6 +170,7 @@ const call: LocalCommandCall = async (args, context) => {
       'approve tool calls, and interrupt turns from your browser.',
       '',
       'The connection lasts for this session only. Use "/web-bridge off" to stop it.',
+      'To connect with a QR code instead, run "/web-bridge off", then "/web-bridge pair".',
     ].join('\n'),
   }
 }
@@ -168,7 +178,7 @@ const call: LocalCommandCall = async (args, context) => {
 const webBridge = {
   type: 'local',
   name: 'web-bridge',
-  description: 'Drive this CLI session from Rayu Studio',
+  description: 'Connect to Rayu Studio with your account or a QR code [pair|status|off]',
   // Pointless outside an interactive session: the bridge's whole purpose is to relay a
   // live REPL, and a one-shot `--print` run has finished before a browser could attach.
   supportsNonInteractive: false,

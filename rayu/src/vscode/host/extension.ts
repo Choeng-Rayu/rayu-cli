@@ -325,6 +325,8 @@ export function activate(context: vscode.ExtensionContext): void {
   let sidebar: ChatSurface | undefined
   let surfaces: SurfaceRegistry
   let webBridge: { entry: SessionEntry; handle: VSCodeWebBridge } | null = null
+  let pairingEntry: SessionEntry | null = null
+  let webBridgeCommandGeneration = 0
 
   // Cards are dismissed, never auto-answered, when they stop being answerable. See
   // permissionRouter.ts: fabricating a denial would reject a tool the user was
@@ -669,6 +671,13 @@ export function activate(context: vscode.ExtensionContext): void {
       // Retired — evicted for capacity, or explicitly closed. Close its tab before
       // its engine goes away, and drop its review records. Idempotent.
       onRetire: entry => {
+        if (webBridge?.entry.key === entry.key || pairingEntry?.key === entry.key) {
+          webBridgeCommandGeneration++
+          webBridge?.handle.stop()
+          webBridge = null
+          pairingEntry = null
+          stopGuestPairing()
+        }
         if (attachedFor(entry.key)) detachAttachment(null, false)
         surfaces.closePanel(entry.key)
         review.store.clear(entry.key)
@@ -893,6 +902,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   async function connectWebBridge(entry: SessionEntry): Promise<void> {
+    if (!registry.has(entry.key)) return
     webBridge?.handle.stop()
     const handle = new VSCodeWebBridge(entry.session, entry.permissions, engineCwd, state => {
       if (state === 'connected') {
@@ -902,7 +912,9 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
     webBridge = { entry, handle }
-    if (!(await handle.connect())) {
+    const connected = await handle.connect()
+    if (webBridge?.handle !== handle) return
+    if (!connected) {
       handle.stop()
       webBridge = null
       void vscode.window.showErrorMessage('Studio Remote could not obtain a bridge credential. Retry /web-bridge.')
@@ -920,22 +932,26 @@ export function activate(context: vscode.ExtensionContext): void {
       const pending = guestPairingStatus()
       const text = webBridge
         ? `Studio Remote: ${webBridge.handle.state}`
-        : pending?.status === 'waiting'
-          ? `Waiting for Studio approval: ${pending.url}`
-          : pending?.status === 'error'
-            ? `Studio pairing failed: ${pending.error}`
-            : 'Studio Remote is off. Run /web-bridge to connect.'
+        : pending?.status === 'starting'
+          ? 'Creating a Studio pairing QR code…'
+          : pending?.status === 'waiting'
+            ? `Waiting for Studio approval: ${pending.url}`
+            : pending?.status === 'error'
+              ? `Studio pairing failed: ${pending.error}`
+              : 'Studio Remote is off. Run /web-bridge to connect.'
       void vscode.window.showInformationMessage(text)
       return
     }
-    if (command === 'off') {
+    if (command === 'off' || command === 'stop' || command === 'disconnect') {
+      webBridgeCommandGeneration++
       webBridge?.handle.stop()
       webBridge = null
+      pairingEntry = null
       stopGuestPairing()
       void vscode.window.showInformationMessage('Studio Remote disconnected.')
       return
     }
-    if (command !== '' && command !== 'on' && command !== 'pair') {
+    if (command !== '' && command !== 'on' && command !== 'connect' && command !== 'pair') {
       void vscode.window.showErrorMessage('Usage: /web-bridge [status|off|pair]')
       return
     }
@@ -943,17 +959,27 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage(`Studio Remote is ${webBridge.handle.state}.`)
       return
     }
+    const commandGeneration = ++webBridgeCommandGeneration
+    pairingEntry = entry
     const token = command === 'pair' ? null : await getAccessTokenForHost()
+    if (commandGeneration !== webBridgeCommandGeneration || !registry.has(entry.key)) return
     if (token) {
+      stopGuestPairing()
+      pairingEntry = null
       await connectWebBridge(entry)
       return
     }
     webBridge?.handle.stop()
     webBridge = null
     stopGuestPairing()
+    pairingEntry = entry
     try {
       const pairing = await beginGuestPairing(
-        () => void connectWebBridge(entry),
+        () => {
+          if (!registry.has(entry.key)) { stopGuestPairing(); return }
+          pairingEntry = null
+          void connectWebBridge(entry)
+        },
         message => void vscode.window.showErrorMessage(`Studio pairing failed: ${message}`),
         {
           machineId: vscodeBridgeMachineId(engineCwd),
@@ -965,6 +991,7 @@ export function activate(context: vscode.ExtensionContext): void {
       )
       await showBridgePairingPanel(enginePath, pairing.url, pairing.expiresAt)
     } catch (error) {
+      if (!registry.has(entry.key) || (error instanceof Error && (error.name === 'AbortError' || error.message === 'Studio pairing was cancelled'))) return
       void vscode.window.showErrorMessage(`Could not start Studio pairing: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -1383,11 +1410,6 @@ export function activate(context: vscode.ExtensionContext): void {
         openSessionTab(key)
       },
       closeSession: (scope, key) => {
-        if (webBridge?.entry.key === key) {
-          webBridge.handle.stop()
-          webBridge = null
-          stopGuestPairing()
-        }
         // Close the MESSAGE key's tab: a sidebar row can close a conversation other
         // than its own binding. `registry.close` fires `onRetire`, which closes the
         // same tab idempotently — the explicit close keeps the tab from rendering a

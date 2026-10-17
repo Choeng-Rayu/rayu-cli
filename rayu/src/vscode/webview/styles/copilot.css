@@ -2058,6 +2058,45 @@ body {
   gap: var(--rc-gap);
 }
 
+/* ── ExitPlanMode plan approval ───────────────────────────────────────────── */
+
+/*
+ * A plan can be arbitrarily long, so the body scrolls rather than stretching the
+ * card past the composer — the same bound the question card places on its form.
+ * The card itself stays as tall as its content up to that cap.
+ */
+.rc-plan-card {
+  max-height: min(70vh, 620px);
+}
+
+.rc-plan-subtitle {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.rc-plan-body {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--rc-gap);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: var(--rc-radius);
+  background-color: var(--vscode-editorWidget-background);
+}
+
+.rc-plan-path {
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  overflow-wrap: anywhere;
+}
+
+/* The approved plan echoed in the transcript pill. Bounded with the pill, not the
+   card, so a long plan scrolls inside the expansion instead of growing the row. */
+.rc-plan-result {
+  max-height: 420px;
+  overflow: auto;
+}
+
 /* ── AskUserQuestion ─────────────────────────────────────────────────────── */
 
 .rc-question-card {

@@ -99,6 +99,55 @@ describe('PermissionRouter payload validation against engine outputSchema()', ()
     })
   })
 
+  test('ExitPlanMode surfaces the plan for the dedicated card and hides the raw input JSON', () => {
+    let shown: any = null
+    const plan = '## Implementation\n\n1. Fix the renderer\n2. Add tests'
+    const input = { plan, planFilePath: '.rayu/plans/session-a.md' }
+    let sentPayload: Record<string, unknown> | null = null
+    const control = new ControlClient(
+      frame => {
+        const value = frame as { type: string; response?: { response?: Record<string, unknown> } }
+        if (value.type === 'control_response') sentPayload = value.response?.response ?? null
+        return true
+      },
+      { onMessage() {}, onRequest() {}, onRequestCancelled() {}, onProtocolError() {} },
+    )
+    control.handleFrame({
+      type: 'control_request',
+      request_id: 'plan_request',
+      request: { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input, tool_use_id: 'plan_tool' },
+    })
+    const router = new PermissionRouter({ onShow: view => { shown = view }, onDismiss() {} })
+    router.present({
+      requestId: 'plan_request', subtype: 'can_use_tool',
+      request: { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input, tool_use_id: 'plan_tool' },
+    })
+
+    // The card renders the plan as markdown; the JSON dump of the whole plan must not
+    // leak through the generic label or the parameter body.
+    expect(shown.planApproval).toEqual({ plan, planFilePath: '.rayu/plans/session-a.md' })
+    expect(shown.label).toBe('')
+    expect(shown.parameters).toBe('')
+
+    // The decision contract is unchanged: allow echoes the input back for the engine.
+    router.resolve(control, 'plan_request', { kind: 'allow-once' })
+    expect(sentPayload).toMatchObject({
+      behavior: 'allow',
+      updatedInput: input,
+      decisionClassification: 'user_temporary',
+    })
+  })
+
+  test('an ExitPlanMode with an empty plan stays on the generic card', () => {
+    let shown: any = null
+    const router = new PermissionRouter({ onShow: view => { shown = view }, onDismiss() {} })
+    router.present({
+      requestId: 'empty_plan', subtype: 'can_use_tool',
+      request: { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input: { plan: '   ' }, tool_use_id: 'plan_tool_2' },
+    })
+    expect(shown.planApproval).toBeUndefined()
+  })
+
   test('allow-once validates against outputSchema()', () => {
     let sentPayload: Record<string, unknown> | null = null
     const control = new ControlClient(
