@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 
 import { builtInCommandNames } from '../src/commands.ts'
 import installGitHubApp from '../src/commands/install-github-app/index.ts'
+import modelImageGeneration from '../src/commands/model-image-generation/index.ts'
+import modelVideoGeneration from '../src/commands/model-video-generation/index.ts'
 import { projectRuntimeCommands } from '../src/runtime/catalog.ts'
 
 describe('Rayu command registry', () => {
@@ -66,5 +68,18 @@ describe('Rayu command registry', () => {
 
     expect(descriptor?.surface).toBe('terminal_only')
     expect(descriptor?.available).toBe(false)
+  })
+
+  test('the image and video model pickers are available in Rayucode', () => {
+    // Rayucode answers both with its own chooser, so they must not be listed as
+    // "does not have a Rayucode surface yet".
+    for (const descriptor of projectRuntimeCommands([
+      modelImageGeneration,
+      modelVideoGeneration,
+    ])) {
+      expect(descriptor.surface).toBe('panel')
+      expect(descriptor.available).toBe(true)
+      expect(descriptor.unavailableReason).toBeUndefined()
+    }
   })
 })

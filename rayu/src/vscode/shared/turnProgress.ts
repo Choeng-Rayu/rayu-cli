@@ -2,8 +2,9 @@
  * How a turn's progress READS. One module, both bundles.
  *
  * In `shared/` for the same reason `permissionModes.ts` is: both sides need it, and it
- * must be testable without stubbing the editor. Dependency-free except for type imports,
- * so it is safe in the BROWSER bundle.
+ * must be testable without stubbing the editor. Dependency-free except for type imports
+ * and the engine's import-free credits formatter (`utils/rayuRequestCharge.ts`, which the
+ * terminal's turn line uses too), so it is safe in the BROWSER bundle.
  *
  * ── THIS REPLACED FOUR SEPARATE DURATION FORMATTERS ────────────────────────────
  *
@@ -26,6 +27,7 @@ import type {
   TurnProgressView,
   TurnTokenUsageView,
 } from './webviewProtocol.js'
+import { rayuCreditsLabel } from '../../utils/rayuRequestCharge.js'
 
 /**
  * Compact duration: "45s", "7m 35s", "1h 2m".
@@ -163,4 +165,37 @@ export function describeCompletion(completion: TurnCompletionEntry): {
     case 'stopped':
       return { glyph: '\u25a0', text: `Stopped after ${duration}`, tone: 'neutral' }
   }
+}
+
+/**
+ * What a finished turn cost on the Rayu plan, e.g. `Credits: 443.76`, or `undefined`
+ * when the gateway charged nothing for it (a bring-your-own-key turn).
+ *
+ * The same label the terminal prints after a turn, from the same formatter, so the two
+ * front ends cannot describe one charge two ways.
+ */
+export function describeTurnCredits(
+  completion: TurnCompletionEntry,
+): { text: string; title: string } | undefined {
+  const credits = completion.credits
+  if (credits === undefined || !Number.isFinite(credits) || credits < 0) return undefined
+  return {
+    text: rayuCreditsLabel(credits),
+    // The unrounded figure, for a turn whose label reads "<0.01".
+    title: `Rayu credits charged for this turn: ${credits.toLocaleString(undefined, { maximumFractionDigits: 6 })}`,
+  }
+}
+
+/**
+ * The credits an engine `result` frame reports for its turn (`rayu_credits`), or
+ * `undefined` when it reports none — a turn with no Rayu-billed request, or an engine too
+ * old to say — or a value that is not a charge.
+ */
+export function creditsFromResultFrame(
+  message: Readonly<Record<string, unknown>> | undefined,
+): number | undefined {
+  const credits = message?.rayu_credits
+  return typeof credits === 'number' && Number.isFinite(credits) && credits >= 0
+    ? credits
+    : undefined
 }

@@ -15,6 +15,7 @@ import { extractOutputRedirections } from '../bash/commands.js'
 import { logForDebugging } from '../debug.js'
 import { AbortError, toError } from '../errors.js'
 import { logError } from '../log.js'
+import { orchestratorMainThreadDenial } from '../../orchestrator/mainThreadPolicy.js'
 import { SandboxManager } from '../sandbox/sandbox-adapter.js'
 import {
   getSettingSourceDisplayNameLowercase,
@@ -1074,6 +1075,11 @@ export async function checkRuleBasedPermissions(
 ): Promise<PermissionAskDecision | PermissionDenyDecision | null> {
   const appState = context.getAppState()
 
+  // A PreToolUse hook's allow must not let Orchestrator's main agent change
+  // files either (src/orchestrator/mainThreadPolicy.ts).
+  const orchestratorDenial = orchestratorMainThreadDenial(tool, input, context)
+  if (orchestratorDenial) return orchestratorDenial
+
   // 1a. Entire tool is denied by rule
   const denyRule = getDenyRuleForTool(appState.toolPermissionContext, tool)
   if (denyRule) {
@@ -1167,6 +1173,11 @@ export async function hasPermissionsToUseToolInner(
   }
 
   let appState = context.getAppState()
+
+  // Orchestrator's main agent delegates every change. Checked before step 0,
+  // which allows everything in that mode (src/orchestrator/mainThreadPolicy.ts).
+  const orchestratorDenial = orchestratorMainThreadDenial(tool, input, context)
+  if (orchestratorDenial) return orchestratorDenial
 
   // 0. fullManage and Orchestrator modes: allow everything unconditionally
   // without permission checks — EXCEPT tools that require user interaction

@@ -25,7 +25,7 @@ import type {
   ModelCatalogueView,
   ModelOptionView,
 } from '../../shared/webviewProtocol.js'
-import { SearchIcon } from './Icons.js'
+import { CheckIcon, SearchIcon } from './Icons.js'
 
 export interface ModelPickerListProps {
   catalogue: ModelCatalogueView
@@ -169,7 +169,7 @@ export function ModelPickerList({
                   <div className="rc-dropdown-item-header">
                     <span className="rc-dropdown-label">{option.label}</span>
                     {isCurrent ? (
-                      <span className="rc-dropdown-current">✓ Active</span>
+                      <span className="rc-dropdown-current"><CheckIcon size={10} /> Active</span>
                     ) : null}
                   </div>
                   {option.customerDescription ? (

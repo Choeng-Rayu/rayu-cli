@@ -11,6 +11,9 @@ import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
 import type { AppState } from '../../../state/AppStateStore.js';
 import { AGENT_TOOL_NAME } from '../../../tools/AgentTool/constants.js';
+import { ORCHESTRATOR_PAID_FEATURE } from '../../../constants/orchestrator.js';
+import { isPaidFeatureLocked } from '../../../services/rayuAuth/paidFeatureGate.js';
+import { toolMatchesName } from '../../../Tool.js';
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants.js';
 import type { AllowedPrompt } from '../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
 import { TEAM_CREATE_TOOL_NAME } from '../../../tools/TeamCreateTool/constants.js';
@@ -46,32 +49,56 @@ import type { PastedContent } from '../../../utils/config.js';
 import type { ImageDimensions } from '../../../utils/imageResizer.js';
 import { maybeResizeAndDownsampleImageBlock } from '../../../utils/imageResizer.js';
 import { cacheImagePath, storeImage } from '../../../utils/imageStore.js';
-type ResponseValue = 'yes-bypass-permissions' | 'yes-accept-edits' | 'yes-accept-edits-keep-context' | 'yes-default-keep-context' | 'yes-resume-auto-mode' | 'yes-auto-clear-context' | 'ultraplan' | 'no';
+type ResponseValue = 'yes-orchestrate' | 'yes-bypass-permissions' | 'yes-accept-edits' | 'yes-accept-edits-keep-context' | 'yes-default-keep-context' | 'yes-resume-auto-mode' | 'yes-auto-clear-context' | 'ultraplan' | 'no';
+
+/**
+ * Whether the dialog offers "approve and orchestrate". Orchestrator delegates
+ * through the Agent tool and is a paid feature (the gate /orchestrator uses); a
+ * worker's own plan approval stays a plain approval, because Orchestrator is a
+ * session-wide role for the main agent.
+ */
+export function canOfferOrchestrate({
+  isWorker,
+  tools
+}: {
+  isWorker: boolean;
+  tools: ReadonlyArray<{
+    name: string;
+    aliases?: string[];
+  }> | undefined;
+}): boolean {
+  return !isWorker && (tools ?? []).some(t => toolMatchesName(t, AGENT_TOOL_NAME)) && !isPaidFeatureLocked(ORCHESTRATOR_PAID_FEATURE);
+}
+
+/**
+ * Prompt-based permission rules requested by the plan, without a mode change.
+ * Only added when classifier permissions are enabled (Ant-only).
+ */
+export function buildPromptRuleUpdates(allowedPrompts?: AllowedPrompt[]): PermissionUpdate[] {
+  if (!isClassifierPermissionsEnabled() || !allowedPrompts || allowedPrompts.length === 0) {
+    return [];
+  }
+  return [{
+    type: 'addRules',
+    rules: allowedPrompts.map(p => ({
+      toolName: p.tool,
+      ruleContent: createPromptRuleContent(p.prompt)
+    })),
+    behavior: 'allow',
+    destination: 'session'
+  }];
+}
 
 /**
  * Build permission updates for plan approval, including prompt-based rules if provided.
  * Prompt-based rules are only added when classifier permissions are enabled (Ant-only).
  */
 export function buildPermissionUpdates(mode: PermissionMode, allowedPrompts?: AllowedPrompt[]): PermissionUpdate[] {
-  const updates: PermissionUpdate[] = [{
+  return [{
     type: 'setMode',
     mode: toExternalPermissionMode(mode),
     destination: 'session'
-  }];
-
-  // Add prompt-based permission rules if provided (Ant-only feature)
-  if (isClassifierPermissionsEnabled() && allowedPrompts && allowedPrompts.length > 0) {
-    updates.push({
-      type: 'addRules',
-      rules: allowedPrompts.map(p => ({
-        toolName: p.tool,
-        ruleContent: createPromptRuleContent(p.prompt)
-      })),
-      behavior: 'allow',
-      destination: 'session'
-    });
-  }
-  return updates;
+  }, ...buildPromptRuleUpdates(allowedPrompts)];
 }
 
 /**
@@ -116,6 +143,7 @@ export function autoNameSessionFromPlan(plan: string, setAppState: (updater: (pr
 }
 export function ExitPlanModePermissionRequest({
   toolUseConfirm,
+  toolUseContext,
   onDone,
   onReject,
   workerBadge,
@@ -147,14 +175,19 @@ export function ExitPlanModePermissionRequest({
     isAutoModeAvailable,
     isBypassPermissionsModeAvailable
   } = toolPermissionContext;
+  const showOrchestrate = canOfferOrchestrate({
+    isWorker: !!workerBadge,
+    tools: toolUseContext?.options.tools
+  });
   const options = useMemo(() => buildPlanApprovalOptions({
     showClearContext,
     showUltraplan,
+    showOrchestrate,
     usedPercent: showClearContext ? getContextUsedPercent(usage, mode) : null,
     isAutoModeAvailable,
     isBypassPermissionsModeAvailable,
     onFeedbackChange: setPlanFeedback
-  }), [showClearContext, showUltraplan, usage, mode, isAutoModeAvailable, isBypassPermissionsModeAvailable]);
+  }), [showClearContext, showUltraplan, showOrchestrate, usage, mode, isAutoModeAvailable, isBypassPermissionsModeAvailable]);
   function onImagePaste(base64Image: string, mediaType?: string, filename?: string, dimensions?: ImageDimensions, _sourcePath?: string) {
     const pasteId = nextPasteIdRef.current++;
     const newContent: PastedContent = {
@@ -332,7 +365,7 @@ export function ExitPlanModePermissionRequest({
     // The REPL will handle context clear and trigger a fresh query
     // Keep-context options skip this block and go through the normal flow below
     const isResumeAutoOption = RAYU_FEATURES.TRANSCRIPT_CLASSIFIER ? value === 'yes-resume-auto-mode' : false;
-    const isKeepContextOption = value === 'yes-accept-edits-keep-context' || value === 'yes-default-keep-context' || isResumeAutoOption;
+    const isKeepContextOption = value === 'yes-orchestrate' || value === 'yes-accept-edits-keep-context' || value === 'yes-default-keep-context' || isResumeAutoOption;
     if (value !== 'no') {
       autoNameSessionFromPlan(currentPlan, setAppState, !isKeepContextOption);
     }
@@ -418,6 +451,27 @@ export function ExitPlanModePermissionRequest({
       }));
       onDone();
       toolUseConfirm.onAllow(updatedInput, [], acceptFeedback);
+      return;
+    }
+
+    // Orchestrate: approve WITHOUT a mode change. The mode is still `plan`, so the
+    // tool's own call() performs the one canonical plan→Orchestrator switch
+    // (restoring stripped rules, settling auto state) and its result names it.
+    // buildPermissionUpdates cannot be used: it would externalize the internal
+    // Orchestrator mode to bypassPermissions.
+    if (value === 'yes-orchestrate') {
+      logEvent('tengu_plan_exit', {
+        planLengthChars: currentPlan.length,
+        outcome: value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        clearContext: false,
+        interviewPhaseEnabled: isPlanModeInterviewPhaseEnabled(),
+        planStructureVariant,
+        hasFeedback: !!acceptFeedback
+      });
+      setHasExitedPlanMode(true);
+      setNeedsPlanModeExitAttachment(true);
+      onDone();
+      toolUseConfirm.onAllow(updatedInput, buildPromptRuleUpdates(allowedPrompts), acceptFeedback);
       return;
     }
 
@@ -673,6 +727,7 @@ export function ExitPlanModePermissionRequest({
 export function buildPlanApprovalOptions({
   showClearContext,
   showUltraplan,
+  showOrchestrate = false,
   usedPercent,
   isAutoModeAvailable,
   isBypassPermissionsModeAvailable,
@@ -680,6 +735,8 @@ export function buildPlanApprovalOptions({
 }: {
   showClearContext: boolean;
   showUltraplan: boolean;
+  /** Offer "approve and orchestrate" (main agent, Agent tool available, entitled). */
+  showOrchestrate?: boolean;
   usedPercent: number | null;
   isAutoModeAvailable: boolean | undefined;
   isBypassPermissionsModeAvailable: boolean | undefined;
@@ -704,6 +761,16 @@ export function buildPlanApprovalOptions({
         value: 'yes-accept-edits'
       });
     }
+  }
+
+  // First keep-context choice: delegate the plan to parallel workers. A
+  // confirmed plan has always been meant to enter Orchestrator mode; this makes
+  // that an explicit, visible choice instead of a silent fallback.
+  if (showOrchestrate) {
+    options.push({
+      label: 'Yes, and orchestrate with parallel workers',
+      value: 'yes-orchestrate'
+    });
   }
 
   // Slot 2: keep-context with elevated mode (same priority: auto > bypass > edits).

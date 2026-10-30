@@ -16,6 +16,15 @@
  *   extension.js  node, CJS   the extension host. `vscode` external.
  *   webview.js    browser     the React UI, loaded in the webview.
  *
+ * PLATFORM VSIXs (`--target`)
+ * `bun run build:vscode` alone produces the UNIVERSAL VSIX, whose engine is engine.mjs
+ * on the editor's own Node. `--target <id>` (repeatable; `all` = every platform plus
+ * universal; table in scripts/vscodeTargets.ts) produces one VSIX per platform whose
+ * engine is the SAME entrypoint compiled into an executable,
+ * `bin/rayucode-engine[.exe]`, with its own embedded runtime — so the engine no longer
+ * changes whenever VS Code upgrades Electron. The extension picks whichever engine its
+ * package contains (`src/vscode/host/engine/engineLaunch.ts`).
+ *
  * WHY THE ENGINE IS A SEPARATE PROCESS AND NOT A MODULE
  * It cannot run inside the extension host, because it owns process globals the
  * host cannot surrender: `process.on('SIGINT')` (print.ts), `process.exit()`
@@ -47,9 +56,22 @@ import {
   copyFileSync,
   writeFileSync,
   readFileSync,
+  chmodSync,
 } from 'node:fs'
-import { resolve } from 'node:path'
-import { sharedBuildOptions, EXTERNAL, zodEnglishLocalesOnlyPlugin } from './bundleConfig.ts'
+import { dirname, resolve } from 'node:path'
+import {
+  compileBuildOptions,
+  sharedBuildOptions,
+  EXTERNAL,
+  zodEnglishLocalesOnlyPlugin,
+} from './bundleConfig.ts'
+import {
+  engineBinaryName,
+  parseTargetArgs,
+  type BuildPlan,
+  type VscodeTarget,
+} from './vscodeTargets.ts'
+import { fetchRipgrep } from './fetchRipgrep.ts'
 import pkg from '../package.json' with { type: 'json' }
 
 const ROOT = resolve(import.meta.dir, '..')
@@ -84,6 +106,25 @@ const ICON_PNG = 'src/vscode/assets/icon.png'
 const SPRITE_GOOSE = 'src/vscode/assets/sprite-goose.png'
 const README = 'src/vscode/README.md'
 const CHANGELOG = 'src/vscode/CHANGELOG.md'
+// VS Code's own icon font, so the webviews use the same icons as the editor around
+// them. The font is CC-BY-4.0, so its attribution ships beside it.
+const CODICONS_DIR = 'node_modules/@vscode/codicons/dist'
+const CODICONS_NOTICE = [
+  'codicon.ttf and codicon.css are from @vscode/codicons (https://github.com/microsoft/vscode-codicons),',
+  'Copyright (c) Microsoft Corporation, licensed under the Creative Commons Attribution 4.0',
+  'International license (https://creativecommons.org/licenses/by/4.0/). Not modified.',
+  '',
+].join('\n')
+
+/** The icon font and its stylesheet, under media/ where the webviews may read them. */
+function stageCodicons(stageDir: string): void {
+  for (const file of ['codicon.css', 'codicon.ttf']) {
+    const source = resolve(ROOT, CODICONS_DIR, file)
+    if (!existsSync(source)) fail(`${CODICONS_DIR}/${file} is missing; run bun install`)
+    copyFileSync(source, resolve(stageDir, 'media', file))
+  }
+  writeFileSync(resolve(stageDir, 'media/codicon-NOTICE.txt'), CODICONS_NOTICE)
+}
 
 function step(message: string): void {
   console.log(`\x1b[2m▸\x1b[0m ${message}`)
@@ -324,11 +365,26 @@ async function buildWebview(): Promise<void> {
 // is injected from rayu/package.json rather than maintained twice: two hand-edited
 // version numbers drift, and the one that drifts is always the one not being
 // looked at.
-function stagePackage(): string {
-  step('stage         → dist/vscode-stage/')
+//
+// The universal VSIX stages into dist/vscode-stage/ (tests read engine.mjs from there);
+// each platform VSIX stages into its own dist/vscode-stage-<target>/, so building every
+// target in one run never leaves the universal stage holding a native engine.
 
-  if (existsSync(STAGE_DIR)) rmSync(STAGE_DIR, { recursive: true, force: true })
-  mkdirSync(resolve(STAGE_DIR, 'media'), { recursive: true })
+/** What a staged VSIX runs as its engine. */
+type StagedEngine =
+  | { kind: 'script' }
+  | { kind: 'native'; target: VscodeTarget; binary: string; ripgrep: string }
+
+function stageDirFor(engine: StagedEngine): string {
+  return engine.kind === 'script' ? STAGE_DIR : `${STAGE_DIR}-${engine.target.id}`
+}
+
+function stagePackage(engine: StagedEngine): string {
+  const stageDir = stageDirFor(engine)
+  step(`stage         → ${stageDir.replace(`${ROOT}/`, '')}/`)
+
+  if (existsSync(stageDir)) rmSync(stageDir, { recursive: true, force: true })
+  mkdirSync(resolve(stageDir, 'media'), { recursive: true })
 
   const manifest = JSON.parse(
     readFileSync(resolve(ROOT, MANIFEST), 'utf8'),
@@ -336,45 +392,98 @@ function stagePackage(): string {
   manifest.version = pkg.version
 
   writeFileSync(
-    resolve(STAGE_DIR, 'package.json'),
+    resolve(stageDir, 'package.json'),
     `${JSON.stringify(manifest, null, 2)}\n`,
   )
 
   // The extension entrypoint sits at the staging root, matching `main`.
-  copyFileSync(resolve(OUT_DIR, 'extension.js'), resolve(STAGE_DIR, 'extension.js'))
-  // .mjs keeps the spawned ESM engine valid beside the CommonJS extension host.
-  copyFileSync(resolve(OUT_DIR, 'engine.mjs'), resolve(STAGE_DIR, 'engine.mjs'))
+  copyFileSync(resolve(OUT_DIR, 'extension.js'), resolve(stageDir, 'extension.js'))
+  stageEngine(engine, stageDir)
   // Webview assets go under media/, which is the only directory the panel's
   // `localResourceRoots` allows it to read.
-  copyFileSync(resolve(OUT_DIR, 'webview.js'), resolve(STAGE_DIR, 'media/webview.js'))
-  copyFileSync(resolve(OUT_DIR, 'webview.css'), resolve(STAGE_DIR, 'media/webview.css'))
-  copyFileSync(resolve(ROOT, ICON), resolve(STAGE_DIR, 'media/icon.svg'))
-  copyFileSync(resolve(ROOT, ICON_PNG), resolve(STAGE_DIR, 'media/icon.png'))
-  copyFileSync(resolve(ROOT, SPRITE_GOOSE), resolve(STAGE_DIR, 'media/sprite-goose.png'))
+  copyFileSync(resolve(OUT_DIR, 'webview.js'), resolve(stageDir, 'media/webview.js'))
+  copyFileSync(resolve(OUT_DIR, 'webview.css'), resolve(stageDir, 'media/webview.css'))
+  copyFileSync(resolve(ROOT, ICON), resolve(stageDir, 'media/icon.svg'))
+  copyFileSync(resolve(ROOT, ICON_PNG), resolve(stageDir, 'media/icon.png'))
+  copyFileSync(resolve(ROOT, SPRITE_GOOSE), resolve(stageDir, 'media/sprite-goose.png'))
+  stageCodicons(stageDir)
   if (existsSync(resolve(ROOT, README))) {
-    copyFileSync(resolve(ROOT, README), resolve(STAGE_DIR, 'README.md'))
+    copyFileSync(resolve(ROOT, README), resolve(stageDir, 'README.md'))
   }
   if (existsSync(resolve(ROOT, CHANGELOG))) {
-    copyFileSync(resolve(ROOT, CHANGELOG), resolve(STAGE_DIR, 'CHANGELOG.md'))
+    copyFileSync(resolve(ROOT, CHANGELOG), resolve(stageDir, 'CHANGELOG.md'))
   }
 
   // Without a .vscodeignore, vsce warns and may include stray files. Everything
   // shipped is already listed above, so this only guards against future additions.
   writeFileSync(
-    resolve(STAGE_DIR, '.vscodeignore'),
+    resolve(stageDir, '.vscodeignore'),
     ['*.map', '.vscodeignore', ''].join('\n'),
   )
 
-  return STAGE_DIR
+  return stageDir
+}
+
+/**
+ * Put the engine where the extension looks for it (`engine/engineLaunch.ts`).
+ *
+ * A platform VSIX carries the compiled engine INSTEAD of engine.mjs, never beside it:
+ * the extension prefers the binary whenever it exists, so a script next to it would be
+ * 20 MB nobody runs.
+ */
+function stageEngine(engine: StagedEngine, stageDir: string): void {
+  if (engine.kind === 'script') {
+    // .mjs keeps the spawned ESM engine valid beside the CommonJS extension host.
+    copyFileSync(resolve(OUT_DIR, 'engine.mjs'), resolve(stageDir, 'engine.mjs'))
+    return
+  }
+  const staged = resolve(stageDir, engineBinaryName(engine.target))
+  mkdirSync(dirname(staged), { recursive: true })
+  copyFileSync(engine.binary, staged)
+  // ripgrep beside it: Grep and Glob run `rg`, and the host points the engine at this
+  // copy (RAYU_RIPGREP_PATH) so search no longer depends on the user's PATH.
+  const rg = resolve(stageDir, `bin/rg${engine.target.exe}`)
+  copyFileSync(engine.ripgrep, rg)
+  // vsce keeps POSIX modes when packaging on Linux or macOS (never on Windows), and the
+  // extension restores a lost exec bit at activation as a second line of defence.
+  chmodSync(staged, 0o755)
+  chmodSync(rg, 0o755)
+}
+
+// ── stage 4b: macOS signatures ───────────────────────────────────────────────
+//
+// macOS will not run an arm64 executable whose signature is missing or broken, and
+// appending the engine to Bun's runtime can leave the runtime's signature invalid. So
+// on a macOS build host each darwin binary is verified and, if that fails, ad-hoc signed
+// (`codesign --sign -`) BEFORE packaging — signing rewrites the file. An ad-hoc signature
+// is enough for a file VS Code extracts itself, which carries no quarantine attribute;
+// notarization is a separate, later step. Off macOS there is no `codesign`, so the build
+// says so and the release workflow builds the darwin VSIXs on a macOS runner.
+function signForMacOS(stageDir: string, target: VscodeTarget): void {
+  if (!target.id.startsWith('darwin-')) return
+  if (process.platform !== 'darwin') {
+    console.log(`  ${target.id}: not code-signed (needs a macOS host); release builds sign on macOS`)
+    return
+  }
+  for (const file of [engineBinaryName(target), `bin/rg${target.exe}`]) {
+    const path = resolve(stageDir, file)
+    if (Bun.spawnSync(['codesign', '--verify', '--strict', path]).exitCode === 0) continue
+    const signed = Bun.spawnSync(['codesign', '--force', '--sign', '-', path], { stderr: 'pipe' })
+    if (signed.exitCode !== 0) fail(`codesign failed for ${file}:\n${signed.stderr.toString()}`)
+    console.log(`  ad-hoc signed ${file}`)
+  }
 }
 
 // ── stage 5: package the VSIX ────────────────────────────────────────────────
 //
 // `--no-dependencies` because everything is already bundled; without it vsce tries
-// to resolve a dependency tree the staging directory does not have.
-function packageVsix(stageDir: string): string {
-  const vsix = resolve(ROOT, `dist/rayucode-${pkg.version}.vsix`)
-  step(`package       → dist/rayucode-${pkg.version}.vsix`)
+// to resolve a dependency tree the staging directory does not have. A platform VSIX
+// passes `--target`, which records the platform in the package so the Marketplace
+// serves it only to matching installs (VS Code 1.61+).
+function packageVsix(stageDir: string, target?: VscodeTarget): string {
+  const name = `rayucode-${pkg.version}${target ? `-${target.id}` : ''}.vsix`
+  const vsix = resolve(ROOT, `dist/${name}`)
+  step(`package       → dist/${name}`)
 
   const vsce = resolve(ROOT, 'node_modules/.bin/vsce')
   if (!existsSync(vsce)) {
@@ -385,7 +494,14 @@ function packageVsix(stageDir: string): string {
   }
 
   const result = Bun.spawnSync(
-    [vsce, 'package', '--no-dependencies', '--out', vsix],
+    [
+      vsce,
+      'package',
+      '--no-dependencies',
+      ...(target ? ['--target', target.id] : []),
+      '--out',
+      vsix,
+    ],
     { cwd: stageDir, stdout: 'pipe', stderr: 'pipe' },
   )
 
@@ -401,27 +517,61 @@ function packageVsix(stageDir: string): string {
   return vsix
 }
 
+// ── stage 1b: the compiled engine, one per platform VSIX ─────────────────────
+//
+// The SAME entrypoint as engine.mjs (vscodeHost.ts) and the same build options
+// (`compileBuildOptions` spreads `sharedBuildOptions()`), compiled to an executable
+// that embeds its own runtime. So a platform VSIX runs exactly the engine the universal
+// one does, minus the dependency on whichever Node the editor happens to embed.
+async function buildNativeEngine(target: VscodeTarget): Promise<string> {
+  const outfile = resolve(OUT_DIR, `targets/${target.id}/rayucode-engine${target.exe}`)
+  step(`rayucode-engine ← ${ENGINE_ENTRY}  (${target.bunTarget})`)
+
+  const result = await Bun.build(
+    compileBuildOptions({ entry: ENGINE_ENTRY, bunTarget: target.bunTarget, outfile }),
+  )
+  if (!result.success) fail(`failed to compile ${ENGINE_ENTRY} for ${target.id}`, result.logs)
+  if (!existsSync(outfile)) fail(`the ${target.id} engine build reported success but wrote no ${outfile}`)
+
+  console.log(`  rayucode-engine${target.exe}  ${mb(Bun.file(outfile).size)}`)
+  return outfile
+}
+
 async function main(): Promise<void> {
   const started = Date.now()
+  let plan: BuildPlan
+  try {
+    plan = parseTargetArgs(process.argv.slice(2))
+  } catch (cause) {
+    fail(cause instanceof Error ? cause.message : String(cause))
+  }
 
   // A stale bundle from a previous shape of this build is worse than none: it
   // would be staged into the VSIX and shipped.
   if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true })
   mkdirSync(OUT_DIR, { recursive: true })
 
-  await buildEngine()
+  if (plan.universal) await buildEngine()
   await buildExtensionHost()
   await buildWebview()
-  const stageDir = stagePackage()
-  const vsix = packageVsix(stageDir)
 
-  const size = Bun.file(vsix).size
+  const vsixes: string[] = []
+  if (plan.universal) vsixes.push(packageVsix(stagePackage({ kind: 'script' })))
+  for (const target of plan.targets) {
+    const binary = await buildNativeEngine(target)
+    step(`rg            ← ripgrep-prebuilt (${target.rgTriple})`)
+    const ripgrep = await fetchRipgrep(target)
+    const stageDir = stagePackage({ kind: 'native', target, binary, ripgrep })
+    signForMacOS(stageDir, target)
+    vsixes.push(packageVsix(stageDir, target))
+  }
+
+  console.log(`\n\x1b[32m✓\x1b[0m built in ${((Date.now() - started) / 1000).toFixed(1)}s`)
+  for (const vsix of vsixes) {
+    console.log(`  ${vsix.replace(`${ROOT}/`, '')}  ${mb(Bun.file(vsix).size)}`)
+  }
   console.log(
-    `\n\x1b[32m✓\x1b[0m built in ${((Date.now() - started) / 1000).toFixed(1)}s\n` +
-      `  ${vsix.replace(`${ROOT}/`, '')}  ${mb(size)}\n` +
-      '  Install locally:  code --install-extension ' +
-      vsix.replace(`${ROOT}/`, '') +
-      '\n',
+    `  Install locally:  code --install-extension ${vsixes[0]?.replace(`${ROOT}/`, '')}\n`,
   )
 }
 

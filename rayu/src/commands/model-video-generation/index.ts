@@ -8,7 +8,7 @@ export default {
     const sel = getVideoModelSelection()
     return sel
       ? `Set the video generation model (currently ${sel})`
-      : 'Set the video generation model (default: NVIDIA/fal)'
+      : 'Set the video generation model (default: Rayu-hosted when signed in)'
   },
   load: () => import('./command.js'),
 } satisfies Command

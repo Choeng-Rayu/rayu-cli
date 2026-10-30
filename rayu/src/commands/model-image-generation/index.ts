@@ -8,7 +8,7 @@ export default {
     const sel = getImageModelSelection()
     return sel
       ? `Set the image generation/editing model (currently ${sel})`
-      : 'Set the image generation/editing model (default: NVIDIA)'
+      : 'Set the image generation/editing model (default: Rayu-hosted when signed in)'
   },
   load: () => import('./command.js'),
 } satisfies Command

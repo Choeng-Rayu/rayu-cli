@@ -21,7 +21,7 @@
  * the panel and types instead of after their first message.
  */
 import * as vscode from 'vscode'
-import { realpathSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { API_IMAGE_MAX_BASE64_SIZE, API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
@@ -51,8 +51,15 @@ import {
   getApiBaseUrlForHost,
   getAuthSnapshot,
   hasAccountSession,
-  signOutShared,
+  currentAccountUser,
 } from './auth/rayuAuthBridge.js'
+import { registerRayuAuthProvider } from './auth/rayuAuthProvider.js'
+import { registerCreditsStatusBar } from './account/creditsStatusBar.js'
+import { fetchRayuCredits } from '../../services/rayuAuth/rayuCredits.js'
+import { liveSignOutDeps, signOutRayucode } from './account/accountChild.js'
+import { removalPrompt, removeDevice } from './account/deviceRemoval.js'
+import { unregisterDevice } from '../../services/rayuAuth/rayuDevices.js'
+import type { EngineLaunch } from './engine/engineLaunch.js'
 import { signInFromEditor, type SignInOptions } from './auth/vscodeLogin.js'
 import {
   RAYU_FEEDBACK_MAX_MESSAGE,
@@ -64,6 +71,16 @@ import { beginGuestPairing, guestPairingStatus, stopGuestPairing } from '../../w
 import { resolveHostname } from '../../webBridge/client/index.js'
 import { VSCodeWebBridge, vscodeBridgeMachineId } from './webBridge/vscodeWebBridge.js'
 import { showBridgePairingPanel } from './webBridge/pairingPanel.js'
+import { setUpEngine } from './engine/engineSetup.js'
+import { registerSettingsPanel } from './settings/settingsPanel.js'
+import { SettingsController, engineInfoView } from './settings/settingsController.js'
+import { readSharedSettings, writeSharedSetting } from './settings/sharedSettings.js'
+import { readRayucodeSettings, writeRayucodeSetting } from './settings/rayucodeSettings.js'
+import { applySavedSetting } from './settings/engineRefresh.js'
+import { loadAccountView } from './account/accountService.js'
+import { liveAccountSources } from './account/accountSources.js'
+import { getRayuAccountPageUrl } from '../../services/rayuAuth/rayuSession.js'
+import { isSettingsSectionId } from '../shared/settingsProtocol.js'
 import {
   openReviewDiff,
   openReviewFile,
@@ -74,10 +91,36 @@ import type { AttachTargetFrame } from '../shared/connectProtocol.js'
 import {
   listAttachTargets,
   listProviderPresets,
+  refreshMediaModelOptions,
   refreshProviderCatalogue,
   saveProvider,
   validateProvider,
 } from './auth/providerSetup.js'
+import {
+  startHostedTelegramPairing,
+  telegramConnectStatus,
+  unlinkTelegram,
+  verifyByoTelegramToken,
+} from './auth/telegramSetup.js'
+// ── WHY THE HOSTED POLL READS THESE DIRECTLY ────────────────────────────────────
+//
+// The child-process rule in providerSetup.ts/telegramSetup.ts exists for imports
+// that drag in the engine graph (~19 MB). These three do not: `telegramHostedApi`
+// reaches `rayuSession` (already bundled here for `rayuFeedback`) plus
+// `telegramApi`, and `telegramConfig` reaches only fs/path/envUtils. Measured,
+// they add a few KB. Polling through an engine child instead would load the whole
+// 23 MB engine bundle every 1.5 s for one authenticated GET. The BYO poll uses the
+// same `telegramConfig` module to read the local link state — no extra weight and
+// no child per tick.
+import {
+  readTelegramConfig,
+  saveAutoAttach,
+  setLinkedBotUsername,
+  setLinkedChat,
+} from '../../telegram/telegramConfig.js'
+import { getHostedLink } from '../../telegram/telegramHostedApi.js'
+import { TelegramConnectController } from './integrations/telegramConnectController.js'
+import { githubIntegrationView, webBridgeView } from './integrations/integrationViews.js'
 import {
   attachToCliSession,
   toAttachableView,
@@ -95,8 +138,11 @@ import {
 import {
   applySelection,
   buildChooser,
+  currentSelectionValue,
   describeSelection,
+  isMediaModelTarget,
   parseModelSettingCommand,
+  type MediaModelSettingTarget,
   type ModelSettingCommand,
 } from './models/modelSettingCommands.js'
 import type {
@@ -109,6 +155,7 @@ import type {
   SessionListView,
   AttachmentView,
   ProviderSetupView,
+  TelegramConnectView,
   SessionSummaryView,
   ImageInputView,
   PromptDeliveryView,
@@ -274,9 +321,92 @@ export function activate(context: vscode.ExtensionContext): void {
   const version =
     (context.extension.packageJSON as { version?: string }).version ?? '0.0.0'
 
-  // `engine.mjs` is staged at the extension root by scripts/build-vscode.ts. It is
-  // spawned, never required, so it does not enter this bundle's import graph.
-  const enginePath = vscode.Uri.joinPath(context.extensionUri, 'engine.mjs').fsPath
+  // The engine — engine.mjs in the universal VSIX, the compiled bin/rayucode-engine in a
+  // platform VSIX, or the `rayucode.engine.path` override — is spawned, never required,
+  // so it does not enter this bundle's import graph. HOW it is spawned is resolved once,
+  // here, and shared by every engine and helper child.
+  const engineSetup = setUpEngine(context)
+  const engineLaunch = engineSetup.launch
+
+  // The Rayucode Settings tab (gear in the sidebar title bar, "Rayucode: Open Settings").
+  // Its state and handlers live in host/settings/; this is wiring only. The closures read
+  // `engineCwd`, `workspaceDir` and `registry`, declared further down — they run only once
+  // the tab sends a message, long after activation.
+  const settingsTab = registerSettingsPanel(context, post => new SettingsController({
+    post,
+    engineInfo: () => engineInfoView(engineSetup, version, `${process.platform}-${process.arch}`),
+    openExtensionSettings: () => {
+      void vscode.commands.executeCommand('workbench.action.openSettings', '@ext:RayuCode.rayucode')
+    },
+    general: {
+      readShared: () => readSharedSettings(engineLaunch, engineCwd),
+      writeShared: (key, value) => writeSharedSetting(engineLaunch, engineCwd, key, value),
+      readRayucode: readRayucodeSettings,
+      writeRayucode: writeRayucodeSetting,
+      hasWorkspace: () => workspaceDir !== undefined,
+      onSaved: (setting, value) => {
+        void applySavedSetting(setting, value, registry.all, {
+          isAttached: entry => Boolean(attachedFor(entry.key)),
+          prewarm: entry => void prewarmSession(entry),
+          publishPermissionMode: entry => {
+            surfaces.postToSession(entry.key, { type: 'setPermissionMode', mode: entry.session.currentPermissionMode })
+          },
+        })
+      },
+    },
+    account: {
+      load: () => loadAccountView(liveAccountSources()),
+      act: action => {
+        if (action === 'signIn') void vscode.commands.executeCommand(COMMANDS.signIn)
+        else if (action === 'useApiKey') void revealSidebar().then(() => openProviderSetupSurface(true))
+        else void runSignOut(resyncAllSurfaces, engineLaunch)
+      },
+      openLink: link => void vscode.env.openExternal(vscode.Uri.parse(getRayuAccountPageUrl(link))),
+      removeDevice: (deviceId, shown) => removeDevice(deviceId, shown, {
+        confirm: async device => {
+          const { message, detail } = removalPrompt(device)
+          return (await vscode.window.showWarningMessage(message, { modal: true, detail }, 'Remove')) === 'Remove'
+        },
+        unregister: async id => {
+          const removed = await unregisterDevice(id)
+          if (!removed) void vscode.window.showErrorMessage('Rayu could not remove that device. Try again later.')
+          return removed
+        },
+      }),
+    },
+    // `telegram`, `webBridge` and `workspaceDir` are declared further down; these run
+    // only once the tab is open.
+    integrations: {
+      view: () => ({
+        telegram: telegram.current,
+        webBridge: webBridgeView({
+          bridgeState: webBridge?.handle.state ?? null,
+          pairing: guestPairingStatus(),
+          signedIn: hasAccountSession(),
+        }),
+        github: githubIntegrationView(workspaceDir, existsSync),
+      }),
+      refreshTelegram: () => telegram.refreshStatus(),
+      // From Settings, a completed link restarts the conversation on screen.
+      telegramStartHosted: () => telegram.startHosted(null),
+      telegramStartByo: token => telegram.startByo(null, token),
+      telegramUnlink: () => telegram.unlink(),
+      webBridge: action => {
+        void runWebBridgeCommand(action === 'connect' ? '' : action === 'pair' ? 'pair' : 'off', registry.active)
+      },
+      setUpGitHub: () => runGitHubSetupFromEditor(workspaceDir, {
+        signedIn: hasAccountSession(),
+        apiBaseUrl: getApiBaseUrlForHost(),
+        getAccessToken: getAccessTokenForHost,
+      }),
+    },
+  }))
+
+  // The credits left, in the status bar; clicking it opens Settings → Account.
+  const creditsStatus = registerCreditsStatusBar(context, {
+    enabled: () => getAuthSnapshot().oauthEnabled && hasAccountSession(),
+    fetch: () => fetchRayuCredits({ timeoutMs: 10_000 }),
+  })
 
   /**
    * Provider setup surface state, owned by the host.
@@ -296,6 +426,27 @@ export function activate(context: vscode.ExtensionContext): void {
     connectedProviderId: null,
     connectedModel: null,
   }
+
+  /**
+   * Telegram connect state and link polling, owned by the host — Settings → Integrations
+   * shows it (see integrations/telegramConnectController.ts). The callbacks below run on
+   * user actions, long after `surfaces` and `settingsTab` exist.
+   */
+  const telegram = new TelegramConnectController({
+    status: () => telegramConnectStatus({ launch: engineLaunch, cwd: engineCwd }),
+    startHosted: () => startHostedTelegramPairing({ launch: engineLaunch, cwd: engineCwd }),
+    verifyByo: token => verifyByoTelegramToken({ launch: engineLaunch, cwd: engineCwd }, token),
+    unlink: () => unlinkTelegram({ launch: engineLaunch, cwd: engineCwd }),
+    hostedLink: getHostedLink,
+    localLinkedChatId: () => readTelegramConfig().linkedChatId,
+    setLinkedChat,
+    setLinkedBotUsername,
+    onLinked: origin => restartTelegramLinkedSession(origin),
+    publish: connect => {
+      surfaces.broadcast({ type: 'setTelegramConnect', connect })
+      settingsTab.controller.integrationsChanged()
+    },
+  })
   const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   const activeFile = vscode.window.activeTextEditor?.document.uri
   // Never use the installed extension directory as a conversation cwd. In an empty
@@ -357,7 +508,7 @@ export function activate(context: vscode.ExtensionContext): void {
     providerSetup = { ...providerSetup, busy: true, busyMessage: 'Loading providers…' }
     surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
 
-    const outcome = await listProviderPresets({ enginePath, cwd: engineCwd })
+    const outcome = await listProviderPresets({ launch: engineLaunch, cwd: engineCwd })
     providerSetup = {
       ...providerSetup,
       busy: false,
@@ -366,6 +517,40 @@ export function activate(context: vscode.ExtensionContext): void {
       error: outcome.ok ? null : (outcome.error ?? 'Could not load providers.'),
     }
     surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
+  }
+
+  /**
+   * A link just completed: remember this conversation and restart its engine.
+   *
+   * ── WHY THE REMEMBERED cwd AND SESSION ID ARE THE ONES THAT MATTER ─────────────
+   *
+   * `useTelegramBridge`'s auto-attach check accepts the memory when either the
+   * session id matches the child's `getSessionId()` OR the remembered cwd matches
+   * its `getOriginalCwd()`:
+   *
+   *  - the child computes `getOriginalCwd()` as
+   *    `realpathSync(process.cwd()).normalize('NFC')` (src/bootstrap/state.ts);
+   *  - it is spawned with `entry.session.workingDirectory` as its cwd
+   *    (engineProcess.ts), so `process.cwd()` is that same path;
+   *  - `normalizeCwdForAttachLookup` is exactly realpathSync + NFC-normalize, with
+   *    the same fallback.
+   *
+   * The restart RESUMES the conversation (`restartEngineWithResume`), so its session id
+   * is kept and nothing the user wrote is lost; a fresh child reads telegram.json, and no
+   * cache has to be invalidated in place. A turn in flight is not interrupted: that
+   * conversation attaches the next time its engine starts.
+   *
+   * `origin` is the conversation that asked, when one did; the Settings tab asks for
+   * the window, which means the conversation on screen.
+   */
+  function restartTelegramLinkedSession(origin: string | null): void {
+    const entry = (origin ? entryFor(origin) : undefined) ?? registry.active
+    saveAutoAttach(
+      entry.session.engineSessionId ?? '',
+      normalizeCwdForAttachLookup(entry.session.workingDirectory),
+    )
+    if (entry.session.isTurnRunning) return
+    void restartEngineWithResume(entry)
   }
 
   /**
@@ -471,7 +656,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let signInPending: Promise<void> | null = null
   const registry = new SessionRegistry(
     {
-      enginePath,
+      launch: engineLaunch,
       cwd: engineCwd,
       prepareStartup: waitForStartupPreparation,
       // Points the child's own lockfile scan at THIS window's editor connection. This is
@@ -600,6 +785,8 @@ export function activate(context: vscode.ExtensionContext): void {
         },
         onTurnCompleted: (turnId, completion) => {
           surfaces.postToSession(entry.key, { type: 'turnCompleted', turnId, completion })
+          // A finished turn may have spent credits (at most one read a minute).
+          void creditsStatus.refresh()
         },
         onThinking: thinking => {
           surfaces.postToSession(entry.key, { type: 'updateThinking', thinking })
@@ -621,6 +808,7 @@ export function activate(context: vscode.ExtensionContext): void {
         },
         onRateLimit: rateLimit => {
           surfaces.postToSession(entry.key, { type: 'setRateLimit', rateLimit })
+          void creditsStatus.refresh()
         },
         onEngineAuthStatus: status => {
           surfaces.postToSession(entry.key, { type: 'setEngineAuthStatus', status })
@@ -830,6 +1018,7 @@ export function activate(context: vscode.ExtensionContext): void {
       entry.session,
       entry.permissions,
       providerSetup,
+      telegram.current,
       modelChooser,
       ideContext,
       attachmentForEntry(entry),
@@ -917,6 +1106,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!registry.has(entry.key)) return
     webBridge?.handle.stop()
     const handle = new VSCodeWebBridge(entry.session, entry.permissions, engineCwd, state => {
+      settingsTab.controller.integrationsChanged()
       if (state === 'connected') {
         void vscode.window.showInformationMessage('Rayucode is connected to Studio Remote.')
       } else if (state === 'error') {
@@ -929,6 +1119,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!connected) {
       handle.stop()
       webBridge = null
+      settingsTab.controller.integrationsChanged()
       void vscode.window.showErrorMessage('Studio Remote could not obtain a bridge credential. Retry /web-bridge.')
     }
   }
@@ -992,7 +1183,10 @@ export function activate(context: vscode.ExtensionContext): void {
           pairingEntry = null
           void connectWebBridge(entry)
         },
-        message => void vscode.window.showErrorMessage(`Studio pairing failed: ${message}`),
+        message => {
+          settingsTab.controller.integrationsChanged()
+          void vscode.window.showErrorMessage(`Studio pairing failed: ${message}`)
+        },
         {
           machineId: vscodeBridgeMachineId(engineCwd),
           hostname: resolveHostname(),
@@ -1001,7 +1195,8 @@ export function activate(context: vscode.ExtensionContext): void {
           sessionLabel: `Rayucode VS Code — ${engineCwd.split(/[\\/]/).filter(Boolean).pop() ?? 'workspace'}`,
         },
       )
-      await showBridgePairingPanel(enginePath, pairing.url, pairing.expiresAt)
+      await showBridgePairingPanel(engineLaunch, pairing.url, pairing.expiresAt, context.extensionUri)
+      settingsTab.controller.integrationsChanged()
     } catch (error) {
       if (!registry.has(entry.key) || (error instanceof Error && (error.name === 'AbortError' || error.message === 'Studio pairing was cancelled'))) return
       void vscode.window.showErrorMessage(`Could not start Studio pairing: ${error instanceof Error ? error.message : String(error)}`)
@@ -1070,7 +1265,13 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   let disposed = false
-  context.subscriptions.push({ dispose: () => { disposed = true } })
+  context.subscriptions.push({
+    dispose: () => {
+      disposed = true
+      // The extension host is going away; no surface can show the result.
+      telegram.dispose()
+    },
+  })
 
   /**
    * Model-catalogue refreshes. The rules for which conversation they answer are in
@@ -1086,7 +1287,7 @@ export function activate(context: vscode.ExtensionContext): void {
       refreshTargetKey = keyForSession(session) ?? ''
       return buildCatalogue(session)
     },
-    fetch: model => refreshProviderCatalogue({ enginePath, cwd: engineCwd }, model),
+    fetch: model => refreshProviderCatalogue({ launch: engineLaunch, cwd: engineCwd }, model),
     readPersistedModel: readActiveModel,
     // "On screen" now means any surface is showing the conversation: its tab, or
     // the sidebar while it is the active one.
@@ -1151,7 +1352,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (signInPending) return signInPending
     let succeeded = false
     const pending = (async () => {
-      if (!await runSignIn(resyncAllSurfaces, { enginePath, cwd: engineCwd })) return
+      if (!await runSignIn(resyncAllSurfaces, { launch: engineLaunch, cwd: engineCwd })) return
       invalidateRayuConfigCache()
       await refreshModels(undefined, entry.session)
       succeeded = true
@@ -1205,6 +1406,35 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   }
 
+  /**
+   * Fill an open image/video chooser with the live catalog.
+   *
+   * The list comes from the connect helper — the same on-open fetch, and the same order,
+   * as the terminal `/model_image_generation` and `/model_video_generation` pickers — so a
+   * model the admin added, renamed or reordered appears without a release. Only the newest
+   * request may write: a slow first fetch must not overwrite the answer to a later "Try
+   * again", and a chooser closed or switched in the meantime is left alone.
+   */
+  let mediaChooserRequest = 0
+  async function loadMediaModelChooser(target: MediaModelSettingTarget): Promise<void> {
+    const request = ++mediaChooserRequest
+    const outcome = await refreshMediaModelOptions({ launch: engineLaunch, cwd: engineCwd }, target)
+    const open = modelChooser
+    if (request !== mediaChooserRequest || open?.target !== target) return
+    setModelChooser({
+      ...open,
+      current: currentSelectionValue(target),
+      catalogue: outcome.ok
+        ? { options: outcome.catalogue ?? [], loading: false, error: null }
+        : {
+            options: [],
+            loading: false,
+            error: outcome.error ?? `Could not load the ${target} generation models.`,
+          },
+      note: outcome.ok ? outcome.notice : undefined,
+    })
+  }
+
   async function runModelSettingCommand(command: ModelSettingCommand, entry: SessionEntry): Promise<void> {
     switch (command.kind) {
       case 'usage':
@@ -1220,6 +1450,12 @@ export function activate(context: vscode.ExtensionContext): void {
         return
       }
       case 'choose':
+        if (isMediaModelTarget(command.target)) {
+          // Opens at once in its loading state; the live list follows.
+          setModelChooser(buildChooser(command.target))
+          await loadMediaModelChooser(command.target)
+          return
+        }
         // The catalogue is what the picker lists, and it may not have been fetched yet.
         void refreshModels(undefined, entry.session)
         setModelChooser(
@@ -1272,7 +1508,7 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
         if (hostCommand === 'logout') {
-          await runSignOut(resyncAllSurfaces)
+          await runSignOut(resyncAllSurfaces, engineLaunch)
           return
         }
         if (hostCommand === 'reload-plugins') {
@@ -1519,7 +1755,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // Rayucode persists them in its product profile, separate from the terminal CLI.
 
       listAttachable: async () => {
-        const outcome = await listAttachTargets({ enginePath, cwd: engineCwdRealpath }, engineCwdRealpath)
+        const outcome = await listAttachTargets({ launch: engineLaunch, cwd: engineCwdRealpath }, engineCwdRealpath)
         attachTargets = outcome.targets ?? []
         attachment = {
           ...attachment,
@@ -1620,7 +1856,7 @@ export function activate(context: vscode.ExtensionContext): void {
         surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
 
         const outcome = await validateProvider(
-          { enginePath, cwd: engineCwd },
+          { launch: engineLaunch, cwd: engineCwd },
           providerId,
           apiKey,
           baseURL,
@@ -1649,7 +1885,7 @@ export function activate(context: vscode.ExtensionContext): void {
         surfaces.broadcast({ type: 'setProviderSetup', setup: providerSetup })
 
         const outcome = await saveProvider(
-          { enginePath, cwd: engineCwd },
+          { launch: engineLaunch, cwd: engineCwd },
           providerId,
           apiKey,
           baseURL,
@@ -1691,13 +1927,17 @@ export function activate(context: vscode.ExtensionContext): void {
         prewarmSession(entry)
       },
 
+      telegramConnectOpen: (scope, open) => telegram.open(open),
+
+      telegramConnectStartHosted: scope => telegram.startHosted(scope.sessionKey),
+
+      telegramConnectStartByo: (scope, token) => telegram.startByo(scope.sessionKey, token),
+
+      telegramConnectUnlink: () => telegram.unlink(),
+
       setEffort: (scope, level) => {
         const entry = entryFor(scope.sessionKey)
         if (entry) entry.session.setEffort(level)
-      },
-      setThinking: (scope, enabled) => {
-        const entry = entryFor(scope.sessionKey)
-        if (entry) entry.session.setThinking(enabled)
       },
       mcpElicitationResponse: (scope, requestId, action, content) => {
         const entry = entryFor(scope.sessionKey)
@@ -1721,6 +1961,8 @@ export function activate(context: vscode.ExtensionContext): void {
         // rejected.
         await entry.session.setPermissionMode(next)
         surfaces.postToSession(entry.key, { type: 'setPermissionMode', mode: entry.session.currentPermissionMode })
+        // The chat's mode is also the Settings tab's "Permission mode for new conversations".
+        settingsTab.controller.rayucodePreferencesChanged()
       },
       setPermissionMode: async (scope, modeId: string) => {
         const entry = entryFor(scope.sessionKey)
@@ -1732,6 +1974,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         // See above: the authoritative mode is published whatever the outcome.
         surfaces.postToSession(entry.key, { type: 'setPermissionMode', mode: entry.session.currentPermissionMode })
+        settingsTab.controller.rayucodePreferencesChanged()
       },
       // Keep/undo go through the engine's OWN /keep and /undo commands, which is the
       // mechanism `utils/pendingFileChanges.ts` implements for the CLI. The
@@ -1767,10 +2010,14 @@ export function activate(context: vscode.ExtensionContext): void {
         // prewarm target the conversation the sign-in surface is bound to.
         await signInToRayucode(entryFor(scope.sessionKey) ?? registry.active)
       },
-      signOut: () => runSignOut(resyncAllSurfaces),
+      signOut: () => runSignOut(resyncAllSurfaces, engineLaunch),
       // Routed at the in-panel surface. This previously opened a dialog telling the
       // user to run /connect in a terminal, which is the gap this closes.
       openProviderSetup: () => openProviderSetupSurface(true),
+      openTelegramConnect: () => settingsTab.host.open('integrations'),
+      openSettings: (_scope, section) => {
+        settingsTab.host.open(isSettingsSectionId(section) ? section : undefined)
+      },
       findFiles: async (scope, query: string) => {
         try {
           // `buildFileSearchGlob` decides what to ask VS Code's own search for —
@@ -1898,6 +2145,15 @@ export function activate(context: vscode.ExtensionContext): void {
         setModelChooser(
           buildChooser('subagent', agentType, entry.session.subagentTypes),
         )
+      },
+      modelChooserRefresh: async () => {
+        const open = modelChooser
+        if (!open || !isMediaModelTarget(open.target)) return
+        setModelChooser({
+          ...open,
+          catalogue: { options: open.catalogue?.options ?? [], loading: true, error: null },
+        })
+        await loadMediaModelChooser(open.target)
       },
       modelChooserDismiss: () => setModelChooser(null),
       mcpToggle: async (scope, serverName, enabled) => {
@@ -2170,12 +2426,28 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   )
 
+  // Rayu in VS Code's Accounts menu. Its session carries no token (authProviderCore.ts).
+  const rayuAccounts = getAuthSnapshot().oauthEnabled
+    ? registerRayuAuthProvider(context, {
+        currentUser: currentAccountUser,
+        signIn: () => signInToRayucode(registry.active),
+        signOut: async () => {
+          // The Accounts menu has already asked "Sign out?", so no second dialog here.
+          await signOutRayucode(liveSignOutDeps(engineLaunch))
+          resyncAllSurfaces()
+        },
+      })
+    : null
+
   // Login/provider helpers run in child processes and write Rayucode's profile. Watch
   // that directory so their settled writes are reflected without reloading the window.
   context.subscriptions.push(watchSharedSession(() => {
     invalidateRayuConfigCache()
     // Sign-in state is window-global: every surface gets a fresh snapshot.
     resyncAllSurfaces()
+    settingsTab.controller.sessionChanged()
+    rayuAccounts?.refresh()
+    void creditsStatus.refresh({ force: true })
     // The auth file can arrive while the login child is still preparing providers.
     // signInToRayucode owns the final refresh and prewarm for that transaction.
     if (signInPending) return
@@ -2310,7 +2582,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await revealSidebar()
       await signInToRayucode(registry.active)
     }),
-    vscode.commands.registerCommand(COMMANDS.signOut, () => runSignOut(resyncAllSurfaces)),
+    vscode.commands.registerCommand(COMMANDS.signOut, () => runSignOut(resyncAllSurfaces, engineLaunch)),
   )
 
   // ── SEND FEEDBACK ─────────────────────────────────────────────────────────────
@@ -2439,6 +2711,7 @@ function buildState(
   session: ChatSession,
   permissions: PermissionRouter,
   providerSetup: ProviderSetupView,
+  telegramConnect: TelegramConnectView,
   modelChooser: ModelChooserView | null,
   ideContext: IdeContextView | null,
   attachment: AttachmentView,
@@ -2478,6 +2751,7 @@ function buildState(
     modelCatalogue: buildCatalogue(session),
     inference: session.currentInference,
     providerSetup,
+    telegramConnect,
     modelChooser,
     attachment,
     permissionMode: session.currentPermissionMode,
@@ -2729,7 +3003,7 @@ async function runSignIn(
 }
 
 /** Sign out and re-derive every surface — sign-out state is window-global. */
-async function runSignOut(resync: () => void): Promise<void> {
+async function runSignOut(resync: () => void, launch: EngineLaunch): Promise<void> {
   const CONFIRM = 'Sign out'
   const choice = await vscode.window.showWarningMessage(
     'Sign out of Rayucode?',
@@ -2738,7 +3012,8 @@ async function runSignOut(resync: () => void): Promise<void> {
   )
   if (choice !== CONFIRM) return
 
-  signOutShared()
+  // The same clean-up as the CLI's /logout (in an engine child), for Rayucode's profile.
+  await signOutRayucode(liveSignOutDeps(launch))
   resync()
   void vscode.window.showInformationMessage('Signed out of Rayu.')
 }

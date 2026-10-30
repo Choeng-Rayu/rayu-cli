@@ -19,6 +19,7 @@ import {
 import { getAgentModel } from '../../utils/model/agent.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
+  flushSessionStorage,
   getAgentTranscript,
   readAgentMetadata,
 } from '../../utils/sessionStorage.js'
@@ -59,6 +60,19 @@ export async function resumeAgentBackground({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
   const permissionMode = appState.toolPermissionContext.mode
+
+  // The sidechain transcript is written through a buffered queue that drains
+  // on a ~100ms timer, and recordSidechainTranscript returns as soon as the
+  // entries are enqueued. The worker's task transitions to completed from that
+  // same point, so resuming straight off the completion notification can read
+  // a file that does not exist yet or is missing its final assistant turn.
+  // Flush first: every entry for a finished worker was enqueued before it
+  // reported completion, so this makes the on-disk transcript complete.
+  try {
+    await flushSessionStorage()
+  } catch (error) {
+    logForDebugging(`Failed to flush session storage before resume: ${error}`)
+  }
 
   const [transcript, meta] = await Promise.all([
     getAgentTranscript(asAgentId(agentId)),

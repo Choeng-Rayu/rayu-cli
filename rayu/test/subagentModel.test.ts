@@ -126,6 +126,21 @@ test('getAgentModel: explicit tool override wins over subagent selection', async
   expect(m).toBe('qwen.qwen3-32b-v1:0')
 })
 
+test('getAgentModel: the planner runs on the Orchestrator model, not the instant model', async () => {
+  await setActiveOpenAIProvider()
+  const { PLANNER_SUBAGENT } = await import('../src/tools/AgentTool/built-in/subagents/planner.ts')
+  const { getAgentModel } = await import('../src/utils/model/agent.ts')
+  expect(
+    getAgentModel(PLANNER_SUBAGENT.model, 'meta/llama-3.3-70b-instruct', undefined, 'orchestrator', 'planner'),
+  ).toBe('meta/llama-3.3-70b-instruct')
+  // A saved per-agent choice still wins.
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg.setSubagentSelection('nvidia', 'nvidia/llama-3.1-nemotron-nano-8b-v1', 'planner')
+  expect(
+    getAgentModel(PLANNER_SUBAGENT.model, 'meta/llama-3.3-70b-instruct', undefined, 'orchestrator', 'planner'),
+  ).toBe('nvidia/llama-3.1-nemotron-nano-8b-v1')
+})
+
 test('getAgentModel: a PER-AGENT selection overrides an agent hardcoded to inherit', async () => {
   await setActiveOpenAIProvider()
   const cfg = await import('../src/utils/rayuConfig.ts')

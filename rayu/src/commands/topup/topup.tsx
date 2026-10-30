@@ -7,6 +7,7 @@ import { Box, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import { fetchRayuCredits } from '../../services/rayuAuth/rayuCredits.js'
+import { refreshRayuEntitlements } from '../../services/rayuAuth/rayuEntitlements.js'
 import {
   cancelTopupPurchase,
   clampTopupCredits,
@@ -126,6 +127,14 @@ function TopupFlow({
           // Re-read the balance from the server so the total shown is the real
           // one, not a locally added number.
           const fresh = await fetchRayuCredits()
+          // ALSO refresh the entitlements cache: the PAYG unlock
+          // (isPaidFeatureLocked → hasPositiveTopupBalance, and
+          // hasHostedModelAccess) reads `topupBalance` from THAT cache, which
+          // refreshes at most every 30s and only in the background. Without
+          // this awaited refresh, a just-purchased top-up would still refuse
+          // the first hosted generation with the pre-purchase "upgrade your
+          // plan" message.
+          await refreshRayuEntitlements().catch(() => {})
           const granted = status.credits ?? purchase.credits
           const total = fresh ? fresh.topupBalance : null
           finish(

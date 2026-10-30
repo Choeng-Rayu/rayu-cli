@@ -3,6 +3,7 @@ import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from 'src/tools/FileWriteTool/prompt.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from 'src/tools/NotebookEditTool/constants.js'
 import type { BuiltInAgentDefinition } from '../../loadAgentsDir.js'
+import { PLANNER_AGENT_TYPE } from '../../constants.js'
 import { getCwd } from '../../../../utils/cwd.js'
 import { detectStack } from '../../../../utils/stackDetector.js'
 import { buildStackAwarenessFragment } from '../stackAwareness.js'
@@ -25,7 +26,7 @@ ${SKILL_SEEKING}`
 
   const body = `## Your job
 1. Understand the objective, success criteria, constraints, and current repository state from the task packet.
-2. Research in parallel when useful: dispatch 2–5 \`Explore\` agents in one message with distinct read-only questions. Time-box discovery and stop once the plan is grounded.
+2. Research with your read-only tools (Read, Glob and Grep; WebFetch or WebSearch when the task depends on outside information). Batch independent searches into one message. Time-box discovery and stop once the plan is grounded.
 3. Preserve an established stack. For greenfield work, choose one concrete stack per layer and briefly justify it.
 4. Compare viable approaches, select one, and make every implementation-significant decision explicit.
 5. Decompose execution into bounded worker packets. Independent packets must own non-overlapping file areas; dependent packets must name their prerequisites.
@@ -55,7 +56,7 @@ Keep the result concise but decision-complete. General-purpose workers implement
 }
 
 export const PLANNER_SUBAGENT: BuiltInAgentDefinition = {
-  agentType: 'planner',
+  agentType: PLANNER_AGENT_TYPE,
   whenToUse:
     'Planning and research specialist for Orchestrator mode. Produces a decision-complete architecture and dependency-aware worker packets with non-overlapping file ownership. It never implements.',
   disallowedTools: [
@@ -66,6 +67,10 @@ export const PLANNER_SUBAGENT: BuiltInAgentDefinition = {
   ],
   source: 'built-in',
   baseDir: 'built-in',
+  // The plan decides the whole run, so it gets the Orchestrator's model. Without
+  // this, non-Anthropic providers ran it on the instant/small-fast model (the
+  // built-in default). /subagent_models still overrides it.
+  model: 'inherit',
   color: 'purple',
   criticalSystemReminder_EXPERIMENTAL:
     'You are the planner. Research and produce decision-complete worker packets; never modify the project or run implementation commands.',

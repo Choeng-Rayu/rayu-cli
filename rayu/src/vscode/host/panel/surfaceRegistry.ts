@@ -216,6 +216,11 @@ export class SurfaceRegistry {
    */
   private registerPanel(panel: vscode.WebviewPanel, sessionKey: string): SessionPanel {
     let surface: SessionPanel
+    // The Rayu mark on the tab, as on the Settings tab: new and restored tabs both pass here.
+    // The PNG rather than the Activity Bar's `icon.svg`: that SVG is monochrome
+    // (`currentColor`), which the Activity Bar recolours but an editor tab does not, so it
+    // can disappear on one theme. The coloured mascot reads on all four.
+    panel.iconPath = vscode.Uri.joinPath(this.deps.extensionUri, 'media', 'icon.png')
     const handlers: SessionPanelHandlers = {
       onMessage: (key, message) => this.deps.onMessage('panel', key, message),
       onClosed: key => {

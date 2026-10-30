@@ -44,7 +44,10 @@
   "activationEvents": [
     "onView:rayucode.chat",
     "onCommand:rayucode.newSession",
-    "onWebviewPanel:rayucode.sessionChat"
+    "onCommand:rayucode.openSettings",
+    "onWebviewPanel:rayucode.sessionChat",
+    "onWebviewPanel:rayucode.settings",
+    "onAuthenticationRequest:rayu"
   ],
   "//capabilities": "Declared rather than left to the default (which VS Code documents as the same `false`) so the choice is explicit and cannot be flipped by accident. The engine is an agent: it executes commands, edits files, starts the workspace's MCP servers and plugins, and loads the workspace .env (which can redirect API endpoints). None of that is safe in a folder the user has not trusted, so Rayucode stays disabled in Restricted Mode.",
   "capabilities": {
@@ -54,6 +57,35 @@
     }
   },
   "contributes": {
+    "//authentication": "Rayu in VS Code's Accounts menu (host/auth/rayuAuthProvider.ts). Its sessions carry a placeholder token, never Rayu's own: any extension may ask for a provider's session.",
+    "authentication": [
+      {
+        "id": "rayu",
+        "label": "Rayu"
+      }
+    ],
+    "//configuration": "Extension options only. Rayu's own settings (models, permissions, auto-compact, …) live in Rayu's settings files and are edited from the Rayucode Settings tab, so the terminal CLI sees the same values.",
+    "configuration": {
+      "title": "Rayucode",
+      "properties": {
+        "rayucode.engine.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Run this Rayu engine instead of the one bundled with Rayucode: a script (`.mjs`, `.cjs` or `.js`, run with the editor's own Node) or a compiled engine executable. Must be an absolute path. Leave empty to use the bundled engine. Takes effect after the window reloads."
+        },
+        "rayucode.engine.maxMemoryMB": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "default": null,
+          "minimum": 512,
+          "scope": "machine",
+          "markdownDescription": "The most memory each Rayu engine (one per open conversation) may use, in MB. When an engine reaches it, it restarts and your next message continues the conversation. Leave empty for a limit based on this machine's RAM. For the `engine.mjs` engine this caps the JavaScript heap. Takes effect after the window reloads."
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -78,6 +110,12 @@
         "title": "New Session",
         "category": "Rayucode",
         "icon": "$(add)"
+      },
+      {
+        "command": "rayucode.openSettings",
+        "title": "Open Settings",
+        "category": "Rayucode",
+        "icon": "$(gear)"
       },
       {
         "command": "rayucode.signIn",
@@ -114,6 +152,11 @@
           "command": "rayucode.newSession",
           "when": "view == rayucode.chat",
           "group": "navigation@1"
+        },
+        {
+          "command": "rayucode.openSettings",
+          "when": "view == rayucode.chat",
+          "group": "navigation@2"
         }
       ],
       "terminal/context": [

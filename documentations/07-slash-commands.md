@@ -17,8 +17,8 @@ command menu; start typing to filter. Press Enter to run.
 | `/model [model]` | — | Set the AI model (searchable picker across all connected providers). `/model <id>` sets directly. See [Models](./04-models.md). |
 | `/collaborator_model [collaborator] [default\|show]` | — | Set the model for collaborators (frontend/backend/mobile/security/deploy). With no name, applies to all; default is inherit from the main agent. |
 | `/model_subagent [AGENT] [default\|show]` | — | Set the model used by subagents (currently the main provider's instant model). |
-| `/model_image_generation` | — | Set the image generation/editing model (default: NVIDIA). |
-| `/model_video_generation` | — | Set the video generation model (default: NVIDIA/fal). |
+| `/model_image_generation` | — | Set the image generation/editing model (default: the first Rayu-hosted model in the admin order; Vertex Imagen when signed out). The list is fetched live when the picker opens. |
+| `/model_video_generation` | — | Set the video generation model (default: the first Rayu-hosted model in the admin order; fal.ai / Vertex Veo when signed out). The list is fetched live when the picker opens. |
 
 ---
 
@@ -138,9 +138,9 @@ command menu; start typing to filter. Press Enter to run.
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/generate-image [prompt]` | — | Generate an image from a text prompt (NVIDIA / Vertex Imagen). Requires NVIDIA API key or Vertex AI. |
-| `/image-editor [prompt]` | — | Edit an existing image with a text prompt (NVIDIA / Vertex Imagen). |
-| `/image-video [prompt]` | — | Generate a video from a text prompt (fal.ai / NVIDIA / Vertex Veo). |
+| `/generate-image [prompt]` | — | Generate an image from a text prompt (Rayu-hosted or Vertex Imagen). Requires a Rayu sign-in or Vertex AI. |
+| `/image-editor [prompt]` | — | Edit an existing image with a text prompt (Rayu-hosted or Vertex Imagen). |
+| `/image-video [prompt]` | — | Generate a video from a text prompt (Rayu-hosted, fal.ai, or Vertex Veo). |
 
 ---
 

@@ -124,6 +124,16 @@ export function hasAccountSession(): boolean {
 }
 
 /**
+ * Who is signed in with an account, for the Accounts menu: the user's id and names from
+ * the session file, never its tokens. Null when no account session exists.
+ */
+export function currentAccountUser(): { id: number; email: string | null; displayName: string | null } | null {
+  const user = readRayuSession()?.user
+  if (!user || typeof user.id !== 'number' || !hasRayuSession()) return null
+  return { id: user.id, email: user.email ?? null, displayName: user.displayName ?? null }
+}
+
+/**
  * Forget the session.
  *
  * This clears Rayucode's profile only. The terminal CLI keeps its own session.

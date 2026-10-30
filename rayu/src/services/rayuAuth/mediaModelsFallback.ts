@@ -16,11 +16,12 @@
 //
 // WHY IT EXISTS AT ALL: the one case of **no gateway** — `USE_RAYU_OAUTH` off, or
 // the user not signed in. Media generation in that mode runs entirely on the
-// user's OWN key (NVIDIA_API_KEY / FAL_KEY / GCP credentials) and never touches
-// Rayu infrastructure, so disabling the tools would be a pure regression for BYOK
+// user's OWN credentials (FAL_KEY / GCP credentials) and never touches Rayu
+// infrastructure, so disabling the tools would be a pure regression for BYOK
 // users with no security or correctness upside (Option B of the plan). It mirrors
-// the previous hardcoded registries one-for-one precisely so that a direct-key
-// user loses NO model they could use before.
+// the previous hardcoded registries entry-for-entry, minus the NVIDIA backends
+// (genai FLUX / Stable Diffusion / Kontext, NVCF Cosmos, SVD), which the CLI no
+// longer serves.
 //
 // Entries are tagged `source: 'fallback'` so the UI can say so.
 //
@@ -29,47 +30,6 @@
 import type { MediaCatalog, MediaModelEntry } from './mediaModels.js'
 
 const FALLBACK_IMAGE: MediaModelEntry[] = [
-  {
-    // Guidance-distilled: the NVIDIA endpoint requires cfg_scale<=0, 1-4 steps.
-    id: 'black-forest-labs/flux.1-schnell',
-    label: 'FLUX.1 Schnell',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'nvidia',
-    family: 'flux',
-    defaultParams: { cfg_scale: 0, steps: 4 },
-    isDefault: true,
-  },
-  {
-    // Uses real guidance, so a much higher cfg_scale and step count.
-    id: 'black-forest-labs/flux.1-dev',
-    label: 'FLUX.1 Dev',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'nvidia',
-    family: 'flux',
-    defaultParams: { cfg_scale: 3.5, steps: 50 },
-  },
-  {
-    id: 'stabilityai/stable-diffusion-3.5-large',
-    label: 'Stable Diffusion 3.5 Large',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'nvidia',
-    family: 'sd3',
-    defaultParams: { cfg_scale: 4.5, steps: 50, aspect_ratio: '1:1' },
-  },
-  {
-    // In-context editing: the client uploads the image as an NVCF asset first.
-    id: 'black-forest-labs/flux.1-kontext-dev',
-    label: 'FLUX.1 Kontext Dev (edit)',
-    mediaType: 'image',
-    capabilities: ['edit'],
-    backend: 'nvidia',
-    family: 'kontext',
-    defaultParams: { cfg_scale: 3.5, steps: 30 },
-    isDefault: true,
-  },
   {
     id: 'imagen-4.0-generate-001',
     label: 'Imagen 4',
@@ -108,59 +68,6 @@ const FALLBACK_IMAGE: MediaModelEntry[] = [
 ]
 
 const FALLBACK_VIDEO: MediaModelEntry[] = [
-  {
-    // Takes an OPTIONAL input image, so it serves both video operations — which
-    // is why the old hardcoded DEFAULT_IMAGE2VIDEO_MODEL was this same model.
-    id: 'nvidia/cosmos-predict1-5b',
-    label: 'Cosmos Predict1 5B',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'nvcf',
-    family: 'cosmos-predict1',
-    nvcfFunctionId: 'eef816a3-3940-413b-93c9-513ae29f34f9',
-    estimatedSeconds: 120,
-    isDefault: true,
-  },
-  {
-    id: 'nvidia/cosmos-transfer1-7b',
-    label: 'Cosmos Transfer1 7B',
-    mediaType: 'video',
-    capabilities: ['image2video'],
-    backend: 'nvcf',
-    family: 'cosmos-transfer1',
-    nvcfFunctionId: 'abb63707-47ee-497c-81a3-37e685bacdc6',
-    estimatedSeconds: 120,
-  },
-  {
-    id: 'nvidia/cosmos3-nano',
-    label: 'Cosmos3 Nano',
-    mediaType: 'video',
-    capabilities: ['text2video'],
-    backend: 'nvcf',
-    family: 'cosmos3-nano',
-    nvcfFunctionId: 'd09cd49d-d7f2-4361-928f-ea22af707249',
-    estimatedSeconds: 90,
-  },
-  {
-    // Legacy Triton format on the dedicated cosmos host — no NVCF function id.
-    id: 'nvidia/cosmos-1.0-7b-diffusion-text2world',
-    label: 'Cosmos 1.0 7B Text2World',
-    mediaType: 'video',
-    capabilities: ['text2video'],
-    backend: 'nvcf',
-    family: 'cosmos-legacy',
-    estimatedSeconds: 120,
-  },
-  {
-    id: 'stabilityai/stable-video-diffusion',
-    label: 'Stable Video Diffusion',
-    mediaType: 'video',
-    capabilities: ['image2video'],
-    backend: 'nvidia-svd',
-    family: 'svd',
-    estimatedSeconds: 60,
-    defaultParams: { cfg_scale: 1.8, motion_bucket_id: 127 },
-  },
   {
     id: 'fal-ai/kling-video/v2.1/standard/text-to-video',
     label: 'Kling Video 2.1 (text-to-video)',

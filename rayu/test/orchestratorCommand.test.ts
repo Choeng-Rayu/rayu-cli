@@ -1,23 +1,29 @@
 import { expect, test } from 'bun:test'
 import command from '../src/commands/orchestrator/index.ts'
+import { getDefaultAppState, type AppState } from '../src/state/AppStateStore.ts'
 
-test('/orchestrator delegates implementation and verification to bounded workers', async () => {
+test('/orchestrator enters the mode and frames the task; the rules come from the reminder', async () => {
   expect(command.name).toBe('orchestrator')
   expect(command.type).toBe('prompt')
 
-  const blocks = await command.getPromptForCommand('build an app', {} as never)
+  let state: AppState = getDefaultAppState()
+  const context = { getAppState: () => state, setAppState: (f: (s: AppState) => AppState) => { state = f(state) } }
+  const blocks = await command.getPromptForCommand('build an app', context as never)
   const text = blocks.map(block => block.text).join('\n')
 
+  expect(state.toolPermissionContext.mode).toBe('orchestrator')
   expect(text).toContain('build an app')
   expect(text).toContain('ORCHESTRATOR')
-  expect(text).toContain('planner')
-  expect(text).toContain('Explore')
-  expect(text).toContain('general-purpose')
-  expect(text).toContain('run_in_background:true')
-  expect(text).toContain('SendMessage')
-  expect(text).toMatch(/MUST NOT implement, edit files/i)
-  expect(text).toMatch(/exact non-overlapping file ownership/i)
-  expect(text).toMatch(/fresh general-purpose agents/i)
+  expect(text).toMatch(/rules in the system reminder/)
+  expect(text).toMatch(/Do not implement anything yourself/)
+  expect(text).toContain('/normal')
+  // The rules live in one place (src/orchestrator/reminder.ts), not in this prompt.
+  expect(text).not.toContain('run_in_background')
   expect(text).not.toContain('.rayu/swarm')
   expect(text).not.toContain('Collaborators')
+})
+
+test('/orchestrator without a task orchestrates what the conversation established', async () => {
+  const blocks = await command.getPromptForCommand('', {} as never)
+  expect(blocks.map(block => block.text).join('\n')).toMatch(/plan already established/)
 })

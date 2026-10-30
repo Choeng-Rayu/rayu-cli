@@ -2125,7 +2125,24 @@ function computeFlexBasis(
     ? MeasureMode.Exactly
     : MeasureMode.Undefined
   if (!isDefined(crossConstraint) && isDefined(availableCross)) {
-    crossConstraint = availableCross
+    // A child's cross-axis margins sit OUTSIDE its box, so the space it can
+    // occupy is the container's inner cross size minus those margins — this
+    // is exactly what the final layout does for stretch/AtMost at
+    // `childCrossSize = innerCrossSize - cMarginCross`. Measuring the basis
+    // at the full inner cross size instead measured wrapping content at a
+    // width it never gets in the layout pass (e.g. `marginX={1}`: measured
+    // at width 100, laid out at 98). If the content wraps to more lines at
+    // the real width, the stored basis height is too small, the parent's
+    // stretch pins that too-small height, and the inner column flex-shrinks
+    // its rows to fractional heights — rows overlap and text lines vanish
+    // (that is what hid a heading line and a whole theme option in the
+    // first-run ThemePicker).
+    const crossMargin = childMarginForAxis(
+      child,
+      isMainRow ? FlexDirection.Column : FlexDirection.Row,
+      ownerWidth,
+    )
+    crossConstraint = Math.max(0, availableCross - crossMargin)
     crossConstraintMode =
       crossMode === MeasureMode.Exactly && isStretchAlign(child)
         ? MeasureMode.Exactly

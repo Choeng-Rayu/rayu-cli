@@ -46,19 +46,33 @@ export interface ChatSurface {
   dispose(): void
 }
 
+/** Which React app a page mounts: the chat (sidebar and tabs) or the Settings tab. */
+export type WebviewApp = 'chat' | 'settings'
+
 /**
  * Panel/container HTML with a fresh nonce and the same CSP as the sidebar.
  *
  * The CSP is byte-identical in policy to the sidebar's current one — see the note in
- * the body for why each allowance is the narrowest that still works.
+ * the body for why each allowance is the narrowest that still works. Every page —
+ * sidebar, session tabs, the Settings tab — is built here, so they cannot drift apart.
  */
-export function renderWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
+export function renderWebviewHtml(
+  webview: vscode.Webview,
+  extensionUri: vscode.Uri,
+  options: { app?: WebviewApp } = {},
+): string {
+  const app = options.app ?? 'chat'
   const nonce = createNonce()
   const scriptUri = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, 'media', 'webview.js'),
   )
   const styleUri = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, 'media', 'webview.css'),
+  )
+  // VS Code's own icon font (staged by build-vscode.ts), so the panel's icons are the
+  // editor's. `font-src` below already allows the webview's own resources.
+  const codiconUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(extensionUri, 'media', 'codicon.css'),
   )
   // Staged as media/sprite-goose.png (see build-vscode.ts) — the animated
   // per-status avatar's source atlas. `webview.css` is a static file with no
@@ -92,12 +106,13 @@ export function renderWebviewHtml(webview: vscode.Webview, extensionUri: vscode.
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link href="${codiconUri}" rel="stylesheet" />
 <link href="${styleUri}" rel="stylesheet" />
 <style>:root { --rc-sprite-goose-url: url("${spriteUri}"); }</style>
-<title>Rayucode</title>
+<title>${app === 'settings' ? 'Rayucode Settings' : 'Rayucode'}</title>
 </head>
 <body>
-<div id="root"></div>
+<div id="root" data-app="${app}"></div>
 <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
 </body>
 </html>`

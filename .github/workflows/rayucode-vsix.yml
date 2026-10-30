@@ -1,0 +1,152 @@
+# Rayucode VS Code extension — builds, smoke-tests and (optionally) publishes every VSIX.
+#
+#   universal       engine.mjs on the editor's own Node (win32-arm64, linux-armhf, …)
+#   linux-x64 linux-arm64 alpine-x64 alpine-arm64 darwin-x64 darwin-arm64 win32-x64
+#                   the same engine compiled with Bun into bin/rayucode-engine, plus bin/rg
+#
+# Lives at the REPOSITORY root because that is the only place GitHub runs workflows from;
+# every step works inside rayu/ (see `defaults`). Build and test commands are the ones in
+# rayu/AGENTS.md; the platform table is rayu/scripts/vscodeTargets.ts.
+#
+# Never packages on Windows: a VSIX packed there loses the executable bit on bin/*.
+#
+# Publishing is opt-in per store: add a VSCE_PAT secret for the VS Code Marketplace and/or
+# an OVSX_PAT secret for Open VSX. Without them, a tag run only attaches the VSIXs to the
+# GitHub release.
+name: Rayucode VSIX
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: rayu
+
+env:
+  # Pinned: the compiled engine embeds this exact runtime. Keep in step with @types/bun.
+  BUN_VERSION: 1.3.14
+
+jobs:
+  build-linux:
+    name: Build (universal, linux, alpine, win32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck:ci
+      - name: Build the CLI bundle (the bundle tests compare against it)
+        run: bun run build
+      - name: Build VSIXs
+        run: >-
+          bun run build:vscode
+          --target universal
+          --target linux-x64 --target linux-arm64
+          --target alpine-x64 --target alpine-arm64
+          --target win32-x64
+      - name: VS Code tests (include the compiled linux-x64 engine end to end)
+        run: bun test test/vscode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-linux
+          path: rayu/dist/rayucode-*.vsix
+          if-no-files-found: error
+
+  build-macos:
+    name: Build (darwin, signed on macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Build darwin VSIXs (codesign --verify, ad-hoc sign when needed)
+        run: bun run build:vscode --target darwin-x64 --target darwin-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-darwin
+          path: rayu/dist/rayucode-*-darwin-*.vsix
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke ${{ matrix.target }}
+    needs: [build-linux, build-macos]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, runner: ubuntu-latest }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm }
+          - { target: darwin-arm64, runner: macos-14 }
+          # Intel macOS; GitHub's x64 macOS label after macos-13 was retired.
+          - { target: darwin-x64, runner: macos-15-intel }
+          - { target: win32-x64, runner: windows-latest }
+          - target: alpine-x64
+            runner: ubuntu-latest
+            container: alpine:3.20
+            # Bun's musl runtime links the C++ runtime, which VS Code's server needs on Alpine too.
+            setup: apk add --no-cache libstdc++ libgcc
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          path: rayu/dist
+          merge-multiple: true
+      - name: Smoke-test the ${{ matrix.target }} VSIX
+        shell: bash
+        run: |
+          vsix=$(ls dist/rayucode-*-${{ matrix.target }}.vsix)
+          if [ -n "${{ matrix.container }}" ]; then
+            bun run scripts/smoke-vscode-engine.ts "$vsix" --container "${{ matrix.container }}" --container-setup "${{ matrix.setup }}"
+          else
+            bun run scripts/smoke-vscode-engine.ts "$vsix"
+          fi
+
+  publish:
+    name: Publish
+    needs: smoke
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          path: rayu/dist
+          merge-multiple: true
+      - name: Attach the VSIXs to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rayu/dist/rayucode-*.vsix
+          prerelease: ${{ contains(github.ref_name, '-') }}
+      - name: Publish to the VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        run: node_modules/.bin/vsce publish --packagePath dist/rayucode-*.vsix
+      - name: Publish to Open VSX
+        if: env.OVSX_PAT != ''
+        run: |
+          for vsix in dist/rayucode-*.vsix; do
+            npx --yes ovsx publish "$vsix" --pat "$OVSX_PAT"
+          done

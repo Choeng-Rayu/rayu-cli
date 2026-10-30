@@ -1,14 +1,19 @@
 /**
- * `/subagent_models` and `/webfetch_model`, as Rayucode implements them.
+ * `/subagent_models`, `/webfetch_model`, `/model_image_generation` and
+ * `/model_video_generation`, as Rayucode implements them.
  *
  * ── WHY THE HOST OWNS THESE AT ALL ─────────────────────────────────────────────
  *
- * Both are `local-jsx` commands in the CLI — they render an Ink picker — so `main.tsx`
+ * All four are `local-jsx` commands in the CLI — they render an Ink picker — so `main.tsx`
  * removes them from a non-interactive engine, exactly as it removes `/login` and
  * `/connect`. The engine would answer "unknown command", so the panel has to provide the
  * surface. What it must NOT provide is a second definition of the settings: the parsing
  * below mirrors the CLI's grammar and the writes go through the CLI's own `rayuConfig`
  * setters, so there is one place each value lives.
+ *
+ * The image and video choosers list the media catalog, which this host cannot load itself
+ * (the catalog service would pull ~19 MB into `extension.js`). The host opens the chooser
+ * empty and the connect helper fetches the live list — see `refreshMediaModelOptions`.
  *
  * ── PARSING IS SPLIT FROM APPLYING, AND IS PURE ────────────────────────────────
  *
@@ -19,9 +24,13 @@
  */
 import {
   clearSubagentSelection,
+  getImageModelSelection,
   getSubagentSelection,
+  getVideoModelSelection,
   getWebFetchModelSelection,
+  setImageModelSelection,
   setSubagentSelection,
+  setVideoModelSelection,
   setWebFetchModelSelection,
 } from '../../../utils/rayuConfig.js'
 import {
@@ -55,7 +64,51 @@ const SUBAGENT_COST_TIP =
 const WEBFETCH_COST_TIP =
   'WebFetch summarizes fetched pages — a small/instant model is usually enough and cheaper.'
 
-export type ModelSettingTarget = 'subagent' | 'webfetch'
+export type ModelSettingTarget = 'subagent' | 'webfetch' | 'image' | 'video'
+
+/** The settings whose chooser lists the image/video generation catalog. */
+export type MediaModelSettingTarget = 'image' | 'video'
+
+export function isMediaModelTarget(
+  target: ModelSettingTarget,
+): target is MediaModelSettingTarget {
+  return target === 'image' || target === 'video'
+}
+
+/** The CLI command for each media setting. A Map, so `constructor` is not a command. */
+const MEDIA_COMMANDS = new Map<string, MediaModelSettingTarget>([
+  ['model_image_generation', 'image'],
+  ['model_video_generation', 'video'],
+])
+
+/**
+ * What the media settings fall back to when unset, worded as the terminal pickers word
+ * it: the tools take the first hosted model, in the admin's order, that can do the
+ * request.
+ */
+const MEDIA_DEFAULT_NOTE: Record<MediaModelSettingTarget, string> = {
+  image:
+    'Rayu-hosted when signed in (the first hosted model in the admin order that can do the request), else Vertex Imagen',
+  video:
+    'Rayu-hosted when signed in (the first hosted model in the admin order that matches the operation), else fal.ai or Vertex Veo',
+}
+
+const MEDIA_TIP: Record<MediaModelSettingTarget, string> = {
+  image:
+    'Used by /generate-image and /image-editor. Hosted models need no API key and are billed in Rayu credits per image.',
+  video:
+    'Used by /image-video. Hosted models need no API key and are billed in Rayu credits per second of video.',
+}
+
+const MEDIA_TITLE: Record<MediaModelSettingTarget, string> = {
+  image: 'Select an image generation model',
+  video: 'Select a video generation model',
+}
+
+const MEDIA_SUBJECT: Record<MediaModelSettingTarget, string> = {
+  image: 'Image generation model',
+  video: 'Video generation model',
+}
 
 /** What the user asked for. `choose` is the picker; the rest answer immediately. */
 export type ModelSettingCommand =
@@ -91,8 +144,14 @@ export function parseModelSettingCommand(
       ? 'subagent'
       : name === 'webfetch_model'
         ? 'webfetch'
-        : null
+        : (name && MEDIA_COMMANDS.get(name)) || null
   if (!target) return null
+
+  if (isMediaModelTarget(target)) {
+    // The CLI's media pickers take no sub-commands: any argument is ignored and the
+    // picker opens. Mirrored exactly, so the two products accept the same input.
+    return { kind: 'choose', target }
+  }
 
   if (target === 'webfetch') {
     const sub = (rest[0] ?? '').toLowerCase()
@@ -132,6 +191,8 @@ export function currentSelectionLabel(
   agentType?: string,
 ): string | null {
   if (target === 'webfetch') return getWebFetchModelSelection() ?? null
+  if (target === 'image') return getImageModelSelection() ?? null
+  if (target === 'video') return getVideoModelSelection() ?? null
   const selection = getSubagentSelection(agentType)
   return selection ? `${selection.model} (${selection.providerId})` : null
 }
@@ -142,6 +203,8 @@ export function currentSelectionValue(
   agentType?: string,
 ): string | null {
   if (target === 'webfetch') return getWebFetchModelSelection() ?? null
+  if (target === 'image') return getImageModelSelection() ?? null
+  if (target === 'video') return getVideoModelSelection() ?? null
   return getSubagentSelection(agentType)?.model ?? null
 }
 
@@ -150,15 +213,31 @@ export function defaultNoteFor(
   agentType?: string,
 ): string {
   if (target === 'webfetch') return WEBFETCH_DEFAULT_NOTE
+  if (isMediaModelTarget(target)) return MEDIA_DEFAULT_NOTE[target]
   return agentType ? SUBAGENT_AGENT_DEFAULT_NOTE : SUBAGENT_GLOBAL_DEFAULT_NOTE
 }
 
-/** The chooser surface for a bare command. */
+/**
+ * The chooser surface for a bare command.
+ *
+ * A media chooser opens with an empty, loading list of its own: the host fills it in once
+ * the connect helper has fetched the live catalog.
+ */
 export function buildChooser(
   target: ModelSettingTarget,
   agentType?: string,
   knownAgentTypes: readonly string[] = [],
 ): ModelChooserView {
+  if (isMediaModelTarget(target)) {
+    return {
+      target,
+      title: MEDIA_TITLE[target],
+      tip: MEDIA_TIP[target],
+      current: currentSelectionValue(target),
+      defaultNote: MEDIA_DEFAULT_NOTE[target],
+      catalogue: { options: [], loading: true, error: null },
+    }
+  }
   const agentTypes =
     target === 'subagent'
       ? getConfigurableAgentTypes(knownAgentTypes)
@@ -190,6 +269,11 @@ export function describeSelection(
       ? `WebFetch model: ${label}`
       : `WebFetch model: default (${WEBFETCH_DEFAULT_NOTE})`
   }
+  if (isMediaModelTarget(target)) {
+    return label
+      ? `${MEDIA_SUBJECT[target]}: ${label}`
+      : `${MEDIA_SUBJECT[target]}: default (${MEDIA_DEFAULT_NOTE[target]})`
+  }
   const subject = agentType ? `${agentType} agent` : 'all agents'
   return label
     ? `${subject} model: ${label}`
@@ -203,6 +287,9 @@ export function describeReset(
 ): string {
   if (target === 'webfetch') {
     return `WebFetch model reset to default (${WEBFETCH_DEFAULT_NOTE}).`
+  }
+  if (isMediaModelTarget(target)) {
+    return `${MEDIA_SUBJECT[target]} reset to default (${MEDIA_DEFAULT_NOTE[target]}).`
   }
   return agentType
     ? `${agentType} model reset to default (uses ${SUBAGENT_AGENT_DEFAULT_NOTE}).`
@@ -229,6 +316,8 @@ export function applySelection(
 ): string | null {
   if (value === null) {
     if (target === 'webfetch') setWebFetchModelSelection(undefined)
+    else if (target === 'image') setImageModelSelection(undefined)
+    else if (target === 'video') setVideoModelSelection(undefined)
     else clearSubagentSelection(agentType)
     return describeReset(target, agentType)
   }
@@ -237,6 +326,16 @@ export function applySelection(
   const providerId = separator === -1 ? undefined : value.slice(0, separator)
   const model = separator === -1 ? value : value.slice(separator + 1)
   if (!model) return null
+
+  if (isMediaModelTarget(target)) {
+    // A media id is routed by its own catalog entry, never by a provider prefix, and the
+    // media chooser never sends one — so a prefixed value is refused rather than stored
+    // as an id no catalog entry will ever match.
+    if (providerId !== undefined) return null
+    if (target === 'image') setImageModelSelection(model)
+    else setVideoModelSelection(model)
+    return `${MEDIA_SUBJECT[target]}: ${model}`
+  }
 
   if (target === 'webfetch') {
     // Stored WITHOUT the provider prefix, matching the CLI command: `getWebFetchModel()`

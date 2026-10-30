@@ -212,3 +212,89 @@ describe('custom-fetch (JWT / OAuth) providers', () => {
     expect<string | null>(sawAuth).toBe('Bearer rayu-jwt')
   })
 })
+
+describe('refuseRedirects (endpoints Rayu operates)', () => {
+  const ok = () =>
+    new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+  const send = (client: ReturnType<typeof createAnthropicMessagesClient>) =>
+    client.messages
+      .create({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
+      .catch(() => undefined)
+
+  /** A fetch that records each attempt's redirect mode and answers `status`. */
+  function recording(statuses: number[]) {
+    const seen: Array<RequestRedirect | undefined> = []
+    const fetchOverride = (async (_input: unknown, init?: RequestInit) => {
+      seen.push(init?.redirect)
+      const status = statuses[seen.length - 1] ?? 200
+      return status === 200 ? ok() : new Response('{}', { status })
+    }) as unknown as typeof fetch
+    return { seen, fetchOverride }
+  }
+
+  test('sends the request with redirect:error', async () => {
+    const { seen, fetchOverride } = recording([200])
+    await send(createAnthropicMessagesClient({
+      maxRetries: 0,
+      auth: { mode: 'bearer', keys: ['rayu_sk_live_test'] },
+      baseURL: 'https://gw.example.test/anthropic',
+      fetchOverride,
+      refuseRedirects: true,
+    }))
+    expect(seen).toEqual(['error'])
+  })
+
+  test('keeps redirect:error on a rotated retry with the next key', async () => {
+    const { seen, fetchOverride } = recording([429, 200])
+    await send(createAnthropicMessagesClient({
+      maxRetries: 0,
+      auth: { mode: 'bearer', keys: ['rayu_sk_live_a', 'rayu_sk_live_b'] },
+      baseURL: 'https://gw.example.test/anthropic',
+      fetchOverride,
+      refuseRedirects: true,
+    }))
+    expect(seen).toEqual(['error', 'error'])
+  })
+
+  test('is off by default, leaving third-party hosts on the runtime default', async () => {
+    const { seen, fetchOverride } = recording([200])
+    await send(createAnthropicMessagesClient({
+      maxRetries: 0,
+      auth: { mode: 'bearer', keys: ['lc-secret'] },
+      baseURL: 'https://api.longcat.chat/anthropic',
+      fetchOverride,
+    }))
+    expect(seen).toEqual([undefined])
+  })
+
+  test('a redirecting endpoint fails the request and the redirect target is never contacted', async () => {
+    let targetHits = 0
+    const target = Bun.serve({
+      port: 0,
+      fetch() {
+        targetHits++
+        return ok()
+      },
+    })
+    const gateway = Bun.serve({
+      port: 0,
+      fetch: () => Response.redirect(`http://127.0.0.1:${target.port}/v1/messages`, 307),
+    })
+    try {
+      const client = createAnthropicMessagesClient({
+        maxRetries: 0,
+        auth: { mode: 'bearer', keys: ['rayu_sk_live_test'] },
+        baseURL: `http://localhost:${gateway.port}/anthropic`,
+        refuseRedirects: true,
+      })
+      const outcome = await client.messages
+        .create({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
+        .then(() => 'resolved', () => 'rejected')
+      expect(outcome).toBe('rejected')
+      expect(targetHits).toBe(0)
+    } finally {
+      gateway.stop(true)
+      target.stop(true)
+    }
+  })
+})

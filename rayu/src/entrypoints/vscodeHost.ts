@@ -49,6 +49,27 @@ import {
 } from '../vscode/shared/connectProtocol.js'
 import { LOGIN_FLAG, type LoginFrame } from '../vscode/shared/loginProtocol.js'
 import { PAIRING_QR_FLAG } from '../vscode/shared/pairingProtocol.js'
+import {
+  TELEGRAM_CONNECT_FLAG,
+  type TelegramConnectAction,
+  type TelegramConnectFrame,
+} from '../vscode/shared/telegramConnectProtocol.js'
+import { ENGINE_EXIT_MEMORY_LIMIT } from '../vscode/shared/engineExitCodes.js'
+import {
+  SETTINGS_FLAG,
+  type SettingsChildAction,
+  type SettingsChildFrame,
+} from '../vscode/shared/settingsChildProtocol.js'
+import {
+  ACCOUNT_FLAG,
+  type AccountChildAction,
+  type AccountResultFrame,
+} from '../vscode/shared/accountChildProtocol.js'
+import {
+  ENGINE_MEMORY_LIMIT_ENV,
+  parseMemoryLimitMB,
+  startMemoryWatchdog,
+} from '../utils/engineMemoryWatchdog.js'
 
 async function renderPairingQr(): Promise<void> {
   let input = ''
@@ -279,6 +300,23 @@ async function runConnect(inlineAction: string | undefined): Promise<void> {
       return
     }
 
+    if (action.action === 'media-models') {
+      // The same on-open fetch and the same order as the terminal pickers, so the
+      // editor lists the admin's current image/video models without a release.
+      if (action.mediaType !== 'image' && action.mediaType !== 'video') {
+        throw new Error('Unknown media type for the model list.')
+      }
+      const { loadMediaModelPicker } = await import('../services/rayuAuth/mediaModelPicker.js')
+      const { options, notice } = await loadMediaModelPicker(action.mediaType)
+      emit({
+        type: 'rayucode_connect_result',
+        ok: true,
+        catalogue: options,
+        ...(notice ? { notice } : {}),
+      })
+      return
+    }
+
     if (action.action === 'attach-list') {
       const { readSessionRecords } = await import('../utils/concurrentSessions.js')
       const records = await readSessionRecords()
@@ -464,6 +502,202 @@ async function runConnect(inlineAction: string | undefined): Promise<void> {
   }
 }
 
+// ── TELEGRAM CONNECT ────────────────────────────────────────────────────────────
+//
+// One BYO pending-pairing token TTL, mirroring TOKEN_TTL_MS in
+// src/commands/telegram-bot/telegram-bot.tsx.
+const TELEGRAM_PAIR_TOKEN_TTL_MS = 10 * 60 * 1000
+
+/** Render a QR code as a PNG data-URL — the same rendering the pairing-qr child uses. */
+async function qrDataUrl(text: string): Promise<string> {
+  const { toDataURL } = await import('qrcode')
+  return toDataURL(text, { errorCorrectionLevel: 'L', margin: 2, width: 280 })
+}
+
+/**
+ * Perform one telegram-connect action and exit.
+ *
+ * ── EVERYTHING HEAVY LIVES HERE, NOT IN THE EXTENSION HOST ─────────────────────
+ *
+ * The hosted pairing calls (`getHostedBotInfo`, `createHostedPairing`) reach
+ * `services/rayuAuth/rayuSession.js`, and BYO verification calls Telegram's API
+ * (`getBotUsername`). All of that drags in the engine graph (~19 MB measured for
+ * the provider-setup neighbours) — twelve times the host bundle budget — so, like
+ * `runConnect`, every telegram module is imported dynamically inside this branch
+ * and none of it is evaluated in session mode.
+ *
+ * ── THE TOKEN NEVER LEAVES THIS PROCESS ────────────────────────────────────────
+ *
+ * `start-byo` carries the bot token on stdin. It is validated and verified here,
+ * written to telegram.json at 0600, and NEVER echoed: no frame, no error message,
+ * no log line contains it.
+ */
+async function runTelegramConnect(): Promise<void> {
+  const emit = (frame: TelegramConnectFrame): void => {
+    process.stdout.write(`${JSON.stringify(frame)}\n`)
+  }
+
+  try {
+    // STDIN ONLY. An inline argv action is not accepted here even for debugging:
+    // `start-byo` carries the bot token, and argv is readable by every local user
+    // through the process table for the life of this child. Read INSIDE the try, so a
+    // stdin failure is reported as a result frame like any other error rather than
+    // escaping as an unhandled rejection.
+    const action = parseTelegramConnectAction(await readConnectActionFromStdin())
+    const telegramConfig = await import('../telegram/telegramConfig.js')
+
+    if (action.action === 'status') {
+      // Local-only, exactly one status frame: no `getBotUsername` (a live Telegram
+      // call would make a panel refresh depend on the network), and no second frame
+      // that would race the first.
+      const cfg = telegramConfig.readTelegramConfig()
+      emit({
+        type: 'rayucode_tgconnect_status',
+        linkedChatId: cfg.linkedChatId,
+        linkedBotUsername: cfg.linkedBotUsername,
+        mode: telegramConfig.getTelegramMode(),
+      })
+      emit({ type: 'rayucode_tgconnect_result', ok: true })
+      return
+    }
+
+    if (action.action === 'start-hosted') {
+      const { hasRayuSession } = await import('../services/rayuAuth/rayuSession.js')
+      if (!hasRayuSession()) {
+        emit({
+          type: 'rayucode_tgconnect_result',
+          ok: false,
+          error: 'Sign in to Rayu first — the shared bot is managed by the backend.',
+        })
+        process.exitCode = 1
+        return
+      }
+      const hostedApi = await import('../telegram/telegramHostedApi.js')
+      emit({ type: 'rayucode_tgconnect_progress', message: 'Checking the shared bot…' })
+      const botInfo = await hostedApi.getHostedBotInfo()
+      if (!botInfo.configured || !botInfo.username) {
+        emit({
+          type: 'rayucode_tgconnect_result',
+          ok: false,
+          error: 'The shared Telegram bot is not configured on the backend.',
+        })
+        process.exitCode = 1
+        return
+      }
+      emit({ type: 'rayucode_tgconnect_progress', message: 'Creating a pairing code…' })
+      const pairing = await hostedApi.createHostedPairing()
+      if (!pairing) {
+        emit({
+          type: 'rayucode_tgconnect_result',
+          ok: false,
+          error: 'Could not create a pairing code. Try again in a moment.',
+        })
+        process.exitCode = 1
+        return
+      }
+      telegramConfig.setTelegramMode('hosted')
+      const botUsername = pairing.botUsername ?? botInfo.username
+      if (pairing.deepLink) {
+        try {
+          const image = await qrDataUrl(pairing.deepLink)
+          emit({ type: 'rayucode_tgconnect_qr', image })
+        } catch {
+          // QR generation failed — the deep link and code are still reported below.
+        }
+      }
+      emit({
+        type: 'rayucode_tgconnect_result',
+        ok: true,
+        deepLink: pairing.deepLink ?? undefined,
+        pairingCode: pairing.code,
+        botUsername,
+      })
+      return
+    }
+
+    if (action.action === 'start-byo') {
+      const token = telegramConfig.normalizeBotToken(action.token)
+      if (!telegramConfig.isValidBotToken(token)) {
+        emit({
+          type: 'rayucode_tgconnect_result',
+          ok: false,
+          error:
+            'That does not look like a bot token. Copy the token @BotFather sent you — ' +
+            'it looks like "123456:ABC-DEF…".',
+        })
+        process.exitCode = 1
+        return
+      }
+      emit({ type: 'rayucode_tgconnect_progress', message: 'Verifying the token with Telegram…' })
+      const { getBotUsername } = await import('../telegram/telegramApi.js')
+      const botUsername = await getBotUsername(token)
+      if (!botUsername) {
+        emit({
+          type: 'rayucode_tgconnect_result',
+          ok: false,
+          error:
+            'Telegram rejected this token. Check it with @BotFather ' +
+            '(/token) and try again.',
+        })
+        process.exitCode = 1
+        return
+      }
+      // The token is verified from here on; it is written to disk and never echoed.
+      telegramConfig.saveBotToken(token)
+      telegramConfig.setTelegramMode('byo')
+      // Pairing token: the ONLY gate on linking a chat. 96 bits, base64url so it is
+      // safe inside a t.me/?start= deep link — same construction as LinkStep in
+      // src/commands/telegram-bot/telegram-bot.tsx.
+      const { randomBytes } = await import('node:crypto')
+      const pairToken = randomBytes(12).toString('base64url')
+      telegramConfig.setPendingToken(pairToken, TELEGRAM_PAIR_TOKEN_TTL_MS)
+      emit({
+        type: 'rayucode_tgconnect_result',
+        ok: true,
+        deepLink: `https://t.me/${botUsername}?start=${pairToken}`,
+        botUsername,
+      })
+      return
+    }
+
+    // action.action === 'unlink'
+    const mode = telegramConfig.getTelegramMode()
+    if (mode === 'hosted') {
+      const hostedApi = await import('../telegram/telegramHostedApi.js')
+      await hostedApi.deleteHostedLink()
+    }
+    telegramConfig.unlink()
+    emit({ type: 'rayucode_tgconnect_result', ok: true })
+  } catch (cause) {
+    emit({
+      type: 'rayucode_tgconnect_result',
+      ok: false,
+      error: cause instanceof Error ? cause.message : String(cause),
+    })
+    process.exitCode = 1
+  }
+}
+
+function parseTelegramConnectAction(raw: string | undefined): TelegramConnectAction {
+  if (!raw) throw new Error('No telegram-connect action was supplied.')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // Deliberately NOT the parser's message: V8 quotes the input it choked on, and this
+    // input can carry a bot token. The message is shown in the editor.
+    throw new Error('Malformed telegram-connect action.')
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    typeof (parsed as TelegramConnectAction).action !== 'string'
+  ) {
+    throw new Error('Malformed telegram-connect action.')
+  }
+  return parsed as TelegramConnectAction
+}
+
 /**
  * Classify why a model-list fetch came back empty.
  *
@@ -530,11 +764,13 @@ function parseConnectAction(raw: string | undefined): ConnectAction {
 const MAX_CONNECT_ACTION_CHARS = 64 * 1024
 
 /**
- * The provider-setup action, as the extension host sends it: on stdin.
+ * The connect action (provider setup or telegram connect), as the extension host sends
+ * it: on stdin.
  *
- * `validate`/`save` carry an API key, and argv is world-readable through the process
- * table, so the host never puts the action there. Throws on oversized input; the caller
- * (`runConnect`) reports any error as a result frame.
+ * `validate`/`save` carry an API key and `start-byo` a bot token, and argv is
+ * world-readable through the process table, so the host never puts the action there.
+ * Throws on oversized input; the callers (`runConnect`, `runTelegramConnect`) report
+ * any error as a result frame.
  */
 async function readConnectActionFromStdin(): Promise<string | undefined> {
   // Decoded by the stream, not per chunk: a multi-byte character (a non-ASCII workspace
@@ -544,10 +780,93 @@ async function readConnectActionFromStdin(): Promise<string | undefined> {
   for await (const chunk of process.stdin) {
     input += chunk as string
     if (input.length > MAX_CONNECT_ACTION_CHARS) {
-      throw new Error('The provider-setup action is too large.')
+      throw new Error('The action is too large.')
     }
   }
   return input.trim() || undefined
+}
+
+/**
+ * One `--rayucode-settings` action, reported as frames on stdout.
+ *
+ * The settings store is imported dynamically, like the other helpers' heavy modules, so
+ * none of it is evaluated in session mode. `read` answers with a snapshot frame; every
+ * action ends with exactly one result frame.
+ */
+async function runSettingsAction(): Promise<void> {
+  const emit = (frame: SettingsChildFrame): void => {
+    process.stdout.write(`${JSON.stringify(frame)}\n`)
+  }
+  try {
+    const raw = await readConnectActionFromStdin()
+    let action: SettingsChildAction
+    try {
+      action = JSON.parse(raw ?? '') as SettingsChildAction
+    } catch {
+      throw new Error('Malformed settings action.')
+    }
+    // As in the CLI's own fast paths (cli.tsx): reading the config throws until this runs.
+    const { enableConfigs } = await import('../utils/config.js')
+    enableConfigs()
+    const store = await import('../utils/settings/editableSettingsStore.js')
+    const cwd = process.cwd()
+    if (action?.action === 'read') {
+      emit({ type: 'rayucode_settings_snapshot', ...(await store.readSharedSettings(cwd)) })
+      emit({ type: 'rayucode_settings_result', ok: true })
+      return
+    }
+    if (action?.action === 'write') {
+      const result = await store.writeSharedSetting({ key: action.key, value: action.value, cwd })
+      emit(result.ok ? { type: 'rayucode_settings_result', ok: true } : { type: 'rayucode_settings_result', ok: false, error: result.error })
+      if (!result.ok) process.exitCode = 1
+      return
+    }
+    throw new Error('Unknown settings action.')
+  } catch (cause) {
+    emit({
+      type: 'rayucode_settings_result',
+      ok: false,
+      error: cause instanceof Error ? cause.message : String(cause),
+    })
+    process.exitCode = 1
+  }
+}
+
+/**
+ * One `--rayucode-account` action, reported as one result frame on stdout.
+ *
+ * Signing out here rather than in the extension host clears everything the CLI's
+ * /logout clears for Rayucode's own profile — the entitlements and the rayu-hosted
+ * provider, the feature-usage counts, the media catalog — except the API key, which
+ * Rayucode keeps as a provider. `RAYU_AUTH_CONFIG_DIR` is inherited from the host, so
+ * the terminal CLI's own sign-in is untouched.
+ */
+async function runAccountAction(): Promise<void> {
+  const emit = (frame: AccountResultFrame): void => {
+    process.stdout.write(`${JSON.stringify(frame)}\n`)
+  }
+  try {
+    const raw = await readConnectActionFromStdin()
+    let action: AccountChildAction
+    try {
+      action = JSON.parse(raw ?? '') as AccountChildAction
+    } catch {
+      throw new Error('Malformed account action.')
+    }
+    if (action?.action !== 'sign-out') throw new Error('Unknown account action.')
+    const { enableConfigs } = await import('../utils/config.js')
+    enableConfigs()
+    const { signOutRayu } = await import('../services/rayuAuth/rayuSignOut.js')
+    const { hadSession } = signOutRayu({ removeApiKey: false })
+    emit({ type: 'rayucode_account_result', ok: true, hadSession })
+  } catch (cause) {
+    emit({
+      type: 'rayucode_account_result',
+      ok: false,
+      error: cause instanceof Error ? cause.message : String(cause),
+    })
+    process.exitCode = 1
+  }
 }
 
 async function main(): Promise<void> {
@@ -576,6 +895,29 @@ async function main(): Promise<void> {
     return
   }
 
+  // Telegram connect short-circuits for the same reasons as provider setup. It also
+  // must not start a session engine: the whole point is to (re)configure the bridge
+  // before one runs.
+  if (passthrough.includes(TELEGRAM_CONNECT_FLAG)) {
+    // The action is read from stdin and ONLY from stdin: unlike provider setup it can
+    // carry a bot token (`start-byo`), which must never appear in argv.
+    await runTelegramConnect()
+    return
+  }
+
+  // Reading or writing Rayu's shared settings files for the Settings tab. Stdin only,
+  // and no session engine: it edits the files a session reads.
+  if (passthrough.includes(SETTINGS_FLAG)) {
+    await runSettingsAction()
+    return
+  }
+
+  // Signing out of the Rayu account for the Settings tab and "Rayucode: Sign Out".
+  if (passthrough.includes(ACCOUNT_FLAG)) {
+    await runAccountAction()
+    return
+  }
+
   // process.argv is [node, thisScript, ...args]; main() re-reads process.argv,
   // so the merged flags have to be written back into it rather than passed.
   process.argv = [
@@ -584,8 +926,39 @@ async function main(): Promise<void> {
     ...buildHostArgv(passthrough),
   ]
 
+  startEngineMemoryLimit()
+
   const { main: cliMain } = await import('../main.js')
   await cliMain()
+}
+
+/**
+ * The compiled engine's memory limit — session mode only, never for the short-lived
+ * helpers above.
+ *
+ * Node engines are capped with `--max-old-space-size`; Bun ignores that flag, so the
+ * extension passes the limit for a compiled engine in RAYU_ENGINE_MAX_MEMORY_MB instead
+ * (see `src/utils/engineMemoryWatchdog.ts`). The variable is removed after reading: it
+ * is an engine-only knob, and every tool this engine runs would otherwise inherit it.
+ *
+ * At the limit the engine says why on stderr and exits with ENGINE_EXIT_MEMORY_LIMIT.
+ * Nothing is written to stdout: the host treats an unexpected frame as a protocol fault.
+ */
+function startEngineMemoryLimit(): void {
+  const limitMB = parseMemoryLimitMB(process.env[ENGINE_MEMORY_LIMIT_ENV])
+  delete process.env[ENGINE_MEMORY_LIMIT_ENV]
+  if (limitMB === null) return
+  startMemoryWatchdog({
+    limitMB,
+    onLimit: rssMB => {
+      process.stderr.write(
+        `Rayu engine memory limit reached (${rssMB} MB resident, limit ${limitMB} MB); ` +
+          'exiting so the conversation can resume.\n',
+      )
+      // eslint-disable-next-line custom-rules/no-process-exit
+      process.exit(ENGINE_EXIT_MEMORY_LIMIT)
+    },
+  })
 }
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects

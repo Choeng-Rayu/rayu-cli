@@ -51,6 +51,17 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
+  // A host that ships its own ripgrep names it here — the Rayucode VS Code extension
+  // does, for its compiled engine and engine.mjs alike. Checked after an explicit
+  // request for the system rg (the user's choice wins) but BEFORE the embedded branch:
+  // a compiled engine built with public Bun has no argv0 dispatch, so "spawn myself as
+  // rg" would start a second engine instead of a search. Only an absolute path to an
+  // existing file is accepted; anything else falls through to the usual resolution.
+  const hostRipgrep = hostProvidedRipgrep(process.env.RAYU_RIPGREP_PATH)
+  if (hostRipgrep) {
+    return { mode: 'builtin', command: hostRipgrep, args: [] }
+  }
+
   // In bundled (native) mode, ripgrep is statically compiled into bun-internal
   // and dispatches based on argv[0]. We spawn ourselves with argv0='rg'.
   if (isInBundledMode()) {
@@ -86,6 +97,13 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
 /** Reset the memoized ripgrep config (tests only). */
 export function _resetRipgrepConfigForTesting(): void {
   getRipgrepConfig.cache?.clear?.()
+}
+
+/** `RAYU_RIPGREP_PATH`, when it names an existing file by absolute path. */
+function hostProvidedRipgrep(raw: string | undefined): string | null {
+  const candidate = raw?.trim()
+  if (!candidate || !path.isAbsolute(candidate)) return null
+  return existsSync(candidate) ? candidate : null
 }
 
 export function ripgrepCommand(): {

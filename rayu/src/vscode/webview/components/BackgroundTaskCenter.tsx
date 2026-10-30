@@ -7,7 +7,7 @@ import type {
 } from '../../shared/webviewProtocol.js'
 import { formatDuration } from '../../shared/turnProgress.js'
 import { useSecondTick } from '../useSecondTick.js'
-import { ProgressGlyph } from './Icons.js'
+import { ChevronIcon, CloseIcon, ProgressGlyph } from './Icons.js'
 import { ToolOutput } from './ToolOutput.js'
 
 /**
@@ -221,7 +221,7 @@ export function BackgroundTaskCenter({
                 <h4>Recent activity</h4>
                 {selected.recentActivities.map(activity => (
                   <div key={activity.id} className="rc-task-activity-line">
-                    <span aria-hidden="true">›</span><span>{activity.label}</span>
+                    <ChevronIcon direction="right" size={12} className="rc-task-activity-chevron" /><span>{activity.label}</span>
                   </div>
                 ))}
               </div>
@@ -268,7 +268,7 @@ export function BackgroundTaskCenter({
 }
 
 function TaskCenterHeader({ onClose }: { onClose: () => void }): JSX.Element {
-  return <header className="rc-task-center-head"><strong>Background work</strong><button type="button" onClick={onClose} aria-label="Back to main conversation">×</button></header>
+  return <header className="rc-task-center-head"><strong>Background work</strong><button type="button" onClick={onClose} aria-label="Back to main conversation"><CloseIcon /></button></header>
 }
 
 /**

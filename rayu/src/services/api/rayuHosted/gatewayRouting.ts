@@ -55,7 +55,7 @@
 // is never logged here.
 import type { RayuProvider } from '../../../utils/rayuConfig.js'
 import {
-  getRayuGatewayBaseUrl,
+  getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
   hasRayuSession,
   isUseRayuOAuthEnabled,
@@ -281,7 +281,11 @@ export function makeGatewayRoutingFetch(
 
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const originalUrl = input instanceof Request ? input.url : String(input)
-    const gatewayUrl = `${getRayuGatewayBaseUrl()}/v1/proxy`
+    // The JWT + the forwarded provider key ride this URL, so it goes through
+    // the secure getter: a remote plaintext-http gateway throws here, before
+    // any request — fail closed rather than shipping two credentials in the
+    // clear.
+    const gatewayUrl = `${getSecureRayuGatewayBaseUrl()}/v1/proxy`
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)
     headers.set('X-Rayu-Token', token)
@@ -309,7 +313,13 @@ export function makeGatewayRoutingFetch(
 
     const callbackToDirect = isGatewayCallbackEnabled()
     try {
-      const res = await inner(gatewayUrl, { ...init, headers })
+      const res = await inner(gatewayUrl, {
+        ...init,
+        headers,
+        // A redirect would move the JWT (and the forwarded provider key) off
+        // the vetted gateway proxy URL.
+        redirect: 'error',
+      })
       // An intentional gateway block (e.g. the per-day turn cap) must be
       // surfaced to the user, not bypassed — return it as-is even though it is
       // not a "proxied" upstream response.

@@ -49,6 +49,8 @@ function createSidebarView() {
 let serializer
 const vscode = {
   EventEmitter: class { constructor() { Object.assign(this, emitter()) } },
+  ThemeColor: class { constructor(id) { this.id = id } },
+  StatusBarAlignment: { Left: 1, Right: 2 },
   Uri: { file: fileUri, joinPath: (base, ...parts) => fileUri(path.join(base.fsPath, ...parts)),
     parse: value => ({ ...fileUri(value), toString: () => value }) },
   ViewColumn: { Active: -1 }, FileType: { File: 1, Directory: 2 },
@@ -56,9 +58,13 @@ const vscode = {
     registerWebviewViewProvider: (_id, provider) => { sidebarProvider = provider; return disposable() },
     registerWebviewPanelSerializer: (_type, value) => { serializer = value; return disposable() },
     registerUriHandler: disposable, onDidChangeActiveTextEditor: disposable,
-    onDidChangeTextEditorSelection: disposable, showInformationMessage: async () => undefined,
+    onDidChangeTextEditorSelection: disposable, onDidChangeWindowState: disposable,
+    createStatusBarItem: () => ({ show() {}, hide() {}, dispose() {} }),
+    showInformationMessage: async () => undefined,
     showWarningMessage: async () => undefined, showErrorMessage: async () => undefined },
-  workspace: { workspaceFolders: [{ uri: fileUri(directory) }], registerTextDocumentContentProvider: disposable },
+  authentication: { registerAuthenticationProvider: disposable, getSession: async () => undefined },
+  workspace: { workspaceFolders: [{ uri: fileUri(directory) }], registerTextDocumentContentProvider: disposable,
+    getConfiguration: () => ({ get: () => undefined }), onDidChangeConfiguration: disposable },
   commands: { registerCommand: disposable, executeCommand: async () => undefined },
   env: { machineId: 'fixture', clipboard: { readText: async () => '', writeText: async () => {} } },
 }

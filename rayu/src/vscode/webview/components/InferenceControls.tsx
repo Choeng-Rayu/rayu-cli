@@ -1,8 +1,8 @@
 /**
  * The reasoning-effort control, in the composer toolbar.
  *
- * Thinking and effort are independent Rayucode session preferences. Both are sent to
- * the shared engine and rendered only after it acknowledges the effective value.
+ * Extended thinking is always on for Rayucode, so this control now renders only the
+ * effort dropdown. The acknowledged value is the one the shared engine reports back.
  *
  * ── HIDDEN WHEN THE MODEL DOES NOT SUPPORT IT ──────────────────────────────────
  *
@@ -19,19 +19,17 @@
  */
 import { useEffect, useRef, useState } from 'react'
 
-
 import {
   availableEffortOptions,
   effortLabel,
   type EffortChoice,
   type InferenceSettingsView,
 } from '../../shared/inferenceSettings.js'
-import { ChevronIcon, EffortIcon } from './Icons.js'
+import { CheckIcon, ChevronIcon, EffortIcon } from './Icons.js'
 
 export interface InferenceControlsProps {
   settings: InferenceSettingsView
   onSetEffort: (level: EffortChoice) => void
-  onSetThinking: (enabled: boolean) => void
   /** Incremented when a typed `/effort` command asks the dropdown to open. */
   effortOpenRequest?: number
 }
@@ -39,35 +37,16 @@ export interface InferenceControlsProps {
 export function InferenceControls({
   settings,
   onSetEffort,
-  onSetThinking,
   effortOpenRequest,
 }: InferenceControlsProps): JSX.Element | null {
-  if (!settings.supportsThinking && !settings.supportsEffort) return null
+  if (!settings.supportsEffort) return null
 
   return (
-    <>
-      {settings.supportsThinking ? (
-        <button
-          type="button"
-          className={`rc-pill rc-pill-button${settings.thinkingEnabled ? ' rc-pill-active' : ''}`}
-          aria-pressed={settings.thinkingEnabled}
-          title={`Thinking is ${settings.thinkingEnabled ? 'on' : 'off'}. Applies to your next message.`}
-          onClick={() => onSetThinking(!settings.thinkingEnabled)}
-        >
-          <EffortIcon />
-          <span className="rc-pill-label">
-            Thinking: {settings.thinkingEnabled ? 'On' : 'Off'}
-          </span>
-        </button>
-      ) : null}
-      {settings.supportsEffort ? (
-        <EffortDropdown
-          settings={settings}
-          onSetEffort={onSetEffort}
-          openRequest={effortOpenRequest}
-        />
-      ) : null}
-    </>
+    <EffortDropdown
+      settings={settings}
+      onSetEffort={onSetEffort}
+      openRequest={effortOpenRequest}
+    />
   )
 }
 
@@ -155,7 +134,7 @@ function EffortDropdown({
                     <div className="rc-dropdown-item-header">
                       <span className="rc-dropdown-label">{option.label}</span>
                       {isCurrent ? (
-                        <span className="rc-dropdown-current">✓ Active</span>
+                        <span className="rc-dropdown-current"><CheckIcon size={10} /> Active</span>
                       ) : null}
                     </div>
                     <span className="rc-dropdown-detail">{option.description}</span>

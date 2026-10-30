@@ -2,26 +2,34 @@
 // against the SERVER-OWNED catalog.
 //
 // There is deliberately no model registry in this file. Which video models exist,
-// their backend, their NVCF function id, how long a generation takes, and their
-// per-model request defaults all come from the Rayu provider at runtime
+// their backend, how long a generation takes, and their per-model request
+// defaults all come from the Rayu provider at runtime
 // (services/rayuAuth/mediaModels.ts → gateway GET /v1/models?media=video), so
 // adding a model needs a backend catalog row and no CLI release.
 //
-// What DOES stay here is the request SHAPE per family — Triton command strings
-// for Cosmos, the SVD data-URI body, fal.ai's queue payload — because that is
-// third-party API mechanics, not catalog data.
+// What DOES stay here is the request SHAPE per family — fal.ai's queue payload
+// and the Rayu gateway's DashScope body — because that is API mechanics, not
+// catalog data. Vertex Veo builds its own body in vertexVideoClient. NVIDIA
+// (NVCF Cosmos, SVD) was removed; its catalog rows are skipped by mediaModels.ts.
 //
-// Async pattern (NVCF): HTTP 202 + NVCF-REQID header → poll pexec/status/{reqId}.
 // SECURITY: only model params + prompt are sent; the key is never logged.
 import {
   getCachedMediaModels,
   type MediaModelEntry,
   type VideoCapability,
 } from '../../services/rayuAuth/mediaModels.js'
+import { resolveReferenceImage } from '../../utils/hostedReferenceImage.js'
 
 export type { VideoCapability }
 /** Upstream that serves a video model (mirrors the catalog's `backend`). */
-export type VideoBackend = 'nvcf' | 'nvidia-svd' | 'fal' | 'vertex'
+export type VideoBackend =
+  | 'fal'
+  | 'vertex'
+  /** Rayu-hosted: proxied by the gateway under the user's account, no key. */
+  | 'rayu'
+
+/** The backend fal.ai models carry in the catalog. */
+export const FAL_VIDEO_BACKEND = 'fal'
 
 export type VideoParams = {
   prompt: string
@@ -35,8 +43,13 @@ export type VideoParams = {
   duration?: string
   /** base64-encoded input image (no data-URI prefix) for image2video models. */
   image?: string
-  /** Index of input image (cosmos-predict1-5b). 0 or 1. */
-  input_image_index?: number
+  /**
+   * The caller's RAW `input_image` value (an https URL or a local file path),
+   * for hosted families that accept a reference image verbatim — the
+   * dashscope_video builder turns a URL through unchanged and reads/encodes a
+   * local path into a `data:` URL. BYO backends use `image` (base64) instead.
+   */
+  input_image?: string
 }
 
 /** Per-model request defaults from the catalog (`defaultParams`). */
@@ -46,9 +59,6 @@ export type VideoDefaults = Record<string, unknown>
 export type VideoModel = MediaModelEntry & {
   buildBody: (p: VideoParams) => Record<string, unknown>
 }
-
-export const NVIDIA_GENAI_HOST =
-  process.env.NVIDIA_GENAI_HOST || 'https://ai.api.nvidia.com/v1/genai'
 
 function num(defaults: VideoDefaults, key: string, fallback: number): number {
   const v = defaults[key]
@@ -61,62 +71,6 @@ function str(defaults: VideoDefaults, key: string, fallback: string): string {
 }
 
 // ── Family request builders ──────────────────────────────────────────────────
-
-/**
- * cosmos-predict1: Triton PREDICT_V2 via NVCF. The internal model name is
- * 'edify' and the exact command API name is undocumented — visit
- * https://build.nvidia.com/nvidia/cosmos-predict1-5b while logged in to see the
- * working playground sample. Best known format from testing: a `command` input
- * with a "t2v"/"i2v" prefix. Takes an OPTIONAL input image, which is why the
- * catalog can list it for both video capabilities.
- */
-const cosmosPredict1Body = (p: VideoParams): Record<string, unknown> => {
-  const isVideo = !p.image
-  // Underscore/space-normalised prompt: quotes and newlines break the command parse.
-  const safePrompt = p.prompt.replace(/["\\']/g, '').replace(/\s+/g, ' ').trim()
-  const cmd = isVideo
-    ? `t2v --prompt="${safePrompt}"${p.seed != null ? ` --seed=${p.seed}` : ''}`
-    : `i2v --prompt="${safePrompt}"${p.image ? ` --input_image=${p.image}` : ''}${p.seed != null ? ` --seed=${p.seed}` : ''}`
-  return {
-    inputs: [{ name: 'command', shape: [1], datatype: 'BYTES', data: [cmd] }],
-    outputs: [{ name: 'status', datatype: 'BYTES', shape: [1] }],
-  }
-}
-
-/** cosmos-transfer1: video-to-video style transfer + prompt. */
-const cosmosTransfer1Body = (p: VideoParams): Record<string, unknown> => ({
-  prompt: p.prompt,
-  seed: p.seed ?? 0,
-})
-
-/** cosmos3-nano: lightweight text-to-world. */
-const cosmos3NanoBody = (p: VideoParams): Record<string, unknown> => ({
-  prompt: p.prompt,
-  seed: p.seed ?? 0,
-})
-
-/** cosmos-1.0-7b: legacy Triton `text2world` command on the cosmos host. */
-const cosmosLegacyText2World = (p: VideoParams): Record<string, unknown> => ({
-  inputs: [
-    {
-      name: 'command',
-      shape: [1],
-      datatype: 'BYTES',
-      data: [
-        `text2world --prompt="${p.prompt.replace(/"/g, '\\"')}"${p.seed != null ? ` --seed=${p.seed}` : ''}`,
-      ],
-    },
-  ],
-  outputs: [{ name: 'status', datatype: 'BYTES', shape: [1] }],
-})
-
-/** NVIDIA Stable Video Diffusion on the genai host (image-to-video). */
-const svdBody = (p: VideoParams, d: VideoDefaults): Record<string, unknown> => ({
-  image: p.image ? `data:image/png;base64,${p.image}` : '',
-  seed: p.seed ?? 0,
-  cfg_scale: num(d, 'cfg_scale', 1.8),
-  motion_bucket_id: num(d, 'motion_bucket_id', 127),
-})
 
 /**
  * fal.ai Kling. One builder for both directions: the presence of an input image
@@ -146,9 +100,131 @@ const falKlingBody = (
  * Vertex Veo bodies are built by vertexVideoClient (buildVeoBody), which owns the
  * `instances`/`parameters` shape and the long-running-operation poll. This
  * placeholder keeps the family known so a Veo model resolves; reaching it means
- * the NVIDIA client was handed a Vertex model.
+ * a non-Vertex client was handed a Vertex model.
  */
 const veoBody = (p: VideoParams): Record<string, unknown> => ({ prompt: p.prompt })
+
+// ── Rayu-hosted (DashScope video) ────────────────────────────────────────────
+
+/** Ratios the gateway/model accepts, in catalogue order. */
+const DASHSCOPE_VIDEO_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4'] as const
+type DashscopeRatio = (typeof DASHSCOPE_VIDEO_RATIOS)[number]
+/** `adaptive` has no numeric ratio to compare against, but the wire accepts it. */
+type DashscopeVideoRatio = DashscopeRatio | 'adaptive'
+
+/**
+ * The hosted clip-length window. wan3.0-video renders 2–30 s and refuses 1 s, so
+ * the floor is 2 rather than the 1 the frame-count maths could produce.
+ */
+const DASHSCOPE_VIDEO_MIN_SECONDS = 2
+const DASHSCOPE_VIDEO_MAX_SECONDS = 30
+
+function ratioValue(r: DashscopeRatio): number {
+  const [a, b] = r.split(':').map(Number) as [number, number]
+  return a / b
+}
+
+/**
+ * Duration in seconds from the CLI's frame-count/fps pair, clamped to the
+ * hosted 2–30 s window. Either one missing means "let the gateway/model
+ * default apply" — not zero.
+ */
+export function dashscopeVideoDuration(p: VideoParams): number | undefined {
+  if (p.num_frames == null || p.fps == null || p.fps <= 0) return undefined
+  return Math.max(
+    DASHSCOPE_VIDEO_MIN_SECONDS,
+    Math.min(
+      DASHSCOPE_VIDEO_MAX_SECONDS,
+      Math.round(p.num_frames / p.fps),
+    ),
+  )
+}
+
+/**
+ * Ratio from an explicit `aspect_ratio` when it is one of the five accepted
+ * values, else the nearest accepted ratio to width/height when both are known,
+ * else undefined.
+ */
+export function dashscopeVideoRatio(
+  p: VideoParams,
+): DashscopeVideoRatio | undefined {
+  if (p.aspect_ratio) {
+    const trimmed = p.aspect_ratio.trim()
+    if (trimmed === 'adaptive') return 'adaptive'
+    const exact = DASHSCOPE_VIDEO_RATIOS.find((r) => r === trimmed)
+    if (exact) return exact
+  }
+  if (p.width != null && p.height != null && p.width > 0 && p.height > 0) {
+    const target = p.width / p.height
+    let best: DashscopeRatio = DASHSCOPE_VIDEO_RATIOS[0]
+    let bestDelta = Math.abs(ratioValue(best) - target)
+    for (const r of DASHSCOPE_VIDEO_RATIOS.slice(1)) {
+      const delta = Math.abs(ratioValue(r) - target)
+      if (delta < bestDelta) {
+        best = r
+        bestDelta = delta
+      }
+    }
+    return best
+  }
+  return undefined
+}
+
+/**
+ * DashScope video family (Rayu-hosted gateway). The body is
+ * `{model, prompt, duration?, ratio?, negative_prompt?, seed?, image?}`;
+ * `image` is sent only when the caller supplied `input_image` and the selected
+ * catalog entry carries the `image2video` capability (VideoGenTool refuses
+ * otherwise — the gateway maps it to a reference_image input).
+ *
+ * There is no `resolution` from the caller: each hosted catalog entry IS one
+ * priced resolution tier (480P / 720P / 1080P are separate models), and the
+ * gateway refuses a request for any other tier. The entry's own tier still
+ * reaches the gateway through its `defaultParams`.
+ *
+ * `defaultParams` spread FIRST so the caller's explicit values win and a
+ * dashboard edit still reaches the request. Routing/transport keys (`model`,
+ * `image`, `img_url`, `audio_url`, `video`) are stripped from the defaults: an
+ * admin-owned row must never be able to swap the billed model or smuggle a
+ * reference input the user did not ask for — the caller's own image is added
+ * AFTER the spread. `stream` and `mask` are stripped too — the gateway rejects
+ * them outright, so a stray default would otherwise 400 every request for that
+ * model.
+ */
+const dashscopeVideoBody = (
+  p: VideoParams,
+  d: VideoDefaults,
+): Record<string, unknown> => {
+  const {
+    model: _model,
+    image: _image,
+    img_url: _imgUrl,
+    audio_url: _audioUrl,
+    video: _video,
+    stream: _stream,
+    mask: _mask,
+    ...defaults
+  } = d
+  const duration = dashscopeVideoDuration(p)
+  const ratio = dashscopeVideoRatio(p)
+  return {
+    ...defaults,
+    prompt: p.prompt,
+    ...(duration != null ? { duration } : {}),
+    ...(ratio != null ? { ratio } : {}),
+    ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
+    ...(p.seed != null ? { seed: p.seed } : {}),
+    // Added after the spread so a defaulted image can never survive, and only
+    // when the caller actually supplied one.
+    ...(p.input_image
+      ? {
+          image: resolveReferenceImage(p.input_image, {
+            gatewayLabel: 'Rayu video gateway',
+          }),
+        }
+      : {}),
+  }
+}
 
 /**
  * family → request builder. The ONLY thing the CLI must change for a genuinely
@@ -159,13 +235,11 @@ export const VIDEO_BODY_BUILDERS: Record<
   string,
   (p: VideoParams, d: VideoDefaults) => Record<string, unknown>
 > = {
-  'cosmos-predict1': cosmosPredict1Body,
-  'cosmos-transfer1': cosmosTransfer1Body,
-  'cosmos3-nano': cosmos3NanoBody,
-  'cosmos-legacy': cosmosLegacyText2World,
-  svd: svdBody,
   'fal-kling': falKlingBody,
   veo: veoBody,
+  // Rayu-hosted models (backend 'rayu') proxy through the gateway, which holds
+  // the upstream provider key and speaks DashScope video to it.
+  dashscope_video: dashscopeVideoBody,
 }
 
 const VERTEX_BACKEND = 'vertex'
@@ -193,7 +267,7 @@ export function isVertexVideoModel(
   const entry = (models ?? cachedVideoModels()).find((m) => m.id === id)
   if (entry) return entry.backend === VERTEX_BACKEND
   // Unknown id (offline, or typed by hand): the id shape is the only signal left,
-  // and misrouting a Veo request to NVIDIA's host is worse than this heuristic.
+  // and without it a hand-typed Veo id could never reach Vertex.
   return /^veo-/i.test(id)
 }
 
@@ -206,8 +280,8 @@ export function isVertexVideoModel(
  * cannot POST to (which would surface as "API key not configured" for a model the
  * user never chose, or as a bogus routing error).
  *
- * Order: the id the caller named → the env override → the `default` model of the
- * most-preferred servable backend → the first usable model of that backend.
+ * Order: the id the caller named → the `default` model of the most-preferred
+ * servable backend → the first usable model of that backend.
  *
  * A named id that is NOT in the catalog is an ERROR, never a silent substitution.
  * A named id that IS in the catalog but cannot do the requested operation DOES
@@ -242,14 +316,8 @@ export function resolveVideoModel(
   const capable = models.filter((m) => m.capabilities.includes(capability))
   const named = known?.capabilities.includes(capability) ? known : undefined
   // Only models this client can actually serve, ordered so the FIRST entry is the
-  // right default. The env override is looked up in this same list, so it can pin a
-  // model but never smuggle in one the caller cannot POST to.
-  const usable = orderByBackendPreference(capable, backends)
-  const override = envOverride(
-    isImage2Video ? 'NVIDIA_IMAGE2VIDEO_MODEL' : 'NVIDIA_VIDEO_MODEL',
-  )
-  const chosen =
-    named ?? (override ? usable.find((m) => m.id === override) : undefined) ?? usable[0]
+  // right default.
+  const chosen = named ?? orderByBackendPreference(capable, backends)[0]
 
   if (!chosen) {
     throw new Error(
@@ -326,20 +394,9 @@ export function defaultVideoModelId(
   const usable = models.filter(
     (m) => m.backend === backend && m.capabilities.includes(capability),
   )
-  const override = envOverride(
-    backend === VERTEX_BACKEND
-      ? 'VERTEX_VIDEO_MODEL'
-      : isImage2Video
-        ? 'NVIDIA_IMAGE2VIDEO_MODEL'
-        : 'NVIDIA_VIDEO_MODEL',
-  )
+  // Only Vertex has a pin; fal follows the catalog's own default.
+  const override =
+    backend === VERTEX_BACKEND ? envOverride('VERTEX_VIDEO_MODEL') : undefined
   const overridden = override ? usable.find((m) => m.id === override) : undefined
   return (overridden ?? usable.find((m) => m.isDefault) ?? usable[0])?.id
 }
-
-/**
- * Backends the NVIDIA/fal video client can POST to, in fallback order. Vertex is
- * deliberately absent: Veo goes through vertexVideoClient's long-running
- * `:predictLongRunning` flow, so resolving a Veo default here would mis-route.
- */
-export const NVIDIA_FAL_VIDEO_BACKENDS = ['nvcf', 'nvidia-svd', 'fal']

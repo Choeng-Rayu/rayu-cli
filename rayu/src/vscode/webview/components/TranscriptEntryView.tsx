@@ -17,6 +17,7 @@ import type {
 } from '../../shared/webviewProtocol.js'
 import {
   describeCompletion,
+  describeTurnCredits,
   formatDuration,
   isTerminalPhase,
   tokenReadouts,
@@ -242,6 +243,7 @@ export function TurnEndEntry({
   if (!completion) return null
   const { glyph, text, tone } = describeCompletion(completion)
   const readouts = tokenReadouts(completion.usage)
+  const credits = describeTurnCredits(completion)
   return (
     <div className={`rc-working rc-turn-done rc-turn-done-${tone}`}>
       <span className="rc-turn-glyph" aria-hidden="true">
@@ -256,6 +258,12 @@ export function TurnEndEntry({
             {readout.direction === '\u2191' ? 'input' : 'output'}
           </span>
         ))}
+        {credits && (
+          <span className="rc-token-readout rc-turn-credits" title={credits.title}>
+            {' · '}
+            {credits.text}
+          </span>
+        )}
       </span>
     </div>
   )

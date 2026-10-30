@@ -7,6 +7,7 @@ import React from 'react'
 import type { ToolRenderer } from './index.js'
 import type { TranscriptEntry } from '../../shared/webviewProtocol.js'
 import { DiffView } from '../components/DiffView.js'
+import { CheckIcon, ErrorIcon } from '../components/Icons.js'
 
 const FILE_TOOLS = new Set(['edit', 'write', 'read', 'multiedit'])
 
@@ -32,12 +33,8 @@ export const FileEditRenderer: ToolRenderer = {
           <span className="rc-tool-file-icon">{icon}</span>
           <span className="rc-tool-file-name">{name.toUpperCase()}</span>
           <code className="rc-tool-file-path">{entry.label}</code>
-          {entry.status === 'error' && (
-            <span className="rc-tool-file-error">✗</span>
-          )}
-          {entry.status === 'done' && !diff && (
-            <span className="rc-tool-file-ok">✓</span>
-          )}
+          {entry.status === 'error' && <ErrorIcon className="rc-tool-file-error" />}
+          {entry.status === 'done' && !diff && <CheckIcon className="rc-tool-file-ok" />}
         </div>
         {diff && (
           <DiffView

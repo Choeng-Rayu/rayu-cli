@@ -5,7 +5,7 @@
  *
  * Tool subprocesses inherit `NO_COLOR=1` / `FORCE_COLOR=0` from the engine, so most
  * output arrives plain — and that MATCHES the terminal, which pipes tool output too.
- * See `host/engine/engineProcess.ts` for why forcing colour on would be a divergence
+ * See `host/engine/engineLaunch.ts` for why forcing colour on would be a divergence
  * rather than parity.
  *
  * Escapes still arrive when the user asks for them explicitly — `ls --color=always`,

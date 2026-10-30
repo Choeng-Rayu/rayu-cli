@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { scriptLaunch } from './helpers/engineLaunch.js'
 
 const sockets: Array<EventEmitter & { connected: boolean; auth: unknown; disconnect: () => void; io: EventEmitter }> = []
 const io = mock((_url: string, options: { auth: unknown }) => {
@@ -201,7 +202,7 @@ describe('native VS Code pairing panel', () => {
     globalThis.fetch = (async (input) => String(input).endsWith('/begin')
       ? challengeResponse() : new Response(null, { status: 204 })) as unknown as typeof fetch
     const pairing = await beginGuestPairing(() => {}, () => {}, worker)
-    await showBridgePairingPanel(engine, pairing.url, pairing.expiresAt)
+    await showBridgePairingPanel(scriptLaunch(engine), pairing.url, pairing.expiresAt)
     received({ type: 'ready' })
     expect(panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ waiting: true, approved: false }))
     expect(panel.webview.html).toContain('var(--vscode-button-background)')
@@ -222,7 +223,7 @@ describe('native VS Code pairing panel', () => {
       : String(input).endsWith('/poll') ? Response.json({ status: 'approved', token: 'worker-token' })
         : new Response(null, { status: 204 })) as unknown as typeof fetch
     const pairing = await beginGuestPairing(() => approved.resolve(), () => {}, worker)
-    await showBridgePairingPanel(engine, pairing.url, pairing.expiresAt)
+    await showBridgePairingPanel(scriptLaunch(engine), pairing.url, pairing.expiresAt)
     await approved.promise
     received({ type: 'ready' })
     expect(panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ waiting: false, approved: true }))

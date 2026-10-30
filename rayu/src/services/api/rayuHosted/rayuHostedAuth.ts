@@ -5,7 +5,7 @@
 // every request — exactly how the Copilot/Vertex providers reuse the adapter
 // with a token-injecting fetch wrapper. SECURITY: tokens are never logged.
 import {
-  getRayuGatewayBaseUrl,
+  getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
 } from '../../rayuAuth/rayuSession.js'
 import {
@@ -15,9 +15,16 @@ import {
   RAYU_QUERY_SOURCE_HEADER,
 } from './gatewayHeaders.js'
 
-/** OpenAI-compatible base URL of the Rayu gateway (gateway base + /v1). */
+/**
+ * OpenAI-compatible base URL of the Rayu gateway (gateway base + /v1).
+ *
+ * Every request built on this URL carries the Rayu JWT (see
+ * {@link makeRayuHostedFetch}), so the base goes through the secure getter:
+ * a remote plaintext-http `RAYU_GATEWAY_URL` throws here, before any chat
+ * request is issued. Loopback http (the dev gateway) still resolves.
+ */
 export function rayuHostedBaseURL(): string {
-  return `${getRayuGatewayBaseUrl()}/v1`
+  return `${getSecureRayuGatewayBaseUrl()}/v1`
 }
 
 /**
@@ -27,7 +34,7 @@ export function rayuHostedBaseURL(): string {
  * Anthropic SDK appends /v1/messages).
  */
 export function rayuHostedAnthropicBaseURL(): string {
-  return `${getRayuGatewayBaseUrl()}/anthropic`
+  return `${getSecureRayuGatewayBaseUrl()}/anthropic`
 }
 
 type FetchParams = Parameters<typeof fetch>
@@ -101,7 +108,9 @@ export function makeRayuHostedFetch(): typeof fetch {
     for (const [k, v] of Object.entries(meta)) {
       headers.set(k, v)
     }
-    return inner(input, { ...init, headers })
+    // redirect:'error' — this fetch attaches the JWT to every request, and a
+    // redirect would move it off the vetted gateway URL.
+    return inner(input, { ...init, headers, redirect: 'error' })
   }
   return wrapped as typeof fetch
 }

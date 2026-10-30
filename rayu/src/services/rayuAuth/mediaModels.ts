@@ -19,15 +19,20 @@
 // in there is no gateway to ask, and a tiny fallback catalog is used instead (see
 // mediaModelsFallback.ts for why, and why it is not the source of truth).
 //
-// SECURITY: this is metadata only. No provider key is fetched, stored, or sent —
-// media generation runs against the user's own NVIDIA / fal / GCP credentials.
+// SECURITY: this is metadata only. No provider key is fetched, stored, or sent.
+// Hosted generation goes through the gateway on the Rayu session; bring-your-own
+// generation runs against the user's own fal.ai / Google Cloud credentials.
+//
+// NVIDIA image and video generation (genai, NVCF, SVD) was removed from the CLI.
+// The backend can still publish rows for those backends — older CLIs read them —
+// so this parser skips them quietly (see RETIRED_MEDIA_BACKENDS).
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { logError } from '../../utils/log.js'
 import { fallbackMediaCatalog } from './mediaModelsFallback.js'
 import {
-  getRayuGatewayBaseUrl,
+  getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
   hasRayuSession,
   isUseRayuOAuthEnabled,
@@ -39,8 +44,16 @@ export type ImageCapability = 'generate' | 'edit'
 export type VideoCapability = 'text2video' | 'image2video'
 export type MediaCapability = ImageCapability | VideoCapability
 
-/** Upstream that serves a media model. The CLI picks its HTTP client from this. */
-export type MediaBackend = 'nvidia' | 'vertex' | 'nvcf' | 'nvidia-svd' | 'fal'
+/**
+ * Upstream that serves a media model. The CLI picks its HTTP client from this.
+ *
+ * `rayu` means RAYU-HOSTED: the request goes to the Rayu gateway (Bearer Rayu
+ * JWT) and the gateway holds the upstream provider key, exactly like a
+ * rayu-hosted chat model. It is therefore the only backend the user needs no
+ * key for. `vertex` (Imagen / Veo on the user's Google credentials) and `fal`
+ * (fal.ai Kling on the user's FAL_KEY) are the bring-your-own backends.
+ */
+export type MediaBackend = 'vertex' | 'fal' | 'rayu'
 
 /**
  * Request-SHAPE family. The CLI maps this to a body builder (see the
@@ -62,8 +75,6 @@ export interface MediaModelEntry {
   capabilities: MediaCapability[]
   backend: MediaBackend
   family: MediaFamily
-  /** NVCF function UUID (video on the `nvcf` backend). */
-  nvcfFunctionId?: string
   /** Rough generation seconds, for the user-facing wait message. */
   estimatedSeconds?: number
   /**
@@ -98,7 +109,8 @@ const FILE = 'rayu-media-models.json'
 /**
  * How long a fetched catalog is considered fresh. Short, because the whole point
  * of a server-owned catalog is that a model added in the dashboard shows up
- * without a release; `/refresh-media-models` forces it immediately.
+ * without a release; opening `/model_image_generation` or
+ * `/model_video_generation` forces an immediate refresh.
  */
 const TTL_MS = 5 * 60 * 1000
 
@@ -109,12 +121,44 @@ const MEDIA_TYPES: readonly MediaType[] = ['image', 'video']
 const IMAGE_CAPABILITIES: readonly string[] = ['generate', 'edit']
 const VIDEO_CAPABILITIES: readonly string[] = ['text2video', 'image2video']
 const MEDIA_BACKENDS: readonly string[] = [
-  'nvidia',
   'vertex',
+  'fal',
+  // Hosted entries synthesized by the gateway from the admin's hosted catalog:
+  // `image_models` for images (family openai_images / dashscope_multimodal) AND
+  // hosted video models (family dashscope_video). mediaModelsFallback.ts stays
+  // BYO-only — hosted models are server-owned and must never be invented offline.
+  'rayu',
+]
+
+/**
+ * Backends this CLI no longer serves: NVIDIA genai (FLUX / Stable Diffusion /
+ * Kontext), NVCF (Cosmos) and NVIDIA SVD.
+ *
+ * Rows for them are skipped QUIETLY. They are not schema drift — the backend
+ * still publishes them for older CLIs — so counting them as unreadable would log
+ * a "your CLI is older than the gateway" warning that is the opposite of true.
+ */
+const RETIRED_MEDIA_BACKENDS: ReadonlySet<string> = new Set([
+  'nvidia',
   'nvcf',
   'nvidia-svd',
-  'fal',
-]
+])
+
+function isRetiredBackendItem(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false
+  const backend = (raw as { backend?: unknown }).backend
+  return typeof backend === 'string' && RETIRED_MEDIA_BACKENDS.has(backend)
+}
+
+/**
+ * Error text for a signed-in hosted user with NO usable media catalog: the
+ * gateway fetch failed (so only the BYO-only built-in fallback is known) or the
+ * catalog carries no hosted entry for the operation, and no BYO backend is
+ * configured either. Naming the real cause beats a misleading "API key not
+ * configured" from a BYO client the user never chose.
+ */
+export const MEDIA_CATALOG_UNAVAILABLE_MESSAGE =
+  'Rayu model catalog unavailable — check your connection, then open /model_image_generation or /model_video_generation to retry'
 
 let cache: PersistedCatalog | null = null
 let loadedFromDisk = false
@@ -207,9 +251,6 @@ function coerceEntry(raw: unknown): MediaModelEntry | null {
     family,
     isDefault: o.default === true || o.isDefault === true,
   }
-  if (typeof o.nvcfFunctionId === 'string' && o.nvcfFunctionId) {
-    entry.nvcfFunctionId = o.nvcfFunctionId
-  }
   if (typeof o.estimatedSeconds === 'number' && o.estimatedSeconds > 0) {
     entry.estimatedSeconds = Math.floor(o.estimatedSeconds)
   }
@@ -261,6 +302,8 @@ export function parseMediaModels(payload: unknown): {
     ) {
       withMediaType++
     }
+    // A retired backend is a known, deliberate omission — not an unreadable item.
+    if (isRetiredBackendItem(raw)) continue
     const entry = coerceEntry(raw)
     if (!entry) {
       dropped++
@@ -398,8 +441,8 @@ async function fetchCatalog(): Promise<MediaCatalog | null> {
     const token = await getValidRayuAccessToken()
     if (!token) return null
     const res = await (globalThis.fetch as typeof fetch)(
-      `${getRayuGatewayBaseUrl()}/v1/models?media=all`,
-      { headers: { Authorization: `Bearer ${token}` } },
+      `${getSecureRayuGatewayBaseUrl()}/v1/models?media=all`,
+      { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' },
     )
     if (!res.ok) {
       if (res.status === 400) {
@@ -455,7 +498,14 @@ async function fetchCatalog(): Promise<MediaCatalog | null> {
     // fetch re-arms it, so a problem that comes back is reported again.
     if (dropped === 0) lastReported = ''
     return stripUserId(next)
-  } catch {
+  } catch (e) {
+    // A gateway URL that would ship the JWT in the clear (remote plaintext
+    // http, embedded credentials, non-http scheme) throws HERE, before the
+    // request. That is a configuration fault the user can fix, not transient
+    // noise — report it once so it does not vanish into the offline fallback.
+    if (e instanceof Error && e.message.includes('RAYU_GATEWAY_URL')) {
+      reportOnce(e.message)
+    }
     // Offline / DNS / TLS — keep the last good cache.
     return null
   }
@@ -468,6 +518,27 @@ export function clearMediaModels(): void {
   lastAttempt = 0
   lastReported = ''
   persist(null)
+}
+
+/**
+ * True when a video catalog entry accepts a reference image, i.e. its
+ * capabilities include `image2video`. The hosted gateway maps that capability
+ * to an `input.media:[{type:"reference_image"}]` upstream request, so this is
+ * the gate for sending `input_image` to a hosted model.
+ */
+export function isReferenceCapable(entry: MediaModelEntry): boolean {
+  return entry.capabilities.includes('image2video')
+}
+
+/**
+ * True when an image catalog entry accepts an input image for editing, i.e.
+ * its capabilities include `edit`. The hosted gateway maps that capability to
+ * an image-to-image upstream request (families like `dashscope_multimodal`
+ * advertise it; `openai_images` entries stay generate-only), so this is the
+ * gate for sending `input_image` to a hosted image model.
+ */
+export function isEditCapable(entry: MediaModelEntry): boolean {
+  return entry.capabilities.includes('edit')
 }
 
 /** All models for a media type, in server-defined order (picker display). */

@@ -8,9 +8,9 @@
  * `EngineManager` owns the PROCESS layer: it knows how to find the binary, spawn
  * the child with the right flags and environment, and dispose it cleanly.
  *
- * The split means process-level concerns (binary path, NODE_OPTIONS, Electron
- * run-as-node quirks, stderr capture for crash diagnostics) live here and never
- * appear in the protocol handler, and vice versa.
+ * The split means process-level concerns (stderr capture for crash diagnostics, disposal)
+ * live here and never appear in the protocol handler, and vice versa. Which executable
+ * runs, and with what environment, is decided by `engine/engineLaunch.ts`.
  *
  * ── WHAT THIS DOES NOT OWN ──────────────────────────────────────────────────────
  *
@@ -18,11 +18,12 @@
  * `ChatSession`'s responsibility.  `EngineManager` delivers the child; the session
  * uses it.
  */
-import type { EngineProcess, EngineProcessOptions } from '../engine/engineProcess.js'
+import type { EngineLaunch } from '../engine/engineLaunch.js'
+import type { EngineProcess } from '../engine/engineProcess.js'
 
 export interface EngineManagerOptions {
-  /** Absolute path to the built `engine.mjs`. */
-  enginePath: string
+  /** How to start the engine — see `engine/engineLaunch.ts`. */
+  launch: EngineLaunch
   /** Working directory for the engine child. */
   cwd: string
   /** Resolves just-in-time environment additions (e.g. IDE server port). */
@@ -67,7 +68,7 @@ export class EngineManager {
     // The caller (SessionRegistry / ChatSession) is expected to replace/supplement these.
     const proc = new EngineProcessClass(
       {
-        enginePath: this.options.enginePath,
+        launch: this.options.launch,
         cwd: this.options.cwd,
         args,
         env: env as Record<string, string | undefined>,

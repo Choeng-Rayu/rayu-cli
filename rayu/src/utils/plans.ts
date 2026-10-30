@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
 import { copyFile, writeFile } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
-import { join, resolve, sep } from 'path'
+import { join, normalize, resolve, sep } from 'path'
 import type { AgentId, SessionId } from 'src/types/ids.js'
 import type { LogOption } from 'src/types/logs.js'
 import type {
@@ -126,6 +126,19 @@ export function getPlanFilePath(agentId?: AgentId): string {
 
   // Subagents: include agent ID
   return join(getPlansDirectory(), `${planSlug}-agent-${agentId}.md`)
+}
+
+// Check if file is the plan file for the current session
+export function isSessionPlanFile(absolutePath: string): boolean {
+  // Check if path is a plan file for this session (main or agent-specific)
+  // Main plan file: {plansDir}/{planSlug}.md
+  // Agent plan file: {plansDir}/{planSlug}-agent-{agentId}.md
+  const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
+  // SECURITY: Normalize to prevent path traversal bypasses via .. segments
+  const normalizedPath = normalize(absolutePath)
+  return (
+    normalizedPath.startsWith(expectedPrefix) && normalizedPath.endsWith('.md')
+  )
 }
 
 /**

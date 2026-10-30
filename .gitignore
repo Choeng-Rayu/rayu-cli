@@ -19,6 +19,7 @@ rayu/.playwright-mcp/
 
 # Test artifacts
 vertex-test/
+brag-output-*/
 
 rayu-cli/node_modules
 # Local development

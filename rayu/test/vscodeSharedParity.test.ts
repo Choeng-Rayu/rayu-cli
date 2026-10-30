@@ -10,6 +10,8 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { CONNECT_FLAG } from '../src/vscode/shared/connectProtocol.js'
 import { LOGIN_FLAG } from '../src/vscode/shared/loginProtocol.js'
+import { SETTINGS_FLAG } from '../src/vscode/shared/settingsChildProtocol.js'
+import { ACCOUNT_FLAG } from '../src/vscode/shared/accountChildProtocol.js'
 import { PERMISSION_MODES as editorModes } from '../src/vscode/shared/permissionModes.js'
 import { PERMISSION_MODES as cliModes, isExternalPermissionMode } from '../src/utils/permissions/PermissionMode.js'
 import { summariseInput, resultText } from '../src/utils/activity/activityBlocks.js'
@@ -53,6 +55,15 @@ describe('shared CLI and editor contracts', () => {
     const hostSource = readFileSync(resolve(import.meta.dir, '../src/entrypoints/vscodeHost.ts'), 'utf8')
     expect(hostSource).toContain('passthrough.includes(LOGIN_FLAG)')
     expect(hostSource).toContain('passthrough.indexOf(CONNECT_FLAG)')
+  })
+  test('SETTINGS_FLAG and ACCOUNT_FLAG are recognized by vscodeHost entrypoint dispatch', () => {
+    // Both helper paths spawn the same engine with a flag; the constant is the contract
+    // between the host bundle and the entrypoint, so it is asserted in both places.
+    expect(SETTINGS_FLAG).toBe('--rayucode-settings')
+    expect(ACCOUNT_FLAG).toBe('--rayucode-account')
+    const hostSource = readFileSync(resolve(import.meta.dir, '../src/entrypoints/vscodeHost.ts'), 'utf8')
+    expect(hostSource).toContain('passthrough.includes(SETTINGS_FLAG)')
+    expect(hostSource).toContain('passthrough.includes(ACCOUNT_FLAG)')
   })
   test('editor permission modes match CLI modes, with internal modes kept internal', () => {
     for (const mode of editorModes) {

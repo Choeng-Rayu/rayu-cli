@@ -22,6 +22,7 @@ import type {
   ProviderPresetView,
   ProviderSetupView,
 } from '../../shared/webviewProtocol.js'
+import { CloseIcon } from './Icons.js'
 
 export interface ProviderSetupPanelProps {
   setup: ProviderSetupView
@@ -71,8 +72,8 @@ export function ProviderSetupPanel({
     <div className="rc-setup" role="region" aria-label="Connect a provider">
       <div className="rc-setup-head">
         <h2 className="rc-setup-title">Connect a provider</h2>
-        <button type="button" className="rc-icon-button" title="Close" onClick={onClose}>
-          ✕
+        <button type="button" className="rc-icon-button" title="Close" aria-label="Close" onClick={onClose}>
+          <CloseIcon />
         </button>
       </div>
 

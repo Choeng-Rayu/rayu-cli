@@ -27,7 +27,7 @@ import {
   getDirectoryForPath,
   sanitizePath,
 } from '../path.js'
-import { getPlanSlug, getPlansDirectory } from '../plans.js'
+import { isSessionPlanFile } from '../plans.js'
 import { getPlatform } from '../platform.js'
 import { getProjectDir } from '../sessionStorage.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
@@ -256,18 +256,8 @@ function isClaudeConfigFilePath(filePath: string): boolean {
   return guardedDirs.some(dir => pathInWorkingPath(filePath, dir))
 }
 
-// Check if file is the plan file for the current session
-function isSessionPlanFile(absolutePath: string): boolean {
-  // Check if path is a plan file for this session (main or agent-specific)
-  // Main plan file: {plansDir}/{planSlug}.md
-  // Agent plan file: {plansDir}/{planSlug}-agent-{agentId}.md
-  const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
-  // SECURITY: Normalize to prevent path traversal bypasses via .. segments
-  const normalizedPath = normalize(absolutePath)
-  return (
-    normalizedPath.startsWith(expectedPrefix) && normalizedPath.endsWith('.md')
-  )
-}
+// The session plan-file check lives in plans.ts (isSessionPlanFile), next to the
+// paths it compares against.
 
 /**
  * Returns the session memory directory path for the current session with trailing separator.

@@ -40,6 +40,8 @@ import {
 } from '../../../protocol/index.js'
 
 import { EngineProcess, type EngineExitInfo } from '../engine/engineProcess.js'
+import { scriptEngineLaunch, type EngineLaunch } from '../engine/engineLaunch.js'
+import { ENGINE_EXIT_MEMORY_LIMIT } from '../../shared/engineExitCodes.js'
 import { ControlClient, type InboundControlRequest } from '../engine/controlClient.js'
 import {
   MAX_WEBVIEW_TEXT_CHARS,
@@ -50,6 +52,7 @@ import {
 } from './formatActivityForVSCode.js'
 import type { WrappedMessage } from '../../../telegram/formatActivity.js'
 import { loadTaskHistory, saveTaskHistory } from '../../../utils/task/taskHistory.js'
+import { resolveSessionFilePath } from '../../../utils/sessionStoragePortable.js'
 import { decodeModelProvider } from '../../../utils/rayuConfig.js'
 // Host-side (Node) only: the webview cannot reach this, which is why the Rayu
 // dashboard link is resolved here and sent down with the rate-limit view.
@@ -113,6 +116,7 @@ import {
   MAX_TRANSCRIPT_ENTRIES,
   TRANSCRIPT_TRIM_STEP,
 } from '../../shared/webviewProtocol.js'
+import { creditsFromResultFrame } from '../../shared/turnProgress.js'
 
 /**
  * Commands implemented by the editor host rather than the stream-json engine.
@@ -145,7 +149,7 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
   { name: 'tasks', description: 'Inspect foreground and background tasks' },
   { name: 'workflows', description: 'Browse available workflows' },
   { name: 'effort', description: 'Set effort level [low|medium|high|max|auto]' },
-  // These two are `local-jsx` in the CLI for the same reason `/connect` is — they render an
+  // These are `local-jsx` in the CLI for the same reason `/connect` is — they render an
   // Ink picker — so the non-interactive engine strips them too, and Rayucode has to provide
   // the surface. The grammar and the persistence are the CLI's; only the picker differs.
   {
@@ -155,6 +159,14 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
   {
     name: 'webfetch_model',
     description: 'Set the model WebFetch uses to summarize pages [show|default]',
+  },
+  {
+    name: 'model_image_generation',
+    description: 'Set the image generation/editing model (live list from Rayu)',
+  },
+  {
+    name: 'model_video_generation',
+    description: 'Set the video generation model (live list from Rayu)',
   },
 ]
 
@@ -190,11 +202,12 @@ function withRayucodeSlashCommands(
  * process. `buildHostArgv` in `entrypoints/vscodeHost.ts` appends the required headless
  * flags on top of whatever this returns and never removes anything, so these survive.
  *
- * ── THE PRODUCT CHOICE IS AN EXPLICIT SPAWN FLAG ───────────────────────────────
+ * ── THINKING IS ALWAYS ON ──────────────────────────────────────────────────────
  *
- * It is the CLI's own switch, and it is the ONLY mechanism that outranks
- * `shouldEnableThinkingByDefault()` — which returns false when the user's shared settings
- * carry `alwaysThinkingEnabled: false` or `MAX_THINKING_TOKENS=0`. The alternative, a
+ * This flag is HARD-CODED to `enabled`, not derived from a preference. It is the CLI's
+ * own switch, and it is the ONLY mechanism that outranks `shouldEnableThinkingByDefault()`
+ * — which returns false when the user's shared settings carry
+ * `alwaysThinkingEnabled: false` or `MAX_THINKING_TOKENS=0`. The alternative, a
  * `set_max_thinking_tokens` control request with `null`, merely restores that same
  * settings default, so it cannot guarantee thinking is on.
  *
@@ -202,17 +215,44 @@ function withRayucodeSlashCommands(
  * "thinking wanted" and then resolves adaptive-vs-budget PER MODEL, so a model that
  * cannot do adaptive thinking gets its own default budget and a model that supports no
  * thinking at all is sent no thinking parameter.
+ *
+ * ── THE PERMISSION MODE IS ALWAYS PASSED, INCLUDING `default` ─────────────────────
+ *
+ * Without the flag the engine starts in the shared settings' `permissions.defaultMode`,
+ * which the CLI owns. Rayucode starts every engine in the mode the user last picked in
+ * Rayucode (or in its Settings tab), so a `defaultMode` written for the terminal could
+ * otherwise run a conversation in a mode its pill does not show. Every mode the editor
+ * offers is one the engine's `--permission-mode` accepts (vscodeConfiguration.test.ts).
  */
-export function engineArgsFor(options: {
-  resumeSessionId?: string
-  thinkingEnabled?: boolean
-}): string[] {
-  const args = [
-    '--thinking',
-    options.thinkingEnabled === false ? 'disabled' : 'enabled',
-  ]
+export function engineArgsFor(options: { resumeSessionId?: string; permissionMode: string }): string[] {
+  const args = ['--thinking', 'enabled', '--permission-mode', options.permissionMode]
   if (options.resumeSessionId) args.push('--resume', options.resumeSessionId)
   return args
+}
+
+/**
+ * The `initialize` request. Prompt suggestions follow Rayucode's own setting: each one is
+ * an extra model request, and the engine generates them whenever this asks.
+ */
+export function initializeRequestFor(preferences: { promptSuggestionEnabled?: boolean }): Record<string, unknown> {
+  return {
+    agentProgressSummaries: true,
+    promptSuggestions: preferences.promptSuggestionEnabled !== false,
+    runtimeCapabilities: true,
+  }
+}
+
+/**
+ * Whether the mode the user chose has to be sent again after `initialize`.
+ *
+ * The engine was started in it (`engineArgsFor`), and a runtime snapshot in the
+ * `initialize` response says which mode it actually runs in. Only a mismatch needs the
+ * switch — the engine fell back, for instance because settings disable that mode. An
+ * engine that does not report its mode is treated as the engines before the flag were:
+ * started in `default`.
+ */
+export function needsPermissionModeReplay(desired: string, reported: string | undefined): boolean {
+  return reported === undefined ? desired !== 'default' : reported !== desired
 }
 
 /** A persisted Rayucode effort as the panel's choice. Absent or unrecognised is Auto. */
@@ -357,11 +397,22 @@ export interface SessionCallbacks {
   onMcpElicitationCancelled?: (requestId: string) => void
 }
 
-export interface SessionOptions {
-  enginePath: string
+/**
+ * How a session's engine is started.
+ *
+ * `launch` is what the extension passes: resolved once, by `engine/engineLaunch.ts`,
+ * which is the one place that knows which executable to run and with what environment.
+ * `enginePath` (with an optional `nodePath`) is shorthand for a script launch of that
+ * file, kept because a large part of the test suite constructs sessions that way; it
+ * resolves through the same module.
+ */
+export type SessionEngineTarget =
+  | { launch: EngineLaunch; enginePath?: undefined; nodePath?: undefined }
+  | { enginePath: string; nodePath?: string; launch?: undefined }
+
+export type SessionOptions = SessionEngineTarget & {
   cwd: string
   resumeSessionId?: string
-  nodePath?: string
   env?: Record<string, string | undefined>
   /** Finish login and provider preparation before a new engine reads its profile. */
   prepareStartup?: () => Promise<void>
@@ -377,6 +428,16 @@ export interface SessionOptions {
    * session from starting.
    */
   resolveEnv?: () => Promise<Record<string, string | undefined>>
+}
+
+/** The launch a session's options describe. */
+function engineLaunchFor(target: SessionEngineTarget): EngineLaunch {
+  if (target.launch) return target.launch
+  return scriptEngineLaunch({
+    enginePath: target.enginePath,
+    nodePath: target.nodePath,
+    execPath: process.execPath,
+  })
 }
 
 /**
@@ -596,15 +657,15 @@ export class ChatSession {
   private permissionMode: PermissionModeView = permissionModeById(
     this.initialPreferences.permissionMode ?? 'default',
   )
-  private thinkingPreference = this.initialPreferences.thinkingEnabled ?? true
 
   /**
    * Thinking and effort as last ACKNOWLEDGED.
    *
    * Capability flags are filled in from the engine's ModelInfo at `initialize`;
    * `supportsEffort: false` until then, so the control stays hidden rather than
-   * appearing and then vanishing. Until an engine exists, `effort` and thinking follow
-   * the persisted Rayucode choices — see `adoptPersistedChoices`.
+   * appearing and then vanishing. Until an engine exists, `effort` follows the persisted
+   * Rayucode effort — see `adoptPersistedChoices` — while thinking is always on whenever
+   * the model supports it.
    */
   private inference: InferenceSettingsView = {
     supportsEffort: false,
@@ -1258,6 +1319,30 @@ export class ChatSession {
       : {}
     if (this.disposed || epoch !== this.submissionEpoch) return
 
+    // ── NEVER RESUME A TRANSCRIPT THAT IS NOT ON DISK ─────────────────────────────
+    //
+    // A restored tab persists the engine's session id as soon as the child reports one,
+    // which can happen before any message has been written. The headless resume path
+    // treats a missing target as fatal (`print.ts` → `gracefulShutdownSync(1)`), and its
+    // message goes to stdout as a `result` frame, so the panel only sees exit code 1 and
+    // an unrelated diagnostics tail — reported as "the engine stopped unexpectedly".
+    //
+    // Resuming is a convenience, not a requirement: with no transcript there is nothing to
+    // continue, so this tab starts a fresh conversation instead of failing to start.
+    if (this.options.resumeSessionId) {
+      const transcript = await resolveSessionFilePath(
+        this.options.resumeSessionId,
+        this.options.cwd,
+      )
+      if (this.disposed || epoch !== this.submissionEpoch) return
+      if (!transcript) {
+        this.options = { ...this.options, resumeSessionId: undefined }
+        // Drop the dead id from the persisted binding too, so a later reload does not
+        // repeat the check for a conversation that never existed.
+        this.callbacks.onSessionIdChanged?.(null)
+      }
+    }
+
     let startupFailure: Error | null = null
     const control: ControlClient = new ControlClient(
       frame => this.engine?.send(frame) ?? false,
@@ -1289,18 +1374,17 @@ export class ChatSession {
       },
     )
 
-    // Thinking follows the Rayucode preference (on unless the user turned it off) — see
-    // `engineArgsFor`. A running engine changes it with `set_thinking` (`setThinking`).
-    // A NEW engine starts from what is persisted now, which another conversation may have
-    // changed since this one was created — the engine reads effort the same way.
+    // Thinking is always enabled — hard-coded at spawn in `engineArgsFor`, and there is no
+    // toggle to change it afterwards.
     if (this.adoptPersistedChoices()) this.callbacks.onInferenceSettings?.(this.inference)
     const args = engineArgsFor({
-      ...this.options,
-      thinkingEnabled: this.thinkingPreference,
+      resumeSessionId: this.options.resumeSessionId,
+      permissionMode: this.permissionMode.id,
     })
     const engine = new EngineProcess(
       {
-        ...this.options,
+        launch: engineLaunchFor(this.options),
+        cwd: this.options.cwd,
         args,
         env: {
           ...this.options.env,
@@ -1343,37 +1427,11 @@ export class ChatSession {
     // account info. A rejected initialization must reject startup too: a child that
     // died here cannot receive the first prompt.
     try {
-      const response = await control.request(
-        'initialize',
-        {
-          agentProgressSummaries: true,
-          promptSuggestions: true,
-          runtimeCapabilities: true,
-        },
-        60_000,
-      )
+      // Read at each spawn, so a change made in the Settings tab reaches the next engine.
+      const response = await control.request('initialize', initializeRequestFor(readRayucodePreferences()), 60_000)
       if (!isCurrent()) return
       let inferenceAcknowledged = this.applyInitialize(response)
-      // ── REPLAY THE CHOSEN PERMISSION MODE ────────────────────────────────────
-      //
-      // A fresh child always starts in the mode its argv implied, which is `default`. So a
-      // mode the user picked before this engine existed — or before the engine it replaced
-      // was torn down — has to be re-sent, or the panel shows "Full Manage" while every
-      // Bash call raises an approval card. `--allow-dangerously-skip-permissions` is in
-      // `vscodeHost`'s required flags precisely so that this replay can succeed.
-      //
-      // A refusal is not swallowed: the local mode falls back to what is actually
-      // enforced and the pill is resynced, because a control that lies about being on is
-      // worse than one that admits it could not be.
-      if (this.permissionMode.id !== 'default') {
-        const desired = this.permissionMode
-        const accepted = await this.applyPermissionModeToEngine(control, desired)
-        if (!isCurrent()) return
-        if (!accepted && this.permissionMode === desired) {
-          this.permissionMode = permissionModeById('default')
-          this.callbacks.onPermissionMode?.(this.permissionMode)
-        }
-      }
+      if (!(await this.confirmStartupPermissionMode(control, response, isCurrent))) return
       // Startup can materialize a provider from environment-based credentials. Read
       // the Rayucode profile again after initialization so even that first session is
       // pinned instead of falling through to a model saved by the terminal CLI.
@@ -1430,7 +1488,8 @@ export class ChatSession {
       typeof value.supportsEffort === 'boolean' &&
       typeof value.supportsThinking === 'boolean'
     ) {
-      this.inference = value
+      // Thinking is always on, so normalize whatever was acknowledged to match capability.
+      this.inference = { ...value, thinkingEnabled: value.supportsThinking }
       this.callbacks.onInferenceSettings?.(this.inference)
       return true
     }
@@ -1643,7 +1702,7 @@ export class ChatSession {
       this.inference = {
         ...this.inference,
         supportsThinking,
-        thinkingEnabled: supportsThinking && this.thinkingPreference,
+        thinkingEnabled: supportsThinking,
       }
       this.callbacks.onInferenceSettings?.(this.inference)
     }
@@ -1703,40 +1762,38 @@ export class ChatSession {
    * the terminal CLI's settings, which Rayucode never writes, so taking them verbatim
    * reverted the pill to Auto every time the model dropdown opened, a model was picked,
    * or the user signed in. The choice stays the engine-acknowledged one, or — before an
-   * engine exists — the persisted one a new engine would start with. An environment
-   * override is the exception: it outranks every choice, and the refresh reports it
-   * faithfully.
+   * engine exists — the persisted effort. Thinking is always on, so the refresh's persisted
+   * thinking value is ignored entirely. An environment override is the exception: it
+   * outranks every choice, and the refresh reports it faithfully.
    */
   applyInitialInference(value: InferenceSettingsView): void {
     this.adoptPersistedChoices()
     this.inference = {
       ...value,
       effort: value.effortEnvOverride !== null ? value.effort : this.inference.effort,
-      thinkingEnabled: value.supportsThinking && this.thinkingPreference,
+      thinkingEnabled: value.supportsThinking,
     }
     this.callbacks.onInferenceSettings?.(this.inference)
   }
 
   /**
-   * Re-read the persisted effort and thinking choices while this conversation has no engine.
+   * Re-read the persisted effort while this conversation has no engine.
    *
-   * Both are PRODUCT-wide, persisted in the Rayucode profile. Without an engine, the values
-   * that matter are the ones a new engine would start with — what is persisted NOW, which
-   * another conversation may have changed since this one was created. A running engine's
-   * acknowledged values win instead, so this does nothing once one exists. Returns whether
-   * the shown state changed. One small synchronous file read.
+   * Effort is PRODUCT-wide, persisted in the Rayucode profile. Without an engine, the effort
+   * shown is the one a new engine would start with — what is persisted NOW, which another
+   * conversation may have changed since this one was created. Thinking is not re-read: it is
+   * always on for Rayucode (see `engineArgsFor`). A running engine's acknowledged values win
+   * instead, so this does nothing once one exists. Returns whether the shown state changed.
+   * One small synchronous file read.
    */
   private adoptPersistedChoices(): boolean {
     if (this.control) return false
     const persisted = readRayucodePreferences()
-    if (persisted.thinkingEnabled !== undefined) {
-      this.thinkingPreference = persisted.thinkingEnabled
-    }
     const effort =
       this.inference.effortEnvOverride !== null
         ? this.inference.effort
         : effortChoiceOf(persisted.effort)
-    const thinkingEnabled = this.inference.supportsThinking && this.thinkingPreference
+    const thinkingEnabled = this.inference.supportsThinking
     if (effort === this.inference.effort && thinkingEnabled === this.inference.thinkingEnabled) {
       return false
     }
@@ -1759,35 +1816,6 @@ export class ChatSession {
       this.callbacks.onError(`Could not set effort: ${cause instanceof Error ? cause.message : String(cause)}`)
     }
   }
-
-  /**
-   * Turn extended thinking on or off for this session, through the engine.
-   *
-   * `set_thinking` replaces the engine's thinking config outright and persists the choice
-   * in the Rayucode profile. It is deliberately NOT `set_max_thinking_tokens`, whose `null`
-   * would only restore the shared CLI settings default (see `engineArgsFor`). The pill
-   * changes only when the engine acknowledges, like effort.
-   */
-  async setThinking(enabled: boolean): Promise<void> {
-    try {
-      await this.ensureStarted()
-      const control = this.control
-      const generation = this.generation
-      if (!control) return
-      const response = await control.request('set_thinking', { enabled }, 15_000)
-      if (control !== this.control || generation !== this.generation || this.disposed) return
-      // A respawn (crash recovery, resume) passes `--thinking` from this, so it follows.
-      this.thinkingPreference = enabled
-      if (!this.applyInferenceResponse(response)) await this.refreshInferenceSettings()
-    } catch (cause) {
-      this.callbacks.onError(
-        `Could not turn thinking ${enabled ? 'on' : 'off'}: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-      )
-    }
-  }
-
 
   /** Reload plugins through the engine that owns this session, then refresh its catalogues. */
   async reloadPlugins(): Promise<void> {
@@ -1896,11 +1924,12 @@ export class ChatSession {
    * ── A MODE CHOSEN BEFORE THE ENGINE EXISTS IS STILL A PROMISE TO KEEP ──────────
    *
    * With no child yet there is nothing to ask, so the choice is recorded and reported as
-   * accepted. That is only honest because `start()` REPLAYS it after `initialize` — see
-   * `applyPermissionModeToEngine`. Without that replay the panel said "Full Manage" while
-   * a freshly spawned child sat in `default` and asked for approval on every Bash call,
-   * which is the exact bug this pairing exists to prevent. The same replay covers every
-   * engine replacement: a configuration restart, a resume, or a crash recovery.
+   * accepted. That is only honest because `start()` launches the next engine in it and
+   * confirms it after `initialize` (`confirmStartupPermissionMode`). Without that, the
+   * panel said "Full Manage" while a freshly spawned child sat in `default` and asked for
+   * approval on every Bash call, which is the exact bug this pairing exists to prevent.
+   * The same path covers every engine replacement: a configuration restart, a resume, or
+   * a crash recovery.
    */
   async setPermissionMode(mode: PermissionModeView): Promise<boolean> {
     if (!this.control) {
@@ -1924,6 +1953,40 @@ export class ChatSession {
       return true
     }
     return false
+  }
+
+  /**
+   * After `initialize`, make sure the engine runs in the mode the user chose. Returns false
+   * when this startup was superseded meanwhile.
+   *
+   * ── WHY THE MODE CAN STILL NEED SENDING ────────────────────────────────────────
+   *
+   * The engine is started in the chosen mode (`engineArgsFor`), and normally reports it
+   * back in the `initialize` runtime snapshot. When it reports another mode — it fell
+   * back, e.g. because settings disable that mode — or reports none (an engine from before
+   * the flag), the mode is sent again; otherwise the panel would show "Full Manage" while
+   * every Bash call raises an approval card. `--allow-dangerously-skip-permissions` is in
+   * `vscodeHost`'s required flags precisely so that this switch can succeed.
+   *
+   * A refusal is not swallowed: the local mode falls back to what is actually enforced —
+   * the reported mode, or `default` — and the pill is resynced, because a control that
+   * lies about being on is worse than one that admits it could not be.
+   */
+  private async confirmStartupPermissionMode(
+    control: ControlClient,
+    response: Record<string, unknown>,
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
+    const desired = this.permissionMode
+    const reported = asString(asRecord(response.runtime)?.permissionMode)
+    if (!needsPermissionModeReplay(desired.id, reported)) return true
+    const accepted = await this.applyPermissionModeToEngine(control, desired)
+    if (!isCurrent()) return false
+    if (!accepted && this.permissionMode === desired) {
+      this.permissionMode = permissionModeById(reported ?? 'default')
+      this.callbacks.onPermissionMode?.(this.permissionMode)
+    }
+    return true
   }
 
   /**
@@ -1994,6 +2057,29 @@ export class ChatSession {
 
     // An expected exit is a disposal we asked for; saying so would be noise.
     if (info.expected) return null
+
+    // ── THE NEXT MESSAGE CONTINUES THIS CONVERSATION ────────────────────────────
+    //
+    // The next prompt starts a new engine, and `start()` resumes `resumeSessionId` — which
+    // until now still held whatever this session was OPENED with, usually nothing. So
+    // after a crash the replacement engine began an empty conversation while the panel
+    // kept showing the old one. Pointing it at the conversation the dead engine was
+    // running fixes that; `start()` already falls back to a fresh conversation if the
+    // transcript never reached disk.
+    if (!duringStartup && this.currentSessionId) {
+      this.options = { ...this.options, resumeSessionId: this.currentSessionId }
+    }
+
+    if (info.code === ENGINE_EXIT_MEMORY_LIMIT) {
+      // Not a failure the user caused or can fix: the engine stopped itself at its limit.
+      const message =
+        'Rayu restarted its engine to free memory. Your next message continues the conversation.'
+      if (!duringStartup) {
+        this.finishStreaming()
+        this.appendEntry({ id: newId(), kind: 'notice', severity: 'warning', text: message })
+      }
+      return new Error(message)
+    }
 
     const detail = info.stderrTail.trim()
     const failure = new Error(
@@ -3074,6 +3160,7 @@ export class ChatSession {
     const direct = finiteToken(rawUsage?.input_tokens)
     const cacheRead = finiteToken(rawUsage?.cache_read_input_tokens)
     const cacheCreation = finiteToken(rawUsage?.cache_creation_input_tokens)
+    const credits = creditsFromResultFrame(message)
     const completion: TurnCompletionEntry = {
       outcome,
       durationMs:
@@ -3090,6 +3177,9 @@ export class ChatSession {
             outputEstimated: false,
           }
         : { ...currentUsage },
+      // What the Rayu gateway charged, as the engine summed it. Absent for a
+      // BYOK turn, and for a turn that ended without a result frame.
+      ...(credits !== undefined && { credits }),
     }
     this.turnCompletions[turnId] = completion
     this.callbacks.onTurnCompleted?.(turnId, completion)

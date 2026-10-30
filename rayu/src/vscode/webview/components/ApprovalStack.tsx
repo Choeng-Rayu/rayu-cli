@@ -17,6 +17,7 @@
  */
 import { useState } from 'react'
 
+import type { PermissionDecisionKind } from '../../shared/planApproval.js'
 import type { PermissionRequestView } from '../../shared/webviewProtocol.js'
 import { PermissionCard } from './PermissionCard.js'
 import { PlanApprovalCard } from './PlanApprovalCard.js'
@@ -32,7 +33,7 @@ export interface ApprovalStackProps {
   ) => void
   onDecide: (
     requestId: string,
-    decision: 'allow-once' | 'allow-always' | 'deny',
+    decision: PermissionDecisionKind,
   ) => void
 }
 

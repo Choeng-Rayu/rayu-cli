@@ -25,10 +25,12 @@ import {
   getSmallFastModel,
   normalizeModelStringForAPI,
 } from '../utils/model/model.js'
+import { creditsFromRayuBody } from '../utils/rayuRequestCharge.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isToolReferenceBlock } from '../utils/toolSearch.js'
 import { getAPIMetadata, getExtraBodyParams } from './api/claude.js'
 import { getAnthropicClient } from './api/client.js'
+import { recordRayuCharge } from './rayuAuth/rayuTurnCredits.js'
 import { withTokenCountVCR } from './vcr.js'
 
 // Minimal values for token counting with thinking enabled
@@ -348,6 +350,8 @@ export async function countTokensViaHaikuFallback(
   const inputTokens = usage.input_tokens
   const cacheCreationTokens = usage.cache_creation_input_tokens || 0
   const cacheReadTokens = usage.cache_read_input_tokens || 0
+  // Counting by a 1-token request is a billed request on the Rayu gateway.
+  recordRayuCharge(creditsFromRayuBody(response))
 
   return inputTokens + cacheCreationTokens + cacheReadTokens
 }

@@ -3,7 +3,7 @@
 // formats it for the /usage command. The gateway is the billing source of
 // truth; the CLI only displays. Never throws.
 import {
-  getRayuGatewayBaseUrl,
+  getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
 } from './rayuSession.js'
 
@@ -101,9 +101,10 @@ async function requestCredits(
   timeoutMs?: number,
 ): Promise<{ status: number; body: RayuCreditStatus | null }> {
   const res = await (globalThis.fetch as typeof fetch)(
-    `${getRayuGatewayBaseUrl()}/v1/credits`,
+    `${getSecureRayuGatewayBaseUrl()}/v1/credits`,
     {
       headers: { Authorization: `Bearer ${credential}` },
+      redirect: 'error',
       ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     },
   )
@@ -112,12 +113,14 @@ async function requestCredits(
 }
 
 /** Fetch live usage from the gateway. Returns null when signed out, the gateway
- *  is unreachable, or the response is not OK. */
-export async function fetchRayuCredits(): Promise<RayuCreditStatus | null> {
+ *  is unreachable, the response is not OK, or `timeoutMs` passes first. */
+export async function fetchRayuCredits(
+  options: { timeoutMs?: number } = {},
+): Promise<RayuCreditStatus | null> {
   const token = await getValidRayuAccessToken()
   if (!token) return null
   try {
-    return (await requestCredits(token)).body
+    return (await requestCredits(token, options.timeoutMs)).body
   } catch {
     return null
   }
@@ -127,6 +130,11 @@ export async function fetchRayuCredits(): Promise<RayuCreditStatus | null> {
  *  text in /usage and the text in a rate-limit error cannot drift apart. */
 export const PACING_SWITCH_HINT =
   'Turn on "use all credits" in your dashboard to keep working now.'
+
+/** The same advice for a TEAM allowance, whose pacing switch only an org admin
+ *  can use, so a member is pointed at them instead of at a control they lack. */
+export const TEAM_PACING_HINT =
+  'Ask your team admin to turn off credit pacing for the team.'
 
 /**
  * Whether the plan's pacing windows are currently being enforced.

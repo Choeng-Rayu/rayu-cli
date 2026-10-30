@@ -31,14 +31,13 @@ const VEO_CATALOG: MediaModelEntry[] = [
     isDefault: true,
   },
   {
-    id: 'nvidia/cosmos-predict1-5b',
-    label: 'Cosmos Predict1 5B',
+    id: 'fal-ai/kling-video/v2.1/standard/text-to-video',
+    label: 'Kling Video 2.1 (text-to-video)',
     mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'nvcf',
-    family: 'cosmos-predict1',
-    nvcfFunctionId: 'eef816a3-3940-413b-93c9-513ae29f34f9',
-    estimatedSeconds: 120,
+    capabilities: ['text2video'],
+    backend: 'fal',
+    family: 'fal-kling',
+    estimatedSeconds: 90,
   },
 ]
 
@@ -66,7 +65,9 @@ afterEach(async () => {
 describe('isVertexVideoModel', () => {
   test('detects veo models', () => {
     expect(isVertexVideoModel('veo-3.1-generate-001', VEO_CATALOG)).toBe(true)
-    expect(isVertexVideoModel('nvidia/cosmos-predict1-5b', VEO_CATALOG)).toBe(false)
+    expect(
+      isVertexVideoModel('fal-ai/kling-video/v2.1/standard/text-to-video', VEO_CATALOG),
+    ).toBe(false)
     expect(isVertexVideoModel(undefined, VEO_CATALOG)).toBe(false)
   })
 })

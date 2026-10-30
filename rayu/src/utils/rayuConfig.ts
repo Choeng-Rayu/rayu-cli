@@ -227,14 +227,16 @@ export type RayuConfig = {
   subagentByAgent?: Record<string, { providerId: string; model: string }>
   /**
    * Default model id for the GenerateImage tool (image generation + editing),
-   * chosen via /model_image_generation. When unset, the tool uses its NVIDIA
-   * default (or Vertex Imagen when that's the only configured backend).
+   * chosen via /model_image_generation. When unset, a signed-in user gets the
+   * first hosted model that fits the request; otherwise Vertex Imagen's
+   * catalog default.
    */
   imageModel?: string
   /**
    * Default model id for the GenerateVideo tool, chosen via
-   * /model_video_generation. When unset, the tool uses its NVIDIA/fal default
-   * (or Vertex Veo when that's the only configured backend).
+   * /model_video_generation. When unset, a signed-in user gets the first hosted
+   * model that fits the request; otherwise the fal.ai or Vertex Veo catalog
+   * default for the configured backend.
    */
   videoModel?: string
   /**

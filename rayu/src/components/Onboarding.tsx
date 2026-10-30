@@ -40,6 +40,20 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
   const [currentStepIndex, setCurrentStepIndex] = useState(0)
   const [theme, setTheme] = useTheme()
 
+  // Which steps EXIST is decided once, when onboarding mounts.
+  //
+  // `hasRayuCredential()` flips from false to true mid-flow the moment the
+  // user signs in (rayuLogin writes rayu-auth.json). Recomputing the step list
+  // on every render therefore DELETES the provider step at exactly the moment
+  // it completes: the login handler's `goToNextStep` advances to index 2
+  // against the old three-step list, but the next render only has
+  // [theme, security], so `steps[2]` is undefined and the component renders
+  // the welcome banner with no step beneath it — stuck until restart.
+  // Freezing the presence decisions keeps every index valid; only the step
+  // components are rebuilt per render, so they still see current state.
+  const [needsCredentialStep] = useState(() => !hasRayuCredential())
+  const [offersTerminalSetup] = useState(() => shouldOfferTerminalSetup())
+
   useEffect(() => {
     logEvent('tengu_began_setup', {})
   }, [])
@@ -120,10 +134,11 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
   // available later via /connect. That is deliberate: a new user should reach
   // their first prompt without picking from a list of twenty vendors.
   //
-  // Gated on hasRayuCredential(), NOT hasConfiguredProvider(): the latter reports
-  // true for any openai-compatible provider row even when it has no key at all,
-  // which would silently skip this step for a user who has no working credential.
-  if (!hasRayuCredential()) {
+  // Gated on hasRayuCredential() (captured once at mount), NOT
+  // hasConfiguredProvider(): the latter reports true for any openai-compatible
+  // provider row even when it has no key at all, which would silently skip this
+  // step for a user who has no working credential.
+  if (needsCredentialStep) {
     steps.push({
       id: 'provider',
       component: <RayuFirstRunSetup onDone={goToNextStep} />,
@@ -132,7 +147,7 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
 
   steps.push({ id: 'security', component: securityStep })
 
-  if (shouldOfferTerminalSetup()) {
+  if (offersTerminalSetup) {
     steps.push({
       id: 'terminal-setup',
       component: (

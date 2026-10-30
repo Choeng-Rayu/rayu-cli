@@ -231,3 +231,51 @@ describe('ChatViewProvider delivery to the webview', () => {
     panel.dispose()
   })
 })
+
+// The Settings tab is built by the same function with `app: 'settings'`. It renders
+// window-wide account and settings data, so it must get exactly the chat's policy.
+const { renderWebviewHtml } = await import('../src/vscode/host/panel/webviewSurface.js')
+
+describe('the Settings tab gets the chat\'s CSP, unchanged', () => {
+  const policyOf = (html: string): string =>
+    html.match(/Content-Security-Policy" content="([^"]+)"/)![1]!.replace(/'nonce-[a-f0-9]+'/, "'nonce-X'")
+
+  test('same policy, its own app marker, fresh nonce', () => {
+    const extensionUri = FakeUri.file('/fake/extension/root')
+    const webview = fakeWebview().webview
+    const chat = renderWebviewHtml(webview as never, extensionUri as never)
+    const settings = renderWebviewHtml(webview as never, extensionUri as never, { app: 'settings' })
+
+    expect(policyOf(settings)).toBe(policyOf(chat))
+    expect(settings).toContain('<div id="root" data-app="settings"></div>')
+    expect(chat).toContain('<div id="root" data-app="chat"></div>')
+    expect(settings).toContain('<title>Rayucode Settings</title>')
+
+    const nonce = settings.match(/script-src 'nonce-([a-f0-9]+)'/)![1]!
+    expect(settings).toContain(`<script nonce="${nonce}"`)
+    expect(chat).not.toContain(nonce)
+  })
+})
+
+// The icons are VS Code's own font now. Its stylesheet must be linked before the panel's
+// own, and the policy must allow the font file, or every icon is an empty square.
+describe('the panel loads the codicon font under the same policy', () => {
+  const html = renderWebviewHtml(
+    fakeWebview().webview as never,
+    FakeUri.file('/fake/extension/root') as never,
+  )
+
+  test('codicon.css is linked before webview.css', () => {
+    const codiconAt = html.indexOf('/media/codicon.css')
+    const styleAt = html.indexOf('/media/webview.css')
+    expect(codiconAt).toBeGreaterThan(-1)
+    expect(styleAt).toBeGreaterThan(-1)
+    expect(codiconAt).toBeLessThan(styleAt)
+  })
+
+  test('font-src allows the webview source, and style-src is otherwise unchanged', () => {
+    const csp = html.match(/Content-Security-Policy" content="([^"]+)"/)![1]!
+    expect(csp).toContain('font-src vscode-webview://abc123')
+    expect(csp).toContain("style-src vscode-webview://abc123 'unsafe-inline'")
+  })
+})

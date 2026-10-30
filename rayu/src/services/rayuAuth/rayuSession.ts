@@ -99,6 +99,32 @@ export function getRayuStudioRemoteUrl(): string {
   return `${getRayuStudioBaseUrl()}/remote`
 }
 
+/** A page of the signed-in account on rayu-web, by name. */
+export type RayuAccountPage =
+  | 'dashboard'
+  | 'plan'
+  | 'usage'
+  | 'credits'
+  | 'apiKeys'
+  | 'billing'
+  | 'plans'
+
+/** Paths on rayu-web: `/dashboard` holds the pacing switch, `/dashboard/credits` top-ups. */
+const ACCOUNT_PAGE_PATHS: Record<RayuAccountPage, string> = {
+  dashboard: '/dashboard',
+  plan: '/dashboard/plan',
+  usage: '/dashboard/usage',
+  credits: '/dashboard/credits',
+  apiKeys: '/dashboard/api-keys',
+  billing: '/billing',
+  plans: '/plans',
+}
+
+/** The URL of an account page, from the one table every surface links through. */
+export function getRayuAccountPageUrl(page: RayuAccountPage): string {
+  return `${getRayuWebBaseUrl()}${ACCOUNT_PAGE_PATHS[page]}`
+}
+
 /**
  * The dashboard, where account settings live — including the credit-pacing
  * switch ("use all credits") that the rate-limit UI directs users to.
@@ -109,7 +135,7 @@ export function getRayuStudioRemoteUrl(): string {
  * slash. `getRayuWebBaseUrl` already trims the trailing slash.
  */
 export function getRayuDashboardUrl(): string {
-  return `${getRayuWebBaseUrl()}/dashboard`
+  return getRayuAccountPageUrl('dashboard')
 }
 
 /**
@@ -121,7 +147,7 @@ export function getRayuDashboardUrl(): string {
  * identical.
  */
 export function getRayuPlansUrl(): string {
-  return `${getRayuWebBaseUrl()}/plans`
+  return getRayuAccountPageUrl('plans')
 }
 
 /**
@@ -133,7 +159,62 @@ export function getRayuGatewayBaseUrl(): string {
     process.env.RAYU_GATEWAY_URL ||
     MACRO.RAYU_GATEWAY_URL ||
     'http://localhost:8080'
-  return base.replace(/\/$/, '')
+  // Strip ALL trailing slashes, not just one. Every consumer appends
+  // `/v1/...` or `/anthropic`, so a leftover slash becomes a DOUBLE slash in the
+  // request path (`http://localhost:8080//v1/models`), which Axum's router does not
+  // match — the catalog read, `/billing`, and hosted image/video generation all 404
+  // and read to the user as "the gateway is down". A `RAYU_GATEWAY_URL` copied from
+  // a browser bar or a Caddy config file routinely carries two.
+  return base.replace(/\/+$/, '')
+}
+
+/**
+ * The gateway base URL for requests that attach the Rayu JWT directly
+ * (the hosted image/video generation clients).
+ *
+ * Same security rule {@link validateCustomBaseURL} applies to a user-supplied
+ * provider endpoint, because the same secret rides on it: **https to any real
+ * host, plain http only to loopback** (the baked `http://localhost:8080` dev
+ * default is the legitimate http case), and no embedded credentials. A
+ * misconfigured or hostile `RAYU_GATEWAY_URL=http://attacker.example` must
+ * fail here, before the bearer token is sent anywhere — the JWT is a live
+ * account credential, not a bearer-less hint.
+ *
+ * Throws with the offending scheme instead of returning a partial value; the
+ * callers surface it verbatim to the user.
+ */
+export function getSecureRayuGatewayBaseUrl(): string {
+  const base = getRayuGatewayBaseUrl()
+  let url: URL
+  try {
+    url = new URL(base)
+  } catch {
+    throw new Error(
+      `Rayu gateway URL ${base ? `"${base}"` : 'is empty'} is not a valid URL. ` +
+        'Check RAYU_GATEWAY_URL.',
+    )
+  }
+  if (url.username || url.password) {
+    throw new Error(
+      'RAYU_GATEWAY_URL must not embed credentials — the Rayu JWT is sent as the Authorization header.',
+    )
+  }
+  if (url.protocol === 'http:') {
+    const host = url.hostname.toLowerCase()
+    const loopback =
+      host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
+    if (!loopback) {
+      throw new Error(
+        `Refusing to send the Rayu account token over plaintext http:// to ${host}. ` +
+          'Set RAYU_GATEWAY_URL to an https:// URL.',
+      )
+    }
+  } else if (url.protocol !== 'https:') {
+    throw new Error(
+      `RAYU_GATEWAY_URL must use https (got ${url.protocol}).`,
+    )
+  }
+  return base
 }
 
 function sessionPath(): string {

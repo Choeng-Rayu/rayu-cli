@@ -7,23 +7,19 @@
 // (services/rayuAuth/mediaModels.ts → gateway GET /v1/models?media=image), so
 // adding a model needs a backend catalog row and no CLI release.
 //
-// What DOES stay here is the request SHAPE per family: how NVIDIA's genai host
-// wants a FLUX body vs a Stable Diffusion body vs a Kontext edit body. That is
-// third-party API mechanics, not catalog data, and moving it server-side would
-// mean proxying image traffic the gateway holds no key for.
+// What DOES stay here is the request SHAPE per family: the flat body the Rayu
+// gateway's /v1/images/generations route accepts. Vertex Imagen builds its own
+// body in vertexImageClient. NVIDIA genai (FLUX / Stable Diffusion / Kontext) was
+// removed; its catalog rows are skipped by mediaModels.ts.
 //
-// SECURITY: only the model id + user prompt/params are sent; the API key is added
-// by the client and never logged.
+// SECURITY: only the model id + user prompt/params are sent; credentials are
+// added by the client and never logged.
 import {
   getCachedMediaModels,
   type ImageCapability,
   type MediaModelEntry,
 } from '../../services/rayuAuth/mediaModels.js'
-
-export const NVIDIA_IMAGE_HOST =
-  process.env.NVIDIA_IMAGE_HOST || 'https://ai.api.nvidia.com/v1/genai'
-export const NVCF_ASSET_HOST =
-  process.env.NVCF_ASSET_HOST || 'https://api.nvcf.nvidia.com/v2/nvcf/assets'
+import { resolveReferenceImage } from '../../utils/hostedReferenceImage.js'
 
 export type { ImageCapability }
 
@@ -36,19 +32,18 @@ export type ImageParams = {
   cfg_scale?: number
   seed?: number
   negative_prompt?: string
-  /** base64-encoded input image (no data-URI prefix) for editing models. */
+  /** base64-encoded input image (no data-URI prefix) for Vertex Imagen edits. */
   image?: string
-  /** NVCF asset ID for the input image; set by the client after upload. */
-  imageAssetId?: string
-  /** MIME type of the uploaded asset (e.g. "image/jpeg"). */
-  imageMimeType?: string
+  /**
+   * The caller's RAW `input_image` value (an https URL or a local file path),
+   * for hosted families that accept a reference image verbatim — the gateway
+   * body builder turns an https URL through unchanged and reads/encodes a
+   * local path into a `data:` URL. Vertex uses `image` (base64) instead.
+   */
+  input_image?: string
 }
 
-/**
- * Per-model request defaults from the catalog (`defaultParams`). Read with
- * `num()`/`str()` below so a mistyped dashboard value can never put a string
- * where the upstream expects a number.
- */
+/** Per-model request defaults from the catalog (`defaultParams`). */
 export type ImageDefaults = Record<string, unknown>
 
 /**
@@ -59,93 +54,137 @@ export type ImageModel = MediaModelEntry & {
   buildBody: (p: ImageParams) => Record<string, unknown>
 }
 
-function num(defaults: ImageDefaults, key: string, fallback: number): number {
-  const v = defaults[key]
-  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
-}
-
-function str(defaults: ImageDefaults, key: string, fallback: string): string {
-  const v = defaults[key]
-  return typeof v === 'string' && v ? v : fallback
-}
-
-// ── Family request builders ──────────────────────────────────────────────────
-// Each takes the caller's params plus the model's catalog defaults. The built-in
-// numbers are last-resort defaults for a catalog row that sets none — the
-// dashboard value always wins.
-
-/**
- * FLUX family. Guidance-distilled variants (flux.1-schnell) need cfg_scale<=0 and
- * 1-4 steps; guidance variants (flux.1-dev) need cfg_scale ~3.5 and many steps.
- * That difference is per-MODEL data, so it arrives in `defaultParams` and one
- * builder serves the whole family.
- */
-const fluxBody = (
-  p: ImageParams,
-  d: ImageDefaults,
-): Record<string, unknown> => ({
-  prompt: p.prompt,
-  cfg_scale: p.cfg_scale ?? num(d, 'cfg_scale', 3.5),
-  width: p.width ?? num(d, 'width', 1024),
-  height: p.height ?? num(d, 'height', 1024),
-  steps: p.steps ?? num(d, 'steps', 4),
-  seed: p.seed ?? 0,
-})
-
-/** Stable Diffusion 3.5: aspect_ratio + negative_prompt, many steps. */
-const sdBody = (p: ImageParams, d: ImageDefaults): Record<string, unknown> => ({
-  prompt: p.prompt,
-  cfg_scale: p.cfg_scale ?? num(d, 'cfg_scale', 4.5),
-  aspect_ratio: p.aspect_ratio ?? str(d, 'aspect_ratio', '1:1'),
-  steps: p.steps ?? num(d, 'steps', 50),
-  seed: p.seed ?? 0,
-  negative_prompt: p.negative_prompt ?? '',
-})
-
-/**
- * FLUX.1-Kontext in-context editing: the genai endpoint rejects inline base64
- * ("Expected: example_id, got: base64"), so the client uploads the image as an
- * NVCF asset first and fills in imageAssetId + imageMimeType.
- */
-const kontextBody = (
-  p: ImageParams,
-  d: ImageDefaults,
-): Record<string, unknown> => {
-  if (!p.imageAssetId) {
-    throw new Error('kontextBody requires imageAssetId (asset must be uploaded first)')
-  }
-  const mime = p.imageMimeType ?? 'image/jpeg'
-  return {
-    prompt: p.prompt,
-    image: `data:${mime};example_id,${p.imageAssetId}`,
-    cfg_scale: p.cfg_scale ?? num(d, 'cfg_scale', 3.5),
-    steps: p.steps ?? num(d, 'steps', 30),
-    seed: p.seed ?? 0,
-  }
-}
-
 /**
  * Vertex Imagen builds its own `instances`/`parameters` body in
- * vertexImageClient (buildImagenBody), so reaching this is a routing bug — the
- * NVIDIA client was handed a Vertex model.
+ * vertexImageClient (buildImagenBody), so reaching this is a routing bug — a
+ * non-Vertex client was handed a Vertex model.
  */
 const vertexUnsupported = (): Record<string, unknown> => {
   throw new Error('Vertex Imagen models are built by vertexImageClient, not buildBody')
 }
 
+// ── OpenAI Images (Rayu-hosted) ──────────────────────────────────────────────
+
+/** Longest side of an aspect-ratio-derived `size`, per the gateway contract. */
+const OPENAI_IMAGE_LONG_SIDE = 1024
+/** Allowed range for the derived short side (the gateway rejects outside it). */
+const OPENAI_IMAGE_MIN_SIDE = 512
+const OPENAI_IMAGE_MAX_SIDE = 2048
+
+function roundTo8(n: number): number {
+  return Math.round(n / 8) * 8
+}
+
+/**
+ * Translate the CLI's width/height/aspect_ratio params into an OpenAI Images
+ * `WxH` size string, or undefined to let the gateway/model default apply.
+ *
+ * - width AND height → used verbatim (`1024x768`).
+ * - aspect_ratio only → long side 1024, short side = 1024/ratio rounded to a
+ *   multiple of 8 and clamped to 512..2048, preserving orientation:
+ *   `1:1` → `1024x1024`, `16:9` → `1024x576`, `9:16` → `576x1024`.
+ * - neither → undefined (the gateway applies the model's `default_size`).
+ *
+ * A malformed ratio is ignored rather than thrown: it is a user-supplied hint,
+ * and failing the whole generation over it would be worse than the default size.
+ */
+export function sizeFromParams(p: ImageParams): string | undefined {
+  if (p.width != null && p.height != null) {
+    return `${p.width}x${p.height}`
+  }
+  if (!p.aspect_ratio) return undefined
+  const match = /^\s*(\d+(?:\.\d+)?)\s*[:\/]\s*(\d+(?:\.\d+)?)\s*$/.exec(
+    p.aspect_ratio,
+  )
+  if (!match) return undefined
+  const a = Number(match[1])
+  const b = Number(match[2])
+  if (!(a > 0) || !(b > 0)) return undefined
+
+  const landscape = a >= b
+  const ratio = landscape ? a / b : b / a
+  const short = Math.min(
+    OPENAI_IMAGE_MAX_SIDE,
+    Math.max(OPENAI_IMAGE_MIN_SIDE, roundTo8(OPENAI_IMAGE_LONG_SIDE / ratio)),
+  )
+  return landscape
+    ? `${OPENAI_IMAGE_LONG_SIDE}x${short}`
+    : `${short}x${OPENAI_IMAGE_LONG_SIDE}`
+}
+
+/**
+ * OpenAI Images family (Rayu-hosted gateway). This is the de-facto standard
+ * shape: `{model, prompt, n, size?, negative_prompt?, seed?}`. The model id and
+ * `response_format` are added by rayuImageClient.
+ *
+ * The catalog's `defaultParams` (e.g. Qwen's `prompt_extend`) spread FIRST, so
+ * the caller's explicit values win and a dashboard edit still reaches the
+ * request. `image`/`mask` are stripped from the DEFAULTS: an admin-owned row
+ * must never smuggle an edit payload the user did not ask for. The CALLER's
+ * image is the opposite — it is added AFTER the spread, and only when the tool
+ * already verified the selected entry advertises the `edit` capability (a
+ * generate-only hosted model is refused upstream of this builder, so an opaque
+ * upstream 400 is never earned).
+ *
+ * `model` and `response_format` are stripped for a different reason: they are
+ * routing/transport fields, not model knobs. A dashboard row that carried either
+ * could otherwise replace the model the caller selected, or make the gateway
+ * answer with a URL the CLI did not ask for. rayuImageClient sets both after the
+ * spread as a second line of defence.
+ */
+const openaiImagesBody = (
+  p: ImageParams,
+  d: ImageDefaults,
+): Record<string, unknown> => {
+  // Never forward a defaulted edit payload or a routing field, even if a
+  // misconfigured defaultParams row carries one.
+  const {
+    image: _image,
+    mask: _mask,
+    model: _model,
+    response_format: _responseFormat,
+    stream: _stream,
+    ...defaults
+  } = d
+  const size = sizeFromParams(p)
+  return {
+    ...defaults,
+    prompt: p.prompt,
+    n: 1,
+    ...(size ? { size } : {}),
+    ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
+    ...(p.seed != null ? { seed: p.seed } : {}),
+    // Added after the spread so a defaulted image can never survive, and only
+    // when the caller actually supplied one (the gateway maps `image` to an
+    // image-to-image edit call on the edit-capable families it advertises).
+    ...(p.input_image
+      ? {
+          image: resolveReferenceImage(p.input_image, {
+            gatewayLabel: 'Rayu image gateway',
+          }),
+        }
+      : {}),
+  }
+}
+
 /**
  * family → request builder. This map is the ONLY thing the CLI has to change for
  * a genuinely new request shape; a new model reusing a known shape needs nothing
- * here. An unknown family fails with a clear, named error (see resolveModel).
+ * here. An unknown family fails with a clear, named error (see withBuilder).
  */
 export const IMAGE_BODY_BUILDERS: Record<
   string,
   (p: ImageParams, d: ImageDefaults) => Record<string, unknown>
 > = {
-  flux: fluxBody,
-  sd3: sdBody,
-  kontext: kontextBody,
   imagen: vertexUnsupported,
+  // Rayu-hosted models (backend 'rayu') proxy through the gateway, which speaks
+  // OpenAI Images to whichever upstream the admin configured.
+  openai_images: openaiImagesBody,
+  // DashScope multimodal (Qwen Image): the gateway exposes it on the SAME
+  // /v1/images/generations contract and maps `image` to the upstream
+  // image-to-image edit call, so the normalized body shape is identical —
+  // capabilities (not the family) decide whether an edit is accepted.
+  dashscope_multimodal: openaiImagesBody,
 }
 
 /** Families whose bodies are built by the Vertex client instead of here. */
@@ -171,102 +210,14 @@ export function isVertexImageModel(
   const entry = catalog.find((m) => m.id === id)
   if (entry) return entry.backend === VERTEX_BACKEND
   // Not in the catalog we have (offline, or an id the user typed by hand). The id
-  // shape is the only signal left, and getting this wrong would send an Imagen
-  // request to NVIDIA's host, so keep the narrow prefix check as a last resort.
+  // shape is the only signal left, so keep the narrow prefix check as a last
+  // resort: without it a hand-typed Imagen id could never reach Vertex.
   return /^imagen-/i.test(id)
 }
 
 /** The image half of the synchronously-available catalog. */
 function cachedImageModels(): MediaModelEntry[] {
   return getCachedMediaModels().image
-}
-
-/**
- * Pick the model to use.
- *
- * `opts.backends` is the ORDERED list of backends the caller can actually serve;
- * it is both a filter and a preference, so a client never resolves a default it
- * cannot POST to.
- *
- * Order: the id the caller named → the env override → the `default` model of the
- * most-preferred servable backend → its first usable model.
- *
- * A named id that is NOT in the catalog is an ERROR, never a silent substitution:
- * generating with a different model than the one asked for is worse than failing.
- * A named id that IS in the catalog but cannot do the requested operation DOES
- * fall through to the default — that is how `input_image` routes a generate-only
- * model to the edit model, and it is deliberate.
- *
- * Also throws when the catalog has nothing for the operation, or when the chosen
- * model's family has no request builder in this CLI build — both are actionable
- * ("update the CLI" / "add a model in the dashboard") and far better than an
- * opaque upstream 400.
- */
-export function resolveModel(
-  models: MediaModelEntry[],
-  modelId: string | undefined,
-  isEdit: boolean,
-  opts?: { backends?: string[] },
-): ImageModel {
-  const capability: ImageCapability = isEdit ? 'edit' : 'generate'
-  const backends = opts?.backends
-
-  const known = modelId ? models.find((m) => m.id === modelId) : undefined
-  if (modelId && !known) {
-    throw new Error(
-      `Unknown image model "${modelId}". Available: ` +
-        `${models.map((m) => m.id).join(', ') || '(none configured)'}`,
-    )
-  }
-  if (known && backends && !backends.includes(known.backend)) {
-    // The tool routes by the model's backend before calling us, so this means the
-    // request reached the wrong client — a Rayu bug, not a user error.
-    throw new Error(
-      `Image model "${known.id}" is served by the "${known.backend}" backend, which this ` +
-        `client does not handle. This is a Rayu routing bug — please report it.`,
-    )
-  }
-
-  const capable = models.filter((m) => m.capabilities.includes(capability))
-  const named = known?.capabilities.includes(capability) ? known : undefined
-  // Only models this client can actually serve, ordered so the FIRST entry is the
-  // right default: preferred backend first, and the flagged default first within
-  // each backend. The env override is looked up in this same list, so it can pin a
-  // model but never smuggle in one the caller cannot POST to.
-  const usable = orderByBackendPreference(capable, backends)
-  const override = envOverride(isEdit ? 'NVIDIA_EDIT_MODEL' : 'NVIDIA_IMAGE_MODEL')
-  const chosen =
-    named ?? (override ? usable.find((m) => m.id === override) : undefined) ?? usable[0]
-
-  if (!chosen) {
-    throw new Error(
-      `No ${capability === 'edit' ? 'image-editing' : 'image-generation'} model is available` +
-        `${backends ? ` for the ${backends.join('/')} backend(s)` : ''}. ` +
-        `Add one in the Rayu dashboard (Media models), or check your connection so the CLI can ` +
-        `fetch the catalog.`,
-    )
-  }
-  return withBuilder(chosen)
-}
-
-/**
- * Models the caller can serve, in default-selection order: backends in the given
- * preference order, and within each backend the catalog's `default` flag first,
- * then server order (sortOrder). So `list[0]` is the model to use when nothing was
- * named, and a flat `find` never jumps to a less-preferred backend.
- */
-function orderByBackendPreference(
-  capable: MediaModelEntry[],
-  backends: string[] | undefined,
-): MediaModelEntry[] {
-  const defaultFirst = (ms: MediaModelEntry[]): MediaModelEntry[] => [
-    ...ms.filter((m) => m.isDefault),
-    ...ms.filter((m) => !m.isDefault),
-  ]
-  if (!backends) return defaultFirst(capable)
-  return backends.flatMap((b) =>
-    defaultFirst(capable.filter((m) => m.backend === b)),
-  )
 }
 
 /**
@@ -323,15 +274,11 @@ export function defaultImageModelId(
   const usable = models.filter(
     (m) => m.backend === backend && m.capabilities.includes(capability),
   )
-  const override = envOverride(
+  // Only Vertex has a pin: it is the one BYO image backend.
+  const override =
     backend === VERTEX_BACKEND
-      ? isEdit
-        ? 'VERTEX_EDIT_MODEL'
-        : 'VERTEX_IMAGE_MODEL'
-      : isEdit
-        ? 'NVIDIA_EDIT_MODEL'
-        : 'NVIDIA_IMAGE_MODEL',
-  )
+      ? envOverride(isEdit ? 'VERTEX_EDIT_MODEL' : 'VERTEX_IMAGE_MODEL')
+      : undefined
   const overridden = override ? usable.find((m) => m.id === override) : undefined
   return (overridden ?? usable.find((m) => m.isDefault) ?? usable[0])?.id
 }

@@ -92,10 +92,13 @@ export type SystemPromptBlock = {
   cacheScope: CacheScope | null
 }
 
-// Fields to filter from tool schemas when swarms are not enabled
+// Fields to filter from tool schemas when swarms are not enabled.
+// The Agent tool's `name` stays: without teams it still names the task, and
+// Orchestrator mode addresses its workers by it (OrchestratorSendMessageTool).
+// Schemas are cached per session, so a mode switch could not add it back later.
 const SWARM_FIELDS_BY_TOOL: Record<string, string[]> = {
   [EXIT_PLAN_MODE_V2_TOOL_NAME]: ['launchSwarm', 'teammateCount'],
-  [AGENT_TOOL_NAME]: ['name', 'team_name', 'mode'],
+  [AGENT_TOOL_NAME]: ['team_name', 'mode'],
 }
 
 /**

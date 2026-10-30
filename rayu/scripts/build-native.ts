@@ -4,15 +4,20 @@
 // Release by .github/workflows/release.yml. Asset names + manifest platform
 // keys MUST match getPlatform() in src/utils/nativeInstaller/installer.ts and
 // the downloader in src/utils/githubReleases.ts.
+//
+// The build options come from scripts/bundleConfig.ts (`compileBuildOptions`),
+// the same definition dist/rayu.js and the VS Code engine use. A private copy
+// here drifted once already and shipped binaries without the RAYU_FEATURES
+// defines — see `compileBuildOptions` for what that broke.
 import { createHash } from 'crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
-import { MACRO_VALUES, ENABLED_FEATURES } from './macroValues.ts'
+import { compileBuildOptions, type CompileTarget } from './bundleConfig.ts'
 
 const OUT_DIR = 'dist-native'
 
 // getPlatform() value  ->  bun --compile target
-const PLATFORMS: Record<string, string> = {
+const PLATFORMS: Record<string, CompileTarget> = {
   'linux-x64': 'bun-linux-x64',
   'linux-arm64': 'bun-linux-arm64',
   'linux-x64-musl': 'bun-linux-x64-musl',
@@ -27,78 +32,19 @@ function assetName(platform: string): string {
   return platform.startsWith('win32') ? `${base}.exe` : base
 }
 
-const define: Record<string, string> = {
-  // Force the production builds of React / react-reconciler. Without this, Bun
-  // resolves react-reconciler's index.js NODE_ENV conditional to the DEVELOPMENT
-  // build, which emits performance.measure() on every commit. Node's User Timing
-  // buffer is never cleared, so a long interactive session accumulates millions
-  // of PerformanceMeasure entries and OOMs at the ~2.35GB old-space ceiling. The
-  // production reconciler makes zero such calls. (interactive-session heap OOM fix)
-  'process.env.NODE_ENV': JSON.stringify('production'),
-  'process.env.USER_TYPE': JSON.stringify(process.env.USER_TYPE ?? 'external'),
-  // Git commit co-author email; sourced from .env (Bun auto-loads it) and baked
-  // in at build time. Falls back to a neutral placeholder.
-  'process.env.RAYU_COMMIT_EMAIL': JSON.stringify(
-    process.env.RAYU_COMMIT_EMAIL ?? 'noreply@rayu.dev',
-  ),
-  'process.env.RAYU_GITHUB_APP_INSTALL_URL': JSON.stringify(
-    process.env.RAYU_GITHUB_APP_INSTALL_URL ?? '',
-  ),
-  'process.env.RAYU_GITHUB_ACTION_REF': JSON.stringify(
-    process.env.RAYU_GITHUB_ACTION_REF ?? '',
-  ),
-  'process.env.RAYU_GITHUB_ACTION_DOCS_URL': JSON.stringify(
-    process.env.RAYU_GITHUB_ACTION_DOCS_URL ?? '',
-  ),
-}
-for (const [k, v] of Object.entries(MACRO_VALUES)) {
-  define[`MACRO.${k}`] = JSON.stringify(v)
-}
-
-const STUB_ALIASES: Record<string, string> = {
-  '@ant/computer-use-mcp': 'stubs/ant/computer-use-mcp/index.ts',
-  '@ant/computer-use-mcp/types': 'stubs/ant/computer-use-mcp/types.ts',
-  '@ant/computer-use-mcp/sentinelApps':
-    'stubs/ant/computer-use-mcp/sentinelApps.ts',
-  '@ant/claude-for-chrome-mcp': 'stubs/ant/claude-for-chrome-mcp/index.ts',
-  '@ant/computer-use-input': 'stubs/ant/computer-use-input/index.ts',
-  '@ant/computer-use-swift': 'stubs/ant/computer-use-swift/index.ts',
-  'color-diff-napi': 'stubs/color-diff-napi/index.ts',
-}
-
-const EXTERNAL = [
-  'modifiers-napi', 'sharp', 'audio-capture-napi', 'image-processor-napi',
-  'url-handler-napi',
-  '@opentelemetry/exporter-trace-otlp-grpc', '@opentelemetry/exporter-trace-otlp-proto',
-  '@opentelemetry/exporter-logs-otlp-grpc', '@opentelemetry/exporter-logs-otlp-proto',
-  '@opentelemetry/exporter-metrics-otlp-grpc', '@opentelemetry/exporter-metrics-otlp-proto',
-  '@opentelemetry/exporter-prometheus',
-]
-
-const stubPlugin: import('bun').BunPlugin = {
-  name: 'rayu-stubs',
-  setup(build) {
-    for (const [spec, rel] of Object.entries(STUB_ALIASES)) {
-      const filter = new RegExp(
-        `^${spec.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')}$`,
-      )
-      build.onResolve({ filter }, () => ({ path: resolve(rel) }))
-    }
-    build.onResolve({ filter: /^commander$/ }, () => ({
-      path: resolve('node_modules/commander/index.js'),
-    }))
-  },
-}
-
 const version = (
   JSON.parse(readFileSync('package.json', 'utf8')).version as string
 ).trim()
 
+const onlyArg = process.argv[2] // optional: build a single getPlatform() target
+if (onlyArg && !(onlyArg in PLATFORMS)) {
+  console.error(`Unknown platform "${onlyArg}". Valid: ${Object.keys(PLATFORMS).join(', ')}`)
+  process.exit(1)
+}
+const targets = onlyArg ? { [onlyArg]: PLATFORMS[onlyArg]! } : PLATFORMS
+
 rmSync(OUT_DIR, { recursive: true, force: true })
 mkdirSync(OUT_DIR, { recursive: true })
-
-const onlyArg = process.argv[2] // optional: build a single getPlatform() target
-const targets = onlyArg ? { [onlyArg]: PLATFORMS[onlyArg]! } : PLATFORMS
 
 const manifest: { version: string; platforms: Record<string, { checksum: string }> } = {
   version,
@@ -108,17 +54,9 @@ const manifest: { version: string; platforms: Record<string, { checksum: string 
 for (const [platform, target] of Object.entries(targets)) {
   const outfile = resolve(OUT_DIR, assetName(platform))
   console.log(`Building ${platform} (${target}) -> ${assetName(platform)}`)
-  const result = await Bun.build({
-    entrypoints: ['src/entrypoints/cli.tsx'],
-    target: 'bun',
-    compile: { target: target as `bun-${string}`, outfile },
-    define,
-    external: EXTERNAL,
-    features: [...ENABLED_FEATURES],
-    plugins: [stubPlugin],
-    loader: { '.md': 'text', '.txt': 'text' },
-    sourcemap: 'none',
-  } as unknown as Parameters<typeof Bun.build>[0])
+  const result = await Bun.build(
+    compileBuildOptions({ entry: 'src/entrypoints/cli.tsx', bunTarget: target, outfile }),
+  )
   if (!result.success) {
     for (const log of result.logs) console.error(log)
     process.exit(1)

@@ -15,8 +15,10 @@ import {
 import {
   notifyPermissionModeChanged,
   notifySessionMetadataChanged,
+  notifyWorkerApprovalLoss,
   type SessionExternalMetadata,
 } from '../utils/sessionState.js'
+import { describeWorkerApprovalLoss } from '../orchestrator/modeChange.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 import type { AppState } from './AppStateStore.js'
 
@@ -89,6 +91,15 @@ export function onChangeAppState({
       })
     }
     notifyPermissionModeChanged(newMode)
+    const approvalLoss = describeWorkerApprovalLoss(oldState, newState)
+    if (approvalLoss) {
+      try {
+        notifyWorkerApprovalLoss(approvalLoss)
+      } catch (error) {
+        // A display listener must never break a state update.
+        logError(toError(error))
+      }
+    }
   }
 
   // mainLoopModel: remove it from settings?
