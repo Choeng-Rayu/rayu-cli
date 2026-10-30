@@ -17,7 +17,7 @@ import {
   PERMISSION_MODES,
   type PermissionModeView,
 } from '../../shared/permissionModes.js'
-import { ChevronIcon } from './Icons.js'
+import { CheckIcon, ChevronIcon } from './Icons.js'
 
 export interface PermissionDropdownProps {
   mode: PermissionModeView
@@ -153,7 +153,7 @@ export function PermissionDropdown({
                         <span className="rc-dropdown-label">{option.label}</span>
                       </div>
                       {isCurrent ? (
-                        <span className="rc-dropdown-current">✓ Active</span>
+                        <span className="rc-dropdown-current"><CheckIcon size={10} /> Active</span>
                       ) : null}
                     </div>
                     <div className="rc-dropdown-detail">

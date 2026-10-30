@@ -1505,6 +1505,9 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     permission_denials: z.array(SDKPermissionDenialSchema()),
     structured_output: z.unknown().optional(),
     fast_mode_state: FastModeStateSchema().optional(),
+    // Rayu credits the gateway charged during this turn, as it reported them.
+    // Absent when the turn made no Rayu-billed request. Additive: no version bump.
+    rayu_credits: z.number().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1530,6 +1533,8 @@ export const SDKResultErrorSchema = lazySchema(() =>
     permission_denials: z.array(SDKPermissionDenialSchema()),
     errors: z.array(z.string()),
     fast_mode_state: FastModeStateSchema().optional(),
+    // See SDKResultSuccessSchema: a failed turn can still have been charged.
+    rayu_credits: z.number().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),

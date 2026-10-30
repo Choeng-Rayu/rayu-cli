@@ -20,7 +20,7 @@
 //
 // SECURITY: the key is sent only to the Rayu gateway, as a Bearer credential,
 // and is never logged — not in the diagnostics payloads below, not in errors.
-import { getRayuGatewayBaseUrl } from '../../rayuAuth/rayuSession.js'
+import { getSecureRayuGatewayBaseUrl } from '../../rayuAuth/rayuSession.js'
 import {
   hostedContextWindows,
   hostedModelDescriptions,
@@ -75,7 +75,7 @@ export type RayuCatalogResult =
 
 /** The gateway endpoint that serves the catalog (NOT the provider's baseURL). */
 function catalogURL(): string {
-  return `${getRayuGatewayBaseUrl()}/v1/models`
+  return `${getSecureRayuGatewayBaseUrl()}/v1/models`
 }
 
 /**
@@ -148,6 +148,8 @@ export async function fetchRayuApiKeyCatalog(
         Authorization: `Bearer ${key}`,
         [RAYU_CLIENT_HEADER]: resolveRayuClientProduct(),
       },
+      // A redirect would move the API key off the vetted gateway URL.
+      redirect: 'error',
       signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
     })
     if (!res.ok) {

@@ -72,7 +72,11 @@ const getTeamDeleteTool = () =>
 const getSendMessageTool = () =>
   require('./tools/SendMessageTool/SendMessageTool.js')
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
+const getOrchestratorSendMessageTool = () =>
+  require('./tools/SendMessageTool/OrchestratorSendMessageTool.js')
+    .OrchestratorSendMessageTool as typeof import('./tools/SendMessageTool/OrchestratorSendMessageTool.js').OrchestratorSendMessageTool
 /* eslint-enable @typescript-eslint/no-require-imports */
+import { SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
@@ -333,7 +337,33 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
   }
 
   const isEnabled = allowedTools.map(_ => _.isEnabled())
-  return allowedTools.filter((_, i) => isEnabled[i])
+  return withOrchestratorMessaging(
+    allowedTools.filter((_, i) => isEnabled[i]),
+    permissionContext,
+  )
+}
+
+/**
+ * Orchestrator mode continues its workers with SendMessage. Without agent teams the
+ * full tool is disabled, so the main thread gets the worker-only variant
+ * (OrchestratorSendMessageTool.ts). Workers never get it: AgentTool builds their
+ * pools under the worker's own mode.
+ */
+function withOrchestratorMessaging(
+  tools: Tools,
+  permissionContext: ToolPermissionContext,
+): Tools {
+  if (permissionContext.mode !== 'orchestrator') return tools
+  if (tools.some(tool => toolMatchesName(tool, SEND_MESSAGE_TOOL_NAME))) {
+    return tools
+  }
+  return [
+    ...tools,
+    ...filterToolsByDenyRules(
+      [getOrchestratorSendMessageTool()],
+      permissionContext,
+    ),
+  ]
 }
 
 /**

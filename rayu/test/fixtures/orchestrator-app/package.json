@@ -1,0 +1,8 @@
+{
+  "name": "orchestrator-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun run checks/consistency.check.ts"
+  }
+}

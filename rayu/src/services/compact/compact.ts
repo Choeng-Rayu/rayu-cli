@@ -12,8 +12,9 @@ import { markPostCompaction } from 'src/bootstrap/state.js'
 import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import type { Tool, ToolUseContext } from '../../Tool.js'
+import { toolMatchesName, type Tool, type ToolUseContext } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../../tools/SendMessageTool/constants.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
@@ -553,6 +554,11 @@ export async function compactConversation(
     if (planModeAttachment) {
       postCompactFileAttachments.push(planModeAttachment)
     }
+    const orchestratorAttachment =
+      createOrchestratorModeAttachmentIfNeeded(context)
+    if (orchestratorAttachment) {
+      postCompactFileAttachments.push(orchestratorAttachment)
+    }
 
     // Add skill attachment if skills were invoked in this session
     const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
@@ -945,6 +951,11 @@ export async function partialCompactConversation(
     const planModeAttachment = await createPlanModeAttachmentIfNeeded(context)
     if (planModeAttachment) {
       postCompactFileAttachments.push(planModeAttachment)
+    }
+    const orchestratorAttachment =
+      createOrchestratorModeAttachmentIfNeeded(context)
+    if (orchestratorAttachment) {
+      postCompactFileAttachments.push(orchestratorAttachment)
     }
 
     const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
@@ -1556,6 +1567,29 @@ export async function createPlanModeAttachmentIfNeeded(
     isSubAgent: !!context.agentId,
     planFilePath,
     planExists,
+  })
+}
+
+/**
+ * Re-attaches the full Orchestrator role reminder after compaction, so the
+ * summary is followed by the rules it no longer contains. Main thread only.
+ */
+export function createOrchestratorModeAttachmentIfNeeded(
+  context: ToolUseContext,
+): AttachmentMessage | null {
+  if (context.agentId) return null
+  if (context.getAppState().toolPermissionContext.mode !== 'orchestrator') {
+    return null
+  }
+  return createAttachmentMessage({
+    type: 'orchestrator_mode',
+    reminderType: 'full',
+    availableAgents: context.options.agentDefinitions.activeAgents.map(
+      agent => agent.agentType,
+    ),
+    canMessageWorkers: context.options.tools.some(tool =>
+      toolMatchesName(tool, SEND_MESSAGE_TOOL_NAME),
+    ),
   })
 }
 

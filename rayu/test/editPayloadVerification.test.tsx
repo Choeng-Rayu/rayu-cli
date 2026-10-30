@@ -29,7 +29,6 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as React from 'react'
-import { Writable } from 'node:stream'
 import stripAnsi from 'strip-ansi'
 
 import { FileEditToolUpdatedMessage } from '../src/components/FileEditToolUpdatedMessage.tsx'
@@ -44,6 +43,7 @@ import {
   getDefaultAppState,
 } from '../src/state/AppState.tsx'
 import { processToolResultBlock } from '../src/utils/toolResultStorage.ts'
+import { CaptureStream } from './helpers/captureStream.js'
 
 /**
  * Markers at three depths, so a leak that carries only a PREFIX or only a SUFFIX
@@ -85,19 +85,6 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
-
-/** Collect rendered output as text. */
-class CaptureStream extends Writable {
-  output = ''
-  override _write(
-    chunk: Buffer | string,
-    _enc: BufferEncoding,
-    cb: (e?: Error) => void,
-  ): void {
-    this.output += chunk.toString()
-    cb()
-  }
-}
 
 async function renderText(node: React.ReactNode): Promise<string> {
   const stdout = new CaptureStream()

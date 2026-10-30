@@ -1,5 +1,6 @@
 /**
- * `/subagent_models` and `/webfetch_model` as Rayucode host commands.
+ * `/subagent_models`, `/webfetch_model`, `/model_image_generation` and
+ * `/model_video_generation` as Rayucode host commands.
  *
  * The parser is the risky part and it is pure, so it is tested directly. The single most
  * important property is the FALL-THROUGH: a prompt that merely mentions one of these names
@@ -118,11 +119,41 @@ describe('parsing', () => {
       '/model_subagents',
       '/webfetch_models show',
       'tell me about the /webfetch_model command',
+      'make /model_image_generation pick Wan',
+      '/model_image_generations',
+      '/model_image',
+      '/model_video',
+      // Object prototype keys are not commands.
+      '/constructor',
+      '/__proto__',
+      '/toString',
       '',
       'hello',
     ]) {
       expect(parseModelSettingCommand(text, AGENTS)).toBeNull()
     }
+  })
+
+  test('the image and video model commands open their choosers', () => {
+    expect(parseModelSettingCommand('/model_image_generation', AGENTS)).toEqual({
+      kind: 'choose',
+      target: 'image',
+    })
+    expect(parseModelSettingCommand('  /model_video_generation  ', AGENTS)).toEqual({
+      kind: 'choose',
+      target: 'video',
+    })
+    // Like the terminal pickers, they take no sub-commands: an argument is
+    // ignored and the chooser (which shows the current choice and a reset
+    // button) opens.
+    expect(parseModelSettingCommand('/model_image_generation show', AGENTS)).toEqual({
+      kind: 'choose',
+      target: 'image',
+    })
+    expect(parseModelSettingCommand('/MODEL_VIDEO_GENERATION default', AGENTS)).toEqual({
+      kind: 'choose',
+      target: 'video',
+    })
   })
 })
 
@@ -218,5 +249,48 @@ describe('persistence', () => {
     expect(scopedChooser.title).toContain('builder')
     expect(scopedChooser.agentTypes).toContain('builder')
     expect(buildChooser('webfetch').agentTypes).toBeUndefined()
+    // The chat-model settings list the session catalogue, not a list of their own.
+    expect(chooser.catalogue).toBeUndefined()
+  })
+
+  test('an image/video choice is stored through the CLI setter the tools read', async () => {
+    const config = await import('../src/utils/rayuConfig.js')
+    expect(applySelection('image', 'rayu-wan2.7-image')).toBe(
+      'Image generation model: rayu-wan2.7-image',
+    )
+    expect(applySelection('video', 'rayu-wan3-video-720p')).toBe(
+      'Video generation model: rayu-wan3-video-720p',
+    )
+    _resetRayuConfigCache()
+    expect(config.getImageModelSelection()).toBe('rayu-wan2.7-image')
+    expect(config.getVideoModelSelection()).toBe('rayu-wan3-video-720p')
+    expect(describeSelection('image')).toBe('Image generation model: rayu-wan2.7-image')
+    expect(buildChooser('video').current).toBe('rayu-wan3-video-720p')
+    // The WebFetch and agent settings are untouched.
+    expect(describeSelection('webfetch')).toContain('default')
+
+    expect(applySelection('image', null)).toContain('Image generation model reset to default')
+    _resetRayuConfigCache()
+    expect(config.getImageModelSelection()).toBeUndefined()
+    expect(config.getVideoModelSelection()).toBe('rayu-wan3-video-720p')
+  })
+
+  test('a provider-prefixed value is refused for a media setting, not stored', async () => {
+    const config = await import('../src/utils/rayuConfig.js')
+    expect(applySelection('video', 'rayu-hosted\u0000rayu-wan3-video-720p')).toBeNull()
+    _resetRayuConfigCache()
+    expect(config.getVideoModelSelection()).toBeUndefined()
+  })
+
+  test('a media chooser opens with its own loading list and names the default', () => {
+    const chooser = buildChooser('video')
+    expect(chooser.target).toBe('video')
+    expect(chooser.title).toBe('Select a video generation model')
+    expect(chooser.tip).toContain('per second')
+    expect(chooser.defaultNote).toContain('admin order')
+    expect(chooser.defaultNote).not.toMatch(/nvidia/i)
+    expect(chooser.catalogue).toEqual({ options: [], loading: true, error: null })
+    expect(chooser.agentTypes).toBeUndefined()
+    expect(describeSelection('image')).toContain('Rayu-hosted when signed in')
   })
 })

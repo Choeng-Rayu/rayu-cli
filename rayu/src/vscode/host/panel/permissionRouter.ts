@@ -51,6 +51,11 @@ import {
 } from '../../../utils/askUserQuestion.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../../tools/AskUserQuestionTool/prompt.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants.js'
+import {
+  isPlanApprovalChoice,
+  planApprovalMode,
+  type PlanApprovalChoice,
+} from '../../shared/planApproval.js'
 import type { PermissionRequestView } from '../../shared/webviewProtocol.js'
 
 /** What the user chose. */
@@ -61,6 +66,8 @@ export type PermissionDecision =
   | { kind: 'allow-always' }
   /** Refuse. */
   | { kind: 'deny' }
+  /** Approve a plan, and say which mode it runs in (`shared/planApproval.ts`). */
+  | { kind: PlanApprovalChoice }
 
 /**
  * The plan content of an ExitPlanMode request, when there is one.
@@ -69,10 +76,12 @@ export type PermissionDecision =
  * `can_use_tool` request crosses, so the approval card can render the plan as markdown
  * rather than showing the input JSON — which is the entire plan on one escaped line.
  * Undefined for every other tool, and for ExitPlanMode when the plan file was empty.
+ * `offersModeChoice` is for this panel's own engine only; see the protocol field.
  */
 function planApprovalOf(
   toolName: string,
   input: Record<string, unknown>,
+  offersModeChoice: boolean,
 ): PermissionRequestView['planApproval'] | undefined {
   if (toolName !== EXIT_PLAN_MODE_V2_TOOL_NAME) return undefined
   const plan = typeof input.plan === 'string' ? input.plan : undefined
@@ -82,6 +91,71 @@ function planApprovalOf(
   return {
     plan,
     ...(planFilePath && { planFilePath }),
+    ...(offersModeChoice && { offersModeChoice }),
+  }
+}
+
+/**
+ * The input an approval sends back.
+ *
+ * Echoed unchanged for every tool except ExitPlanMode. There, `normalizeToolInput` put
+ * the plan file's text into `input.plan` for display, and ExitPlanModeV2Tool.call reads
+ * a `plan` field as the user's EDIT: echoing it made every approval report "Approved
+ * Plan (edited by user)" and rewrite the plan file with the snapshot this card showed,
+ * losing any edit made on disk meanwhile. Without it the tool reads the plan from disk,
+ * as after the terminal's own unedited approval. The remaining `planFilePath` keeps the
+ * object non-empty, which matters: the engine's stdio path reads `{}` as "use the
+ * original input", the one that carries `plan`.
+ */
+function approvedInput(entry: Pending): Record<string, unknown> {
+  if (entry.toolName !== EXIT_PLAN_MODE_V2_TOOL_NAME || !('plan' in entry.input)) {
+    return entry.input
+  }
+  const { plan: _shownPlan, ...rest } = entry.input
+  return Object.keys(rest).length > 0 ? rest : entry.input
+}
+
+/**
+ * The response to a plan card's choice, or null when the request did not offer one.
+ *
+ * "Orchestrate" changes no mode: the tool switches plan→Orchestrator itself. The other
+ * choices set an external mode for the session before the tool runs, which the tool
+ * then keeps and names in its result.
+ */
+function planChoiceResponse(
+  entry: Pending,
+  choice: PlanApprovalChoice,
+): Record<string, unknown> | null {
+  if (!entry.view.planApproval?.offersModeChoice) return null
+  const mode = planApprovalMode(choice)
+  return {
+    behavior: 'allow',
+    updatedInput: approvedInput(entry),
+    decisionClassification: 'user_temporary',
+    ...(mode && {
+      updatedPermissions: [{ type: 'setMode', mode, destination: 'session' }],
+    }),
+  }
+}
+
+/** The response to "Allow once" / "Always allow". */
+function allowResponse(entry: Pending, always: boolean): Record<string, unknown> {
+  return {
+    behavior: 'allow',
+    // REQUIRED. Echoed (see approvedInput): this UI does not offer input editing,
+    // and omitting the field fails validation, which the engine reads as a denial.
+    updatedInput: approvedInput(entry),
+    ...(always
+      ? {
+          decisionClassification: 'user_permanent',
+          // The engine's own suggestions are replayed rather than invented here:
+          // it knows the rule shape that matches what it asked about, and a
+          // hand-built rule risks being broader than the user agreed to.
+          ...(entry.suggestions.length > 0
+            ? { updatedPermissions: entry.suggestions }
+            : {}),
+        }
+      : { decisionClassification: 'user_temporary' }),
   }
 }
 
@@ -142,7 +216,7 @@ export class PermissionRouter {
 
     // A plan approval renders its own card from the plan itself; the generic label
     // and parameter dump would put the whole plan on screen as escaped JSON.
-    const planApproval = planApprovalOf(toolName, input)
+    const planApproval = planApprovalOf(toolName, input, true)
 
     const view: PermissionRequestView = {
       requestId: request.requestId,
@@ -210,7 +284,7 @@ export class PermissionRouter {
         ? (request.input as Record<string, unknown>)
         : {}
 
-    const planApproval = planApprovalOf(request.toolName, input)
+    const planApproval = planApprovalOf(request.toolName, input, false)
 
     const view: PermissionRequestView = {
       requestId: request.requestId,
@@ -274,6 +348,12 @@ export class PermissionRouter {
       entry.toolName === ASK_USER_QUESTION_TOOL_NAME &&
       decision.kind !== 'deny'
     ) return
+    // A plan choice answers only the card that offered it. Anywhere else it would have
+    // to be guessed into an allow, possibly in a mode nobody picked, so the card stays.
+    const planResponse = isPlanApprovalChoice(decision.kind)
+      ? planChoiceResponse(entry, decision.kind)
+      : undefined
+    if (planResponse === null) return
     this.pending.delete(requestId)
     this.callbacks.onDismiss(requestId)
 
@@ -284,7 +364,7 @@ export class PermissionRouter {
       entry.respondRemotely(
         decision.kind === 'deny'
           ? { behavior: 'deny', message: 'The user denied this from the editor.' }
-          : { behavior: 'allow', updatedInput: entry.input },
+          : { behavior: 'allow', updatedInput: approvedInput(entry) },
       )
       return
     }
@@ -302,23 +382,10 @@ export class PermissionRouter {
       return
     }
 
-    control.respond(requestId, {
-      behavior: 'allow',
-      // REQUIRED. Echoed unchanged: this UI does not offer input editing, and
-      // omitting the field fails validation, which the engine reads as a denial.
-      updatedInput: entry.input,
-      ...(decision.kind === 'allow-always'
-        ? {
-            decisionClassification: 'user_permanent',
-            // The engine's own suggestions are replayed rather than invented here:
-            // it knows the rule shape that matches what it asked about, and a
-            // hand-built rule risks being broader than the user agreed to.
-            ...(entry.suggestions.length > 0
-              ? { updatedPermissions: entry.suggestions }
-              : {}),
-          }
-        : { decisionClassification: 'user_temporary' }),
-    })
+    control.respond(
+      requestId,
+      planResponse ?? allowResponse(entry, decision.kind === 'allow-always'),
+    )
   }
 
   /** Answer AskUserQuestion through the same updatedInput contract as the CLI. */

@@ -124,18 +124,28 @@ describe('PermissionRouter payload validation against engine outputSchema()', ()
     })
 
     // The card renders the plan as markdown; the JSON dump of the whole plan must not
-    // leak through the generic label or the parameter body.
-    expect(shown.planApproval).toEqual({ plan, planFilePath: '.rayu/plans/session-a.md' })
+    // leak through the generic label or the parameter body. This panel's own engine
+    // asked, so the card may offer how the plan continues.
+    expect(shown.planApproval).toEqual({
+      plan,
+      planFilePath: '.rayu/plans/session-a.md',
+      offersModeChoice: true,
+    })
     expect(shown.label).toBe('')
     expect(shown.parameters).toBe('')
 
-    // The decision contract is unchanged: allow echoes the input back for the engine.
+    // Allow echoes the input WITHOUT the injected plan text: the tool reads a `plan`
+    // field as the user's edit. `planFilePath` keeps the object non-empty, because the
+    // engine reads `{}` as "use the original input" (the one carrying `plan`).
     router.resolve(control, 'plan_request', { kind: 'allow-once' })
-    expect(sentPayload).toMatchObject({
+    // Exact match: a subset match would not catch `plan` coming back. (Assigned in a
+    // callback, so TypeScript still narrows it to null here.)
+    expect(sentPayload as unknown).toEqual({
       behavior: 'allow',
-      updatedInput: input,
+      updatedInput: { planFilePath: '.rayu/plans/session-a.md' },
       decisionClassification: 'user_temporary',
     })
+    expect(outputSchema().safeParse(sentPayload).success).toBe(true)
   })
 
   test('an ExitPlanMode with an empty plan stays on the generic card', () => {

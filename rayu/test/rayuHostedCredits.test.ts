@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -17,7 +17,11 @@ import {
   _resetRayuEntitlementsForTesting,
   _setRayuEntitlementsForTesting,
 } from '../src/services/rayuAuth/rayuEntitlements.ts'
-import { makeRayuHostedFetch } from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
+import {
+  makeRayuHostedFetch,
+  rayuHostedAnthropicBaseURL,
+  rayuHostedBaseURL,
+} from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
 import {
   getAllProviderModelOptions,
   loadRayuConfig,
@@ -608,6 +612,95 @@ describe('rayu-hosted visibility (free sees it, blocked on use)', () => {
   })
 })
 
+
+// --- Gateway URL security: the hosted chat base URLs carry the Rayu JWT ---
+
+describe('rayu-hosted gateway URL security', () => {
+  test('a remote plaintext-http gateway refuses both chat base URLs, NO network call', () => {
+    const saved = process.env.RAYU_GATEWAY_URL
+    process.env.RAYU_GATEWAY_URL = 'http://gateway.attacker.example'
+    let calls = 0
+    const real = globalThis.fetch
+    globalThis.fetch = (async () => {
+      calls++
+      throw new Error('must not reach the network')
+    }) as unknown as typeof fetch
+    try {
+      // Every hosted-chat client is built on these URLs (providerRegistry /
+      // syncRayuHostedProvider), so a throw here fails the chat call locally,
+      // before a single byte of JWT leaves the process.
+      expect(() => rayuHostedBaseURL()).toThrow(/plaintext http/)
+      expect(() => rayuHostedAnthropicBaseURL()).toThrow(/plaintext http/)
+      expect(calls).toBe(0)
+    } finally {
+      globalThis.fetch = real
+      if (saved === undefined) delete process.env.RAYU_GATEWAY_URL
+      else process.env.RAYU_GATEWAY_URL = saved
+    }
+  })
+
+  test('loopback http still works and the bearer request does not follow redirects', async () => {
+    const saved = process.env.RAYU_GATEWAY_URL
+    const savedAuthDir = process.env.RAYU_AUTH_CONFIG_DIR
+    // RAYU_AUTH_CONFIG_DIR outranks RAYU_CONFIG_DIR — pin it to the isolated
+    // dir so the test never reads the developer's real session.
+    process.env.RAYU_AUTH_CONFIG_DIR = dir
+    process.env.RAYU_GATEWAY_URL = 'http://127.0.0.1:8080'
+    process.env.USE_RAYU_OAUTH = 'true'
+    // Far-future expiry → getValidRayuAccessToken() returns the token without
+    // a refresh round-trip.
+    writeFileSync(
+      join(dir, 'rayu-auth.json'),
+      JSON.stringify({
+        accessToken: 'test-access-token',
+        refreshToken: 'test-refresh-token',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        user: { id: 7, email: null, displayName: null, avatarUrl: null, role: 'user' },
+      }),
+      { mode: 0o600 },
+    )
+    _setRayuEntitlementsForTesting({
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [
+        { code: 'deepseek-v4-pro', label: 'p', provider: 'deepseek', creditMultiplier: 1 },
+      ],
+    })
+    const seen: Array<{ url: string; init?: RequestInit }> = []
+    const real = globalThis.fetch
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      seen.push({ url: String(input), init })
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      // The dev gateway over plaintext loopback http must keep working.
+      expect(rayuHostedBaseURL()).toBe('http://127.0.0.1:8080/v1')
+      const f = makeRayuHostedFetch()
+      await f(`${rayuHostedBaseURL()}/chat/completions`, {
+        method: 'POST',
+        body: JSON.stringify({ model: 'deepseek-v4-pro', messages: [] }),
+      })
+      // (The entitlement gate may itself refresh from the BACKEND — filter to
+      // the gateway request.)
+      const gatewayReqs = seen.filter((s) => s.url.includes('127.0.0.1:8080'))
+      expect(gatewayReqs).toHaveLength(1)
+      expect(gatewayReqs[0].url).toBe('http://127.0.0.1:8080/v1/chat/completions')
+      const headers = new Headers(gatewayReqs[0].init?.headers)
+      expect(headers.get('authorization')).toBe('Bearer test-access-token')
+      // The JWT-carrying request must not chase a redirect.
+      expect(gatewayReqs[0].init?.redirect).toBe('error')
+    } finally {
+      globalThis.fetch = real
+      _resetRayuEntitlementsForTesting()
+      delete process.env.USE_RAYU_OAUTH
+      if (savedAuthDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+      else process.env.RAYU_AUTH_CONFIG_DIR = savedAuthDir
+      if (saved === undefined) delete process.env.RAYU_GATEWAY_URL
+      else process.env.RAYU_GATEWAY_URL = saved
+    }
+  })
+})
 
 // --- Credit / period limit (429) is TERMINAL: no retry, clear renew message ---
 

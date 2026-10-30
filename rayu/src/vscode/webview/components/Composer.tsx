@@ -148,7 +148,6 @@ export interface ComposerProps {
   onSelectModel: (value: string) => void
   onRefreshModels: () => void
   onSetEffort: (level: EffortChoice) => void
-  onSetThinking: (enabled: boolean) => void
   onCyclePermissionMode: () => void
   onSelectPermissionMode?: (modeId: string) => void
   onOpenProviderSetup: () => void
@@ -200,7 +199,6 @@ export function Composer({
   onSelectModel,
   onRefreshModels,
   onSetEffort,
-  onSetThinking,
   onCyclePermissionMode,
   onSelectPermissionMode,
   onOpenProviderSetup,
@@ -901,7 +899,6 @@ export function Composer({
             <InferenceControls
               settings={inference}
               onSetEffort={onSetEffort}
-              onSetThinking={onSetThinking}
               effortOpenRequest={controlRequest?.control === 'effort' ? controlRequest.revision : undefined}
             />
           </div>

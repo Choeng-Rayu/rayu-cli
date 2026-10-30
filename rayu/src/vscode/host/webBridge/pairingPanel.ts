@@ -1,8 +1,11 @@
 import * as vscode from 'vscode'
-import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { PAIRING_QR_FLAG } from '../../shared/pairingProtocol.js'
 import { guestPairingStatus, stopGuestPairing } from '../../../webBridge/guestPairing.js'
+import { runEngineChild, type EngineLaunch } from '../engine/engineLaunch.js'
+
+const QR_TIMEOUT_MS = 10_000
+const QR_IMAGE = /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, character => ({
@@ -11,45 +14,37 @@ function escapeHtml(value: string): string {
 }
 
 /** VS Code-specific QR display; pairing and token handling remain shared with the CLI. */
-function renderQrInEngine(enginePath: string, url: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [enginePath, PAIRING_QR_FLAG], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
-    let output = ''
-    const timeout = setTimeout(() => child.kill(), 10_000)
-    child.stdout.on('data', chunk => {
-      output += String(chunk)
-      if (output.length > 100_000) child.kill()
-    })
-    child.on('error', error => { clearTimeout(timeout); reject(error) })
-    child.on('close', code => {
-      clearTimeout(timeout)
-      if (code !== 0) return reject(new Error('Could not generate a pairing QR code'))
-      try {
-        const image = (JSON.parse(output) as { image?: unknown }).image
-        if (typeof image !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(image)) {
-          throw new Error('Invalid QR image')
-        }
-        resolve(image)
-      } catch (error) {
-        reject(error)
-      }
-    })
-    child.stdin.end(JSON.stringify({ url }))
+async function renderQrInEngine(launch: EngineLaunch, url: string): Promise<string> {
+  const result = await runEngineChild<string>(launch, {
+    flag: PAIRING_QR_FLAG,
+    stdin: JSON.stringify({ url }),
+    timeoutMs: QR_TIMEOUT_MS,
+    onFrame: frame => {
+      if (typeof frame.image !== 'string') return undefined
+      if (!QR_IMAGE.test(frame.image)) throw new Error('Invalid QR image')
+      return frame.image
+    },
   })
+  if (result.kind === 'done') return result.value
+  if (result.kind === 'spawn-error' || result.kind === 'protocol-error') {
+    throw new Error(result.message)
+  }
+  throw new Error('Could not generate a pairing QR code')
 }
 
-export async function showBridgePairingPanel(enginePath: string, url: string, expiresAt: string): Promise<void> {
+export async function showBridgePairingPanel(
+  launch: EngineLaunch,
+  url: string,
+  expiresAt: string,
+  extensionUri?: vscode.Uri,
+): Promise<void> {
   const target = new URL(url)
   if (!['https:', 'http:'].includes(target.protocol) || target.username || target.password) {
     throw new Error('Invalid Studio pairing URL')
   }
   let image: string
   try {
-    image = await renderQrInEngine(enginePath, url)
+    image = await renderQrInEngine(launch, url)
   } catch (error) {
     if (guestPairingStatus()?.url === url) stopGuestPairing()
     throw error
@@ -62,6 +57,8 @@ export async function showBridgePairingPanel(enginePath: string, url: string, ex
     vscode.ViewColumn.Active,
     { enableScripts: true },
   )
+  // Same Rayu mark on the tab as the chat and Settings panels.
+  if (extensionUri) panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'icon.png')
   wirePairingPanel(panel, url, expiresAt)
   panel.webview.html = renderPairingPanelHtml(image, url, expiresAt, nonce)
 }

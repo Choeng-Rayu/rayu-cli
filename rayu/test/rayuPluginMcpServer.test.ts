@@ -18,10 +18,16 @@ import { createLinkedTransportPair } from '../src/services/mcp/InProcessTranspor
 let workDir: string
 let client: Client
 let close: (() => Promise<void>) | undefined
+let savedGcpProject: string | undefined
 
 beforeAll(async () => {
   workDir = await mkdtemp(join(tmpdir(), 'rayu-mcp-e2e-'))
   await writeFile(join(workDir, 'hello.txt'), 'hello from rayu\n')
+  // The billing-gated GenerateImage tool is listed only when an image backend is
+  // usable. Configure one explicitly (Vertex) instead of depending on whatever
+  // keys or session the developer's shell happens to have.
+  savedGcpProject = process.env.GOOGLE_CLOUD_PROJECT
+  process.env.GOOGLE_CLOUD_PROJECT = 'rayu-mcp-e2e'
 
   const { createRayuMcpServer } = await import(
     '../src/plugins/mcpServer/index.ts'
@@ -46,6 +52,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await close?.()
   await rm(workDir, { recursive: true, force: true })
+  if (savedGcpProject === undefined) delete process.env.GOOGLE_CLOUD_PROJECT
+  else process.env.GOOGLE_CLOUD_PROJECT = savedGcpProject
 })
 
 /** Exactly what `client.callTool()` resolves to, per the installed SDK. */

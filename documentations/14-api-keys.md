@@ -204,6 +204,20 @@ Every response includes credit usage information in headers:
 | `x-rayu-topup-balance` | Top-up credit balance |
 | `x-rayu-limit` | Total period allowance |
 
+### What one request cost
+
+The headers are period totals and are sent before a stream starts, so they cannot say what the request itself cost. The response does, in a `rayu` member, priced exactly as the request is billed:
+
+```json
+"rayu": { "billableTokens": 443760, "tokensPerCredit": 1000, "credits": 443.76 }
+```
+
+- **Streaming** (`stream: true`): on the `message_delta` event. The Anthropic SDKs keep unknown fields, so read `event.rayu` from the raw stream event.
+- **Non-streaming:** on the response body.
+- `credits` is `billableTokens ÷ tokensPerCredit`. The image and video endpoints publish the same `billableTokens`/`tokensPerCredit` pair in their own `rayu` object.
+
+The member is additive: a client that does not read it is unaffected. The OpenAI-compatible endpoint does not carry it.
+
 ## Per-Key Controls
 
 Each API key can have optional limits set in the dashboard:

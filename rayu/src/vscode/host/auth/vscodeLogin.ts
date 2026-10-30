@@ -38,12 +38,15 @@
  * parameter on the rayu-web login page. Until then this reports a clear timeout
  * rather than hanging.
  */
-import { spawn } from 'node:child_process'
-
 import * as vscode from 'vscode'
 
 import { LOGIN_FLAG } from '../../shared/loginProtocol.js'
-import { NdjsonReader } from '../engine/ndjsonReader.js'
+import {
+  runEngineChild,
+  stderrExcerpt,
+  type EngineChildResult,
+  type EngineLaunch,
+} from '../engine/engineLaunch.js'
 
 /** The website's own login timeout is 5 minutes; allow a little more than that. */
 const LOGIN_TIMEOUT_MS = 6 * 60 * 1000
@@ -57,8 +60,8 @@ export interface SignInOutcome {
 }
 
 export interface SignInOptions {
-  /** Absolute path to the bundled `engine.mjs`. */
-  enginePath: string
+  /** How to start the engine — see `engine/engineLaunch.ts`. */
+  launch: EngineLaunch
   /** Working directory for the child. Any real directory will do. */
   cwd: string
 }
@@ -83,107 +86,63 @@ export async function signInFromEditor(
   )
 }
 
-function runLoginChild(
+async function runLoginChild(
   options: SignInOptions,
   token: vscode.CancellationToken,
 ): Promise<SignInOutcome> {
-  return new Promise<SignInOutcome>(resolve => {
-    let settled = false
-    let stderrTail = ''
-
-    const child = spawn(process.execPath, [options.enginePath, LOGIN_FLAG], {
+  const cancel = new AbortController()
+  const cancellation = token.onCancellationRequested(() => cancel.abort())
+  try {
+    const result = await runEngineChild<SignInOutcome>(options.launch, {
+      flag: LOGIN_FLAG,
       cwd: options.cwd,
-      env: {
-        ...process.env,
-        // The extension host's execPath is the Electron binary, not Node. This is
-        // what makes it behave as the Node it embeds, with no dependency on a
-        // `node` being present on the user's PATH.
-        ELECTRON_RUN_AS_NODE: '1',
-        NO_COLOR: '1',
-        FORCE_COLOR: '0',
+      timeoutMs: LOGIN_TIMEOUT_MS,
+      signal: cancel.signal,
+      onFrame: parsed => {
+        if (parsed.type === 'rayucode_login_url' && typeof parsed.url === 'string') {
+          void openLoginUrl(parsed.url)
+          return undefined
+        }
+        if (parsed.type !== 'rayucode_login_result') return undefined
+        return parsed.ok === true
+          ? { ok: true, displayName: typeof parsed.displayName === 'string' ? parsed.displayName : null }
+          : { ok: false, error: typeof parsed.error === 'string' ? parsed.error : 'unknown error' }
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
     })
+    return result.kind === 'done' ? result.value : loginFailure(result)
+  } finally {
+    cancellation.dispose()
+  }
+}
 
-    function finish(outcome: SignInOutcome): void {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        // Already gone.
-      }
-      resolve(outcome)
-    }
-
-    const timer = setTimeout(() => {
-      finish({
+/** The user-facing outcome for a login helper that ended without a result frame. */
+function loginFailure(
+  result: Exclude<EngineChildResult<SignInOutcome>, { kind: 'done' }>,
+): SignInOutcome {
+  switch (result.kind) {
+    case 'timeout':
+      return {
         ok: false,
         error:
           'the browser sign-in timed out. If this workspace is remote, the login ' +
           'page may not be able to reach the forwarded callback port.',
-      })
-    }, LOGIN_TIMEOUT_MS)
-    timer.unref?.()
-
-    token.onCancellationRequested(() => {
-      finish({ ok: false, error: 'sign-in was cancelled' })
-    })
-
-    const reader = new NdjsonReader({
-      onFrame: frame => {
-        const parsed = frame as Record<string, unknown>
-        if (parsed.type === 'rayucode_login_url' && typeof parsed.url === 'string') {
-          void openLoginUrl(parsed.url)
-          return
-        }
-        if (parsed.type === 'rayucode_login_result') {
-          finish(
-            parsed.ok === true
-              ? {
-                  ok: true,
-                  displayName:
-                    typeof parsed.displayName === 'string' ? parsed.displayName : null,
-                }
-              : {
-                  ok: false,
-                  error:
-                    typeof parsed.error === 'string' ? parsed.error : 'unknown error',
-                },
-          )
-        }
-      },
-      onError: error => {
-        finish({ ok: false, error: `login channel error: ${error.message}` })
-      },
-    })
-
-    child.stdout.setEncoding('utf8')
-    child.stdout.on('data', (chunk: string) => reader.push(chunk))
-    child.stdout.on('end', () => reader.end())
-
-    child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk: string) => {
-      stderrTail = `${stderrTail}${chunk}`.slice(-2_000)
-    })
-
-    child.on('error', err => {
-      finish({ ok: false, error: `could not start the login helper: ${err.message}` })
-    })
-
-    // Exiting without a result frame means the helper died. Reporting the stderr
-    // tail is the difference between an actionable error and "sign-in failed".
-    child.on('close', code => {
-      finish({
+      }
+    case 'aborted':
+      return { ok: false, error: 'sign-in was cancelled' }
+    case 'protocol-error':
+      return { ok: false, error: `login channel error: ${result.message}` }
+    case 'spawn-error':
+      return { ok: false, error: `could not start the login helper: ${result.message}` }
+    case 'exited':
+      // Exiting without a result frame means the helper died. Reporting the stderr
+      // tail is the difference between an actionable error and "sign-in failed".
+      return {
         ok: false,
         error:
-          `the login helper exited (code ${code}) without completing.` +
-          (stderrTail.trim() ? ` ${stderrTail.trim().slice(-400)}` : ''),
-      })
-    })
-  })
+          `the login helper exited (code ${result.code}) without completing.` +
+          stderrExcerpt(result.stderrTail),
+      }
+  }
 }
 
 /**

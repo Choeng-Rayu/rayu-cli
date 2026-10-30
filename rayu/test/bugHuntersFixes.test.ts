@@ -4,7 +4,7 @@
 //   rayu-plan-bug  — a paid user told to "upgrade your plan"; a concurrency
 //                    denial reported as an exhausted credit balance.
 import { APIError } from '@anthropic-ai/sdk/index.js'
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import {
@@ -115,6 +115,20 @@ describe('rayu-plan — entitlements payload validation', () => {
 })
 
 describe('rayu-plan — a paying user is never told to upgrade', () => {
+  // hasHostedModelAccess() only gates when Rayu OAuth is ON. The suite's
+  // preload forces the baked default OFF, but an ambient .env/other test file
+  // could set or delete USE_RAYU_OAUTH — so the flag is set explicitly here
+  // and restored, keeping this file hermetic in any batch order.
+  let savedOAuth: string | undefined
+  beforeEach(() => {
+    savedOAuth = process.env.USE_RAYU_OAUTH
+    process.env.USE_RAYU_OAUTH = 'true'
+  })
+  afterEach(() => {
+    if (savedOAuth === undefined) delete process.env.USE_RAYU_OAUTH
+    else process.env.USE_RAYU_OAUTH = savedOAuth
+  })
+
   test('paid plan keeps hosted access even with an empty allowedModels', () => {
     // Reproduces the report: a Max subscriber with credits was shown
     // "🔒 Rayu-hosted models are a paid feature. Please upgrade your plan".

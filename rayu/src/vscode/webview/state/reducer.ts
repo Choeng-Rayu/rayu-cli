@@ -27,6 +27,7 @@ import type {
   AttachmentView,
   PermissionRequestView,
   ProviderSetupView,
+  TelegramConnectView,
   SessionListView,
   IdeContextView,
   ModelChooserView,
@@ -163,6 +164,7 @@ export interface ChatState {
   /** Thinking and effort, as acknowledged by the engine. */
   inference: InferenceSettingsView
   providerSetup: ProviderSetupView
+  telegramConnect: TelegramConnectView
   /** Open command-driven model chooser, or null. */
   modelChooser: ModelChooserView | null
   attachment: AttachmentView
@@ -291,6 +293,20 @@ export const initialChatState: ChatState = {
     connectedProviderId: null,
     connectedModel: null,
   },
+  telegramConnect: {
+    open: false,
+    busy: false,
+    busyMessage: null,
+    error: null,
+    linkedChatId: null,
+    linkedBotUsername: null,
+    mode: null,
+    botUsername: null,
+    qr: null,
+    deepLink: null,
+    pairingCode: null,
+    waitingForLink: false,
+  },
   permissionMode: DEFAULT_PERMISSION_MODE,
   pendingPermissions: [],
   notices: [],
@@ -336,6 +352,7 @@ export type ChatAction =
   | { type: 'setModelCatalogue'; catalogue: ModelCatalogueView }
   | { type: 'setInferenceSettings'; settings: InferenceSettingsView }
   | { type: 'setProviderSetup'; setup: ProviderSetupView }
+  | { type: 'setTelegramConnect'; connect: TelegramConnectView }
   | { type: 'setModelChooser'; chooser: ModelChooserView | null }
   | { type: 'setAttachment'; attachment: AttachmentView }
   | { type: 'setPermissionMode'; mode: PermissionModeView }
@@ -393,6 +410,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         modelCatalogue: action.state.modelCatalogue,
         inference: action.state.inference,
         providerSetup: action.state.providerSetup,
+        telegramConnect: action.state.telegramConnect,
         modelChooser: action.state.modelChooser,
         attachment: action.state.attachment,
         permissionMode: action.state.permissionMode,
@@ -541,6 +559,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'setProviderSetup':
       // The host owns this surface's state so it survives a webview re-creation.
       return { ...state, providerSetup: action.setup }
+
+    case 'setTelegramConnect':
+      // Host-owned for the same reason: the pairing/QR state must survive re-creation.
+      return { ...state, telegramConnect: action.connect }
 
     case 'setModelChooser':
       // Host-owned for the same reason: a chooser opened by a command must survive the

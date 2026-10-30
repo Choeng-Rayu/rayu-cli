@@ -13,20 +13,35 @@
  *
  * ── SAME DECISION CONTRACT AS THE GENERIC CARD ───────────────────────────────────
  *
- * "Approve plan" answers `allow-once` and "Keep planning" answers `deny`, so the
- * engine's blocked ExitPlanMode call resolves exactly as before — only the display
- * changed. There is no "Always allow": a lasting rule for a tool that exists to ask
- * would silence the one question it is for. Deny comes first, as on every card, so
- * the safe choice is the easy one to hit.
+ * "Keep planning" answers `deny`, as on every card, and comes first so the safe choice
+ * is the easy one to hit. There is no "Always allow": a lasting rule for a tool that
+ * exists to ask would silence the one question it is for.
+ *
+ * ── HOW THE PLAN CONTINUES IS THE USER'S CHOICE ──────────────────────────────────
+ *
+ * A request from this panel's own engine (`offersModeChoice`) offers one approve button
+ * per mode: Ask, Auto-edit, or Orchestrator, the last as the primary action because a
+ * confirmed plan enters Orchestrator mode when nothing else is chosen. The labels come
+ * from the mode pill (`shared/planApproval.ts`), so the button and the pill that
+ * changes after it always name the same mode. A request mirrored from an attached CLI
+ * session keeps the single "Approve plan" (`allow-once`): that session applies its own
+ * plan-exit rule.
  */
 import { useMemo } from 'react'
 
 import { renderMarkdown } from '../markdown.js'
+import {
+  PLAN_APPROVAL_CHOICES,
+  planApprovalLabel,
+  type PlanApprovalChoice,
+} from '../../shared/planApproval.js'
 import type { PermissionRequestView } from '../../shared/webviewProtocol.js'
+
+export type PlanApprovalDecision = 'allow-once' | 'deny' | PlanApprovalChoice
 
 export interface PlanApprovalCardProps {
   request: PermissionRequestView
-  onDecide: (decision: 'allow-once' | 'allow-always' | 'deny') => void
+  onDecide: (decision: PlanApprovalDecision) => void
 }
 
 export function PlanApprovalCard({
@@ -74,13 +89,34 @@ export function PlanApprovalCard({
         >
           Keep planning
         </button>
-        <button
-          type="button"
-          className="rc-button rc-button-primary"
-          onClick={() => onDecide('allow-once')}
-        >
-          Approve plan
-        </button>
+        {approval?.offersModeChoice ? (
+          PLAN_APPROVAL_CHOICES.map(choice => {
+            const { label, description } = planApprovalLabel(choice)
+            return (
+              <button
+                key={choice}
+                type="button"
+                className={
+                  choice === 'approve-orchestrate'
+                    ? 'rc-button rc-button-primary'
+                    : 'rc-button'
+                }
+                title={description}
+                onClick={() => onDecide(choice)}
+              >
+                {label}
+              </button>
+            )
+          })
+        ) : (
+          <button
+            type="button"
+            className="rc-button rc-button-primary"
+            onClick={() => onDecide('allow-once')}
+          >
+            Approve plan
+          </button>
+        )}
       </div>
     </section>
   )

@@ -15,7 +15,7 @@
  * and the timeout paths are the production ones. Only the engine's BEHAVIOUR is scripted.
  */
 import { afterEach, expect, mock, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -41,6 +41,12 @@ function writeFakeEngine(dir: string, options: {
   initializeDelayMs?: number
   exitOnPrompt?: boolean
   stderrSuffix?: string
+  /**
+   * Report a permission mode in the `initialize` runtime snapshot, as the real engine
+   * does: `true` reports the `--permission-mode` it was started with, a string reports
+   * that mode instead (an engine that fell back).
+   */
+  reportMode?: boolean | string
 } = {}): {
   enginePath: string
   logPath: string
@@ -81,8 +87,11 @@ process.stdin.on('data', chunk => {
       }) + '\\n')
       continue
     }
+    const reportedMode = ${JSON.stringify(options.reportMode ?? false)} === true
+      ? process.argv[process.argv.indexOf('--permission-mode') + 1]
+      : ${JSON.stringify(options.reportMode ?? false)}
     const payload = subtype === 'initialize'
-      ? { commands: [], models: [], agents: [] }
+      ? { commands: [], models: [], agents: [], ...(reportedMode ? { runtime: { permissionMode: reportedMode } } : {}) }
       : subtype === 'get_settings'
         ? { inference: { supportsEffort: false, supportedLevels: [], effort: null, effortEnvOverride: null, supportsThinking: true, thinkingEnabled: true } }
         : {}
@@ -353,6 +362,105 @@ test('the mode survives an engine replacement', async () => {
     .filter((r: any) => r?.subtype === 'set_permission_mode')
   expect(modes.map((r: any) => r.mode)).toEqual(['acceptEdits', 'acceptEdits'])
   expect(session.currentPermissionMode.id).toBe('acceptEdits')
+})
+
+/** Run `body` with Rayucode's profile in `dir`, as the extension host has it. */
+async function withProfile(dir: string, profile: Record<string, unknown> | null, body: () => Promise<void>): Promise<void> {
+  const saved = process.env.RAYU_AUTH_CONFIG_DIR
+  process.env.RAYU_AUTH_CONFIG_DIR = dir
+  if (profile) writeFileSync(join(dir, 'rayucode-preferences.json'), JSON.stringify(profile))
+  try {
+    await body()
+  } finally {
+    if (saved === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+    else process.env.RAYU_AUTH_CONFIG_DIR = saved
+  }
+}
+
+const requestsOf = (logPath: string, subtype: string): any[] =>
+  framesFrom(logPath).map(entry => entry.frame.request).filter((r: any) => r?.subtype === subtype)
+
+test('every engine is started in the chosen mode, even default, with suggestions on by default', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir)
+  await withProfile(dir, null, async () => {
+    const session = new ChatSession({ enginePath, cwd: dir, nodePath: process.execPath }, sessionCallbacks())
+    sessions.push(session)
+    await session.warmup()
+    await until(() => requestsOf(logPath, 'initialize').length > 0)
+
+    // Without the flag a terminal `permissions.defaultMode` would pick the mode instead.
+    const argv = framesFrom(logPath)[0]!.argv
+    expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('default')
+    expect(requestsOf(logPath, 'initialize')[0]).toMatchObject({ promptSuggestions: true })
+    expect(requestsOf(logPath, 'set_permission_mode')).toEqual([])
+  })
+})
+
+test('the remembered mode and the suggestions setting reach a new engine', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir, { reportMode: true })
+  await withProfile(dir, { permissionMode: 'acceptEdits', promptSuggestionEnabled: false }, async () => {
+    const session = new ChatSession({ enginePath, cwd: dir, nodePath: process.execPath }, sessionCallbacks())
+    sessions.push(session)
+    await session.warmup()
+    await until(() => requestsOf(logPath, 'initialize').length > 0)
+
+    const argv = framesFrom(logPath)[0]!.argv
+    expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('acceptEdits')
+    expect(requestsOf(logPath, 'initialize')[0]).toMatchObject({ promptSuggestions: false })
+    // The engine reported the mode it was started in, so nothing is sent again.
+    expect(requestsOf(logPath, 'set_permission_mode')).toEqual([])
+    expect(session.currentPermissionMode.id).toBe('acceptEdits')
+  })
+})
+
+test('the suggestions setting is read at each spawn, so a change reaches the next engine', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir)
+  await withProfile(dir, null, async () => {
+    const session = new ChatSession({ enginePath, cwd: dir, nodePath: process.execPath }, sessionCallbacks())
+    sessions.push(session)
+    await session.warmup()
+    await until(() => requestsOf(logPath, 'initialize').length === 1)
+    writeFileSync(join(dir, 'rayucode-preferences.json'), JSON.stringify({ promptSuggestionEnabled: false }))
+    session.newSession()
+    await session.warmup()
+    await until(() => requestsOf(logPath, 'initialize').length === 2)
+    expect(requestsOf(logPath, 'initialize').map(r => r.promptSuggestions)).toEqual([true, false])
+  })
+})
+
+test('an engine that fell back to another mode is switched after initialize', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir, { reportMode: 'default' })
+  await withProfile(dir, { permissionMode: 'fullManage' }, async () => {
+    const session = new ChatSession({ enginePath, cwd: dir, nodePath: process.execPath }, sessionCallbacks())
+    sessions.push(session)
+    await session.warmup()
+    await until(() => requestsOf(logPath, 'set_permission_mode').length > 0)
+    expect(requestsOf(logPath, 'set_permission_mode').map(r => r.mode)).toEqual(['fullManage'])
+    expect(session.currentPermissionMode.id).toBe('fullManage')
+  })
+})
+
+test('a refused switch after a fallback shows the mode the engine reported', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir, { reportMode: 'acceptEdits', refuse: 'set_permission_mode' })
+  const reported: string[] = []
+  await withProfile(dir, { permissionMode: 'fullManage' }, async () => {
+    const session = new ChatSession(
+      { enginePath, cwd: dir, nodePath: process.execPath },
+      sessionCallbacks({ onPermissionMode: mode => reported.push(mode.id), onError: () => {} }),
+    )
+    sessions.push(session)
+    await session.warmup()
+    await until(() => reported.length > 0)
+    expect(requestsOf(logPath, 'set_permission_mode')).toHaveLength(1)
+    // What the engine said it runs, not a blind `default`.
+    expect(session.currentPermissionMode.id).toBe('acceptEdits')
+    expect(reported).toEqual(['acceptEdits'])
+  })
 })
 
 
@@ -649,31 +757,96 @@ test('closing the visible conversation leaves another one visible', async () => 
 })
 
 
-test('a new engine starts with the thinking choice persisted now, not at construction', async () => {
-  // Thinking is a product-wide choice. A conversation created before another one turned
-  // thinking off used to spawn its engine with `--thinking enabled` regardless, because it
-  // only read the profile once, when it was created.
+test('thinking is hard-coded on at spawn even when the persisted preference is off', async () => {
+  // Rayucode is a reasoning-first product: thinking is always enabled, so the spawn flag
+  // is not derived from the persisted preference or the shared CLI settings.
   const dir = tempDir()
   const { enginePath, logPath } = writeFakeEngine(dir)
   const savedAuthDir = process.env.RAYU_AUTH_CONFIG_DIR
   process.env.RAYU_AUTH_CONFIG_DIR = dir
   try {
     const preferences = join(dir, 'rayucode-preferences.json')
-    writeFileSync(preferences, JSON.stringify({ thinkingEnabled: true }))
+    writeFileSync(preferences, JSON.stringify({ thinkingEnabled: false }))
     const session = new ChatSession(
       { enginePath, cwd: dir, nodePath: process.execPath },
       sessionCallbacks(),
     )
     sessions.push(session)
 
-    writeFileSync(preferences, JSON.stringify({ thinkingEnabled: false }))
     await session.warmup()
     await until(() => framesFrom(logPath).length > 0)
 
     const argv = framesFrom(logPath)[0]!.argv
-    expect(argv[argv.indexOf('--thinking') + 1]).toBe('disabled')
+    expect(argv[argv.indexOf('--thinking') + 1]).toBe('enabled')
   } finally {
     if (savedAuthDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
     else process.env.RAYU_AUTH_CONFIG_DIR = savedAuthDir
+  }
+})
+
+test('a resume target with no transcript starts fresh instead of failing to start', async () => {
+  // A restored tab can persist an engine session id before any message was written. The
+  // real engine treats a missing `--resume` target as fatal (exit 1), and its message goes
+  // to stdout, so the panel can only report "the engine stopped unexpectedly".
+  const dir = tempDir()
+  const { enginePath, logPath, startsPath } = writeFakeEngine(dir)
+  const savedConfigDir = process.env.RAYU_CONFIG_DIR
+  process.env.RAYU_CONFIG_DIR = dir
+  try {
+    const session = new ChatSession(
+      {
+        enginePath,
+        cwd: dir,
+        nodePath: process.execPath,
+        resumeSessionId: '00000000-0000-4000-8000-000000000000',
+      },
+      sessionCallbacks(),
+    )
+    sessions.push(session)
+
+    await session.warmup()
+    await until(() => framesFrom(logPath).length > 0)
+
+    expect(readFileSync(startsPath, 'utf8').trim().split('\n')).toHaveLength(1)
+    const argv = framesFrom(logPath)[0]!.argv
+    expect(argv).not.toContain('--resume')
+    expect(argv[argv.indexOf('--thinking') + 1]).toBe('enabled')
+    // The dead id is dropped, not merely ignored, so a reload does not retry it.
+    expect(session.engineSessionId).toBeNull()
+  } finally {
+    if (savedConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
+    else process.env.RAYU_CONFIG_DIR = savedConfigDir
+  }
+})
+
+test('a resume target with a transcript on disk is still resumed', async () => {
+  const dir = tempDir()
+  const { enginePath, logPath } = writeFakeEngine(dir)
+  const savedConfigDir = process.env.RAYU_CONFIG_DIR
+  process.env.RAYU_CONFIG_DIR = dir
+  try {
+    const { canonicalizePath, sanitizePath } = await import(
+      '../src/utils/sessionStoragePortable.js'
+    )
+    const sessionId = '6f1c7d2e-3a4b-4c5d-8e9f-0a1b2c3d4e5f'
+    const projectDir = join(dir, 'projects', sanitizePath(await canonicalizePath(dir)))
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(join(projectDir, `${sessionId}.jsonl`), '{"type":"user"}\n')
+
+    const session = new ChatSession(
+      { enginePath, cwd: dir, nodePath: process.execPath, resumeSessionId: sessionId },
+      sessionCallbacks(),
+    )
+    sessions.push(session)
+
+    await session.warmup()
+    await until(() => framesFrom(logPath).length > 0)
+
+    const argv = framesFrom(logPath)[0]!.argv
+    expect(argv[argv.indexOf('--resume') + 1]).toBe(sessionId)
+    expect(session.engineSessionId).toBe(sessionId)
+  } finally {
+    if (savedConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
+    else process.env.RAYU_CONFIG_DIR = savedConfigDir
   }
 })

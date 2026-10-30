@@ -56,16 +56,22 @@ RAYU is designed to be a **universal AI coding assistant** that works with any A
 | `extension.js` | the VS Code extension host (node, CJS, `vscode` external) | `src/vscode/host/extension.ts` |
 | `webview.js` | the React UI inside VS Code's webview (browser target) | `src/vscode/webview/` |
 
+`bun run build:vscode --target <platform>` packages that same engine entry as a compiled
+`bin/rayucode-engine[.exe]` (plus `bin/rg`) in a platform VSIX; the universal VSIX keeps
+`engine.mjs`. `scripts/smoke-vscode-engine.ts` starts a built engine and checks it answers.
+
 The engine runs as a **separate process**, not an in-process module, because it owns things the extension host cannot survive giving up: `process.on('SIGINT')`, `process.exit()`, direct `process.stdout` writes carrying the stream-json protocol, and a self re-exec with a computed `--max-old-space-size`. The CLI's own entry (`src/entrypoints/cli.tsx`) runs that identical engine directly in its own process instead of spawning it — same engine, different host.
 
 **Where new code goes — decide this before writing anything:**
 
 1. **Does the engine itself need it** (a tool, a command, a provider adapter, a piece of state, anything the AI agent loop uses)? → It goes in the **shared engine source** — `src/tools/`, `src/commands/`, `src/services/`, `src/state/`, `src/utils/`, etc. (everything under `src/` that is NOT `src/vscode/`). Both products get it automatically; there is nothing to wire up per-product. This is the common case — **when in doubt, a new tool/command/provider/utility belongs here, not under `src/vscode/`.**
 2. **Is it purely about how VS Code hosts the extension** (activation, the webview UI, VS Code-specific auth/IDE integration, panel/webview protocol types)? → It goes under `src/vscode/`:
-   - `src/vscode/host/` — the extension host: activation, auth (`host/auth/`), engine spawning/control (`host/engine/`), the chat panel (`host/panel/`), IDE integration (`host/ide/`), diff/review UI (`host/review/`).
+   - `src/vscode/host/` — the extension host: activation, auth (`host/auth/`), engine spawning/control (`host/engine/`), the chat panel (`host/panel/`), the Settings tab (`host/settings/`), Account and credits (`host/account/`), Integrations (`host/integrations/`), IDE integration (`host/ide/`), diff/review UI (`host/review/`).
    - `src/vscode/shared/` — types/protocol shared **between the host and the webview only** (`webviewProtocol.ts`, `connectProtocol.ts`, `permissionModes.ts`, etc.) — this is NOT the same thing as the engine-level shared `src/` described in point 1.
    - `src/vscode/webview/` — the React UI rendered inside VS Code.
 3. **Is it purely about the terminal** (Ink components, terminal-only keybindings, the TUI-specific rendering of something)? → It goes under the CLI-facing parts of the shared source (`src/components/`, `src/ink/`, `src/keybindings/`) but is naturally invisible to the extension because the extension never mounts the Ink renderer — no gating needed, just don't route it through `src/vscode/`.
+
+**Settings tab:** its rows are described once in `src/utils/settings/editableSettings.ts`. The host never writes those files directly — it spawns the engine child with `--rayucode-settings` (and `--rayucode-account` for account/profile work) and the child reads and writes them, so the terminal and the editor cannot disagree. The host-only helper flags are `--rayucode-login`, `--rayucode-connect`, `--rayucode-telegram-connect`, `--rayucode-settings`, `--rayucode-account`, and the Studio pairing QR.
 
 **Before adding a tool, command, provider, or utility, ask: "does this need to work identically whether the user is in a terminal or in VS Code?"** For nearly everything the answer is yes — a new tool, a new provider adapter, a new piece of billing logic, a new external-agent capability — all of it lives once in the shared engine and both front ends get it for free. Only genuinely UI-hosting concerns (how the chat renders, how VS Code's own panel/webview talks to the engine) are product-specific, and those already have a home in `src/vscode/`. Do not create a parallel implementation of engine logic inside `src/vscode/host/` "for VS Code" — if you find yourself doing that, the right fix is almost always to make the shared engine code configurable/host-agnostic instead, the same way `src/entrypoints/cli.tsx` and `src/entrypoints/vscodeHost.ts` are two thin entries over one engine.
 

@@ -362,6 +362,7 @@ export function App(): JSX.Element {
         case 'setModelCatalogue':
         case 'setAttachment':
         case 'setProviderSetup':
+        case 'setTelegramConnect':
         case 'setModelChooser':
         case 'setInferenceSettings':
         case 'setPermissionMode':
@@ -595,6 +596,8 @@ export function App(): JSX.Element {
           }
         }}
         onOpenProviderSetup={() => send({ type: 'openProviderSetup' })}
+        onOpenTelegramConnect={() => send({ type: 'openTelegramConnect' })}
+        onOpenSettings={() => send({ type: 'openSettings' })}
         onRefreshMcp={refreshMcp}
         onOpenMcp={() => {
           setRuntimeSection('mcp')
@@ -752,6 +755,7 @@ export function App(): JSX.Element {
           }
           onDismiss={() => send({ type: 'modelChooserDismiss' })}
           onRefresh={() => send({ type: 'refreshModelCatalogue' })}
+          onRefreshOwnList={() => send({ type: 'modelChooserRefresh' })}
         />
       ) : null}
 
@@ -826,7 +830,6 @@ export function App(): JSX.Element {
           onSelectModel={value => send({ type: 'selectModelValue', value })}
           onRefreshModels={() => send({ type: 'refreshModelCatalogue' })}
           onSetEffort={level => send({ type: 'setEffort', level })}
-          onSetThinking={enabled => send({ type: 'setThinking', enabled })}
           onCyclePermissionMode={() => send({ type: 'cyclePermissionMode' })}
           onSelectPermissionMode={modeId => {
             dispatch({ type: 'setPermissionMode', mode: permissionModeById(modeId) })
@@ -1301,6 +1304,13 @@ function SignInView({ state }: { state: WebviewState }): JSX.Element {
           onClick={() => send({ type: 'openProviderSetup' })}
         >
           Use an API key instead
+        </button>
+        <button
+          type="button"
+          className="rc-button"
+          onClick={() => send({ type: 'openTelegramConnect' })}
+        >
+          Connect Telegram
         </button>
       </div>
 

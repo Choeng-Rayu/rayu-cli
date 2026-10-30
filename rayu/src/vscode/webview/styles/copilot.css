@@ -14,14 +14,34 @@
 
 :root {
   /* Local design tokens. Sizing and spacing only — never colour. */
-  --rc-radius: 6px;
-  --rc-radius-lg: 8px;
+  --rc-radius: 2px;
+  --rc-radius-lg: 4px;
   --rc-gap: 8px;
   --rc-gap-lg: 12px;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/*
+ * Keyboard focus must be visible, in every theme. Individual components add their own
+ * offsets further down; this base rule makes sure nothing interactive is ever left
+ * without an outline. It sits early and uses element/attribute selectors, so a later
+ * class rule always wins where a component has tailored its own.
+ */
+button:focus-visible,
+a[href]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[role='button']:focus-visible,
+[role='option']:focus-visible,
+[role='tab']:focus-visible,
+[tabindex]:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 
 body {
@@ -95,7 +115,7 @@ body {
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-focusBorder);
-  border-radius: 3px;
+  border-radius: 2px;
   outline: none;
 }
 
@@ -188,7 +208,7 @@ body {
   min-height: 28px;
   padding: 0 var(--rc-gap);
   border: 0;
-  border-radius: 4px;
+  border-radius: 2px;
   background: none;
   color: var(--vscode-foreground);
   font-size: 0.85em;
@@ -302,8 +322,8 @@ body {
   right: 0;
   min-width: 13px;
   padding: 0 3px;
-  border-radius: 7px;
-  font-size: 9px;
+  border-radius: 4px;
+  font-size: calc(var(--vscode-font-size) * 0.7);
   line-height: 13px;
   text-align: center;
   background-color: var(--vscode-badge-background);
@@ -378,10 +398,10 @@ body {
 }
 
 .rc-task-center-head { flex: 0 0 auto; min-height: 38px; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--vscode-panel-border); }
-.rc-task-center-head button { color: var(--vscode-foreground); background: transparent; border: 0; font: inherit; font-size: 1.25em; cursor: pointer; border-radius: 4px; }
+.rc-task-center-head button { color: var(--vscode-foreground); background: transparent; border: 0; font: inherit; font-size: 1.25em; cursor: pointer; border-radius: 2px; }
 .rc-task-center-head button:hover { background: var(--vscode-toolbar-hoverBackground); }
 .rc-task-filters { flex: 0 0 auto; display: flex; gap: 3px; padding: 6px 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; border-bottom: 1px solid var(--vscode-panel-border); }
-.rc-task-filter { color: var(--vscode-descriptionForeground); background: transparent; border: 0; border-radius: 4px; font: inherit; font-size: .82em; padding: 3px 6px; cursor: pointer; }
+.rc-task-filter { color: var(--vscode-descriptionForeground); background: transparent; border: 0; border-radius: 2px; font: inherit; font-size: .82em; padding: 3px 6px; cursor: pointer; }
 .rc-task-filter:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
 .rc-task-filter-on { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
 .rc-task-center-scroll { flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; min-height: 0; }
@@ -411,12 +431,12 @@ body {
 .rc-task-detail { border-top: 1px solid var(--vscode-panel-border); margin-top: 8px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
 .rc-task-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .rc-task-detail-sub { color: var(--vscode-descriptionForeground); font-size: .82em; margin-top: 2px; }
-.rc-task-stop { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 4px; padding: 4px 9px; font: inherit; cursor: pointer; }
+.rc-task-stop { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 2px; padding: 4px 9px; font: inherit; cursor: pointer; }
 .rc-task-stop:hover { background: var(--vscode-button-hoverBackground); }
 .rc-task-prompt { color: var(--vscode-descriptionForeground); }
 .rc-task-prompt > div { margin-top: 5px; padding: 7px; color: var(--vscode-foreground); background: var(--vscode-textCodeBlock-background); border-radius: 4px; white-space: pre-wrap; }
 .rc-task-stats { display: flex; gap: 6px; flex-wrap: wrap; color: var(--vscode-descriptionForeground); font-size: .8em; }
-.rc-task-stats span { padding: 2px 5px; border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; }
+.rc-task-stats span { padding: 2px 5px; border: 1px solid var(--vscode-editorWidget-border); border-radius: 2px; }
 .rc-task-waiting-card { padding: 7px 8px; color: var(--vscode-editorWarning-foreground); background: var(--vscode-inputValidation-warningBackground); border: 1px solid var(--vscode-inputValidation-warningBorder); border-radius: 4px; }
 .rc-task-activities h4 { margin: 0 0 5px; font-size: .82em; color: var(--vscode-descriptionForeground); }
 .rc-task-activity-line { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; font-size: .86em; }
@@ -425,7 +445,7 @@ body {
 .rc-task-error { color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground); }
 .rc-task-reply { display: flex; gap: 5px; }
 .rc-task-reply input { flex: 1; min-width: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); padding: 5px 7px; }
-.rc-task-reply button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 4px; padding: 4px 8px; }
+.rc-task-reply button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 2px; padding: 4px 8px; }
 
 /* What the task recorded. The one part of the detail panel that is not metadata. */
 .rc-task-output { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
@@ -613,7 +633,7 @@ body {
    VS Code renders controls such as Runtime Close as a bright platform-default rectangle. */
 .rc-text-button {
   border: 0;
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 2px 4px;
   color: var(--vscode-textLink-foreground);
   background: transparent;
@@ -785,7 +805,7 @@ body {
   font-family: var(--vscode-editor-font-family);
   font-size: 0.92em;
   background-color: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 0.1em 0.3em;
 }
 
@@ -794,7 +814,7 @@ body {
 .rc-code-block {
   margin: var(--rc-gap) 0;
   border: 1px solid var(--vscode-panel-border);
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
   background-color: var(--vscode-textCodeBlock-background);
   overflow: hidden;
 }
@@ -821,7 +841,7 @@ body {
   font-family: inherit;
   font-size: 0.9em;
   padding: 2px 8px;
-  border-radius: 3px;
+  border-radius: 2px;
   cursor: pointer;
   border: 1px solid transparent;
   color: var(--vscode-button-secondaryForeground);
@@ -955,7 +975,7 @@ body {
   font-family: var(--vscode-editor-font-family);
   background-color: var(--vscode-textCodeBlock-background);
   border: 1px solid var(--vscode-panel-border);
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
   padding: var(--rc-gap);
   overflow-x: auto;
 }
@@ -1257,7 +1277,7 @@ body {
 /* ── notices ─────────────────────────────────────────────────────────────── */
 
 .rc-notice {
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
   padding: var(--rc-gap) var(--rc-gap-lg);
   background-color: var(--vscode-inputValidation-warningBackground);
   border: 1px solid var(--vscode-inputValidation-warningBorder);
@@ -1358,12 +1378,12 @@ body {
   justify-self: end;
   margin: 0 var(--rc-gap-lg);
   border: 0;
-  border-radius: 4px;
+  border-radius: 2px;
   padding: 2px 6px;
   color: var(--vscode-descriptionForeground);
   background: transparent;
   font: inherit;
-  font-size: 11px;
+  font-size: calc(var(--vscode-font-size) * 0.85);
   cursor: pointer;
 }
 
@@ -1391,7 +1411,7 @@ body {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--vscode-editorWidget-border);
-  border-radius: var(--rc-radius-lg, 8px);
+  border-radius: var(--rc-radius-lg, 4px);
   background: var(--vscode-editorWidget-background);
   box-shadow: 0 6px 20px var(--vscode-widget-shadow);
   overflow: hidden;
@@ -1426,7 +1446,7 @@ body {
 }
 
 .rc-runtime-center-subtitle,
-.rc-runtime-row-meta { font-size: 11px; }
+.rc-runtime-row-meta { font-size: calc(var(--vscode-font-size) * 0.85); }
 
 .rc-runtime-tabs {
   flex: 0 0 auto;
@@ -1511,7 +1531,7 @@ body {
   font-size: 0.9em;
   border: 1px solid var(--vscode-editorWidget-border);
   background-color: var(--vscode-editorWidget-background);
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
   min-width: 0;
 }
 
@@ -1669,14 +1689,14 @@ body {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.95em;
   background-color: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 2px 5px;
 }
 
 .rc-tool-pre {
   font-family: var(--vscode-editor-font-family);
   background-color: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
+  border-radius: 4px;
   padding: var(--rc-gap);
   margin: 0;
   /* Bounded so one enormous tool result cannot make the whole transcript
@@ -1710,7 +1730,7 @@ body {
   margin-top: 4px;
   padding: 3px var(--rc-gap);
   border: none;
-  border-radius: 3px;
+  border-radius: 2px;
   background: none;
   text-align: left;
   cursor: pointer;
@@ -1749,7 +1769,7 @@ body {
 .rc-badge {
   flex: 0 0 auto;
   font-size: 0.8em;
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 0 5px;
   background-color: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
@@ -1778,7 +1798,7 @@ body {
   margin: -8px -10px 2px;
   border: 0;
   border-bottom: 1px solid var(--vscode-editorWidget-border);
-  border-radius: 11px 11px 0 0;
+  border-radius: 4px 4px 0 0;
   background: var(--vscode-editorWidget-background);
 }
 
@@ -1927,7 +1947,7 @@ body {
 .rc-todo-in_progress {
   margin: 0 calc(var(--rc-gap) * -0.5);
   padding: 4px calc(var(--rc-gap) * 0.5);
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
   background: var(--vscode-list-hoverBackground);
 }
 
@@ -1938,7 +1958,7 @@ body {
 .rc-todo-error-detail {
   margin: 0 var(--rc-gap-lg) var(--rc-gap);
   padding: 6px var(--rc-gap);
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
   color: var(--vscode-errorForeground);
   background: var(--vscode-inputValidation-errorBackground);
   font-size: 0.85em;
@@ -2021,7 +2041,7 @@ body {
   font-family: var(--vscode-editor-font-family);
   font-size: 0.9em;
   background-color: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 3px 6px;
   overflow-wrap: anywhere;
 }
@@ -2079,7 +2099,7 @@ body {
   overflow: auto;
   padding: var(--rc-gap);
   border: 1px solid var(--vscode-editorWidget-border);
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
   background-color: var(--vscode-editorWidget-background);
 }
 
@@ -2111,7 +2131,7 @@ body {
   margin: 0;
   padding: var(--rc-gap);
   border: 1px solid var(--vscode-editorWidget-border);
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
 }
 
 .rc-question legend {
@@ -2125,7 +2145,7 @@ body {
 
 .rc-question-header {
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: 4px;
   color: var(--vscode-badge-foreground);
   background: var(--vscode-badge-background);
   font-size: 0.8em;
@@ -2183,7 +2203,7 @@ body {
   padding: var(--rc-gap);
   white-space: pre-wrap;
   background: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
 .rc-question-other {
@@ -2489,7 +2509,7 @@ body {
 .rc-welcome-hint code,
 .rc-welcome-hint kbd {
   padding: 0 4px;
-  border-radius: 3px;
+  border-radius: 2px;
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.95em;
   background-color: var(--vscode-textCodeBlock-background);
@@ -2620,7 +2640,7 @@ body {
   margin: 0 var(--rc-gap-lg) var(--rc-gap-lg);
   border: 1px solid var(--vscode-editorWidget-border, var(--vscode-input-border));
   background-color: var(--vscode-input-background);
-  border-radius: 12px;
+  border-radius: 4px;
   padding: 8px 10px 6px;
   display: flex;
   flex-direction: column;
@@ -2759,7 +2779,7 @@ body {
 .rc-attach-thumb {
   width: 22px;
   height: 22px;
-  border-radius: 3px;
+  border-radius: 4px;
   object-fit: cover;
   flex: 0 0 auto;
 }
@@ -2782,7 +2802,7 @@ body {
   flex: 0 0 auto;
   padding: 0;
   border: 0;
-  border-radius: 3px;
+  border-radius: 2px;
   background: none;
   color: var(--vscode-descriptionForeground);
   cursor: pointer;
@@ -2833,7 +2853,7 @@ body {
   justify-content: center;
   gap: 4px;
   background-color: var(--vscode-list-dropBackground, var(--vscode-input-background));
-  border-radius: 12px;
+  border-radius: 4px;
   pointer-events: none;
 }
 
@@ -2878,7 +2898,7 @@ body {
   padding: 14px 18px;
   text-align: center;
   border: 1px dashed var(--vscode-focusBorder);
-  border-radius: 10px;
+  border-radius: 4px;
   background-color: var(--vscode-editorWidget-background);
 }
 
@@ -2902,7 +2922,7 @@ body {
 .rc-pill {
   font-size: 0.82em;
   font-weight: 500;
-  border-radius: 6px;
+  border-radius: 2px;
   padding: 3px 8px;
   color: var(--vscode-foreground);
   background-color: transparent;
@@ -3062,18 +3082,18 @@ body {
   align-items: center;
   padding: 2px;
   border: 1px solid var(--vscode-editorWidget-border);
-  border-radius: 6px;
+  border-radius: 2px;
   background: var(--vscode-input-background);
 }
 
 .rc-delivery-option {
   border: 0;
-  border-radius: 4px;
+  border-radius: 2px;
   padding: 2px 6px;
   color: var(--vscode-descriptionForeground);
   background: transparent;
   font: inherit;
-  font-size: 11px;
+  font-size: calc(var(--vscode-font-size) * 0.85);
   cursor: pointer;
 }
 
@@ -3209,7 +3229,7 @@ body {
   max-width: 92vw;
   border: 1px solid var(--vscode-editorWidget-border);
   background-color: var(--vscode-editorWidget-background);
-  border-radius: 8px;
+  border-radius: 4px;
   box-shadow: 0 8px 24px var(--vscode-widget-shadow, transparent);
   display: flex;
   flex-direction: column;
@@ -3265,7 +3285,7 @@ body {
   text-align: left;
   cursor: pointer;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 2px;
   background: transparent;
   color: var(--vscode-foreground);
   padding: 6px 8px;
@@ -3298,6 +3318,10 @@ body {
 }
 
 .rc-dropdown-current {
+  /* The codicon sits inside the pill: flex keeps it centred on the label's baseline. */
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 0.78em;
   font-weight: 500;
   color: var(--vscode-gitDecoration-addedResourceForeground);
@@ -3443,7 +3467,7 @@ body {
 .rc-dropdown-empty code {
   font-family: var(--vscode-editor-font-family);
   background-color: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 0 3px;
 }
 
@@ -3491,7 +3515,7 @@ body {
  */
 .rc-activity {
   border: 1px solid var(--vscode-editorWidget-border);
-  border-radius: var(--rc-radius);
+  border-radius: var(--rc-radius-lg);
   background-color: var(--vscode-editorWidget-background);
   overflow: hidden;
 }
@@ -3564,7 +3588,7 @@ body {
   white-space: nowrap;
   text-overflow: ellipsis;
   padding: 0 5px;
-  border-radius: 3px;
+  border-radius: 2px;
   font-size: 0.85em;
   background-color: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
@@ -3879,7 +3903,7 @@ body {
   height: 24px;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: 2px;
   color: var(--vscode-icon-foreground);
   background: transparent;
   cursor: pointer;
@@ -3977,7 +4001,7 @@ body {
   color: var(--vscode-input-foreground);
   background-color: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
-  border-radius: 3px;
+  border-radius: 2px;
   font-family: inherit;
   font-size: inherit;
 }
@@ -3997,7 +4021,7 @@ body {
 .rc-setup-note code {
   font-family: var(--vscode-editor-font-family);
   background-color: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 0 3px;
 }
 
@@ -4029,7 +4053,7 @@ body {
 .rc-dropdown-empty code {
   font-family: var(--vscode-editor-font-family);
   background-color: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 0 3px;
 }
 
@@ -4345,4 +4369,90 @@ body {
 
 .rc-search-path:hover {
   text-decoration: underline;
+}
+
+/* ── high contrast ─────────────────────────────────────────────────────────── */
+/*
+ * High-contrast themes flatten the faint background differences the panel uses for
+ * separation, so edges have to be drawn explicitly. Same rules as settings.css, written
+ * with `:is()` on the two body states to keep the selector list readable.
+ */
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-button,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-text-button,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-link-button,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-icon-button,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-overflow-item,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-filter,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-stop,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-reply button,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-center-head button,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-question-option,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-popover-item,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-dropdown-item,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-summary-action,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-review-action,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-delivery-toggle,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-delivery-option,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-chip,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-pill,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-pill-button,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-attach-remove,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-code-copy,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-tool-copy-btn,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-turn-action-btn,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-scroll-bottom,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-submit,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-model-chooser-scope-option,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-runtime-tab,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-runtime-open,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-search-path,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-array-input-field,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-setup-input,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-header-title-input,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-composer-input,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-question-notes textarea,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-runtime-search input,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-dropdown-search,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-dropdown-panel,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-popover,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-request,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-permission,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-review,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-notice,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-tool,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-todo-card,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-todo-error-detail,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-summary,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-plan-body,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-question,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-model-chooser,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-runtime-center,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-signin,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-waiting-card,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-setup-error,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-result,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-error,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-code-block,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-tool-pre,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-output-pre,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-composer-card,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-badge {
+  border: 1px solid var(--vscode-contrastBorder);
+}
+
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-delivery-option-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-dropdown-item-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-icon-button-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-model-chooser-scope-option-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-permission-item-selected,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-pill-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-popover-item-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-question-option-selected,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-runtime-open-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-runtime-tab-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-session-row-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-task-row-selected,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-todo-active,
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-todo-status-active {
+  outline: 1px solid var(--vscode-contrastActiveBorder);
 }

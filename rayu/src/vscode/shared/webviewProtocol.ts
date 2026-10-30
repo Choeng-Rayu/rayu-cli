@@ -28,6 +28,7 @@ import type {
   EffortChoice,
   InferenceSettingsView,
 } from './inferenceSettings.js'
+import type { PermissionDecisionKind } from './planApproval.js'
 import type { BackgroundTaskView } from '../../runtime/taskTypes.js'
 import type {
   RuntimeAgentDescriptor,
@@ -199,6 +200,12 @@ export interface TurnCompletionEntry {
   durationMs: number
   /** Authoritative usage from the `result` message where it supplied one. */
   usage: TurnTokenUsageView
+  /**
+   * Rayu credits the gateway charged during the turn (the result frame's
+   * `rayu_credits`). Absent when the turn made no Rayu-billed request, or the
+   * engine did not report one.
+   */
+  credits?: number
 }
 
 /**
@@ -229,7 +236,9 @@ export interface ImageInputView {
  * Agent and WebFetch models are set by `/subagent_models` and `/webfetch_model`, the
  * same commands the CLI uses. They are deliberately NOT given toolbar pills: they are rare,
  * per-project decisions, and a permanent control for each would crowd out the three that
- * are used every turn (permission mode, model, effort).
+ * are used every turn (permission mode, model, effort). The image and video generation
+ * models (`/model_image_generation`, `/model_video_generation`) use this chooser for the
+ * same reason.
  *
  * ── HOST-OWNED, LIKE THE PROVIDER SETUP SURFACE ────────────────────────────────
  *
@@ -239,7 +248,7 @@ export interface ImageInputView {
  */
 export interface ModelChooserView {
   /** Which setting a choice writes. Also selects the wording. */
-  target: 'subagent' | 'webfetch'
+  target: 'subagent' | 'webfetch' | 'image' | 'video'
   /** Set when scoping a choice to one agent type, from `/subagent_models <AGENT>`. */
   agentType?: string
   /** Agent scopes offered by the chooser. Only present for the subagent setting. */
@@ -251,6 +260,14 @@ export interface ModelChooserView {
   current: string | null
   /** Human description of what "default" means here, for the reset action. */
   defaultNote: string
+  /**
+   * The chooser's OWN list, for settings whose choices are not chat models: the image and
+   * video generation catalogs, fetched live from Rayu when the chooser opens. Absent for
+   * the subagent and WebFetch settings, which list the session's chat-model catalogue.
+   */
+  catalogue?: ModelCatalogueView
+  /** A one-line caveat about `catalogue`, e.g. built-in defaults while signed out. */
+  note?: string
 }
 
 /**
@@ -456,6 +473,8 @@ export type HostToWebviewMessage =
   | { type: 'setInferenceSettings'; settings: InferenceSettingsView }
   /** Provider setup surface state. Never carries a credential. */
   | { type: 'setProviderSetup'; setup: ProviderSetupView }
+  /** Telegram connect surface state. Never carries a bot token. */
+  | { type: 'setTelegramConnect'; connect: TelegramConnectView }
   /** Attachable CLI sessions and the current attachment. Never carries an IPC token. */
   | { type: 'setAttachment'; attachment: AttachmentView }
   /** The active permission mode, after the engine accepted a change. */
@@ -675,6 +694,13 @@ export interface PermissionRequestView {
     plan: string
     /** Where the engine saved the plan, when it reported a path. */
     planFilePath?: string
+    /**
+     * True when the card may ask HOW to continue (Ask, Auto-edit or Orchestrator; see
+     * `shared/planApproval.ts`). Set for this panel's own engine only: a request
+     * mirrored from an attached CLI session is answered over IPC, and keeps the plain
+     * Approve, which leaves the mode to that session's own plan-exit rule.
+     */
+    offersModeChoice?: boolean
   }
 }
 
@@ -727,12 +753,13 @@ export type WebviewToHostMessage =
    * The user's answer to a permission card.
    *
    * `allow-always` records a lasting rule; `allow-once` applies to this call only.
-   * The host maps these onto the engine's `decisionClassification`.
+   * The host maps these onto the engine's `decisionClassification`. A plan card's
+   * choices (`approve-*`) also say which mode the approved plan runs in.
    */
   | {
       type: 'permissionResponse'
       requestId: string
-      decision: 'allow-once' | 'allow-always' | 'deny'
+      decision: PermissionDecisionKind
     }
   /** Answers to an AskUserQuestion request, keyed by its exact question text. */
   | {
@@ -758,12 +785,24 @@ export type WebviewToHostMessage =
    * value as well as the persisted key and reports any environment override.
    */
   | { type: 'setEffort'; level: EffortChoice }
-  | { type: 'setThinking'; enabled: boolean }
   /** Open or close the in-panel provider setup surface. */
   | { type: 'listAttachable' }
   | { type: 'attachToSession'; pid: number }
   | { type: 'detachFromSession' }
   | { type: 'providerSetupOpen'; open: boolean }
+  /** Open or close the in-panel Telegram connect surface. */
+  | { type: 'telegramConnectOpen'; open: boolean }
+  /** Create a pairing against the shared Rayu-hosted bot. */
+  | { type: 'telegramConnectStartHosted' }
+  /**
+   * Verify and save a BYO (@BotFather) bot token.
+   *
+   * The token crosses the webview boundary once, here, and is never echoed back or
+   * stored in webview state — the same write-only rule `providerSetupValidate` follows.
+   */
+  | { type: 'telegramConnectStartByo'; token: string }
+  /** Forget the current chat binding (hosted mode also deletes the server-side link). */
+  | { type: 'telegramConnectUnlink' }
   /**
    * Verify a credential without saving it. The key crosses the webview boundary once,
    * here, and is never echoed back or stored in webview state.
@@ -820,6 +859,10 @@ export type WebviewToHostMessage =
    * tell a user with a valid key that they are not authenticated.
    */
   | { type: 'openProviderSetup' }
+  /** Open the in-panel Telegram connect surface. */
+  | { type: 'openTelegramConnect' }
+  /** Open the Rayucode Settings tab, optionally at a section. */
+  | { type: 'openSettings'; section?: string }
   /** Search workspace files for @-mentions. */
   | { type: 'findFiles'; query: string }
   /**
@@ -849,6 +892,8 @@ export type WebviewToHostMessage =
     }
   /** Change the scope of an open subagent-model chooser without applying a model. */
   | { type: 'modelChooserTarget'; agentType?: string }
+  /** Fetch an open image/video chooser's own list again (its "Try again"). */
+  | { type: 'modelChooserRefresh' }
   /** Close the chooser without changing anything. */
   | { type: 'modelChooserDismiss' }
   /** Toggle an MCP server connection. */
@@ -1548,6 +1593,7 @@ export interface WebviewState {
   /** Thinking and effort, so the controls survive a webview re-creation. */
   inference: InferenceSettingsView
   providerSetup: ProviderSetupView
+  telegramConnect: TelegramConnectView
   /** Open command-driven model chooser, or null. Host-owned so it survives re-creation. */
   modelChooser: ModelChooserView | null
   attachment: AttachmentView
@@ -1769,6 +1815,45 @@ export interface ProviderSetupView {
   /** Set after a successful save, so the panel can confirm what is now active. */
   connectedProviderId: string | null
   connectedModel: string | null
+}
+
+/**
+ * The in-panel Telegram connect surface.
+ *
+ * ── NO FIELD HERE HOLDS A BOT TOKEN ────────────────────────────────────────────
+ *
+ * A BYO token is write-only from the webview's point of view: it is typed into a local
+ * `type="password"` input, sent once in `telegramConnectStartByo`, and never returned.
+ * The host never reads it back, so nothing on this type could place one in persisted
+ * webview state, a diagnostic, or the transcript.
+ *
+ * `linkedChatId` being set means the account is already connected; the panel then offers
+ * unlink instead of a mode chooser. `waitingForLink` is the in-progress pairing state the
+ * UI uses to keep the deep link and "waiting" hint on screen.
+ */
+export interface TelegramConnectView {
+  open: boolean
+  /** True while a status load, pairing, verification, or unlink is in flight. */
+  busy: boolean
+  /** Progress wording for the step in flight. */
+  busyMessage: string | null
+  error: string | null
+  /** The linked Telegram chat, or null when nothing is connected. */
+  linkedChatId: number | null
+  /** The bot this link was made with, when known. */
+  linkedBotUsername: string | null
+  /** Which pairing path last ran, or null before a choice is made. */
+  mode: 'hosted' | 'byo' | null
+  /** The bot the CLI would talk to right now, when known. */
+  botUsername: string | null
+  /** PNG data-URL of the hosted pairing QR, or null. */
+  qr: string | null
+  /** `https://t.me/<bot>?start=<code>` the user opens to finish pairing. */
+  deepLink: string | null
+  /** The single-use hosted pairing code, or null. */
+  pairingCode: string | null
+  /** True while a pairing has been created and the link is being completed. */
+  waitingForLink: boolean
 }
 
 export interface ProviderPresetView {

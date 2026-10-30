@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path'
 
 import { validateProvider } from '../src/vscode/host/auth/providerSetup.js'
 import { CONNECT_FLAG } from '../src/vscode/shared/connectProtocol.js'
+import { scriptLaunch } from './helpers/engineLaunch.js'
 
 const ENGINE = resolve(import.meta.dir, '../dist/vscode-stage/engine.mjs')
 const saved = { config: process.env.RAYU_CONFIG_DIR, oauth: process.env.USE_RAYU_OAUTH }
@@ -65,7 +66,7 @@ test.skipIf(process.platform !== 'linux' || !existsSync(ENGINE))(
     })
     try {
       const outcome = await validateProvider(
-        { enginePath: ENGINE, cwd: dir },
+        { launch: scriptLaunch(ENGINE), cwd: dir },
         'deepseek',
         key,
         `http://127.0.0.1:${server.port}/v1`,
@@ -128,7 +129,7 @@ test.skipIf(!existsSync(ENGINE))(
   async () => {
     const oversized = await runHelper('x'.repeat(70 * 1024))
     expect(oversized.result.ok).toBe(false)
-    expect(oversized.result.error).toBe('The provider-setup action is too large.')
+    expect(oversized.result.error).toBe('The action is too large.')
 
     const empty = await runHelper('')
     expect(empty.result.ok).toBe(false)

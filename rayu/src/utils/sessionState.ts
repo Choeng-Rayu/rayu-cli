@@ -26,6 +26,8 @@ export type RequiresActionDetails = {
 import { isEnvTruthy } from './envUtils.js'
 import type { PermissionMode } from './permissions/PermissionMode.js'
 import { enqueueSdkEvent } from './sdkEventQueue.js'
+import { createSignal } from './signal.js'
+import type { WorkerApprovalLoss } from '../orchestrator/modeChange.js'
 
 // CCR external_metadata keys — push in onChangeAppState, restore in
 // externalMetadataToAppState.
@@ -148,3 +150,15 @@ export function notifySessionMetadataChanged(
 export function notifyPermissionModeChanged(mode: PermissionMode): void {
   permissionModeListener?.(mode)
 }
+
+// ── Worker approval loss ─────────────────────────────────────────────────────
+//
+// Fired by onChangeAppState when a mode change takes auto-approval away from
+// running background workers (src/orchestrator/modeChange.ts). Unlike the
+// single-slot listeners above, any host may subscribe: the REPL shows a
+// notification and print.ts emits a warning frame Rayucode renders.
+
+const workerApprovalLoss = createSignal<[WorkerApprovalLoss]>()
+
+export const subscribeWorkerApprovalLoss = workerApprovalLoss.subscribe
+export const notifyWorkerApprovalLoss = workerApprovalLoss.emit

@@ -1,5 +1,5 @@
 import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
-import { AGENT_TOOL_NAME } from '../constants.js'
+import { AGENT_TOOL_NAME, GENERAL_PURPOSE_AGENT_TYPE } from '../constants.js'
 
 const SHARED_PREFIX = `You are a universal implementation worker for the official CLI powered by Choeng Rayu. The main Orchestrator gives you one bounded task packet. Complete that task fully—don't gold-plate, but don't leave it half-done.`
 
@@ -27,7 +27,7 @@ ${SHARED_GUIDELINES}`
 }
 
 export const GENERAL_PURPOSE_AGENT: BuiltInAgentDefinition = {
-  agentType: 'general-purpose',
+  agentType: GENERAL_PURPOSE_AGENT_TYPE,
   whenToUse:
     'Universal implementation worker for any domain: frontend, backend, mobile, security, infrastructure, tests, review, fixes, and multi-step code changes. In Orchestrator mode, give each worker one self-contained task with exact non-overlapping file ownership and verification criteria.',
   tools: ['*'],

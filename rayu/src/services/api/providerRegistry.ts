@@ -457,9 +457,13 @@ export async function buildClient(
 
     case 'anthropic-compatible': {
       // A BYO-key third-party Anthropic Messages endpoint at a custom baseURL
-      // with Bearer auth (LongCat, Ollama Cloud).
+      // with Bearer auth (LongCat, Ollama Cloud) — or the Rayu API-key provider,
+      // which is the same wire shape pointed at our own gateway.
       const apiKeys = await resolveProviderApiKeys(provider)
       const { gatewayFetch } = await resolveTransport(provider)
+      // Dynamic, like every services/api → rayuProviders import, to stay clear of
+      // the rayuConfig ↔ rayuProviders ↔ services/* cycle (see providerKeys.ts).
+      const { RAYU_API_PROVIDER_ID } = await import('../../utils/rayuProviders.js')
       return createAnthropicMessagesClient({
         maxRetries,
         auth: {
@@ -470,6 +474,10 @@ export async function buildClient(
         source,
         fetchOverride,
         ...(gatewayFetch ? { wrapFetch: () => gatewayFetch } : {}),
+        // Our gateway never redirects `/anthropic/v1/messages`, so a redirect
+        // means something is wrong and must not carry the `rayu_sk_…` key on.
+        // Third-party hosts keep the runtime default.
+        refuseRedirects: provider.id === RAYU_API_PROVIDER_ID,
       })
     }
 

@@ -12,7 +12,7 @@ import {
   saveRayuConfig,
 } from './rayuConfig.js'
 import { loadDotEnv } from './envUtils.js'
-import { getRayuGatewayBaseUrl } from '../services/rayuAuth/rayuSession.js'
+import { getSecureRayuGatewayBaseUrl } from '../services/rayuAuth/rayuSession.js'
 import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_PROVIDER_ID } from '../services/api/ollamaCloud.js'
 
 
@@ -184,10 +184,12 @@ export const RAYU_API_PROVIDER_ID = 'rayu'
  * which would drag a large subtree onto the startup path this file sits on and
  * risk the documented `rayuConfig ↔ rayuProviders ↔ services/*` import cycle
  * (see services/api/providerKeys.ts). Only the dependency-light gateway-base
- * accessor is imported here.
+ * accessor is imported here — the SECURE one, because every request built on
+ * this URL carries the user's `rayu_sk_live_…` key as its credential: a remote
+ * plaintext-http gateway must throw here rather than ship the key in the clear.
  */
 export function rayuApiAnthropicBaseURL(): string {
-  return `${getRayuGatewayBaseUrl()}/anthropic`
+  return `${getSecureRayuGatewayBaseUrl()}/anthropic`
 }
 
 /**
@@ -708,6 +710,14 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 
 
 /**
+ * Stand-in base URL for a Rayu provider row whose real gateway host could not be
+ * resolved. 127.0.0.1:1 is a port nothing listens on, so a request fails locally and
+ * immediately instead of falling through to the Anthropic SDK's default host — which
+ * is where an empty `baseURL` would send the user's `rayu_sk_live_…` key.
+ */
+const UNROUTABLE_GATEWAY_BASE_URL = 'http://127.0.0.1:1/anthropic'
+
+/**
  * Import API keys from known env vars / .env into the provider config. Adds a
  * provider entry for each env key found that isn't already configured with a
  * key. Sets the first imported provider active only if none is active yet.
@@ -727,8 +737,19 @@ export function migrateEnvKeysToConfig(): void {
     // older build) would therefore send the user's Rayu key to the SDK default
     // host, api.anthropic.com. Repair it on every load rather than trusting the
     // row.
+    //
+    // The repair can THROW: rayuApiAnthropicBaseURL() refuses a RAYU_GATEWAY_URL
+    // that would carry the key in plaintext. It must not be allowed to abort the
+    // whole migration — one bad gateway URL would cost every OTHER provider their
+    // env-key import (the caller swallows the error, so the loss is silent). Fail
+    // closed locally instead: point the row at an unroutable loopback port so a
+    // request errors out immediately rather than shipping the Rayu key to Anthropic.
     if (provider.id === RAYU_API_PROVIDER_ID && !provider.baseURL) {
-      provider.baseURL = rayuApiAnthropicBaseURL()
+      try {
+        provider.baseURL = rayuApiAnthropicBaseURL()
+      } catch {
+        provider.baseURL = UNROUTABLE_GATEWAY_BASE_URL
+      }
       changed = true
     }
     if (!provider.baseURL && preset.baseURL) {
@@ -763,11 +784,21 @@ export function migrateEnvKeysToConfig(): void {
     // reason Bedrock does — it is not a fixed host. Doing it here (rather than
     // leaving it undefined) is the hazard-1 guard on the env-import path: see the
     // repair loop above.
-    const baseURL = isBedrock
-      ? bedrockBaseURL(region as string)
-      : preset.id === RAYU_API_PROVIDER_ID
-        ? rayuApiAnthropicBaseURL()
-        : preset.baseURL
+    //
+    // Like the repair above, this call can throw on an unsafe RAYU_GATEWAY_URL.
+    // Here the answer is to SKIP the preset: importing the key without a host to
+    // send it to would create the very row hazard 1 warns about, and aborting the
+    // loop would cost every remaining provider its import. No row, no key, no leak.
+    let baseURL: string | undefined
+    try {
+      baseURL = isBedrock
+        ? bedrockBaseURL(region as string)
+        : preset.id === RAYU_API_PROVIDER_ID
+          ? rayuApiAnthropicBaseURL()
+          : preset.baseURL
+    } catch {
+      continue
+    }
     if (existing) {
       existing.apiKey = key
       existing.baseURL ??= baseURL

@@ -23,91 +23,30 @@
  * Spawning also keeps tool execution — subprocesses, file writes, native modules —
  * off the extension host's event loop, so a slow tool cannot freeze the editor.
  *
- * ── WHY `ELECTRON_RUN_AS_NODE` ─────────────────────────────────────────────────
- *
- * `process.execPath` in an extension host is the ELECTRON binary, not Node.
- * Spawning it plainly launches a second Electron app: a window may flash, the
- * script is never run as a script, and stdio does not behave. `ELECTRON_RUN_AS_NODE=1`
- * makes that same binary behave as the Node it embeds, which is the supported way
- * for an extension to run a Node script and needs no Node on the user's PATH.
- *
- * A system `node` is accepted as an override for the case where the embedded
- * version is unsuitable, but it is NOT the default: relying on PATH would make
- * the extension fail on machines that have no Node at all, which is most of them.
+ * HOW the child is started — which executable, which environment, the memory limit —
+ * is decided once by `engineLaunch.ts`, shared with the short-lived helper children.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { totalmem } from 'node:os'
 
+import {
+  describeEngineStartFailure,
+  engineSpawnEnv,
+  type EngineLaunch,
+} from './engineLaunch.js'
 import { NdjsonReader, type NdjsonFrameError } from './ndjsonReader.js'
+
+// Re-exported from their new home so existing importers keep working.
+export {
+  computeDefaultEngineHeapCapMB,
+  parseEngineHeapCapMB,
+} from './engineLaunch.js'
 
 /** How much stderr to retain for diagnostics when the child dies. */
 const STDERR_TAIL_CHARS = 4_000
 
-/**
- * Env var on the EXTENSION HOST that caps each engine child's V8 old-space, in MB.
- *
- * WHY THIS EXISTS
- * The CLI's launcher re-execs itself with a RAM-aware `--max-old-space-size`
- * (utils/heapLimitReexec.ts), but that path deliberately skips headless runs —
- * and this child IS headless (`--print`), spawned via `vscodeHost.ts`, so it has
- * always run at Node's DEFAULT heap ceiling with up to MAX_LIVE_SESSIONS of them
- * alive at once. On a machine with modest RAM, a session that grows large (huge
- * tool outputs, a pathological context) could therefore drag the whole system
- * down, and the process the OOM killer takes is as likely to be VS Code itself
- * as the child — which is exactly the "editor reloads / shuts down on long runs"
- * failure users report.
- *
- * Setting this var flips the blast radius: each child OOMs ITSELF at the cap
- * instead. `handleExit` surfaces "engine stopped unexpectedly", and the next
- * prompt respawns with `--resume`, so the session recovers from its file while
- * the editor survives. When unset, a RAM-proportional default is computed
- * (50% of physical RAM / MAX_LIVE_SESSIONS, capped at 4 GB, floored at 512 MB)
- * so the protection is always active. Override example (settings.json →
- * terminal.integrated.env.* or the shell VS Code was launched from):
- * RAYU_ENGINE_MAX_OLD_SPACE_MB=3072
- */
-const ENGINE_HEAP_CAP_ENV = 'RAYU_ENGINE_MAX_OLD_SPACE_MB'
-
-/**
- * Parses the heap-cap env value; null for anything absent or not a bare
- * positive integer. A regex rather than parseInt because parseInt would
- * silently accept "2048MB" and "1.5" — and a cap that is not exactly what the
- * operator typed is worse than no cap at all.
- */
-export function parseEngineHeapCapMB(raw: string | undefined): number | null {
-  if (!raw) return null
-  const trimmed = raw.trim()
-  if (!/^\d+$/.test(trimmed)) return null
-  const mb = Number.parseInt(trimmed, 10)
-  return mb > 0 ? mb : null
-}
-
-/**
- * Compute a default per-engine heap cap when none is specified.
- *
- * Targets 50% of physical RAM divided by MAX_LIVE_SESSIONS (4), so 4 engines
- * at full cap consume at most 50% of RAM, leaving headroom for VS Code, the
- * extension host, and the OS. Capped at 4 GB (more than any single session
- * needs) and floored at 512 MB (below which the engine cannot do useful work).
- * Returns null on hosts where totalmem() is unavailable or nonsensical.
- */
-const MAX_LIVE_SESSIONS_FOR_CAP = 4
-const DEFAULT_CAP_MIN_MB = 512
-const DEFAULT_CAP_MAX_MB = 4096
-const BYTES_PER_MB = 1024 * 1024
-
-export function computeDefaultEngineHeapCapMB(): number | null {
-  const totalBytes = totalmem()
-  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return null
-  const totalMB = Math.floor(totalBytes / BYTES_PER_MB)
-  const perChild = Math.floor((totalMB * 0.5) / MAX_LIVE_SESSIONS_FOR_CAP)
-  if (perChild < DEFAULT_CAP_MIN_MB) return null
-  return Math.min(perChild, DEFAULT_CAP_MAX_MB)
-}
-
 export interface EngineProcessOptions {
-  /** Absolute path to the built `engine.mjs`. */
-  enginePath: string
+  /** How to start the engine — see `engineLaunch.ts`. */
+  launch: EngineLaunch
   /** Working directory for the session — normally the workspace folder. */
   cwd: string
   /**
@@ -119,12 +58,6 @@ export interface EngineProcessOptions {
   args?: readonly string[]
   /** Environment overlaid on the extension host's own. */
   env?: Readonly<Record<string, string | undefined>>
-  /**
-   * Interpreter override. Defaults to `process.execPath` with
-   * `ELECTRON_RUN_AS_NODE=1`; set this to a system `node` only to work around an
-   * unsuitable embedded runtime.
-   */
-  nodePath?: string
 }
 
 export interface EngineProcessCallbacks {
@@ -204,49 +137,11 @@ export class EngineProcess {
   start(): void {
     if (this.child) throw new Error('EngineProcess.start() called twice')
 
-    const useEmbeddedNode = this.options.nodePath === undefined
-    const command = this.options.nodePath ?? process.execPath
+    const { launch } = this.options
+    // Conversation engines are the ones that grow, so they alone get the memory limit.
+    const env = engineSpawnEnv(launch, process.env, this.options.env, { limitMemory: true })
 
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      ...this.options.env,
-    }
-    if (useEmbeddedNode) {
-      // Turns the Electron binary into the Node it embeds. Without this the
-      // spawn starts a second editor instead of running the script.
-      env.ELECTRON_RUN_AS_NODE = '1'
-    }
-    // The engine is not a terminal. Leaving these set makes it try to colour
-    // output that the extension host parses as protocol.
-    //
-    // ── THESE ALSO REACH TOOL SUBPROCESSES, AND THAT IS CORRECT ────────────────
-    //
-    // A command run by `Bash` inherits this environment, so it produces no colour
-    // either. That was examined as a possible cause of the panel's plainer output and
-    // it is not one: the CLI does not force colour on for tool subprocesses anywhere,
-    // and their stdout is a pipe rather than a TTY, so well-behaved tools disable
-    // colour themselves regardless of these variables. Unsetting them here would make
-    // the panel show colour where the terminal shows none — a divergence, not parity.
-    //
-    // Output can still ARRIVE with escapes in it, when the user opts in explicitly
-    // (`--color=always`, `git -c color.ui=always`) or a file simply contains them.
-    // Those are rendered by the webview's ANSI renderer rather than shown as literal
-    // `[0;32m` noise; see `webview/ansi.ts`.
-    env.NO_COLOR = '1'
-    env.FORCE_COLOR = '0'
-
-    // Per-child heap cap — see ENGINE_HEAP_CAP_ENV. Falls back to a
-    // RAM-proportional default so engine children cannot consume all memory
-    // and OOM-kill VS Code. Applied through NODE_OPTIONS because
-    // `--max-old-space-size` only takes effect at V8 startup. An explicit
-    // flag already in NODE_OPTIONS wins.
-    const heapCapMB = parseEngineHeapCapMB(env[ENGINE_HEAP_CAP_ENV]) ?? computeDefaultEngineHeapCapMB()
-    if (heapCapMB !== null && !/--max[-_]old[-_]space[-_]size/.test(env.NODE_OPTIONS ?? '')) {
-      const flag = `--max-old-space-size=${heapCapMB}`
-      env.NODE_OPTIONS = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ${flag}` : flag
-    }
-
-    const child = spawn(command, [this.options.enginePath, ...(this.options.args ?? [])], {
+    const child = spawn(launch.command, [...launch.baseArgs, ...(this.options.args ?? [])], {
       cwd: this.options.cwd,
       env,
       // Explicit pipes on all three. 'inherit' on stdout would hand the protocol
@@ -271,7 +166,8 @@ export class EngineProcess {
     // followed by a useful 'exit', so it has to be reported here or a failed
     // spawn looks like a session that simply never responds.
     child.on('error', err => {
-      this.finishExit(null, null, `${this.stderrTail}\n${err.message}`.trim())
+      const message = describeEngineStartFailure(launch, err.message)
+      this.finishExit(null, null, `${this.stderrTail}\n${message}`.trim())
     })
 
     child.on('close', (code, signal) => {

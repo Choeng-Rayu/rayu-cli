@@ -36,6 +36,9 @@ export interface RemoteDevice {
 /** Heartbeat cadence. Well inside the backend's 5-minute offline threshold. */
 export const DEVICE_HEARTBEAT_INTERVAL_MS = 60_000
 
+/** A registry call is one indexed row; anything slower is an outage, not a wait. */
+const DEVICE_REQUEST_TIMEOUT_MS = 15_000
+
 async function deviceFetch(
   path: string,
   init?: { method?: string; body?: string },
@@ -53,6 +56,9 @@ async function deviceFetch(
           ...(init?.body ? { 'content-type': 'application/json' } : {}),
         },
         ...(init?.body ? { body: init.body } : {}),
+        // The bearer token must not follow a redirect to another origin.
+        redirect: 'error',
+        signal: AbortSignal.timeout(DEVICE_REQUEST_TIMEOUT_MS),
       },
     )
   } catch (e) {
@@ -96,10 +102,18 @@ export async function heartbeatThisDevice(): Promise<RemoteDevice | null> {
 
 /** Every device on this account. Used by `/uninstall` targeting and the Mini App. */
 export async function listDevices(): Promise<RemoteDevice[]> {
+  return (await fetchDevices()) ?? []
+}
+
+/**
+ * Every device on this account, or null when the list could not be read (signed
+ * out, offline, refused) — for a caller that must tell "none" from "unknown".
+ */
+export async function fetchDevices(): Promise<RemoteDevice[] | null> {
   const res = await deviceFetch('/devices')
-  if (!res?.ok) return []
+  if (!res?.ok) return null
   const json = (await res.json().catch(() => null)) as RemoteDevice[] | null
-  return Array.isArray(json) ? json : []
+  return Array.isArray(json) ? json : null
 }
 
 /** Move a device to a new lifecycle state. Returns false when refused. */

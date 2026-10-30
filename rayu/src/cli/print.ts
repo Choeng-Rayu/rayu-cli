@@ -55,9 +55,11 @@ import {
   notifySessionStateChanged,
   notifySessionMetadataChanged,
   setPermissionModeChangedListener,
+  subscribeWorkerApprovalLoss,
   type RequiresActionDetails,
   type SessionExternalMetadata,
 } from 'src/utils/sessionState.js'
+import { formatWorkerApprovalLoss } from 'src/orchestrator/modeChange.js'
 import {
   createFileChangeReviewSystemMessage,
   createPendingFileChangeReviewSystemMessage,
@@ -256,7 +258,10 @@ import {
   toInternalMessages,
   toSDKRateLimitInfo,
 } from 'src/utils/messages/mappers.js'
-import { createModelSwitchBreadcrumbs } from 'src/utils/messages.js'
+import {
+  createModelSwitchBreadcrumbs,
+  createSystemMessage,
+} from 'src/utils/messages.js'
 import { collectContextData } from 'src/commands/context/context-noninteractive.js'
 import { LOCAL_COMMAND_STDOUT_TAG } from 'src/constants/xml.js'
 import {
@@ -1249,6 +1254,14 @@ function runHeadlessStreaming(
         session_id: getSessionId(),
       })
     }
+  })
+  // A mode change that leaves running background workers unable to get
+  // approval is shown as a warning (src/orchestrator/modeChange.ts); Rayucode
+  // renders `informational` frames as transcript notices.
+  const unsubscribeWorkerApprovalLoss = subscribeWorkerApprovalLoss(loss => {
+    output.enqueue(
+      createSystemMessage(formatWorkerApprovalLoss(loss), 'warning') as StdoutMessage,
+    )
   })
 
   // Prompt suggestion tracking (push model)
@@ -2390,6 +2403,9 @@ function runHeadlessStreaming(
               isMeta: cmd.isMeta,
               cwd: cwd(),
               tools: allTools,
+              // Same builder as allTools, re-run between tool rounds: a mid-turn
+              // mode change (plan approval → Orchestrator) changes the tool list.
+              refreshTools: () => buildAllTools(getAppState()),
               verbose: options.verbose,
               mcpClients: allMcpClients,
               thinkingConfig: options.thinkingConfig,
@@ -2912,6 +2928,7 @@ function runHeadlessStreaming(
         await finalizePendingAsyncHooks()
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
+        unsubscribeWorkerApprovalLoss()
         statusListeners.delete(rateLimitListener)
         output.done()
       }
@@ -4392,6 +4409,7 @@ function runHeadlessStreaming(
       await finalizePendingAsyncHooks()
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
+      unsubscribeWorkerApprovalLoss()
       statusListeners.delete(rateLimitListener)
       output.done()
     }

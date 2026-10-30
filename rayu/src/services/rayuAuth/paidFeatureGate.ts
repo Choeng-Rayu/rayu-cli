@@ -23,7 +23,9 @@
 // Rayu OAuth is OFF (the BYOK / open-source path) rayuFeatureAllowed() also
 // returns true, so behaviour there is unchanged as well.
 
-import { rayuFeatureAllowed } from './rayuEntitlements.js'
+import { rayuFeatureAllowed, hasPositiveTopupBalance } from './rayuEntitlements.js'
+import { IMAGE_GEN_FEATURE } from '../../tools/ImageGenTool/constants.js'
+import { VIDEO_GEN_FEATURE } from '../../tools/VideoGenTool/constants.js'
 import { getFeatureUsage } from './rayuFeatureUsage.js'
 import { getEntryPaidPlan } from './rayuPlansCatalog.js'
 import { isUseRayuOAuthEnabled } from './rayuSession.js'
@@ -35,9 +37,26 @@ import { isUseRayuOAuthEnabled } from './rayuSession.js'
  * This is the inverse of `rayuFeatureAllowed`, so it inherits its fail-open
  * semantics: locked is only ever true for a signed-in Free user with Rayu OAuth
  * enabled. Paid users and the OAuth-off (BYOK) path are never locked.
+ *
+ * PAYG BYPASS: image/video generation are served by the GATEWAY from a funded
+ * top-up balance even when the plan lacks the feature (see
+ * `image_feature_allowed` in rayu-gateway-rust `image/reserve.rs`: plan
+ * feature OR payg_available). Locking them client-side in that state blocks a
+ * funded user from something the gateway would serve and bill, so a positive
+ * top-up unlocks these two features. Every OTHER gated feature (telegram,
+ * swarm, …) is not top-up-served and stays locked without the plan grant.
  */
+const PAYG_SERVED_FEATURES: ReadonlySet<string> = new Set([
+  IMAGE_GEN_FEATURE,
+  VIDEO_GEN_FEATURE,
+])
+
 export function isPaidFeatureLocked(featureKey: string): boolean {
-  return !rayuFeatureAllowed(featureKey)
+  if (rayuFeatureAllowed(featureKey)) return false
+  if (PAYG_SERVED_FEATURES.has(featureKey) && hasPositiveTopupBalance()) {
+    return false
+  }
+  return true
 }
 
 /** Capitalize the first letter (for sentence-leading feature labels). */

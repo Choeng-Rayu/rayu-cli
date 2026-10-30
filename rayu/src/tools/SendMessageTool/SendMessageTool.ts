@@ -2,6 +2,8 @@ import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
 import { getReplBridgeHandle } from '../../bridge/replBridgeHandle.js'
+import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import type { AppState } from '../../state/AppState.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { findTeammateTaskByAgentId } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
@@ -10,7 +12,8 @@ import {
   queuePendingMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isMainSessionTask } from '../../tasks/LocalMainSessionTask.js'
-import { toAgentId } from '../../types/ids.js'
+import { type AgentId, toAgentId } from '../../types/ids.js'
+import type { AssistantMessage } from '../../types/message.js'
 import { generateRequestId } from '../../utils/agentId.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -517,6 +520,94 @@ async function handlePlanRejection(
   }
 }
 
+// ── In-process subagents ─────────────────────────────────────────────────────
+//
+// Also the whole of the Orchestrator variant (OrchestratorSendMessageTool.ts),
+// which offers only this route.
+
+/** A registered agent name or a raw agent ID, as the agent's ID. */
+export function resolveLocalAgentRecipient(
+  to: string,
+  appState: Pick<AppState, 'agentNameRegistry'>,
+): AgentId | null {
+  return appState.agentNameRegistry.get(to) ?? toAgentId(to)
+}
+
+export type LocalAgentDelivery = {
+  agentId: AgentId
+  /** How the sender addressed the agent; echoed in the result. */
+  to: string
+  message: string
+  context: ToolUseContext
+  canUseTool: CanUseToolFn
+  assistantMessage: AssistantMessage | undefined
+}
+
+/**
+ * Deliver a plain message to an in-process subagent. A running agent gets it at its
+ * next tool round; a stopped one is resumed in the background with it, and one that
+ * is no longer in state is resumed from its transcript.
+ */
+export async function messageLocalAgent(
+  delivery: LocalAgentDelivery,
+): Promise<{ data: MessageOutput }> {
+  const { agentId, to, message, context } = delivery
+  const task = context.getAppState().tasks[agentId]
+  if (!isLocalAgentTask(task) || isMainSessionTask(task)) {
+    // task evicted from state — try resume from disk transcript.
+    // agentId is either a registered name or a format-matching raw ID
+    // (toAgentId validates the createAgentId format, so teammate names
+    // never reach this block).
+    return resumeLocalAgent(delivery, {
+      resumed: `Agent "${to}" had no active task; resumed from transcript in the background with your message.`,
+      failed: error =>
+        `Agent "${to}" is registered but has no transcript to resume. It may have been cleaned up. (${error})`,
+    })
+  }
+  if (task.status === 'running') {
+    queuePendingMessage(
+      agentId,
+      message,
+      context.setAppStateForTasks ?? context.setAppState,
+    )
+    return {
+      data: {
+        success: true,
+        message: `Message queued for delivery to ${to} at its next tool round.`,
+      },
+    }
+  }
+  // task exists but stopped — auto-resume
+  return resumeLocalAgent(delivery, {
+    resumed: `Agent "${to}" was stopped (${task.status}); resumed it in the background with your message.`,
+    failed: error =>
+      `Agent "${to}" is stopped (${task.status}) and could not be resumed: ${error}`,
+  })
+}
+
+async function resumeLocalAgent(
+  { agentId, message, context, canUseTool, assistantMessage }: LocalAgentDelivery,
+  text: { resumed: string; failed: (error: string) => string },
+): Promise<{ data: MessageOutput }> {
+  try {
+    const result = await resumeAgentBackground({
+      agentId,
+      prompt: message,
+      toolUseContext: context,
+      canUseTool,
+      invokingRequestId: assistantMessage?.requestId,
+    })
+    return {
+      data: {
+        success: true,
+        message: `${text.resumed} You'll be notified when it finishes. Output: ${result.outputFile}`,
+      },
+    }
+  } catch (e) {
+    return { data: { success: false, message: text.failed(errorMessage(e)) } }
+  }
+}
+
 export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
   buildTool({
     name: SEND_MESSAGE_TOOL_NAME,
@@ -800,76 +891,19 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       // Route to in-process subagent by name or raw agentId before falling
       // through to ambient-team resolution. Stopped agents are auto-resumed.
       if (typeof input.message === 'string' && input.to !== '*') {
-        const appState = context.getAppState()
-        const registered = appState.agentNameRegistry.get(input.to)
-        const agentId = registered ?? toAgentId(input.to)
+        const agentId = resolveLocalAgentRecipient(
+          input.to,
+          context.getAppState(),
+        )
         if (agentId) {
-          const task = appState.tasks[agentId]
-          if (isLocalAgentTask(task) && !isMainSessionTask(task)) {
-            if (task.status === 'running') {
-              queuePendingMessage(
-                agentId,
-                input.message,
-                context.setAppStateForTasks ?? context.setAppState,
-              )
-              return {
-                data: {
-                  success: true,
-                  message: `Message queued for delivery to ${input.to} at its next tool round.`,
-                },
-              }
-            }
-            // task exists but stopped — auto-resume
-            try {
-              const result = await resumeAgentBackground({
-                agentId,
-                prompt: input.message,
-                toolUseContext: context,
-                canUseTool,
-                invokingRequestId: assistantMessage?.requestId,
-              })
-              return {
-                data: {
-                  success: true,
-                  message: `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
-                },
-              }
-            } catch (e) {
-              return {
-                data: {
-                  success: false,
-                  message: `Agent "${input.to}" is stopped (${task.status}) and could not be resumed: ${errorMessage(e)}`,
-                },
-              }
-            }
-          } else {
-            // task evicted from state — try resume from disk transcript.
-            // agentId is either a registered name or a format-matching raw ID
-            // (toAgentId validates the createAgentId format, so teammate names
-            // never reach this block).
-            try {
-              const result = await resumeAgentBackground({
-                agentId,
-                prompt: input.message,
-                toolUseContext: context,
-                canUseTool,
-                invokingRequestId: assistantMessage?.requestId,
-              })
-              return {
-                data: {
-                  success: true,
-                  message: `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
-                },
-              }
-            } catch (e) {
-              return {
-                data: {
-                  success: false,
-                  message: `Agent "${input.to}" is registered but has no transcript to resume. It may have been cleaned up. (${errorMessage(e)})`,
-                },
-              }
-            }
-          }
+          return messageLocalAgent({
+            agentId,
+            to: input.to,
+            message: input.message,
+            context,
+            canUseTool,
+            assistantMessage,
+          })
         }
       }
 

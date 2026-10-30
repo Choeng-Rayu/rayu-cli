@@ -136,6 +136,9 @@ try {
     }))
     throw new Error(`Expected one chat header, found ${visibleHeaders}: ${JSON.stringify(headerShape)}`)
   }
+  // The sidebar and every conversation tab are separate webviews now, and each renders
+  // exactly one header. A surface that renders a SECOND header is the regression this
+  // guards (the old failure was a whole-surface duplicate).
   const rayucodeFrames: Array<{ url: string; headers: number }> = []
   for (const candidatePage of browser!.contexts().flatMap(context => context.pages())) {
     for (const candidate of candidatePage.frames()) {
@@ -143,7 +146,9 @@ try {
       if (headers) rayucodeFrames.push({ url: candidate.url(), headers })
     }
   }
-  if (rayucodeFrames.length !== 1) throw new Error(`Expected one Rayucode webview, found ${JSON.stringify(rayucodeFrames)}`)
+  if (rayucodeFrames.length < 2) throw new Error(`Expected the sidebar and a conversation tab, found ${JSON.stringify(rayucodeFrames)}`)
+  const duplicatedHeaders = rayucodeFrames.filter(item => item.headers !== 1)
+  if (duplicatedHeaders.length) throw new Error(`A Rayucode surface duplicated its header: ${JSON.stringify(duplicatedHeaders)}`)
   const output = join(root, 'dist/test-results'); mkdirSync(output, { recursive: true })
   await page.screenshot({ path: join(output, 'rayucode-dark.png') })
   await frame!.getByRole('button', { name: 'Diff', exact: true }).first().click()
@@ -223,19 +228,39 @@ try {
   }
   await frame!.getByRole('textbox', { name: 'Message Rayu' }).fill('')
 
-  // The sessions surface is a real panel: the search is labelled "Search sessions" and rows are
-  // buttons grouped by recency rather than listbox options.
+  // ── THE SIDEBAR IS THE SESSIONS SURFACE ───────────────────────────────────────
   //
-  // Resuming is NO LONGER a two-click confirmation, because it is no longer destructive. The
-  // session matching this search IS the one on screen, so clicking it ACTIVATES rather than
-  // respawning — which is why no further inference may be issued.
-  await frame!.getByTitle('Sessions', { exact: true }).click()
-  await frame!.getByRole('textbox', { name: 'Search sessions' }).fill('fixture')
+  // The chat header no longer has a "Sessions" button. The management hub is the sidebar
+  // webview and a conversation lives in its own editor tab, so searching, opening and
+  // closing rows all happen in the sidebar. Clicking a live row OPENS or FOCUSES its tab
+  // and issues no inference; a history row spawns an engine with `--resume`.
+  async function findSidebarFrame(timeout = 30_000) {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      for (const candidatePage of browser!.contexts().flatMap(context => context.pages())) {
+        for (const candidate of candidatePage.frames()) {
+          const count = await candidate
+            .getByRole('textbox', { name: 'Search sessions' })
+            .count()
+            .catch(() => 0)
+          if (count > 0) return candidate
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error('Timed out waiting for the Rayucode sidebar')
+  }
+  const sidebar = await findSidebarFrame()
+  const sessionSearch = sidebar.getByRole('textbox', { name: 'Search sessions' })
+  await sessionSearch.waitFor()
+  if (await sidebar.locator('.rc-header').count() !== 1) throw new Error('The sidebar must render exactly one header')
+  // The conversation just used is listed under "Open now"; the search narrows both groups.
+  await sessionSearch.fill('fixture')
   const streamsBeforeSwitch = provider.requests.filter(r => r.stream).length
-  const history = frame!.locator('.rc-session-row-history, .rc-session-live-row .rc-session-row').first()
-  await history.waitFor(); await history.click()
+  const ownRow = sidebar.locator('.rc-session-live-row .rc-session-row').first()
+  await ownRow.waitFor(); await ownRow.click()
   await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
-  if (provider.requests.filter(r => r.stream).length !== streamsBeforeSwitch) throw new Error('Restoring history resubmitted inference')
+  if (provider.requests.filter(r => r.stream).length !== streamsBeforeSwitch) throw new Error('Activating the live session resubmitted inference')
 
   await frame!.getByRole('button', { name: /^Conversation name:/ }).click()
   const renameInput = frame!.getByRole('textbox', { name: 'Conversation name' })
@@ -311,56 +336,73 @@ try {
   if (taskLayout.headShrink !== '0' || taskLayout.filterShrink !== '0' || taskLayout.scrollGrow !== '1') throw new Error(`Background-work flex layout is unsafe: ${JSON.stringify(taskLayout)}`)
   if (taskLayout.scrollHeight <= taskLayout.clientHeight) throw new Error(`Background-work results do not scroll: ${JSON.stringify(taskLayout)}`)
 
-  // Force a long scrollable chat in the narrow sidebar and leave it mid-transcript.
-  // The sessions surface hides this element; returning must restore its reading position.
-  await frame!.evaluate(() => {
-    const el = document.querySelector('.rc-transcript') as HTMLElement
-    el.style.maxHeight = '90px'
-    el.style.flex = '0 0 90px'
-  })
-  await new Promise(resolve => setTimeout(resolve, 100))
-  await frame!.evaluate(() => {
-    const el = document.querySelector('.rc-transcript') as HTMLElement
-    el.scrollTop = 30
-    el.dispatchEvent(new Event('scroll', { bubbles: true }))
-  })
-  await new Promise(resolve => setTimeout(resolve, 100))
-  const beforeNew = await frame!.evaluate(() => (document.querySelector('.rc-transcript') as HTMLElement).scrollTop)
-  if (beforeNew < 20) throw new Error('Transcript fixture was not scrollable')
-
   // ── CONCURRENT SESSIONS ────────────────────────────────────────────────────────
   //
   // The reported bug: pressing + killed the conversation that was on screen, and going back
-  // rebuilt it from the session FILE. It must now OPEN a second conversation and leave the
-  // first one intact, so switching back is a plain activation with the transcript still there.
+  // rebuilt it from the session FILE. It must OPEN a second conversation and leave the first
+  // one intact — each conversation has its own editor tab now, so the first tab is never
+  // touched, and returning to it from the sidebar is a focus, not a reload.
   await frame!.getByTitle('New session', { exact: true }).click()
-  await frame!.locator('.rc-welcome').waitFor()
-  await frame!.getByTitle('Sessions — 2 open', { exact: true }).click()
-  await frame!.getByText('Open now', { exact: true }).waitFor()
-  const live = frame!.locator('.rc-session-live-row')
+  async function findOtherChatFrame(exclude: typeof frame, timeout = 30_000) {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      for (const candidatePage of browser!.contexts().flatMap(context => context.pages())) {
+        for (const candidate of candidatePage.frames()) {
+          if (candidate === exclude) continue
+          const count = await candidate
+            .getByRole('textbox', { name: 'Message Rayu' })
+            .count()
+            .catch(() => 0)
+          if (count > 0) return candidate
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error('Timed out waiting for the new conversation tab')
+  }
+  // The new conversation opens as its own tab and starts on the welcome screen.
+  const second = await findOtherChatFrame(frame)
+  await second.locator('.rc-welcome').waitFor()
+  await sidebar.getByText('Open now', { exact: true }).waitFor()
+  // Clear the filter: the new conversation has a different title.
+  await sessionSearch.fill('')
+  const live = sidebar.locator('.rc-session-live-row')
+  const liveDeadline = Date.now() + 15_000
+  while ((await live.count()) !== 2 && Date.now() < liveDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
   if ((await live.count()) !== 2) throw new Error('Opening a session did not leave the previous one open')
-  // The row that is NOT on screen is the original conversation.
-  await frame!.locator('.rc-session-live-row .rc-session-row:not(.rc-session-row-active)').first().click()
+  // Return to the original conversation by name; the first tab must still be intact.
+  await sidebar.locator('.rc-session-live-row .rc-session-row').filter({ hasText: 'Canva session check' }).click()
   await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
-  const restored = await frame!.evaluate(() => {
-    const el = document.querySelector('.rc-transcript') as HTMLElement
-    return { top: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, style: el.getAttribute('style') }
-  })
-  if (Math.abs(restored.top - beforeNew) > 5) throw new Error(`Switching sessions lost reading position: ${beforeNew} → ${JSON.stringify(restored)}`)
   if (provider.requests.filter(r => r.stream).length !== streamsBeforeSwitch) throw new Error('Switching sessions resubmitted inference')
   if (await frame!.locator('.rc-header').count() !== 1) throw new Error('Switching sessions duplicated the chat header')
 
-  // Close the live conversation and open it from history again. This is the true first-open
-  // resume path: the host loads the transcript asynchronously, and it must land at the newest
-  // message rather than leaving the browser at scrollTop 0.
-  await frame!.getByTitle('Sessions — 2 open', { exact: true }).click()
-  await frame!.getByRole('button', { name: 'Close Canva session check' }).click()
-  const historicalSession = frame!.locator('.rc-session-row-history').filter({ hasText: 'Canva session check' })
+  // Close the conversation and open it from history again. This is the true first-open resume
+  // path: the host spawns an engine with `--resume` and loads the transcript asynchronously,
+  // and it must land at the newest message rather than at scrollTop 0.
+  await sidebar.getByRole('button', { name: 'Close Canva session check' }).click()
+  await sessionSearch.fill('Canva')
+  const historicalSession = sidebar.locator('.rc-session-row-history').filter({ hasText: 'Canva session check' })
   await historicalSession.waitFor()
   await historicalSession.click()
-  await frame!.getByText('The check passed.', { exact: false }).first().waitFor()
-  await frame!.waitForTimeout(150)
-  const firstOpenHistory = await frame!.evaluate(() => {
+  async function findChatFrameShowing(text: string, timeout = 30_000) {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      for (const candidatePage of browser!.contexts().flatMap(context => context.pages())) {
+        for (const candidate of candidatePage.frames()) {
+          const count = await candidate.getByText(text, { exact: false }).count().catch(() => 0)
+          if (count > 0) return candidate
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error(`Timed out waiting for a conversation showing ${JSON.stringify(text)}`)
+  }
+  // Resuming opens a new tab; it is the one that now shows this transcript.
+  const resumed = await findChatFrameShowing('The check passed.')
+  await resumed.waitForTimeout(150)
+  const firstOpenHistory = await resumed.evaluate(() => {
     const el = document.querySelector('.rc-transcript') as HTMLElement
     return { top: el.scrollTop, max: el.scrollHeight - el.clientHeight }
   })
@@ -371,7 +413,7 @@ try {
   // A restored history can contain up to 400 variable-height blocks. They must all take part
   // in the first layout; deferred intrinsic placeholders make scrollHeight grow as each new
   // viewport is revealed, so a user has to scroll to the apparent bottom over and over.
-  const longHistoryLayout = await frame!.evaluate(async () => {
+  const longHistoryLayout = await resumed.evaluate(async () => {
     const probe = document.createElement('div')
     probe.className = 'rc-transcript'
     probe.style.cssText = 'position:absolute;inset:0 auto auto 0;width:280px;height:160px;opacity:.01;pointer-events:none;z-index:10000;'

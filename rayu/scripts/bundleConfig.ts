@@ -155,3 +155,52 @@ export function sharedBuildOptions(): Omit<
     loader: { '.md': 'text', '.txt': 'text' },
   }
 }
+
+/** A `bun build --compile` platform, e.g. `bun-linux-x64-baseline`. */
+export type CompileTarget = Bun.Build.CompileTarget
+
+export interface CompileRequest {
+  /** Entry module, relative to the package root (builds run from there). */
+  entry: string
+  /** Platform to compile for. */
+  bunTarget: CompileTarget
+  /** Path of the executable to write. Nothing is appended for Windows. */
+  outfile: string
+}
+
+/**
+ * Options for a standalone executable (`bun build --compile`) of a rayu entrypoint.
+ *
+ * WHY THIS EXISTS
+ * scripts/build-native.ts and scripts/build-binaries.ts used to assemble their own
+ * copy of the options, and the copy drifted: it had no RAYU_BAKED_BUILD_CONFIG and no
+ * RAYU_FEATURES.<flag> defines. Only the dev/test preload installs that global, so the
+ * shipped binaries threw `ReferenceError: RAYU_FEATURES is not defined` on anything
+ * beyond `--version` (which cli.tsx answers before those modules load). Measured on
+ * rayu-cli-linux-x64 2.3.1, started from a directory without a bunfig.toml.
+ *
+ * WHY AUTOLOAD IS OFF
+ * Unless told otherwise, a Bun executable reads `bunfig.toml` and `.env` from the
+ * directory it is started in. `bunfig.toml` can declare `preload` scripts, so a
+ * compiled rayu started inside any Bun project would run that project's preload in
+ * its own process before main(). Measured: the broken binary above "worked" when
+ * started from this repo, because this repo's preload installed the missing global.
+ * The node bundle has no such behaviour, and `.env` is already loaded explicitly by
+ * `loadDotEnv()` in cli.tsx and vscodeHost.ts, so Bun's autoload would only add
+ * files the node bundle never reads (`.env.local`, `.env.<NODE_ENV>`).
+ */
+export function compileBuildOptions(
+  request: CompileRequest,
+): Parameters<typeof Bun.build>[0] {
+  return {
+    ...sharedBuildOptions(),
+    entrypoints: [request.entry],
+    target: 'bun',
+    compile: {
+      target: request.bunTarget,
+      outfile: request.outfile,
+      autoloadBunfig: false,
+      autoloadDotenv: false,
+    },
+  }
+}

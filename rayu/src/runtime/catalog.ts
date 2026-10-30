@@ -81,6 +81,8 @@ const RAYUCODE_IMPLEMENTED_COMMANDS = new Set([
   'logout',
   'subagent_models',
   'webfetch_model',
+  'model_image_generation',
+  'model_video_generation',
   'btw',
   'reload-plugins',
   'install-skill',

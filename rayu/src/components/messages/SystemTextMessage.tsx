@@ -15,11 +15,12 @@ import { openPath } from '../../utils/browser.js';
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemSaved = feature('TEAMMEM') ? require('./teamMemSaved.js') as typeof import('./teamMemSaved.js') : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js';
+import { MIN_TURN_DURATION_MS, TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemThinkingMessage, SystemMemorySavedMessage } from '../../types/message.js';
 import { SystemAPIErrorMessage } from './SystemAPIErrorMessage.js';
 import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
+import { rayuCreditsLabel } from '../../utils/rayuRequestCharge.js';
 import { getGlobalConfig } from '../../utils/config.js';
 import Link from '../../ink/components/Link.js';
 import ThemedText from '../design-system/ThemedText.js';
@@ -536,7 +537,14 @@ function TurnDurationMessage(t0) {
     t3 = $[4];
   }
   const duration = t3;
+  // A sub-second turn never reads "worked for 0s" (see MIN_TURN_DURATION_MS):
+  // the REPL only gives such a turn a line for its budget or its credits.
+  const showDuration = showTurnDuration && message.durationMs >= MIN_TURN_DURATION_MS;
   const hasBudget = message.budgetLimit !== undefined;
+  // What the Rayu gateway charged for this turn ("Credits: 443.76"). Shown even
+  // when the duration is turned off: it is billing, not timing.
+  const hasCredits = message.rayuCredits !== undefined;
+  const creditsSuffix = hasCredits ? `${showDuration ? " \xB7 " : ""}${rayuCreditsLabel(message.rayuCredits)}` : "";
   let t4;
   bb0: {
     if (!hasBudget) {
@@ -556,10 +564,10 @@ function TurnDurationMessage(t0) {
     }
     const usage = t5;
     const nudges = message.budgetNudges > 0 ? ` \u00B7 ${message.budgetNudges} ${message.budgetNudges === 1 ? "nudge" : "nudges"}` : "";
-    t4 = `${showTurnDuration ? " \xB7 " : ""}${usage}${nudges}`;
+    t4 = `${showDuration || hasCredits ? " \xB7 " : ""}${usage}${nudges}`;
   }
   const budgetSuffix = t4;
-  if (!showTurnDuration && !hasBudget) {
+  if (!showDuration && !hasBudget && !hasCredits) {
     return null;
   }
   const t5 = addMargin ? 1 : 0;
@@ -570,12 +578,14 @@ function TurnDurationMessage(t0) {
   } else {
     t6 = $[8];
   }
-  const t7 = showTurnDuration && `Rayu ${verb.toLowerCase()} for ${duration}`;
+  const t7 = showDuration && `Rayu ${verb.toLowerCase()} for ${duration}`;
   const t8 = backgroundTaskSummary && ` \u00B7 ${backgroundTaskSummary} still running`;
+  // One string, so the memo below keeps its slot count.
+  const suffix = creditsSuffix + budgetSuffix;
   let t9;
-  if ($[9] !== budgetSuffix || $[10] !== t7 || $[11] !== t8) {
-    t9 = <Text dimColor={true}>{t7}{budgetSuffix}{t8}</Text>;
-    $[9] = budgetSuffix;
+  if ($[9] !== suffix || $[10] !== t7 || $[11] !== t8) {
+    t9 = <Text dimColor={true}>{t7}{suffix}{t8}</Text>;
+    $[9] = suffix;
     $[10] = t7;
     $[11] = t8;
     $[12] = t9;

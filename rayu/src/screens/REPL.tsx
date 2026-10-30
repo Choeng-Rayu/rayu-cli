@@ -73,6 +73,7 @@ import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../component
 import { getSystemPrompt } from '../constants/prompts.js';
 import { getBrandGlyph } from '../constants/figures.js';
 import { MIN_TURN_DURATION_MS } from '../constants/turnCompletionVerbs.js';
+import { markRayuCharges, rayuCreditsSince, type RayuChargeMark } from '../services/rayuAuth/rayuTurnCredits.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
@@ -275,6 +276,7 @@ import { useIDEStatusIndicator } from 'src/hooks/notifs/useIDEStatusIndicator.js
 import { useModelMigrationNotifications } from 'src/hooks/notifs/useModelMigrationNotifications.js';
 import { useCanSwitchToExistingSubscription } from 'src/hooks/notifs/useCanSwitchToExistingSubscription.js';
 import { useTeammateLifecycleNotification } from 'src/hooks/notifs/useTeammateShutdownNotification.js';
+import { useWorkerApprovalLossNotification } from 'src/hooks/notifs/useWorkerApprovalLossNotification.js';
 import { useFastModeNotification } from 'src/hooks/notifs/useFastModeNotification.js';
 import { AutoRunIssueNotification, shouldAutoRunIssue, getAutoRunIssueReasonText, getAutoRunCommand, type AutoRunIssueReason } from '../utils/autoRunIssue.js';
 import type { HookProgress } from '../types/hooks.js';
@@ -315,6 +317,15 @@ const HISTORY_STUB = {
 // up to read the start → start typing → before this fix, snapped to bottom.
 // https://anthropic.slack.com/archives/C07VBSHV7EV/p1773545449871739
 const RECENT_SCROLL_REPIN_WINDOW_MS = 3000;
+
+// How long the turn line waits for the one-shot session-title request's charge.
+// The title is launched with the first turn and billed to it, but it runs
+// concurrently and often settles after the answer does. Reading the turn total
+// without waiting made an identical turn show either ~1.9 credits (title
+// included) or ~0.01 (title dropped), depending on which request finished
+// first. The wait is bounded: a title still running after this long is not
+// worth stalling the completion line for.
+const TURN_TITLE_CHARGE_WAIT_MS = 3000;
 
 // Use LRU cache to prevent unbounded memory growth
 // 100 files should be sufficient for most coding sessions while preventing
@@ -777,6 +788,7 @@ export function REPL({
   useOfficialMarketplaceNotification();
   useLspInitializationNotification();
   useTeammateLifecycleNotification();
+  useWorkerApprovalLossNotification();
   const {
     recommendation: lspRecommendation,
     handleResponse: handleLspResponse
@@ -977,6 +989,13 @@ export function REPL({
     limit: number;
     nudges: number;
   } | undefined>(undefined);
+  // Rayu credits for the turn line are what the gateway charged since these
+  // marks: the current turn's start, and the first deferred swarm turn's start.
+  const turnChargeMarkRef = React.useRef<RayuChargeMark>(markRayuCharges());
+  const swarmChargeMarkRef = React.useRef<RayuChargeMark | null>(null);
+  // The session-title request started for this turn, until its charge is known.
+  // The turn line awaits it so a late title settlement cannot change the number.
+  const turnTitleChargeRef = React.useRef<Promise<unknown> | null>(null);
 
   // Ref to track current focusedInputDialog for use in callbacks
   // This avoids stale closures when checking dialog state in timer callbacks
@@ -1633,15 +1652,18 @@ export function REPL({
     if (!hasRunningTeammates && swarmStartTimeRef.current !== null) {
       const totalMs = Date.now() - swarmStartTimeRef.current;
       const deferredBudget = swarmBudgetInfoRef.current;
+      // Everything charged since the first deferred turn began, teammates included.
+      const deferredCredits = swarmChargeMarkRef.current ? rayuCreditsSince(swarmChargeMarkRef.current) : undefined;
       swarmStartTimeRef.current = null;
       swarmBudgetInfoRef.current = undefined;
+      swarmChargeMarkRef.current = null;
       setMessages(prev => [...prev, createTurnDurationMessage(totalMs, deferredBudget,
       // Count only what recordTranscript will persist — ephemeral
       // progress ticks and non-ant attachments are filtered by
       // isLoggableMessage and never reach disk. Using raw prev.length
       // would make checkResumeConsistency report false delta<0 for
       // every turn that ran a progress-emitting tool.
-      count(prev, isLoggableMessage))]);
+      count(prev, isLoggableMessage), deferredCredits)]);
     }
   }, [hasRunningTeammates, setMessages]);
 
@@ -2731,6 +2753,11 @@ export function REPL({
     // Mark onboarding as complete when any user message is sent to Claude
     void maybeMarkProjectOnboardingComplete();
 
+    // The title request below is launched for this turn, so the turn mark must
+    // be taken before it: attribution is by request start, and a mark taken
+    // after the title would put its charge outside this turn's window.
+    turnChargeMarkRef.current = markRayuCharges();
+
     // Extract a session title from the first real user message. One-shot
     // via ref (was tengu_birch_mist experiment: first-message-only to save
     // Haiku calls). The ref replaces the old `messages.length <= 1` check,
@@ -2747,11 +2774,15 @@ export function REPL({
       // None of these are the user's topic; wait for real prose.
       if (text && !text.startsWith(`<${LOCAL_COMMAND_STDOUT_TAG}>`) && !text.startsWith(`<${COMMAND_MESSAGE_TAG}>`) && !text.startsWith(`<${COMMAND_NAME_TAG}>`) && !text.startsWith(`<${BASH_INPUT_TAG}>`)) {
         haikuTitleAttemptedRef.current = true;
-        void generateSessionTitle(text, new AbortController().signal).then(title => {
+        const titleRequest = generateSessionTitle(text, new AbortController().signal).then(title => {
           if (title) setHaikuTitle(title);else haikuTitleAttemptedRef.current = false;
         }, () => {
           haikuTitleAttemptedRef.current = false;
         });
+        // The title is billed to this turn; hold the promise so the turn line can
+        // wait for that charge (see TURN_TITLE_CHARGE_WAIT_MS).
+        turnTitleChargeRef.current = titleRequest;
+        void titleRequest;
       }
     }
 
@@ -3038,22 +3069,37 @@ export function REPL({
         // completion status and the user had no consistent "the response is
         // done" signal. Floored rather than unconditional so a sub-second turn
         // never renders "worked for 0s".
+        // A turn the Rayu gateway charged for always gets the line, so its
+        // credits are shown however fast it was (a sub-second line shows only
+        // the credits).
         // Skip if user aborted or if in loop mode (too noisy between ticks)
         // Defer if swarm teammates are still running (show when they finish)
         const turnDurationMs = Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current;
-        if ((turnDurationMs >= MIN_TURN_DURATION_MS || budgetInfo !== undefined) && !abortController.signal.aborted && !proactiveActive) {
+        // The session-title request belongs to this turn but runs alongside it,
+        // so its charge may land after the answer. Wait for it (bounded) before
+        // reading the total, or the same turn reads ~1.9 one run and ~0.01 the
+        // next depending on which request settled first. Read outside the timing
+        // above so the wait is not reported as turn duration.
+        const pendingTitleCharge = turnTitleChargeRef.current;
+        if (pendingTitleCharge && !abortController.signal.aborted && !proactiveActive) {
+          turnTitleChargeRef.current = null;
+          await Promise.race([pendingTitleCharge.catch(() => {}), new Promise(resolve => setTimeout(resolve, TURN_TITLE_CHARGE_WAIT_MS))]);
+        }
+        const turnCredits = rayuCreditsSince(turnChargeMarkRef.current);
+        if ((turnDurationMs >= MIN_TURN_DURATION_MS || budgetInfo !== undefined || turnCredits !== undefined) && !abortController.signal.aborted && !proactiveActive) {
           const hasRunningSwarmAgents = getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running');
           if (hasRunningSwarmAgents) {
             // Only record start time on the first deferred turn
             if (swarmStartTimeRef.current === null) {
               swarmStartTimeRef.current = loadingStartTimeRef.current;
+              swarmChargeMarkRef.current = turnChargeMarkRef.current;
             }
             // Always update budget — later turns may carry the actual budget
             if (budgetInfo) {
               swarmBudgetInfoRef.current = budgetInfo;
             }
           } else {
-            setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs, budgetInfo, count(prev, isLoggableMessage))]);
+            setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs, budgetInfo, count(prev, isLoggableMessage), turnCredits)]);
           }
         }
         // Clear the controller so CancelRequestHandler's canCancelRunningTask

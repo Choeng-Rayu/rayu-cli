@@ -110,6 +110,11 @@ import {
   publishRayuPacingLimit,
   rayuPacingLimitFromError,
 } from '../rayuAuth/rayuRateLimit.js'
+import { markRayuCharges, recordRayuCharge } from '../rayuAuth/rayuTurnCredits.js'
+import {
+  creditsFromRayuBody,
+  creditsFromRayuCharge,
+} from '../../utils/rayuRequestCharge.js'
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -1041,6 +1046,11 @@ async function* queryModel(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  // Snapshot the charge sequence before any request goes out: this is the
+  // request's start, so its charge lands in the turn that launched it even if
+  // it settles after that turn's line was rendered.
+  const chargeMark = markRayuCharges()
+
   // Check cheap conditions first — the off-switch await blocks on GrowthBook
   // init (~10ms). For non-Opus models (haiku, sonnet) this skips the await
   // entirely. Subscribers don't hit this path at all.
@@ -1831,6 +1841,10 @@ async function* queryModel(
   let stopReason: BetaStopReason | null = null
   let didFallBackToNonStreaming = false
   let fallbackMessage: AssistantMessage | undefined
+  // What the Rayu gateway said this request's stream cost (its `message_delta`
+  // carries a `rayu` member). Recorded once, in the finally below, so a stream
+  // that repeats message_delta still counts one charge.
+  let streamedRayuCredits: number | undefined
   let maxOutputTokens = 0
   let responseHeaders: globalThis.Headers | undefined = undefined
   let research: unknown = undefined
@@ -2303,6 +2317,12 @@ async function* queryModel(
           }
           case 'message_delta': {
             usage = updateUsage(usage, part.usage)
+            // The Rayu gateway publishes this request's charge here; the latest
+            // value wins. Absent for any other provider, and for an older gateway.
+            streamedRayuCredits =
+              creditsFromRayuCharge(
+                (part as unknown as { rayu?: unknown }).rayu,
+              ) ?? streamedRayuCredits
             // Capture research from message_delta if available (internal only).
             // Always overwrite with the latest value. Also write back to
             // already-yielded messages since message_delta arrives after
@@ -2931,6 +2951,16 @@ async function* queryModel(
         fallbackUsage,
         options.model,
       )
+    }
+
+    // What the Rayu gateway charged, for the turn's "Credits:" line. Recorded in
+    // this finally for the same reason as the fallback cost above: it must
+    // survive .return() at a yield. A stream and the non-streaming retry that
+    // replaced it are two gateway requests, and both are billed. The fallback
+    // body is spread into `fallbackMessage.message`, so its `rayu` member is there.
+    recordRayuCharge(streamedRayuCredits, chargeMark)
+    if (fallbackMessage) {
+      recordRayuCharge(creditsFromRayuBody(fallbackMessage.message), chargeMark)
     }
   }
 

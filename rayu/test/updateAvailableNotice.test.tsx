@@ -8,27 +8,13 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import * as React from 'react'
-import { Writable } from 'stream'
 import stripAnsi from 'strip-ansi'
 
 import { UpdateAvailableNotice } from '../src/components/UpdateAvailableNotice.tsx'
 import { render } from '../src/ink.ts'
 import { _resetLatestNpmVersionCacheForTesting } from '../src/utils/autoUpdater.ts'
 import type { InstallationType } from '../src/utils/doctorDiagnostic.ts'
-
-class CaptureStream extends Writable {
-  output = ''
-  columns = 120
-  rows = 40
-  override _write(
-    chunk: Buffer | string,
-    _encoding: string,
-    callback: () => void,
-  ): void {
-    this.output += chunk.toString()
-    callback()
-  }
-}
+import { CaptureStream } from './helpers/captureStream.js'
 
 afterEach(() => {
   _resetLatestNpmVersionCacheForTesting()
@@ -53,7 +39,7 @@ async function renderNotice(options: {
   columns?: number
   environment?: typeof INTERACTIVE_DEFAULT | Record<string, unknown>
 }): Promise<string> {
-  const stdout = new CaptureStream()
+  const stdout = new CaptureStream({ columns: 120, rows: 40 })
   if (options.columns) stdout.columns = options.columns
 
   const instance = await render(
@@ -242,7 +228,7 @@ describe('UpdateAvailableNotice', () => {
   test('does not hit the registry when the notice is not permitted', async () => {
     // An env opt-out must prevent the request itself, not just hide its result.
     let fetches = 0
-    const stdout = new CaptureStream()
+    const stdout = new CaptureStream({ columns: 120, rows: 40 })
     const instance = await render(
       <UpdateAvailableNotice
         detectInstallationType={async () => 'npm-global'}

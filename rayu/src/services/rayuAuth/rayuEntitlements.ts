@@ -121,7 +121,15 @@ const REFRESH_COOLDOWN_MS = 30_000
 
 let cache: RayuEntitlements | null = null
 let loadedFromDisk = false
-let fetching = false
+/**
+ * The in-flight refresh, if any — a PROMISE, not a flag, so a caller that
+ * arrives mid-fetch WAITS for it instead of being handed the stale cache.
+ * Otherwise a background fetch that STARTED BEFORE a top-up landed could
+ * complete AFTER it, and an awaited post-purchase refresh would silently
+ * return the pre-purchase cache — the exact staleness the /topup refresh
+ * exists to prevent.
+ */
+let fetching: Promise<RayuEntitlements | null> | null = null
 let lastAttempt = 0
 
 function entitlementsPath(): string {
@@ -257,39 +265,47 @@ export function getCachedEntitlements(): RayuEntitlements | null {
  */
 export async function refreshRayuEntitlements(): Promise<RayuEntitlements | null> {
   if (!isUseRayuOAuthEnabled() || !hasRayuSession()) return null
-  if (fetching) return cache
-  fetching = true
+  // Share the in-flight request rather than stacking another — and AWAIT it,
+  // so a caller that needs fresh data (e.g. /topup right after a payment)
+  // actually gets it instead of the stale cache.
+  if (fetching) return fetching
   lastAttempt = Date.now()
-  try {
-    const token = await getValidRayuAccessToken()
-    if (!token) return cache
-    const res = await (globalThis.fetch as typeof fetch)(
-      `${getRayuApiBaseUrl()}/me/entitlements`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    )
-    if (!res.ok) return cache
-    const parsed: unknown = await res.json()
-    // Only a recognisable entitlements body may replace the cache. Anything else
-    // (proxy JSON page, enveloped/partial shape) leaves the LAST GOOD cache in
-    // place and is neither persisted nor fed to syncRayuHostedProvider — see
-    // isEntitlementsPayload for what the old blind cast did to paid users.
-    if (!isEntitlementsPayload(parsed)) {
+  const run = (async (): Promise<RayuEntitlements | null> => {
+    try {
+      const token = await getValidRayuAccessToken()
+      if (!token) return cache
+      const res = await (globalThis.fetch as typeof fetch)(
+        `${getRayuApiBaseUrl()}/me/entitlements`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      if (!res.ok) return cache
+      const parsed: unknown = await res.json()
+      // Only a recognisable entitlements body may replace the cache. Anything else
+      // (proxy JSON page, enveloped/partial shape) leaves the LAST GOOD cache in
+      // place and is neither persisted nor fed to syncRayuHostedProvider — see
+      // isEntitlementsPayload for what the old blind cast did to paid users.
+      if (!isEntitlementsPayload(parsed)) {
+        return cache
+      }
+      const data = parsed
+      // Bind to the current session user so the file can't be reused by another.
+      data.userId = currentUserId()
+      cache = data
+      loadedFromDisk = true
+      persist(data)
+      // Keep the rayu-hosted provider config in sync with entitlements. No
+      // activation here (background refresh must not hijack the user's choice).
+      syncRayuHostedProvider(data)
+      return data
+    } catch {
       return cache
     }
-    const data = parsed
-    // Bind to the current session user so the file can't be reused by another.
-    data.userId = currentUserId()
-    cache = data
-    loadedFromDisk = true
-    persist(data)
-    // Keep the rayu-hosted provider config in sync with entitlements. No
-    // activation here (background refresh must not hijack the user's choice).
-    syncRayuHostedProvider(data)
-    return data
-  } catch {
-    return cache
+  })()
+  fetching = run
+  try {
+    return await run
   } finally {
-    fetching = false
+    if (fetching === run) fetching = null
   }
 }
 
@@ -355,6 +371,28 @@ export function isHostedModelEntitled(modelCode: string): boolean {
 }
 
 /**
+ * True when the cached entitlements show a POSITIVE top-up balance.
+ *
+ * WHY THIS EXISTS: the gateway (rayu-gateway-rust) serves PAYG usage from a
+ * funded top-up even when the plan does not grant the feature — see
+ * `image_feature_allowed` / `video_feature_allowed` (plan feature OR
+ * payg_available) in `crates/gateway/src/image/reserve.rs`. The client gate
+ * must match, or a user with money in the account is blocked locally from what
+ * the gateway would happily serve and bill.
+ *
+ * Deliberately POSITIVE-only: no cache / missing / non-positive balance returns
+ * false. This predicate never DENIES anything by itself — it only unlocks — so
+ * the surrounding fail-open logic (unknown → let the gateway decide) is
+ * untouched.
+ */
+export function hasPositiveTopupBalance(): boolean {
+  if (!isUseRayuOAuthEnabled()) return false
+  const ent = getCachedEntitlements()
+  if (!ent) return false
+  return typeof ent.topupBalance === 'number' && ent.topupBalance > 0
+}
+
+/**
  * Whether the signed-in user's plan can use ANY Rayu-hosted model — i.e. their
  * `allowedModels` is non-empty. Used by the client-side block-on-use gate to
  * decide whether to short-circuit with the upgrade message.
@@ -373,6 +411,11 @@ export function hasHostedModelAccess(): boolean {
   if (!isUseRayuOAuthEnabled()) return true
   const ent = getCachedEntitlements()
   if (!ent) return true // unknown → let the gateway decide
+  // PAYG: a funded top-up balance buys gateway usage even on a plan that
+  // grants no hosted models — mirrors the gateway's payg_available bypass
+  // (see hasPositiveTopupBalance). Checking this BEFORE the empty-allowedModels
+  // denial is what keeps a top-up-funded user from being blocked locally.
+  if (typeof ent.topupBalance === 'number' && ent.topupBalance > 0) return true
   // A PAID plan is never told "upgrade your plan" by the client. If a paying
   // user's allowedModels is empty the cause is on Rayu's side (no model↔plan
   // rows configured for that plan, or a cache written from a partial payload),
@@ -406,6 +449,6 @@ export function _setRayuEntitlementsForTesting(
 export function _resetRayuEntitlementsForTesting(): void {
   cache = null
   loadedFromDisk = false
-  fetching = false
+  fetching = null
   lastAttempt = 0
 }

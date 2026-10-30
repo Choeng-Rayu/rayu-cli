@@ -23,15 +23,18 @@ import type { ModelOptionView } from '../../shared/webviewProtocol.js'
  * webview state, or a log line. `describeAction()` exists so progress and error
  * reporting never has to stringify the action itself.
  */
-import { spawn } from 'node:child_process'
-
 import {
   CONNECT_FLAG,
   type AttachTargetFrame,
   type ConnectAction,
   type ConnectPresetView,
 } from '../../shared/connectProtocol.js'
-import { NdjsonReader } from '../engine/ndjsonReader.js'
+import {
+  runEngineChild,
+  stderrExcerpt,
+  type EngineChildResult,
+  type EngineLaunch,
+} from '../engine/engineLaunch.js'
 
 /**
  * Model-list fetches hit a provider's API over the network. Generous, because a slow
@@ -40,8 +43,8 @@ import { NdjsonReader } from '../engine/ndjsonReader.js'
 const CONNECT_TIMEOUT_MS = 90_000
 
 export interface ProviderSetupOptions {
-  /** Absolute path to the bundled `engine.mjs`. */
-  enginePath: string
+  /** How to start the engine — see `engine/engineLaunch.ts`. */
+  launch: EngineLaunch
   cwd: string
 }
 
@@ -55,6 +58,8 @@ export interface ConnectOutcome {
   inference?: InferenceSettingsView
   activeProviderId?: string
   activeModel?: string
+  /** A caveat about `catalogue`, already user-facing. */
+  notice?: string
   /** Already user-facing. Never contains a credential. */
   error?: string
 }
@@ -77,6 +82,19 @@ export async function refreshProviderCatalogue(
   model?: string,
 ): Promise<ConnectOutcome> {
   return runConnectChild(options, { action: 'models', model })
+}
+
+/**
+ * Fetch the live image or video generation models for the chooser.
+ *
+ * In the child for the same reason as the chat catalogue: the media catalog
+ * service would pull ~19 MB of the engine into the host bundle.
+ */
+export async function refreshMediaModelOptions(
+  options: ProviderSetupOptions,
+  mediaType: 'image' | 'video',
+): Promise<ConnectOutcome> {
+  return runConnectChild(options, { action: 'media-models', mediaType })
 }
 
 /** Enumerate the providers the panel can offer. */
@@ -129,137 +147,97 @@ export async function saveProvider(
   })
 }
 
-function runConnectChild(
+async function runConnectChild(
   options: ProviderSetupOptions,
   action: ConnectAction,
 ): Promise<ConnectOutcome> {
-  return new Promise<ConnectOutcome>(resolve => {
-    let settled = false
-    let stderrTail = ''
-    let presets: ConnectPresetView[] | undefined
-    let targets: AttachTargetFrame[] | undefined
+  let presets: ConnectPresetView[] | undefined
+  let targets: AttachTargetFrame[] | undefined
 
-    // ── THE ACTION GOES OVER STDIN, NEVER ARGV ───────────────────────────────────
-    //
-    // `validate` and `save` carry the user's API key. A process's argv is readable by
-    // EVERY local user (`ps`, `/proc/<pid>/cmdline`) for as long as it runs, and these
-    // helpers run for a network round-trip. Stdin is private to the two processes.
-    const child = spawn(
-      process.execPath,
-      [options.enginePath, CONNECT_FLAG],
-      {
-        cwd: options.cwd,
-        env: {
-          ...process.env,
-          // The extension host's execPath is the Electron binary. This makes it behave
-          // as the Node it embeds, with no dependency on a `node` on the user's PATH.
-          ELECTRON_RUN_AS_NODE: '1',
-          NO_COLOR: '1',
-          FORCE_COLOR: '0',
-        },
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-      },
-    )
-    // A helper that dies before reading raises EPIPE here; without a listener that error
-    // would be thrown on the extension host. The `close` handler below reports the exit.
-    child.stdin.on('error', () => {})
-    child.stdin.end(JSON.stringify(action))
-
-    function finish(outcome: ConnectOutcome): void {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        // Already gone.
+  // ── THE ACTION GOES OVER STDIN, NEVER ARGV ───────────────────────────────────
+  //
+  // `validate` and `save` carry the user's API key. A process's argv is readable by
+  // EVERY local user (`ps`, `/proc/<pid>/cmdline`) for as long as it runs, and these
+  // helpers run for a network round-trip. Stdin is private to the two processes.
+  const result = await runEngineChild<ConnectOutcome>(options.launch, {
+    flag: CONNECT_FLAG,
+    cwd: options.cwd,
+    stdin: JSON.stringify(action),
+    timeoutMs: CONNECT_TIMEOUT_MS,
+    onFrame: parsed => {
+      if (parsed.type === 'rayucode_connect_presets' && Array.isArray(parsed.presets)) {
+        presets = parsed.presets as ConnectPresetView[]
+        return undefined
       }
-      resolve(outcome)
-    }
+      if (parsed.type === 'rayucode_attach_targets' && Array.isArray(parsed.targets)) {
+        targets = parsed.targets as AttachTargetFrame[]
+        return undefined
+      }
+      // `rayucode_connect_progress` is intentionally not surfaced yet: the panel shows
+      // its own step state, and a second progress channel would contradict it.
+      if (parsed.type !== 'rayucode_connect_result') return undefined
+      return connectOutcomeFrom(parsed, presets, targets)
+    },
+  })
 
-    const timer = setTimeout(() => {
-      finish({
+  return result.kind === 'done' ? result.value : connectFailure(action, result)
+}
+
+/** The user-facing outcome for a helper that ended without a result frame. */
+function connectFailure(
+  action: ConnectAction,
+  result: Exclude<EngineChildResult<ConnectOutcome>, { kind: 'done' }>,
+): ConnectOutcome {
+  switch (result.kind) {
+    case 'timeout':
+      return {
         ok: false,
         error: `${describeAction(action)} timed out after ${Math.round(
           CONNECT_TIMEOUT_MS / 1000,
         )}s. The provider endpoint may be unreachable.`,
-      })
-    }, CONNECT_TIMEOUT_MS)
-    timer.unref?.()
-
-    const reader = new NdjsonReader({
-      onFrame: frame => {
-        const parsed = frame as Record<string, unknown>
-        if (parsed.type === 'rayucode_connect_presets' && Array.isArray(parsed.presets)) {
-          presets = parsed.presets as ConnectPresetView[]
-          return
-        }
-        if (parsed.type === 'rayucode_attach_targets' && Array.isArray(parsed.targets)) {
-          targets = parsed.targets as AttachTargetFrame[]
-          return
-        }
-        if (parsed.type === 'rayucode_connect_result') {
-          finish(
-            parsed.ok === true
-              ? {
-                  ok: true,
-                  presets,
-                  targets,
-                  inference: parsed.inference as InferenceSettingsView | undefined,
-                  catalogue: Array.isArray(parsed.catalogue) ? parsed.catalogue as ModelOptionView[] : undefined,
-                  models: Array.isArray(parsed.models)
-                    ? (parsed.models as string[])
-                    : undefined,
-                  activeProviderId:
-                    typeof parsed.activeProviderId === 'string'
-                      ? parsed.activeProviderId
-                      : undefined,
-                  activeModel:
-                    typeof parsed.activeModel === 'string' ? parsed.activeModel : undefined,
-                }
-              : {
-                  ok: false,
-                  error:
-                    typeof parsed.error === 'string' ? parsed.error : 'unknown error',
-                },
-          )
-        }
-        // `rayucode_connect_progress` is intentionally not surfaced yet: the panel shows
-        // its own step state, and a second progress channel would contradict it.
-      },
-      onError: error => {
-        finish({ ok: false, error: `provider setup channel error: ${error.message}` })
-      },
-    })
-
-    child.stdout.setEncoding('utf8')
-    child.stdout.on('data', (chunk: string) => reader.push(chunk))
-    child.stdout.on('end', () => reader.end())
-
-    child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk: string) => {
-      stderrTail = `${stderrTail}${chunk}`.slice(-2_000)
-    })
-
-    child.on('error', err => {
-      finish({
-        ok: false,
-        error: `could not start the provider setup helper: ${err.message}`,
-      })
-    })
-
-    // Exiting without a result frame means the helper died. The stderr tail is the
-    // difference between an actionable error and "it failed".
-    child.on('close', code => {
-      finish({
+      }
+    case 'protocol-error':
+      return { ok: false, error: `provider setup channel error: ${result.message}` }
+    case 'spawn-error':
+      return { ok: false, error: `could not start the provider setup helper: ${result.message}` }
+    case 'exited':
+    case 'aborted':
+      // Exiting without a result frame means the helper died. The stderr tail is the
+      // difference between an actionable error and "it failed".
+      return {
         ok: false,
         error:
-          `${describeAction(action)} did not complete (helper exited with code ${code}).` +
-          (stderrTail.trim() ? ` ${stderrTail.trim().slice(-400)}` : ''),
-      })
-    })
-  })
+          `${describeAction(action)} did not complete (helper exited with code ${
+            result.kind === 'exited' ? result.code : null
+          }).${result.kind === 'exited' ? stderrExcerpt(result.stderrTail) : ''}`,
+      }
+  }
+}
+
+/** The outcome a `rayucode_connect_result` frame reports. */
+function connectOutcomeFrom(
+  parsed: Record<string, unknown>,
+  presets: ConnectPresetView[] | undefined,
+  targets: AttachTargetFrame[] | undefined,
+): ConnectOutcome {
+  if (parsed.ok !== true) {
+    return {
+      ok: false,
+      error: typeof parsed.error === 'string' ? parsed.error : 'unknown error',
+    }
+  }
+  return {
+    ok: true,
+    presets,
+    targets,
+    inference: parsed.inference as InferenceSettingsView | undefined,
+    catalogue: Array.isArray(parsed.catalogue) ? parsed.catalogue as ModelOptionView[] : undefined,
+    models: Array.isArray(parsed.models) ? (parsed.models as string[]) : undefined,
+    activeProviderId:
+      typeof parsed.activeProviderId === 'string' ? parsed.activeProviderId : undefined,
+    activeModel: typeof parsed.activeModel === 'string' ? parsed.activeModel : undefined,
+    notice: typeof parsed.notice === 'string' ? parsed.notice : undefined,
+  }
 }
 
 /**
@@ -274,6 +252,8 @@ function describeAction(action: ConnectAction): string {
       return 'Looking for running Rayu sessions'
     case 'models':
       return 'Refreshing available models'
+    case 'media-models':
+      return `Loading ${action.mediaType} generation models`
     case 'list':
       return 'Loading the provider list'
     case 'validate':

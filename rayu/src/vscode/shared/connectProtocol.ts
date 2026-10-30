@@ -108,6 +108,15 @@ export type ConnectAction =
   /** Refresh the same live catalogs the CLI model picker refreshes. */
   | { action: 'models'; model?: string }
   /**
+   * Fetch the live image or video generation catalog, as the CLI's
+   * `/model_image_generation` and `/model_video_generation` pickers do on open.
+   *
+   * Runs in the child because the media catalog service reaches `utils/log.ts`,
+   * which costs ~19 MB in the host bundle. The answer is credential-free: model
+   * ids, display names, backends and capabilities.
+   */
+  | { action: 'media-models'; mediaType: 'image' | 'video' }
+  /**
    * Verify a credential by asking the provider for its model list, and return the
    * models on success. The same call answers "is this key valid" and "what can it
    * serve", so there is no second round-trip and no chance of the two disagreeing.
@@ -156,5 +165,7 @@ export type ConnectFrame =
       /** The provider that ended up active, for the panel to display. */
       activeProviderId?: string
       activeModel?: string
+      /** A one-line caveat about `catalogue`, e.g. built-in defaults while signed out. */
+      notice?: string
     }
   | { type: 'rayucode_connect_result'; ok: false; error: string }

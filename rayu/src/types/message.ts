@@ -182,6 +182,11 @@ export type SystemTurnDurationMessage = SystemMessageBase & {
   budgetLimit?: number
   budgetNudges?: number
   messageCount?: number
+  /**
+   * Rayu credits the gateway charged during the turn, as it reported them.
+   * Absent when the turn made no Rayu-billed request (bring-your-own key).
+   */
+  rayuCredits?: number
 }
 
 export type SystemAwaySummaryMessage = SystemMessageBase & {

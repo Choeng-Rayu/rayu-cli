@@ -16,10 +16,12 @@
  * unit-testable against the message union.
  */
 import type { EffortChoice } from '../../shared/inferenceSettings.js'
+import type { PermissionDecisionKind } from '../../shared/planApproval.js'
 import type {
   ChatSurfaceKind,
   HostToWebviewMessage,
   ImageInputView,
+  ModelChooserView,
   PromptDeliveryView,
   WebviewToHostMessage,
 } from '../../shared/webviewProtocol.js'
@@ -78,7 +80,7 @@ export interface ChatViewHandlers {
   permissionResponse: (
     scope: SurfaceScope,
     requestId: string,
-    decision: 'allow-once' | 'allow-always' | 'deny',
+    decision: PermissionDecisionKind,
   ) => Promise<void> | void
   questionResponse: (
     scope: SurfaceScope,
@@ -89,7 +91,6 @@ export interface ChatViewHandlers {
   selectModelValue: (scope: SurfaceScope, value: string) => Promise<void> | void
   refreshModelCatalogue: (scope: SurfaceScope) => Promise<void> | void
   setEffort: (scope: SurfaceScope, level: EffortChoice) => Promise<void> | void
-  setThinking: (scope: SurfaceScope, enabled: boolean) => Promise<void> | void
 
   listAttachable: (scope: SurfaceScope) => Promise<void> | void
   attachToSession: (scope: SurfaceScope, pid: number) => Promise<void> | void
@@ -108,6 +109,10 @@ export interface ChatViewHandlers {
     baseURL?: string,
     model?: string,
   ) => Promise<void> | void
+  telegramConnectOpen: (scope: SurfaceScope, open: boolean) => Promise<void> | void
+  telegramConnectStartHosted: (scope: SurfaceScope) => Promise<void> | void
+  telegramConnectStartByo: (scope: SurfaceScope, token: string) => Promise<void> | void
+  telegramConnectUnlink: (scope: SurfaceScope) => Promise<void> | void
   cyclePermissionMode: (scope: SurfaceScope) => Promise<void> | void
   setPermissionMode: (scope: SurfaceScope, modeId: string) => Promise<void> | void
   reviewKeep: (scope: SurfaceScope, path?: string) => Promise<void> | void
@@ -118,6 +123,9 @@ export interface ChatViewHandlers {
   signIn: (scope: SurfaceScope) => Promise<void> | void
   signOut: (scope: SurfaceScope) => Promise<void> | void
   openProviderSetup: (scope: SurfaceScope) => Promise<void> | void
+  openTelegramConnect: (scope: SurfaceScope) => Promise<void> | void
+  /** Open the Rayucode Settings tab, optionally at a section (validated by the handler). */
+  openSettings: (scope: SurfaceScope, section?: string) => Promise<void> | void
   findFiles: (scope: SurfaceScope, query: string) => Promise<void> | void
   resolveContextPaths: (
     scope: SurfaceScope,
@@ -139,12 +147,14 @@ export interface ChatViewHandlers {
   /** Apply a model-chooser choice. `value` null resets to the default. */
   modelChooserChoice: (
     scope: SurfaceScope,
-    target: 'subagent' | 'webfetch',
+    target: ModelChooserView['target'],
     value: string | null,
     agentType?: string,
   ) => Promise<void> | void
   /** Change only the scope displayed by the open subagent chooser. */
   modelChooserTarget: (scope: SurfaceScope, agentType?: string) => Promise<void> | void
+  /** Fetch the open image/video chooser's own list again. */
+  modelChooserRefresh: (scope: SurfaceScope) => Promise<void> | void
   modelChooserDismiss: (scope: SurfaceScope) => Promise<void> | void
   mcpToggle: (scope: SurfaceScope, serverName: string, enabled: boolean) => Promise<void> | void
   mcpReconnect: (scope: SurfaceScope, serverName: string) => Promise<void> | void
@@ -236,9 +246,6 @@ export function dispatchWebviewMessage(
     case 'setEffort':
       void handlers.setEffort(scope, message.level)
       return
-    case 'setThinking':
-      void handlers.setThinking(scope, message.enabled)
-      return
 
     case 'listAttachable':
       void handlers.listAttachable(scope)
@@ -268,6 +275,19 @@ export function dispatchWebviewMessage(
         message.baseURL,
         message.model,
       )
+      return
+    case 'telegramConnectOpen':
+      void handlers.telegramConnectOpen(scope, message.open)
+      return
+    case 'telegramConnectStartHosted':
+      void handlers.telegramConnectStartHosted(scope)
+      return
+    case 'telegramConnectStartByo':
+      // The token crosses here once and only reaches the handler's child process.
+      void handlers.telegramConnectStartByo(scope, message.token)
+      return
+    case 'telegramConnectUnlink':
+      void handlers.telegramConnectUnlink(scope)
       return
     case 'cyclePermissionMode':
       void handlers.cyclePermissionMode(scope)
@@ -299,6 +319,12 @@ export function dispatchWebviewMessage(
     case 'openProviderSetup':
       void handlers.openProviderSetup(scope)
       return
+    case 'openTelegramConnect':
+      void handlers.openTelegramConnect(scope)
+      return
+    case 'openSettings':
+      void handlers.openSettings(scope, message.section)
+      return
     case 'findFiles':
       void handlers.findFiles(scope, message.query)
       return
@@ -319,6 +345,9 @@ export function dispatchWebviewMessage(
       return
     case 'modelChooserTarget':
       void handlers.modelChooserTarget(scope, message.agentType)
+      return
+    case 'modelChooserRefresh':
+      void handlers.modelChooserRefresh(scope)
       return
     case 'modelChooserDismiss':
       void handlers.modelChooserDismiss(scope)

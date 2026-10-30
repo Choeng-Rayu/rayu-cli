@@ -1,5 +1,6 @@
 import type { Base64ImageSource } from '@anthropic-ai/sdk/resources/messages.mjs'
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, readFile } from 'fs/promises'
+import { writeFileAtomically } from '../../utils/fsOperations.js'
 import { dirname, isAbsolute, relative } from 'path'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
 import { z } from 'zod/v4'
@@ -9,9 +10,22 @@ import { getImageModelSelection } from '../../utils/rayuConfig.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath } from '../../utils/path.js'
-import { ensureMediaModels } from '../../services/rayuAuth/mediaModels.js'
-import { isVertexImageModel, retainKnownImageModel } from './models.js'
-import { generateImage, getNvidiaApiKey } from './nvidiaImageClient.js'
+import {
+  ensureMediaModels,
+  isEditCapable,
+  MEDIA_CATALOG_UNAVAILABLE_MESSAGE,
+  type MediaModelEntry,
+} from '../../services/rayuAuth/mediaModels.js'
+import {
+  hasRayuSession,
+  isUseRayuOAuthEnabled,
+} from '../../services/rayuAuth/rayuSession.js'
+import {
+  isVertexImageModel,
+  retainKnownImageModel,
+  withBuilder,
+} from './models.js'
+import { generateRayuImage } from './rayuImageClient.js'
 import {
   generateVertexImage,
   isGeminiVertexImageAvailable,
@@ -63,7 +77,11 @@ const inputSchema = lazySchema(() =>
     input_image: z
       .string()
       .optional()
-      .describe('Path to an existing image to edit (routes to an editing model)'),
+      .describe(
+        'Path to an existing image to edit (routes to an editing model). ' +
+          'An https:// URL is accepted by edit-capable hosted models verbatim ' +
+          '(plain http:// is refused); a local path is encoded for the gateway.',
+      ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -129,6 +147,89 @@ function extForMedia(mediaType: string): string {
   return ext === 'jpeg' ? 'jpg' : ext
 }
 
+/**
+ * True when Rayu-HOSTED image models are usable: OAuth mode on and a Rayu
+ * session stored. Together they mean the gateway will accept the request with
+ * the user's JWT and hold the upstream provider key — no BYO key required.
+ *
+ * Synchronous and memoized briefly: isEnabled() runs while the tool registry is
+ * assembled and whenever a picker renders, which must not hit the disk each
+ * time. The TTL is short so /login and /logout take effect promptly.
+ */
+const RAYU_AVAILABILITY_TTL_MS = 5_000
+let rayuAvailability: { value: boolean; at: number } | null = null
+
+export function isRayuImageAvailable(): boolean {
+  const now = Date.now()
+  if (
+    rayuAvailability &&
+    now - rayuAvailability.at < RAYU_AVAILABILITY_TTL_MS
+  ) {
+    return rayuAvailability.value
+  }
+  const value = isUseRayuOAuthEnabled() && hasRayuSession()
+  rayuAvailability = { value, at: now }
+  return value
+}
+
+/** Test hook: forget the memoized availability verdict. */
+export function _resetRayuImageAvailabilityForTesting(): void {
+  rayuAvailability = null
+}
+
+/**
+ * The hosted model a request falls back to when nothing was named.
+ *
+ * Capability-aware: a generate request may only land on a `generate` entry and an
+ * edit (`input_image`) request only on an `edit` entry — anything else would
+ * produce a request the gateway rejects. Within the eligible set the catalog's
+ * `default` flag wins; otherwise server (sort) order decides, which is how the
+ * picker is already presented and how an admin chooses the default.
+ */
+export function selectHostedImageModel(
+  models: MediaModelEntry[],
+  isEdit = false,
+): MediaModelEntry | undefined {
+  const capability = isEdit ? 'edit' : 'generate'
+  const hosted = models.filter(
+    (m) => m.backend === 'rayu' && m.capabilities.includes(capability),
+  )
+  return hosted.find((m) => m.isDefault) ?? hosted[0]
+}
+
+/** The hosted GENERATE default. See {@link selectHostedImageModel}. */
+export function selectHostedGenerateModel(
+  models: MediaModelEntry[],
+): MediaModelEntry | undefined {
+  return selectHostedImageModel(models, false)
+}
+
+/**
+ * True when this CLI can serve an image model of `backend` right now. Hosted and
+ * Vertex are the only image backends; anything else (a fal row, a backend newer
+ * than this build) has no image client here.
+ */
+function isImageBackendUsable(backend: string): boolean {
+  if (backend === 'rayu') return isRayuImageAvailable()
+  if (backend === 'vertex') return isGeminiVertexImageAvailable()
+  return false
+}
+
+/** The refusal when no image backend can take the request. */
+function noImageBackendMessage(entry: MediaModelEntry | undefined): string {
+  if (entry) {
+    return (
+      `Image model "${entry.id}" is served by "${entry.backend}", which this version ` +
+      'of Rayu cannot call for images. Pick another model with /model_image_generation.'
+    )
+  }
+  if (isRayuImageAvailable()) return MEDIA_CATALOG_UNAVAILABLE_MESSAGE
+  return (
+    'Image generation needs a Rayu sign-in (/login) for hosted models, or Vertex AI ' +
+    '(/connect → Gemini / Vertex AI) for Imagen.'
+  )
+}
+
 export const ImageGenTool = buildTool({
   name: IMAGE_GEN_TOOL_NAME,
   searchHint: 'generate or edit images from a text prompt',
@@ -143,10 +244,11 @@ export const ImageGenTool = buildTool({
   },
   isEnabled() {
     // Visibility is capability-only: show the tool whenever an image backend is
-    // configured. Plan entitlement is enforced SOFTLY (see prompt()/call()), so
-    // a Free user still SEES the tool and gets an upgrade prompt instead of it
-    // silently vanishing.
-    return getNvidiaApiKey() != null || isGeminiVertexImageAvailable()
+    // usable. That is Vertex Imagen (the user's Google credentials) OR a
+    // signed-in Rayu account, which needs no key at all. Plan entitlement is
+    // still enforced SOFTLY (see prompt()/call()), so a Free signed-in user SEES
+    // the tool and gets an upgrade prompt instead of it silently vanishing.
+    return isGeminiVertexImageAvailable() || isRayuImageAvailable()
   },
   isReadOnly() {
     return false
@@ -239,46 +341,115 @@ export const ImageGenTool = buildTool({
     }
 
     const isEdit = !!input.input_image
+    // The input image is resolved once the backend is known (below): Vertex
+    // gets base64 bytes read here, the hosted gateway gets the caller's raw
+    // value — an https URL passes through, a local path is read and encoded by
+    // the gateway body builder.
     let image: string | undefined
-    if (input.input_image) {
-      const imgPath = expandPath(input.input_image)
-      try {
-        image = (await readFile(imgPath)).toString('base64')
-      } catch {
-        throw new Error(`input_image not found or unreadable: ${input.input_image}`)
-      }
-    }
+    let hostedImage: string | undefined
     // The catalog is fetched lazily HERE (first tool use), not at import time, so
     // CLI startup never waits on the gateway. Cached + TTL'd afterwards.
     const catalog = await ensureMediaModels()
 
     // Resolve the model: explicit input wins, else the configured default from
-    // /model_image_generation, else the catalog default for the backend.
+    // /model_image_generation, else — for a signed-in user — the hosted catalog
+    // default, else Vertex Imagen when it is configured.
     //
     // The remembered preference is dropped when it is no longer in the catalog (an
     // admin removed it, a plan withdrew it, or we are offline on built-ins), so a
     // choice made weeks ago cannot fail every generation. An EXPLICIT input.model
     // was already rejected loudly by validateInput if unknown.
+    const explicitModel = !!input.model
     const selectedModel = retainKnownImageModel(
       catalog.image,
       input.model ?? getImageModelSelection(),
     )
 
-    // Route to Vertex Imagen when the SELECTED model is Vertex-served, or — when
-    // nothing is selected — when Vertex is the only configured image backend.
-    //
-    // Routing by the selected model's own backend matters: deciding from
-    // availability alone would send an explicitly requested NVIDIA model to Vertex
-    // on a Vertex-only machine, silently generating with a different model. Routed
-    // this way, the NVIDIA client instead reports the missing NVIDIA key, which is
-    // the real problem.
-    const selectedEntry = selectedModel
+    let selectedEntry = selectedModel
       ? catalog.image.find((m) => m.id === selectedModel)
       : undefined
+
+    // Rayu-hosted is the DEFAULT for a signed-in user. An explicit input.model was
+    // validated above and is never swapped here.
+    if (!explicitModel && isRayuImageAvailable()) {
+      if (!selectedModel) {
+        // Nothing named and nothing remembered: use the hosted catalog default for
+        // this operation, routed through the gateway and billed to Rayu credits —
+        // even when Vertex is also configured. A Vertex model is used when the user
+        // picks one (tool argument or /model_image_generation), or when the catalog
+        // has no hosted model that can do this operation.
+        const hosted = selectHostedImageModel(catalog.image, isEdit)
+        if (hosted) {
+          selectedEntry = hosted
+        } else if (!isGeminiVertexImageAvailable()) {
+          // No hosted model for the operation and no Vertex either. For an edit,
+          // select the hosted GENERATE model so the refusal below names it;
+          // otherwise the catalog itself is the problem (the gateway fetch failed,
+          // or it lists no hosted model).
+          const generateOnly = isEdit
+            ? selectHostedGenerateModel(catalog.image)
+            : undefined
+          if (!generateOnly) throw new Error(MEDIA_CATALOG_UNAVAILABLE_MESSAGE)
+          selectedEntry = generateOnly
+        }
+      } else if (!isImageBackendUsable(selectedEntry?.backend ?? 'vertex')) {
+        // A remembered model this machine cannot serve — a Vertex entry after the
+        // GCP project went away, or a backend this CLI has no image client for —
+        // falls back to the hosted model instead of an unactionable error. (An id
+        // with no catalog entry survived retainKnownImageModel only because it is
+        // an imagen-* id, hence the 'vertex' default.) When its backend IS usable,
+        // the user's choice stands.
+        const hosted =
+          selectHostedImageModel(catalog.image, isEdit) ??
+          selectHostedGenerateModel(catalog.image)
+        if (!hosted) throw new Error(MEDIA_CATALOG_UNAVAILABLE_MESSAGE)
+        selectedEntry = hosted
+      }
+    }
+
+    // Route to Vertex Imagen when the SELECTED model is Vertex-served, or — when
+    // nothing is selected — when Vertex is configured, since it is the only
+    // bring-your-own image backend. Anything else has no client here and is
+    // refused with a message that says why.
     const useVertex = selectedEntry
       ? selectedEntry.backend === 'vertex'
       : isVertexImageModel(selectedModel, catalog.image) ||
-        (isGeminiVertexImageAvailable() && getNvidiaApiKey() == null)
+        isGeminiVertexImageAvailable()
+    const route: 'rayu' | 'vertex' | null =
+      selectedEntry?.backend === 'rayu' ? 'rayu' : useVertex ? 'vertex' : null
+    if (!route) throw new Error(noImageBackendMessage(selectedEntry))
+
+    // Resolve the input image now that the backend is known. Hosted models
+    // with the edit capability accept the caller's raw value (URL or local
+    // path — the body builder encodes it); a generate-only hosted entry is
+    // refused with an actionable message instead of sending a body the gateway
+    // will 400. A REMEMBERED generate-only hosted model is NOT silently
+    // swapped for an edit-capable one — unlike the video tool, most image
+    // requests are text-to-image, so auto-selection keeps preferring a
+    // generate model and the caller chooses explicitly. Vertex keeps the
+    // base64 read.
+    if (input.input_image) {
+      if (route === 'rayu' && selectedEntry) {
+        if (!isEditCapable(selectedEntry)) {
+          throw new Error(
+            `Hosted image model "${selectedEntry.id}" is generate-only — ` +
+              'pick a model that supports edit, or remove input_image.',
+          )
+        }
+        hostedImage = /^https?:\/\//i.test(input.input_image)
+          ? input.input_image
+          : expandPath(input.input_image)
+      } else {
+        const imgPath = expandPath(input.input_image)
+        try {
+          image = (await readFile(imgPath)).toString('base64')
+        } catch {
+          throw new Error(
+            `input_image not found or unreadable: ${input.input_image}`,
+          )
+        }
+      }
+    }
 
     const genParams = {
       prompt: input.prompt,
@@ -290,32 +461,40 @@ export const ImageGenTool = buildTool({
       seed: input.seed,
       negative_prompt: input.negative_prompt,
       image,
+      ...(hostedImage !== undefined ? { input_image: hostedImage } : {}),
     }
 
-    // Both clients report the model they actually used, resolved from the same
+    // Every client reports the model it actually used, resolved from the same
     // catalog — the tool no longer keeps its own copy of the defaults.
-    const { buffer, mediaType, modelId: usedModelId } = useVertex
-      ? await generateVertexImage({
-          modelId: selectedModel,
-          isEdit,
-          params: genParams,
-          signal: context.abortController.signal,
-        })
-      : await generateImage({
-          modelId: selectedModel,
-          isEdit,
-          params: genParams,
-          signal: context.abortController.signal,
-        })
+    let generated: { buffer: Buffer; mediaType: string; modelId: string }
+    if (route === 'rayu' && selectedEntry) {
+      // Edit-capability was verified when the input image was resolved above;
+      // generate-only hosted models never reach here with an `image`.
+      generated = await generateRayuImage({
+        model: withBuilder(selectedEntry),
+        params: genParams,
+        signal: context.abortController.signal,
+      })
+    } else {
+      generated = await generateVertexImage({
+        modelId: selectedModel,
+        isEdit,
+        params: genParams,
+        signal: context.abortController.signal,
+      })
+    }
+    const { buffer, mediaType, modelId: usedModelId } = generated
 
     // Resolve the output path; the default filename uses the real extension.
     const { path } = resolveOutputPath(
       input.output_path ?? defaultOutputPath(extForMedia(mediaType)),
     )
 
-    // Save the full-resolution image to disk (inside the working directory).
+    // Save the full-resolution image to disk (inside the working directory),
+    // atomically — a half-written PNG/JPEG would fail the dimension sniff and
+    // the inline block below, yet still leave a corrupt file as "the result".
     await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, buffer)
+    await writeFileAtomically(path, buffer)
 
     // Downsample a copy for the inline (model-facing) block to respect the
     // token budget; fall back to the original image when the processor
@@ -338,6 +517,12 @@ export const ImageGenTool = buildTool({
 
     // Count this successful generation toward the monthly soft cap immediately
     // (the durable usage_events row is written by the per-tool usage ping).
+    //
+    // UX ONLY — for Rayu-hosted models the GATEWAY is the authoritative billed
+    // meter: it reserves and settles per image (images × creditsPerImage) and
+    // writes the ledger. This counter can drift (offline, other devices, the
+    // gateway counting fewer images than requested) and must never be treated
+    // as the billing record.
     bumpFeatureUsage(IMAGE_GEN_FEATURE)
 
     return {

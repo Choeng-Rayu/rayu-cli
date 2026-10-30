@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { _resetRayuConfigCache } from '../src/utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from '../src/vscode/host/models/modelConfig.js'
-import { ChatSession, engineArgsFor } from '../src/vscode/host/panel/sessionHandle.js'
+import { ChatSession, engineArgsFor, initializeRequestFor, needsPermissionModeReplay } from '../src/vscode/host/panel/sessionHandle.js'
 import { sessionCallbacks } from './helpers/vscodeSession.js'
 import { CONNECT_FLAG } from '../src/vscode/shared/connectProtocol.js'
 import { PERMISSION_MODES as editorModes } from '../src/vscode/shared/permissionModes.js'
@@ -39,30 +39,36 @@ test('editor permission modes are accepted by the CLI', () => {
   for (const mode of editorModes) expect(cliModes as readonly string[]).toContain(mode.id)
 })
 
-test('thinking defaults on by the spawn flag, and a toggle never uses set_max_thinking_tokens', async () => {
-  // The flag is the whole default mechanism: it is the only thing that outranks a shared
-  // `alwaysThinkingEnabled: false`. Asserted on the pure argv builder so the contract is
-  // checked without spawning, and re-checked end-to-end in vscodeRealEngine.test.ts.
-  expect(engineArgsFor({})).toEqual(['--thinking', 'enabled'])
-  expect(engineArgsFor({ resumeSessionId: 'abc-123' })).toEqual([
-    '--thinking', 'enabled', '--resume', 'abc-123',
+test('thinking is always on at spawn, and the permission mode is always passed', () => {
+  // The thinking flag is hard-coded, not conditional: it is the only thing that outranks a
+  // shared `alwaysThinkingEnabled: false`, and Rayucode is a reasoning-first product. The
+  // mode is passed even when it is `default`, so a terminal `permissions.defaultMode` cannot
+  // start a conversation in a mode its pill does not show. Asserted on the pure argv
+  // builder so the contract is checked without spawning, and re-checked end-to-end in
+  // vscodeRealEngine.test.ts.
+  expect(engineArgsFor({ permissionMode: 'default' })).toEqual([
+    '--thinking', 'enabled', '--permission-mode', 'default',
   ])
-  expect(engineArgsFor({ thinkingEnabled: false })).toEqual(['--thinking', 'disabled'])
+  expect(engineArgsFor({ resumeSessionId: 'abc-123', permissionMode: 'fullManage' })).toEqual([
+    '--thinking', 'enabled', '--permission-mode', 'fullManage', '--resume', 'abc-123',
+  ])
+})
 
-  // And nothing may quietly re-disable it: `set_max_thinking_tokens` with null would
-  // restore the settings default, and with 0 would turn thinking off outright. The
-  // user's own toggle goes through `set_thinking`, which replaces the config outright.
-  const session = new ChatSession({ enginePath: '/unused', cwd: tmpdir() }, sessionCallbacks())
-  const requests: unknown[][] = []
-  ;(session as any).starting = Promise.resolve()
-  ;(session as any).engine = { isRunning: true, send: () => true, dispose: () => {} }
-  ;(session as any).control = { request: async (...args: unknown[]) => { requests.push(args); return {} }, dispose() {} }
-  await session.setEffort('high')
-  await session.setThinking(false)
-  const methods = requests.map(([method]) => method)
-  expect(methods).not.toContain('set_max_thinking_tokens')
-  expect(requests).toContainEqual(['set_thinking', { enabled: false }, 15_000])
-  session.dispose()
+test('the startup mode is sent again only when the engine says it runs another one', () => {
+  expect(needsPermissionModeReplay('fullManage', 'fullManage')).toBe(false)
+  expect(needsPermissionModeReplay('default', 'default')).toBe(false)
+  // The engine fell back, e.g. settings disable the mode: switch after initialize.
+  expect(needsPermissionModeReplay('fullManage', 'default')).toBe(true)
+  expect(needsPermissionModeReplay('default', 'acceptEdits')).toBe(true)
+  // An engine that does not report its mode is assumed to start in default, as before.
+  expect(needsPermissionModeReplay('plan', undefined)).toBe(true)
+  expect(needsPermissionModeReplay('default', undefined)).toBe(false)
+})
+
+test('initialize asks for prompt suggestions unless Rayucode\'s setting turned them off', () => {
+  expect(initializeRequestFor({})).toEqual({ agentProgressSummaries: true, promptSuggestions: true, runtimeCapabilities: true })
+  expect(initializeRequestFor({ promptSuggestionEnabled: true }).promptSuggestions).toBe(true)
+  expect(initializeRequestFor({ promptSuggestionEnabled: false }).promptSuggestions).toBe(false)
 })
 
 test.each([401, 403, 404])('real connect dispatch classifies HTTP %i without returning credentials', async status => {

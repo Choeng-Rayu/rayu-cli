@@ -1,82 +1,23 @@
 // Build standalone single-file Rayu-CLI executables for all supported platforms.
 // Each binary embeds the Bun runtime + bundled code — users need no Bun/Node.
 //
+// The build options come from scripts/bundleConfig.ts (`compileBuildOptions`), the
+// same definition dist/rayu.js and the VS Code engine use — see that function for
+// what a private copy here used to break.
+//
 // Usage:
 //   bun run scripts/build-binaries.ts            # all targets
 //   bun run scripts/build-binaries.ts linux-x64  # one or more specific targets
-import { plugin } from 'bun'
-import { resolve } from 'path'
-import { MACRO_VALUES, ENABLED_FEATURES } from './macroValues.ts'
+import { compileBuildOptions, type CompileTarget } from './bundleConfig.ts'
+import { MACRO_VALUES } from './macroValues.ts'
 
 const V = MACRO_VALUES.VERSION
-const ALL_TARGETS: Record<string, { bunTarget: string; outfile: string }> = {
+const ALL_TARGETS: Record<string, { bunTarget: CompileTarget; outfile: string }> = {
   'linux-x64': { bunTarget: 'bun-linux-x64', outfile: `dist/bin/rayu-linux-x64-${V}` },
   'linux-arm64': { bunTarget: 'bun-linux-arm64', outfile: `dist/bin/rayu-linux-arm64-${V}` },
   'windows-x64': { bunTarget: 'bun-windows-x64', outfile: `dist/bin/rayu-windows-x64-${V}.exe` },
   'darwin-x64': { bunTarget: 'bun-darwin-x64', outfile: `dist/bin/rayu-darwin-x64-${V}` },
   'darwin-arm64': { bunTarget: 'bun-darwin-arm64', outfile: `dist/bin/rayu-darwin-arm64-${V}` },
-}
-
-const define: Record<string, string> = {
-  // Force the production builds of React / react-reconciler. Without this, Bun
-  // resolves react-reconciler's index.js NODE_ENV conditional to the DEVELOPMENT
-  // build, which emits performance.measure() on every commit. Node's User Timing
-  // buffer is never cleared, so a long interactive session accumulates millions
-  // of PerformanceMeasure entries and OOMs at the ~2.35GB old-space ceiling. The
-  // production reconciler makes zero such calls. (interactive-session heap OOM fix)
-  'process.env.NODE_ENV': JSON.stringify('production'),
-  'process.env.USER_TYPE': JSON.stringify(process.env.USER_TYPE ?? 'external'),
-  // Git commit co-author email; sourced from .env (Bun auto-loads it) and baked
-  // in at build time. Falls back to a neutral placeholder.
-  'process.env.RAYU_COMMIT_EMAIL': JSON.stringify(
-    process.env.RAYU_COMMIT_EMAIL ?? 'noreply@rayu.dev',
-  ),
-  'process.env.RAYU_GITHUB_APP_INSTALL_URL': JSON.stringify(
-    process.env.RAYU_GITHUB_APP_INSTALL_URL ?? '',
-  ),
-  'process.env.RAYU_GITHUB_ACTION_REF': JSON.stringify(
-    process.env.RAYU_GITHUB_ACTION_REF ?? '',
-  ),
-  'process.env.RAYU_GITHUB_ACTION_DOCS_URL': JSON.stringify(
-    process.env.RAYU_GITHUB_ACTION_DOCS_URL ?? '',
-  ),
-}
-for (const [k, v] of Object.entries(MACRO_VALUES)) {
-  define[`MACRO.${k}`] = JSON.stringify(v)
-}
-
-// Local stubs for unpublished/internal packages (same as scripts/build.ts).
-const STUB_ALIASES: Record<string, string> = {
-  '@ant/computer-use-mcp': 'stubs/ant/computer-use-mcp/index.ts',
-  '@ant/computer-use-mcp/types': 'stubs/ant/computer-use-mcp/types.ts',
-  '@ant/computer-use-mcp/sentinelApps': 'stubs/ant/computer-use-mcp/sentinelApps.ts',
-  '@ant/claude-for-chrome-mcp': 'stubs/ant/claude-for-chrome-mcp/index.ts',
-  '@ant/computer-use-input': 'stubs/ant/computer-use-input/index.ts',
-  '@ant/computer-use-swift': 'stubs/ant/computer-use-swift/index.ts',
-  'color-diff-napi': 'stubs/color-diff-napi/index.ts',
-}
-
-// Optional native/desktop + OTEL-grpc/proto modules, dynamically required behind
-// disabled features; kept external so absence at runtime is handled by guards.
-const EXTERNAL = [
-  'modifiers-napi', 'sharp', 'audio-capture-napi', 'image-processor-napi', 'url-handler-napi',
-  '@opentelemetry/exporter-trace-otlp-grpc', '@opentelemetry/exporter-trace-otlp-proto',
-  '@opentelemetry/exporter-logs-otlp-grpc', '@opentelemetry/exporter-logs-otlp-proto',
-  '@opentelemetry/exporter-metrics-otlp-grpc', '@opentelemetry/exporter-metrics-otlp-proto',
-  '@opentelemetry/exporter-prometheus',
-]
-
-const stubPlugin: import('bun').BunPlugin = {
-  name: 'rayu-stubs',
-  setup(build) {
-    for (const [spec, rel] of Object.entries(STUB_ALIASES)) {
-      const filter = new RegExp(`^${spec.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')}$`)
-      build.onResolve({ filter }, () => ({ path: resolve(rel) }))
-    }
-    build.onResolve({ filter: /^commander$/ }, () => ({
-      path: resolve('node_modules/commander/index.js'),
-    }))
-  },
 }
 
 const requested = process.argv.slice(2)
@@ -92,17 +33,9 @@ for (const name of targets) {
   const { bunTarget, outfile } = ALL_TARGETS[name]!
   console.log(`\n▶ Building ${name} → ${outfile} …`)
   const start = Date.now()
-  const result = await Bun.build({
-    entrypoints: ['src/entrypoints/cli.tsx'],
-    target: 'bun',
-    compile: { target: bunTarget, outfile },
-    define,
-    external: EXTERNAL,
-    features: [...ENABLED_FEATURES],
-    plugins: [stubPlugin],
-    loader: { '.md': 'text', '.txt': 'text' },
-    sourcemap: 'none',
-  } as Parameters<typeof Bun.build>[0])
+  const result = await Bun.build(
+    compileBuildOptions({ entry: 'src/entrypoints/cli.tsx', bunTarget, outfile }),
+  )
   if (!result.success) {
     for (const log of result.logs) console.error(log)
     process.exit(1)

@@ -8,6 +8,12 @@ export interface RuntimeProductPreferences {
   effort?: EffortLevel
   thinkingEnabled?: boolean
   permissionMode?: PermissionMode
+  /**
+   * Rayucode's follow-up prompt suggestions. Only the opt-out is stored. Kept here, not
+   * in the CLI's `promptSuggestionEnabled` setting: the terminal never shows suggestions
+   * (their feature gate is off in Rayu), so only Rayucode reads this.
+   */
+  promptSuggestionEnabled?: boolean
 }
 
 const FILE_NAME = 'rayucode-preferences.json'
@@ -58,6 +64,9 @@ export function readRayucodePreferences(): RuntimeProductPreferences {
         : {}),
       ...(isPermissionMode(parsed.permissionMode)
         ? { permissionMode: parsed.permissionMode }
+        : {}),
+      ...(typeof parsed.promptSuggestionEnabled === 'boolean'
+        ? { promptSuggestionEnabled: parsed.promptSuggestionEnabled }
         : {}),
     }
   } catch {

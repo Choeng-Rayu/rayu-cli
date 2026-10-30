@@ -33,7 +33,10 @@ describe('Orchestrator agent architecture', () => {
     expect(denied).toContain('Bash')
 
     const prompt = planner.getSystemPrompt?.({} as never) ?? ''
-    expect(prompt).toContain('Explore')
+    // Subagents cannot launch agents, so the planner researches with its own tools.
+    expect(prompt).not.toMatch(/dispatch 2.5 `Explore` agents/)
+    expect(prompt).toMatch(/Research with your read-only tools/)
+    expect(planner.model).toBe('inherit')
     expect(prompt).toContain('Worker packets')
     expect(prompt).toMatch(/non-overlapping file/i)
     expect(prompt).not.toContain('.rayu/swarm')

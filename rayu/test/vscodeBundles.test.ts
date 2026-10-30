@@ -174,6 +174,14 @@ describe.if(artifactsPresent)('Rayucode build integrity and boundary guards', ()
   })
 
   describe('VSIX packaging and staging contents', () => {
+    test('stages the codicon font, stylesheet and attribution', () => {
+      for (const file of ['media/codicon.css', 'media/codicon.ttf', 'media/codicon-NOTICE.txt']) {
+        expect(existsSync(join(STAGE_DIR, file)), `${file} was not staged`).toBe(true)
+      }
+      expect(readFileSync(join(STAGE_DIR, 'media/codicon-NOTICE.txt'), 'utf8'))
+        .toContain('Creative Commons Attribution 4.0')
+    })
+
     test('staged package has no sourcemaps', () => {
       expect(existsSync(join(STAGE_DIR, 'extension.js.map'))).toBe(false)
       expect(existsSync(join(STAGE_DIR, 'engine.mjs.map'))).toBe(false)
@@ -197,11 +205,97 @@ describe.if(artifactsPresent)('Rayucode build integrity and boundary guards', ()
       expect(output).toContain('extension/media/icon.svg')
       expect(output).toContain('extension/media/icon.png')
       expect(output).toContain('extension/media/sprite-goose.png')
+      // VS Code's own icon font, with its CC-BY-4.0 attribution.
+      expect(output).toContain('extension/media/codicon.css')
+      expect(output).toContain('extension/media/codicon.ttf')
+      expect(output).toContain('extension/media/codicon-NOTICE.txt')
       expect(output).toContain('extension/readme.md')
       expect(output).toContain('extension/changelog.md')
 
       // No map files
       expect(output.includes('.map')).toBe(false)
     })
+  })
+})
+
+// ── platform VSIX (compiled engine) ──────────────────────────────────────────
+//
+// Checked for this machine's platform when it has been built
+// (`bun run build:vscode --target <platform>`); CI builds and smoke-tests every one.
+const PLATFORM_ID = `${process.platform}-${process.arch}`
+const PLATFORM_VSIX = join(ROOT, `dist/rayucode-${pkg.version}-${PLATFORM_ID}.vsix`)
+const ENGINE_BINARY = `extension/bin/rayucode-engine${process.platform === 'win32' ? '.exe' : ''}`
+const RG_BINARY = `extension/bin/rg${process.platform === 'win32' ? '.exe' : ''}`
+
+describe.if(existsSync(PLATFORM_VSIX))(`platform VSIX (${PLATFORM_ID})`, () => {
+  const listing = (): string =>
+    spawnSync('unzip', ['-l', PLATFORM_VSIX], { encoding: 'utf8' }).stdout
+
+  test('ships the compiled engine instead of engine.mjs, never both', () => {
+    const output = listing()
+    expect(output).toContain(ENGINE_BINARY)
+    expect(output).not.toContain('extension/engine.mjs')
+    expect(output).toContain('extension/extension.js')
+    expect(output).toContain('extension/media/webview.js')
+  })
+
+  test('ships ripgrep beside the engine, so search does not depend on PATH', () => {
+    expect(listing()).toContain(RG_BINARY)
+  })
+
+  test.skipIf(process.platform === 'win32')('keeps the engine and ripgrep executable', () => {
+    // `unzip -Z` (zipinfo) prints the stored POSIX mode first.
+    for (const entry of [ENGINE_BINARY, RG_BINARY]) {
+      const info = spawnSync('unzip', ['-Z', PLATFORM_VSIX, entry], { encoding: 'utf8' })
+      expect(info.status, info.stderr).toBe(0)
+      expect(info.stdout.trim()).toMatch(/^-rwxr-xr-x/)
+    }
+  })
+
+  test('records its platform, so the Marketplace serves it only to matching installs', () => {
+    const manifest = spawnSync('unzip', ['-p', PLATFORM_VSIX, 'extension.vsixmanifest'], { encoding: 'utf8' })
+    expect(manifest.stdout).toContain(`TargetPlatform="${PLATFORM_ID}"`)
+  })
+})
+
+describe('extension manifest', () => {
+  const manifest = JSON.parse(
+    readFileSync(join(ROOT, 'src/vscode/extension.manifest.json'), 'utf8'),
+  ) as {
+    activationEvents: string[]
+    contributes: {
+      configuration: { properties: Record<string, { scope?: string }> }
+      commands: Array<{ command: string; icon?: string }>
+      menus: Record<string, Array<{ command: string; when?: string; group?: string }>>
+      authentication?: Array<{ id: string; label: string }>
+    }
+  }
+
+  test('the engine override is machine-scoped, so no workspace can redirect it', () => {
+    // A workspace-scoped engine path would let any opened folder choose which program
+    // the extension runs.
+    expect(manifest.contributes.configuration.properties['rayucode.engine.path']?.scope).toBe('machine')
+    expect(manifest.contributes.configuration.properties['rayucode.engine.maxMemoryMB']?.scope).toBe('machine')
+  })
+
+  test('the Settings tab has a command, a gear in the sidebar title bar and a restore event', () => {
+    expect(manifest.contributes.commands).toContainEqual(
+      expect.objectContaining({ command: 'rayucode.openSettings', icon: '$(gear)' }),
+    )
+    expect(manifest.contributes.menus['view/title']).toContainEqual({
+      command: 'rayucode.openSettings', when: 'view == rayucode.chat', group: 'navigation@2',
+    })
+    expect(manifest.activationEvents).toContain('onWebviewPanel:rayucode.settings')
+  })
+
+  test('contributes the Rayu authentication provider under the same id', () => {
+    // The Accounts menu entry: `registerRayuAuthProvider` registers this id at runtime, so
+    // the manifest and the code must agree or VS Code never asks for the session.
+    expect(manifest.contributes.authentication).toEqual([{ id: 'rayu', label: 'Rayu' }])
+  })
+
+  test('activates on the Accounts request and on the Settings command', () => {
+    expect(manifest.activationEvents).toContain('onAuthenticationRequest:rayu')
+    expect(manifest.activationEvents).toContain('onCommand:rayucode.openSettings')
   })
 })

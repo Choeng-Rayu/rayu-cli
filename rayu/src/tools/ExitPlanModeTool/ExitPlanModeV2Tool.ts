@@ -24,6 +24,10 @@ import {
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import {
+  permissionModeFromString,
+  permissionModeTitle,
+} from '../../utils/permissions/PermissionMode.js'
+import {
   getPlan,
   getPlanFilePath,
   persistFileSnapshotIfRemote,
@@ -70,6 +74,12 @@ const allowedPromptSchema = lazySchema(() =>
 )
 
 export type AllowedPrompt = z.infer<ReturnType<typeof allowedPromptSchema>>
+
+/** Names the mode a non-Orchestrator approval left the session in. */
+function describeApprovedMode(mode: string | undefined): string {
+  if (!mode) return ''
+  return `The permission mode is now ${permissionModeTitle(permissionModeFromString(mode))}.`
+}
 
 const inputSchema = lazySchema(() =>
   z
@@ -135,6 +145,12 @@ export const outputSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('Unique identifier for the plan approval request'),
+    resultingMode: z
+      .string()
+      .optional()
+      .describe(
+        'The permission mode in effect after approval, so the result text names the mode actually set',
+      ),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -355,6 +371,16 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
       isAgentSwarmsEnabled() &&
       context.options.tools.some(t => toolMatchesName(t, AGENT_TOOL_NAME))
 
+    // The approval may have set a mode already (CLI dialog choices, an SDK host's
+    // setMode), in which case the updater above left it alone. Either way the
+    // plan-mode exit notice is due, and the result must name the mode that is
+    // actually in effect rather than assume Orchestrator.
+    if (!isAgent) {
+      setHasExitedPlanMode(true)
+      setNeedsPlanModeExitAttachment(true)
+    }
+    const resultingMode = context.getAppState().toolPermissionContext.mode
+
     return {
       data: {
         plan,
@@ -362,6 +388,7 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
         filePath,
         hasTaskTool: hasTaskTool || undefined,
         planWasEdited: inputPlan !== undefined || undefined,
+        resultingMode,
       },
     }
   },
@@ -374,6 +401,7 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
       planWasEdited,
       awaitingLeaderApproval,
       requestId,
+      resultingMode,
     },
     toolUseID,
   ) {
@@ -407,19 +435,21 @@ Request ID: ${requestId}`,
       }
     }
 
+    // Results recorded before resultingMode existed came from the path that
+    // always switched to Orchestrator.
+    const orchestrating =
+      resultingMode === undefined || resultingMode === 'orchestrator'
+
     // Handle empty plan
     if (!plan || plan.trim() === '') {
       return {
         type: 'tool_result',
-        content:
-          'User has approved exiting plan mode. Orchestrator mode is now active: coordinate and delegate all implementation and verification; do not code or run implementation commands yourself.',
+        content: orchestrating
+          ? 'User has approved exiting plan mode. Orchestrator mode is now active: coordinate and delegate all implementation and verification; do not code or run implementation commands yourself.'
+          : `User has approved exiting plan mode. ${describeApprovedMode(resultingMode)} You can now proceed.`,
         tool_use_id: toolUseID,
       }
     }
-
-    const teamHint = hasTaskTool
-      ? '\n\nDispatch independent, named general-purpose workers in parallel with exact non-overlapping ownership. Keep dependent packets sequential and resume existing workers with SendMessage.'
-      : ''
 
     // Always include the plan — extractApprovedPlan() in the Ultraplan CCR
     // flow parses the tool_result to retrieve the plan text for the local CLI.
@@ -427,6 +457,24 @@ Request ID: ${requestId}`,
     const planLabel = planWasEdited
       ? 'Approved Plan (edited by user)'
       : 'Approved Plan'
+
+    if (!orchestrating) {
+      return {
+        type: 'tool_result',
+        content: `User has approved your plan. ${describeApprovedMode(resultingMode)} You can now start implementing it.
+
+Your plan has been saved to: ${filePath}
+You can refer back to it if needed during implementation.
+
+## ${planLabel}:
+${plan}`,
+        tool_use_id: toolUseID,
+      }
+    }
+
+    const teamHint = hasTaskTool
+      ? '\n\nDispatch independent, named general-purpose workers in parallel with exact non-overlapping ownership. Keep dependent packets sequential and resume existing workers with SendMessage.'
+      : ''
 
     return {
       type: 'tool_result',

@@ -17,7 +17,7 @@
 // the command can render a clear message instead of a stack trace.
 import {
   getRayuApiBaseUrl,
-  getRayuGatewayBaseUrl,
+  getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
 } from './rayuSession.js'
 
@@ -126,13 +126,26 @@ export async function fetchTopupQuote(
     credits != null && Number.isFinite(credits) && credits > 0
       ? `?credits=${Math.trunc(credits)}`
       : ''
-  const urls = [
-    `${getRayuGatewayBaseUrl()}/v1/credits/topup/quote${qs}`,
-    `${getRayuApiBaseUrl()}/payments/topup/quote${qs}`,
-  ]
-  for (const url of urls) {
+  // The gateway leg carries the JWT, so its URL goes through the secure
+  // getter: a remote plaintext-http RAYU_GATEWAY_URL throws HERE, before any
+  // request. Nothing here throws, so an unsafe gateway skips to the backend
+  // quote instead of taking the whole pricing read down with it.
+  const urls: Array<{ url: string; init: Record<string, unknown> }> = []
+  try {
+    urls.push({
+      url: `${getSecureRayuGatewayBaseUrl()}/v1/credits/topup/quote${qs}`,
+      init: { redirect: 'error' },
+    })
+  } catch {
+    // Unsafe gateway URL — fall back to the backend source below.
+  }
+  urls.push({
+    url: `${getRayuApiBaseUrl()}/payments/topup/quote${qs}`,
+    init: {},
+  })
+  for (const { url, init } of urls) {
     try {
-      const res = await (globalThis.fetch as typeof fetch)(url, { headers })
+      const res = await (globalThis.fetch as typeof fetch)(url, { headers, ...init })
       if (!res.ok) continue
       return (await res.json()) as TopupQuote
     } catch {

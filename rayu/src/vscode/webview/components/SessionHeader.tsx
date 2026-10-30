@@ -33,6 +33,8 @@ import { isTerminalPhase, isWaitingPhase } from '../../shared/turnProgress.js'
 import {
   CloseIcon,
   EllipsisIcon,
+  GearIcon,
+  LinkIcon,
   ListIcon,
   PlugIcon,
   PlusIcon,
@@ -127,6 +129,9 @@ export interface SessionHeaderProps {
   backgroundOpen: boolean
   onToggleBackground: () => void
   onOpenProviderSetup: () => void
+  onOpenTelegramConnect?: () => void
+  /** Open the Rayucode Settings tab. */
+  onOpenSettings?: () => void
   onRefreshMcp: () => void
   onOpenMcp: () => void
   onReconnectMcp: (serverName: string) => void
@@ -156,6 +161,8 @@ export function SessionHeader({
   backgroundOpen,
   onToggleBackground,
   onOpenProviderSetup,
+  onOpenTelegramConnect,
+  onOpenSettings,
   onRefreshMcp,
   onOpenMcp,
   onReconnectMcp,
@@ -385,6 +392,36 @@ export function SessionHeader({
               <PlugIcon size={13} />
               Connect provider
             </button>
+
+            {onOpenTelegramConnect ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-overflow-item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onOpenTelegramConnect()
+                }}
+              >
+                <LinkIcon size={13} />
+                Connect Telegram
+              </button>
+            ) : null}
+
+            {onOpenSettings ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-overflow-item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onOpenSettings()
+                }}
+              >
+                <GearIcon size={13} />
+                Settings
+              </button>
+            ) : null}
 
             <div className="rc-overflow-section">
               <span className="rc-overflow-section-title">MCP servers</span>

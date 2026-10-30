@@ -50,6 +50,8 @@ import {
 import {
   formatRelativeDuration,
   isPacingEnforced,
+  PACING_SWITCH_HINT,
+  TEAM_PACING_HINT,
   type RayuCreditStatus,
 } from './rayuCredits.js'
 import {
@@ -395,9 +397,7 @@ export function describeRayuPacing(limit: RayuPacingLimit): string {
  * control they have no permission to use would be worse than saying nothing.
  */
 export function rayuPacingAction(limit: RayuPacingLimit): string {
-  return limit.scope === 'team'
-    ? 'Ask your team admin to turn off credit pacing for the team.'
-    : 'Turn on "use all credits" in your dashboard to keep working now.'
+  return limit.scope === 'team' ? TEAM_PACING_HINT : PACING_SWITCH_HINT
 }
 
 /**

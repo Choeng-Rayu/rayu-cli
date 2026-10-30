@@ -2,6 +2,18 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 2.4.1 - 2026-10-30 (Beta)
+- **Rayucode settings, account and credits, right in the editor** — a new Settings tab (sidebar gear, Command Palette, or the chat's overflow menu) covers General, Account, Integrations and About. Account shows your profile, plan and renewal date, credits, usage limits and registered devices, and a credits item in the status bar warns when your remaining allowance or daily turns drop below 10%. General settings write Rayu's real settings files, so the terminal and the editor always agree
+- **Integrations moved into Settings** — connect Telegram by scanning the shared bot's QR code or pasting your own bot token, turn on Studio Remote or pair it with a QR code, and install Rayu's GitHub Actions workflows without leaving VS Code. The Telegram connect panel no longer lives in the chat
+- **Rayu-hosted image and video generation** — generate images and clips on your Rayu plan with no provider key, billed in credits through the gateway; bringing your own fal.ai key still works for video
+- **Per-turn credit reporting** — a "Credits: …" line after each turn, in the terminal and in VS Code, totals everything the gateway charged for that turn, including side queries and media generation
+- **Platform VSIX packages** — platform builds ship a compiled engine and bundled ripgrep (the universal VSIX keeps the plain engine bundle), plus a memory watchdog that replaces an engine at its memory limit and continues the same conversation instead of starting over
+- **A stricter orchestrator** — in orchestrator mode the main agent can no longer edit files or run non-read-only shell itself and must delegate to workers; changing mode warns when it would break running workers, and SendMessage is worker-only when agent teams are off
+- **Shift+Tab is always bound** — cycling permission modes now works with the standard key on Windows (Meta+M remains an alias)
+- **Signing out of Rayucode matches `/logout`** — the same caches are cleared, and a configured API key is kept
+- **Fixed remote-gateway safety** — a plaintext (non-HTTPS) remote gateway is now refused for Rayu credentials, and gateway redirects are rejected instead of followed
+- **Breaking: NVIDIA image/video backends removed** — `/generate-image` and `/image-video` now use Rayu-hosted, Vertex or fal.ai; NVIDIA text models are unaffected. In VS Code the engine now starts in the permission mode chosen in the extension, so a `permissions.defaultMode` written for the terminal no longer overrides it
+
 ## 2.2.17 - 2026-10-17 (Beta)
 - **Sessions now open as editor tabs** — every RayuCode conversation opens in its own editor tab, so you can run several side by side and switch between them without interrupting a turn that is already in flight
 - **The sidebar is now the agent's management hub** — it shows your session list, background tasks, MCP servers, provider setup and sign-in instead of a second copy of the chat. The conversation itself — transcript and composer — lives in the session's editor tab, so it appears in exactly one place
@@ -32,15 +44,22 @@ All notable user-facing changes to Rayu-CLI are documented here, newest first.
 - **Fixed clipboard paste on Windows Terminal** — clipboard image paste now works correctly in Windows Terminal and conhost.exe, not just Windows Terminal with the new engine
 - **Fixed slash command autocomplete ordering** — commands are now ranked by relevance and frequency instead of alphabetically, so `/model`, `/connect`, and `/help` appear first
 
-## 1.5.16 - 2026-08-08
-- Major first-launch experience overhaul — smoother onboarding, clearer setup flow, and a much friendlier "what's new" introduction for new users
-- Added Custom Provider support — users can now define and connect their own provider (any OpenAI/Anthropic-compatible endpoint) directly from `/connect` without patching the CLI
-- Migrated the gateway to a fully unified type system that speaks both the OpenAI Chat Completions and Anthropic Messages wire formats — every provider is now a thin transport on top of one internal IR, eliminating format-specific branches across the codebase
-- Significantly improved the Telegram bridge — better message streaming, more reliable inline keyboards, and reduced dropped messages on slow networks
-- Fixed Figma MCP integration — OAuth handshake, asset fetch, and image reference flows now work end-to-end without the previous stale-token and 404 edge cases
-- Improved the gateway cache layer — much higher cache hit rate for repeated prompts, with tiered caching for both system prompts and tool results, noticeably reducing latency and cost
-- Migrated the gateway from Go to a fully Rust implementation — lower memory footprint, faster cold start, single static binary, and a hardened async runtime for streaming under load
-- Reduced wasted tokens per request — tightened system prompt assembly, deduplicated overlapping tool descriptions, and stripped redundant boilerplate from every outbound request
+## 1.6.0 - 2026-08-30
+- Introduced the **External Agent Orchestrator** — `/agent` command and `ExternalAgent` tool to discover, launch, adopt, assign work to, and stream other agentic CLIs (Codex, Claude Code, OpenCode, and any ACP agent). Supports orchestration policies (parallel/sequential/race/retry/fallback), git worktree isolation, brokered permissions, and crash recovery
+- Overhauled the **Telegram bridge** for multi-session support — list sessions with `/sessions`, switch between them with `/switch <n>`, and route prompts across processes over the new IPC layer
+- Added **Telegram bridge health monitoring** with typed poll outcomes, exponential backoff, and clear connection status (connected/reconnecting/disconnected)
+- Added **Telegram remote uninstall** — a typed device lifecycle operation gated by local opt-in, explicit device targeting, single-use confirmation tokens, and a concurrency lock
+- Added a secure **IPC (Inter-Process Communication)** layer — Unix socket protocol with per-session token auth enabling cross-session routing and multi-session coordination
+- Added the **Rayu API Key provider** (`rayu`) — authenticate with a `rayu_sk_live_…` key, with gateway validation, credential caching, and device identity registration
+- Added a streamlined **first-run setup screen** — offers Rayu sign-in or API key entry, with the full provider list one keystroke away via `/connect`
+- Added **per-model image capability detection** — knows which (provider, model) pairs accept images, replacing the old provider-wide boolean that caused silent image drops or lost turns
+- Added **tool input repair** — automatically recovers malformed tool-argument JSON from weaker models (markdown fences, raw newlines, trailing commas, truncation)
+- Added **Edit/Write tool key coercion** — transparently maps camelCase and synonym keys (e.g. `filePath` → `file_path`) so tool calls from non-Claude models work correctly
+- Improved the **file state cache** — tracks full-file reads explicitly to reduce spurious "file modified since read" warnings after formatters or git operations
+- Added **device identity** — a stable per-machine identifier for remote lifecycle operations, registered and heartbeated against the backend
+- Rewrote the **uninstall system** — modular orchestrator with scoped manifests, install-method detection, and a detached helper that finishes cleanup after RAYU exits
+- Added the active **model name in the input bar and sidebar** for better context during sessions
+- Added comprehensive test coverage for external agents, Telegram, API key auth, image capabilities, tool input repair, file edit coercion, and more
 
 ## 1.5.12 - 2026-07-30
 - Improved the model selection experience — better picker UX and more reliable model resolution when switching providers

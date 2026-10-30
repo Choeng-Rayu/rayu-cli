@@ -43,6 +43,7 @@ import { createAgentWorktree, hasWorktreeChanges, removeAgentWorktree } from '..
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
@@ -91,7 +92,7 @@ const baseInputSchema = lazySchema(() => z.object({
 const fullInputSchema = lazySchema(() => {
   // Multi-agent parameters
   const multiAgentInputSchema = z.object({
-    name: z.string().optional().describe('Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.'),
+    name: z.string().optional().describe('Short name for the spawned agent, such as the work packet it owns. Shown in the task list; when the SendMessage tool is available, it is the address that reaches the agent.'),
     team_name: z.string().optional().describe('Team name for spawning. Uses current team context if omitted.'),
     mode: permissionModeSchema().optional().describe('Permission mode for spawned teammate (e.g., "plan" to require plan approval).')
   });
@@ -141,7 +142,8 @@ type AgentToolInput = z.infer<ReturnType<typeof baseInputSchema>> & {
 export const outputSchema = lazySchema(() => {
   const syncOutputSchema = agentToolResultSchema().extend({
     status: z.literal('completed'),
-    prompt: z.string()
+    prompt: z.string(),
+    canSendMessage: z.boolean().optional().describe('Whether the calling agent has SendMessage to continue this agent')
   });
   const asyncOutputSchema = z.object({
     status: z.literal('async_launched'),
@@ -149,7 +151,8 @@ export const outputSchema = lazySchema(() => {
     description: z.string().describe('The description of the task'),
     prompt: z.string().describe('The prompt for the agent'),
     outputFile: z.string().describe('Path to the output file for checking agent progress'),
-    canReadOutputFile: z.boolean().optional().describe('Whether the calling agent has Read/Bash tools to check progress')
+    canReadOutputFile: z.boolean().optional().describe('Whether the calling agent has Read/Bash tools to check progress'),
+    canSendMessage: z.boolean().optional().describe('Whether the calling agent has SendMessage to continue this agent')
   });
   return z.union([syncOutputSchema, asyncOutputSchema]);
 });
@@ -761,7 +764,8 @@ export const AgentTool = buildTool({
           description: description,
           prompt: prompt,
           outputFile: getTaskOutputPath(agentBackgroundTask.agentId),
-          canReadOutputFile
+          canReadOutputFile,
+          canSendMessage: callerCanSendMessage(toolUseContext.options.tools)
         }
       };
     } else {
@@ -1258,6 +1262,7 @@ export const AgentTool = buildTool({
           data: {
             status: 'completed' as const,
             prompt,
+            canSendMessage: callerCanSendMessage(toolUseContext.options.tools),
             ...agentResult,
             ...worktreeResult
           }
@@ -1329,7 +1334,9 @@ The agent is now running and will receive instructions via mailbox.`
       };
     }
     if (data.status === 'async_launched') {
-      const prefix = `Async agent launched successfully.\nagentId: ${data.agentId} (internal ID - do not mention to user. Use SendMessage with to: '${data.agentId}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.`;
+      // Results recorded before canSendMessage existed keep their exact text.
+      const continueHint = data.canSendMessage === false ? '' : ` Use SendMessage with to: '${data.agentId}' to continue this agent.`;
+      const prefix = `Async agent launched successfully.\nagentId: ${data.agentId} (internal ID - do not mention to user.${continueHint})\nThe agent is working in the background. You will be notified automatically when it completes.`;
       const instructions = data.canReadOutputFile ? `Do not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.\noutput_file: ${data.outputFile}\nIf asked, you can check progress before completion by using ${FILE_READ_TOOL_NAME} or ${BASH_TOOL_NAME} tail on the output file.` : `Briefly tell the user what you launched and end your response. Do not generate any other text — agent results will arrive in a subsequent message.`;
       const text = `${prefix}\n${instructions}`;
       return {
@@ -1364,12 +1371,13 @@ The agent is now running and will receive instructions via mailbox.`
           content: contentOrMarker
         };
       }
+      const continueHint = data.canSendMessage === false ? '' : ` (use SendMessage with to: '${data.agentId}' to continue this agent)`;
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
         content: [...contentOrMarker, {
           type: 'text',
-          text: `agentId: ${data.agentId} (use SendMessage with to: '${data.agentId}' to continue this agent)${worktreeInfoText}
+          text: `agentId: ${data.agentId}${continueHint}${worktreeInfoText}
 <usage>total_tokens: ${data.totalTokens}
 tool_uses: ${data.totalToolUseCount}
 duration_ms: ${data.totalDurationMs}</usage>`
@@ -1389,6 +1397,16 @@ duration_ms: ${data.totalDurationMs}</usage>`
   renderToolUseErrorMessage,
   renderGroupedToolUse: renderGroupedAgentToolUse
 } satisfies ToolDef<InputSchema, Output, Progress>);
+/**
+ * Whether the caller can continue an agent with SendMessage. Without agent teams the
+ * tool exists only in Orchestrator mode, so the result offers the hint only then.
+ */
+function callerCanSendMessage(tools: ReadonlyArray<{
+  name: string;
+  aliases?: string[];
+}>): boolean {
+  return tools.some(t => toolMatchesName(t, SEND_MESSAGE_TOOL_NAME));
+}
 function resolveTeamName(input: {
   team_name?: string;
 }, appState: {

@@ -78,19 +78,41 @@ function generateDeviceId(): string {
   return randomBytes(16).toString('base64url')
 }
 
+/** The shape rayu-backend accepts for a device id (it appears in URL paths). */
+const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/
+
+export function isValidDeviceId(value: unknown): value is string {
+  return typeof value === 'string' && DEVICE_ID_PATTERN.test(value)
+}
+
 /** Shape check so a hand-edited or truncated file regenerates instead of throwing. */
 function isDeviceIdentity(value: unknown): value is DeviceIdentity {
   if (!value || typeof value !== 'object') return false
   const v = value as Partial<DeviceIdentity>
   return (
-    typeof v.deviceId === 'string' &&
-    /^[A-Za-z0-9_-]{8,64}$/.test(v.deviceId) &&
+    isValidDeviceId(v.deviceId) &&
     typeof v.deviceName === 'string' &&
     v.deviceName.length > 0
   )
 }
 
 let cached: DeviceIdentity | null = null
+
+/**
+ * This machine's identity if it already has one, without creating it — for a
+ * caller that only needs to recognise this machine in a list.
+ */
+export function peekDeviceIdentity(): DeviceIdentity | null {
+  if (cached) return cached
+  try {
+    const path = devicePath()
+    if (!existsSync(path)) return null
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    return isDeviceIdentity(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * This machine's identity, creating it on first call.
