@@ -1,13 +1,12 @@
 /**
- * Settings → Integrations, rendered. Covers the cards' visible states and the rule that
- * the Telegram panel is a plain card inside Settings but a closable panel on its own.
+ * Settings → Integrations, rendered. Covers the cards' visible states, including the
+ * rule that the Telegram card has no title or close button of its own.
  */
 import { describe, expect, test } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { IntegrationsSection } from '../src/vscode/webview/settings/IntegrationsSection.js'
-import { TelegramConnectPanel } from '../src/vscode/webview/components/TelegramConnectPanel.js'
 import type { IntegrationsView, WebBridgeView } from '../src/vscode/shared/settingsProtocol.js'
 import { EMPTY_TELEGRAM_CONNECT } from '../src/vscode/host/integrations/telegramConnectController.js'
 import type { TelegramConnectView } from '../src/vscode/shared/webviewProtocol.js'
@@ -60,7 +59,7 @@ describe('the Telegram card inside Settings', () => {
 
   test('a linked account shows the link and a Disconnect button', () => {
     const html = renderSection(integrations({
-      telegram: { open: true, linkedChatId: 42, linkedBotUsername: 'rayu_bot' },
+      telegram: { linkedChatId: 42, linkedBotUsername: 'rayu_bot' },
     }))
     expect(html).toContain('Telegram is connected')
     expect(html).toContain('@rayu_bot')
@@ -122,6 +121,12 @@ describe('the GitHub card', () => {
     expect(html).toContain('disabled')
     expect(html).toContain('Open a repository folder to set up GitHub.')
     expect(html).toContain('Set up GitHub Actions')
+    expect(html).not.toContain('merge the pull request')
+  })
+
+  test('with a folder a note says the check is local and setup ends in a pull request', () => {
+    const html = renderSection(integrations())
+    expect(html).toContain('Shows what is in this folder. After setup, merge the pull request and pull.')
   })
 
   test('each workflow shows its own installed state with a codicon', () => {
@@ -152,29 +157,5 @@ describe('the GitHub card', () => {
       },
     }))
     expect(html).toContain('Set up again')
-  })
-})
-
-describe('TelegramConnectPanel on its own', () => {
-  const props = {
-    connect: { ...EMPTY_TELEGRAM_CONNECT, open: true },
-    onStartHosted: noop,
-    onStartByo: noop,
-    onUnlink: noop,
-  }
-
-  test('still shows a Close button with an accessible name', () => {
-    const html = renderToStaticMarkup(createElement(TelegramConnectPanel, props))
-    expect(html).toContain('aria-label="Close"')
-    expect(html).toContain('codicon-close')
-    expect(html).toContain('>Connect Telegram</h2>')
-  })
-
-  test('renders nothing while closed', () => {
-    const html = renderToStaticMarkup(createElement(TelegramConnectPanel, {
-      ...props,
-      connect: { ...EMPTY_TELEGRAM_CONNECT, open: false },
-    }))
-    expect(html).toBe('')
   })
 })

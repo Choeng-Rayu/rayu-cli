@@ -29,7 +29,6 @@ export const TELEGRAM_LINK_POLL_MS = 1_500
 export const TELEGRAM_LINK_POLL_TIMEOUT_MS = 10 * 60 * 1000
 
 export const EMPTY_TELEGRAM_CONNECT: TelegramConnectView = {
-  open: false,
   busy: false,
   busyMessage: null,
   error: null,
@@ -73,20 +72,6 @@ export class TelegramConnectController {
 
   get current(): TelegramConnectView {
     return this.view
-  }
-
-  /**
-   * Open or close the connect surface. Closing abandons an in-flight pairing: nothing is
-   * left watching for the link, and the QR would be stale by the time it reopens.
-   */
-  async open(open: boolean): Promise<void> {
-    if (!open) {
-      this.stopPolling()
-      this.set({ open: false, error: null, ...NO_PAIRING })
-      return
-    }
-    this.set({ open: true, error: null })
-    await this.refreshStatus()
   }
 
   /** Read the link through the engine child, so a link made in the terminal shows here. */
@@ -222,8 +207,8 @@ export class TelegramConnectController {
       } else if (this.view.botUsername) {
         this.deps.setLinkedBotUsername(this.view.botUsername)
       }
-      // Closed or unlinked while the request ran: the config write stands, but the UI
-      // update and the restart belong to a surface that no longer wants them.
+      // Unlinked or reset while the request ran: the config write stands, but the UI
+      // update and the restart belong to a pairing that no longer wants them.
       if (!this.view.waitingForLink) return
       this.linked(origin, chatId ?? this.view.linkedChatId)
     } catch (error) {
@@ -242,7 +227,7 @@ export class TelegramConnectController {
     this.stopPolling()
     const deadline = this.now() + TELEGRAM_LINK_POLL_TIMEOUT_MS
     this.startTimer(() => {
-      // Closed, unlinked, or switched to the other mode since the last tick.
+      // Unlinked, or switched to the other mode, since the last tick.
       if (!this.view.waitingForLink || this.view.mode !== 'byo') return this.stopPolling()
       if (this.now() > deadline) {
         this.stopPolling()

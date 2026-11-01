@@ -29,6 +29,10 @@ import {
 import type { EffortValue } from '../utils/effort.js'
 import type { FileHistoryState } from '../utils/fileHistory.js'
 import type { PendingFileChangesState } from '../utils/pendingFileChanges.js'
+import {
+  EMPTY_ORCHESTRATION_STATE,
+  type OrchestrationState,
+} from '../orchestrator/runState.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import type { SessionHooksState } from '../utils/hooks/sessionHooks.js'
 import type { ModelSetting } from '../utils/model/model.js'
@@ -218,6 +222,8 @@ export type AppState = DeepImmutable<{
   agentDefinitions: AgentDefinitionsResult
   fileHistory: FileHistoryState
   pendingFileChanges: PendingFileChangesState
+  /** The Orchestrator run and its contract (src/orchestrator/runState.ts). */
+  orchestration: OrchestrationState
   attribution: AttributionState
   todos: { [agentId: string]: TodoList }
   remoteAgentTaskSuggestions: { summary: string; task: string }[]
@@ -547,6 +553,7 @@ export function getDefaultAppState(): AppState {
       snapshotSequence: 0,
     },
     pendingFileChanges: [],
+    orchestration: EMPTY_ORCHESTRATION_STATE,
     attribution: createEmptyAttributionState(),
     mcp: {
       clients: [],

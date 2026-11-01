@@ -186,6 +186,7 @@ import { createDirectConnectSession, DirectConnectError } from './server/createD
 import { initializeLspServerManager } from './services/lsp/manager.js';
 import { shouldEnablePromptSuggestion } from './services/PromptSuggestion/promptSuggestion.js';
 import { type AppState, getDefaultAppState, IDLE_SPECULATION_STATE } from './state/AppStateStore.js';
+import { EMPTY_ORCHESTRATION_STATE } from './orchestrator/runState.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
 import { createStore } from './state/store.js';
 import { asSessionId } from './types/ids.js';
@@ -2876,6 +2877,7 @@ async function run(): Promise<CommanderCommand> {
         snapshotSequence: 0
       },
       pendingFileChanges: [],
+      orchestration: EMPTY_ORCHESTRATION_STATE,
       attribution: createEmptyAttributionState(),
       thinkingEnabled,
       promptSuggestionEnabled: shouldEnablePromptSuggestion(),

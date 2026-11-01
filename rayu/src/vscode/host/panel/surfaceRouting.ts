@@ -27,7 +27,6 @@ export const GLOBAL_MESSAGE_TYPES: ReadonlySet<HostToWebviewMessage['type']> = n
   'setLiveSessions',
   'setIdeContext',
   'setProviderSetup',
-  'setTelegramConnect',
   'setModelChooser',
 ])
 

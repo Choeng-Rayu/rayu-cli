@@ -21,6 +21,7 @@ import {
   ModelInfoSchema,
   PermissionModeSchema,
   PermissionUpdateSchema,
+  RuntimeTaskOrchestrationSchema,
   SDKMessageSchema,
   SDKPostTurnSummaryMessageSchema,
   SDKStreamlinedTextMessageSchema,
@@ -216,6 +217,7 @@ export const RuntimeBackgroundTaskSchema = lazySchema(() =>
       status: z.string().optional(),
       detail: z.string().optional(),
     })).optional(),
+    orchestration: RuntimeTaskOrchestrationSchema().optional(),
   }),
 )
 

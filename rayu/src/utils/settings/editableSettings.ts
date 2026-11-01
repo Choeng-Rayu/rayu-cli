@@ -18,7 +18,6 @@
  */
 
 export type EditableSettingKey =
-  | 'thinkingEnabled'
   | 'permissionMode'
   | 'autoCompactEnabled'
   | 'language'
@@ -76,16 +75,12 @@ export type EditableSettingValue = boolean | string
 /** Longest language name accepted; the CLI's picker is a free-text field. */
 export const LANGUAGE_MAX_LENGTH = 64
 
+/**
+ * Thinking is not a row: Rayucode always starts the engine with `--thinking enabled`
+ * (`engineArgsFor` in src/vscode/host/panel/sessionHandle.ts), so a switch would change
+ * nothing.
+ */
 export const EDITABLE_SETTINGS: readonly EditableSettingDescriptor[] = [
-  {
-    key: 'thinkingEnabled',
-    label: 'Thinking',
-    description: 'Let the model think before it answers, on models that support it.',
-    type: 'boolean',
-    default: true,
-    store: 'rayucodePreferences',
-    effect: 'live',
-  },
   {
     key: 'permissionMode',
     label: 'Permission mode for new conversations',

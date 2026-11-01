@@ -1,6 +1,7 @@
-# Orchestrator reliability: test tasks
+# Orchestrator reliability: how it is tested
 
-This file lists the checks for the Orchestrator work, task by task. Run them in the order given and send back the report described at the end. Tasks 1–3 were verified when they were written. Tasks 4 and 5 were written without running anything, so expect their first run to find problems.
+All 17 tasks are implemented, and every check below was run on this tree. Use this file
+to re-run them. `AGENTS_ORCHESTRATOR.md` describes the design.
 
 Run everything from the repository root:
 
@@ -8,139 +9,122 @@ Run everything from the repository root:
 cd /home/rayu/rayu/rayu-cli/rayu
 ```
 
-## Baselines (measured before this work)
+Use the `./` prefix in `bun test ./test/...` paths; without it Bun sometimes reports
+"did not match any test files" for new files. To keep an end-to-end scenario's temporary
+project, home and config directories, set `RAYU_KEEP_HARNESS_DIR=1`.
 
-| Check | Baseline |
-|---|---|
-| `bun test` (full suite) | 4266 pass, 21 skip, 13 fail, 3 errors. The 13 failure names are in `/tmp/rayu-baseline-fails.txt` |
-| Type errors (`tsc`) | 1539 errors, saved in `/tmp/rayu-tsc-baseline.txt` |
+## Unit tests, by task
 
-`/tmp/rayu-tsc-diff.sh` runs `tsc` and prints only error signatures that are not in the baseline (line numbers are ignored). If `/tmp` was cleared, use `bun run typecheck` and report the total error count instead.
-
-Use the `./` prefix in `bun test ./test/...` paths. Without it, Bun sometimes reports "did not match any test files" for new files.
-
-To debug a failing end-to-end test, set `RAYU_KEEP_HARNESS_DIR=1`. The test then keeps its temporary project, home and config directories, and prints nothing extra.
-
----
-
-## Task 3: plan approval names the mode it sets, and workers losing approval are announced
-
-Already verified: 644 related tests passed, the e2e test passed, and there were 0 new type errors. Re-run it once, because Tasks 4 and 5 changed shared files.
-
-```bash
-bun test ./test/orchestratorPlanApproval.test.ts ./test/vscodePlanApproval.test.tsx ./test/vscodePermissions.test.ts ./test/webBridgePlanApprovalMode.test.ts ./test/vscodeWebBridgeApprovals.test.ts ./test/vscodeWebviewDispatch.test.ts
-```
-
-Expected: all pass (15 + 13 + 10 + 2 + the existing web-bridge and dispatch tests).
-
-Manual check, CLI:
-1. Start `bun run dev`, press Shift+Tab until Plan mode, and ask for a small change.
-2. When the plan dialog opens, the first "Yes" option should be **"Yes, and orchestrate with parallel workers"**. Pick "Yes, auto-accept edits" instead.
-3. The model's next message must not claim Orchestrator mode, and the mode indicator should show Accept edits.
-
-Manual check, Rayucode (after `bun run build:vscode` and installing the `.vsix`):
-1. Get a plan card the same way. It should have four buttons: "Keep planning", "Approve · Ask", "Approve · Auto-edit" and "Approve · Orchestrator" (the last one highlighted).
-2. Each Approve button should leave the mode pill on the mode it names.
-3. In Orchestrator mode, while a background worker is running, switch the pill to Ask. A notice should say the worker is still running and cannot get approval.
-
----
-
-## Task 4: what the Orchestrator is told matches the tools it has
-
-What changed:
-- Orchestrator mode now has **SendMessage** to continue its own workers, even without agent teams. The new variant is in `src/tools/SendMessageTool/OrchestratorSendMessageTool.ts`, and `getTools` adds it in `src/tools.ts`. It accepts only plain text to a worker of this session, by name or agent ID. It does not support broadcast, `uds:` or `bridge:` addresses, or shutdown and plan-approval messages. Workers never get it.
-- The in-process routing in `SendMessageTool.call` moved into `messageLocalAgent()` and `resolveLocalAgentRecipient()`, which both tools use. The full tool's behavior should be unchanged.
-- The Agent tool's `name` parameter is now visible to the model without agent teams. It was removed from the schema before, even though the Orchestrator was told to name its workers.
-- The Agent tool now mentions SendMessage only where the caller has it: in its prompt ("If the SendMessage tool is available…") and in launch and completion results.
-- The planner now runs on the Orchestrator's model (`model: 'inherit'`). Before, it ran on the provider's small/fast model for non-Anthropic providers. Its prompt no longer tells it to launch `Explore` agents, which subagents cannot do.
-- The headless engine (Rayucode and `--print`) now rebuilds its tool list between tool rounds (`refreshTools` in `QueryEngine` and `print.ts`), as the REPL already does. A plan approval that enters Orchestrator mode mid-turn therefore offers SendMessage on the next request.
-
-Unit tests:
+| Task | What | Test files |
+|---|---|---|
+| 1 | Scripted model and headless harness | `scriptedProvider` |
+| 2 | Role reminder on every turn | `orchestratorReminder`, `orchestratorMode`, `orchestratorCommand` |
+| 3 | Plan approval modes, worker-approval-loss warning | `orchestratorPlanApproval`, `vscodePlanApproval.tsx` |
+| 4 | SendMessage for the Orchestrator, planner model | `orchestratorSendMessage`, `orchestratorAgents` |
+| 5 | Main thread cannot change files | `orchestratorMainThreadPolicy` |
+| 6 | Shared change ledger | `agentChangeLedger` (+ `externalAgents*` as regression) |
+| 7 | Contract, run state, audit, `/orchestrator-status` | `orchestratorContract` |
+| 8 | Working-tree snapshots | `orchestratorGitSnapshot` |
+| 9 | Spawn policy, briefing, packet progress | `orchestratorSpawnPolicy` |
+| 10 | Attribution of file changes | `orchestratorAttribution` |
+| 11 | Shell commands and checkpoints | `orchestratorCheckpoint`, `orchestratorRunLifecycle` |
+| 12 | 3-way merge of worktree packets | `orchestratorMerge3`, `orchestratorWorktreeIntegration` |
+| 13 | Verifier and its evidence | `orchestratorVerification` |
+| 14 | Verification gate | `orchestratorGate` |
+| 15 | Rayucode board (`task_orchestration`) | `orchestrationBoard.tsx`, `vscodeBackgroundTasks` |
+| 16 | CLI board, `/orchestrator-status diff` | `orchestratorCliBoard.tsx` |
+| 17 | Tool surfaces, workspace, git runner | `orchestratorToolSurfaces` |
 
 ```bash
-bun test ./test/orchestratorSendMessage.test.ts ./test/orchestratorAgents.test.ts ./test/subagentModel.test.ts ./test/agentModel.test.ts ./test/agentModelTargets.test.ts ./test/subagentModelDisplay.test.ts
+bun test $(ls test/orchestrat*.test.ts* | grep -v E2E | sed 's|^|./|') ./test/agentChangeLedger.test.ts ./test/vscodeBackgroundTasks.test.ts ./test/originManifest.test.ts
 ```
 
-Expected: all pass. Of these, `orchestratorSendMessage.test.ts` is new, and one test was added to `subagentModel.test.ts` ("the planner runs on the Orchestrator model"). The test in `orchestratorAgents.test.ts` was updated: it used to assert the old "Explore" instruction.
+Last run: 234 pass, 0 fail (with `agentModelTargets` and `subagentModelDisplay`).
 
-End-to-end (spawns the real engine against a local scripted model, so no network is needed; about 1 minute in total):
+## End-to-end scenarios
 
 ```bash
 bun test ./test/orchestratorE2E.test.ts
 ```
 
-Expected: 6 tests pass:
-1. `baseline: parallel workers without a contract produce code that does not fit, and nothing flags it`. This test deliberately asserts today's buggy behavior. Tasks 9 and 10 will change it.
-2. `the Orchestrator role reaches every turn after a mid-conversation switch, and /normal leaves it`
-3. `switching to a prompting mode while a background worker runs emits a warning frame`
-4. `approving a plan mid-turn offers SendMessage on the very next request` (new, Task 4)
-5. `a finished worker is continued with SendMessage and keeps its context` (new, Task 4)
-6. `the Orchestrator main agent cannot change files itself, while its workers can` (new, Task 5)
+The real engine runs headless over stream-json (Rayucode's protocol) with a scripted
+model, in a throwaway git repository with the fixture `test/fixtures/orchestrator-app`.
+Last run: 15 pass, three times in a row (about 40–70 s each).
 
-If test 5 fails, include whether the SendMessage result said "had no active task" or "is registered but has no transcript". That tells me whether the worker's transcript was missing on disk in `--print` mode.
+1. without a contract, the Orchestrator cannot launch implementation workers
+2. with a contract, workers are briefed with it, and a write outside a packet is reported
+3. the Orchestrator role reaches every turn after a mid-conversation switch, and /normal leaves it
+4. switching to a prompting mode while a background worker runs emits a warning frame
+5. approving a plan mid-turn offers SendMessage on the very next request
+6. a finished worker is continued with SendMessage and keeps its context (gate set to `soft`)
+7. the Orchestrator main agent cannot change files itself, while its workers can
+8. the Orchestrator publishes a contract, and /orchestrator-status shows the run
+9. a dependent packet waits for its dependency, and a packet gets only one running worker
+10. a worker command writing outside its packet, and a change no worker made, are both raised
+11. a worktree packet is merged back; a conflict goes back to its worker, and the resolved work is merged
+12. the verifier is briefed with the contract, and only a PASS backed by commands it ran is accepted
+13. the gate sends an unverified "done" back to work, and opens once the verifier accepts the run
+14. a full run: parallel packets, a worktree merge, a failed verification, a fix, and an accepted one
+15. when verification keeps failing, the gate stops the repairs and the Orchestrator reports the failure
 
-Manual check (CLI or Rayucode, in Orchestrator mode):
-1. Ask for a change that needs one worker. When it finishes, say "send the types worker a follow-up: also export the type".
-2. The Orchestrator should call **SendMessage** with `to` set to the worker's name, rather than starting a new worker. The worker should resume, and a second completion notice should arrive.
-3. With a non-Anthropic provider and no `/subagent_models` choice, the planner's model in the task list should be the main model, not the small/fast one.
+Tests 4, 6 and 9 depend on timing between workers; run the file a few times after
+changes near them.
 
----
-
-## Task 5: the Orchestrator's own main agent cannot change files
-
-What changed:
-- `src/orchestrator/mainThreadPolicy.ts` is new. In Orchestrator mode it denies Edit, Write (except the session plan file), NotebookEdit, and shell commands the shell tool does not consider read-only. This applies to the main agent only; workers keep auto-approval. The denial message tells the model to delegate, and mentions SendMessage when it is available.
-- The rule is checked in `hasPermissionsToUseToolInner`, before the step that allows everything in Orchestrator mode. It is also checked in `checkRuleBasedPermissions`, the PreToolUse-hook allow path, so a hook cannot bypass it.
-- `isSessionPlanFile` moved from `utils/permissions/filesystem.ts` to `utils/plans.ts` (now exported) to avoid an import cycle. The plan-file rules in `filesystem.ts` should behave the same.
-
-```bash
-bun test ./test/orchestratorMainThreadPolicy.test.ts ./test/fullManageInteractive.test.ts ./test/orchestratorMode.test.ts ./test/externalAgentsPermissions.test.ts ./test/composeBridgePermissionCallbacks.test.ts
-```
-
-Expected: all pass. `orchestratorMainThreadPolicy.test.ts` is new. The e2e scenario for Task 5 is test 6 above.
-
-Manual check (CLI, Orchestrator mode):
-1. Say "edit README.md yourself, add one line, do not use workers".
-2. The Edit or Write call should be denied with "Orchestrator mode: the main agent coordinates and does not edit files itself…", and the model should then delegate.
-3. Read-only commands such as `git status` should still run without a prompt.
-4. A worker's edits should still apply without prompts.
-
----
-
-## Whole-repo checks (run once, after the task checks)
-
-Type check (only new error signatures are printed; an empty list is the goal):
+## Whole-repo checks
 
 ```bash
-timeout 900 /tmp/rayu-tsc-diff.sh
-```
-
-Full test suite, compared with the baseline failures:
-
-```bash
-bun test 2>&1 | tee /tmp/rayu-tests-now.log | grep -E '^\(fail\)' | sed -E 's/ \[[0-9.]+m?s\]$//' | sort -u > /tmp/rayu-fails-now.txt
-grep -E '^ *[0-9]+ (pass|fail|skip)|^ *[0-9]+ errors?|Ran ' /tmp/rayu-tests-now.log | tail -6
-echo '--- failures not in the baseline:'
-comm -13 <(sort -u /tmp/rayu-baseline-fails.txt) /tmp/rayu-fails-now.txt
-```
-
-Expected: no failures outside the baseline. Your own work in progress (for example the Rayucode settings files) may add failures that are not mine. List them anyway and I will sort them out.
-
-Builds (optional now; required before the final task):
-
-```bash
+bun run typecheck:ci
+bun test 2>&1 | tee /tmp/rayu-tests-now.log | grep -E '^\(fail\)' | sed -E 's/ \[[0-9.]+m?s\]$//' | sort -u
+bun test --isolate vscode webBridge
 bun run build
 bun run build:vscode
 ```
 
----
+Last results:
+- `typecheck:ci`: no new errors (1539 known). Four baseline entries in
+  `src/components/messages/AttachmentMessage.tsx` and `nullRenderingAttachments.ts` were
+  replaced by the same errors with longer type previews (the attachment union gained
+  `orchestrator_checkpoint`); only those signatures were swapped, nothing re-snapshotted.
+- `bun test`: 4963 pass, 20 skip, 14 fail. The failures are the 13 known ones (codex
+  adapter, `detectGcpProjectAndRegion`, "analyzer sees the graph tsc sees", "React
+  coupling > exactly 637 engine files…", 2 "movability", 2 "type debt", 4 path-resolve)
+  plus "React coupling > the two non-src react importers are tests", which fails on HEAD
+  already: seven `test/vscode*.test.ts` files committed in `4216fb4` and `f0ff988` import
+  React.
+- `bun test --isolate vscode webBridge`: 1150 pass, 0 fail.
+- `bun run build`: `dist/rayu.js`, runs (`--version`). `bun run build:vscode`:
+  `dist/rayucode-2.4.1.vsix` (6.85 MB); the staged `engine.mjs` runs under node.
 
-## What to send back
+### Coverage of the new modules
 
-For each command above:
-- the pass/fail/skip counts;
-- for every failing test, its name and the first 30 lines of its error;
-- for the type check, the full "NEW error signatures" list;
-- for each manual check you ran, what you saw where it differed from the expected result.
+`bun test --coverage` cannot load test files that import `SendMessageTool.ts` or
+`ToolSearchTool/prompt.ts`: both import `isReplBridgeActive`, which
+`src/bootstrap/state.ts` does not export (a TS2305 in the baseline; normal runs tolerate
+it, coverage runs do not). Coverage was measured with a one-line export added to
+`state.ts` for the measurement and removed afterwards. All 34 new modules are at 80% or
+more of lines, 94% on average; the lowest are `gate.ts` (82%), `checkpoint.ts` (84%) and
+`attribution.ts` (85%).
 
-When everything passes, I continue with Task 6 (a shared change ledger, extracted from the external-agents change tracker). After that come the contract tool and `/orchestrator-status` (Task 7).
+## Manual checks (CLI or Rayucode, Orchestrator mode)
+
+1. Ask for a change across two dependent areas, for example "add a displayName field to
+   the User type and show it in the UI". The Orchestrator publishes a contract, then
+   launches one worker per packet with `name` set to the packet.
+2. `git status`, `git stash list` and `git diff --cached` are unchanged by the run's
+   snapshots; `git for-each-ref refs/rayu/` lists the run's refs, and is empty after
+   `/normal` and one more message.
+3. Open a worker in the background-tasks dialog (CLI) or Rayucode's background-work
+   panel: the run section lists every packet; the worker shows its packet, and any
+   problems or merge conflicts.
+4. If a worker edits a file of another packet, its tool result says so, and
+   `/orchestrator-status` lists the problem; `/orchestrator-status diff p1` shows the
+   change.
+5. When the workers finish, the Orchestrator should launch `verifier`. If it reports the
+   work done without one, the transcript shows "Orchestrator gate for run-1 is closed"
+   and the Orchestrator is sent back to work.
+
+## Open questions
+
+- In Full Manage and Orchestrator modes the permission check approves a tool before it
+  looks at your settings' deny rules, so deny rules do not apply to those modes or their
+  workers. This predates this work and is unchanged. Should deny rules always apply?

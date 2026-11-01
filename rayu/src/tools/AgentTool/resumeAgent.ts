@@ -10,6 +10,7 @@ import { asAgentId } from '../../types/ids.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { finishPacketWorktree } from '../../orchestrator/worktreeIntegration.js'
 import {
   createUserMessage,
   filterOrphanedThinkingOnlyMessages,
@@ -22,6 +23,7 @@ import {
   flushSessionStorage,
   getAgentTranscript,
   readAgentMetadata,
+  writeAgentMetadata,
 } from '../../utils/sessionStorage.js'
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js'
 import type { SystemPrompt } from '../../utils/systemPromptType.js'
@@ -270,7 +272,18 @@ export async function resumeAgentBackground({
           isForkSubagentEnabled() ||
           getSdkAgentProgressSummariesEnabled(),
         getWorktreeResult: async () =>
-          resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
+          // A worktree packet's worker merges its worktree back when it finishes again.
+          (await finishPacketWorktree(agentId, {
+            getAppState: toolUseContext.getAppState,
+            setAppState: rootSetAppState,
+            onWorktreeRemoved: () =>
+              void writeAgentMetadata(asAgentId(agentId), {
+                agentType: selectedAgent.agentType,
+                ...(meta?.description ? { description: meta.description } : {}),
+              }).catch(error =>
+                logForDebugging(`Failed to clear worktree metadata: ${error}`),
+              ),
+          })) ?? (resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {}),
       }),
     ),
   )

@@ -32,7 +32,7 @@ import {
   getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
 } from '../../services/rayuAuth/rayuSession.js'
-import { recordRayuCharge } from '../../services/rayuAuth/rayuTurnCredits.js'
+import { recordRayuCharge, startRayuCharge } from '../../services/rayuAuth/rayuTurnCredits.js'
 import { creditsFromRayuBody } from '../../utils/rayuRequestCharge.js'
 import { type VideoModel, type VideoParams } from './models.js'
 
@@ -235,6 +235,8 @@ export async function generateRayuVideo(opts: {
     model: opts.model.id,
   }
 
+  // The request's start: its charge belongs to the work that asked for it.
+  const chargeTicket = startRayuCharge()
   const { composed, timeout } = withTimeout(opts.signal)
   let res: Response
   try {
@@ -283,7 +285,7 @@ export async function generateRayuVideo(opts: {
   }
   // The render was settled before the gateway answered, so count it now: a
   // download that fails below does not undo the charge.
-  recordRayuCharge(creditsFromRayuBody(payload))
+  recordRayuCharge(creditsFromRayuBody(payload), chargeTicket, 'video_generation')
   if (payload?.error?.message) {
     throw new Error(`Rayu video API error: ${payload.error.message}`)
   }

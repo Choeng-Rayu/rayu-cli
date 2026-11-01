@@ -18,6 +18,7 @@ import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import orchestrator from './commands/orchestrator/index.js'
 import normal from './commands/normal/index.js'
+import orchestratorStatus from './commands/orchestrator-status/index.js'
 // Hidden internal command: REPL submits it from the rate-limit notice, so the
 // user can lift Rayu's credit pacing without leaving the terminal. Named
 // `rayu-` because the Claude-era `rate-limit-options` (a subscription command
@@ -287,6 +288,7 @@ const COMMANDS = memoize((): Command[] => [
   review,
   orchestrator,
   normal,
+  orchestratorStatus,
   ultraplanLocal,
   ultrareviewLocal,
   generateImage,

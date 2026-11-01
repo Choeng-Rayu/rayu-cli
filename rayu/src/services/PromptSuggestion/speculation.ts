@@ -465,13 +465,12 @@ export async function startSpeculation(
         // Check permission mode BEFORE allowing file edits
         if (isWriteTool) {
           const appState = context.toolUseContext.getAppState()
-          const { mode, isBypassPermissionsModeAvailable } =
-            appState.toolPermissionContext
+          const { mode } = appState.toolPermissionContext
 
+          // Plan mode never changes the project (utils/permissions/planModePolicy.ts),
+          // so it does not pre-apply edits either.
           const canAutoAcceptEdits =
-            mode === 'acceptEdits' ||
-            mode === 'bypassPermissions' ||
-            (mode === 'plan' && isBypassPermissionsModeAvailable)
+            mode === 'acceptEdits' || mode === 'bypassPermissions'
 
           if (!canAutoAcceptEdits) {
             logForDebugging(`[Speculation] Stopping at file edit: ${tool.name}`)

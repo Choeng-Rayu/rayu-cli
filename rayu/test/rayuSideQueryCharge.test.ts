@@ -10,8 +10,9 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 import {
-  markRayuCharges,
-  rayuCreditsSince,
+  closeRayuCreditWindow,
+  openRayuCreditWindow,
+  rayuWindowCredits,
 } from '../src/services/rayuAuth/rayuTurnCredits.ts'
 import { _resetRayuConfigCache, loadRayuConfig, saveRayuConfig } from '../src/utils/rayuConfig.ts'
 import { sideQuery } from '../src/utils/sideQuery.ts'
@@ -78,14 +79,22 @@ const ask = () =>
 
 test('a charged side query counts toward the turn', async () => {
   charge = { billableTokens: 80, tokensPerCredit: 1000, credits: 0.08 }
-  const mark = markRayuCharges()
-  await ask()
-  expect(rayuCreditsSince(mark)).toBe(0.08)
+  const work = openRayuCreditWindow()
+  try {
+    await ask()
+    expect(rayuWindowCredits(work)).toBe(0.08)
+  } finally {
+    closeRayuCreditWindow(work)
+  }
 })
 
 test('a side query that reports no charge adds nothing', async () => {
   charge = undefined
-  const mark = markRayuCharges()
-  await ask()
-  expect(rayuCreditsSince(mark)).toBeUndefined()
+  const work = openRayuCreditWindow()
+  try {
+    await ask()
+    expect(rayuWindowCredits(work)).toBeUndefined()
+  } finally {
+    closeRayuCreditWindow(work)
+  }
 })

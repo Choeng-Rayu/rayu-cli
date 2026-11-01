@@ -362,7 +362,6 @@ export function App(): JSX.Element {
         case 'setModelCatalogue':
         case 'setAttachment':
         case 'setProviderSetup':
-        case 'setTelegramConnect':
         case 'setModelChooser':
         case 'setInferenceSettings':
         case 'setPermissionMode':

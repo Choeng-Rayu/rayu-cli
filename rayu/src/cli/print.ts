@@ -56,6 +56,7 @@ import {
   notifySessionMetadataChanged,
   setPermissionModeChangedListener,
   subscribeWorkerApprovalLoss,
+  subscribeOrchestratorGateStatus,
   type RequiresActionDetails,
   type SessionExternalMetadata,
 } from 'src/utils/sessionState.js'
@@ -365,7 +366,13 @@ import {
 import { removeTeammateFromTeamFile } from '../utils/swarm/teamHelpers.js'
 import { unassignTeammateTasks } from '../utils/tasks.js'
 import { getRunningTasks } from '../utils/task/framework.js'
-import { isBackgroundTask } from '../tasks/types.js'
+import { isBackgroundTask, hasUnfinishedBackgroundAgent } from '../tasks/types.js'
+import {
+  closeRayuCreditWindow,
+  openRayuCreditWindow,
+  type RayuCreditWindow,
+  rayuWindowCredits,
+} from '../services/rayuAuth/rayuTurnCredits.js'
 import { stopTask } from '../tasks/stopTask.js'
 import { getTaskOutput, getTaskOutputSize } from '../utils/task/diskOutput.js'
 import { drainSdkEvents } from '../utils/sdkEventQueue.js'
@@ -1159,6 +1166,16 @@ function runHeadlessStreaming(
   let inputClosed = false
   let shutdownPromptInjected = false
   let heldBackResult: StdoutMessage | null = null
+  // The work the next `result` answers: opened by the first turn after the
+  // previous result went out and kept across every turn a held-back result
+  // waits through (background agents, their notification turns). The result
+  // reports that whole span -- its Rayu credits, and for a held-back result its
+  // duration -- not just the last turn's.
+  let work: {
+    credits: RayuCreditWindow
+    startedAt: number
+    turns: number
+  } | null = null
   /** Whether this stream has told clients that a pending review exists. */
   let fileChangeReviewVisible = false
   let abortController: AbortController | undefined
@@ -1196,6 +1213,44 @@ function runHeadlessStreaming(
       }) as any,
     )
   }
+
+  /**
+   * Sends a turn's `result` as the answer to the user's work and ends that work.
+   *
+   * Stamps the Rayu credits the work cost (`rayu_credits`). A result held back
+   * across several turns also gets the work's wall-clock `duration_ms`: its own
+   * figure covers only the last turn, so an hour of background work would read
+   * "Completed in 20s". A single-turn result keeps the engine's own duration.
+   */
+  const emitResult = (result: StdoutMessage): void => {
+    const finished = work
+    work = null
+    let stamped = result
+    if (finished) {
+      closeRayuCreditWindow(finished.credits)
+      if (result.type === 'result') {
+        const credits = rayuWindowCredits(finished.credits)
+        stamped = {
+          ...result,
+          ...(finished.turns > 1 && { duration_ms: Date.now() - finished.startedAt }),
+          ...(credits !== undefined && { rayu_credits: credits }),
+        }
+      }
+    }
+    output.enqueue(stamped)
+  }
+
+  /**
+   * Whether the work the current turn belongs to goes on after this turn: a
+   * background agent is still running or has not queued its notification yet,
+   * or its notification is queued for the next turn. Its `result` is held back
+   * until then.
+   */
+  const workContinues = (): boolean =>
+    hasUnfinishedBackgroundAgent(getAppState().tasks) ||
+    peek(
+      cmd => cmd.mode === 'task-notification' && cmd.agentId === undefined,
+    ) !== undefined
 
   // Ctrl+C in -p mode: abort the in-flight query, then shut down gracefully.
   // gracefulShutdown persists session state and flushes analytics, with a
@@ -1262,6 +1317,11 @@ function runHeadlessStreaming(
     output.enqueue(
       createSystemMessage(formatWorkerApprovalLoss(loss), 'warning') as StdoutMessage,
     )
+  })
+  // The Orchestrator verification gate's status (src/orchestrator/gate.ts). The
+  // engine drops the transcript notice query.ts yields, so it is sent as a frame.
+  const unsubscribeGateStatus = subscribeOrchestratorGateStatus(status => {
+    output.enqueue(createSystemMessage(status, 'warning') as StdoutMessage)
   })
 
   // Prompt suggestion tracking (push model)
@@ -2392,6 +2452,10 @@ function runHeadlessStreaming(
           // const-capture: TS loses `while ((command = dequeue()))` narrowing
           // inside the closure.
           const cmd = command
+          // A turn of new work opens it; a turn that continues held-back work
+          // (a background agent's notification) adds to it.
+          work ??= { credits: openRayuCreditWindow(), startedAt: Date.now(), turns: 0 }
+          work.turns += 1
           await runWithWorkload(cmd.workload ?? options.workload, async () => {
             for await (const message of ask({
               commands: uniqBy(
@@ -2471,21 +2535,15 @@ function runHeadlessStreaming(
                   output.enqueue(event)
                 }
 
-                // Hold-back: don't emit result while background agents are running
-                const currentState = getAppState()
-                if (
-                  getRunningTasks(currentState).some(
-                    t =>
-                      (t.type === 'local_agent' ||
-                        t.type === 'local_workflow') &&
-                      isBackgroundTask(t),
-                  )
-                ) {
+                // Hold-back: don't emit result while the work it answers goes
+                // on -- a background agent is running, or one finished and its
+                // notification turn is next. The turn that ends the work emits.
+                if (workContinues()) {
                   heldBackResult = message
                 } else {
                   heldBackResult = null
                   enqueueFileChangeReviewSnapshot()
-                  output.enqueue(message)
+                  emitResult(message)
                 }
               } else {
                 // Flush SDK events (task_started, task_progress) so background
@@ -2642,9 +2700,14 @@ function runHeadlessStreaming(
         waitingForAgents = false
         {
           const state = getAppState()
-          const hasRunningBg = getRunningTasks(state).some(
-            t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
-          )
+          // An agent that has finished but not queued its notification yet
+          // (worktree cleanup runs git first) still counts. Leaving in that
+          // gap would strand the notification until the next input and send
+          // the held-back result without the turn it starts.
+          const hasRunningBg =
+            getRunningTasks(state).some(
+              t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
+            ) || hasUnfinishedBackgroundAgent(state.tasks)
           const hasMainThreadQueued = peek(isMainThread) !== undefined
           if (hasRunningBg || hasMainThreadQueued) {
             waitingForAgents = true
@@ -2660,7 +2723,7 @@ function runHeadlessStreaming(
 
       if (heldBackResult) {
         enqueueFileChangeReviewSnapshot()
-        output.enqueue(heldBackResult)
+        emitResult(heldBackResult)
         heldBackResult = null
         if (suggestionState.pendingSuggestion) {
           output.enqueue(suggestionState.pendingSuggestion)
@@ -2929,6 +2992,7 @@ function runHeadlessStreaming(
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
         unsubscribeWorkerApprovalLoss()
+        unsubscribeGateStatus()
         statusListeners.delete(rateLimitListener)
         output.done()
       }
@@ -4410,6 +4474,7 @@ function runHeadlessStreaming(
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
       unsubscribeWorkerApprovalLoss()
+      unsubscribeGateStatus()
       statusListeners.delete(rateLimitListener)
       output.done()
     }

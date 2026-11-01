@@ -28,6 +28,7 @@ const NULL_RENDERING_TYPES = [
   'plan_mode_reentry',
   'orchestrator_mode',
   'orchestrator_mode_exit',
+  'orchestrator_checkpoint',
   'structured_output',
   'team_context',
   'todo_reminder',

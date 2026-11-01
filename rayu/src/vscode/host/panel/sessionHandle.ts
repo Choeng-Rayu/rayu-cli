@@ -40,6 +40,7 @@ import {
 } from '../../../protocol/index.js'
 
 import { EngineProcess, type EngineExitInfo } from '../engine/engineProcess.js'
+import { PendingOrchestrationViews, readTaskOrchestration } from './taskOrchestration.js'
 import { scriptEngineLaunch, type EngineLaunch } from '../engine/engineLaunch.js'
 import { ENGINE_EXIT_MEMORY_LIMIT } from '../../shared/engineExitCodes.js'
 import { ControlClient, type InboundControlRequest } from '../engine/controlClient.js'
@@ -790,6 +791,8 @@ export class ChatSession {
   private readonly seenNarrativeEventIds = new Set<string>()
   /** Background work is host-owned so webview disposal cannot lose it. */
   private readonly backgroundTaskMap = new Map<string, BackgroundTaskView>()
+  /** Orchestrator views that arrived before their task started (taskOrchestration.ts). */
+  private readonly pendingOrchestration = new PendingOrchestrationViews()
   private taskHistoryWrite: Promise<void> = Promise.resolve()
 
   private starting: Promise<void> | null = null
@@ -1266,6 +1269,7 @@ export class ChatSession {
     this.thinkingBlocks.clear()
     this.activeThinkingKey = null
     this.backgroundTaskMap.clear()
+    this.pendingOrchestration.clear()
     this.callbacks.onTaskStateReplaced?.([])
     this.promptSuggestion = null
     this.callbacks.onPromptSuggestion?.(null)
@@ -2299,6 +2303,7 @@ export class ChatSession {
       case 'task_started':
       case 'task_progress':
       case 'task_notification':
+      case 'task_orchestration':
         this.handleTaskLifecycle(message)
         return
 
@@ -2541,6 +2546,16 @@ export class ChatSession {
     const now = Date.now()
     const existing = this.backgroundTaskMap.get(key)
 
+    if (message.subtype === 'task_orchestration') {
+      const orchestration = readTaskOrchestration(message.orchestration)
+      if (!orchestration) return
+      // Applied to finished rows too: a worktree merge or a settled problem comes after
+      // the worker's own terminal frame, and the row must not keep the stale state.
+      if (existing) this.publishTask({ ...existing, orchestration })
+      else this.pendingOrchestration.set(key, orchestration)
+      return
+    }
+
     if (message.subtype === 'task_started') {
       // A duplicated/replayed start must not erase progress or revive a finished task.
       if (existing) return
@@ -2590,6 +2605,7 @@ export class ChatSession {
         toolCount: 0,
         unread: false,
         capabilities: taskCapabilities(type, true),
+        orchestration: this.pendingOrchestration.take(key),
       })
       return
     }
@@ -2664,6 +2680,7 @@ export class ChatSession {
         unread: existing?.unread ?? false,
         capabilities: taskCapabilities(type, true),
         workflowProgress: normalizeWorkflowProgress(message.workflow_progress),
+        orchestration: existing?.orchestration,
       })
       return
     }
@@ -2711,6 +2728,7 @@ export class ChatSession {
         unread: true,
         capabilities: taskCapabilities(type, false),
         workflowProgress: existing?.workflowProgress,
+        orchestration: existing?.orchestration,
       })
     }
   }

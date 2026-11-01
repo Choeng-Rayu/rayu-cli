@@ -8,6 +8,7 @@ import type {
   RuntimeInferenceSnapshot,
   RuntimeSnapshot,
 } from '../protocol/index.js'
+import { agentOrchestrationView } from '../orchestrator/orchestrationView.js'
 import { projectTaskState } from './taskProjection.js'
 import {
   projectRuntimeAgents,
@@ -54,7 +55,7 @@ export function buildRuntimeSnapshot(input: RuntimeSnapshotInput): RuntimeSnapsh
     skills,
     workflows: skills.filter(skill => skill.workflow),
     tasks: Object.values(input.appState.tasks ?? {}).map(task =>
-      projectTaskState(input.sessionId, task),
+      projectTaskState(input.sessionId, task, agentOrchestrationView(input.appState.orchestration?.run ?? null, task.id)),
     ),
     mcpServers: input.mcpServers,
     inference: { model: input.model, ...input.inference },

@@ -16,13 +16,15 @@
  * to load a deferred tool with.
  */
 import { z } from 'zod/v4'
-import type { AppState } from '../../state/AppState.js'
+import type { AppState } from '../../state/AppStateStore.js'
 import { buildTool, type Tool, type ToolDef } from '../../Tool.js'
 import { isLocalAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isMainSessionTask } from '../../tasks/LocalMainSessionTask.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { parseAddress } from '../../utils/peerAddress.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { recordWorkerBriefed } from '../../orchestrator/packetProgress.js'
+import { contractUpdateFor } from '../../orchestrator/workerBriefing.js'
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import {
   type MessageOutput,
@@ -163,14 +165,20 @@ export const OrchestratorSendMessageTool: Tool<InputSchema, MessageOutput> =
       if (problem || !agentId) {
         return { data: { success: false, message: problem ?? `No worker is named "${input.to}".` } }
       }
-      return messageLocalAgent({
+      // A worker briefed with an older contract gets the current one first.
+      const update = contractUpdateFor(appState, agentId)
+      const delivered = await messageLocalAgent({
         agentId,
         to: input.to,
-        message: input.message,
+        message: update ? `${update}\n\n---\n\n${input.message}` : input.message,
         context,
         canUseTool,
         assistantMessage,
       })
+      if (update && delivered.data.success) {
+        recordWorkerBriefed(agentId, context.setAppStateForTasks ?? context.setAppState)
+      }
+      return delivered
     },
 
     renderToolUseMessage,

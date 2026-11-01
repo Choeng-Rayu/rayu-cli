@@ -452,8 +452,8 @@ describe('SettingsController', () => {
 
   test('a running step or a waiting pairing suppresses the Telegram read', async () => {
     const cases = [
-      { ...EMPTY_TELEGRAM_CONNECT, open: true, busy: true },
-      { ...EMPTY_TELEGRAM_CONNECT, open: true, waitingForLink: true },
+      { ...EMPTY_TELEGRAM_CONNECT, busy: true },
+      { ...EMPTY_TELEGRAM_CONNECT, waitingForLink: true },
     ]
     for (const telegram of cases) {
       const integrations = fakeIntegrations()

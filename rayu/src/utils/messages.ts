@@ -3318,11 +3318,11 @@ function getPlanModeV2Instructions(attachment: {
     ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool.`
     : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool.`
 
-  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
+  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT change the project: no edits to any file except the plan file mentioned below, and no commands that change files, configs, dependencies or the repository (including making commits). You may still run commands that only investigate, such as tests, builds and scripts that leave the code unchanged. This supercedes any other instructions you have received.
 
 ## Plan File Info:
 ${planFileInfo}
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
+You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - everything else you do must leave the project unchanged.
 
 ## Plan Workflow
 
@@ -3422,7 +3422,7 @@ function getPlanModeInterviewInstructions(attachment: {
     ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool.`
     : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool.`
 
-  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
+  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT change the project: no edits to any file except the plan file mentioned below, and no commands that change files, configs, dependencies or the repository (including making commits). You may still run commands that only investigate, such as tests, builds and scripts that leave the code unchanged. This supercedes any other instructions you have received.
 
 ## Plan File Info:
 ${planFileInfo}
@@ -3483,7 +3483,7 @@ function getPlanModeV2SparseInstructions(attachment: {
     ? 'Follow iterative workflow: explore codebase, interview user, write to plan incrementally.'
     : 'Follow 5-phase workflow.'
 
-  const content = `Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${attachment.planFilePath}). ${workflowDescription} End turns with ${ASK_USER_QUESTION_TOOL_NAME} (for clarifications) or ${ExitPlanModeV2Tool.name} (for plan approval). Never ask about plan approval via text or AskUserQuestion.`
+  const content = `Plan mode still active (see full instructions earlier in conversation). Do not change the project except the plan file (${attachment.planFilePath}); commands that only investigate are fine. ${workflowDescription} End turns with ${ASK_USER_QUESTION_TOOL_NAME} (for clarifications) or ${ExitPlanModeV2Tool.name} (for plan approval). Never ask about plan approval via text or AskUserQuestion.`
 
   return wrapMessagesInSystemReminder([
     createUserMessage({ content, isMeta: true }),
@@ -3498,11 +3498,11 @@ function getPlanModeV2SubAgentInstructions(attachment: {
     ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool if you need to.`
     : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool if you need to.`
 
-  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
+  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run commands that change files, configs, dependencies or the repository (including making commits), or otherwise change the project. Commands that only investigate are fine. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
 
 ## Plan File Info:
 ${planFileInfo}
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
+You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - everything else you do must leave the project unchanged.
 Answer the user's query comprehensively, using the ${ASK_USER_QUESTION_TOOL_NAME} tool if you need to ask the user clarifying questions. If you do use the ${ASK_USER_QUESTION_TOOL_NAME}, make sure to ask all clarifying questions you need to fully understand the user's intent before proceeding.`
 
   return wrapMessagesInSystemReminder([
@@ -3969,6 +3969,11 @@ You have exited plan mode. You can now make edits, run tools, and take actions.$
     case 'orchestrator_mode_exit': {
       return wrapMessagesInSystemReminder([
         createUserMessage({ content: renderOrchestratorExit(), isMeta: true }),
+      ])
+    }
+    case 'orchestrator_checkpoint': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({ content: attachment.text, isMeta: true }),
       ])
     }
     case 'auto_mode': {
@@ -4544,6 +4549,7 @@ export function createTurnDurationMessage(
   budget?: { tokens: number; limit: number; nudges: number },
   messageCount?: number,
   rayuCredits?: number,
+  rayuCreditsSoFar?: boolean,
 ): SystemTurnDurationMessage {
   return {
     type: 'system',
@@ -4554,6 +4560,7 @@ export function createTurnDurationMessage(
     budgetNudges: budget?.nudges,
     messageCount,
     ...(rayuCredits !== undefined && { rayuCredits }),
+    ...(rayuCredits !== undefined && rayuCreditsSoFar === true && { rayuCreditsSoFar }),
     timestamp: new Date().toISOString(),
     uuid: randomUUID(),
     isMeta: false,

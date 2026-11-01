@@ -168,11 +168,13 @@ export function describeCompletion(completion: TurnCompletionEntry): {
 }
 
 /**
- * What a finished turn cost on the Rayu plan, e.g. `Credits: 443.76`, or `undefined`
- * when the gateway charged nothing for it (a bring-your-own-key turn).
+ * What a finished request cost on the Rayu plan, e.g. `Credits: 443.76` or `Credits: 2k`,
+ * or `undefined` when the gateway charged nothing for it (a bring-your-own-key turn).
  *
- * The same label the terminal prints after a turn, from the same formatter, so the two
- * front ends cannot describe one charge two ways.
+ * The figure covers the whole request the completion line closes: the engine holds a
+ * turn's result back while background agents it launched still work, and reports the
+ * credits of every turn since the user's prompt. The same label the terminal prints,
+ * from the same formatter, so the two front ends cannot describe one charge two ways.
  */
 export function describeTurnCredits(
   completion: TurnCompletionEntry,
@@ -181,8 +183,8 @@ export function describeTurnCredits(
   if (credits === undefined || !Number.isFinite(credits) || credits < 0) return undefined
   return {
     text: rayuCreditsLabel(credits),
-    // The unrounded figure, for a turn whose label reads "<0.01".
-    title: `Rayu credits charged for this turn: ${credits.toLocaleString(undefined, { maximumFractionDigits: 6 })}`,
+    // The unrounded figure, for a label that reads "<0.01" or "2.4k".
+    title: `Rayu credits charged for this request: ${credits.toLocaleString(undefined, { maximumFractionDigits: 6 })}`,
   }
 }
 

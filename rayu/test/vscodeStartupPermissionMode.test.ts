@@ -13,12 +13,21 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { invalidateRayuConfigCache } from '../src/utils/rayuConfig.js'
 import { ChatSession } from '../src/vscode/host/panel/sessionHandle.js'
 import { sessionCallbacks, until } from './helpers/vscodeSession.js'
+import { nativeLaunch, scriptLaunch } from './helpers/engineLaunch.js'
 import { startLocalProvider } from './helpers/localProvider.js'
+import type { EngineLaunch } from '../src/vscode/host/engine/engineLaunch.js'
 
 const SCRIPT_ENGINE = resolve(import.meta.dir, '../dist/vscode-stage/engine.mjs')
-const COMPILED_ENGINE = resolve(import.meta.dir, '../dist/vscode-stage/bin/rayucode-engine')
+// Platform builds are staged per target (`build:vscode --target <platform>`), not in the
+// universal stage; and a compiled binary must be launched natively, never as a script.
+const PLATFORM = `${process.platform}-${process.arch}`
+const COMPILED_ENGINE = resolve(
+  import.meta.dir,
+  `../dist/vscode-stage-${PLATFORM}/bin/rayucode-engine${process.platform === 'win32' ? '.exe' : ''}`,
+)
 
 interface Outcome {
   file: string
@@ -34,7 +43,7 @@ interface Outcome {
  * terminal `permissions.defaultMode` that disagrees, so passing the flag is observable.
  */
 async function runFixture(
-  launch: { enginePath: string; nodePath?: string },
+  launch: EngineLaunch,
   permissionMode: string,
 ): Promise<Outcome> {
   const dir = mkdtempSync(join(tmpdir(), 'rayucode-startup-mode-'))
@@ -69,7 +78,7 @@ async function runFixture(
     let permissionRequests = 0
     let finished = false
     session = new ChatSession({
-      ...launch,
+      launch,
       cwd: dir,
       env: {
         RAYU_CONFIG_DIR: config,
@@ -111,19 +120,22 @@ async function runFixture(
     await provider.close()
     await new Promise(resolve => setTimeout(resolve, 100))
     rmSync(dir, { recursive: true, force: true })
+    // The host-side session loaded this fixture's providers.json into the process-wide
+    // config cache. The env is restored above, but the cache is not: drop it, or the
+    // next test file in this process resolves models against 'test-model'.
+    invalidateRayuConfigCache()
   }
 }
 
 // ── what the mode flag actually changes ────────────────────────────────────────
 //
-// This fork's plan mode is ADVISORY: it tells the model to plan and offers
-// ExitPlanMode, but it does not deny Edit/Bash at the tool layer (measured on the
-// real engine: plan raised no permission request and the edit landed). So the
-// behavioural proof that the flag is honoured is default-vs-fullManage, not plan.
-// Plan is still asserted on the reported mode, which is what the pill shows.
+// Plan mode works like Full Manage, so it raises no permission prompts, but it never
+// changes the project: an Edit outside the plan file is refused by the engine
+// (src/utils/permissions/planModePolicy.ts), while the fixture's `true` command runs.
+// So plan shows as no prompts AND an unchanged file, unlike both default and fullManage.
 
 test.if(existsSync(SCRIPT_ENGINE))('default asks before changing a file, so the mode is in effect', async () => {
-  const ask = await runFixture({ enginePath: SCRIPT_ENGINE, nodePath: 'node' }, 'default')
+  const ask = await runFixture(scriptLaunch(SCRIPT_ENGINE, 'node'), 'default')
   expect(ask.errors).toEqual([])
   expect(ask.finished).toBe(true)
   expect(ask.modeId).toBe('default')
@@ -133,7 +145,7 @@ test.if(existsSync(SCRIPT_ENGINE))('default asks before changing a file, so the 
 }, 90_000)
 
 test.if(existsSync(SCRIPT_ENGINE))('fullManage runs tools without asking', async () => {
-  const full = await runFixture({ enginePath: SCRIPT_ENGINE, nodePath: 'node' }, 'fullManage')
+  const full = await runFixture(scriptLaunch(SCRIPT_ENGINE, 'node'), 'fullManage')
   expect(full.errors).toEqual([])
   expect(full.finished).toBe(true)
   expect(full.modeId).toBe('fullManage')
@@ -141,22 +153,32 @@ test.if(existsSync(SCRIPT_ENGINE))('fullManage runs tools without asking', async
   expect(full.file).toBe('after\n')
 }, 90_000)
 
-test.if(existsSync(SCRIPT_ENGINE))('plan is accepted and reported at startup', async () => {
-  const plan = await runFixture({ enginePath: SCRIPT_ENGINE, nodePath: 'node' }, 'plan')
+test.if(existsSync(SCRIPT_ENGINE))('plan runs without asking but leaves the file unchanged', async () => {
+  const plan = await runFixture(scriptLaunch(SCRIPT_ENGINE, 'node'), 'plan')
   expect(plan.errors).toEqual([])
+  expect(plan.finished).toBe(true)
   // If the engine had rejected the flag, the host would have resynced to its report.
   expect(plan.modeId).toBe('plan')
+  // Like Full Manage: nothing asked. Unlike it: the Edit was refused, so no change.
+  expect(plan.permissionRequests).toBe(0)
+  expect(plan.file).toBe('before\n')
 }, 90_000)
 
 test.if(existsSync(COMPILED_ENGINE))('the compiled engine honours the same profile mode', async () => {
-  const ask = await runFixture({ enginePath: COMPILED_ENGINE }, 'default')
+  const ask = await runFixture(nativeLaunch(COMPILED_ENGINE), 'default')
   expect(ask.errors).toEqual([])
   expect(ask.permissionRequests).toBeGreaterThan(0)
   expect(ask.file).toBe('before\n')
 
-  const full = await runFixture({ enginePath: COMPILED_ENGINE }, 'fullManage')
+  const plan = await runFixture(nativeLaunch(COMPILED_ENGINE), 'plan')
+  expect(plan.errors).toEqual([])
+  expect(plan.modeId).toBe('plan')
+  expect(plan.permissionRequests).toBe(0)
+  expect(plan.file).toBe('before\n')
+
+  const full = await runFixture(nativeLaunch(COMPILED_ENGINE), 'fullManage')
   expect(full.errors).toEqual([])
   expect(full.modeId).toBe('fullManage')
   expect(full.permissionRequests).toBe(0)
   expect(full.file).toBe('after\n')
-}, 240_000)
+}, 360_000)

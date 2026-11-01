@@ -1,5 +1,5 @@
 /**
- * In-panel Telegram connection — the editor's `/telegram-bot`.
+ * The Telegram card in Settings → Integrations — the editor's `/telegram-bot`.
  *
  * ── THE BOT TOKEN IS WRITE-ONLY ────────────────────────────────────────────────
  *
@@ -20,33 +20,23 @@
 import { useState } from 'react'
 
 import type { TelegramConnectView } from '../../shared/webviewProtocol.js'
-import { CloseIcon } from './Icons.js'
 
 export interface TelegramConnectPanelProps {
   connect: TelegramConnectView
-  /**
-   * Shown as a card inside Settings → Integrations rather than as a closable panel: it
-   * renders whatever `connect.open` says, and has no title or close button of its own.
-   */
-  embedded?: boolean
-  onClose?: () => void
   onStartHosted: () => void
   onStartByo: (token: string) => void
   onUnlink: () => void
 }
 
+/** A card inside a Settings item, which supplies the title: no heading or close button here. */
 export function TelegramConnectPanel({
   connect,
-  embedded = false,
-  onClose,
   onStartHosted,
   onStartByo,
   onUnlink,
-}: TelegramConnectPanelProps): JSX.Element | null {
+}: TelegramConnectPanelProps): JSX.Element {
   const [token, setToken] = useState('')
   const [mode, setMode] = useState<'hosted' | 'byo' | null>(null)
-
-  if (!connect.open && !embedded) return null
 
   const linked = connect.linkedChatId !== null
 
@@ -59,16 +49,7 @@ export function TelegramConnectPanel({
   }
 
   return (
-    <div className={`rc-setup${embedded ? ' rc-setup-embedded' : ''}`} role="region" aria-label="Connect Telegram">
-      {embedded ? null : (
-        <div className="rc-setup-head">
-          <h2 className="rc-setup-title">Connect Telegram</h2>
-          <button type="button" className="rc-icon-button" title="Close" aria-label="Close" onClick={onClose}>
-            <CloseIcon />
-          </button>
-        </div>
-      )}
-
+    <div className="rc-setup rc-setup-embedded" role="region" aria-label="Connect Telegram">
       {connect.error ? (
         <p className="rc-setup-error" role="alert">
           {connect.error}

@@ -120,6 +120,7 @@ import {
 } from '../../telegram/telegramConfig.js'
 import { getHostedLink } from '../../telegram/telegramHostedApi.js'
 import { TelegramConnectController } from './integrations/telegramConnectController.js'
+import { TELEGRAM_RESTART_SETTLE_MS, TelegramLinkRestarts } from './integrations/telegramLinkRestart.js'
 import { githubIntegrationView, webBridgeView } from './integrations/integrationViews.js'
 import {
   attachToCliSession,
@@ -155,7 +156,6 @@ import type {
   SessionListView,
   AttachmentView,
   ProviderSetupView,
-  TelegramConnectView,
   SessionSummaryView,
   ImageInputView,
   PromptDeliveryView,
@@ -442,10 +442,7 @@ export function activate(context: vscode.ExtensionContext): void {
     setLinkedChat,
     setLinkedBotUsername,
     onLinked: origin => restartTelegramLinkedSession(origin),
-    publish: connect => {
-      surfaces.broadcast({ type: 'setTelegramConnect', connect })
-      settingsTab.controller.integrationsChanged()
-    },
+    publish: () => settingsTab.controller.integrationsChanged(),
   })
   const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   const activeFile = vscode.window.activeTextEditor?.document.uri
@@ -537,8 +534,8 @@ export function activate(context: vscode.ExtensionContext): void {
    *
    * The restart RESUMES the conversation (`restartEngineWithResume`), so its session id
    * is kept and nothing the user wrote is lost; a fresh child reads telegram.json, and no
-   * cache has to be invalidated in place. A turn in flight is not interrupted: that
-   * conversation attaches the next time its engine starts.
+   * cache has to be invalidated in place. A turn in flight is not interrupted: the
+   * restart waits until it ends (integrations/telegramLinkRestart.ts).
    *
    * `origin` is the conversation that asked, when one did; the Settings tab asks for
    * the window, which means the conversation on screen.
@@ -549,9 +546,20 @@ export function activate(context: vscode.ExtensionContext): void {
       entry.session.engineSessionId ?? '',
       normalizeCwdForAttachLookup(entry.session.workingDirectory),
     )
-    if (entry.session.isTurnRunning) return
-    void restartEngineWithResume(entry)
+    telegramRestarts.requestRestart(entry.key)
   }
+
+  const telegramRestarts = new TelegramLinkRestarts<object>({
+    lookup: key => {
+      const entry = entryFor(key)
+      return entry ? { isTurnRunning: entry.session.isTurnRunning, engine: entry.session.controlClient } : null
+    },
+    restart: key => {
+      const entry = entryFor(key)
+      if (entry) void restartEngineWithResume(entry)
+    },
+    schedule: settle => { setTimeout(settle, TELEGRAM_RESTART_SETTLE_MS) },
+  })
 
   /**
    * Attachment state, host-owned.
@@ -696,6 +704,7 @@ export function activate(context: vscode.ExtensionContext): void {
           if (webBridge?.entry === entry) webBridge.handle.onTurnState(running)
           surfaces.postToSession(entry.key, { type: 'turnState', running })
           postLiveSessions()
+          if (!running) telegramRestarts.turnEnded(entry.key)
         },
         // A running tool's live output goes to the conversation's surfaces — a
         // background tab's tool row is exactly where it renders.
@@ -1018,7 +1027,6 @@ export function activate(context: vscode.ExtensionContext): void {
       entry.session,
       entry.permissions,
       providerSetup,
-      telegram.current,
       modelChooser,
       ideContext,
       attachmentForEntry(entry),
@@ -1927,14 +1935,6 @@ export function activate(context: vscode.ExtensionContext): void {
         prewarmSession(entry)
       },
 
-      telegramConnectOpen: (scope, open) => telegram.open(open),
-
-      telegramConnectStartHosted: scope => telegram.startHosted(scope.sessionKey),
-
-      telegramConnectStartByo: (scope, token) => telegram.startByo(scope.sessionKey, token),
-
-      telegramConnectUnlink: () => telegram.unlink(),
-
       setEffort: (scope, level) => {
         const entry = entryFor(scope.sessionKey)
         if (entry) entry.session.setEffort(level)
@@ -2711,7 +2711,6 @@ function buildState(
   session: ChatSession,
   permissions: PermissionRouter,
   providerSetup: ProviderSetupView,
-  telegramConnect: TelegramConnectView,
   modelChooser: ModelChooserView | null,
   ideContext: IdeContextView | null,
   attachment: AttachmentView,
@@ -2751,7 +2750,6 @@ function buildState(
     modelCatalogue: buildCatalogue(session),
     inference: session.currentInference,
     providerSetup,
-    telegramConnect,
     modelChooser,
     attachment,
     permissionMode: session.currentPermissionMode,

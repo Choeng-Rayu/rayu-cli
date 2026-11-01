@@ -1,93 +1,123 @@
 /**
- * Summing what the Rayu gateway charged between two points (a turn's start and
- * end). Marks rather than a reset, so overlapping readers cannot clear each
- * other.
+ * Totalling what the Rayu gateway charged for one piece of work. A request counts
+ * toward the windows that were open when it STARTED, however late its charge is
+ * reported, and a window counts every such request, however many there are.
  */
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 
 import {
-  markRayuCharges,
-  rayuCreditsSince,
+  closeRayuCreditWindow,
+  isRayuCreditWindowOpen,
+  openRayuCreditWindow,
+  rayuWindowCredits,
   recordRayuCharge,
   resetRayuChargesForTests,
+  startRayuCharge,
 } from '../src/services/rayuAuth/rayuTurnCredits.js'
 
-beforeEach(() => resetRayuChargesForTests())
+afterEach(() => resetRayuChargesForTests())
 
-describe('rayuCreditsSince', () => {
-  test('a turn with no Rayu-billed request has no total at all', () => {
-    const mark = markRayuCharges()
+describe('a credit window', () => {
+  test('work with no Rayu-billed request has no total at all', () => {
+    const work = openRayuCreditWindow()
     // A BYOK request reports no charge; it must not turn into "Credits: 0.00".
     recordRayuCharge(undefined)
-    expect(rayuCreditsSince(mark)).toBeUndefined()
+    expect(rayuWindowCredits(work)).toBeUndefined()
   })
 
-  test('the total is every charge recorded since the mark', () => {
-    recordRayuCharge(5) // before the turn
-    const mark = markRayuCharges()
+  test('counts every request that starts while it is open', () => {
+    recordRayuCharge(5) // no window open yet: counted nowhere
+    const work = openRayuCreditWindow()
     recordRayuCharge(443.76) // the main loop
     recordRayuCharge(0.12) // a side query
     recordRayuCharge(1.5) // a hosted image
-    expect(rayuCreditsSince(mark)).toBe(445.38)
+    expect(rayuWindowCredits(work)).toBe(445.38)
   })
 
-  test('sums are exact, not float-drifted', () => {
-    const mark = markRayuCharges()
+  test('sums exactly, without float drift', () => {
+    const work = openRayuCreditWindow()
     recordRayuCharge(0.1)
     recordRayuCharge(0.2)
-    expect(rayuCreditsSince(mark)).toBe(0.3)
+    expect(rayuWindowCredits(work)).toBe(0.3)
   })
 
-  test('a zero charge still means the turn was billed', () => {
-    const mark = markRayuCharges()
+  test('a zero charge still means the work was billed', () => {
+    const work = openRayuCreditWindow()
     recordRayuCharge(0)
-    expect(rayuCreditsSince(mark)).toBe(0)
-  })
-
-  test('overlapping marks each see their own window', () => {
-    const swarmStart = markRayuCharges()
-    recordRayuCharge(10)
-    const turnStart = markRayuCharges()
-    recordRayuCharge(2.5)
-    expect(rayuCreditsSince(turnStart)).toBe(2.5)
-    // The deferred swarm line covers both turns; reading the turn did not reset it.
-    expect(rayuCreditsSince(swarmStart)).toBe(12.5)
+    expect(rayuWindowCredits(work)).toBe(0)
   })
 
   test('values that are not a charge are ignored', () => {
-    const mark = markRayuCharges()
+    const work = openRayuCreditWindow()
     recordRayuCharge(-1)
     recordRayuCharge(Number.NaN)
     recordRayuCharge(Number.POSITIVE_INFINITY)
-    expect(rayuCreditsSince(mark)).toBeUndefined()
+    expect(rayuWindowCredits(work)).toBeUndefined()
   })
 
-  test('a request that started before the mark is not counted even when it settles later', () => {
-    const a = markRayuCharges()
-    recordRayuCharge(5) // a request that started at A and already settled
-    const b = markRayuCharges()
-    // A request that started at A, but only settles now -- after B was taken.
-    recordRayuCharge(1.9, a)
-    expect(rayuCreditsSince(b)).toBeUndefined()
-    expect(rayuCreditsSince(a)).toBe(6.9)
+  // The bug behind "an hour of work showed far too few credits": the previous
+  // implementation kept one bucket per request start and pruned all but the newest
+  // 1,024, so the first part of any long run vanished from its total.
+  test('counts thousands of requests exactly, the first ones included', () => {
+    const work = openRayuCreditWindow()
+    for (let i = 0; i < 5000; i++) {
+      const ticket = startRayuCharge()
+      recordRayuCharge(i === 0 ? 1000 : 0.5, ticket)
+    }
+    expect(rayuWindowCredits(work)).toBe(1000 + 4999 * 0.5)
+  })
+})
+
+describe('attribution by request start', () => {
+  test('a request that started before the window opened is not counted, however late it settles', () => {
+    const before = startRayuCharge()
+    const work = openRayuCreditWindow()
+    recordRayuCharge(1.9, before)
+    expect(rayuWindowCredits(work)).toBeUndefined()
   })
 
-  test('a request that started inside the window counts even if it settles after the turn ended', () => {
-    // The session-title regression: the request is launched for this turn (its
-    // start mark is `start`) but its charge is reported after the turn line
-    // already read the total.
-    const start = markRayuCharges()
-    // The turn line renders now, before the title request settles.
-    expect(rayuCreditsSince(start)).toBeUndefined()
-    // The title request settles afterwards, attributed to its start mark; the
-    // earlier read did not lock the total in.
-    recordRayuCharge(1.9, start)
-    expect(rayuCreditsSince(start)).toBe(1.9)
+  test('a request that started inside the window counts even after the window closed', () => {
+    // The session-title regression: launched for this turn, settled after its line.
+    const work = openRayuCreditWindow()
+    const title = startRayuCharge()
+    closeRayuCreditWindow(work)
+    expect(isRayuCreditWindowOpen(work)).toBe(false)
+    recordRayuCharge(1.9, title)
+    expect(rayuWindowCredits(work)).toBe(1.9)
   })
 
-  test('a charge recorded with no start mark is attributed to now', () => {
-    const mark = markRayuCharges()
-    recordRayuCharge(2) // media/token-estimation call sites: start == finish
-    expect(rayuCreditsSince(mark)).toBe(2)
+  test('a request that starts after the window closed goes to the next window only', () => {
+    const first = openRayuCreditWindow()
+    recordRayuCharge(10)
+    closeRayuCreditWindow(first)
+    const second = openRayuCreditWindow()
+    recordRayuCharge(2.5)
+    expect(rayuWindowCredits(first)).toBe(10)
+    expect(rayuWindowCredits(second)).toBe(2.5)
+  })
+
+  test('overlapping windows each count what started while they were open', () => {
+    const outer = openRayuCreditWindow()
+    recordRayuCharge(10)
+    const inner = openRayuCreditWindow()
+    recordRayuCharge(2.5)
+    closeRayuCreditWindow(inner)
+    recordRayuCharge(1)
+    expect(rayuWindowCredits(inner)).toBe(2.5)
+    expect(rayuWindowCredits(outer)).toBe(13.5)
+  })
+
+  test('a charge recorded without a ticket counts toward the windows open now', () => {
+    const work = openRayuCreditWindow()
+    recordRayuCharge(2)
+    expect(rayuWindowCredits(work)).toBe(2)
+  })
+
+  test('a request with no window open at its start is counted nowhere', () => {
+    const ticket = startRayuCharge()
+    const work = openRayuCreditWindow()
+    recordRayuCharge(3, ticket)
+    expect(ticket.windows).toHaveLength(0)
+    expect(rayuWindowCredits(work)).toBeUndefined()
   })
 })

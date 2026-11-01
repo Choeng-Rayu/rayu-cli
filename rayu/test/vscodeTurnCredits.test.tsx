@@ -53,6 +53,13 @@ describe('reading and describing the turn charge', () => {
   test('a BYOK turn has no credits to describe', () => {
     expect(describeTurnCredits(completion())).toBeUndefined()
   })
+
+  test('a large request total reads compactly, with the exact figure in the tooltip', () => {
+    const big = describeTurnCredits(completion({ credits: 200_000.07 }))
+    expect(big?.text).toBe('Credits: 200k')
+    // toLocaleString groups digits in the tooltip; the exact cents stay.
+    expect(big?.title).toMatch(/200.?000[.,]07/)
+  })
 })
 
 describe('TurnEndEntry', () => {

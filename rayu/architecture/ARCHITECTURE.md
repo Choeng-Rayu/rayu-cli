@@ -178,18 +178,23 @@ graph TD
     U["User"] --> O["🧠 Orchestrator<br>scope · plan · delegate · integrate"]
     O -->|"complex planning"| PL["📋 planner<br>read-only planning"]
     PL -->|"parallel discovery"| EX["🔎 Explore<br>read-only research"]
-    O -->|"named, bounded packets<br>parallel when independent"| GP["⚙️ general-purpose workers"]
-    GP --> IMPL["implementation"]
-    GP --> VERIFY["review · fix · lint · test · build"]
+    O -->|"publishes"| C["📜 contract<br>packets · owned files · interfaces · checks"]
+    C -->|"one worker per packet<br>parallel when independent"| GP["⚙️ general-purpose workers"]
+    GP -->|"shared tree, or own worktree<br>merged back 3-way"| TREE["main tree"]
+    TREE -->|"checked against packets<br>checkpoints · problems"| O
+    O -->|"once every worker finished"| VF["✅ verifier<br>required checks with evidence"]
+    VF -->|"accepted PASS for this tree"| GATE["🚦 gate"]
+    GATE -->|"closed: back to work"| O
     GP -.->|"no nested delegation"| STOP["return handoff"]
 ```
 
 | Type | Role | Writes? | Delegates? |
 |------|------|---------|------------|
 | Main Orchestrator | Plan, decompose, coordinate, integrate | No | Yes |
-| `planner` | Decision-complete plan and worker packets | No | Read-only `Explore` only |
+| `planner` | Decision-complete plan and worker packets | No | No |
 | `Explore` | Repository discovery | No | No |
-| `general-purpose` | Any implementation or verification domain | Yes | No |
+| `general-purpose` | Implementation, fixes, review, tests — one contract packet each | Yes | No |
+| `verifier` | Runs the contract's required checks; PASS/FAIL/PARTIAL with command evidence | No (guarded) | No |
 
 <details>
 <summary><b>📋 Built-in agent registry & gating (<code>tools/AgentTool/builtInAgents.ts</code>)</b></summary>
@@ -197,13 +202,15 @@ graph TD
 `getBuiltInAgents()` assembles the available agents:
 
 - Always: `GENERAL_PURPOSE_AGENT`, `STATUSLINE_SETUP_AGENT`.
-- Non-SDK entrypoints: `RAYU_CODE_GUIDE_AGENT` and the sole specialist,
-  `planner` (`built-in/subagents/index.ts` → `SUBAGENTS[]`).
+- Non-SDK entrypoints: `RAYU_CODE_GUIDE_AGENT`.
+- Every entrypoint except the programmatic SDKs (`sdk-ts`, `sdk-py`): the specialists
+  `planner` and `verifier` (`built-in/subagents/index.ts` → `SUBAGENTS[]`), so `-p` and
+  the Rayucode engine (`sdk-cli`) have them too.
 - Gated: `EXPLORE_AGENT` (GrowthBook A/B), `VERIFICATION_AGENT` (feature + gate).
 - **Coordinator mode** swaps the whole set for `getCoordinatorAgents()`.
 
 Opt-outs: `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS` (SDK), `RAYU_DISABLE_SPECIALIST_AGENTS`
-(disables `planner`). Global and per-agent models are configured with `/subagent_models`.
+(disables `planner` and `verifier`). Global and per-agent models are configured with `/subagent_models`.
 
 The separate team/teammate subsystem is gated by `isAgentSwarmsEnabled()`: always on for
 `USER_TYPE=ant`; otherwise requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` (or
@@ -257,12 +264,35 @@ available in the CLI Shift+Tab cycle and Rayucode's mode selector. It can also b
 with `/orchestrator`, and is selected automatically when a plan is approved. `/normal`
 exits to the default mode.
 
-The main thread receives a reminder on every human turn: do not edit or run
-implementation commands; delegate implementation, review, fixes, linting, tests, and
-builds. Complex work begins with `planner`, then named `general-purpose` workers receive
-self-contained packets with exact non-overlapping file ownership and verification
-criteria. Independent packets run in parallel; dependencies run sequentially. Completed
-workers are resumed by name, and fresh workers perform final review and verification.
+The rules are enforced in the shared engine (`src/orchestrator/`), so the CLI and
+Rayucode behave the same:
+
+- **Role.** A full reminder when the mode is entered (also mid-conversation), a short
+  one on every later turn, an exit notice when it is left. The main thread cannot
+  edit files or run writing commands itself (`mainThreadPolicy.ts`); workers keep
+  auto-approval.
+- **Contract.** `OrchestrationContract` publishes packets with owned paths, shared
+  interfaces with exact definitions, the order, and required checks. Contract v1
+  starts a run and snapshots the working tree as its baseline (`gitSnapshot.ts`,
+  private refs, the user's index untouched).
+- **Workers.** A writing worker must serve one packet (`spawnPolicy.ts`): dependencies
+  completed, one worker per packet, at most `orchestrator.maxParallelWriters`, in the
+  background. Each is briefed with the contract. Finished workers are continued with
+  SendMessage.
+- **Checks on changes.** Every worker change is checked against its packet
+  (`attribution.ts`, `shellChanges.ts`); checkpoints compare the whole tree with the
+  baseline when nothing runs (`checkpoint.ts`). Problems are reported to the worker
+  and the Orchestrator and stay open until undone, covered by a new contract version,
+  or accepted by the user.
+- **Worktree packets** are merged back 3-way, all or nothing, when their worker
+  finishes; conflicts go back to the worker's worktree (`worktreeIntegration.ts`).
+- **Verification and gate.** The `verifier` runs once every worker finished; its PASS
+  counts only with evidence for every required check (`verification.ts`). The gate in
+  `query.ts` (`gate.ts`) keeps a run that is not finished from being reported as done.
+- **Visibility.** `/orchestrator-status`, the CLI background-tasks dialog, Rayucode's
+  background-work panel (`task_orchestration` frames), and an audit history per run.
+
+See `AGENTS_ORCHESTRATOR.md` for the full flow and settings.
 
 </details>
 

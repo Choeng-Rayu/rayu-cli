@@ -38,8 +38,9 @@ import {
   _setFeatureUsageForTesting,
 } from '../src/services/rayuAuth/rayuFeatureUsage.ts'
 import {
-  markRayuCharges,
-  rayuCreditsSince,
+  closeRayuCreditWindow,
+  openRayuCreditWindow,
+  rayuWindowCredits,
 } from '../src/services/rayuAuth/rayuTurnCredits.ts'
 
 // A fetched-style catalog: exactly the shape services/rayuAuth/mediaModels.ts
@@ -791,13 +792,17 @@ describe('generateRayuImage client (hosted)', () => {
           { status: 200 },
         ),
     )
-    const mark = markRayuCharges()
-    await generateRayuImage({
-      model: withBuilder(HOSTED_IMAGE_MODEL),
-      params: { prompt: 'a cat' },
-    })
-    // 1200 billable tokens at 1000 per credit: what the turn line adds.
-    expect(rayuCreditsSince(mark)).toBe(1.2)
+    const work = openRayuCreditWindow()
+    try {
+      await generateRayuImage({
+        model: withBuilder(HOSTED_IMAGE_MODEL),
+        params: { prompt: 'a cat' },
+      })
+      // 1200 billable tokens at 1000 per credit: what the turn line adds.
+      expect(rayuWindowCredits(work)).toBe(1.2)
+    } finally {
+      closeRayuCreditWindow(work)
+    }
   })
 
   test('an older gateway that reports no charge adds nothing', async () => {
@@ -808,12 +813,16 @@ describe('generateRayuImage client (hosted)', () => {
           { status: 200 },
         ),
     )
-    const mark = markRayuCharges()
-    await generateRayuImage({
-      model: withBuilder(HOSTED_IMAGE_MODEL),
-      params: { prompt: 'a cat' },
-    })
-    expect(rayuCreditsSince(mark)).toBeUndefined()
+    const work = openRayuCreditWindow()
+    try {
+      await generateRayuImage({
+        model: withBuilder(HOSTED_IMAGE_MODEL),
+        params: { prompt: 'a cat' },
+      })
+      expect(rayuWindowCredits(work)).toBeUndefined()
+    } finally {
+      closeRayuCreditWindow(work)
+    }
   })
 
   test('falls back to downloading data[0].url with redirect:error', async () => {

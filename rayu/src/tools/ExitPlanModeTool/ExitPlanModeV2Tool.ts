@@ -445,7 +445,7 @@ Request ID: ${requestId}`,
       return {
         type: 'tool_result',
         content: orchestrating
-          ? 'User has approved exiting plan mode. Orchestrator mode is now active: coordinate and delegate all implementation and verification; do not code or run implementation commands yourself.'
+          ? 'User has approved exiting plan mode. Orchestrator mode is now active: coordinate and delegate implementation to subagents; do not edit files yourself, though you may run shell commands such as checks and builds.'
           : `User has approved exiting plan mode. ${describeApprovedMode(resultingMode)} You can now proceed.`,
         tool_use_id: toolUseID,
       }
@@ -478,7 +478,7 @@ ${plan}`,
 
     return {
       type: 'tool_result',
-      content: `User has approved your plan and Orchestrator mode is now active. Do not implement it yourself. Delegate every implementation and verification packet to subagents, coordinate their dependencies, and integrate their results.${teamHint}
+      content: `User has approved your plan and Orchestrator mode is now active. Do not edit files yourself. Delegate each implementation packet to a subagent, coordinate their dependencies, and integrate their results; you may run shell commands such as checks and builds yourself.${teamHint}
 
 Your plan has been saved to: ${filePath}
 Use it as the contract for delegated implementation.

@@ -7,6 +7,8 @@ export const VERIFICATION_AGENT_TYPE = 'verification'
 export const GENERAL_PURPOSE_AGENT_TYPE = 'general-purpose'
 export const PLANNER_AGENT_TYPE = 'planner'
 export const EXPLORE_AGENT_TYPE = 'Explore'
+/** Checks an Orchestrator run's integrated result; its verdict feeds the run's gate. */
+export const VERIFIER_AGENT_TYPE = 'verifier'
 
 // Built-in agents that run once and return a report — the parent never
 // SendMessages back to continue them. Skip the agentId/SendMessage/usage

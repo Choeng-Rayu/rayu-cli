@@ -1,9 +1,9 @@
 /**
  * Settings → Integrations: Telegram, Studio Remote and GitHub, each with its own card.
  *
- * Telegram is the same connect flow the terminal's `/telegram-bot` runs (the panel is
- * shared with the chat). Studio Remote and GitHub hand their work to the host's
- * existing flows, which open their own native prompts and tabs.
+ * Telegram is the same connect flow the terminal's `/telegram-bot` runs. Studio Remote
+ * and GitHub hand their work to the host's existing flows, which open their own native
+ * prompts and tabs.
  */
 import type { IntegrationsView, WebBridgeAction, WebBridgeView } from '../../shared/settingsProtocol.js'
 import { CheckIcon, CircleIcon } from '../components/Icons.js'
@@ -37,7 +37,6 @@ export function IntegrationsSection(props: IntegrationsSectionProps): JSX.Elemen
         description="Send prompts and approve tools from Telegram. The link is shared with Rayu CLI, so one made in either works in both."
       >
         <TelegramConnectPanel
-          embedded
           connect={integrations.telegram}
           onStartHosted={props.onTelegramStartHosted}
           onStartByo={props.onTelegramStartByo}
@@ -91,6 +90,9 @@ function GitHubItem({ github, onSetup }: { github: IntegrationsView['github']; o
             </span>
           ))
         : <span className="rs-item-note">Open a repository folder to set up GitHub.</span>}
+      {github.hasWorkspace && (
+        <span className="rs-item-note">Shows what is in this folder. After setup, merge the pull request and pull.</span>
+      )}
       <div className="rs-actions">
         <button type="button" className="rs-button rs-button-secondary" disabled={!github.hasWorkspace} onClick={onSetup}>
           {allInstalled && github.hasWorkspace ? 'Set up again' : 'Set up GitHub Actions'}

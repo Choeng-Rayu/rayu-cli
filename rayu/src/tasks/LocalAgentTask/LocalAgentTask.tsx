@@ -18,6 +18,8 @@ import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
 import { getAgentTranscriptPath } from '../../utils/sessionStorage.js';
 import { evictTaskOutput, getTaskOutputPath, initTaskOutputAsSymlink } from '../../utils/task/diskOutput.js';
 import { PANEL_GRACE_MS, registerTask, updateTaskState } from '../../utils/task/framework.js';
+import { orchestrationNotice, recordWorkerStatus } from '../../orchestrator/packetProgress.js';
+import { settleVerifier, verificationNotice } from '../../orchestrator/verification.js';
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js';
 import type { TaskState } from '../types.js';
 export type ToolActivity = {
@@ -275,6 +277,16 @@ export function enqueueAgentNotification({
   // results may reference stale task output. The prompt suggestion text is
   // preserved; only the pre-computed response is discarded.
   abortSpeculation(setAppState);
+  // An Orchestrator worker's notice says which packet it served and what can
+  // start next; a verifier's says what its verdict amounts to. Read through the
+  // updater: this function has no getAppState.
+  settleVerifier(taskId, finalMessage ?? '', status, setAppState);
+  let orchestrationSection = '';
+  setAppState(prev => {
+    const notice = orchestrationNotice(prev, taskId) ?? verificationNotice(prev, taskId);
+    orchestrationSection = notice ? `\n${notice}` : '';
+    return prev;
+  });
   const summary = status === 'completed' ? `Agent "${description}" completed` : status === 'failed' ? `Agent "${description}" failed: ${error || 'Unknown error'}` : `Agent "${description}" was stopped`;
   const outputPath = getTaskOutputPath(taskId);
   const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';
@@ -285,7 +297,7 @@ export function enqueueAgentNotification({
 <${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}${orchestrationSection}
 </${TASK_NOTIFICATION_TAG}>`;
   enqueuePendingNotification({
     value: message,
@@ -330,6 +342,7 @@ export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
     };
   });
   if (killed) {
+    recordWorkerStatus(taskId, 'killed', setAppState);
     void evictTaskOutput(taskId);
   }
 }
@@ -459,6 +472,7 @@ export function completeAgentTask(result: AgentToolResult, setAppState: SetAppSt
       selectedAgent: undefined
     };
   });
+  recordWorkerStatus(taskId, 'completed', setAppState);
   void evictTaskOutput(taskId);
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
@@ -483,6 +497,7 @@ export function failAgentTask(taskId: string, error: string, setAppState: SetApp
       selectedAgent: undefined
     };
   });
+  recordWorkerStatus(taskId, 'failed', setAppState);
   void evictTaskOutput(taskId);
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
@@ -557,6 +572,8 @@ export function registerAsyncAgent({
 
   // Register task in AppState
   registerTask(taskState, setAppState);
+  // A resumed Orchestrator worker puts its packet back to running.
+  recordWorkerStatus(agentId, 'running', setAppState);
   return taskState;
 }
 

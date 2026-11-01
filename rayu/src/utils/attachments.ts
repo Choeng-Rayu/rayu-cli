@@ -27,7 +27,14 @@ import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
-import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
+import {
+  archiveActiveRun,
+  describeOrchestratorSession,
+} from '../orchestrator/session.js'
+import {
+  renderCheckpoint,
+  takeCheckpointIfDue,
+} from '../orchestrator/checkpoint.js'
 import {
   decideOrchestratorReminder,
   needsOrchestratorExitNotice,
@@ -588,9 +595,16 @@ export type Attachment =
       reminderType?: 'full' | 'sparse'
       availableAgents?: string[]
       canMessageWorkers?: boolean
+      hasContractTool?: boolean
+      contract?: { runId: string; version: number }
     }
   | {
       type: 'orchestrator_mode_exit'
+    }
+  | {
+      /** Whole-tree comparison with the run's baseline, when no worker is running. */
+      type: 'orchestrator_checkpoint'
+      text: string
     }
   | {
       type: 'auto_mode'
@@ -900,6 +914,9 @@ export async function getAttachments(
     ),
     maybe('orchestrator_mode_exit', () =>
       Promise.resolve(getOrchestratorModeExitAttachment(messages, toolUseContext)),
+    ),
+    maybe('orchestrator_checkpoint', () =>
+      getOrchestratorCheckpointAttachment(input, toolUseContext),
     ),
     ...(feature('TRANSCRIPT_CLASSIFIER')
       ? [
@@ -1282,18 +1299,15 @@ async function getOrchestratorModeAttachment(
   return [
     {
       type: 'orchestrator_mode',
-      reminderType,
-      availableAgents: toolUseContext.options.agentDefinitions.activeAgents.map(
-        agent => agent.agentType,
-      ),
-      canMessageWorkers: toolUseContext.options.tools.some(tool =>
-        toolMatchesName(tool, SEND_MESSAGE_TOOL_NAME),
-      ),
+      ...describeOrchestratorSession(toolUseContext, reminderType),
     },
   ]
 }
 
-/** A one-time notice that Orchestrator mode was left, so its rules stop applying. */
+/**
+ * A one-time notice that Orchestrator mode was left, so its rules stop applying.
+ * The run ends with it: its contract no longer binds anyone.
+ */
 function getOrchestratorModeExitAttachment(
   messages: Message[] | undefined,
   toolUseContext: ToolUseContext,
@@ -1303,7 +1317,22 @@ function getOrchestratorModeExitAttachment(
     mode: toolUseContext.getAppState().toolPermissionContext.mode,
     messages,
   })
-  return due ? [{ type: 'orchestrator_mode_exit' }] : []
+  if (!due) return []
+  archiveActiveRun(toolUseContext)
+  return [{ type: 'orchestrator_mode_exit' }]
+}
+
+/**
+ * At the start of an Orchestrator turn with no worker running, compare the working
+ * tree with the run's baseline (src/orchestrator/checkpoint.ts).
+ */
+async function getOrchestratorCheckpointAttachment(
+  input: string | null,
+  toolUseContext: ToolUseContext,
+): Promise<Attachment[]> {
+  if (input === null) return []
+  const summary = await takeCheckpointIfDue(toolUseContext)
+  return summary ? [{ type: 'orchestrator_checkpoint', text: renderCheckpoint(summary) }] : []
 }
 
 /**

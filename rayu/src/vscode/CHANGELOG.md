@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.3.1
+## 2.4.1
 
 ### Added
 
@@ -24,10 +24,17 @@
   configured API key.
 - Icons are now VS Code codicons, and the panel's corner radii/focus/high-contrast
   styling follow the editor.
+- Plan mode runs without asking, as Full Manage does, but never changes your code. It
+  refuses file edits outside the plan file and commands that change files, git state
+  or dependencies, and asks the model to write the change into the plan instead.
+- A Telegram link made while a reply is running now attaches that conversation when the
+  reply ends. Before, it waited until the engine next restarted.
 
 ### Fixed
 
 - A crashed engine's replacement resumes the same conversation instead of starting over.
+- Plan mode no longer lets edits through. Rayucode always starts its engine with
+  bypass permissions available, and plan mode used to inherit them.
 
 ## 1.6.23
 

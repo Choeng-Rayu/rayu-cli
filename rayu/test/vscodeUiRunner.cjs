@@ -30,6 +30,7 @@ exports.run = async () => {
         let result = {}
         try {
           if (request.action === 'theme') await vscode.workspace.getConfiguration('workbench').update('colorTheme', request.theme, vscode.ConfigurationTarget.Global)
+          if (request.action === 'command') await vscode.commands.executeCommand(request.command)
           if (request.action === 'diff') {
             // `vscode.diff` resolves after scheduling the editors; give the content
             // provider a moment to materialize both documents before reading them.

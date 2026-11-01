@@ -61,10 +61,16 @@ export function getBuiltInAgents(): AgentDefinition[] {
     agents.push(RAYU_CODE_GUIDE_AGENT)
   }
 
-  // The planner is the only specialist subagent. Orchestrator mode uses
-  // general-purpose agents for implementation, review, and verification.
+  // Specialist subagents: the planner and the Orchestrator verifier. Orchestrator
+  // mode uses general-purpose agents for implementation, review and fixes. They
+  // are offered headless too (`-p`, and the Rayucode engine, both "sdk-cli"), so
+  // Orchestrator mode has them in both products; only the programmatic SDKs,
+  // whose callers define their own agents, go without.
+  const isProgrammaticSdk =
+    process.env.CLAUDE_CODE_ENTRYPOINT === 'sdk-ts' ||
+    process.env.CLAUDE_CODE_ENTRYPOINT === 'sdk-py'
   if (
-    isNonSdkEntrypoint &&
+    !isProgrammaticSdk &&
     !isEnvTruthy(process.env.RAYU_DISABLE_SPECIALIST_AGENTS)
   ) {
     agents.push(...SUBAGENTS)

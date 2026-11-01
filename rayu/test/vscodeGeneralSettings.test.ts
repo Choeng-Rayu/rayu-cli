@@ -158,7 +158,7 @@ describe('GeneralSettings', () => {
 
   test.each([
     ['nope', true, 'That setting cannot be changed here.'],
-    // A real setting, but not one this section shows: the webview cannot reach it.
+    // Not a Settings row (thinking is always on), so the webview cannot reach it.
     ['thinkingEnabled', false, 'That setting cannot be changed here.'],
     // The engine knows these modes, but the editor does not offer them.
     ['permissionMode', 'bypassPermissions', 'That is not a valid permission mode for new conversations.'],

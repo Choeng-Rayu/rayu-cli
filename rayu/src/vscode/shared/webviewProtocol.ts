@@ -473,8 +473,6 @@ export type HostToWebviewMessage =
   | { type: 'setInferenceSettings'; settings: InferenceSettingsView }
   /** Provider setup surface state. Never carries a credential. */
   | { type: 'setProviderSetup'; setup: ProviderSetupView }
-  /** Telegram connect surface state. Never carries a bot token. */
-  | { type: 'setTelegramConnect'; connect: TelegramConnectView }
   /** Attachable CLI sessions and the current attachment. Never carries an IPC token. */
   | { type: 'setAttachment'; attachment: AttachmentView }
   /** The active permission mode, after the engine accepted a change. */
@@ -790,19 +788,6 @@ export type WebviewToHostMessage =
   | { type: 'attachToSession'; pid: number }
   | { type: 'detachFromSession' }
   | { type: 'providerSetupOpen'; open: boolean }
-  /** Open or close the in-panel Telegram connect surface. */
-  | { type: 'telegramConnectOpen'; open: boolean }
-  /** Create a pairing against the shared Rayu-hosted bot. */
-  | { type: 'telegramConnectStartHosted' }
-  /**
-   * Verify and save a BYO (@BotFather) bot token.
-   *
-   * The token crosses the webview boundary once, here, and is never echoed back or
-   * stored in webview state — the same write-only rule `providerSetupValidate` follows.
-   */
-  | { type: 'telegramConnectStartByo'; token: string }
-  /** Forget the current chat binding (hosted mode also deletes the server-side link). */
-  | { type: 'telegramConnectUnlink' }
   /**
    * Verify a credential without saving it. The key crosses the webview boundary once,
    * here, and is never echoed back or stored in webview state.
@@ -859,7 +844,7 @@ export type WebviewToHostMessage =
    * tell a user with a valid key that they are not authenticated.
    */
   | { type: 'openProviderSetup' }
-  /** Open the in-panel Telegram connect surface. */
+  /** Open Settings → Integrations, where Telegram is connected. */
   | { type: 'openTelegramConnect' }
   /** Open the Rayucode Settings tab, optionally at a section. */
   | { type: 'openSettings'; section?: string }
@@ -1593,7 +1578,6 @@ export interface WebviewState {
   /** Thinking and effort, so the controls survive a webview re-creation. */
   inference: InferenceSettingsView
   providerSetup: ProviderSetupView
-  telegramConnect: TelegramConnectView
   /** Open command-driven model chooser, or null. Host-owned so it survives re-creation. */
   modelChooser: ModelChooserView | null
   attachment: AttachmentView
@@ -1818,12 +1802,12 @@ export interface ProviderSetupView {
 }
 
 /**
- * The in-panel Telegram connect surface.
+ * The Telegram connect card in Settings → Integrations (`TelegramConnectPanel`).
  *
  * ── NO FIELD HERE HOLDS A BOT TOKEN ────────────────────────────────────────────
  *
  * A BYO token is write-only from the webview's point of view: it is typed into a local
- * `type="password"` input, sent once in `telegramConnectStartByo`, and never returned.
+ * `type="password"` input, sent once in `settingsTelegramStartByo`, and never returned.
  * The host never reads it back, so nothing on this type could place one in persisted
  * webview state, a diagnostic, or the transcript.
  *
@@ -1832,7 +1816,6 @@ export interface ProviderSetupView {
  * UI uses to keep the deep link and "waiting" hint on screen.
  */
 export interface TelegramConnectView {
-  open: boolean
   /** True while a status load, pairing, verification, or unlink is in flight. */
   busy: boolean
   /** Progress wording for the step in flight. */

@@ -44,6 +44,12 @@ import { BASH_TOOL_NAME } from '../BashTool/toolName.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js';
+import { assignPacketWorker, orchestrationNotice, recordPacketWorktree, releasePacketWorker, settleForegroundPacket } from '../../orchestrator/packetProgress.js';
+import { finishPacketWorktree } from '../../orchestrator/worktreeIntegration.js';
+import { beginVerification, decideVerifierSpawn, sealVerification, settleForegroundVerifier } from '../../orchestrator/verifierGuard.js';
+import { getActiveRun } from '../../orchestrator/runState.js';
+import { getOrchestratorSettings } from '../../orchestrator/settings.js';
+import { decideWorkerSpawn } from '../../orchestrator/spawnPolicy.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
@@ -417,6 +423,38 @@ export const AgentTool = buildTool({
       setAgentColor(selectedAgent.agentType, selectedAgent.color);
     }
 
+    // Created here, before the first await, so an Orchestrator packet can be
+    // claimed for this worker synchronously: parallel Agent calls in one message
+    // then cannot both claim the same packet or exceed the writer limit.
+    const earlyAgentId = createAgentId();
+
+    // Orchestrator mode: an implementation worker must serve one contract packet
+    // (src/orchestrator/spawnPolicy.ts). It is briefed with the contract and its
+    // packet decides the isolation.
+    const packetDecision = decideWorkerSpawn({
+      agentDefinition: selectedAgent,
+      name
+    }, toolUseContext, getOrchestratorSettings());
+    if (packetDecision.kind === 'refused') {
+      throw new Error(packetDecision.message);
+    }
+    const packetGrant = packetDecision.kind === 'packet' ? packetDecision : null;
+    const packetStatusBefore = packetGrant ? getActiveRun(appState)?.packets.find(p => p.name === packetGrant.packet.name)?.status ?? 'pending' : null;
+    if (packetGrant) {
+      assignPacketWorker(packetGrant.packet.name, earlyAgentId, rootSetAppState);
+    }
+    const releasePacketClaim = () => {
+      if (packetGrant && packetStatusBefore) releasePacketWorker(packetGrant.packet.name, earlyAgentId, packetStatusBefore, rootSetAppState);
+    };
+    // The Orchestrator verifier is briefed with the run's contract and launched only
+    // once every packet has finished (src/orchestrator/verifierGuard.ts).
+    const verifierDecision = decideVerifierSpawn(selectedAgent.agentType, toolUseContext);
+    if (verifierDecision.kind === 'refused') {
+      throw new Error(verifierDecision.message);
+    }
+    const verifierGrant = verifierDecision.kind === 'verifier' ? verifierDecision : null;
+    const workerPrompt = packetGrant ? `${packetGrant.briefing}${prompt}` : verifierGrant ? `${verifierGrant.briefing}${prompt}` : prompt;
+
     // Resolve agent params for logging (these are already resolved in runAgent)
     const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode, selectedAgent.agentType);
     logEvent('tengu_agent_tool_selected', {
@@ -430,8 +468,10 @@ export const AgentTool = buildTool({
       is_fork: isForkPath
     });
 
-    // Resolve effective isolation mode (explicit param overrides agent def)
-    const effectiveIsolation = isolation ?? selectedAgent.isolation;
+    // Resolve effective isolation mode (explicit param overrides agent def).
+    // An Orchestrator packet's isolation comes from the contract instead: a
+    // shared packet must edit the main tree its peers are measured against.
+    const effectiveIsolation = packetGrant ? packetGrant.worktreeBase ? 'worktree' as const : undefined : isolation ?? selectedAgent.isolation;
 
     // Remote isolation: delegate to CCR. Gated ant-only — the guard enables
     // dead code elimination of the entire block for external builds.
@@ -512,7 +552,7 @@ export const AgentTool = buildTool({
           appendSystemPrompt: toolUseContext.options.appendSystemPrompt
         });
       }
-      promptMessages = buildForkedMessages(prompt, assistantMessage);
+      promptMessages = buildForkedMessages(workerPrompt, assistantMessage);
     } else {
       try {
         const additionalWorkingDirectories = Array.from(appState.toolPermissionContext.additionalWorkingDirectories.keys());
@@ -539,7 +579,7 @@ export const AgentTool = buildTool({
         logForDebugging(`Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`);
       }
       promptMessages = [createUserMessage({
-        content: prompt
+        content: workerPrompt
       })];
     }
     const metadata = {
@@ -567,7 +607,9 @@ export const AgentTool = buildTool({
     // <task-notification> re-entry there is handled by the else branch
     // below (registerAsyncAgentTask + notifyOnCompletion).
     const assistantForceAsync = feature('KAIROS') ? appState.kairosEnabled : false;
-    const shouldRunAsync = (run_in_background === true || selectedAgent.background === true || isCoordinator || forceAsync || assistantForceAsync || (proactiveModule?.isProactiveActive() ?? false)) && !isBackgroundTasksDisabled;
+    // An Orchestrator packet worker always runs in the background, so asking for the
+    // foreground costs no refused call and no second attempt.
+    const shouldRunAsync = (run_in_background === true || selectedAgent.background === true || isCoordinator || forceAsync || assistantForceAsync || packetGrant !== null || (proactiveModule?.isProactiveActive() ?? false)) && !isBackgroundTasksDisabled;
     // Assemble the worker's tool pool independently of the parent's.
     // Workers always get their tools from assembleToolPool with their own
     // permission mode, so they aren't affected by the parent's tool
@@ -579,9 +621,6 @@ export const AgentTool = buildTool({
     };
     const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
 
-    // Create a stable agent ID early so it can be used for worktree slug
-    const earlyAgentId = createAgentId();
-
     // Set up worktree isolation if requested
     let worktreeInfo: {
       worktreePath: string;
@@ -592,7 +631,30 @@ export const AgentTool = buildTool({
     } | null = null;
     if (effectiveIsolation === 'worktree') {
       const slug = `agent-${earlyAgentId.slice(0, 8)}`;
-      worktreeInfo = await createAgentWorktree(slug);
+      try {
+        worktreeInfo = await createAgentWorktree(slug, packetGrant?.worktreeBase ? {
+          baseCommit: packetGrant.worktreeBase
+        } : undefined);
+      } catch (error) {
+        // The worker never started: its packet must not stay claimed.
+        releasePacketClaim();
+        throw error;
+      }
+      // A worktree packet's changes are merged back when its worker finishes
+      // (src/orchestrator/worktreeIntegration.ts), measured from its base.
+      if (packetGrant?.worktreeBase && worktreeInfo.gitRoot) {
+        recordPacketWorktree(earlyAgentId, {
+          path: worktreeInfo.worktreePath,
+          ...(worktreeInfo.worktreeBranch ? {
+            branch: worktreeInfo.worktreeBranch
+          } : {}),
+          gitRoot: worktreeInfo.gitRoot,
+          base: packetGrant.worktreeBase,
+          state: 'open',
+          failedAttempts: 0,
+          conflicts: []
+        }, rootSetAppState);
+      }
     }
 
     // Fork + worktree: inject a notice telling the child to translate paths
@@ -644,11 +706,27 @@ export const AgentTool = buildTool({
     const wrapWithCwd = <T,>(fn: () => T): T => cwdOverridePath ? runWithCwdOverride(cwdOverridePath, fn) : fn();
 
     // Helper to clean up worktree after agent completes
+    const packetWorktreeHost = {
+      getAppState: toolUseContext.getAppState,
+      setAppState: rootSetAppState,
+      onWorktreeRemoved: () => void writeAgentMetadata(asAgentId(earlyAgentId), {
+        agentType: selectedAgent.agentType,
+        description
+      }).catch(_err => logForDebugging(`Failed to clear worktree metadata: ${_err}`))
+    };
     const cleanupWorktreeIfNeeded = async (): Promise<{
       worktreePath?: string;
       worktreeBranch?: string;
     }> => {
+      // A verifier's run ended: compare the tree with the one it started from.
+      if (verifierGrant) await sealVerification(earlyAgentId, packetWorktreeHost);
       if (!worktreeInfo) return {};
+      // A worktree packet is merged into the main tree instead of being kept
+      // or dropped; null means it no longer belongs to an active run.
+      if (packetGrant?.worktreeBase) {
+        const packetResult = await finishPacketWorktree(earlyAgentId, packetWorktreeHost);
+        if (packetResult) return packetResult;
+      }
       const {
         worktreePath,
         worktreeBranch,
@@ -686,6 +764,9 @@ export const AgentTool = buildTool({
         worktreeBranch
       };
     };
+    if (verifierGrant) {
+      await beginVerification(earlyAgentId, verifierGrant.run);
+    }
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId;
       const agentBackgroundTask = registerAsyncAgent({
@@ -788,7 +869,7 @@ export const AgentTool = buildTool({
 
       // Wrap entire sync agent execution in context for analytics attribution
       // and optionally in a worktree cwd override for filesystem isolation
-      return runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
+      const syncRun = runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
         const agentMessages: MessageType[] = [];
         const agentStartTime = Date.now();
         const syncTracker = createProgressTracker();
@@ -1268,6 +1349,13 @@ export const AgentTool = buildTool({
           }
         };
       }));
+      // A foreground packet worker finishes when this call does; one moved to
+      // the background reports through its task's status transitions instead.
+      // A foreground worktree packet is merged once its completion is recorded.
+      return packetGrant ? settleForegroundPacket(syncRun, earlyAgentId, rootSetAppState, packetGrant.worktreeBase ? async () => {
+        await finishPacketWorktree(earlyAgentId, packetWorktreeHost);
+        return orchestrationNotice(toolUseContext.getAppState(), earlyAgentId);
+      } : undefined) : verifierGrant ? settleForegroundVerifier(syncRun, earlyAgentId, packetWorktreeHost) : syncRun;
     }
   },
   isReadOnly() {

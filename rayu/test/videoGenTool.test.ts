@@ -42,8 +42,9 @@ import {
   _setFeatureUsageForTesting,
 } from '../src/services/rayuAuth/rayuFeatureUsage.ts'
 import {
-  markRayuCharges,
-  rayuCreditsSince,
+  closeRayuCreditWindow,
+  openRayuCreditWindow,
+  rayuWindowCredits,
 } from '../src/services/rayuAuth/rayuTurnCredits.ts'
 
 // A fetched-style catalog: exactly what services/rayuAuth/mediaModels.ts produces
@@ -1581,15 +1582,19 @@ describe('VideoGenTool hosted (Rayu)', () => {
         headers: { 'content-type': 'application/octet-stream' },
       })
     })
-    const mark = markRayuCharges()
-    await expect(
-      generateRayuVideo({
-        model: withBuilder(HOSTED_VIDEO_MODEL),
-        params: { prompt: 'x' },
-      }),
-    ).rejects.toThrow(/MP4/)
-    // The gateway settled the render before answering; a failed download does not undo it.
-    expect(rayuCreditsSince(mark)).toBe(2.5)
+    const work = openRayuCreditWindow()
+    try {
+      await expect(
+        generateRayuVideo({
+          model: withBuilder(HOSTED_VIDEO_MODEL),
+          params: { prompt: 'x' },
+        }),
+      ).rejects.toThrow(/MP4/)
+      // The gateway settled the render before answering; a failed download does not undo it.
+      expect(rayuWindowCredits(work)).toBe(2.5)
+    } finally {
+      closeRayuCreditWindow(work)
+    }
   })
 
   test('the client timeout waits past the gateway 900s budget', () => {

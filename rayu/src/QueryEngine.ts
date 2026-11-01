@@ -35,11 +35,6 @@ import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
-import {
-  markRayuCharges,
-  type RayuChargeMark,
-  rayuCreditsSince,
-} from './services/rayuAuth/rayuTurnCredits.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
@@ -188,16 +183,6 @@ export type QueryEngineConfig = {
 }
 
 /**
- * The `rayu_credits` a result frame carries: what the Rayu gateway charged
- * during the turn, for the front end's "Credits:" line. Omitted when the turn
- * made no Rayu-billed request, so a BYOK turn reports nothing rather than 0.
- */
-function rayuCreditsField(mark: RayuChargeMark): { rayu_credits?: number } {
-  const credits = rayuCreditsSince(mark)
-  return credits === undefined ? {} : { rayu_credits: credits }
-}
-
-/**
  * QueryEngine owns the query lifecycle and session state for a conversation.
  * It extracts the core logic from ask() into a standalone class that can be
  * used by both the headless/SDK path and (in a future phase) the REPL.
@@ -265,8 +250,6 @@ export class QueryEngine {
     setCwd(cwd)
     const persistSession = !isSessionPersistenceDisabled()
     const startTime = Date.now()
-    // The result frame reports what the Rayu gateway charged from here on.
-    const rayuChargeMark = markRayuCharges()
 
     // Wrap canUseTool to track permission denials
     const wrappedCanUseTool: CanUseToolFn = async (
@@ -675,7 +658,6 @@ export class QueryEngine {
           mainLoopModel,
           initialAppState.fastMode,
         ),
-        ...rayuCreditsField(rayuChargeMark),
         uuid: randomUUID(),
       }
       return
@@ -908,7 +890,6 @@ export class QueryEngine {
                 mainLoopModel,
                 initialAppState.fastMode,
               ),
-              ...rayuCreditsField(rayuChargeMark),
               uuid: randomUUID(),
               errors: [
                 `Reached maximum number of turns (${message.attachment.maxTurns})`,
@@ -1039,7 +1020,6 @@ export class QueryEngine {
             mainLoopModel,
             initialAppState.fastMode,
           ),
-          ...rayuCreditsField(rayuChargeMark),
           uuid: randomUUID(),
           errors: [`Reached maximum budget ($${maxBudgetUsd})`],
         }
@@ -1083,7 +1063,6 @@ export class QueryEngine {
               mainLoopModel,
               initialAppState.fastMode,
             ),
-            ...rayuCreditsField(rayuChargeMark),
             uuid: randomUUID(),
             errors: [
               `Failed to provide valid structured output after ${maxRetries} attempts`,
@@ -1143,7 +1122,6 @@ export class QueryEngine {
           mainLoopModel,
           initialAppState.fastMode,
         ),
-        ...rayuCreditsField(rayuChargeMark),
         uuid: randomUUID(),
         // Diagnostic prefix: these are what isResultSuccessful() checks — if
         // the result type isn't assistant-with-text/thinking or user-with-
@@ -1198,7 +1176,6 @@ export class QueryEngine {
         mainLoopModel,
         initialAppState.fastMode,
       ),
-      ...rayuCreditsField(rayuChargeMark),
       uuid: randomUUID(),
     }
   }

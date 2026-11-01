@@ -166,6 +166,7 @@ A few concrete traps, because they've bitten before:
 - The Ink renderer at `src/ink/reconciler.ts` is a **custom reconciler** (packed Int32 buffers, custom ANSI parser, Yoga layout) — not standard npm `ink`.
 - State management is **Zustand-like stores** in `src/state/`, not React context.
 - Directory structure doesn't follow any external template — Rayu adds whole directories (`src/telegram/`, `src/coordinator/`, `src/bridge/`, `src/buddy/`, `src/vscode/`, etc.) that won't exist in your training data.
+- **Plan mode is not upstream's.** It runs tools without asking, like Full Manage, but refuses anything that changes the project except the session plan file. The rule is `src/utils/permissions/planModePolicy.ts`, called from `permissions.ts` next to Orchestrator's main-thread rule; extend that file rather than adding plan-mode checks elsewhere.
 
 ### 🔍 Rule 2: Prevent duplicate code — search before you write
 

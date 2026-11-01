@@ -86,6 +86,8 @@ Tools fall into three buckets:
 | `EnterWorktree` | `EnterWorktreeTool` | `isWorktreeModeEnabled()` |
 | `ExitWorktree` | `ExitWorktreeTool` | `isWorktreeModeEnabled()` |
 | `SendMessage` | `SendMessageTool` | Always resolved via lazy `require()` (breaks a circular dep) — effectively always included |
+| `OrchestrationContract` | `OrchestrationContractTool` | Main thread in Orchestrator mode only (`withOrchestratorTools`); publishes and shows the run's contract. In `ALL_AGENT_DISALLOWED_TOOLS`, so workers never get it |
+| `SendMessage` (Orchestrator) | `OrchestratorSendMessageTool` | Main thread in Orchestrator mode only, when agent teams are off: continues a finished worker by packet name or agent id, with the current contract version if it changed |
 | `TeamCreate` | `TeamCreateTool` | `isAgentSwarmsEnabled()` |
 | `TeamDelete` | `TeamDeleteTool` | `isAgentSwarmsEnabled()` |
 | `VerifyPlanExecution` | `VerifyPlanExecutionTool` | `process.env.CLAUDE_CODE_VERIFY_PLAN === 'true'` |

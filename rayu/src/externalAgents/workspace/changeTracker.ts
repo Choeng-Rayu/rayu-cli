@@ -30,91 +30,38 @@
  * was never there. So this module deliberately stores only metadata (path,
  * kind, timing, counts) and never claims a change is reversible.
  *
- * Memory shape
- * ------------
- * A long-running agent may rewrite one file hundreds of times, so per-file
- * history is collapsed to first-seen / last-seen / count. The number of
- * *distinct* paths is still unbounded, so it is capped per agent and the
- * overflow is counted rather than silently dropped — an agent that blew the cap
- * is exactly the one you want to know about.
+ * Implementation
+ * --------------
+ * The bookkeeping (path normalization, the per-agent cap, conflict detection)
+ * lives in `utils/agentChangeLedger.ts`, which Orchestrator mode also uses for
+ * its own workers. This module is the process-wide ledger for external agents
+ * plus the event adapter and the report text.
  */
 
-import { isAbsolute, relative, resolve } from 'path'
+import {
+  type AgentChangeSummary as LedgerSummary,
+  type AgentFileChange as LedgerFileChange,
+  type ConflictParticipant as LedgerParticipant,
+  createAgentChangeLedger,
+  DEFAULT_MAX_TRACKED_PATHS_PER_AGENT,
+  type FileConflict as LedgerConflict,
+} from '../../utils/agentChangeLedger.js'
 import type { AgentInstanceId, FileChangedEvent } from '../core/types.js'
 
+export { resolveChangePath } from '../../utils/agentChangeLedger.js'
+
 /** Distinct paths retained per agent before overflow is merely counted. */
-export const MAX_TRACKED_PATHS_PER_AGENT = 5000
+export const MAX_TRACKED_PATHS_PER_AGENT = DEFAULT_MAX_TRACKED_PATHS_PER_AGENT
 
 export type FileChangeKind = FileChangedEvent['change']
+export type AgentFileChange = LedgerFileChange
+export type AgentChangeSummary = LedgerSummary<AgentInstanceId>
+export type ConflictParticipant = LedgerParticipant<AgentInstanceId>
+export type FileConflict = LedgerConflict<AgentInstanceId>
 
-export type AgentFileChange = {
-  /** Absolute, normalized. Comparable across agents. */
-  readonly path: string
-  /** Relative to the agent's workspace root, for display. */
-  readonly displayPath: string
-  /** Most recent change kind reported for this path. */
-  readonly change: FileChangeKind
-  /** First kind reported, so create-then-modify stays legible. */
-  readonly firstChange: FileChangeKind
-  readonly firstSeenMs: number
-  readonly lastSeenMs: number
-  /** How many `file_changed` events landed on this path. */
-  readonly count: number
-  /** Whether any event carried a unified diff. */
-  readonly hasDiff: boolean
-}
-
-export type AgentChangeSummary = {
-  readonly agentId: AgentInstanceId
-  readonly workspaceRoot: string
-  readonly files: readonly AgentFileChange[]
-  /** Distinct paths dropped because the per-agent cap was reached. */
-  readonly overflowCount: number
-}
-
-export type ConflictParticipant = {
-  readonly agentId: AgentInstanceId
-  readonly change: FileChangeKind
-  readonly lastSeenMs: number
-}
-
-export type FileConflict = {
-  readonly path: string
-  /** Ordered by most recent writer first — the likely clobberer. */
-  readonly agents: readonly ConflictParticipant[]
-}
-
-type AgentEntry = {
-  workspaceRoot: string
-  readonly files: Map<string, AgentFileChange>
-  overflowCount: number
-}
-
-const byAgent = new Map<AgentInstanceId, AgentEntry>()
-
-/**
- * Resolve a reported path against the agent's workspace root.
- *
- * Providers are inconsistent: Codex reports absolute paths, OpenCode's
- * `file.edited` may report repo-relative ones. Normalizing to absolute is what
- * makes cross-agent comparison meaningful — and it is also why two agents in
- * separate worktrees never produce a false conflict, since their roots differ.
- */
-export function resolveChangePath(
-  reportedPath: string,
-  workspaceRoot: string,
-): string {
-  return isAbsolute(reportedPath)
-    ? resolve(reportedPath)
-    : resolve(workspaceRoot, reportedPath)
-}
-
-function displayFor(absolutePath: string, workspaceRoot: string): string {
-  const rel = relative(workspaceRoot, absolutePath)
-  // A path outside the workspace keeps its absolute form rather than a
-  // confusing pile of `../` segments.
-  return rel === '' || rel.startsWith('..') ? absolutePath : rel
-}
+const ledger = createAgentChangeLedger<AgentInstanceId>({
+  maxPathsPerAgent: MAX_TRACKED_PATHS_PER_AGENT,
+})
 
 /**
  * Record one `file_changed` event.
@@ -126,73 +73,33 @@ export function recordFileChange(
   event: FileChangedEvent,
   workspaceRoot: string,
 ): void {
-  const entry = byAgent.get(event.agentId) ?? {
-    workspaceRoot,
-    files: new Map<string, AgentFileChange>(),
-    overflowCount: 0,
-  }
-  // A relaunch into a fresh worktree changes the root; keep the newest.
-  entry.workspaceRoot = workspaceRoot
-  byAgent.set(event.agentId, entry)
-
-  const path = resolveChangePath(event.path, workspaceRoot)
-  const existing = entry.files.get(path)
-  const atMs = event.at
-
-  if (existing) {
-    entry.files.set(path, {
-      ...existing,
+  ledger.record(
+    {
+      agentId: event.agentId,
+      path: event.path,
       change: event.change,
-      lastSeenMs: Math.max(existing.lastSeenMs, atMs),
-      count: existing.count + 1,
-      hasDiff: existing.hasDiff || typeof event.diff === 'string',
-    })
-    return
-  }
-
-  if (entry.files.size >= MAX_TRACKED_PATHS_PER_AGENT) {
-    entry.overflowCount++
-    return
-  }
-
-  entry.files.set(path, {
-    path,
-    displayPath: displayFor(path, workspaceRoot),
-    change: event.change,
-    firstChange: event.change,
-    firstSeenMs: atMs,
-    lastSeenMs: atMs,
-    count: 1,
-    hasDiff: typeof event.diff === 'string',
-  })
+      at: event.at,
+      hasDiff: typeof event.diff === 'string',
+    },
+    workspaceRoot,
+  )
 }
 
 /** Files this agent has touched, most recently changed first. */
 export function listChangedFiles(
   agentId: AgentInstanceId,
 ): readonly AgentFileChange[] {
-  const entry = byAgent.get(agentId)
-  if (!entry) return []
-  return [...entry.files.values()].sort((a, b) => b.lastSeenMs - a.lastSeenMs)
+  return ledger.listChangedFiles(agentId)
 }
 
 export function getChangeSummary(
   agentId: AgentInstanceId,
 ): AgentChangeSummary | undefined {
-  const entry = byAgent.get(agentId)
-  if (!entry) return undefined
-  return {
-    agentId,
-    workspaceRoot: entry.workspaceRoot,
-    files: listChangedFiles(agentId),
-    overflowCount: entry.overflowCount,
-  }
+  return ledger.getSummary(agentId)
 }
 
 export function listChangeSummaries(): readonly AgentChangeSummary[] {
-  return [...byAgent.keys()]
-    .map(agentId => getChangeSummary(agentId))
-    .filter((summary): summary is AgentChangeSummary => summary !== undefined)
+  return ledger.listSummaries()
 }
 
 /**
@@ -203,53 +110,19 @@ export function listChangeSummaries(): readonly AgentChangeSummary[] {
  * see a non-zero `overflowCount` should say the report is partial.
  */
 export function findConflicts(): readonly FileConflict[] {
-  const owners = new Map<string, ConflictParticipant[]>()
-  for (const [agentId, entry] of byAgent) {
-    for (const file of entry.files.values()) {
-      const list = owners.get(file.path)
-      const participant: ConflictParticipant = {
-        agentId,
-        change: file.change,
-        lastSeenMs: file.lastSeenMs,
-      }
-      if (list) {
-        list.push(participant)
-      } else {
-        owners.set(file.path, [participant])
-      }
-    }
-  }
-
-  const conflicts: FileConflict[] = []
-  for (const [path, agents] of owners) {
-    if (agents.length < 2) continue
-    conflicts.push({
-      path,
-      agents: [...agents].sort((a, b) => b.lastSeenMs - a.lastSeenMs),
-    })
-  }
-  return conflicts.sort((a, b) => {
-    const aLatest = a.agents[0]?.lastSeenMs ?? 0
-    const bLatest = b.agents[0]?.lastSeenMs ?? 0
-    return bLatest - aLatest
-  })
+  return ledger.findConflicts()
 }
 
 /** Conflicts involving one agent, for a targeted warning at assignment time. */
 export function findConflictsForAgent(
   agentId: AgentInstanceId,
 ): readonly FileConflict[] {
-  return findConflicts().filter(conflict =>
-    conflict.agents.some(participant => participant.agentId === agentId),
-  )
+  return ledger.findConflictsForAgent(agentId)
 }
 
 /** True when any agent's path set was capped, making reports partial. */
 export function hasPartialCoverage(): boolean {
-  for (const entry of byAgent.values()) {
-    if (entry.overflowCount > 0) return true
-  }
-  return false
+  return ledger.hasPartialCoverage()
 }
 
 /**
@@ -259,11 +132,11 @@ export function hasPartialCoverage(): boolean {
  * edits are still on disk and still the answer to "what changed?".
  */
 export function clearAgentChanges(agentId: AgentInstanceId): void {
-  byAgent.delete(agentId)
+  ledger.clearAgent(agentId)
 }
 
 export function resetChangeTracker(): void {
-  byAgent.clear()
+  ledger.reset()
 }
 
 /** Human-readable conflict report, shared by commands and non-interactive output. */

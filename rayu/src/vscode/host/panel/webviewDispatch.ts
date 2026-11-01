@@ -109,10 +109,6 @@ export interface ChatViewHandlers {
     baseURL?: string,
     model?: string,
   ) => Promise<void> | void
-  telegramConnectOpen: (scope: SurfaceScope, open: boolean) => Promise<void> | void
-  telegramConnectStartHosted: (scope: SurfaceScope) => Promise<void> | void
-  telegramConnectStartByo: (scope: SurfaceScope, token: string) => Promise<void> | void
-  telegramConnectUnlink: (scope: SurfaceScope) => Promise<void> | void
   cyclePermissionMode: (scope: SurfaceScope) => Promise<void> | void
   setPermissionMode: (scope: SurfaceScope, modeId: string) => Promise<void> | void
   reviewKeep: (scope: SurfaceScope, path?: string) => Promise<void> | void
@@ -275,19 +271,6 @@ export function dispatchWebviewMessage(
         message.baseURL,
         message.model,
       )
-      return
-    case 'telegramConnectOpen':
-      void handlers.telegramConnectOpen(scope, message.open)
-      return
-    case 'telegramConnectStartHosted':
-      void handlers.telegramConnectStartHosted(scope)
-      return
-    case 'telegramConnectStartByo':
-      // The token crosses here once and only reaches the handler's child process.
-      void handlers.telegramConnectStartByo(scope, message.token)
-      return
-    case 'telegramConnectUnlink':
-      void handlers.telegramConnectUnlink(scope)
       return
     case 'cyclePermissionMode':
       void handlers.cyclePermissionMode(scope)

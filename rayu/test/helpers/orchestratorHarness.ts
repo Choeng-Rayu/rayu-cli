@@ -33,6 +33,11 @@ export type HarnessOptions = {
   script: Script
   /** A directory under test/fixtures, copied and committed as the project. */
   fixture?: string
+  /**
+   * Whether the project is a git repository (default true). `false` copies the fixture
+   * into a plain directory, the way a project that is not under version control looks.
+   */
+  git?: boolean
   /** Launch permission mode. Defaults to Orchestrator. */
   permissionMode?: string
   /** Extra settings.json content for the session. */
@@ -43,7 +48,7 @@ export type HarnessOptions = {
 }
 
 export type EngineRun = {
-  /** The project directory (a git repository). */
+  /** The project directory (a git repository unless the run was started with `git: false`). */
   dir: string
   configDir: string
   events: EngineEvent[]
@@ -77,7 +82,7 @@ export async function startOrchestratorRun(options: HarnessOptions): Promise<Eng
   const provider = await startScriptedProvider(options.script)
   writeConfig(configDir, provider.url, options.settings)
   const gitEnv = hermeticGitEnv(home)
-  createProject(dir, options.fixture ?? 'orchestrator-app', gitEnv)
+  createProject(dir, options.fixture ?? 'orchestrator-app', gitEnv, options.git !== false)
 
   const child = Bun.spawn(
     [
@@ -205,8 +210,9 @@ function hermeticGitEnv(home: string): Record<string, string> {
   }
 }
 
-function createProject(dir: string, fixture: string, env: Record<string, string>): void {
+function createProject(dir: string, fixture: string, env: Record<string, string>, git: boolean): void {
   cpSync(join(FIXTURES, fixture), dir, { recursive: true })
+  if (!git) return
   for (const args of [['init', '-q', '-b', 'main'], ['add', '-A'], ['commit', '-q', '-m', 'fixture']]) {
     const out = spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' })
     if (out.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${out.stderr}`)
@@ -301,4 +307,16 @@ export function assistantText(events: readonly EngineEvent[]): string {
     .filter((block: EngineEvent) => block.type === 'text')
     .map((block: EngineEvent) => block.text as string)
     .join('\n')
+}
+
+/**
+ * Make `subdirectory` of the project its own git repository, the way a workspace that is
+ * not itself under version control holds several repositories side by side.
+ */
+export function initNestedRepository(project: string, subdirectory: string): void {
+  const env = hermeticGitEnv(project)
+  for (const args of [['init', '-q', '-b', 'main'], ['add', '-A'], ['commit', '-q', '-m', 'nested']]) {
+    const out = spawnSync('git', args, { cwd: join(project, subdirectory), env, encoding: 'utf8' })
+    if (out.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${out.stderr}`)
+  }
 }

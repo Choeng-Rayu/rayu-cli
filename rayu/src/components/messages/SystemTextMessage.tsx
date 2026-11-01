@@ -541,10 +541,13 @@ function TurnDurationMessage(t0) {
   // the REPL only gives such a turn a line for its budget or its credits.
   const showDuration = showTurnDuration && message.durationMs >= MIN_TURN_DURATION_MS;
   const hasBudget = message.budgetLimit !== undefined;
-  // What the Rayu gateway charged for this turn ("Credits: 443.76"). Shown even
-  // when the duration is turned off: it is billing, not timing.
+  // What the Rayu gateway charged for the user's request ("Credits: 443.76").
+  // Shown even when the duration is turned off: it is billing, not timing.
+  // "so far" while background agents are still working on the request.
   const hasCredits = message.rayuCredits !== undefined;
-  const creditsSuffix = hasCredits ? `${showDuration ? " \xB7 " : ""}${rayuCreditsLabel(message.rayuCredits)}` : "";
+  const creditsSuffix = hasCredits ? `${showDuration ? " \xB7 " : ""}${rayuCreditsLabel(message.rayuCredits, {
+    soFar: message.rayuCreditsSoFar === true
+  })}` : "";
   let t4;
   bb0: {
     if (!hasBudget) {
