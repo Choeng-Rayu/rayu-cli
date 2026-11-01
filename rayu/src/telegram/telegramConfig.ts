@@ -250,6 +250,12 @@ export function writeTelegramConfig(config: TelegramConfig): void {
 }
 
 export function setPendingToken(token: string, ttlMs: number): TelegramConfig {
+  // A fresh token starts with a clean slate of attempts. Without this the
+  // module-global pairingAttempts carries over from a PREVIOUS token that
+  // expired mid-guess, so a brand-new QR could be burnt by a single mistype
+  // (e.g. 4 stale misses + 1 = MAX). Declared below but initialised before this
+  // function is ever called at runtime.
+  pairingAttempts = 0
   const next: TelegramConfig = {
     ...readTelegramConfig(),
     pendingToken: { token, expiresAt: Date.now() + ttlMs },

@@ -14,6 +14,7 @@
  * Every refusal tells the Orchestrator what to do instead.
  */
 import type { ToolUseContext } from '../Tool.js'
+import { VERIFIER_AGENT_TYPE } from '../tools/AgentTool/constants.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
@@ -39,7 +40,7 @@ export type WorkerSpawnRequest = {
 }
 
 export type WorkerSpawnContext = Pick<ToolUseContext, 'agentId' | 'getAppState'> & {
-  options: Pick<ToolUseContext['options'], 'tools'>
+  options: Pick<ToolUseContext['options'], 'tools' | 'agentDefinitions'>
 }
 
 export type WorkerSpawnGrant = {
@@ -61,15 +62,28 @@ function isGoverned(request: WorkerSpawnRequest, context: WorkerSpawnContext): b
   return canWriteFiles(request.agentDefinition)
 }
 
-function findPacket(run: OrchestrationRun, name: string | undefined): { packet: ContractPacket; state: PacketRunState } | string {
+/**
+ * The governed path is for implementation workers. A review or verification agent is
+ * not a packet: point the Orchestrator at the exempt verifier when this session has it,
+ * and at its own checks otherwise, so it does not invent a packet or republish the
+ * contract to make room for a reviewer.
+ */
+function reviewHint(context: WorkerSpawnContext): string {
+  const hasVerifier = context.options.agentDefinitions.activeAgents.some(agent => agent.agentType === VERIFIER_AGENT_TYPE)
+  return hasVerifier
+    ? ` If this agent reviews or verifies the result rather than implementing a packet, launch the \`${VERIFIER_AGENT_TYPE}\` agent instead (it serves no packet), or run the checks yourself.`
+    : ' If this agent reviews or verifies the result rather than implementing a packet, run the checks yourself instead; a review is not a packet.'
+}
+
+function findPacket(run: OrchestrationRun, name: string | undefined, hint: string): { packet: ContractPacket; state: PacketRunState } | string {
   const names = run.current.contract.packets.map(packet => packet.name)
   if (!name) {
-    return `Set \`name\` to the contract packet this worker implements (${names.join(', ')}). Implementation workers in Orchestrator mode each serve one packet.`
+    return `Set \`name\` to the contract packet this worker implements (${names.join(', ')}). Implementation workers in Orchestrator mode each serve one packet.${hint}`
   }
   const packet = run.current.contract.packets.find(item => item.name === name)
   const state = run.packets.find(item => item.name === name)
   if (!packet || !state) {
-    return `Contract v${run.current.version} has no packet named "${name}" (packets: ${names.join(', ')}). To add one, publish a new contract version with ${ORCHESTRATION_CONTRACT_TOOL_NAME}.`
+    return `Contract v${run.current.version} has no packet named "${name}" (packets: ${names.join(', ')}). To add one, publish a new contract version with ${ORCHESTRATION_CONTRACT_TOOL_NAME}.${hint}`
   }
   return { packet, state }
 }
@@ -110,7 +124,7 @@ export function decideWorkerSpawn(
   if (!run) {
     return refuse(`Publish the run's contract with ${ORCHESTRATION_CONTRACT_TOOL_NAME} before launching implementation workers. Read-only agents such as the planner can run before it.`)
   }
-  const found = findPacket(run, request.name)
+  const found = findPacket(run, request.name, reviewHint(context))
   if (typeof found === 'string') return refuse(found)
   const canMessage = context.options.tools.some(tool => tool.name === SEND_MESSAGE_TOOL_NAME)
   const problem = busyProblem(run, found.packet, found.state, canMessage) ?? capacityProblem(run, limits.maxParallelWriters)

@@ -52,9 +52,13 @@
  *
  * ── FAILURE IS SILENT AND HARMLESS, DELIBERATELY ───────────────────────────────
  *
- * Every window hop is wrapped: a future VS Code that tightens the sandbox would make the
- * ancestor cross-origin, and reading it throws. That must degrade to the old behaviour rather
- * than break the panel, which is why nothing here rethrows.
+ * Every window hop is wrapped, because on current VS Code the ancestor frame is cross-origin
+ * and touching it throws. That is the usual case, not a hypothetical one: the throw is
+ * swallowed, the listener never lands on the shell frame, and the preload's own handler there
+ * still blanks the panel for any drag that does not carry Shift. Holding Shift is therefore the
+ * required fallback (see `dropCopy.ts` for the wording shown to the user), and this module is
+ * a best-effort that only helps where the ancestor happens to be reachable. Failing must
+ * degrade to that behaviour rather than break the panel, which is why nothing here rethrows.
  */
 
 /**
@@ -103,8 +107,9 @@ export function keepDropEventsInPanel(): () => void {
       ;(target as unknown as Record<string, unknown>)[INSTALLED] = dispose
       disposers.push(dispose)
     } catch {
-      // A cross-origin ancestor. Nothing can be done for it, and nothing needs to be: the
-      // panel still works, it just needs the Shift gesture it already documents.
+      // A cross-origin ancestor: reading or writing a property on it throws. Expected on
+      // modern VS Code, so the unblock does not take effect there. Nothing can be done for it;
+      // the drag only reaches the panel while Shift is held, which the UI states up front.
     }
 
     try {

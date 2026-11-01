@@ -129,6 +129,9 @@ import { creditsFromResultFrame } from '../../shared/turnProgress.js'
  * the engine, where the shared CLI cleanup and transcript output already live.
  */
 const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
+  // `supportsNonInteractive: false` in the CLI, so the engine never lists it. The host
+  // answers it (extension.ts `startFreshConversation`), hence it is listed here.
+  { name: 'clear', description: 'Clear the conversation and start fresh' },
   { name: 'connect', description: 'Connect or configure an AI provider' },
   { name: 'login', description: 'Sign in to your Rayu account' },
   { name: 'logout', description: 'Sign out of your Rayu account' },
@@ -171,17 +174,19 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
   },
 ]
 
+/**
+ * The menu before the engine's `initialize` response arrives. Only commands that can
+ * actually run are listed: `/doctor`, `/help` and `/permissions` are `local-jsx` in the CLI
+ * (Ink pickers the headless engine strips and Rayucode has no surface for), so they are
+ * omitted rather than offered and then silently doing nothing.
+ */
 const DEFAULT_SLASH_COMMANDS: SlashCommandView[] = [
   ...RAYUCODE_SLASH_COMMANDS,
-  { name: 'clear', description: 'Clear current conversation' },
   { name: 'compact', description: 'Compact conversation to save context window' },
   { name: 'cost', description: 'Show token usage and estimated cost' },
-  { name: 'doctor', description: 'Diagnose setup and environment issues' },
-  { name: 'help', description: 'Show available slash commands and usage' },
   { name: 'init', description: 'Initialize project-level configuration' },
   { name: 'keep', description: 'Keep pending file changes' },
   { name: 'model', description: 'Switch active AI model' },
-  { name: 'permissions', description: 'View or change tool permissions' },
   { name: 'review', description: 'Review changed files awaiting approval' },
   { name: 'undo', description: 'Revert pending file changes' },
 ]
@@ -988,11 +993,16 @@ export class ChatSession {
     const imageDescription = images
       .map(image => `[Image: ${image.name || 'attachment'}]`)
       .join(' ')
+    // A caller-supplied uuid keys file checkpoints to this exact prompt. Sent on the stdin
+    // frame below so the engine snapshots under it, and kept on the entry so the Restore
+    // control can rewind to it later.
+    const messageUuid = randomUUID()
     this.appendEntry({
       id: newId(),
       kind: 'prompt',
       text: [trimmed, imageDescription].filter(Boolean).join('\n'),
       ...(delivery === 'normal' ? {} : { delivery }),
+      messageUuid,
     })
 
     // Report work immediately, before spawning the child or waiting for its
@@ -1052,6 +1062,7 @@ export class ChatSession {
     const delivered = this.engine?.send({
       type: 'user',
       message: { role: 'user', content },
+      uuid: messageUuid,
       parent_tool_use_id: null,
       ...(bridgeOrigin ? { bridge_origin: true } : {}),
       ...(delivery === 'steer'
@@ -1149,6 +1160,40 @@ export class ChatSession {
       // Deliberately swallowed. The user asked to stop; whether the engine
       // acknowledged is not something they can act on, and the composer is already
       // usable again.
+    }
+  }
+
+  /**
+   * Rewind files to the state before a specific user message (the CLI's `/rewind`).
+   *
+   * `dryRun` reports what WOULD change — the files plus ±line counts — without touching
+   * disk, so the host can confirm with the user first. Files only: the conversation is not
+   * truncated. Keyed by the message uuid the host sent with the prompt.
+   */
+  async rewindFiles(
+    messageUuid: string,
+    dryRun: boolean,
+  ): Promise<{
+    canRewind: boolean
+    error?: string
+    filesChanged?: string[]
+    insertions?: number
+    deletions?: number
+  }> {
+    if (!this.control) throw new Error('The Rayu engine is not running.')
+    // The control client types this channel's response as a generic record (it has no
+    // per-subtype response map entry for `rewind_files`); the schema's shape is authoritative.
+    const response = await this.control.request(
+      'rewind_files',
+      { user_message_id: messageUuid, dry_run: dryRun },
+      60_000,
+    )
+    return response as unknown as {
+      canRewind: boolean
+      error?: string
+      filesChanged?: string[]
+      insertions?: number
+      deletions?: number
     }
   }
 
@@ -1398,6 +1443,10 @@ export class ChatSession {
           // frames; without the flag queued/steered follow-ups can start after a result
           // while the composer still claims the session is idle.
           CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+          // Turn on file checkpointing so the per-prompt Restore control (`rewind_files`)
+          // has snapshots to rewind to. Off by default in headless mode; the engine still
+          // honors CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING as an explicit opt-out.
+          CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: '1',
         },
       },
       {
@@ -1528,6 +1577,9 @@ export class ChatSession {
           .map(c => ({
             name: typeof c.name === 'string' ? c.name : '',
             description: typeof c.description === 'string' ? c.description : '',
+            ...(typeof c.argumentHint === 'string' && c.argumentHint
+              ? { argumentHint: c.argumentHint }
+              : {}),
           }))
           .filter(c => c.name.length > 0),
       )
@@ -1890,6 +1942,9 @@ export class ChatSession {
           .map(command => ({
             name: asString(command.name) ?? '',
             description: asString(command.description) ?? '',
+            ...(asString(command.argumentHint)
+              ? { argumentHint: asString(command.argumentHint) }
+              : {}),
           }))
           .filter(command => command.name.length > 0),
       )

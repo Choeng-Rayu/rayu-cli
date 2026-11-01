@@ -219,6 +219,81 @@ describe('projectToolResult — plan', () => {
   })
 })
 
+describe('projectToolResult — media', () => {
+  const imageOutput = {
+    path: '/work/generated-image-1.png',
+    model: 'flux-1.1',
+    width: 1024,
+    height: 768,
+    mediaType: 'image/png',
+    base64: 'iVBORw0KGgo=',
+  }
+
+  test('an ImageGen output becomes an inline image media result', () => {
+    const result = projectToolResult(imageOutput)
+    expect(result?.kind).toBe('media')
+    if (result?.kind !== 'media') throw new Error('unreachable')
+    expect(result.media).toBe('image')
+    expect(result.fileName).toBe('generated-image-1.png')
+    expect(result.width).toBe(1024)
+    expect(result.height).toBe(768)
+    expect(result.model).toBe('flux-1.1')
+    expect(result.previewDataUri).toBe('data:image/png;base64,iVBORw0KGgo=')
+  })
+
+  test('an oversized image drops the inline preview but keeps the metadata', () => {
+    const result = projectToolResult({
+      ...imageOutput,
+      base64: 'a'.repeat(3_000_001),
+    })
+    if (result?.kind !== 'media') throw new Error('unreachable')
+    expect(result.previewDataUri).toBeUndefined()
+    expect(result.fileName).toBe('generated-image-1.png')
+  })
+
+  test('a VideoGen output becomes a video media result with a poster, no webviewUri yet', () => {
+    const result = projectToolResult({
+      path: '/work/generated-video-1.mp4',
+      model: 'veo-3',
+      frames: 120,
+      fps: 24,
+      mediaType: 'video/mp4',
+      durationSeconds: 5,
+      resolution: '720p',
+      previewBase64: 'AAAA',
+      previewMediaType: 'image/jpeg',
+    })
+    expect(result?.kind).toBe('media')
+    if (result?.kind !== 'media') throw new Error('unreachable')
+    expect(result.media).toBe('video')
+    expect(result.fileName).toBe('generated-video-1.mp4')
+    expect(result.durationSeconds).toBe(5)
+    expect(result.resolution).toBe('720p')
+    // Host fills webviewUri at post time; the pure projector must NOT set it.
+    expect(result.webviewUri).toBeUndefined()
+    expect(result.previewDataUri).toBe('data:image/jpeg;base64,AAAA')
+  })
+
+  test('a video without a poster has no previewDataUri', () => {
+    const result = projectToolResult({
+      path: '/work/v.mp4',
+      model: 'veo-3',
+      frames: 24,
+      fps: 24,
+      mediaType: 'video/mp4',
+    })
+    if (result?.kind !== 'media') throw new Error('unreachable')
+    expect(result.previewDataUri).toBeUndefined()
+  })
+
+  test('a media object with the wrong mediaType prefix is not a media result', () => {
+    // An "image" object whose mediaType says video must not match ImageResultSchema.
+    expect(
+      projectToolResult({ ...imageOutput, mediaType: 'video/mp4' }),
+    ).toBeUndefined()
+  })
+})
+
 describe('projectToolResult — degradation', () => {
   test.each([
     ['undefined', undefined],

@@ -60,6 +60,7 @@ const HANDLER_NAMES: readonly HandlerName[] = [
   'reviewUndo',
   'openReviewDiff',
   'openFile',
+  'rewindFiles',
   'openExternal',
   'signIn',
   'signOut',
@@ -442,6 +443,12 @@ const CASES: RouteCase[] = [
     message: { type: 'sendTaskMessage', sourceSessionId: 'src-2', taskId: 'task-8', text: 'go' },
     method: 'sendTaskMessage',
     payload: ['src-2', 'task-8', 'go'],
+  },
+  {
+    name: 'rewindFiles',
+    message: { type: 'rewindFiles', messageUuid: 'uuid-1' },
+    method: 'rewindFiles',
+    payload: ['uuid-1'],
   },
 ]
 

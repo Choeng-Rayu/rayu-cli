@@ -166,6 +166,8 @@ export interface ChatViewHandlers {
   ) => Promise<void> | void
   reloadPlugins: (scope: SurfaceScope) => Promise<void> | void
   installSkill: (scope: SurfaceScope, source: string, overwrite?: boolean) => Promise<void> | void
+  /** Restore files to before a specific user message (the CLI's /rewind). */
+  rewindFiles: (scope: SurfaceScope, messageUuid: string) => Promise<void> | void
   listSessions: (scope: SurfaceScope) => Promise<void> | void
   resumeSession: (scope: SurfaceScope, id: string) => Promise<void> | void
   stopTask: (
@@ -283,6 +285,9 @@ export function dispatchWebviewMessage(
       return
     case 'reviewUndo':
       void handlers.reviewUndo(scope, message.path)
+      return
+    case 'rewindFiles':
+      void handlers.rewindFiles(scope, message.messageUuid)
       return
     case 'openReviewDiff':
       void handlers.openReviewDiff(scope, message.path)

@@ -21,7 +21,6 @@ export const RAYUCODE_TERMINAL_ONLY_COMMANDS = new Set([
   'quit',
   'statusline',
   'thinkback-play',
-  'install-github-app',
 ])
 
 const PANEL_COMMANDS = new Set([
@@ -74,8 +73,18 @@ const PANEL_COMMANDS = new Set([
   'contact_me',
 ])
 
-/** Local/JSX commands for which the VS Code host currently has a real handler. */
+/**
+ * Local/JSX commands for which the VS Code host currently has a real handler.
+ *
+ * `clear` is `supportsNonInteractive: false` in the CLI (it only makes sense as a new
+ * session); Rayucode answers it in `extension.ts` by restarting the tab's engine in place.
+ * `web-bridge` and `install-github-app` are likewise intercepted by the host before a
+ * prompt reaches the engine, so neither may be reported as unavailable.
+ */
 const RAYUCODE_IMPLEMENTED_COMMANDS = new Set([
+  'clear',
+  'web-bridge',
+  'install-github-app',
   'connect',
   'login',
   'logout',

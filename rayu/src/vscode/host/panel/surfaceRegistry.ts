@@ -108,7 +108,10 @@ export class SurfaceRegistry {
       viewColumn ?? vscode.ViewColumn.Active,
       {
         enableScripts: true,
-        localResourceRoots: [vscode.Uri.joinPath(this.deps.extensionUri, 'media')],
+        localResourceRoots: [
+          vscode.Uri.joinPath(this.deps.extensionUri, 'media'),
+          ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri),
+        ],
         // Parity with the sidebar, and required for background streaming: the tab must
         // keep its React heap and DOM while the user is in another tab. Bounded by
         // MAX_LIVE_SESSIONS (see the plan's risk register).

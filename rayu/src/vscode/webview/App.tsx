@@ -813,6 +813,7 @@ export function App(): JSX.Element {
           inference={state.inference}
           permissionMode={state.permissionMode}
           commands={composerCommands}
+          runtimeCommands={state.runtimeCommands}
           agents={state.runtimeAgents}
           promptHistory={promptHistory}
           workspaceFiles={state.workspaceFiles}
@@ -1119,6 +1120,10 @@ function Transcript({
   const onUndo = useCallback((path?: string) => send({ type: 'reviewUndo', path }), [])
   const onDiff = useCallback((path: string) => send({ type: 'openReviewDiff', path }), [])
   const onOpenFile = useCallback((path: string) => send({ type: 'openFile', path }), [])
+  const onRewind = useCallback(
+    (messageUuid: string) => send({ type: 'rewindFiles', messageUuid }),
+    [],
+  )
 
   const session = state.session
 
@@ -1184,6 +1189,7 @@ function Transcript({
                     onUndo={onUndo}
                     onDiff={onDiff}
                     onOpen={onOpenFile}
+                    onRewind={onRewind}
                   />
                 </TranscriptBlock>
               ),

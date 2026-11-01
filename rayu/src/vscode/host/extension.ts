@@ -46,6 +46,9 @@ import { readModelOptions, readActiveModel } from './models/modelConfig.js'
 import { CatalogueRefresher } from './models/catalogueRefresh.js'
 import { nextPermissionMode, permissionModeById } from '../shared/permissionModes.js'
 import { formatPathMentions } from '../shared/contextMentions.js'
+import { contextPathsForUris, urisFromUriList } from './panel/contextPaths.js'
+import { parseClearCommand } from './panel/clearCommand.js'
+import { registerContextDropView } from './panel/dropTargetView.js'
 import {
   getAccessTokenForHost,
   getApiBaseUrlForHost,
@@ -1375,6 +1378,20 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   /**
+   * Reset one conversation in place: a fresh engine, an empty transcript, the same tab.
+   *
+   * `preserveModel` because this is a restart of the tab, not a new conversation elsewhere,
+   * so it must not adopt whatever model another conversation has since selected.
+   * `newSession` also empties the review records and tells the surfaces, so nothing from the
+   * outgoing conversation survives. Shared by `/clear` and by the no-session-id restart.
+   */
+  function startFreshConversation(entry: SessionEntry): void {
+    entry.session.newSession(undefined, undefined, { preserveModel: true })
+    surfaces.syncSession(entry.key)
+    prewarmSession(entry)
+  }
+
+  /**
    * Restart the engine so it re-reads the shared config, WITHOUT losing the conversation.
    *
    * `rayuConfig` is process-cached in the engine child, so a subagent or WebFetch model
@@ -1391,11 +1408,7 @@ export function activate(context: vscode.ExtensionContext): void {
     invalidateRayuConfigCache()
     const sessionId = entry.session.engineSessionId
     if (!sessionId) {
-      // `preserveModel` throughout: this is a RESTART of one conversation, not a new one, so
-      // it must not adopt whatever model another conversation has since selected.
-      entry.session.newSession(undefined, undefined, { preserveModel: true })
-      surfaces.syncSession(entry.key)
-      prewarmSession(entry)
+      startFreshConversation(entry)
       return
     }
     const cwd = workspaceDir ?? engineCwd
@@ -1500,6 +1513,17 @@ export function activate(context: vscode.ExtensionContext): void {
         const bridgeCommand = /^\s*\/web-bridge(?:\s+(\S+))?\s*$/.exec(text)
         if (bridgeCommand) {
           await runWebBridgeCommand(bridgeCommand[1] ?? '', entry)
+          return
+        }
+        // `/clear` (`/reset`, `/new`) is `supportsNonInteractive: false` in the CLI, so the
+        // headless engine would treat it as plain text. Reset THIS tab in place instead. An
+        // attached CLI owns its own conversation and has a real `/clear`, so it passes through.
+        if (!cli && parseClearCommand(text)) {
+          if (entry.session.isTurnRunning) {
+            postCommandNotice(entry.key, 'Stop the running turn before clearing the conversation.')
+            return
+          }
+          startFreshConversation(entry)
           return
         }
         // The CLI implementations of these commands render Ink UI and are therefore
@@ -1991,6 +2015,78 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       openReviewDiff: (scope, path) => openReviewDiff(review.store, scope.sessionKey, path),
       openFile: (scope, path) => openReviewFile(review.store, scope.sessionKey, path),
+      // Restore files to before a specific user message (the CLI's /rewind). Files only —
+      // the conversation is untouched. Dry-run first so the modal states the real impact.
+      rewindFiles: async (scope, messageUuid) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        if (attachedFor(scope.sessionKey)) {
+          scope.reply({
+            type: 'showError',
+            message: 'Rewinding files is not available for an attached CLI session.',
+          })
+          return
+        }
+        if (entry.session.isTurnRunning) {
+          scope.reply({
+            type: 'showError',
+            message: 'Stop the running turn before restoring files.',
+          })
+          return
+        }
+        let preview: Awaited<ReturnType<typeof entry.session.rewindFiles>>
+        try {
+          preview = await entry.session.rewindFiles(messageUuid, true)
+        } catch (cause) {
+          scope.reply({
+            type: 'showError',
+            message: cause instanceof Error ? cause.message : 'Could not check the checkpoint.',
+          })
+          return
+        }
+        if (!preview.canRewind) {
+          scope.reply({
+            type: 'showError',
+            message: preview.error ?? 'No file checkpoint is available for this message.',
+          })
+          return
+        }
+        const files = preview.filesChanged ?? []
+        const counts = ` (+${preview.insertions ?? 0} −${preview.deletions ?? 0})`
+        const detail = files.length > 0
+          ? `${files.join('\n')}${counts}`
+          : 'No files differ from this checkpoint.'
+        const choice = await vscode.window.showWarningMessage(
+          'Restore files to before this message?',
+          { modal: true, detail },
+          'Restore',
+        )
+        if (choice !== 'Restore') return
+        try {
+          const result = await entry.session.rewindFiles(messageUuid, false)
+          if (!result.canRewind) {
+            scope.reply({
+              type: 'showError',
+              message: result.error ?? 'The files could not be restored.',
+            })
+            return
+          }
+          const restored = (result.filesChanged ?? files).length
+          postCommandNotice(
+            entry.key,
+            `Restored ${restored} ${restored === 1 ? 'file' : 'files'} to before that message.`,
+          )
+          // Review records for the restored files are intentionally left in place: the store
+          // keys by display path (the engine reports raw paths), so per-file invalidation is
+          // not reliably matchable, and clearing the whole session would discard still-valid
+          // records for earlier edits. The review card is rebuilt on the next turn's changes.
+        } catch (cause) {
+          scope.reply({
+            type: 'showError',
+            message: cause instanceof Error ? cause.message : 'The files could not be restored.',
+          })
+        }
+      },
       openExternal: async (scope, rawUrl) => {
         try {
           const url = new URL(rawUrl)
@@ -2045,20 +2141,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
       resolveContextPaths: async (scope, requestId, uriList) => {
-        const uris: vscode.Uri[] = []
-        for (const line of uriList.split(/\r?\n/)) {
-          const value = line.trim()
-          if (!value || value.startsWith('#')) continue
-          try {
-            const uri = value.includes('://') ? vscode.Uri.parse(value, true) : vscode.Uri.file(value)
-            if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') continue
-            uris.push(uri)
-          } catch {
-            // A stale Explorer item or inaccessible external path is skipped while
-            // other dropped resources remain usable.
-          }
-        }
-        const paths = await contextPathsForUris(uris)
+        const paths = await contextPathsForUris(urisFromUriList(uriList))
         if (paths.length === 0) {
           scope.reply({ type: 'showError', message: 'Rayucode could not access the dropped file or folder.' })
         }
@@ -2526,15 +2609,19 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ── ADDING CONTEXT FROM THE TREE AND THE EDITOR ──────────────────────────────
   //
-  // Drag and drop cannot serve a webview. VS Code blanks the panel's pointer events for the
-  // duration of any drag that looks like it carries a file — which an ordinary Explorer or
+  // A plain drag cannot reach the chat webview. VS Code blanks the panel's pointer events for
+  // the duration of any drag that looks like it carries a file — which an ordinary Explorer or
   // editor-tab drag does — unless Shift is held, and the event that would have to be cancelled
-  // is dispatched in a frame the panel cannot reach. See `panel/dropTargetView.ts` for the
-  // measurement and for the drop strip that DOES accept a plain drag.
+  // is dispatched in a frame the panel cannot reach. Two routes work without Shift and both
+  // are registered below:
   //
-  // So this menu command is not a workaround: it is the route the platform supports for the
-  // tree. It reuses the SAME resolver and the SAME `@`-mention format as every other path, so
-  // they all produce identical prompt text.
+  //   - the Add to Rayu Context menu command (Explorer and editor context menus), and
+  //   - the collapsed "Rayucode Context" Explorer pane (`panel/dropTargetView.ts`), a tree
+  //     view whose TreeDragAndDropController accepts a plain drag. It can be hidden with
+  //     `rayucode.contextDropView`.
+  //
+  // Both reuse the SAME resolver (`panel/contextPaths.ts`) and the SAME `@`-mention format as
+  // every other path, so they all produce identical prompt text.
   context.subscriptions.push(
     vscode.commands.registerCommand(
       COMMANDS.addToContext,
@@ -2567,6 +2654,14 @@ export function activate(context: vscode.ExtensionContext): void {
         insertPromptIntoTab(registry.active.key, formatPathMentions(paths))
       },
     ),
+  )
+
+  context.subscriptions.push(
+    registerContextDropView({
+      resolve: uris => contextPathsForUris(uris),
+      // Same target as the command above: the active conversation's composer.
+      deliver: paths => insertPromptIntoTab(registry.active.key, formatPathMentions(paths)),
+    }),
   )
 
   context.subscriptions.push(
@@ -2853,30 +2948,6 @@ function parseRayucodeInferenceCommand(text: string): RayucodeInferenceCommand |
   // Recognised command with an invalid argument: opening the authoritative list is
   // more useful than sending the malformed slash command to the model.
   return { kind: 'open', control: 'effort' }
-}
-
-/**
- * Convert VS Code URIs to the same workspace-relative attachment references used
- * by the CLI. This deliberately lives in the extension host: browser File objects
- * do not reliably expose a path, and remote-workspace paths must go through VS Code.
- */
-async function contextPathsForUris(uris: readonly vscode.Uri[]): Promise<string[]> {
-  const paths: string[] = []
-  for (const uri of uris) {
-    try {
-      const stat = await vscode.workspace.fs.stat(uri)
-      const workspace = vscode.workspace.getWorkspaceFolder(uri)
-      let display = workspace
-        ? vscode.workspace.asRelativePath(uri, false)
-        : uri.fsPath
-      display = display.replace(/\\/g, '/')
-      if (stat.type & vscode.FileType.Directory) display = `${display.replace(/\/$/, '')}/`
-      if (!paths.includes(display)) paths.push(display)
-    } catch {
-      // Leave inaccessible members out while preserving the rest of a multi-drop.
-    }
-  }
-  return paths
 }
 
 /** Validate untrusted webview image payloads before they enter the engine process. */

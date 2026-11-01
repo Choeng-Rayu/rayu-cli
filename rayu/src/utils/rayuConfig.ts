@@ -1364,16 +1364,40 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     const { fetchOllamaCloudModels } = await import('../services/api/ollamaCloud.js')
     return fetchOllamaCloudModels(p.apiKey, p.baseURL)
   }
-  // Claude.ai subscription login (kind:'anthropic' + anthropicAuthType:'oauth'):
-  // list the models the ACCOUNT can use from api.anthropic.com/v1/models with the
-  // stored OAuth bearer. Lazy import so the OAuth modules stay off the startup
-  // path. API-key anthropic providers fall through and return [] as before.
+  // Anthropic (kind:'anthropic') exposes GET /v1/models, so the catalog is always
+  // listed LIVE — never hardcoded. The two auth modes differ only in the header:
+  //  - oauth (claude.ai subscription): bearer token, via the lazy-imported helper
+  //    so the OAuth modules stay off the startup path.
+  //  - api key (first-party console): x-api-key, fetched inline below.
   if (p.kind === 'anthropic') {
-    if (p.anthropicAuthType !== 'oauth') return []
-    const { fetchClaudeSubscriptionModels } = await import(
-      '../services/oauth/claudeAiLogin.js'
-    )
-    return fetchClaudeSubscriptionModels()
+    if (p.anthropicAuthType === 'oauth') {
+      const { fetchClaudeSubscriptionModels } = await import(
+        '../services/oauth/claudeAiLogin.js'
+      )
+      return fetchClaudeSubscriptionModels()
+    }
+    // First-party Anthropic (API key) DOES expose GET /v1/models, so the catalog
+    // is listed LIVE here — it follows Anthropic's releases instead of a baked-in
+    // list. The credential is sent only to the provider's own host (its baseURL,
+    // or api.anthropic.com by default), honouring the one-host-per-key invariant.
+    // Returns [] on any failure, the same contract every caller relies on (an
+    // empty result preserves whatever catalog is already cached).
+    if (!p.apiKey) return []
+    const base = p.baseURL?.replace(/\/+$/, '') || 'https://api.anthropic.com'
+    try {
+      const res = await fetch(`${base}/v1/models?limit=100`, {
+        headers: { 'x-api-key': p.apiKey, 'anthropic-version': '2023-06-01' },
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!res.ok) return []
+      const json = (await res.json()) as { data?: Array<{ id?: string }> }
+      return (json.data ?? [])
+        .map(m => m.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+        .sort()
+    } catch {
+      return []
+    }
   }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []

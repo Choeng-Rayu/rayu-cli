@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 
 import { builtInCommandNames } from '../src/commands.ts'
+import clear from '../src/commands/clear/index.ts'
 import installGitHubApp from '../src/commands/install-github-app/index.ts'
 import modelImageGeneration from '../src/commands/model-image-generation/index.ts'
 import modelVideoGeneration from '../src/commands/model-video-generation/index.ts'
+import webBridge from '../src/commands/web-bridge.ts'
 import { projectRuntimeCommands } from '../src/runtime/catalog.ts'
 
 describe('Rayu command registry', () => {
@@ -63,11 +65,26 @@ describe('Rayu command registry', () => {
     expect(names.has('subagent_model')).toBe(true)
   })
 
-  test('marks the Ink GitHub setup wizard as terminal-only in Rayucode', () => {
+  test('the GitHub setup command is available: the host runs it natively', () => {
+    // extension.ts intercepts `/install-github-app` and runs `runGitHubSetupFromEditor`,
+    // so it must not be listed as terminal-only (which would hide it from the menu).
     const [descriptor] = projectRuntimeCommands([installGitHubApp])
 
-    expect(descriptor?.surface).toBe('terminal_only')
-    expect(descriptor?.available).toBe(false)
+    expect(descriptor?.surface).not.toBe('terminal_only')
+    expect(descriptor?.available).toBe(true)
+    expect(descriptor?.unavailableReason).toBeUndefined()
+  })
+
+  test('/clear and /web-bridge are available although they are not headless', () => {
+    // Neither supports non-interactive execution in the engine; the VS Code host answers
+    // both itself, so the catalogue must say they can run.
+    const byName = new Map(
+      projectRuntimeCommands([clear, webBridge]).map(d => [d.name, d]),
+    )
+
+    expect(byName.get('clear')?.available).toBe(true)
+    expect(byName.get('clear')?.aliases).toEqual(['reset', 'new'])
+    expect(byName.get('web-bridge')?.available).toBe(true)
   })
 
   test('the image and video model pickers are available in Rayucode', () => {

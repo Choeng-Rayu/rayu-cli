@@ -45,6 +45,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
+import { estimateMediaBytes } from '../../utils/mediaBytes.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -256,6 +257,25 @@ export function getRequestTooLargeErrorMessage(): string {
   return getIsNonInteractiveSession()
     ? `Request too large (${limits}). Try with a smaller file.`
     : `Request too large (${limits}). Double press esc to go back and try with a smaller file.`
+}
+
+/**
+ * User-facing text for a 413 caused by ACCUMULATED conversation media rather
+ * than a single oversized upload.
+ *
+ * The generic getRequestTooLargeErrorMessage tells the user to "try with a
+ * smaller file" — the PDF-upload copy. But a long session heavy in pasted
+ * images 413s with no file in the failing turn at all (the images are spread
+ * through prior history), so that advice is actively misleading: the user sent
+ * no file to shrink. Say what actually happened and point at the real levers.
+ * MEDIA_COMPACT_BUDGET_BYTES normally sheds this proactively; this message is
+ * the fallback for when the body still crosses the server cap (e.g. auto-compact
+ * disabled, or a gateway cap below the budget).
+ */
+export function getRequestTooLargeContextMessage(): string {
+  return getIsNonInteractiveSession()
+    ? 'Request too large: this conversation\u2019s accumulated images and attachments exceed the request size limit. Start a new session, or remove earlier images.'
+    : 'Request too large: this conversation\u2019s accumulated images and attachments exceed the request size limit. Run /compact to summarize and drop old images from context, or /clear to start fresh.'
 }
 
 /**
@@ -813,14 +833,14 @@ export function getAssistantMessageFromError(
     ) {
       return createAssistantAPIErrorMessage({
         error: 'unknown',
-        content: `⚠️ Can't reach Rayu right now — the model may be temporarily reach to high valume, or your connection dropped. Please change model or try again in a little while.`,
+        content: `⚠️ Can't reach Rayu right now. The model may be under high volume, or your connection dropped. Please wait a moment or switch to a different model with ${switchCmd}.`,
       })
     }
     // (b) Reached Rayu but the provider/origin returned a server error (5xx).
     if (isRayuHostedProviderUnavailable(error)) {
       return createAssistantAPIErrorMessage({
         error: 'invalid_request',
-        content: `⚠️ Rayu's AI provider for "${model}" is temporarily unavailable. Try a smaller model with ${switchCmd}, or try again in a little while.`,
+        content: `⚠️ The model is under high volume right now. Please wait a moment or switch to a different model with ${switchCmd}.`,
       })
     }
   }
@@ -1122,11 +1142,41 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // Check for request too large errors (413 status)
-  // This typically happens when a large PDF + conversation context exceeds the 32MB API limit
+  // Check for request too large errors (413 status). Two distinct causes need
+  // different advice:
+  //   (a) a single oversized upload in the CURRENT turn — removing that file
+  //       (esc) or sending a smaller one fixes it. The generic message + the
+  //       normalizeMessagesForAPI strip-map (keyed on
+  //       getRequestTooLargeErrorMessage) already handle this.
+  //   (b) ACCUMULATED conversation media — images/PDFs spread through history
+  //       whose combined base64 bytes cross the server cap while no single
+  //       piece is oversized (each already passed per-item validation). This is
+  //       the long-session case; "send a smaller file" is actively misleading
+  //       because there is no file in this turn to shrink. Point at /compact.
+  //       MEDIA_COMPACT_BUDGET_BYTES normally sheds this proactively via
+  //       auto-compact; this message is the fallback when a body still slips
+  //       past (auto-compact disabled, or a gateway cap below the budget).
+  // Distinguish by whether media exists OUTSIDE the last user turn: media in an
+  // earlier message means removing the current turn's upload cannot fix it.
   if (error instanceof APIError && error.status === 413) {
+    const messagesForAPI = options?.messagesForAPI
+    let isAccumulatedContext = false
+    if (messagesForAPI && messagesForAPI.length > 0) {
+      let lastUserIdx = -1
+      for (let i = messagesForAPI.length - 1; i >= 0; i--) {
+        if (messagesForAPI[i]!.type === 'user') {
+          lastUserIdx = i
+          break
+        }
+      }
+      const priorSlice =
+        lastUserIdx > 0 ? messagesForAPI.slice(0, lastUserIdx) : []
+      isAccumulatedContext = estimateMediaBytes(priorSlice) > 0
+    }
     return createAssistantAPIErrorMessage({
-      content: getRequestTooLargeErrorMessage(),
+      content: isAccumulatedContext
+        ? getRequestTooLargeContextMessage()
+        : getRequestTooLargeErrorMessage(),
       error: 'invalid_request',
     })
   }

@@ -752,6 +752,18 @@ body {
   opacity: 1;
 }
 
+/* Restore-to-checkpoint, revealed on hover like Copy so it does not compete with the
+   prompt at rest. Hidden entirely when the prompt has no checkpoint uuid (no button). */
+.rc-request-rewind {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.rc-request-wrap:hover .rc-request-rewind,
+.rc-request-rewind:focus-visible {
+  opacity: 1;
+}
+
 .rc-action-feedback {
   font-size: 0.85em;
   color: var(--vscode-gitDecoration-addedResourceForeground);
@@ -2654,6 +2666,21 @@ body {
   opacity: 0.85;
 }
 
+/* Argument hint, right-aligned after the (truncating) description. */
+.rc-popover-hint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.rc-popover-item-active .rc-popover-hint {
+  color: inherit;
+  opacity: 0.85;
+}
+
 /* ── composer ────────────────────────────────────────────────────────────── */
 
 .rc-composer-card {
@@ -2673,11 +2700,11 @@ body {
   container-name: composer;
 }
 
-/* The whole card takes the focus ring, not just the textarea, because the card is
-   what reads as the input. */
+/* The card owns the ONE focus line (its border), not the textarea, because the card
+   is what reads as the input. No extra box-shadow ring: that stacked a second line on
+   top of the border. */
 .rc-composer-card:focus-within {
   border-color: var(--vscode-focusBorder);
-  box-shadow: 0 0 0 1px var(--vscode-focusBorder), 0 4px 16px var(--vscode-widget-shadow, transparent);
 }
 
 .rc-composer-input {
@@ -2694,6 +2721,13 @@ body {
   overflow-y: auto;
   min-height: 1.5em;
   line-height: 1.45;
+}
+
+/* The base `textarea:focus-visible` rule (specificity 0,1,1) would draw a second
+   outline inside the card; this (0,2,0) rule keeps the card border the only line. */
+.rc-composer-input:focus,
+.rc-composer-input:focus-visible {
+  outline: none;
 }
 
 .rc-composer-input::placeholder {
@@ -4358,6 +4392,60 @@ body {
   opacity: 0.85;
 }
 
+/* ── generated media (ImageGen / VideoGen) ───────────────────────────────── */
+.rc-media {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rc-media-frame {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  max-width: 100%;
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-input-border));
+  border-radius: var(--rc-radius-lg);
+  overflow: hidden;
+  background-color: var(--vscode-editorWidget-background);
+}
+
+.rc-media-player {
+  display: block;
+  max-width: 100%;
+  /* Bounded height so a tall image or a video does not dominate the transcript; the file
+     itself is one click away for a full view. */
+  max-height: 320px;
+  height: auto;
+}
+
+.rc-media-placeholder {
+  padding: 14px;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-media-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--rc-gap);
+  min-width: 0;
+}
+
+.rc-media-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.rc-media-open {
+  flex: 0 0 auto;
+}
+
 .rc-search-results {
   list-style: none;
   margin: 0;
@@ -4431,7 +4519,6 @@ body {
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-array-input-field,
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-setup-input,
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-header-title-input,
-:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-composer-input,
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-question-notes textarea,
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-runtime-search input,
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-dropdown-search,
@@ -4460,6 +4547,12 @@ body {
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-composer-card,
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-badge {
   border: 1px solid var(--vscode-contrastBorder);
+}
+
+/* The HC rule above is more specific than the base `:focus-within` border colour, so
+   restate the focus indicator for the composer card here. */
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-composer-card:focus-within {
+  border-color: var(--vscode-focusBorder);
 }
 
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) .rc-delivery-option-active,

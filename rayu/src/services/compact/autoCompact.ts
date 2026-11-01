@@ -11,6 +11,11 @@ import { hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
 import { getHeapPressure } from '../../utils/memoryPressureGuard.js'
+import {
+  estimateAccumulatedMediaBytes,
+  estimateMediaBytes,
+  getMediaCompactBudgetBytes,
+} from '../../utils/mediaBytes.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
@@ -18,6 +23,7 @@ import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import {
   type CompactionResult,
+  buildPostCompactMessages,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
@@ -237,19 +243,41 @@ async function getAutoCompactDecision(
   let trigger:
     | { reason: 'token_threshold' }
     | { reason: 'heap_pressure'; heapUsed: number; heapLimit: number }
+    | { reason: 'media_bytes'; mediaBytes: number; mediaBudget: number }
   if (tokenCount >= threshold) {
     trigger = { reason: 'token_threshold' }
   } else {
-    // Internal records include tool calls and split streaming blocks. A large
-    // count is not evidence of context exhaustion; require actual heap pressure
-    // to retain the OOM fallback without routinely discarding low-token history.
-    if (messages.length < MIN_MESSAGES_FOR_HEAP_PRESSURE_COMPACT) return null
-    const { heapUsed, heapLimit, isHigh } = getHeapPressure()
-    if (!isHigh) return null
-    trigger = { reason: 'heap_pressure', heapUsed, heapLimit }
-    logForDebugging(
-      `autocompact: reason=heap_pressure heapUsed=${heapUsed} heapLimit=${heapLimit} messages=${messages.length}`,
-    )
+    // ACCUMULATED media bytes (turns before the current user message) can cross
+    // the server's size cap while the token count stays under threshold: the
+    // token estimate scores each image as a flat 2000 tokens but is blind to the
+    // ~1.5MB each base64 image weighs on the wire, so an image-heavy session
+    // 413s ("request too large") with no token-based compaction ever firing.
+    // Only ACCUMULATED media triggers — the current turn's own attachments are
+    // left alone so a fresh paste is never summarized away before the model sees
+    // it (see estimateAccumulatedMediaBytes). Checked BEFORE the heap-pressure
+    // MIN_MESSAGES gate — a short session with a dozen old images is byte-huge
+    // but record-few, so that record-count gate would wrongly skip it. Converges
+    // rather than loops: compaction replaces old messages with an image-stripped
+    // summary (compact.ts), so the bytes are gone next turn.
+    const mediaBytes = estimateAccumulatedMediaBytes(messages)
+    const mediaBudget = getMediaCompactBudgetBytes()
+    if (mediaBytes >= mediaBudget) {
+      trigger = { reason: 'media_bytes', mediaBytes, mediaBudget }
+      logForDebugging(
+        `autocompact: reason=media_bytes mediaBytes=${mediaBytes} mediaBudget=${mediaBudget} messages=${messages.length}`,
+      )
+    } else {
+      // Internal records include tool calls and split streaming blocks. A large
+      // count is not evidence of context exhaustion; require actual heap pressure
+      // to retain the OOM fallback without routinely discarding low-token history.
+      if (messages.length < MIN_MESSAGES_FOR_HEAP_PRESSURE_COMPACT) return null
+      const { heapUsed, heapLimit, isHigh } = getHeapPressure()
+      if (!isHigh) return null
+      trigger = { reason: 'heap_pressure', heapUsed, heapLimit }
+      logForDebugging(
+        `autocompact: reason=heap_pressure heapUsed=${heapUsed} heapLimit=${heapLimit} messages=${messages.length}`,
+      )
+    }
   }
 
   return {
@@ -340,23 +368,42 @@ export async function autoCompactIfNeeded(
     model,
   )
   if (sessionMemoryResult) {
-    recordAutoCompactDecision(sessionMemoryResult, decision)
-    // Reset lastSummarizedMessageId since session memory compaction prunes messages
-    // and the old message UUID will no longer exist after the REPL replaces messages
-    setLastSummarizedMessageId(undefined)
-    runPostCompactCleanup(querySource)
-    // Reset cache read baseline so the post-compact drop isn't flagged as a
-    // break. compactConversation does this internally; SM-compact doesn't.
-    // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
-    // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
-    if (RAYU_FEATURES.PROMPT_CACHE_BREAK_DETECTION) {
-      notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
+    // A media_bytes compaction exists to shrink the request body below the byte
+    // budget. Session-memory compaction KEEPS a verbatim tail (messagesToKeep,
+    // NOT image-stripped); if the recent turns are image-heavy, that tail alone
+    // can still exceed the budget, leaving the body over the server cap. Accepting
+    // it would compact again next turn without ever fixing the 413. Reject the SM
+    // result and fall through to legacy full compaction, which keeps nothing and
+    // therefore sheds the images. Only relevant when SM-compact is enabled (off
+    // by default via tengu_session_memory/tengu_sm_compact) AND the trigger was
+    // bytes — token/heap triggers keep the normal SM tail.
+    const retainsTooMuchMedia =
+      decision.reason === 'media_bytes' &&
+      estimateMediaBytes(buildPostCompactMessages(sessionMemoryResult)) >=
+        decision.mediaBudget
+    if (!retainsTooMuchMedia) {
+      recordAutoCompactDecision(sessionMemoryResult, decision)
+      // Reset lastSummarizedMessageId since session memory compaction prunes messages
+      // and the old message UUID will no longer exist after the REPL replaces messages
+      setLastSummarizedMessageId(undefined)
+      runPostCompactCleanup(querySource)
+      // Reset cache read baseline so the post-compact drop isn't flagged as a
+      // break. compactConversation does this internally; SM-compact doesn't.
+      // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
+      // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
+      if (RAYU_FEATURES.PROMPT_CACHE_BREAK_DETECTION) {
+        notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
+      }
+      markPostCompaction()
+      return {
+        wasCompacted: true,
+        compactionResult: sessionMemoryResult,
+      }
     }
-    markPostCompaction()
-    return {
-      wasCompacted: true,
-      compactionResult: sessionMemoryResult,
-    }
+    logForDebugging(
+      'autocompact: media_bytes — session-memory compaction retained too much media; falling back to full compaction to shed images',
+      { level: 'warn' },
+    )
   }
 
   try {

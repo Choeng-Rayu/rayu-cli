@@ -558,6 +558,51 @@ const PlanResultSchema = z
   .passthrough()
 
 /**
+ * Base64 length above which an inline image preview is dropped.
+ *
+ * The pixels travel inside the transcript as a `data:` URL, which is retained for the
+ * life of the entry, so this is a memory bound, not a protocol one. ~3 MB of base64 is
+ * ~2.2 MB of image — generous for a generated image, small enough that a session full of
+ * them stays reasonable. Over the cap the view degrades to a filename + Open button;
+ * nothing is lost but the thumbnail.
+ */
+const MAX_INLINE_MEDIA_BASE64 = 3_000_000
+
+/** `ImageGen` output. See `src/tools/ImageGenTool/ImageGenTool.ts`. */
+const ImageResultSchema = z
+  .object({
+    path: z.string(),
+    model: z.string(),
+    width: z.number(),
+    height: z.number(),
+    mediaType: z.string().regex(/^image\//),
+    base64: z.string(),
+  })
+  .passthrough()
+
+/** `VideoGen` output. See `src/tools/VideoGenTool/VideoGenTool.ts`. */
+const VideoResultSchema = z
+  .object({
+    path: z.string(),
+    model: z.string(),
+    frames: z.number(),
+    fps: z.number(),
+    mediaType: z.string().regex(/^video\//),
+    durationSeconds: z.number().optional(),
+    resolution: z.string().optional(),
+    ratio: z.string().optional(),
+    previewBase64: z.string().optional(),
+    previewMediaType: z.string().optional(),
+  })
+  .passthrough()
+
+/** The trailing file name of an absolute or relative path, for display + a11y. */
+function mediaFileName(path: string): string {
+  const parts = path.split(/[\\/]/)
+  return parts[parts.length - 1] || path
+}
+
+/**
  * Project a tool's typed output into a renderable result, or undefined.
  *
  * ── THE TYPED OUTPUT IS ALREADY ON THE WIRE ────────────────────────────────────
@@ -622,6 +667,47 @@ export function projectToolResult(raw: unknown): ToolResultView | undefined {
       kind: 'plan',
       plan: clamp(planResult.data.plan),
       ...(planResult.data.filePath ? { filePath: planResult.data.filePath } : {}),
+    }
+  }
+
+  const image = ImageResultSchema.safeParse(raw)
+  if (image.success) {
+    const { path, model, width, height, mediaType, base64 } = image.data
+    return {
+      kind: 'media',
+      media: 'image',
+      path,
+      fileName: mediaFileName(path),
+      mediaType,
+      width,
+      height,
+      model,
+      ...(base64.length <= MAX_INLINE_MEDIA_BASE64
+        ? { previewDataUri: `data:${mediaType};base64,${base64}` }
+        : {}),
+    }
+  }
+
+  const video = VideoResultSchema.safeParse(raw)
+  if (video.success) {
+    const { path, model, mediaType, durationSeconds, resolution, previewBase64 } =
+      video.data
+    // `webviewUri` is filled host-side at post time (see SessionPanel.postState) — it needs
+    // the live `webview.asWebviewUri`, which a pure formatter does not have.
+    return {
+      kind: 'media',
+      media: 'video',
+      path,
+      fileName: mediaFileName(path),
+      mediaType,
+      model,
+      ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+      ...(resolution ? { resolution } : {}),
+      ...(previewBase64 && previewBase64.length <= MAX_INLINE_MEDIA_BASE64
+        ? {
+            previewDataUri: `data:${video.data.previewMediaType || 'image/png'};base64,${previewBase64}`,
+          }
+        : {}),
     }
   }
 

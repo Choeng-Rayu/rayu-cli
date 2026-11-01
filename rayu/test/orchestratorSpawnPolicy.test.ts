@@ -45,10 +45,14 @@ function stateWith(run: OrchestrationRun | null, mode = 'orchestrator'): AppStat
   return { ...base, toolPermissionContext: { ...getEmptyToolPermissionContext(), mode } as never, orchestration: { run } }
 }
 
-function decide(state: AppState, name: string | undefined, extra: { agentId?: string; agent?: typeof GENERAL_PURPOSE_AGENT; maxParallelWriters?: number; tools?: string[] } = {}) {
+// The agents a CLI or Rayucode session has (src/tools/AgentTool/builtInAgents.ts).
+const SESSION_AGENTS = ['general-purpose', 'planner', 'verifier']
+
+function decide(state: AppState, name: string | undefined, extra: { agentId?: string; agent?: typeof GENERAL_PURPOSE_AGENT; maxParallelWriters?: number; tools?: string[]; agents?: string[] } = {}) {
+  const activeAgents = (extra.agents ?? SESSION_AGENTS).map(agentType => ({ agentType }))
   return decideWorkerSpawn(
     { agentDefinition: extra.agent ?? GENERAL_PURPOSE_AGENT, name },
-    { agentId: extra.agentId, getAppState: () => state, options: { tools: (extra.tools ?? []).map(toolName => ({ name: toolName })) } } as never,
+    { agentId: extra.agentId, getAppState: () => state, options: { tools: (extra.tools ?? []).map(toolName => ({ name: toolName })), agentDefinitions: { activeAgents, allAgents: activeAgents } } } as never,
     { maxParallelWriters: extra.maxParallelWriters ?? 4 },
   )
 }
@@ -81,6 +85,23 @@ describe('refusals say what to do instead', () => {
     expect(message(decide(stateWith(null), 'types'))).toContain("Publish the run's contract with OrchestrationContract")
     expect(message(decide(stateWith(freshRun()), undefined))).toContain('Set `name` to the contract packet this worker implements (types, api, ui)')
     expect(message(decide(stateWith(freshRun()), 'docs'))).toContain('Contract v1 has no packet named "docs"')
+  })
+
+  test('a name mismatch points a reviewer at the verifier instead of a fake packet', () => {
+    // The spawn policy governs implementation workers only; a review agent is not a
+    // packet, so both refusals must redirect it to the exempt verifier (the real bug:
+    // the model looped inventing a review packet). See src/orchestrator/spawnPolicy.ts.
+    expect(message(decide(stateWith(freshRun()), undefined))).toContain('launch the `verifier` agent instead')
+    expect(message(decide(stateWith(freshRun()), 'review-integration'))).toContain('launch the `verifier` agent instead')
+  })
+
+  test('without the verifier (programmatic SDK, RAYU_DISABLE_SPECIALIST_AGENTS), it is not named', () => {
+    const agents = ['general-purpose']
+    for (const name of [undefined, 'review-integration']) {
+      const text = message(decide(stateWith(freshRun()), name, { agents }))
+      expect(text).not.toContain('verifier')
+      expect(text).toContain('run the checks yourself instead; a review is not a packet')
+    }
   })
 
   test('unfinished dependency, a running duplicate, and the writer limit', () => {

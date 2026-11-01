@@ -816,6 +816,13 @@ export type WebviewToHostMessage =
    */
   | { type: 'reviewKeep'; path?: string }
   | { type: 'reviewUndo'; path?: string }
+  /**
+   * Restore files to their state before a specific user message (the CLI's `/rewind`).
+   *
+   * Files only — the conversation is not truncated. Keyed by the message uuid the host sent
+   * with the prompt; the host confirms with a modal before restoring.
+   */
+  | { type: 'rewindFiles'; messageUuid: string }
   /** Show a changed file's diff against its state before the turn. */
   | { type: 'openReviewDiff'; path: string }
   /** Open a changed file in an editor. */
@@ -995,8 +1002,9 @@ export interface TaskDetailPage {
  *
  * A DECISION, not an omission. Edits were done first because they are what the agent
  * spends most of its time doing and the hardest thing to read as raw text; search was
- * added second to prove the mechanism generalises past one shape. The rest — `Read`,
- * `Bash`, `Agent`, `LSP`, `MCP`, `ImageGen`, `ReadMcpResource`, `ListMcpResources`,
+ * added second to prove the mechanism generalises past one shape; media (`ImageGen` /
+ * `VideoGen`) was added next because a bare file path is useless for something visual.
+ * The rest — `Read`, `Bash`, `Agent`, `LSP`, `MCP`, `ReadMcpResource`, `ListMcpResources`,
  * `RemoteTrigger`, `Config`, `Brief`, the plan-mode and worktree tools, and
  * `AskUserQuestion`/`TodoWrite` which already have their own cards — each have a
  * `renderToolResultMessage` in `src/tools/<Name>/UI.tsx` worth mirroring, and are left
@@ -1046,6 +1054,33 @@ export type ToolResultView =
       plan: string
       /** Where the engine saved it, when it reported a path. */
       filePath?: string
+    }
+  /**
+   * A generated image or video — `ImageGen` / `VideoGen` output.
+   *
+   * Images carry their pixels inline as `previewDataUri` (`data:` URL, already permitted by
+   * the webview CSP's `img-src ... data:`), so they render without any file access. Videos
+   * are too large to inline: the host resolves `path` to a `webview.asWebviewUri` value in
+   * `webviewUri` at post time, which is why it may be absent when the file sits outside the
+   * webview's `localResourceRoots`. When it is absent the view still shows the poster
+   * (`previewDataUri`) and an Open button, so nothing is lost, only playback.
+   */
+  | {
+      kind: 'media'
+      media: 'image' | 'video'
+      /** Absolute on-disk output path (inside the session cwd). */
+      path: string
+      fileName: string
+      mediaType: string
+      width?: number
+      height?: number
+      model?: string
+      durationSeconds?: number
+      resolution?: string
+      /** Image pixels, or a video poster frame, as a `data:` URL. Bounded by the host. */
+      previewDataUri?: string
+      /** Video playback URL from `webview.asWebviewUri`, set host-side at post time. */
+      webviewUri?: string
     }
 
 /**
@@ -1106,6 +1141,14 @@ export type TranscriptEntry =
       text: string
       /** How a prompt entered an already-running turn. Omitted for ordinary sends. */
       delivery?: Exclude<PromptDeliveryView, 'normal'>
+      /**
+       * The engine's uuid for this user message, when the host generated one.
+       *
+       * Present only for prompts sent from this host (not restored history), and only when
+       * file checkpointing is on. It is the key `rewind_files` uses to restore files to the
+       * state before this message, so the Restore control shows exactly when this is set.
+       */
+      messageUuid?: string
     }
   | { id: EntryId; kind: 'assistant'; text: string; streaming?: boolean }
   | {
@@ -1649,6 +1692,7 @@ export interface WebviewState {
 export interface SlashCommandView {
   name: string
   description: string
+  argumentHint?: string
 }
 
 /** An MCP server's connection status. */

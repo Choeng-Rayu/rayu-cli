@@ -165,7 +165,7 @@ function verificationRule(agents: ReadonlySet<string>, info: OrchestratorReminde
   if (agents.has(VERIFIER_AGENT_TYPE) && info.hasContractTool) {
     return `After every worker has finished, launch the \`${VERIFIER_AGENT_TYPE}\` agent in the foreground; RAYU gives it the contract and checks its report against the commands it ran. Only an accepted PASS for the project as it is now counts as verified. Send each finding ${sendBack}, and launch a new verifier after the fixes.`
   }
-  return `After implementation, have a fresh \`${GENERAL_PURPOSE_AGENT_TYPE}\` agent review the result and run the checks. Send each issue ${sendBack}, and repeat until the checks pass.`
+  return `After implementation, review the integrated result and run the checks yourself (you can run shell commands directly). Send each issue ${sendBack}, and repeat until the checks pass.`
 }
 
 function researchRule(agents: ReadonlySet<string>): string {

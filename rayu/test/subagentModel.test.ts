@@ -116,12 +116,22 @@ test('getAgentModel: same-provider subagent selection is NOT prefixed', async ()
   expect(m).toBe('nvidia/llama-3.1-nemotron-nano-8b-v1')
 })
 
-test('getAgentModel: explicit tool override wins over subagent selection', async () => {
+test('getAgentModel: a saved subagent selection is a hard lock over the tool model param', async () => {
   await setActiveOpenAIProvider()
   const cfg = await import('../src/utils/rayuConfig.ts')
   cfg.setSubagentSelection('bedrock', 'openai.gpt-oss-120b-1:0')
   const { getAgentModel } = await import('../src/utils/model/agent.ts')
-  // explicit non-default model id passed by the caller is honored verbatim
+  // the main agent's per-call `model` must not override what the user assigned
+  const m = getAgentModel('haiku', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0')
+  expect(cfg.decodeModelProvider(m)).toEqual({
+    providerId: 'bedrock',
+    model: 'openai.gpt-oss-120b-1:0',
+  })
+})
+
+test('getAgentModel: with no saved selection the tool model param is honored', async () => {
+  await setActiveOpenAIProvider()
+  const { getAgentModel } = await import('../src/utils/model/agent.ts')
   const m = getAgentModel('haiku', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0')
   expect(m).toBe('qwen.qwen3-32b-v1:0')
 })
@@ -242,4 +252,47 @@ test('/subagent_models accepts general-purpose, Explore, planner, and custom age
     )
     expect(message).toContain(`${agentType} agent model:`)
   }
+})
+
+// formatAgentLine annotation + hard-lock precedence: saved selection wins over the tool model param.
+function fakeAgent(agentType: string, model?: string) {
+  return {
+    agentType,
+    whenToUse: 'does things',
+    model,
+    source: 'built-in',
+    getSystemPrompt: () => '',
+  } as never
+}
+
+test('formatAgentLine: a saved per-agent selection is annotated as locked', async () => {
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg.setSubagentSelection('nvidia', 'nvidia/llama-3.1-nemotron-nano-8b-v1', 'general-purpose')
+  const { formatAgentLine } = await import('../src/tools/AgentTool/prompt.ts')
+  const line = formatAgentLine(fakeAgent('general-purpose', 'inherit'))
+  expect(line).toContain('- general-purpose: does things')
+  expect(line).toContain(
+    '[model: nvidia/nvidia/llama-3.1-nemotron-nano-8b-v1 · set by you — do not override]',
+  )
+  expect(line).not.toContain('auto')
+})
+
+test('formatAgentLine: an unassigned agent is annotated as auto', async () => {
+  const { formatAgentLine } = await import('../src/tools/AgentTool/prompt.ts')
+  const line = formatAgentLine(fakeAgent('Explore', 'haiku'))
+  expect(line).toContain('[model: Haiku · auto — you may pass a smaller `model` for simple tasks]')
+  expect(line).not.toContain('set by you')
+})
+
+test('formatAgentLine: a global selection marks every agent locked, a per-agent one wins for its own', async () => {
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  const { formatAgentLine } = await import('../src/tools/AgentTool/prompt.ts')
+  cfg.setSubagentSelection('bedrock', 'openai.gpt-oss-120b-1:0')
+  cfg.setSubagentSelection('nvidia', 'per-agent-model', 'planner')
+  expect(formatAgentLine(fakeAgent('custom-agent'))).toContain(
+    '[model: bedrock/openai.gpt-oss-120b-1:0 · set by you — do not override]',
+  )
+  expect(formatAgentLine(fakeAgent('planner'))).toContain(
+    '[model: nvidia/per-agent-model · set by you — do not override]',
+  )
 })

@@ -68,6 +68,10 @@ mock.module('../src/services/rayuAuth/rayuDevices.ts', () => ({
   unregisterDevice: async () => null,
   startDeviceHeartbeat: () => {},
   stopDeviceHeartbeat: () => {},
+  // telegramSnapshot imports this; omitting it made mock.module (process-global
+  // in Bun) break any other test file that imports telegramBridge in the same
+  // run. Mirror the real export surface.
+  publishSessionSnapshot: async () => true,
 }))
 
 const { setHostedRouter } = await import('../src/telegram/telegramApi.ts')
@@ -634,6 +638,22 @@ describe('/uninstall gates', () => {
 
     await handleUninstallCommand('tok', CHAT, USER, '')
     expectNothingStarted()
+  })
+
+  // Regression: the bridge passes a missing sender id through as 0. The Gate 3
+  // confirmation is bound to telegramUserId, so binding to the sentinel 0 would
+  // let a second id-less message satisfy the match (0 === 0). A destructive op
+  // must refuse rather than bind to a sentinel.
+  test('a missing sender id (0) is refused instead of binding to a sentinel', async () => {
+    setRemoteUninstallAllowed(true)
+    const id = getDeviceIdentity()
+    devices = [remoteDevice(id.deviceId, id.deviceName)]
+
+    await handleUninstallCommand('tok', CHAT, 0, id.deviceName)
+
+    expectNothingStarted()
+    expect(cards).toHaveLength(0)
+    expect(lastMessage()).toMatch(/could not identify/i)
   })
 
   test('the enable switch is a boolean and can be turned back off', () => {

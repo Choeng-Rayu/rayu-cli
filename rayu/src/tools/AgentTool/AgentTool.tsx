@@ -23,8 +23,9 @@ import { isEnvTruthy } from '../../utils/envUtils.js';
 import { AbortError, errorMessage, toError } from '../../utils/errors.js';
 import type { CacheSafeParams } from '../../utils/forkedAgent.js';
 import { lazySchema } from '../../utils/lazySchema.js';
-import { createUserMessage, extractTextContent, isSyntheticMessage, normalizeMessages } from '../../utils/messages.js';
+import { createSystemMessage, createUserMessage, extractTextContent, isSyntheticMessage, normalizeMessages } from '../../utils/messages.js';
 import { getAgentModel } from '../../utils/model/agent.js';
+import { clearSubagentSelection, getSubagentSelection } from '../../utils/rayuConfig.js';
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { filterDeniedAgents, getDenyRuleForAgent } from '../../utils/permissions/permissions.js';
@@ -60,6 +61,7 @@ import type { AgentDefinition } from './loadAgentsDir.js';
 import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
 import { getPrompt } from './prompt.js';
 import { runAgent } from './runAgent.js';
+import { maybePromptForUnassignedSubagentModel } from './subagentModelPrompt.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -83,6 +85,10 @@ function getAutoBackgroundMs(): number {
   return 0;
 }
 
+// A failed foreground spawn whose message looks model-related (bad/removed/unsupported
+// model) clears the saved per-agent selection and lets the user pick again once.
+const MODEL_ERROR_PATTERN = /(model|not found|404|unsupported|does not exist)/i;
+
 // Multi-agent type constants are defined inline inside gated blocks to enable dead code elimination
 
 // Base input schema without multi-agent parameters
@@ -90,7 +96,7 @@ const baseInputSchema = lazySchema(() => z.object({
   description: z.string().describe('A short (3-5 word) description of the task'),
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
-  model: z.string().optional().describe("Optional model override for this agent (an alias like 'sonnet'/'opus'/'haiku', or a provider-specific model id). Takes precedence over /subagent_models and the agent definition's model. If omitted, uses the named/global agent selection, then the definition default or parent model."),
+  model: z.string().optional().describe("Model for this agent. A model the user assigned to this agent type with /subagent_models is a HARD LOCK: it always wins and this `model` is ignored for that agent type. Otherwise `model` picks the model for this one call (an alias like 'sonnet'/'opus'/'haiku', or a provider-specific model id). If neither is set, the agent's default/instant model is used, and the user may be asked once to choose a model for this agent type."),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -454,6 +460,21 @@ export const AgentTool = buildTool({
     }
     const verifierGrant = verifierDecision.kind === 'verifier' ? verifierDecision : null;
     const workerPrompt = packetGrant ? `${packetGrant.briefing}${prompt}` : verifierGrant ? `${verifierGrant.briefing}${prompt}` : prompt;
+
+    // Only a synchronous foreground spawn may stop to ask the user for a model.
+    // Fork, teammate, background/forced-async, packet and verifier spawns never
+    // prompt (their async-forcing conditions mirror `shouldRunAsync` below).
+    const isPromptableForegroundSpawn = !isForkPath && run_in_background !== true && selectedAgent.background !== true && !(teamName && name) && !packetGrant && !verifierGrant && !isForkSubagentEnabled() && !(feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) : false) && !(feature('KAIROS') ? appState.kairosEnabled : false) && !(proactiveModule?.isProactiveActive() ?? false);
+    if (isPromptableForegroundSpawn) {
+      // Asks once (existing picker) when nothing decides this agent's model, and
+      // persists the choice so the model resolution below picks it up. A user's
+      // /subagent_models assignment is never re-asked and `model` cannot override it.
+      await maybePromptForUnassignedSubagentModel({
+        agentType: selectedAgent.agentType,
+        toolSpecifiedModel: isForkPath ? undefined : model,
+        toolUseContext
+      });
+    }
 
     // Resolve agent params for logging (these are already resolved in runAgent)
     const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode, selectedAgent.agentType);
@@ -869,7 +890,7 @@ export const AgentTool = buildTool({
 
       // Wrap entire sync agent execution in context for analytics attribution
       // and optionally in a worktree cwd override for filesystem isolation
-      const syncRun = runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
+      const runSyncAgentOnce = () => runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
         const agentMessages: MessageType[] = [];
         const agentStartTime = Date.now();
         const syncTracker = createProgressTracker();
@@ -1349,7 +1370,33 @@ export const AgentTool = buildTool({
           }
         };
       }));
-      // A foreground packet worker finishes when this call does; one moved to
+      // A saved model that no longer works (removed, renamed, unsupported) must not
+      // keep failing every run: clear it, tell the user, and let them pick again.
+      // Bounded to ONE recovery per call. A worktree-isolated run is not retried
+      // (its worktree is already torn down), but the stale selection is still cleared.
+      const hadSubagentSelection = isPromptableForegroundSpawn && !!getSubagentSelection(selectedAgent.agentType);
+      let retriedForModel = false;
+      const syncRun = (async () => {
+        try {
+          return await runSyncAgentOnce();
+        } catch (error) {
+          if (!hadSubagentSelection || retriedForModel || error instanceof AbortError || !MODEL_ERROR_PATTERN.test(errorMessage(error))) {
+            throw error;
+          }
+          retriedForModel = true;
+          clearSubagentSelection(selectedAgent.agentType);
+          if (effectiveIsolation === 'worktree') throw error;
+          toolUseContext.appendSystemMessage?.(createSystemMessage(`The saved model for the "${selectedAgent.agentType}" subagent failed (${errorMessage(error).slice(0, 160)}). Cleared it.`, 'warning'));
+          const picked = await maybePromptForUnassignedSubagentModel({
+            agentType: selectedAgent.agentType,
+            toolSpecifiedModel: undefined,
+            toolUseContext
+          });
+          // Non-interactive, or the user dismissed the picker: surface the original error.
+          if (!picked) throw error;
+          return await runSyncAgentOnce();
+        }
+      })();
       // the background reports through its task's status transitions instead.
       // A foreground worktree packet is merged once its completion is recorded.
       return packetGrant ? settleForegroundPacket(syncRun, earlyAgentId, rootSetAppState, packetGrant.worktreeBase ? async () => {

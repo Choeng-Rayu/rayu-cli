@@ -244,6 +244,10 @@ export type AutoCompactDecision = {
 } & (
   | { reason: 'token_threshold' }
   | { reason: 'heap_pressure'; heapUsed: number; heapLimit: number }
+  // Request-body media bytes (base64 images/documents) crossed the budget while
+  // the token count stayed under threshold — the case the flat 2000-tokens-per-
+  // image estimate cannot see. See MEDIA_COMPACT_BUDGET_BYTES / estimateMediaBytes.
+  | { reason: 'media_bytes'; mediaBytes: number; mediaBudget: number }
 )
 
 export type CompactMetadata = {

@@ -27,19 +27,25 @@ import { spriteStateForPhase } from '../spriteAtlas.js'
 import { useSecondTick } from '../useSecondTick.js'
 import { DiffView, countChanges } from './DiffView.js'
 import { FileChangeReviewCard } from './FileChangeReviewCard.js'
+import { MediaResultView } from './MediaResultView.js'
 import { SpriteAvatar } from './SpriteAvatar.js'
 import { SummaryEntryView } from './SummaryEntryView.js'
 import { ThinkingBlock } from './ThinkingBlock.js'
-import { ChevronIcon, CopyIcon } from './Icons.js'
+import { ChevronIcon, CopyIcon, HistoryIcon } from './Icons.js'
 import { ToolOutput, outputForClipboard } from './ToolOutput.js'
 
 /** The user's prompt. */
 export function UserEntry({
   text,
   delivery,
+  messageUuid,
+  onRewind,
 }: {
   text: string
   delivery?: 'queue' | 'steer'
+  /** Present only for prompts sent from this host with checkpointing on. */
+  messageUuid?: string
+  onRewind?: (messageUuid: string) => void
 }): JSX.Element {
   const [copied, setCopied] = useState(false)
 
@@ -69,6 +75,17 @@ export function UserEntry({
           <CopyIcon />
           {copied ? <span className="rc-action-feedback">Copied</span> : null}
         </button>
+        {messageUuid && onRewind ? (
+          <button
+            type="button"
+            className="rc-turn-action-btn rc-request-rewind"
+            onClick={() => onRewind(messageUuid)}
+            title="Restore files to before this message"
+            aria-label="Restore files to before this message"
+          >
+            <HistoryIcon />
+          </button>
+        ) : null}
       </div>
     </div>
   )
@@ -357,7 +374,11 @@ export function ToolActionEntry({
    * The rule lives in `resolveToolOpen` — one definition, so a test of it is a test of what
    * ships. `hasDetail` gates it because an empty row has nothing to open.
    */
-  const isOpen = resolveToolOpen(open, detailed) && hasDetail
+  // A media result is the point of the row — a generated image/video should appear without
+  // the user opening a pill first — so it counts as "detailed" for the default-open rule.
+  // `resolveToolOpen` still wins: an explicit user toggle overrides this either way.
+  const isOpen =
+    resolveToolOpen(open, detailed || entry.toolResult?.kind === 'media') && hasDetail
   // Shown only while running. A finished call's duration belongs to the turn's own
   // completion line, and a frozen timer on every historical pill is noise.
   const elapsed =
@@ -495,6 +516,8 @@ function ToolResultBody({
       return <SearchResultView result={result} onOpenFile={onOpenFile} />
     case 'plan':
       return <PlanResultView result={result} />
+    case 'media':
+      return <MediaResultView result={result} onOpenFile={onOpenFile} />
   }
 }
 
@@ -823,6 +846,7 @@ export function TranscriptEntryView({
   onUndo,
   onDiff,
   onOpen,
+  onRewind,
 }: {
   entry: TranscriptEntry
   /** Reasoning blocks for THIS entry, already filtered and ordered by the caller. */
@@ -854,10 +878,19 @@ export function TranscriptEntryView({
   onUndo?: (path?: string) => void
   onDiff?: (path: string) => void
   onOpen?: (path: string) => void
+  /** Restore files to before a prompt (the CLI's /rewind), keyed by its message uuid. */
+  onRewind?: (messageUuid: string) => void
 }): JSX.Element | null {
   switch (entry.kind) {
     case 'prompt':
-      return <UserEntry text={entry.text} delivery={entry.delivery} />
+      return (
+        <UserEntry
+          text={entry.text}
+          delivery={entry.delivery}
+          messageUuid={entry.messageUuid}
+          onRewind={onRewind}
+        />
+      )
     case 'assistant':
       return (
         <AssistantEntry

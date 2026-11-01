@@ -175,7 +175,12 @@ function url(token: string, method: string): string {
   return `${API_BASE}/bot${token}/${method}`
 }
 
-async function callApi(token: string, method: string, body: object): Promise<unknown> {
+async function callApi(
+  token: string,
+  method: string,
+  body: object,
+  { allowRetry = true }: { allowRetry?: boolean } = {},
+): Promise<unknown> {
   // Hosted mode: relay through the backend instead of calling Telegram directly.
   if (hostedRouter) return hostedRouter.call(method, body as Record<string, unknown>)
   const res = await fetch(url(token, method), {
@@ -185,11 +190,15 @@ async function callApi(token: string, method: string, body: object): Promise<unk
   })
   const json: unknown = await res.json()
   if (!res.ok || !(json as { ok?: boolean }).ok) {
-    // On rate-limit (429), honour the retry_after delay and retry once
+    // On rate-limit (429), honour the retry_after delay and retry ONCE. The
+    // single-retry guard + capped wait mirror relayHostedSend: without them a
+    // sustained 429 recursed forever, and a hostile/large retry_after could park
+    // the call for an unbounded time.
     const retryAfter = (json as { parameters?: { retry_after?: number } }).parameters?.retry_after
-    if (res.status === 429 && retryAfter) {
-      await new Promise(r => setTimeout(r, retryAfter * 1000 + 200))
-      return callApi(token, method, body)
+    if (res.status === 429 && retryAfter && allowRetry) {
+      const waitMs = Math.min(retryAfter * 1000, 30_000) + 200
+      await new Promise(r => setTimeout(r, waitMs))
+      return callApi(token, method, body, { allowRetry: false })
     }
     throw new TelegramApiError(
       `Telegram ${method} failed: ${JSON.stringify(json)}`,

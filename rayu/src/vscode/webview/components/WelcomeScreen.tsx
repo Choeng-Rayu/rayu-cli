@@ -14,6 +14,7 @@
  * feature of a different product. The one-line introduction says what this is; the chips show
  * what to do with it.
  */
+import { DRAG_WELCOME_HINT } from '../dropCopy.js'
 import { RayuMark } from './Icons.js'
 
 export interface PromptChipItem {
@@ -62,10 +63,7 @@ export function WelcomeScreen({
         ))}
       </div>
 
-      <p className="rc-welcome-hint">
-        Drag files or images onto this panel, use <strong>Add Context</strong>, type{' '}
-        <code>@</code>, or right-click a file in the Explorer.
-      </p>
+      <p className="rc-welcome-hint">{DRAG_WELCOME_HINT}</p>
     </div>
   )
 }
