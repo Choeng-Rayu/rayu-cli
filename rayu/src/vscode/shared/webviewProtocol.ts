@@ -914,7 +914,8 @@ export type WebviewToHostMessage =
    *
    * Distinct from `resumeSession`: nothing is spawned, nothing is torn down, and a turn that
    * is mid-flight in the target keeps running. Keyed by the panel's own session key because a
-   * live session may not have learned its engine id yet.
+   * live session may not have learned its engine id yet. When the sidebar slot is EMPTY, the
+   * conversation is adopted into the sidebar rather than opened as a tab.
    */
   | { type: 'switchSession'; key: string }
   /**
@@ -924,23 +925,20 @@ export type WebviewToHostMessage =
    * which switches the surface the sender is IN: this asks the host to create a NEW
    * panel bound to `key`, or reveal the one already bound to it. Nothing is spawned or
    * stopped, because the session is already running.
+   *
+   * Exception: when the sidebar slot is EMPTY, the host adopts the conversation into the
+   * sidebar instead of creating a tab.
    */
   | { type: 'openSessionPanel'; key: string }
-  /**
-   * Open the ACTIVE session's editor tab with a slash command pre-typed in its composer.
-   *
-   * Sent from the sidebar's Runtime Center, which is a management surface with no composer
-   * of its own: "use this command" means "put it where commands are typed" — the active
-   * conversation's tab. The host opens (or focuses) the tab and delivers the text there,
-   * so the command is one keystroke away instead of silently vanishing.
-   */
-  | { type: 'useCommandInTab'; name: string }
   /**
    * Resume a STORED session as its own editor tab.
    *
    * Sent from the sidebar's history list. Spawns an engine child with `--resume` and
    * opens a panel for it — the tab equivalent of the old `resumeSession`, which remains
    * in the union for the sidebar's own quick-chat fallback path.
+   *
+   * Exception: when the sidebar slot is EMPTY, the resumed conversation is adopted into
+   * the sidebar instead of opening a tab.
    */
   | { type: 'resumeSessionPanel'; id: string }
   /** Close an open session and stop its engine. */
@@ -1669,6 +1667,11 @@ export interface WebviewState {
    * revive the tab after a window reload.
    */
   surfaceBinding: SurfaceBindingView | null
+  /**
+   * True when this snapshot belongs to a live conversation (always true for a panel).
+   * False only for the sidebar hub snapshot shown when the sidebar hosts no chat.
+   */
+  hasConversation: boolean
   /** Host-owned task state survives webview collapse and recreation. */
   backgroundTasks?: BackgroundTaskView[]
   /** False when an attached older CLI does not expose task inspection. */

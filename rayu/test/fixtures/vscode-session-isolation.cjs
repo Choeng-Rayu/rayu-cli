@@ -59,6 +59,9 @@ const vscode = {
     registerWebviewPanelSerializer: (_type, value) => { serializer = value; return disposable() },
     registerUriHandler: disposable, onDidChangeActiveTextEditor: disposable,
     onDidChangeTextEditorSelection: disposable, onDidChangeWindowState: disposable,
+    // `panel/dropTargetView.ts` registers the Explorer drop pane and keeps only the
+    // returned disposable (`context.subscriptions`), so this is the whole surface.
+    createTreeView: () => ({ dispose() {} }),
     createStatusBarItem: () => ({ show() {}, hide() {}, dispose() {} }),
     showInformationMessage: async () => undefined,
     showWarningMessage: async () => undefined, showErrorMessage: async () => undefined },
@@ -95,7 +98,10 @@ vm.runInThisContext(`(function(require,module,exports){${fs.readFileSync(bundle,
   name => name === 'vscode' ? vscode : requireFromRoot(name), mod, mod.exports,
 )
 const context = { globalStorageUri: fileUri(directory), extensionUri: fileUri(directory),
-  extension: { packageJSON: { version: '0.0.0' } }, subscriptions: [] }
+  extension: { packageJSON: { version: '0.0.0' } }, subscriptions: [],
+  // Activation restores/persists the sidebar's binding through the extension context's
+  // memento. `get` returning undefined means "no saved binding": a fresh sidebar conversation.
+  workspaceState: { get: () => undefined, update: async () => undefined } }
 mod.exports.activate(context)
 const host = globalThis.__host
 const scope = entry => host.scopeFor('panel', entry.key)
@@ -216,33 +222,77 @@ async function run() {
   assert.deepEqual(closing.calls, [['detach']], 'retiring attachment owner disconnects it')
   assert.deepEqual(host.registry.all.map(entry => entry.key), keysBeforeClose, 'retirement does not create an extra session')
 
+  // The sidebar hosts its OWN conversation. A bare `create()` ("+" in a window that
+  // already has sessions) is just another editor tab: it must not claim or steal the
+  // sidebar slot.
   const bound = host.registry.create()
   const boundPanel = open(bound)
   host.registry.create()
   const boundState = stateFor(boundPanel)
   assert.equal(boundState.activeSessionKey, bound.key, 'global active changes must not rebind a panel')
   assert.equal(boundState.surfaceBinding.sessionKey, bound.key)
-  const sidebar = host.chatReducer({ ...host.initialChatState, surface: 'sidebar' },
-    { type: 'setLiveSessions', sessions: [], activeKey: 'sidebar-target' })
-  assert.equal(sidebar.activeSessionKey, 'sidebar-target', 'sidebar still follows global active key')
+  assert.equal(host.registry.sidebarSessionKey, '', 'a bare create() must not claim an empty sidebar')
+  const sidebarKeyBefore = host.registry.sidebarSessionKey
+  host.registry.create()
+  assert.equal(host.registry.sidebarSessionKey, sidebarKeyBefore,
+    'creating a tab session must not claim or move the sidebar binding')
 
-  // The sidebar must receive a SIDEBAR-flavoured snapshot. It used to be built from the
-  // panel snapshot builder, so the sidebar briefly mounted the conversation — a duplicate
-  // of the editor tab — and re-laid-out as the flavour flipped back (the "whole UI reload").
+  // Claim the slot explicitly — the only way an empty sidebar acquires a conversation.
+  const sidebarEntry = host.registry.create({ inSidebar: true })
+  assert.equal(host.registry.sidebarSessionKey, sidebarEntry.key, 'an inSidebar create() claims the slot')
+  assert.equal(host.registry.sidebarEntry.key, sidebarEntry.key)
+
+  // The sidebar must receive a SIDEBAR-flavoured snapshot built for ITS OWN key. It used
+  // to be built from the panel snapshot builder and follow the globally active key, so
+  // the sidebar briefly mounted the conversation — a duplicate of the editor tab — and
+  // re-laid-out when the flavour flipped back (the "whole UI reload").
   const sidebarView = createSidebarView()
   sidebarProvider.resolveWebviewView(sidebarView)
   sidebarView.messages.length = 0
-  const activeEntry = host.registry.active
-  const activePanel = open(activeEntry)
-  activePanel.messages.length = 0
-  host.surfaces.syncSession(activeEntry.key)
+  host.surfaces.syncSidebar()
   const sidebarInit = sidebarView.messages.filter(message => message.type === 'init').at(-1)
-  assert.ok(sidebarInit, 'the sidebar must receive an init for the active session')
+  assert.ok(sidebarInit, 'the sidebar must receive an init for its own conversation')
   assert.equal(sidebarInit.state.surface, 'sidebar',
     'the sidebar must never receive a panel-flavoured snapshot')
-  const panelInit = activePanel.messages.filter(message => message.type === 'init').at(-1)
+  assert.equal(sidebarInit.state.hasConversation, true,
+    'a sidebar that hosts a conversation says so, so the webview renders chat not the hub')
+  assert.equal(sidebarInit.state.activeSessionKey, host.registry.sidebarSessionKey,
+    'the sidebar snapshot is built for its bound key, not the globally active one')
+
+  // Focusing/creating a DIFFERENT tab must not rebind the sidebar. No new init may reach
+  // it, because an init is a full state replacement and would drag it onto that tab.
+  sidebarView.messages.length = 0
+  const focused = host.registry.create()
+  host.surfaces.openPanel(focused.key)
+  const focusedPanel = panels.at(-1)
+  host.registry.activate(focused.key)
+  host.surfaces.syncSession(focused.key)
+  assert.equal(host.registry.sidebarSessionKey, sidebarEntry.key,
+    'focusing a tab never moves the sidebar binding')
+  assert.equal(sidebarView.messages.filter(message => message.type === 'init').length, 0,
+    'a tab focus/creation must not re-init the sidebar')
+  const panelInit = focusedPanel.messages.filter(message => message.type === 'init').at(-1)
   assert.ok(panelInit, 'the tab must receive an init for its own session')
   assert.equal(panelInit.state.surface, 'panel', 'a tab must still receive a panel-flavoured snapshot')
+  assert.equal(panelInit.state.activeSessionKey, focused.key)
+
+  // A conversation is never rendered on two surfaces. Asking for the sidebar's own
+  // conversation in an editor tab closes that duplicate tab and keeps (or reveals) the
+  // sidebar, so the chat exists exactly once.
+  host.surfaces.openPanel(sidebarEntry.key)
+  assert.equal(host.surfaces.hasPanel(sidebarEntry.key), true,
+    'precondition: a duplicate tab could be opened for the sidebar conversation')
+  await host.handlers.openSessionPanel(scope(sidebarEntry), sidebarEntry.key)
+  assert.equal(host.surfaces.hasPanel(sidebarEntry.key), false,
+    'the sidebar conversation must never keep an editor tab')
+  assert.equal(host.registry.sidebarSessionKey, sidebarEntry.key, 'the sidebar still hosts it')
+  assert.equal(host.registry.sidebarEntry.key, sidebarEntry.key)
+  sidebarView.messages.length = 0
+  host.surfaces.syncSidebar()
+  const stillSidebar = sidebarView.messages.filter(message => message.type === 'init').at(-1)
+  assert.ok(stillSidebar, 'the sidebar is still the surface hosting that conversation')
+  assert.equal(stillSidebar.state.activeSessionKey, sidebarEntry.key)
+  assert.equal(stillSidebar.state.hasConversation, true)
   console.log('session isolation checks passed')
 }
 async function runFirstLogin() {

@@ -373,6 +373,7 @@ describe('VS Code Webview Reducer (chatReducer)', () => {
       workspaceFolder: '/workspace',
       surface: 'sidebar',
       surfaceBinding: null,
+      hasConversation: true,
       signInMessage: null,
       identity: { email: 'dev@rayu.ai', displayName: 'Dev' },
       oauthEnabled: true,

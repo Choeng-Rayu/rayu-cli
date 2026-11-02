@@ -10,11 +10,13 @@
  *   2. A per-session push (transcript, approvals)   → `postToSession`
  *   3. A window-global push (sign-out, catalogue)   → `broadcast`
  *
- * ── THE SIDEBAR'S BINDING IS THE ACTIVE KEY ────────────────────────────────────
+ * ── THE SIDEBAR'S BINDING IS ITS OWN SLOT ──────────────────────────────────────
  *
- * The sidebar's quick chat always renders `activeSidebarKey()`. Panels are bound once,
- * permanently, and never gated. This is what preserves the existing
- * `active == sidebar target` invariant while letting a background tab keep streaming.
+ * The sidebar renders `activeSidebarKey()` — `registry.sidebarSessionKey`, the one
+ * conversation the sidebar hosts — and the sessions hub when that slot is empty. It is
+ * deliberately NOT the globally active key: focusing a tab must not drag the sidebar
+ * onto that conversation (which would show one conversation twice). Panels are bound
+ * once, permanently, and never gated, so a background tab keeps streaming.
  *
  * ── WHY `attachSidebar` BUILDS THE PROVIDER ────────────────────────────────────
  *
@@ -40,7 +42,7 @@ import { SESSION_PANEL_VIEW_TYPE, type ChatSurface } from './webviewSurface.js'
 
 export interface SurfaceRegistryDeps {
   extensionUri: vscode.Uri
-  /** The sidebar's currently-bound key (registry.activeSessionKey). */
+  /** The sidebar's currently-bound key (registry.sidebarSessionKey; '' = the hub). */
   activeSidebarKey: () => string
   /**
    * Full snapshot for a session key on a given surface, or null when unknown.
@@ -48,8 +50,9 @@ export interface SurfaceRegistryDeps {
    * ── WHY THE SURFACE IS A PARAMETER, NOT BAKED IN ───────────────────────────────
    *
    * A snapshot carries `surface`, and the webview decides its entire chrome from that one
-   * field — a panel renders the transcript and composer, the sidebar renders the sessions
-   * hub. The registry is the only place that knows WHICH surface it is building for, so it
+   * field — a panel always renders the transcript and composer, while the sidebar renders
+   * either its bound conversation or (with `hasConversation: false`) the sessions hub. The
+   * registry is the only place that knows WHICH surface it is building for, so it
    * must say so here. When this was hard-wired to `'panel'`, `syncSidebar()` built the
    * sidebar's init from the panel builder, and the sidebar briefly mounted the whole
    * conversation before a corrective re-post arrived — the duplicate-chat-and-reload bug.
@@ -85,7 +88,8 @@ export class SurfaceRegistry {
     this.sidebar?.dispose()
     // No snapshot builder is wired into the provider on purpose: the host owns every
     // sidebar init and posts it through `postState`, built by the registry's
-    // `syncSidebar()` from a sidebar-flavoured snapshot (see the `stateFor` dep).
+    // `syncSidebar()` from `activeSidebarKey()` — the sidebar's own conversation, or the
+    // sessions hub when that slot is empty (see the `stateFor` dep).
     const surface = new ChatViewProvider(this.deps.extensionUri, {
       onMessage: message => this.deps.onMessage('sidebar', this.deps.activeSidebarKey(), message),
     })

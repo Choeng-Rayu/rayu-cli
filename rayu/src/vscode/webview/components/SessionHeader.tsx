@@ -34,6 +34,7 @@ import {
   CloseIcon,
   EllipsisIcon,
   GearIcon,
+  HistoryIcon,
   LinkIcon,
   ListIcon,
   PlugIcon,
@@ -100,15 +101,25 @@ export interface SessionHeaderProps {
   /**
    * Which surface this header belongs to.
    *
-   * A panel is bound to exactly one session and hosts the conversation, so it carries the
-   * title, status and detail switch. The sidebar is the management hub: its header keeps
-   * only the agent-level actions — new session, background work, MCP, account.
+   * Both surfaces render the conversation's title, status and detail switch, because the
+   * sidebar can host the first conversation itself. Only the close action is panel-only,
+   * and only a sidebar with a conversation gets a Sessions toggle back to its list.
    *
    * Optional, defaulting to `'sidebar'`: that keeps an existing caller (e.g. a static
-   * render in a test) compiling and rendering the hub header. App always passes the real
-   * value.
+   * render in a test) compiling. App always passes the real value.
    */
   surface?: ChatSurfaceKind
+  /**
+   * Whether this surface hosts a live conversation.
+   *
+   * The sidebar only needs a sessions toggle when it can show a chat; a hub with no chat
+   * has nothing to toggle away from. Optional, defaulting to false, for bare test renders.
+   */
+  hasConversation?: boolean
+  /** Sidebar only: whether the sessions list is the body currently on screen. */
+  sessionsOpen?: boolean
+  /** Sidebar only: flip between the chat body and the sessions list. */
+  onToggleSessions?: () => void
   status: SessionStatus
   mcpServers: readonly McpServerView[]
   mcpConnectionUi: McpConnectionUiView
@@ -149,6 +160,9 @@ export function SessionHeader({
   title,
   activeSessionKey,
   surface = 'sidebar',
+  hasConversation = false,
+  sessionsOpen = false,
+  onToggleSessions,
   status,
   mcpServers,
   mcpConnectionUi,
@@ -171,12 +185,10 @@ export function SessionHeader({
   onSignIn,
   onSignOut,
 }: SessionHeaderProps): JSX.Element {
-  // The sidebar is the management hub: its header carries the actions that manage the
-  // agent (new session, background work, MCP, account) and nothing that describes one
-  // conversation — the title, status, transcript-detail switch and sessions switcher
-  // all belong to the conversation's own tab. `surface` defaults to `'sidebar'`, so a
-  // bare render without the prop compiles and renders the hub header.
-  const isSidebar = surface === 'sidebar'
+  // What changes as you work — the conversation's title, its status and the transcript
+  // detail switch — now renders on either surface, because the sidebar can host the
+  // first conversation itself. Only the close action stays panel-only, and only a
+  // sidebar with a conversation gets a switcher back to its sessions list.
   const [menuOpen, setMenuOpen] = useState(false)
   const [editingTitle, setEditingTitle] = useState<string | null>(null)
   const cancelTitleEdit = useRef(false)
@@ -236,7 +248,7 @@ export function SessionHeader({
     <header className="rc-header" ref={container}>
       <RayuMark size={14} className="rc-header-mark" />
 
-      {isSidebar ? null : editingTitle !== null ? (
+      {editingTitle !== null ? (
         <input
           ref={titleInput}
           className="rc-header-title rc-header-title-input"
@@ -264,7 +276,7 @@ export function SessionHeader({
       )}
 
       {/* `idle` is not rendered: a pill that says "Ready" on every fresh panel is furniture. */}
-      {!isSidebar && ready && status !== 'idle' ? (
+      {ready && status !== 'idle' ? (
         <span
           className={`rc-session-status rc-session-status-${status}`}
           role="status"
@@ -294,24 +306,22 @@ export function SessionHeader({
             The clickable equivalent of the CLI's Ctrl+O. A shortcut alone would be
             invisible in an editor panel — a keystroke nobody can discover is the same as
             no feature — so this is a real control, and the shortcut is documented on it.
-            Panels only: the switch governs transcript rows, and the sidebar shows none.
+            Shown on both surfaces, since both can render transcript rows.
           */}
-          {!isSidebar ? (
-            <button
-              type="button"
-              className={`rc-icon-button${detailed ? ' rc-icon-button-active' : ''}`}
-              aria-pressed={detailed}
-              title={
-                detailed
-                  ? 'Hide tool details (Ctrl+O)'
-                  : 'Show tool parameters and output (Ctrl+O)'
-              }
-              aria-label="Toggle tool details"
-              onClick={onToggleDetailed}
-            >
-              <ListIcon size={14} />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className={`rc-icon-button${detailed ? ' rc-icon-button-active' : ''}`}
+            aria-pressed={detailed}
+            title={
+              detailed
+                ? 'Hide tool details (Ctrl+O)'
+                : 'Show tool parameters and output (Ctrl+O)'
+            }
+            aria-label="Toggle tool details"
+            onClick={onToggleDetailed}
+          >
+            <ListIcon size={14} />
+          </button>
           {/* Only offered when there IS background work: an always-present control that
               opens an empty panel teaches the user to stop pressing it. Shown on the
               sidebar too — background work is exactly what the hub manages. */}
@@ -332,7 +342,22 @@ export function SessionHeader({
               <span className="rc-icon-badge">{backgroundTaskCount}</span>
             </button>
           ) : null}
-          {/* The hub's primary action: a new conversation opens as its own editor tab. */}
+          {/* Sidebar only, and only while it hosts a conversation: flip its body between
+              that chat and the sessions list. A panel has no list to toggle to. */}
+          {surface === 'sidebar' && hasConversation ? (
+            <button
+              type="button"
+              className={`rc-icon-button${sessionsOpen ? ' rc-icon-button-active' : ''}`}
+              title="Sessions"
+              aria-label="Sessions"
+              aria-pressed={sessionsOpen}
+              onClick={() => onToggleSessions?.()}
+            >
+              <HistoryIcon size={14} />
+            </button>
+          ) : null}
+          {/* Primary action: a new conversation claims the sidebar slot when it is empty,
+              and otherwise opens as its own editor tab. */}
           <button
             type="button"
             className="rc-icon-button"
@@ -342,9 +367,8 @@ export function SessionHeader({
           >
             <PlusIcon size={14} />
           </button>
-          {/* A panel is bound to one session, so it gets a close action. The sidebar needs
-              neither a switcher nor a close: its whole body IS the sessions list, and
-              closing a conversation is that list's own row action. */}
+          {/* A panel is bound to one session, so it gets a close action. The sidebar does
+              not: closing one of its conversations is the sessions list's own row action. */}
           {surface === 'panel' ? (
             <button
               type="button"

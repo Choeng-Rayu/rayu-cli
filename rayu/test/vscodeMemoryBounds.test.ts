@@ -133,6 +133,7 @@ function webviewState(transcript: TranscriptEntry[]): WebviewState {
     workspaceFolder: null,
     surface: 'sidebar',
     surfaceBinding: null,
+    hasConversation: true,
     transcript,
     turnRunning: false,
     pendingPermissions: [],

@@ -439,6 +439,7 @@ describe('init', () => {
       workspaceFolder: '/tmp',
       surface: 'sidebar',
       surfaceBinding: null,
+      hasConversation: true,
       transcript: [{ id: 'p1', kind: 'prompt', text: 'fresh' }],
       turnRunning: false,
       pendingPermissions: [],

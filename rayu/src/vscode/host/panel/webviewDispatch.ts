@@ -58,7 +58,10 @@ export interface ChatViewHandlers {
   ) => Promise<void> | void
   interrupt: (scope: SurfaceScope) => Promise<void> | void
   newSession: (scope: SurfaceScope) => Promise<void> | void
-  /** Bring an already-open conversation to the front. Nothing is spawned or stopped. */
+  /**
+   * Bring an already-open conversation to the front. Nothing is spawned or stopped.
+   * An empty sidebar slot adopts it instead of opening a tab.
+   */
   switchSession: (scope: SurfaceScope, key: string) => Promise<void> | void
   /** Close an open conversation and stop its engine. */
   closeSession: (scope: SurfaceScope, key: string) => Promise<void> | void
@@ -68,14 +71,12 @@ export interface ChatViewHandlers {
     id: string | undefined,
     title?: string,
   ) => Promise<void> | void
-  /** Open/focus a LIVE session as its own editor tab (no spawn, no teardown). */
-  openSessionPanel: (scope: SurfaceScope, key: string) => Promise<void> | void
   /**
-   * Put a slash command in the ACTIVE session's tab — the sidebar's route for "use this
-   * command", since the hub has no composer of its own.
+   * Open/focus a LIVE session as its own editor tab (no spawn, no teardown). An empty
+   * sidebar slot adopts it into the sidebar instead of opening a tab.
    */
-  useCommandInTab: (scope: SurfaceScope, name: string) => Promise<void> | void
-  /** Resume a STORED session as its own editor tab. */
+  openSessionPanel: (scope: SurfaceScope, key: string) => Promise<void> | void
+  /** Resume a STORED session as its own editor tab; an empty sidebar slot adopts it. */
   resumeSessionPanel: (scope: SurfaceScope, id: string) => Promise<void> | void
   permissionResponse: (
     scope: SurfaceScope,
@@ -216,9 +217,6 @@ export function dispatchWebviewMessage(
       return
     case 'openSessionPanel':
       void handlers.openSessionPanel(scope, message.key)
-      return
-    case 'useCommandInTab':
-      void handlers.useCommandInTab(scope, message.name)
       return
     case 'resumeSessionPanel':
       void handlers.resumeSessionPanel(scope, message.id)

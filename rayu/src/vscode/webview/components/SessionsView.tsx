@@ -40,13 +40,16 @@ export interface SessionsViewProps {
   activeSessionKey: string
   workspaceFolder: string
   /**
-   * Resume a STORED session as its own editor tab. The host spawns an engine child with
-   * `--resume`; this surface is not switched or emptied — see `onSwitch`.
+   * Resume a STORED session. The host spawns an engine child with `--resume` and opens it
+   * as its own editor tab — but only when the sidebar already hosts a conversation. With
+   * the sidebar slot empty it adopts the session into the sidebar instead (closing any tab
+   * it had). Either way this surface is not switched or emptied — see `onSwitch`.
    */
   onResume: (id: string) => void
   /**
-   * Open/focus a LIVE conversation's editor tab. Nothing is spawned or stopped here: the
-   * session is already running, so the host only creates or reveals its panel.
+   * Open/focus a LIVE conversation. Nothing is spawned or stopped here: the session is
+   * already running, so the host only creates or reveals its panel — unless the sidebar
+   * slot is empty, where it adopts the conversation into the sidebar instead.
    */
   onSwitch: (key: string) => void
   /** Close an open conversation and stop its engine. */

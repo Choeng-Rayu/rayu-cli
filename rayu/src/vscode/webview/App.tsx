@@ -35,6 +35,7 @@ import {
 } from '../shared/turnProgress.js'
 import { spriteStateForPhase } from './spriteAtlas.js'
 import { chatReducer, initialChatState, type ChatState } from './state/reducer.js'
+import { sidebarBody } from './state/sidebarBody.js'
 import { Composer } from './components/Composer.js'
 import { ProviderSetupPanel } from './components/ProviderSetupPanel.js'
 import { ModelChooserCard } from './components/ModelChooserCard.js'
@@ -118,6 +119,14 @@ function send(message: WebviewToHostMessage): void {
 
 export function App(): JSX.Element {
   const [state, dispatch] = useReducer(chatReducer, initialChatState)
+  /**
+   * Which body the sidebar shows when it hosts a conversation.
+   *
+   * A panel ignores this: it always renders the conversation. On the sidebar the user
+   * may flip between the live chat and the sessions list without leaving the sidebar.
+   * Reset by the effect below whenever `hasConversation` changes, not on every `init`.
+   */
+  const [sidebarView, setSidebarView] = useState<'chat' | 'sessions'>('chat')
   /** Text a prompt chip put in the composer but the user has not sent. */
   const [draft, setDraft] = useState<string | null>(() => readPersistedUi().draft ?? null)
   /** Whether a drag is currently over the panel. Owned here so the overlay can cover it. */
@@ -133,6 +142,14 @@ export function App(): JSX.Element {
     () => readPersistedUi().selectedTaskKey ?? null,
   )
   const captureReadingRef = useRef<() => void>(() => {})
+  /**
+   * The current surface, readable from the message listener.
+   *
+   * The listener is registered once with `[]` deps — re-registering it would re-send
+   * `ready` — so it cannot close over a value that is only known after `init`. Assigning
+   * the rendered surface here keeps `insertPrompt` able to tell a sidebar from a panel.
+   */
+  const surfaceRef = useRef<ChatSurfaceKind>('sidebar')
   /**
    * Whether every tool row shows its fields and output.
    *
@@ -328,6 +345,9 @@ export function App(): JSX.Element {
       // chips use, so it appends to whatever is already typed rather than replacing it.
       if (message.type === 'insertPrompt') {
         setDraft(current => (current ? `${current.replace(/\s*$/, '')}\n${message.text}` : message.text))
+        // On the sidebar the composer is only visible in the chat body, so an inserted
+        // prompt must reveal it; on a panel the body is always the conversation.
+        if (surfaceRef.current !== 'panel') setSidebarView('chat')
         return
       }
 
@@ -409,12 +429,23 @@ export function App(): JSX.Element {
   const session = state.session
   const signedOut = session === null || session.status === 'signed-out'
   // Which surface this webview is. A panel is bound to exactly one session and hosts the
-  // conversation; the sidebar is the management hub (sessions, history, tasks, MCP,
-  // provider setup, sign-in) and deliberately renders NO transcript or composer, so a
-  // conversation never appears on two surfaces at once. Read from the snapshot the host
-  // built for this surface, never inferred from the message channel.
+  // conversation; a signed-in sidebar may host the first conversation itself (chat) or
+  // show the sessions list. Read from the snapshot the host built for this surface, never
+  // inferred from the message channel.
   const surface: ChatSurfaceKind = session?.surface ?? 'sidebar'
   const isPanel = surface === 'panel'
+  // Read by the `insertPrompt` handler, which is registered once and cannot see `surface`.
+  surfaceRef.current = surface
+
+  const hasConversation = session?.hasConversation ?? false
+  const body = sidebarBody({ surface, signedOut, hasConversation, view: sidebarView })
+
+  // Which body wins is a function of `hasConversation`; when it flips, follow it. Keyed on
+  // the boolean rather than on `session`, so an ordinary `init` of the same conversation
+  // does not yank the user back out of whichever body they chose.
+  useEffect(() => {
+    setSidebarView(hasConversation ? 'chat' : 'sessions')
+  }, [hasConversation])
 
   // The sidebar IS the sessions surface, so its history is fetched as soon as the
   // surface is known — panels fetch theirs behind the header's sessions toggle. Once,
@@ -515,16 +546,15 @@ export function App(): JSX.Element {
       liveSessions={state.liveSessions}
       activeSessionKey={state.activeSessionKey}
       workspaceFolder={session?.workspaceFolder ?? ''}
-      // A history row OPENS its own editor tab (the host spawns the engine with
-      // `--resume`). The list is deliberately left open: opening several is the point,
-      // and the tab destroys nothing here. The old `resumeSession` switched THIS surface
-      // destructively, which is no longer what a history row means.
+      // A history row OPENS an editor tab (the host spawns the engine with `--resume`),
+      // unless the sidebar slot is free — then the host adopts it into the sidebar
+      // instead. Resuming never switches THIS surface destructively.
       onResume={id => {
         setSelectedTaskKey(null)
         send({ type: 'resumeSessionPanel', id })
       }}
-      // A live row opens/focuses its tab. The list stays put: opening several without
-      // reopening the sidebar each time is the point.
+      // A live row opens/focuses its tab when the sidebar already hosts a conversation;
+      // with the slot free, the host adopts it into the sidebar instead.
       onSwitch={key => {
         setSelectedTaskKey(null)
         send({ type: 'openSessionPanel', key })
@@ -538,7 +568,9 @@ export function App(): JSX.Element {
     <div
       className={`rc-shell${panelDragging ? ' rc-shell-drag-over' : ''}${
         runtimeCenterOpen ? ' rc-shell-runtime-open' : ''
-      }${isPanel ? '' : ' rc-shell-sidebar'}`}
+      }${isPanel ? '' : ' rc-shell-sidebar'}${
+        body === 'chat' ? '' : ' rc-shell-sidebar-sessions'
+      }`}
     >
       {/*
         The drop target covers the PANEL, because the handler does. An overlay confined to
@@ -568,6 +600,11 @@ export function App(): JSX.Element {
         title={sessionTitle}
         activeSessionKey={state.activeSessionKey}
         surface={surface}
+        hasConversation={hasConversation}
+        sessionsOpen={sidebarView === 'sessions'}
+        onToggleSessions={() =>
+          setSidebarView(current => (current === 'sessions' ? 'chat' : 'sessions'))
+        }
         onCloseTab={() => {
           // Keyed off the panel's own binding, not `activeSessionKey`: a panel is bound to
           // exactly one session for its life, and its tab must close THAT one.
@@ -651,11 +688,11 @@ export function App(): JSX.Element {
           workflows={state.runtimeWorkflows}
           onClose={() => setRuntimeCenterOpen(false)}
           onUseCommand={name => {
-            // A panel types the command where it stands. The sidebar has no composer,
-            // so "use" means "put this in the active conversation's tab" — the host
-            // opens/focuses it and delivers the text there.
-            if (isPanel) setDraft(`/${name} `)
-            else send({ type: 'useCommandInTab', name })
+            // Both surfaces type the command where they stand now that the sidebar can
+            // host a conversation. On the sidebar, "use" also reveals the chat body so
+            // the draft is visible.
+            if (!isPanel) setSidebarView('chat')
+            setDraft(`/${name} `)
             setRuntimeCenterOpen(false)
           }}
           onRefreshMcp={refreshMcp}
@@ -681,7 +718,7 @@ export function App(): JSX.Element {
       />
 
       <div className={`rc-main-area${taskCenterOpen ? ' rc-main-area-tasks' : ''}`}>
-        {isPanel ? (
+        {body === 'chat' ? (
           <Transcript
             state={state}
             captureReadingRef={captureReadingRef}
@@ -692,16 +729,14 @@ export function App(): JSX.Element {
             onToggleTool={toggleTool}
             onRequestToolOutput={requestToolOutput}
           />
+        ) : body === 'signin' ? (
+          // A signed-out sidebar offers the gate before anything else; there is no
+          // conversation for it to sit above.
+          session !== null ? <SignInView state={session} /> : null
         ) : (
-          // ── THE SIDEBAR IS THE MANAGEMENT HUB ─────────────────────────────
-          // No transcript, no composer: a conversation lives in exactly one place —
-          // its editor tab — and selecting a row here OPENS that tab. What stays
-          // is what manages the agent: the sessions list, the sign-in gate when
-          // signed out, and (via the header) tasks, MCP and provider setup.
-          <>
-            {signedOut && session !== null ? <SignInView state={session} /> : null}
-            {sessionsList}
-          </>
+          // The sessions list. Selecting a row opens an editor tab when the sidebar
+          // already hosts a conversation; otherwise the host adopts it into the sidebar.
+          sessionsList
         )}
         {taskCenterOpen ? (
           <BackgroundTaskCenter
@@ -730,9 +765,9 @@ export function App(): JSX.Element {
 
       {/* Pinned between the transcript and the composer: the engine is blocked, so
           this must be visible without scrolling, while the transcript it describes
-          stays readable. Panels only — the sidebar has no transcript or composer for
-          the chooser to sit among; a model is picked in the conversation's tab. */}
-      {isPanel && state.modelChooser ? (
+          stays readable. Shown on both surfaces, since both can host the conversation
+          the chooser is blocking. */}
+      {state.modelChooser ? (
         <ModelChooserCard
           chooser={state.modelChooser}
           catalogue={state.modelCatalogue}
@@ -781,27 +816,25 @@ export function App(): JSX.Element {
         onOpenExternal={url => send({ type: 'openExternal', url })}
       />
 
-      {/* Panels only: a strip about THIS conversation's work, sitting on the composer
-          it interrupts. The sidebar reaches the task center through the header badge. */}
-      {isPanel ? (
-        <BackgroundTaskBar
-          tasks={state.backgroundTasks}
-          open={taskCenterOpen}
-          supported={state.taskInspectionSupported}
-          message={state.taskInspectionMessage}
-          onToggle={() => {
-            setTaskCenterOpen(open => !open)
-            if (!selectedTaskKey && state.backgroundTasks[0]) {
-              setSelectedTaskKey(state.backgroundTasks[0].key)
-            }
-          }}
-        />
-      ) : null}
+      {/* A strip about THIS conversation's work, sitting on the composer it interrupts.
+          It renders on both surfaces; the header badge still reaches the task center. */}
+      <BackgroundTaskBar
+        tasks={state.backgroundTasks}
+        open={taskCenterOpen}
+        supported={state.taskInspectionSupported}
+        message={state.taskInspectionMessage}
+        onToggle={() => {
+          setTaskCenterOpen(open => !open)
+          if (!selectedTaskKey && state.backgroundTasks[0]) {
+            setSelectedTaskKey(state.backgroundTasks[0].key)
+          }
+        }}
+      />
 
-      {/* Panels only — THE WHOLE POINT of the sidebar redesign: the conversation, and
-          the place you type into it, exist solely in the session's editor tab. Rendering
-          them here too is what made the sidebar a duplicate of the tab. */}
-      {isPanel ? (
+      {/* The composer belongs wherever the conversation is. A signed-in sidebar shows it
+          only in the chat body; a panel always shows it, including while signed out so
+          the sign-in path stays reachable from the place the user was typing. */}
+      {body === 'chat' ? (
         <Composer
           key={draft ?? ''}
           initialValue={draft ?? ''}

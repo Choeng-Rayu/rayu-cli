@@ -2,8 +2,10 @@
  * The Rayucode chat panel (the SIDEBAR surface).
  *
  * A `WebviewViewProvider`, so the UI lives in the sidebar next to Explorer and Source
- * Control rather than in an editor tab. Per-session EDITOR tabs are `SessionPanel`s;
- * this provider is now one `ChatSurface` among several, deliberately thin:
+ * Control rather than in an editor tab. The sidebar hosts exactly ONE conversation —
+ * the registry's bound `sidebarSessionKey` — and renders the sessions hub while that
+ * slot is empty. Per-session EDITOR tabs are `SessionPanel`s; this provider is one
+ * `ChatSurface` among several, deliberately thin:
  *
  *   - It owns the sidebar `WebviewView`, its options, and its one message listener.
  *   - It forwards EVERY message — including `ready` — to the host through `deps.onMessage`;

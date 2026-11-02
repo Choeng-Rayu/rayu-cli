@@ -3884,30 +3884,31 @@ body {
   white-space: normal;
 }
 
-/* ── the sidebar as management hub ─────────────────────────────────────────── */
+/* ── the sidebar's sessions body ────────────────────────────────────────────── */
 
 /*
- * The sidebar hosts no conversation. Its main area is the sessions list — with the
- * sign-in card above it while signed out — stacked, never side by side, and the
- * list fills the width (there is no transcript beside it to share it with).
+ * Only while the sidebar shows its list body — the sessions list, or the sign-in card
+ * while signed out. The class is applied by App per body, so the sidebar's CHAT body is
+ * left with the ordinary transcript-and-composer layout instead of inheriting these
+ * list-specific rules.
  */
-.rc-shell-sidebar .rc-main-area {
+.rc-shell-sidebar-sessions .rc-main-area {
   flex-direction: column;
 }
 
-.rc-shell-sidebar .rc-sessions {
+.rc-shell-sidebar-sessions .rc-sessions {
   border-left: 0;
 }
 
-.rc-shell-sidebar .rc-signin {
+.rc-shell-sidebar-sessions .rc-signin {
   margin: var(--rc-gap) var(--rc-gap-lg) 0;
 }
 
 /* Tasks replace the hub's list the same way they replace a narrow panel's transcript:
    the opened center is the thing being read, and splitting the height between two
    scrollers makes both unusable. */
-.rc-shell-sidebar .rc-main-area-tasks > .rc-sessions,
-.rc-shell-sidebar .rc-main-area-tasks > .rc-signin {
+.rc-shell-sidebar-sessions .rc-main-area-tasks > .rc-sessions,
+.rc-shell-sidebar-sessions .rc-main-area-tasks > .rc-signin {
   display: none;
 }
 
