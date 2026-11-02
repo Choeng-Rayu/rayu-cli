@@ -30,6 +30,7 @@ import {
 import type { RuntimeAction, RuntimeActionResponse } from '../vscode/shared/attachProtocol.js'
 import { buildCommandRegistry } from '../vscode/host/panel/commandRegistry.js'
 import { projectTaskState } from '../runtime/taskProjection.js'
+import { agentOrchestrationView } from '../orchestrator/orchestrationView.js'
 
 /** Expose the live CLI task owner to authenticated local Rayucode attachments. */
 export function useRayucodeTaskBridge(): void {
@@ -42,9 +43,7 @@ export function useRayucodeTaskBridge(): void {
 
     const unregisterSnapshot = registerIpcHandler(IPC_TASK_SNAPSHOT, () => ({
       version: 1,
-      tasks: Object.values(store.getState().tasks ?? {}).map(task =>
-        projectTaskState(getSessionId(), task as TaskState),
-      ),
+      tasks: projectAllTasks(store.getState()),
     }))
 
     // ── Task 12: Conversation snapshot ─────────────────────────────────────
@@ -158,9 +157,7 @@ export function useRayucodeTaskBridge(): void {
       const tasks = store.getState().tasks
       if (Object.is(tasks, previousTasks)) return
       previousTasks = tasks
-      const projected = Object.values(tasks ?? {}).map(task =>
-        projectTaskState(getSessionId(), task as TaskState),
-      )
+      const projected = projectAllTasks(store.getState())
       historyWrite = historyWrite
         .catch(() => {})
         .then(() => saveTaskHistory(getOriginalCwd(), getSessionId(), projected))
@@ -190,6 +187,14 @@ export function useRayucodeTaskBridge(): void {
 // ── Task 14: Runtime action helpers ──────────────────────────────────────────
 
 type AppStore = ReturnType<typeof useAppStateStore>
+
+/** Every task as the wire shows it, with its Orchestrator view when it has one. */
+function projectAllTasks(state: ReturnType<AppStore['getState']>) {
+  const run = state.orchestration?.run ?? null
+  return Object.values(state.tasks ?? {}).map(task =>
+    projectTaskState(getSessionId(), task as TaskState, agentOrchestrationView(run, task.id)),
+  )
+}
 
 /**
  * Apply a typed runtime action to the session's live state.

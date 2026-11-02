@@ -95,6 +95,9 @@ import { SLEEP_TOOL_NAME } from './tools/SleepTool/prompt.js'
 import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
 import { executeStopFailureHooks } from './utils/hooks.js'
 import type { QuerySource } from './constants/querySource.js'
+import { ORCHESTRATOR_GATE_MAX_CONTINUATIONS_PER_TURN } from './constants/orchestrator.js'
+import { checkOrchestratorGate } from './orchestrator/gate.js'
+import { notifyOrchestratorGateStatus } from './utils/sessionState.js'
 import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
 import { queryCheckpoint } from './utils/queryProfiler.js'
@@ -292,6 +295,8 @@ async function* queryLoop(
   // trigger point. Loop-local (not on State) to avoid touching the 7 continue
   // sites.
   let taskBudgetRemaining: number | undefined = undefined
+  // Times the Orchestrator verification gate sent this turn back to work.
+  let orchestratorGateContinuations = 0
 
   // Snapshot immutable env/statsig/session state once at entry. See QueryConfig
   // for what's included and why feature() gates are intentionally excluded.
@@ -1343,6 +1348,39 @@ async function* queryLoop(
         }
         state = next
         continue
+      }
+
+      // Orchestrator mode: the run's verification gate keeps a run that is not
+      // finished from being reported as done (src/orchestrator/gate.ts).
+      if (
+        (querySource.startsWith('repl_main_thread') || querySource === 'sdk') &&
+        orchestratorGateContinuations < ORCHESTRATOR_GATE_MAX_CONTINUATIONS_PER_TURN
+      ) {
+        const gate = await checkOrchestratorGate(toolUseContext)
+        if (gate?.status) {
+          notifyOrchestratorGateStatus(gate.status)
+          yield createSystemMessage(gate.status, gate.closed ? 'warning' : 'info')
+        }
+        if (gate?.continuation) {
+          orchestratorGateContinuations++
+          state = {
+            messages: [
+              ...messagesForQuery,
+              ...assistantMessages,
+              createUserMessage({ content: gate.continuation, isMeta: true }),
+            ],
+            toolUseContext,
+            autoCompactTracking: tracking,
+            maxOutputTokensRecoveryCount: 0,
+            hasAttemptedReactiveCompact,
+            maxOutputTokensOverride: undefined,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            turnCount,
+            transition: { reason: 'orchestrator_gate' },
+          }
+          continue
+        }
       }
 
       if (feature('TOKEN_BUDGET')) {

@@ -44,6 +44,7 @@ import {
   initTaskOutputAsSymlink,
 } from '../../utils/task/diskOutput.js'
 import { getCurrentWorktreeSession } from '../../utils/worktree.js'
+import { EMPTY_ORCHESTRATION_STATE } from '../../orchestrator/runState.js'
 import { clearSessionCaches } from './caches.js'
 
 export async function clearConversation({
@@ -178,6 +179,8 @@ export async function clearConversation({
           snapshotSequence: 0,
         },
         pendingFileChanges: [],
+        // A cleared conversation starts with no Orchestrator run.
+        orchestration: EMPTY_ORCHESTRATION_STATE,
         // Reset MCP state to default to trigger re-initialization.
         // Preserve pluginReconnectKey so /clear doesn't cause a no-op
         // (it's only bumped by /reload-plugins).

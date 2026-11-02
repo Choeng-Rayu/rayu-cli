@@ -73,7 +73,8 @@ import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../component
 import { getSystemPrompt } from '../constants/prompts.js';
 import { getBrandGlyph } from '../constants/figures.js';
 import { MIN_TURN_DURATION_MS } from '../constants/turnCompletionVerbs.js';
-import { markRayuCharges, rayuCreditsSince, type RayuChargeMark } from '../services/rayuAuth/rayuTurnCredits.js';
+import { closeRayuCreditWindow, openRayuCreditWindow, type RayuCreditWindow, rayuWindowCredits } from '../services/rayuAuth/rayuTurnCredits.js';
+import { hasUnfinishedBackgroundAgent } from '../tasks/types.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
@@ -174,7 +175,7 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js';
 import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js';
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
-import { useAppState, useSetAppState, useAppStateStore } from '../state/AppState.js';
+import { type AppState, useAppState, useSetAppState, useAppStateStore } from '../state/AppState.js';
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js';
 import type { PastedContent } from '../utils/config.js';
@@ -220,7 +221,7 @@ import { useIDEIntegration } from '../hooks/useIDEIntegration.js';
 import exit from '../commands/exit/index.js';
 import { ExitFlow } from '../components/ExitFlow.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
-import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter } from '../utils/messageQueueManager.js';
+import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, peek, removeByFilter } from '../utils/messageQueueManager.js';
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
@@ -335,6 +336,18 @@ function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? Math.round((sorted[mid - 1]! + sorted[mid]!) / 2) : sorted[mid]!;
+}
+
+/**
+ * Whether the user's request goes on after the turn that just ended: a background
+ * agent it launched is still running or has not queued its notification yet, or
+ * its notification is queued for the next turn. While it does, the request's Rayu
+ * credit window stays open and the turn line says "so far". Matches the headless
+ * engine's hold-back (cli/print.ts), so the terminal and Rayucode agree on when a
+ * request is done.
+ */
+function requestWorkContinues(state: AppState): boolean {
+  return hasUnfinishedBackgroundAgent(state.tasks) || peek(cmd => cmd.mode === 'task-notification' && cmd.agentId === undefined) !== undefined;
 }
 
 /**
@@ -989,10 +1002,12 @@ export function REPL({
     limit: number;
     nudges: number;
   } | undefined>(undefined);
-  // Rayu credits for the turn line are what the gateway charged since these
-  // marks: the current turn's start, and the first deferred swarm turn's start.
-  const turnChargeMarkRef = React.useRef<RayuChargeMark>(markRayuCharges());
-  const swarmChargeMarkRef = React.useRef<RayuChargeMark | null>(null);
+  // The Rayu credit window of the request the user is waiting on. Opened by the
+  // first turn after the previous request finished; kept open while background
+  // agents it launched still run, so the turns their notifications start add to
+  // it; closed by the turn line that finds the work done. That line's figure is
+  // the whole request, from the user's message to the last agent's answer.
+  const creditWindowRef = React.useRef<RayuCreditWindow | null>(null);
   // The session-title request started for this turn, until its charge is known.
   // The turn line awaits it so a late title settlement cannot change the number.
   const turnTitleChargeRef = React.useRef<Promise<unknown> | null>(null);
@@ -1652,18 +1667,25 @@ export function REPL({
     if (!hasRunningTeammates && swarmStartTimeRef.current !== null) {
       const totalMs = Date.now() - swarmStartTimeRef.current;
       const deferredBudget = swarmBudgetInfoRef.current;
-      // Everything charged since the first deferred turn began, teammates included.
-      const deferredCredits = swarmChargeMarkRef.current ? rayuCreditsSince(swarmChargeMarkRef.current) : undefined;
+      // The request's credits, teammates included. If a turn or a background
+      // agent is still running the request is not done: the figure is "so far"
+      // and the window stays open for the line that ends it.
+      const creditWindow = creditWindowRef.current;
+      const deferredCredits = creditWindow ? rayuWindowCredits(creditWindow) : undefined;
+      const stillWorking = queryGuard.isActive || requestWorkContinues(store.getState());
+      if (creditWindow && !stillWorking) {
+        closeRayuCreditWindow(creditWindow);
+        creditWindowRef.current = null;
+      }
       swarmStartTimeRef.current = null;
       swarmBudgetInfoRef.current = undefined;
-      swarmChargeMarkRef.current = null;
       setMessages(prev => [...prev, createTurnDurationMessage(totalMs, deferredBudget,
       // Count only what recordTranscript will persist — ephemeral
       // progress ticks and non-ant attachments are filtered by
       // isLoggableMessage and never reach disk. Using raw prev.length
       // would make checkResumeConsistency report false delta<0 for
       // every turn that ran a progress-emitting tool.
-      count(prev, isLoggableMessage), deferredCredits)]);
+      count(prev, isLoggableMessage), deferredCredits, stillWorking)]);
     }
   }, [hasRunningTeammates, setMessages]);
 
@@ -2227,6 +2249,17 @@ export function REPL({
 
     // forceEnd() skips the finally path — fire directly (aborted=true).
     void mrOnTurnComplete(messagesRef.current, true);
+
+    // The finally path is also where a request's credit window closes. An
+    // interrupted turn shows no line, and its request is over unless background
+    // agents it launched are still working, so the next request starts its own
+    // total. Closed here, synchronously, so a prompt sent right after Esc
+    // cannot land in this window.
+    const creditWindow = creditWindowRef.current;
+    if (creditWindow && !requestWorkContinues(store.getState()) && !getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running')) {
+      closeRayuCreditWindow(creditWindow);
+      creditWindowRef.current = null;
+    }
   }
 
   // Function to handle queued command when canceling a permission request
@@ -2753,10 +2786,21 @@ export function REPL({
     // Mark onboarding as complete when any user message is sent to Claude
     void maybeMarkProjectOnboardingComplete();
 
-    // The title request below is launched for this turn, so the turn mark must
-    // be taken before it: attribution is by request start, and a mark taken
-    // after the title would put its charge outside this turn's window.
-    turnChargeMarkRef.current = markRayuCharges();
+    // Open the credit window before the title request below: a request counts
+    // toward the windows open when it starts, so a window opened after the
+    // title would leave its charge out. A turn that continues work still going
+    // (a background agent's notification) keeps the window it already has, and
+    // so does a prompt sent while that work runs: it joins the same request.
+    // A window left open by work that has since finished without a turn to
+    // close it (an agent stopped without a notification) is not carried into
+    // a new request.
+    const continuesWork = newMessages.some(m => m.type === 'user' && m.origin?.kind === 'task-notification');
+    const openCreditWindow = creditWindowRef.current;
+    if (openCreditWindow && !continuesWork && !requestWorkContinues(store.getState()) && !getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running')) {
+      closeRayuCreditWindow(openCreditWindow);
+      creditWindowRef.current = null;
+    }
+    creditWindowRef.current ??= openRayuCreditWindow();
 
     // Extract a session title from the first real user message. One-shot
     // via ref (was tengu_birch_mist experiment: first-message-only to save
@@ -3085,22 +3129,34 @@ export function REPL({
           turnTitleChargeRef.current = null;
           await Promise.race([pendingTitleCharge.catch(() => {}), new Promise(resolve => setTimeout(resolve, TURN_TITLE_CHARGE_WAIT_MS))]);
         }
-        const turnCredits = rayuCreditsSince(turnChargeMarkRef.current);
+        // The request's Rayu credits: everything charged since the user's
+        // message, every turn and background agent included. While agents it
+        // launched still work, the line says "so far" and the window stays open
+        // for the turns their notifications start; the line that finds the
+        // work done shows the total and closes the window.
+        const creditWindow = creditWindowRef.current;
+        const turnCredits = creditWindow ? rayuWindowCredits(creditWindow) : undefined;
+        const workContinues = requestWorkContinues(store.getState());
+        const hasRunningSwarmAgents = getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running');
         if ((turnDurationMs >= MIN_TURN_DURATION_MS || budgetInfo !== undefined || turnCredits !== undefined) && !abortController.signal.aborted && !proactiveActive) {
-          const hasRunningSwarmAgents = getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running');
           if (hasRunningSwarmAgents) {
             // Only record start time on the first deferred turn
             if (swarmStartTimeRef.current === null) {
               swarmStartTimeRef.current = loadingStartTimeRef.current;
-              swarmChargeMarkRef.current = turnChargeMarkRef.current;
             }
             // Always update budget — later turns may carry the actual budget
             if (budgetInfo) {
               swarmBudgetInfoRef.current = budgetInfo;
             }
           } else {
-            setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs, budgetInfo, count(prev, isLoggableMessage), turnCredits)]);
+            setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs, budgetInfo, count(prev, isLoggableMessage), turnCredits, workContinues)]);
           }
+        }
+        // Teammates keep the window open too: the deferred line they leave
+        // prints when they finish, and closes it then.
+        if (creditWindow && !workContinues && !hasRunningSwarmAgents) {
+          closeRayuCreditWindow(creditWindow);
+          creditWindowRef.current = null;
         }
         // Clear the controller so CancelRequestHandler's canCancelRunningTask
         // reads false at the idle prompt. Without this, the stale non-aborted

@@ -58,7 +58,10 @@ export interface ChatViewHandlers {
   ) => Promise<void> | void
   interrupt: (scope: SurfaceScope) => Promise<void> | void
   newSession: (scope: SurfaceScope) => Promise<void> | void
-  /** Bring an already-open conversation to the front. Nothing is spawned or stopped. */
+  /**
+   * Bring an already-open conversation to the front. Nothing is spawned or stopped.
+   * An empty sidebar slot adopts it instead of opening a tab.
+   */
   switchSession: (scope: SurfaceScope, key: string) => Promise<void> | void
   /** Close an open conversation and stop its engine. */
   closeSession: (scope: SurfaceScope, key: string) => Promise<void> | void
@@ -68,14 +71,12 @@ export interface ChatViewHandlers {
     id: string | undefined,
     title?: string,
   ) => Promise<void> | void
-  /** Open/focus a LIVE session as its own editor tab (no spawn, no teardown). */
-  openSessionPanel: (scope: SurfaceScope, key: string) => Promise<void> | void
   /**
-   * Put a slash command in the ACTIVE session's tab — the sidebar's route for "use this
-   * command", since the hub has no composer of its own.
+   * Open/focus a LIVE session as its own editor tab (no spawn, no teardown). An empty
+   * sidebar slot adopts it into the sidebar instead of opening a tab.
    */
-  useCommandInTab: (scope: SurfaceScope, name: string) => Promise<void> | void
-  /** Resume a STORED session as its own editor tab. */
+  openSessionPanel: (scope: SurfaceScope, key: string) => Promise<void> | void
+  /** Resume a STORED session as its own editor tab; an empty sidebar slot adopts it. */
   resumeSessionPanel: (scope: SurfaceScope, id: string) => Promise<void> | void
   permissionResponse: (
     scope: SurfaceScope,
@@ -109,10 +110,6 @@ export interface ChatViewHandlers {
     baseURL?: string,
     model?: string,
   ) => Promise<void> | void
-  telegramConnectOpen: (scope: SurfaceScope, open: boolean) => Promise<void> | void
-  telegramConnectStartHosted: (scope: SurfaceScope) => Promise<void> | void
-  telegramConnectStartByo: (scope: SurfaceScope, token: string) => Promise<void> | void
-  telegramConnectUnlink: (scope: SurfaceScope) => Promise<void> | void
   cyclePermissionMode: (scope: SurfaceScope) => Promise<void> | void
   setPermissionMode: (scope: SurfaceScope, modeId: string) => Promise<void> | void
   reviewKeep: (scope: SurfaceScope, path?: string) => Promise<void> | void
@@ -170,6 +167,8 @@ export interface ChatViewHandlers {
   ) => Promise<void> | void
   reloadPlugins: (scope: SurfaceScope) => Promise<void> | void
   installSkill: (scope: SurfaceScope, source: string, overwrite?: boolean) => Promise<void> | void
+  /** Restore files to before a specific user message (the CLI's /rewind). */
+  rewindFiles: (scope: SurfaceScope, messageUuid: string) => Promise<void> | void
   listSessions: (scope: SurfaceScope) => Promise<void> | void
   resumeSession: (scope: SurfaceScope, id: string) => Promise<void> | void
   stopTask: (
@@ -218,9 +217,6 @@ export function dispatchWebviewMessage(
       return
     case 'openSessionPanel':
       void handlers.openSessionPanel(scope, message.key)
-      return
-    case 'useCommandInTab':
-      void handlers.useCommandInTab(scope, message.name)
       return
     case 'resumeSessionPanel':
       void handlers.resumeSessionPanel(scope, message.id)
@@ -276,19 +272,6 @@ export function dispatchWebviewMessage(
         message.model,
       )
       return
-    case 'telegramConnectOpen':
-      void handlers.telegramConnectOpen(scope, message.open)
-      return
-    case 'telegramConnectStartHosted':
-      void handlers.telegramConnectStartHosted(scope)
-      return
-    case 'telegramConnectStartByo':
-      // The token crosses here once and only reaches the handler's child process.
-      void handlers.telegramConnectStartByo(scope, message.token)
-      return
-    case 'telegramConnectUnlink':
-      void handlers.telegramConnectUnlink(scope)
-      return
     case 'cyclePermissionMode':
       void handlers.cyclePermissionMode(scope)
       return
@@ -300,6 +283,9 @@ export function dispatchWebviewMessage(
       return
     case 'reviewUndo':
       void handlers.reviewUndo(scope, message.path)
+      return
+    case 'rewindFiles':
+      void handlers.rewindFiles(scope, message.messageUuid)
       return
     case 'openReviewDiff':
       void handlers.openReviewDiff(scope, message.path)

@@ -1,15 +1,17 @@
 /**
- * Orchestrator mode's hard rule for the main agent: it does not change files itself.
+ * Orchestrator mode's hard rule for the main agent: it does not edit files with the
+ * file-editing tools itself.
  *
  * The role reminder (reminder.ts) asks for this; this module enforces it. A coordinator
  * that patches files while its workers own them produces exactly the mismatches the mode
  * exists to prevent, and the change belongs to no worker's packet. The rule covers the
  * main thread only: workers run under the same mode and keep its auto-approval.
  *
- * Denied: Edit and Write (except to the session plan file), NotebookEdit, and shell
- * commands that the shell tool does not classify as read-only. PowerShell's synchronous
- * classification is conservative and may deny a harmless command; that is the safe
- * direction, and the denial says what to do instead.
+ * Denied: Edit, Write (except to the session plan file) and NotebookEdit. Shell commands
+ * are allowed for the main agent; the shell tool's own permission checks still apply.
+ * Because a shell command can also change files, this rule no longer guarantees that the
+ * main agent changes nothing — it stops the file-editing tools, and shell access is the
+ * user's explicit choice.
  *
  * Checked before Orchestrator's allow-everything step (hasPermissionsToUseToolInner)
  * and on the PreToolUse-hook allow path (checkRuleBasedPermissions), so neither the
@@ -27,14 +29,13 @@ import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import type { PermissionDenyDecision } from '../types/permissions.js'
 import { expandPath } from '../utils/path.js'
 import { isSessionPlanFile } from '../utils/plans.js'
-import { SHELL_TOOL_NAMES } from '../utils/shell/shellToolUtils.js'
 
 const FILE_WRITING_TOOLS: ReadonlySet<string> = new Set([
   FILE_EDIT_TOOL_NAME,
   FILE_WRITE_TOOL_NAME,
 ])
 
-type PolicyTool = Pick<Tool, 'name' | 'inputSchema' | 'isReadOnly'>
+type PolicyTool = Pick<Tool, 'name'>
 
 type PolicyContext = Pick<ToolUseContext, 'agentId' | 'getAppState'> & {
   options: Pick<ToolUseContext['options'], 'tools'>
@@ -54,7 +55,7 @@ export function orchestratorMainThreadDenial(
   return change ? denial(change, context) : null
 }
 
-/** What the call would do that the main agent may not, or null for a read-only call. */
+/** What the call would do that the main agent may not, or null when the rule allows it. */
 function describeChange(
   tool: PolicyTool,
   input: Record<string, unknown>,
@@ -65,16 +66,7 @@ function describeChange(
     return 'edit files'
   }
   if (tool.name === NOTEBOOK_EDIT_TOOL_NAME) return 'edit files'
-  if (SHELL_TOOL_NAMES.includes(tool.name) && !isReadOnlyCall(tool, input)) {
-    return 'run commands that can change files or state'
-  }
   return null
-}
-
-/** Input the schema rejects is treated as not read-only: the safe answer. */
-function isReadOnlyCall(tool: PolicyTool, input: Record<string, unknown>): boolean {
-  const parsed = tool.inputSchema.safeParse(input)
-  return parsed.success && tool.isReadOnly(parsed.data)
 }
 
 function denial(change: string, context: PolicyContext): PermissionDenyDecision {
@@ -86,7 +78,7 @@ function denial(change: string, context: PolicyContext): PermissionDenyDecision 
     : ''
   return {
     behavior: 'deny',
-    message: `Orchestrator mode: the main agent coordinates and does not ${change} itself. Delegate this to a \`${GENERAL_PURPOSE_AGENT_TYPE}\` worker with the ${AGENT_TOOL_NAME} tool, naming the files it owns${existingWorker}. Read-only tools and commands are still available to you.`,
+    message: `Orchestrator mode: the main agent coordinates and does not ${change} itself. Delegate this to a \`${GENERAL_PURPOSE_AGENT_TYPE}\` worker with the ${AGENT_TOOL_NAME} tool, naming the files it owns${existingWorker}. Reading files and running shell commands are still available to you.`,
     decisionReason: { type: 'mode', mode: 'orchestrator' },
   }
 }

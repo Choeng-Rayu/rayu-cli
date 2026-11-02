@@ -5,6 +5,7 @@
  * lifecycle. Runtime handles, callbacks, credentials, message objects and raw
  * reasoning are intentionally not part of the returned value.
  */
+import type { RuntimeTaskOrchestration } from '../protocol/index.js'
 import type { TaskState } from '../tasks/types.js'
 import { decodeModelProvider } from '../utils/rayuConfig.js'
 import type {
@@ -80,6 +81,8 @@ export function taskCapabilities(
 export function projectTaskState(
   sourceSessionId: string,
   task: TaskState,
+  /** The Orchestrator run's view of the task's agent (agentOrchestrationView), if any. */
+  orchestration?: RuntimeTaskOrchestration | null,
 ): BackgroundTaskView {
   const record = task as unknown as Record<string, unknown>
   const rawType = String(task.type)
@@ -155,6 +158,7 @@ export function projectTaskState(
       ...taskCapabilities(type, task.status === 'running'),
       canStop: !terminal && task.status === 'running',
     },
+    ...(orchestration ? { orchestration } : {}),
   }
 }
 

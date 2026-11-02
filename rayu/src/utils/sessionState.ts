@@ -162,3 +162,14 @@ const workerApprovalLoss = createSignal<[WorkerApprovalLoss]>()
 
 export const subscribeWorkerApprovalLoss = workerApprovalLoss.subscribe
 export const notifyWorkerApprovalLoss = workerApprovalLoss.emit
+
+// ── Orchestrator gate status ─────────────────────────────────────────────────
+//
+// Fired by query.ts when the verification gate (src/orchestrator/gate.ts) has a
+// status for the user. The REPL shows the same text as a transcript notice that
+// query.ts yields; print.ts, whose engine drops those, emits it as a frame.
+
+const orchestratorGateStatus = createSignal<[string]>()
+
+export const subscribeOrchestratorGateStatus = orchestratorGateStatus.subscribe
+export const notifyOrchestratorGateStatus = orchestratorGateStatus.emit

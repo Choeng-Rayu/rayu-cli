@@ -14,7 +14,7 @@ import { logEvent } from '../services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../services/analytics/metadata.js'
 import { getAPIMetadata } from '../services/api/claude.js'
 import { getAnthropicClient } from '../services/api/client.js'
-import { markRayuCharges, recordRayuCharge } from '../services/rayuAuth/rayuTurnCredits.js'
+import { recordRayuCharge, startRayuCharge } from '../services/rayuAuth/rayuTurnCredits.js'
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { computeFingerprint } from './fingerprint.js'
 import { normalizeModelStringForAPI } from './model/model.js'
@@ -108,8 +108,8 @@ function extractFirstUserMessageText(messages: MessageParam[]): string {
  */
 export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
   // The request's start, before anything is sent: its charge belongs to the
-  // turn that launched it, even if it settles afterwards.
-  const chargeMark = markRayuCharges()
+  // work that launched it, even if it settles afterwards.
+  const chargeTicket = startRayuCharge()
   const {
     model,
     system,
@@ -223,7 +223,7 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
   })
   setLastApiCompletionTimestamp(now)
   // A Rayu-hosted side query is billed too; count it in the turn's credits.
-  recordRayuCharge(creditsFromRayuBody(response), chargeMark)
+  recordRayuCharge(creditsFromRayuBody(response), chargeTicket, opts.querySource)
 
   return response
 }

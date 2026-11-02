@@ -221,6 +221,21 @@ export async function handleUninstallCommand(
     return
   }
 
+  // A destructive operation must be bound to a REAL Telegram user: Gate 3 ties
+  // the confirmation to telegramUserId, and handleConfirmation only accepts a
+  // reply whose user matches. The bridge passes a missing sender id through as
+  // 0, so refuse that here rather than let it bind to a sentinel that a second
+  // id-less message could satisfy (0 === 0). Telegram user ids are always
+  // positive, so this never rejects a genuine private-chat message.
+  if (!Number.isInteger(telegramUserId) || telegramUserId <= 0) {
+    await sendMessage(
+      token,
+      chatId,
+      '⚠️ Could not identify who sent this message, so uninstall was refused.',
+    )
+    return
+  }
+
   // GATE 4 (first half): refuse anything while a teardown is running.
   const run = readUninstallRun()
   if (isUninstallInProgress() && run) {

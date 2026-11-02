@@ -23,6 +23,7 @@ import {
 } from '../settings/constants.js'
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
+import { planModeChangeDenial } from './planModePolicy.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -1079,6 +1080,9 @@ export async function checkRuleBasedPermissions(
   // files either (src/orchestrator/mainThreadPolicy.ts).
   const orchestratorDenial = orchestratorMainThreadDenial(tool, input, context)
   if (orchestratorDenial) return orchestratorDenial
+  // Nor let plan mode change the project (planModePolicy.ts).
+  const planDenial = planModeChangeDenial(tool, input, context)
+  if (planDenial) return planDenial
 
   // 1a. Entire tool is denied by rule
   const denyRule = getDenyRuleForTool(appState.toolPermissionContext, tool)
@@ -1178,6 +1182,9 @@ export async function hasPermissionsToUseToolInner(
   // which allows everything in that mode (src/orchestrator/mainThreadPolicy.ts).
   const orchestratorDenial = orchestratorMainThreadDenial(tool, input, context)
   if (orchestratorDenial) return orchestratorDenial
+  // Plan mode leaves the project unchanged; everything else runs at step 2a.
+  const planDenial = planModeChangeDenial(tool, input, context)
+  if (planDenial) return planDenial
 
   // 0. fullManage and Orchestrator modes: allow everything unconditionally
   // without permission checks — EXCEPT tools that require user interaction
@@ -1299,20 +1306,20 @@ export async function hasPermissionsToUseToolInner(
   // 2a. Check if mode allows the tool to run
   // IMPORTANT: Call getAppState() to get the latest value
   appState = context.getAppState()
-  // Check if permissions should be bypassed:
-  // - Direct bypassPermissions mode
-  // - Plan mode when the user originally started with bypass mode (isBypassPermissionsModeAvailable)
-  const shouldBypassPermissions =
-    appState.toolPermissionContext.mode === 'bypassPermissions' ||
-    (appState.toolPermissionContext.mode === 'plan' &&
-      appState.toolPermissionContext.isBypassPermissionsModeAvailable)
+  // Runs without asking:
+  // - bypassPermissions mode;
+  // - plan mode, which works like Full Manage except that it may not change the
+  //   project. Those calls were already refused before step 1 (planModePolicy.ts).
+  // Both still honour deny rules, ask rules and the safety checks above.
+  const { mode } = appState.toolPermissionContext
+  const shouldBypassPermissions = mode === 'bypassPermissions' || mode === 'plan'
   if (shouldBypassPermissions) {
     return {
       behavior: 'allow',
       updatedInput: getUpdatedInputOrFallback(toolPermissionResult, input),
       decisionReason: {
         type: 'mode',
-        mode: appState.toolPermissionContext.mode,
+        mode,
       },
     }
   }

@@ -1,6 +1,7 @@
 /**
- * Task 5: in Orchestrator mode the main agent cannot change files itself. Its workers,
- * which run under the same mode, keep auto-approval.
+ * Task 5: in Orchestrator mode the main agent cannot edit files with the file tools.
+ * Shell commands are allowed for it (the user's choice); its workers, which run under the
+ * same mode, keep auto-approval.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -69,16 +70,22 @@ describe('what the Orchestrator main agent may not do', () => {
     }
   })
 
-  test('run commands that are not read-only', () => {
-    for (const command of ['rm -rf build', 'bun test', 'echo done > notes.txt']) {
-      expect(denied(BashTool, shell(command))?.message).toContain('does not run commands that can change files or state itself')
-    }
+  test('but it may read and keep its plan file', () => {
+    expect(denied(FileReadTool, { file_path: '/repo/src/user.ts' })).toBeNull()
+    expect(denied(FileWriteTool, { file_path: getPlanFilePath(), content: '# Plan\n' })).toBeNull()
   })
 
-  test('but it may read, run read-only commands, and keep its plan file', () => {
-    expect(denied(FileReadTool, { file_path: '/repo/src/user.ts' })).toBeNull()
-    for (const command of ['git status', 'ls -la']) expect(denied(BashTool, shell(command))).toBeNull()
-    expect(denied(FileWriteTool, { file_path: getPlanFilePath(), content: '# Plan\n' })).toBeNull()
+  test('it may run shell commands, read-only or not', () => {
+    for (const command of [
+      'git status',
+      'ls -la',
+      'rm -rf build',
+      'bun test',
+      'echo done > notes.txt',
+      'for f in a b; do echo "$f"; done',
+    ]) {
+      expect(denied(BashTool, shell(command))).toBeNull()
+    }
   })
 })
 
@@ -102,6 +109,14 @@ describe('the permission pipeline', () => {
   test('denies the main agent before Orchestrator mode allows everything', async () => {
     const decision = await hasPermissionsToUseToolInner(FileEditTool, edit, context('orchestrator'))
     expect(decision.behavior).toBe('deny')
+  })
+
+  test('allows the main agent to run shell commands, read-only or not', async () => {
+    for (const command of ['git status', 'rm -rf build', 'bun test', 'echo done > notes.txt']) {
+      const decision = await hasPermissionsToUseToolInner(BashTool, shell(command), context('orchestrator'))
+      expect(decision.behavior).toBe('allow')
+      expect(decision.decisionReason).toMatchObject({ type: 'mode', mode: 'orchestrator' })
+    }
   })
 
   test('still auto-approves a worker in Orchestrator mode', async () => {

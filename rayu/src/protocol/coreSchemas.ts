@@ -1505,8 +1505,9 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     permission_denials: z.array(SDKPermissionDenialSchema()),
     structured_output: z.unknown().optional(),
     fast_mode_state: FastModeStateSchema().optional(),
-    // Rayu credits the gateway charged during this turn, as it reported them.
-    // Absent when the turn made no Rayu-billed request. Additive: no version bump.
+    // Rayu credits the gateway charged for the work this result answers: every
+    // turn it took, background agents included (stamped by cli/print.ts).
+    // Absent when nothing was Rayu-billed. Additive: no version bump.
     rayu_credits: z.number().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1533,7 +1534,7 @@ export const SDKResultErrorSchema = lazySchema(() =>
     permission_denials: z.array(SDKPermissionDenialSchema()),
     errors: z.array(z.string()),
     fast_mode_state: FastModeStateSchema().optional(),
-    // See SDKResultSuccessSchema: a failed turn can still have been charged.
+    // See SDKResultSuccessSchema: failed work can still have been charged.
     rayu_credits: z.number().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1980,6 +1981,63 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
   }),
 )
 
+/**
+ * What an Orchestrator run knows about a task's agent: the contract packet a worker
+ * serves (or a verifier's verdict), the problems raised for it, its worktree, and a
+ * summary of the whole run so a panel can show every packet. Sent with the task, and
+ * again as `task_orchestration` whenever it changes, including after the task ended:
+ * a worktree packet is merged, and a problem settled, after its worker finished.
+ */
+export const RuntimeTaskOrchestrationSchema = lazySchema(() => {
+  const packetStatus = z.enum(['pending', 'running', 'merging', 'completed', 'conflicted', 'failed', 'stopped'])
+  const verdict = z.enum(['PASS', 'FAIL', 'PARTIAL']).nullable()
+  return z.object({
+    runId: z.string(),
+    contractVersion: z.number(),
+    role: z.enum(['worker', 'verifier']),
+    packet: z.string().optional(),
+    packetStatus: packetStatus.optional(),
+    /** False for an earlier worker of a packet that has since had another. */
+    current: z.boolean(),
+    problems: z.array(z.object({ id: z.string(), kind: z.string(), path: z.string(), summary: z.string() })),
+    worktree: z
+      .object({
+        path: z.string(),
+        state: z.enum(['open', 'merged']),
+        failedAttempts: z.number(),
+        conflicts: z.array(z.object({ path: z.string(), reason: z.string() })),
+        mergedFiles: z.number().optional(),
+      })
+      .optional(),
+    verification: z
+      .object({ id: z.string(), verdict, accepted: z.boolean(), findings: z.array(z.string()) })
+      .optional(),
+    run: z.object({
+      status: z.enum(['active', 'archived']),
+      goal: z.string(),
+      packets: z.array(z.object({ name: z.string(), status: packetStatus, worker: z.string().optional() })),
+      openProblems: z.number(),
+      gate: z.enum(['open', 'closed', 'pending']),
+      verification: z.object({ id: z.string(), verdict, accepted: z.boolean() }).optional(),
+    }),
+  })
+})
+
+export const SDKTaskOrchestrationMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('task_orchestration'),
+      task_id: z.string(),
+      orchestration: RuntimeTaskOrchestrationSchema(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe(
+      "An Orchestrator run's view of a task's agent changed. Apply it to the task even when the task has already ended: merges and problem settlements happen after a worker finishes.",
+    ),
+)
+
 export const SDKToolUseSummaryMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('tool_use_summary'),
@@ -2088,6 +2146,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKTaskNotificationMessageSchema(),
     SDKTaskStartedMessageSchema(),
     SDKTaskProgressMessageSchema(),
+    SDKTaskOrchestrationMessageSchema(),
     SDKSessionStateChangedMessageSchema(),
     SDKFilesPersistedEventSchema(),
     SDKToolUseSummaryMessageSchema(),

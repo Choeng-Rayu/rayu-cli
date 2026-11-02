@@ -7,9 +7,9 @@ import {
 } from '../src/tools/AgentTool/built-in/subagents/index.ts'
 
 describe('Orchestrator agent architecture', () => {
-  test('planner is the only specialist subagent', () => {
-    expect(SUBAGENT_TYPES).toEqual(['planner'])
-    expect(SUBAGENTS.map(agent => agent.agentType)).toEqual(['planner'])
+  test('the planner and the verifier are the only specialist subagents', () => {
+    expect(SUBAGENT_TYPES).toEqual(['planner', 'verifier'])
+    expect(SUBAGENTS.map(agent => agent.agentType)).toEqual(['planner', 'verifier'])
 
     const removed = [
       'design',

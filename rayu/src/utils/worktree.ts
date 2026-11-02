@@ -234,7 +234,7 @@ function worktreePathFor(repoRoot: string, slug: string): string {
 async function getOrCreateWorktree(
   repoRoot: string,
   slug: string,
-  options?: { prNumber?: number },
+  options?: { prNumber?: number; baseCommit?: string },
 ): Promise<WorktreeCreateResult> {
   const worktreePath = worktreePathFor(repoRoot, slug)
   const worktreeBranch = worktreeBranchName(slug)
@@ -260,7 +260,11 @@ async function getOrCreateWorktree(
 
   let baseBranch: string
   let baseSha: string | null = null
-  if (options?.prNumber) {
+  if (options?.baseCommit) {
+    // An exact commit, such as an Orchestrator baseline snapshot: no fetch.
+    baseBranch = options.baseCommit
+    baseSha = options.baseCommit
+  } else if (options?.prNumber) {
     const { code: prFetchCode, stderr: prFetchStderr } =
       await execFileNoThrowWithCwd(
         gitExe(),
@@ -898,7 +902,17 @@ export async function cleanupWorktree(): Promise<void> {
  * global session state (currentWorktreeSession, process.chdir, project config).
  * Falls back to hook-based creation if not in a git repository.
  */
-export async function createAgentWorktree(slug: string): Promise<{
+export async function createAgentWorktree(
+  slug: string,
+  options?: {
+    /**
+     * Start the worktree at this commit instead of the default branch. Used for
+     * Orchestrator worktree packets, whose base is the run's baseline snapshot
+     * (the working tree including uncommitted changes).
+     */
+    baseCommit?: string
+  },
+): Promise<{
   worktreePath: string
   worktreeBranch?: string
   headCommit?: string
@@ -909,6 +923,11 @@ export async function createAgentWorktree(slug: string): Promise<{
 
   // Try hook-based worktree creation first (allows user-configured VCS)
   if (hasWorktreeCreateHook()) {
+    if (options?.baseCommit) {
+      throw new Error(
+        'This worker needs a git worktree that starts at a given commit, but a WorktreeCreate hook is configured, and hooks cannot be given a base commit.',
+      )
+    }
     const hookResult = await executeWorktreeCreateHook(slug)
     logForDebugging(
       `Created hook-based agent worktree at: ${hookResult.worktreePath}`,
@@ -931,7 +950,7 @@ export async function createAgentWorktree(slug: string): Promise<{
   }
 
   const { worktreePath, worktreeBranch, headCommit, existed } =
-    await getOrCreateWorktree(gitRoot, slug)
+    await getOrCreateWorktree(gitRoot, slug, options?.baseCommit ? { baseCommit: options.baseCommit } : undefined)
 
   if (!existed) {
     logForDebugging(

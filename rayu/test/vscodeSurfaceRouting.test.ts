@@ -22,7 +22,6 @@ const GLOBAL_TYPES = [
   'setLiveSessions',
   'setIdeContext',
   'setProviderSetup',
-  'setTelegramConnect',
   'setModelChooser',
 ] as const satisfies readonly HostToWebviewMessage['type'][]
 

@@ -44,6 +44,7 @@ test('the panel header shows the conversation title and Canva as connected', () 
   const html = renderToStaticMarkup(createElement(SessionHeader, {
     ready: true, signedOut: false, identity: null, version: 'test', title: 'Canva session', activeSessionKey: 'test-session',
     surface: 'panel',
+    hasConversation: true, sessionsOpen: false, onToggleSessions: noop,
     status: 'idle', mcpServers: [canva],
     mcpConnectionUi: { load: 'ready', error: null, auth: null },
     onNewSession: noop, onRename: noop, onCloseTab: noop,
@@ -58,14 +59,16 @@ test('the panel header shows the conversation title and Canva as connected', () 
   expect(html).toContain('1 MCP server connected')
 })
 
-// The sidebar is the management hub: its header carries no per-conversation chrome —
-// no title, no status, no detail switch — only agent-level actions. This pins that
-// split, because a title leaking back in is exactly the "duplicate of the tab" bug
-// the redesign removed.
-test('the sidebar header is management chrome only: no title, no close, but new session', () => {
+// The sidebar now hosts the first conversation itself, so its header carries that
+// conversation's own chrome — title, status and detail switch — plus the way back to the
+// sessions list. What it must NOT grow is the panel's close action: closing a conversation
+// is the sessions row's job, and a duplicate "Close session" here would imply the sidebar's
+// body is the conversation rather than the hub it falls back to.
+test('the sidebar header shows its hosted conversation and sessions control, but no close', () => {
   const html = renderToStaticMarkup(createElement(SessionHeader, {
     ready: true, signedOut: false, identity: null, version: 'test', title: 'Canva session', activeSessionKey: 'test-session',
     surface: 'sidebar',
+    hasConversation: true, sessionsOpen: false, onToggleSessions: noop,
     status: 'working', mcpServers: [canva],
     mcpConnectionUi: { load: 'ready', error: null, auth: null },
     onNewSession: noop, onRename: noop, onCloseTab: noop,
@@ -75,10 +78,12 @@ test('the sidebar header is management chrome only: no title, no close, but new 
     onReconnectMcp: noop, onAuthenticateMcp: noop, onToggleMcp: noop,
     onSignIn: noop, onSignOut: noop,
   }))
-  expect(html).not.toContain('Canva session')
-  expect(html).not.toContain('Working')
-  expect(html).not.toContain('Toggle tool details')
-  expect(html).not.toContain('Close session')
+  expect(html).toContain('Canva session')
+  expect(html).toContain('Working')
+  expect(html).toContain('Toggle tool details')
+  // The sidebar-only way back to the sessions list, offered only while it hosts a chat.
+  expect(html).toContain('Sessions')
   expect(html).toContain('New session')
+  expect(html).not.toContain('Close session')
   expect(html).toContain('1 MCP server connected')
 })

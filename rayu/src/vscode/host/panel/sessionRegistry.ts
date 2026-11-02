@@ -13,6 +13,16 @@
  * A registry replaces all of that with the obvious model: several conversations, each with its
  * own engine, all running at once, one of them on screen.
  *
+ * ── ONE ACTIVE KEY, PLUS A SIDEBAR SLOT ────────────────────────────────────────
+ *
+ * `activeKey` is the conversation in the foreground. Separately, `sidebarKey` names the
+ * conversation hosted by the sidebar — the first one the user meets, which must not be
+ * duplicated as an editor tab. The two are independent: activating a conversation never moves
+ * the sidebar binding, so a session opened from the sidebar cannot silently take it over.
+ * Only an explicit `create({ inSidebar: true })` (when the slot is empty) or `adoptSidebar()`
+ * can claim the slot; closing the sidebar's conversation empties it without creating a
+ * replacement, which is what lets the sidebar fall back to the sessions list.
+ *
  * ── ONLY THE ACTIVE SESSION MAY WRITE TO THE PANEL ─────────────────────────────
  *
  * Every `ChatSession` keeps its own transcript, turn state, thinking blocks, tasks and review
@@ -41,7 +51,8 @@
  * Each session is a ~23 MB Node child that may own MCP subprocesses. Unbounded growth would be
  * a memory leak the user creates by pressing a button, so the oldest IDLE session is retired
  * when the limit is reached. Never a running one: silently killing work is the bug this whole
- * module exists to fix.
+ * module exists to fix. Never the sidebar's conversation either — evicting it would empty the
+ * sidebar behind the user's back, so the bound yields instead.
  */
 import { ChatSession, type SessionCallbacks, type SessionOptions } from './sessionHandle.js'
 import { PermissionRouter } from './permissionRouter.js'
@@ -56,6 +67,14 @@ import type { LiveSessionView, PermissionRequestView } from '../../shared/webvie
  */
 export const MAX_LIVE_SESSIONS = 4
 
+export interface CreateSessionOptions {
+  resumeSessionId?: string
+  cwd?: string
+  customTitle?: string
+  /** Claim the sidebar slot when it is empty. */
+  inSidebar?: boolean
+}
+
 export interface RegistryCallbacks {
   /** Build the callbacks for one session. `isActive` gates every push to the webview. */
   sessionCallbacks: (entry: SessionEntry, isActive: () => boolean) => SessionCallbacks
@@ -68,8 +87,13 @@ export interface RegistryCallbacks {
   onDismissPermission: (entry: SessionEntry, requestId: string) => void
   /** The active session changed, or a live session's summary did. */
   onChanged: () => void
-  /** The active (sidebar-bound) session changed. */
+  /** The foreground (active-key) session changed. Never moves the sidebar binding. */
   onActivate: (entry: SessionEntry) => void
+  /**
+   * The sidebar slot changed. `null` means it is now empty. This is NOT an activation: the
+   * sidebar keeps hosting the same conversation until it is explicitly claimed or closed.
+   */
+  onSidebarChanged?: (entry: SessionEntry | null) => void
   /**
    * An entry is being retired — evicted for capacity, or explicitly closed. Fired
    * immediately before its engine is disposed. Used to close the conversation's editor
@@ -91,6 +115,8 @@ export interface SessionEntry {
 export class SessionRegistry {
   private readonly entries: SessionEntry[] = []
   private activeKey = ''
+  /** The conversation the sidebar hosts. '' when the sidebar shows its sessions list. */
+  private sidebarKey = ''
   private counter = 0
 
   constructor(
@@ -105,8 +131,27 @@ export class SessionRegistry {
     return this.create()
   }
 
+  /** The active key, or '' when no conversation is open. Never creates one as a side effect. */
   get activeSessionKey(): string {
-    return this.active.key
+    return this.activeKey
+  }
+
+  /** The active entry, or undefined when no conversation is open. Never creates one. */
+  get activeEntry(): SessionEntry | undefined {
+    return this.entries.find(entry => entry.key === this.activeKey)
+  }
+
+  /** The sidebar's conversation key, or '' when the sidebar is showing the sessions list. */
+  get sidebarSessionKey(): string {
+    return this.sidebarKey
+  }
+
+  get hasSidebarSession(): boolean {
+    return this.sidebarKey !== ''
+  }
+
+  get sidebarEntry(): SessionEntry | null {
+    return this.entries.find(entry => entry.key === this.sidebarKey) ?? null
   }
 
   /** Every open conversation, for disposal and for the live list. */
@@ -120,7 +165,7 @@ export class SessionRegistry {
    * This is the whole point of the module: the previous implementation's "new session" was a
    * teardown of the only session there was.
    */
-  create(options: { resumeSessionId?: string; cwd?: string; customTitle?: string } = {}): SessionEntry {
+  create(options: CreateSessionOptions = {}): SessionEntry {
     this.retireForCapacity()
 
     const key = `panel-${++this.counter}`
@@ -157,6 +202,12 @@ export class SessionRegistry {
     this.entries.push(entry)
     this.activeKey = key
     this.callbacks.onActivate(entry)
+    // A bare create() is just another tab. Only an explicit sidebar request claims the slot,
+    // and only when it is empty — never steal the sidebar's running conversation.
+    if (options.inSidebar === true && this.sidebarKey === '') {
+      this.sidebarKey = key
+      this.callbacks.onSidebarChanged?.(entry)
+    }
     this.callbacks.onChanged()
     return entry
   }
@@ -173,6 +224,24 @@ export class SessionRegistry {
     if (this.activeKey === key) return entry
     this.activeKey = key
     this.callbacks.onActivate(entry)
+    this.callbacks.onChanged()
+    return entry
+  }
+
+  /**
+   * Give the sidebar an already-open conversation.
+   *
+   * Used when the sidebar slot is empty and the user opens a conversation: rather than
+   * duplicating it as a tab, the existing entry becomes the sidebar's. Deliberately does not
+   * fire `onActivate` — the sidebar binding, not the active key, is what changed, and the
+   * caller already knows which conversation it asked for (avoids a duplicate sidebar sync).
+   */
+  adoptSidebar(key: string): SessionEntry | null {
+    const entry = this.entries.find(item => item.key === key)
+    if (!entry) return null
+    this.sidebarKey = key
+    this.activeKey = key
+    this.callbacks.onSidebarChanged?.(entry)
     this.callbacks.onChanged()
     return entry
   }
@@ -218,16 +287,27 @@ export class SessionRegistry {
     if (entry) this.callbacks.onRetire?.(entry)
     entry?.permissions.cancelAll()
     entry?.session.dispose()
+    // Closing the sidebar's conversation empties the slot and nothing takes its place: the
+    // sidebar falls back to its sessions list until something explicitly claims or adopts it.
+    const closedWasSidebar = key !== '' && key === this.sidebarKey
+    if (closedWasSidebar) {
+      this.sidebarKey = ''
+      this.callbacks.onSidebarChanged?.(null)
+    }
     // Closing the visible conversation has to leave SOMETHING visible. The most recently
-    // active remaining session is the least surprising choice; with none left, a fresh one.
+    // active remaining session is the least surprising choice; with none left, a fresh one —
+    // except when the closed conversation WAS the sidebar's, where a replacement would
+    // immediately re-claim the slot the user just emptied.
     if (this.activeKey === key) {
       const next = this.entries[this.entries.length - 1]
       if (next) {
         this.activeKey = next.key
         this.callbacks.onActivate(next)
-      } else {
+      } else if (!closedWasSidebar) {
         this.create()
         return
+      } else {
+        this.activeKey = ''
       }
     }
     this.callbacks.onChanged()
@@ -267,9 +347,13 @@ export class SessionRegistry {
       const idle = [...this.entries]
         .filter(
           entry =>
-            !entry.session.isTurnRunning && entry.permissions.snapshot().length === 0,
+            entry.key !== this.sidebarKey &&
+            !entry.session.isTurnRunning &&
+            entry.permissions.snapshot().length === 0,
         )
         .sort((a, b) => a.session.lastActivityAt - b.session.lastActivityAt)[0]
+      // Never the sidebar's conversation: emptying the sidebar to make room would be a
+      // visible loss the user did not ask for. If it is the only idle entry, exceed the cap.
       if (!idle) return
       const index = this.entries.indexOf(idle)
       this.entries.splice(index, 1)

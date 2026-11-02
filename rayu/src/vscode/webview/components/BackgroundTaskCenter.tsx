@@ -8,6 +8,7 @@ import type {
 import { formatDuration } from '../../shared/turnProgress.js'
 import { useSecondTick } from '../useSecondTick.js'
 import { ChevronIcon, CloseIcon, ProgressGlyph } from './Icons.js'
+import { OrchestrationBadges, OrchestrationDetail, OrchestrationRunSection } from './OrchestrationBoard.js'
 import { ToolOutput } from './ToolOutput.js'
 
 /**
@@ -146,6 +147,7 @@ export function BackgroundTaskCenter({
       </div>
 
       <div className="rc-task-center-scroll">
+        <OrchestrationRunSection tasks={tasks} />
         {visible.length === 0 ? (
           <div className="rc-task-empty">No tasks match this filter.</div>
         ) : (
@@ -172,6 +174,7 @@ export function BackgroundTaskCenter({
                         {task.toolCount ? ` · ${task.toolCount} tools` : ''}
                         {task.tokenCount ? ` · ${formatCount(task.tokenCount)} tokens` : ''}
                       </span>
+                      <OrchestrationBadges task={task} />
                     </span>
                     {task.unread ? <span className="rc-task-unread" aria-label="Unread completion" /> : null}
                   </button>
@@ -210,6 +213,7 @@ export function BackgroundTaskCenter({
                   Printing "0 tokens" presented that gap as a measurement. */}
               <span>{selected.tokenCount ? `${formatCount(selected.tokenCount)} tokens` : 'tokens not reported'}</span>
             </div>
+            <OrchestrationDetail task={selected} />
             {selectedPermissions.map(request => (
               <div key={request.requestId} className="rc-task-waiting-card" role="status">
                 <ProgressGlyph state="waiting" />

@@ -28,7 +28,7 @@ import type {
   WebviewToHostMessage,
 } from '../../shared/webviewProtocol.js'
 import { MessageCoalescer } from './messageCoalescer.js'
-import { renderWebviewHtml, type ChatSurface } from './webviewSurface.js'
+import { renderWebviewHtml, resolveMediaWebviewUris, type ChatSurface } from './webviewSurface.js'
 
 export interface SessionPanelHandlers {
   onMessage(sessionKey: string, message: WebviewToHostMessage): void
@@ -60,9 +60,14 @@ export class SessionPanel implements ChatSurface {
     this.panel.webview.options = {
       enableScripts: true,
       // Restrict what the webview may load to the bundle directory, exactly as the
-      // sidebar does. The CSP already denies everything by default; this is the second
+      // sidebar does — PLUS the workspace folders, so a generated video (written into the
+      // session cwd, normally inside the workspace) can be served to `<video>` via
+      // `asWebviewUri`. The CSP already denies everything by default; this is the second
       // half of the same boundary.
-      localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
+      localResourceRoots: [
+        vscode.Uri.joinPath(extensionUri, 'media'),
+        ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri),
+      ],
     }
     this.panel.webview.html = renderWebviewHtml(this.panel.webview, extensionUri)
 
@@ -104,7 +109,7 @@ export class SessionPanel implements ChatSurface {
   }
 
   postState(state: WebviewState): void {
-    this.post({ type: 'init', state })
+    this.post({ type: 'init', state: resolveMediaWebviewUris(state, this.panel.webview) })
   }
 
   /** Bring the tab to the front, forcing the column it lives in. */

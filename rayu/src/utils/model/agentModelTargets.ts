@@ -32,6 +32,8 @@ export function describeConfigurableAgent(agentType: string): string {
       return 'Read-only code search and analysis'
     case 'planner':
       return 'Planning and delegation packets'
+    case 'verifier':
+      return 'Orchestrator verification with command evidence'
     default:
       return 'Set the model for this agent'
   }

@@ -15,7 +15,8 @@ test('/orchestrator enters the mode and frames the task; the rules come from the
   expect(text).toContain('build an app')
   expect(text).toContain('ORCHESTRATOR')
   expect(text).toMatch(/rules in the system reminder/)
-  expect(text).toMatch(/Do not implement anything yourself/)
+  expect(text).toMatch(/Do not edit files yourself/)
+  expect(text).toMatch(/may run shell commands/)
   expect(text).toContain('/normal')
   // The rules live in one place (src/orchestrator/reminder.ts), not in this prompt.
   expect(text).not.toContain('run_in_background')

@@ -1,71 +1,145 @@
 # RAYU Orchestrator and Agents — Architecture Summary
 
-> Verified directly from source code on 2026-09-20. The old domain-persona
-> architecture has been removed. Orchestrator is a permission/UI mode, not a
-> spawnable agent type.
+> Verified from source after the Orchestrator reliability work (Tasks 1–17). The
+> engine code lives in `src/orchestrator/` and is shared by the CLI and Rayucode.
 
 ## Orchestrator mode
 
-Orchestrator is a distinct permission/UI mode that uses the same execution
-semantics as `fullManage`, so delegated workers can edit files and run commands
-without repeated approval prompts. Full Access and Full Manage remain separate
-selectable modes. The main agent is prompt-constrained to coordination only:
-understand the goal, plan, divide ownership, delegate implementation and
-verification, integrate the results, and report back.
+Orchestrator is a permission/UI mode with Full Manage's execution semantics, so
+workers can edit files and run commands without repeated prompts. The main agent
+coordinates only, and that is enforced, not just asked for: in Orchestrator mode the
+main thread cannot use Edit, Write or NotebookEdit or run commands that change files
+(`src/orchestrator/mainThreadPolicy.ts`, checked before mode auto-approval and before
+hooks). Its workers keep auto-approval.
 
-Users can enter it in three ways:
+Ways in: Shift+Tab (CLI), the Rayucode mode control, `/orchestrator [task]`, and the
+"Orchestrator" choice when approving a plan. Ways out: another mode, or `/normal`.
+The role reminder is attached on the first turn after entering the mode, a short form
+on every later turn, a full one every 10th, and an exit notice when the mode is left
+(`src/orchestrator/reminder.ts`).
 
-- Select **Orchestrator** with Shift+Tab in the CLI.
-- Select **Orchestrator** from Rayucode's permission-mode control.
-- Run `/orchestrator [task]`.
+## Child agents
 
-Confirming a plan also enters Orchestrator automatically. Selecting another
-mode or running `/normal` exits it.
-
-## Orchestrator child-agent set
-
-| Type | Role | Writes code? | Can delegate? |
+| Type | Role | Writes code? | Delegates? |
 |---|---|---:|---:|
-| `planner` | Researches and returns a decision-complete execution graph with bounded worker packets | No | May use read-only `Explore` agents |
-| `Explore` | Read-only repository discovery | No | No |
-| `general-purpose` | Universal implementation, review, fix, lint, test, and build worker | Yes | No |
+| `planner` | Research and a decision-complete plan with worker packets | No | No |
+| `general-purpose` | Implementation, fixes, review, tests, builds — one contract packet each | Yes | No |
+| `verifier` | Runs the contract's required checks and probes the seams between packets; PASS/FAIL/PARTIAL with command evidence | No (guarded) | No |
+| `Explore` | Read-only discovery, when its gate is on | No | No |
 
-The planner is the only specialist registered in `SUBAGENTS`. Implementation is
-delegated to one or more named `general-purpose` workers. Independent workers
-receive exact non-overlapping file ownership and can run concurrently;
-dependent work is sequenced. Fresh workers perform review and verification.
+`planner` and `verifier` are `SUBAGENTS` (`src/tools/AgentTool/built-in/subagents/`).
+They are registered for the CLI, `-p` and the Rayucode engine (all non-SDK or
+`sdk-cli` entrypoints); only the programmatic SDKs (`sdk-ts`, `sdk-py`) and
+`RAYU_DISABLE_SPECIALIST_AGENTS` leave them out.
 
-There are no built-in `frontend`, `backend`, `mobile`, `security`, or `deploy`
-personas. The former `design`, `backend-design`, `global-setup`,
-`asset-generation`, `builder`, `review`, `fix`, and `linter` specialist types
-are also absent.
+## A run, end to end
 
-## Registry counts
+1. **Contract** (`OrchestrationContract` tool, `src/orchestrator/contract.ts`). The
+   Orchestrator publishes packets (objective, owned paths, acceptance, `dependsOn`,
+   isolation `shared` or `worktree`), shared interfaces with exact definitions and
+   owners, and required checks (plus `orchestrator.checkCommands` from settings).
+   Ownership of packets that can run at the same time must not overlap. Paths are
+   relative to the **project root**: the git root, or the directory the session works in
+   when the project is not in git (`runWorkspace.ts`). The root is recorded on the run,
+   and the contract result names it; an absolute path inside it is converted, not
+   refused. Check commands may be up to 2,000 characters. Publishing again creates a new
+   version; started packets cannot be dropped. Contract v1 starts a run and takes a
+   baseline of the project:
+   - in git, a snapshot of the working tree (`gitSnapshot.ts`), kept under
+     `refs/rayu/orchestration/<session>/<run>/` without touching the user's index, HEAD
+     or stash;
+   - outside git, a scan of file sizes and modification times (`fileManifest.ts`), held
+     in memory. It skips `node_modules`, build output and caches, and gives up on a tree
+     over 150,000 files or 8 s. Worktree packets are refused (they are git worktrees).
+   `treeTracker.ts` answers "what is the project's state, and what changed" for either
+   backend, so checkpoints, the verifier guard and the gate do not care which it is.
+2. **Workers** (`spawnPolicy.ts`, `workerBriefing.ts`). A writing agent launched by
+   the Orchestrator must name a packet. It is refused while the packet's dependencies
+   have not completed, while another worker of the packet runs, while
+   `orchestrator.maxParallelWriters` writers run, or in the foreground when background
+   tasks exist. Each worker is briefed with the contract and its packet. The packet's
+   isolation decides the worktree; worktree packets start from the baseline snapshot.
+   A packet worker always runs in the background (a foreground request is not refused),
+   and a worker's paths are relative to the run's project root, or to its own worktree,
+   never to wherever its shell is.
+3. **Checking changes** (`attribution.ts`, `shellChanges.ts`, `checkpoint.ts`). Every
+   file-tool change and every writing shell command of a worker is checked against its
+   packet: `outside-packet`, `unowned` and `overlap` problems are recorded, told to the
+   worker in its tool result, and shown to the Orchestrator. Changes are reported, not
+   blocked. At the start of each Orchestrator turn when nothing runs, a checkpoint
+   compares the whole tree with the baseline and raises anything no worker accounts for
+   as `untraced`, and workers that ended early as `interrupted`.
+4. **Worktree packets** (`worktreeIntegration.ts`, `worktreeMerge.ts`, `merge3.ts`).
+   When the worker completes, the packet is `merging`: its changes are merged 3-way
+   into the main tree, all or nothing, written synchronously after checking that no
+   target file changed since the plan was made, recorded for `/undo` and the review
+   card, and the worktree is removed. Binary files, symlinks, submodules, LFS files,
+   delete/modify and add/add are conflicts, never guesses. On conflict nothing is
+   written; the worktree gets the main tree's changes with conflict markers, the
+   packet is `conflicted` (its dependents wait), and the Orchestrator is told to
+   continue the worker with SendMessage. After 3 failed attempts each conflict is a
+   `merge-conflict` problem.
+5. **Verification** (`verifierGuard.ts`, `verification.ts`). The verifier may start
+   only when no packet runs or merges. It is briefed with the contract. Its shell
+   commands and their outcomes are recorded, and the tree is compared before and after
+   (a changed file is a `verifier-change` problem). A PASS is accepted only when every
+   required check was run by the verifier and succeeded (the recorded commands are the
+   evidence, a report block that says FAIL overrides), the verdict is PASS, and nothing
+   changed. The verifier's own side probes that no recorded command backs up are notes
+   on the record, not reasons to reject. The record says whether the project itself
+   failed (`failed`) and names the tree it covers (none for an untracked project).
+6. **Gate** (`gate.ts`, called from `query.ts` after stop hooks). When the
+   Orchestrator's turn ends with nothing running and no worker notice waiting, the run
+   is done only if every packet completed, no problem is open, and an accepted
+   verification covers the current contract version and the current tree. With
+   `orchestrator.verificationGate: "hard"` (default) a closed gate sends the
+   Orchestrator back with the reasons (twice per unchanged set of reasons), then once
+   tells it not to claim success; after `orchestrator.maxRepairRounds` verifications that
+   found the project failing (counted per contract version) it asks for that report at
+   once. Having said its last word for a set of reasons, the gate keeps that state: asking
+   again neither repeats the reminders nor the status line. `"soft"` only reports. The status
+   line reaches the REPL transcript and Rayucode (an `informational` frame).
 
-`getBuiltInAgents()` assembles the registry as follows outside coordinator-mode
-replacement:
+Problems close when the change is undone (checkpoint), a new contract version gives
+the file to the packet, a later merge succeeds, or the user accepts them with
+`/orchestrator-status accept <id> [note]`. Leaving Orchestrator mode archives the run
+and deletes its snapshot refs.
 
-| Category | Count | Types |
-|---|---:|---|
-| Always registered | 2 | `general-purpose`, `statusline-setup` |
-| Orchestrator specialist | 0–1 | `planner` (non-SDK, unless specialists are disabled) |
-| Other conditional helpers | 0–3 | `Explore`, `rayu-code-guide`, `verification` |
-| Domain collaborator personas | 0 | none |
+## Where the user sees it
 
-That produces **2–6 built-in child-agent types**, depending on entrypoint,
-feature flags, and environment settings. A normal interactive CLI session has
-`general-purpose`, `statusline-setup`, `planner`, and `rayu-code-guide`, plus
-`Explore` and `verification` when their gates are enabled.
+- `/orchestrator-status` — packets, workers, worktrees, problems, verification and the
+  gate. `contract` prints the contract, `accept <id> [note]` accepts a problem, and
+  `diff <id>` shows the change recorded with it.
+- CLI background-tasks dialog — an Orchestrator section with every packet (also those
+  whose workers left the task list) and a worker's packet, conflicts and problems in
+  its detail view (`src/components/tasks/Orchestration*.tsx`).
+- Rayucode background-work panel — the same run as a section, badges per row and
+  details (`src/vscode/webview/components/OrchestrationBoard.tsx`), from the
+  `orchestration` view on each task and `task_orchestration` frames, which also update
+  rows that have already finished (`src/orchestrator/orchestrationView.ts`).
+- Audit history — `{plansDir}/{slug}-orchestration/run-<n>/`: `run.json`,
+  `events.jsonl` (contract versions, problems with diffs, checkpoints, merges,
+  verifications, gate decisions), `contract-v<N>.json|md`. Directories 0700, files 0600.
 
-The main Orchestrator itself adds one coordinating agent at runtime but is not
-part of the child-agent registry.
+## Settings (`orchestrator` in settings.json)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `verificationGate` | `hard` | `hard` sends an unfinished run back to work; `soft` only reports |
+| `maxRepairRounds` | 3 | Verifications under one contract version that found the project failing, before the gate stops asking for repairs. Rejections that were not the project's fault do not count |
+| `maxParallelWriters` | 4 | Writing workers that may run at once |
+| `checkCommands` | `[]` | Checks required in every run, in addition to the contract's |
 
 ## Source of truth
 
-- `src/commands/orchestrator/index.ts` — explicit mode-entry prompt
-- `src/utils/orchestratorMode.ts` — distinct mode state transition
-- `src/utils/messages.ts` — per-turn main-agent Orchestrator reminder
-- `src/tools/AgentTool/builtInAgents.ts` — child-agent registry assembly
-- `src/tools/AgentTool/built-in/subagents/planner.ts` — planner definition
-- `src/tools/AgentTool/built-in/generalPurposeAgent.ts` — universal worker
-- `src/vscode/shared/permissionModes.ts` — Rayucode mode selector
+- `src/orchestrator/` — contract, run state, snapshots, spawn policy, attribution,
+  checkpoints, worktree merge, verifier guard, gate, views, audit, reminder
+- `src/tools/OrchestrationContractTool/` — the contract tool
+- `src/tools/SendMessageTool/OrchestratorSendMessageTool.ts` — continuing workers
+- `src/commands/orchestrator-status/` — `/orchestrator-status`
+- `src/tools/AgentTool/AgentTool.tsx` — packet claims, briefing, worktrees, verifier hooks
+- `src/tools/AgentTool/built-in/subagents/{planner,verifier}.ts` — specialist definitions
+- `src/query.ts` — the gate's continuation; `src/services/tools/toolExecution.ts` —
+  attribution and verifier evidence hooks
+- `test/orchestrator*.test.ts`, `test/orchestratorE2E.test.ts` — unit and headless
+  end-to-end scenarios (scripted model, `test/helpers/orchestratorHarness.ts`)

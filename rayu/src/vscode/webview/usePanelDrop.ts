@@ -25,7 +25,9 @@
  * gets STUCK in this host, and not rarely:
  *
  * VS Code blanks the webview iframe's pointer events for the duration of any drag that looks
- * like it carries a file, unless Shift is held (see `dropPayload.ts` for the measurement). If
+ * like it carries a file, unless Shift is held (see `dropPayload.ts` for the measurement; the
+ * iframe-unblock in `keepDropEventsInPanel.ts` is swallowed when the ancestor frame is
+ * cross-origin, so Shift is the required fallback and the UI says so in `dropCopy.ts`). If
  * that happens after our `dragenter` has run, the overlay is showing and the matching
  * `dragleave` never arrives — the iframe has stopped receiving events entirely. A permanently
  * lit drop target on a panel that will not accept a drop is worse than no target at all.
@@ -112,9 +114,11 @@ export function usePanelDrop(handlers: PanelDropHandlers): boolean {
   latest.current = handlers
 
   useEffect(() => {
-    // Installed FIRST, and on the ancestor frames as well as this one: without it VS Code
-    // blanks this panel's pointer events as soon as the drag arrives and none of the handlers
-    // below ever run. See that module for the measurement.
+    // Installed FIRST, on this frame and on whichever ancestor frames are reachable. Hops to
+    // a cross-origin ancestor throw and are swallowed there, which is the usual case on modern
+    // VS Code, so this is best-effort: without Shift the panel can still be blanked before any
+    // handler below runs, and holding Shift is the required fallback. See that module and
+    // `dropCopy.ts`.
     const releaseUnblock = keepDropEventsInPanel()
 
     function clearWatchdog(): void {

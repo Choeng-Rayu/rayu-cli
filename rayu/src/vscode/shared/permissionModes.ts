@@ -39,7 +39,7 @@ export const PERMISSION_MODES: readonly PermissionModeView[] = [
   {
     id: 'plan',
     label: 'Plan',
-    description: 'Read and analyse only. No edits, no commands.',
+    description: 'Investigate and write a plan without asking. Never changes your code.',
   },
   {
     id: 'fullManage',

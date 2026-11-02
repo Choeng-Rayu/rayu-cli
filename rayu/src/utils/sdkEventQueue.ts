@@ -1,6 +1,7 @@
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
+import type { RuntimeTaskOrchestration } from '../protocol/index.js'
 import type { SdkWorkflowProgress } from '../types/tools.js'
 
 type TaskStartedEvent = {
@@ -83,10 +84,21 @@ type SessionStateChangedEvent = {
   state: 'idle' | 'running' | 'requires_action'
 }
 
+// An Orchestrator run's view of a task's agent changed (src/orchestrator/
+// orchestrationView.ts). Unlike progress, it may follow the task's own
+// task_notification: merges and problem settlements happen after it ends.
+type TaskOrchestrationEvent = {
+  type: 'system'
+  subtype: 'task_orchestration'
+  task_id: string
+  orchestration: RuntimeTaskOrchestration
+}
+
 export type SdkEvent =
   | TaskStartedEvent
   | TaskProgressEvent
   | TaskNotificationSdkEvent
+  | TaskOrchestrationEvent
   | SessionStateChangedEvent
 
 const MAX_QUEUE_SIZE = 1000

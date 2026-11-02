@@ -34,6 +34,7 @@ import {
   type SessionEntry,
 } from './panel/sessionRegistry.js'
 import { SurfaceRegistry } from './panel/surfaceRegistry.js'
+import { routeForSession } from './panel/surfaceRouting.js'
 import {
   dispatchWebviewMessage,
   type ChatViewHandlers,
@@ -44,8 +45,11 @@ import { PermissionRouter } from './panel/permissionRouter.js'
 import { invalidateRayuConfigCache } from '../../utils/rayuConfig.js'
 import { readModelOptions, readActiveModel } from './models/modelConfig.js'
 import { CatalogueRefresher } from './models/catalogueRefresh.js'
-import { nextPermissionMode, permissionModeById } from '../shared/permissionModes.js'
+import { DEFAULT_PERMISSION_MODE, nextPermissionMode, permissionModeById } from '../shared/permissionModes.js'
 import { formatPathMentions } from '../shared/contextMentions.js'
+import { contextPathsForUris, urisFromUriList } from './panel/contextPaths.js'
+import { parseClearCommand } from './panel/clearCommand.js'
+import { registerContextDropView } from './panel/dropTargetView.js'
 import {
   getAccessTokenForHost,
   getApiBaseUrlForHost,
@@ -120,6 +124,7 @@ import {
 } from '../../telegram/telegramConfig.js'
 import { getHostedLink } from '../../telegram/telegramHostedApi.js'
 import { TelegramConnectController } from './integrations/telegramConnectController.js'
+import { TELEGRAM_RESTART_SETTLE_MS, TelegramLinkRestarts } from './integrations/telegramLinkRestart.js'
 import { githubIntegrationView, webBridgeView } from './integrations/integrationViews.js'
 import {
   attachToCliSession,
@@ -155,7 +160,6 @@ import type {
   SessionListView,
   AttachmentView,
   ProviderSetupView,
-  TelegramConnectView,
   SessionSummaryView,
   ImageInputView,
   PromptDeliveryView,
@@ -173,6 +177,41 @@ const COMMANDS = {
   addToContext: 'rayucode.addToContext',
   feedback: 'rayucode.feedback',
 } as const
+
+/** Where the sidebar's bound conversation is remembered across a window reload. */
+const SIDEBAR_BINDING_KEY = 'rayucode.sidebarConversation'
+
+/** What a reload reads back to restore the sidebar's conversation. */
+interface PersistedSidebarBinding {
+  sessionId?: string
+  cwd?: string
+  customTitle?: string
+}
+
+/**
+ * Messages that make sense with NO conversation behind them.
+ *
+ * The sidebar now renders its sessions hub while its slot is empty, so messages from
+ * that hub arrive with the empty key. These are the window-global actions the hub (and
+ * its header) offers; each handler already tolerates a missing conversation or targets
+ * the active one itself. Every other message still requires a live key.
+ */
+const HUB_SAFE_MESSAGE_TYPES: ReadonlySet<string> = new Set([
+  'newSession',
+  'openSessionPanel',
+  'resumeSessionPanel',
+  'listSessions',
+  'renameSession',
+  'signIn',
+  'signOut',
+  'openProviderSetup',
+  'openTelegramConnect',
+  'openSettings',
+  'providerSetupOpen',
+  // The chooser is window-global state, so a hub snapshot can still carry one that was
+  // opened elsewhere; dismissing it must work from wherever it is shown.
+  'modelChooserDismiss',
+])
 
 /**
  * Resolve a workspace path the exact same way `getOriginalCwd()` does in
@@ -392,7 +431,7 @@ export function activate(context: vscode.ExtensionContext): void {
       telegramStartByo: token => telegram.startByo(null, token),
       telegramUnlink: () => telegram.unlink(),
       webBridge: action => {
-        void runWebBridgeCommand(action === 'connect' ? '' : action === 'pair' ? 'pair' : 'off', registry.active)
+        void runWebBridgeCommand(action === 'connect' ? '' : action === 'pair' ? 'pair' : 'off', currentEntry())
       },
       setUpGitHub: () => runGitHubSetupFromEditor(workspaceDir, {
         signedIn: hasAccountSession(),
@@ -442,10 +481,7 @@ export function activate(context: vscode.ExtensionContext): void {
     setLinkedChat,
     setLinkedBotUsername,
     onLinked: origin => restartTelegramLinkedSession(origin),
-    publish: connect => {
-      surfaces.broadcast({ type: 'setTelegramConnect', connect })
-      settingsTab.controller.integrationsChanged()
-    },
+    publish: () => settingsTab.controller.integrationsChanged(),
   })
   const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   const activeFile = vscode.window.activeTextEditor?.document.uri
@@ -471,8 +507,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // The chat now lives on several surfaces at once: the sidebar view and one editor
   // tab per open conversation. `surfaces` (constructed below, after the registry)
   // owns them all — fan-out, per-session routing, and the serializer's revival.
-  // The sidebar is the management hub; conversations live in their tabs, and prompt
-  // text is delivered to the active conversation's tab (`insertPromptIntoTab`).
+  // The sidebar hosts exactly ONE conversation, its bound `registry.sidebarSessionKey`;
+  // while that slot is empty it renders the sessions hub instead. Every other
+  // conversation lives in its own editor tab, and prompt text is delivered to the
+  // target conversation's own surface (`insertPromptIntoConversation`) — never to a
+  // tab the user did not ask for.
   // `sidebar` is the sidebar surface handle, held only for the few host actions
   // that are genuinely sidebar-shaped (reveal, the sidebar's own snapshot).
   let sidebar: ChatSurface | undefined
@@ -537,21 +576,32 @@ export function activate(context: vscode.ExtensionContext): void {
    *
    * The restart RESUMES the conversation (`restartEngineWithResume`), so its session id
    * is kept and nothing the user wrote is lost; a fresh child reads telegram.json, and no
-   * cache has to be invalidated in place. A turn in flight is not interrupted: that
-   * conversation attaches the next time its engine starts.
+   * cache has to be invalidated in place. A turn in flight is not interrupted: the
+   * restart waits until it ends (integrations/telegramLinkRestart.ts).
    *
    * `origin` is the conversation that asked, when one did; the Settings tab asks for
    * the window, which means the conversation on screen.
    */
   function restartTelegramLinkedSession(origin: string | null): void {
-    const entry = (origin ? entryFor(origin) : undefined) ?? registry.active
+    const entry = (origin ? entryFor(origin) : undefined) ?? currentEntry()
     saveAutoAttach(
       entry.session.engineSessionId ?? '',
       normalizeCwdForAttachLookup(entry.session.workingDirectory),
     )
-    if (entry.session.isTurnRunning) return
-    void restartEngineWithResume(entry)
+    telegramRestarts.requestRestart(entry.key)
   }
+
+  const telegramRestarts = new TelegramLinkRestarts<object>({
+    lookup: key => {
+      const entry = entryFor(key)
+      return entry ? { isTurnRunning: entry.session.isTurnRunning, engine: entry.session.controlClient } : null
+    },
+    restart: key => {
+      const entry = entryFor(key)
+      if (entry) void restartEngineWithResume(entry)
+    },
+    schedule: settle => { setTimeout(settle, TELEGRAM_RESTART_SETTLE_MS) },
+  })
 
   /**
    * Attachment state, host-owned.
@@ -646,8 +696,8 @@ export function activate(context: vscode.ExtensionContext): void {
    * A conversation keeps its own transcript, turn state and cards inside its
    * `ChatSession`; the callbacks here are purely a PUSH channel to the surfaces.
    * Each push is routed by `surfaces.postToSession(entry.key, …)`, which reaches the
-   * conversation's editor tab and — while that conversation is the active one — the
-   * sidebar, WITHOUT an `isActive()` gate: a background tab must keep streaming.
+   * conversation's editor tab and — while the sidebar hosts that same conversation —
+   * the sidebar, WITHOUT an `isActive()` gate: a background tab must keep streaming.
    * A conversation with no surface showing it still accrues state, and the next
    * full sync reconstructs it.
    */
@@ -696,6 +746,7 @@ export function activate(context: vscode.ExtensionContext): void {
           if (webBridge?.entry === entry) webBridge.handle.onTurnState(running)
           surfaces.postToSession(entry.key, { type: 'turnState', running })
           postLiveSessions()
+          if (!running) telegramRestarts.turnEnded(entry.key)
         },
         // A running tool's live output goes to the conversation's surfaces — a
         // background tab's tool row is exactly where it renders.
@@ -712,6 +763,9 @@ export function activate(context: vscode.ExtensionContext): void {
           })
         },
         onSessionIdChanged: () => {
+          // The reload restore keys off this id: write the sidebar binding as soon as
+          // the engine reports it, so a window reload can resume the same conversation.
+          if (registry.sidebarEntry === entry) persistSidebarBinding(entry)
           postSurfaceBinding(entry)
           postLiveSessions()
         },
@@ -731,8 +785,9 @@ export function activate(context: vscode.ExtensionContext): void {
           // so they know which conversation it was about. Routing it to
           // `postToSession(entry.key, …)` would deliver it to nobody: no surface is
           // bound to that key at this point.
-          if (!surfaces.panelFor(entry.key) && registry.activeSessionKey !== entry.key) {
-            surfaces.postToSession(registry.activeSessionKey, {
+          const activeKey = registry.activeSessionKey
+          if (!surfaces.panelFor(entry.key) && activeKey !== '' && activeKey !== entry.key) {
+            surfaces.postToSession(activeKey, {
               type: 'showError',
               message: `${labelOf(entry)}: ${message}`,
             })
@@ -848,15 +903,24 @@ export function activate(context: vscode.ExtensionContext): void {
           postSurfaceBinding(entry)
         }
       },
-      // The active (sidebar-bound) session changed. One full sync is both simpler and
-      // more honest than replaying deltas. The review store is per-session now and is
-      // fed by `onReviewFiles`, so nothing is handed over on activation.
+      // The active session changed. One full sync is both simpler and more honest than
+      // replaying deltas; `syncSession` reaches the sidebar only when it hosts THIS
+      // conversation, so focusing a tab no longer re-posts the sidebar's init. The
+      // review store is per-session now and is fed by `onReviewFiles`, so nothing is
+      // handed over on activation.
       onActivate: entry => {
         if (mcpUiSessionKey !== entry.key) {
           mcpUi = { load: 'idle', error: null, auth: null }
           mcpUiSessionKey = entry.key
         }
         surfaces.syncSession(entry.key)
+      },
+      // The sidebar slot changed — claimed, adopted, closed, or emptied. Persist what a
+      // reload must resume and give the sidebar its own (chat or hub) snapshot. `null`
+      // means the hub: `syncSidebar()` builds it for the empty key.
+      onSidebarChanged: entry => {
+        persistSidebarBinding(entry)
+        surfaces.syncSidebar()
       },
       // Retired — evicted for capacity, or explicitly closed. Close its tab before
       // its engine goes away, and drop its review records. Idempotent.
@@ -881,8 +945,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ── THE SURFACE REGISTRY ─────────────────────────────────────────────────────
   // Owns the sidebar view and every editor session tab. Panels are bound to one
-  // session for their life and are never gated; the sidebar renders
-  // `registry.activeSessionKey`. See `panel/surfaceRegistry.ts`.
+  // session for their life and are never gated; the sidebar renders its own bound
+  // `registry.sidebarSessionKey` (or the hub when that slot is empty). See
+  // `panel/surfaceRegistry.ts`.
   //
   // ── ONE SNAPSHOT BUILDER, PARAMETERISED BY SURFACE ────────────────────────────
   //
@@ -894,16 +959,17 @@ export function activate(context: vscode.ExtensionContext): void {
   // `broadcast`) are unaffected: only `init` is flavoured.
   let lastRevivedSessionKey = ''
   let revivedNeedsRestore = false
-  // Prompt text parked for a tab whose webview has not said `ready` yet — see
-  // `insertPromptIntoTab`. Keyed by session key; flushed (and cleared) the moment
-  // the panel announces itself, so a just-created tab still receives what was
-  // meant for it instead of silently dropping it.
+  // Prompt text parked for a surface whose webview has not said `ready` yet — see
+  // `insertPromptIntoConversation`. Keyed by the target's session key; flushed (and
+  // cleared) the moment that surface announces itself, so a just-created tab or a
+  // just-revealed sidebar chat still receives what was meant for it.
   const pendingTabInserts = new Map<string, string[]>()
   surfaces = new SurfaceRegistry({
     extensionUri: context.extensionUri,
-    // The sidebar's binding follows the registry's active key, exactly as before:
-    // activation (a tab gaining focus, a conversation being created) rebinds it.
-    activeSidebarKey: () => registry.activeSessionKey,
+    // The sidebar's binding is the registry's OWN sidebar slot, not the globally active
+    // key: focusing a tab must not drag the sidebar onto that conversation (which would
+    // make the same conversation appear in both places and re-post the sidebar's init).
+    activeSidebarKey: () => registry.sidebarSessionKey,
     // Built per surface — see the block comment above.
     stateFor: (sessionKey, surface) => buildStateForKey(sessionKey, surface),
     onMessage: (kind, sessionKey, message) => {
@@ -912,35 +978,29 @@ export function activate(context: vscode.ExtensionContext): void {
         // The listener is attached; anything sent before now was dropped. The
         // surface's snapshot is (re)sent HERE — then `handlers.ready` warms the
         // engine for the conversation the surface is bound to.
-        if (kind === 'sidebar') surfaces.syncSidebar()
-        else {
+        if (kind === 'sidebar') {
+          surfaces.syncSidebar()
+          flushPendingInsert('sidebar', sessionKey)
+        } else {
           surfaces.syncSession(sessionKey)
-          const queued = pendingTabInserts.get(sessionKey)
-          if (queued) {
-            pendingTabInserts.delete(sessionKey)
-            for (const text of queued) {
-              surfaces.postToSurface('panel', sessionKey, { type: 'insertPrompt', text })
-            }
-          }
+          flushPendingInsert('panel', sessionKey)
         }
         dispatchWebviewMessage(message, scope, handlers)
         return
       }
       // A surface whose conversation is gone (its tab is closing, or its key is
-      // stale) must act on nothing — except the three requests that exist to work
-      // without a live conversation.
-      if (
-        !registry.has(sessionKey) &&
-        message.type !== 'openSessionPanel' &&
-        message.type !== 'resumeSessionPanel' &&
-        message.type !== 'listSessions'
-      ) {
+      // stale) must act on nothing — except the window-global actions that exist to
+      // work without a live conversation, including everything the sidebar's empty
+      // hub offers. Unknown keys on a bound conversation still act on nothing.
+      const hubSafe =
+        kind === 'sidebar' && sessionKey === '' && HUB_SAFE_MESSAGE_TYPES.has(message.type)
+      if (!registry.has(sessionKey) && !hubSafe) {
         return
       }
       dispatchWebviewMessage(message, scope, handlers)
     },
-    // A tab gaining focus makes its conversation the active one, which rebinds
-    // the sidebar (`onActivate` → the full sidebar sync).
+    // A tab gaining focus makes its conversation the active one. The sidebar is NOT
+    // rebound: it hosts its own slot, so the same conversation never appears twice.
     onPanelFocused: sessionKey => {
       registry.activate(sessionKey)
     },
@@ -1018,13 +1078,14 @@ export function activate(context: vscode.ExtensionContext): void {
       entry.session,
       entry.permissions,
       providerSetup,
-      telegram.current,
       modelChooser,
       ideContext,
       attachmentForEntry(entry),
       historySessions,
       registry.summaries(),
-      surface === 'panel' ? entry.key : registry.activeSessionKey,
+      // Both surfaces are built for the entry bound to them: a panel's own key, and
+      // the sidebar's bound key (its snapshot is only ever built for that entry).
+      entry.key,
       mcpUi,
       entry.customTitle,
       owned?.taskInspectionSupported ?? true,
@@ -1047,24 +1108,138 @@ export function activate(context: vscode.ExtensionContext): void {
     surfaces.postToSurface('panel', entry.key, { type: 'setSurfaceBinding', binding: surfaceBindingFor(entry) })
   }
 
-  /** The snapshot for a key, or null when the registry no longer knows it. */
+  /**
+   * The snapshot for a key, or null when the registry no longer knows it.
+   *
+   * The one exception is the EMPTY sidebar key: that is not an unknown conversation,
+   * it is the sessions hub, so it gets the hub snapshot (`hasConversation: false`)
+   * rather than nothing. Every other unknown key still returns null, so stale pushes
+   * cannot resurrect a closed conversation.
+   */
   function buildStateForKey(sessionKey: string, surface: ChatSurfaceKind): WebviewState | null {
     const entry = registry.byKey(sessionKey)
-    return entry ? stateForEntry(entry, surface) : null
+    if (entry) return stateForEntry(entry, surface)
+    if (sessionKey !== '' || surface !== 'sidebar') return null
+    return buildState(
+      version,
+      null,
+      null,
+      providerSetup,
+      modelChooser,
+      ideContext,
+      // Nothing is attached on the hub: attachment is a property of a conversation.
+      { available: attachment.available, attached: null, error: attachment.error },
+      historySessions,
+      registry.summaries(),
+      // No conversation is bound, but the list still marks whichever conversation is
+      // focused in a tab, so its row reads as "already open here".
+      registry.activeSessionKey,
+      mcpUi,
+      null,
+      true,
+      undefined,
+      surface,
+      null,
+    )
+  }
+
+  /** Remember (or clear) the sidebar's conversation for the next window reload. */
+  function persistSidebarBinding(entry: SessionEntry | null): void {
+    const value: PersistedSidebarBinding | undefined = entry
+      ? {
+          sessionId: entry.session.engineSessionId ?? undefined,
+          cwd: entry.session.workingDirectory,
+          customTitle: entry.customTitle ?? undefined,
+        }
+      : undefined
+    void context.workspaceState?.update(SIDEBAR_BINDING_KEY, value)
   }
 
   /**
-   * Deliver prompt text to a conversation's composer — the one place a prompt is typed,
-   * now that the sidebar is a management hub with no composer of its own.
+   * The conversation prompt-ish host actions should land in: the focused one, else the
+   * sidebar's, else a conversation created in the sidebar slot (so text never vanishes).
+   */
+  function currentEntry(): SessionEntry {
+    return registry.activeEntry ?? registry.sidebarEntry ?? registry.create({ inSidebar: true })
+  }
+
+  /**
+   * Show an open conversation on exactly ONE surface.
    *
-   * ── WHY A JUST-CREATED TAB NEEDS THE QUEUE ──────────────────────────────────
+   * `routeForSession` owns the rule; this only performs it. Revealing means the sidebar
+   * already hosts it; adopting moves it out of its tab; otherwise it is a tab.
+   */
+  function showSession(key: string): void {
+    if (!registry.has(key)) return
+    const route = routeForSession(key, registry.sidebarSessionKey)
+    if (route === 'sidebar') {
+      // Defensive: a conversation already in the sidebar never keeps a duplicate tab.
+      if (surfaces.hasPanel(key)) surfaces.closePanel(key)
+      void revealSidebar()
+      return
+    }
+    if (route === 'adopt') {
+      adoptIntoSidebar(key)
+      return
+    }
+    surfaces.openPanel(key)
+  }
+
+  /**
+   * Move a conversation into the sidebar slot.
+   *
+   * Its editor tab is CLOSED first — but only the tab, never the engine: closing a
+   * `SessionPanel` disposes the webview, not the session. That is what guarantees the
+   * conversation is not visible in two places at once.
+   */
+  function adoptIntoSidebar(key: string): void {
+    if (!registry.has(key)) return
+    if (surfaces.hasPanel(key)) surfaces.closePanel(key)
+    if (!registry.adoptSidebar(key)) return
+    void revealSidebar()
+  }
+
+  /**
+   * Start a conversation: claim the sidebar slot when it is free, otherwise open a tab.
+   *
+   * The sidebar is the FIRST conversation's home. Once it hosts one, pressing "+" must
+   * not evict it — a second conversation opens as an editor tab and both engines keep
+   * running.
+   */
+  function startNewSession(): void {
+    if (registry.hasSidebarSession) {
+      const entry = registry.create()
+      surfaces.openPanel(entry.key)
+      prewarmSession(entry)
+      return
+    }
+    const entry = registry.create({ inSidebar: true })
+    prewarmSession(entry)
+    void revealSidebar()
+  }
+
+  /**
+   * Deliver prompt text to the conversation's OWN composer, whichever surface hosts it.
+   *
+   * ── WHY A JUST-OPENED SURFACE NEEDS THE QUEUE ────────────────────────────────
    *
    * `postMessage` to a webview whose React listener has not attached yet is dropped by
-   * the platform — the same race `ready` exists to solve. An already-open tab is safe to
-   * post to directly; one this call just created is not, so its text is parked in
-   * `pendingTabInserts` and flushed when the panel announces itself.
+   * the platform — the same race `ready` exists to solve. An already-mounted surface is
+   * safe to post to directly; one this call just opened (or the sidebar before it has
+   * mounted) is not, so its text is parked in `pendingTabInserts` and flushed when that
+   * surface announces itself.
    */
-  function insertPromptIntoTab(sessionKey: string, text: string): void {
+  function insertPromptIntoConversation(sessionKey: string, text: string): void {
+    if (sessionKey === registry.sidebarSessionKey) {
+      if (sidebar) {
+        surfaces.postToSurface('sidebar', sessionKey, { type: 'insertPrompt', text })
+        return
+      }
+      const queue = pendingTabInserts.get(sessionKey) ?? []
+      queue.push(text)
+      pendingTabInserts.set(sessionKey, queue)
+      return
+    }
     const existed = surfaces.hasPanel(sessionKey)
     surfaces.openPanel(sessionKey)
     if (existed) {
@@ -1074,6 +1249,19 @@ export function activate(context: vscode.ExtensionContext): void {
     const queue = pendingTabInserts.get(sessionKey) ?? []
     queue.push(text)
     pendingTabInserts.set(sessionKey, queue)
+  }
+
+  /** Flush text parked for a surface that has just announced itself. */
+  function flushPendingInsert(
+    kind: ChatSurfaceKind,
+    sessionKey: string,
+  ): void {
+    const queued = pendingTabInserts.get(sessionKey)
+    if (!queued) return
+    pendingTabInserts.delete(sessionKey)
+    for (const text of queued) {
+      surfaces.postToSurface(kind, sessionKey, { type: 'insertPrompt', text })
+    }
   }
 
   /**
@@ -1097,10 +1285,6 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`)
   }
 
-  /** The conversation on screen — the sidebar's binding. Resolved per call. */
-  function current(): SessionEntry {
-    return registry.active
-  }
 
   async function connectWebBridge(entry: SessionEntry): Promise<void> {
     if (!registry.has(entry.key)) return
@@ -1252,7 +1436,7 @@ export function activate(context: vscode.ExtensionContext): void {
     owned.handle?.detach()
     attachment = { ...attachment, attached: null, error }
     // Retirement has already removed the entry. Do not ask the sidebar for its
-    // active key until the registry finishes selecting the replacement.
+    // bound key until the registry finishes selecting the replacement.
     if (!registry.has(owned.entry.key)) return
     owned.entry.permissions.cancelAll(true)
     owned.entry.session.resetMirroredPromptTracking()
@@ -1289,11 +1473,16 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     fetch: model => refreshProviderCatalogue({ launch: engineLaunch, cwd: engineCwd }, model),
     readPersistedModel: readActiveModel,
-    // "On screen" now means any surface is showing the conversation: its tab, or
-    // the sidebar while it is the active one.
+    // "On screen" now means any surface is showing the conversation: its own tab, or
+    // the sidebar while it hosts that same conversation.
     isActive: session => {
       const key = keyForSession(session)
-      return key !== undefined && (surfaces.hasPanel(key) || registry.activeSessionKey === key)
+      return (
+        key !== undefined &&
+        (surfaces.hasPanel(key) ||
+          registry.activeSessionKey === key ||
+          registry.sidebarSessionKey === key)
+      )
     },
     post: catalogue => surfaces.postToSession(refreshTargetKey, { type: 'setModelCatalogue', catalogue }),
     invalidate: invalidateRayuConfigCache,
@@ -1310,7 +1499,10 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   /** Prewarm only when a surface is usable and standalone Rayucode owns execution. */
-  async function prewarmSession(entry: SessionEntry = current()): Promise<void> {
+  async function prewarmSession(entry: SessionEntry | undefined = registry.activeEntry): Promise<void> {
+    // No conversation is on screen — the sidebar hub, with no engine to warm. Never
+    // create one just to prewarm it.
+    if (!entry) return
     if (
       disposed ||
       !surfaces.isOpen ||
@@ -1343,8 +1535,12 @@ export function activate(context: vscode.ExtensionContext): void {
    * Callers acting on a user's choice pass the conversation they captured when the user
    * acted; the default is right only for refreshes not tied to a choice.
    */
-  function refreshModels(model?: string, target: ChatSession = registry.active.session): Promise<void> {
-    return catalogueRefresher.refresh(target, model)
+  function refreshModels(model?: string, target?: ChatSession): Promise<void> {
+    // No target and nothing on screen: nothing to refresh, and no conversation may be
+    // created as a side effect of asking.
+    const session = target ?? registry.activeEntry?.session
+    if (!session) return Promise.resolve()
+    return catalogueRefresher.refresh(session, model)
   }
 
   /** Run the editor-native login flow, then refresh the same state as the button. */
@@ -1367,6 +1563,20 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   /**
+   * Reset one conversation in place: a fresh engine, an empty transcript, the same tab.
+   *
+   * `preserveModel` because this is a restart of the tab, not a new conversation elsewhere,
+   * so it must not adopt whatever model another conversation has since selected.
+   * `newSession` also empties the review records and tells the surfaces, so nothing from the
+   * outgoing conversation survives. Shared by `/clear` and by the no-session-id restart.
+   */
+  function startFreshConversation(entry: SessionEntry): void {
+    entry.session.newSession(undefined, undefined, { preserveModel: true })
+    surfaces.syncSession(entry.key)
+    prewarmSession(entry)
+  }
+
+  /**
    * Restart the engine so it re-reads the shared config, WITHOUT losing the conversation.
    *
    * `rayuConfig` is process-cached in the engine child, so a subagent or WebFetch model
@@ -1383,11 +1593,7 @@ export function activate(context: vscode.ExtensionContext): void {
     invalidateRayuConfigCache()
     const sessionId = entry.session.engineSessionId
     if (!sessionId) {
-      // `preserveModel` throughout: this is a RESTART of one conversation, not a new one, so
-      // it must not adopt whatever model another conversation has since selected.
-      entry.session.newSession(undefined, undefined, { preserveModel: true })
-      surfaces.syncSession(entry.key)
-      prewarmSession(entry)
+      startFreshConversation(entry)
       return
     }
     const cwd = workspaceDir ?? engineCwd
@@ -1492,6 +1698,17 @@ export function activate(context: vscode.ExtensionContext): void {
         const bridgeCommand = /^\s*\/web-bridge(?:\s+(\S+))?\s*$/.exec(text)
         if (bridgeCommand) {
           await runWebBridgeCommand(bridgeCommand[1] ?? '', entry)
+          return
+        }
+        // `/clear` (`/reset`, `/new`) is `supportsNonInteractive: false` in the CLI, so the
+        // headless engine would treat it as plain text. Reset THIS tab in place instead. An
+        // attached CLI owns its own conversation and has a real `/clear`, so it passes through.
+        if (!cli && parseClearCommand(text)) {
+          if (entry.session.isTurnRunning) {
+            postCommandNotice(entry.key, 'Stop the running turn before clearing the conversation.')
+            return
+          }
+          startFreshConversation(entry)
           return
         }
         // The CLI implementations of these commands render Ink UI and are therefore
@@ -1629,15 +1846,13 @@ export function activate(context: vscode.ExtensionContext): void {
         if (entry) entry.session.interrupt()
       },
       newSession: () => {
-        // OPENS a conversation as its own editor tab; it does not replace one. The
-        // previous implementation called `newSession()` on the single session, which
-        // killed a turn that was still running.
-        const entry = registry.create()
-        surfaces.openPanel(entry.key)
-        prewarmSession(entry)
+        // OPENS a conversation; it does not replace one, so a running turn is never
+        // killed. It occupies the sidebar slot when that is free (the first
+        // conversation), and otherwise opens as its own editor tab.
+        startNewSession()
       },
-      // Sidebar intent: open (or focus) the conversation's editor tab. The sidebar
-      // binding follows through the tab's focus → `registry.activate`.
+      // Sidebar intent: show the conversation wherever it belongs — the sidebar if it
+      // is already its conversation, an emptied sidebar if the slot is free, else a tab.
       switchSession: (scope, key) => {
         if (!registry.has(key)) {
           // A stale key from a list the webview fetched before a session closed. Resync rather
@@ -1646,23 +1861,16 @@ export function activate(context: vscode.ExtensionContext): void {
           scope.reply({ type: 'showError', message: 'That conversation is no longer open.' })
           return
         }
-        surfaces.openPanel(key)
+        showSession(key)
       },
-      // Same intent as switchSession, for surfaces that ask for the tab explicitly.
+      // Same target as switchSession: the one-surface routing decides where it lands.
       openSessionPanel: (scope, key) => {
         if (!registry.has(key)) {
           postLiveSessions()
           scope.reply({ type: 'showError', message: 'That conversation is no longer open.' })
           return
         }
-        surfaces.openPanel(key)
-      },
-      // The sidebar's Runtime Center has no composer to type into, so "use command"
-      // means "put it in the active conversation's tab". The active key is the right
-      // target — it is the conversation the user last touched, and the sidebar's own
-      // state is bound to it.
-      useCommandInTab: (_scope, name) => {
-        insertPromptIntoTab(registry.active.key, `/${name} `)
+        showSession(key)
       },
       closeSession: (scope, key) => {
         // Close the MESSAGE key's tab: a sidebar row can close a conversation other
@@ -1671,7 +1879,9 @@ export function activate(context: vscode.ExtensionContext): void {
         // retired conversation for even one frame.
         surfaces.closePanel(key)
         registry.close(key)
-        prewarmSession()
+        // Closing the last conversation leaves the hub; only warm a replacement when
+        // one actually remains.
+        if (registry.all.length > 0) prewarmSession()
       },
       renameSession: async (scope, key, id, suppliedTitle) => {
         const entry = key
@@ -1927,14 +2137,6 @@ export function activate(context: vscode.ExtensionContext): void {
         prewarmSession(entry)
       },
 
-      telegramConnectOpen: (scope, open) => telegram.open(open),
-
-      telegramConnectStartHosted: scope => telegram.startHosted(scope.sessionKey),
-
-      telegramConnectStartByo: (scope, token) => telegram.startByo(scope.sessionKey, token),
-
-      telegramConnectUnlink: () => telegram.unlink(),
-
       setEffort: (scope, level) => {
         const entry = entryFor(scope.sessionKey)
         if (entry) entry.session.setEffort(level)
@@ -1991,6 +2193,78 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       openReviewDiff: (scope, path) => openReviewDiff(review.store, scope.sessionKey, path),
       openFile: (scope, path) => openReviewFile(review.store, scope.sessionKey, path),
+      // Restore files to before a specific user message (the CLI's /rewind). Files only —
+      // the conversation is untouched. Dry-run first so the modal states the real impact.
+      rewindFiles: async (scope, messageUuid) => {
+        const entry = entryFor(scope.sessionKey)
+        if (!entry) return
+        if (attachedFor(scope.sessionKey)) {
+          scope.reply({
+            type: 'showError',
+            message: 'Rewinding files is not available for an attached CLI session.',
+          })
+          return
+        }
+        if (entry.session.isTurnRunning) {
+          scope.reply({
+            type: 'showError',
+            message: 'Stop the running turn before restoring files.',
+          })
+          return
+        }
+        let preview: Awaited<ReturnType<typeof entry.session.rewindFiles>>
+        try {
+          preview = await entry.session.rewindFiles(messageUuid, true)
+        } catch (cause) {
+          scope.reply({
+            type: 'showError',
+            message: cause instanceof Error ? cause.message : 'Could not check the checkpoint.',
+          })
+          return
+        }
+        if (!preview.canRewind) {
+          scope.reply({
+            type: 'showError',
+            message: preview.error ?? 'No file checkpoint is available for this message.',
+          })
+          return
+        }
+        const files = preview.filesChanged ?? []
+        const counts = ` (+${preview.insertions ?? 0} −${preview.deletions ?? 0})`
+        const detail = files.length > 0
+          ? `${files.join('\n')}${counts}`
+          : 'No files differ from this checkpoint.'
+        const choice = await vscode.window.showWarningMessage(
+          'Restore files to before this message?',
+          { modal: true, detail },
+          'Restore',
+        )
+        if (choice !== 'Restore') return
+        try {
+          const result = await entry.session.rewindFiles(messageUuid, false)
+          if (!result.canRewind) {
+            scope.reply({
+              type: 'showError',
+              message: result.error ?? 'The files could not be restored.',
+            })
+            return
+          }
+          const restored = (result.filesChanged ?? files).length
+          postCommandNotice(
+            entry.key,
+            `Restored ${restored} ${restored === 1 ? 'file' : 'files'} to before that message.`,
+          )
+          // Review records for the restored files are intentionally left in place: the store
+          // keys by display path (the engine reports raw paths), so per-file invalidation is
+          // not reliably matchable, and clearing the whole session would discard still-valid
+          // records for earlier edits. The review card is rebuilt on the next turn's changes.
+        } catch (cause) {
+          scope.reply({
+            type: 'showError',
+            message: cause instanceof Error ? cause.message : 'The files could not be restored.',
+          })
+        }
+      },
       openExternal: async (scope, rawUrl) => {
         try {
           const url = new URL(rawUrl)
@@ -2008,7 +2282,7 @@ export function activate(context: vscode.ExtensionContext): void {
       signIn: async scope => {
         // Global by nature (auth is window state), but the post-sign-in refresh and
         // prewarm target the conversation the sign-in surface is bound to.
-        await signInToRayucode(entryFor(scope.sessionKey) ?? registry.active)
+        await signInToRayucode(entryFor(scope.sessionKey) ?? currentEntry())
       },
       signOut: () => runSignOut(resyncAllSurfaces, engineLaunch),
       // Routed at the in-panel surface. This previously opened a dialog telling the
@@ -2045,20 +2319,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
       resolveContextPaths: async (scope, requestId, uriList) => {
-        const uris: vscode.Uri[] = []
-        for (const line of uriList.split(/\r?\n/)) {
-          const value = line.trim()
-          if (!value || value.startsWith('#')) continue
-          try {
-            const uri = value.includes('://') ? vscode.Uri.parse(value, true) : vscode.Uri.file(value)
-            if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') continue
-            uris.push(uri)
-          } catch {
-            // A stale Explorer item or inaccessible external path is skipped while
-            // other dropped resources remain usable.
-          }
-        }
-        const paths = await contextPathsForUris(uris)
+        const paths = await contextPathsForUris(urisFromUriList(uriList))
         if (paths.length === 0) {
           scope.reply({ type: 'showError', message: 'Rayucode could not access the dropped file or folder.' })
         }
@@ -2136,12 +2397,13 @@ export function activate(context: vscode.ExtensionContext): void {
         // Only restart when something was actually written. A choice that resolved to no
         // model is a no-op, and respawning for it would cost the user a reload for nothing.
         if (!notice) return
-        postCommandNotice(registry.activeSessionKey, notice)
-        await restartEngineWithResume(registry.active)
+        const entry = currentEntry()
+        postCommandNotice(entry.key, notice)
+        await restartEngineWithResume(entry)
       },
       modelChooserTarget: (scope, agentType) => {
         if (modelChooser?.target !== 'subagent') return
-        const entry = entryFor(scope.sessionKey) ?? registry.active
+        const entry = entryFor(scope.sessionKey) ?? currentEntry()
         setModelChooser(
           buildChooser('subagent', agentType, entry.session.subagentTypes),
         )
@@ -2275,8 +2537,8 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         surfaces.broadcast({ type: 'setSessions', list: historySessions })
       },
-      // The sidebar's quick-chat fallback path — the sidebar's history rows send
-      // `resumeSessionPanel`; both resume the stored conversation as a tab.
+      // History rows (sidebar hub and panel) resume the stored conversation. Where it
+      // lands — an empty sidebar slot or its own tab — is `showSession`'s decision.
       resumeSession: (scope, id) => resumeStoredSession(scope, id),
       resumeSessionPanel: (scope, id) => resumeStoredSession(scope, id),
       stopTask: async (scope, _sourceSessionId, taskId) => {
@@ -2312,9 +2574,14 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   /**
-   * Resume a stored conversation as its own editor tab — the flow both
-   * `resumeSession` (the sidebar's fallback) and `resumeSessionPanel` (the
-   * sidebar's history rows) run.
+   * Resume a stored conversation — the flow both `resumeSession` (the sidebar's
+   * fallback) and `resumeSessionPanel` (the sidebar's history rows) run.
+   *
+   * ── WHERE IT LANDS IS `routeForSession`'S DECISION ───────────────────────────
+   *
+   * A conversation belongs on exactly one surface. If the sidebar slot is empty the
+   * resumed conversation is adopted into it (that is the first conversation); if the
+   * slot is occupied — or already holds this conversation — it opens as its own tab.
    *
    * ── AN OPEN CONVERSATION IS OPENED, NOT RESUMED ─────────────────────────────
    *
@@ -2322,12 +2589,12 @@ export function activate(context: vscode.ExtensionContext): void {
    * Respawning it with `--resume` would kill that turn and rebuild the transcript
    * from the session FILE — which is where the raw
    * `<command-name>/model</command-name>` breadcrumbs came from. Opening the
-   * existing tab is both cheaper and lossless.
+   * existing surface is both cheaper and lossless.
    */
   async function resumeStoredSession(scope: SurfaceScope, id: string): Promise<void> {
     const existing = registry.findByEngineSessionId(id)
     if (existing) {
-      surfaces.openPanel(existing.key)
+      showSession(existing.key)
       prewarmSession(existing)
       return
     }
@@ -2352,7 +2619,9 @@ export function activate(context: vscode.ExtensionContext): void {
     const entry = registry.create({ resumeSessionId: id, cwd: resumeCwd, customTitle: selected.customTitle })
     entry.session.restoreTranscript(await loadSessionTranscript(id, resumeCwd))
     await entry.session.restoreTaskHistory(id, resumeCwd)
-    surfaces.openPanel(entry.key)
+    // Adopt into an empty sidebar, or open a tab when the slot is occupied — see the
+    // header. Restoring BEFORE showing means the first init already carries it.
+    showSession(entry.key)
     prewarmSession(entry)
   }
 
@@ -2361,11 +2630,35 @@ export function activate(context: vscode.ExtensionContext): void {
   // several conversations open there may be several of them.
   context.subscriptions.push({ dispose: () => registry.dispose() })
   context.subscriptions.push({ dispose: () => { webBridge?.handle.stop(); stopGuestPairing() } })
-  // The first conversation is opened HERE, not on first access: a lazy creation triggered
-  // from inside a snapshot build (the sidebar's `activeSessionKey`) would re-enter the
-  // sync mid-snapshot. Creating an entry does not spawn an engine; `prewarmSession()`
-  // does that once a surface mounts.
-  registry.create()
+  // The sidebar's conversation is restored HERE, not on first access: a lazy creation
+  // triggered from inside a snapshot build would re-enter the sync mid-snapshot.
+  // Creating an entry does not spawn an engine; `prewarmSession()` does that once a
+  // surface mounts. When a binding was persisted, the engine child resumes it and the
+  // HOST's transcript is restored from the session file asynchronously — `activate` is
+  // synchronous, so the restore is kicked off without blocking. With no binding, the
+  // sidebar starts with a fresh conversation in its slot.
+  const persistedSidebar = context.workspaceState?.get<PersistedSidebarBinding>(SIDEBAR_BINDING_KEY)
+  if (persistedSidebar?.sessionId) {
+    const sessionId = persistedSidebar.sessionId
+    const resumeCwd = persistedSidebar.cwd ?? engineCwd
+    const entry = registry.create({
+      resumeSessionId: sessionId,
+      cwd: resumeCwd,
+      ...(persistedSidebar.customTitle ? { customTitle: persistedSidebar.customTitle } : {}),
+      inSidebar: true,
+    })
+    void (async () => {
+      try {
+        entry.session.restoreTranscript(await loadSessionTranscript(sessionId, resumeCwd))
+      } catch {
+        // An unreadable transcript degrades to an empty sidebar conversation rather
+        // than failing activation; the engine child still resumes from its own file.
+      }
+      surfaces.syncSidebar()
+    })()
+  } else {
+    registry.create({ inSidebar: true })
+  }
   // Detach cleanly so the CLI session stops forwarding and drops pending decisions,
   // rather than waiting for the socket to notice the window closed.
   context.subscriptions.push({ dispose: () => detachAttachment(null, false) })
@@ -2405,6 +2698,13 @@ export function activate(context: vscode.ExtensionContext): void {
         const sessionKey = lastRevivedSessionKey
         const needsRestore = revivedNeedsRestore
         await revived
+        // A conversation must appear on exactly ONE surface. The sidebar restores its
+        // own binding at activation; if this tab revived onto that same conversation,
+        // close the tab and show the sidebar instead of rendering it twice.
+        if (sessionKey !== '' && sessionKey === registry.sidebarSessionKey) {
+          surfaces.closePanel(sessionKey)
+          void revealSidebar()
+        }
         const entry = registry.byKey(sessionKey)
         if (needsRestore && entry && restored.sessionId) {
           try {
@@ -2430,7 +2730,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const rayuAccounts = getAuthSnapshot().oauthEnabled
     ? registerRayuAuthProvider(context, {
         currentUser: currentAccountUser,
-        signIn: () => signInToRayucode(registry.active),
+        signIn: () => signInToRayucode(currentEntry()),
         signOut: async () => {
           // The Accounts menu has already asked "Sign out?", so no second dialog here.
           await signOutRayucode(liveSignOutDeps(engineLaunch))
@@ -2457,7 +2757,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // A Rayucode helper changed its provider catalogue. Refresh the choices while the
     // current conversation keeps its explicit provider-qualified execution selection.
     invalidateRayuConfigCache()
-    registry.active.session.availableModels = null
+    // Every open conversation's catalogue is stale after a provider change; clear them
+    // all rather than only whichever happens to be active (and never create one here).
+    for (const entry of registry.all) entry.session.availableModels = null
     resyncAllSurfaces()
     if (signInPending) return
     void refreshModels()
@@ -2515,9 +2817,9 @@ export function activate(context: vscode.ExtensionContext): void {
           )
           return
         }
-        // The sidebar is a management hub with no composer, so the selection goes to the
-        // ACTIVE conversation's tab — the one place a prompt is typed.
-        insertPromptIntoTab(registry.active.key, fenceTerminalSelection(selection))
+        // The selection goes to the conversation on screen — the active entry, else the
+        // sidebar's — so it always lands in a composer the user can see.
+        insertPromptIntoConversation(currentEntry().key, fenceTerminalSelection(selection))
       } finally {
         await vscode.env.clipboard.writeText(previousClipboard)
       }
@@ -2526,15 +2828,19 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ── ADDING CONTEXT FROM THE TREE AND THE EDITOR ──────────────────────────────
   //
-  // Drag and drop cannot serve a webview. VS Code blanks the panel's pointer events for the
-  // duration of any drag that looks like it carries a file — which an ordinary Explorer or
+  // A plain drag cannot reach the chat webview. VS Code blanks the panel's pointer events for
+  // the duration of any drag that looks like it carries a file — which an ordinary Explorer or
   // editor-tab drag does — unless Shift is held, and the event that would have to be cancelled
-  // is dispatched in a frame the panel cannot reach. See `panel/dropTargetView.ts` for the
-  // measurement and for the drop strip that DOES accept a plain drag.
+  // is dispatched in a frame the panel cannot reach. Two routes work without Shift and both
+  // are registered below:
   //
-  // So this menu command is not a workaround: it is the route the platform supports for the
-  // tree. It reuses the SAME resolver and the SAME `@`-mention format as every other path, so
-  // they all produce identical prompt text.
+  //   - the Add to Rayu Context menu command (Explorer and editor context menus), and
+  //   - the collapsed "Rayucode Context" Explorer pane (`panel/dropTargetView.ts`), a tree
+  //     view whose TreeDragAndDropController accepts a plain drag. It can be hidden with
+  //     `rayucode.contextDropView`.
+  //
+  // Both reuse the SAME resolver (`panel/contextPaths.ts`) and the SAME `@`-mention format as
+  // every other path, so they all produce identical prompt text.
   context.subscriptions.push(
     vscode.commands.registerCommand(
       COMMANDS.addToContext,
@@ -2563,24 +2869,31 @@ export function activate(context: vscode.ExtensionContext): void {
           )
           return
         }
-        // Same target as the terminal selection: the active conversation's composer.
-        insertPromptIntoTab(registry.active.key, formatPathMentions(paths))
+        // Same target as the terminal selection: the conversation on screen's composer.
+        insertPromptIntoConversation(currentEntry().key, formatPathMentions(paths))
       },
     ),
   )
 
   context.subscriptions.push(
+    registerContextDropView({
+      resolve: uris => contextPathsForUris(uris),
+      // Same target as the command above: the conversation on screen's composer.
+      deliver: paths => insertPromptIntoConversation(currentEntry().key, formatPathMentions(paths)),
+    }),
+  )
+
+  context.subscriptions.push(
     vscode.commands.registerCommand(COMMANDS.newSession, async () => {
-      // OPENS a conversation as its own editor tab. Whatever was on screen keeps its
-      // engine and keeps running — which is the whole difference from the previous
-      // behaviour, where this button killed the turn in flight.
-      const entry = registry.create()
-      surfaces.openPanel(entry.key)
-      prewarmSession(entry)
+      // OPENS a conversation. Whatever was on screen keeps its engine and keeps
+      // running — which is the whole difference from the previous behaviour, where
+      // this button killed the turn in flight. It claims a free sidebar slot, else
+      // opens a tab.
+      startNewSession()
     }),
     vscode.commands.registerCommand(COMMANDS.signIn, async () => {
       await revealSidebar()
-      await signInToRayucode(registry.active)
+      await signInToRayucode(currentEntry())
     }),
     vscode.commands.registerCommand(COMMANDS.signOut, () => runSignOut(resyncAllSurfaces, engineLaunch)),
   )
@@ -2598,7 +2911,7 @@ export function activate(context: vscode.ExtensionContext): void {
         'Sign in to Rayu to send feedback.',
         'Sign In',
       )
-      if (action === 'Sign In') await signInToRayucode(registry.active)
+      if (action === 'Sign In') await signInToRayucode(currentEntry())
       return
     }
 
@@ -2708,10 +3021,9 @@ function buildCatalogue(session: ChatSession): ModelCatalogueView {
 
 function buildState(
   version: string,
-  session: ChatSession,
-  permissions: PermissionRouter,
+  session: ChatSession | null,
+  permissions: PermissionRouter | null,
   providerSetup: ProviderSetupView,
-  telegramConnect: TelegramConnectView,
   modelChooser: ModelChooserView | null,
   ideContext: IdeContextView | null,
   attachment: AttachmentView,
@@ -2733,32 +3045,90 @@ function buildState(
   surfaceBinding: SurfaceBindingView | null = null,
 ): WebviewState {
   const auth = getAuthSnapshot()
-  return {
+  // ONE host-fields object, spread by both paths — the window-global half of a snapshot
+  // cannot drift between the sidebar hub and a live conversation.
+  const host = {
     status: auth.signedIn ? 'ready' : 'signed-out',
     signInMessage: auth.gateMessage,
     identity: auth.identity,
     oauthEnabled: auth.oauthEnabled,
     version,
     workspaceFolder: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null,
+    providerSetup,
+    modelChooser,
+    attachment,
+    ideContext,
+    mcpConnectionUi,
+    // Full `init` snapshots replace webview state. Carry the host-owned history
+    // list so unrelated model/auth/context syncs cannot erase an open picker.
+    sessions: historySessions,
+    liveSessions,
+    activeSessionKey,
+    surface,
+    surfaceBinding,
+    taskInspectionSupported,
+    taskInspectionMessage,
+    /** False only for the sidebar hub — see `WebviewState.hasConversation`. */
+    hasConversation: session !== null,
+  } as const
+  if (!session) {
+    // The sidebar hub: no conversation, so no transcript, engine state or cards.
+    // Neutral, empty values rather than another builder — the webview renders the
+    // sessions list from `liveSessions`/`sessions` alone.
+    return {
+      ...host,
+      transcript: [],
+      turnRunning: false,
+      pendingPermissions: [],
+      modelInfo: { model: null, provider: null },
+      modelCatalogue: { options: [], loading: false, error: null },
+      inference: {
+        supportsEffort: false,
+        supportedLevels: [],
+        effort: null,
+        effortEnvOverride: null,
+        supportsThinking: false,
+        thinkingEnabled: false,
+      },
+      permissionMode: DEFAULT_PERMISSION_MODE,
+      commands: [],
+      contextUsage: null,
+      mcpServers: [],
+      customTitle,
+      runtimeCapabilities: null,
+      runtimeCommands: [],
+      runtimeTools: [],
+      runtimeAgents: [],
+      runtimePlugins: [],
+      runtimeSkills: [],
+      runtimeWorkflows: [],
+      rateLimit: null,
+      engineAuthStatus: null,
+      sessionStatus: undefined,
+      promptSuggestion: null,
+      mcpElicitations: [],
+      backgroundTasks: [],
+      turnProgress: null,
+      turnCompletions: {},
+      thinkingBlocks: [],
+    }
+  }
+  return {
+    ...host,
     // The host owns the transcript, so a webview VS Code re-created mid-conversation
     // is restored rather than blanked.
     transcript: [...session.transcript],
     turnRunning: session.isTurnRunning,
     // Restored too: the engine stays blocked across a webview re-creation, so losing
     // the card would leave the turn stuck with nothing on screen to unblock it.
-    pendingPermissions: permissions.snapshot(),
+    pendingPermissions: permissions?.snapshot() ?? [],
     modelInfo: session.currentModelInfo,
     modelCatalogue: buildCatalogue(session),
     inference: session.currentInference,
-    providerSetup,
-    telegramConnect,
-    modelChooser,
-    attachment,
     permissionMode: session.currentPermissionMode,
     commands: [...session.commands],
     contextUsage: session.contextUsage,
     mcpServers: [...session.mcpServers],
-    mcpConnectionUi,
     customTitle,
     runtimeCapabilities: session.currentRuntimeCapabilities,
     runtimeCommands: [...session.runtimeCommands],
@@ -2772,17 +3142,7 @@ function buildState(
     sessionStatus: session.currentExecutionStatus,
     promptSuggestion: session.currentPromptSuggestion,
     mcpElicitations: [...session.pendingMcpElicitations],
-    ideContext,
-    // Full `init` snapshots replace webview state. Carry the host-owned history
-    // list so unrelated model/auth/context syncs cannot erase an open picker.
-    sessions: historySessions,
-    liveSessions,
-    activeSessionKey,
-    surface,
-    surfaceBinding,
     backgroundTasks: [...session.backgroundTasks],
-    taskInspectionSupported,
-    taskInspectionMessage,
     turnProgress: session.currentTurnProgress,
     turnCompletions: { ...session.completedTurns },
     thinkingBlocks: [...session.currentThinkingBlocks],
@@ -2855,30 +3215,6 @@ function parseRayucodeInferenceCommand(text: string): RayucodeInferenceCommand |
   // Recognised command with an invalid argument: opening the authoritative list is
   // more useful than sending the malformed slash command to the model.
   return { kind: 'open', control: 'effort' }
-}
-
-/**
- * Convert VS Code URIs to the same workspace-relative attachment references used
- * by the CLI. This deliberately lives in the extension host: browser File objects
- * do not reliably expose a path, and remote-workspace paths must go through VS Code.
- */
-async function contextPathsForUris(uris: readonly vscode.Uri[]): Promise<string[]> {
-  const paths: string[] = []
-  for (const uri of uris) {
-    try {
-      const stat = await vscode.workspace.fs.stat(uri)
-      const workspace = vscode.workspace.getWorkspaceFolder(uri)
-      let display = workspace
-        ? vscode.workspace.asRelativePath(uri, false)
-        : uri.fsPath
-      display = display.replace(/\\/g, '/')
-      if (stat.type & vscode.FileType.Directory) display = `${display.replace(/\/$/, '')}/`
-      if (!paths.includes(display)) paths.push(display)
-    } catch {
-      // Leave inaccessible members out while preserving the rest of a multi-drop.
-    }
-  }
-  return paths
 }
 
 /** Validate untrusted webview image payloads before they enter the engine process. */

@@ -278,4 +278,13 @@ describe('the panel loads the codicon font under the same policy', () => {
     expect(csp).toContain('font-src vscode-webview://abc123')
     expect(csp).toContain("style-src vscode-webview://abc123 'unsafe-inline'")
   })
+
+  test('media-src allows the webview source so generated videos can play', () => {
+    const csp = html.match(/Content-Security-Policy" content="([^"]+)"/)![1]!
+    expect(csp).toContain('media-src vscode-webview://abc123')
+    // Inline `<video src>` data URLs and remote media stay denied — only the cspSource.
+    const mediaSrc = csp.match(/media-src ([^;]+)/)?.[1] ?? ''
+    expect(mediaSrc).not.toContain('https:')
+    expect(mediaSrc).not.toContain('data:')
+  })
 })

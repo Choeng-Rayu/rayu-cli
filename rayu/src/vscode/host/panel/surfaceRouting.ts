@@ -27,10 +27,26 @@ export const GLOBAL_MESSAGE_TYPES: ReadonlySet<HostToWebviewMessage['type']> = n
   'setLiveSessions',
   'setIdeContext',
   'setProviderSetup',
-  'setTelegramConnect',
   'setModelChooser',
 ])
 
 export function isGlobalMessage(type: HostToWebviewMessage['type']): boolean {
   return GLOBAL_MESSAGE_TYPES.has(type)
+}
+
+export type SessionRoute = 'sidebar' | 'adopt' | 'tab'
+
+/**
+ * Decide where an open conversation should be shown.
+ *
+ * 'sidebar' — it is the sidebar's conversation: reveal the sidebar.
+ * 'adopt'   — the sidebar slot is empty: move it into the sidebar.
+ * 'tab'     — the sidebar is occupied: open/focus its editor tab.
+ *
+ * Pure, like the rest of this module, so the "one conversation, one surface"
+ * rule stays identical on every path that opens a conversation.
+ */
+export function routeForSession(key: string, sidebarKey: string): SessionRoute {
+  if (key !== '' && key === sidebarKey) return 'sidebar'
+  return sidebarKey === '' ? 'adopt' : 'tab'
 }

@@ -19,6 +19,8 @@ import {
   type SessionExternalMetadata,
 } from '../utils/sessionState.js'
 import { describeWorkerApprovalLoss } from '../orchestrator/modeChange.js'
+import { changedOrchestrationViews } from '../orchestrator/orchestrationView.js'
+import { enqueueSdkEvent } from '../utils/sdkEventQueue.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 import type { AppState } from './AppStateStore.js'
 
@@ -99,6 +101,19 @@ export function onChangeAppState({
         // A display listener must never break a state update.
         logError(toError(error))
       }
+    }
+  }
+
+  // Orchestrator run → task panels. Each worker's and verifier's view goes out as a
+  // task_orchestration event when it changes (src/orchestrator/orchestrationView.ts).
+  if (newState.orchestration !== oldState.orchestration) {
+    try {
+      const changed = changedOrchestrationViews(oldState.orchestration?.run ?? null, newState.orchestration?.run ?? null)
+      for (const { agentId, view } of changed) {
+        enqueueSdkEvent({ type: 'system', subtype: 'task_orchestration', task_id: agentId, orchestration: view })
+      }
+    } catch (error) {
+      logError(toError(error))
     }
   }
 

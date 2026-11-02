@@ -15,8 +15,15 @@ import { ACCOUNT_FLAG } from '../src/vscode/shared/accountChildProtocol.js'
 import { PERMISSION_MODES as editorModes } from '../src/vscode/shared/permissionModes.js'
 import { PERMISSION_MODES as cliModes, isExternalPermissionMode } from '../src/utils/permissions/PermissionMode.js'
 import { summariseInput, resultText } from '../src/utils/activity/activityBlocks.js'
+import clearCommand from '../src/commands/clear/index.js'
+import { CLEAR_COMMAND_NAMES } from '../src/vscode/host/panel/clearCommand.js'
 
 describe('shared CLI and editor contracts', () => {
+  test('the host /clear names are exactly the CLI clear command name and aliases', () => {
+    expect([...CLEAR_COMMAND_NAMES].sort()).toEqual(
+      [clearCommand.name, ...clearCommand.aliases].sort(),
+    )
+  })
   test('every attachment channel agrees with the publishing CLI', () => {
     const canonical = { ...telegram, IPC_PROMPT } as Record<string, unknown>
     // `attachChannels.ts` duplicates two different things now: the ORIGINAL

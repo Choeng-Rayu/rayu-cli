@@ -12,6 +12,8 @@ export interface AutocompleteItem {
   id: string
   label: string
   description?: string
+  /** Muted trailing text, e.g. a slash command's argument hint (`[low|medium|high]`). */
+  hint?: string
   insertText: string
   /**
    * `folder` is distinguished from `file` because the two are otherwise indistinguishable
@@ -73,6 +75,7 @@ export function AutocompletePopover({
             {item.description ? (
               <span className="rc-popover-desc">{item.description}</span>
             ) : null}
+            {item.hint ? <span className="rc-popover-hint">{item.hint}</span> : null}
           </li>
         )
       })}

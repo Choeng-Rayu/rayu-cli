@@ -871,7 +871,7 @@ function providerUnavailableError(status = 502): APIError {
     {
       error: {
         message:
-          'The AI provider for this model is temporarily unavailable. Try another (smaller) model or try again later.',
+          'The model is under high volume right now. Please wait a moment or switch to a different model.',
         type: 'provider_unavailable',
       },
     },
@@ -881,18 +881,38 @@ function providerUnavailableError(status = 502): APIError {
 }
 
 describe('getAssistantMessageFromError · rayu-hosted provider unavailable (Case 1)', () => {
-  test('renders "try a smaller model / try again later" and never leaks the upstream', () => {
+  test('renders "high volume, wait or switch model" and never leaks the upstream', () => {
     setActiveProvider('rayu-hosted')
     const msg = getAssistantMessageFromError(providerUnavailableError(502), 'kimi-k2.7')
     const text = textOf(msg)
-    expect(text.toLowerCase()).toContain('temporarily unavailable')
-    expect(text.toLowerCase()).toContain('smaller model')
+    expect(text.toLowerCase()).toContain('high volume')
+    expect(text.toLowerCase()).toContain('switch to a different model')
     expect(msg.isApiErrorMessage).toBe(true)
     // Never surface the upstream provider or its subscription/limit wording…
     expect(text.toLowerCase()).not.toContain('ollama')
     expect(text.toLowerCase()).not.toContain('subscription')
     // …and this is NOT the plan/credit-limit (upgrade) message.
     expect(text).not.toContain('/plans')
+  })
+
+  test('a 503 carrying x-should-retry:false still renders the friendly guidance', () => {
+    setActiveProvider('rayu-hosted')
+    // The gateway's non-retryable capacity response (Kiro monthly quota).
+    const err = APIError.generate(
+      503,
+      {
+        error: {
+          type: 'provider_unavailable',
+          message: 'The model is under high volume right now. Please wait a moment or switch to a different model.',
+        },
+      },
+      'provider unavailable',
+      new Headers({ 'x-should-retry': 'false' }),
+    ) as APIError
+    expect(isRayuHostedProviderUnavailable(err)).toBe(true)
+    const text = textOf(getAssistantMessageFromError(err, 'claude-opus-5.5'))
+    expect(text.toLowerCase()).toContain('high volume')
+    expect(text.toLowerCase()).not.toContain('reached the limit')
   })
 
   test('detector: true for a hosted 5xx, false for a 429 (that is the plan-limit path)', () => {
@@ -905,8 +925,15 @@ describe('getAssistantMessageFromError · rayu-hosted provider unavailable (Case
   test('BYO-key providers are NOT affected — a 5xx keeps normal handling, not the hosted message', () => {
     setActiveProvider('byo')
     expect(isRayuHostedProviderUnavailable(providerUnavailableError(502))).toBe(false)
-    const msg = getAssistantMessageFromError(providerUnavailableError(502), 'deepseek-chat')
-    expect(textOf(msg)).not.toContain("Rayu's AI provider")
+    // A BYO provider's own 5xx must keep its real handling, not Rayu's guidance.
+    const byo = APIError.generate(
+      502,
+      { error: { message: 'upstream exploded', type: 'api_error' } },
+      'upstream exploded',
+      new Headers(),
+    ) as APIError
+    const msg = getAssistantMessageFromError(byo, 'deepseek-chat')
+    expect(textOf(msg)).not.toContain('high volume')
   })
 })
 
@@ -957,7 +984,7 @@ describe('getAssistantMessageFromError · exact Cloudflare origin 502', () => {
       new Headers({ 'content-type': 'application/json' }),
     ) as APIError
     const text = textOf(getAssistantMessageFromError(err, 'kimi-k2.7'))
-    expect(text.toLowerCase()).toContain('temporarily unavailable')
+    expect(text.toLowerCase()).toContain('high volume')
     // The raw Cloudflare body must NOT leak to the customer.
     expect(text.toLowerCase()).not.toContain('cloudflare')
     expect(text).not.toContain('origin_bad_gateway')

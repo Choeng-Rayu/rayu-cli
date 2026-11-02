@@ -22,10 +22,12 @@
  * messages in memory, but the model no longer sees them.
  */
 import { ORCHESTRATOR_FULL_REMINDER_EVERY } from '../constants/orchestrator.js'
+import { ORCHESTRATION_CONTRACT_TOOL_NAME } from '../tools/OrchestrationContractTool/constants.js'
 import {
   EXPLORE_AGENT_TYPE,
   GENERAL_PURPOSE_AGENT_TYPE,
   PLANNER_AGENT_TYPE,
+  VERIFIER_AGENT_TYPE,
 } from '../tools/AgentTool/constants.js'
 import type { Message } from '../types/message.js'
 
@@ -39,6 +41,10 @@ export type OrchestratorReminderInfo = {
   availableAgents?: readonly string[]
   /** Whether the orchestrator can message its own workers (SendMessage). */
   canMessageWorkers?: boolean
+  /** Whether the OrchestrationContract tool is available. */
+  hasContractTool?: boolean
+  /** The active run's current contract, so the model can find it again after compaction. */
+  contract?: { runId: string; version: number }
 }
 
 type Marker = { kind: 'reminder'; reminderType: OrchestratorReminderKind } | { kind: 'exit' }
@@ -100,24 +106,45 @@ export function needsOrchestratorExitNotice(
 export const ORCHESTRATOR_REMINDER_HEADING = '## Orchestrator mode is ON'
 
 export function renderOrchestratorReminder(info: OrchestratorReminderInfo): string {
-  return info.reminderType === 'sparse' ? renderSparse() : renderFull(info)
+  return info.reminderType === 'sparse' ? renderSparse(info) : renderFull(info)
 }
 
-function renderSparse(): string {
-  return 'Orchestrator mode is still ON. Delegate implementation to workers with disjoint file ownership; do not edit files or run commands that change files yourself. Verify the integrated result before you report success.'
+function contractReferenceLines(info: OrchestratorReminderInfo): string[] {
+  if (!info.contract) return []
+  return ['', `The current contract is v${info.contract.version} of ${info.contract.runId}. If it is no longer in this conversation, call ${ORCHESTRATION_CONTRACT_TOOL_NAME} with action "show".`]
+}
+
+function renderSparse(info: OrchestratorReminderInfo): string {
+  const base = 'Orchestrator mode is still ON. Delegate implementation to workers with disjoint file ownership; do not edit files yourself, though shell commands are allowed. Verify the integrated result before you report success.'
+  return info.contract ? `${base} Current contract: v${info.contract.version} (${info.contract.runId}).` : base
+}
+
+function contractRules(info: OrchestratorReminderInfo): string[] {
+  if (!info.hasContractTool) return []
+  return [
+    `Before launching implementation workers, publish the run's contract with ${ORCHESTRATION_CONTRACT_TOOL_NAME}: one packet per worker with the files it owns, the shared interfaces with their exact definitions and owners, the order packets run in, and at least one required check. To change which packet owns a file, or an interface, publish a new version instead of telling workers individually.`,
+  ]
+}
+
+function workerRule(info: OrchestratorReminderInfo): string {
+  const briefing = info.hasContractTool
+    ? 'one worker per contract packet, with `name` set to the packet name. RAYU puts the contract and the worker\u2019s packet at the top of its prompt; your prompt adds what the packet needs beyond that, such as where to start and how to verify it.'
+    : 'Workers cannot see this conversation, so give each one a self-contained packet: the objective, the exact files it owns (never overlapping with another worker running at the same time), the interfaces and names it must use, constraints, and how to verify the result.'
+  return `Use named \`${GENERAL_PURPOSE_AGENT_TYPE}\` agents with \`run_in_background: true\` as implementation workers${info.hasContractTool ? ': ' : '. '}${briefing}`
 }
 
 function renderFull(info: OrchestratorReminderInfo): string {
   const agents = new Set(info.availableAgents ?? [PLANNER_AGENT_TYPE, EXPLORE_AGENT_TYPE])
   const rules = [
-    'Do not edit or write project files, and do not run commands that change files. Delegate every implementation, fix, review, lint, test and build to subagents. Read-only tools are fine for understanding the code.',
+    'Do not edit or write project files yourself; delegate implementation to subagents. You may run shell commands directly, including checks and builds. Read-only tools are fine for understanding the code.',
     researchRule(agents),
-    `Use named \`${GENERAL_PURPOSE_AGENT_TYPE}\` agents with \`run_in_background: true\` as implementation workers. Workers cannot see this conversation, so give each one a self-contained packet: the objective, the exact files it owns (never overlapping with another worker running at the same time), the interfaces and names it must use, constraints, and how to verify the result.`,
+    ...contractRules(info),
+    workerRule(info),
     'Launch independent workers together in one message. Start a dependent packet only after the packets it depends on have finished.',
     ...(info.canMessageWorkers
       ? ['To continue a finished worker, for example to fix an issue in its packet, message it with SendMessage instead of starting a replacement; it keeps its context.']
       : []),
-    `After implementation, have a fresh \`${GENERAL_PURPOSE_AGENT_TYPE}\` agent review the result and run the checks. Send each issue ${info.canMessageWorkers ? 'back to the worker that owns the files' : 'to a new worker for the owning packet, with the original packet and the issue'}, and repeat until the checks pass.`,
+    verificationRule(agents, info),
     'Report one integrated result to the user, including anything that failed or was not verified.',
   ]
   return [
@@ -127,9 +154,18 @@ function renderFull(info: OrchestratorReminderInfo): string {
     '',
     'Rules:',
     ...rules.map((rule, index) => `${index + 1}. ${rule}`),
+    ...contractReferenceLines(info),
     '',
     'The user can leave Orchestrator mode by selecting another mode or running /normal.',
   ].join('\n')
+}
+
+function verificationRule(agents: ReadonlySet<string>, info: OrchestratorReminderInfo): string {
+  const sendBack = info.canMessageWorkers ? 'back to the worker that owns the files' : 'to a new worker for the owning packet, with the original packet and the issue'
+  if (agents.has(VERIFIER_AGENT_TYPE) && info.hasContractTool) {
+    return `After every worker has finished, launch the \`${VERIFIER_AGENT_TYPE}\` agent in the foreground; RAYU gives it the contract and checks its report against the commands it ran. Only an accepted PASS for the project as it is now counts as verified. Send each finding ${sendBack}, and launch a new verifier after the fixes.`
+  }
+  return `After implementation, review the integrated result and run the checks yourself (you can run shell commands directly). Send each issue ${sendBack}, and repeat until the checks pass.`
 }
 
 function researchRule(agents: ReadonlySet<string>): string {

@@ -95,6 +95,10 @@ export function renderWebviewHtml(
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
+    // Generated videos are served from `webview.asWebviewUri` (the cspSource origin), so
+    // `<video>` needs `media-src`. No `https:` and no `data:` — a remote media URL would be
+    // the same exfiltration channel the img-src note warns about.
+    `media-src ${webview.cspSource}`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `font-src ${webview.cspSource}`,
     `script-src 'nonce-${nonce}'`,
@@ -116,6 +120,36 @@ export function renderWebviewHtml(
 <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
 </body>
 </html>`
+}
+
+/**
+ * Fill `webviewUri` on every video media result in a snapshot before it is posted.
+ *
+ * A generated video is a real file on disk; a webview cannot load `file://` directly, so it
+ * needs the `webview.asWebviewUri` form, which depends on the PANEL that will render it.
+ * That makes this a host-time step rather than part of the pure formatter — it is applied in
+ * each surface's `postState`, where the `vscode.Webview` is in hand. Recomputed on every post
+ * (never cached on the shared entry) so a session reopened in a different panel gets that
+ * panel's URL, not a stale one. A path outside `localResourceRoots` still yields a URL object;
+ * the load is simply blocked by the webview, and the view falls back to poster + Open.
+ */
+export function resolveMediaWebviewUris(
+  state: WebviewState,
+  webview: vscode.Webview,
+): WebviewState {
+  for (const entry of state.transcript) {
+    if (entry.kind !== 'tool') continue
+    const result = entry.toolResult
+    if (!result || result.kind !== 'media' || result.media !== 'video') continue
+    try {
+      result.webviewUri = webview
+        .asWebviewUri(vscode.Uri.file(result.path))
+        .toString()
+    } catch {
+      // A malformed path. Leave `webviewUri` unset; the poster + Open button still render.
+    }
+  }
+  return state
 }
 
 /**

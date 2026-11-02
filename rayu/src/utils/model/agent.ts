@@ -102,9 +102,13 @@ export function getAgentModel(
   // applies to every spawned Agent-tool worker, including definitions whose
   // built-in default is `inherit` (for example general-purpose). A named
   // selection wins because getSubagentSelection(agentType) checks it before the
-  // global selection. Environment and per-call overrides retain higher
-  // precedence. If the selected provider differs from the active provider, the
-  // encoded provider+model route sends that worker to the selected provider.
+  // global selection. A saved selection is a HARD LOCK: it also overrides the
+  // Agent tool's per-call `model` param, so the main agent cannot change what
+  // the user assigned. Only CLAUDE_CODE_SUBAGENT_MODEL ranks higher. If the
+  // selected provider differs from the active provider, the encoded
+  // provider+model route sends that worker to the selected provider.
+  // Precedence: env var > saved selection > tool `model` param > built-in
+  // default / instant / inherit.
   const usesBuiltinDefault =
     agentModel === undefined || agentModel.toLowerCase() === 'haiku'
   let configuredSelection:
@@ -120,11 +124,7 @@ export function getAgentModel(
     configuredSelection = undefined
   }
 
-  if (
-    !process.env.CLAUDE_CODE_SUBAGENT_MODEL &&
-    !toolSpecifiedModel &&
-    configuredSelection
-  ) {
+  if (!process.env.CLAUDE_CODE_SUBAGENT_MODEL && configuredSelection) {
     if (!isModelAllowed(configuredSelection.model)) {
       return getRuntimeMainLoopModel({
         permissionMode: permissionMode ?? 'default',

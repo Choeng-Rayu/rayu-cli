@@ -35,7 +35,7 @@ const command = {
 
 ${taskLine}
 
-Follow the Orchestrator mode rules in the system reminder. First make sure you understand the goal and ask the user about any high-impact decision the code cannot answer. Then plan, delegate every implementation and verification step to subagents, and integrate their results. Do not implement anything yourself. Stay in Orchestrator mode until the user selects another mode or runs /normal.`,
+Follow the Orchestrator mode rules in the system reminder. First make sure you understand the goal and ask the user about any high-impact decision the code cannot answer. Then plan and delegate implementation to subagents with disjoint file ownership, and integrate their results. Do not edit files yourself; you may run shell commands such as checks and builds. Stay in Orchestrator mode until the user selects another mode or runs /normal.`,
       },
     ]
   },

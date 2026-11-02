@@ -12,9 +12,9 @@ import { markPostCompaction } from 'src/bootstrap/state.js'
 import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { toolMatchesName, type Tool, type ToolUseContext } from '../../Tool.js'
+import type { Tool, ToolUseContext } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import { SEND_MESSAGE_TOOL_NAME } from '../../tools/SendMessageTool/constants.js'
+import { describeOrchestratorSession } from '../../orchestrator/session.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
@@ -1583,13 +1583,7 @@ export function createOrchestratorModeAttachmentIfNeeded(
   }
   return createAttachmentMessage({
     type: 'orchestrator_mode',
-    reminderType: 'full',
-    availableAgents: context.options.agentDefinitions.activeAgents.map(
-      agent => agent.agentType,
-    ),
-    canMessageWorkers: context.options.tools.some(tool =>
-      toolMatchesName(tool, SEND_MESSAGE_TOOL_NAME),
-    ),
+    ...describeOrchestratorSession(context, 'full'),
   })
 }
 

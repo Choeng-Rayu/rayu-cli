@@ -68,4 +68,28 @@ describe('turn line', () => {
     )
     expect(text).toMatch(/for 5s · Credits: 1\.25 · 1(\.0)?k \/ 4(\.0)?k \(25%\)$/)
   })
+
+  test('a large total reads compactly', async () => {
+    const text = await line(createTurnDurationMessage(3_600_000, undefined, 0, 200_000.07))
+    expect(text).toMatch(/for 1h 0m 0s · Credits: 200k$/)
+  })
+
+  test('a line printed while background agents still work says "so far"', async () => {
+    const text = await line(createTurnDurationMessage(5_000, undefined, 0, 1_234, true))
+    expect(text).toContain('Credits so far: 1.2k')
+    // The final line of the request drops it.
+    expect(await line(createTurnDurationMessage(5_000, undefined, 0, 1_234, false))).toMatch(
+      /Credits: 1\.2k$/,
+    )
+  })
+})
+
+describe('createTurnDurationMessage "so far"', () => {
+  test('is kept only with credits, and only when true', () => {
+    expect(createTurnDurationMessage(5_000, undefined, 0, 2, true).rayuCreditsSoFar).toBe(true)
+    expect('rayuCreditsSoFar' in createTurnDurationMessage(5_000, undefined, 0, 2, false)).toBe(false)
+    expect('rayuCreditsSoFar' in createTurnDurationMessage(5_000, undefined, 0, undefined, true)).toBe(
+      false,
+    )
+  })
 })

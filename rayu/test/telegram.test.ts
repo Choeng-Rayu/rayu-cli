@@ -236,6 +236,24 @@ describe('telegramConfig', () => {
     expect(readTelegramConfig().pendingToken).toBeUndefined()
   })
 
+  // Regression: pairingAttempts is a module global. Before, a fresh token did
+  // not reset it, so misses accrued against an OLD (expired) token counted
+  // toward a NEW one — a brand-new QR could be burnt by a single mistype.
+  test('a fresh token RESETS the attempt counter', () => {
+    // Accrue 4 misses against an old token (the cap is 5).
+    setPendingToken('old-token', 60_000)
+    for (let i = 0; i < 4; i++) consumePendingToken('wrong', 1, undefined)
+
+    // Issue a new token — the counter must start clean.
+    setPendingToken('new-token', 60_000)
+    // One mistype must NOT exhaust it (4 stale + 1 = 5 would otherwise burn it).
+    expect(consumePendingToken('wrong-once', 1, undefined)).toBeNull()
+
+    // The new token is still valid after that single miss.
+    const ok = consumePendingToken('new-token', 42, 'alice')
+    expect(ok?.linkedChatId).toBe(42)
+  })
+
   // The bot a link belongs to has to be recorded, otherwise a connect can't
   // tell that the (backend-owned) default bot has changed and silently reuses a
   // link that points at a retired bot.

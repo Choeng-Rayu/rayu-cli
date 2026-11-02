@@ -121,24 +121,34 @@ function harness(now: () => number = () => 0): Harness {
   }
 }
 
-describe('TelegramConnectController: open and close', () => {
-  test('opening reads the link status', async () => {
+describe('TelegramConnectController: status', () => {
+  test('refreshing reads the link through the child', async () => {
     const h = harness()
-    await h.controller.open(true)
+    h.setStatus({ ok: true, linkedChatId: 42, linkedBotUsername: 'rayu_bot', mode: 'hosted', botUsername: 'rayu_bot' })
+    await h.controller.refreshStatus()
     expect(h.calls.status).toBe(1)
-    expect(h.controller.current.open).toBe(true)
+    expect(h.controller.current.linkedChatId).toBe(42)
+    expect(h.controller.current.busy).toBe(false)
   })
 
-  test('closing clears the QR and stops polling', async () => {
+  test('a live link clears a pairing in progress', async () => {
     const h = harness()
-    await h.controller.open(true)
     await h.controller.startHosted(null)
-    expect(timerActive).toBe(true)
-    await h.controller.open(false)
-    expect(timerActive).toBe(false)
+    h.setStatus({ ok: true, linkedChatId: 42, mode: 'hosted', botUsername: 'rayu_bot' })
+    await h.controller.refreshStatus()
     expect(h.controller.current.qr).toBeNull()
     expect(h.controller.current.deepLink).toBeNull()
     expect(h.controller.current.waitingForLink).toBe(false)
+  })
+
+  test('a failed read keeps the last known link and reports the error', async () => {
+    const h = harness()
+    h.setStatus({ ok: true, linkedChatId: 42, mode: 'hosted', botUsername: 'rayu_bot' })
+    await h.controller.refreshStatus()
+    h.setStatus({ ok: false, error: 'engine failed' })
+    await h.controller.refreshStatus()
+    expect(h.controller.current.linkedChatId).toBe(42)
+    expect(h.controller.current.error).toBe('engine failed')
   })
 })
 
@@ -206,17 +216,18 @@ describe('TelegramConnectController: hosted pairing', () => {
     await flush()
   })
 
-  test('closing while the lookup runs writes the link but does not notify', async () => {
+  test('unlinking while the lookup runs neither shows the link nor restarts a conversation', async () => {
     let resolve!: (value: { linked: boolean; chatId?: string }) => void
     const h = harness()
     await h.controller.startHosted('origin')
     h.setHostedLink(new Promise(resolveLink => { resolve = resolveLink }))
     tick?.()
-    await h.controller.open(false)
+    await h.controller.unlink()
     resolve({ linked: true, chatId: '77' })
     await flush()
-    expect(h.calls.setLinkedChat).toEqual([{ chatId: 77, username: undefined, botUsername: 'rayu_bot' }])
     expect(h.calls.onLinked).toEqual([])
+    expect(h.controller.current.linkedChatId).toBeNull()
+    expect(h.controller.current.waitingForLink).toBe(false)
   })
 
   test('an unexpected throw stops the poller', async () => {

@@ -30,7 +30,7 @@ import { jsonStringify } from '../utils/slowOperations.js'
 import { isToolReferenceBlock } from '../utils/toolSearch.js'
 import { getAPIMetadata, getExtraBodyParams } from './api/claude.js'
 import { getAnthropicClient } from './api/client.js'
-import { recordRayuCharge } from './rayuAuth/rayuTurnCredits.js'
+import { recordRayuCharge, startRayuCharge } from './rayuAuth/rayuTurnCredits.js'
 import { withTokenCountVCR } from './vcr.js'
 
 // Minimal values for token counting with thinking enabled
@@ -328,6 +328,9 @@ export async function countTokensViaHaikuFallback(
       ? betas.filter(b => VERTEX_COUNT_TOKENS_ALLOWED_BETAS.has(b))
       : betas
 
+  // Taken before the request is sent, so its charge belongs to the work that
+  // asked for the count.
+  const chargeTicket = startRayuCharge()
   // biome-ignore lint/plugin: token counting needs specialized parameters (thinking, betas) that sideQuery doesn't support
   const response = await anthropic.beta.messages.create({
     model: normalizeModelStringForAPI(model),
@@ -351,7 +354,7 @@ export async function countTokensViaHaikuFallback(
   const cacheCreationTokens = usage.cache_creation_input_tokens || 0
   const cacheReadTokens = usage.cache_read_input_tokens || 0
   // Counting by a 1-token request is a billed request on the Rayu gateway.
-  recordRayuCharge(creditsFromRayuBody(response))
+  recordRayuCharge(creditsFromRayuBody(response), chargeTicket, 'token_count')
 
   return inputTokens + cacheCreationTokens + cacheReadTokens
 }

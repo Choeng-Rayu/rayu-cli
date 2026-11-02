@@ -31,6 +31,11 @@ const ORIGINAL_DIR_PREFIXES = [
   'utils/swarm/',
   'coordinator/',
   'commands/orchestrator/',
+  // Orchestrator mode's run engine (contract, packets, attribution, worktree merge,
+  // verifier, gate) and its tool and command. No upstream counterpart.
+  'orchestrator/',
+  'tools/OrchestrationContractTool/',
+  'commands/orchestrator-status/',
   'tools/ImageGenTool/',
   'tools/VideoGenTool/',
   'telegram/',
@@ -59,6 +64,17 @@ const ORIGINAL_FILE_MARKERS = [
   'utils/rayuProviders.ts',
   'utils/agentSwarmsEnabled.ts',
   'utils/orchestratorMode.ts',
+  // Rayu's plan mode: runs like Full Manage but refuses changes to the project.
+  'utils/permissions/planModePolicy.ts',
+  // Orchestrator mode pieces that live beside upstream modules.
+  'constants/orchestrator.ts',
+  'tools/SendMessageTool/OrchestratorSendMessageTool.ts',
+  'tools/AgentTool/built-in/subagents/verifier.ts',
+  'utils/agentChangeLedger.ts',
+  'utils/git/gitBinary.ts',
+  'components/tasks/OrchestrationRunSection.tsx',
+  'components/tasks/OrchestrationWorkerDetail.tsx',
+  'hooks/notifs/useWorkerApprovalLossNotification.ts',
   'components/RayuProviderSetup.tsx',
 ]
 

@@ -1,12 +1,13 @@
 /**
- * /connect wizard + /model inline picker for the Telegram bot.
+ * /connect wizard + /model command for the Telegram bot.
  *
- * /connect flow:
+ * /connect flow (identical for every provider — no per-provider special-casing):
  *   → provider picker (inline keyboard)
  *   → (local only) ask for base URL
  *   → ask for API key
- *   → fetch + show model picker (paginated inline keyboard)
- *   → done — saves provider + active model to config
+ *   → done — saves the provider + its preset default model, warms the LIVE model
+ *     catalog in the background (fetchProviderModels, the same source /model
+ *     uses), and points the user at /model to switch
  *
  * /model flow (no argument):
  *   → fetch models for active provider (uses cache or live-fetches)
@@ -41,7 +42,6 @@ import {
   sendMessage,
   sendMessageWithInlineKeyboard,
   type InlineKeyboard,
-  type InlineKeyboardButton,
 } from './telegramApi.js'
 import {
   collectModelCatalog,
@@ -50,36 +50,22 @@ import {
   resolveModelSelection,
 } from './telegramModelCatalog.js'
 
-// ---- Hardcoded Anthropic Claude models (no /v1/models endpoint) ----
-const ANTHROPIC_MODELS = [
-  'claude-opus-4-5',
-  'claude-sonnet-4-5',
-  'claude-haiku-3-5',
-  'claude-opus-4-0',
-  'claude-sonnet-4-0',
-  'claude-haiku-3-0',
-]
-
 // ---- Callback data prefixes ----
 // /connect wizard  (kept ≤ 32 chars to stay well under 64-byte Telegram limit)
 const CB_PROVIDER    = 'cnx:p:'    // + providerId
-const CB_PAGE        = 'cnx:pg:'   // + page number
 const CB_CANCEL      = 'cnx:cancel'
-const CB_MODEL_IDX   = 'cnx:mi:'   // + index  (connect model picker)
 
-// NOTE: /model has NO callback namespace. It renders a copyable text catalog
-// instead of an inline keyboard — see telegramModelCatalog.ts for why.
-
-const MODELS_PER_PAGE = 8
-const MODELS_PER_ROW  = 2
+// NOTE: neither /connect nor /model uses a model-picker keyboard. Connect saves
+// the provider's preset default and warms the LIVE catalog (fetchProviderModels,
+// the same source /model reads); /model then renders a copyable text catalog
+// across every configured provider — see telegramModelCatalog.ts for why text.
 
 // ---- Session state ----
 type StepIdle         = { step: 'idle' }
 type StepWaitBaseURL  = { step: 'wait_baseurl'; providerId: string; messageId: number }
 type StepWaitApiKey   = { step: 'wait_apikey';  providerId: string; baseURL?: string; messageId: number }
-type StepSelectModel  = { step: 'select_model'; providerId: string; models: string[]; page: number; messageId: number }
 
-type ConnectStep = StepIdle | StepWaitBaseURL | StepWaitApiKey | StepSelectModel
+type ConnectStep = StepIdle | StepWaitBaseURL | StepWaitApiKey
 
 interface ConnectSession { chatId: number; state: ConnectStep }
 
@@ -94,7 +80,7 @@ function getSession(chatId: number): ConnectSession {
 
 function clearSession(chatId: number): void { SESSIONS.delete(chatId) }
 
-/** True when a connect wizard or model picker is in progress for this chat. */
+/** True when a connect wizard is in progress for this chat. */
 export function isConnectSessionActive(chatId: number): boolean {
   const s = SESSIONS.get(chatId)
   return s !== undefined && s.state.step !== 'idle'
@@ -122,47 +108,20 @@ function providerKeyboard(): InlineKeyboard {
   return rows
 }
 
-/** Keyboard for the /connect model picker (uses cnx:mi: / cnx:pg: / cnx:cancel). */
-function modelKeyboard(models: string[], page: number): InlineKeyboard {
-  const totalPages = Math.ceil(models.length / MODELS_PER_PAGE)
-  const start = page * MODELS_PER_PAGE
-  const rows: InlineKeyboard = []
-  for (let i = 0; i < MODELS_PER_PAGE && start + i < models.length; i += MODELS_PER_ROW) {
-    const row: InlineKeyboardButton[] = []
-    for (let j = 0; j < MODELS_PER_ROW; j++) {
-      const idx = start + i + j
-      if (idx >= models.length) break
-      const m = models[idx]!
-      row.push({ text: m.length > 30 ? `…${m.slice(-28)}` : m, callback_data: `${CB_MODEL_IDX}${idx}` })
-    }
-    if (row.length) rows.push(row)
-  }
-  if (totalPages > 1) {
-    const nav: InlineKeyboardButton[] = []
-    if (page > 0) nav.push({ text: '◀ Prev', callback_data: `${CB_PAGE}${page - 1}` })
-    nav.push({ text: `${page + 1}/${totalPages}`, callback_data: 'cnx:noop' })
-    if (page < totalPages - 1) nav.push({ text: 'Next ▶', callback_data: `${CB_PAGE}${page + 1}` })
-    rows.push(nav)
-  }
-  rows.push([{ text: '❌ Cancel', callback_data: CB_CANCEL }])
-  return rows
-}
-
-function modelPageText(models: string[], page: number, providerId: string): string {
-  const totalPages = Math.ceil(models.length / MODELS_PER_PAGE)
-  return [
-    `✅ Connected to ${providerId}!`,
-    ``,
-    `🤖 Select a model: (${models.length} available, page ${page + 1}/${totalPages})`,
-    ``,
-    `💡 Tip: You can also type /model <name> to set any model directly.`,
-  ].join('\n')
-}
-
+/**
+ * Warm a just-connected provider's model cache from its LIVE catalog, so the
+ * next `/model` renders instantly instead of fetching on demand.
+ *
+ * Provider-agnostic on purpose: fetchProviderModels is the single source every
+ * provider's catalog comes from (Anthropic via /v1/models, openai-compatible via
+ * /models, etc.), so there is no per-kind branch here. Best-effort — an empty
+ * result (offline, no catalog endpoint, rejected key) leaves any existing cache
+ * untouched, and /model can fetch live later.
+ */
 function refreshProviderModelsInBackground(providerId: string): void {
   void (async () => {
     const provider = loadRayuConfig().providers.find(p => p.id === providerId)
-    if (!provider || provider.kind !== 'openai-compatible') return
+    if (!provider) return
     const fetched = await fetchProviderModels(provider)
     if (fetched.length === 0) return
     const cfg = loadRayuConfig()
@@ -225,8 +184,6 @@ export async function handleCallbackQuery(
     return true
   }
 
-  if (data === 'cnx:noop') return true
-
   if (data.startsWith(CB_PROVIDER)) {
     const providerId = data.slice(CB_PROVIDER.length)
     const preset = PROVIDER_PRESETS.find(p => p.id === providerId)
@@ -242,47 +199,8 @@ export async function handleCallbackQuery(
     } else {
       SESSIONS.set(chatId, { chatId, state: { step: 'wait_apikey', providerId, baseURL: preset.baseURL, messageId } })
       await editMessageWithInlineKeyboard(token, chatId, messageId,
-        `🔑 Enter your API key for *${preset.label}*:\n\n_Your key is stored locally at ~/.rayu/providers.json (0600)._`)
+        `🔑 Enter your API key for *${preset.label}*:\n\n_It is saved locally at ~/.rayu/providers.json (0600), but your message travels through Telegram (and Rayu's server in hosted mode) and stays in this chat's history — delete it after, and prefer entering keys in the terminal._`)
     }
-    return true
-  }
-
-  // /connect model selected by index
-  if (data.startsWith(CB_MODEL_IDX)) {
-    const session = SESSIONS.get(chatId)
-    if (!session || session.state.step !== 'select_model') return false
-    const state = session.state as StepSelectModel
-
-    const idx = parseInt(data.slice(CB_MODEL_IDX.length), 10)
-    const model = state.models[idx]
-    if (!model) return false
-
-    const cfg = loadRayuConfig()
-    const prov = cfg.providers.find(p => p.id === state.providerId)
-    if (prov) { prov.defaultModel = model; saveRayuConfig(cfg) }
-
-    _resetRayuConfigCache()
-    setRemoteModelOverride(model)
-    setMainLoopModelOverride(model)
-    enqueue({ value: `[Telegram] Provider changed to ${state.providerId} · Model: ${model}`, mode: 'task-notification' })
-
-    clearSession(chatId)
-    await editMessageWithInlineKeyboard(token, chatId, state.messageId,
-      `✅ Done!\n\nActive provider: *${state.providerId}*\nActive model: \`${model}\`\n\nSend any message to start chatting. Use /connect to change anytime.`)
-    return true
-  }
-
-  // /connect pagination
-  if (data.startsWith(CB_PAGE)) {
-    const session = SESSIONS.get(chatId)
-    if (!session || session.state.step !== 'select_model') return false
-    const state = session.state as StepSelectModel
-
-    const page = parseInt(data.slice(CB_PAGE.length), 10)
-    state.page = page
-    await editMessageWithInlineKeyboard(token, chatId, state.messageId,
-      modelPageText(state.models, page, state.providerId),
-      modelKeyboard(state.models, page))
     return true
   }
 
@@ -304,7 +222,10 @@ export async function handleConnectTextInput(
 
   if (state.step === 'wait_baseurl') {
     const baseURL = text.trim().replace(/\/+$/, '')
-    if (!baseURL.startsWith('http')) {
+    // Require a real http(s):// scheme. `startsWith('http')` used to also accept
+    // junk like `httpx://` or `httpfoo`, which only fails later as a confusing
+    // model-fetch error.
+    if (!/^https?:\/\//i.test(baseURL)) {
       await sendMessage(token, chatId, '⚠️ Please enter a valid URL starting with http:// or https://')
       return true
     }
@@ -313,7 +234,7 @@ export async function handleConnectTextInput(
       state: { step: 'wait_apikey', providerId: state.providerId, baseURL, messageId: state.messageId },
     })
     await editMessageWithInlineKeyboard(token, chatId, state.messageId,
-      `🔑 Base URL set to: \`${baseURL}\`\n\nNow enter your API key (or send \`none\` if no key required):`)
+      `🔑 Base URL set to: \`${baseURL}\`\n\nNow enter your API key (or send \`none\` if no key required).\n\n_Your message travels through Telegram and stays in this chat's history — delete it after, and prefer entering keys in the terminal._`)
     return true
   }
 
@@ -337,50 +258,28 @@ export async function handleConnectTextInput(
       true,
     )
 
-    if (state.providerId !== 'anthropic') {
-      if (preset?.defaultModel) {
-        setRemoteModelOverride(preset.defaultModel)
-        setMainLoopModelOverride(preset.defaultModel)
-        enqueue({
-          value: `[Telegram] Provider changed to ${state.providerId} · Model: ${preset.defaultModel}`,
-          mode: 'task-notification',
-        })
-      }
-      refreshProviderModelsInBackground(state.providerId)
-      clearSession(chatId)
-      await editMessageWithInlineKeyboard(token, chatId, state.messageId, [
-        `✅ Connected to *${state.providerId}*!`,
-        ``,
-        `Active model: \`${preset?.defaultModel ?? '(none)'}\``,
-        ``,
-        `Model list is refreshing in the background. Use \`/model\` to switch anytime.`,
-      ].join('\n'))
-      return true
+    // Uniform completion for EVERY provider: adopt the preset default so there
+    // is always an active model, warm the LIVE catalog in the background, and
+    // point at /model to switch. Anthropic is no longer special-cased — its
+    // catalog comes from the same fetchProviderModels path as every other
+    // provider, so there is no per-provider branch here.
+    if (preset?.defaultModel) {
+      setRemoteModelOverride(preset.defaultModel)
+      setMainLoopModelOverride(preset.defaultModel)
+      enqueue({
+        value: `[Telegram] Provider changed to ${state.providerId} · Model: ${preset.defaultModel}`,
+        mode: 'task-notification',
+      })
     }
-
-    let models: string[] = []
-    models = ANTHROPIC_MODELS
-
-    if (models.length === 0) {
-      clearSession(chatId)
-      await editMessageWithInlineKeyboard(token, chatId, state.messageId, [
-        `✅ Connected to *${state.providerId}*!`,
-        ``,
-        `⚠️ Could not fetch model list. Using default: \`${preset?.defaultModel ?? 'none'}\``,
-        ``,
-        `Use \`/model\` to pick a model or \`/model <name>\` to set one directly.`,
-      ].join('\n'))
-      return true
-    }
-
-    const page = 0
-    SESSIONS.set(chatId, {
-      chatId,
-      state: { step: 'select_model', providerId: state.providerId, models, page, messageId: state.messageId },
-    })
-    await editMessageWithInlineKeyboard(token, chatId, state.messageId,
-      modelPageText(models, page, state.providerId),
-      modelKeyboard(models, page))
+    refreshProviderModelsInBackground(state.providerId)
+    clearSession(chatId)
+    await editMessageWithInlineKeyboard(token, chatId, state.messageId, [
+      `✅ Connected to *${state.providerId}*!`,
+      ``,
+      `Active model: \`${preset?.defaultModel ?? '(none)'}\``,
+      ``,
+      `Model list is refreshing in the background. Use \`/model\` to switch anytime.`,
+    ].join('\n'))
     return true
   }
 

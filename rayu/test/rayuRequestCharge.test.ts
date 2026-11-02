@@ -59,12 +59,32 @@ describe('creditsFromRayuCharge', () => {
 })
 
 describe('formatRayuCredits', () => {
-  test('two decimals, as in "Credits: 443.76"', () => {
+  test('two decimals below 1,000, as in "Credits: 443.76"', () => {
     expect(formatRayuCredits(443.76)).toBe('443.76')
     expect(formatRayuCredits(0.12)).toBe('0.12')
     expect(formatRayuCredits(2)).toBe('2.00')
-    // No grouping and no locale: the same text in every terminal and webview.
-    expect(formatRayuCredits(12_345.678)).toBe('12345.68')
+    expect(formatRayuCredits(999.99)).toBe('999.99')
+  })
+
+  test('1,000 and up reads compactly, as in "Credits: 2k"', () => {
+    expect(formatRayuCredits(1000)).toBe('1k')
+    expect(formatRayuCredits(2000)).toBe('2k')
+    expect(formatRayuCredits(2450)).toBe('2.5k')
+    expect(formatRayuCredits(12_345.678)).toBe('12.3k')
+    expect(formatRayuCredits(99_949)).toBe('99.9k')
+    // From 100 of a unit up, no decimal: "200k", not "200.0k".
+    expect(formatRayuCredits(99_950)).toBe('100k')
+    expect(formatRayuCredits(200_000.07)).toBe('200k')
+    expect(formatRayuCredits(999_499)).toBe('999k')
+    expect(formatRayuCredits(1_250_000)).toBe('1.3M')
+    expect(formatRayuCredits(45_600_000)).toBe('45.6M')
+  })
+
+  test('an amount that rounds up takes the next unit', () => {
+    // 999.996 rounds to 1000.00 at two decimals, so it is already "1k".
+    expect(formatRayuCredits(999.996)).toBe('1k')
+    // 999,500 is 999.5k, which rounds to 1000k: that is "1M".
+    expect(formatRayuCredits(999_500)).toBe('1M')
   })
 
   test('a real charge too small for two decimals is not shown as nothing', () => {
@@ -84,5 +104,11 @@ describe('formatRayuCredits', () => {
   test('the label both front ends print', () => {
     expect(rayuCreditsLabel(443.76)).toBe('Credits: 443.76')
     expect(rayuCreditsLabel(0.0001)).toBe('Credits: <0.01')
+    expect(rayuCreditsLabel(2000)).toBe('Credits: 2k')
+  })
+
+  test('a line printed while the work goes on says "so far"', () => {
+    expect(rayuCreditsLabel(1234, { soFar: true })).toBe('Credits so far: 1.2k')
+    expect(rayuCreditsLabel(1234, { soFar: false })).toBe('Credits: 1.2k')
   })
 })

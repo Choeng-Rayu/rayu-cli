@@ -49,6 +49,7 @@ import type {
   PermissionModeView,
   PromptDeliveryView,
   RuntimeAgentView,
+  RuntimeCommandView,
   SlashCommandView,
 } from '../../shared/webviewProtocol.js'
 import {
@@ -84,6 +85,8 @@ import {
   AutocompletePopover,
   type AutocompleteItem,
 } from './AutocompletePopover.js'
+import { buildSlashItems } from './slashCommandMenu.js'
+import { ADD_CONTEXT_ARIA_LABEL, ADD_CONTEXT_TOOLTIP } from '../dropCopy.js'
 import { TodoListCard, type TodoToolEntry } from './TodoListCard.js'
 
 /** Tallest the input grows before it scrolls internally, in pixels. */
@@ -116,6 +119,11 @@ export interface ComposerProps {
   inference: InferenceSettingsView
   permissionMode: PermissionModeView
   commands?: SlashCommandView[]
+  /**
+   * The engine's full command descriptors. They decide which of `commands` are shown
+   * (unavailable ones are hidden) and supply aliases; see `slashCommandMenu.ts`.
+   */
+  runtimeCommands?: RuntimeCommandView[]
   /** Runtime names extend the built-in agent scopes in model-command autocomplete. */
   agents?: RuntimeAgentView[]
   /** Reusable prompts, newest first, derived from the current/restored transcript. */
@@ -183,6 +191,7 @@ export function Composer({
   inference,
   permissionMode,
   commands,
+  runtimeCommands,
   agents,
   promptHistory,
   workspaceFiles,
@@ -236,16 +245,8 @@ export function Composer({
   const slashQuery = isSlashCommand ? value.slice(1) : ''
   const slashItems: AutocompleteItem[] = useMemo(() => {
     if (!isSlashCommand) return []
-    return (commands ?? [])
-      .filter(c => c.name.toLowerCase().includes(slashQuery.toLowerCase()))
-      .map(c => ({
-        id: 'cmd-' + c.name,
-        label: '/' + c.name,
-        description: c.description,
-        insertText: '/' + c.name + ' ',
-        kind: 'command',
-      }))
-  }, [isSlashCommand, commands, slashQuery])
+    return buildSlashItems(slashQuery, commands ?? [], runtimeCommands ?? [])
+  }, [isSlashCommand, commands, runtimeCommands, slashQuery])
 
   const agentTargetMatch = dismissed
     ? null
@@ -862,11 +863,8 @@ export function Composer({
                 type="button"
                 className="rc-pill rc-pill-button rc-pill-add-context"
                 onClick={() => void addContext()}
-                title={
-                  'Add files or folders as context.\n' +
-                  'You can also drag them straight onto this panel.'
-                }
-                aria-label="Add context"
+                title={ADD_CONTEXT_TOOLTIP}
+                aria-label={ADD_CONTEXT_ARIA_LABEL}
               >
                 <PaperclipIcon size={12} />
                 <span className="rc-pill-label">Add Context</span>

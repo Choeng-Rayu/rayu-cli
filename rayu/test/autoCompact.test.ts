@@ -42,6 +42,7 @@ const ENV_KEYS = [
   'DISABLE_AUTO_COMPACT',
   'ENABLE_CLAUDE_CODE_SM_COMPACT',
   'DISABLE_CLAUDE_CODE_SM_COMPACT',
+  'RAYU_MEDIA_COMPACT_BUDGET_BYTES',
 ] as const
 
 let dir: string
@@ -99,6 +100,20 @@ function usageMessage(inputTokens: number, cachedTokens = 0): Message {
   message.message.usage.input_tokens = inputTokens
   message.message.usage.cache_read_input_tokens = cachedTokens
   return message
+}
+
+// A user message carrying a base64 image of `base64Bytes` wire bytes — the
+// shape a pasted screenshot takes. Its token estimate is a flat 2000 regardless
+// of byte size, which is exactly why the byte-based trigger is needed.
+function imageMessage(base64Bytes: number): Message {
+  return createUserMessage({
+    content: [
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(base64Bytes) },
+      },
+    ],
+  })
 }
 
 describe('automatic compaction on a 1M context window', () => {
@@ -213,6 +228,125 @@ describe('automatic compaction on a 1M context window', () => {
     )
     expect(result).toEqual({ wasCompacted: false })
     expect(memorySpy).not.toHaveBeenCalled()
+  })
+
+  test('accumulated media bytes trigger compaction even when the token count is low', async () => {
+    process.env.RAYU_MEDIA_COMPACT_BUDGET_BYTES = String(4 * 1024 * 1024)
+    // Three ~1.5MB images in EARLIER turns = ~4.5MB, over the 4MB budget — yet
+    // the token estimate scores them as a flat 2000 each (~6k tokens), nowhere
+    // near the 967k threshold. Token-only compaction would never fire. The
+    // trailing text user turn is the current prompt; the images precede it, so
+    // they are "accumulated".
+    const messages = [
+      usageMessage(10_000),
+      imageMessage(1_500_000),
+      imageMessage(1_500_000),
+      imageMessage(1_500_000),
+      createUserMessage({ content: 'please continue' }),
+    ]
+    expect(tokenCountWithEstimation(messages)).toBeLessThan(getAutoCompactThreshold(MODEL))
+    expect(await shouldAutoCompact(messages, MODEL)).toBe(true)
+  })
+
+  test('media under the byte budget does not trigger compaction', async () => {
+    process.env.RAYU_MEDIA_COMPACT_BUDGET_BYTES = String(4 * 1024 * 1024)
+    const messages = [
+      usageMessage(10_000),
+      imageMessage(1_000_000),
+      createUserMessage({ content: 'next' }),
+    ]
+    expect(await shouldAutoCompact(messages, MODEL)).toBe(false)
+  })
+
+  test('a large fresh paste in the current turn alone does not trigger compaction', async () => {
+    // The images ARE the last user turn — a just-pasted batch. Compaction would
+    // summarize them away (and its summary request strips images) before the
+    // model ever saw them, so accumulated-only must NOT trigger here.
+    process.env.RAYU_MEDIA_COMPACT_BUDGET_BYTES = String(4 * 1024 * 1024)
+    const messages = [usageMessage(10_000), imageMessage(6_000_000)]
+    expect(await shouldAutoCompact(messages, MODEL)).toBe(false)
+  })
+
+  test('media-byte compaction records the byte trigger, not a token or heap reason', async () => {
+    // Use the legacy full-compaction path (the production default — SM-compact
+    // is off unless tengu_session_memory/tengu_sm_compact are on) and spy the
+    // summarizer so no network call happens.
+    process.env.DISABLE_CLAUDE_CODE_SM_COMPACT = '1'
+    process.env.RAYU_MEDIA_COMPACT_BUDGET_BYTES = String(4 * 1024 * 1024)
+    const compactSpy = spyOn(compact, 'compactConversation').mockResolvedValue({
+      boundaryMarker: createCompactBoundaryMessage('auto', 40_000),
+      summaryMessages: [createUserMessage({ content: 'Summary.' })],
+      attachments: [],
+      hookResults: [],
+    })
+    try {
+      const result = await autoCompactIfNeeded(
+        [
+          usageMessage(10_000),
+          imageMessage(1_500_000),
+          imageMessage(1_500_000),
+          imageMessage(1_500_000),
+          createUserMessage({ content: 'continue' }),
+        ],
+        { options: { mainLoopModel: MODEL } } as ToolUseContext,
+        {} as CacheSafeParams,
+        'sdk',
+      )
+      expect(result.wasCompacted).toBe(true)
+      const boundary = result.compactionResult?.boundaryMarker
+      if (boundary?.subtype !== 'compact_boundary') throw new Error('Missing boundary')
+      expect(boundary.compactMetadata.autoCompact).toMatchObject({
+        reason: 'media_bytes',
+        mediaBudget: 4 * 1024 * 1024,
+      })
+      const decision = boundary.compactMetadata.autoCompact
+      if (decision?.reason !== 'media_bytes') throw new Error('Expected media_bytes reason')
+      expect(decision.mediaBytes).toBeGreaterThanOrEqual(4 * 1024 * 1024)
+    } finally {
+      compactSpy.mockRestore()
+    }
+  })
+
+  test('media_bytes falls back to full compaction when the session-memory tail still exceeds the budget', async () => {
+    // SM-compact keeps a verbatim tail (messagesToKeep), NOT image-stripped. If
+    // that tail is image-heavy it stays over the byte budget, so accepting it
+    // would re-compact every turn without fixing the 413. The guard must reject
+    // it and fall through to legacy full compaction (which keeps nothing).
+    process.env.ENABLE_CLAUDE_CODE_SM_COMPACT = '1'
+    process.env.RAYU_MEDIA_COMPACT_BUDGET_BYTES = String(4 * 1024 * 1024)
+    const lead = usageMessage(10_000)
+    const messages = [
+      lead,
+      imageMessage(1_500_000),
+      imageMessage(1_500_000),
+      imageMessage(1_500_000),
+      createUserMessage({ content: 'continue' }),
+    ]
+    // Point the summarized boundary at the FIRST message so the kept tail is
+    // everything after it — i.e. all three images survive into messagesToKeep.
+    sessionMemory.setLastSummarizedMessageId(lead.uuid)
+    const compactSpy = spyOn(compact, 'compactConversation').mockResolvedValue({
+      boundaryMarker: createCompactBoundaryMessage('auto', 40_000),
+      summaryMessages: [createUserMessage({ content: 'Summary.' })],
+      attachments: [],
+      hookResults: [],
+    })
+    try {
+      const result = await autoCompactIfNeeded(
+        messages,
+        { options: { mainLoopModel: MODEL } } as ToolUseContext,
+        {} as CacheSafeParams,
+        'sdk',
+      )
+      expect(result.wasCompacted).toBe(true)
+      // Fell back to full compaction rather than accepting the ineffective SM tail.
+      expect(compactSpy).toHaveBeenCalledTimes(1)
+      const boundary = result.compactionResult?.boundaryMarker
+      if (boundary?.subtype !== 'compact_boundary') throw new Error('Missing boundary')
+      expect(boundary.compactMetadata.autoCompact).toMatchObject({ reason: 'media_bytes' })
+    } finally {
+      compactSpy.mockRestore()
+    }
   })
 
   test('the legacy summary path records the same trigger inputs and resets failures', async () => {

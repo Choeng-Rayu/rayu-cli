@@ -30,6 +30,9 @@ describe('module origin manifest', () => {
     // Core engine files must not be misclassified as first-party.
     expect(classify('query.ts')).toBe('DERIVATIVE')
     expect(classify('QueryEngine.ts')).toBe('DERIVATIVE')
+    // Rayu's plan-mode rule is first-party; the permission system around it is not.
+    expect(classify('utils/permissions/planModePolicy.ts')).toBe('ORIGINAL')
+    expect(classify('utils/permissions/permissions.ts')).toBe('DERIVATIVE')
     expect(classify('types/generated/events_mono/common/v1/auth.ts')).toBe(
       'GENERATED',
     )

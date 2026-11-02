@@ -75,6 +75,9 @@ const getSendMessageTool = () =>
 const getOrchestratorSendMessageTool = () =>
   require('./tools/SendMessageTool/OrchestratorSendMessageTool.js')
     .OrchestratorSendMessageTool as typeof import('./tools/SendMessageTool/OrchestratorSendMessageTool.js').OrchestratorSendMessageTool
+const getOrchestrationContractTool = () =>
+  require('./tools/OrchestrationContractTool/OrchestrationContractTool.js')
+    .OrchestrationContractTool as typeof import('./tools/OrchestrationContractTool/OrchestrationContractTool.js').OrchestrationContractTool
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
@@ -337,30 +340,34 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
   }
 
   const isEnabled = allowedTools.map(_ => _.isEnabled())
-  return withOrchestratorMessaging(
+  return withOrchestratorTools(
     allowedTools.filter((_, i) => isEnabled[i]),
     permissionContext,
   )
 }
 
 /**
- * Orchestrator mode continues its workers with SendMessage. Without agent teams the
- * full tool is disabled, so the main thread gets the worker-only variant
- * (OrchestratorSendMessageTool.ts). Workers never get it: AgentTool builds their
- * pools under the worker's own mode.
+ * Tools only Orchestrator mode's main thread has: the contract its workers follow,
+ * and SendMessage to continue them. Without agent teams the full SendMessage is
+ * disabled, so the worker-only variant (OrchestratorSendMessageTool.ts) is added.
+ * Workers never get either: AgentTool builds their pools under the worker's own
+ * mode, and the contract tool is also in ALL_AGENT_DISALLOWED_TOOLS.
  */
-function withOrchestratorMessaging(
+function withOrchestratorTools(
   tools: Tools,
   permissionContext: ToolPermissionContext,
 ): Tools {
   if (permissionContext.mode !== 'orchestrator') return tools
-  if (tools.some(tool => toolMatchesName(tool, SEND_MESSAGE_TOOL_NAME))) {
-    return tools
-  }
+  const hasSendMessage = tools.some(tool =>
+    toolMatchesName(tool, SEND_MESSAGE_TOOL_NAME),
+  )
   return [
     ...tools,
     ...filterToolsByDenyRules(
-      [getOrchestratorSendMessageTool()],
+      [
+        getOrchestrationContractTool(),
+        ...(hasSendMessage ? [] : [getOrchestratorSendMessageTool()]),
+      ],
       permissionContext,
     ),
   ]

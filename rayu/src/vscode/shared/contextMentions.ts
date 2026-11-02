@@ -46,8 +46,9 @@ export function formatPathMentions(paths: readonly string[]): string {
  * a dragged code fragment must keep being inserted as text.
  *
  * Shared because BOTH readers need the identical rule: the webview's `DataTransfer` parser and
- * the drop strip's `TreeDragAndDropController`. Two copies would drift, and the symptom — one
- * drop route accepting what the other rejects — reads as randomness to the user.
+ * the Rayucode Context tree view's `TreeDragAndDropController` (`host/panel/dropTargetView.ts`).
+ * Two copies would drift, and the symptom — one drop route accepting what the other rejects —
+ * reads as randomness to the user.
  */
 export function looksLikeFileReference(value: string): boolean {
   const trimmed = value.trim()
@@ -56,4 +57,19 @@ export function looksLikeFileReference(value: string): boolean {
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return true
   // Absolute POSIX path, or a Windows drive path.
   return trimmed.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(trimmed)
+}
+
+/**
+ * Split a `text/uri-list` body into the entries that could be file references.
+ *
+ * Pure, so it is shared by the tree-view drop reader and testable without a drag event. Blank
+ * lines and `#` comments (part of the `text/uri-list` format) are dropped, entries are
+ * trimmed, and anything failing `looksLikeFileReference` — a dragged sentence, a code
+ * fragment — is rejected rather than turned into an attachment to nothing.
+ */
+export function splitUriList(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && looksLikeFileReference(line))
 }

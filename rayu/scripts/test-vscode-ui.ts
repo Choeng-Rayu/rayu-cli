@@ -53,6 +53,10 @@ try {
   if (launchError) throw launchError
   const page = browser.contexts()[0]!.pages()[0]!
   page.setDefaultTimeout(30_000)
+  // VS Code's own toasts (such as "extensions are temporarily disabled", caused by
+  // --disable-extensions) cover the bottom-right corner of an editor tab, which is where
+  // the chat's Send button is. They are not under test, so they are hidden.
+  await page.addStyleTag({ content: '.notifications-toasts { display: none !important; }' })
   // VS Code may expose a webview frame as `vscode-webview://.../fake.html` or as
   // an anonymous out-of-process iframe. Locate our frame by its accessible composer
   // instead of coupling the test to that editor-internal URL.
@@ -72,6 +76,26 @@ try {
     }
     throw new Error('Timed out waiting for the Rayucode webview')
   }
+  // The sidebar lists the sessions; a conversation's composer lives in its own editor tab.
+  // Open the conversation the sidebar shows, as a user would.
+  async function findSidebarFrame(timeout = 30_000) {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      for (const candidatePage of browser!.contexts().flatMap(context => context.pages())) {
+        for (const candidate of candidatePage.frames()) {
+          const count = await candidate
+            .getByRole('textbox', { name: 'Search sessions' })
+            .count()
+            .catch(() => 0)
+          if (count > 0) return candidate
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error('Timed out waiting for the Rayucode sidebar')
+  }
+  const hub = await findSidebarFrame()
+  await hub.locator('.rc-session-live-row .rc-session-row').first().click()
   let frame = await findRayucodeFrame()
   const input = frame!.getByRole('textbox', { name: 'Message Rayu' })
   await input.waitFor({ timeout: 20_000 })
@@ -234,22 +258,6 @@ try {
   // webview and a conversation lives in its own editor tab, so searching, opening and
   // closing rows all happen in the sidebar. Clicking a live row OPENS or FOCUSES its tab
   // and issues no inference; a history row spawns an engine with `--resume`.
-  async function findSidebarFrame(timeout = 30_000) {
-    const deadline = Date.now() + timeout
-    while (Date.now() < deadline) {
-      for (const candidatePage of browser!.contexts().flatMap(context => context.pages())) {
-        for (const candidate of candidatePage.frames()) {
-          const count = await candidate
-            .getByRole('textbox', { name: 'Search sessions' })
-            .count()
-            .catch(() => 0)
-          if (count > 0) return candidate
-        }
-      }
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-    throw new Error('Timed out waiting for the Rayucode sidebar')
-  }
   const sidebar = await findSidebarFrame()
   const sessionSearch = sidebar.getByRole('textbox', { name: 'Search sessions' })
   await sessionSearch.waitFor()
@@ -363,9 +371,10 @@ try {
   // The new conversation opens as its own tab and starts on the welcome screen.
   const second = await findOtherChatFrame(frame)
   await second.locator('.rc-welcome').waitFor()
-  await sidebar.getByText('Open now', { exact: true }).waitFor()
-  // Clear the filter: the new conversation has a different title.
+  // Clear the filter first: it still holds "fixture" from above, which neither the renamed
+  // conversation nor the new one matches, and "Open now" is only shown for matching rows.
   await sessionSearch.fill('')
+  await sidebar.getByText('Open now', { exact: true }).waitFor()
   const live = sidebar.locator('.rc-session-live-row')
   const liveDeadline = Date.now() + 15_000
   while ((await live.count()) !== 2 && Date.now() < liveDeadline) {
@@ -450,7 +459,57 @@ try {
   if (longHistoryLayout.max - longHistoryLayout.top > 1) {
     throw new Error(`Long history bottom moved after initial scroll: ${JSON.stringify(longHistoryLayout)}`)
   }
-  console.log('PASS: real extension host, AskUserQuestion answers, sign-in gate, hosted catalog/capabilities, keyboard model selection/draft, streaming, approval, exact diff, concurrent sessions, dark/light themes')
+
+  // ── THE SETTINGS TAB ──────────────────────────────────────────────────────────
+  //
+  // Opened by its command, as the gear and the Command Palette do. A Language saved in
+  // General must land in the CLI's own settings.json: the engine child writes it, so the
+  // terminal and the editor read the same value.
+  await native('command', { command: 'rayucode.openSettings' })
+  async function findSettingsFrame(timeout = 30_000) {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      for (const candidatePage of browser!.contexts().flatMap(context => context.pages())) {
+        for (const candidate of candidatePage.frames()) {
+          const count = await candidate
+            .getByRole('navigation', { name: 'Settings sections' })
+            .count()
+            .catch(() => 0)
+          if (count > 0) return candidate
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error('Timed out waiting for the Rayucode Settings tab')
+  }
+  const settingsTab = await findSettingsFrame()
+  const sections = settingsTab.getByRole('navigation', { name: 'Settings sections' })
+  for (const name of ['General', 'Account', 'Integrations', 'About']) {
+    await sections.getByRole('button', { name, exact: true }).waitFor()
+  }
+  const language = settingsTab.getByRole('textbox', { name: 'Language', exact: true })
+  await language.fill('Thai')
+  await language.press('Enter')
+  const sharedSettings = join(config, 'settings.json')
+  const languageSaved = () => {
+    try { return JSON.parse(readFileSync(sharedSettings, 'utf8')).language === 'Thai' } catch { return false }
+  }
+  await until(languageSaved, 30_000)
+  if (!JSON.parse(readFileSync(sharedSettings, 'utf8')).permissions) throw new Error('Saving the language dropped the rest of settings.json')
+
+  await sections.getByRole('button', { name: 'Integrations', exact: true }).click()
+  for (const card of ['Telegram', 'Studio Remote', 'GitHub']) {
+    await settingsTab.getByRole('group', { name: card, exact: true }).waitFor()
+  }
+  await settingsTab.getByText('Shows what is in this folder. After setup, merge the pull request and pull.').waitFor()
+  await sections.getByRole('button', { name: 'About', exact: true }).click()
+  // This harness loads the universal stage, so the engine is engine.mjs on VS Code's Node.
+  await settingsTab.getByText("engine.mjs on VS Code's Node (universal package)", { exact: true }).waitFor()
+  await page.screenshot({ path: join(output, 'rayucode-settings-light.png') })
+  await native('theme', { theme: 'Default Dark Modern' })
+  await settingsTab.locator('body.vscode-dark').waitFor()
+  await page.screenshot({ path: join(output, 'rayucode-settings-dark.png') })
+  console.log('PASS: real extension host, AskUserQuestion answers, sign-in gate, hosted catalog/capabilities, keyboard model selection/draft, streaming, approval, exact diff, concurrent sessions, dark/light themes, settings tab')
 } catch (error) {
   if (existsSync(join(directory, 'runner.log'))) {
     console.error('RUNNER LOG:\n' + readFileSync(join(directory, 'runner.log'), 'utf8'))

@@ -2,6 +2,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/gr
 import { getSubscriptionType } from '../../utils/auth.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
+import { getAgentModelDisplay } from '../../utils/model/agent.js'
 import { isTeammate } from '../../utils/teammate.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
@@ -37,12 +38,38 @@ function getToolsDescription(agent: AgentDefinition): string {
 }
 
 /**
+ * The user's saved /subagent_models selection for this agent type (per-agent
+ * override first, then the global one), or undefined. Config is read lazily and
+ * any failure degrades to "no selection" so listing an agent never throws.
+ */
+function getLockedSelection(
+  agentType: string,
+): { providerId: string; model: string } | undefined {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getSubagentSelection } =
+      require('../../utils/rayuConfig.js') as typeof import('../../utils/rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return getSubagentSelection(agentType)
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Format one agent line for the agent_listing_delta attachment message:
- * `- type: whenToUse (Tools: ...)`.
+ * `- type: whenToUse (Tools: ...) [model: ... · ...]`.
+ *
+ * The trailing annotation tells the main agent which model the subagent runs
+ * on and whether the user locked it via /subagent_models.
  */
 export function formatAgentLine(agent: AgentDefinition): string {
   const toolsDescription = getToolsDescription(agent)
-  return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription})`
+  const selection = getLockedSelection(agent.agentType)
+  const modelAnnotation = selection
+    ? `[model: ${selection.providerId}/${selection.model} · set by you — do not override]`
+    : `[model: ${getAgentModelDisplay(agent.model)} · auto — you may pass a smaller \`model\` for simple tasks]`
+  return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription}) ${modelAnnotation}`
 }
 
 /**
@@ -254,6 +281,7 @@ ${whenNotToUseSection}
 
 Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do${concurrencyNote}
+- Agent models: an agent marked "set by you" has a model the user chose and locked — never pass \`model\` for it. For "auto" agents, prefer a small/fast model for simple, read-only, or research-style tasks. An unassigned auto agent may show the user a one-time model picker.
 - When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.${
     // eslint-disable-next-line custom-rules/no-process-env-top-level
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&

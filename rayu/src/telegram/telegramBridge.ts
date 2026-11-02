@@ -914,8 +914,31 @@ function acquireBridgeLock(): boolean {
       }
     }
 
-    // Stale or dead lock — take it.
-    writeFileSync(path, content, { mode: 0o600 })
+    // Stale or dead lock — reclaim it ATOMICALLY rather than with a plain
+    // overwrite. Two sessions that both saw the SAME stale lock would each
+    // writeFileSync and each return true — two bridge leaders, hence two
+    // getUpdates consumers (409 Conflict in BYO mode). Removing the stale file
+    // and re-creating with O_EXCL means a racing peer that re-creates first wins
+    // the create; the loser gets EEXIST and concedes instead of clobbering the
+    // peer's fresh lock.
+    try {
+      unlinkSync(path)
+    } catch {
+      // ENOENT (a peer already reclaimed it) or similar — the exclusive create
+      // below is the real arbiter, so ignore and attempt it regardless.
+    }
+    try {
+      const fd = openSync(path, 'wx', 0o600)
+      writeSync(fd, content)
+      closeSync(fd)
+      return true
+    } catch (reclaimErr: unknown) {
+      // A peer won the reclaim and now holds a fresh lock — respect it.
+      if ((reclaimErr as NodeJS.ErrnoException).code === 'EEXIST') return false
+      // Any other error (permissions, etc.) falls back to best-effort ownership,
+      // exactly as the original overwrite did.
+      return true
+    }
   } catch {
     // Corrupt or unreadable — proceed best-effort.
   }

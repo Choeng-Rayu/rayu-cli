@@ -110,7 +110,7 @@ import {
   publishRayuPacingLimit,
   rayuPacingLimitFromError,
 } from '../rayuAuth/rayuRateLimit.js'
-import { markRayuCharges, recordRayuCharge } from '../rayuAuth/rayuTurnCredits.js'
+import { recordRayuCharge, startRayuCharge } from '../rayuAuth/rayuTurnCredits.js'
 import {
   creditsFromRayuBody,
   creditsFromRayuCharge,
@@ -1046,10 +1046,10 @@ async function* queryModel(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
-  // Snapshot the charge sequence before any request goes out: this is the
-  // request's start, so its charge lands in the turn that launched it even if
-  // it settles after that turn's line was rendered.
-  const chargeMark = markRayuCharges()
+  // Take the charge ticket before any request goes out: this is the request's
+  // start, so its charge lands in the work that launched it even if it settles
+  // after that work's line was rendered.
+  const chargeTicket = startRayuCharge()
 
   // Check cheap conditions first — the off-switch await blocks on GrowthBook
   // init (~10ms). For non-Opus models (haiku, sonnet) this skips the await
@@ -2958,9 +2958,13 @@ async function* queryModel(
     // survive .return() at a yield. A stream and the non-streaming retry that
     // replaced it are two gateway requests, and both are billed. The fallback
     // body is spread into `fallbackMessage.message`, so its `rayu` member is there.
-    recordRayuCharge(streamedRayuCredits, chargeMark)
+    recordRayuCharge(streamedRayuCredits, chargeTicket, options.querySource)
     if (fallbackMessage) {
-      recordRayuCharge(creditsFromRayuBody(fallbackMessage.message), chargeMark)
+      recordRayuCharge(
+        creditsFromRayuBody(fallbackMessage.message),
+        chargeTicket,
+        options.querySource,
+      )
     }
   }
 

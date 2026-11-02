@@ -39,7 +39,6 @@ describe('editable setting descriptors', () => {
   test('only Rayucode\'s own choices stay out of the files the CLI reads', () => {
     const shared = Object.fromEntries(EDITABLE_SETTINGS.map(descriptor => [descriptor.key, isSharedWithCli(descriptor)]))
     expect(shared).toEqual({
-      thinkingEnabled: false,
       permissionMode: false,
       autoCompactEnabled: true,
       language: true,
@@ -47,6 +46,10 @@ describe('editable setting descriptors', () => {
       // The terminal never shows prompt suggestions (their feature gate is off in Rayu).
       promptSuggestionEnabled: false,
     })
+  })
+
+  test('thinking is not a setting: Rayucode always runs with it on', () => {
+    expect(editableSetting('thinkingEnabled')).toBeUndefined()
   })
 
   test('the shared stores match the CLI\'s /config', () => {
@@ -156,8 +159,8 @@ describe('editableSettingsStore', () => {
 
   test.each([
     ['nope', true, 'That setting cannot be changed here.'],
-    // Rayucode-only settings live in Rayucode's profile, never in Rayu's files.
     ['thinkingEnabled', false, 'That setting cannot be changed here.'],
+    // Rayucode-only settings live in Rayucode's profile, never in Rayu's files.
     ['permissionMode', 'default', 'That setting cannot be changed here.'],
     ['promptSuggestionEnabled', false, 'That setting cannot be changed here.'],
     ['language', 'Thai\nmore', 'Language must be a single line of text.'],

@@ -65,12 +65,24 @@ export function quoteShellCommand(
     return addStdinRedirect ? `${quoted} < /dev/null` : quoted
   }
 
-  // For regular commands, use shell-quote
-  if (addStdinRedirect) {
-    return quote([command, '<', '/dev/null'])
-  }
+  // Regular commands also go through single quotes. shell-quote's quote() switches
+  // to double-quote mode when the input holds both ' and ", and in that mode it
+  // escapes ! as \!. Nothing un-escapes it before `eval`, so a plain
+  // `node -e "a!==b"` reached node as `a\!==b` and failed to parse (the same for
+  // jq and awk filters). Single quotes pass the text through byte for byte.
+  const quoted = singleQuoteForEval(command)
+  // `eval 'cmd' \< /dev/null`: eval joins its arguments with spaces, so the redirect
+  // applies to the command and not to eval itself.
+  return addStdinRedirect ? `${quoted} \\< /dev/null` : quoted
+}
 
-  return quote([command])
+/**
+ * Single-quote a string for use as one `eval` argument. An embedded single quote is
+ * written '"'"' (close, a literal ' inside double quotes, reopen), so no other
+ * character, including ! $ ` and \, is ever interpreted or rewritten.
+ */
+export function singleQuoteForEval(s: string): string {
+  return "'" + s.replace(/'/g, `'"'"'`) + "'"
 }
 
 /**

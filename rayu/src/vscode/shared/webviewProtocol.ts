@@ -473,8 +473,6 @@ export type HostToWebviewMessage =
   | { type: 'setInferenceSettings'; settings: InferenceSettingsView }
   /** Provider setup surface state. Never carries a credential. */
   | { type: 'setProviderSetup'; setup: ProviderSetupView }
-  /** Telegram connect surface state. Never carries a bot token. */
-  | { type: 'setTelegramConnect'; connect: TelegramConnectView }
   /** Attachable CLI sessions and the current attachment. Never carries an IPC token. */
   | { type: 'setAttachment'; attachment: AttachmentView }
   /** The active permission mode, after the engine accepted a change. */
@@ -790,19 +788,6 @@ export type WebviewToHostMessage =
   | { type: 'attachToSession'; pid: number }
   | { type: 'detachFromSession' }
   | { type: 'providerSetupOpen'; open: boolean }
-  /** Open or close the in-panel Telegram connect surface. */
-  | { type: 'telegramConnectOpen'; open: boolean }
-  /** Create a pairing against the shared Rayu-hosted bot. */
-  | { type: 'telegramConnectStartHosted' }
-  /**
-   * Verify and save a BYO (@BotFather) bot token.
-   *
-   * The token crosses the webview boundary once, here, and is never echoed back or
-   * stored in webview state — the same write-only rule `providerSetupValidate` follows.
-   */
-  | { type: 'telegramConnectStartByo'; token: string }
-  /** Forget the current chat binding (hosted mode also deletes the server-side link). */
-  | { type: 'telegramConnectUnlink' }
   /**
    * Verify a credential without saving it. The key crosses the webview boundary once,
    * here, and is never echoed back or stored in webview state.
@@ -831,6 +816,13 @@ export type WebviewToHostMessage =
    */
   | { type: 'reviewKeep'; path?: string }
   | { type: 'reviewUndo'; path?: string }
+  /**
+   * Restore files to their state before a specific user message (the CLI's `/rewind`).
+   *
+   * Files only — the conversation is not truncated. Keyed by the message uuid the host sent
+   * with the prompt; the host confirms with a modal before restoring.
+   */
+  | { type: 'rewindFiles'; messageUuid: string }
   /** Show a changed file's diff against its state before the turn. */
   | { type: 'openReviewDiff'; path: string }
   /** Open a changed file in an editor. */
@@ -859,7 +851,7 @@ export type WebviewToHostMessage =
    * tell a user with a valid key that they are not authenticated.
    */
   | { type: 'openProviderSetup' }
-  /** Open the in-panel Telegram connect surface. */
+  /** Open Settings → Integrations, where Telegram is connected. */
   | { type: 'openTelegramConnect' }
   /** Open the Rayucode Settings tab, optionally at a section. */
   | { type: 'openSettings'; section?: string }
@@ -922,7 +914,8 @@ export type WebviewToHostMessage =
    *
    * Distinct from `resumeSession`: nothing is spawned, nothing is torn down, and a turn that
    * is mid-flight in the target keeps running. Keyed by the panel's own session key because a
-   * live session may not have learned its engine id yet.
+   * live session may not have learned its engine id yet. When the sidebar slot is EMPTY, the
+   * conversation is adopted into the sidebar rather than opened as a tab.
    */
   | { type: 'switchSession'; key: string }
   /**
@@ -932,23 +925,20 @@ export type WebviewToHostMessage =
    * which switches the surface the sender is IN: this asks the host to create a NEW
    * panel bound to `key`, or reveal the one already bound to it. Nothing is spawned or
    * stopped, because the session is already running.
+   *
+   * Exception: when the sidebar slot is EMPTY, the host adopts the conversation into the
+   * sidebar instead of creating a tab.
    */
   | { type: 'openSessionPanel'; key: string }
-  /**
-   * Open the ACTIVE session's editor tab with a slash command pre-typed in its composer.
-   *
-   * Sent from the sidebar's Runtime Center, which is a management surface with no composer
-   * of its own: "use this command" means "put it where commands are typed" — the active
-   * conversation's tab. The host opens (or focuses) the tab and delivers the text there,
-   * so the command is one keystroke away instead of silently vanishing.
-   */
-  | { type: 'useCommandInTab'; name: string }
   /**
    * Resume a STORED session as its own editor tab.
    *
    * Sent from the sidebar's history list. Spawns an engine child with `--resume` and
    * opens a panel for it — the tab equivalent of the old `resumeSession`, which remains
    * in the union for the sidebar's own quick-chat fallback path.
+   *
+   * Exception: when the sidebar slot is EMPTY, the resumed conversation is adopted into
+   * the sidebar instead of opening a tab.
    */
   | { type: 'resumeSessionPanel'; id: string }
   /** Close an open session and stop its engine. */
@@ -1010,8 +1000,9 @@ export interface TaskDetailPage {
  *
  * A DECISION, not an omission. Edits were done first because they are what the agent
  * spends most of its time doing and the hardest thing to read as raw text; search was
- * added second to prove the mechanism generalises past one shape. The rest — `Read`,
- * `Bash`, `Agent`, `LSP`, `MCP`, `ImageGen`, `ReadMcpResource`, `ListMcpResources`,
+ * added second to prove the mechanism generalises past one shape; media (`ImageGen` /
+ * `VideoGen`) was added next because a bare file path is useless for something visual.
+ * The rest — `Read`, `Bash`, `Agent`, `LSP`, `MCP`, `ReadMcpResource`, `ListMcpResources`,
  * `RemoteTrigger`, `Config`, `Brief`, the plan-mode and worktree tools, and
  * `AskUserQuestion`/`TodoWrite` which already have their own cards — each have a
  * `renderToolResultMessage` in `src/tools/<Name>/UI.tsx` worth mirroring, and are left
@@ -1061,6 +1052,33 @@ export type ToolResultView =
       plan: string
       /** Where the engine saved it, when it reported a path. */
       filePath?: string
+    }
+  /**
+   * A generated image or video — `ImageGen` / `VideoGen` output.
+   *
+   * Images carry their pixels inline as `previewDataUri` (`data:` URL, already permitted by
+   * the webview CSP's `img-src ... data:`), so they render without any file access. Videos
+   * are too large to inline: the host resolves `path` to a `webview.asWebviewUri` value in
+   * `webviewUri` at post time, which is why it may be absent when the file sits outside the
+   * webview's `localResourceRoots`. When it is absent the view still shows the poster
+   * (`previewDataUri`) and an Open button, so nothing is lost, only playback.
+   */
+  | {
+      kind: 'media'
+      media: 'image' | 'video'
+      /** Absolute on-disk output path (inside the session cwd). */
+      path: string
+      fileName: string
+      mediaType: string
+      width?: number
+      height?: number
+      model?: string
+      durationSeconds?: number
+      resolution?: string
+      /** Image pixels, or a video poster frame, as a `data:` URL. Bounded by the host. */
+      previewDataUri?: string
+      /** Video playback URL from `webview.asWebviewUri`, set host-side at post time. */
+      webviewUri?: string
     }
 
 /**
@@ -1121,6 +1139,14 @@ export type TranscriptEntry =
       text: string
       /** How a prompt entered an already-running turn. Omitted for ordinary sends. */
       delivery?: Exclude<PromptDeliveryView, 'normal'>
+      /**
+       * The engine's uuid for this user message, when the host generated one.
+       *
+       * Present only for prompts sent from this host (not restored history), and only when
+       * file checkpointing is on. It is the key `rewind_files` uses to restore files to the
+       * state before this message, so the Restore control shows exactly when this is set.
+       */
+      messageUuid?: string
     }
   | { id: EntryId; kind: 'assistant'; text: string; streaming?: boolean }
   | {
@@ -1593,7 +1619,6 @@ export interface WebviewState {
   /** Thinking and effort, so the controls survive a webview re-creation. */
   inference: InferenceSettingsView
   providerSetup: ProviderSetupView
-  telegramConnect: TelegramConnectView
   /** Open command-driven model chooser, or null. Host-owned so it survives re-creation. */
   modelChooser: ModelChooserView | null
   attachment: AttachmentView
@@ -1642,6 +1667,11 @@ export interface WebviewState {
    * revive the tab after a window reload.
    */
   surfaceBinding: SurfaceBindingView | null
+  /**
+   * True when this snapshot belongs to a live conversation (always true for a panel).
+   * False only for the sidebar hub snapshot shown when the sidebar hosts no chat.
+   */
+  hasConversation: boolean
   /** Host-owned task state survives webview collapse and recreation. */
   backgroundTasks?: BackgroundTaskView[]
   /** False when an attached older CLI does not expose task inspection. */
@@ -1665,6 +1695,7 @@ export interface WebviewState {
 export interface SlashCommandView {
   name: string
   description: string
+  argumentHint?: string
 }
 
 /** An MCP server's connection status. */
@@ -1818,12 +1849,12 @@ export interface ProviderSetupView {
 }
 
 /**
- * The in-panel Telegram connect surface.
+ * The Telegram connect card in Settings → Integrations (`TelegramConnectPanel`).
  *
  * ── NO FIELD HERE HOLDS A BOT TOKEN ────────────────────────────────────────────
  *
  * A BYO token is write-only from the webview's point of view: it is typed into a local
- * `type="password"` input, sent once in `telegramConnectStartByo`, and never returned.
+ * `type="password"` input, sent once in `settingsTelegramStartByo`, and never returned.
  * The host never reads it back, so nothing on this type could place one in persisted
  * webview state, a diagnostic, or the transcript.
  *
@@ -1832,7 +1863,6 @@ export interface ProviderSetupView {
  * UI uses to keep the deep link and "waiting" hint on screen.
  */
 export interface TelegramConnectView {
-  open: boolean
   /** True while a status load, pairing, verification, or unlink is in flight. */
   busy: boolean
   /** Progress wording for the step in flight. */

@@ -832,6 +832,39 @@ export const SettingsSchema = lazySchema(() =>
           'Custom directory for plan files, relative to project root. ' +
             'If not set, defaults to ~/.rayu/plans/',
         ),
+      orchestrator: z
+        .object({
+          verificationGate: z
+            .enum(['hard', 'soft'])
+            .optional()
+            .describe(
+              '"hard" (default): an Orchestrator run cannot be reported as done while a required check fails. ' +
+                '"soft": failures are reported but do not hold the run open.',
+            ),
+          maxRepairRounds: z
+            .number()
+            .int()
+            .min(0)
+            .max(10)
+            .optional()
+            .describe('Repair rounds allowed after a failed verification (default 3).'),
+          maxParallelWriters: z
+            .number()
+            .int()
+            .min(1)
+            .max(16)
+            .optional()
+            .describe('Implementation workers that may write at the same time (default 4).'),
+          checkCommands: z
+            .array(z.string())
+            .optional()
+            .describe(
+              'Commands every Orchestrator run must pass, in addition to the checks in its contract, ' +
+                'for example ["bun run typecheck", "bun test"].',
+            ),
+        })
+        .optional()
+        .describe('Orchestrator mode: verification and parallelism limits.'),
       ...(process.env.USER_TYPE === 'ant'
         ? {
             classifierPermissionsEnabled: z

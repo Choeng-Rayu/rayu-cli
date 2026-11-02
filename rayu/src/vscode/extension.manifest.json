@@ -43,6 +43,7 @@
   "//activationEvents": "onView keeps activation lazy: the extension host does no work in windows where the panel is never opened. Once the authenticated panel mounts, it prewarms the engine while the user reads or types so the first turn can reuse it.",
   "activationEvents": [
     "onView:rayucode.chat",
+    "onView:rayucode.contextDrop",
     "onCommand:rayucode.newSession",
     "onCommand:rayucode.openSettings",
     "onWebviewPanel:rayucode.sessionChat",
@@ -83,6 +84,11 @@
           "minimum": 512,
           "scope": "machine",
           "markdownDescription": "The most memory each Rayu engine (one per open conversation) may use, in MB. When an engine reaches it, it restarts and your next message continues the conversation. Leave empty for a limit based on this machine's RAM. For the `engine.mjs` engine this caps the JavaScript heap. Takes effect after the window reloads."
+        },
+        "rayucode.contextDropView": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the **Rayucode Context** pane in the Explorer. Drag files or folders onto it to add them to the active Rayucode conversation without holding Shift."
         }
       }
     },
@@ -101,6 +107,14 @@
           "id": "rayucode.chat",
           "name": "Sessions",
           "type": "webview"
+        }
+      ],
+      "explorer": [
+        {
+          "id": "rayucode.contextDrop",
+          "name": "Rayucode Context",
+          "visibility": "collapsed",
+          "when": "config.rayucode.contextDropView"
         }
       ]
     },

@@ -116,49 +116,72 @@ function SignedOut({ apiKey, onAction, onOpenLink }: AccountSectionProps & { api
   )
 }
 
-function UsageItems({ usage, onOpenLink }: { usage: AccountUsageView; onOpenLink: (link: AccountLinkId) => void }): JSX.Element {
+type OpenLink = (link: AccountLinkId) => void
+
+function UsageItems({ usage, onOpenLink }: { usage: AccountUsageView; onOpenLink: OpenLink }): JSX.Element {
   return (
     <>
-      <SettingsItem label="Plan">
-        <span className="rs-value">{usage.planName} · {formatPlanPrice(usage.priceCents)}</span>
-        {usage.renewsAt && <span className="rs-item-note">Renews {formatDay(usage.renewsAt)}</span>}
-        <LinkRow links={[['plan', 'Manage plan'], ['plans', 'Compare plans'], ['billing', 'Billing']]} onOpenLink={onOpenLink} />
-      </SettingsItem>
-      <SettingsItem label="Credits" description={usage.team ? 'Your share of your team\'s allowance.' : undefined}>
-        {usage.credits
-          ? <Meter label="This period" used={usage.credits.used} cap={usage.credits.perPeriod} note={`${count(usage.credits.remaining)} left`} />
-          : <span className="rs-value">This plan includes no hosted credits.</span>}
-        {usage.pacing.enforced && usage.pacing.windows.map(window => (
-          <Meter
-            key={window.id}
-            label={WINDOW_LABELS[window.id]}
-            used={window.used}
-            cap={window.cap}
-            note={`${count(Math.max(0, window.cap - window.used))} left${formatResets(window.resetsAt)}`}
-          />
-        ))}
-        {!usage.pacing.enforced && usage.pacing.windows.length > 0 && (
-          <span className="rs-item-note">Pacing is off: you can use all your credits without session or weekly limits.</span>
-        )}
-        {usage.pacing.advice && <span className="rs-warning" role="status">{usage.pacing.advice}</span>}
-        {usage.dailyTurns && (
-          <Meter
-            label="Turns today"
-            used={usage.dailyTurns.used}
-            cap={usage.dailyTurns.max}
-            note={`${count(usage.dailyTurns.remaining)} left${formatResets(usage.dailyTurns.resetsAt)}`}
-          />
-        )}
-        {usage.topUpBalance !== null && <span className="rs-value">Top-up balance: {count(usage.topUpBalance)} credits</span>}
-        <LinkRow
-          links={[
-            ['usage', 'Usage details'],
-            ...(usage.topUpBalance !== null ? [['credits', 'Buy credits'] as const] : []),
-            ...(usage.pacing.windows.length > 0 && !usage.team ? [['dashboard', 'Pacing settings'] as const] : []),
-          ]}
-          onOpenLink={onOpenLink}
+      <PlanItem usage={usage} onOpenLink={onOpenLink} />
+      <CreditsItem usage={usage} onOpenLink={onOpenLink} />
+    </>
+  )
+}
+
+function PlanItem({ usage, onOpenLink }: { usage: AccountUsageView; onOpenLink: OpenLink }): JSX.Element {
+  return (
+    <SettingsItem label="Plan">
+      <span className="rs-value">{usage.planName} · {formatPlanPrice(usage.priceCents)}</span>
+      {usage.renewsAt && <span className="rs-item-note">Renews {formatDay(usage.renewsAt)}</span>}
+      <LinkRow links={[['plan', 'Manage plan'], ['plans', 'Compare plans'], ['billing', 'Billing']]} onOpenLink={onOpenLink} />
+    </SettingsItem>
+  )
+}
+
+function CreditsItem({ usage, onOpenLink }: { usage: AccountUsageView; onOpenLink: OpenLink }): JSX.Element {
+  return (
+    <SettingsItem label="Credits" description={usage.team ? 'Your share of your team\'s allowance.' : undefined}>
+      {usage.credits
+        ? <Meter label="This period" used={usage.credits.used} cap={usage.credits.perPeriod} note={`${count(usage.credits.remaining)} left`} />
+        : <span className="rs-value">This plan includes no hosted credits.</span>}
+      <PacingMeters pacing={usage.pacing} />
+      {usage.dailyTurns && (
+        <Meter
+          label="Turns today"
+          used={usage.dailyTurns.used}
+          cap={usage.dailyTurns.max}
+          note={`${count(usage.dailyTurns.remaining)} left${formatResets(usage.dailyTurns.resetsAt)}`}
         />
-      </SettingsItem>
+      )}
+      {usage.topUpBalance !== null && <span className="rs-value">Top-up balance: {count(usage.topUpBalance)} credits</span>}
+      <LinkRow
+        links={[
+          ['usage', 'Usage details'],
+          ...(usage.topUpBalance !== null ? [['credits', 'Buy credits'] as const] : []),
+          ...(usage.pacing.windows.length > 0 && !usage.team ? [['dashboard', 'Pacing settings'] as const] : []),
+        ]}
+        onOpenLink={onOpenLink}
+      />
+    </SettingsItem>
+  )
+}
+
+/** The session and weekly windows when pacing is enforced, or a note that it is off. */
+function PacingMeters({ pacing }: { pacing: AccountUsageView['pacing'] }): JSX.Element {
+  return (
+    <>
+      {pacing.enforced && pacing.windows.map(window => (
+        <Meter
+          key={window.id}
+          label={WINDOW_LABELS[window.id]}
+          used={window.used}
+          cap={window.cap}
+          note={`${count(Math.max(0, window.cap - window.used))} left${formatResets(window.resetsAt)}`}
+        />
+      ))}
+      {!pacing.enforced && pacing.windows.length > 0 && (
+        <span className="rs-item-note">Pacing is off: you can use all your credits without session or weekly limits.</span>
+      )}
+      {pacing.advice && <span className="rs-warning" role="status">{pacing.advice}</span>}
     </>
   )
 }

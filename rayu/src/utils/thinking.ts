@@ -9,6 +9,11 @@ import {
   resolveRequestShape,
   usesTranslatedFormat,
 } from './model/providerCapabilities.js'
+import {
+  isClaude46Plus,
+  isLegacyClaude3Model,
+  normalizeModelNotation,
+} from './model/modelNotation.js'
 import { getSettingsWithErrors } from './settings/settings.js'
 
 export type ThinkingConfig =
@@ -116,13 +121,27 @@ export function modelSupportsThinking(model: string): boolean {
       return true
     }
   }
+  // Notation-agnostic decision on the RAW id: DOTS and DASHES name the same model
+  // (`claude-opus-4.6` ≡ `claude-opus-4-6`). This must run BEFORE the canonical logic,
+  // because `getCanonicalName` collapses a dotted/newer version to a family-only name and
+  // loses the distinction. See modelNotation.ts.
+  const notation = normalizeModelNotation(model)
+  if (isClaude46Plus(notation)) {
+    return true
+  }
   // IMPORTANT: Do not change thinking support without notifying the model
   // launch DRI and research. This can greatly affect model quality and bashing.
+  // NOTE: `getCanonicalName` takes the ORIGINAL id, NOT the normalized one, on purpose — it
+  // resolves user `modelOverrides` by EXACT string match, and those values can be dotted ARNs
+  // (`us.anthropic.…`); normalizing would break that match.
   const canonical = getCanonicalName(model)
   const provider = getAPIProvider()
-  // 1P and Foundry: all Claude 4+ models (including Haiku 4.5)
+  // 1P and Foundry: all Claude 4+ models (including Haiku 4.5) — only Claude 3.x excluded.
+  // Checked on `notation` (not `canonical`) so a DOTTED `claude-3.5-…` is excluded exactly like
+  // its DASHED twin; the canonical form of a dotted 3.x collapses to `claude-3` and slipped past
+  // a dashed-only `includes('claude-3-')`.
   if (provider === 'foundry' || provider === 'anthropic') {
-    return !canonical.includes('claude-3-')
+    return !isLegacyClaude3Model(notation)
   }
   // 3P (Bedrock/Vertex): only Opus 4+ and Sonnet 4+
   return canonical.includes('sonnet-4') || canonical.includes('opus-4')
@@ -153,16 +172,27 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   if (!shape.anthropicFormat) {
     return true
   }
-  const canonical = getCanonicalName(model)
-  // Supported by a subset of Claude 4 models
-  if (canonical.includes('opus-4-6') || canonical.includes('sonnet-4-6')) {
+  // Notation-agnostic 4.6+ check on the RAW id (dots or dashes, any provider). Replaces the
+  // previous dashed-only `canonical.includes('opus-4-6')` test, which rejected gateway/kiro
+  // dotted ids and newer 4.7/4.8/5.x because getCanonicalName collapses them. See modelNotation.ts.
+  const notation = normalizeModelNotation(model)
+  if (isClaude46Plus(notation)) {
     return true
   }
-  // Exclude any other known legacy models (allowlist above catches 4-6 variants first)
+  // ORIGINAL id, not the normalized one — see the note in `modelSupportsThinking` about
+  // exact-match `modelOverrides` (dotted ARNs).
+  const canonical = getCanonicalName(model)
+  // Exclude any other known legacy Claude family (the 4.6+ allowlist above already returned).
+  // Checked on BOTH `canonical` (aliases/ARNs) and `notation` (raw, dots normalized) so a
+  // DOTTED `claude-3.5-…` — which collapses to `claude-3` and slips past the canonical check —
+  // is excluded exactly like its DASHED twin. See modelNotation.ts.
   if (
     canonical.includes('opus') ||
     canonical.includes('sonnet') ||
-    canonical.includes('haiku')
+    canonical.includes('haiku') ||
+    notation.includes('opus') ||
+    notation.includes('sonnet') ||
+    notation.includes('haiku')
   ) {
     return false
   }

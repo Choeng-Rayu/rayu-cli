@@ -30,7 +30,7 @@ import {
   getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
 } from '../../services/rayuAuth/rayuSession.js'
-import { recordRayuCharge } from '../../services/rayuAuth/rayuTurnCredits.js'
+import { recordRayuCharge, startRayuCharge } from '../../services/rayuAuth/rayuTurnCredits.js'
 import { type ImageModel, type ImageParams } from './models.js'
 
 /**
@@ -209,6 +209,8 @@ export async function generateRayuImage(opts: {
     response_format: 'b64_json',
   }
 
+  // The request's start: its charge belongs to the work that asked for it.
+  const chargeTicket = startRayuCharge()
   const { composed, timeout } = withTimeout(opts.signal)
   let res: Response
   try {
@@ -256,7 +258,7 @@ export async function generateRayuImage(opts: {
   }
   // The gateway settled the charge before answering, so count it now: a URL
   // download that fails below does not undo it.
-  recordRayuCharge(creditsFromRayuBody(payload))
+  recordRayuCharge(creditsFromRayuBody(payload), chargeTicket, 'image_generation')
   if (payload?.error?.message) {
     throw new Error(`Rayu image API error: ${payload.error.message}`)
   }
