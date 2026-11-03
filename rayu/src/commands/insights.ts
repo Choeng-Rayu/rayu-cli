@@ -105,7 +105,7 @@ const collectFromRemoteHost: (
         const result = { copied: 0, skipped: 0 }
 
         // Create temp directory
-        const tempDir = await mkdtemp(join(tmpdir(), 'claude-hs-'))
+        const tempDir = await mkdtemp(join(tmpdir(), 'rayu-hs-'))
 
         try {
           // SCP the projects folder

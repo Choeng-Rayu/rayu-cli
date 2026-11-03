@@ -452,7 +452,7 @@ function loadSettingsFromFlag(settingsFile: string): void {
       // the cache prefix and causing a 12x input token cost penalty.
       // The content hash ensures identical settings produce the same path
       // across process boundaries (each SDK query() spawns a new process).
-      settingsPath = generateTempFilePath('claude-settings', '.json', {
+      settingsPath = generateTempFilePath('rayu-settings', '.json', {
         contentHash: trimmedSettings
       });
       writeFileSync_DEPRECATED(settingsPath, trimmedSettings, 'utf8');

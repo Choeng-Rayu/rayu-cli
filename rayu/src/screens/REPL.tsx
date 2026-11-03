@@ -4507,7 +4507,7 @@ export function REPL({
           const w = Math.max(80, (process.stdout.columns ?? 80) - 6);
           const raw = await renderMessagesToPlainText(deferredMessages, tools, w);
           const text = raw.replace(/[ \t]+$/gm, '');
-          const path = join(tmpdir(), `cc-transcript-${Date.now()}.txt`);
+          const path = join(tmpdir(), `rayu-transcript-${Date.now()}.txt`);
           await writeFile(path, text);
           const opened = openFileInExternalEditor(path);
           setStatus(opened ? `opening ${path}` : `wrote ${path} · no $VISUAL/$EDITOR set`);

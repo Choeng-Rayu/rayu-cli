@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { hostname, tmpdir } from 'os'
+import { hostname } from 'os'
 import { basename, join, resolve } from 'path'
 import { getRemoteSessionUrl } from '../constants/product.js'
 import { shutdownDatadog } from '../services/analytics/datadog.js'
@@ -14,6 +14,7 @@ import { isInBundledMode } from '../utils/bundledMode.js'
 import { logForDebugging } from '../utils/debug.js'
 import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'
 import { isEnvTruthy, isInProtectedNamespace } from '../utils/envUtils.js'
+import { getRayuTempDir } from '../utils/rayuTempDir.js'
 import { errorMessage } from '../utils/errors.js'
 import { truncateToWidth } from '../utils/format.js'
 import { logError } from '../utils/log.js'
@@ -348,7 +349,7 @@ export async function runBridgeLoop(
           ? `${config.debugFile.slice(0, ext)}-*${config.debugFile.slice(ext)}`
           : `${config.debugFile}-*`
     } else {
-      debugGlob = join(tmpdir(), 'claude', 'bridge-session-*.log')
+      debugGlob = join(getRayuTempDir(), 'bridge', 'bridge-session-*.log')
     }
     logger.setDebugLogPath(debugGlob)
   }
@@ -1133,8 +1134,8 @@ export async function runBridgeLoop(
             }
           } else if (config.verbose || process.env.USER_TYPE === 'ant') {
             sessionDebugFile = join(
-              tmpdir(),
-              'claude',
+              getRayuTempDir(),
+              'bridge',
               `bridge-session-${safeId}.log`,
             )
           }

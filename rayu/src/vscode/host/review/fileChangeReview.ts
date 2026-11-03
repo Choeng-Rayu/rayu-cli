@@ -284,8 +284,13 @@ export async function openReviewDiff(
 
   if (!record) {
     // No recorded change: nothing to diff against. Opening the file is more useful
-    // than an empty diff implying nothing changed.
-    await vscode.window.showTextDocument(uri, { preview: true })
+    // than an empty diff implying nothing changed. Opened beside and non-preview for
+    // the same reason as the diff below: the Diff button must never take over the
+    // conversation's own tab.
+    await vscode.window.showTextDocument(uri, {
+      viewColumn: vscode.ViewColumn.Beside,
+      preview: false,
+    })
     return
   }
 
@@ -294,7 +299,19 @@ export async function openReviewDiff(
     preEditUri(sessionKey, record.displayPath),
     uri,
     `${basename(displayPath)} — Rayu changes`,
-    { preview: true },
+    {
+      // ── BESIDE, NOT IN THE ACTIVE GROUP ──────────────────────────────────────
+      //
+      // Opening the diff in the active editor group (the default) made it share that
+      // group with the chat tab. With `preview: true` VS Code then reuses the group's
+      // preview slot, so the chat tab could be replaced by the diff instead of a new
+      // tab appearing next to it. `ViewColumn.Beside` puts the diff in its OWN editor
+      // group to the right, which leaves the conversation tab exactly where it was and
+      // lets the user see both at once. A non-preview tab so it is a real, stable tab
+      // that a later preview open cannot silently replace.
+      viewColumn: vscode.ViewColumn.Beside,
+      preview: false,
+    },
   )
 }
 

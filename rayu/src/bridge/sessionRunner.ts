@@ -1,8 +1,8 @@
 import { type ChildProcess, spawn } from 'child_process'
 import { createWriteStream, type WriteStream } from 'fs'
-import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { createInterface } from 'readline'
+import { getRayuTempDir } from '../utils/rayuTempDir.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
 import { debugTruncate } from './debugUtils.js'
 import type {
@@ -262,7 +262,11 @@ export function createSessionSpawner(deps: SessionSpawnerDeps): SessionSpawner {
           debugFile = `${deps.debugFile}-${safeId}`
         }
       } else if (deps.verbose || process.env.USER_TYPE === 'ant') {
-        debugFile = join(tmpdir(), 'claude', `bridge-session-${safeId}.log`)
+        debugFile = join(
+          getRayuTempDir(),
+          'bridge',
+          `bridge-session-${safeId}.log`,
+        )
       }
 
       // Transcript file: write raw NDJSON lines for post-hoc analysis.

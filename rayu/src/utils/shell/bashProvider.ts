@@ -114,10 +114,10 @@ export async function createBashShellProvider(
       // but Node.js needs native Windows paths for file operations.
       const shellCwdFilePath = opts.useSandbox
         ? posixJoin(opts.sandboxTmpDir!, `cwd-${opts.id}`)
-        : posixJoin(shellTmpdir, `claude-${opts.id}-cwd`)
+        : posixJoin(shellTmpdir, `rayu-${opts.id}-cwd`)
       const cwdFilePath = opts.useSandbox
         ? posixJoin(opts.sandboxTmpDir!, `cwd-${opts.id}`)
-        : nativeJoin(tmpdir, `claude-${opts.id}-cwd`)
+        : nativeJoin(tmpdir, `rayu-${opts.id}-cwd`)
 
       // Defensive rewrite: the model sometimes emits Windows CMD-style `2>nul`
       // redirects. In POSIX bash (including Git Bash on Windows), this creates a
@@ -237,6 +237,8 @@ export async function createBashShellProvider(
           posixTmpDir = windowsPathToPosixPath(posixTmpDir)
         }
         env.TMPDIR = posixTmpDir
+        env.RAYU_CODE_TMPDIR = posixTmpDir
+        // Kept for child tooling that still reads the old variable.
         env.CLAUDE_CODE_TMPDIR = posixTmpDir
         // Zsh uses TMPPREFIX (default /tmp/zsh) for heredoc temp files,
         // not TMPDIR. Set it to a path inside the sandbox tmp dir so

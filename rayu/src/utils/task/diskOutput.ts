@@ -13,6 +13,7 @@ import { getErrnoCode } from '../errors.js'
 import { readFileRange, tailFile } from '../fsOperations.js'
 import { logError } from '../log.js'
 import { getProjectTempDir } from '../permissions/filesystem.js'
+import { ensureRayuTempDir } from '../rayuTempDir.js'
 
 // SECURITY: O_NOFOLLOW prevents following symlinks when opening task output files.
 // Without this, an attacker in the sandbox could create symlinks in the tasks directory
@@ -63,7 +64,8 @@ export function _resetTaskOutputDirForTest(): void {
  * Ensure the task output directory exists
  */
 async function ensureOutputDir(): Promise<void> {
-  await mkdir(getTaskOutputDir(), { recursive: true })
+  await ensureRayuTempDir()
+  await mkdir(getTaskOutputDir(), { recursive: true, mode: 0o700 })
 }
 
 /**
@@ -151,6 +153,8 @@ export class DiskTaskOutput {
                   fsConstants.O_APPEND |
                   fsConstants.O_CREAT |
                   O_NOFOLLOW,
+            // Task output is raw tool stdout — keep it owner-only.
+            0o600,
           )
         }
         while (true) {

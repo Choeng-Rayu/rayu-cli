@@ -39,7 +39,7 @@ import {
   INTERRUPT_MESSAGE,
   INTERRUPT_MESSAGE_FOR_TOOL_USE,
 } from '../../utils/messages.js'
-import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
+import { getRayuTempDir } from '../../utils/rayuTempDir.js'
 import { extractReadFilesFromMessages } from '../../utils/queryHelpers.js'
 import { getTranscriptPath } from '../../utils/sessionStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -78,7 +78,7 @@ function safeRemoveOverlay(overlayPath: string): void {
 }
 
 function getOverlayPath(id: string): string {
-  return join(getClaudeTempDir(), 'speculation', String(process.pid), id)
+  return join(getRayuTempDir(), 'speculation', String(process.pid), id)
 }
 
 function denySpeculation(
@@ -426,7 +426,7 @@ export async function startSpeculation(
   const cwd = getCwdState()
 
   try {
-    await mkdir(overlayPath, { recursive: true })
+    await mkdir(overlayPath, { recursive: true, mode: 0o700 })
   } catch {
     logForDebugging('[Speculation] Failed to create overlay directory')
     return
@@ -528,7 +528,7 @@ export async function startSpeculation(
               // Copy-on-write: copy original to overlay if not yet there
               if (!writtenPathsRef.current.has(rel)) {
                 const overlayFile = join(overlayPath, rel)
-                await mkdir(dirname(overlayFile), { recursive: true })
+                await mkdir(dirname(overlayFile), { recursive: true, mode: 0o700 })
                 try {
                   await copyFile(join(cwd, rel), overlayFile)
                 } catch {
