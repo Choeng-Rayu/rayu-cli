@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle';
 import { appendFileSync } from 'fs';
 import React from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
@@ -23,7 +22,7 @@ import { isEnvTruthy } from './utils/envUtils.js';
 import { type FpsMetrics, FpsTracker } from './utils/fpsTracker.js';
 import { setMemProbeFpsTracker, startMemProbeIfEnabled } from './utils/memProbe.js';
 import { startInteractiveHeapDumpMonitor } from './utils/interactiveHeapDumpMonitor.js';
-import { startMemoryPressureGuard } from './utils/memoryPressureGuard.js';
+import { setMemoryPressureCleanup, startMemoryPressureGuard } from './utils/memoryPressureGuard.js';
 import { updateGithubRepoPathMapping } from './utils/githubRepoPathMapping.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import type { PermissionMode } from './utils/permissions/PermissionMode.js';
@@ -123,6 +122,40 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     });
   }
 
+  // Re-check a stored Rayu API key on EVERY launch, so a key that has been
+  // revoked, has expired, or has run out of credit is caught here rather than
+  // surfacing as a failed request mid-conversation. This is what "track the user"
+  // means for a long-lived credential: unlike an account session it carries no
+  // expiry the CLI can read locally, so the gateway has to be asked.
+  //
+  // Deliberately AFTER onboarding: a first run has just set the key up and
+  // validated it, and ensureRayuApiKeyValidated() only calls out once per process,
+  // so this costs nothing on that path.
+  //
+  // FAILS OPEN. Only 'invalid' and 'no-credit' — verdicts the gateway is certain
+  // about — interrupt the user. An unreachable gateway returns 'unavailable' and
+  // is ignored: an offline laptop or a gateway blip must not lock someone out of
+  // their own session, and the request path will surface a real error if it
+  // genuinely cannot proceed.
+  //
+  // Non-interactive/--print runs never reach showSetupScreens at all, so headless
+  // usage is unaffected and a bad key there still surfaces as an API error.
+  if (!onboardingShown) {
+    const {
+      ensureRayuApiKeyValidated
+    } = await import('./services/rayuAuth/rayuApiKeyAuth.js');
+    const check = await ensureRayuApiKeyValidated().catch(() => null);
+    if (check && (check.status === 'invalid' || check.status === 'no-credit')) {
+      const {
+        RayuFirstRunSetup
+      } = await import('./components/RayuFirstRunSetup.js');
+      const notice = check.status === 'invalid' ? 'Your saved Rayu API key was rejected — it may have been revoked, expired, or regenerated.' : 'Your Rayu account has no credits left, so the saved API key cannot be used right now.';
+      await showSetupDialog(root, done => <RayuFirstRunSetup reason="relaunch" notice={notice} onDone={() => void done()} />, {
+        onChangeAppState
+      });
+    }
+  }
+
   // Always show the trust dialog in interactive sessions, regardless of permission mode.
   // The trust dialog is the workspace trust boundary — it warns about untrusted repos
   // and checks RAYU.md external includes. bypassPermissions mode
@@ -174,7 +207,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
   // Track current repo path for teleport directory switching (fire-and-forget)
   // This must happen AFTER trust to prevent untrusted directories from poisoning the mapping
   void updateGithubRepoPathMapping();
-  if (feature('LODESTONE')) {
+  if (RAYU_FEATURES.LODESTONE) {
     updateDeepLinkTerminalPreference();
   }
 
@@ -200,7 +233,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     } = await import('./components/BypassPermissionsModeDialog.js');
     await showSetupDialog(root, done => <BypassPermissionsModeDialog onAccept={done} />);
   }
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     // Only show the opt-in dialog if auto mode actually resolved — if the
     // gate denied it (org not allowlisted, settings disabled), showing
     // consent for an unavailable feature is pointless. The
@@ -217,7 +250,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
   // dev channels to any --channels list already set in main.tsx. Org policy
   // is NOT bypassed — gateChannelServer() still runs; this flag only exists
   // to sidestep the --channels approved-server allowlist.
-  if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
+  if (RAYU_FEATURES.KAIROS || RAYU_FEATURES.KAIROS_CHANNELS) {
     // gateChannelServer and ChannelsNotice read tengu_harbor after this
     // function returns. A cold disk cache (fresh install, or first run after
     // the flag was added server-side) defaults to false and silently drops
@@ -297,6 +330,14 @@ export function getRenderContext(exitOnCtrlC: boolean): {
   // Memory-pressure guardrail: periodically clears Node's User Timing buffer
   // (the perf-measure leak class) and, at ~80% of the heap limit, runs cleanup
   // + GC to degrade gracefully instead of OOM-crashing. Opt out RAYU_MEM_GUARD=0.
+  setMemoryPressureCleanup(() => {
+    try {
+      const { runPostCompactCleanup } = require('./services/compact/postCompactCleanup.js') as typeof import('./services/compact/postCompactCleanup.js');
+      runPostCompactCleanup();
+    } catch {
+      // Best effort.
+    }
+  });
   startMemoryPressureGuard();
 
   // Bench mode: when set, append per-frame phase timings as JSONL for

@@ -22,6 +22,7 @@ import { generateProgressiveArgumentHint, parseArguments } from '../utils/argume
 import { getShellCompletions, type ShellCompletionType } from '../utils/bash/shellCompletion.js';
 import { formatLogMetadata } from '../utils/format.js';
 import { getSessionIdFromLog, searchSessionsByCustomTitle } from '../utils/sessionStorage.js';
+import { applyAgentModelTarget, describeConfigurableAgent, matchAgentModelTarget, matchingAgentModelTargets } from '../utils/model/agentModelTargets.js';
 import { applyCommandSuggestion, findMidInputSlashCommand, generateCommandSuggestions, getBestCommandMatch, isCommandInput } from '../utils/suggestions/commandSuggestions.js';
 import { getDirectoryCompletions, getPathCompletions, isPathLikeToken } from '../utils/suggestions/directoryCompletion.js';
 import { getShellHistoryCompletion } from '../utils/suggestions/shellHistoryCompletion.js';
@@ -590,6 +591,34 @@ export function useTypeahead({
       }
     }
 
+    // `/subagent_models <AGENT>` completion. The command itself comes from the
+    // normal slash-command list; after its first space, replace that list with
+    // concrete agent types so users do not have to memorize internal names.
+    if (mode === 'prompt') {
+      const targetMatch = matchAgentModelTarget(value, effectiveCursorOffset);
+      if (targetMatch) {
+        const targetItems = matchingAgentModelTargets(value, effectiveCursorOffset, agents.map(agent => agent.agentType)).map(agentType => ({
+          id: `agent-model-target-${agentType}`,
+          displayText: agentType,
+          description: describeConfigurableAgent(agentType),
+          metadata: {
+            agentType
+          }
+        }));
+        setSuggestionsState(prev => ({
+          commandArgumentHint: undefined,
+          suggestions: targetItems,
+          selectedSuggestion: getPreservedSelection(prev.suggestions, prev.selectedSuggestion, targetItems)
+        }));
+        setSuggestionType(targetItems.length > 0 ? 'agent-model-target' : 'none');
+        setMaxColumnWidth(undefined);
+        return;
+      }
+      if (suggestionType === 'agent-model-target') {
+        clearSuggestions();
+      }
+    }
+
     // Check for @ to trigger team member / named subagent suggestions
     // Must check before @ file symbol to prevent conflict
     // Skip in bash mode - @ has no special meaning in shell commands
@@ -1024,6 +1053,19 @@ export function useTypeahead({
           applyTriggerSuggestion(suggestion, input, cursorOffset, DM_MEMBER_RE, onInputChange, setCursorOffset);
           clearSuggestions();
         }
+      } else if (suggestionType === 'agent-model-target' && suggestions.length > 0) {
+        const suggestion = suggestions[index];
+        const agentType = (suggestion?.metadata as {
+          agentType?: string;
+        } | undefined)?.agentType;
+        if (agentType) {
+          const result = applyAgentModelTarget(input, cursorOffset, agentType);
+          if (result) {
+            onInputChange(result.input);
+            setCursorOffset(result.cursorOffset);
+          }
+        }
+        clearSuggestions();
       } else if (suggestionType === 'slack-channel' && suggestions.length > 0) {
         const suggestion = suggestions[index];
         if (suggestion) {
@@ -1167,6 +1209,20 @@ export function useTypeahead({
       }
     } else if (suggestionType === 'agent' && selectedSuggestion < suggestions.length && suggestion?.id?.startsWith('dm-')) {
       applyTriggerSuggestion(suggestion, input, cursorOffset, DM_MEMBER_RE, onInputChange, setCursorOffset);
+      debouncedFetchFileSuggestions.cancel();
+      clearSuggestions();
+    } else if (suggestionType === 'agent-model-target' && selectedSuggestion < suggestions.length) {
+      const agentType = (suggestion?.metadata as {
+        agentType?: string;
+      } | undefined)?.agentType;
+      if (agentType) {
+        const result = applyAgentModelTarget(input, cursorOffset, agentType);
+        if (result) {
+          onInputChange(result.input);
+          setCursorOffset(result.cursorOffset);
+          onSubmit(result.input, /* isSubmittingSlashCommand */true);
+        }
+      }
       debouncedFetchFileSuggestions.cancel();
       clearSuggestions();
     } else if (suggestionType === 'slack-channel' && selectedSuggestion < suggestions.length) {

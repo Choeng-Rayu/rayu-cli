@@ -26,6 +26,8 @@ export type RequiresActionDetails = {
 import { isEnvTruthy } from './envUtils.js'
 import type { PermissionMode } from './permissions/PermissionMode.js'
 import { enqueueSdkEvent } from './sdkEventQueue.js'
+import { createSignal } from './signal.js'
+import type { WorkerApprovalLoss } from '../orchestrator/modeChange.js'
 
 // CCR external_metadata keys — push in onChangeAppState, restore in
 // externalMetadataToAppState.
@@ -148,3 +150,26 @@ export function notifySessionMetadataChanged(
 export function notifyPermissionModeChanged(mode: PermissionMode): void {
   permissionModeListener?.(mode)
 }
+
+// ── Worker approval loss ─────────────────────────────────────────────────────
+//
+// Fired by onChangeAppState when a mode change takes auto-approval away from
+// running background workers (src/orchestrator/modeChange.ts). Unlike the
+// single-slot listeners above, any host may subscribe: the REPL shows a
+// notification and print.ts emits a warning frame Rayucode renders.
+
+const workerApprovalLoss = createSignal<[WorkerApprovalLoss]>()
+
+export const subscribeWorkerApprovalLoss = workerApprovalLoss.subscribe
+export const notifyWorkerApprovalLoss = workerApprovalLoss.emit
+
+// ── Orchestrator gate status ─────────────────────────────────────────────────
+//
+// Fired by query.ts when the verification gate (src/orchestrator/gate.ts) has a
+// status for the user. The REPL shows the same text as a transcript notice that
+// query.ts yields; print.ts, whose engine drops those, emits it as a frame.
+
+const orchestratorGateStatus = createSignal<[string]>()
+
+export const subscribeOrchestratorGateStatus = orchestratorGateStatus.subscribe
+export const notifyOrchestratorGateStatus = orchestratorGateStatus.emit

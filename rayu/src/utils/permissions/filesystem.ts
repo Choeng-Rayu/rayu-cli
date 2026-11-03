@@ -1,8 +1,7 @@
-import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
-import { homedir, tmpdir } from 'os'
+import { homedir } from 'os'
 import { join, normalize, posix, sep } from 'path'
 import { hasAutoMemPathOverride, isAutoMemPath } from 'src/memdir/paths.js'
 import { isAgentMemoryPath } from 'src/tools/AgentTool/agentMemory.js'
@@ -28,8 +27,9 @@ import {
   getDirectoryForPath,
   sanitizePath,
 } from '../path.js'
-import { getPlanSlug, getPlansDirectory } from '../plans.js'
+import { isSessionPlanFile } from '../plans.js'
 import { getPlatform } from '../platform.js'
+import { ensureRayuTempDir, getRayuTempDir } from '../rayuTempDir.js'
 import { getProjectDir } from '../sessionStorage.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
 import {
@@ -257,18 +257,8 @@ function isClaudeConfigFilePath(filePath: string): boolean {
   return guardedDirs.some(dir => pathInWorkingPath(filePath, dir))
 }
 
-// Check if file is the plan file for the current session
-function isSessionPlanFile(absolutePath: string): boolean {
-  // Check if path is a plan file for this session (main or agent-specific)
-  // Main plan file: {plansDir}/{planSlug}.md
-  // Agent plan file: {plansDir}/{planSlug}-agent-{agentId}.md
-  const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
-  // SECURITY: Normalize to prevent path traversal bypasses via .. segments
-  const normalizedPath = normalize(absolutePath)
-  return (
-    normalizedPath.startsWith(expectedPrefix) && normalizedPath.endsWith('.md')
-  )
-}
+// The session plan-file check lives in plans.ts (isSessionPlanFile), next to the
+// paths it compares against.
 
 /**
  * Returns the session memory directory path for the current session with trailing separator.
@@ -316,53 +306,6 @@ export function isScratchpadEnabled(): boolean {
 }
 
 /**
- * Returns the user-specific Claude temp directory name.
- * On Unix: 'claude-{uid}' to prevent multi-user permission conflicts
- * On Windows: 'claude' (tmpdir() is already per-user)
- */
-export function getClaudeTempDirName(): string {
-  if (getPlatform() === 'windows') {
-    return 'claude'
-  }
-  // Use UID to create per-user directories, preventing permission conflicts
-  // when multiple users share the same /tmp directory
-  const uid = process.getuid?.() ?? 0
-  return `claude-${uid}`
-}
-
-/**
- * Returns the Claude temp directory path with symlinks resolved.
- * Uses TMPDIR env var if set, otherwise:
- * - On Unix: /tmp/claude-{uid}/ (resolved to /private/tmp/claude-{uid}/ on macOS)
- * - On Windows: {tmpdir}/claude/ (e.g., C:\Users\{user}\AppData\Local\Temp\claude\)
- * This is a per-user temporary directory used by RAYU for all temp files.
- *
- * NOTE: We resolve symlinks to ensure this path matches the resolved paths used
- * in permission checks. On macOS, /tmp is a symlink to /private/tmp, so without
- * resolution, paths like /tmp/claude-{uid}/... wouldn't match /private/tmp/claude-{uid}/...
- */
-// Memoized: called per-tool from permission checks (yoloClassifier, sandbox-adapter)
-// and per-turn from BashTool prompt. Inputs (CLAUDE_CODE_TMPDIR env + platform) are
-// fixed at startup, and the realpath of the system tmp dir does not change mid-session.
-export const getClaudeTempDir = memoize(function getClaudeTempDir(): string {
-  const baseTmpDir =
-    process.env.CLAUDE_CODE_TMPDIR ||
-    (getPlatform() === 'windows' ? tmpdir() : '/tmp')
-
-  // Resolve symlinks in the base temp directory (e.g., /tmp -> /private/tmp on macOS)
-  // This ensures the path matches resolved paths in permission checks
-  const fs = getFsImplementation()
-  let resolvedBaseTmpDir = baseTmpDir
-  try {
-    resolvedBaseTmpDir = fs.realpathSync(baseTmpDir)
-  } catch {
-    // If resolution fails, use the original path
-  }
-
-  return join(resolvedBaseTmpDir, getClaudeTempDirName()) + sep
-})
-
-/**
  * Root for bundled-skill file extraction (see bundledSkills.ts).
  *
  * SECURITY: The per-process random nonce is the load-bearing defense here.
@@ -381,21 +324,21 @@ export const getClaudeTempDir = memoize(function getClaudeTempDir(): string {
 export const getBundledSkillsRoot = memoize(
   function getBundledSkillsRoot(): string {
     const nonce = randomBytes(16).toString('hex')
-    return join(getClaudeTempDir(), 'bundled-skills', MACRO.VERSION, nonce)
+    return join(getRayuTempDir(), 'bundled-skills', MACRO.VERSION, nonce)
   },
 )
 
 /**
  * Returns the project temp directory path with trailing separator.
- * Path format: /tmp/claude-{uid}/{sanitized-cwd}/
+ * Path format: /tmp/rayu-{uid}/{sanitized-cwd}/
  */
 export function getProjectTempDir(): string {
-  return join(getClaudeTempDir(), sanitizePath(getOriginalCwd())) + sep
+  return join(getRayuTempDir(), sanitizePath(getOriginalCwd())) + sep
 }
 
 /**
  * Returns the scratchpad directory path for the current session.
- * Path format: /tmp/claude-{uid}/{sanitized-cwd}/{sessionId}/scratchpad/
+ * Path format: /tmp/rayu-{uid}/{sanitized-cwd}/{sessionId}/scratchpad/
  */
 export function getScratchpadDir(): string {
   return join(getProjectTempDir(), getSessionId(), 'scratchpad')
@@ -415,6 +358,9 @@ export async function ensureScratchpadDir(): Promise<string> {
   const fs = getFsImplementation()
   const scratchpadDir = getScratchpadDir()
 
+  // The namespace root must be owner-only before anything is created under it.
+  await ensureRayuTempDir()
+
   // Create directory recursively with secure permissions (owner-only access)
   // FsOperations.mkdir handles recursive: true internally and is a no-op if dir exists
   await fs.mkdir(scratchpadDir, { mode: 0o700 })
@@ -430,7 +376,7 @@ function isScratchpadPath(absolutePath: string): boolean {
   const scratchpadDir = getScratchpadDir()
   // SECURITY: Normalize the path to resolve .. segments before checking
   // This prevents path traversal bypasses like:
-  //   echo "malicious" > /tmp/claude-0/proj/session/scratchpad/../../../etc/passwd
+  //   echo "malicious" > /tmp/rayu-0/proj/session/scratchpad/../../../etc/passwd
   // Without normalization, the path would pass the startsWith check but write to /etc/passwd
   const normalizedPath = normalize(absolutePath)
   return (
@@ -1533,7 +1479,7 @@ export function checkEditableInternalPath(
   // e.g. ~/.ssh/authorized_keys does not get a free write. Resolving both
   // sides handles the macOS /tmp → /private/tmp case where the config dir
   // lives under a symlinked root.
-  if (feature('TEMPLATES')) {
+  if (RAYU_FEATURES.TEMPLATES) {
     const jobDir = process.env.CLAUDE_JOB_DIR
     if (jobDir) {
       const jobsRoot = join(getRayuConfigHomeDir(), 'jobs')
@@ -1701,7 +1647,7 @@ export function checkReadableInternalPath(
     }
   }
 
-  // Project temp directory (/tmp/claude/{sanitized-cwd}/)
+  // Project temp directory (/tmp/rayu-{uid}/{sanitized-cwd}/)
   // Intentionally allows reading files from all sessions in this project, not just the current session.
   // This enables cross-session file access within the same project's temp space.
   const projectTempDir = getProjectTempDir()

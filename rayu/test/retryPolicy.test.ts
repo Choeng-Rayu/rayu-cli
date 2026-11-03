@@ -5,7 +5,10 @@ import { join } from 'path'
 import { APIError } from '@anthropic-ai/sdk/index.js'
 import {
   getAssistantMessageFromError,
+  getRayuResetSeconds,
+  isRayuCreditLimitError,
   isRayuDailyTurnLimitError,
+  isRayuWindowLimitError,
 } from '../src/services/api/errors.ts'
 import { CannotRetryError, withRetry } from '../src/services/api/withRetry.ts'
 
@@ -33,6 +36,28 @@ function dailyTurnLimitError(resetSeconds = 7200): APIError {
       resetSeconds,
     },
     'daily turn limit reached',
+    headers,
+  ) as APIError
+}
+
+// Gateway PACING-window 429 (X-Rayu-Limit header + reason discriminator).
+function windowLimitError(
+  reason: 'weekly_limit' | 'session_window_limit',
+  resetSeconds = 259_200,
+): APIError {
+  const headers = new Headers({
+    'retry-after': String(resetSeconds),
+    'x-rayu-limit': reason,
+  })
+  return APIError.generate(
+    429,
+    {
+      error: { message: 'window limit reached', type: 'rate_limit_exceeded' },
+      reason,
+      resetSeconds,
+      transient: false,
+    },
+    'window limit reached',
     headers,
   ) as APIError
 }
@@ -108,7 +133,132 @@ describe('getAssistantMessageFromError · daily turn limit', () => {
   })
 })
 
+describe('isRayuWindowLimitError', () => {
+  test('true for both window reasons, via the header and via the body', () => {
+    expect(isRayuWindowLimitError(windowLimitError('weekly_limit'))).toBe(true)
+    expect(isRayuWindowLimitError(windowLimitError('session_window_limit'))).toBe(true)
+
+    const viaBody = APIError.generate(
+      429,
+      { error: { message: 'nope' }, reason: 'weekly_limit' },
+      'nope',
+      new Headers(),
+    )
+    expect(isRayuWindowLimitError(viaBody)).toBe(true)
+  })
+
+  /**
+   * The three 429 states must stay mutually exclusive. A window is NOT a balance
+   * problem (the user has credit) and NOT the daily turn cap (it counts credits and
+   * rolls on a different clock) — conflating them sends the user to the wrong fix.
+   */
+  test('does not confuse a window with a credit limit or a turn cap', () => {
+    const weekly = windowLimitError('weekly_limit')
+    expect(isRayuWindowLimitError(weekly)).toBe(true)
+    expect(isRayuCreditLimitError(weekly)).toBe(false)
+    expect(isRayuDailyTurnLimitError(weekly)).toBe(false)
+
+    const daily = dailyTurnLimitError()
+    expect(isRayuWindowLimitError(daily)).toBe(false)
+
+    const credit = APIError.generate(
+      429,
+      { error: { message: 'credit limit reached: period_limit' }, reason: 'period_limit' },
+      'credit limit reached: period_limit',
+      new Headers(),
+    )
+    expect(isRayuWindowLimitError(credit)).toBe(false)
+    expect(isRayuCreditLimitError(credit)).toBe(true)
+  })
+
+  test('false for a plain 429 and for non-429', () => {
+    expect(isRayuWindowLimitError(plain429())).toBe(false)
+    expect(
+      isRayuWindowLimitError(
+        APIError.generate(500, { error: { message: 'x' } }, 'x', new Headers()),
+      ),
+    ).toBe(false)
+  })
+})
+
+describe('getRayuResetSeconds', () => {
+  test('reads the window ETA from the body, falling back to Retry-After', () => {
+    expect(getRayuResetSeconds(windowLimitError('weekly_limit', 259_200))).toBe(259_200)
+    // Header only, no body field.
+    const headerOnly = APIError.generate(
+      429,
+      { error: { message: 'x' } },
+      'x',
+      new Headers({ 'retry-after': '7200' }),
+    )
+    expect(getRayuResetSeconds(headerOnly)).toBe(7200)
+  })
+
+  test('null rather than a bogus ETA when neither is present', () => {
+    expect(
+      getRayuResetSeconds(
+        APIError.generate(429, { error: { message: 'x' } }, 'x', new Headers()),
+      ),
+    ).toBeNull()
+  })
+})
+
+describe('getAssistantMessageFromError · pacing window', () => {
+  /**
+   * The advice differs from every other limit: the user HAS credit, so the answer is
+   * the dashboard switch — never the pricing page.
+   */
+  test('names the window and points at the dashboard switch, not /plans', () => {
+    process.env.RAYU_WEB_URL = 'https://web.example.test'
+    try {
+      const weekly = textOf(
+        getAssistantMessageFromError(windowLimitError('weekly_limit'), 'deepseek-v4-pro'),
+      )
+      expect(weekly).toContain('weekly')
+      expect(weekly).toContain('use all credits')
+      expect(weekly).toContain('https://web.example.test/dashboard')
+      expect(weekly).not.toContain('/plans')
+      expect(weekly.toLowerCase()).not.toContain('credit limit')
+
+      const session = textOf(
+        getAssistantMessageFromError(
+          windowLimitError('session_window_limit', 7200),
+          'deepseek-v4-pro',
+        ),
+      )
+      expect(session).toContain('session')
+      expect(session).toContain('use all credits')
+      // The ETA is the WINDOW's (7200s = 2 hours), rendered as a human duration --
+      // not the billing period's, which would read as weeks.
+      expect(session).toContain('2 hour')
+    } finally {
+      delete process.env.RAYU_WEB_URL
+    }
+  })
+})
+
 describe('withRetry · amplification control', () => {
+  /**
+   * A window can be a WEEK away. The generic 429 path would sleep out the whole
+   * ETA — the "Retrying in 2452241 seconds" failure mode — so this must bail on the
+   * first attempt, like the credit and turn-cap bails.
+   */
+  test('pacing-window 429 bails after ONE attempt (never sleeps out a multi-hour ETA)', async () => {
+    let calls = 0
+    const err = windowLimitError('weekly_limit', 604_800)
+    const gen = withRetry<{ ok: true }>(
+      async () => ({}) as never,
+      async () => {
+        calls++
+        throw err
+      },
+      { model: 'deepseek-v4-pro', thinkingConfig: { type: 'disabled' }, maxRetries: 10 },
+    )
+    const { error } = await drain(gen)
+    expect(calls).toBe(1)
+    expect(error).toBeInstanceOf(CannotRetryError)
+  })
+
   test('daily-turn-limit 429 bails after ONE attempt (no 10× retry of a cap that cannot clear)', async () => {
     let calls = 0
     const err = dailyTurnLimitError()

@@ -18,6 +18,8 @@ import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
 import { getAgentTranscriptPath } from '../../utils/sessionStorage.js';
 import { evictTaskOutput, getTaskOutputPath, initTaskOutputAsSymlink } from '../../utils/task/diskOutput.js';
 import { PANEL_GRACE_MS, registerTask, updateTaskState } from '../../utils/task/framework.js';
+import { orchestrationNotice, recordWorkerStatus } from '../../orchestrator/packetProgress.js';
+import { settleVerifier, verificationNotice } from '../../orchestrator/verification.js';
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js';
 import type { TaskState } from '../types.js';
 export type ToolActivity = {
@@ -66,6 +68,16 @@ export function getTokenCountFromTracker(tracker: ProgressTracker): number {
 }
 
 /**
+ * A usage counter as a number, or 0.
+ *
+ * Providers translated onto the Anthropic shape do not all report every counter, and the
+ * type says `number` where the wire may have nothing. See `updateProgressFromMessage`.
+ */
+function finiteTokenCount(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/**
  * Resolver function that returns a human-readable activity description
  * for a given tool name and input. Used to pre-compute descriptions
  * from Tool.getActivityDescription() at recording time.
@@ -76,9 +88,19 @@ export function updateProgressFromMessage(tracker: ProgressTracker, message: Mes
     return;
   }
   const usage = message.message.usage;
-  // Keep latest input (it's cumulative in the API), sum outputs
-  tracker.latestInputTokens = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
-  tracker.cumulativeOutputTokens += usage.output_tokens;
+  // Keep latest input (it's cumulative in the API), sum outputs.
+  //
+  // Every field is coerced, because `usage` is typed as Anthropic's shape but ARRIVES from
+  // whichever provider served the subagent, and a translated response can omit a counter
+  // entirely. `undefined + 0` is NaN, NaN is sticky through the running sum, and
+  // `JSON.stringify(NaN)` is `null` — which is how `task_progress.usage.total_tokens`
+  // reached the editor panel as null and made every subagent read "0 tokens" forever.
+  // Verified against a live openai-compatible provider before this guard existed.
+  tracker.latestInputTokens =
+    finiteTokenCount(usage.input_tokens) +
+    finiteTokenCount(usage.cache_creation_input_tokens) +
+    finiteTokenCount(usage.cache_read_input_tokens);
+  tracker.cumulativeOutputTokens += finiteTokenCount(usage.output_tokens);
   // The agent is "thinking" when this turn has a thinking block but no tool call
   // yet. Cleared as soon as a tool_use (or a non-thinking turn) arrives below.
   tracker.isThinking =
@@ -255,6 +277,16 @@ export function enqueueAgentNotification({
   // results may reference stale task output. The prompt suggestion text is
   // preserved; only the pre-computed response is discarded.
   abortSpeculation(setAppState);
+  // An Orchestrator worker's notice says which packet it served and what can
+  // start next; a verifier's says what its verdict amounts to. Read through the
+  // updater: this function has no getAppState.
+  settleVerifier(taskId, finalMessage ?? '', status, setAppState);
+  let orchestrationSection = '';
+  setAppState(prev => {
+    const notice = orchestrationNotice(prev, taskId) ?? verificationNotice(prev, taskId);
+    orchestrationSection = notice ? `\n${notice}` : '';
+    return prev;
+  });
   const summary = status === 'completed' ? `Agent "${description}" completed` : status === 'failed' ? `Agent "${description}" failed: ${error || 'Unknown error'}` : `Agent "${description}" was stopped`;
   const outputPath = getTaskOutputPath(taskId);
   const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';
@@ -265,7 +297,7 @@ export function enqueueAgentNotification({
 <${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}${orchestrationSection}
 </${TASK_NOTIFICATION_TAG}>`;
   enqueuePendingNotification({
     value: message,
@@ -310,6 +342,7 @@ export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
     };
   });
   if (killed) {
+    recordWorkerStatus(taskId, 'killed', setAppState);
     void evictTaskOutput(taskId);
   }
 }
@@ -439,6 +472,7 @@ export function completeAgentTask(result: AgentToolResult, setAppState: SetAppSt
       selectedAgent: undefined
     };
   });
+  recordWorkerStatus(taskId, 'completed', setAppState);
   void evictTaskOutput(taskId);
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
@@ -463,6 +497,7 @@ export function failAgentTask(taskId: string, error: string, setAppState: SetApp
       selectedAgent: undefined
     };
   });
+  recordWorkerStatus(taskId, 'failed', setAppState);
   void evictTaskOutput(taskId);
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
@@ -482,7 +517,8 @@ export function registerAsyncAgent({
   selectedAgent,
   setAppState,
   parentAbortController,
-  toolUseId
+  toolUseId,
+  model
 }: {
   agentId: string;
   description: string;
@@ -491,6 +527,16 @@ export function registerAsyncAgent({
   setAppState: SetAppState;
   parentAbortController?: AbortController;
   toolUseId?: string;
+  /**
+   * The RESOLVED model this agent runs on, from `getAgentModel` — not the agent
+   * definition's configured `model`, which can be undefined or 'inherit'.
+   *
+   * Carried onto the task so the subagent's model can be shown while it works.
+   * It may be provider-encoded (`providerId\u0000model`) when the subagent is
+   * routed to a different provider than the main thread, so consumers must decode
+   * with `decodeModelProvider` rather than splitting on a slash.
+   */
+  model?: string;
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(agentId, getAgentTranscriptPath(asAgentId(agentId)));
 
@@ -504,6 +550,9 @@ export function registerAsyncAgent({
     prompt,
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
+    // `'inherit'` is a routing instruction, not a model id. Storing it would make a
+    // reader report the literal string as this agent's model, so it is dropped here.
+    ...(model && model !== 'inherit' ? { model } : {}),
     abortController,
     retrieved: false,
     lastReportedToolCount: 0,
@@ -523,6 +572,8 @@ export function registerAsyncAgent({
 
   // Register task in AppState
   registerTask(taskState, setAppState);
+  // A resumed Orchestrator worker puts its packet back to running.
+  recordWorkerStatus(agentId, 'running', setAppState);
   return taskState;
 }
 
@@ -542,7 +593,8 @@ export function registerAgentForeground({
   selectedAgent,
   setAppState,
   autoBackgroundMs,
-  toolUseId
+  toolUseId,
+  model
 }: {
   agentId: string;
   description: string;
@@ -551,6 +603,8 @@ export function registerAgentForeground({
   setAppState: SetAppState;
   autoBackgroundMs?: number;
   toolUseId?: string;
+  /** Resolved model — see `registerAsyncAgent`. Dropped when it is 'inherit'. */
+  model?: string;
 }): {
   taskId: string;
   backgroundSignal: Promise<void>;
@@ -569,6 +623,7 @@ export function registerAgentForeground({
     prompt,
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
+    ...(model && model !== 'inherit' ? { model } : {}),
     abortController,
     unregisterCleanup,
     retrieved: false,

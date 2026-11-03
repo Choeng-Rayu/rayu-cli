@@ -13,6 +13,32 @@ with free model switching, full MCP support, and a complete built-in tool suite.
 
 ## Installation
 
+One command, any machine. The installer downloads the pre-bundled CLI (and a
+private Node runtime if the machine has none), so it does not depend on your
+Node/npm version or on write access to a global npm prefix:
+
+```bash
+# macOS / Linux
+curl -fsSL https://rayucode.com/install | bash
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://rayucode.com/install.ps1 | iex
+```
+
+Then start:
+
+```bash
+rayu
+```
+
+Read the script first if you prefer: <https://rayucode.com/install.sh>.
+Full details, flags and uninstall instructions:
+<https://rayucode.com/docs/01-installation>.
+
+### Via npm (needs Node >= 18)
+
 ```bash
 npm install -g @rayu-dev/rayu-cli
 ```
@@ -21,12 +47,6 @@ Or run instantly without installing:
 
 ```bash
 npx @rayu-dev/rayu-cli
-```
-
-Then start:
-
-```bash
-rayu
 ```
 
 ### Package managers
@@ -39,16 +59,40 @@ yarn global add @rayu-dev/rayu-cli
 
 ---
 
+## Studio Remote
+
+Control a running CLI session from Rayu Studio. There are two connection options:
+
+- **QR code:** run `/web-bridge pair` in the CLI, scan the QR code with your phone
+  camera (or open its link), sign in to Studio, and choose **Approve machine**.
+  This also works when the CLI is signed in. The QR code expires after five minutes.
+- **Rayu account:** sign in to the same Rayu account in the CLI and Studio, then
+  run `/web-bridge` to connect directly.
+
+Select the machine on Studio's **Remote** page to send prompts, approve tool calls,
+and interrupt turns. QR pairing grants control of that running worker; it does
+not sign the worker into Rayu or provide credentials for hosted models.
+
+Use `/web-bridge status` to check the connection and `/web-bridge off` to cancel
+pairing or disconnect. If already connected, disconnect before starting QR pairing.
+Closing the CLI also ends remote control for that session.
+
+---
+
 ## Update
 
 ```bash
 rayu update
 ```
 
+This works for both install methods: an installer-managed install re-runs the
+installer, an npm install reinstalls from npm.
+
 Or reinstall the latest directly:
 
 ```bash
-npm install -g @rayu-dev/rayu-cli
+curl -fsSL https://rayucode.com/install | bash    # installer-managed
+npm install -g @rayu-dev/rayu-cli                 # npm-managed
 ```
 
 Prefer `rayu update`: it resolves the latest version once, installs that **exact**
@@ -124,7 +168,7 @@ Inside a session, type `/` to see all slash commands:
 |---------|--------------|
 | `/connect` | Add or switch providers (type → key → model) |
 | `/model` | Search and switch models across all providers |
-| `/model_subagent` | Set a separate model for sub-agents |
+| `/subagent_models [AGENT]` | Set the model for all spawned agents or one named agent (`/model_subagent` remains an alias) |
 | `/help` | List all slash commands with descriptions |
 | `/config` | View and edit configuration |
 | `/brandmark` | Customize the brand glyph and spinner style |
@@ -338,10 +382,12 @@ https://github.com/Choeng-Rayu/rayu-cli/issues
 git clone https://github.com/Choeng-Rayu/rayu-cli.git
 cd rayu-cli/rayu
 bun install
-bun run dev          # run from source
-bun run build        # bundle to dist/rayu.js
-bun test             # run tests
-bun run typecheck    # TypeScript type checking
+bun run dev             # run from source
+bun run build           # bundle CLI to dist/rayu.js (alias for build:cli)
+bun run build:cli       # build standalone CLI bundle (dist/rayu.js)
+bun run build:vscode    # build Rayucode VS Code extension (.vsix)
+bun test                # run tests
+bun run typecheck       # TypeScript type checking
 ```
 
 Built with [Bun](https://bun.sh), TypeScript, React/Ink, and a custom terminal renderer.

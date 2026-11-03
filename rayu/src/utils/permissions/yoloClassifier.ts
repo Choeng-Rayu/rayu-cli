@@ -41,7 +41,7 @@ import {
   extractToolUseBlock,
   parseClassifierResponse,
 } from './classifierShared.js'
-import { getClaudeTempDir } from './filesystem.js'
+import { ensureRayuTempDir, getRayuTempDir } from '../rayuTempDir.js'
 
 // Dead code elimination: conditional imports for auto mode classifier prompts.
 // At build time, the bundler inlines .txt files as string literals. At test
@@ -142,12 +142,12 @@ export function buildDefaultExternalSystemPrompt(): string {
 }
 
 function getAutoModeDumpDir(): string {
-  return join(getClaudeTempDir(), 'auto-mode')
+  return join(getRayuTempDir(), 'auto-mode')
 }
 
 /**
  * Dump the auto mode classifier request and response bodies to the per-user
- * claude temp directory when CLAUDE_CODE_DUMP_AUTO_MODE is set. Files are
+ * Rayu temp directory when CLAUDE_CODE_DUMP_AUTO_MODE is set. Files are
  * named by unix timestamp: {timestamp}[.{suffix}].req.json and .res.json
  */
 async function maybeDumpAutoMode(
@@ -160,16 +160,17 @@ async function maybeDumpAutoMode(
   if (!isEnvTruthy(process.env.CLAUDE_CODE_DUMP_AUTO_MODE)) return
   const base = suffix ? `${timestamp}.${suffix}` : `${timestamp}`
   try {
-    await mkdir(getAutoModeDumpDir(), { recursive: true })
+    await ensureRayuTempDir()
+    await mkdir(getAutoModeDumpDir(), { recursive: true, mode: 0o700 })
     await writeFile(
       join(getAutoModeDumpDir(), `${base}.req.json`),
       jsonStringify(request, null, 2),
-      'utf-8',
+      { encoding: 'utf-8', mode: 0o600 },
     )
     await writeFile(
       join(getAutoModeDumpDir(), `${base}.res.json`),
       jsonStringify(response, null, 2),
-      'utf-8',
+      { encoding: 'utf-8', mode: 0o600 },
     )
     logForDebugging(
       `Dumped auto mode req/res to ${getAutoModeDumpDir()}/${base}.{req,res}.json`,
@@ -185,7 +186,7 @@ async function maybeDumpAutoMode(
  */
 export function getAutoModeClassifierErrorDumpPath(): string {
   return join(
-    getClaudeTempDir(),
+    getRayuTempDir(),
     'auto-mode-classifier-errors',
     `${getSessionId()}.txt`,
   )
@@ -226,7 +227,8 @@ async function dumpErrorPrompts(
 ): Promise<string | null> {
   try {
     const path = getAutoModeClassifierErrorDumpPath()
-    await mkdir(dirname(path), { recursive: true })
+    await ensureRayuTempDir()
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
     const content =
       `=== ERROR ===\n${errorMessage(error)}\n\n` +
       `=== CONTEXT COMPARISON ===\n` +
@@ -241,7 +243,7 @@ async function dumpErrorPrompts(
       `=== ACTION BEING CLASSIFIED ===\n${contextInfo.action}\n\n` +
       `=== SYSTEM PROMPT ===\n${systemPrompt}\n\n` +
       `=== USER PROMPT (transcript) ===\n${userPrompt}\n`
-    await writeFile(path, content, 'utf-8')
+    await writeFile(path, content, { encoding: 'utf-8', mode: 0o600 })
     logForDebugging(`Dumped auto mode classifier error prompts to ${path}`)
     return path
   } catch {

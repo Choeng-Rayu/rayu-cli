@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-// Steering: paid features (subagent_model, collaborator_swarm, collaborator_model,
+// Steering: paid features (subagent_model, Orchestrator's legacy entitlement,
 // telegram, image/video) stay VISIBLE as slash commands for everyone, but a Free
 // user who runs one is shown an upgrade notice instead of it executing; paid /
 // entitled users (and the BYOK / OAuth-off path) run them as usual.
@@ -15,8 +15,7 @@ import { join } from 'path'
 // Command module → expected admin entitlement key.
 const PAID_COMMANDS: Array<{ path: string; feature: string }> = [
   { path: '../src/commands/model-subagent/index.ts', feature: 'subagent_model' },
-  { path: '../src/commands/collaborator-model/index.ts', feature: 'collaborator_model' },
-  { path: '../src/commands/collaborator-swarm/index.ts', feature: 'collaborator_swarm' },
+  { path: '../src/commands/orchestrator/index.ts', feature: 'collaborator_swarm' },
   { path: '../src/commands/telegram-bot/index.ts', feature: 'telegram' },
   { path: '../src/commands/generate-image.ts', feature: 'image_generation' },
   { path: '../src/commands/image-editor.ts', feature: 'image_generation' },
@@ -76,7 +75,6 @@ describe('paid command soft-gate decision (dispatcher predicate)', () => {
     ;(await ents())._setRayuEntitlementsForTesting(
       ent({
         subagent_model: { enabled: false },
-        collaborator_model: { enabled: false },
         collaborator_swarm: { enabled: false },
         telegram: { enabled: false },
         image_generation: { enabled: false },
@@ -93,7 +91,6 @@ describe('paid command soft-gate decision (dispatcher predicate)', () => {
     ;(await ents())._setRayuEntitlementsForTesting(
       ent({
         subagent_model: { enabled: true },
-        collaborator_model: { enabled: true },
         collaborator_swarm: { enabled: true },
         telegram: { enabled: true },
         image_generation: { enabled: true },

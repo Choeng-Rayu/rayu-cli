@@ -6,12 +6,20 @@
 // provider is removed so the model picker never shows stale hosted models.
 import {
   loadRayuConfig,
+  invalidateRayuConfigCache,
   saveRayuConfig,
   type RayuProvider,
 } from '../../utils/rayuConfig.js'
 import { RAYU_HOSTED_PROVIDER_ID } from '../../utils/rayuProviders.js'
 import { rayuHostedBaseURL } from '../api/rayuHosted/rayuHostedAuth.js'
-import type { AllowedModel, RayuEntitlements } from './rayuEntitlements.js'
+import {
+  catalogSignature,
+  hostedContextWindows,
+  hostedModelDescriptions,
+  hostedModelLabels,
+  hostedModelCapabilities,
+} from './rayuModelCatalog.js'
+import type { RayuEntitlements } from './rayuEntitlements.js'
 
 /**
  * Reconcile the rayu-hosted provider with the given entitlements.
@@ -40,6 +48,8 @@ export function syncRayuHostedProvider(
   opts?: { activate?: boolean },
 ): void {
   try {
+    // Another interface may have selected a model while the HTTP refresh ran.
+    invalidateRayuConfigCache()
     const cfg = loadRayuConfig()
     // Visibility uses the full catalog; usability uses the entitled subset.
     const catalog = ent?.hostedModels ?? ent?.allowedModels ?? []
@@ -81,6 +91,10 @@ export function syncRayuHostedProvider(
         // Display names exactly as the admin typed them, so /model can show
         // "DeepSeek V4 Pro" beside the id that goes on the wire.
         modelLabels: hostedModelLabels(catalog),
+        // Customer-facing summaries stay separate from display names: the picker
+        // needs both the concise name and the explanatory credit/use-case text.
+        modelDescriptions: hostedModelDescriptions(catalog),
+        ...hostedModelCapabilities(catalog),
       }
       if (idx >= 0) cfg.providers[idx] = provider
       else cfg.providers.push(provider)
@@ -137,55 +151,21 @@ function hostedModelSignature(): string {
       (x) => x.id === RAYU_HOSTED_PROVIDER_ID,
     )
     if (!p) return ''
-    // Ids + names + windows: everything the picker renders, so a rename or a
-    // context-window change counts as a change too.
-    return (p.models ?? [])
-      .map(
-        (m) =>
-          `${m}|${p.modelLabels?.[m] ?? ''}|${p.modelContextWindows?.[m] ?? ''}`,
-      )
-      .join(',')
+    // Ids + names + descriptions + windows: everything the picker renders, so an
+    // admin description edit reaches an already-open picker on its next refresh.
+    return catalogSignature(
+      p.models ?? [],
+      p.modelLabels,
+      p.modelContextWindows,
+      p.modelDescriptions,
+    ) +
+      JSON.stringify([p.modelSupportsThinking, p.modelSupportsImage, p.modelSupportsTools])
   } catch {
     return ''
   }
 }
 
-/**
- * Build the per-model display-name map from a hosted catalog.
- *
- * A name is only recorded when it ADDS something: a blank label, or one that just
- * repeats the model id, is left out so the picker shows the id once instead of
- * "deepseek-v4-pro — deepseek-v4-pro". Names are trimmed but never rewritten —
- * what the admin typed is what the user sees.
- */
-export function hostedModelLabels(
-  catalog: AllowedModel[],
-): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const m of catalog) {
-    const label = typeof m.label === 'string' ? m.label.trim() : ''
-    if (!label || label === m.code) continue
-    out[m.code] = label
-  }
-  return out
-}
-
-/**
- * Build the per-model context-window map from a hosted catalog.
- *
- * Only models the admin gave a usable window are included: a missing, null, or
- * non-positive value must leave the model ABSENT from the map so the CLI keeps
- * its own default instead of budgeting against a bogus window (a 0 would make
- * every request look over-budget). Values are floored to whole tokens.
- */
-export function hostedContextWindows(
-  catalog: AllowedModel[],
-): Record<string, number> {
-  const out: Record<string, number> = {}
-  for (const m of catalog) {
-    const raw = m.contextWindow
-    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) continue
-    out[m.code] = Math.floor(raw)
-  }
-  return out
-}
+// The per-model label and context-window mappers moved to ./rayuModelCatalog.ts
+// when the Rayu API-KEY provider ('rayu') started consuming the same catalog
+// shape from GET {gateway}/v1/models. Both providers now share one
+// interpretation of an admin's dashboard edits. Imported at the top of this file.

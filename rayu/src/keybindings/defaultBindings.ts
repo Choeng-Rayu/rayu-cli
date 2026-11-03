@@ -24,10 +24,38 @@ const SUPPORTS_TERMINAL_VT_MODE =
     ? satisfies(process.versions.bun, '>=1.2.23')
     : satisfies(process.versions.node, '>=22.17.0 <23.0.0 || >=24.2.0'))
 
-// Platform-specific mode cycle shortcut:
-// - Windows without VT mode: meta+m (shift+tab doesn't work reliably)
-// - Other platforms: shift+tab
-const MODE_CYCLE_KEY = SUPPORTS_TERMINAL_VT_MODE ? 'shift+tab' : 'meta+m'
+// Mode-cycle (permission mode) shortcuts.
+//
+// `shift+tab` is ALWAYS bound, on every platform. It is decoded by
+// parse-keypress as ESC[Z (FN_KEY_RE's '[Z' entry → isShiftKey) or, when Kitty
+// keyboard reporting is on, as CSI-u ESC[9;2u (keycodeToName(9) → 'tab'). Both
+// paths are platform-independent, so nothing here needs to change to *receive*
+// it.
+//
+// It used to be bound ONLY where VT input mode was known to be available, and
+// replaced by `meta+m` everywhere else. The published binary is a Node script
+// (`engines.node >= 18` in package.json, `bin: dist/rayu.js`), so every Windows
+// user on Node 18 / 20 / 22.16 and friends took the `meta+m` branch — and
+// Shift+Tab then resolved to no binding at all, which is the reported "Shift+Tab
+// does not switch mode on Windows".
+//
+// `meta+m` is kept as an ALIAS rather than a replacement, for consoles that
+// cannot deliver Shift+Tab at all (without VT input mode a modified Tab can be
+// indistinguishable from a plain Tab, but Alt+<key> still arrives as
+// ESC+<key>). Binding both is strictly better than swapping: wherever ESC[Z
+// arrives Shift+Tab works, and the old chord keeps working where it does not.
+//
+// Exported so both branches are testable on any host: the reported failure only
+// reproduced on a Windows runtime whose Node version failed the VT check.
+export function modeCycleBindings(
+  supportsTerminalVtMode: boolean,
+): Record<string, 'chat:cycleMode'> {
+  // `meta+m` first: getBindingDisplayText() uses findLast(), so putting it first
+  // keeps `shift+tab` as the binding the UI advertises.
+  return supportsTerminalVtMode
+    ? { 'shift+tab': 'chat:cycleMode' }
+    : { 'meta+m': 'chat:cycleMode', 'shift+tab': 'chat:cycleMode' }
+}
 
 export const DEFAULT_BINDINGS: KeybindingBlock[] = [
   {
@@ -66,7 +94,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       escape: 'chat:cancel',
       // ctrl+x chord prefix avoids shadowing readline editing keys (ctrl+a/b/e/f/...).
       'ctrl+x ctrl+k': 'chat:killAgents',
-      [MODE_CYCLE_KEY]: 'chat:cycleMode',
+      ...modeCycleBindings(SUPPORTS_TERMINAL_VT_MODE),
       'meta+p': 'chat:modelPicker',
       'meta+o': 'chat:fastMode',
       'meta+t': 'chat:thinkingToggle',

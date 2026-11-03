@@ -29,7 +29,7 @@ import {
 } from '../../utils/auth.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { classifyAxiosError } from '../../utils/errors.js'
 import { safeParseJSON } from '../../utils/json.js'
 import {
@@ -118,7 +118,7 @@ export function initializePolicyLimitsLoadingPromise(): void {
  * Get the path to the policy limits cache file
  */
 function getCachePath(): string {
-  return join(getRayuConfigHomeDir(), CACHE_FILENAME)
+  return join(getRayuAuthConfigDir(), CACHE_FILENAME)
 }
 
 /**

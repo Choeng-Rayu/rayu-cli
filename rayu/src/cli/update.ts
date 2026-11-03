@@ -1,5 +1,12 @@
 import chalk from 'chalk'
+import { spawnSync } from 'child_process'
 import { isInBundledMode } from 'src/utils/bundledMode.js'
+import {
+  getInstallerCommand,
+  getInstallerScriptPath,
+  isInstallerManagedInstall,
+  readInstallerManifest,
+} from 'src/utils/installerManifest.js'
 import {
   buildNpmRemediation,
   buildPinnedSpec,
@@ -19,6 +26,14 @@ import {
 export async function update() {
   writeToStdout(`Current version: ${MACRO.VERSION}\n`)
 
+  // An install created by https://rayucode.com/install is neither an npm global
+  // install nor the native installer's layout: it is a launcher in
+  // $RAYU_HOME/bin pointing at $RAYU_HOME/lib/current. Running npm here would
+  // install a second copy into npm's prefix that the launcher never executes,
+  // and then report success — so hand the update back to the installer that
+  // owns this install. It is idempotent and does the version swap atomically.
+  if (await updateInstallerManaged()) return
+
   const isBundled = isInBundledMode()
 
   if (isBundled) {
@@ -26,6 +41,89 @@ export async function update() {
   } else {
     await updateNpmPackage()
   }
+}
+
+/**
+ * Re-run the installer that created this install.
+ *
+ * Returns false (so the caller falls through to the npm/native paths) when this
+ * is not an installer-managed install. Returns true when the update was handled
+ * — including the case where the local installer copy is missing, because the
+ * correct action there is to print the one-liner, NOT to fall through to npm and
+ * silently install a copy that will not be used.
+ */
+async function updateInstallerManaged(): Promise<boolean> {
+  const manifest = readInstallerManifest()
+  if (!isInstallerManagedInstall(manifest)) return false
+
+  const script = getInstallerScriptPath(manifest)
+  if (!script) {
+    process.stderr.write(
+      chalk.yellow('\nThis copy of Rayu was installed by the rayucode.com installer,\n'),
+    )
+    process.stderr.write(
+      'but its local copy of that installer is missing, so `rayu update`\n' +
+        'cannot drive it. Update with:\n\n',
+    )
+    process.stderr.write(chalk.bold(`  ${getInstallerCommand()}\n`))
+    process.exit(1)
+    return true
+  }
+
+  writeToStdout('Updating with the installer that manages this install...\n\n')
+
+  // Serialize against the in-session auto-updater the same way the npm path
+  // does: two installers swapping lib/current concurrently can leave the
+  // symlink pointing at a directory the other one is deleting.
+  if (!(await acquireUpdateLock())) {
+    process.stderr.write(
+      chalk.yellow('\nAnother Rayu update is already in progress\n'),
+    )
+    process.stderr.write(
+      'A running Rayu session may be auto-updating in the background.\n' +
+        'Wait a few seconds and run `rayu update` again.\n',
+    )
+    process.exit(1)
+    return true
+  }
+
+  let status: number | null = null
+  try {
+    const result = IS_WINDOWS
+      ? spawnSync(
+          'powershell',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script],
+          { stdio: 'inherit' },
+        )
+      : spawnSync(script, [], { stdio: 'inherit' })
+    if (result.error) throw result.error
+    status = result.status
+  } catch (error) {
+    await releaseUpdateLock()
+    process.stderr.write(chalk.red('\nFailed to run the installer\n'))
+    process.stderr.write(
+      `${error instanceof Error ? error.message : String(error)}\n\nRun it yourself:\n`,
+    )
+    process.stderr.write(chalk.bold(`  ${getInstallerCommand()}\n`))
+    process.exit(1)
+    return true
+  }
+  await releaseUpdateLock()
+
+  if (status !== 0) {
+    process.stderr.write(
+      chalk.red(`\nThe installer exited with code ${status ?? 'unknown'}\n`),
+    )
+    process.exit(status ?? 1)
+    return true
+  }
+
+  // The installer prints the resulting version and verifies it itself, so there
+  // is nothing to re-report here. Restarting matters because this process is
+  // still running the previous bundle.
+  writeToStdout(chalk.green('\nUpdate complete. Restart Rayu to use it.\n'))
+  process.exit(0)
+  return true
 }
 
 async function updateNpmPackage() {

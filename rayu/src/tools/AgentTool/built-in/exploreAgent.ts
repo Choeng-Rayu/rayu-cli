@@ -7,7 +7,7 @@ import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from 'src/tools/NotebookEditTool/constants.js'
 import { hasEmbeddedSearchTools } from 'src/utils/embeddedTools.js'
-import { AGENT_TOOL_NAME } from '../constants.js'
+import { AGENT_TOOL_NAME, EXPLORE_AGENT_TYPE } from '../constants.js'
 import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
 
 function getExploreSystemPrompt(): string {
@@ -62,7 +62,7 @@ const EXPLORE_WHEN_TO_USE =
   'Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.'
 
 export const EXPLORE_AGENT: BuiltInAgentDefinition = {
-  agentType: 'Explore',
+  agentType: EXPLORE_AGENT_TYPE,
   whenToUse: EXPLORE_WHEN_TO_USE,
   disallowedTools: [
     AGENT_TOOL_NAME,
@@ -75,7 +75,7 @@ export const EXPLORE_AGENT: BuiltInAgentDefinition = {
   baseDir: 'built-in',
   // Fast default ('haiku' = the small/fast tier). On non-Anthropic providers
   // this resolves to that provider's instant model; overridable per-agent via
-  // /model_subagent. Env override still wins. Explore is read-only and does NOT
+  // /subagent_models. Env override still wins. Explore is read-only and does NOT
   // use extended thinking (see runAgent.ts thinking gate).
   model: process.env.RAYU_EXPLORE_AGENT_MODEL || 'haiku',
   // Explore is a fast read-only search agent — it doesn't need commit/PR/lint

@@ -1,6 +1,6 @@
 import { chmodSync } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir } from '../envUtils.js'
+import { getRayuAuthConfigDir } from '../envUtils.js'
 import { getErrnoCode } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
 import {
@@ -11,7 +11,7 @@ import {
 import type { SecureStorage, SecureStorageData } from './types.js'
 
 function getStoragePath(): { storageDir: string; storagePath: string } {
-  const storageDir = getRayuConfigHomeDir()
+  const storageDir = getRayuAuthConfigDir()
   const storageFileName = '.credentials.json'
   return { storageDir, storagePath: join(storageDir, storageFileName) }
 }

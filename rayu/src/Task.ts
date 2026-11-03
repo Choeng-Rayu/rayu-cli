@@ -11,6 +11,7 @@ export type TaskType =
   | 'local_workflow'
   | 'monitor_mcp'
   | 'dream'
+  | 'external_agent'
 
 export type TaskStatus =
   | 'pending'
@@ -84,6 +85,7 @@ const TASK_ID_PREFIXES: Record<string, string> = {
   local_workflow: 'w',
   monitor_mcp: 'm',
   dream: 'd',
+  external_agent: 'x', // foreign agent CLI (Codex, Claude Code, OpenCode, ACP)
 }
 
 // Get task ID prefix

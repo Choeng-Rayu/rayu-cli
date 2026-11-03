@@ -1,7 +1,6 @@
 import { c as _c } from "react/compiler-runtime";
 import { mkdir, writeFile } from 'fs/promises';
 import { marked, type Tokens } from 'marked';
-import { tmpdir } from 'os';
 import { join } from 'path';
 import React, { useRef } from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
@@ -19,8 +18,12 @@ import type { LocalJSXCommandCall } from '../../types/command.js';
 import type { AssistantMessage, Message } from '../../types/message.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { extractTextContent, stripPromptXMLTags } from '../../utils/messages.js';
+import { ensureRayuTempDir, getRayuTempDir } from '../../utils/rayuTempDir.js';
 import { countCharInString } from '../../utils/stringUtils.js';
-const COPY_DIR = join(tmpdir(), 'claude');
+// Resolved per write, not at module load: the temp root is memoized on first
+// use, and freezing it at import time would pin it before the CLI has decided
+// its own temp directory for this process.
+const getCopyDir = (): string => join(getRayuTempDir(), 'copy');
 const RESPONSE_FILENAME = 'response.md';
 const MAX_LOOKBACK = 20;
 type CodeBlock = {
@@ -71,11 +74,14 @@ export function fileExtension(lang: string | undefined): string {
   return '.txt';
 }
 async function writeToFile(text: string, filename: string): Promise<string> {
-  const filePath = join(COPY_DIR, filename);
-  await mkdir(COPY_DIR, {
-    recursive: true
+  const copyDir = getCopyDir();
+  const filePath = join(copyDir, filename);
+  await ensureRayuTempDir();
+  await mkdir(copyDir, {
+    recursive: true,
+    mode: 0o700
   });
-  await writeFile(filePath, text, 'utf-8');
+  await writeFile(filePath, text, { encoding: 'utf-8', mode: 0o600 });
   return filePath;
 }
 async function copyOrWriteToFile(text: string, filename: string): Promise<string> {

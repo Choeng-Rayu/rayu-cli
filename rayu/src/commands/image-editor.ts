@@ -1,19 +1,19 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../commands.js'
 import { IMAGE_GEN_TOOL_NAME } from '../tools/ImageGenTool/constants.js'
-import { getNvidiaApiKey } from '../tools/ImageGenTool/nvidiaImageClient.js'
+import { isRayuImageAvailable } from '../tools/ImageGenTool/ImageGenTool.js'
 import { isGeminiVertexImageAvailable } from '../tools/ImageGenTool/vertexImageClient.js'
 
 const imageEditor: Command = {
   type: 'prompt',
   name: 'image-editor',
-  description: 'Edit an existing image with a text prompt (NVIDIA / Vertex Imagen)',
+  description: 'Edit an existing image with a text prompt (Rayu-hosted or Vertex Imagen)',
   progressMessage: 'editing image',
   contentLength: 0,
   source: 'builtin',
-  // Capability gate only; paid entitlement is a soft gate (paidFeature).
-  isEnabled: () =>
-    getNvidiaApiKey() != null || isGeminiVertexImageAvailable(),
+  // Capability gate only; paid entitlement is a soft gate (paidFeature). Signed-in
+  // Rayu users can edit with an edit-capable hosted model (e.g. Wan 2.7 Image).
+  isEnabled: () => isRayuImageAvailable() || isGeminiVertexImageAvailable(),
   paidFeature: 'image_generation',
   async getPromptForCommand(args): Promise<ContentBlockParam[]> {
     const text = args.trim()

@@ -4,13 +4,13 @@ Rayu CLI is a terminal-based, **bring-your-own-key** AI coding agent. It speaks 
 provider — Anthropic, OpenAI-compatible endpoints (NVIDIA, DeepSeek, Kimi/Moonshot,
 OpenRouter, local servers…), AWS Bedrock, Google Vertex/Gemini, and Kiro/CodeWhisperer —
 behind one unified agent loop, a full tool suite, MCP support, a skills system, a plugin
-marketplace, and a multi-tier agent swarm.
+marketplace, and an Orchestrator mode for delegated parallel work.
 
 This document is the single source of truth for how the codebase fits together. It is
 organized top-down:
 
 1. [🌍 Whole-System Architecture (Summary)](#-1-whole-system-architecture-summary)
-2. [🤖 Agents, Subagents, Collaborator Swarm & Context](#-2-agents-subagents-collaborator-swarm--context)
+2. [🤖 Agents, Subagents & Orchestrator Mode](#-2-agents-subagents--orchestrator-mode)
 3. [🛠️ Tool Use](#️-3-tool-use)
 4. [⚙️ Background & Foreground Processes](#️-4-background--foreground-processes)
 5. [🧪 Skills](#-5-skills)
@@ -54,7 +54,7 @@ graph TD
     ADP --> GEM["Gemini / Vertex<br><code>gemini/</code>"]
     ADP --> KIRO["Kiro / CodeWhisperer<br><code>kiro/</code>"]
 
-    TOOLS --> AGENTS["Agents & Swarm<br><code>src/tools/AgentTool/</code>"]
+    TOOLS --> AGENTS["Agents & Orchestrator<br><code>src/tools/AgentTool/</code>"]
     TOOLS --> TASKS["Background tasks<br><code>src/tasks/</code>"]
     TOOLS --> MCP["MCP clients<br><code>src/services/mcp/</code>"]
     TOOLS --> SKILLS["Skills<br><code>src/skills/</code>"]
@@ -164,47 +164,37 @@ provide retries, fallbacks, and normalized error handling across all adapters.
 
 ---
 
-## 🤖 2. Agents, Subagents, Collaborator Swarm & Context
+## 🤖 2. Agents, Subagents & Orchestrator Mode
 
-Rayu CLI runs a **three-tier agent model** on top of one process. The main agent can act
-as a pure **orchestrator**, delegate domain work to semi-persistent **collaborators**, and
-fan out atomic jobs to ephemeral **subagents** — all sharing a tiered, file-backed context
-so nobody re-derives what's already decided.
+Rayu CLI has a first-class **Orchestrator** permission mode. The main agent coordinates
+only: it plans, assigns bounded work, manages dependencies, and integrates results.
+Implementation and verification are delegated to child agents with explicit ownership.
+Orchestrator is a distinct mode that uses the same permission semantics as
+`fullManage`, so workers can act without repeated approval prompts while Full Access and
+Full Manage remain available independently.
 
 ```mermaid
 graph TD
-    U["User"] --> O["🧠 Tier 1 — Orchestrator<br>(main agent)<br>scope · plan · verify · integrate"]
-
-    O -->|"BACKGROUND<br>run_in_background:true<br>resumable via SendMessage"| C1["🤝 Tier 2 — Collaborators"]
-    O -->|"FOREGROUND<br>one-shot"| S1["⚡ Tier 3 — Subagents"]
-
-    C1 --> FE["frontend"]
-    C1 --> BE["backend"]
-    C1 --> MOB["mobile"]
-    C1 --> SEC["security"]
-    C1 --> DEP["deploy"]
-
-    C1 -.->|"may dispatch (matrix-limited)"| S1
-
-    S1 --> PL["planner"]
-    S1 --> DSN["design"]
-    S1 --> BDS["backend-design"]
-    S1 --> GS["global-setup"]
-    S1 --> ASSET["asset-generation"]
-    S1 --> BLD["builder"]
-    S1 --> REV["review"]
-    S1 --> FIX["fix"]
-    S1 --> LINT["linter"]
-
-    O <-->|"shared.json + DOMAIN.md"| CTX[("📁 .rayu/swarm/<br>tiered context")]
-    C1 <-->|"own section only"| CTX
+    U["User"] --> O["🧠 Orchestrator<br>scope · plan · delegate · integrate"]
+    O -->|"complex planning"| PL["📋 planner<br>read-only planning"]
+    PL -->|"parallel discovery"| EX["🔎 Explore<br>read-only research"]
+    O -->|"publishes"| C["📜 contract<br>packets · owned files · interfaces · checks"]
+    C -->|"one worker per packet<br>parallel when independent"| GP["⚙️ general-purpose workers"]
+    GP -->|"shared tree, or own worktree<br>merged back 3-way"| TREE["main tree"]
+    TREE -->|"checked against packets<br>checkpoints · problems"| O
+    O -->|"once every worker finished"| VF["✅ verifier<br>required checks with evidence"]
+    VF -->|"accepted PASS for this tree"| GATE["🚦 gate"]
+    GATE -->|"closed: back to work"| O
+    GP -.->|"no nested delegation"| STOP["return handoff"]
 ```
 
-| Tier | Role | Lifetime | Execution | Examples |
-|------|------|----------|-----------|----------|
-| **1 — Orchestrator** | Plan, decompose, verify, integrate; never writes code in swarm mode | Whole session | Main thread | the main agent |
-| **2 — Collaborators** | Semi-persistent domain implementers | Resumable | **Background**, named | `frontend`, `backend`, `mobile`, `security`, `deploy` |
-| **3 — Subagents** | Atomic plan / generate / build / audit / fix jobs | One-shot | **Foreground** | `planner`, `design`, `backend-design`, `global-setup`, `asset-generation`, `builder`, `review`, `fix`, `linter`, plus `Explore`; `general-purpose` (non-web/mobile only) |
+| Type | Role | Writes? | Delegates? |
+|------|------|---------|------------|
+| Main Orchestrator | Plan, decompose, coordinate, integrate | No | Yes |
+| `planner` | Decision-complete plan and worker packets | No | No |
+| `Explore` | Repository discovery | No | No |
+| `general-purpose` | Implementation, fixes, review, tests — one contract packet each | Yes | No |
+| `verifier` | Runs the contract's required checks; PASS/FAIL/PARTIAL with command evidence | No (guarded) | No |
 
 <details>
 <summary><b>📋 Built-in agent registry & gating (<code>tools/AgentTool/builtInAgents.ts</code>)</b></summary>
@@ -212,18 +202,17 @@ graph TD
 `getBuiltInAgents()` assembles the available agents:
 
 - Always: `GENERAL_PURPOSE_AGENT`, `STATUSLINE_SETUP_AGENT`.
-- Non-SDK entrypoints: `RAYU_CODE_GUIDE_AGENT`, the **9 Tier-3 subagents**
-  (`built-in/subagents/index.ts` → `SUBAGENTS[]`, incl. `planner` + `builder`), and the **5 Tier-2 collaborators**
-  (`built-in/collaborators/index.ts` → `COLLABORATORS[]`).
+- Non-SDK entrypoints: `RAYU_CODE_GUIDE_AGENT`.
+- Every entrypoint except the programmatic SDKs (`sdk-ts`, `sdk-py`): the specialists
+  `planner` and `verifier` (`built-in/subagents/index.ts` → `SUBAGENTS[]`), so `-p` and
+  the Rayucode engine (`sdk-cli`) have them too.
 - Gated: `EXPLORE_AGENT` (GrowthBook A/B), `VERIFICATION_AGENT` (feature + gate).
 - **Coordinator mode** swaps the whole set for `getCoordinatorAgents()`.
 
 Opt-outs: `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS` (SDK), `RAYU_DISABLE_SPECIALIST_AGENTS`
-(disables the whole swarm: Tier-3 subagents + Tier-2 collaborators). Per-agent models via
-`/model_subagent` and `/collaborator_model`. Parallel-builder cap per wave:
-`RAYU_SWARM_MAX_PARALLEL` (default 5).
+(disables `planner` and `verifier`). Global and per-agent models are configured with `/subagent_models`.
 
-Swarm/teammate features are gated by `isAgentSwarmsEnabled()`: always on for
+The separate team/teammate subsystem is gated by `isAgentSwarmsEnabled()`: always on for
 `USER_TYPE=ant`; otherwise requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` (or
 `--agent-teams`) **and** the GrowthBook killswitch.
 
@@ -267,54 +256,43 @@ teammates (tmux/iTerm2 backends) instead use env vars `CLAUDE_CODE_AGENT_ID` and
 </details>
 
 <details>
-<summary><b>📁 Tiered swarm context (<code>tools/AgentTool/swarmContext.ts</code>)</b></summary>
+<summary><b>🎚️ Orchestrator mode (<code>utils/orchestratorMode.ts</code>, <code>commands/orchestrator/</code>)</b></summary>
 
-Instead of the orchestrator hand-copying everything into every prompt, the swarm shares a
-small, deterministic, **per-file** context under `.rayu/swarm/` (project-local):
+Orchestrator has its own internal permission-mode identifier and shares Full Manage's
+execution behavior. Full Access, Full Manage, and Orchestrator are all independently
+available in the CLI Shift+Tab cycle and Rayucode's mode selector. It can also be entered
+with `/orchestrator`, and is selected automatically when a plan is approved. `/normal`
+exits to the default mode.
 
-```mermaid
-graph TD
-    PA["PA subagent"] -->|writes once| SH["shared.json<br>goal · stack · flow · constraints · needs<br>(&lt; ~500 tokens, read-only after)"]
-    BE["backend"] -->|writes own| BEMD["BACKEND.md"]
-    FE["frontend"] -->|writes own| FEMD["FRONTEND.md"]
-    SEC["security"] -->|writes own| SECMD["SECURITY.md"]
+The rules are enforced in the shared engine (`src/orchestrator/`), so the CLI and
+Rayucode behave the same:
 
-    SH --> ASM["assembleContext(agentType)"]
-    BEMD --> ASM
-    SECMD --> ASM
-    ASM -->|"shared + ONLY dependency sections<br>(DOMAIN_DEPENDENCIES)"| INJ["Injected SWARM CONTEXT block"]
-```
+- **Role.** A full reminder when the mode is entered (also mid-conversation), a short
+  one on every later turn, an exit notice when it is left. The main thread cannot
+  edit files or run writing commands itself (`mainThreadPolicy.ts`); workers keep
+  auto-approval.
+- **Contract.** `OrchestrationContract` publishes packets with owned paths, shared
+  interfaces with exact definitions, the order, and required checks. Contract v1
+  starts a run and snapshots the working tree as its baseline (`gitSnapshot.ts`,
+  private refs, the user's index untouched).
+- **Workers.** A writing worker must serve one packet (`spawnPolicy.ts`): dependencies
+  completed, one worker per packet, at most `orchestrator.maxParallelWriters`, in the
+  background. Each is briefed with the contract. Finished workers are continued with
+  SendMessage.
+- **Checks on changes.** Every worker change is checked against its packet
+  (`attribution.ts`, `shellChanges.ts`); checkpoints compare the whole tree with the
+  baseline when nothing runs (`checkpoint.ts`). Problems are reported to the worker
+  and the Orchestrator and stay open until undone, covered by a new contract version,
+  or accepted by the user.
+- **Worktree packets** are merged back 3-way, all or nothing, when their worker
+  finishes; conflicts go back to the worker's worktree (`worktreeIntegration.ts`).
+- **Verification and gate.** The `verifier` runs once every worker finished; its PASS
+  counts only with evidence for every required check (`verification.ts`). The gate in
+  `query.ts` (`gate.ts`) keeps a run that is not finished from being reported as done.
+- **Visibility.** `/orchestrator-status`, the CLI background-tasks dialog, Rayucode's
+  background-work panel (`task_orchestration` frames), and an audit history per run.
 
-- **`shared.json`** — written once by `PA`; injected into every specialist.
-- **`<DOMAIN>.md`** — one file per domain, written **only by its owner** (per-file
-  ownership avoids the concurrent-write race a single shared file would have when a
-  parallel wave runs).
-- **`DOMAIN_DEPENDENCIES`** maps each agent to `['shared', …upstream sections]` (e.g.
-  `frontend → shared, BACKEND, SECURITY`). Selection is **static** — zero latency, no
-  embeddings; `ContextRetriever` is left as a seam for future RAG.
-- **Token budget:** ~1500 tokens/section, ~6000 total (≈4 chars/token guardrail).
-
-</details>
-
-<details>
-<summary><b>🎚️ Swarm mode & the 3-phase flow (<code>utils/swarmMode.ts</code>, <code>commands/collaborator-swarm/</code>)</b></summary>
-
-`swarmMode` is a per-session `AppState` flag (reset on `/clear`). It is toggled on by
-`/collaborator_swarm`, off by `/normal`, and **auto-enabled when a plan is approved**
-(ExitPlanMode). When on, the main agent is re-framed each turn as the **orchestrator** and
-runs the build flow:
-
-1. **Scope & research** — clarify request + tech stack (with recommendations); `PA`
-   researches open implementation choices.
-2. **One aligned plan** — `PA` produces a single plan aligned across backend + frontend;
-   user confirms.
-3. **Build** — `global-setup` scaffolds, then a 3-way parallel design block
-   (`design ∥ backend-design`), parallel implementation (`backend ∥ security`, then
-   `frontend ∥ mobile`), a `review → fix` verification gate, and `deploy`.
-
-A **subagent specialization matrix** (enforced in code, e.g. `COLLABORATOR_AGENT_TYPES`,
-`SUBAGENT_TYPES`) restricts who may call what — e.g. `backend` may not call `design`;
-`PA`/`global-setup` are orchestrator-only. The flow defaults to **parallel** dispatch.
+See `AGENTS_ORCHESTRATOR.md` for the full flow and settings.
 
 </details>
 

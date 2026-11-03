@@ -538,9 +538,16 @@ function AssistantMessageBlock(t0) {
       }
     case "thinking":
       {
-        if (!isTranscriptMode && !verbose) {
-          return null;
-        }
+        // Rendered in EVERY view, not just transcript/verbose. This used to
+        // early-return null outside transcript/verbose mode, which meant the only
+        // thinking UI in the default view was the live streaming preview that
+        // Messages.tsx renders as a sibling AFTER the whole message list — so
+        // "✓ Thought" was structurally forced BELOW the response text and below
+        // the appended turn-duration line. Rendering the block in place puts it
+        // where it belongs (assistant content order is [thinking, text], and
+        // normalizeMessages splits per block preserving order) and keeps it in
+        // history instead of vanishing after 30s. AssistantThinkingMessage
+        // already collapses to the "✓ Thought" one-liner when not verbose.
         const isLastThinking = !lastThinkingBlockId || thinkingBlockId === lastThinkingBlockId;
         const t1 = isTranscriptMode && !isLastThinking;
         let t2;

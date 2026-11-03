@@ -13,8 +13,16 @@ import { describe, expect, test } from 'bun:test'
  * drops the define from a build script.
  */
 const ROOT = join(import.meta.dir, '..')
-const BUILD_SCRIPTS = [
+// Every build takes its define map from scripts/bundleConfig.ts, so that is where
+// the literal must appear. scripts/build-native.ts and scripts/build-binaries.ts used
+// to construct their own copy; that copy drifted (it lost the RAYU_FEATURES defines),
+// so they now go through `compileBuildOptions` like everything else.
+const BUILD_SCRIPTS = ['scripts/bundleConfig.ts']
+
+/** Scripts that must OBTAIN the define map rather than define NODE_ENV inline. */
+const SHARED_CONFIG_CONSUMERS = [
   'scripts/build.ts',
+  'scripts/build-vscode.ts',
   'scripts/build-binaries.ts',
   'scripts/build-native.ts',
 ]
@@ -26,6 +34,19 @@ describe('react production build define (heap-OOM regression guard)', () => {
       expect(src).toContain(
         `'process.env.NODE_ENV': JSON.stringify('production')`,
       )
+    })
+  }
+
+  for (const rel of SHARED_CONFIG_CONSUMERS) {
+    test(`${rel} takes its defines from the shared config`, () => {
+      // The CLI bundle and the library bundle must use the SAME define map: rayu
+      // is built from partial source, and several `require()`d modules only
+      // disappear because a define folds a branch to a constant. A bundle that
+      // assembled its own map would either miss the NODE_ENV production define
+      // (the heap-OOM this file guards) or fail to link at all.
+      const src = readFileSync(join(ROOT, rel), 'utf8')
+      expect(src).toMatch(/\b(sharedBuildOptions|compileBuildOptions)\b/)
+      expect(src).toContain('bundleConfig.ts')
     })
   }
 })

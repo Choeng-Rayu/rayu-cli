@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { chmod, open, rename, stat, unlink } from 'fs/promises'
 import { homedir } from 'os'
 import mapValues from 'lodash-es/mapValues.js'
@@ -583,7 +582,7 @@ export async function addMcpConfig(
     )
   }
 
-  if (feature('CHICAGO_MCP')) {
+  if (RAYU_FEATURES.CHICAGO_MCP) {
     const { isComputerUseMCPServer } = await import(
       '../../utils/computerUse/common.js'
     )
@@ -1493,7 +1492,7 @@ export function areMcpConfigsAllowedWithEnterpriseMcpConfig(
  * enabledMcpServers. Shows up in /mcp as disabled until the user enables it.
  */
 /* eslint-disable @typescript-eslint/no-require-imports */
-const DEFAULT_DISABLED_BUILTIN = feature('CHICAGO_MCP')
+const DEFAULT_DISABLED_BUILTIN = RAYU_FEATURES.CHICAGO_MCP
   ? (
       require('../../utils/computerUse/common.js') as typeof import('../../utils/computerUse/common.js')
     ).COMPUTER_USE_MCP_SERVER_NAME

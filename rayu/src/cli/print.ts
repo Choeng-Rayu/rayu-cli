@@ -55,9 +55,16 @@ import {
   notifySessionStateChanged,
   notifySessionMetadataChanged,
   setPermissionModeChangedListener,
+  subscribeWorkerApprovalLoss,
+  subscribeOrchestratorGateStatus,
   type RequiresActionDetails,
   type SessionExternalMetadata,
 } from 'src/utils/sessionState.js'
+import { formatWorkerApprovalLoss } from 'src/orchestrator/modeChange.js'
+import {
+  createFileChangeReviewSystemMessage,
+  createPendingFileChangeReviewSystemMessage,
+} from 'src/utils/pendingFileChanges.js'
 import { externalMetadataToAppState } from 'src/state/onChangeAppState.js'
 import { getInMemoryErrors, logError, logMCPDebug } from 'src/utils/log.js'
 import {
@@ -66,6 +73,7 @@ import {
 } from 'src/utils/process.js'
 import type { Stream } from 'src/utils/stream.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
+import { rayuLoginGateMessage } from 'src/services/rayuAuth/rayuSession.js'
 import {
   loadConversationForResume,
   type TurnInterruptionState,
@@ -251,7 +259,10 @@ import {
   toInternalMessages,
   toSDKRateLimitInfo,
 } from 'src/utils/messages/mappers.js'
-import { createModelSwitchBreadcrumbs } from 'src/utils/messages.js'
+import {
+  createModelSwitchBreadcrumbs,
+  createSystemMessage,
+} from 'src/utils/messages.js'
 import { collectContextData } from 'src/commands/context/context-noninteractive.js'
 import { LOCAL_COMMAND_STDOUT_TAG } from 'src/constants/xml.js'
 import {
@@ -272,6 +283,7 @@ import {
   resolveAppliedEffort,
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
+import { resolveInferenceSettings } from 'src/utils/model/inferenceSettings.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
@@ -307,6 +319,7 @@ import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
 import {
   headlessProfilerStartTurn,
   headlessProfilerCheckpoint,
+  isHeadlessProfilerEnabled,
   logHeadlessProfilerTurn,
 } from 'src/utils/headlessProfiler.js'
 import {
@@ -316,7 +329,21 @@ import {
 import { asSessionId } from 'src/types/ids.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { skillChangeDetector } from '../utils/skills/skillChangeDetector.js'
-import { getCommands, clearCommandsCache } from '../commands.js'
+import {
+  getCommands,
+  clearCommandsCache,
+  filterCommandsForNonInteractive,
+} from '../commands.js'
+import {
+  projectRuntimeCommands,
+  projectRuntimeTools,
+} from '../runtime/catalog.js'
+import {
+  isRayucodeRuntime,
+  updateRayucodePreferences,
+} from '../runtime/productPreferences.js'
+import { buildRuntimeSnapshot } from '../runtime/snapshot.js'
+import type { RuntimeSnapshot } from '../protocol/index.js'
 import {
   isBareMode,
   isEnvTruthy,
@@ -339,11 +366,19 @@ import {
 import { removeTeammateFromTeamFile } from '../utils/swarm/teamHelpers.js'
 import { unassignTeammateTasks } from '../utils/tasks.js'
 import { getRunningTasks } from '../utils/task/framework.js'
-import { isBackgroundTask } from '../tasks/types.js'
+import { isBackgroundTask, hasUnfinishedBackgroundAgent } from '../tasks/types.js'
+import {
+  closeRayuCreditWindow,
+  openRayuCreditWindow,
+  type RayuCreditWindow,
+  rayuWindowCredits,
+} from '../services/rayuAuth/rayuTurnCredits.js'
 import { stopTask } from '../tasks/stopTask.js'
+import { getTaskOutput, getTaskOutputSize } from '../utils/task/diskOutput.js'
 import { drainSdkEvents } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
+import { setMemoryPressureCleanup, setUserTimingInUse, startMemoryPressureGuard } from '../utils/memoryPressureGuard.js'
 import { sleep } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 
@@ -388,6 +423,38 @@ Shut down your team and prepare your final response for the user.`
 const MAX_RECEIVED_UUIDS = 10_000
 const receivedMessageUuids = new Set<UUID>()
 const receivedMessageUuidsOrder: UUID[] = []
+
+/**
+ * Cap on a single `task_output` control response.
+ *
+ * Far below `getTaskOutput`'s own 8MB default: this crosses a pipe to an editor client that
+ * then has to render it, and a background shell can legitimately record gigabytes. The tail
+ * is the part anyone wants, and the response reports the true size so the client can say
+ * how much it is not showing.
+ */
+const MAX_CONTROL_TASK_OUTPUT_BYTES = 512 * 1024
+
+/**
+ * Whether recorded output is a conversation transcript rather than console text.
+ *
+ * Used only for a task that is no longer in state — while it is, its own `type` answers
+ * this. Scans a few lines rather than just the first, because a truncated read is prefixed
+ * with a human-readable "earlier output omitted" line.
+ */
+function looksLikeTranscript(content: string): boolean {
+  for (const line of content.split('\n', 8)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const parsed = JSON.parse(trimmed) as { type?: unknown }
+      if (typeof parsed?.type === 'string') return true
+    } catch {
+      // A tail can begin mid-line. Keep looking.
+    }
+  }
+  return false
+}
 
 function trackReceivedMessageUuid(uuid: UUID): boolean {
   if (receivedMessageUuids.has(uuid)) {
@@ -446,6 +513,55 @@ export function canBatchWith(
   )
 }
 
+/**
+ * Whether a queued headless prompt must be refused for lack of a Rayu login.
+ *
+ * The SAME gate the interactive REPL applies in
+ * utils/processUserInput/processUserInput.ts, which headless mode had no
+ * equivalent of: `rayuLoginGateMessage()` was reachable only from the TUI input
+ * path, so ANY headless consumer — the SDK, CCR, and the Rayucode extension —
+ * could run turns while signed out.
+ *
+ * The conditions mirror the REPL's exactly:
+ *   - only `prompt` mode (task notifications and orphaned permissions are
+ *     engine-generated, not user input);
+ *   - `isMeta` prompts are system-generated (proactive ticks, teammate messages,
+ *     resource updates) and must not be gated;
+ *   - `bridgeOrigin` prompts already passed the remote client's own auth;
+ *   - slash commands are exempt, so `/login` and `/connect` stay reachable while
+ *     signed out — which is what makes the gate recoverable rather than a
+ *     lockout. `skipSlashCommands` marks a source whose text must be treated as
+ *     plain text, so such input is NOT exempt.
+ *
+ * `gate` is injected so this is unit-testable without a real session on disk.
+ *
+ * @returns the message to surface, or null to let the turn proceed.
+ */
+export function headlessLoginGateMessage(
+  command: Pick<
+    QueuedCommand,
+    'mode' | 'value' | 'isMeta' | 'bridgeOrigin' | 'skipSlashCommands'
+  >,
+  gate: () => string | null = rayuLoginGateMessage,
+): string | null {
+  if (command.mode !== 'prompt') return null
+  if (command.isMeta) return null
+  if (command.bridgeOrigin) return null
+
+  const promptText =
+    typeof command.value === 'string'
+      ? command.value
+      : command.value
+          .map(block => (block.type === 'text' ? block.text : ''))
+          .join('')
+
+  const isSlashCommand =
+    !command.skipSlashCommands && promptText.trimStart().startsWith('/')
+  if (isSlashCommand) return null
+
+  return gate()
+}
+
 export async function runHeadless(
   inputPrompt: string | AsyncIterable<string>,
   getAppState: () => AppState,
@@ -483,6 +599,8 @@ export async function runHeadless(
     setupTrigger?: 'init' | 'maintenance' | undefined
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
     setSDKStatus?: (status: SDKStatus) => void
+    /** Full registry used only for first-party runtime discovery. */
+    catalogCommands?: Command[]
   },
 ): Promise<void> {
   if (
@@ -543,6 +661,33 @@ export async function runHeadless(
     const gcTimer = setInterval(Bun.gc, 1000)
     gcTimer.unref()
   }
+
+  // Memory-pressure guardrail, matching what the interactive TUI starts in
+  // interactiveHelpers.tsx. Headless runs used to skip it entirely, which left the
+  // VS Code extension's engine child — a LONG-LIVED headless process, unlike a
+  // one-shot `--print` — with no User Timing buffer hygiene and no graceful
+  // degradation at ~80% of the heap: it simply grew until V8 OOM-killed it or the
+  // OS killed the whole editor. The guard's timer is unref'd and idempotent, so a
+  // short one-shot run pays nothing. Opt out with RAYU_MEM_GUARD=0.
+  //
+  // The headless profiler keeps `headless_*` marks on that same buffer for the
+  // WHOLE turn (read back only at turn end), so declaring itself in-use here stops
+  // the guard's 30s hygiene tick from wiping `turn_start` mid-turn and silently
+  // reporting nothing for every long turn — the exact case the guard exists for.
+  setUserTimingInUse(isHeadlessProfilerEnabled)
+  setMemoryPressureCleanup(() => {
+    // Under heap pressure, clear the same module-level caches that compaction
+    // frees. The QueryEngine's mutableMessages are trimmed by compaction itself;
+    // what the guard adds is freeing these caches BETWEEN compactions when the
+    // heap is tight — the gap that let long sessions OOM before compaction fired.
+    try {
+      const { runPostCompactCleanup } = require('../services/compact/postCompactCleanup.js') as typeof import('../services/compact/postCompactCleanup.js')
+      runPostCompactCleanup('sdk')
+    } catch {
+      // Best effort — the cleanup failing must not crash the guard.
+    }
+  })
+  startMemoryPressureGuard()
 
   // Start headless profiler for first turn
   headlessProfilerStartTurn()
@@ -894,6 +1039,16 @@ export async function runHeadless(
           message.subtype === 'post_turn_summary')
       ) &&
       message.type !== 'stream_event' &&
+      // Progress, not conversation. `lastMessage` becomes the final `--print` payload, so
+      // a frame that merely reports a running command's output so far must never land
+      // there — it can arrive while a tool is still flushing and would otherwise replace
+      // the result as the session's answer.
+      //
+      // (`tool_progress` is missing from this list for the same reason it is invisible in
+      // practice: it is gated to remote/container sessions. Left alone here rather than
+      // fixed blind, since changing it would alter remote behaviour that cannot be
+      // exercised from this surface.)
+      message.type !== 'tool_output' &&
       message.type !== 'keep_alive' &&
       message.type !== 'streamlined_text' &&
       message.type !== 'streamlined_tool_use_summary' &&
@@ -996,6 +1151,8 @@ function runHeadlessStreaming(
     setSDKStatus?: (status: SDKStatus) => void
     promptSuggestions?: boolean | undefined
     workload?: string | undefined
+    /** Full registry used only for first-party runtime discovery. */
+    catalogCommands?: Command[]
   },
   turnInterruptionState?: TurnInterruptionState,
 ): AsyncIterable<StdoutMessage> {
@@ -1009,9 +1166,91 @@ function runHeadlessStreaming(
   let inputClosed = false
   let shutdownPromptInjected = false
   let heldBackResult: StdoutMessage | null = null
+  // The work the next `result` answers: opened by the first turn after the
+  // previous result went out and kept across every turn a held-back result
+  // waits through (background agents, their notification turns). The result
+  // reports that whole span -- its Rayu credits, and for a held-back result its
+  // duration -- not just the last turn's.
+  let work: {
+    credits: RayuCreditWindow
+    startedAt: number
+    turns: number
+  } | null = null
+  /** Whether this stream has told clients that a pending review exists. */
+  let fileChangeReviewVisible = false
   let abortController: AbortController | undefined
   // Same queue sendRequest() enqueues to — one FIFO for everything.
   const output = structuredIO.outbound
+
+  /**
+   * Emit the complete pending-review snapshot, including the transition to empty.
+   *
+   * `createPendingFileChangeReviewSystemMessage()` correctly returns null when no
+   * changes remain. A stateful stream still has to publish that final empty snapshot,
+   * otherwise editor clients retain the last non-empty card forever after Keep all or
+   * Undo all. Avoid sending empty review events in sessions that never had a review.
+   */
+  const enqueueFileChangeReviewSnapshot = (): void => {
+    const reviewMessage = createPendingFileChangeReviewSystemMessage(
+      getAppState().pendingFileChanges,
+    )
+    if (reviewMessage) {
+      fileChangeReviewVisible = true
+      output.enqueue(reviewMessage as any)
+      return
+    }
+    if (!fileChangeReviewVisible) return
+
+    fileChangeReviewVisible = false
+    output.enqueue(
+      createFileChangeReviewSystemMessage({
+        changeIds: [],
+        totalFiles: 0,
+        totalAdditions: 0,
+        totalRemovals: 0,
+        files: [],
+        createdAt: Date.now(),
+      }) as any,
+    )
+  }
+
+  /**
+   * Sends a turn's `result` as the answer to the user's work and ends that work.
+   *
+   * Stamps the Rayu credits the work cost (`rayu_credits`). A result held back
+   * across several turns also gets the work's wall-clock `duration_ms`: its own
+   * figure covers only the last turn, so an hour of background work would read
+   * "Completed in 20s". A single-turn result keeps the engine's own duration.
+   */
+  const emitResult = (result: StdoutMessage): void => {
+    const finished = work
+    work = null
+    let stamped = result
+    if (finished) {
+      closeRayuCreditWindow(finished.credits)
+      if (result.type === 'result') {
+        const credits = rayuWindowCredits(finished.credits)
+        stamped = {
+          ...result,
+          ...(finished.turns > 1 && { duration_ms: Date.now() - finished.startedAt }),
+          ...(credits !== undefined && { rayu_credits: credits }),
+        }
+      }
+    }
+    output.enqueue(stamped)
+  }
+
+  /**
+   * Whether the work the current turn belongs to goes on after this turn: a
+   * background agent is still running or has not queued its notification yet,
+   * or its notification is queued for the next turn. Its `result` is held back
+   * until then.
+   */
+  const workContinues = (): boolean =>
+    hasUnfinishedBackgroundAgent(getAppState().tasks) ||
+    peek(
+      cmd => cmd.mode === 'task-notification' && cmd.agentId === undefined,
+    ) !== undefined
 
   // Ctrl+C in -p mode: abort the in-flight query, then shut down gracefully.
   // gracefulShutdown persists session state and flushes analytics, with a
@@ -1055,6 +1294,8 @@ function runHeadlessStreaming(
       newMode === 'default' ||
       newMode === 'acceptEdits' ||
       newMode === 'bypassPermissions' ||
+      newMode === 'fullManage' ||
+      newMode === 'orchestrator' ||
       newMode === 'plan' ||
       newMode === (feature('TRANSCRIPT_CLASSIFIER') && 'auto') ||
       newMode === 'dontAsk'
@@ -1068,6 +1309,19 @@ function runHeadlessStreaming(
         session_id: getSessionId(),
       })
     }
+  })
+  // A mode change that leaves running background workers unable to get
+  // approval is shown as a warning (src/orchestrator/modeChange.ts); Rayucode
+  // renders `informational` frames as transcript notices.
+  const unsubscribeWorkerApprovalLoss = subscribeWorkerApprovalLoss(loss => {
+    output.enqueue(
+      createSystemMessage(formatWorkerApprovalLoss(loss), 'warning') as StdoutMessage,
+    )
+  })
+  // The Orchestrator verification gate's status (src/orchestrator/gate.ts). The
+  // engine drops the transcript notice query.ts yields, so it is sent as a frame.
+  const unsubscribeGateStatus = subscribeOrchestratorGateStatus(status => {
+    output.enqueue(createSystemMessage(status, 'warning') as StdoutMessage)
   })
 
   // Prompt suggestion tracking (push model)
@@ -1734,7 +1988,45 @@ function runHeadlessStreaming(
 
   // Mutable commands and agents for hot reloading
   let currentCommands = commands
+  let currentCatalogCommands = options.catalogCommands ?? commands
   let currentAgents = agents
+  let runtimeRevision = 0
+
+  async function currentRuntimeSnapshot() {
+    const appState = getAppState()
+    const settings = getSettings_DEPRECATED()
+    const outputStyle = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME
+    const availableOutputStyles = await getAllOutputStyles(getCwd())
+    const accountInfo = getAccountInformation()
+    const model = getMainLoopModel()
+    return buildRuntimeSnapshot({
+      revision: ++runtimeRevision,
+      product: isRayucodeRuntime() ? 'rayucode' : 'sdk',
+      sessionId: getSessionId(),
+      sessionStatus: getSessionState(),
+      commands: currentCatalogCommands,
+      tools,
+      agents: currentAgents,
+      appState,
+      mcpServers: buildMcpServerStatuses(),
+      inference: resolveInferenceSettings(
+        model,
+        appState.effortValue,
+        options.thinkingConfig,
+      ),
+      model,
+      account: {
+        email: accountInfo?.email,
+        organization: accountInfo?.organization,
+        subscriptionType: accountInfo?.subscription,
+        tokenSource: accountInfo?.tokenSource,
+        apiKeySource: accountInfo?.apiKeySource,
+        apiProvider: getAPIProvider(),
+      },
+      outputStyle,
+      availableOutputStyles: Object.keys(availableOutputStyles),
+    })
+  }
 
   // Clear all plugin-related caches, reload commands/agents/hooks.
   // Called after CLAUDE_CODE_SYNC_PLUGIN_INSTALL completes (before first query)
@@ -1753,7 +2045,8 @@ function runHeadlessStreaming(
     // Headless-specific: currentCommands/currentAgents are local mutable refs
     // captured by the query loop (REPL uses AppState instead). getCommands is
     // fresh because refreshActivePlugins cleared its cache.
-    currentCommands = await getCommands(cwd())
+    currentCatalogCommands = await getCommands(cwd())
+    currentCommands = filterCommandsForNonInteractive(currentCatalogCommands)
 
     // Preserve SDK-provided agents (--agents CLI flag or SDK initialize
     // control_request) — both inject via parseAgentsFromJson with
@@ -1810,7 +2103,8 @@ function runHeadlessStreaming(
   const unsubscribeSkillChanges = skillChangeDetector.subscribe(() => {
     clearCommandsCache()
     void getCommands(cwd()).then(newCommands => {
-      currentCommands = newCommands
+      currentCatalogCommands = newCommands
+      currentCommands = filterCommandsForNonInteractive(newCommands)
     })
   })
 
@@ -1946,6 +2240,35 @@ function runHeadlessStreaming(
             }
           }
           const batchUuids = batch.map(c => c.uuid).filter(u => u !== undefined)
+
+          // ── Rayu login gate ────────────────────────────────────────────────
+          //
+          // Refusal is a per-TURN error result, not a process exit: the
+          // extension keeps one long-lived session, so signing in must let the
+          // next prompt through without a restart. `SDKResultErrorSchema`
+          // already carries `errors: string[]`, and the host already renders it
+          // (sessionManager.ts surfaces `message.errors`), so this needs no
+          // protocol change. See headlessLoginGateMessage() for the conditions.
+          const loginGate = headlessLoginGateMessage(command)
+          if (loginGate) {
+            output.enqueue({
+              type: 'result',
+              subtype: 'error_during_execution',
+              duration_ms: 0,
+              duration_api_ms: 0,
+              is_error: true,
+              num_turns: 0,
+              stop_reason: null,
+              session_id: getSessionId(),
+              total_cost_usd: 0,
+              usage: EMPTY_USAGE,
+              modelUsage: {},
+              permission_denials: [],
+              errors: [loginGate],
+              uuid: randomUUID(),
+            })
+            continue
+          }
 
           // QueryEngine will emit a replay for command.uuid (the last uuid in
           // the batch) via its messagesToAck path. Emit replays here for the
@@ -2129,6 +2452,10 @@ function runHeadlessStreaming(
           // const-capture: TS loses `while ((command = dequeue()))` narrowing
           // inside the closure.
           const cmd = command
+          // A turn of new work opens it; a turn that continues held-back work
+          // (a background agent's notification) adds to it.
+          work ??= { credits: openRayuCreditWindow(), startedAt: Date.now(), turns: 0 }
+          work.turns += 1
           await runWithWorkload(cmd.workload ?? options.workload, async () => {
             for await (const message of ask({
               commands: uniqBy(
@@ -2140,6 +2467,9 @@ function runHeadlessStreaming(
               isMeta: cmd.isMeta,
               cwd: cwd(),
               tools: allTools,
+              // Same builder as allTools, re-run between tool rounds: a mid-turn
+              // mode change (plan approval → Orchestrator) changes the tool list.
+              refreshTools: () => buildAllTools(getAppState()),
               verbose: options.verbose,
               mcpClients: allMcpClients,
               thinkingConfig: options.thinkingConfig,
@@ -2205,20 +2535,15 @@ function runHeadlessStreaming(
                   output.enqueue(event)
                 }
 
-                // Hold-back: don't emit result while background agents are running
-                const currentState = getAppState()
-                if (
-                  getRunningTasks(currentState).some(
-                    t =>
-                      (t.type === 'local_agent' ||
-                        t.type === 'local_workflow') &&
-                      isBackgroundTask(t),
-                  )
-                ) {
+                // Hold-back: don't emit result while the work it answers goes
+                // on -- a background agent is running, or one finished and its
+                // notification turn is next. The turn that ends the work emits.
+                if (workContinues()) {
                   heldBackResult = message
                 } else {
                   heldBackResult = null
-                  output.enqueue(message)
+                  enqueueFileChangeReviewSnapshot()
+                  emitResult(message)
                 }
               } else {
                 // Flush SDK events (task_started, task_progress) so background
@@ -2375,9 +2700,14 @@ function runHeadlessStreaming(
         waitingForAgents = false
         {
           const state = getAppState()
-          const hasRunningBg = getRunningTasks(state).some(
-            t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
-          )
+          // An agent that has finished but not queued its notification yet
+          // (worktree cleanup runs git first) still counts. Leaving in that
+          // gap would strand the notification until the next input and send
+          // the held-back result without the turn it starts.
+          const hasRunningBg =
+            getRunningTasks(state).some(
+              t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
+            ) || hasUnfinishedBackgroundAgent(state.tasks)
           const hasMainThreadQueued = peek(isMainThread) !== undefined
           if (hasRunningBg || hasMainThreadQueued) {
             waitingForAgents = true
@@ -2392,7 +2722,8 @@ function runHeadlessStreaming(
       } while (waitingForAgents)
 
       if (heldBackResult) {
-        output.enqueue(heldBackResult)
+        enqueueFileChangeReviewSnapshot()
+        emitResult(heldBackResult)
         heldBackResult = null
         if (suggestionState.pendingSuggestion) {
           output.enqueue(suggestionState.pendingSuggestion)
@@ -2660,6 +2991,8 @@ function runHeadlessStreaming(
         await finalizePendingAsyncHooks()
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
+        unsubscribeWorkerApprovalLoss()
+        unsubscribeGateStatus()
         statusListeners.delete(rateLimitListener)
         output.done()
       }
@@ -2853,18 +3186,22 @@ function runHeadlessStreaming(
             }
           }
 
+          const runtimeSnapshot = message.request.runtimeCapabilities
+            ? await currentRuntimeSnapshot()
+            : undefined
           await handleInitializeRequest(
             message.request,
             message.request_id,
             initialized,
             output,
-            commands,
+            currentCommands,
             modelInfos,
             structuredIO,
             !!options.enableAuthStatus,
             options,
-            agents,
+            currentAgents,
             getAppState,
+            runtimeSnapshot,
           )
 
           // Enable prompt suggestions in AppState when SDK consumer opts in.
@@ -2891,22 +3228,38 @@ function runHeadlessStreaming(
           if (hasCommandsInQueue()) {
             void run()
           }
+        } else if (message.request.subtype === 'get_runtime_snapshot') {
+          try {
+            sendControlResponseSuccess(message, {
+              runtime: await currentRuntimeSnapshot(),
+            })
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
         } else if (message.request.subtype === 'set_permission_mode') {
           const m = message.request // for typescript (TODO: use readonly types to avoid this)
-          setAppState(prev => ({
-            ...prev,
-            toolPermissionContext: handleSetPermissionMode(
+          setAppState(prev => {
+            const toolPermissionContext = handleSetPermissionMode(
               m,
               message.request_id,
               prev.toolPermissionContext,
               output,
-            ),
-            isUltraplanMode: m.ultraplan ?? prev.isUltraplanMode,
-          }))
+            )
+            if (isRayucodeRuntime() && toolPermissionContext.mode === m.mode) {
+              updateRayucodePreferences({ permissionMode: m.mode })
+            }
+            return {
+              ...prev,
+              toolPermissionContext,
+              isUltraplanMode: m.ultraplan ?? prev.isUltraplanMode,
+            }
+          })
           // handleSetPermissionMode sends the control_response; the
           // notifySessionMetadataChanged that used to follow here is
           // now fired by onChangeAppState (with externalized mode name).
         } else if (message.request.subtype === 'set_model') {
+          const { invalidateRayuConfigCache } = await import('../utils/rayuConfig.js')
+          invalidateRayuConfigCache()
           const requestedModel = message.request.model ?? 'default'
           const model =
             requestedModel === 'default'
@@ -2917,7 +3270,15 @@ function runHeadlessStreaming(
           notifySessionMetadataChanged({ model })
           injectModelSwitchBreadcrumbs(requestedModel, model)
 
-          sendControlResponseSuccess(message)
+          const currentAppState = getAppState()
+          sendControlResponseSuccess(message, {
+            applied: { model },
+            inference: resolveInferenceSettings(
+              model,
+              currentAppState.effortValue,
+              options.thinkingConfig,
+            ),
+          })
         } else if (message.request.subtype === 'set_max_thinking_tokens') {
           if (message.request.max_thinking_tokens === null) {
             options.thinkingConfig = undefined
@@ -2930,6 +3291,30 @@ function runHeadlessStreaming(
             }
           }
           sendControlResponseSuccess(message)
+        } else if (message.request.subtype === 'set_thinking') {
+          // Persist BEFORE applying, as set_effort does. The caller treats an error as
+          // "nothing changed" (Rayucode keeps its pill), so a refused write must leave the
+          // running config alone — applying first made the engine and the panel disagree.
+          if (isRayucodeRuntime()) {
+            const stored = updateRayucodePreferences({
+              thinkingEnabled: message.request.enabled,
+            })
+            if (stored.error) {
+              sendControlResponseError(message, stored.error.message)
+              continue
+            }
+          }
+          options.thinkingConfig = message.request.enabled
+            ? { type: 'adaptive' }
+            : { type: 'disabled' }
+          const currentAppState = getAppState()
+          sendControlResponseSuccess(message, {
+            inference: resolveInferenceSettings(
+              getMainLoopModel(),
+              currentAppState.effortValue,
+              options.thinkingConfig,
+            ),
+          })
         } else if (message.request.subtype === 'mcp_status') {
           sendControlResponseSuccess(message, {
             mcpServers: buildMcpServerStatuses(),
@@ -3069,7 +3454,8 @@ function runHeadlessStreaming(
               loadAllPluginsCacheOnly(),
             ])
             if (cmdsR.status === 'fulfilled') {
-              currentCommands = cmdsR.value
+              currentCatalogCommands = cmdsR.value
+              currentCommands = filterCommandsForNonInteractive(cmdsR.value)
             } else {
               logError(cmdsR.reason)
             }
@@ -3102,7 +3488,43 @@ function runHeadlessStreaming(
               plugins,
               mcpServers: buildMcpServerStatuses(),
               error_count: r.error_count,
+              runtimeCommands: projectRuntimeCommands(currentCatalogCommands),
+              runtimeTools: projectRuntimeTools([
+                ...tools,
+                ...getAppState().mcp.tools,
+              ]),
             } satisfies SDKControlReloadPluginsResponse)
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'install_skill') {
+          try {
+            const { installSkillFromSource } = await import('../skills/installSkill.js')
+            const installed = await installSkillFromSource(message.request.source, {
+              overwrite: message.request.overwrite === true,
+            })
+            // The installer clears the shared skill/command caches. Re-read the same
+            // registry the query loop uses so the command is available immediately.
+            currentCatalogCommands = await getCommands(cwd())
+            currentCommands = filterCommandsForNonInteractive(currentCatalogCommands)
+            const appState = getAppState()
+            sendControlResponseSuccess(message, {
+              skills: installed.map(skill => ({
+                name: skill.name,
+                description: skill.description,
+                path: skill.path,
+                replaced: skill.replaced,
+              })),
+              commands: currentCommands
+                .filter(command => command.userInvocable !== false)
+                .map(command => ({
+                  name: getCommandName(command),
+                  description: formatDescriptionWithSource(command),
+                  argumentHint: command.argumentHint || '',
+                })),
+              runtimeCommands: projectRuntimeCommands(currentCatalogCommands),
+              runtimeTools: projectRuntimeTools([...tools, ...appState.mcp.tools]),
+            })
           } catch (error) {
             sendControlResponseError(message, errorMessage(error))
           }
@@ -3592,6 +4014,39 @@ function runHeadlessStreaming(
           }
 
           sendControlResponseSuccess(message)
+        } else if ((message.request as any).subtype === 'set_effort') {
+          // The TUI and headless editor invoke the same action. In particular Auto
+          // must clear runtime state as well as the persisted key.
+          const requested = (message.request as any).effort as
+            | 'low'
+            | 'medium'
+            | 'high'
+            | 'max'
+            | null
+          const result = isRayucodeRuntime()
+            ? (() => {
+                const stored = updateRayucodePreferences({
+                  effort: requested ?? undefined,
+                })
+                return stored.error
+                  ? { message: `Failed to set effort level: ${stored.error.message}` }
+                  : {
+                      message: requested
+                        ? `Set Rayucode effort level to ${requested}`
+                        : 'Rayucode effort level set to auto',
+                      effortUpdate: { value: requested ?? undefined },
+                    }
+              })()
+            : (await import('../utils/effortCommand.js')).executeEffort(
+                requested ?? 'auto',
+              )
+          if (result.effortUpdate) {
+            const value = result.effortUpdate.value
+            setAppState(prev => ({ ...prev, effortValue: value }))
+            sendControlResponseSuccess(message, { message: result.message })
+          } else {
+            sendControlResponseError(message, result.message)
+          }
         } else if (message.request.subtype === 'get_settings') {
           const currentAppState = getAppState()
           const model = getMainLoopModel()
@@ -3607,6 +4062,7 @@ function runHeadlessStreaming(
               // Numeric effort (ant-only) → null; SDK schema is string-level only.
               effort: typeof effort === 'string' ? effort : null,
             },
+            inference: resolveInferenceSettings(model, currentAppState.effortValue, options.thinkingConfig),
           })
         } else if (message.request.subtype === 'stop_task') {
           const { task_id: taskId } = message.request
@@ -3616,6 +4072,49 @@ function runHeadlessStreaming(
               setAppState,
             })
             sendControlResponseSuccess(message, {})
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'task_output') {
+          // ── WHY THE ENGINE HAS TO SERVE THIS ────────────────────────────────
+          //
+          // The output path is `getProjectTempDir()/<session>/tasks/<id>.output`, and both
+          // halves of that are process state: the temp dir is derived from the engine's own
+          // cwd resolution and the session id is memoized at first use, deliberately, so a
+          // /clear cannot orphan the files of tasks that are still running. An editor client
+          // computing the path itself would get it wrong the moment either changed — so it
+          // asks, and `getTaskOutput` (the same reader the CLI's own shell dialog uses)
+          // answers with a tail-capped read.
+          //
+          // A task whose file does not exist yet, or which has been evicted, returns empty
+          // content rather than an error: "nothing recorded" is a real answer and the client
+          // renders it as such.
+          const { task_id: taskId, max_bytes: maxBytes } = message.request
+          try {
+            const cap =
+              typeof maxBytes === 'number' && Number.isFinite(maxBytes) && maxBytes > 0
+                ? Math.min(maxBytes, MAX_CONTROL_TASK_OUTPUT_BYTES)
+                : MAX_CONTROL_TASK_OUTPUT_BYTES
+            const [content, size] = await Promise.all([
+              getTaskOutput(taskId, cap),
+              getTaskOutputSize(taskId),
+            ])
+            // An agent's output path is a SYMLINK to its transcript, so the same reader
+            // returns JSONL for agents and console text for everything else. The task's own
+            // type is the authority while it is still in state; once it has been evicted the
+            // content is all there is to go on, and a first line that parses as a record with
+            // a `type` is only ever a transcript.
+            const task = getAppState().tasks?.[taskId]
+            const isTranscript =
+              task?.type === 'local_agent' ||
+              task?.type === 'in_process_teammate' ||
+              (task === undefined && looksLikeTranscript(content))
+            sendControlResponseSuccess(message, {
+              content,
+              format: isTranscript ? 'transcript' : 'text',
+              truncated: size > cap,
+              size,
+            })
           } catch (error) {
             sendControlResponseError(message, errorMessage(error))
           }
@@ -3945,6 +4444,7 @@ function runHeadlessStreaming(
         value: await resolveAndPrepend(message, message.message.content),
         uuid: message.uuid,
         priority: message.priority,
+        bridgeOrigin: message.bridge_origin === true,
       })
       // Increment prompt count for attribution tracking and save snapshot
       // The snapshot persists promptCount so it survives compaction
@@ -3973,6 +4473,8 @@ function runHeadlessStreaming(
       await finalizePendingAsyncHooks()
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
+      unsubscribeWorkerApprovalLoss()
+      unsubscribeGateStatus()
       statusListeners.delete(rateLimitListener)
       output.done()
     }
@@ -4186,10 +4688,12 @@ async function handleInitializeRequest(
     appendSystemPrompt: string | undefined
     agent?: string | undefined
     userSpecifiedModel?: string | undefined
+    thinkingConfig?: ThinkingConfig
     [key: string]: unknown
   },
   agents: AgentDefinition[],
   getAppState: () => AppState,
+  runtimeSnapshot?: RuntimeSnapshot,
 ): Promise<void> {
   if (initialized) {
     output.enqueue({
@@ -4265,9 +4769,14 @@ async function handleInitializeRequest(
     }
   }
 
-  const settings = getSettings_DEPRECATED()
-  const outputStyle = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME
-  const availableOutputStyles = await getAllOutputStyles(getCwd())
+  // `runtimeSnapshot` was built from these same shared resolvers immediately before
+  // this call. Re-reading output-style files here doubled first-launch filesystem work.
+  const settings = runtimeSnapshot ? undefined : getSettings_DEPRECATED()
+  const outputStyle = runtimeSnapshot?.outputStyle ??
+    settings?.outputStyle ??
+    DEFAULT_OUTPUT_STYLE_NAME
+  const availableOutputStyleNames = runtimeSnapshot?.availableOutputStyles ??
+    Object.keys(await getAllOutputStyles(getCwd()))
 
   // Get account information
   const accountInfo = getAccountInformation()
@@ -4289,14 +4798,24 @@ async function handleInitializeRequest(
   if (request.jsonSchema) {
     setInitJsonSchema(request.jsonSchema)
   }
+  const commandsForResponse = runtimeSnapshot
+    ? runtimeSnapshot.commands.filter(command => command.available)
+    : commands
+        .filter(cmd => cmd.userInvocable !== false)
+        .map(cmd => ({
+          name: getCommandName(cmd),
+          description: formatDescriptionWithSource(cmd),
+          argumentHint: cmd.argumentHint || '',
+        }))
+
   const initResponse: SDKControlInitializeResponse = {
-    commands: commands
-      .filter(cmd => cmd.userInvocable !== false)
-      .map(cmd => ({
-        name: getCommandName(cmd),
-        description: formatDescriptionWithSource(cmd),
-        argumentHint: cmd.argumentHint || '',
-      })),
+    commands: runtimeSnapshot
+      ? commandsForResponse.map(command => ({
+          name: command.name,
+          description: command.description,
+          argumentHint: command.argumentHint,
+        }))
+      : commandsForResponse,
     agents: agents.map(agent => ({
       name: agent.agentType,
       description: agent.whenToUse,
@@ -4304,7 +4823,7 @@ async function handleInitializeRequest(
       model: agent.model === 'inherit' ? undefined : agent.model,
     })),
     output_style: outputStyle,
-    available_output_styles: Object.keys(availableOutputStyles),
+    available_output_styles: availableOutputStyleNames,
     models: modelInfos,
     account: {
       email: accountInfo?.email,
@@ -4319,6 +4838,8 @@ async function handleInitializeRequest(
     },
     pid: process.pid,
   }
+
+  if (runtimeSnapshot) initResponse.runtime = runtimeSnapshot
 
   if (isFastModeEnabled() && isFastModeAvailable()) {
     const appState = getAppState()

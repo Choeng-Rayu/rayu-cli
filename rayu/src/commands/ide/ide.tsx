@@ -13,7 +13,7 @@ import type { ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { getCwd } from '../../utils/cwd.js';
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
-import { type DetectedIDEInfo, detectIDEs, detectRunningIDEs, type IdeType, isJetBrainsIde, isSupportedJetBrainsTerminal, isSupportedTerminal, toIDEDisplayName } from '../../utils/ide.js';
+import { type DetectedIDEInfo, detectIDEs, detectRunningIDEs, ideMcpServerConfig, type IdeType, isJetBrainsIde, isSupportedJetBrainsTerminal, isSupportedTerminal, toIDEDisplayName } from '../../utils/ide.js';
 import { getCurrentWorktreeSession } from '../../utils/worktree.js';
 type IDEScreenProps = {
   availableIDEs: DetectedIDEInfo[];
@@ -582,15 +582,8 @@ function IDECommandFlow({
       onDone(currentIDE ? `Disconnected from ${currentIDE.name}.` : 'No IDE selected.');
       return;
     }
-    const url = selectedIDE.url;
-    newConfig.ide = {
-      type: url.startsWith('ws:') ? 'ws-ide' : 'sse-ide',
-      url: url,
-      ideName: selectedIDE.name,
-      authToken: selectedIDE.authToken,
-      ideRunningInWindows: selectedIDE.ideRunningInWindows,
-      scope: 'dynamic' as const
-    } as ScopedMcpServerConfig;
+    // Shared mapping — see ideMcpServerConfig.
+    newConfig.ide = ideMcpServerConfig(selectedIDE);
     isFirstCheckRef.current = true;
     setConnectingIDE(selectedIDE);
     onChangeDynamicMcpConfig(newConfig);

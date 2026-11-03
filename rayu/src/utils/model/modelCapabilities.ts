@@ -8,7 +8,7 @@ import { OAUTH_BETA_HEADER } from '../../constants/oauth.js'
 import { getAnthropicClient } from '../../services/api/client.js'
 import { isClaudeAISubscriber } from '../auth.js'
 import { logForDebugging } from '../debug.js'
-import { getRayuConfigHomeDir } from '../envUtils.js'
+import { getRayuAuthConfigDir } from '../envUtils.js'
 import { safeParseJSON } from '../json.js'
 import { lazySchema } from '../lazySchema.js'
 import { isEssentialTrafficOnly } from '../privacyLevel.js'
@@ -36,7 +36,7 @@ const CacheFileSchema = lazySchema(() =>
 export type ModelCapability = z.infer<ReturnType<typeof ModelCapabilitySchema>>
 
 function getCacheDir(): string {
-  return join(getRayuConfigHomeDir(), 'cache')
+  return join(getRayuAuthConfigDir(), 'cache')
 }
 
 function getCachePath(): string {

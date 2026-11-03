@@ -30,6 +30,8 @@
 //   • First-party-only request decorations (ANTHROPIC_CUSTOM_HEADERS,
 //     X-Claude-Code-Session-Id, x-client-request-id) are gated by the
 //     `firstParty` flag — see anthropicTransport.ts.
+//   • `refuseRedirects` (set for Rayu's own gateway) makes every request use
+//     `redirect:'error'`, so its credential reaches only the configured host.
 //   • Credentials are read from the 0600 provider config and never logged.
 import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk/index.js'
 import { anthropicTransportOptions } from './anthropicTransport.js'
@@ -67,6 +69,15 @@ export type AnthropicMessagesClientOptions = {
    * OUTSIDE the auth/logging fetch so it can fail safe back to a direct call.
    */
   wrapFetch?: (inner: typeof fetch) => typeof fetch
+  /**
+   * Send every request, rotated retries included, with `redirect: 'error'`.
+   *
+   * For endpoints Rayu operates (the gateway), where a redirect is never
+   * legitimate and the credential must reach exactly the configured host — the
+   * same rule the account-JWT fetch (rayuHostedAuth) and every other gateway call
+   * follow. Third-party endpoints keep the runtime default.
+   */
+  refuseRedirects?: boolean
 }
 
 /**
@@ -134,6 +145,7 @@ export function createAnthropicMessagesClient(
     fetchOverride,
     extraHeaders,
     wrapFetch,
+    refuseRedirects = false,
   } = opts
 
   const transport = anthropicTransportOptions({
@@ -164,6 +176,14 @@ export function createAnthropicMessagesClient(
   if (wrapFetch) {
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     resolvedFetch = wrapFetch((resolvedFetch ?? globalThis.fetch) as typeof fetch)
+  }
+  if (refuseRedirects) {
+    // Outermost, so the option reaches the network through every wrapper above:
+    // each one spreads `init`, including each rotated attempt.
+    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+    const inner = (resolvedFetch ?? globalThis.fetch) as typeof fetch
+    resolvedFetch = ((input, init) =>
+      inner(input, { ...init, redirect: 'error' })) as typeof fetch
   }
 
   // Final default headers: the shared transport's, then any caller extras, then

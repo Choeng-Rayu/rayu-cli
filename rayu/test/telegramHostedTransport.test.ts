@@ -12,7 +12,7 @@ mock.module('../src/telegram/telegramHostedApi.ts', () => ({
     updatesCalls.push(after)
     const updates = updatesQueue
     updatesQueue = []
-    return { linked: true, updates }
+    return { kind: 'ok', batch: { linked: true, updates } }
   },
   relayHostedSend: async (method: string, params: unknown) => {
     relayCalls.push({ method, params })
@@ -40,13 +40,13 @@ describe('createHostedRouter', () => {
     ]
     const first = await router.getUpdates(0)
     expect(updatesCalls[0]).toBe(0) // first poll acks nothing
-    expect(first).toEqual([u1, u2])
+    expect(first).toEqual({ kind: 'ok', updates: [u1, u2] })
 
     const u3 = { update_id: 102, message: { message_id: 3, text: 'c', chat: { id: 55 } } }
     updatesQueue = [{ id: 8, update: u3 }]
     const second = await router.getUpdates(999999) // bridge offset intentionally ignored
     expect(updatesCalls[1]).toBe(5) // advanced to the max row id from the first batch
-    expect(second).toEqual([u3])
+    expect(second).toEqual({ kind: 'ok', updates: [u3] })
   })
 
   test('call(getMe) returns the shared bot username', async () => {

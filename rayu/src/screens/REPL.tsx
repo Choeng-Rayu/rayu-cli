@@ -48,6 +48,8 @@ import { endInteractionSpan } from '../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
 import { useTelegramBridge } from '../hooks/useTelegramBridge.js';
+import { useRayucodeTaskBridge } from '../hooks/useRayucodeTaskBridge.js';
+import { useWebBridge } from '../hooks/useWebBridge.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
 import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
@@ -70,6 +72,9 @@ import { useMoreRight } from '../moreright/useMoreRight.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../components/Spinner.js';
 import { getSystemPrompt } from '../constants/prompts.js';
 import { getBrandGlyph } from '../constants/figures.js';
+import { MIN_TURN_DURATION_MS } from '../constants/turnCompletionVerbs.js';
+import { closeRayuCreditWindow, openRayuCreditWindow, type RayuCreditWindow, rayuWindowCredits } from '../services/rayuAuth/rayuTurnCredits.js';
+import { hasUnfinishedBackgroundAgent } from '../tasks/types.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
@@ -170,7 +175,7 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js';
 import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js';
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
-import { useAppState, useSetAppState, useAppStateStore } from '../state/AppState.js';
+import { type AppState, useAppState, useSetAppState, useAppStateStore } from '../state/AppState.js';
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js';
 import type { PastedContent } from '../utils/config.js';
@@ -202,6 +207,11 @@ const PROACTIVE_FALSE = () => false;
 const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
 const useProactive = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/useProactive.js').useProactive : null;
 const useScheduledTasks = feature('AGENT_TRIGGERS') ? require('../hooks/useScheduledTasks.js').useScheduledTasks : null;
+// Gated require, NOT a static import: REPL.tsx is always in the bundle, so a
+// static import here would pull the whole external-agent subsystem (manager,
+// four adapters, orchestration, persistence) into every build and defeat the
+// feature's dead-code elimination.
+const installExternalAgents: typeof import('../externalAgents/recovery/session.js').installExternalAgents | null = feature('EXTERNAL_AGENTS') ? require('../externalAgents/recovery/session.js').installExternalAgents : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
@@ -211,7 +221,7 @@ import { useIDEIntegration } from '../hooks/useIDEIntegration.js';
 import exit from '../commands/exit/index.js';
 import { ExitFlow } from '../components/ExitFlow.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
-import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter } from '../utils/messageQueueManager.js';
+import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, peek, removeByFilter } from '../utils/messageQueueManager.js';
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
@@ -267,6 +277,7 @@ import { useIDEStatusIndicator } from 'src/hooks/notifs/useIDEStatusIndicator.js
 import { useModelMigrationNotifications } from 'src/hooks/notifs/useModelMigrationNotifications.js';
 import { useCanSwitchToExistingSubscription } from 'src/hooks/notifs/useCanSwitchToExistingSubscription.js';
 import { useTeammateLifecycleNotification } from 'src/hooks/notifs/useTeammateShutdownNotification.js';
+import { useWorkerApprovalLossNotification } from 'src/hooks/notifs/useWorkerApprovalLossNotification.js';
 import { useFastModeNotification } from 'src/hooks/notifs/useFastModeNotification.js';
 import { AutoRunIssueNotification, shouldAutoRunIssue, getAutoRunIssueReasonText, getAutoRunCommand, type AutoRunIssueReason } from '../utils/autoRunIssue.js';
 import type { HookProgress } from '../types/hooks.js';
@@ -308,6 +319,15 @@ const HISTORY_STUB = {
 // https://anthropic.slack.com/archives/C07VBSHV7EV/p1773545449871739
 const RECENT_SCROLL_REPIN_WINDOW_MS = 3000;
 
+// How long the turn line waits for the one-shot session-title request's charge.
+// The title is launched with the first turn and billed to it, but it runs
+// concurrently and often settles after the answer does. Reading the turn total
+// without waiting made an identical turn show either ~1.9 credits (title
+// included) or ~0.01 (title dropped), depending on which request finished
+// first. The wait is bounded: a title still running after this long is not
+// worth stalling the completion line for.
+const TURN_TITLE_CHARGE_WAIT_MS = 3000;
+
 // Use LRU cache to prevent unbounded memory growth
 // 100 files should be sufficient for most coding sessions while preventing
 // memory issues when working across many files in large projects
@@ -316,6 +336,18 @@ function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? Math.round((sorted[mid - 1]! + sorted[mid]!) / 2) : sorted[mid]!;
+}
+
+/**
+ * Whether the user's request goes on after the turn that just ended: a background
+ * agent it launched is still running or has not queued its notification yet, or
+ * its notification is queued for the next turn. While it does, the request's Rayu
+ * credit window stays open and the turn line says "so far". Matches the headless
+ * engine's hold-back (cli/print.ts), so the terminal and Rayucode agree on when a
+ * request is done.
+ */
+function requestWorkContinues(state: AppState): boolean {
+  return hasUnfinishedBackgroundAgent(state.tasks) || peek(cmd => cmd.mode === 'task-notification' && cmd.agentId === undefined) !== undefined;
 }
 
 /**
@@ -769,6 +801,7 @@ export function REPL({
   useOfficialMarketplaceNotification();
   useLspInitializationNotification();
   useTeammateLifecycleNotification();
+  useWorkerApprovalLossNotification();
   const {
     recommendation: lspRecommendation,
     handleResponse: handleLspResponse
@@ -848,19 +881,13 @@ export function REPL({
   const [streamingToolUses, setStreamingToolUses] = useState<StreamingToolUse[]>([]);
   const [streamingThinking, setStreamingThinking] = useState<StreamingThinking | null>(null);
 
-  // Auto-hide streaming thinking after 30 seconds of being completed
-  useEffect(() => {
-    if (streamingThinking && !streamingThinking.isStreaming && streamingThinking.streamingEndedAt) {
-      const elapsed = Date.now() - streamingThinking.streamingEndedAt;
-      const remaining = 30000 - elapsed;
-      if (remaining > 0) {
-        const timer = setTimeout(setStreamingThinking, remaining, null);
-        return () => clearTimeout(timer);
-      } else {
-        setStreamingThinking(null);
-      }
-    }
-  }, [streamingThinking]);
+  // No auto-hide timer. Completed reasoning is now rendered by the thinking
+  // block itself, in order, above the response text (Message.tsx case
+  // 'thinking'), so it belongs to history like any other content. The old 30s
+  // timer existed only to retire the trailing streaming preview, which
+  // Messages.tsx now drops the moment isStreaming goes false.
+  // finalizeStreamingThinkingOnTurnEnd still clears a preview left mid-stream by
+  // an abort or error — see its doc comment.
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   // Ref that always points to the current abort controller, used by the
   // REPL bridge to abort the active query when a remote interrupt arrives.
@@ -871,7 +898,8 @@ export function REPL({
   // read in the onQuery finally block to notify mobile clients that a turn ended.
   const sendBridgeResultRef = useRef<() => void>(() => {});
   // Set after handleIncomingPrompt is defined; the Telegram bridge calls
-  // Holds the Telegram streaming wrapper for onStreamingText; populated by useTelegramBridge.
+  // Holds the chained remote streaming wrappers for onStreamingText; populated by
+  // useTelegramBridge and useWebBridge. Named `tg…` for history — it carries both.
   const tgStreamingWrapRef = useRef<
     ((f: (current: string | null) => string | null) => void) | null
   >(null);
@@ -974,6 +1002,15 @@ export function REPL({
     limit: number;
     nudges: number;
   } | undefined>(undefined);
+  // The Rayu credit window of the request the user is waiting on. Opened by the
+  // first turn after the previous request finished; kept open while background
+  // agents it launched still run, so the turns their notifications start add to
+  // it; closed by the turn line that finds the work done. That line's figure is
+  // the whole request, from the user's message to the last agent's answer.
+  const creditWindowRef = React.useRef<RayuCreditWindow | null>(null);
+  // The session-title request started for this turn, until its charge is known.
+  // The turn line awaits it so a late title settlement cannot change the number.
+  const turnTitleChargeRef = React.useRef<Promise<unknown> | null>(null);
 
   // Ref to track current focusedInputDialog for use in callbacks
   // This avoids stale closures when checking dialog state in timer callbacks
@@ -1191,6 +1228,20 @@ export function REPL({
     registerLeaderToolUseConfirmQueue(setToolUseConfirmQueue);
     return () => unregisterLeaderToolUseConfirmQueue();
   }, [setToolUseConfirmQueue]);
+  // Start the external-agent orchestrator for this session: event sinks, the
+  // permission broker and workspace tracking. Ordered AFTER the leader queue
+  // registration above because the broker routes a foreign agent's approvals
+  // into that same queue, so it must exist first. No-ops when the feature is
+  // not compiled in. Teardown also detaches agents and releases workspace
+  // leases, and is additionally registered with the cleanup registry so an
+  // abrupt exit still lets go cleanly.
+  useEffect(() => {
+    if (!installExternalAgents) return;
+    const teardown = installExternalAgents(setAppState);
+    return () => {
+      void teardown();
+    };
+  }, [setAppState]);
   const [messages, rawSetMessages] = useState<MessageType[]>(initialMessages ?? []);
   const messagesRef = useRef(messages);
   // Stores the willowMode variant that was shown (or false if no hint shown).
@@ -1593,7 +1644,8 @@ export function REPL({
     // nothing else clears it — the animated "Thinking…" preview would keep
     // spinning below the error/turn-status and look like it's still working.
     // On a normal turn the block already completed (isStreaming:false), so
-    // this is a no-op and the 30s "✓ Thought" linger is preserved.
+    // this is a no-op and the finished block stays in history as in-order
+    // message content.
     setStreamingThinking(finalizeStreamingThinkingOnTurnEnd);
     setSpinnerMessage(null);
     setSpinnerColor(null);
@@ -1615,6 +1667,16 @@ export function REPL({
     if (!hasRunningTeammates && swarmStartTimeRef.current !== null) {
       const totalMs = Date.now() - swarmStartTimeRef.current;
       const deferredBudget = swarmBudgetInfoRef.current;
+      // The request's credits, teammates included. If a turn or a background
+      // agent is still running the request is not done: the figure is "so far"
+      // and the window stays open for the line that ends it.
+      const creditWindow = creditWindowRef.current;
+      const deferredCredits = creditWindow ? rayuWindowCredits(creditWindow) : undefined;
+      const stillWorking = queryGuard.isActive || requestWorkContinues(store.getState());
+      if (creditWindow && !stillWorking) {
+        closeRayuCreditWindow(creditWindow);
+        creditWindowRef.current = null;
+      }
       swarmStartTimeRef.current = null;
       swarmBudgetInfoRef.current = undefined;
       setMessages(prev => [...prev, createTurnDurationMessage(totalMs, deferredBudget,
@@ -1623,7 +1685,7 @@ export function REPL({
       // isLoggableMessage and never reach disk. Using raw prev.length
       // would make checkResumeConsistency report false delta<0 for
       // every turn that ran a progress-emitting tool.
-      count(prev, isLoggableMessage))]);
+      count(prev, isLoggableMessage), deferredCredits, stillWorking)]);
     }
   }, [hasRunningTeammates, setMessages]);
 
@@ -2187,6 +2249,17 @@ export function REPL({
 
     // forceEnd() skips the finally path — fire directly (aborted=true).
     void mrOnTurnComplete(messagesRef.current, true);
+
+    // The finally path is also where a request's credit window closes. An
+    // interrupted turn shows no line, and its request is over unless background
+    // agents it launched are still working, so the next request starts its own
+    // total. Closed here, synchronously, so a prompt sent right after Esc
+    // cannot land in this window.
+    const creditWindow = creditWindowRef.current;
+    if (creditWindow && !requestWorkContinues(store.getState()) && !getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running')) {
+      closeRayuCreditWindow(creditWindow);
+      creditWindowRef.current = null;
+    }
   }
 
   // Function to handle queued command when canceling a permission request
@@ -2507,6 +2580,7 @@ export function REPL({
       nestedMemoryAttachmentTriggers: new Set<string>(),
       loadedNestedMemoryPaths: loadedNestedMemoryPathsRef.current,
       dynamicSkillDirTriggers: new Set<string>(),
+      forceFreshReadPaths: new Set<string>(),
       discoveredSkillNames: discoveredSkillNamesRef.current,
       setResponseLength,
       pushApiMetricsEntry: "external" === 'ant' ? (ttftMs: number) => {
@@ -2628,6 +2702,14 @@ export function REPL({
         // Bump conversationId so Messages.tsx row keys change and
         // stale memoized rows remount with post-compact content.
         setConversationId(randomUUID());
+        // Compaction replaced all messages: old tool_use_ids will never be
+        // seen again, so the replacement state's seenIds/replacements maps
+        // can be freed. Without this they grow monotonically for the whole
+        // session — ~2 KB per persisted tool result, never reclaimed.
+        if (contentReplacementStateRef.current) {
+          contentReplacementStateRef.current.seenIds.clear();
+          contentReplacementStateRef.current.replacements.clear();
+        }
         // Compaction succeeded — clear the context-blocked flag so ticks resume
         if (feature('PROACTIVE') || feature('KAIROS')) {
           proactiveModule?.setContextBlocked(false);
@@ -2704,6 +2786,22 @@ export function REPL({
     // Mark onboarding as complete when any user message is sent to Claude
     void maybeMarkProjectOnboardingComplete();
 
+    // Open the credit window before the title request below: a request counts
+    // toward the windows open when it starts, so a window opened after the
+    // title would leave its charge out. A turn that continues work still going
+    // (a background agent's notification) keeps the window it already has, and
+    // so does a prompt sent while that work runs: it joins the same request.
+    // A window left open by work that has since finished without a turn to
+    // close it (an agent stopped without a notification) is not carried into
+    // a new request.
+    const continuesWork = newMessages.some(m => m.type === 'user' && m.origin?.kind === 'task-notification');
+    const openCreditWindow = creditWindowRef.current;
+    if (openCreditWindow && !continuesWork && !requestWorkContinues(store.getState()) && !getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running')) {
+      closeRayuCreditWindow(openCreditWindow);
+      creditWindowRef.current = null;
+    }
+    creditWindowRef.current ??= openRayuCreditWindow();
+
     // Extract a session title from the first real user message. One-shot
     // via ref (was tengu_birch_mist experiment: first-message-only to save
     // Haiku calls). The ref replaces the old `messages.length <= 1` check,
@@ -2720,11 +2818,15 @@ export function REPL({
       // None of these are the user's topic; wait for real prose.
       if (text && !text.startsWith(`<${LOCAL_COMMAND_STDOUT_TAG}>`) && !text.startsWith(`<${COMMAND_MESSAGE_TAG}>`) && !text.startsWith(`<${COMMAND_NAME_TAG}>`) && !text.startsWith(`<${BASH_INPUT_TAG}>`)) {
         haikuTitleAttemptedRef.current = true;
-        void generateSessionTitle(text, new AbortController().signal).then(title => {
+        const titleRequest = generateSessionTitle(text, new AbortController().signal).then(title => {
           if (title) setHaikuTitle(title);else haikuTitleAttemptedRef.current = false;
         }, () => {
           haikuTitleAttemptedRef.current = false;
         });
+        // The title is billed to this turn; hold the promise so the turn line can
+        // wait for that charge (see TURN_TITLE_CHARGE_WAIT_MS).
+        turnTitleChargeRef.current = titleRequest;
+        void titleRequest;
       }
     }
 
@@ -3005,12 +3107,38 @@ export function REPL({
           snapshotOutputTokensForTurn(null);
         }
 
-        // Add turn duration message for turns longer than 30s or with a budget
+        // Add the turn duration message for any turn that took at least
+        // MIN_TURN_DURATION_MS, or that carried a token budget. The threshold
+        // used to be 30s, which meant nearly every turn ended with no
+        // completion status and the user had no consistent "the response is
+        // done" signal. Floored rather than unconditional so a sub-second turn
+        // never renders "worked for 0s".
+        // A turn the Rayu gateway charged for always gets the line, so its
+        // credits are shown however fast it was (a sub-second line shows only
+        // the credits).
         // Skip if user aborted or if in loop mode (too noisy between ticks)
         // Defer if swarm teammates are still running (show when they finish)
         const turnDurationMs = Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current;
-        if ((turnDurationMs > 30000 || budgetInfo !== undefined) && !abortController.signal.aborted && !proactiveActive) {
-          const hasRunningSwarmAgents = getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running');
+        // The session-title request belongs to this turn but runs alongside it,
+        // so its charge may land after the answer. Wait for it (bounded) before
+        // reading the total, or the same turn reads ~1.9 one run and ~0.01 the
+        // next depending on which request settled first. Read outside the timing
+        // above so the wait is not reported as turn duration.
+        const pendingTitleCharge = turnTitleChargeRef.current;
+        if (pendingTitleCharge && !abortController.signal.aborted && !proactiveActive) {
+          turnTitleChargeRef.current = null;
+          await Promise.race([pendingTitleCharge.catch(() => {}), new Promise(resolve => setTimeout(resolve, TURN_TITLE_CHARGE_WAIT_MS))]);
+        }
+        // The request's Rayu credits: everything charged since the user's
+        // message, every turn and background agent included. While agents it
+        // launched still work, the line says "so far" and the window stays open
+        // for the turns their notifications start; the line that finds the
+        // work done shows the total and closes the window.
+        const creditWindow = creditWindowRef.current;
+        const turnCredits = creditWindow ? rayuWindowCredits(creditWindow) : undefined;
+        const workContinues = requestWorkContinues(store.getState());
+        const hasRunningSwarmAgents = getAllInProcessTeammateTasks(store.getState().tasks).some(t => t.status === 'running');
+        if ((turnDurationMs >= MIN_TURN_DURATION_MS || budgetInfo !== undefined || turnCredits !== undefined) && !abortController.signal.aborted && !proactiveActive) {
           if (hasRunningSwarmAgents) {
             // Only record start time on the first deferred turn
             if (swarmStartTimeRef.current === null) {
@@ -3021,8 +3149,14 @@ export function REPL({
               swarmBudgetInfoRef.current = budgetInfo;
             }
           } else {
-            setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs, budgetInfo, count(prev, isLoggableMessage))]);
+            setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs, budgetInfo, count(prev, isLoggableMessage), turnCredits, workContinues)]);
           }
+        }
+        // Teammates keep the window open too: the deferred line they leave
+        // prints when they finish, and closes it then.
+        if (creditWindow && !workContinues && !hasRunningSwarmAgents) {
+          closeRayuCreditWindow(creditWindow);
+          creditWindowRef.current = null;
         }
         // Clear the controller so CancelRequestHandler's canCancelRunningTask
         // reads false at the idle prompt. Without this, the stale non-aborted
@@ -3654,7 +3788,10 @@ export function REPL({
   const onSubmitRef = useRef(onSubmit);
   onSubmitRef.current = onSubmit;
   const handleOpenRateLimitOptions = useCallback(() => {
-    void onSubmitRef.current('/rate-limit-options', {
+    // Rayu's own command (see src/commands/rayu-limit-options): it offers to lift
+    // the account's credit PACING. Named apart from the Claude-era
+    // `/rate-limit-options` subscription command, which Rayu does not ship.
+    void onSubmitRef.current('/rayu-limit-options', {
       setCursorOffset: () => {},
       clearBuffer: () => {},
       resetHistory: () => {}
@@ -3876,7 +4013,19 @@ export function REPL({
   } = useReplBridge(messages, setMessages, abortControllerRef, commands, mainLoopModel);
   sendBridgeResultRef.current = sendBridgeResult;
   const { wrapOnStreamingText } = useTelegramBridge(messages);
-  tgStreamingWrapRef.current = wrapOnStreamingText(onStreamingText);
+  // Independent from Telegram: both interfaces may observe/control the same task owner.
+  useRayucodeTaskBridge();
+  const { wrapOnStreamingText: wrapWebBridgeOnStreamingText } = useWebBridge(messages);
+  /*
+   * CHAINED, not chosen. Each wrapper keeps its own accumulator and forwards to the
+   * callback it was given, so composing them means every remote surface sees every
+   * delta. Assigning one of them to the ref instead would silently give whichever
+   * lost the streaming feed nothing at all — the session would look alive in one
+   * place and frozen mid-answer in the other.
+   */
+  tgStreamingWrapRef.current = wrapWebBridgeOnStreamingText(
+    wrapOnStreamingText(onStreamingText),
+  );
   useAfterFirstRender();
 
   // Track prompt queue usage for analytics. Fire once per transition from
@@ -4358,7 +4507,7 @@ export function REPL({
           const w = Math.max(80, (process.stdout.columns ?? 80) - 6);
           const raw = await renderMessagesToPlainText(deferredMessages, tools, w);
           const text = raw.replace(/[ \t]+$/gm, '');
-          const path = join(tmpdir(), `cc-transcript-${Date.now()}.txt`);
+          const path = join(tmpdir(), `rayu-transcript-${Date.now()}.txt`);
           await writeFile(path, text);
           const opened = openFileInExternalEditor(path);
           setStatus(opened ? `opening ${path}` : `wrote ${path} · no $VISUAL/$EDITOR set`);

@@ -69,6 +69,10 @@ import {
   type ProcessUserInputContext,
   processUserInput,
 } from './utils/processUserInput/processUserInput.js'
+import {
+  getCurrentIdeSelection,
+  trackIdeSelection,
+} from './utils/ideSelectionTracker.js'
 import { fetchSystemPromptParts } from './utils/queryContext.js'
 import { setCwd } from './utils/Shell.js'
 import {
@@ -130,6 +134,12 @@ const snipProjection = feature('HISTORY_SNIP')
 export type QueryEngineConfig = {
   cwd: string
   tools: Tools
+  /**
+   * The tool list as of now. Called between tool rounds (query.ts), so a tool that a
+   * mid-turn mode change adds or removes (plan approval entering Orchestrator mode, and
+   * with it SendMessage) is offered on the very next request, as in the REPL.
+   */
+  refreshTools?: () => Tools
   commands: Command[]
   mcpClients: MCPServerConnection[]
   agents: AgentDefinition[]
@@ -214,6 +224,7 @@ export class QueryEngine {
       cwd,
       commands,
       tools,
+      refreshTools,
       mcpClients,
       verbose = false,
       thinkingConfig,
@@ -350,6 +361,7 @@ export class QueryEngine {
         commands,
         debug: false, // we use stdout, so don't want to clobber it
         tools,
+        refreshTools,
         verbose,
         mainLoopModel: initialMainLoopModel,
         thinkingConfig: initialThinkingConfig,
@@ -370,6 +382,7 @@ export class QueryEngine {
       nestedMemoryAttachmentTriggers: new Set<string>(),
       loadedNestedMemoryPaths: this.loadedNestedMemoryPaths,
       dynamicSkillDirTriggers: new Set<string>(),
+      forceFreshReadPaths: new Set<string>(),
       discoveredSkillNames: this.discoveredSkillNames,
       setInProgressToolUseIDs: () => {},
       setResponseLength: () => {},
@@ -407,6 +420,15 @@ export class QueryEngine {
       }
     }
 
+    // The editor's current selection, when this session is attached to one.
+    //
+    // `trackIdeSelection` is called here rather than at session start because MCP clients
+    // connect asynchronously — the `ide` client may not exist yet on the first turn — and
+    // registering the handler is idempotent. This is what makes a selection in the editor
+    // reach a NON-INTERACTIVE turn: the interactive REPL gets the same value from
+    // `useIdeSelection`, and both feed the same `getSelectedLinesFromIDE` attachment.
+    trackIdeSelection(processUserInputContext.options?.mcpClients)
+
     const {
       messages: messagesFromUserInput,
       shouldQuery,
@@ -422,6 +444,7 @@ export class QueryEngine {
         messages: this.mutableMessages,
       },
       messages: this.mutableMessages,
+      ideSelection: getCurrentIdeSelection(),
       uuid: options?.uuid,
       isMeta: options?.isMeta,
       querySource: 'sdk',
@@ -498,6 +521,7 @@ export class QueryEngine {
         commands,
         debug: false,
         tools,
+        refreshTools,
         verbose,
         mainLoopModel,
         thinkingConfig: initialThinkingConfig,
@@ -518,6 +542,7 @@ export class QueryEngine {
       nestedMemoryAttachmentTriggers: new Set<string>(),
       loadedNestedMemoryPaths: this.loadedNestedMemoryPaths,
       dynamicSkillDirTriggers: new Set<string>(),
+      forceFreshReadPaths: new Set<string>(),
       discoveredSkillNames: this.discoveredSkillNames,
       setInProgressToolUseIDs: () => {},
       setResponseLength: () => {},
@@ -1190,6 +1215,7 @@ export async function* ask({
   isMeta,
   cwd,
   tools,
+  refreshTools,
   mcpClients,
   verbose = false,
   thinkingConfig,
@@ -1221,6 +1247,7 @@ export async function* ask({
   isMeta?: boolean
   cwd: string
   tools: Tools
+  refreshTools?: () => Tools
   verbose?: boolean
   mcpClients: MCPServerConnection[]
   thinkingConfig?: ThinkingConfig
@@ -1249,6 +1276,7 @@ export async function* ask({
   const engine = new QueryEngine({
     cwd,
     tools,
+    refreshTools,
     commands,
     mcpClients,
     agents,

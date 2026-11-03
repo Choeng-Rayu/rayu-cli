@@ -2,8 +2,10 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import {
   HEAP_HIGH_WATER_FRACTION,
   checkMemoryPressure,
+  getHeapPressure,
   isMemoryGuardEnabled,
   setMemoryPressureCleanup,
+  setUserTimingInUse,
   _resetMemoryPressureGuardForTest,
 } from '../src/utils/memoryPressureGuard.js'
 
@@ -28,6 +30,20 @@ describe('memoryPressureGuard', () => {
 
   test('high-water fraction constant is 0.8', () => {
     expect(HEAP_HIGH_WATER_FRACTION).toBe(0.8)
+  })
+
+  test('heap pressure uses the actual limit and does not run cleanup', () => {
+    let cleanupCalls = 0
+    setMemoryPressureCleanup(() => { cleanupCalls++ })
+    expect(getHeapPressure(() => 0.79 * GB, () => GB).isHigh).toBe(false)
+    expect(getHeapPressure(() => 0.8 * GB, () => GB)).toEqual({
+      heapUsed: 0.8 * GB, heapLimit: GB, isHigh: true,
+    })
+    expect(cleanupCalls).toBe(0)
+  })
+
+  test.each([0, -1, NaN, Infinity])('unavailable or invalid heap limit %s does not trigger emergency compaction', limit => {
+    expect(getHeapPressure(() => GB, () => limit).isHigh).toBe(false)
   })
 
   test('below the high-water mark: clears timing, no cleanup, returns false', () => {
@@ -91,6 +107,59 @@ describe('memoryPressureGuard', () => {
     )
     expect(fired).toBe(false)
     expect(cleared).toBe(0) // profiler relies on marks — don't wipe them
+  })
+
+  // The headless profiler (the `--print` engine the VS Code extension spawns)
+  // keeps `headless_*` marks for a WHOLE turn and reads them back only at turn
+  // end, so the routine wholesale clear must skip it or every turn longer than
+  // the 30s tick reports nothing. It declares itself via setUserTimingInUse.
+  test('routine clear is skipped when a registered profiler is in use', () => {
+    setUserTimingInUse(() => true)
+    let cleared = 0
+    const fired = checkMemoryPressure(
+      () => 0.5 * GB, // well below mark
+      LIMIT,
+      () => 0,
+      () => {
+        cleared++
+      },
+    )
+    expect(fired).toBe(false)
+    expect(cleared).toBe(0) // marks preserved for the in-turn reader
+  })
+
+  test('routine clear runs again once the registered profiler is cleared', () => {
+    setUserTimingInUse(() => true)
+    let cleared = 0
+    const clear = () => {
+      cleared++
+    }
+    checkMemoryPressure(() => 0.5 * GB, LIMIT, () => 0, clear)
+    expect(cleared).toBe(0)
+
+    setUserTimingInUse(() => false)
+    checkMemoryPressure(() => 0.5 * GB, LIMIT, () => 0, clear)
+    expect(cleared).toBe(1)
+
+    setUserTimingInUse(null) // null also means "nothing in use"
+    checkMemoryPressure(() => 0.5 * GB, LIMIT, () => 0, clear)
+    expect(cleared).toBe(2)
+  })
+
+  test('an over-mark heap still clears timing even while a profiler is in use', () => {
+    // Avoiding an OOM crash trumps profiling fidelity.
+    setUserTimingInUse(() => true)
+    let cleared = 0
+    const fired = checkMemoryPressure(
+      () => 1.9 * GB, // 95% of 2GB
+      LIMIT,
+      () => 0,
+      () => {
+        cleared++
+      },
+    )
+    expect(fired).toBe(true)
+    expect(cleared).toBe(1)
   })
 
   test('a throwing cleanup does not break the guard', () => {

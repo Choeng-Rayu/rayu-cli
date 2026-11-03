@@ -1,21 +1,23 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../commands.js'
 import { IMAGE_GEN_TOOL_NAME } from '../tools/ImageGenTool/constants.js'
-import { getNvidiaApiKey } from '../tools/ImageGenTool/nvidiaImageClient.js'
+import { isRayuImageAvailable } from '../tools/ImageGenTool/ImageGenTool.js'
 import { isGeminiVertexImageAvailable } from '../tools/ImageGenTool/vertexImageClient.js'
 
 const generateImage: Command = {
   type: 'prompt',
   name: 'generate-image',
-  description: 'Generate an image from a text prompt (NVIDIA / Vertex Imagen)',
+  description:
+    'Generate an image from a text prompt (Rayu-hosted or Vertex Imagen)',
   progressMessage: 'generating image',
   contentLength: 0,
   source: 'builtin',
-  // Capability gate only (hide when no image backend is configured). The paid
+  // Capability gate only (hide when no image backend is usable). The paid
   // entitlement is a SOFT gate (paidFeature) so the command stays visible and
   // Free users get an upgrade notice instead of it disappearing.
   isEnabled: () =>
-    getNvidiaApiKey() != null || isGeminiVertexImageAvailable(),
+    // Signed-in Rayu users can use hosted image models with no BYO key.
+    isRayuImageAvailable() || isGeminiVertexImageAvailable(),
   paidFeature: 'image_generation',
   async getPromptForCommand(args): Promise<ContentBlockParam[]> {
     const prompt = args.trim()

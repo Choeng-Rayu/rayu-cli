@@ -34,10 +34,16 @@ describe('FileWriteTool validation guidance', () => {
 
     expect(result?.result).toBe(false)
     if (!result || result.result) throw new Error('Expected validation failure')
-    expect(result.message).toContain(
-      'Existing-file Write requires a fresh full Read',
-    )
+    // Names the actual cause (never read, vs aged out of the cache, vs partial
+    // view) instead of one blanket sentence for all three.
+    expect(result.message).toContain('File has not been read yet')
     expect(result.message).toContain('without offset or limit')
+    expect(result.message).toContain(
+      'retry Write with the complete new file content',
+    )
+    // The requirement holds even with edit permission already granted —
+    // otherwise the model reads it as a contradiction and retries unchanged.
+    expect(result.message).toContain('edit permission is already granted')
   })
 
   test('allows overwriting an existing file after a fresh full read', async () => {

@@ -7,6 +7,78 @@ cat ~/.rayu/diagnostics.jsonl | jq .
 RAYU_DIAGNOSTICS=1 rayu --print "hi"     # echo diagnostics to stderr
 ```
 
+## Installation problems
+
+### `rayu: command not found` right after installing
+
+The `PATH` change the installer made only applies to **new** shells. Open a new
+terminal, or apply it to the current one:
+
+```bash
+export PATH="$HOME/.rayu/bin:$PATH"
+```
+
+On Windows, reopen PowerShell (the user `PATH` is read at process start).
+
+### The installer says another `rayu` is earlier on my PATH
+
+An older `npm install -g` copy is shadowing the new install, so `rayu` keeps
+launching the old one. Remove it:
+
+```bash
+npm uninstall -g @rayu-dev/rayu-cli
+which -a rayu        # confirm only ~/.rayu/bin/rayu remains
+```
+
+### `npm install -g` fails (EACCES, node-gyp, sharp, prebuild)
+
+Use the installer instead — it needs no npm, no global prefix write access and
+compiles nothing:
+
+```bash
+curl -fsSL https://rayucode.com/install | bash
+```
+
+If you must use npm, point it at a prefix you own rather than using `sudo`:
+
+```bash
+npm config set prefix ~/.npm-global
+export PATH="$HOME/.npm-global/bin:$PATH"
+npm install -g @rayu-dev/rayu-cli
+```
+
+### `checksum mismatch`
+
+The download was corrupted or tampered with, and **nothing was installed**.
+Retry; if it keeps happening on the same file, report it with the printed
+expected/actual hashes.
+
+### Behind a proxy, or on an internal mirror
+
+```bash
+export HTTPS_PROXY=http://proxy.internal:3128
+export RAYU_NPM_REGISTRY=https://npm.internal/repository/npm-proxy
+curl -fsSL https://rayucode.com/install | bash
+```
+
+### Alpine / musl, or no prebuilt runtime for my platform
+
+The installer detects musl and uses a musl Node build. If none exists for your
+architecture, install Node yourself and re-run:
+
+```bash
+apk add nodejs        # Alpine
+curl -fsSL https://rayucode.com/install | bash
+```
+
+### Start over
+
+```bash
+curl -fsSL https://rayucode.com/install | bash -s -- --uninstall
+rm -rf ~/.rayu        # also drops settings and credentials
+curl -fsSL https://rayucode.com/install | bash
+```
+
 ## API Error: 404
 
 **Cause:** the selected model isn't a chat model on that endpoint, or the model

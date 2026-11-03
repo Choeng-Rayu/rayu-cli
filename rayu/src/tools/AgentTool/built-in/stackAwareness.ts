@@ -1,9 +1,8 @@
-// Stack-awareness prompt fragment for the planner (and stack-aware collaborators).
+// Stack-awareness prompt fragment for the Orchestrator planner.
 //
 // PURE CONTENT: a function of a DetectedStack → instructional text. The
 // ASSEMBLY (running detectStack(getCwd()) and splicing this into the prompt)
-// lives in the planner's getSystemPrompt assembly (and collaborators'
-// buildCollaboratorPrompt). Keeping content separate keeps a future markdown
+// lives in the planner's getSystemPrompt assembly. Keeping content separate keeps a future markdown
 // migration a pure move — the dynamic bit stays a code-injected fragment.
 import type { DetectedStack } from '../../../utils/stackDetector.js'
 import { summarizeStack } from '../../../utils/stackDetector.js'
@@ -20,8 +19,8 @@ export function buildStackAwarenessFragment(stack: DetectedStack): string {
       `This project already has an established stack: ${summarizeStack(stack)}.`,
       `Detected from: ${stack.manifests.join(', ')}.`,
       '- Your job here is to DOCUMENT and RESPECT this stack, not pick a new one. Do NOT propose migrating, swapping, or "modernizing" the language, framework, package manager, or database.',
-      '- Record the detected stack verbatim in the shared brief (.rayu/swarm/shared.json "stack").',
-      '- Decompose the work ONTO this stack and tell each specialist how to build within it.',
+      '- Record the detected stack in the plan and preserve it in every worker packet.',
+      '- Decompose the work ONTO this stack and tell each worker how to build within it.',
       '- Introduce a new library/tool only when the task genuinely needs one the stack lacks — and flag it with a one-line justification.',
     ].join('\n')
   }

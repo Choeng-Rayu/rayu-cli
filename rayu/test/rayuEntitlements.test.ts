@@ -232,11 +232,106 @@ describe('hosted model entitlement', () => {
     expect(m.isHostedModelEntitled('deepseek-v4-pro')).toBe(true)
   })
 
+  test('PAYG: hasHostedModelAccess true with a funded top-up on a feature-less plan', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    // Free plan whose allowedModels is EXPLICITLY empty — normally denied
+    // client-side. A positive topupBalance buys gateway usage (the Rust
+    // gateway's payg_available bypass), so access must be true.
+    m._setRayuEntitlementsForTesting({ ...hostedEnt([]), topupBalance: 42 })
+    expect(m.hasHostedModelAccess()).toBe(true)
+    expect(m.hasPositiveTopupBalance()).toBe(true)
+  })
+
+  test('PAYG: zero / unknown topupBalance does not unlock access', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    m._setRayuEntitlementsForTesting({ ...hostedEnt([]), topupBalance: 0 })
+    expect(m.hasHostedModelAccess()).toBe(false)
+    expect(m.hasPositiveTopupBalance()).toBe(false)
+    // Field absent = unknown -> no unlock; existing empty-list denial holds.
+    m._setRayuEntitlementsForTesting(hostedEnt([]))
+    expect(m.hasHostedModelAccess()).toBe(false)
+    expect(m.hasPositiveTopupBalance()).toBe(false)
+  })
+
+  test('hasPositiveTopupBalance is false when OAuth is off (no gating effect)', async () => {
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    m._setRayuEntitlementsForTesting({ ...hostedEnt([]), topupBalance: 999 })
+    expect(m.hasPositiveTopupBalance()).toBe(false)
+  })
+
+  test('PAYG: no entitlements cached -> hasHostedModelAccess fails open', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    m._resetRayuEntitlementsForTesting()
+    expect(m.hasHostedModelAccess()).toBe(true)
+    // ...while the top-up predicate itself never fabricates access.
+    expect(m.hasPositiveTopupBalance()).toBe(false)
+  })
+
   test('upgrade message includes the /plans link', async () => {
     process.env.RAYU_WEB_URL = 'https://web.example.test'
     const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
     const msg = m.hostedModelUpgradeMessage()
     expect(msg).toContain('https://web.example.test/plans')
     delete process.env.RAYU_WEB_URL
+  })
+
+  test('PAYG: an awaited refresh picks up topupBalance and unlocks the gate (the /topup paid path)', async () => {
+    // WHY: the PAYG unlock reads topupBalance from the ENTITLEMENTS cache, and
+    // /topup used to only re-read the balance from /v1/credits — leaving the
+    // stale pre-purchase cache in place for up to 30s, so the first hosted
+    // generation after paying was still refused with "upgrade your plan". The
+    // fix awaits refreshRayuEntitlements() when the poll reports `paid`; this
+    // proves that an awaited refresh flips the gate synchronously.
+    process.env.USE_RAYU_OAUTH = 'true'
+    const sess = await import('../src/services/rayuAuth/rayuSession.ts')
+    const m = await import('../src/services/rayuAuth/rayuEntitlements.ts')
+    const savedAuthDir = process.env.RAYU_AUTH_CONFIG_DIR
+    // The refresh persists AND syncs the rayu-hosted provider — keep every
+    // write inside the temp dir.
+    process.env.RAYU_AUTH_CONFIG_DIR = dir
+    try {
+      sess.writeRayuSession({
+        accessToken: 'at',
+        refreshToken: 'rt',
+        expiresAt: Date.now() + 3600_000,
+        user: { id: 1, email: 'a@b.c', displayName: null, avatarUrl: null, role: 'user' },
+      })
+      // Pre-purchase cache: Free, feature off, no balance.
+      m._setRayuEntitlementsForTesting({
+        ...ent({ image_generation: { enabled: false } }),
+        allowedModels: [],
+        topupBalance: 0,
+        userId: 1,
+      })
+      const gate = await import('../src/services/rayuAuth/paidFeatureGate.ts')
+      expect(gate.isPaidFeatureLocked('image_generation')).toBe(true)
+
+      // The backend answer AFTER the payment landed (what /topup triggers).
+      const real = globalThis.fetch
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            ...ent({ image_generation: { enabled: false } }),
+            allowedModels: [],
+            topupBalance: 5000,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )) as unknown as typeof fetch
+      try {
+        const refreshed = await m.refreshRayuEntitlements()
+        expect(refreshed?.topupBalance).toBe(5000)
+      } finally {
+        globalThis.fetch = real
+      }
+      expect(m.hasPositiveTopupBalance()).toBe(true)
+      expect(gate.isPaidFeatureLocked('image_generation')).toBe(false)
+      expect(m.hasHostedModelAccess()).toBe(true)
+    } finally {
+      if (savedAuthDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+      else process.env.RAYU_AUTH_CONFIG_DIR = savedAuthDir
+    }
   })
 })

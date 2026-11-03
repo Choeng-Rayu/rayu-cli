@@ -1,0 +1,312 @@
+/**
+ * The `vscodeHost` entrypoint — the engine the Rayucode extension spawns.
+ *
+ * Two things are tested, and the second is the one that matters:
+ *
+ *  1. the argv contract, as a pure function. `--verbose` is not decoration:
+ *     print.ts refuses `--output-format=stream-json` without it. Encoding the
+ *     flag set on the engine side is the point of this entrypoint — it used to
+ *     live in `rayucode/packages/core/src/cli/agentProcess.ts`, i.e. in another
+ *     repository that could not see changes to the contract.
+ *
+ *  2. CAPABILITY PARITY. The host must expose the same tools, slash commands and
+ *     skills as the CLI, because it delegates to the same `main()` rather than
+ *     reassembling the registry. This is the property the whole design rests on:
+ *     if the two ever diverge, the extension is running a different engine than
+ *     the CLI and "one source of truth" is a claim rather than a fact.
+ *
+ * The parity check spawns both bundles, so it is slow and skips when they are not
+ * built. Build with `bun run build:cli && bun run build:vscode`.
+ */
+import { describe, expect, test } from 'bun:test'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import { buildHostArgv } from '../src/entrypoints/vscodeHost.ts'
+
+const ROOT = resolve(import.meta.dir, '..')
+const CLI = join(ROOT, 'dist/rayu.js')
+// Stage 1 of `bun run build:vscode`. This is the bundle that is staged into the
+// VSIX and spawned by the extension host, so parity is asserted against the
+// artifact that actually ships.
+const HOST = join(ROOT, 'dist/vscode/engine.mjs')
+const bundlesBuilt = existsSync(CLI) && existsSync(HOST)
+
+describe('the argv contract is owned by the engine', () => {
+  test('an empty argv gets the full headless flag set', () => {
+    expect(buildHostArgv([])).toEqual([
+      '--print',
+      '--input-format=stream-json',
+      '--output-format=stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--permission-prompt-tool=stdio',
+      '--allow-dangerously-skip-permissions',
+    ])
+  })
+
+  test('--include-partial-messages is present, or nothing ever streams', () => {
+    // The engine defaults it to FALSE (QueryEngine.ts:232) and only emits
+    // `stream_event` frames when it is set (QueryEngine.ts:820). Without it the
+    // extension's whole partial-rendering path is dead code: the answer arrives as
+    // one settled `assistant` message after the turn, so the panel sits silent and
+    // then blinks the entire reply into place.
+    //
+    // Safe to force: main.tsx:1783 rejects it unless --print and
+    // --output-format=stream-json are both present, and both are in this list.
+    expect(buildHostArgv([])).toContain('--include-partial-messages')
+  })
+
+  test('--permission-prompt-tool=stdio is present, or permissions never reach the host', () => {
+    // getCanUseToolFn() in print.ts: 'stdio' sends a `can_use_tool` control
+    // request; UNDEFINED decides locally. Without this flag the engine resolved
+    // every permission by itself, so the panel reported that a tool needed
+    // permission and the user was never asked for one.
+    expect(buildHostArgv([])).toContain('--permission-prompt-tool=stdio')
+  })
+
+  test('a caller may override the permission prompt tool', () => {
+    const out = buildHostArgv(['--permission-prompt-tool=some_mcp_tool'])
+    expect(out.filter(a => a.startsWith('--permission-prompt-tool')).length).toBe(1)
+    expect(out).toContain('--permission-prompt-tool=some_mcp_tool')
+  })
+
+  test('--verbose is always present, because stream-json output requires it', () => {
+    // print.ts: "When using --print, --output-format=stream-json requires --verbose".
+    expect(buildHostArgv([])).toContain('--verbose')
+  })
+
+  test('caller flags survive untouched', () => {
+    const out = buildHostArgv(['--model', 'claude-sonnet-4', '--resume', 'abc'])
+    expect(out.slice(0, 4)).toEqual(['--model', 'claude-sonnet-4', '--resume', 'abc'])
+    expect(out).toContain('--print')
+  })
+
+  test('a flag the caller already set is not duplicated', () => {
+    // A repeated --output-format would be ambiguous, not merely noisy.
+    const out = buildHostArgv(['--output-format=stream-json'])
+    expect(out.filter(a => a.startsWith('--output-format')).length).toBe(1)
+  })
+
+  test('a caller value for a required flag wins over the default', () => {
+    // If a consumer ever needs a different output format, the host must not
+    // silently append a second one.
+    const out = buildHostArgv(['--output-format=json'])
+    expect(out).toContain('--output-format=json')
+    expect(out).not.toContain('--output-format=stream-json')
+  })
+
+  test('the space-separated form is recognised as already present', () => {
+    const out = buildHostArgv(['--output-format', 'json'])
+    expect(out.filter(a => a.startsWith('--output-format')).length).toBe(1)
+  })
+
+  test('a boolean flag already present is not repeated', () => {
+    expect(buildHostArgv(['--print']).filter(a => a === '--print').length).toBe(1)
+    expect(buildHostArgv(['--verbose']).filter(a => a === '--verbose').length).toBe(1)
+  })
+})
+
+/** Run a bundle with one stream-json prompt on stdin and return its `system/init`. */
+function systemInit(bundle: string, extraArgs: string[]): Record<string, unknown> | null {
+  const configDir = mkdtempSync(join(tmpdir(), 'rayu-host-parity-'))
+  // A session file so the login gate (print.ts) does not refuse the turn.
+  writeFileSync(
+    join(configDir, 'rayu-auth.json'),
+    JSON.stringify({
+      accessToken: 'test',
+      refreshToken: 'test',
+      expiresAt: Date.now() + 3_600_000,
+    }),
+    { mode: 0o600 },
+  )
+
+  const proc = Bun.spawnSync(['node', bundle, ...extraArgs], {
+    cwd: configDir,
+    env: { ...process.env, RAYU_CONFIG_DIR: configDir },
+    stdin: new TextEncoder().encode(
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '/cost' },
+      }) + '\n',
+    ),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+
+  for (const line of proc.stdout.toString().split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>
+      if (parsed.type === 'system' && parsed.subtype === 'init') return parsed
+    } catch {
+      // Non-JSON on stdout would itself be a bug, but it is not this test's
+      // assertion — the stream guard is covered elsewhere.
+    }
+  }
+  return null
+}
+
+describe.if(bundlesBuilt)('the host exposes the same engine as the CLI', () => {
+  const cliInit = bundlesBuilt
+    ? systemInit(CLI, [
+        '--print',
+        '--input-format=stream-json',
+        '--output-format=stream-json',
+        '--verbose',
+      ])
+    : null
+  const hostInit = bundlesBuilt ? systemInit(HOST, []) : null
+
+  test('both emit a system/init', () => {
+    expect(cliInit, 'the CLI must announce init').not.toBeNull()
+    expect(hostInit, 'the host must announce init').not.toBeNull()
+  })
+
+  test('the tool inventory is identical', () => {
+    // Not just the same count — the same names. A host missing one tool would
+    // silently make the extension less capable than the CLI.
+    expect(hostInit?.tools).toEqual(cliInit?.tools)
+    expect((hostInit?.tools as string[]).length).toBeGreaterThan(20)
+  })
+
+  test('the slash-command inventory is identical', () => {
+    expect(hostInit?.slash_commands).toEqual(cliInit?.slash_commands)
+    expect((hostInit?.slash_commands as string[]).length).toBeGreaterThan(10)
+  })
+
+  test('the skill inventory is identical', () => {
+    expect(hostInit?.skills).toEqual(cliInit?.skills)
+  })
+
+  test('protocol version and permission mode agree', () => {
+    expect(hostInit?.protocolVersion).toBe(cliInit?.protocolVersion)
+    expect(hostInit?.permissionMode).toBe(cliInit?.permissionMode)
+  })
+
+  test('the host needs no flags of its own, proving it owns the contract', () => {
+    // The CLI required four flags above; the host was spawned with none.
+    expect(hostInit).not.toBeNull()
+  })
+})
+
+
+/**
+ * `attach-list` cwd matching must survive symlink resolution.
+ *
+ * ── THE BUG THIS GUARDS ─────────────────────────────────────────────────────────
+ *
+ * The terminal CLI registers its session under `getOriginalCwd()`
+ * (`src/bootstrap/state.ts`), which is `realpathSync(cwd()).normalize('NFC')` —
+ * symlinks resolved. Before this test existed, the extension host passed VS Code's
+ * raw, unresolved `workspaceFolders[0].uri.fsPath` straight into the `attach-list`
+ * action, which filtered session records with a strict `===`. On any workspace
+ * whose path crosses a symlink, that comparison could never succeed: a session that
+ * had already exited still looked present until its stale PID file aged out, and a
+ * brand-new session run from that workspace would never be found no matter how many
+ * times the attach dropdown was reopened — because the two cwd strings simply never
+ * converged, not because anything was stale in a way a retry would fix.
+ *
+ * This test creates a REAL symlink, writes a REAL session record under the
+ * REALPATH (exactly as `registerSession()` does), then queries `attach-list`
+ * through the real spawned entrypoint using the SYMLINKED, unresolved path —
+ * reproducing the exact mismatch a symlinked VS Code workspace folder produces.
+ */
+describe('attach-list survives a symlinked workspace path', () => {
+  test('a session registered under the realpath is found when queried by its symlink', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rayu-attach-symlink-'))
+    const real = join(root, 'real-project')
+    const link = join(root, 'linked-project')
+    mkdirSync(real, { recursive: true })
+    symlinkSync(real, link)
+
+    const configDir = mkdtempSync(join(tmpdir(), 'rayu-attach-config-'))
+    const sessionsDir = join(configDir, 'sessions')
+    mkdirSync(sessionsDir, { recursive: true, mode: 0o700 })
+
+    // Exactly what `registerSession()` writes, with a REAL, currently-running pid
+    // (the test process's own) so `isProcessRunning()` does not sweep it as stale.
+    const realpathOfReal = realpathSync(real).normalize('NFC')
+    writeFileSync(
+      join(sessionsDir, `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: 'symlink-fixture-session',
+        cwd: realpathOfReal,
+        startedAt: Date.now(),
+        ipcAddress: '/tmp/does-not-need-to-exist.sock',
+        ipcToken: 'fixture-token',
+      }),
+    )
+
+    // Queried with the SYMLINKED path — what an unresolved VS Code
+    // `workspaceFolders[0].uri.fsPath` would be if the workspace folder is a symlink.
+    const proc = Bun.spawnSync(
+      ['bun', 'run', join(ROOT, 'src/entrypoints/vscodeHost.ts'),
+        '--rayucode-connect', JSON.stringify({ action: 'attach-list', cwd: link })],
+      { env: { ...process.env, RAYU_CONFIG_DIR: configDir }, stdout: 'pipe', stderr: 'pipe' },
+    )
+
+    const lines = proc.stdout.toString().split('\n').filter(Boolean)
+    const targetsFrame = lines
+      .map(l => { try { return JSON.parse(l) as Record<string, unknown> } catch { return null } })
+      .find(f => f?.type === 'rayucode_attach_targets') as { targets?: { sessionId: string }[] } | undefined
+
+    expect(proc.stderr.toString()).not.toContain('Error')
+    expect(targetsFrame, 'attach-list must emit a rayucode_attach_targets frame').toBeDefined()
+    expect(targetsFrame?.targets?.map(t => t.sessionId)).toContain('symlink-fixture-session')
+
+    rmSync(root, { recursive: true, force: true })
+    rmSync(configDir, { recursive: true, force: true })
+  })
+
+  test('a session under an unrelated cwd is still correctly excluded', async () => {
+    // Guards the other direction: normalization must not make the filter too loose
+    // and start matching sessions from a different project.
+    const root = mkdtempSync(join(tmpdir(), 'rayu-attach-unrelated-'))
+    const projectA = join(root, 'project-a')
+    const projectB = join(root, 'project-b')
+    mkdirSync(projectA, { recursive: true })
+    mkdirSync(projectB, { recursive: true })
+
+    const configDir = mkdtempSync(join(tmpdir(), 'rayu-attach-config-'))
+    const sessionsDir = join(configDir, 'sessions')
+    mkdirSync(sessionsDir, { recursive: true, mode: 0o700 })
+    writeFileSync(
+      join(sessionsDir, `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: 'unrelated-project-session',
+        cwd: realpathSync(projectA).normalize('NFC'),
+        startedAt: Date.now(),
+        ipcAddress: '/tmp/does-not-need-to-exist.sock',
+        ipcToken: 'fixture-token',
+      }),
+    )
+
+    const proc = Bun.spawnSync(
+      ['bun', 'run', join(ROOT, 'src/entrypoints/vscodeHost.ts'),
+        '--rayucode-connect', JSON.stringify({ action: 'attach-list', cwd: projectB })],
+      { env: { ...process.env, RAYU_CONFIG_DIR: configDir }, stdout: 'pipe', stderr: 'pipe' },
+    )
+
+    const lines = proc.stdout.toString().split('\n').filter(Boolean)
+    const targetsFrame = lines
+      .map(l => { try { return JSON.parse(l) as Record<string, unknown> } catch { return null } })
+      .find(f => f?.type === 'rayucode_attach_targets') as { targets?: { sessionId: string }[] } | undefined
+
+    expect(targetsFrame?.targets?.map(t => t.sessionId) ?? []).not.toContain('unrelated-project-session')
+
+    rmSync(root, { recursive: true, force: true })
+    rmSync(configDir, { recursive: true, force: true })
+  })
+})

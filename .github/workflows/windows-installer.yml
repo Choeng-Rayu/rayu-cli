@@ -1,0 +1,31 @@
+name: Windows Installer
+
+on:
+  push:
+    paths:
+      - 'rayu/install.ps1'
+      - 'rayu/test/windowsInstaller*'
+      - '.github/workflows/windows-installer.yml'
+  pull_request:
+    paths:
+      - 'rayu/install.ps1'
+      - 'rayu/test/windowsInstaller*'
+      - '.github/workflows/windows-installer.yml'
+  workflow_dispatch:
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '22']
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Check JSON, startup failures and the actual Windows launcher
+        shell: ${{ matrix.shell }}
+        run: ./rayu/test/windowsInstaller.ps1

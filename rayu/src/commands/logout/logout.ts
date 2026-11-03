@@ -1,22 +1,23 @@
 import type { LocalCommandResult } from '../../types/command.js'
-import { clearMediaModels } from '../../services/rayuAuth/mediaModels.js'
-import { clearRayuEntitlements } from '../../services/rayuAuth/rayuEntitlements.js'
-import { clearFeatureUsage } from '../../services/rayuAuth/rayuFeatureUsage.js'
-import {
-  clearRayuSession,
-  readRayuSession,
-} from '../../services/rayuAuth/rayuSession.js'
+import { signOutRayu } from '../../services/rayuAuth/rayuSignOut.js'
 
 export async function call(): Promise<LocalCommandResult> {
-  const existing = readRayuSession()
-  if (!existing?.accessToken) {
+  // Clear BOTH credential types so the user can start fresh — Rayu Auth and
+  // Rayu API key are either-or, and /logout is the clean-break point.
+  const { hadSession, hadApiKey } = signOutRayu({ removeApiKey: true })
+
+  if (!hadSession && !hadApiKey) {
     return { type: 'text', value: 'You are not signed in to Rayu.' }
   }
-  clearRayuSession()
-  clearRayuEntitlements()
-  clearFeatureUsage()
-  // The image/video catalog is plan-filtered, so it must not outlive the session
-  // (a signed-out CLI falls back to its built-in defaults).
-  clearMediaModels()
-  return { type: 'text', value: 'Signed out of Rayu.' }
+
+  const what = hadSession && hadApiKey
+    ? 'Signed out of Rayu (cleared account session and API key).'
+    : hadSession
+      ? 'Signed out of Rayu.'
+      : 'Removed Rayu API key.'
+
+  return {
+    type: 'text',
+    value: `${what} Run /login to sign in again, or /connect → Rayu to use a different API key.`,
+  }
 }

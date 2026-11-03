@@ -60,21 +60,13 @@ test('registerRayuSkills registers them into getBundledSkills', async () => {
   for (const e of EXPECTED) expect(names).toContain(e)
 })
 
-test('agents are wired to pick the rayu skills by domain', () => {
+test('Orchestrator workers discover bundled rayu skills without domain personas', () => {
   const read = (p: string) => readFileSync(p, 'utf8')
-  expect(
-    read('src/tools/AgentTool/built-in/collaborators/frontend/index.ts'),
-  ).toContain('rayu-frontend-design')
-  expect(
-    read('src/tools/AgentTool/built-in/collaborators/backend/index.ts'),
-  ).toContain('rayu-api-design')
-  expect(
-    read('src/tools/AgentTool/built-in/collaborators/security/index.ts'),
-  ).toContain('rayu-web-testing')
   expect(read('src/tools/AgentTool/built-in/subagents/common.ts')).toContain(
     'rayu-doc-export',
   )
-  // Orchestrator prompt lists every rayu skill.
-  const orch = read('src/commands/collaborator-swarm/index.ts')
-  for (const e of EXPECTED) expect(orch).toContain(e)
+  const planner = read('src/tools/AgentTool/built-in/subagents/planner.ts')
+  expect(planner).toContain('SKILL_SEEKING')
+  const worker = read('src/tools/AgentTool/built-in/generalPurposeAgent.ts')
+  expect(worker).toMatch(/frontend, backend, mobile, security, infrastructure/)
 })

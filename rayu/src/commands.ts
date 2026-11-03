@@ -16,13 +16,21 @@ import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
-import collaboratorSwarm from './commands/collaborator-swarm/index.js'
+import orchestrator from './commands/orchestrator/index.js'
 import normal from './commands/normal/index.js'
+import orchestratorStatus from './commands/orchestrator-status/index.js'
+// Hidden internal command: REPL submits it from the rate-limit notice, so the
+// user can lift Rayu's credit pacing without leaving the terminal. Named
+// `rayu-` because the Claude-era `rate-limit-options` (a subscription command
+// Rayu does not have) is asserted absent by commandRegistry.test.ts.
+import rayuLimitOptions from './commands/rayu-limit-options/index.js'
 import keybindings from './commands/keybindings/index.js'
 import keep from './commands/keep/index.js'
 import mcp from './commands/mcp/index.js'
 import telegramBot from './commands/telegram-bot/index.js'
 import disconnectTelegram from './commands/telegram-bot/disconnect-index.js'
+import telegramRemoteUninstall from './commands/telegram-bot/remote-uninstall-index.js'
+import webBridge from './commands/web-bridge.js'
 import pr_comments from './commands/pr_comments/index.js'
 import rename from './commands/rename/index.js'
 import reviewDetial from './commands/review-detial/index.js'
@@ -100,6 +108,11 @@ const buddy = feature('BUDDY')
       require('./commands/buddy/index.js') as typeof import('./commands/buddy/index.js')
     ).default
   : null
+const externalAgentCmd = feature('EXTERNAL_AGENTS')
+  ? (
+      require('./commands/agent/index.js') as typeof import('./commands/agent/index.js')
+    ).default
+  : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 import thinkback from './commands/thinkback/index.js'
 import thinkbackPlay from './commands/thinkback-play/index.js'
@@ -118,6 +131,7 @@ import bridgeKick from './commands/bridge-kick.js'
 import version from './commands/version.js'
 import sandboxToggle from './commands/sandbox-toggle/index.js'
 import contactMe from './commands/contactMe/index.js'
+import feedback from './commands/feedback/index.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
 import billing from './commands/billing/index.js'
@@ -144,11 +158,11 @@ import memoize from 'lodash-es/memoize.js'
 import exit from './commands/exit/index.js'
 import exportCommand from './commands/export/index.js'
 import connect from './commands/connect/index.js'
+import installGitHubApp from './commands/install-github-app/index.js'
 import installSkill from './commands/install-skill/index.js'
 import model from './commands/model/index.js'
 import modelSubagent from './commands/model-subagent/index.js'
 import webfetchModel from './commands/webfetch-model/index.js'
-import collaboratorModel from './commands/collaborator-model/index.js'
 import modelImageGeneration from './commands/model-image-generation/index.js'
 import modelVideoGeneration from './commands/model-video-generation/index.js'
 import tag from './commands/tag/index.js'
@@ -232,15 +246,20 @@ const COMMANDS = memoize((): Command[] => [
   keep,
   mcp,
   memory,
+  rayuLimitOptions,
   telegramBot,
   disconnectTelegram,
+  telegramRemoteUninstall,
+  // The other remote-control surface. Sits beside the Telegram commands because the
+  // two are alternatives a user chooses between, and both can be active at once.
+  webBridge,
   model,
   modelSubagent,
   webfetchModel,
-  collaboratorModel,
   modelImageGeneration,
   modelVideoGeneration,
   connect,
+  installGitHubApp,
   installSkill,
   outputStyle,
   plugin,
@@ -256,6 +275,7 @@ const COMMANDS = memoize((): Command[] => [
   status,
   statusline,
   contactMe,
+  feedback,
   login,
   logout,
   billing,
@@ -266,8 +286,9 @@ const COMMANDS = memoize((): Command[] => [
   mascot,
   brand,
   review,
-  collaboratorSwarm,
+  orchestrator,
   normal,
+  orchestratorStatus,
   ultraplanLocal,
   ultrareviewLocal,
   generateImage,
@@ -293,6 +314,7 @@ const COMMANDS = memoize((): Command[] => [
   sandboxToggle,
   ...(peersCmd ? [peersCmd] : []),
   tasks,
+  ...(externalAgentCmd ? [externalAgentCmd] : []),
   ...(workflowsCmd ? [workflowsCmd] : []),
   ...(torch ? [torch] : []),
   ...(process.env.USER_TYPE === 'ant' && !process.env.IS_DEMO
@@ -597,6 +619,24 @@ export function isBridgeSafeCommand(cmd: Command): boolean {
   if (cmd.type === 'local-jsx') return false
   if (cmd.type === 'prompt') return true
   return BRIDGE_SAFE_COMMANDS.has(cmd)
+}
+
+/**
+ * Commands the framework-free query engine can execute without mounting Ink.
+ * Prompt commands expand to model input; local commands must explicitly opt in.
+ * Interactive JSX commands are represented by client actions instead.
+ */
+export function isNonInteractiveCommand(command: Command): boolean {
+  return (
+    (command.type === 'prompt' && !command.disableNonInteractive) ||
+    (command.type === 'local' && command.supportsNonInteractive)
+  )
+}
+
+export function filterCommandsForNonInteractive(
+  commands: readonly Command[],
+): Command[] {
+  return commands.filter(isNonInteractiveCommand)
 }
 
 /**

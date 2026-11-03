@@ -20,7 +20,7 @@ import { readEditContext } from '../../utils/readEditContext.js';
 import { firstLineOf } from '../../utils/stringUtils.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { FileEditOutput } from './types.js';
-import { findActualString, getPatchForEdit, preserveQuoteStyle } from './utils.js';
+import { getPatchForEdit, resolveEditStrings } from './utils.js';
 const FILE_CHANGE_REVIEW_HINT = 'Pending review appears below when Rayu finishes. Use /keep [file] or /undo [file].';
 export function userFacingName(input: Partial<{
   file_path: string;
@@ -78,7 +78,7 @@ export function renderToolUseMessage({
 export function renderToolResultMessage({
   filePath,
   structuredPatch,
-  originalFile
+  firstLine
 }: FileEditOutput, _progressMessagesForMessage: ProgressMessage[], {
   style,
   verbose
@@ -88,7 +88,10 @@ export function renderToolResultMessage({
 }): React.ReactNode {
   // For plan files, show /plan hint above the diff
   const isPlanFile = filePath.startsWith(getPlansDirectory());
-  return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={originalFile.split('\n')[0] ?? null} fileContent={originalFile} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
+  // `firstLine` comes from the result rather than being sliced off the original
+  // contents here — the full contents are no longer carried in the result at all.
+  // `?? null` normalizes an old transcript record, which has no `firstLine` at all.
+  return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={firstLine ?? null} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} reviewHint={isPlanFile ? undefined : FILE_CHANGE_REVIEW_HINT} />;
 }
 export function renderToolUseRejectedMessage(input: {
   file_path: string;
@@ -266,15 +269,19 @@ async function loadRejectionDiff(filePath: string, oldString: string, newString:
         fileContent: undefined
       };
     }
-    const actualOld = findActualString(ctx.content, oldString) || oldString;
-    const actualNew = preserveQuoteStyle(oldString, actualOld, newString);
+    // Shared with FileEditTool.call so the previewed diff is byte-identical to
+    // what will be written — including the tier-gated quote handling.
+    const {
+      actualOldString,
+      actualNewString
+    } = resolveEditStrings(ctx.content, oldString, newString);
     const {
       patch
     } = getPatchForEdit({
       filePath,
       fileContents: ctx.content,
-      oldString: actualOld,
-      newString: actualNew,
+      oldString: actualOldString,
+      newString: actualNewString,
       replaceAll
     });
     return {

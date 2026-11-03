@@ -7,26 +7,26 @@ import type {
 } from '../services/mcp/types.js'
 import { getConnectedIdeClient } from '../utils/ide.js'
 import { lazySchema } from '../utils/lazySchema.js'
-export type SelectionPoint = {
-  line: number
-  character: number
-}
-
-export type SelectionData = {
-  selection: {
-    start: SelectionPoint
-    end: SelectionPoint
-  } | null
-  text?: string
-  filePath?: string
-}
-
-export type IDESelection = {
-  lineCount: number
-  lineStart?: number
-  text?: string
-  filePath?: string
-}
+/**
+ * Re-exported from `utils/ideSelection.ts`, which is where the shape and the mapping now
+ * live. They moved because the Rayucode extension host needs the same arithmetic and cannot
+ * import this module: it is a separate bundle with a hard size budget and a build guard that
+ * rejects React, and reaching in here measured 19.9 MB against a 1.6 MB limit.
+ *
+ * Re-exported rather than relocated silently so every existing `useIdeSelection` import
+ * keeps working against one definition.
+ */
+export {
+  toIdeSelection,
+  type IDESelection,
+  type SelectionData,
+  type SelectionPoint,
+} from '../utils/ideSelection.js'
+import {
+  toIdeSelection,
+  type IDESelection,
+  type SelectionData,
+} from '../utils/ideSelection.js'
 
 // Define the selection changed notification schema
 const SelectionChangedSchema = lazySchema(() =>
@@ -87,25 +87,10 @@ export function useIdeSelection(
       return
     }
 
-    // Handler function for selection changes
+    // Handler function for selection changes. The mapping — including what a cleared
+    // selection means — lives in `toIdeSelection` so it is testable.
     const selectionChangeHandler = (data: SelectionData) => {
-      if (data.selection?.start && data.selection?.end) {
-        const { start, end } = data.selection
-        let lineCount = end.line - start.line + 1
-        // If on the first character of the line, do not count the line
-        // as being selected.
-        if (end.character === 0) {
-          lineCount--
-        }
-        const selection = {
-          lineCount,
-          lineStart: start.line,
-          text: data.text,
-          filePath: data.filePath,
-        }
-
-        onSelect(selection)
-      }
+      onSelect(toIdeSelection(data))
     }
 
     // Register notification handler for selection_changed events
@@ -128,7 +113,7 @@ export function useIdeSelection(
           ) {
             // Handle selection changes
             selectionChangeHandler(selectionData as SelectionData)
-          } else if (selectionData.text !== undefined) {
+          } else if (selectionData.selection === null || selectionData.text !== undefined) {
             // Handle empty selection (when text is empty string)
             selectionChangeHandler({
               selection: null,

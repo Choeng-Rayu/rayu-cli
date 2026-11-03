@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import type Anthropic from '@anthropic-ai/sdk/index.js'
 import {
   APIConnectionError,
@@ -42,7 +41,7 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { isRayuConcurrencyLimitError, isRayuCreditLimitError, isRayuDailyTurnLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
+import { isRayuConcurrencyLimitError, isRayuCreditLimitError, isRayuDailyTurnLimitError, isRayuWindowLimitError, REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -76,7 +75,7 @@ const FOREGROUND_529_RETRY_SOURCES = new Set<QuerySource>([
   // type-only). bash_classifier is ant-only; feature-gate so the string
   // tree-shakes out of external builds (excluded-strings.txt).
   'auto_mode',
-  ...(feature('BASH_CLASSIFIER') ? (['bash_classifier'] as const) : []),
+  ...(RAYU_FEATURES.BASH_CLASSIFIER ? (['bash_classifier'] as const) : []),
 ])
 
 function shouldRetry529(querySource: QuerySource | undefined): boolean {
@@ -96,7 +95,7 @@ const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000
 const HEARTBEAT_INTERVAL_MS = 30_000
 
 function isPersistentRetryEnabled(): boolean {
-  return feature('UNATTENDED_RETRY')
+  return RAYU_FEATURES.UNATTENDED_RETRY
     ? isEnvTruthy(process.env.CLAUDE_CODE_UNATTENDED_RETRY)
     : false
 }
@@ -277,6 +276,20 @@ export async function* withRetry<T>(
       // fast-mode / transient-429 branches below.
       if (isRayuDailyTurnLimitError(error)) {
         logEvent('tengu_api_rayu_daily_turn_limit_reached', {
+          provider: getAPIProviderForStatsig(),
+        })
+        throw new CannotRetryError(error, retryContext)
+      }
+
+      // Gateway PACING window (429 reason:"weekly_limit" | "session_window_limit").
+      // Terminal for the current window, whose ETA the gateway sets to the window's
+      // own reset — up to a week away. The generic 429 path would sleep for that
+      // whole duration, which is exactly the "Retrying in 2452241 seconds" failure
+      // the credit-limit bail above already exists to prevent. The window is also
+      // user-liftable (the dashboard switch), so waiting is the wrong answer even
+      // when it would eventually work.
+      if (isRayuWindowLimitError(error)) {
+        logEvent('tengu_api_rayu_window_limit_reached', {
           provider: getAPIProviderForStatsig(),
         })
         throw new CannotRetryError(error, retryContext)

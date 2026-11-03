@@ -4,7 +4,7 @@ import type { ScopedMcpServerConfig } from '../services/mcp/types.js';
 import { getGlobalConfig } from '../utils/config.js';
 import { isEnvDefinedFalsy, isEnvTruthy } from '../utils/envUtils.js';
 import type { DetectedIDEInfo } from '../utils/ide.js';
-import { type IDEExtensionInstallationStatus, type IdeType, initializeIdeIntegration, isSupportedTerminal } from '../utils/ide.js';
+import { type IDEExtensionInstallationStatus, type IdeType, ideMcpServerConfig, initializeIdeIntegration, isSupportedTerminal } from '../utils/ide.js';
 type UseIDEIntegrationProps = {
   autoConnectIdeFlag?: boolean;
   ideToInstallExtension: IdeType | null;
@@ -38,16 +38,11 @@ export function useIDEIntegration(t0) {
           if (prev?.ide) {
             return prev;
           }
+          // Shared mapping — see ideMcpServerConfig. Was written out by hand here and
+          // again in /ide, which is how the two could disagree about the transport.
           return {
             ...prev,
-            ide: {
-              type: ide.url.startsWith("ws:") ? "ws-ide" : "sse-ide",
-              url: ide.url,
-              ideName: ide.name,
-              authToken: ide.authToken,
-              ideRunningInWindows: ide.ideRunningInWindows,
-              scope: "dynamic" as const
-            }
+            ide: ideMcpServerConfig(ide)
           };
         });
       };

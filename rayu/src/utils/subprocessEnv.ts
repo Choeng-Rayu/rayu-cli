@@ -13,6 +13,10 @@ import { isEnvTruthy } from './envUtils.js'
  * expires when the workflow ends.
  */
 const GHA_SUBPROCESS_SCRUB = [
+  // Rayu-hosted auth. The parent agent needs this key for model requests, but
+  // tools and other child processes must never be able to print or transmit it.
+  'RAYU_API_KEY',
+
   // Anthropic auth — claude re-reads these per-request, subprocesses don't need them
   'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_OAUTH_TOKEN',

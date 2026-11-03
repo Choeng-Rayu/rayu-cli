@@ -633,3 +633,43 @@ describe('first-party Anthropic construction (unchanged path)', () => {
     expect(client.authToken).toBe('lc-secret')
   })
 })
+
+describe('anthropic-compatible redirect policy', () => {
+  /** Build a client for `provider` and report the redirect mode it sent. */
+  async function redirectModeFor(provider: RayuProvider): Promise<RequestRedirect | undefined> {
+    let seen: RequestRedirect | undefined
+    const fetchOverride = (async (_input: unknown, init?: RequestInit) => {
+      seen = init?.redirect
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    const { buildClient } = await registry()
+    const client = (await buildClient(provider, {
+      maxRetries: 0,
+      fetchOverride: fetchOverride as never,
+    })) as {
+      messages: { create: (body: unknown) => Promise<unknown> }
+    }
+    await client.messages
+      .create({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
+      .catch(() => undefined)
+    return seen
+  }
+
+  test('the Rayu API-key provider refuses redirects, so its key stays on the gateway', async () => {
+    expect(await redirectModeFor({
+      id: 'rayu',
+      kind: 'anthropic-compatible',
+      apiKey: 'rayu_sk_live_test',
+      baseURL: 'https://gw.example.test/anthropic',
+    })).toBe('error')
+  })
+
+  test('a third-party anthropic-compatible provider keeps the runtime default', async () => {
+    expect(await redirectModeFor({
+      id: 'longcat',
+      kind: 'anthropic-compatible',
+      apiKey: 'lc-secret',
+      baseURL: 'https://api.longcat.chat/anthropic',
+    })).toBeUndefined()
+  })
+})

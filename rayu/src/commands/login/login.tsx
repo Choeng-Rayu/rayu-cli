@@ -17,8 +17,12 @@ type Props = {
  * browser). Mirrors the /session command's local-jsx pattern; a plain `local`
  * command can't reliably paint output mid-flight while it awaits the browser
  * callback, which is why the link wasn't showing before.
+ *
+ * Exported so the two-option FIRST-RUN screen (RayuFirstRunSetup) can render the
+ * very same flow rather than reimplementing it — sign-in behaviour must be
+ * identical whether it is reached through /login or through onboarding.
  */
-function LoginFlow({ onDone }: Props): React.ReactNode {
+export function LoginFlow({ onDone }: Props): React.ReactNode {
   const [url, setUrl] = useState<string | null>(null)
   const finished = useRef(false)
 

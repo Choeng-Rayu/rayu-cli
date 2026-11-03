@@ -158,14 +158,25 @@ export function isFirstPartyRequest(model?: string): boolean {
 }
 
 /**
- * False only when the resolved provider EXPLICITLY declares that its endpoint does
- * not accept image content (the `supportsImage` toggle in /connect → Custom).
+ * False only when we POSITIVELY know the model that will serve this request
+ * cannot accept image content — either the resolved provider declared it (the
+ * `supportsImage` toggle in /connect → Custom, or a per-model
+ * `modelSupportsImage` entry) or the model is in the built-in text-only table.
  *
- * Everything else returns true: built-in providers declare nothing and their image
- * support is a property of the model, which the endpoint itself reports by
- * accepting or rejecting the request. This exists so a user who knows their
- * endpoint is text-only can stop Rayu from sending image parts that would 400.
+ * Delegates to resolveImageSupport (utils/model/imageCapability.ts). It used to
+ * read `provider.supportsImage !== false` directly, which was provider-wide and
+ * so could not answer for a provider serving both text-only and vision models
+ * (DeepSeek's `deepseek-chat` next to `deepseek-vl`). Name and signature are
+ * unchanged, so the adapter call sites became model-aware without edits.
+ *
+ * An UNKNOWN model still returns true: the tables can never be complete, and
+ * suppressing images for an unlisted-but-capable model would be a regression.
+ * The reactive recovery path handles a wrong guess.
  */
 export function providerAcceptsImages(model?: string): boolean {
-  return resolveRequestShape(model).provider?.supportsImage !== false
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { modelAcceptsImages } =
+    require('./imageCapability.js') as typeof import('./imageCapability.js')
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return modelAcceptsImages(model)
 }

@@ -92,3 +92,28 @@ export const PDF_AT_MENTION_INLINE_THRESHOLD = 10
  * We validate client-side to provide a clear error message.
  */
 export const API_MAX_MEDIA_PER_REQUEST = 100
+
+/**
+ * Byte budget for base64 media (images + documents) carried in one API request.
+ *
+ * The token estimator scores each image/document as a flat 2000 tokens
+ * (tokenEstimation.ts roughTokenCountEstimationForBlock) — correct for the
+ * context WINDOW, but blind to the request BODY: a base64 image is ~1-1.5MB of
+ * wire bytes. So a long session heavy in pasted images can sit far under the
+ * token-based auto-compact threshold while its serialized body crosses the
+ * server's size cap (32MB total on the first-party API; gateways/proxies may
+ * enforce less) and is rejected with HTTP 413.
+ *
+ * Auto-compact consults this to shed that media proactively. Compaction's
+ * summary request strips images (compact.ts), so a byte-triggered compaction
+ * cannot itself 413.
+ *
+ * THE BINDING CONSTANT IS THE GATEWAY, NOT THE 32MB FIRST-PARTY CAP. The known
+ * rayu-hosted gateway request-body ceiling is 16MB (GATEWAY_MAX_BODY_BYTES in
+ * utils/hostedReferenceImage.ts, mirroring the gateway's DefaultBodyLimit) — a
+ * budget ABOVE that would trigger only after the gateway already 413'd. 12MB
+ * leaves ~4MB headroom for text context + JSON under the 16MB ceiling while
+ * staying far below the 32MB first-party cap. Override with
+ * RAYU_MEDIA_COMPACT_BUDGET_BYTES when a deployment's real cap is known.
+ */
+export const MEDIA_COMPACT_BUDGET_BYTES = 12 * 1024 * 1024 // 12 MB (under the 16MB gateway body cap)

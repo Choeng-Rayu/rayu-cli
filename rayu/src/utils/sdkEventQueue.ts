@@ -1,6 +1,7 @@
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
+import type { RuntimeTaskOrchestration } from '../protocol/index.js'
 import type { SdkWorkflowProgress } from '../types/tools.js'
 
 type TaskStartedEvent = {
@@ -12,6 +13,24 @@ type TaskStartedEvent = {
   task_type?: string
   workflow_name?: string
   prompt?: string
+  /**
+   * Whether the task runs inside the turn or detached from it.
+   *
+   * Absent when the task type has no such distinction. Editor clients used to assume
+   * `background` for everything, which labelled every inline subagent — the common case —
+   * as background work.
+   */
+  execution_mode?: 'foreground' | 'background'
+  /**
+   * The model this task runs on.
+   *
+   * Lets a UI show WHICH model a subagent is using while it works — a subagent can
+   * be routed to a different (often pricier) model than the main thread, and its
+   * name alone does not say so. May be provider-ENCODED (`providerId\u0000model`)
+   * when it is routed elsewhere, so decode it with `decodeModelProvider` rather
+   * than splitting on a slash. Absent for task types that record no model.
+   */
+  model?: string
 }
 
 type TaskProgressEvent = {
@@ -65,16 +84,51 @@ type SessionStateChangedEvent = {
   state: 'idle' | 'running' | 'requires_action'
 }
 
+// An Orchestrator run's view of a task's agent changed (src/orchestrator/
+// orchestrationView.ts). Unlike progress, it may follow the task's own
+// task_notification: merges and problem settlements happen after it ends.
+type TaskOrchestrationEvent = {
+  type: 'system'
+  subtype: 'task_orchestration'
+  task_id: string
+  orchestration: RuntimeTaskOrchestration
+}
+
 export type SdkEvent =
   | TaskStartedEvent
   | TaskProgressEvent
   | TaskNotificationSdkEvent
+  | TaskOrchestrationEvent
   | SessionStateChangedEvent
 
 const MAX_QUEUE_SIZE = 1000
 const queue: SdkEvent[] = []
+type PublishedSdkEvent = SdkEvent & { uuid: UUID; session_id: string }
+const subscribers = new Set<(event: PublishedSdkEvent) => void>()
+
+/** Observe lifecycle events in both TUI and headless modes without draining the SDK queue. */
+export function subscribeSdkEvents(
+  subscriber: (event: PublishedSdkEvent) => void,
+): () => void {
+  subscribers.add(subscriber)
+  return () => subscribers.delete(subscriber)
+}
 
 export function enqueueSdkEvent(event: SdkEvent): void {
+  if (subscribers.size > 0) {
+    const published: PublishedSdkEvent = {
+      ...event,
+      uuid: randomUUID(),
+      session_id: getSessionId(),
+    }
+    for (const subscriber of subscribers) {
+      try {
+        subscriber(published)
+      } catch {
+        // An observing UI must never interrupt task execution.
+      }
+    }
+  }
   // SDK events are only consumed (drained) in headless/streaming mode.
   // In TUI mode they would accumulate up to the cap and never be read.
   if (!getIsNonInteractiveSession()) {

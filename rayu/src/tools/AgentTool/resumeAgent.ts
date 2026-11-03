@@ -10,6 +10,7 @@ import { asAgentId } from '../../types/ids.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { finishPacketWorktree } from '../../orchestrator/worktreeIntegration.js'
 import {
   createUserMessage,
   filterOrphanedThinkingOnlyMessages,
@@ -19,8 +20,10 @@ import {
 import { getAgentModel } from '../../utils/model/agent.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
+  flushSessionStorage,
   getAgentTranscript,
   readAgentMetadata,
+  writeAgentMetadata,
 } from '../../utils/sessionStorage.js'
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js'
 import type { SystemPrompt } from '../../utils/systemPromptType.js'
@@ -59,6 +62,19 @@ export async function resumeAgentBackground({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
   const permissionMode = appState.toolPermissionContext.mode
+
+  // The sidechain transcript is written through a buffered queue that drains
+  // on a ~100ms timer, and recordSidechainTranscript returns as soon as the
+  // entries are enqueued. The worker's task transitions to completed from that
+  // same point, so resuming straight off the completion notification can read
+  // a file that does not exist yet or is missing its final assistant turn.
+  // Flush first: every entry for a finished worker was enqueued before it
+  // reported completion, so this makes the on-disk transcript complete.
+  try {
+    await flushSessionStorage()
+  } catch (error) {
+    logForDebugging(`Failed to flush session storage before resume: ${error}`)
+  }
 
   const [transcript, meta] = await Promise.all([
     getAgentTranscript(asAgentId(agentId)),
@@ -203,6 +219,9 @@ export async function resumeAgentBackground({
     selectedAgent,
     setAppState: rootSetAppState,
     toolUseId: toolUseContext.toolUseId,
+    // A resumed agent keeps running on the model it was resolved to, so the row
+    // still reports a model rather than blanking out on resume.
+    model: resolvedAgentModel,
   })
 
   const metadata = {
@@ -253,7 +272,18 @@ export async function resumeAgentBackground({
           isForkSubagentEnabled() ||
           getSdkAgentProgressSummariesEnabled(),
         getWorktreeResult: async () =>
-          resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
+          // A worktree packet's worker merges its worktree back when it finishes again.
+          (await finishPacketWorktree(agentId, {
+            getAppState: toolUseContext.getAppState,
+            setAppState: rootSetAppState,
+            onWorktreeRemoved: () =>
+              void writeAgentMetadata(asAgentId(agentId), {
+                agentType: selectedAgent.agentType,
+                ...(meta?.description ? { description: meta.description } : {}),
+              }).catch(error =>
+                logForDebugging(`Failed to clear worktree metadata: ${error}`),
+              ),
+          })) ?? (resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {}),
       }),
     ),
   )

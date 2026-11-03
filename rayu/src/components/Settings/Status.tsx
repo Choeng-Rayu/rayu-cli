@@ -5,9 +5,10 @@ import { Suspense, use } from 'react';
 import { getSessionId } from '../../bootstrap/state.js';
 import type { LocalJSXCommandContext } from '../../commands.js';
 import { useIsInsideModal } from '../../context/modalContext.js';
-import { Box, Text, useTheme } from '../../ink.js';
+import { Box, Text, color, useTheme } from '../../ink.js';
 import { type AppState, useAppState } from '../../state/AppState.js';
 import { getCwd } from '../../utils/cwd.js';
+import { resolveImageSupport } from '../../utils/model/imageCapability.js';
 import { getCurrentSessionTitle } from '../../utils/sessionStorage.js';
 import { buildAccountProperties, buildAPIProviderProperties, buildIDEProperties, buildInstallationDiagnostics, buildInstallationHealthDiagnostics, buildMcpProperties, buildMemoryDiagnostics, buildSandboxProperties, buildSettingSourcesProperties, type Diagnostic, getModelDisplayLabel, type Property } from '../../utils/status.js';
 import type { ThemeName } from '../../utils/theme.js';
@@ -46,10 +47,19 @@ function buildSecondarySection({
   context: LocalJSXCommandContext;
 }): Property[] {
   const modelLabel = getModelDisplayLabel(mainLoopModel);
+  // Image capability is a per-(provider, model) fact the user otherwise has no
+  // way to inspect — and it changes behaviour silently (images are dropped with
+  // a warning rather than sent). Surfacing it here makes "why didn't it see my
+  // screenshot?" answerable, and tells the user when Rayu is only GUESSING.
+  const imageSupport = resolveImageSupport(mainLoopModel ?? undefined);
+  const imageRow: Property[] = mainLoopModel ? [{
+    label: 'Image input',
+    value: imageSupport === 'yes' ? 'Supported' : imageSupport === 'no' ? <Text color={color('warning', theme)}>Not supported by this model — images are dropped with a warning</Text> : <Text dimColor>Unknown — Rayu will send images and recover if rejected</Text>
+  }] : [];
   return [{
     label: 'Model',
     value: modelLabel
-  }, ...buildIDEProperties(mcp.clients, context.options.ideInstallationStatus, theme), ...buildMcpProperties(mcp.clients, theme), ...buildSandboxProperties(), ...buildSettingSourcesProperties()];
+  }, ...imageRow, ...buildIDEProperties(mcp.clients, context.options.ideInstallationStatus, theme), ...buildMcpProperties(mcp.clients, theme), ...buildSandboxProperties(), ...buildSettingSourcesProperties()];
 }
 export async function buildDiagnostics(): Promise<Diagnostic[]> {
   return [...(await buildInstallationDiagnostics()), ...(await buildInstallationHealthDiagnostics()), ...(await buildMemoryDiagnostics())];

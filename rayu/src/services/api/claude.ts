@@ -27,6 +27,7 @@ import {
 } from 'src/utils/model/providers.js'
 import {
   isFirstPartyRequest,
+  providerAcceptsImages,
   usesTranslatedFormat,
 } from 'src/utils/model/providerCapabilities.js'
 import {
@@ -104,14 +105,23 @@ import {
   extractQuotaStatusFromError,
   extractQuotaStatusFromHeaders,
 } from '../claudeAiLimits.js'
+import {
+  publishForcedPacingLimitIfSet,
+  publishRayuPacingLimit,
+  rayuPacingLimitFromError,
+} from '../rayuAuth/rayuRateLimit.js'
+import { recordRayuCharge, startRayuCharge } from '../rayuAuth/rayuTurnCredits.js'
+import {
+  creditsFromRayuBody,
+  creditsFromRayuCharge,
+} from '../../utils/rayuRequestCharge.js'
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
+const autoModeStateModule = RAYU_FEATURES.TRANSCRIPT_CLASSIFIER
   ? (require('../../utils/permissions/autoModeState.js') as typeof import('../../utils/permissions/autoModeState.js'))
   : null
 
-import { feature } from 'bun:bundle'
 import type { ClientOptions } from '@anthropic-ai/sdk/index.js'
 import {
   APIConnectionTimeoutError,
@@ -236,7 +246,9 @@ import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
 import {
   RAYU_INTENDED_MODEL_HEADER,
   RAYU_LOGICAL_REQUEST_ID_HEADER,
+  RAYU_CLIENT_HEADER,
   RAYU_QUERY_SOURCE_HEADER,
+  resolveRayuClientProduct,
 } from './rayuHosted/gatewayHeaders.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
@@ -309,7 +321,7 @@ export function getExtraBodyParams(betaHeaders?: string[]): JsonObject {
 
   // Anti-distillation: send fake_tools opt-in for 1P CLI only
   if (
-    feature('ANTI_DISTILLATION_CC')
+    RAYU_FEATURES.ANTI_DISTILLATION_CC
       ? process.env.CLAUDE_CODE_ENTRYPOINT === 'cli' &&
         shouldIncludeFirstPartyOnlyBetas() &&
         getFeatureValue_CACHED_MAY_BE_STALE(
@@ -667,7 +679,7 @@ export function assistantMessageToMessageParam(
           ...(i === message.message.content.length - 1 &&
           _.type !== 'thinking' &&
           _.type !== 'redacted_thinking' &&
-          (feature('CONNECTOR_TEXT') ? !isConnectorTextBlock(_) : true)
+          (RAYU_FEATURES.CONNECTOR_TEXT ? !isConnectorTextBlock(_) : true)
             ? enablePromptCaching
               ? { cache_control: getCacheControl({ querySource }) }
               : {}
@@ -1034,6 +1046,11 @@ async function* queryModel(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  // Take the charge ticket before any request goes out: this is the request's
+  // start, so its charge lands in the work that launched it even if it settles
+  // after that work's line was rendered.
+  const chargeTicket = startRayuCharge()
+
   // Check cheap conditions first — the off-switch await blocks on GrowthBook
   // init (~10ms). For non-Opus models (haiku, sonnet) this skips the await
   // entirely. Subscribers don't hit this path at all.
@@ -1196,7 +1213,7 @@ async function* queryModel(
   // ant-only CACHE_EDITING_BETA_HEADER constant.
   let cachedMCEnabled = false
   let cacheEditingBetaHeader = ''
-  if (feature('CACHED_MICROCOMPACT')) {
+  if (RAYU_FEATURES.CACHED_MICROCOMPACT) {
     const {
       isCachedMicrocompactEnabled,
       isModelSupportedForCacheEditing,
@@ -1323,6 +1340,51 @@ async function* queryModel(
     API_MAX_MEDIA_PER_REQUEST,
   )
 
+  // Drop image content when the resolved (provider, model) is text-only.
+  //
+  // The two OpenAI adapters already did this at translation time, but the NATIVE
+  // Anthropic Messages path had no such guard — so a text-only model reached
+  // through an anthropic-compatible endpoint (or one the user marked text-only in
+  // /connect) received image blocks and answered 400, losing the turn AND leaving
+  // the image in history to fail every following turn.
+  //
+  // stripImagesFromMessages substitutes an "[image]" text placeholder rather than
+  // deleting the block: a tool_result whose content array became empty is itself
+  // a 400, and the placeholder tells the model an image existed but was not
+  // visible to it. Required via lazy require — compact.ts imports this module for
+  // queryModelWithStreaming, so a static import is a cycle.
+  if (!providerAcceptsImages(options.model)) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { stripImagesFromMessages } =
+      require('../compact/compact.js') as typeof import('../compact/compact.js')
+    const { contentHasImage, notePendingImageDropNotice, rememberModelRejectedImages } =
+      require('src/utils/model/imageCapability.js') as typeof import('src/utils/model/imageCapability.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    // ── THE WARNING MUST BE QUEUED HERE TOO, NOT ONLY ON THE REACTIVE PATH ─────
+    //
+    // `notePendingImageDropNotice`/`rememberModelRejectedImages` were previously
+    // called ONLY from `openaiAdapter.ts`'s `noteImageUnsupported()` — the
+    // REACTIVE path, triggered after a provider has already answered 400. This
+    // proactive strip (the one that actually runs for anthropic-compatible and
+    // rayu-hosted providers, decided by the built-in capability table BEFORE any
+    // request is sent) had no equivalent call, so the image was silently replaced
+    // with an "[image]" placeholder and the user was told nothing: the model
+    // correctly declined to hallucinate seeing an image, and the user correctly
+    // read that as "Rayucode never even tried to send it" — because it hadn't
+    // been told a warning existed to look for. Checking BEFORE stripping (not
+    // after) — `stripImagesFromMessages` reports nothing back to its caller
+    // about what it removed, so the presence check has to happen here.
+    if (messagesForAPI.some(m => m.type === 'user' && contentHasImage(m.message.content))) {
+      // `providerId` is accepted by `rememberModelRejectedImages` for telemetry
+      // symmetry only — its own header states it is deliberately NOT part of the
+      // lookup key — so `undefined` here matches how `openaiAdapter.ts` would
+      // call it when it has no local config to read one from.
+      rememberModelRejectedImages(undefined, options.model)
+      notePendingImageDropNotice(options.model, /* discoveredFromProvider */ false)
+    }
+    messagesForAPI = stripImagesFromMessages(messagesForAPI)
+  }
+
   // Instrumentation: Track message count after normalization
   logEvent('tengu_api_after_normalize', {
     postNormalizedMessageCount: messagesForAPI.length,
@@ -1409,7 +1471,7 @@ async function* queryModel(
   // per-call so non-agentic queries keep their own stable header set.
 
   let afkHeaderLatched = getAfkModeHeaderLatched() === true
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     if (
       !afkHeaderLatched &&
       isAgenticQuery &&
@@ -1428,7 +1490,7 @@ async function* queryModel(
   }
 
   let cacheEditingHeaderLatched = getCacheEditingHeaderLatched() === true
-  if (feature('CACHED_MICROCOMPACT')) {
+  if (RAYU_FEATURES.CACHED_MICROCOMPACT) {
     if (
       !cacheEditingHeaderLatched &&
       cachedMCEnabled &&
@@ -1456,7 +1518,7 @@ async function* queryModel(
 
   const effort = resolveAppliedEffort(options.model, options.effortValue)
 
-  if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+  if (RAYU_FEATURES.PROMPT_CACHE_BREAK_DETECTION) {
     // Exclude defer_loading tools from the hash -- the API strips them from the
     // prompt, so they never affect the actual cache key. Including them creates
     // false-positive "tool schemas changed" breaks when tools are discovered or
@@ -1661,7 +1723,7 @@ async function* queryModel(
 
     // AFK mode beta: latched once auto mode is first activated. Still gated
     // by isAgenticQuery per-call so classifiers/compaction don't get it.
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
+    if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
       if (
         afkHeaderLatched &&
         shouldIncludeFirstPartyOnlyBetas() &&
@@ -1779,6 +1841,10 @@ async function* queryModel(
   let stopReason: BetaStopReason | null = null
   let didFallBackToNonStreaming = false
   let fallbackMessage: AssistantMessage | undefined
+  // What the Rayu gateway said this request's stream cost (its `message_delta`
+  // carries a `rayu` member). Recorded once, in the finally below, so a stream
+  // that repeats message_delta still counts one charge.
+  let streamedRayuCredits: number | undefined
   let maxOutputTokens = 0
   let responseHeaders: globalThis.Headers | undefined = undefined
   let research: unknown = undefined
@@ -1833,6 +1899,7 @@ async function* queryModel(
         // the actual wire request; these are the caller's intent for the gateway
         // fidelity check + attribution. All X-Rayu-* are stripped upstream.
         const rayuMetaHeaders: Record<string, string> = {
+          [RAYU_CLIENT_HEADER]: resolveRayuClientProduct(),
           [RAYU_LOGICAL_REQUEST_ID_HEADER]: logicalRequestId,
         }
         {
@@ -2102,7 +2169,7 @@ async function* queryModel(
               throw new RangeError('Content block not found')
             }
             if (
-              feature('CONNECTOR_TEXT') &&
+              RAYU_FEATURES.CONNECTOR_TEXT &&
               delta.type === 'connector_text_delta'
             ) {
               if (contentBlock.type !== 'connector_text') {
@@ -2164,7 +2231,7 @@ async function* queryModel(
                   break
                 case 'signature_delta':
                   if (
-                    feature('CONNECTOR_TEXT') &&
+                    RAYU_FEATURES.CONNECTOR_TEXT &&
                     contentBlock.type === 'connector_text'
                   ) {
                     contentBlock.signature = delta.signature
@@ -2250,6 +2317,12 @@ async function* queryModel(
           }
           case 'message_delta': {
             usage = updateUsage(usage, part.usage)
+            // The Rayu gateway publishes this request's charge here; the latest
+            // value wins. Absent for any other provider, and for an older gateway.
+            streamedRayuCredits =
+              creditsFromRayuCharge(
+                (part as unknown as { rayu?: unknown }).rayu,
+              ) ?? streamedRayuCredits
             // Capture research from message_delta if available (internal only).
             // Always overwrite with the latest value. Also write back to
             // already-yielded messages since message_delta arrives after
@@ -2418,7 +2491,7 @@ async function* queryModel(
       }
 
       // Check if the cache actually broke based on response tokens
-      if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+      if (RAYU_FEATURES.PROMPT_CACHE_BREAK_DETECTION) {
         void checkResponseForCacheBreak(
           options.querySource,
           usage.cache_read_input_tokens,
@@ -2436,6 +2509,10 @@ async function* queryModel(
       const resp = streamResponse as unknown as Response | undefined
       if (resp) {
         extractQuotaStatusFromHeaders(resp.headers)
+        // Dev/test harness. Inert unless RAYU_FORCE_PACING_LIMIT is set, and
+        // checked here (per response) so a forced Rayu window shows up on the next
+        // turn while everything else keeps working.
+        publishForcedPacingLimitIfSet()
         // Store headers for gateway detection
         responseHeaders = resp.headers
       }
@@ -2746,6 +2823,11 @@ async function* queryModel(
 
         if (error instanceof APIError) {
           extractQuotaStatusFromError(error)
+          // Rayu gateways refuse a paced request with none of the Anthropic
+          // rate-limit headers, so the call above cannot see it. Publishing here
+          // is what surfaces it in the terminal notice and the VS Code status bar.
+          const pacing = rayuPacingLimitFromError(error)
+          if (pacing) publishRayuPacingLimit(pacing)
         }
 
         const requestId =
@@ -2801,6 +2883,10 @@ async function* queryModel(
       // Extract quota status from error headers if it's a rate limit error
       if (error instanceof APIError) {
         extractQuotaStatusFromError(error)
+        // Same as the fallback path above: a Rayu pacing refusal carries no
+        // Anthropic headers, so it is published from the Rayu reason instead.
+        const pacing = rayuPacingLimitFromError(error)
+        if (pacing) publishRayuPacingLimit(pacing)
       }
 
       // Extract requestId from stream, error header, or error body
@@ -2866,10 +2952,24 @@ async function* queryModel(
         options.model,
       )
     }
+
+    // What the Rayu gateway charged, for the turn's "Credits:" line. Recorded in
+    // this finally for the same reason as the fallback cost above: it must
+    // survive .return() at a yield. A stream and the non-streaming retry that
+    // replaced it are two gateway requests, and both are billed. The fallback
+    // body is spread into `fallbackMessage.message`, so its `rayu` member is there.
+    recordRayuCharge(streamedRayuCredits, chargeTicket, options.querySource)
+    if (fallbackMessage) {
+      recordRayuCharge(
+        creditsFromRayuBody(fallbackMessage.message),
+        chargeTicket,
+        options.querySource,
+      )
+    }
   }
 
   // Mark all registered tools as sent to API so they become eligible for deletion
-  if (feature('CACHED_MICROCOMPACT') && cachedMCEnabled) {
+  if (RAYU_FEATURES.CACHED_MICROCOMPACT && cachedMCEnabled) {
     markToolsSentToAPIState()
   }
 
@@ -3005,7 +3105,7 @@ export function updateUsage(
     // so the string is eliminated from external builds by dead code elimination.
     // Uses the same > 0 guard as other token fields to prevent message_delta
     // from overwriting the real value with 0.
-    ...(feature('CACHED_MICROCOMPACT')
+    ...(RAYU_FEATURES.CACHED_MICROCOMPACT
       ? {
           cache_deleted_input_tokens:
             (partUsage as unknown as { cache_deleted_input_tokens?: number })
@@ -3059,7 +3159,7 @@ export function accumulateUsage(
     },
     // See comment in updateUsage — field is not on NonNullableUsage to keep
     // the string out of external builds.
-    ...(feature('CACHED_MICROCOMPACT')
+    ...(RAYU_FEATURES.CACHED_MICROCOMPACT
       ? {
           cache_deleted_input_tokens:
             ((totalUsage as unknown as { cache_deleted_input_tokens?: number })

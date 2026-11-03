@@ -1,0 +1,886 @@
+/**
+ * REPL messages → structured transcript blocks for the VS Code webview.
+ *
+ * A sibling of `webBridge/formatActivityForWeb.ts`, not a call into it. Both read
+ * the same messages through the same primitives in
+ * `utils/activity/activityBlocks.ts`, and then diverge on purpose:
+ *
+ *   the studio  → one flat `{ kind, summary }` line per block, rendered as text
+ *   the webview → typed blocks the React UI draws as expandable tool pills with
+ *                 status badges, collapsible parameters and separate output
+ *
+ * Flattening a tool call to `"Bash npm test"` is right for a chat transcript and
+ * wrong here: `ToolActionEntry` needs the name, the collapsed label, the full
+ * parameters and the result as distinct fields, because they land in different
+ * parts of the pill and the result carries a success/error state the badge shows.
+ * Reusing the studio's shape would mean the webview re-parsing a string the host
+ * had just finished assembling.
+ *
+ * ── THE RULE THAT PREVENTS DOUBLE RENDERING ────────────────────────────────────
+ *
+ * Only FINISHED messages become blocks. Streaming assistant text reaches the
+ * webview token by token as `appendPartial`, so emitting the assembled message
+ * here as well would show every answer twice — once streamed, once settled. This
+ * is the single most likely bug in a transcript UI and the reason the web bridge
+ * carries the same rule in its header.
+ *
+ * ── WHY `thinking` IS EMITTED, AND HOW IT AVOIDS THAT TRAP ─────────────────────
+ *
+ * `thinking` used to be dropped here on the same grounds, and that was right while
+ * reasoning was relayed live and never rendered. It is not right now that thinking is
+ * a real transcript element, because two cases have no live deltas at all:
+ *
+ *   1. RESTORE FROM HISTORY. `restoreTranscript` reads a stored session through this
+ *      formatter. There is no stream to relay, so dropping thinking here means a
+ *      resumed conversation silently loses every reasoning block it once had.
+ *   2. A PROVIDER THAT PERSISTED WITHOUT STREAMING — after a reconnect, or one that
+ *      simply does not emit `thinking_delta`. The block exists only in the settled
+ *      message.
+ *
+ * Duplication is prevented by CORRELATION rather than by suppression: the caller keys
+ * every block on `(source entry, blockIndex)` and ignores one it already holds, which
+ * is the same `(id, index)` rule the settled-text path uses. `blockIndex` is the
+ * position in the message's own content array, so it lines up with Anthropic's `index`
+ * on the stream event that produced the live copy.
+ *
+ * ── WHY THE HOST COMPUTES THE LABEL ────────────────────────────────────────────
+ *
+ * `summariseInput` lives under `src/utils/`, which is Node code. The webview is a
+ * BROWSER bundle, so importing it there would drag Node modules across the target
+ * boundary. The host resolves the label and ships it, which also keeps one
+ * definition of "what this tool acted on" across every surface.
+ */
+
+import type { ContentBlock, WrappedMessage } from '../../../telegram/formatActivity.js'
+import { decodeModelProvider } from '../../../utils/rayuConfig.js'
+import {
+  blocksOf,
+  isSyntheticUserText,
+  resultText,
+  summariseInput,
+} from '../../../utils/activity/activityBlocks.js'
+import { parseAskUserQuestions } from '../../../utils/askUserQuestion.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../../../tools/AskUserQuestionTool/prompt.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants.js'
+import { TODO_WRITE_TOOL_NAME } from '../../../tools/TodoWriteTool/constants.js'
+import { TodoListSchema, type TodoList } from '../../../utils/todo/types.js'
+import { z } from 'zod'
+import type { ToolDetailView, ToolResultView } from '../../shared/webviewProtocol.js'
+
+/**
+ * Correlation ids, which `ContentBlock` does not declare.
+ *
+ * They are present on the wire — `tool_use` carries `id`, `tool_result` carries
+ * `tool_use_id` — but the shared interface predates any consumer needing them.
+ * Widening the shared type would touch the Telegram and web formatters for no
+ * benefit, so the extra fields are declared locally instead.
+ */
+type CorrelatedBlock = ContentBlock & {
+  id?: string
+  tool_use_id?: string
+}
+
+/**
+ * Clamp for text crossing into the webview.
+ *
+ * Deliberately larger than the 4 000 used for the studio. That cap exists because
+ * activity travels over a socket to a browser under a 32 000-character protocol
+ * limit; this is `postMessage` between two local processes, and an editor is
+ * exactly where a developer expects to READ a command's output rather than a
+ * summary of it. Still bounded: a `Read` of a large file must not be pasted
+ * wholesale into a transcript that lives for the length of a session.
+ */
+export const MAX_WEBVIEW_TEXT_CHARS = 32_000
+
+/**
+ * Bound text crossing into the webview.
+ *
+ * Exported because it is the ONE definition of that bound. Hook output and streamed tool
+ * output are clamped by the host outside this module, and a second truncation helper would
+ * drift from this one — a different limit, or a different suffix the UI cannot recognise.
+ */
+export function clamp(text: string, limit = MAX_WEBVIEW_TEXT_CHARS): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= limit) return trimmed
+  return `${trimmed.slice(0, limit)}\n…[truncated ${trimmed.length - limit} more characters]`
+}
+
+const SYSTEM_REMINDER_OPEN = '<system-reminder>'
+const SYSTEM_REMINDER_CLOSE = '</system-reminder>'
+
+/**
+ * Remove `<system-reminder>` blocks — context written for the model, never for a reader.
+ *
+ * ── WHY THIS IS A SECOND COPY OF AN EXISTING LOOP ───────────────────────────────
+ *
+ * `src/utils/transcriptSearch.ts` strips the same blocks with the same loop, and reusing it
+ * would mean importing that module — which pulls in `utils/messages.ts` and its dependency
+ * graph — into the EXTENSION bundle, to share eight lines of `indexOf` and `slice`. The
+ * trade is not worth it. Stated here rather than left to be discovered, so the two stay in
+ * step: they implement one rule, "drop everything between the tags, anywhere in the text".
+ *
+ * Unclosed tags are left alone rather than truncating to the end of the text: a tail that
+ * begins mid-block would otherwise lose real output that follows it.
+ */
+export function stripSystemReminders(text: string): string {
+  let result = text
+  let open = result.indexOf(SYSTEM_REMINDER_OPEN)
+  while (open >= 0) {
+    const close = result.indexOf(SYSTEM_REMINDER_CLOSE, open)
+    if (close < 0) break
+    result = result.slice(0, open) + result.slice(close + SYSTEM_REMINDER_CLOSE.length)
+    open = result.indexOf(SYSTEM_REMINDER_OPEN)
+  }
+  return result
+}
+
+/** A settled transcript entry, ready to render. */
+export type VSCodeActivityBlock =
+  | { kind: 'prompt'; text: string }
+  | { kind: 'assistant'; text: string }
+  | {
+      kind: 'thinking'
+      /**
+       * Position in the message's own `content` array.
+       *
+       * This is what correlates a settled block with the live one that already
+       * arrived — see the header. It is NOT the index within the emitted block list,
+       * which skips empty and non-renderable entries.
+       */
+      blockIndex: number
+      text: string
+    }
+  | {
+      kind: 'tool_use'
+      /** Correlates with the matching `tool_result`. Null when the engine omitted it. */
+      toolUseId: string | null
+      /**
+       * The `Task` call this one ran inside, from the message's `parent_tool_use_id`.
+       *
+       * Null for main-thread calls. Carried as an ID rather than a name because the name
+       * has to be looked up in the transcript, which only the session holds.
+       */
+      parentToolUseId: string | null
+      /**
+       * The provider and model the SUBAGENT ran this call on.
+       *
+       * ── WHY IT IS PER-BLOCK AND NOT SESSION-GLOBAL ─────────────────────────────
+       *
+       * A subagent can be routed to a different model than the main thread — even to
+       * a different provider, concurrently (`getAgentModel`). The panel already shows
+       * the session's model in the composer, but that says nothing about a background
+       * agent burning a different, often pricier model. These two fields are carried
+       * only on subagent-attributed blocks, so a main-thread row is not decorated with
+       * the model it obviously shares with the session.
+       *
+       * Read from the subagent's own assistant frame (`message.model`), so it is the
+       * model that actually SERVED the call rather than what was requested.
+       */
+      agentProvider?: string
+      agentModel?: string
+      name: string
+      /** One-line collapsed label, e.g. the command or the file path. */
+      label: string
+      /** Named fields for the expanded row. See `ToolDetailView`. */
+      details: ToolDetailView[]
+      /** Pretty-printed parameters for the expanded pill. */
+      parameters: string
+      /** Structured questions for the dedicated interaction/result renderer. */
+      questions?: ReturnType<typeof parseAskUserQuestions>
+      /** Validated TodoWrite input for the dedicated task-list renderer. */
+      todos?: TodoList
+    }
+  | {
+      kind: 'tool_result'
+      toolUseId: string | null
+      text: string
+      isError: boolean
+      /**
+       * How many characters `clamp` removed, and the untruncated text it removed them
+       * from.
+       *
+       * ── THE FULL TEXT STOPS AT THE HOST ────────────────────────────────────────
+       *
+       * `text` is what crosses into the webview and stays bounded, for the reason
+       * `MAX_WEBVIEW_TEXT_CHARS` exists. `fullText` is carried only as far as the
+       * session, which retains it under its own cap and serves it when the user asks
+       * to read the rest. Pushing it eagerly would defeat the clamp entirely.
+       *
+       * `truncatedChars` is 0 and `fullText` undefined when nothing was cut, so the
+       * common case adds nothing to the block.
+       */
+      truncatedChars: number
+      fullText?: string
+      /** The tool's typed result, when it sent one this formatter can render. */
+      toolResult?: ToolResultView
+    }
+
+/** Pretty-print a tool's arguments for the expanded pill, bounded. */
+/**
+ * The row's one-line label: what the call acted on.
+ *
+ * `summariseInput` is the shared definition and is used unchanged for every tool that has a
+ * command, a path, a pattern or a URL. It is wrapped only for the case it was never shaped
+ * for: a tool whose sole textual argument is a `prompt`. Its precedence ends at `prompt`, so
+ * an `Agent` call — whose prompt is a multi-page brief — put that entire brief in the pill
+ * header, where the CLI shows the one-line description instead.
+ *
+ * Fixed here rather than in `summariseInput` because that function also feeds the Telegram
+ * and web-bridge transcripts, and changing what "the summary" means for every surface to fix
+ * one surface's header is the kind of shared-code edit that produces two transcripts which
+ * disagree. See the header of `utils/activity/activityBlocks.ts`.
+ */
+function summariseLabel(input: unknown): string {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const record = input as Record<string, unknown>
+    const hasStrongerSubject = ['command', 'file_path', 'path', 'pattern', 'url'].some(
+      key => typeof record[key] === 'string' && record[key],
+    )
+    const description = record.description
+    if (!hasStrongerSubject && typeof description === 'string' && description.trim()) {
+      return description.trim()
+    }
+  }
+  return summariseInput(input)
+}
+
+/**
+ * A tool call's arguments as a short list of NAMED FIELDS.
+ *
+ * ── KEY-DRIVEN, NOT PER-TOOL ────────────────────────────────────────────────────
+ *
+ * A switch over tool names would need a new case for every tool and every rename, and would
+ * silently fall back to nothing for the ~30 MCP tools whose names are not known until a
+ * server connects. Tool INPUT KEYS are far more stable than tool names — `command`,
+ * `file_path`, `pattern`, `url` mean the same thing wherever they appear — so the labels are
+ * keyed off those, and anything unrecognised is described rather than dumped.
+ *
+ * ── THREE CLASSES OF FIELD ──────────────────────────────────────────────────────
+ *
+ * 1. NAMED: a known key with a short scalar value. Shown in full, with a label.
+ * 2. BULK: a key whose value is a payload, not an argument — a file's whole `content`, both
+ *    sides of an `Edit`. Shown as a SIZE. The result already renders the change as a diff,
+ *    so printing the body here said everything twice and buried the diff under it.
+ * 3. UNKNOWN: any other key. The NAME is shown with a shape (`{…}`, `3 items`) or a short
+ *    scalar. This is what keeps an MCP tool's arguments legible without putting a server
+ *    token on screen.
+ *
+ * Order is fixed by `DETAIL_KEY_ORDER` rather than by the object's own key order, because
+ * argument order is the model's choice and would make the same call render differently
+ * between turns.
+ */
+export function toolDetails(input: unknown): ToolDetailView[] {
+  if (input === undefined || input === null) return []
+  // A bare string argument has no field name to show. The row's label already carries it.
+  if (typeof input !== 'object' || Array.isArray(input)) return []
+
+  const record = input as Record<string, unknown>
+  const details: ToolDetailView[] = []
+  const seen = new Set<string>()
+
+  for (const key of DETAIL_KEY_ORDER) {
+    if (!(key in record)) continue
+    seen.add(key)
+    const detail = describeDetail(key, record[key])
+    if (detail) details.push(detail)
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    if (seen.has(key)) continue
+    // Internal plumbing the model never sees and the user cannot act on.
+    if (key.startsWith('_')) continue
+    const detail = describeDetail(key, value)
+    if (detail) details.push(detail)
+    if (details.length >= MAX_TOOL_DETAILS) break
+  }
+
+  return details
+}
+
+/** Known input keys, in the order they read best. Also the labels the row shows. */
+const DETAIL_LABELS: Record<string, string> = {
+  command: 'Command',
+  description: 'Description',
+  file_path: 'File',
+  notebook_path: 'Notebook',
+  // After the subject of a search: `Grep` acts on a PATTERN, and the path only narrows it.
+  pattern: 'Pattern',
+  query: 'Query',
+  path: 'Path',
+  url: 'URL',
+  glob: 'Filter',
+  type: 'File type',
+  output_mode: 'Mode',
+  offset: 'From line',
+  limit: 'Limit',
+  head_limit: 'Limit',
+  subagent_type: 'Agent',
+  model: 'Model',
+  timeout: 'Timeout',
+  run_in_background: 'Background',
+  replace_all: 'Replace all',
+  cell_id: 'Cell',
+  cell_type: 'Cell type',
+  edit_mode: 'Edit mode',
+  prompt: 'Prompt',
+  skill: 'Skill',
+  name: 'Name',
+}
+
+const DETAIL_KEY_ORDER = Object.keys(DETAIL_LABELS)
+
+/**
+ * Keys whose value is content, not an argument. Reported as a size — see `toolDetails`.
+ *
+ * `old_string`/`new_string` are absent deliberately: for an `Edit` the diff below the row
+ * renders both sides, so a pair of character counts adds nothing but height. `content` stays,
+ * because a `Write`'s result is a one-line "file created" that says nothing about how much
+ * was written.
+ */
+const BULK_KEYS = new Set(['content', 'new_source', 'edits', 'file_text'])
+
+/** Keys dropped entirely, because something else in the row already shows them better. */
+const REDUNDANT_KEYS = new Set(['old_string', 'new_string'])
+
+/** Values rendered as a block in monospace, where whitespace is part of the meaning. */
+const CODE_KEYS = new Set(['command', 'pattern', 'query'])
+
+/**
+ * Beyond this a value is a document rather than an argument, and is reported as a size.
+ *
+ * Applies to `prompt`, which is the same field on a one-line `WebFetch` question and on a
+ * subagent's full multi-page brief. The brief is reachable in the background-task panel,
+ * which is built to show it.
+ */
+const MAX_INLINE_PROMPT_CHARS = 400
+
+/** Beyond this the list stops being scannable, which is the whole point of it. */
+const MAX_TOOL_DETAILS = 12
+/** A single field is a summary, not a document. Longer values are clipped with a marker. */
+const MAX_DETAIL_VALUE_CHARS = 2_000
+
+/**
+ * Key fragments that mean the VALUE is a credential.
+ *
+ * Applied ONLY to keys outside `DETAIL_LABELS` — that is, to arguments this code does not
+ * recognise, which in practice means MCP tools whose schemas arrive at runtime. A curated key
+ * is never hidden: a `Bash` command has to be readable even when it contains a token, because
+ * the command is the thing the user is being asked to trust.
+ *
+ * Matched on the key with separators removed, so `api_key`, `apiKey` and `API-KEY` all hit.
+ * A false positive costs one hidden value; a false negative puts a live credential in a
+ * screenshot.
+ */
+const SECRET_KEY_FRAGMENTS = [
+  'token',
+  'secret',
+  'password',
+  'passwd',
+  'apikey',
+  'credential',
+  'authorization',
+  'bearer',
+  'privatekey',
+  'signature',
+  'cookie',
+]
+
+function looksSecret(key: string): boolean {
+  const normalised = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return SECRET_KEY_FRAGMENTS.some(fragment => normalised.includes(fragment))
+}
+
+function describeDetail(key: string, value: unknown): ToolDetailView | null {
+  const known = key in DETAIL_LABELS
+  const label = DETAIL_LABELS[key] ?? humaniseKey(key)
+
+  if (value === undefined || value === null) return null
+  if (REDUNDANT_KEYS.has(key)) return null
+  if (BULK_KEYS.has(key)) {
+    const size = typeof value === 'string' ? value.length : jsonLength(value)
+    return size > 0 ? { label, value: `${formatBytes(size)} (see the diff below)` } : null
+  }
+  if (!known && looksSecret(key)) {
+    // The key is reported so the call is still legible; the value is not.
+    return { label, value: '[hidden]' }
+  }
+  if (typeof value === 'boolean') {
+    // A false flag is the default and says nothing. `replace_all: false` is noise.
+    return value ? { label, value: 'yes' } : null
+  }
+  if (typeof value === 'number') {
+    return { label, value: key === 'timeout' ? formatTimeout(value) : String(value) }
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    if (key === 'prompt' && trimmed.length > MAX_INLINE_PROMPT_CHARS) {
+      return { label, value: formatBytes(trimmed.length) }
+    }
+    return {
+      label,
+      value: clampDetailValue(trimmed),
+      ...(CODE_KEYS.has(key) || trimmed.includes('\n') ? { code: true } : {}),
+    }
+  }
+  if (Array.isArray(value)) {
+    return { label, value: `${value.length} ${value.length === 1 ? 'item' : 'items'}` }
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>)
+    // The SHAPE, not the contents: enough for a developer to know what was passed, without
+    // printing values that may be credentials.
+    return { label, value: keys.length ? `{ ${keys.slice(0, 6).join(', ')} }` : '{ }' }
+  }
+  return null
+}
+
+/** `run_in_background` → "Run in background". Used for keys with no curated label. */
+function humaniseKey(key: string): string {
+  const spaced = key.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2')
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
+function clampDetailValue(value: string): string {
+  if (value.length <= MAX_DETAIL_VALUE_CHARS) return value
+  return `${value.slice(0, MAX_DETAIL_VALUE_CHARS)}…[${
+    value.length - MAX_DETAIL_VALUE_CHARS
+  } more characters]`
+}
+
+function jsonLength(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0
+  } catch {
+    return 0
+  }
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} characters`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function formatTimeout(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return String(ms)
+  return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`
+}
+
+function formatParameters(input: unknown): string {
+  if (input === undefined || input === null) return ''
+  if (typeof input === 'string') return clamp(input)
+  try {
+    return clamp(JSON.stringify(input, null, 2))
+  } catch {
+    // Circular or non-serialisable input. The label still says what it acted on,
+    // so degrade to no parameters rather than losing the whole block.
+    return ''
+  }
+}
+
+/**
+ * Read TodoWrite's input through the engine's canonical schema.
+ *
+ * Returning undefined on malformed input is deliberate: the caller then falls back
+ * to the generic tool renderer, where the raw parameters remain available for
+ * diagnosis instead of showing an empty or partly invented task list.
+ */
+function parseTodoWriteTodos(input: unknown): TodoList | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return undefined
+  }
+  const parsed = TodoListSchema().safeParse(
+    (input as Record<string, unknown>).todos,
+  )
+  return parsed.success ? parsed.data : undefined
+}
+
+/**
+ * Caps on a typed result crossing into the webview.
+ *
+ * Same reasoning as the review card's caps, and deliberately the same numbers: a diff is
+ * a diff whichever surface shows it, and two different truncation points for the same
+ * content would be visible as one card showing more than another.
+ */
+const MAX_RESULT_HUNKS = 12
+const MAX_RESULT_HUNK_LINES = 400
+const MAX_RESULT_FILENAMES = 200
+
+/** The hunk shape both `Edit` and `Write` produce. */
+const HunkSchema = z.object({
+  oldStart: z.number(),
+  oldLines: z.number(),
+  newStart: z.number(),
+  newLines: z.number(),
+  lines: z.array(z.string()),
+})
+
+/**
+ * `Edit` and `Write` outputs, which share the fields that matter here.
+ *
+ * `passthrough` is deliberate: both carry more than this (`firstLine`, `content`,
+ * `userModified`) and neither is needed to draw a diff. Requiring an exact shape would
+ * break the projection every time an unrelated field was added to either tool.
+ */
+const EditResultSchema = z
+  .object({
+    filePath: z.string(),
+    structuredPatch: z.array(HunkSchema),
+    /** Only `Write` has this. `create` means the file did not exist before. */
+    type: z.enum(['create', 'update']).optional(),
+  })
+  .passthrough()
+
+/** `Grep` in files-with-matches mode, and `Glob`. */
+const SearchResultSchema = z
+  .object({
+    filenames: z.array(z.string()),
+    numFiles: z.number().optional(),
+  })
+  .passthrough()
+
+/**
+ * `ExitPlanMode`'s output, which carries the plan the user just reviewed.
+ *
+ * `awaitingLeaderApproval` is excluded on purpose: that result's generic text —
+ * "submitted to the team lead, wait for approval" — is the instruction the
+ * SUBAGENT still needs to read, so replacing it with the plan would hide the
+ * only part it can act on.
+ */
+const PlanResultSchema = z
+  .object({
+    plan: z.string(),
+    isAgent: z.boolean(),
+    filePath: z.string().optional(),
+    awaitingLeaderApproval: z.boolean().optional(),
+  })
+  .passthrough()
+
+/**
+ * Base64 length above which an inline image preview is dropped.
+ *
+ * The pixels travel inside the transcript as a `data:` URL, which is retained for the
+ * life of the entry, so this is a memory bound, not a protocol one. ~3 MB of base64 is
+ * ~2.2 MB of image — generous for a generated image, small enough that a session full of
+ * them stays reasonable. Over the cap the view degrades to a filename + Open button;
+ * nothing is lost but the thumbnail.
+ */
+const MAX_INLINE_MEDIA_BASE64 = 3_000_000
+
+/** `ImageGen` output. See `src/tools/ImageGenTool/ImageGenTool.ts`. */
+const ImageResultSchema = z
+  .object({
+    path: z.string(),
+    model: z.string(),
+    width: z.number(),
+    height: z.number(),
+    mediaType: z.string().regex(/^image\//),
+    base64: z.string(),
+  })
+  .passthrough()
+
+/** `VideoGen` output. See `src/tools/VideoGenTool/VideoGenTool.ts`. */
+const VideoResultSchema = z
+  .object({
+    path: z.string(),
+    model: z.string(),
+    frames: z.number(),
+    fps: z.number(),
+    mediaType: z.string().regex(/^video\//),
+    durationSeconds: z.number().optional(),
+    resolution: z.string().optional(),
+    ratio: z.string().optional(),
+    previewBase64: z.string().optional(),
+    previewMediaType: z.string().optional(),
+  })
+  .passthrough()
+
+/** The trailing file name of an absolute or relative path, for display + a11y. */
+function mediaFileName(path: string): string {
+  const parts = path.split(/[\\/]/)
+  return parts[parts.length - 1] || path
+}
+
+/**
+ * Project a tool's typed output into a renderable result, or undefined.
+ *
+ * ── THE TYPED OUTPUT IS ALREADY ON THE WIRE ────────────────────────────────────
+ *
+ * `toolExecution.ts` sets `toolUseResult: toolOutput` — the tool's own `Output` object —
+ * on the settled user message, and `queryHelpers.ts` forwards it as `tool_use_result`.
+ * So no engine change is needed to render any tool richly; the data was there all along
+ * and this formatter was simply flattening it to a string and discarding the rest.
+ *
+ * ── DISCRIMINATED BY SHAPE, NOT BY TOOL NAME ───────────────────────────────────
+ *
+ * A `tool_result` block carries no tool name — only `tool_use_id` — so matching on the
+ * name would mean threading the correlation map into this pure function. Shape is also
+ * the more honest test: what can be drawn depends on which fields arrived, not on which
+ * tool was supposed to have sent them. `Edit` and `Write` fall out as one case for free.
+ *
+ * ── ABSENT IS NORMAL AND MUST STAY CHEAP ───────────────────────────────────────
+ *
+ * Returns undefined for every unsupported tool, for a subagent's results (the engine
+ * sends no `tool_use_result` for those unless `preserveToolUseResults` is set), and for
+ * anything that fails validation. Each of those falls back to the generic `<pre>` with
+ * the raw text intact — the same graceful-degradation rule `parseTodoWriteTodos` follows.
+ */
+export function projectToolResult(raw: unknown): ToolResultView | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined
+  }
+
+  const edit = EditResultSchema.safeParse(raw)
+  if (edit.success && edit.data.structuredPatch.length > 0) {
+    const patch = edit.data.structuredPatch
+    let truncated = patch.length > MAX_RESULT_HUNKS
+    const hunks = patch.slice(0, MAX_RESULT_HUNKS).map(hunk => {
+      if (hunk.lines.length > MAX_RESULT_HUNK_LINES) truncated = true
+      return { ...hunk, lines: hunk.lines.slice(0, MAX_RESULT_HUNK_LINES) }
+    })
+    return {
+      kind: 'edit',
+      filePath: edit.data.filePath,
+      hunks,
+      isCreated: edit.data.type === 'create',
+      ...(truncated ? { truncated: true } : {}),
+    }
+  }
+
+  const search = SearchResultSchema.safeParse(raw)
+  if (search.success) {
+    return {
+      kind: 'search',
+      filenames: search.data.filenames.slice(0, MAX_RESULT_FILENAMES),
+      totalCount: search.data.numFiles ?? search.data.filenames.length,
+    }
+  }
+
+  const planResult = PlanResultSchema.safeParse(raw)
+  if (
+    planResult.success &&
+    planResult.data.plan.trim() &&
+    planResult.data.awaitingLeaderApproval !== true
+  ) {
+    return {
+      kind: 'plan',
+      plan: clamp(planResult.data.plan),
+      ...(planResult.data.filePath ? { filePath: planResult.data.filePath } : {}),
+    }
+  }
+
+  const image = ImageResultSchema.safeParse(raw)
+  if (image.success) {
+    const { path, model, width, height, mediaType, base64 } = image.data
+    return {
+      kind: 'media',
+      media: 'image',
+      path,
+      fileName: mediaFileName(path),
+      mediaType,
+      width,
+      height,
+      model,
+      ...(base64.length <= MAX_INLINE_MEDIA_BASE64
+        ? { previewDataUri: `data:${mediaType};base64,${base64}` }
+        : {}),
+    }
+  }
+
+  const video = VideoResultSchema.safeParse(raw)
+  if (video.success) {
+    const { path, model, mediaType, durationSeconds, resolution, previewBase64 } =
+      video.data
+    // `webviewUri` is filled host-side at post time (see SessionPanel.postState) — it needs
+    // the live `webview.asWebviewUri`, which a pure formatter does not have.
+    return {
+      kind: 'media',
+      media: 'video',
+      path,
+      fileName: mediaFileName(path),
+      mediaType,
+      model,
+      ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+      ...(resolution ? { resolution } : {}),
+      ...(previewBase64 && previewBase64.length <= MAX_INLINE_MEDIA_BASE64
+        ? {
+            previewDataUri: `data:${video.data.previewMediaType || 'image/png'};base64,${previewBase64}`,
+          }
+        : {}),
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Convert one finished REPL message into zero or more transcript blocks.
+ *
+ * Zero is a normal outcome: meta messages, empty blocks, and block types with no
+ * editor meaning produce nothing rather than an empty entry.
+ */
+export function formatMessageForVSCode(
+  message: WrappedMessage,
+): VSCodeActivityBlock[] {
+  // Meta messages are internal bookkeeping the user never sees locally either.
+  if (message.isMeta) return []
+
+  const blocks: VSCodeActivityBlock[] = []
+  // The tool's own typed `Output`, forwarded by the engine on the settled user message.
+  // Read once at message level because that is where it lives — see `projectToolResult`.
+  const typedResult = projectToolResult(
+    (message as { tool_use_result?: unknown }).tool_use_result,
+  )
+  // Present on every frame a SUBAGENT produced: the id of the `Task` call it runs inside.
+  // Read once at message level because it applies to every block in the message, and it is
+  // what lets the UI attribute a tool row to the agent that ran it instead of showing a
+  // subagent's reads as though the main thread had made them.
+  const parentToolUseId =
+    typeof (message as { parent_tool_use_id?: unknown }).parent_tool_use_id === 'string'
+      ? ((message as { parent_tool_use_id?: string }).parent_tool_use_id as string)
+      : null
+  // The model that served THIS message, read once at message level for the same
+  // reason as `parentToolUseId`: it applies to every block in the message. Only
+  // meaningful for a subagent — on the main thread it is the session's own model,
+  // which the composer already reports, so it is attached only when there is a
+  // `parentToolUseId` to attribute it to.
+  //
+  // `message.model` is what the PROVIDER returned, so it is the model that actually
+  // ran the call. It can arrive provider-encoded (`providerId\u0000model`) when the
+  // subagent was routed elsewhere; `decodeModelProvider` is a no-op for a plain id,
+  // so decoding here is safe either way and keeps the two model surfaces agreeing.
+  const rawAgentModel = (message as { message?: { model?: unknown } }).message?.model
+  const agentRoute =
+    parentToolUseId && typeof rawAgentModel === 'string' && rawAgentModel.trim()
+      ? decodeModelProvider(rawAgentModel.trim())
+      : undefined
+
+  // The index is the block's position in the message's own content array, which is
+  // what correlates a settled thinking block with the live one. `entries()` is used
+  // rather than a counter because `blocksOf` normalises a bare string into a
+  // single-element array, and that element is still index 0.
+  for (const [wireIndex, raw] of blocksOf(message).entries()) {
+    const block = raw as CorrelatedBlock
+
+    switch (block.type) {
+      case 'text': {
+        const text = block.text ?? ''
+        if (!text.trim()) break
+        // A `user`-role block can be engine-injected plumbing (a task-notification, a
+        // piped bash result, an internal tick) rather than something the person typed.
+        // Showing that as a `prompt` bubble puts raw XML in the transcript — see
+        // `isSyntheticUserText` for the full rationale and tag list.
+        if (message.type === 'user' && isSyntheticUserText(text)) break
+        blocks.push(
+          message.type === 'user'
+            ? { kind: 'prompt', text: clamp(text) }
+            : { kind: 'assistant', text: clamp(text) },
+        )
+        break
+      }
+
+      case 'thinking': {
+        const text = block.thinking ?? ''
+        if (!text.trim()) break
+        blocks.push({ kind: 'thinking', blockIndex: wireIndex, text: clamp(text) })
+        break
+      }
+
+      case 'tool_use': {
+        const name = block.name ?? 'tool'
+        const questions =
+          name === ASK_USER_QUESTION_TOOL_NAME
+            ? parseAskUserQuestions(block.input)
+            : undefined
+        const todos =
+          name === TODO_WRITE_TOOL_NAME
+            ? parseTodoWriteTodos(block.input)
+            : undefined
+        // A plan exit carries the whole plan in its injected `input.plan`; the
+        // dedicated approval card owns that payload, so the pill states what
+        // happened instead of dumping the plan as JSON.
+        const isPlanExit = name === EXIT_PLAN_MODE_V2_TOOL_NAME
+        const dedicatedCard = Boolean(questions) || Boolean(todos) || isPlanExit
+        blocks.push({
+          kind: 'tool_use',
+          toolUseId: block.id ?? null,
+          parentToolUseId,
+          ...(agentRoute && {
+            agentModel: agentRoute.model,
+            ...(agentRoute.providerId && { agentProvider: agentRoute.providerId }),
+          }),
+          name,
+          label: questions
+            ? `${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`
+            : todos
+              ? `${todos.filter(todo => todo.status === 'completed').length}/${todos.length} complete`
+              : isPlanExit
+                ? 'Present plan for approval'
+                : block.input === undefined ? '' : summariseLabel(block.input),
+          // Dedicated cards own these payloads. Repeating them as generic fields is the
+          // raw payload leak reported by users.
+          details: dedicatedCard ? [] : toolDetails(block.input),
+          parameters: dedicatedCard ? '' : formatParameters(block.input),
+          ...(questions && { questions }),
+          ...(todos && { todos }),
+        })
+        break
+      }
+
+      case 'tool_result': {
+        // Engine furniture, stripped before anything measures or displays the text: the
+        // reminders are appended when a result is prepared for the MODEL, and the CLI's own
+        // renderers strip them for the same reason (`transcriptSearch.ts` calls them "Claude
+        // context, not user-visible"). Left in, they added the same ~40-word malware notice
+        // under every Read in the panel and dominated a subagent's recorded transcript.
+        const text = stripSystemReminders(resultText(block.content))
+        const trimmed = text.trim()
+        // ── COMPLETION AND VISIBLE OUTPUT ARE SEPARATE CONCERNS ──────────────
+        //
+        // Every tool_result is emitted, including an empty successful one. Skipping
+        // it — which an earlier version did, on the reasonable-sounding grounds that
+        // there is nothing to show — meant the consumer never learned the tool had
+        // finished, so the pill span forever on "running". A `Bash` that writes
+        // nothing to stdout is the common case, not an edge case.
+        //
+        // Suppressing the empty OUTPUT BODY is the renderer's job: `ToolActionEntry`
+        // only draws the Output section when `output` is non-empty. That is the right
+        // place for a presentation decision, and it cannot lose the completion.
+        const truncatedChars = Math.max(0, trimmed.length - MAX_WEBVIEW_TEXT_CHARS)
+        blocks.push({
+          kind: 'tool_result',
+          toolUseId: block.tool_use_id ?? null,
+          text: clamp(text),
+          isError: block.is_error === true,
+          truncatedChars,
+          // Carried only when it would add something. See the field's comment for why
+          // this stops at the host.
+          ...(truncatedChars > 0 ? { fullText: trimmed } : {}),
+          // Only on a SUCCESSFUL result. A failed tool's typed output describes a change
+          // that did not happen, and drawing a diff for it would show edits the file
+          // never received.
+          ...(typedResult && block.is_error !== true
+            ? { toolResult: typedResult }
+            : {}),
+        })
+        break
+      }
+
+      // `redacted_thinking` falls through here and is deliberately never emitted: it
+      // is an opaque provider payload, not readable reasoning, and rendering it would
+      // put an unintelligible blob in the transcript.
+      default:
+        break
+    }
+  }
+
+  return blocks
+}
+
+/** Convert a batch of finished messages, preserving order. */
+export function formatActivityForVSCode(
+  messages: readonly WrappedMessage[],
+): VSCodeActivityBlock[] {
+  return messages.flatMap(formatMessageForVSCode)
+}

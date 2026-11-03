@@ -9,6 +9,7 @@ import {
   rm as rmPromise,
   stat as statPromise,
   unlink as unlinkPromise,
+  writeFile as writeFilePromise,
 } from 'fs/promises'
 import { homedir } from 'os'
 import * as nodePath from 'path'
@@ -628,6 +629,30 @@ export function getFsImplementation(): FsOperations {
  */
 export function setOriginalFsImplementation(): void {
   activeFs = NodeFsOperations
+}
+
+/**
+ * Write `data` to `path` atomically: write to a sibling temp file, then rename
+ * over the destination (same directory, so rename is atomic on every platform
+ * Node supports). A crash or an ENOSPC mid-write therefore leaves the OLD file
+ * (or nothing) at `path` — never a half-written one that downstream readers
+ * (preview extractors, the model's inline block, the user's editor) would
+ * trust. Used by the media tools, whose generated files are large binaries.
+ */
+export async function writeFileAtomically(
+  path: string,
+  data: string | Buffer | Uint8Array,
+): Promise<void> {
+  const tmp = `${path}.${process.pid}.rayu-tmp`
+  try {
+    await writeFilePromise(tmp, data)
+    await renamePromise(tmp, path)
+  } catch (err) {
+    // Never leave the temp file behind when the write or rename fails — the
+    // tools retry, and a stale temp sibling is garbage either way.
+    await rmPromise(tmp, { force: true }).catch(() => {})
+    throw err
+  }
 }
 
 export type ReadFileRangeResult = {

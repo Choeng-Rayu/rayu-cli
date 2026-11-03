@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk/index.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
@@ -16,6 +15,7 @@ import { extractOutputRedirections } from '../bash/commands.js'
 import { logForDebugging } from '../debug.js'
 import { AbortError, toError } from '../errors.js'
 import { logError } from '../log.js'
+import { orchestratorMainThreadDenial } from '../../orchestrator/mainThreadPolicy.js'
 import { SandboxManager } from '../sandbox/sandbox-adapter.js'
 import {
   getSettingSourceDisplayNameLowercase,
@@ -23,6 +23,7 @@ import {
 } from '../settings/constants.js'
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
+import { planModeChangeDenial } from './planModePolicy.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -56,10 +57,10 @@ import {
 } from './permissionsLoader.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const classifierDecisionModule = feature('TRANSCRIPT_CLASSIFIER')
+const classifierDecisionModule = RAYU_FEATURES.TRANSCRIPT_CLASSIFIER
   ? (require('./classifierDecision.js') as typeof import('./classifierDecision.js'))
   : null
-const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
+const autoModeStateModule = RAYU_FEATURES.TRANSCRIPT_CLASSIFIER
   ? (require('./autoModeState.js') as typeof import('./autoModeState.js'))
   : null
 
@@ -141,7 +142,7 @@ export function createPermissionRequestMessage(
   // Handle different decision reason types
   if (decisionReason) {
     if (
-      (feature('BASH_CLASSIFIER') || feature('TRANSCRIPT_CLASSIFIER')) &&
+      (RAYU_FEATURES.BASH_CLASSIFIER || RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) &&
       decisionReason.type === 'classifier'
     ) {
       return `Classifier '${decisionReason.classifier}' requires approval for this ${toolName} command: ${decisionReason.reason}`
@@ -485,7 +486,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
   // breaks the consecutive denial streak.
   if (result.behavior === 'allow') {
     const appState = context.getAppState()
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
+    if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
       const currentDenialState =
         context.localDenialTracking ?? appState.denialTracking
       if (
@@ -518,7 +519,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
     // Apply auto mode: use AI classifier instead of prompting user
     // Check this BEFORE shouldAvoidPermissionPrompts so classifiers work in headless mode
     if (
-      feature('TRANSCRIPT_CLASSIFIER') &&
+      RAYU_FEATURES.TRANSCRIPT_CLASSIFIER &&
       (appState.toolPermissionContext.mode === 'auto' ||
         (appState.toolPermissionContext.mode === 'plan' &&
           (autoModeStateModule?.isAutoModeActive() ?? false)))
@@ -571,7 +572,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
       // prefix rules for ant users and auto mode entry.
       if (
         tool.name === POWERSHELL_TOOL_NAME &&
-        !feature('POWERSHELL_AUTO_MODE')
+        !RAYU_FEATURES.POWERSHELL_AUTO_MODE
       ) {
         if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
           return {
@@ -1075,6 +1076,14 @@ export async function checkRuleBasedPermissions(
 ): Promise<PermissionAskDecision | PermissionDenyDecision | null> {
   const appState = context.getAppState()
 
+  // A PreToolUse hook's allow must not let Orchestrator's main agent change
+  // files either (src/orchestrator/mainThreadPolicy.ts).
+  const orchestratorDenial = orchestratorMainThreadDenial(tool, input, context)
+  if (orchestratorDenial) return orchestratorDenial
+  // Nor let plan mode change the project (planModePolicy.ts).
+  const planDenial = planModeChangeDenial(tool, input, context)
+  if (planDenial) return planDenial
+
   // 1a. Entire tool is denied by rule
   const denyRule = getDenyRuleForTool(appState.toolPermissionContext, tool)
   if (denyRule) {
@@ -1155,7 +1164,7 @@ export async function checkRuleBasedPermissions(
   return null
 }
 
-// Exported for unit testing the mode-gating logic (fullManage/bypass vs the
+// Exported for unit testing the mode-gating logic (fullManage/Orchestrator vs the
 // requiresUserInteraction guard). Not part of the public permission API — use
 // hasPermissionsToUseTool.
 export async function hasPermissionsToUseToolInner(
@@ -1169,8 +1178,17 @@ export async function hasPermissionsToUseToolInner(
 
   let appState = context.getAppState()
 
-  // 0. fullManage mode: allow everything unconditionally without any permission
-  // checks — EXCEPT tools that require user interaction (AskUserQuestion,
+  // Orchestrator's main agent delegates every change. Checked before step 0,
+  // which allows everything in that mode (src/orchestrator/mainThreadPolicy.ts).
+  const orchestratorDenial = orchestratorMainThreadDenial(tool, input, context)
+  if (orchestratorDenial) return orchestratorDenial
+  // Plan mode leaves the project unchanged; everything else runs at step 2a.
+  const planDenial = planModeChangeDenial(tool, input, context)
+  if (planDenial) return planDenial
+
+  // 0. fullManage and Orchestrator modes: allow everything unconditionally
+  // without permission checks — EXCEPT tools that require user interaction
+  // (AskUserQuestion,
   // ExitPlanMode, ReviewArtifact). Auto-"allowing" an interactive tool has no
   // user input to synthesize, so it would execute with empty input and its
   // dialog would never render (e.g. AskUserQuestion resolves "answered" with
@@ -1178,7 +1196,8 @@ export async function hasPermissionsToUseToolInner(
   // interactive 'ask' the UI needs — matching how bypassPermissions already
   // handles these tools.
   if (
-    appState.toolPermissionContext.mode === 'fullManage' &&
+    (appState.toolPermissionContext.mode === 'fullManage' ||
+      appState.toolPermissionContext.mode === 'orchestrator') &&
     !tool.requiresUserInteraction?.()
   ) {
     return {
@@ -1186,7 +1205,7 @@ export async function hasPermissionsToUseToolInner(
       updatedInput: input,
       decisionReason: {
         type: 'mode',
-        mode: 'fullManage',
+        mode: appState.toolPermissionContext.mode,
       },
     }
   }
@@ -1287,20 +1306,20 @@ export async function hasPermissionsToUseToolInner(
   // 2a. Check if mode allows the tool to run
   // IMPORTANT: Call getAppState() to get the latest value
   appState = context.getAppState()
-  // Check if permissions should be bypassed:
-  // - Direct bypassPermissions mode
-  // - Plan mode when the user originally started with bypass mode (isBypassPermissionsModeAvailable)
-  const shouldBypassPermissions =
-    appState.toolPermissionContext.mode === 'bypassPermissions' ||
-    (appState.toolPermissionContext.mode === 'plan' &&
-      appState.toolPermissionContext.isBypassPermissionsModeAvailable)
+  // Runs without asking:
+  // - bypassPermissions mode;
+  // - plan mode, which works like Full Manage except that it may not change the
+  //   project. Those calls were already refused before step 1 (planModePolicy.ts).
+  // Both still honour deny rules, ask rules and the safety checks above.
+  const { mode } = appState.toolPermissionContext
+  const shouldBypassPermissions = mode === 'bypassPermissions' || mode === 'plan'
   if (shouldBypassPermissions) {
     return {
       behavior: 'allow',
       updatedInput: getUpdatedInputOrFallback(toolPermissionResult, input),
       decisionReason: {
         type: 'mode',
-        mode: appState.toolPermissionContext.mode,
+        mode,
       },
     }
   }

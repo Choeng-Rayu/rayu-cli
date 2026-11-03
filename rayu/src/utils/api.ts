@@ -20,6 +20,10 @@ import type { ScopedMcpServerConfig } from 'src/services/mcp/types.js'
 import { BashTool } from 'src/tools/BashTool/BashTool.js'
 import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js'
 import {
+  coerceFileEditInput,
+  coerceFileWriteInput,
+} from 'src/tools/FileEditTool/coerce.js'
+import {
   normalizeFileEditInput,
   stripTrailingWhitespace,
 } from 'src/tools/FileEditTool/utils.js'
@@ -88,10 +92,13 @@ export type SystemPromptBlock = {
   cacheScope: CacheScope | null
 }
 
-// Fields to filter from tool schemas when swarms are not enabled
+// Fields to filter from tool schemas when swarms are not enabled.
+// The Agent tool's `name` stays: without teams it still names the task, and
+// Orchestrator mode addresses its workers by it (OrchestratorSendMessageTool).
+// Schemas are cached per session, so a mode switch could not add it back later.
 const SWARM_FIELDS_BY_TOOL: Record<string, string[]> = {
   [EXIT_PLAN_MODE_V2_TOOL_NAME]: ['launchSwarm', 'teammateCount'],
-  [AGENT_TOOL_NAME]: ['name', 'team_name', 'mode'],
+  [AGENT_TOOL_NAME]: ['team_name', 'mode'],
 }
 
 /**
@@ -758,8 +765,12 @@ export function normalizeToolInput<T extends Tool>(
       } as z.infer<T['inputSchema']>
     }
     case FileEditTool.name: {
+      // Repair camelCase / synonym key names before strict zod validation
+      // (parse() below THROWS on an unknown key, and that throw is swallowed by
+      // normalizeContentFromAPI). No-op when already canonical.
+      const coerced = coerceFileEditInput(input)
       // Validated upstream, won't throw
-      const parsedInput = FileEditTool.inputSchema.parse(input)
+      const parsedInput = FileEditTool.inputSchema.parse(coerced)
 
       // This is a workaround for tokens claude can't see
       const { file_path, edits } = normalizeFileEditInput({
@@ -782,8 +793,10 @@ export function normalizeToolInput<T extends Tool>(
       } as z.infer<T['inputSchema']>
     }
     case FileWriteTool.name: {
+      // Same key-name repair as Edit — see coerceFileEditInput.
+      const coerced = coerceFileWriteInput(input)
       // Validated upstream, won't throw
-      const parsedInput = FileWriteTool.inputSchema.parse(input)
+      const parsedInput = FileWriteTool.inputSchema.parse(coerced)
 
       // Markdown uses two trailing spaces as a hard line break — don't strip.
       const isMarkdown = /\.(md|mdx)$/i.test(parsedInput.file_path)

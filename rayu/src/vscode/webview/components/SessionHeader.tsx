@@ -1,0 +1,542 @@
+/**
+ * The panel's own header.
+ *
+ * ── IT DOES NOT REPEAT WHAT VS CODE ALREADY SHOWS ──────────────────────────────
+ *
+ * The previous header led with the word "Rayucode" and carried the version, the signed-in
+ * account, the context gauge, the attachment control and the history dropdown. VS Code
+ * already renders the view's title directly above it, so the name was duplicated furniture,
+ * and the rest competed for a strip narrower than a sidebar. What belongs here is what
+ * changes as you work: which conversation this is, and what it is doing.
+ *
+ * Identity, version, provider setup, MCP connections and sign-out moved into the overflow
+ * menu. They are settings and facts, consulted rarely — and two of them (MCP status and
+ * sign-out) previously had NO surface at all despite the protocol supporting them, so the
+ * capability existed and could not be reached.
+ *
+ * ── THE STATUS PILL IS DERIVED, NOT REPORTED ───────────────────────────────────
+ *
+ * There is no "session status" on the wire, and there should not be: it is a function of
+ * facts the panel already holds. `waiting` outranks `working` because an approval blocks the
+ * turn — describing a blocked session as working is the one reading that would mislead.
+ */
+import { useEffect, useRef, useState } from 'react'
+
+import type {
+  ChatSurfaceKind,
+  McpServerView,
+  McpConnectionUiView,
+  TranscriptEntry,
+  TurnProgressView,
+} from '../../shared/webviewProtocol.js'
+import { isTerminalPhase, isWaitingPhase } from '../../shared/turnProgress.js'
+import {
+  CloseIcon,
+  EllipsisIcon,
+  GearIcon,
+  HistoryIcon,
+  LinkIcon,
+  ListIcon,
+  PlugIcon,
+  PlusIcon,
+  ProgressGlyph,
+  RayuMark,
+  SignInIcon,
+  SignOutIcon,
+} from './Icons.js'
+
+export type SessionStatus = 'idle' | 'working' | 'waiting' | 'completed' | 'failed'
+
+/**
+ * Derive the session's status from what the panel already knows.
+ *
+ * Exported for test: the precedence is the whole of the logic, and it is the kind of thing
+ * that looks obviously right and is quietly wrong for the blocked case.
+ */
+export function deriveSessionStatus(
+  turnRunning: boolean,
+  progress: TurnProgressView | null,
+  pendingApprovals: number,
+): SessionStatus {
+  // Blocked on the user outranks everything else: the turn cannot advance until they answer.
+  if (pendingApprovals > 0) return 'waiting'
+  if (turnRunning) return progress && isWaitingPhase(progress.phase) ? 'waiting' : 'working'
+  if (progress && isTerminalPhase(progress.phase)) {
+    return progress.phase === 'completed' ? 'completed' : 'failed'
+  }
+  return 'idle'
+}
+
+const STATUS_LABEL: Record<SessionStatus, string> = {
+  idle: 'Ready',
+  working: 'Working',
+  waiting: 'Waiting for you',
+  completed: 'Done',
+  failed: 'Failed',
+}
+
+/**
+ * A title for the conversation.
+ *
+ * Derived from the first prompt rather than added to the protocol, because the host has no
+ * title for a live session either — the CLI's own fallback chain ends at the first prompt for
+ * exactly the same reason. Trimmed to a single line: a pasted multi-line prompt would
+ * otherwise stretch the header to the height of the paste.
+ */
+export function deriveSessionTitle(entries: readonly TranscriptEntry[]): string | null {
+  const firstPrompt = entries.find(entry => entry.kind === 'prompt')
+  if (!firstPrompt || firstPrompt.kind !== 'prompt') return null
+  const line = firstPrompt.text.split('\n').map(l => l.trim()).find(Boolean)
+  if (!line) return null
+  return line.length > 60 ? `${line.slice(0, 59)}…` : line
+}
+
+export interface SessionHeaderProps {
+  ready: boolean
+  signedOut: boolean
+  identity: { email: string | null; displayName: string | null } | null
+  version: string
+  title: string | null
+  activeSessionKey: string
+  /**
+   * Which surface this header belongs to.
+   *
+   * Both surfaces render the conversation's title, status and detail switch, because the
+   * sidebar can host the first conversation itself. Only the close action is panel-only,
+   * and only a sidebar with a conversation gets a Sessions toggle back to its list.
+   *
+   * Optional, defaulting to `'sidebar'`: that keeps an existing caller (e.g. a static
+   * render in a test) compiling. App always passes the real value.
+   */
+  surface?: ChatSurfaceKind
+  /**
+   * Whether this surface hosts a live conversation.
+   *
+   * The sidebar only needs a sessions toggle when it can show a chat; a hub with no chat
+   * has nothing to toggle away from. Optional, defaulting to false, for bare test renders.
+   */
+  hasConversation?: boolean
+  /** Sidebar only: whether the sessions list is the body currently on screen. */
+  sessionsOpen?: boolean
+  /** Sidebar only: flip between the chat body and the sessions list. */
+  onToggleSessions?: () => void
+  status: SessionStatus
+  mcpServers: readonly McpServerView[]
+  mcpConnectionUi: McpConnectionUiView
+  onNewSession: () => void
+  onRename: (title: string) => void
+  /**
+   * Panel only: close this session (and stop its engine). Shown in place of the sessions
+   * switcher, which a panel has no use for. Optional for the same reason as `surface`.
+   */
+  onCloseTab?: () => void
+  /** Whether every tool row is showing its parameters and output. */
+  detailed: boolean
+  /** Flip the panel-wide detail switch — the editor's equivalent of the CLI's Ctrl+O. */
+  onToggleDetailed: () => void
+  /** How many background tasks exist, for the badge on the background-work control. */
+  backgroundTaskCount: number
+  /** Whether the background-work surface is the one currently open. */
+  backgroundOpen: boolean
+  onToggleBackground: () => void
+  onOpenProviderSetup: () => void
+  onOpenTelegramConnect?: () => void
+  /** Open the Rayucode Settings tab. */
+  onOpenSettings?: () => void
+  onRefreshMcp: () => void
+  onOpenMcp: () => void
+  onReconnectMcp: (serverName: string) => void
+  onAuthenticateMcp: (serverName: string) => void
+  onToggleMcp: (serverName: string, enabled: boolean) => void
+  onSignIn: () => void
+  onSignOut: () => void
+}
+
+export function SessionHeader({
+  ready,
+  signedOut,
+  identity,
+  version,
+  title,
+  activeSessionKey,
+  surface = 'sidebar',
+  hasConversation = false,
+  sessionsOpen = false,
+  onToggleSessions,
+  status,
+  mcpServers,
+  mcpConnectionUi,
+  onNewSession,
+  onRename,
+  onCloseTab,
+  detailed,
+  onToggleDetailed,
+  backgroundTaskCount,
+  backgroundOpen,
+  onToggleBackground,
+  onOpenProviderSetup,
+  onOpenTelegramConnect,
+  onOpenSettings,
+  onRefreshMcp,
+  onOpenMcp,
+  onReconnectMcp,
+  onAuthenticateMcp,
+  onToggleMcp,
+  onSignIn,
+  onSignOut,
+}: SessionHeaderProps): JSX.Element {
+  // What changes as you work — the conversation's title, its status and the transcript
+  // detail switch — now renders on either surface, because the sidebar can host the
+  // first conversation itself. Only the close action stays panel-only, and only a
+  // sidebar with a conversation gets a switcher back to its sessions list.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [editingTitle, setEditingTitle] = useState<string | null>(null)
+  const cancelTitleEdit = useRef(false)
+  const titleInput = useRef<HTMLInputElement | null>(null)
+  const container = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (editingTitle !== null) titleInput.current?.select()
+  }, [editingTitle !== null])
+
+  // Switching conversations dismisses transient header UI without remounting the whole
+  // header. Keying this component left stale DOM siblings behind in VS Code's webview.
+  useEffect(() => {
+    cancelTitleEdit.current = false
+    setEditingTitle(null)
+    setMenuOpen(false)
+  }, [activeSessionKey])
+
+  function finishTitleEdit(value: string): void {
+    if (cancelTitleEdit.current) {
+      cancelTitleEdit.current = false
+      setEditingTitle(null)
+      return
+    }
+    const next = value.trim()
+    setEditingTitle(null)
+    if (next && next !== title) onRename(next)
+  }
+
+  // Registered only while open, so a closed menu costs no document listener.
+  useEffect(() => {
+    if (!menuOpen) return
+    function onDocument(event: MouseEvent): void {
+      if (!container.current?.contains(event.target as Node)) setMenuOpen(false)
+    }
+    function onKey(event: KeyboardEvent): void {
+      if (event.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDocument)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocument)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
+
+  // MCP status is fetched when the menu opens rather than polled: it is only visible here,
+  // and a background poll would keep the engine busy for a panel nobody is looking at.
+  useEffect(() => {
+    if (menuOpen) onRefreshMcp()
+  }, [menuOpen, onRefreshMcp])
+
+  const who = identity?.displayName ?? identity?.email ?? null
+  const connectedMcp = mcpServers.filter(server => server.status === 'connected').length
+
+  return (
+    <header className="rc-header" ref={container}>
+      <RayuMark size={14} className="rc-header-mark" />
+
+      {editingTitle !== null ? (
+        <input
+          ref={titleInput}
+          className="rc-header-title rc-header-title-input"
+          aria-label="Conversation name"
+          value={editingTitle}
+          maxLength={200}
+          onChange={event => setEditingTitle(event.target.value)}
+          onBlur={event => finishTitleEdit(event.currentTarget.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+            if (event.key === 'Escape') {
+              cancelTitleEdit.current = true
+              event.currentTarget.blur()
+            }
+          }}
+        />
+      ) : ready && title ? (
+        <button type="button" className="rc-header-title rc-header-title-editable"
+          title={`${title} — click to edit`} aria-label={`Conversation name: ${title}. Click to edit`}
+          onClick={() => setEditingTitle(title)}>
+          {title}
+        </button>
+      ) : (
+        <span className="rc-header-title">{title ?? 'New conversation'}</span>
+      )}
+
+      {/* `idle` is not rendered: a pill that says "Ready" on every fresh panel is furniture. */}
+      {ready && status !== 'idle' ? (
+        <span
+          className={`rc-session-status rc-session-status-${status}`}
+          role="status"
+          aria-live="polite"
+        >
+          {status === 'working' || status === 'waiting' ? (
+            <ProgressGlyph state={status === 'waiting' ? 'waiting' : 'thinking'} />
+          ) : null}
+          {STATUS_LABEL[status]}
+        </span>
+      ) : null}
+
+      <span className="rc-header-spacer" />
+
+      {(connectedMcp > 0 || mcpConnectionUi.auth?.stage === 'waiting') ? (
+        <button type="button" className="rc-icon-button rc-icon-button-badged" onClick={onOpenMcp}
+          title={connectedMcp > 0 ? `${connectedMcp} MCP server${connectedMcp === 1 ? '' : 's'} connected` : 'MCP authorization in progress'}
+          aria-label={connectedMcp > 0 ? `${connectedMcp} MCP server${connectedMcp === 1 ? '' : 's'} connected` : 'MCP authorization in progress'}>
+          <PlugIcon size={14} />
+          {connectedMcp > 0 ? <span className="rc-icon-badge">{connectedMcp}</span> : <span className="rc-header-mcp-pending" aria-hidden="true" />}
+        </button>
+      ) : null}
+
+      {!signedOut ? (
+        <>
+          {/*
+            The clickable equivalent of the CLI's Ctrl+O. A shortcut alone would be
+            invisible in an editor panel — a keystroke nobody can discover is the same as
+            no feature — so this is a real control, and the shortcut is documented on it.
+            Shown on both surfaces, since both can render transcript rows.
+          */}
+          <button
+            type="button"
+            className={`rc-icon-button${detailed ? ' rc-icon-button-active' : ''}`}
+            aria-pressed={detailed}
+            title={
+              detailed
+                ? 'Hide tool details (Ctrl+O)'
+                : 'Show tool parameters and output (Ctrl+O)'
+            }
+            aria-label="Toggle tool details"
+            onClick={onToggleDetailed}
+          >
+            <ListIcon size={14} />
+          </button>
+          {/* Only offered when there IS background work: an always-present control that
+              opens an empty panel teaches the user to stop pressing it. Shown on the
+              sidebar too — background work is exactly what the hub manages. */}
+          {backgroundTaskCount > 0 ? (
+            <button
+              type="button"
+              className={`rc-icon-button rc-icon-button-badged${
+                backgroundOpen ? ' rc-icon-button-active' : ''
+              }`}
+              aria-expanded={backgroundOpen}
+              title={`Background work (${backgroundTaskCount})`}
+              aria-label={`Background work, ${backgroundTaskCount} ${
+                backgroundTaskCount === 1 ? 'task' : 'tasks'
+              }`}
+              onClick={onToggleBackground}
+            >
+              <RayuMark size={13} />
+              <span className="rc-icon-badge">{backgroundTaskCount}</span>
+            </button>
+          ) : null}
+          {/* Sidebar only, and only while it hosts a conversation: flip its body between
+              that chat and the sessions list. A panel has no list to toggle to. */}
+          {surface === 'sidebar' && hasConversation ? (
+            <button
+              type="button"
+              className={`rc-icon-button${sessionsOpen ? ' rc-icon-button-active' : ''}`}
+              title="Sessions"
+              aria-label="Sessions"
+              aria-pressed={sessionsOpen}
+              onClick={() => onToggleSessions?.()}
+            >
+              <HistoryIcon size={14} />
+            </button>
+          ) : null}
+          {/* Primary action: a new conversation claims the sidebar slot when it is empty,
+              and otherwise opens as its own editor tab. */}
+          <button
+            type="button"
+            className="rc-icon-button"
+            title="New session"
+            aria-label="New session"
+            onClick={onNewSession}
+          >
+            <PlusIcon size={14} />
+          </button>
+          {/* A panel is bound to one session, so it gets a close action. The sidebar does
+              not: closing one of its conversations is the sessions list's own row action. */}
+          {surface === 'panel' ? (
+            <button
+              type="button"
+              className="rc-icon-button"
+              title="Close session"
+              aria-label="Close session"
+              onClick={() => onCloseTab?.()}
+            >
+              <CloseIcon size={14} />
+            </button>
+          ) : null}
+        </>
+      ) : null}
+
+      <div className="rc-dropdown">
+        <button
+          type="button"
+          className={`rc-icon-button${menuOpen ? ' rc-icon-button-active' : ''}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          title="More actions"
+          aria-label="More actions"
+          onClick={() => setMenuOpen(open => !open)}
+        >
+          <EllipsisIcon size={14} />
+        </button>
+
+        {menuOpen ? (
+          <div className="rc-dropdown-panel rc-overflow-panel" role="menu">
+            <div className="rc-overflow-identity">
+              <RayuMark size={16} />
+              <span className="rc-overflow-who">{who ?? 'Not signed in'}</span>
+              <span className="rc-overflow-version">v{version}</span>
+            </div>
+
+            <button
+              type="button"
+              role="menuitem"
+              className="rc-overflow-item"
+              onClick={() => {
+                setMenuOpen(false)
+                onOpenProviderSetup()
+              }}
+            >
+              <PlugIcon size={13} />
+              Connect provider
+            </button>
+
+            {onOpenTelegramConnect ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-overflow-item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onOpenTelegramConnect()
+                }}
+              >
+                <LinkIcon size={13} />
+                Connect Telegram
+              </button>
+            ) : null}
+
+            {onOpenSettings ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-overflow-item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onOpenSettings()
+                }}
+              >
+                <GearIcon size={13} />
+                Settings
+              </button>
+            ) : null}
+
+            <div className="rc-overflow-section">
+              <span className="rc-overflow-section-title">MCP servers</span>
+              <button type="button" className="rc-overflow-mcp-action" onClick={() => {
+                setMenuOpen(false)
+                onOpenMcp()
+              }}>View connections</button>
+              {mcpConnectionUi.load === 'idle' ? (
+                <p className="rc-overflow-empty">Connection status has not been checked yet.</p>
+              ) : mcpConnectionUi.load === 'loading' ? (
+                <p className="rc-overflow-empty">Checking connections…</p>
+              ) : mcpConnectionUi.load === 'error' ? (
+                <p className="rc-overflow-empty" role="alert">Could not check connections. <button type="button" className="rc-overflow-mcp-action" onClick={onRefreshMcp}>Retry</button></p>
+              ) : mcpServers.length === 0 ? (
+                <p className="rc-overflow-empty">No MCP servers connected.</p>
+              ) : (
+                <ul className="rc-overflow-mcp">
+                  {mcpServers.map(server => (
+                    <li key={server.name} className="rc-overflow-mcp-row">
+                      <span
+                        className={`rc-mcp-dot rc-mcp-${server.status}`}
+                        aria-hidden="true"
+                      />
+                      <span className="rc-overflow-mcp-name" title={server.error}>
+                        {server.name}
+                      </span>
+                      <span className="rc-overflow-mcp-status">{server.status}</span>
+                      {/* Reconnect is offered only where it can help. A disabled server needs
+                          enabling, not reconnecting. */}
+                      {server.status === 'needs-auth' ? (
+                        <button
+                          type="button"
+                          className="rc-overflow-mcp-action"
+                          onClick={() => onAuthenticateMcp(server.name)}
+                        >
+                          Authenticate
+                        </button>
+                      ) : server.status === 'failed' ? (
+                        <button
+                          type="button"
+                          className="rc-overflow-mcp-action"
+                          onClick={() => onReconnectMcp(server.name)}
+                        >
+                          Reconnect
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="rc-overflow-mcp-action"
+                        onClick={() =>
+                          onToggleMcp(server.name, server.status === 'disabled')
+                        }
+                      >
+                        {server.status === 'disabled' ? 'Enable' : 'Disable'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {signedOut ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-overflow-item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onSignIn()
+                }}
+              >
+                <SignInIcon size={13} />
+                Sign in
+              </button>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                className="rc-overflow-item rc-overflow-item-danger"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onSignOut()
+                }}
+              >
+                <SignOutIcon size={13} />
+                Sign out
+              </button>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </header>
+  )
+}

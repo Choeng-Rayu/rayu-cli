@@ -7,6 +7,7 @@
 // Reading the Anthropic Messages IR (system prompt, text blocks, image sources)
 // is format-independent and shared with the OpenAI adapters — see anthropicIR.ts.
 import { imageBlockSource, systemToText } from '../anthropicIR.js'
+import { providerAcceptsImages } from '../../../utils/model/providerCapabilities.js'
 
 export type AnyObj = Record<string, unknown>
 
@@ -51,7 +52,12 @@ export function _resetThoughtSignaturesForTesting(): void {
 }
 
 /** A GenAI Part for an Anthropic image block (base64 only; url unsupported). */
-function imagePart(block: AnyObj): AnyObj | null {
+function imagePart(block: AnyObj, model?: string): AnyObj | null {
+  // The resolved (provider, model) may be text-only — a Vertex MaaS text
+  // checkpoint, or a model the user marked text-only in /connect. Sending image
+  // parts there is a 400, and the proactive submit-time drop only covers images
+  // the USER pasted, not ones a tool returned. Mirrors openaiAdapter.ts:101.
+  if (!providerAcceptsImages(model)) return null
   const src = imageBlockSource(block)
   // GenAI takes inline bytes, so a url-sourced image has no representation here.
   if (!src || src.kind !== 'base64') return null
@@ -121,14 +127,14 @@ export function toGenAIRequest(params: BetaParams): GenAIRequest {
           })
           if (Array.isArray(b.content)) {
             for (const x of b.content as AnyObj[]) {
-              const img = imagePart(x)
+              const img = imagePart(x, params.model)
               if (img) userParts.push(img)
             }
           }
         } else if (b.type === 'text' && b.text) {
           userParts.push({ text: b.text })
         } else {
-          const img = imagePart(b)
+          const img = imagePart(b, params.model)
           if (img) userParts.push(img)
         }
       }

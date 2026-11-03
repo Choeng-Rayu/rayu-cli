@@ -31,7 +31,11 @@ import {
 import { getModelStrings } from 'src/utils/model/modelStrings.js'
 import { getAPIProvider, isRayuNonAnthropicActive } from 'src/utils/model/providers.js'
 import { getActiveProvider } from 'src/utils/rayuConfig.js'
-import { getRayuWebBaseUrl } from 'src/services/rayuAuth/rayuSession.js'
+import {
+  getRayuDashboardUrl,
+  getRayuPlansUrl,
+  getRayuWebBaseUrl,
+} from 'src/services/rayuAuth/rayuSession.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {
   API_PDF_MAX_PAGES,
@@ -41,6 +45,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
+import { estimateMediaBytes } from '../../utils/mediaBytes.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -252,6 +257,25 @@ export function getRequestTooLargeErrorMessage(): string {
   return getIsNonInteractiveSession()
     ? `Request too large (${limits}). Try with a smaller file.`
     : `Request too large (${limits}). Double press esc to go back and try with a smaller file.`
+}
+
+/**
+ * User-facing text for a 413 caused by ACCUMULATED conversation media rather
+ * than a single oversized upload.
+ *
+ * The generic getRequestTooLargeErrorMessage tells the user to "try with a
+ * smaller file" — the PDF-upload copy. But a long session heavy in pasted
+ * images 413s with no file in the failing turn at all (the images are spread
+ * through prior history), so that advice is actively misleading: the user sent
+ * no file to shrink. Say what actually happened and point at the real levers.
+ * MEDIA_COMPACT_BUDGET_BYTES normally sheds this proactively; this message is
+ * the fallback for when the body still crosses the server cap (e.g. auto-compact
+ * disabled, or a gateway cap below the budget).
+ */
+export function getRequestTooLargeContextMessage(): string {
+  return getIsNonInteractiveSession()
+    ? 'Request too large: this conversation\u2019s accumulated images and attachments exceed the request size limit. Start a new session, or remove earlier images.'
+    : 'Request too large: this conversation\u2019s accumulated images and attachments exceed the request size limit. Run /compact to summarize and drop old images from context, or /clear to start fresh.'
 }
 
 /**
@@ -519,8 +543,12 @@ const RAYU_TRANSIENT_LIMIT_REASONS = new Set(['concurrency', 'requests'])
  * The gateway's machine-readable denial reason, from the most reliable source
  * available: the X-Rayu-Limit header, then the parsed body's `reason`, then the
  * "credit limit reached: <reason>" suffix in the composed message.
+ *
+ * Exported because the rate-limit UI needs to name WHICH window was hit
+ * (`weekly_limit` vs `session_window_limit`), and re-deriving that from the
+ * message here would be a second, divergent parser.
  */
-function rayuLimitReason(error: APIError): string | undefined {
+export function rayuLimitReason(error: APIError): string | undefined {
   const header = error.headers?.get?.('x-rayu-limit')
   if (header) return String(header)
   const body = (error as { error?: unknown }).error
@@ -614,10 +642,76 @@ export function isRayuDailyTurnLimitError(error: unknown): boolean {
 }
 
 /**
+ * The gateway's PACING-window denials: `weekly_limit` and `session_window_limit`.
+ *
+ * A distinct state from BOTH of its neighbours, and the difference drives entirely
+ * different advice:
+ *
+ *  - NOT `period_limit` (see `isRayuCreditLimitError`): the customer has credit
+ *    left. Telling them to buy more would be the same misdirection that file was
+ *    written to prevent.
+ *  - NOT the daily TURN cap: this counts CREDITS and its window rolls on a clock
+ *    measured in hours (session) or days (week), not at 00:00 UTC.
+ *
+ * Like the turn cap it is terminal for the current window, so `withRetry` bails
+ * rather than sleeping out an ETA that can be hours long.
+ */
+export const RAYU_WINDOW_LIMIT_REASONS = new Set([
+  'weekly_limit',
+  'session_window_limit',
+])
+
+/**
+ * True when the request was refused by a pacing window.
+ *
+ * Detected structurally (header, then body `reason`) with a message fallback, the
+ * same three-tier shape as the neighbouring predicates, so a wording change does
+ * not silently reclassify it.
+ */
+export function isRayuWindowLimitError(error: unknown): boolean {
+  if (!(error instanceof APIError) || error.status !== 429) {
+    return false
+  }
+  const reason = rayuLimitReason(error)
+  if (reason !== undefined) {
+    return RAYU_WINDOW_LIMIT_REASONS.has(reason)
+  }
+  return /weekly_limit|session_window_limit/i.test(error.message ?? '')
+}
+
+/**
+ * Whose limit a denial is: the caller's own, or their TEAM's.
+ *
+ * The gateway echoes `scope: "team"` on a team denial (and `"team"` on the team
+ * credits view), because on a team the escape hatch is different: the pacing
+ * switch is org-admin-only, so "turn on use all credits" is advice a member
+ * cannot act on. Reading it here lets the UI say "ask your admin" instead.
+ *
+ * Defaults to `personal` when absent — the personal path is the one that has no
+ * marker, so an unmarked denial is a personal one.
+ */
+export function getRayuLimitScope(error: unknown): 'personal' | 'team' {
+  if (!(error instanceof APIError)) return 'personal'
+  const body = (error as { error?: unknown }).error
+  if (body && typeof body === 'object' && 'scope' in body) {
+    if (String((body as { scope?: unknown }).scope ?? '') === 'team') return 'team'
+  }
+  return 'personal'
+}
+
+/**
  * Seconds until the credit period resets, from the gateway body (`resetSeconds`)
  * or the Retry-After header, whichever is present and positive. null if unknown.
+ *
+ * ONE reader serves all three intentional denials — `period_limit`, the daily
+ * TURN cap, and the pacing windows — because the gateway puts the reset that is
+ * correct for THAT denial into the same field. Only the meaning of "reset"
+ * differs (period end / next UTC midnight / window roll), and phrasing it is the
+ * caller's job. Keeping a single reader is what stops the three messages from
+ * disagreeing about an ETA.
  */
-function getRayuCreditResetSeconds(error: APIError): number | null {
+export function getRayuResetSeconds(error: unknown): number | null {
+  if (!(error instanceof APIError)) return null
   const body = (error as { error?: unknown }).error
   if (body && typeof body === 'object' && 'resetSeconds' in body) {
     const n = Number((body as { resetSeconds?: unknown }).resetSeconds)
@@ -739,14 +833,14 @@ export function getAssistantMessageFromError(
     ) {
       return createAssistantAPIErrorMessage({
         error: 'unknown',
-        content: `⚠️ Can't reach Rayu right now — the service may be temporarily down, or your connection dropped. Please try again in a little while.`,
+        content: `⚠️ Can't reach Rayu right now. The model may be under high volume, or your connection dropped. Please wait a moment or switch to a different model with ${switchCmd}.`,
       })
     }
     // (b) Reached Rayu but the provider/origin returned a server error (5xx).
     if (isRayuHostedProviderUnavailable(error)) {
       return createAssistantAPIErrorMessage({
         error: 'invalid_request',
-        content: `⚠️ Rayu's AI provider for "${model}" is temporarily unavailable. Try a smaller model with ${switchCmd}, or try again in a little while.`,
+        content: `⚠️ The model is under high volume right now. Please wait a moment or switch to a different model with ${switchCmd}.`,
       })
     }
   }
@@ -790,8 +884,8 @@ export function getAssistantMessageFromError(
   // prompt with the plans link, NOT a generic "Request rejected (429)" or the
   // (now-suppressed in withRetry) multi-week retry spinner.
   if (isRayuCreditLimitError(error)) {
-    const plansUrl = `${getRayuWebBaseUrl()}/plans`
-    const resetSeconds = getRayuCreditResetSeconds(error as APIError)
+    const plansUrl = getRayuPlansUrl()
+    const resetSeconds = getRayuResetSeconds(error)
     const resetHint = resetSeconds
       ? ` Your credits renew ${formatCreditResetHint(resetSeconds)}.`
       : ''
@@ -808,14 +902,38 @@ export function getAssistantMessageFromError(
   // from the credit limit so the user knows it's a daily cap (not billing) and
   // won't clear by retrying now.
   if (isRayuDailyTurnLimitError(error)) {
-    const plansUrl = `${getRayuWebBaseUrl()}/plans`
-    const resetSeconds = getRayuCreditResetSeconds(error as APIError)
+    const plansUrl = getRayuPlansUrl()
+    const resetSeconds = getRayuResetSeconds(error)
     const resetHint = resetSeconds
       ? ` It resets ${formatCreditResetHint(resetSeconds)}.`
       : ' It resets at the start of the next day (UTC).'
     return createAssistantAPIErrorMessage({
       error: 'rate_limit',
       content: `🚦 You've reached your plan's daily request limit.${resetHint} Upgrade for a higher daily limit: ${plansUrl}`,
+    })
+  }
+
+  // Pacing window (429 reason:"weekly_limit" | "session_window_limit"): the
+  // customer still HAS credit — the plan just releases it over time — so the
+  // useful answer is the dashboard switch that lifts the pace, not a top-up. The
+  // gateway's own 429 already says this; repeating it here is what lets a
+  // non-streaming caller (and the transcript) show the same advice.
+  //
+  // Placed before the generic 429 handling below so the switch hint wins over the
+  // shared "rate limit" prose.
+  if (isRayuWindowLimitError(error)) {
+    const resetSeconds = getRayuResetSeconds(error)
+    const resetHint = resetSeconds
+      ? ` It resets ${formatCreditResetHint(resetSeconds)}.`
+      : ''
+    const dashboardUrl = getRayuDashboardUrl()
+    // The predicate narrowed nothing for the compiler (it returns a boolean, not a
+    // type predicate), so the cast is explicit — same as the daily-turn block above.
+    const which = rayuLimitReason(error as APIError)
+    const windowName = which === 'weekly_limit' ? 'weekly' : 'session'
+    return createAssistantAPIErrorMessage({
+      error: 'rate_limit',
+      content: `⏳ You've used this ${windowName} credit allowance, but you still have credits left. Turn on "use all credits" in your dashboard to keep working now: ${dashboardUrl}${resetHint}`,
     })
   }
 
@@ -1024,11 +1142,41 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // Check for request too large errors (413 status)
-  // This typically happens when a large PDF + conversation context exceeds the 32MB API limit
+  // Check for request too large errors (413 status). Two distinct causes need
+  // different advice:
+  //   (a) a single oversized upload in the CURRENT turn — removing that file
+  //       (esc) or sending a smaller one fixes it. The generic message + the
+  //       normalizeMessagesForAPI strip-map (keyed on
+  //       getRequestTooLargeErrorMessage) already handle this.
+  //   (b) ACCUMULATED conversation media — images/PDFs spread through history
+  //       whose combined base64 bytes cross the server cap while no single
+  //       piece is oversized (each already passed per-item validation). This is
+  //       the long-session case; "send a smaller file" is actively misleading
+  //       because there is no file in this turn to shrink. Point at /compact.
+  //       MEDIA_COMPACT_BUDGET_BYTES normally sheds this proactively via
+  //       auto-compact; this message is the fallback when a body still slips
+  //       past (auto-compact disabled, or a gateway cap below the budget).
+  // Distinguish by whether media exists OUTSIDE the last user turn: media in an
+  // earlier message means removing the current turn's upload cannot fix it.
   if (error instanceof APIError && error.status === 413) {
+    const messagesForAPI = options?.messagesForAPI
+    let isAccumulatedContext = false
+    if (messagesForAPI && messagesForAPI.length > 0) {
+      let lastUserIdx = -1
+      for (let i = messagesForAPI.length - 1; i >= 0; i--) {
+        if (messagesForAPI[i]!.type === 'user') {
+          lastUserIdx = i
+          break
+        }
+      }
+      const priorSlice =
+        lastUserIdx > 0 ? messagesForAPI.slice(0, lastUserIdx) : []
+      isAccumulatedContext = estimateMediaBytes(priorSlice) > 0
+    }
     return createAssistantAPIErrorMessage({
-      content: getRequestTooLargeErrorMessage(),
+      content: isAccumulatedContext
+        ? getRequestTooLargeContextMessage()
+        : getRequestTooLargeErrorMessage(),
       error: 'invalid_request',
     })
   }
@@ -1234,7 +1382,7 @@ export function getAssistantMessageFromError(
       error.message.toLowerCase().includes('paid feature') ||
       error.message.includes('plan_upgrade_required')
     if (onHosted || planGated) {
-      const plansUrl = `${getRayuWebBaseUrl()}/plans`
+      const plansUrl = getRayuPlansUrl()
       const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'
       return createAssistantAPIErrorMessage({
         error: 'invalid_request',

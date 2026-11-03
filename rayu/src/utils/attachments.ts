@@ -27,6 +27,18 @@ import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
+import {
+  archiveActiveRun,
+  describeOrchestratorSession,
+} from '../orchestrator/session.js'
+import {
+  renderCheckpoint,
+  takeCheckpointIfDue,
+} from '../orchestrator/checkpoint.js'
+import {
+  decideOrchestratorReminder,
+  needsOrchestratorExitNotice,
+} from '../orchestrator/reminder.js'
 import type { TodoList } from './todo/types.js'
 import {
   type Task,
@@ -574,9 +586,25 @@ export type Attachment =
       type: 'plan_mode_exit'
       planFilePath: string
       planExists: boolean
+      /** The mode the approval left the session in; absent on older attachments. */
+      mode?: string
     }
   | {
-      type: 'swarm_mode'
+      type: 'orchestrator_mode'
+      /** Absent on attachments recorded before reminder kinds existed. */
+      reminderType?: 'full' | 'sparse'
+      availableAgents?: string[]
+      canMessageWorkers?: boolean
+      hasContractTool?: boolean
+      contract?: { runId: string; version: number }
+    }
+  | {
+      type: 'orchestrator_mode_exit'
+    }
+  | {
+      /** Whole-tree comparison with the run's baseline, when no worker is running. */
+      type: 'orchestrator_checkpoint'
+      text: string
     }
   | {
       type: 'auto_mode'
@@ -881,7 +909,15 @@ export async function getAttachments(
     // replaces it; see src/services/skillSearch/prefetch.ts.
     maybe('plan_mode', () => getPlanModeAttachments(messages, toolUseContext)),
     maybe('plan_mode_exit', () => getPlanModeExitAttachment(toolUseContext)),
-    maybe('swarm_mode', () => getSwarmModeAttachment(messages, toolUseContext)),
+    maybe('orchestrator_mode', () =>
+      getOrchestratorModeAttachment(input, messages, toolUseContext),
+    ),
+    maybe('orchestrator_mode_exit', () =>
+      Promise.resolve(getOrchestratorModeExitAttachment(messages, toolUseContext)),
+    ),
+    maybe('orchestrator_checkpoint', () =>
+      getOrchestratorCheckpointAttachment(input, toolUseContext),
+    ),
     ...(feature('TRANSCRIPT_CLASSIFIER')
       ? [
           maybe('auto_mode', () =>
@@ -1244,36 +1280,59 @@ async function getPlanModeAttachments(
 }
 
 /**
- * Returns a swarm_mode reminder while the session is in collaborator-swarm
- * mode. Fires once per human turn (not on every intermediate tool round) to
- * keep the orchestrator role active without spamming tokens.
+ * The Orchestrator role reminder for the main agent: in full when the mode was just
+ * entered (or after compaction), short at the start of later turns, and nothing during
+ * tool rounds. See src/orchestrator/reminder.ts for the rules.
  */
-async function getSwarmModeAttachment(
+async function getOrchestratorModeAttachment(
+  input: string | null,
   messages: Message[] | undefined,
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
-  // Orchestrator-only: never inject the "you are the orchestrator" reminder
-  // into a spawned subagent/collaborator (they have an agentId). swarmMode is a
-  // main-session concept.
-  if (toolUseContext.agentId) {
-    return []
-  }
-  if (!toolUseContext.getAppState().swarmMode) {
-    return []
-  }
-  // Only attach at the start of a genuine human turn — during the tool loop the
-  // last message is a tool_result, so this won't re-fire on every round.
-  if (messages && messages.length > 0) {
-    const last = messages[messages.length - 1]
-    const isHumanTurn =
-      last?.type === 'user' &&
-      !last.isMeta &&
-      !hasToolResultContent(last.message.content)
-    if (!isHumanTurn) {
-      return []
-    }
-  }
-  return [{ type: 'swarm_mode' }]
+  const reminderType = decideOrchestratorReminder({
+    isSubagent: !!toolUseContext.agentId,
+    mode: toolUseContext.getAppState().toolPermissionContext.mode,
+    input,
+    messages,
+  })
+  if (!reminderType) return []
+  return [
+    {
+      type: 'orchestrator_mode',
+      ...describeOrchestratorSession(toolUseContext, reminderType),
+    },
+  ]
+}
+
+/**
+ * A one-time notice that Orchestrator mode was left, so its rules stop applying.
+ * The run ends with it: its contract no longer binds anyone.
+ */
+function getOrchestratorModeExitAttachment(
+  messages: Message[] | undefined,
+  toolUseContext: ToolUseContext,
+): Attachment[] {
+  const due = needsOrchestratorExitNotice({
+    isSubagent: !!toolUseContext.agentId,
+    mode: toolUseContext.getAppState().toolPermissionContext.mode,
+    messages,
+  })
+  if (!due) return []
+  archiveActiveRun(toolUseContext)
+  return [{ type: 'orchestrator_mode_exit' }]
+}
+
+/**
+ * At the start of an Orchestrator turn with no worker running, compare the working
+ * tree with the run's baseline (src/orchestrator/checkpoint.ts).
+ */
+async function getOrchestratorCheckpointAttachment(
+  input: string | null,
+  toolUseContext: ToolUseContext,
+): Promise<Attachment[]> {
+  if (input === null) return []
+  const summary = await takeCheckpointIfDue(toolUseContext)
+  return summary ? [{ type: 'orchestrator_checkpoint', text: renderCheckpoint(summary) }] : []
 }
 
 /**
@@ -1304,7 +1363,14 @@ async function getPlanModeExitAttachment(
   // written, it's too late — the model should have had relevant skills WHILE
   // planning. The user_message signal already fires on the request that
   // triggers planning ("plan how to deploy this"), which is the right moment.
-  return [{ type: 'plan_mode_exit', planFilePath, planExists }]
+  return [
+    {
+      type: 'plan_mode_exit',
+      planFilePath,
+      planExists,
+      mode: appState.toolPermissionContext.mode,
+    },
+  ]
 }
 
 function getAutoModeAttachmentTurnCount(messages: Message[]): {

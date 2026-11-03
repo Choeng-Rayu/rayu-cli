@@ -100,6 +100,21 @@ export function AutoUpdater({
         return;
       }
 
+      // An install from https://rayucode.com/install is swapped by re-running
+      // that installer, which replaces $RAYU_HOME/lib/current. Doing that
+      // underneath a live session would pull the bundle out from under the
+      // running process, and the npm fallback below would instead install a
+      // copy into npm's prefix that this install never executes — reported as a
+      // successful update that changes nothing. The "update available" notice
+      // still fires and points at `rayu update`, which drives the installer.
+      if (installationType === 'installer') {
+        logForDebugging(
+          'AutoUpdater: installer-managed install — deferring to `rayu update`',
+        );
+        onChangeIsUpdating(false);
+        return;
+      }
+
       // Choose the appropriate update method based on what's actually running
       let installStatus: InstallStatus;
       let updateMethod: 'local' | 'global';

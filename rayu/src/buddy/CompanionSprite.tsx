@@ -1,5 +1,4 @@
 import { c as _c } from "react/compiler-runtime";
-import { feature } from 'bun:bundle';
 import figures from 'figures';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
@@ -165,7 +164,7 @@ function spriteColWidth(nameWidth: number): number {
 // Narrow terminals: 0 — REPL.tsx stacks the one-liner on its own row
 // (above input in fullscreen, below in scrollback), so no reservation.
 export function companionReservedColumns(terminalColumns: number, speaking: boolean): number {
-  if (!feature('BUDDY')) return 0;
+  if (!RAYU_FEATURES.BUDDY) return 0;
   const companion = getCompanion();
   if (!companion || getGlobalConfig().companionMuted) return 0;
   if (terminalColumns < MIN_COLS_FOR_FULL_SPRITE) return 0;
@@ -212,7 +211,7 @@ export function CompanionSprite(): React.ReactNode {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick intentionally captured at reaction-change, not tracked
   }, [reaction, setAppState]);
-  if (!feature('BUDDY')) return null;
+  if (!RAYU_FEATURES.BUDDY) return null;
   const companion = getCompanion();
   if (!companion || getGlobalConfig().companionMuted) return null;
   const color = RARITY_COLORS[companion.rarity];
@@ -337,7 +336,7 @@ export function CompanionFloatingBubble() {
     t3 = $[4];
   }
   useEffect(t2, t3);
-  if (!feature("BUDDY") || !reaction) {
+  if (!RAYU_FEATURES.BUDDY || !reaction) {
     return null;
   }
   const companion = getCompanion();

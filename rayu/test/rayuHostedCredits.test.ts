@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -17,7 +17,11 @@ import {
   _resetRayuEntitlementsForTesting,
   _setRayuEntitlementsForTesting,
 } from '../src/services/rayuAuth/rayuEntitlements.ts'
-import { makeRayuHostedFetch } from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
+import {
+  makeRayuHostedFetch,
+  rayuHostedAnthropicBaseURL,
+  rayuHostedBaseURL,
+} from '../src/services/api/rayuHosted/rayuHostedAuth.ts'
 import {
   getAllProviderModelOptions,
   loadRayuConfig,
@@ -69,13 +73,13 @@ const status = (over: Partial<RayuCreditStatus> = {}): RayuCreditStatus => ({
 })
 
 describe('rayu usage formatter', () => {
-  test('paid plan summary shows plan/price + credits + tokens + topup', () => {
+  test('paid plan summary shows plan/price + credits + topup', () => {
     const s = formatRayuUsageSummary(status())
     expect(s).toContain('Rayu Plan Usage')
     expect(s).toContain('Pro ($10/mo)')
     expect(s).toContain('1 / 50 used')
     expect(s).toContain('49 left')
-    expect(s).toContain('5,000,000')
+    expect(s).not.toContain('Tokens')
     expect(s).toContain('Top-up')
   })
 
@@ -133,6 +137,126 @@ describe('rayu usage formatter', () => {
         }),
       ),
     ).toBe('Rayu: 38 / 50 turns left today')
+  })
+})
+
+/**
+ * The pacing windows: a plan allowance released over a rolling session window and
+ * a week. These pace the SAME credits as the period, so the summary must show both
+ * without implying the totals have changed.
+ */
+describe('rayu usage formatter — pacing windows', () => {
+  const windowed = (over: Partial<RayuCreditStatus> = {}) =>
+    status({
+      creditsPer5h: 625,
+      windowUsedCredits: 200,
+      windowRemainingCredits: 425,
+      windowResetSeconds: 3600,
+      creditsPerWeek: 12_500,
+      weekUsedCredits: 5_000,
+      weekRemainingCredits: 7_500,
+      weekResetSeconds: 259_200,
+      sessionWindowMinutes: 300,
+      limitMode: 'gated',
+      ...over,
+    })
+
+  test('paced users see only Session + Weekly, not the period Credits bar', () => {
+    const s = formatRayuUsageSummary(windowed())
+    expect(s).toContain('Session')
+    expect(s).toContain('200 / 625 used')
+    expect(s).toContain('425 left')
+    expect(s).toContain('Weekly')
+    expect(s).toContain('5,000 / 12,500 used')
+    // The period Credits bar is hidden for paced users — the windows are
+    // the binding constraint, and the total is redundant.
+    expect(s).not.toContain('Credits')
+    expect(s).not.toContain('1 / 50 used')
+  })
+
+  test('a plan without window caps shows no window rows', () => {
+    // Absent caps mean UNGATED, so there is no bar to draw -- and drawing a
+    // zero-filled one would read as "you are blocked".
+    const s = formatRayuUsageSummary(status())
+    expect(s).not.toContain('Session')
+    expect(s).not.toContain('Weekly')
+  })
+
+  test('an exhausted window points at the dashboard switch', () => {
+    const s = formatRayuUsageSummary(
+      windowed({ windowUsedCredits: 625, windowRemainingCredits: 0 }),
+    )
+    expect(s).toContain('0 left')
+    expect(s).toContain('use all credits')
+  })
+
+  test('a half-full window gives no switch hint', () => {
+    expect(formatRayuUsageSummary(windowed())).not.toContain('use all credits')
+  })
+
+  /**
+   * With the switch ON the windows are still counted, but a full one is not a
+   * reason to warn anyone -- they will not be blocked by it. Showing an empty bar
+   * plus a "turn it on" hint to someone who already turned it on would be nonsense.
+   */
+  test('full-credits mode shows Credits bar without reset timer, no windows', () => {
+    const s = formatRayuUsageSummary(
+      windowed({
+        limitMode: 'full_credits',
+        windowUsedCredits: 625,
+        weekUsedCredits: 12_500,
+      }),
+    )
+    // Credits bar is shown (they opted out of pacing, so the period total matters).
+    expect(s).toContain('1 / 50 used')
+    // But no reset timer — they already know the allowance renews with the plan.
+    expect(s).not.toContain('resets in')
+    // The "Pacing off" line explains why windows are absent.
+    expect(s).toContain('using all credits')
+    expect(s).not.toContain('use all credits" in your dashboard')
+    expect(s).not.toContain('Session')
+    expect(s).not.toContain('Weekly')
+  })
+
+  /**
+   * The compact line leads with a window when one is the binding constraint: with
+   * a large period balance and an empty session, "49 credits left" is true but
+   * useless.
+   */
+  test('compact line reports an exhausted window over the period balance', () => {
+    expect(
+      formatRayuUsageLine(
+        windowed({ windowUsedCredits: 625, weekUsedCredits: 12_500 }),
+      ),
+    ).toBe('Rayu: session limit reached — turn on "use all credits" to continue')
+  })
+
+  test('compact line falls back to the period balance when no window binds', () => {
+    expect(formatRayuUsageLine(windowed())).toBe('Rayu: 49 / 50 credits left')
+  })
+
+  test('compact line ignores a full window when the switch is off', () => {
+    expect(
+      formatRayuUsageLine(
+        windowed({
+          limitMode: 'full_credits',
+          windowUsedCredits: 625,
+          weekUsedCredits: 12_500,
+        }),
+      ),
+    ).toBe('Rayu: 49 / 50 credits left')
+  })
+
+  /**
+   * An older gateway returns none of these fields. It must render exactly as it
+   * did before pacing existed — no switch hint, no "windows off" line.
+   */
+  test('a gateway that predates pacing renders as before', () => {
+    const s = formatRayuUsageSummary(status())
+    expect(s).toContain('1 / 50 used')
+    expect(s).not.toContain('Pacing')
+    expect(s).not.toContain('use all credits')
+    expect(formatRayuUsageLine(status())).toBe('Rayu: 49 / 50 credits left')
   })
 })
 
@@ -489,6 +613,95 @@ describe('rayu-hosted visibility (free sees it, blocked on use)', () => {
 })
 
 
+// --- Gateway URL security: the hosted chat base URLs carry the Rayu JWT ---
+
+describe('rayu-hosted gateway URL security', () => {
+  test('a remote plaintext-http gateway refuses both chat base URLs, NO network call', () => {
+    const saved = process.env.RAYU_GATEWAY_URL
+    process.env.RAYU_GATEWAY_URL = 'http://gateway.attacker.example'
+    let calls = 0
+    const real = globalThis.fetch
+    globalThis.fetch = (async () => {
+      calls++
+      throw new Error('must not reach the network')
+    }) as unknown as typeof fetch
+    try {
+      // Every hosted-chat client is built on these URLs (providerRegistry /
+      // syncRayuHostedProvider), so a throw here fails the chat call locally,
+      // before a single byte of JWT leaves the process.
+      expect(() => rayuHostedBaseURL()).toThrow(/plaintext http/)
+      expect(() => rayuHostedAnthropicBaseURL()).toThrow(/plaintext http/)
+      expect(calls).toBe(0)
+    } finally {
+      globalThis.fetch = real
+      if (saved === undefined) delete process.env.RAYU_GATEWAY_URL
+      else process.env.RAYU_GATEWAY_URL = saved
+    }
+  })
+
+  test('loopback http still works and the bearer request does not follow redirects', async () => {
+    const saved = process.env.RAYU_GATEWAY_URL
+    const savedAuthDir = process.env.RAYU_AUTH_CONFIG_DIR
+    // RAYU_AUTH_CONFIG_DIR outranks RAYU_CONFIG_DIR — pin it to the isolated
+    // dir so the test never reads the developer's real session.
+    process.env.RAYU_AUTH_CONFIG_DIR = dir
+    process.env.RAYU_GATEWAY_URL = 'http://127.0.0.1:8080'
+    process.env.USE_RAYU_OAUTH = 'true'
+    // Far-future expiry → getValidRayuAccessToken() returns the token without
+    // a refresh round-trip.
+    writeFileSync(
+      join(dir, 'rayu-auth.json'),
+      JSON.stringify({
+        accessToken: 'test-access-token',
+        refreshToken: 'test-refresh-token',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        user: { id: 7, email: null, displayName: null, avatarUrl: null, role: 'user' },
+      }),
+      { mode: 0o600 },
+    )
+    _setRayuEntitlementsForTesting({
+      plan: { code: 'pro', name: 'Pro', priceCents: 1000, availability: 'active' },
+      maxDailyTurns: null,
+      features: {},
+      allowedModels: [
+        { code: 'deepseek-v4-pro', label: 'p', provider: 'deepseek', creditMultiplier: 1 },
+      ],
+    })
+    const seen: Array<{ url: string; init?: RequestInit }> = []
+    const real = globalThis.fetch
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      seen.push({ url: String(input), init })
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      // The dev gateway over plaintext loopback http must keep working.
+      expect(rayuHostedBaseURL()).toBe('http://127.0.0.1:8080/v1')
+      const f = makeRayuHostedFetch()
+      await f(`${rayuHostedBaseURL()}/chat/completions`, {
+        method: 'POST',
+        body: JSON.stringify({ model: 'deepseek-v4-pro', messages: [] }),
+      })
+      // (The entitlement gate may itself refresh from the BACKEND — filter to
+      // the gateway request.)
+      const gatewayReqs = seen.filter((s) => s.url.includes('127.0.0.1:8080'))
+      expect(gatewayReqs).toHaveLength(1)
+      expect(gatewayReqs[0].url).toBe('http://127.0.0.1:8080/v1/chat/completions')
+      const headers = new Headers(gatewayReqs[0].init?.headers)
+      expect(headers.get('authorization')).toBe('Bearer test-access-token')
+      // The JWT-carrying request must not chase a redirect.
+      expect(gatewayReqs[0].init?.redirect).toBe('error')
+    } finally {
+      globalThis.fetch = real
+      _resetRayuEntitlementsForTesting()
+      delete process.env.USE_RAYU_OAUTH
+      if (savedAuthDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+      else process.env.RAYU_AUTH_CONFIG_DIR = savedAuthDir
+      if (saved === undefined) delete process.env.RAYU_GATEWAY_URL
+      else process.env.RAYU_GATEWAY_URL = saved
+    }
+  })
+})
+
 // --- Credit / period limit (429) is TERMINAL: no retry, clear renew message ---
 
 /** Build the exact Anthropic-shaped error the OpenAI adapter produces for the
@@ -658,7 +871,7 @@ function providerUnavailableError(status = 502): APIError {
     {
       error: {
         message:
-          'The AI provider for this model is temporarily unavailable. Try another (smaller) model or try again later.',
+          'The model is under high volume right now. Please wait a moment or switch to a different model.',
         type: 'provider_unavailable',
       },
     },
@@ -668,18 +881,38 @@ function providerUnavailableError(status = 502): APIError {
 }
 
 describe('getAssistantMessageFromError · rayu-hosted provider unavailable (Case 1)', () => {
-  test('renders "try a smaller model / try again later" and never leaks the upstream', () => {
+  test('renders "high volume, wait or switch model" and never leaks the upstream', () => {
     setActiveProvider('rayu-hosted')
     const msg = getAssistantMessageFromError(providerUnavailableError(502), 'kimi-k2.7')
     const text = textOf(msg)
-    expect(text.toLowerCase()).toContain('temporarily unavailable')
-    expect(text.toLowerCase()).toContain('smaller model')
+    expect(text.toLowerCase()).toContain('high volume')
+    expect(text.toLowerCase()).toContain('switch to a different model')
     expect(msg.isApiErrorMessage).toBe(true)
     // Never surface the upstream provider or its subscription/limit wording…
     expect(text.toLowerCase()).not.toContain('ollama')
     expect(text.toLowerCase()).not.toContain('subscription')
     // …and this is NOT the plan/credit-limit (upgrade) message.
     expect(text).not.toContain('/plans')
+  })
+
+  test('a 503 carrying x-should-retry:false still renders the friendly guidance', () => {
+    setActiveProvider('rayu-hosted')
+    // The gateway's non-retryable capacity response (Kiro monthly quota).
+    const err = APIError.generate(
+      503,
+      {
+        error: {
+          type: 'provider_unavailable',
+          message: 'The model is under high volume right now. Please wait a moment or switch to a different model.',
+        },
+      },
+      'provider unavailable',
+      new Headers({ 'x-should-retry': 'false' }),
+    ) as APIError
+    expect(isRayuHostedProviderUnavailable(err)).toBe(true)
+    const text = textOf(getAssistantMessageFromError(err, 'claude-opus-5.5'))
+    expect(text.toLowerCase()).toContain('high volume')
+    expect(text.toLowerCase()).not.toContain('reached the limit')
   })
 
   test('detector: true for a hosted 5xx, false for a 429 (that is the plan-limit path)', () => {
@@ -692,8 +925,15 @@ describe('getAssistantMessageFromError · rayu-hosted provider unavailable (Case
   test('BYO-key providers are NOT affected — a 5xx keeps normal handling, not the hosted message', () => {
     setActiveProvider('byo')
     expect(isRayuHostedProviderUnavailable(providerUnavailableError(502))).toBe(false)
-    const msg = getAssistantMessageFromError(providerUnavailableError(502), 'deepseek-chat')
-    expect(textOf(msg)).not.toContain("Rayu's AI provider")
+    // A BYO provider's own 5xx must keep its real handling, not Rayu's guidance.
+    const byo = APIError.generate(
+      502,
+      { error: { message: 'upstream exploded', type: 'api_error' } },
+      'upstream exploded',
+      new Headers(),
+    ) as APIError
+    const msg = getAssistantMessageFromError(byo, 'deepseek-chat')
+    expect(textOf(msg)).not.toContain('high volume')
   })
 })
 
@@ -744,7 +984,7 @@ describe('getAssistantMessageFromError · exact Cloudflare origin 502', () => {
       new Headers({ 'content-type': 'application/json' }),
     ) as APIError
     const text = textOf(getAssistantMessageFromError(err, 'kimi-k2.7'))
-    expect(text.toLowerCase()).toContain('temporarily unavailable')
+    expect(text.toLowerCase()).toContain('high volume')
     // The raw Cloudflare body must NOT leak to the customer.
     expect(text.toLowerCase()).not.toContain('cloudflare')
     expect(text).not.toContain('origin_bad_gateway')

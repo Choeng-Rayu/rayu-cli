@@ -1,0 +1,33 @@
+name: Rayu Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  rayu-review:
+    if: |
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run Rayu review
+        id: rayu-review
+        uses: Choeng-Rayu/rayu-cli/rayu-action@main
+        with:
+          rayu_api_key: ${{ secrets.RAYU_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          mode: review
+          pull_request_number: ${{ github.event.pull_request.number }}

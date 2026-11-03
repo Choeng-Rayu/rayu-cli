@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import memoize from 'lodash-es/memoize.js'
 import {
   checkStatsigFeatureGate_CACHED_MAY_BE_STALE,
@@ -159,7 +158,7 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
 
 // @[MODEL LAUNCH]: Add the new model if it supports auto mode (specifically PI probes) — ask in #proj-claude-code-safety-research.
 export function modelSupportsAutoMode(model: string): boolean {
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     const m = getCanonicalName(model)
     // External: anthropic-only at launch (PI probes not wired for
     // Bedrock/Vertex/Foundry yet). Checked before allowModels so the GB

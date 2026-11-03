@@ -182,6 +182,18 @@ export type SystemTurnDurationMessage = SystemMessageBase & {
   budgetLimit?: number
   budgetNudges?: number
   messageCount?: number
+  /**
+   * Rayu credits the gateway charged for the work this line closes: everything
+   * since the user's message, every turn and background agent included.
+   * Absent when nothing was Rayu-billed (bring-your-own key).
+   */
+  rayuCredits?: number
+  /**
+   * True when the line is printed while that work is still going (background
+   * agents running): the figure is the total so far, and a later line has the
+   * final one.
+   */
+  rayuCreditsSoFar?: boolean
 }
 
 export type SystemAwaySummaryMessage = SystemMessageBase & {
@@ -220,11 +232,30 @@ export type SystemLocalCommandMessage = SystemMessageBase & {
   level: SystemMessageLevel
 }
 
+/** Inputs used by the shared engine when automatic compaction was triggered. */
+export type AutoCompactDecision = {
+  model: string
+  contextWindow: number
+  effectiveContextWindow: number
+  threshold: number
+  tokenCount: number
+  messageCount: number
+  querySource?: string
+} & (
+  | { reason: 'token_threshold' }
+  | { reason: 'heap_pressure'; heapUsed: number; heapLimit: number }
+  // Request-body media bytes (base64 images/documents) crossed the budget while
+  // the token count stayed under threshold — the case the flat 2000-tokens-per-
+  // image estimate cannot see. See MEDIA_COMPACT_BUDGET_BYTES / estimateMediaBytes.
+  | { reason: 'media_bytes'; mediaBytes: number; mediaBudget: number }
+)
+
 export type CompactMetadata = {
   trigger: 'manual' | 'auto'
   preTokens: number
   userContext?: string
   messagesSummarized?: number
+  autoCompact?: AutoCompactDecision
 }
 
 export type SystemCompactBoundaryMessage = SystemMessageBase & {

@@ -15,6 +15,11 @@ import { getRayuConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import {
+  getInstallerHomeDir,
+  isInstallerManagedInstall,
+  readInstallerManifest,
+} from './installerManifest.js'
+import {
   getShellType,
   isRunningFromLocalInstallation,
   localInstallationExists,
@@ -47,6 +52,13 @@ export type InstallationType =
   | 'npm-global'
   | 'npm-local'
   | 'native'
+  /**
+   * Created by the one-liner at https://rayucode.com/install: a launcher in
+   * $RAYU_HOME/bin over $RAYU_HOME/lib/current (or a standalone binary the
+   * installer placed there). Neither npm nor the native installer manages it,
+   * so both of their update paths would install a second copy that never runs.
+   */
+  | 'installer'
   | 'package-manager'
   | 'development'
   | 'unknown'
@@ -89,6 +101,17 @@ export async function getCurrentInstallationType(): Promise<InstallationType> {
   }
 
   const [invokedPath] = getNormalizedPaths()
+
+  // Checked before everything else, including the bundled-mode branch. An
+  // install from https://rayucode.com/install lives entirely under $RAYU_HOME
+  // and is driven by re-running that installer; every other branch here would
+  // hand it to npm or to the native installer's XDG layout, both of which write
+  // a SECOND copy somewhere this install never reads. Detection requires the
+  // running entrypoint to be inside $RAYU_HOME, so a machine that has both an
+  // installer copy and an npm copy still classifies whichever one is running.
+  if (isInstallerManagedInstall()) {
+    return 'installer'
+  }
 
   // Check if running in bundled mode first
   if (isInBundledMode()) {
@@ -422,6 +445,45 @@ async function detectConfigurationIssues(
           issue:
             'Native installation exists but ~/.local/bin is not in your PATH',
           fix: `Run: echo 'export PATH="$HOME/.local/bin:$PATH"' >> ${displayPath} then open a new terminal or run: source ${displayPath}`,
+        })
+      }
+    }
+  }
+
+  // Check that the installer's bin directory is on PATH. This is the single
+  // most common "I installed it but `rayu` is not found" cause: the installer
+  // appends the PATH line to shell profiles, which only affects NEW shells.
+  if (type === 'installer') {
+    const manifest = readInstallerManifest()
+    const binDir = manifest?.binDir?.trim() || join(getInstallerHomeDir(), 'bin')
+    const normalize = (value: string): string => {
+      const slashed =
+        getPlatform() === 'windows'
+          ? value.split(win32.sep).join(posix.sep)
+          : value
+      return slashed.replace(/\/+$/, '')
+    }
+    const target = normalize(binDir)
+    const onPath = (process.env.PATH || '')
+      .split(delimiter)
+      .some(dir => normalize(dir) === target)
+
+    if (!onPath) {
+      if (getPlatform() === 'windows') {
+        warnings.push({
+          issue: `Rayu is installed in ${binDir} but that directory is not in your PATH`,
+          fix: 'Reopen your terminal (the user PATH is read at process start), or re-run: irm https://rayucode.com/install.ps1 | iex',
+        })
+      } else {
+        const shellType = getShellType()
+        const configPaths = getShellConfigPaths()
+        const configFile = configPaths[shellType as keyof typeof configPaths]
+        const displayPath = configFile
+          ? configFile.replace(homedir(), '~')
+          : 'your shell config file'
+        warnings.push({
+          issue: `Rayu is installed in ${binDir} but that directory is not in your PATH`,
+          fix: `Open a new terminal, or run: echo 'export PATH="${binDir}:$PATH"' >> ${displayPath} && source ${displayPath}`,
         })
       }
     }

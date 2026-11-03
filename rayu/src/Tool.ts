@@ -231,6 +231,18 @@ export type ToolUseContext = {
    */
   loadedNestedMemoryPaths?: Set<string>
   dynamicSkillDirTriggers?: Set<string>
+  /**
+   * Normalized absolute paths whose next Read must return REAL content instead
+   * of FileReadTool's `file_unchanged` dedup stub.
+   *
+   * Populated when Edit/Write rejects an edit and tells the model to "Read it
+   * again". Without this the recovery Read hits the dedup fast path (same
+   * range, unchanged mtime) and answers with a contentless stub, so the model
+   * has nothing fresh to copy `old_string` from and retries the same wrong
+   * string — the loop this exists to break. Consumed and cleared by the Read
+   * that services it, so it costs one full re-read, not permanent dedup loss.
+   */
+  forceFreshReadPaths?: Set<string>
   /** Skill names surfaced via skill_discovery this session. Telemetry only (feeds was_discovered). */
   discoveredSkillNames?: Set<string>
   userModified?: boolean

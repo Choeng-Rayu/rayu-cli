@@ -14,6 +14,8 @@ import {
   hasRayuSession,
   isUseRayuOAuthEnabled,
 } from './rayuSession.js'
+import { IMAGE_GEN_FEATURE, IMAGE_GEN_LABEL } from '../../tools/ImageGenTool/constants.js'
+import { VIDEO_GEN_FEATURE, VIDEO_GEN_LABEL } from '../../tools/VideoGenTool/constants.js'
 
 export interface FeatureUsage {
   used: number
@@ -21,10 +23,45 @@ export interface FeatureUsage {
   limit: number | null
 }
 
+/** One feature's usage this month, labelled for display. */
+export interface FeatureUsageRow extends FeatureUsage {
+  key: string
+  label: string
+}
+
 const REFRESH_COOLDOWN_MS = 60_000
+/** The backend answers from one indexed query; anything slower is an outage. */
+const REFRESH_TIMEOUT_MS = 10_000
 let cache: Record<string, FeatureUsage> | null = null
 let fetching = false
 let lastAttempt = 0
+
+/** Labels of the features the tools meter, in the order they are listed. */
+const FEATURE_LABELS: ReadonlyMap<string, string> = new Map([
+  [IMAGE_GEN_FEATURE, IMAGE_GEN_LABEL],
+  [VIDEO_GEN_FEATURE, VIDEO_GEN_LABEL],
+])
+
+/**
+ * Every feature in the cached usage, labelled: the tools' own labels first, then
+ * any other key the backend reports, in sentence case ("web_search" → "Web search").
+ * Null when usage is not known (see `getFeatureUsage`). Does not fetch.
+ */
+export function listFeatureUsage(): FeatureUsageRow[] | null {
+  if (!cache) return null
+  const known = [...FEATURE_LABELS.keys()].filter(key => cache?.[key])
+  const others = Object.keys(cache).filter(key => !FEATURE_LABELS.has(key)).sort()
+  return [...known, ...others].map(key => ({
+    key,
+    label: sentenceCase(FEATURE_LABELS.get(key) ?? key.replace(/[_-]+/g, ' ')),
+    ...(cache as Record<string, FeatureUsage>)[key]!,
+  }))
+}
+
+function sentenceCase(text: string): string {
+  const trimmed = text.trim()
+  return trimmed ? trimmed[0]!.toUpperCase() + trimmed.slice(1) : trimmed
+}
 
 /**
  * The cached `{ used, limit }` for a feature, or null when unknown (offline,
@@ -48,42 +85,52 @@ function maybeRefreshFeatureUsage(): void {
   }
 }
 
-/** Fetch the per-feature usage map. Never throws; keeps the last good cache. */
-export async function refreshFeatureUsage(): Promise<void> {
-  if (!isUseRayuOAuthEnabled() || !hasRayuSession() || fetching) return
+/**
+ * Fetch the per-feature usage map. Never throws; keeps the last good cache. Resolves
+ * true only when this call replaced the cache with a fresh answer.
+ */
+export async function refreshFeatureUsage(): Promise<boolean> {
+  if (!isUseRayuOAuthEnabled() || !hasRayuSession() || fetching) return false
   fetching = true
   lastAttempt = Date.now()
   try {
     const token = await getValidRayuAccessToken()
-    if (!token) return
+    if (!token) return false
     const res = await (globalThis.fetch as typeof fetch)(
       `${getRayuApiBaseUrl()}/usage/features`,
-      { headers: { Authorization: `Bearer ${token}` } },
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        // The bearer token must not follow a redirect to another origin.
+        redirect: 'error',
+        signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
+      },
     )
-    if (!res.ok) return
-    const data: unknown = await res.json()
-    if (data && typeof data === 'object') {
-      const next: Record<string, FeatureUsage> = {}
-      for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
-        if (v && typeof v === 'object') {
-          const rawUsed = (v as FeatureUsage).used
-          const rawLimit = (v as FeatureUsage).limit
-          const used =
-            typeof rawUsed === 'number' && Number.isFinite(rawUsed) ? rawUsed : 0
-          const limit =
-            typeof rawLimit === 'number' && Number.isFinite(rawLimit)
-              ? rawLimit
-              : null
-          next[k] = { used, limit }
-        }
-      }
-      cache = next
-    }
+    if (!res.ok) return false
+    const next = parseFeatureUsage(await res.json())
+    if (!next) return false
+    cache = next
+    return true
   } catch {
     // best-effort; keep the last good cache
+    return false
   } finally {
     fetching = false
   }
+}
+
+/** The usage map in a `/usage/features` answer; unusable counts read as 0 used, no limit. */
+function parseFeatureUsage(data: unknown): Record<string, FeatureUsage> | null {
+  if (!data || typeof data !== 'object') return null
+  const next: Record<string, FeatureUsage> = {}
+  for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+    if (!v || typeof v !== 'object') continue
+    const { used, limit } = v as Partial<Record<keyof FeatureUsage, unknown>>
+    next[k] = {
+      used: typeof used === 'number' && Number.isFinite(used) ? used : 0,
+      limit: typeof limit === 'number' && Number.isFinite(limit) ? limit : null,
+    }
+  }
+  return next
 }
 
 /**

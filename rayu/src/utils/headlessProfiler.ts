@@ -36,6 +36,19 @@ const STATSIG_LOGGING_SAMPLED =
 // Enable profiling if either detailed mode OR sampled for Statsig
 const SHOULD_PROFILE = DETAILED_PROFILING || STATSIG_LOGGING_SAMPLED
 
+/**
+ * Whether this process is keeping `headless_*` marks on the User Timing buffer.
+ *
+ * Exported so the memory-pressure guard can leave the buffer alone while that is
+ * true: this profiler records `turn_start` and reads it back only when the turn
+ * ENDS (`logHeadlessProfilerTurn`), so a routine wholesale clear mid-turn made
+ * every turn longer than the guard's tick report nothing at all. See
+ * `setUserTimingInUse` in `./memoryPressureGuard.ts`.
+ */
+export function isHeadlessProfilerEnabled(): boolean {
+  return SHOULD_PROFILE
+}
+
 // Use a unique prefix to avoid conflicts with other profiler marks
 const MARK_PREFIX = 'headless_'
 

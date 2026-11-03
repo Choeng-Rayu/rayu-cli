@@ -29,6 +29,10 @@ import {
 import type { EffortValue } from '../utils/effort.js'
 import type { FileHistoryState } from '../utils/fileHistory.js'
 import type { PendingFileChangesState } from '../utils/pendingFileChanges.js'
+import {
+  EMPTY_ORCHESTRATION_STATE,
+  type OrchestrationState,
+} from '../orchestrator/runState.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import type { SessionHooksState } from '../utils/hooks/sessionHooks.js'
 import type { ModelSetting } from '../utils/model/model.js'
@@ -218,12 +222,8 @@ export type AppState = DeepImmutable<{
   agentDefinitions: AgentDefinitionsResult
   fileHistory: FileHistoryState
   pendingFileChanges: PendingFileChangesState
-  /** Session-wide collaborator-swarm mode. When true, the main agent acts as
-   *  the orchestrator (3-phase build flow, delegate to specialist
-   *  collaborators) and an indicator shows under the input. Toggled by
-   *  /collaborator_swarm (on) and /normal (off); auto-enabled on plan confirm.
-   *  Session-scoped: reset on /clear. */
-  swarmMode: boolean
+  /** The Orchestrator run and its contract (src/orchestrator/runState.ts). */
+  orchestration: OrchestrationState
   attribution: AttributionState
   todos: { [agentId: string]: TodoList }
   remoteAgentTaskSuggestions: { summary: string; task: string }[]
@@ -455,6 +455,30 @@ export type AppState = DeepImmutable<{
   replBridgePermissionCallbacks?: BridgePermissionCallbacks
   // Telegram bot permission callbacks — permission prompts sent to the linked chat.
   telegramPermissionCallbacks?: BridgePermissionCallbacks
+  /**
+   * Web Bridge permission callbacks — permission prompts sent to Rayu Studio.
+   *
+   * SEPARATE from `telegramPermissionCallbacks` rather than sharing one slot, because
+   * both remotes can be connected at once and both must be offered the decision. They
+   * are combined into a single racer at the point of use (see useCanUseTool).
+   */
+  webBridgePermissionCallbacks?: BridgePermissionCallbacks
+  /** True when the user has explicitly activated the Web Bridge via /web-bridge in this session. */
+  webBridgeActive?: boolean
+  /**
+   * Socket state of the Web Bridge, for the footer indicator.
+   *
+   * `registering` means the socket is up but the backend has not acknowledged
+   * `cli_hello` yet — authenticated, but not yet listed in the studio and not yet
+   * able to receive a prompt. Only `connected` means usable from a browser.
+   */
+  webBridgeConnection?:
+    | 'idle'
+    | 'connecting'
+    | 'registering'
+    | 'connected'
+    | 'reconnecting'
+    | 'error'
   /** True when the user has explicitly activated the Telegram bridge via /telegram-bot in this session. */
   telegramBridgeActive?: boolean
   /**
@@ -529,7 +553,7 @@ export function getDefaultAppState(): AppState {
       snapshotSequence: 0,
     },
     pendingFileChanges: [],
-    swarmMode: false,
+    orchestration: EMPTY_ORCHESTRATION_STATE,
     attribution: createEmptyAttributionState(),
     mcp: {
       clients: [],

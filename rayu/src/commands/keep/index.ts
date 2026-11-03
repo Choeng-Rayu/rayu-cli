@@ -5,7 +5,7 @@ const keep = {
   name: 'keep',
   argumentHint: '[file]',
   type: 'local',
-  supportsNonInteractive: false,
+  supportsNonInteractive: true,
   load: () => import('./keep.js'),
 } satisfies Command
 

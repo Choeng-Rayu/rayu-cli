@@ -133,6 +133,23 @@ export type ClaudeAILimits = {
   overageDisabledReason?: OverageDisabledReason
   isUsingOverage?: boolean
   surpassedThreshold?: number
+  /**
+   * Set only for RAYU credit PAcing limits (not claude.ai subscription ones),
+   * naming which window was reached.
+   *
+   * A separate field rather than a new `rateLimitType` member because Rayu's two
+   * windows ARE the existing `seven_day`/`five_hour` concepts and every display
+   * that maps them already works — this only adds "and it is Rayu's allowance, so
+   * say 'credit allowance' and offer the pacing switch".
+   */
+  rayuPacingWindow?: 'weekly' | 'session'
+  /**
+   * Whose Rayu pacing limit this is, when `rayuPacingWindow` is set.
+   *
+   * On a TEAM the pacing switch is org-admin-only, so the UI must say "ask your
+   * admin" rather than offer a control the user cannot use.
+   */
+  rayuLimitScope?: 'personal' | 'team'
 }
 
 // Exported for testing only

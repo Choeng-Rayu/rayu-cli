@@ -32,7 +32,13 @@ import {
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
 import {
+  isFullViewOfFile,
+  markForceFreshRead,
+  readRequiredMessage,
+} from '../../utils/fileStateCache.js'
+import {
   type LineEndingType,
+  readFileNormalizedAsync,
   readFileSyncWithMetadata,
 } from '../../utils/fileRead.js'
 import { formatFileSize } from '../../utils/format.js'
@@ -51,6 +57,7 @@ import {
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
+import { firstLineOf } from '../../utils/stringUtils.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
 import {
   FILE_EDIT_TOOL_NAME,
@@ -76,7 +83,7 @@ import {
   describeEditMismatch,
   findActualString,
   getPatchForEdit,
-  preserveQuoteStyle,
+  resolveEditStrings,
 } from './utils.js'
 
 // V8/Bun string length limit is ~2^30 characters (~1 billion). For typical
@@ -205,23 +212,9 @@ export const FileEditTool = buildTool({
     // Read the file as bytes first so we can detect encoding from the buffer
     // instead of calling detectFileEncoding (which does its own sync readSync
     // and would fail with a wasted ENOENT when the file doesn't exist).
-    let fileContent: string | null
-    try {
-      const fileBuffer = await fs.readFileBytes(fullFilePath)
-      const encoding: BufferEncoding =
-        fileBuffer.length >= 2 &&
-        fileBuffer[0] === 0xff &&
-        fileBuffer[1] === 0xfe
-          ? 'utf16le'
-          : 'utf8'
-      fileContent = fileBuffer.toString(encoding).replaceAll('\r\n', '\n')
-    } catch (e) {
-      if (isENOENT(e)) {
-        fileContent = null
-      } else {
-        throw e
-      }
-    }
+    // Normalized identically to how readFileState stores content, so the
+    // content-equality check below is a valid comparison.
+    const fileContent = await readFileNormalizedAsync(fullFilePath)
 
     // File doesn't exist
     if (fileContent === null) {
@@ -277,11 +270,15 @@ export const FileEditTool = buildTool({
 
     const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
     if (!readTimestamp || readTimestamp.isPartialView) {
+      markForceFreshRead(toolUseContext, fullFilePath)
       return {
         result: false,
         behavior: 'ask',
-        message:
-          'File has not been read yet. Edit requires a fresh full Read of this exact file path first. Use Read without offset or limit, then retry with an exact old_string copied from that result.',
+        message: readRequiredMessage(
+          toolUseContext.readFileState,
+          fullFilePath,
+          'retry with an exact old_string copied from that result.',
+        ),
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
@@ -296,12 +293,15 @@ export const FileEditTool = buildTool({
         // Timestamp indicates modification, but on Windows timestamps can change
         // without content changes (cloud sync, antivirus, etc.). For full reads,
         // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          readTimestamp.offset === undefined &&
-          readTimestamp.limit === undefined
-        if (isFullRead && fileContent === readTimestamp.content) {
+        // isFullViewOfFile (not `offset === undefined`) because FileReadTool
+        // always stores a concrete offset — see FileState.fullRead.
+        if (
+          isFullViewOfFile(readTimestamp) &&
+          fileContent === readTimestamp.content
+        ) {
           // Content unchanged, safe to proceed
         } else {
+          markForceFreshRead(toolUseContext, fullFilePath)
           return {
             result: false,
             behavior: 'ask',
@@ -318,6 +318,7 @@ export const FileEditTool = buildTool({
     // Use findActualString to handle quote normalization
     const actualOldString = findActualString(file, old_string)
     if (!actualOldString) {
+      markForceFreshRead(toolUseContext, fullFilePath)
       return {
         result: false,
         behavior: 'ask',
@@ -463,26 +464,24 @@ export const FileEditTool = buildTool({
         // Timestamp indicates modification, but on Windows timestamps can change
         // without content changes (cloud sync, antivirus, etc.). For full reads,
         // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          lastRead &&
-          lastRead.offset === undefined &&
-          lastRead.limit === undefined
+        // isFullViewOfFile (not `offset === undefined`) because FileReadTool
+        // always stores a concrete offset — see FileState.fullRead.
         const contentUnchanged =
-          isFullRead && originalFileContents === lastRead.content
+          isFullViewOfFile(lastRead) &&
+          originalFileContents === lastRead?.content
         if (!contentUnchanged) {
+          markForceFreshRead(context, absoluteFilePath)
           throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
         }
       }
     }
 
-    // 3. Use findActualString to handle quote normalization
-    const actualOldString =
-      findActualString(originalFileContents, old_string) || old_string
-
-    // Preserve curly quotes in new_string when the file uses them
-    const actualNewString = preserveQuoteStyle(
+    // 3. Resolve the strings to apply. Tier-aware: curly-quote preservation
+    //    happens ONLY when the match itself required folding curly quotes, never
+    //    for a whitespace/invisible-character match. See resolveEditStrings.
+    const { actualOldString, actualNewString } = resolveEditStrings(
+      originalFileContents,
       old_string,
-      actualOldString,
       new_string,
     )
 
@@ -584,11 +583,14 @@ export const FileEditTool = buildTool({
     }
 
     // 8. Yield result
+    // Only the first line is carried, never the whole file: this object becomes
+    // the transcript's `tool_use_result`, so the full contents would be persisted
+    // verbatim for every edit. See the field's note in `types.ts`.
     const data = {
       filePath: file_path,
       oldString: actualOldString,
       newString: new_string,
-      originalFile: originalFileContents,
+      firstLine: firstLineOf(originalFileContents),
       structuredPatch: patch,
       userModified: userModified ?? false,
       replaceAll: replace_all,

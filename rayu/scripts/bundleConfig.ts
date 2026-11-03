@@ -1,0 +1,206 @@
+#!/usr/bin/env bun
+/**
+ * The Bun build configuration, shared by every artifact rayu emits.
+ *
+ * WHY THIS IS SHARED AND NOT COPIED
+ * The CLI bundle only links because of this exact combination of `define`,
+ * `features`, stub aliases and externals. rayu is built from PARTIAL source: a
+ * number of modules referenced by `require()` were never present, and they only
+ * disappear because a `feature()` gate or a `process.env.USER_TYPE` comparison
+ * folds to a constant and Bun eliminates the branch. Measured: building a second
+ * entrypoint with `define` missing just `process.env.USER_TYPE` fails with
+ * `Could not resolve "./tools/REPLTool/REPLTool.js"` and three more like it.
+ *
+ * So any additional bundle — the library surface the Rayucode extension consumes
+ * — must use the same configuration, or it will not link. Copying it would let
+ * the two drift, and the drift would present as an unresolvable module rather
+ * than as anything that points at the cause.
+ */
+import { resolve } from 'path'
+import { readFileSync } from 'node:fs'
+import { buildFeatureTable } from '../src/core/index.js'
+import { MACRO_VALUES, ENABLED_FEATURES } from './macroValues.ts'
+
+/** Local stub modules for unpublished/internal packages. Mapped by exact specifier. */
+export const STUB_ALIASES: Record<string, string> = {
+  '@ant/computer-use-mcp': 'stubs/ant/computer-use-mcp/index.ts',
+  '@ant/computer-use-mcp/types': 'stubs/ant/computer-use-mcp/types.ts',
+  '@ant/computer-use-mcp/sentinelApps': 'stubs/ant/computer-use-mcp/sentinelApps.ts',
+  '@ant/claude-for-chrome-mcp': 'stubs/ant/claude-for-chrome-mcp/index.ts',
+  '@ant/computer-use-input': 'stubs/ant/computer-use-input/index.ts',
+  '@ant/computer-use-swift': 'stubs/ant/computer-use-swift/index.ts',
+  'color-diff-napi': 'stubs/color-diff-napi/index.ts',
+}
+
+/**
+ * Optional native/desktop modules dynamically required behind disabled features,
+ * plus the optional OTEL exporters. Left external so they remain runtime
+ * requires (absent → caught by the existing guards).
+ */
+export const EXTERNAL = [
+  'modifiers-napi', 'sharp', 'audio-capture-napi', 'image-processor-napi', 'url-handler-napi',
+  '@opentelemetry/exporter-trace-otlp-grpc', '@opentelemetry/exporter-trace-otlp-proto',
+  '@opentelemetry/exporter-logs-otlp-grpc', '@opentelemetry/exporter-logs-otlp-proto',
+  '@opentelemetry/exporter-metrics-otlp-grpc', '@opentelemetry/exporter-metrics-otlp-proto',
+  '@opentelemetry/exporter-prometheus',
+]
+
+/**
+ * Every `--define` entry.
+ *
+ * Three groups, all load-bearing:
+ *   - `process.env.*`: NODE_ENV forces the production React/react-reconciler
+ *     builds (the development reconciler calls performance.measure() on every
+ *     commit, and Node never clears the User Timing buffer, so a long session
+ *     OOMs at the ~2.35GB old-space ceiling). USER_TYPE gates ant-only paths —
+ *     omitting it leaves `require()`s of absent modules in the graph.
+ *   - `MACRO.*`: the 11 baked build values.
+ *   - `RAYU_FEATURES.*`: one boolean per known flag, which is what preserves
+ *     dead-code elimination for the call sites migrated off `bun:bundle`. Every
+ *     flag gets an entry, not just the enabled ones: a missing define leaves a
+ *     real property access instead of a literal, and the disabled code ships.
+ */
+export function buildDefines(): Record<string, string> {
+  const define: Record<string, string> = {
+    'process.env.NODE_ENV': JSON.stringify('production'),
+    'process.env.USER_TYPE': JSON.stringify(process.env.USER_TYPE ?? 'external'),
+    'process.env.RAYU_COMMIT_EMAIL': JSON.stringify(
+      process.env.RAYU_COMMIT_EMAIL ?? 'noreply@rayu.dev',
+    ),
+    'process.env.RAYU_GITHUB_APP_INSTALL_URL': JSON.stringify(
+      process.env.RAYU_GITHUB_APP_INSTALL_URL ?? '',
+    ),
+    'process.env.RAYU_GITHUB_ACTION_REF': JSON.stringify(
+      process.env.RAYU_GITHUB_ACTION_REF ?? '',
+    ),
+    'process.env.RAYU_GITHUB_ACTION_DOCS_URL': JSON.stringify(
+      process.env.RAYU_GITHUB_ACTION_DOCS_URL ?? '',
+    ),
+  }
+  for (const [k, v] of Object.entries(MACRO_VALUES)) {
+    define[`MACRO.${k}`] = JSON.stringify(v)
+  }
+  // One object for src/core's getBakedBuildConfig(); see build.ts.
+  define['RAYU_BAKED_BUILD_CONFIG'] = JSON.stringify(MACRO_VALUES)
+
+  const allFlags: string[] = JSON.parse(
+    readFileSync(resolve(import.meta.dir, '../feature-flags.json'), 'utf8'),
+  )
+  for (const [flag, enabled] of Object.entries(
+    buildFeatureTable(allFlags, ENABLED_FEATURES),
+  )) {
+    define[`RAYU_FEATURES.${flag}`] = JSON.stringify(enabled)
+  }
+  return define
+}
+
+/** Resolves stub specifiers and pins commander to the hoisted v15. */
+export function makeStubPlugin(): import('bun').BunPlugin {
+  return {
+    name: 'rayu-stubs',
+    setup(build) {
+      for (const [spec, rel] of Object.entries(STUB_ALIASES)) {
+        const filter = new RegExp(`^${spec.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')}$`)
+        build.onResolve({ filter }, () => ({ path: resolve(rel) }))
+      }
+      // Force commander to the hoisted v15 (extra-typings re-exports it and must
+      // not pick up a nested legacy copy lacking configureHelp()).
+      build.onResolve({ filter: /^commander$/ }, () => ({
+        path: resolve('node_modules/commander/index.js'),
+      }))
+    },
+  }
+}
+
+/**
+ * Bundle only zod's English locale. For the VS Code extension host bundle ONLY.
+ *
+ * `zod/v4` re-exports every translation as a namespace (`export * as locales from
+ * "../locales/index.js"`), which cannot be tree-shaken once `z` is used as a value, so
+ * ~211 KB of translations reached `extension.js` unused. This swaps that one relative
+ * import, from inside zod, for stubs/zod-locales/index.ts, which keeps `en` — zod's
+ * default error map, imported separately by `classic/external.js` — so messages are
+ * unchanged. Matched on the importer, so no other `../locales/index.js` is affected.
+ *
+ * Not part of `sharedBuildOptions()`: the engine and CLI keep every locale, because they
+ * run arbitrary plugin and tool code that might select one.
+ */
+export function zodEnglishLocalesOnlyPlugin(): import('bun').BunPlugin {
+  const stub = resolve(import.meta.dir, '../stubs/zod-locales/index.ts')
+  return {
+    name: 'zod-english-locales-only',
+    setup(build) {
+      build.onResolve({ filter: /^\.\.\/locales\/index\.js$/ }, args =>
+        /[\\/]node_modules[\\/]zod[\\/]v4[\\/](?:classic|core|mini)[\\/]/.test(args.importer)
+          ? { path: stub }
+          : undefined,
+      )
+    },
+  }
+}
+
+/** Everything common to a rayu bundle, minus entrypoint/outdir/naming/banner. */
+export function sharedBuildOptions(): Omit<
+  Parameters<typeof Bun.build>[0],
+  'entrypoints'
+> {
+  return {
+    target: 'node',
+    format: 'esm',
+    define: buildDefines(),
+    external: EXTERNAL,
+    features: [...ENABLED_FEATURES],
+    plugins: [makeStubPlugin()],
+    sourcemap: 'none',
+    loader: { '.md': 'text', '.txt': 'text' },
+  }
+}
+
+/** A `bun build --compile` platform, e.g. `bun-linux-x64-baseline`. */
+export type CompileTarget = Bun.Build.CompileTarget
+
+export interface CompileRequest {
+  /** Entry module, relative to the package root (builds run from there). */
+  entry: string
+  /** Platform to compile for. */
+  bunTarget: CompileTarget
+  /** Path of the executable to write. Nothing is appended for Windows. */
+  outfile: string
+}
+
+/**
+ * Options for a standalone executable (`bun build --compile`) of a rayu entrypoint.
+ *
+ * WHY THIS EXISTS
+ * scripts/build-native.ts and scripts/build-binaries.ts used to assemble their own
+ * copy of the options, and the copy drifted: it had no RAYU_BAKED_BUILD_CONFIG and no
+ * RAYU_FEATURES.<flag> defines. Only the dev/test preload installs that global, so the
+ * shipped binaries threw `ReferenceError: RAYU_FEATURES is not defined` on anything
+ * beyond `--version` (which cli.tsx answers before those modules load). Measured on
+ * rayu-cli-linux-x64 2.3.1, started from a directory without a bunfig.toml.
+ *
+ * WHY AUTOLOAD IS OFF
+ * Unless told otherwise, a Bun executable reads `bunfig.toml` and `.env` from the
+ * directory it is started in. `bunfig.toml` can declare `preload` scripts, so a
+ * compiled rayu started inside any Bun project would run that project's preload in
+ * its own process before main(). Measured: the broken binary above "worked" when
+ * started from this repo, because this repo's preload installed the missing global.
+ * The node bundle has no such behaviour, and `.env` is already loaded explicitly by
+ * `loadDotEnv()` in cli.tsx and vscodeHost.ts, so Bun's autoload would only add
+ * files the node bundle never reads (`.env.local`, `.env.<NODE_ENV>`).
+ */
+export function compileBuildOptions(
+  request: CompileRequest,
+): Parameters<typeof Bun.build>[0] {
+  return {
+    ...sharedBuildOptions(),
+    entrypoints: [request.entry],
+    target: 'bun',
+    compile: {
+      target: request.bunTarget,
+      outfile: request.outfile,
+      autoloadBunfig: false,
+      autoloadDotenv: false,
+    },
+  }
+}

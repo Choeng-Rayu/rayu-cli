@@ -1,10 +1,9 @@
-import { feature } from 'bun:bundle'
 import { prependBullets } from '../../constants/prompts.js'
 import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
-import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
+import { getRayuTempDir } from '../../utils/rayuTempDir.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -182,12 +181,12 @@ function getSimpleSandboxSection(): string {
   const allowUnsandboxedCommands =
     SandboxManager.areUnsandboxedCommandsAllowed()
 
-  // Replace the per-UID temp dir literal (e.g. /private/tmp/claude-1001/) with
+  // Replace the per-UID temp dir literal (e.g. /private/tmp/rayu-1001/) with
   // "$TMPDIR" so the prompt is identical across users — avoids busting the
   // cross-user global prompt cache. The sandbox already sets $TMPDIR at runtime.
-  const claudeTempDir = getClaudeTempDir()
+  const rayuTempDir = getRayuTempDir()
   const normalizeAllowOnly = (paths: string[]): string[] =>
-    [...new Set(paths)].map(p => (p === claudeTempDir ? '$TMPDIR' : p))
+    [...new Set(paths)].map(p => (p === rayuTempDir ? '$TMPDIR' : p))
 
   const filesystemConfig = {
     read: {
@@ -309,7 +308,7 @@ export function getSimplePrompt(): string {
 
   const sleepSubitems = [
     'Do not sleep between commands that can run immediately — just run them.',
-    ...(feature('MONITOR_TOOL')
+    ...(RAYU_FEATURES.MONITOR_TOOL
       ? [
           'Use the Monitor tool to stream events from a background process (each stdout line is a notification). For one-shot "wait until done," use Bash with run_in_background instead.',
         ]
@@ -317,7 +316,7 @@ export function getSimplePrompt(): string {
     'If your command is long running and you would like to be notified when it finishes — use `run_in_background`. No sleep needed.',
     'Do not retry failing commands in a sleep loop — diagnose the root cause.',
     'If waiting for a background task you started with `run_in_background`, you will be notified when it completes — do not poll.',
-    ...(feature('MONITOR_TOOL')
+    ...(RAYU_FEATURES.MONITOR_TOOL
       ? [
           '`sleep N` as the first command with N ≥ 2 is blocked. If you need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.',
         ]

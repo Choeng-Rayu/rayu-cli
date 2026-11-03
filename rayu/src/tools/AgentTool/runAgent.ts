@@ -80,7 +80,6 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
-import { COLLABORATOR_AGENT_TYPES } from './built-in/collaborators/index.js'
 import { SUBAGENT_TYPES } from './built-in/subagents/index.js'
 
 /**
@@ -706,15 +705,17 @@ export async function* runAgent({
     // Thinking config:
     // - Fork children (useExactTools): inherit the parent's config (byte-identical
     //   prefix for prompt-cache hits).
-    // - Tier-3 subagents (except read-only Explore) + Tier-2 collaborators: inherit
-    //   the parent's thinking so planning/implementation/review/fix can reason
+    // - Planner and Orchestrator-mode general-purpose workers inherit the
+    //   parent's thinking so planning and implementation can reason deeply.
     //   (only takes effect where the model supports thinking).
     // - All other agents (Explore, general-purpose, utility): thinking disabled to
     //   control output token cost — Explore is read-only and never needs it.
     thinkingConfig:
       useExactTools ||
       SUBAGENT_TYPES.includes(agentDefinition.agentType) ||
-      COLLABORATOR_AGENT_TYPES.includes(agentDefinition.agentType)
+      (agentDefinition.agentType === 'general-purpose' &&
+        toolUseContext.getAppState().toolPermissionContext.mode ===
+          'orchestrator')
         ? toolUseContext.options.thinkingConfig
         : { type: 'disabled' as const },
     mcpClients: mergedMcpClients,
@@ -755,7 +756,7 @@ export async function* runAgent({
 
   // Record this agent's MAIN-TREE file edits into the root session store so the
   // review card + /undo /keep /review_detail control them — even for async
-  // (background) agents whose setAppState is a no-op (collaborators, teammates).
+  // (background) agents whose setAppState is a no-op (workers, teammates).
   // Worktree-isolated agents are suppressed (their edits surface via the diff).
   agentToolUseContext.recordFileChangeSetAppState = resolveFileChangeRecorder({
     worktreePath,

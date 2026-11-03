@@ -159,7 +159,8 @@ describe('bot token validation', () => {
 describe('telegramConfig', () => {
   let tmpDir: string
   const origConfigDir = process.env.RAYU_CONFIG_DIR
-  const origToken = process.env.TELEGRAM_BOT_TOKEN
+  const origToken = process.env.RAYU_TELEGRAM_BOT_TOKEN
+  const origBackendToken = process.env.TELEGRAM_BOT_TOKEN
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'rayu-tg-test-'))
@@ -167,6 +168,7 @@ describe('telegramConfig', () => {
     // Reset memoize cache so the new dir is picked up
     const cache = (getRayuConfigHomeDir as unknown as { cache?: Map<unknown, unknown> }).cache
     cache?.clear?.()
+    delete process.env.RAYU_TELEGRAM_BOT_TOKEN
     delete process.env.TELEGRAM_BOT_TOKEN
   })
 
@@ -174,15 +176,25 @@ describe('telegramConfig', () => {
     rmSync(tmpDir, { recursive: true, force: true })
     if (origConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
     else process.env.RAYU_CONFIG_DIR = origConfigDir
-    if (origToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN
-    else process.env.TELEGRAM_BOT_TOKEN = origToken
+    if (origToken === undefined) delete process.env.RAYU_TELEGRAM_BOT_TOKEN
+    else process.env.RAYU_TELEGRAM_BOT_TOKEN = origToken
+    if (origBackendToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN
+    else process.env.TELEGRAM_BOT_TOKEN = origBackendToken
     const cache = (getRayuConfigHomeDir as unknown as { cache?: Map<unknown, unknown> }).cache
     cache?.clear?.()
   })
 
-  test('getBotToken reads TELEGRAM_BOT_TOKEN env', () => {
-    process.env.TELEGRAM_BOT_TOKEN = 'test-token-123'
+  test('getBotToken reads the Rayu-namespaced RAYU_TELEGRAM_BOT_TOKEN env', () => {
+    process.env.RAYU_TELEGRAM_BOT_TOKEN = 'test-token-123'
     expect(getBotToken()).toBe('test-token-123')
+  })
+
+  test('getBotToken IGNORES the backend ABA payment bot TELEGRAM_BOT_TOKEN (T-9)', () => {
+    // rayu-backend uses TELEGRAM_BOT_TOKEN for the ABA payment bot. Adopting it
+    // here made the CLI a second getUpdates consumer of that bot, which Telegram
+    // answers with 409 Conflict and which manifests as lost inbound messages.
+    process.env.TELEGRAM_BOT_TOKEN = 'aba-payment-bot-token'
+    expect(getBotToken()).toBeUndefined()
   })
 
   test('getBotToken returns undefined when unset', () => {
@@ -222,6 +234,24 @@ describe('telegramConfig', () => {
     setPendingToken('tok123', 60_000)
     consumePendingToken('tok123', 42, 'alice')
     expect(readTelegramConfig().pendingToken).toBeUndefined()
+  })
+
+  // Regression: pairingAttempts is a module global. Before, a fresh token did
+  // not reset it, so misses accrued against an OLD (expired) token counted
+  // toward a NEW one — a brand-new QR could be burnt by a single mistype.
+  test('a fresh token RESETS the attempt counter', () => {
+    // Accrue 4 misses against an old token (the cap is 5).
+    setPendingToken('old-token', 60_000)
+    for (let i = 0; i < 4; i++) consumePendingToken('wrong', 1, undefined)
+
+    // Issue a new token — the counter must start clean.
+    setPendingToken('new-token', 60_000)
+    // One mistype must NOT exhaust it (4 stale + 1 = 5 would otherwise burn it).
+    expect(consumePendingToken('wrong-once', 1, undefined)).toBeNull()
+
+    // The new token is still valid after that single miss.
+    const ok = consumePendingToken('new-token', 42, 'alice')
+    expect(ok?.linkedChatId).toBe(42)
   })
 
   // The bot a link belongs to has to be recorded, otherwise a connect can't
@@ -551,7 +581,7 @@ describe('telegram permission prompts', () => {
   beforeEach(() => {
     calls = []
     setHostedRouter({
-      getUpdates: async () => [],
+      getUpdates: async () => ({ kind: 'ok' as const, updates: [] }),
       botUsername: async () => 'rayu_test_bot',
       call: async (method, params) => {
         calls.push({ method, params })
@@ -1206,7 +1236,7 @@ describe('question flow over the bridge', () => {
     nextMessageId = 900
     resetQuestionSessions()
     setHostedRouter({
-      getUpdates: async () => [],
+      getUpdates: async () => ({ kind: 'ok' as const, updates: [] }),
       botUsername: async () => 'rayu_test_bot',
       call: async (method, params) => {
         calls.push({ method, params })
@@ -1475,7 +1505,7 @@ describe('handlePermissionReply resolves one request at a time', () => {
   beforeEach(() => {
     calls = []
     setHostedRouter({
-      getUpdates: async () => [],
+      getUpdates: async () => ({ kind: 'ok' as const, updates: [] }),
       botUsername: async () => 'rayu_test_bot',
       call: async (method, params) => {
         calls.push({ method, params })
@@ -1601,7 +1631,7 @@ describe('plan approval card', () => {
     nextMessageId = 500
     resetPlanSessions()
     setHostedRouter({
-      getUpdates: async () => [],
+      getUpdates: async () => ({ kind: 'ok' as const, updates: [] }),
       botUsername: async () => 'rayu_test_bot',
       call: async (method, params) => {
         calls.push({ method, params })
@@ -1717,7 +1747,7 @@ describe('telegram interrupt', () => {
     resetStopCard()
     clearCommandQueue()
     setHostedRouter({
-      getUpdates: async () => [],
+      getUpdates: async () => ({ kind: 'ok' as const, updates: [] }),
       botUsername: async () => 'rayu_test_bot',
       call: async (method, params) => {
         calls.push({ method, params })

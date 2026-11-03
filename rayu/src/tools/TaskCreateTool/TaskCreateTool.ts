@@ -68,8 +68,13 @@ export const TaskCreateTool = buildTool({
   isEnabled() {
     return isTodoV2Enabled()
   },
+  // MUST stay false: task IDs are assigned at write time (highest ID + 1).
+  // If creates ran concurrently, IDs would land in lock-acquisition order
+  // instead of the order the model emitted the tool calls, scrambling the
+  // task list display (which sorts by ID). Serial execution preserves
+  // emission order → IDs → display order.
   isConcurrencySafe() {
-    return true
+    return false
   },
   toAutoClassifierInput(input) {
     return input.subject

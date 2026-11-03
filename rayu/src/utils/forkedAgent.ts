@@ -382,6 +382,9 @@ export function createSubagentContext(
     nestedMemoryAttachmentTriggers: new Set<string>(),
     loadedNestedMemoryPaths: new Set<string>(),
     dynamicSkillDirTriggers: new Set<string>(),
+    // Per-subagent: an Edit rejection inside the subagent must force ITS next
+    // Read to return real content, without leaking that demand to the parent.
+    forceFreshReadPaths: new Set<string>(),
     // Per-subagent: tracks skills surfaced by discovery for was_discovered telemetry (SkillTool.ts:116)
     discoveredSkillNames: new Set<string>(),
     toolDecisions: undefined,

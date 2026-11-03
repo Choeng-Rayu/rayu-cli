@@ -5,13 +5,14 @@ import capitalize from 'lodash-es/capitalize.js'
 import memoize from 'lodash-es/memoize.js'
 import { createConnection } from 'net'
 import * as os from 'os'
-import { basename, join, sep as pathSeparator, resolve } from 'path'
+import { basename, dirname, join, sep as pathSeparator, resolve } from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getIsScrollDraining, getOriginalCwd } from '../bootstrap/state.js'
 import { callIdeRpc } from '../services/mcp/client.js'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
+  ScopedMcpServerConfig,
 } from '../services/mcp/types.js'
 import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { env } from './env.js'
@@ -87,6 +88,8 @@ type IdeLockfileInfo = {
   useWebSocket: boolean
   runningInWindows: boolean
   authToken?: string
+  /** True when the lockfile came from Rayu's own `ide` directory. See DetectedIDEInfo. */
+  isRayuNative: boolean
 }
 
 export type DetectedIDEInfo = {
@@ -97,6 +100,16 @@ export type DetectedIDEInfo = {
   isValid: boolean
   authToken?: string
   ideRunningInWindows?: boolean
+  /**
+   * True when this connection was advertised by Rayu's OWN editor extension
+   * (a lockfile under `~/.rayu/ide`) rather than by the upstream Claude Code
+   * extension (`~/.claude/ide`).
+   *
+   * Load-bearing, not informational: when both extensions are running in the same
+   * workspace, discovery finds two equally valid editors and would otherwise refuse to
+   * choose. Rayucode is the native integration and wins — see `findAvailableIDE`.
+   */
+  isRayuNative: boolean
 }
 
 export type IdeType =
@@ -292,9 +305,20 @@ export function getTerminalIdeType(): IdeType | null {
 }
 
 /**
+ * Whether a lockfile path belongs to Rayu's OWN editor extension.
+ *
+ * Decided by the containing directory, not by reading the file: the contents are identical
+ * between the two extensions by design — that shape IS the discovery contract they both
+ * implement — so provenance is only knowable from where it was written.
+ */
+export function isRayuNativeLockfile(lockfilePath: string): boolean {
+  return dirname(lockfilePath) === join(getRayuConfigHomeDir(), 'ide')
+}
+
+/**
  * Gets sorted IDE lockfiles from the ~/.rayu/ide and ~/.claude/ide directories
  * (the latter for interop with an installed Claude Code editor extension).
- * @returns Array of full lockfile paths sorted by modification time (newest first)
+ * @returns Array of full lockfile paths, Rayu's own extension first, then newest-first
  */
 export async function getSortedIdeLockfiles(): Promise<string[]> {
   try {
@@ -333,10 +357,20 @@ export async function getSortedIdeLockfiles(): Promise<string[]> {
         }),
       )
 
-    // Flatten and sort all lockfiles by last modified date (newest first)
+    // ── RAYU'S OWN EXTENSION SORTS FIRST ──────────────────────────────────────
+    //
+    // Ordering used to be modification time alone, which made the choice between Rayucode
+    // and the Claude Code extension a race decided by whichever window had most recently
+    // touched its lockfile. Rayucode is the native integration, so it is preferred
+    // deterministically; mtime still orders within each group so the freshest window of
+    // the same kind wins.
     return allLockfiles
       .flat()
-      .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
+      .sort((a, b) => {
+        const aNative = isRayuNativeLockfile(a.path) ? 0 : 1
+        const bNative = isRayuNativeLockfile(b.path) ? 0 : 1
+        return aNative - bNative || b.mtime.getTime() - a.mtime.getTime()
+      })
       .map(file => file.path)
   } catch (error) {
     logError(error as Error)
@@ -386,6 +420,7 @@ async function readIdeLockfile(path: string): Promise<IdeLockfileInfo | null> {
       useWebSocket,
       runningInWindows,
       authToken,
+      isRayuNative: isRayuNativeLockfile(path),
     }
   } catch (error) {
     logError(error as Error)
@@ -660,6 +695,21 @@ export async function findAvailableIDE(): Promise<DetectedIDEInfo | null> {
     if (ides.length === 1) {
       return ides[0]!
     }
+    // ── RAYUCODE WINS AN OTHERWISE AMBIGUOUS CHOICE ─────────────────────────
+    //
+    // A workspace can have BOTH editor extensions running: Rayu's own, and the upstream
+    // Claude Code one that rayu-cli has historically connected through. Both advertise a
+    // valid connection for the same folder, so the count above is two and this used to give
+    // up and tell the user to run `/ide` — for two editors that are the same editor.
+    //
+    // Rayucode is the native integration and owns the live-context path, so it is chosen
+    // when it is unambiguous among the natives. Falling through (rather than picking
+    // arbitrarily) is still correct for two Rayucode windows over the same folder, which is
+    // a genuine ambiguity only the user can resolve.
+    const natives = ides.filter(ide => ide.isRayuNative)
+    if (natives.length === 1) {
+      return natives[0]!
+    }
     await sleep(1000, signal)
   }
   return null
@@ -814,6 +864,7 @@ export async function detectIDEs(
         isValid: isValid,
         authToken: lockfileInfo.authToken,
         ideRunningInWindows: lockfileInfo.runningInWindows,
+        isRayuNative: lockfileInfo.isRayuNative,
       })
     }
 
@@ -853,10 +904,13 @@ export function hasAccessToIDEExtensionDiffFeature(
   )
 }
 
+// Rayucode publishes under publisher `RayuCode` (see
+// src/vscode/extension.manifest.json); VS Code lowercases ids in
+// `--list-extensions`, so store the canonical lowercase form.
 const EXTENSION_ID =
   process.env.USER_TYPE === 'ant'
     ? 'anthropic.claude-code-internal'
-    : 'anthropic.claude-code'
+    : 'rayucode.rayucode'
 
 export async function isIDEExtensionInstalled(
   ideType: IdeType,
@@ -872,7 +926,7 @@ export async function isIDEExtensionInstalled(
             env: getInstallationEnv(),
           },
         )
-        if (result.stdout?.includes(EXTENSION_ID)) {
+        if (result.stdout?.toLowerCase().includes(EXTENSION_ID.toLowerCase())) {
           return true
         }
       } catch {
@@ -895,12 +949,12 @@ async function installIDEExtension(ideType: IdeType): Promise<string | null> {
       }
       let version = await getInstalledVSCodeExtensionVersion(command)
       // If it's not installed or the version is older than the one we have bundled,
-      if (!version || lt(version, getClaudeCodeVersion())) {
+      if (!version || lt(version, getRayuCodeVersion())) {
         // `code` may crash when invoked too quickly in succession
         await sleep(500)
         const result = await execFileNoThrowWithCwd(
           command,
-          ['--force', '--install-extension', 'anthropic.claude-code'],
+          ['--force', '--install-extension', EXTENSION_ID],
           {
             env: getInstallationEnv(),
           },
@@ -908,7 +962,7 @@ async function installIDEExtension(ideType: IdeType): Promise<string | null> {
         if (result.code !== 0) {
           throw new Error(`${result.code}: ${result.error} ${result.stderr}`)
         }
-        version = getClaudeCodeVersion()
+        version = getRayuCodeVersion()
       }
       return version
     }
@@ -933,7 +987,9 @@ function getInstallationEnv(): NodeJS.ProcessEnv | undefined {
   return undefined
 }
 
-function getClaudeCodeVersion() {
+// The Rayucode extension is versioned in lockstep with the CLI: both come from
+// rayu/package.json, so the engine's own version is the bundled extension's.
+function getRayuCodeVersion() {
   return MACRO.VERSION
 }
 
@@ -950,7 +1006,7 @@ async function getInstalledVSCodeExtensionVersion(
   const lines = stdout?.split('\n') || []
   for (const line of lines) {
     const [extensionId, version] = line.split('@')
-    if (extensionId === 'anthropic.claude-code' && version) {
+    if (extensionId?.toLowerCase() === EXTENSION_ID.toLowerCase() && version) {
       return version
     }
   }
@@ -1253,6 +1309,35 @@ export function toIDEDisplayName(terminal: string | null): string {
 export { callIdeRpc }
 
 /**
+ * The MCP server entry for a detected editor.
+ *
+ * ── ONE MAPPING, THREE CALLERS ─────────────────────────────────────────────────
+ *
+ * This was written out by hand in `hooks/useIDEIntegration.tsx` and again in
+ * `commands/ide/ide.tsx`, and the headless path needed a third copy. The transport choice
+ * in particular is easy to get subtly wrong: it is decided by the URL SCHEME the lockfile
+ * produced, not by the editor's identity, because the same extension may advertise either.
+ *
+ * `scope: 'dynamic'` marks it as a connection established at runtime rather than one read
+ * from a settings file, which is what keeps it out of the user's persisted MCP config.
+ */
+export function ideMcpServerConfig(
+  ide: Pick<
+    DetectedIDEInfo,
+    'url' | 'name' | 'authToken' | 'ideRunningInWindows'
+  >,
+): ScopedMcpServerConfig {
+  return {
+    type: ide.url.startsWith('ws:') ? 'ws-ide' : 'sse-ide',
+    url: ide.url,
+    ideName: ide.name,
+    authToken: ide.authToken,
+    ideRunningInWindows: ide.ideRunningInWindows,
+    scope: 'dynamic' as const,
+  } as ScopedMcpServerConfig
+}
+
+/**
  * Gets the connected IDE client from a list of MCP clients
  * @param mcpClients - Array of wrapped MCP clients
  * @returns The connected IDE client, or undefined if not found
@@ -1305,8 +1390,8 @@ export async function initializeIdeIntegration(
   // Don't await so we don't block startup, but return a promise that resolves with the status
   void findAvailableIDE().then(onIdeDetected)
 
-  // Rayu has no first-party VS Code extension; do NOT auto-install Anthropic's
-  // `anthropic.claude-code` extension. Default OFF (opt in via config).
+  // Auto-install Rayucode's own extension (`rayucode.rayucode`), never
+  // Anthropic's. Default OFF (opt in via config).
   const shouldAutoInstall = getGlobalConfig().autoInstallIdeExtension ?? false
   if (
     !isEnvTruthy(process.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) &&
@@ -1450,7 +1535,7 @@ async function installFromArtifactory(command: string): Promise<string> {
     const vsixUrl = `https://artifactory.infra.ant.dev/artifactory/armorcode-claude-code-internal/claude-vscode-releases/${version}/claude-code.vsix`
     const tempVsixPath = join(
       os.tmpdir(),
-      `claude-code-${version}-${Date.now()}.vsix`,
+      `rayucode-${version}-${Date.now()}.vsix`,
     )
 
     try {

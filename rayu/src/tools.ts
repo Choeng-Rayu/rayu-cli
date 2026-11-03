@@ -72,7 +72,14 @@ const getTeamDeleteTool = () =>
 const getSendMessageTool = () =>
   require('./tools/SendMessageTool/SendMessageTool.js')
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
+const getOrchestratorSendMessageTool = () =>
+  require('./tools/SendMessageTool/OrchestratorSendMessageTool.js')
+    .OrchestratorSendMessageTool as typeof import('./tools/SendMessageTool/OrchestratorSendMessageTool.js').OrchestratorSendMessageTool
+const getOrchestrationContractTool = () =>
+  require('./tools/OrchestrationContractTool/OrchestrationContractTool.js')
+    .OrchestrationContractTool as typeof import('./tools/OrchestrationContractTool/OrchestrationContractTool.js').OrchestrationContractTool
 /* eslint-enable @typescript-eslint/no-require-imports */
+import { SEND_MESSAGE_TOOL_NAME } from './tools/SendMessageTool/constants.js'
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
@@ -134,6 +141,9 @@ const WorkflowTool = feature('WORKFLOW_SCRIPTS')
       require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
       return require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool
     })()
+  : null
+const ExternalAgentTool = feature('EXTERNAL_AGENTS')
+  ? require('./tools/ExternalAgentTool/ExternalAgentTool.js').ExternalAgentTool
   : null
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './Tool.js'
@@ -237,6 +247,7 @@ export function getAllBaseTools(): Tools {
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
     ...(process.env.USER_TYPE === 'ant' && REPLTool ? [REPLTool] : []),
     ...(WorkflowTool ? [WorkflowTool] : []),
+    ...(ExternalAgentTool ? [ExternalAgentTool] : []),
     ...(SleepTool ? [SleepTool] : []),
     ...cronTools,
     ...(RemoteTriggerTool ? [RemoteTriggerTool] : []),
@@ -329,7 +340,37 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
   }
 
   const isEnabled = allowedTools.map(_ => _.isEnabled())
-  return allowedTools.filter((_, i) => isEnabled[i])
+  return withOrchestratorTools(
+    allowedTools.filter((_, i) => isEnabled[i]),
+    permissionContext,
+  )
+}
+
+/**
+ * Tools only Orchestrator mode's main thread has: the contract its workers follow,
+ * and SendMessage to continue them. Without agent teams the full SendMessage is
+ * disabled, so the worker-only variant (OrchestratorSendMessageTool.ts) is added.
+ * Workers never get either: AgentTool builds their pools under the worker's own
+ * mode, and the contract tool is also in ALL_AGENT_DISALLOWED_TOOLS.
+ */
+function withOrchestratorTools(
+  tools: Tools,
+  permissionContext: ToolPermissionContext,
+): Tools {
+  if (permissionContext.mode !== 'orchestrator') return tools
+  const hasSendMessage = tools.some(tool =>
+    toolMatchesName(tool, SEND_MESSAGE_TOOL_NAME),
+  )
+  return [
+    ...tools,
+    ...filterToolsByDenyRules(
+      [
+        getOrchestrationContractTool(),
+        ...(hasSendMessage ? [] : [getOrchestratorSendMessageTool()]),
+      ],
+      permissionContext,
+    ),
+  ]
 }
 
 /**

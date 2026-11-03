@@ -1,9 +1,8 @@
-import { feature } from 'bun:bundle'
 import { isBridgeEnabled } from '../../bridge/bridgeEnabled.js'
 import type { Command } from '../../commands.js'
 
 function isEnabled(): boolean {
-  if (!feature('BRIDGE_MODE')) {
+  if (!RAYU_FEATURES.BRIDGE_MODE) {
     return false
   }
   return isBridgeEnabled()

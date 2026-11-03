@@ -34,7 +34,7 @@ import { parse } from 'url'
 import xss from 'xss'
 import { MCP_CLIENT_METADATA_URL } from '../../constants/oauth.js'
 import { openBrowser } from '../../utils/browser.js'
-import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { errorMessage, getErrnoCode } from '../../utils/errors.js'
 import * as lockfile from '../../utils/lockfile.js'
 import { logMCPDebug } from '../../utils/log.js'
@@ -2275,7 +2275,7 @@ export class RayuMcpOAuthProvider implements OAuthClientProvider {
     refreshToken: string,
   ): Promise<OAuthTokens | undefined> {
     const serverKey = getServerKey(this.serverName, this.serverConfig)
-    const rayuDir = getRayuConfigHomeDir()
+    const rayuDir = getRayuAuthConfigDir()
     await mkdir(rayuDir, { recursive: true })
     const sanitizedKey = serverKey.replace(/[^a-zA-Z0-9]/g, '_')
     const lockfilePath = join(rayuDir, `mcp-refresh-${sanitizedKey}.lock`)

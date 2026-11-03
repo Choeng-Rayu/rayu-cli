@@ -5,6 +5,7 @@ import {
   quote,
   tryParseShellCommand,
 } from './shellQuote.js'
+import { singleQuoteForEval } from './shellQuoting.js'
 
 /**
  * Rearranges a command with pipes to place stdin redirect after the first command.
@@ -261,17 +262,6 @@ function containsControlStructure(command: string): boolean {
  */
 function quoteWithEvalStdinRedirect(command: string): string {
   return singleQuoteForEval(command) + ' < /dev/null'
-}
-
-/**
- * Single-quote a string for use as an eval argument. Escapes embedded single
- * quotes via '"'"' (close-sq, literal-sq-in-dq, reopen-sq). Used instead of
- * shell-quote's quote() which switches to double-quote mode when the input
- * contains single quotes and then escapes ! -> \!, corrupting jq/awk filters
- * like `select(.x != .y)` into `select(.x \!= .y)`.
- */
-function singleQuoteForEval(s: string): string {
-  return "'" + s.replace(/'/g, `'"'"'`) + "'"
 }
 
 /**

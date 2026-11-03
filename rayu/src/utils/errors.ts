@@ -1,4 +1,8 @@
-import { APIUserAbortError } from '@anthropic-ai/sdk/index.js'
+// The narrow entry, not '@anthropic-ai/sdk/index.js': both export the same class object
+// (index re-exports core/error), but the root entry drags the whole API client in with
+// it. This module is reached from the VS Code extension host, where that was ~390 KB of
+// a 1.6 MB bundle budget for one `instanceof` check. Same path as services/api/claude.ts.
+import { APIUserAbortError } from '@anthropic-ai/sdk/error.js'
 
 export class ClaudeError extends Error {
   constructor(message: string) {

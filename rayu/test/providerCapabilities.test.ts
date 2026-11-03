@@ -329,3 +329,136 @@ describe('preserved quirks (deliberately unchanged)', () => {
     expect(modelSupportsThinking('us.anthropic.claude-sonnet-4-6-v1')).toBe(true)
   })
 })
+
+
+describe('providerAcceptsImages is now per-(provider, model)', () => {
+  // It used to read `provider.supportsImage !== false`, a PROVIDER-wide flag —
+  // which cannot answer for a provider serving both text-only and vision models
+  // (DeepSeek serves deepseek-chat next to deepseek-vl). The name and signature
+  // are unchanged, so the two OpenAI adapter call sites became model-aware with
+  // no edit at those sites.
+  async function imageCaps() {
+    return await import('../src/utils/model/imageCapability.ts')
+  }
+
+  test('one provider, two models, two different answers', async () => {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    cfg.upsertProvider(
+      {
+        id: 'deepseek',
+        kind: 'openai-compatible',
+        apiKey: 'ds-key',
+        baseURL: 'https://api.deepseek.com/v1',
+        defaultModel: 'deepseek-chat',
+      },
+      true,
+    )
+    const { providerAcceptsImages } = await caps()
+    expect(providerAcceptsImages('deepseek-chat')).toBe(false)
+    expect(providerAcceptsImages('deepseek-vl')).toBe(true)
+  })
+
+  test('provider-level supportsImage:false still blocks everything', async () => {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    cfg.upsertProvider(
+      {
+        id: 'text-only-box',
+        kind: 'openai-compatible',
+        apiKey: 'k',
+        baseURL: 'https://local.test/v1',
+        defaultModel: 'gpt-4o',
+        supportsImage: false,
+      },
+      true,
+    )
+    const { providerAcceptsImages } = await caps()
+    // Even a model the tables call vision-capable.
+    expect(providerAcceptsImages('gpt-4o')).toBe(false)
+  })
+
+  test('a per-model override outranks the built-in tables', async () => {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    cfg.upsertProvider(
+      {
+        id: 'my-endpoint',
+        kind: 'custom',
+        wireFormat: 'openai-chat',
+        apiKey: 'k',
+        baseURL: 'https://my.test/v1',
+        defaultModel: 'deepseek-chat',
+        modelSupportsImage: { 'deepseek-chat': true },
+      },
+      true,
+    )
+    const { providerAcceptsImages } = await caps()
+    const { resolveImageSupport } = await imageCaps()
+    // The table says 'no'; the user's explicit declaration says otherwise.
+    expect(resolveImageSupport('deepseek-chat')).toBe('yes')
+    expect(providerAcceptsImages('deepseek-chat')).toBe(true)
+  })
+
+  test('a per-model override also outranks provider-level supportsImage:false', async () => {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    cfg.upsertProvider(
+      {
+        id: 'mixed-box',
+        kind: 'openai-compatible',
+        apiKey: 'k',
+        baseURL: 'https://mixed.test/v1',
+        defaultModel: 'house-vision-1',
+        supportsImage: false,
+        modelSupportsImage: { 'house-vision-1': true },
+      },
+      true,
+    )
+    const { providerAcceptsImages } = await caps()
+    expect(providerAcceptsImages('house-vision-1')).toBe(true)
+    // Other models on the same provider still respect the provider-wide flag.
+    expect(providerAcceptsImages('house-text-1')).toBe(false)
+  })
+
+  test('a per-model override can also declare a model text-only', async () => {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    cfg.upsertProvider(
+      {
+        id: 'quirky',
+        kind: 'openai-compatible',
+        apiKey: 'k',
+        baseURL: 'https://quirky.test/v1',
+        defaultModel: 'gpt-4o',
+        modelSupportsImage: { 'gpt-4o': false },
+      },
+      true,
+    )
+    const { providerAcceptsImages } = await caps()
+    expect(providerAcceptsImages('gpt-4o')).toBe(false)
+  })
+
+  test('a cross-provider routed subagent is answered for ITS provider', async () => {
+    const cfg = await seedClaudeMainAndDeepSeekCollaborator()
+    const { providerAcceptsImages } = await caps()
+    // Main agent on Claude: images fine.
+    expect(providerAcceptsImages('claude-sonnet-4-6')).toBe(true)
+    // Collaborator routed to DeepSeek's text-only model: not fine.
+    const routed = cfg.encodeModelWithProvider('deepseek', 'deepseek-chat')
+    expect(providerAcceptsImages(routed)).toBe(false)
+  })
+
+  test('an unlisted model on any provider is still permitted', async () => {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    cfg.upsertProvider(
+      {
+        id: 'somewhere',
+        kind: 'openai-compatible',
+        apiKey: 'k',
+        baseURL: 'https://somewhere.test/v1',
+        defaultModel: 'brand-new-2031',
+      },
+      true,
+    )
+    const { providerAcceptsImages } = await caps()
+    // Blocking an unknown-but-capable model would be a regression; the reactive
+    // recovery path handles a wrong guess.
+    expect(providerAcceptsImages('brand-new-2031')).toBe(true)
+  })
+})

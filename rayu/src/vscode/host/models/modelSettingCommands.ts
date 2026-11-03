@@ -1,0 +1,355 @@
+/**
+ * `/subagent_models`, `/webfetch_model`, `/model_image_generation` and
+ * `/model_video_generation`, as Rayucode implements them.
+ *
+ * ── WHY THE HOST OWNS THESE AT ALL ─────────────────────────────────────────────
+ *
+ * All four are `local-jsx` commands in the CLI — they render an Ink picker — so `main.tsx`
+ * removes them from a non-interactive engine, exactly as it removes `/login` and
+ * `/connect`. The engine would answer "unknown command", so the panel has to provide the
+ * surface. What it must NOT provide is a second definition of the settings: the parsing
+ * below mirrors the CLI's grammar and the writes go through the CLI's own `rayuConfig`
+ * setters, so there is one place each value lives.
+ *
+ * The image and video choosers list the media catalog, which this host cannot load itself
+ * (the catalog service would pull ~19 MB into `extension.js`). The host opens the chooser
+ * empty and the connect helper fetches the live list — see `refreshMediaModelOptions`.
+ *
+ * ── PARSING IS SPLIT FROM APPLYING, AND IS PURE ────────────────────────────────
+ *
+ * `parseModelSettingCommand` is a pure function over the typed text. That matters because
+ * the one thing that must not break here is the fall-through: a prompt that merely begins
+ * with `/subagent_models…` and is not one of these commands has to reach the model unchanged.
+ * A pure parser is exhaustively testable without an editor, a config file or an engine.
+ */
+import {
+  clearSubagentSelection,
+  getImageModelSelection,
+  getSubagentSelection,
+  getVideoModelSelection,
+  getWebFetchModelSelection,
+  setImageModelSelection,
+  setSubagentSelection,
+  setVideoModelSelection,
+  setWebFetchModelSelection,
+} from '../../../utils/rayuConfig.js'
+import {
+  AGENT_MODEL_COMMAND_NAMES,
+  getConfigurableAgentTypes,
+} from '../../../utils/model/agentModelTargets.js'
+import type { ModelChooserView } from '../../shared/webviewProtocol.js'
+
+/** The CLI's own reset and inspect keywords, matched case-insensitively as it does. */
+const RESET_WORDS = new Set(['default', 'reset', 'clear'])
+const SHOW_WORDS = new Set(['info', 'show', 'status'])
+
+/**
+ * What `/webfetch_model` falls back to when unset.
+ *
+ * Worded as the CLI words it. Saying only "default" would leave the user unable to tell
+ * which model they are actually getting.
+ */
+const WEBFETCH_DEFAULT_NOTE =
+  "the active provider\u2019s instant/small-fast model (i.e. your current model)"
+
+const SUBAGENT_GLOBAL_DEFAULT_NOTE =
+  'each agent uses its built-in default'
+
+const SUBAGENT_AGENT_DEFAULT_NOTE =
+  'the global agent model, else its built-in default'
+
+const SUBAGENT_COST_TIP =
+  'Agents can run frequently — a large global model costs more and is usually overkill for small tasks.'
+
+const WEBFETCH_COST_TIP =
+  'WebFetch summarizes fetched pages — a small/instant model is usually enough and cheaper.'
+
+export type ModelSettingTarget = 'subagent' | 'webfetch' | 'image' | 'video'
+
+/** The settings whose chooser lists the image/video generation catalog. */
+export type MediaModelSettingTarget = 'image' | 'video'
+
+export function isMediaModelTarget(
+  target: ModelSettingTarget,
+): target is MediaModelSettingTarget {
+  return target === 'image' || target === 'video'
+}
+
+/** The CLI command for each media setting. A Map, so `constructor` is not a command. */
+const MEDIA_COMMANDS = new Map<string, MediaModelSettingTarget>([
+  ['model_image_generation', 'image'],
+  ['model_video_generation', 'video'],
+])
+
+/**
+ * What the media settings fall back to when unset, worded as the terminal pickers word
+ * it: the tools take the first hosted model, in the admin's order, that can do the
+ * request.
+ */
+const MEDIA_DEFAULT_NOTE: Record<MediaModelSettingTarget, string> = {
+  image:
+    'Rayu-hosted when signed in (the first hosted model in the admin order that can do the request), else Vertex Imagen',
+  video:
+    'Rayu-hosted when signed in (the first hosted model in the admin order that matches the operation), else fal.ai or Vertex Veo',
+}
+
+const MEDIA_TIP: Record<MediaModelSettingTarget, string> = {
+  image:
+    'Used by /generate-image and /image-editor. Hosted models need no API key and are billed in Rayu credits per image.',
+  video:
+    'Used by /image-video. Hosted models need no API key and are billed in Rayu credits per second of video.',
+}
+
+const MEDIA_TITLE: Record<MediaModelSettingTarget, string> = {
+  image: 'Select an image generation model',
+  video: 'Select a video generation model',
+}
+
+const MEDIA_SUBJECT: Record<MediaModelSettingTarget, string> = {
+  image: 'Image generation model',
+  video: 'Video generation model',
+}
+
+/** What the user asked for. `choose` is the picker; the rest answer immediately. */
+export type ModelSettingCommand =
+  | { kind: 'choose'; target: ModelSettingTarget; agentType?: string }
+  | { kind: 'reset'; target: ModelSettingTarget; agentType?: string }
+  | { kind: 'show'; target: ModelSettingTarget; agentType?: string }
+  /** A recognised command with an argument that is not valid — answered with usage. */
+  | { kind: 'usage'; target: ModelSettingTarget; message: string }
+
+/**
+ * Recognise one of these commands in typed text.
+ *
+ * Returns null for anything else, INCLUDING a prompt that merely starts with the command
+ * name as part of a sentence. The command name must be the first whitespace-delimited
+ * token, which is what the CLI's own dispatcher requires.
+ *
+ * `knownAgentTypes` comes from the engine rather than being imported, so the list cannot
+ * drift from what the running engine actually offers — and so the host bundle does not have
+ * to carry every subagent's prompt module to know their names.
+ */
+export function parseModelSettingCommand(
+  text: string,
+  knownAgentTypes: readonly string[] = [],
+): ModelSettingCommand | null {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('/')) return null
+
+  const [rawName, ...rest] = trimmed.split(/\s+/)
+  const name = rawName?.slice(1).toLowerCase()
+
+  const target: ModelSettingTarget | null =
+    name && (AGENT_MODEL_COMMAND_NAMES as readonly string[]).includes(name)
+      ? 'subagent'
+      : name === 'webfetch_model'
+        ? 'webfetch'
+        : (name && MEDIA_COMMANDS.get(name)) || null
+  if (!target) return null
+
+  if (isMediaModelTarget(target)) {
+    // The CLI's media pickers take no sub-commands: any argument is ignored and the
+    // picker opens. Mirrored exactly, so the two products accept the same input.
+    return { kind: 'choose', target }
+  }
+
+  if (target === 'webfetch') {
+    const sub = (rest[0] ?? '').toLowerCase()
+    if (!sub) return { kind: 'choose', target }
+    if (RESET_WORDS.has(sub)) return { kind: 'reset', target }
+    if (SHOW_WORDS.has(sub)) return { kind: 'show', target }
+    return {
+      kind: 'usage',
+      target,
+      message: `Unknown argument "${sub}". Usage: /webfetch_model [show|default].`,
+    }
+  }
+
+  // `/subagent_models [AGENT] [show|default]` — the first token may be an agent type,
+  // resolved case-insensitively exactly as the CLI resolves it.
+  const agentTypes = getConfigurableAgentTypes(knownAgentTypes)
+  const first = rest[0] ?? ''
+  const agentType = agentTypes.find(a => a.toLowerCase() === first.toLowerCase())
+  const sub = (agentType ? rest[1] ?? '' : first).toLowerCase()
+
+  if (!sub) return { kind: 'choose', target, ...(agentType ? { agentType } : {}) }
+  if (RESET_WORDS.has(sub)) return { kind: 'reset', target, ...(agentType ? { agentType } : {}) }
+  if (SHOW_WORDS.has(sub)) return { kind: 'show', target, ...(agentType ? { agentType } : {}) }
+
+  return {
+    kind: 'usage',
+    target,
+    message:
+      `Unknown argument "${sub}". Usage: /subagent_models [AGENT] [show|default].` +
+      ` Agents: ${agentTypes.join(', ')}.`,
+  }
+}
+
+/** The label for what is configured now, or null when the default applies. */
+export function currentSelectionLabel(
+  target: ModelSettingTarget,
+  agentType?: string,
+): string | null {
+  if (target === 'webfetch') return getWebFetchModelSelection() ?? null
+  if (target === 'image') return getImageModelSelection() ?? null
+  if (target === 'video') return getVideoModelSelection() ?? null
+  const selection = getSubagentSelection(agentType)
+  return selection ? `${selection.model} (${selection.providerId})` : null
+}
+
+/** The model identifier to mark as active in the picker, or null. */
+export function currentSelectionValue(
+  target: ModelSettingTarget,
+  agentType?: string,
+): string | null {
+  if (target === 'webfetch') return getWebFetchModelSelection() ?? null
+  if (target === 'image') return getImageModelSelection() ?? null
+  if (target === 'video') return getVideoModelSelection() ?? null
+  return getSubagentSelection(agentType)?.model ?? null
+}
+
+export function defaultNoteFor(
+  target: ModelSettingTarget,
+  agentType?: string,
+): string {
+  if (target === 'webfetch') return WEBFETCH_DEFAULT_NOTE
+  if (isMediaModelTarget(target)) return MEDIA_DEFAULT_NOTE[target]
+  return agentType ? SUBAGENT_AGENT_DEFAULT_NOTE : SUBAGENT_GLOBAL_DEFAULT_NOTE
+}
+
+/**
+ * The chooser surface for a bare command.
+ *
+ * A media chooser opens with an empty, loading list of its own: the host fills it in once
+ * the connect helper has fetched the live catalog.
+ */
+export function buildChooser(
+  target: ModelSettingTarget,
+  agentType?: string,
+  knownAgentTypes: readonly string[] = [],
+): ModelChooserView {
+  if (isMediaModelTarget(target)) {
+    return {
+      target,
+      title: MEDIA_TITLE[target],
+      tip: MEDIA_TIP[target],
+      current: currentSelectionValue(target),
+      defaultNote: MEDIA_DEFAULT_NOTE[target],
+      catalogue: { options: [], loading: true, error: null },
+    }
+  }
+  const agentTypes =
+    target === 'subagent'
+      ? getConfigurableAgentTypes(knownAgentTypes)
+      : undefined
+  return {
+    target,
+    ...(agentType ? { agentType } : {}),
+    ...(agentTypes ? { agentTypes } : {}),
+    title:
+      target === 'webfetch'
+        ? 'Select a model for WebFetch (page summarization)'
+        : agentType
+          ? `Select a model for ${agentType}`
+          : 'Select a model for all agents (global default)',
+    tip: target === 'webfetch' ? WEBFETCH_COST_TIP : SUBAGENT_COST_TIP,
+    current: currentSelectionValue(target, agentType),
+    defaultNote: defaultNoteFor(target, agentType),
+  }
+}
+
+/** The `show` answer, worded as the CLI words it. */
+export function describeSelection(
+  target: ModelSettingTarget,
+  agentType?: string,
+): string {
+  const label = currentSelectionLabel(target, agentType)
+  if (target === 'webfetch') {
+    return label
+      ? `WebFetch model: ${label}`
+      : `WebFetch model: default (${WEBFETCH_DEFAULT_NOTE})`
+  }
+  if (isMediaModelTarget(target)) {
+    return label
+      ? `${MEDIA_SUBJECT[target]}: ${label}`
+      : `${MEDIA_SUBJECT[target]}: default (${MEDIA_DEFAULT_NOTE[target]})`
+  }
+  const subject = agentType ? `${agentType} agent` : 'all agents'
+  return label
+    ? `${subject} model: ${label}`
+    : `${subject} model: default (${defaultNoteFor(target, agentType)})`
+}
+
+/** The confirmation for a reset, worded as the CLI words it. */
+export function describeReset(
+  target: ModelSettingTarget,
+  agentType?: string,
+): string {
+  if (target === 'webfetch') {
+    return `WebFetch model reset to default (${WEBFETCH_DEFAULT_NOTE}).`
+  }
+  if (isMediaModelTarget(target)) {
+    return `${MEDIA_SUBJECT[target]} reset to default (${MEDIA_DEFAULT_NOTE[target]}).`
+  }
+  return agentType
+    ? `${agentType} model reset to default (uses ${SUBAGENT_AGENT_DEFAULT_NOTE}).`
+    : `Global agent model reset to default (${SUBAGENT_GLOBAL_DEFAULT_NOTE}).`
+}
+
+/**
+ * Persist a choice.
+ *
+ * Returns the confirmation to show, or null when nothing was written — a `value` that
+ * carries no model is not an error worth a notice, it is a no-op.
+ *
+ * ── THE PROVIDER PREFIX IS DECODED, NOT STORED ─────────────────────────────────
+ *
+ * The webview sends the catalogue's `value`, which for a configured provider is the shared
+ * `providerId\0model` routing form. `setSubagentSelection` wants the two parts separately,
+ * because a subagent may legitimately run on a different provider from the main agent.
+ * Splitting on the same NUL the CLI's own encoder uses keeps that one convention.
+ */
+export function applySelection(
+  target: ModelSettingTarget,
+  value: string | null,
+  agentType?: string,
+): string | null {
+  if (value === null) {
+    if (target === 'webfetch') setWebFetchModelSelection(undefined)
+    else if (target === 'image') setImageModelSelection(undefined)
+    else if (target === 'video') setVideoModelSelection(undefined)
+    else clearSubagentSelection(agentType)
+    return describeReset(target, agentType)
+  }
+
+  const separator = value.indexOf('\u0000')
+  const providerId = separator === -1 ? undefined : value.slice(0, separator)
+  const model = separator === -1 ? value : value.slice(separator + 1)
+  if (!model) return null
+
+  if (isMediaModelTarget(target)) {
+    // A media id is routed by its own catalog entry, never by a provider prefix, and the
+    // media chooser never sends one — so a prefixed value is refused rather than stored
+    // as an id no catalog entry will ever match.
+    if (providerId !== undefined) return null
+    if (target === 'image') setImageModelSelection(model)
+    else setVideoModelSelection(model)
+    return `${MEDIA_SUBJECT[target]}: ${model}`
+  }
+
+  if (target === 'webfetch') {
+    // Stored WITHOUT the provider prefix, matching the CLI command: `getWebFetchModel()`
+    // resolves it against the active provider.
+    setWebFetchModelSelection(model)
+    return `WebFetch model: ${model}`
+  }
+
+  if (!providerId) {
+    // No provider prefix means the catalogue entry did not carry one, and a subagent
+    // selection is meaningless without it — it is half a routing decision.
+    return null
+  }
+  setSubagentSelection(providerId, model, agentType)
+  const subject = agentType ? `${agentType} agent` : 'all agents'
+  return `${subject} model: ${model} (${providerId})`
+}

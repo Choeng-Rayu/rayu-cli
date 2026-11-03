@@ -100,3 +100,33 @@ export function readFileSyncWithMetadata(filePath: string): {
 export function readFileSync(filePath: string): string {
   return readFileSyncWithMetadata(filePath).content
 }
+
+/**
+ * Read a whole file ASYNCHRONOUSLY, normalized exactly the way readFileState
+ * entries are stored: UTF-16LE detected from the BOM, everything else UTF-8, and
+ * CRLF collapsed to LF.
+ *
+ * Exists so the "did the bytes actually change?" comparison in FileEditTool and
+ * FileWriteTool is byte-identical in both tools. Getting the normalization
+ * subtly different in one of them would silently reintroduce the false
+ * "File has been modified since read" rejection this comparison exists to
+ * prevent.
+ *
+ * Returns null when the file cannot be read (missing, permissions, …) so callers
+ * can treat "unknown" as "not provably unchanged" rather than crashing a
+ * validation path.
+ */
+export async function readFileNormalizedAsync(
+  filePath: string,
+): Promise<string | null> {
+  try {
+    const buffer = await getFsImplementation().readFileBytes(filePath)
+    const encoding: BufferEncoding =
+      buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe
+        ? 'utf16le'
+        : 'utf8'
+    return buffer.toString(encoding).replaceAll('\r\n', '\n')
+  } catch {
+    return null
+  }
+}

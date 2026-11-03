@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import { unwatchFile, watchFile } from 'fs'
 import memoize from 'lodash-es/memoize.js'
@@ -33,10 +32,10 @@ import { getManagedFilePath } from './settings/managedPath.js'
 import type { ThemeSetting } from './theme.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM')
+const teamMemPaths = RAYU_FEATURES.TEAMMEM
   ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
   : null
-const ccrAutoConnect = feature('CCR_AUTO_CONNECT')
+const ccrAutoConnect = RAYU_FEATURES.CCR_AUTO_CONNECT
   ? (require('../bridge/bridgeEnabled.js') as typeof import('../bridge/bridgeEnabled.js'))
   : null
 
@@ -1104,7 +1103,7 @@ export function getGlobalConfig(): GlobalConfig {
 export function getRemoteControlAtStartup(): boolean {
   const explicit = getGlobalConfig().remoteControlAtStartup
   if (explicit !== undefined) return explicit
-  if (feature('CCR_AUTO_CONNECT')) {
+  if (RAYU_FEATURES.CCR_AUTO_CONNECT) {
     if (ccrAutoConnect?.getCcrAutoConnectDefault()) return true
   }
   return false
@@ -1805,7 +1804,7 @@ export function getMemoryPath(memoryType: MemoryType): string {
       return getAutoMemEntrypoint()
   }
   // TeamMem is only a valid MemoryType when feature('TEAMMEM') is true
-  if (feature('TEAMMEM')) {
+  if (RAYU_FEATURES.TEAMMEM) {
     return teamMemPaths!.getTeamMemEntrypoint()
   }
   return '' // unreachable in external builds where TeamMem is not in MemoryType

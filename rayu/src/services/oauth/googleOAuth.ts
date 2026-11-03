@@ -2,8 +2,8 @@
 // provider. When Application Default Credentials are unavailable, this runs an
 // interactive browser consent flow against a localhost redirect, captures the
 // authorization code, exchanges it for tokens, and persists the refresh token
-// to ~/.rayu/gemini-oauth.json (0600). Subsequent calls mint a fresh access
-// token from the stored refresh token — no gcloud dependency required.
+// in the active authentication profile (0600). Subsequent calls mint a fresh
+// access token from the stored refresh token — no gcloud dependency required.
 //
 // The OAuth client id/secret default to the public Google Cloud SDK desktop
 // client (the same one `gcloud auth application-default login` uses), and can
@@ -22,7 +22,7 @@ import {
 import { createServer } from 'http'
 import { join } from 'path'
 import { AddressInfo } from 'net'
-import { getRayuConfigHomeDir } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { openBrowser } from '../../utils/browser.js'
 import {
   registerVertexOAuthFallback,
@@ -58,7 +58,7 @@ export type GeminiOAuthStore = {
 }
 
 function tokenPath(): string {
-  return join(getRayuConfigHomeDir(), TOKEN_FILE)
+  return join(getRayuAuthConfigDir(), TOKEN_FILE)
 }
 
 export function readGeminiOAuthStore(): GeminiOAuthStore | null {
@@ -72,7 +72,7 @@ export function readGeminiOAuthStore(): GeminiOAuthStore | null {
 }
 
 export function writeGeminiOAuthStore(store: GeminiOAuthStore): void {
-  const dir = getRayuConfigHomeDir()
+  const dir = getRayuAuthConfigDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const p = tokenPath()
   writeFileSync(p, JSON.stringify(store, null, 2), { mode: 0o600 })

@@ -3,7 +3,7 @@
  */
 
 import type { AgentId } from '../../types/ids.js'
-import type { HookResultMessage, Message } from '../../types/message.js'
+import type { CompactMetadata, HookResultMessage, Message } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -15,7 +15,7 @@ import {
 import { getSessionMemoryPath } from '../../utils/permissions/filesystem.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
 import { getTranscriptPath } from '../../utils/sessionStorage.js'
-import { tokenCountFromLastAPIResponse } from '../../utils/tokens.js'
+import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { extractDiscoveredToolNames } from '../../utils/toolSearch.js'
 import {
   getDynamicConfig_BLOCKS_ON_INIT,
@@ -440,11 +440,12 @@ function createCompactionResultFromSessionMemory(
   hookResults: HookResultMessage[],
   transcriptPath: string,
   agentId?: AgentId,
+  trigger: CompactMetadata['trigger'] = 'manual',
 ): CompactionResult {
-  const preCompactTokenCount = tokenCountFromLastAPIResponse(messages)
+  const preCompactTokenCount = tokenCountWithEstimation(messages)
 
   const boundaryMarker = createCompactBoundaryMessage(
-    'auto',
+    trigger,
     preCompactTokenCount ?? 0,
     messages[messages.length - 1]?.uuid,
   )
@@ -595,6 +596,7 @@ export async function trySessionMemoryCompaction(
       hookResults,
       transcriptPath,
       agentId,
+      autoCompactThreshold === undefined ? 'manual' : 'auto',
     )
 
     const postCompactMessages = buildPostCompactMessages(compactionResult)

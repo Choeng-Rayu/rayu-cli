@@ -378,9 +378,17 @@ export function anthropicNameToCanonical(name: ModelName): ModelShortName {
  * @returns The short name (e.g., 'claude-3-5-haiku') if found, or the original name if no mapping exists
  */
 export function getCanonicalName(fullModelName: ModelName): ModelShortName {
+  // A provider-qualified model (`providerId\u0000model`) is internal routing
+  // metadata. Canonical names are used in HTTP headers, analytics, capability
+  // checks, and attribution, where the control-character separator is invalid and
+  // the provider prefix is not part of the model id. Strip it at this shared
+  // boundary so every consumer receives the same safe, bare model name.
+  const sepIdx = fullModelName.indexOf('\u0000')
+  const modelName =
+    sepIdx === -1 ? fullModelName : fullModelName.slice(sepIdx + 1)
   // Resolve overridden model IDs (e.g. Bedrock ARNs) back to canonical names.
   // resolved is always a 1P-format ID, so anthropicNameToCanonical can handle it.
-  return anthropicNameToCanonical(resolveOverriddenModel(fullModelName))
+  return anthropicNameToCanonical(resolveOverriddenModel(modelName))
 }
 
 // @[MODEL LAUNCH]: Update the default model description strings shown to users.

@@ -1,7 +1,5 @@
-import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { clearInvokedSkillsForAgent } from '../../bootstrap/state.js'
-import { persistDomainSectionIfEmpty } from './swarmContext.js'
 import {
   ALL_AGENT_DISALLOWED_TOOLS,
   ASYNC_AGENT_ALLOWED_TOOLS,
@@ -162,8 +160,8 @@ export function resolveAgentTools(
 
   // If tools is undefined or includes '*', allow all tools (after filtering
   // disallowed). We still honor an explicit Agent(types) spec alongside the
-  // wildcard so a full-toolset agent can scope WHICH subagents it may spawn
-  // (domain-locked collaborators: tools: ['*', 'Agent(design,review,...)']).
+  // wildcard so a full-toolset custom agent can scope which subagents it may
+  // spawn (tools: ['*', 'Agent(researcher,reviewer)']).
   const hasWildcard =
     agentTools === undefined || agentTools.some(t => t === '*')
   if (hasWildcard) {
@@ -284,11 +282,6 @@ export function countToolUses(messages: MessageType[]): number {
   return count
 }
 
-// Bulk-research utilities run many-in-parallel and their findings are not a
-// swarm "section" — they would clobber each other's file. Every OTHER spawned
-// agent (collaborators + subagents incl. planner) auto-persists its final output.
-const NON_SWARM_PERSIST_AGENT_TYPES = new Set(['Explore', 'general-purpose'])
-
 export function finalizeAgentTool(
   agentMessages: MessageType[],
   agentId: string,
@@ -361,21 +354,6 @@ export function finalizeAgentTool(
     })
   }
 
-  // Code-level guarantee for swarm shared memory: persist this agent's final
-  // output to its .rayu/swarm/<AGENT>.md section so downstream agents always
-  // receive cross-domain context — even when the agent forgot to Write its own
-  // section. Non-clobbering (an agent's own concise section wins) and skipped
-  // for the bulk-research utilities. Best-effort: never break completion.
-  if (!NON_SWARM_PERSIST_AGENT_TYPES.has(agentType)) {
-    const finalText = content
-      .map(c => (c.type === 'text' ? c.text : ''))
-      .join('\n')
-      .trim()
-    if (finalText.length > 0) {
-      persistDomainSectionIfEmpty(agentType, finalText)
-    }
-  }
-
   return {
     agentId,
     agentType,
@@ -432,7 +410,7 @@ export async function classifyHandoffIfNeeded({
   subagentType: string
   totalToolUseCount: number
 }): Promise<string | null> {
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     if (toolPermissionContext.mode !== 'auto') return null
 
     const agentTranscript = buildTranscriptForClassifier(agentMessages, tools)
@@ -635,7 +613,7 @@ export async function runAsyncAgentLifecycle({
 
     let finalMessage = extractTextContent(agentResult.content, '\n')
 
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
+    if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
       const handoffWarning = await classifyHandoffIfNeeded({
         agentMessages,
         tools: toolUseContext.options.tools,

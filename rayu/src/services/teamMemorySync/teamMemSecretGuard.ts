@@ -1,5 +1,3 @@
-import { feature } from 'bun:bundle'
-
 /**
  * Check if a file write/edit to a team memory path contains secrets.
  * Returns an error message if secrets are detected, or null if safe.
@@ -16,7 +14,7 @@ export function checkTeamMemSecrets(
   filePath: string,
   content: string,
 ): string | null {
-  if (feature('TEAMMEM')) {
+  if (RAYU_FEATURES.TEAMMEM) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { isTeamMemPath } =
       require('../../memdir/teamMemPaths.js') as typeof import('../../memdir/teamMemPaths.js')

@@ -3,7 +3,6 @@ import * as React from 'react'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Writable } from 'stream'
 import stripAnsi from 'strip-ansi'
 import { FileChangeReviewCard } from '../src/components/FileChangeReviewCard.tsx'
 import { FileChangeReviewActionsProvider } from '../src/context/fileChangeReviewContext.tsx'
@@ -22,6 +21,7 @@ import {
   isFileChangeReviewSystemMessage,
   recordPendingFileChange,
 } from '../src/utils/pendingFileChanges.ts'
+import { CaptureStream } from './helpers/captureStream.js'
 
 let dir: string
 
@@ -122,7 +122,7 @@ describe('FileChangeReviewCard', () => {
       status: 'kept',
     }
 
-    const stdout = new CaptureStream()
+    const stdout = new CaptureStream({ columns: 100, rows: 30, isTTY: false })
     const instance = await render(
       <AppStateProvider initialState={state}>
         <FileChangeReviewActionsProvider
@@ -180,7 +180,7 @@ describe('FileChangeReviewCard', () => {
     const summary = buildFileChangeReviewSummary(state.pendingFileChanges)
     if (!summary) throw new Error('Expected review summary')
     const message = createFileChangeReviewSystemMessage(summary)
-    const stdout = new CaptureStream()
+    const stdout = new CaptureStream({ columns: 100, rows: 30, isTTY: false })
     const instance = await render(
       <AppStateProvider initialState={state}>
         <FileChangeReviewActionsProvider
@@ -229,22 +229,3 @@ function createContext(state: AppState) {
   }
 }
 
-class CaptureStream extends Writable {
-  columns = 100
-  rows = 30
-  isTTY = false
-  private chunks: string[] = []
-
-  _write(
-    chunk: string | Buffer,
-    _encoding: BufferEncoding,
-    callback: (error?: Error | null) => void,
-  ): void {
-    this.chunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk)
-    callback()
-  }
-
-  get output(): string {
-    return this.chunks.join('')
-  }
-}

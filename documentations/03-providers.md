@@ -231,16 +231,19 @@ Rayu seamlessly connects to your local instances and cloud Ollama environments.
 
 ## Image / video generation models
 
-The built-in image/video tools default to NVIDIA but can be pointed at Vertex
-Imagen / Veo (or any registered model):
+Signed-in Rayu users get the Rayu-hosted image and video models by default (no
+provider key, billed in Rayu credits). Bring-your-own backends are Vertex
+Imagen / Veo and fal.ai Kling; NVIDIA serves chat only.
 
 - `/model_image_generation` — choose the model for `/generate-image` and
-  `/image-editor` (NVIDIA FLUX/SD or Vertex `imagen-*`).
-- `/model_video_generation` — choose the model for `/image-video` (NVIDIA
-  Cosmos / fal.ai or Vertex `veo-*`).
+  `/image-editor` (Rayu-hosted or Vertex `imagen-*`).
+- `/model_video_generation` — choose the model for `/image-video` (Rayu-hosted,
+  fal.ai Kling or Vertex `veo-*`).
 
-Selecting "Default" reverts to NVIDIA (or Vertex when it's the only configured
-backend). Selections are stored in `~/.rayu/providers.json`.
+Both pickers fetch the live catalog each time they open, hosted models first in
+the admin's order. Selecting "Default" reverts to the first hosted model that can
+do the request (or the BYO default when signed out). Selections are stored in
+`~/.rayu/providers.json`. The same commands work in Rayucode (VS Code).
 
 ---
 

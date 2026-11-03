@@ -14,8 +14,9 @@ import { join } from 'path'
 const IMG_KEY = 'image_generation'
 const VID_KEY = 'video_generation'
 
-// NVIDIA media env keys cleared so a stray host key can't skew isEnabled().
+// Media backend env cleared so a stray host key can't skew isEnabled().
 const MEDIA_ENV = [
+  'NVIDIA_API_KEY',
   'FAL_KEY',
   'GOOGLE_CLOUD_PROJECT',
   'GOOGLE_APPLICATION_CREDENTIALS',
@@ -43,10 +44,9 @@ beforeEach(async () => {
     saved[k] = process.env[k]
     delete process.env[k]
   }
-  // An image/video backend IS configured, so isEnabled() is capability-true
-  // regardless of plan — the whole point of the soft gate.
-  saved.NVIDIA_API_KEY = process.env.NVIDIA_API_KEY
-  process.env.NVIDIA_API_KEY = 'nv-test-key'
+  // An image/video backend IS configured (Vertex serves both), so isEnabled() is
+  // capability-true regardless of plan — the whole point of the soft gate.
+  process.env.GOOGLE_CLOUD_PROJECT = 'test-proj'
   // Default: admin catalog is known, so messages name the real upgrade target.
   const cat = await import('../src/services/rayuAuth/rayuPlansCatalog.ts')
   cat._setPlansCatalogForTesting(CATALOG)
@@ -56,7 +56,7 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true })
   delete process.env.RAYU_CONFIG_DIR
   delete process.env.USE_RAYU_OAUTH
-  for (const k of [...MEDIA_ENV, 'NVIDIA_API_KEY']) {
+  for (const k of MEDIA_ENV) {
     if (saved[k] === undefined) delete process.env[k]
     else process.env[k] = saved[k]
   }
@@ -137,6 +137,58 @@ describe('isPaidFeatureLocked', () => {
     const g = await gate()
     expect(g.isPaidFeatureLocked(IMG_KEY)).toBe(false)
     expect(g.isPaidFeatureLocked(VID_KEY)).toBe(false)
+  })
+
+  // PAYG: the gateway serves image/video from a funded top-up even without the
+  // plan feature (image_feature_allowed = plan feature OR payg_available, see
+  // rayu-gateway-rust image/reserve.rs). The client lock must match, or a
+  // funded user is blocked locally from what the gateway would serve + bill.
+  test('OAuth ON + Free plan + funded top-up -> media features NOT locked', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    ;(await ents())._setRayuEntitlementsForTesting({
+      ...planEnt(false),
+      topupBalance: 42,
+    })
+    const g = await gate()
+    expect(g.isPaidFeatureLocked(IMG_KEY)).toBe(false)
+    expect(g.isPaidFeatureLocked(VID_KEY)).toBe(false)
+    const { ImageGenTool } = await tools()
+    expect(await ImageGenTool.prompt()).not.toContain('Paid feature')
+  })
+
+  test('OAuth ON + Free plan + zero or unknown top-up -> still locked', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const g = await gate()
+    ;(await ents())._setRayuEntitlementsForTesting({
+      ...planEnt(false),
+      topupBalance: 0,
+    })
+    expect(g.isPaidFeatureLocked(IMG_KEY)).toBe(true)
+    // Field absent = unknown balance -> no unlock, lock path unchanged.
+    ;(await ents())._setRayuEntitlementsForTesting(planEnt(false))
+    expect(g.isPaidFeatureLocked(IMG_KEY)).toBe(true)
+  })
+
+  test('funded top-up does NOT unlock non-media features (e.g. telegram)', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const e = await ents()
+    e._setRayuEntitlementsForTesting({
+      ...planEnt(false),
+      features: { ...planEnt(false).features, telegram: { enabled: false } },
+      topupBalance: 999,
+    })
+    const g = await gate()
+    expect(g.isPaidFeatureLocked('telegram')).toBe(true)
+    expect(g.isPaidFeatureLocked(IMG_KEY)).toBe(false)
+  })
+
+  test('OAuth OFF + funded top-up -> not locked (BYOK path unchanged)', async () => {
+    ;(await ents())._setRayuEntitlementsForTesting({
+      ...planEnt(false),
+      topupBalance: 42,
+    })
+    const g = await gate()
+    expect(g.isPaidFeatureLocked(IMG_KEY)).toBe(false)
   })
 })
 

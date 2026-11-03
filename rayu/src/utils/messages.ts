@@ -110,6 +110,10 @@ import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
 import { BashTool } from 'src/tools/BashTool/BashTool.js'
 import { ExitPlanModeV2Tool } from 'src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
+import {
+  renderOrchestratorExit,
+  renderOrchestratorReminder,
+} from 'src/orchestrator/reminder.js'
 import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js'
 import {
   FILE_READ_TOOL_NAME,
@@ -153,6 +157,12 @@ import { formatFileSize } from './format.js'
 import { validateImagesForAPI } from './imageValidation.js'
 import { safeParseJSON } from './json.js'
 import { logError, logMCPDebug } from './log.js'
+import {
+  getToolInputParseFailure,
+  repairToolArgumentsJSON,
+  TOOL_INPUT_PARSE_FAILURE_KEY,
+  toolInputJSONErrorMessage,
+} from './toolInputRepair.js'
 import { normalizeLegacyToolName } from './permissions/permissionRuleParser.js'
 import {
   getPlanModeV2AgentCount,
@@ -2693,30 +2703,53 @@ export function normalizeContentFromAPI(
         // TODO: This needs patching as recursive fields can still be stringified
         let normalizedInput: unknown
         if (typeof contentBlock.input === 'string') {
-          const parsed = safeParseJSON(contentBlock.input)
-          if (parsed === null && contentBlock.input.length > 0) {
-            // TET/FC-v3 diagnostic: the streamed tool input JSON failed to
-            // parse. We fall back to {} which means downstream validation
-            // sees empty input. The raw prefix goes to debug log only — no
-            // PII-tagged proto column exists for it yet.
+          const parsed = safeParseJSON(contentBlock.input, false)
+          if (parsed !== null || contentBlock.input.length === 0) {
+            normalizedInput = parsed ?? {}
+          } else {
+            // Malformed tool-argument JSON. Non-Claude providers produce this
+            // routinely (fenced payloads, raw newlines inside a string,
+            // trailing commas, output truncated mid-arguments). Try a bounded,
+            // syntax-only repair before giving up.
+            //
+            // Previously this fell through to `{}`, so the tool ran with empty
+            // input and reported a schema error naming the wrong problem — the
+            // model then "fixed" arguments that were never wrong and looped.
+            const repair = repairToolArgumentsJSON(contentBlock.input)
             logEvent('tengu_tool_input_json_parse_fail', {
               toolName: sanitizeToolNameForAnalytics(contentBlock.name),
               inputLen: contentBlock.input.length,
+              recovered: repair.ok,
+              // Count, not names: the metadata schema takes no free-form strings
+              // here, and the stage names already go to the debug log below.
+              repairStageCount: repair.ok ? repair.stages.length : 0,
             })
-            if (process.env.USER_TYPE === 'ant') {
-              logForDebugging(
-                `tool input JSON parse fail: ${contentBlock.input.slice(0, 200)}`,
-                { level: 'warn' },
-              )
-            }
+            // Not gated on USER_TYPE: 3P users hit this far more often than
+            // first-party ones and need it to diagnose their provider.
+            logForDebugging(
+              `tool input JSON ${repair.ok ? `repaired (${repair.stages.join(', ')})` : 'parse fail'} for ${contentBlock.name}: ${contentBlock.input.slice(0, 200)}`,
+              { level: 'warn' },
+            )
+            normalizedInput = repair.ok
+              ? repair.value
+              : {
+                  [TOOL_INPUT_PARSE_FAILURE_KEY]: toolInputJSONErrorMessage(
+                    contentBlock.name,
+                    contentBlock.input,
+                    repair.reason,
+                  ),
+                }
           }
-          normalizedInput = parsed ?? {}
         } else {
           normalizedInput = contentBlock.input
         }
 
         // Then apply tool-specific corrections
-        if (typeof normalizedInput === 'object' && normalizedInput !== null) {
+        if (
+          typeof normalizedInput === 'object' &&
+          normalizedInput !== null &&
+          getToolInputParseFailure(normalizedInput) === undefined
+        ) {
           const tool = findToolByName(tools, contentBlock.name)
           if (tool) {
             try {
@@ -2940,6 +2973,14 @@ export type StreamingToolUse = {
 export type StreamingThinking = {
   thinking: string
   isStreaming: boolean
+  /**
+   * When the block finished streaming.
+   *
+   * No longer drives VISIBILITY — the trailing preview is shown only while
+   * `isStreaming` is true, and completed reasoning renders as in-order message
+   * content instead. Still recorded because it is the timestamp of the
+   * streaming→complete transition and callers/tests assert on it.
+   */
   streamingEndedAt?: number
 }
 
@@ -2948,17 +2989,21 @@ export type StreamingThinking = {
  *
  * On a normal turn the completion path (an assistant message carrying the
  * finished thinking block) has already flipped the state to
- * `isStreaming:false` with a `streamingEndedAt`, which the 30s auto-hide in
- * REPL then clears — so this returns it unchanged and that brief "✓ Thought"
- * linger is preserved.
+ * `isStreaming:false`, at which point Messages.tsx stops rendering the trailing
+ * preview and the finished block renders IN PLACE, above the response text. So
+ * this returns it unchanged and nothing is lost.
  *
  * But if the turn ended while a thinking block was still mid-stream — e.g. the
  * request errored ("Streaming is required…") or was aborted before the block
- * completed — the state is stuck at `isStreaming:true`. Nothing else clears it
- * (the auto-hide requires `!isStreaming`), so the animated "Thinking…" preview
- * keeps spinning below the error/turn-status and looks like the model is still
- * working. In that case we drop it to `null` so the final response/error stays
- * as the last thing on screen.
+ * completed — the state is stuck at `isStreaming:true`, and no completed
+ * assistant message will ever arrive to clear it. The animated "Thinking…"
+ * preview would keep spinning below the error and look like the model is still
+ * working, so we drop it to `null` and let the final response/error stand as the
+ * last thing on screen.
+ *
+ * (Historically this also mattered because a completed preview lingered for 30s
+ * behind a timer in REPL. That timer is gone: completed reasoning is ordinary
+ * in-order message content now.)
  */
 export function finalizeStreamingThinkingOnTurnEnd(
   current: StreamingThinking | null,
@@ -3273,11 +3318,11 @@ function getPlanModeV2Instructions(attachment: {
     ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool.`
     : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool.`
 
-  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
+  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT change the project: no edits to any file except the plan file mentioned below, and no commands that change files, configs, dependencies or the repository (including making commits). You may still run commands that only investigate, such as tests, builds and scripts that leave the code unchanged. This supercedes any other instructions you have received.
 
 ## Plan File Info:
 ${planFileInfo}
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
+You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - everything else you do must leave the project unchanged.
 
 ## Plan Workflow
 
@@ -3377,7 +3422,7 @@ function getPlanModeInterviewInstructions(attachment: {
     ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool.`
     : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool.`
 
-  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
+  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT change the project: no edits to any file except the plan file mentioned below, and no commands that change files, configs, dependencies or the repository (including making commits). You may still run commands that only investigate, such as tests, builds and scripts that leave the code unchanged. This supercedes any other instructions you have received.
 
 ## Plan File Info:
 ${planFileInfo}
@@ -3438,7 +3483,7 @@ function getPlanModeV2SparseInstructions(attachment: {
     ? 'Follow iterative workflow: explore codebase, interview user, write to plan incrementally.'
     : 'Follow 5-phase workflow.'
 
-  const content = `Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${attachment.planFilePath}). ${workflowDescription} End turns with ${ASK_USER_QUESTION_TOOL_NAME} (for clarifications) or ${ExitPlanModeV2Tool.name} (for plan approval). Never ask about plan approval via text or AskUserQuestion.`
+  const content = `Plan mode still active (see full instructions earlier in conversation). Do not change the project except the plan file (${attachment.planFilePath}); commands that only investigate are fine. ${workflowDescription} End turns with ${ASK_USER_QUESTION_TOOL_NAME} (for clarifications) or ${ExitPlanModeV2Tool.name} (for plan approval). Never ask about plan approval via text or AskUserQuestion.`
 
   return wrapMessagesInSystemReminder([
     createUserMessage({ content, isMeta: true }),
@@ -3453,11 +3498,11 @@ function getPlanModeV2SubAgentInstructions(attachment: {
     ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool if you need to.`
     : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool if you need to.`
 
-  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
+  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run commands that change files, configs, dependencies or the repository (including making commits), or otherwise change the project. Commands that only investigate are fine. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
 
 ## Plan File Info:
 ${planFileInfo}
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
+You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - everything else you do must leave the project unchanged.
 Answer the user's query comprehensively, using the ${ASK_USER_QUESTION_TOOL_NAME} tool if you need to ask the user clarifying questions. If you do use the ${ASK_USER_QUESTION_TOOL_NAME}, make sure to ask all clarifying questions you need to fully understand the user's intent before proceeding.`
 
   return wrapMessagesInSystemReminder([
@@ -3898,7 +3943,14 @@ Treat this as a fresh planning session. Do not assume the existing plan is relev
       const planReference = attachment.planExists
         ? ` The plan file is located at ${attachment.planFilePath} if you need to reference it.`
         : ''
-      const content = `## Exited Plan Mode
+      // Only an approval that actually entered Orchestrator mode gets the
+      // delegation-only text; an older attachment without a mode claims nothing.
+      const content =
+        attachment.mode === 'orchestrator'
+          ? `## Exited Plan Mode — Orchestrator Active
+
+The plan is approved and Orchestrator mode is active. Coordinate and delegate implementation, review, tests, and builds to subagents; do not edit application files or run implementation commands yourself.${planReference}`
+          : `## Exited Plan Mode
 
 You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}`
 
@@ -3906,18 +3958,22 @@ You have exited plan mode. You can now make edits, run tools, and take actions.$
         createUserMessage({ content, isMeta: true }),
       ])
     }
-    case 'swarm_mode': {
-      const content = `## Collaborator-swarm mode is ON
-
-You are the ORCHESTRATOR — coordinate, do not implement yourself. Run the 3-phase build flow:
-1. SCOPE & RESEARCH — clarify the request's detail and scope; ask the user for their preferred tech stack (offer recommendations with rationale). For open implementation choices (e.g. payment: Stripe / bank / ABA), dispatch the planner subagent to research the real options and present them for the user to choose.
-2. ALIGNED PLAN — have the planner produce ONE coherent plan, explicitly aligned across backend AND frontend (shared API contract, data model, auth); get the user's confirmation.
-3. DELEGATE BY SPECIALTY — decompose into backend / frontend / mobile subtasks and delegate to the matching collaborators (run independent work in parallel). Each collaborator may use only its allowed subagents.
-
-The user can return to normal mode with /normal.`
-
+    case 'orchestrator_mode': {
       return wrapMessagesInSystemReminder([
-        createUserMessage({ content, isMeta: true }),
+        createUserMessage({
+          content: renderOrchestratorReminder(attachment),
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'orchestrator_mode_exit': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({ content: renderOrchestratorExit(), isMeta: true }),
+      ])
+    }
+    case 'orchestrator_checkpoint': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({ content: attachment.text, isMeta: true }),
       ])
     }
     case 'auto_mode': {
@@ -4492,6 +4548,8 @@ export function createTurnDurationMessage(
   durationMs: number,
   budget?: { tokens: number; limit: number; nudges: number },
   messageCount?: number,
+  rayuCredits?: number,
+  rayuCreditsSoFar?: boolean,
 ): SystemTurnDurationMessage {
   return {
     type: 'system',
@@ -4501,6 +4559,8 @@ export function createTurnDurationMessage(
     budgetLimit: budget?.limit,
     budgetNudges: budget?.nudges,
     messageCount,
+    ...(rayuCredits !== undefined && { rayuCredits }),
+    ...(rayuCredits !== undefined && rayuCreditsSoFar === true && { rayuCreditsSoFar }),
     timestamp: new Date().toISOString(),
     uuid: randomUUID(),
     isMeta: false,

@@ -1,0 +1,202 @@
+{
+  "//": "The VS Code extension manifest. It is NOT a package.json for this source tree \u2014 scripts/build-vscode.ts copies it into dist/vscode-stage/ AS package.json and injects `version` from rayu/package.json. It deliberately does not live inside src/ as a real package.json, because a nested package.json changes Node/Bun module resolution for everything beneath it, which would silently alter how the CLI bundle resolves src/vscode/** .",
+  "name": "rayucode",
+  "displayName": "Rayucode",
+  "description": "The Rayu AI coding agent in VS Code \u2014 the same engine, tools, MCP servers and slash commands as the Rayu CLI.",
+  "version": "0.0.0",
+  "publisher": "RayuCode",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#18181b",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rayu-dev/rayu-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/rayu-dev/rayu-cli/issues"
+  },
+  "homepage": "https://rayu.dev",
+  "license": "MIT",
+  "//engines": "1.85 is the floor. Everything used here \u2014 WebviewViewProvider, asExternalUri, registerUriHandler \u2014 predates it comfortably, and a lower floor costs nothing while excluding fewer users.",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "chat",
+    "coding assistant",
+    "rayu"
+  ],
+  "//main": "CommonJS, because VS Code loads extensions with require() and has no ESM entrypoint support (microsoft/vscode#130367).",
+  "//type": "Stated explicitly, not left to Node's default. rayu/package.json declares \"type\": \"module\", so an extension.js sitting anywhere under it is treated as ESM and fails to require() with 'module is not defined in ES module scope'. Inside the VSIX this manifest is the nearest package.json, so this field is what makes the bundle load \u2014 and saying it out loud stops a future edit from re-introducing that failure.",
+  "type": "commonjs",
+  "main": "./extension.js",
+  "//activationEvents": "onView keeps activation lazy: the extension host does no work in windows where the panel is never opened. Once the authenticated panel mounts, it prewarms the engine while the user reads or types so the first turn can reuse it.",
+  "activationEvents": [
+    "onView:rayucode.chat",
+    "onView:rayucode.contextDrop",
+    "onCommand:rayucode.newSession",
+    "onCommand:rayucode.openSettings",
+    "onWebviewPanel:rayucode.sessionChat",
+    "onWebviewPanel:rayucode.settings",
+    "onAuthenticationRequest:rayu"
+  ],
+  "//capabilities": "Declared rather than left to the default (which VS Code documents as the same `false`) so the choice is explicit and cannot be flipped by accident. The engine is an agent: it executes commands, edits files, starts the workspace's MCP servers and plugins, and loads the workspace .env (which can redirect API endpoints). None of that is safe in a folder the user has not trusted, so Rayucode stays disabled in Restricted Mode.",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Rayucode runs an AI agent that executes commands, edits files, and loads this folder's .env, MCP servers and plugins. Trust the folder to enable it."
+    }
+  },
+  "contributes": {
+    "//authentication": "Rayu in VS Code's Accounts menu (host/auth/rayuAuthProvider.ts). Its sessions carry a placeholder token, never Rayu's own: any extension may ask for a provider's session.",
+    "authentication": [
+      {
+        "id": "rayu",
+        "label": "Rayu"
+      }
+    ],
+    "//configuration": "Extension options only. Rayu's own settings (models, permissions, auto-compact, …) live in Rayu's settings files and are edited from the Rayucode Settings tab, so the terminal CLI sees the same values.",
+    "configuration": {
+      "title": "Rayucode",
+      "properties": {
+        "rayucode.engine.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Run this Rayu engine instead of the one bundled with Rayucode: a script (`.mjs`, `.cjs` or `.js`, run with the editor's own Node) or a compiled engine executable. Must be an absolute path. Leave empty to use the bundled engine. Takes effect after the window reloads."
+        },
+        "rayucode.engine.maxMemoryMB": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "default": null,
+          "minimum": 512,
+          "scope": "machine",
+          "markdownDescription": "The most memory each Rayu engine (one per open conversation) may use, in MB. When an engine reaches it, it restarts and your next message continues the conversation. Leave empty for a limit based on this machine's RAM. For the `engine.mjs` engine this caps the JavaScript heap. Takes effect after the window reloads."
+        },
+        "rayucode.contextDropView": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the **Rayucode Context** pane in the Explorer. Drag files or folders onto it to add them to the active Rayucode conversation without holding Shift."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rayucode",
+          "title": "Rayucode",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "rayucode": [
+        {
+          "id": "rayucode.chat",
+          "name": "Sessions",
+          "type": "webview"
+        }
+      ],
+      "explorer": [
+        {
+          "id": "rayucode.contextDrop",
+          "name": "Rayucode Context",
+          "visibility": "collapsed",
+          "when": "config.rayucode.contextDropView"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "rayucode.newSession",
+        "title": "New Session",
+        "category": "Rayucode",
+        "icon": "$(add)"
+      },
+      {
+        "command": "rayucode.openSettings",
+        "title": "Open Settings",
+        "category": "Rayucode",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "rayucode.signIn",
+        "title": "Sign In",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.signOut",
+        "title": "Sign Out",
+        "category": "Rayucode"
+      },
+      {
+        "command": "rayucode.feedback",
+        "title": "Send Feedback",
+        "category": "Rayucode",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "rayucode.addTerminalSelection",
+        "title": "Add Terminal Selection to Prompt",
+        "category": "Rayucode"
+      },
+      {
+        "//": "The Explorer route. A drop CANNOT reach the chat panel from the Explorer \u2014 Rayucode contributes its own activity-bar container, so the two are never visible at the same time \u2014 which makes this the primary way to add a file from the tree, not a convenience alias for dragging.",
+        "command": "rayucode.addToContext",
+        "title": "Add to Rayu Context",
+        "category": "Rayucode",
+        "icon": "$(add)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "rayucode.newSession",
+          "when": "view == rayucode.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "rayucode.openSettings",
+          "when": "view == rayucode.chat",
+          "group": "navigation@2"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "rayucode.addTerminalSelection",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "rayucode.addToContext",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "rayucode.addToContext",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "rayucode.addToContext",
+          "group": "navigation@99"
+        }
+      ]
+    }
+  }
+}

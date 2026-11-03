@@ -4,7 +4,7 @@
 // to support an IP/legal review of the fork:
 //
 //   ORIGINAL   — first-party Rayu work (features the maintainer added):
-//                collaborator swarm, image/video generation, Telegram bridge,
+//                Orchestrator mode, image/video generation, Telegram bridge,
 //                the Rayu gateway/account layer, and Rayu-branded config/UI.
 //   GENERATED  — machine-generated code (protobuf schemas, etc.).
 //   DERIVATIVE — the Claude Code core this project was forked from (the CLI
@@ -30,7 +30,12 @@ const OUT = join(ROOT, 'ORIGIN_MANIFEST.md')
 const ORIGINAL_DIR_PREFIXES = [
   'utils/swarm/',
   'coordinator/',
-  'tools/AgentTool/built-in/collaborators/',
+  'commands/orchestrator/',
+  // Orchestrator mode's run engine (contract, packets, attribution, worktree merge,
+  // verifier, gate) and its tool and command. No upstream counterpart.
+  'orchestrator/',
+  'tools/OrchestrationContractTool/',
+  'commands/orchestrator-status/',
   'tools/ImageGenTool/',
   'tools/VideoGenTool/',
   'telegram/',
@@ -38,6 +43,17 @@ const ORIGINAL_DIR_PREFIXES = [
   'commands/model-image-generation/',
   'commands/model-video-generation/',
   'commands/ultraplan-local/',
+  // External-agent orchestrator: RAYU drives other agentic CLIs (Codex,
+  // Claude Code, OpenCode, any ACP agent) as capability-gated plugins.
+  // Entirely first-party; no upstream counterpart exists.
+  'externalAgents/',
+  'commands/agent/',
+  'tools/ExternalAgentTool/',
+  'tasks/ExternalAgentTask/',
+  // The Rayucode VS Code extension: manifest, extension host, engine transport
+  // and the React webview UI. Entirely first-party — upstream has no editor
+  // client, and this consumes the shared engine rather than reimplementing it.
+  'vscode/',
 ]
 // First-party single-file markers (exact relative paths or basename patterns).
 const ORIGINAL_FILE_MARKERS = [
@@ -47,6 +63,18 @@ const ORIGINAL_FILE_MARKERS = [
   'utils/rayuConfig.ts',
   'utils/rayuProviders.ts',
   'utils/agentSwarmsEnabled.ts',
+  'utils/orchestratorMode.ts',
+  // Rayu's plan mode: runs like Full Manage but refuses changes to the project.
+  'utils/permissions/planModePolicy.ts',
+  // Orchestrator mode pieces that live beside upstream modules.
+  'constants/orchestrator.ts',
+  'tools/SendMessageTool/OrchestratorSendMessageTool.ts',
+  'tools/AgentTool/built-in/subagents/verifier.ts',
+  'utils/agentChangeLedger.ts',
+  'utils/git/gitBinary.ts',
+  'components/tasks/OrchestrationRunSection.tsx',
+  'components/tasks/OrchestrationWorkerDetail.tsx',
+  'hooks/notifs/useWorkerApprovalLossNotification.ts',
   'components/RayuProviderSetup.tsx',
 ]
 

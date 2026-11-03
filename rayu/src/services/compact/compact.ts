@@ -14,6 +14,7 @@ import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { describeOrchestratorSession } from '../../orchestrator/session.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
@@ -142,7 +143,7 @@ const MAX_COMPACT_STREAMING_RETRIES = 2
  * tool_result content from tools). Assistant messages contain text, tool_use,
  * and thinking blocks but not images.
  */
-export function stripImagesFromMessages(messages: Message[]): Message[] {
+export function stripImagesFromMessages<T extends Message>(messages: T[]): T[] {
   return messages.map(message => {
     if (message.type !== 'user') {
       return message
@@ -553,6 +554,11 @@ export async function compactConversation(
     if (planModeAttachment) {
       postCompactFileAttachments.push(planModeAttachment)
     }
+    const orchestratorAttachment =
+      createOrchestratorModeAttachmentIfNeeded(context)
+    if (orchestratorAttachment) {
+      postCompactFileAttachments.push(orchestratorAttachment)
+    }
 
     // Add skill attachment if skills were invoked in this session
     const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
@@ -945,6 +951,11 @@ export async function partialCompactConversation(
     const planModeAttachment = await createPlanModeAttachmentIfNeeded(context)
     if (planModeAttachment) {
       postCompactFileAttachments.push(planModeAttachment)
+    }
+    const orchestratorAttachment =
+      createOrchestratorModeAttachmentIfNeeded(context)
+    if (orchestratorAttachment) {
+      postCompactFileAttachments.push(orchestratorAttachment)
     }
 
     const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
@@ -1556,6 +1567,23 @@ export async function createPlanModeAttachmentIfNeeded(
     isSubAgent: !!context.agentId,
     planFilePath,
     planExists,
+  })
+}
+
+/**
+ * Re-attaches the full Orchestrator role reminder after compaction, so the
+ * summary is followed by the rules it no longer contains. Main thread only.
+ */
+export function createOrchestratorModeAttachmentIfNeeded(
+  context: ToolUseContext,
+): AttachmentMessage | null {
+  if (context.agentId) return null
+  if (context.getAppState().toolPermissionContext.mode !== 'orchestrator') {
+    return null
+  }
+  return createAttachmentMessage({
+    type: 'orchestrator_mode',
+    ...describeOrchestratorSession(context, 'full'),
   })
 }
 

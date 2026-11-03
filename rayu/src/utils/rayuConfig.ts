@@ -5,12 +5,25 @@
 // never logged or echoed; callers reference providers by id, not by key value.
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir } from './envUtils.js'
+import { getRayuAuthConfigDir, isUnsandboxedTestConfigAccess } from './envUtils.js'
 import { clearContextPrepCache } from './contextPrepCache.js'
 import { CURATED_PROVIDER_MODELS } from './curatedProviderModels.js'
 import { reportBug, reportIssue, reportVulnerability } from './rayuDiagnostics.js'
 
 export type ProviderKind = 'anthropic' | 'anthropic-compatible' | 'openai-compatible' | 'bedrock' | 'azure' | 'vertex' | 'genai' | 'kiro' | 'copilot' | 'rayu-hosted' | 'custom'
+
+/**
+ * Provider id of the Rayu API-KEY provider ('rayu' — Rayu's hosted models via a
+ * `rayu_sk_live_…` key).
+ *
+ * Declared here as a literal rather than imported from rayuProviders.ts because
+ * that dependency runs ONE WAY: rayuProviders imports rayuConfig, never the
+ * reverse (see the import-cycle note in services/api/providerKeys.ts). Kept in
+ * sync with `RAYU_API_PROVIDER_ID` there, and a test asserts the two agree so a
+ * rename cannot silently split them.
+ */
+const RAYU_API_PROVIDER_ID = 'rayu'
+
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
 /**
@@ -64,6 +77,22 @@ export type RayuProvider = {
    */
   supportsThinking?: boolean
   supportsImage?: boolean
+  /**
+   * Per-MODEL image capability, keyed by exact model id. Highest precedence in
+   * resolveImageSupport() — it overrides both `supportsImage` and the built-in
+   * model tables.
+   *
+   * Needed because `supportsImage` is provider-wide and one provider commonly
+   * serves both kinds of model: DeepSeek serves text-only `deepseek-chat`
+   * alongside vision `deepseek-vl`, and a Bedrock/Azure/Vertex entry serves
+   * several families at once. A provider-level boolean cannot answer for such a
+   * provider at all; only a (provider, model) pair can.
+   *
+   * Both directions are meaningful here, unlike `supportsImage`: `true` corrects
+   * a model the built-in table wrongly lists as text-only, `false` corrects the
+   * opposite. Set from /connect, or by hand in ~/.rayu/providers.json.
+   */
+  modelSupportsImage?: Record<string, boolean>
   apiKey?: string
   /**
    * How a first-party Anthropic provider (kind:'anthropic') authenticates:
@@ -100,6 +129,9 @@ export type RayuProvider = {
   contextWindow?: number
   /** Per-model context-window (tokens) overrides, keyed by model id. */
   modelContextWindows?: Record<string, number>
+  /** Per-model declarations from the provider catalogue. Absent means unknown. */
+  modelSupportsThinking?: Record<string, boolean>
+  modelSupportsTools?: Record<string, boolean>
   /**
    * Per-model DISPLAY NAME, keyed by model id. Populated for rayu-hosted from
    * /me/entitlements (the name the Rayu admin typed), so the picker can show
@@ -109,6 +141,12 @@ export type RayuProvider = {
    * from the map, and the picker then shows the id alone.
    */
   modelLabels?: Record<string, string>
+  /**
+   * Per-model customer-facing plain-text summaries, keyed by model id. Rayu
+   * catalogs populate this from the admin-managed description so the CLI and
+   * Rayucode can explain a model without exposing upstream routing details.
+   */
+  modelDescriptions?: Record<string, string>
   /** User-listed model ids selectable via /model (openai-compatible). */
   models?: string[]
   /** Models fetched live from {baseURL}/models, cached for the /model picker. */
@@ -169,10 +207,9 @@ export type RayuConfig = {
   activeProvider?: string
   providers: RayuProvider[]
   /**
-   * Globally-configured model for built-in subagents (the Agent tool). Lets the
-   * subagent run on a DIFFERENT provider than the main agent (e.g. main on
-   * Bedrock/Claude, subagents on NVIDIA's fast model). When unset, subagents
-   * default to the main provider's instant/small-fast model.
+   * Globally-configured model for spawned Agent-tool workers. It may use a
+   * DIFFERENT provider than the main agent (e.g. main on Bedrock/Claude,
+   * workers on NVIDIA). When unset, each agent uses its built-in default.
    *
    * Shaped as a single selection for now; kept as an object so it can grow into
    * per-specialty selections later (e.g. subagentsBySpecialty) without a
@@ -183,21 +220,23 @@ export type RayuConfig = {
     model: string
   }
   /**
-   * Per-agent overrides keyed by agent type (e.g. 'backend'). Takes
+   * Per-agent overrides keyed by agent type (e.g. 'general-purpose'). Takes
    * precedence over the global `subagent` selection for that agent. Lets each
-   * specialist run on its own provider/model (set via /model_subagent <AGENT>).
+   * worker run on its own provider/model (set via /subagent_models <AGENT>).
    */
   subagentByAgent?: Record<string, { providerId: string; model: string }>
   /**
    * Default model id for the GenerateImage tool (image generation + editing),
-   * chosen via /model_image_generation. When unset, the tool uses its NVIDIA
-   * default (or Vertex Imagen when that's the only configured backend).
+   * chosen via /model_image_generation. When unset, a signed-in user gets the
+   * first hosted model that fits the request; otherwise Vertex Imagen's
+   * catalog default.
    */
   imageModel?: string
   /**
    * Default model id for the GenerateVideo tool, chosen via
-   * /model_video_generation. When unset, the tool uses its NVIDIA/fal default
-   * (or Vertex Veo when that's the only configured backend).
+   * /model_video_generation. When unset, a signed-in user gets the first hosted
+   * model that fits the request; otherwise the fal.ai or Vertex Veo catalog
+   * default for the configured backend.
    */
   videoModel?: string
   /**
@@ -208,8 +247,8 @@ export type RayuConfig = {
    */
   webFetchModel?: string
   /**
-   * Opt-in project profile name for the specialist swarm (e.g. 'cambodia').
-   * When set, the matching locale/stack fragments are injected into PA/DB/MOB.
+   * Opt-in project profile name for the Orchestrator planner (e.g. 'cambodia').
+   * When set, the matching locale fragment is injected into the planner.
    * Unset → no locale bias (the 'default' profile). See built-in/profiles.ts.
    */
   projectProfile?: string
@@ -218,7 +257,7 @@ export type RayuConfig = {
 const FILE_NAME = 'providers.json'
 
 function configPath(): string {
-  return join(getRayuConfigHomeDir(), FILE_NAME)
+  return join(getRayuAuthConfigDir(), FILE_NAME)
 }
 
 let cache: RayuConfig | null = null
@@ -245,11 +284,39 @@ function maybeWarnInsecurePermissions(path: string): void {
 
 export function loadRayuConfig(): RayuConfig {
   if (cache) return cache
+  // A test that has not sandboxed its config directory must not see — or later overwrite —
+  // the developer's real providers and API keys. It gets an empty config it can populate
+  // in memory, which is also what makes such a test deterministic. See
+  // `isUnsandboxedTestConfigAccess`.
+  if (isUnsandboxedTestConfigAccess()) {
+    cache = { providers: [] }
+    return cache
+  }
   const path = configPath()
   if (existsSync(path)) {
     try {
       cache = JSON.parse(readFileSync(path, 'utf8')) as RayuConfig
       if (!Array.isArray(cache.providers)) cache.providers = []
+      // modelSupportsImage is a documented hand-edit point, so it is untrusted
+      // input keyed by MODEL ID — and model ids feed the
+      // `providerId\u0000model` routing string. Sanitize on read so a bad key can
+      // never reach routing, and so a non-boolean value is dropped rather than
+      // coerced (a truthy "false" would mean "send images" — the exact 400 this
+      // feature prevents). Lazy require: customProvider.ts is a leaf, but this
+      // module is imported extremely early.
+      for (const provider of cache.providers) {
+        if (provider.modelSupportsImage === undefined) continue
+        /* eslint-disable @typescript-eslint/no-require-imports */
+        const { sanitizeModelSupportsImage } = require('./customProvider.js') as {
+          sanitizeModelSupportsImage: (
+            input: unknown,
+          ) => Record<string, boolean> | undefined
+        }
+        /* eslint-enable @typescript-eslint/no-require-imports */
+        const clean = sanitizeModelSupportsImage(provider.modelSupportsImage)
+        if (clean) provider.modelSupportsImage = clean
+        else delete provider.modelSupportsImage
+      }
       maybeWarnInsecurePermissions(path)
       return cache
     } catch (e) {
@@ -266,7 +333,15 @@ export function loadRayuConfig(): RayuConfig {
 }
 
 export function saveRayuConfig(config: RayuConfig): void {
-  const dir = getRayuConfigHomeDir()
+  // In-memory only, for the reason in `isUnsandboxedTestConfigAccess`: this file holds the
+  // user's API keys and provider endpoints, and an unsandboxed test run has destroyed both.
+  // Reads go through `cache`, so a test that writes and reads back still behaves normally.
+  if (isUnsandboxedTestConfigAccess()) {
+    cache = config
+    clearContextPrepCache('rayu-config-save')
+    return
+  }
+  const dir = getRayuAuthConfigDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   // 0600: secrets must not be world/group readable.
   writeFileSync(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
@@ -354,9 +429,9 @@ export function setActiveProviderModel(providerId: string, model: string): void 
 }
 
 /**
- * The globally-configured subagent model selection (provider + model), or
- * undefined when the user hasn't set one (subagents then default to the main
- * provider's instant model — see resolveSubagentExecution in model/agent code).
+ * The globally-configured spawned-agent model selection (provider + model), or
+ * undefined when the user has not set one. A named agent override takes
+ * precedence over this global value.
  */
 export function getSubagentSelection(
   agentType?: string,
@@ -376,8 +451,8 @@ export function getSubagentSelection(
 
 /**
  * The per-agent subagent override ONLY (ignores the global default). Used by
- * model resolution to decide whether an explicit /model_subagent or
- * /collaborator_model selection should override an agent's hardcoded model
+ * model resolution to decide whether an explicit per-agent model selection
+ * should override an agent's hardcoded model
  * (including 'inherit'), while leaving fork/inherit agents untouched when the
  * user hasn't configured that specific agent type.
  */
@@ -394,10 +469,11 @@ export function getPerAgentSubagentSelection(
 }
 
 /**
- * Persist a subagent model selection (set via /model_subagent). With no
- * agentType, sets the GLOBAL default for all subagents. With an agentType
- * (e.g. 'backend'), sets a per-agent override. Does NOT change the active
- * (main) provider — subagents can run on a different provider concurrently.
+ * Persist an Agent-tool worker model selection (set via /subagent_models).
+ * With no agentType, sets the GLOBAL model for all spawned agents. With an
+ * agentType (e.g. 'general-purpose'), sets a per-agent override. This does NOT
+ * change the main conversational model; spawned agents may run on a different
+ * provider concurrently.
  */
 export function setSubagentSelection(
   providerId: string,
@@ -414,8 +490,8 @@ export function setSubagentSelection(
 }
 
 /**
- * Clear a subagent selection. With no agentType, clears the global default.
- * With an agentType, clears just that specialist's override.
+ * Clear a spawned-agent selection. With no agentType, clears the global value.
+ * With an agentType, clears only that agent's override.
  */
 export function clearSubagentSelection(agentType?: string): void {
   const cfg = loadRayuConfig()
@@ -666,12 +742,39 @@ const KNOWN_MODEL_CONTEXT: Array<[RegExp, number]> = [
  * Priority: RAYU_CONTEXT_TOKENS env → per-model config override →
  * per-provider config default → known-model table → null (caller defaults).
  * Records a diagnostic when it falls back so unknown models surface for tuning.
+ *
+ * ── THE MODEL MAY CARRY A PROVIDER PREFIX, AND IT IS DECODED HERE ──────────────
+ *
+ * A model string can be the routed `providerId\0model` form produced by
+ * `encodeModelWithProvider`. Two callers rely on that: a subagent or swarm collaborator
+ * routed to a different provider than the active one, and the Rayucode extension, which
+ * always pins its session with the provider-qualified id.
+ *
+ * Without decoding, every lookup below was done with the ENCODED string — so
+ * `modelContextWindows['longcat-2.0']` was searched for as
+ * `modelContextWindows['rayu-hosted\0longcat-2.0']`, missed, and the caller fell back to
+ * the 200k default. A 1M model was reported as 200k, and `/context`, the autocompact
+ * threshold and the panel's gauge were all wrong together.
+ *
+ * The provider is resolved from the prefix rather than from `getActiveProvider()` for the
+ * same reason: a routed model's window belongs to ITS provider. This is the behaviour
+ * `getContextWindowForModel` already documents ("Per-MODEL, so a routed subagent gets ITS
+ * provider's window rather than the active provider's") — the decode is what makes the
+ * implementation match.
  */
 export function getRayuModelContextWindow(model: string): number | null {
   const envOverride = parseInt(process.env.RAYU_CONTEXT_TOKENS || '', 10)
   if (!isNaN(envOverride) && envOverride > 0) return envOverride
 
-  const p = getActiveProvider()
+  const decoded = decodeModelProvider(model)
+  // Bare model for every lookup: config keys, the known-model table and the Kiro catalog
+  // are all keyed by the model the provider actually serves.
+  model = decoded.model
+  const p = decoded.providerId
+    ? (loadRayuConfig().providers.find(
+        provider => provider.id === decoded.providerId,
+      ) ?? getActiveProvider())
+    : getActiveProvider()
   // Kiro: per-model context from the Kiro catalog (opus-4.7/4.8 are 1M; sonnet/
   // haiku base are 200k). Per-model config overrides still win.
   if (p?.kind === 'kiro') {
@@ -698,15 +801,18 @@ export function getRayuModelContextWindow(model: string): number | null {
   if (!p || p.kind === 'anthropic') {
     return null
   }
-  // Rayu-HOSTED: the catalog is SERVER-DRIVEN, so the context window must be too.
-  // The admin sets it per model in the dashboard; it arrives via
-  // /me/entitlements and is synced into modelContextWindows by
-  // syncRayuHostedProvider. We deliberately do NOT consult the built-in
-  // KNOWN_MODEL_CONTEXT table here: a hosted model may be added or renamed at any
+  // BOTH Rayu providers: the catalog is SERVER-DRIVEN, so the context window must
+  // be too. The admin sets it per model in the dashboard; it arrives via
+  // /me/entitlements for 'rayu-hosted' (synced by syncRayuHostedProvider) and via
+  // GET {gateway}/v1/models for the API-key provider 'rayu' (synced by
+  // refreshRayuApiKeyCatalog). We deliberately do NOT consult the built-in
+  // KNOWN_MODEL_CONTEXT table here: a Rayu model may be added or renamed at any
   // time, and matching an admin's model code against hardcoded patterns is how a
-  // brand-new model silently inherits some other model's window. Unknown window →
-  // null, and the caller applies its documented default.
-  if (p.kind === 'rayu-hosted') {
+  // brand-new model silently inherits some OTHER vendor's window (a Rayu code like
+  // `deepseek-v3` would match the DeepSeek pattern even if the admin pointed it at
+  // something else entirely). Unknown window → null, and the caller applies its
+  // documented default.
+  if (p.kind === 'rayu-hosted' || p.id === RAYU_API_PROVIDER_ID) {
     const perModel = p.modelContextWindows?.[model]
     if (perModel && perModel > 0) return perModel
     // Provider-level fallback is still honoured: it is explicit local config
@@ -714,7 +820,7 @@ export function getRayuModelContextWindow(model: string): number | null {
     if (p.contextWindow && p.contextWindow > 0) return p.contextWindow
     reportIssue(
       'rayu_context.hosted_window_unset',
-      'no admin-configured context window for this Rayu-hosted model; using the client default — set it in Admin → Providers → the model row',
+      'no admin-configured context window for this Rayu model; using the client default — set it in Admin → Providers → the model row',
       { provider: p.id, model },
       'low',
     )
@@ -1204,6 +1310,21 @@ async function fetchAzureModels(p: RayuProvider): Promise<string[]> {
 }
 
 export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
+  // Rayu's own hosted models via a `rayu_sk_live_…` API key. Special-cased by ID
+  // (not kind) because the provider is kind:'anthropic-compatible' for CHAT — its
+  // baseURL points at the gateway's /anthropic surface — while the CATALOG lives
+  // on the gateway's OpenAI-shaped /v1/models. Same shape of special case as
+  // 'ollama-cloud' below. Lazy import keeps the gateway modules off the startup
+  // path and breaks the rayuConfig -> catalog -> rayuConfig import cycle.
+  if (p.id === RAYU_API_PROVIDER_ID) {
+    const { fetchRayuApiKeyCatalog } = await import(
+      '../services/api/rayuHosted/rayuApiKeyCatalog.js'
+    )
+    const result = await fetchRayuApiKeyCatalog(p.apiKey)
+    // An empty list on failure preserves whatever catalog is already cached — the
+    // caller (refreshActiveProviderModels) only overwrites on a non-empty result.
+    return result.ok ? result.models : []
+  }
   // Bedrock exposes no OpenAI-style /models endpoint; list via its control plane.
   // ONE unified catalog spanning both wire formats (Claude inference profiles +
   // the OpenAI-Chat-capable foundation models).
@@ -1243,16 +1364,40 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
     const { fetchOllamaCloudModels } = await import('../services/api/ollamaCloud.js')
     return fetchOllamaCloudModels(p.apiKey, p.baseURL)
   }
-  // Claude.ai subscription login (kind:'anthropic' + anthropicAuthType:'oauth'):
-  // list the models the ACCOUNT can use from api.anthropic.com/v1/models with the
-  // stored OAuth bearer. Lazy import so the OAuth modules stay off the startup
-  // path. API-key anthropic providers fall through and return [] as before.
+  // Anthropic (kind:'anthropic') exposes GET /v1/models, so the catalog is always
+  // listed LIVE — never hardcoded. The two auth modes differ only in the header:
+  //  - oauth (claude.ai subscription): bearer token, via the lazy-imported helper
+  //    so the OAuth modules stay off the startup path.
+  //  - api key (first-party console): x-api-key, fetched inline below.
   if (p.kind === 'anthropic') {
-    if (p.anthropicAuthType !== 'oauth') return []
-    const { fetchClaudeSubscriptionModels } = await import(
-      '../services/oauth/claudeAiLogin.js'
-    )
-    return fetchClaudeSubscriptionModels()
+    if (p.anthropicAuthType === 'oauth') {
+      const { fetchClaudeSubscriptionModels } = await import(
+        '../services/oauth/claudeAiLogin.js'
+      )
+      return fetchClaudeSubscriptionModels()
+    }
+    // First-party Anthropic (API key) DOES expose GET /v1/models, so the catalog
+    // is listed LIVE here — it follows Anthropic's releases instead of a baked-in
+    // list. The credential is sent only to the provider's own host (its baseURL,
+    // or api.anthropic.com by default), honouring the one-host-per-key invariant.
+    // Returns [] on any failure, the same contract every caller relies on (an
+    // empty result preserves whatever catalog is already cached).
+    if (!p.apiKey) return []
+    const base = p.baseURL?.replace(/\/+$/, '') || 'https://api.anthropic.com'
+    try {
+      const res = await fetch(`${base}/v1/models?limit=100`, {
+        headers: { 'x-api-key': p.apiKey, 'anthropic-version': '2023-06-01' },
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!res.ok) return []
+      const json = (await res.json()) as { data?: Array<{ id?: string }> }
+      return (json.data ?? [])
+        .map(m => m.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+        .sort()
+    } catch {
+      return []
+    }
   }
   if (p.kind !== 'openai-compatible' || !p.baseURL) return []
   const curated = CURATED_PROVIDER_MODELS[p.id] ?? []
@@ -1308,6 +1453,15 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
       p.kind !== 'anthropic-compatible')
   )
     return []
+  // The Rayu API-key provider carries admin-set display NAMES and CONTEXT
+  // WINDOWS alongside the ids. The generic path below stores only fetchedModels,
+  // which would silently drop both on every refresh and leave /model showing bare
+  // ids and the CLI budgeting against its own default window instead of the
+  // dashboard's.
+  if (p.id === RAYU_API_PROVIDER_ID) {
+    const { models } = await refreshRayuApiKeyCatalog()
+    return models
+  }
   const models = await fetchProviderModels(p)
   if (models.length) {
     const cfg = loadRayuConfig()
@@ -1318,6 +1472,79 @@ export async function refreshActiveProviderModels(): Promise<string[]> {
     }
   }
   return models
+}
+
+/**
+ * Refresh the Rayu API-key provider's catalog from GET {gateway}/v1/models and
+ * persist EVERYTHING the picker renders: ids, admin display names, customer
+ * descriptions, and admin context windows.
+ *
+ * Returns the model list plus whether anything actually MOVED, so a caller can
+ * re-render only when it did. `changed` covers renames and window changes too,
+ * not just added/removed models — an admin renaming a model is a visible change
+ * even though the id set is identical.
+ *
+ * Best-effort: a failed fetch leaves the existing cache untouched and reports
+ * `changed:false`, so an offline launch or a gateway blip never empties /model.
+ */
+export async function refreshRayuApiKeyCatalog(): Promise<{
+  models: string[]
+  changed: boolean
+}> {
+  const provider = loadRayuConfig().providers.find(
+    p => p.id === RAYU_API_PROVIDER_ID,
+  )
+  if (!provider?.apiKey) return { models: [], changed: false }
+  const [{ fetchRayuApiKeyCatalog }, { catalogSignature, pickRayuDefaultModels }] =
+    await Promise.all([
+      import('../services/api/rayuHosted/rayuApiKeyCatalog.js'),
+      import('../services/rayuAuth/rayuModelCatalog.js'),
+    ])
+  const result = await fetchRayuApiKeyCatalog(provider.apiKey)
+  if (!result.ok || result.models.length === 0) {
+    return { models: provider.models ?? [], changed: false }
+  }
+  const before = catalogSignature(
+    provider.models ?? [],
+    provider.modelLabels,
+    provider.modelContextWindows,
+    provider.modelDescriptions,
+  )
+  const after = catalogSignature(
+    result.models,
+    result.modelLabels,
+    result.modelContextWindows,
+    result.modelDescriptions,
+  )
+  // Re-read inside the write so a concurrent save (e.g. the user switching model
+  // in another pane) is not clobbered by a stale snapshot.
+  const cfg = loadRayuConfig()
+  const cur = cfg.providers.find(p => p.id === RAYU_API_PROVIDER_ID)
+  if (!cur) return { models: result.models, changed: false }
+  cur.models = result.models
+  cur.fetchedModels = result.models
+  cur.modelLabels = result.modelLabels
+  cur.modelDescriptions = result.modelDescriptions
+  cur.modelContextWindows = result.modelContextWindows
+  // Keep the default/small model POINTING AT SOMETHING REAL, in both directions:
+  //
+  //  • Drop a code the admin has since removed. Holding on to one turns every
+  //    request into a 403 "model not available", which reads like a CLI bug rather
+  //    than a catalog change. (Same reasoning as syncRayuHostedProvider.)
+  //  • BACKFILL one that was never set. A provider created from the RAYU_API_KEY
+  //    environment variable has no default model — the preset carries none,
+  //    because the catalog is not known until this fetch — and a provider with no
+  //    default model cannot serve a request. This is the first moment the real
+  //    catalog is available, so it is the right place to choose.
+  const fallback = pickRayuDefaultModels(result.models)
+  if (!cur.defaultModel || !result.models.includes(cur.defaultModel)) {
+    cur.defaultModel = fallback.defaultModel
+  }
+  if (!cur.smallFastModel || !result.models.includes(cur.smallFastModel)) {
+    cur.smallFastModel = fallback.smallFastModel
+  }
+  saveRayuConfig(cfg)
+  return { models: result.models, changed: before !== after }
 }
 
 /**
@@ -1356,10 +1583,14 @@ export async function refreshAllProviderModels(): Promise<void> {
   if (dirty) saveRayuConfig(cfg)
 }
 
-/** Reset the in-memory cache (tests). */
-export function _resetRayuConfigCache(): void {
+/** Invalidate a process-local snapshot after another interface writes providers.json. */
+export function invalidateRayuConfigCache(): void {
   cache = null
+  clearContextPrepCache('rayu-config-reload')
 }
+
+/** Backwards-compatible test hook. */
+export const _resetRayuConfigCache = invalidateRayuConfigCache
 
 /** Separator encoding provider+model in a single picker value. */
 export const RAYU_MODEL_SEP = '\u0000'
@@ -1403,8 +1634,13 @@ export type RayuModelChoice = {
    * models are just ids, which is every BYO provider.
    */
   label?: string
+  /** Admin-configured customer-facing model summary, when one is published. */
+  description?: string
   /** Admin-configured context window in tokens, when known. */
   contextWindow?: number
+  supportsThinking?: boolean
+  supportsImage?: boolean
+  supportsTools?: boolean
 }
 
 /**
@@ -1448,26 +1684,30 @@ export function getAllProviderModelOptions(): RayuModelChoice[] {
       // Name + window are carried through when the provider knows them, so the
       // picker never has to look up a per-provider table of its own.
       const label = p.modelLabels?.[model]
+      const description = p.modelDescriptions?.[model]
       const contextWindow = p.modelContextWindows?.[model]
       out.push({
         value,
         providerId: p.id,
         model,
+        supportsThinking: p.modelSupportsThinking?.[model],
+        supportsImage: p.modelSupportsImage?.[model],
+        supportsTools: p.modelSupportsTools?.[model],
         ...(label ? { label } : {}),
+        ...(description ? { description } : {}),
         ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
       })
     }
   }
 
-  // Pin the entire rayu-hosted provider's models to the very top of the picker
-  // so the hosted models are always the first choices, regardless of which
-  // provider is active. (Only has an effect when rayu-hosted is configured.)
+  // Pin BOTH Rayu providers' models to the very top of the picker so hosted
+  // models are always the first choices, regardless of which provider is active.
   // The id 'rayu-hosted' (RAYU_HOSTED_PROVIDER_ID) is inlined to avoid a
   // rayuProviders↔rayuConfig import cycle. Stable sort preserves the existing
-  // order within the rayu-hosted group and among all the other entries.
+  // order within each Rayu group and among all the other entries.
   out.sort((a, b) => {
-    const ra = a.providerId === 'rayu-hosted' ? 0 : 1
-    const rb = b.providerId === 'rayu-hosted' ? 0 : 1
+    const ra = a.providerId === 'rayu-hosted' ? 0 : a.providerId === RAYU_API_PROVIDER_ID ? 0 : 1
+    const rb = b.providerId === 'rayu-hosted' ? 0 : b.providerId === RAYU_API_PROVIDER_ID ? 0 : 1
     return ra - rb
   })
 

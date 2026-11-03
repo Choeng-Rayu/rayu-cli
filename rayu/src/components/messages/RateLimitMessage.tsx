@@ -4,6 +4,10 @@ import { extraUsage } from 'src/commands/extra-usage/index.js';
 import { Box, Text } from 'src/ink.js';
 import { useClaudeAiLimits } from 'src/services/claudeAiLimitsHook.js';
 import { shouldProcessMockLimits } from 'src/services/rateLimitMocking.js'; // Used for /mock-limits command
+// Rayu credit pacing: a Rayu-hosted user hitting a session/weekly window is not a
+// claude.ai subscriber, so the upsell gate below would otherwise hide the options
+// menu from exactly the users it was built for.
+import { rayuPacingLimitFromLimits } from 'src/services/rayuAuth/rayuRateLimit.js';
 import { getRateLimitTier, getSubscriptionType, isClaudeAISubscriber } from 'src/utils/auth.js';
 import { hasClaudeAiBillingAccess } from 'src/utils/billing.js';
 import { MessageResponse } from '../MessageResponse.js';
@@ -84,8 +88,13 @@ export function RateLimitMessage(t0) {
   const canSeeRateLimitOptionsUpsell = shouldShowUpsell && !isMax20x;
   const [hasOpenedInteractiveMenu, setHasOpenedInteractiveMenu] = useState(false);
   const claudeAiLimits = useClaudeAiLimits();
+  // A Rayu pacing limit IS an actionable limit with a real alternative (the
+  // dashboard switch), so it earns the same menu as a subscriber's limit. Without
+  // this the notice would render but the menu would never open for a Rayu user,
+  // because `canSeeRateLimitOptionsUpsell` keys on the claude.ai subscription.
+  const isRayuPacingLimit = rayuPacingLimitFromLimits(claudeAiLimits) !== null;
   const isCurrentlyRateLimited = claudeAiLimits.status === "rejected" && claudeAiLimits.resetsAt !== undefined && !claudeAiLimits.isUsingOverage;
-  const shouldAutoOpenRateLimitOptionsMenu = canSeeRateLimitOptionsUpsell && !hasOpenedInteractiveMenu && isCurrentlyRateLimited && onOpenRateLimitOptions;
+  const shouldAutoOpenRateLimitOptionsMenu = (canSeeRateLimitOptionsUpsell || isRayuPacingLimit) && !hasOpenedInteractiveMenu && isCurrentlyRateLimited && onOpenRateLimitOptions;
   let t4;
   let t5;
   if ($[3] !== onOpenRateLimitOptions || $[4] !== shouldAutoOpenRateLimitOptionsMenu) {

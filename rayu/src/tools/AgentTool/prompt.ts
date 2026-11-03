@@ -2,6 +2,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/gr
 import { getSubscriptionType } from '../../utils/auth.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
+import { getAgentModelDisplay } from '../../utils/model/agent.js'
 import { isTeammate } from '../../utils/teammate.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
@@ -37,12 +38,38 @@ function getToolsDescription(agent: AgentDefinition): string {
 }
 
 /**
+ * The user's saved /subagent_models selection for this agent type (per-agent
+ * override first, then the global one), or undefined. Config is read lazily and
+ * any failure degrades to "no selection" so listing an agent never throws.
+ */
+function getLockedSelection(
+  agentType: string,
+): { providerId: string; model: string } | undefined {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getSubagentSelection } =
+      require('../../utils/rayuConfig.js') as typeof import('../../utils/rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return getSubagentSelection(agentType)
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Format one agent line for the agent_listing_delta attachment message:
- * `- type: whenToUse (Tools: ...)`.
+ * `- type: whenToUse (Tools: ...) [model: ... · ...]`.
+ *
+ * The trailing annotation tells the main agent which model the subagent runs
+ * on and whether the user locked it via /subagent_models.
  */
 export function formatAgentLine(agent: AgentDefinition): string {
   const toolsDescription = getToolsDescription(agent)
-  return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription})`
+  const selection = getLockedSelection(agent.agentType)
+  const modelAnnotation = selection
+    ? `[model: ${selection.providerId}/${selection.model} · set by you — do not override]`
+    : `[model: ${getAgentModelDisplay(agent.model)} · auto — you may pass a smaller \`model\` for simple tasks]`
+  return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription}) ${modelAnnotation}`
 }
 
 /**
@@ -248,33 +275,13 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
 - Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
       : ''
 
-  // Collaborator-swarm orchestration guidance. The collaborators (frontend/
-  // backend/security/deploy/mobile) + the planner are in the agent list above;
-  // this tells the main agent HOW to run them as a coordinated swarm. Omitted
-  // when the swarm is disabled.
-  const swarmSection = isEnvTruthy(process.env.RAYU_DISABLE_SPECIALIST_AGENTS)
-    ? ''
-    : `
-
-## Collaborator swarm (orchestration)
-For multi-domain build/implementation work (especially full-stack web/mobile apps), act as the orchestrator and dispatch the planner + collaborators instead of building every domain yourself:
-- planner (architecture/stack — run FIRST on new projects/features; its stack decisions are FINAL and it writes the shared brief), then the Tier-2 collaborators: backend (API + data layer: schema/migrations), security (auth/authz — FINAL), frontend (web UI), mobile (app), deploy (devops/ship — usually LAST). Each collaborator implements its domain and fans out parallel \`builder\` subagents for disjoint slices.
-- Maximize parallelism: dispatch collaborators with no unmet dependency in a SINGLE message with multiple ${AGENT_TOOL_NAME} tool calls. Spawn each as a NAMED BACKGROUND agent (run_in_background:true) with a stable lowercase name (planner/backend/security/frontend/mobile/deploy) so you can track and resume it.
-- Spawn only what the task needs: run the planner FIRST, then spawn exactly the collaborators it declares in \`.rayu/swarm/shared.json\` "needs". If the planner didn't declare a set, fall back to the domains the task clearly involves — don't spawn all five by reflex.
-- Typical full-stack order: planner → { security (auth spec) ∥ backend } → frontend (after the backend contract lands) → deploy LAST; mobile after backend+frontend. Run independent collaborators concurrently.
-- Shared context (token-saver): collaborators share context through a project-local artifact, NOT by you re-typing it. The planner writes the shared brief (.rayu/swarm/shared.json: goal/stack/flow/constraints/needs); every collaborator reads the shared brief plus only its dependency sections (auto-injected into its prompt) and writes its own .rayu/swarm/<DOMAIN>.md (e.g. BACKEND.md, FRONTEND.md). So you do NOT need to hand-copy schema/routes/auth into each prompt — just give the task plus any brand-new decision not yet in the artifact.
-- Persistent sessions: keep collaborators alive. For a follow-up or next task in a domain that already ran, RESUME the same session with ${SEND_MESSAGE_TOOL_NAME} (to: the collaborator's name or id) carrying just the new task + any changed contracts — do NOT spawn a fresh collaborator. Resuming preserves its full working context and auto-refreshes its shared/dependency context; a fresh spawn only gets the shared artifact and loses prior work. Spawn fresh only for a genuinely unrelated new domain.
-- After finishing a plan (e.g. leaving plan mode) for a multi-domain project, proactively run the swarm to implement it — you don't need the user to ask. Apply the task-routing classification (TRIVIAL / SINGLE-DOMAIN / MULTI-DOMAIN): dispatch the swarm for multi-domain work, and handle trivial or single-domain work directly.
-- general-purpose is for NON-web/mobile work only (CLI tools, scripts, libraries, data pipelines). For web/mobile, use the collaborators and their builder/Explore subagents — not general-purpose.
-- Resolve conflicts by authority (security > planner/stack > backend-contract > frontend/mobile/deploy). If a collaborator flags a cross-domain need, route that item to the right collaborator rather than letting it drift.
-- Then synthesize the collaborators' outputs into one coherent result, and verify the frontend↔backend contracts line up (FE calls match BE routes). The /swarm command frames a request for this flow.`
-
   // Non-coordinator gets the full prompt with all sections
   return `${shared}
 ${whenNotToUseSection}
 
 Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do${concurrencyNote}
+- Agent models: an agent marked "set by you" has a model the user chose and locked — never pass \`model\` for it. For "auto" agents, prefer a small/fast model for simple, read-only, or research-style tasks. An unassigned auto agent may show the user a one-time model picker.
 - When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.${
     // eslint-disable-next-line custom-rules/no-process-env-top-level
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&
@@ -285,7 +292,7 @@ Usage notes:
 - **Foreground vs background**: Use foreground (default) when you need the agent's results before you can proceed — e.g., research agents whose findings inform your next steps. Use background when you have genuinely independent work to do in parallel.`
       : ''
   }
-- To continue a previously spawned agent, use ${SEND_MESSAGE_TOOL_NAME} with the agent's ID or name as the \`to\` field. The agent resumes with its full context preserved. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}
+- If the ${SEND_MESSAGE_TOOL_NAME} tool is available, use it to continue a previously spawned agent: pass the agent's ID or name as the \`to\` field, and the agent resumes with its full context preserved. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}
 - The agent's outputs should generally be trusted
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.)${forkEnabled ? '' : ", since it is not aware of the user's intent"}
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
@@ -302,7 +309,7 @@ Usage notes:
         ? `
 - The name, team_name, and mode parameters are not available in this context — teammates cannot spawn other teammates. Omit them to spawn a subagent.`
         : ''
-  }${whenToForkSection}${writingThePromptSection}${swarmSection}
+  }${whenToForkSection}${writingThePromptSection}
 
 ${forkEnabled ? forkExamples : currentExamples}`
 }

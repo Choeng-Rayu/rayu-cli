@@ -144,9 +144,9 @@ async function appendAsync(
   content: string,
 ): Promise<void> {
   if (needMkdir) {
-    await mkdir(dir, { recursive: true }).catch(() => {})
+    await mkdir(dir, { recursive: true, mode: 0o700 }).catch(() => {})
   }
-  await appendFile(path, content)
+  await appendFile(path, content, { mode: 0o600 })
   void updateLatestDebugLogSymlink()
 }
 
@@ -167,12 +167,12 @@ function getDebugWriter(): BufferedWriter {
           // handlers (infinite loop with Perfetto tracing). See #22257.
           if (needMkdir) {
             try {
-              getFsImplementation().mkdirSync(dir)
+              getFsImplementation().mkdirSync(dir, { mode: 0o700 })
             } catch {
               // Directory already exists
             }
           }
-          getFsImplementation().appendFileSync(path, content)
+          getFsImplementation().appendFileSync(path, content, { mode: 0o600 })
           void updateLatestDebugLogSymlink()
           return
         }

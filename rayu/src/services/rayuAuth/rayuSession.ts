@@ -6,7 +6,8 @@
 //
 // It mirrors the storage pattern of googleOAuth.ts: the session (access +
 // refresh token issued by rayu-backend after a Google OAuth login) is persisted to
-// ~/.rayu/rayu-auth.json with 0600 permissions and never logged.
+// the active authentication profile's rayu-auth.json with 0600 permissions and
+// never logged. The CLI profile defaults to ~/.rayu.
 //
 // NOTE: This is the Rayu *account* session — distinct from the Anthropic
 // "Claude AI" provider OAuth (src/utils/auth.ts), which remains untouched and
@@ -20,7 +21,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { join } from 'path'
-import { getRayuConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
+import { getRayuAuthConfigDir, isEnvTruthy } from '../../utils/envUtils.js'
 
 const SESSION_FILE = 'rayu-auth.json'
 const REFRESH_SKEW_MS = 60 * 1000
@@ -75,6 +76,80 @@ export function getRayuWebBaseUrl(): string {
   return base.replace(/\/$/, '')
 }
 
+/** Standalone Studio origin, where the Web Bridge remote-control page lives. */
+export function getRayuStudioBaseUrl(): string {
+  const configured = process.env.RAYU_STUDIO_URL?.trim()
+  if (configured) return configured.replace(/\/+$/, '')
+
+  // From-source development uses the local Studio alongside the local web app.
+  // Published builds use the production web URL and therefore the production Studio.
+  try {
+    const web = new URL(getRayuWebBaseUrl())
+    if (web.hostname === 'localhost' || web.hostname === '127.0.0.1') {
+      return `${web.protocol}//${web.hostname}:5173`
+    }
+  } catch {
+    // A malformed web URL must not produce a malformed Studio link.
+  }
+
+  return 'https://studio.rayucode.com'
+}
+
+export function getRayuStudioRemoteUrl(): string {
+  return `${getRayuStudioBaseUrl()}/remote`
+}
+
+/** A page of the signed-in account on rayu-web, by name. */
+export type RayuAccountPage =
+  | 'dashboard'
+  | 'plan'
+  | 'usage'
+  | 'credits'
+  | 'apiKeys'
+  | 'billing'
+  | 'plans'
+
+/** Paths on rayu-web: `/dashboard` holds the pacing switch, `/dashboard/credits` top-ups. */
+const ACCOUNT_PAGE_PATHS: Record<RayuAccountPage, string> = {
+  dashboard: '/dashboard',
+  plan: '/dashboard/plan',
+  usage: '/dashboard/usage',
+  credits: '/dashboard/credits',
+  apiKeys: '/dashboard/api-keys',
+  billing: '/billing',
+  plans: '/plans',
+}
+
+/** The URL of an account page, from the one table every surface links through. */
+export function getRayuAccountPageUrl(page: RayuAccountPage): string {
+  return `${getRayuWebBaseUrl()}${ACCOUNT_PAGE_PATHS[page]}`
+}
+
+/**
+ * The dashboard, where account settings live — including the credit-pacing
+ * switch ("use all credits") that the rate-limit UI directs users to.
+ *
+ * One builder rather than `${getRayuWebBaseUrl()}/dashboard` per call site: this
+ * URL is shown in a terminal error message, a browser hand-off AND the VS Code
+ * status bar, and three inlined copies is how one of them ends up with a double
+ * slash. `getRayuWebBaseUrl` already trims the trailing slash.
+ */
+export function getRayuDashboardUrl(): string {
+  return getRayuAccountPageUrl('dashboard')
+}
+
+/**
+ * The plans/pricing page, offered alongside the dashboard wherever a limit is
+ * hit ("upgrade", "see plans with a larger allowance").
+ *
+ * Sibling of [`getRayuDashboardUrl`] and for the same reason: the URL is already
+ * built at several call sites in the rate-limit copy, and one builder keeps them
+ * identical.
+ */
+export function getRayuPlansUrl(): string {
+  return getRayuAccountPageUrl('plans')
+}
+
 /**
  * Base URL of the rayu-gateway (no trailing slash, no /v1 suffix). Resolution:
  * runtime RAYU_GATEWAY_URL → baked MACRO.RAYU_GATEWAY_URL → localhost:8080.
@@ -84,11 +159,66 @@ export function getRayuGatewayBaseUrl(): string {
     process.env.RAYU_GATEWAY_URL ||
     MACRO.RAYU_GATEWAY_URL ||
     'http://localhost:8080'
-  return base.replace(/\/$/, '')
+  // Strip ALL trailing slashes, not just one. Every consumer appends
+  // `/v1/...` or `/anthropic`, so a leftover slash becomes a DOUBLE slash in the
+  // request path (`http://localhost:8080//v1/models`), which Axum's router does not
+  // match — the catalog read, `/billing`, and hosted image/video generation all 404
+  // and read to the user as "the gateway is down". A `RAYU_GATEWAY_URL` copied from
+  // a browser bar or a Caddy config file routinely carries two.
+  return base.replace(/\/+$/, '')
+}
+
+/**
+ * The gateway base URL for requests that attach the Rayu JWT directly
+ * (the hosted image/video generation clients).
+ *
+ * Same security rule {@link validateCustomBaseURL} applies to a user-supplied
+ * provider endpoint, because the same secret rides on it: **https to any real
+ * host, plain http only to loopback** (the baked `http://localhost:8080` dev
+ * default is the legitimate http case), and no embedded credentials. A
+ * misconfigured or hostile `RAYU_GATEWAY_URL=http://attacker.example` must
+ * fail here, before the bearer token is sent anywhere — the JWT is a live
+ * account credential, not a bearer-less hint.
+ *
+ * Throws with the offending scheme instead of returning a partial value; the
+ * callers surface it verbatim to the user.
+ */
+export function getSecureRayuGatewayBaseUrl(): string {
+  const base = getRayuGatewayBaseUrl()
+  let url: URL
+  try {
+    url = new URL(base)
+  } catch {
+    throw new Error(
+      `Rayu gateway URL ${base ? `"${base}"` : 'is empty'} is not a valid URL. ` +
+        'Check RAYU_GATEWAY_URL.',
+    )
+  }
+  if (url.username || url.password) {
+    throw new Error(
+      'RAYU_GATEWAY_URL must not embed credentials — the Rayu JWT is sent as the Authorization header.',
+    )
+  }
+  if (url.protocol === 'http:') {
+    const host = url.hostname.toLowerCase()
+    const loopback =
+      host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
+    if (!loopback) {
+      throw new Error(
+        `Refusing to send the Rayu account token over plaintext http:// to ${host}. ` +
+          'Set RAYU_GATEWAY_URL to an https:// URL.',
+      )
+    }
+  } else if (url.protocol !== 'https:') {
+    throw new Error(
+      `RAYU_GATEWAY_URL must use https (got ${url.protocol}).`,
+    )
+  }
+  return base
 }
 
 function sessionPath(): string {
-  return join(getRayuConfigHomeDir(), SESSION_FILE)
+  return join(getRayuAuthConfigDir(), SESSION_FILE)
 }
 
 export function readRayuSession(): RayuSessionStore | null {
@@ -102,7 +232,7 @@ export function readRayuSession(): RayuSessionStore | null {
 }
 
 export function writeRayuSession(store: RayuSessionStore): void {
-  const dir = getRayuConfigHomeDir()
+  const dir = getRayuAuthConfigDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const p = sessionPath()
   writeFileSync(p, JSON.stringify(store, null, 2), { mode: 0o600 })
@@ -164,16 +294,45 @@ export async function recordRayuToolUsageBestEffort(tool: string): Promise<void>
 
 /**
  * Login gate used before the first model query. Returns a user-facing message
- * when the request should be blocked (Rayu OAuth enabled but not logged in),
- * or null when the request may proceed.
+ * when the request should be blocked (Rayu OAuth enabled but no usable Rayu
+ * credential), or null when the request may proceed.
  *
- * Pure/synchronous and cheap so it is safe to call on the prompt hot path. When
- * USE_RAYU_OAUTH is off this always returns null (no behavior change).
+ * A Rayu API KEY satisfies this gate as well as an account session. The two are
+ * alternative credentials for the same product — rayucode serves its hosted
+ * models to any caller with a `rayu_sk_live_…` key — so a user who connected via
+ * /connect → Rayu is fully entitled to send a prompt and must not be told to run
+ * /login. Only INFERENCE is unlocked this way: /usage, /billing, /topup and the
+ * other account surfaces still require a real session, because they talk to the
+ * backend with a JWT.
+ *
+ * Pure/synchronous and cheap so it is safe to call on the prompt hot path — the
+ * key's verdict is read from the cached record written by the launch-time check,
+ * never fetched here. When USE_RAYU_OAUTH is off this always returns null (no
+ * behavior change).
  */
 export function rayuLoginGateMessage(): string | null {
   if (!isUseRayuOAuthEnabled()) return null
   if (hasRayuSession()) return null
-  return 'You need to sign in to use Rayu. Run /login to sign in, then send your message again.'
+  if (hasUsableRayuApiKey()) return null
+  return 'You need to sign in to use Rayu. Run /login to sign in, or /connect → Rayu to use a Rayu API key, then send your message again.'
+}
+
+/**
+ * Whether a validated Rayu API key is available, read without importing the
+ * API-key module at load time.
+ *
+ * rayuApiKeyAuth imports rayuConfig (to find the provider) and this module (for
+ * hasRayuSession), so a static import here would close a cycle. `require` keeps
+ * the gate synchronous — it is called per prompt and cannot await — and any
+ * failure degrades to "no key", i.e. the previous behaviour.
+ */
+function hasUsableRayuApiKey(): boolean {
+  try {
+    const { hasValidatedRayuApiKey } = require('./rayuApiKeyAuth.js') as typeof import('./rayuApiKeyAuth.js')
+    return hasValidatedRayuApiKey()
+  } catch {
+    return false
+  }
 }
 
 // --- HTTP (injectable for tests) -------------------------------------------

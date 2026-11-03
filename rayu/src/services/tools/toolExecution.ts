@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import type {
   ContentBlockParam,
   ToolResultBlockParam,
@@ -103,6 +102,7 @@ import {
   formatError,
   formatZodValidationError,
 } from '../../utils/toolErrors.js'
+import { getToolInputParseFailure } from '../../utils/toolInputRepair.js'
 import {
   processPreMappedToolResultBlock,
   processToolResultBlock,
@@ -119,6 +119,15 @@ import {
 import { mcpInfoFromString } from '../mcp/mcpStringUtils.js'
 import { normalizeNameForMCP } from '../mcp/normalization.js'
 import type { MCPServerConnection } from '../mcp/types.js'
+import {
+  appendToToolResult,
+  attributeFileChange,
+} from '../../orchestrator/attribution.js'
+import {
+  beginShellAttribution,
+  endShellAttribution,
+} from '../../orchestrator/shellChanges.js'
+import { recordVerifierShellCall } from '../../orchestrator/verifierGuard.js'
 import {
   getLoggingSafeMcpBaseUrl,
   getMcpServerScopeFromToolName,
@@ -614,13 +623,23 @@ async function checkPermissionsAndCallTool(
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
   const parsedInput = tool.inputSchema.safeParse(input)
   if (!parsedInput.success) {
-    let errorContent = formatZodValidationError(tool.name, parsedInput.error)
+    // The arguments never parsed as JSON, so normalizeContentFromAPI stamped the
+    // real diagnosis onto the input. Report THAT: a zod schema error here would
+    // list every field as missing and send the model off fixing values that were
+    // never the problem.
+    const parseFailure = getToolInputParseFailure(input)
+    let errorContent =
+      parseFailure ?? formatZodValidationError(tool.name, parsedInput.error)
 
-    const schemaHint = buildSchemaNotSentHint(
-      tool,
-      toolUseContext.messages,
-      toolUseContext.options.tools,
-    )
+    const schemaHint = parseFailure
+      ? // The schema WAS sent; the model's JSON encoding was broken. Appending
+        // "this tool's schema may not have been sent" would misdirect.
+        null
+      : buildSchemaNotSentHint(
+          tool,
+          toolUseContext.messages,
+          toolUseContext.options.tools,
+        )
     if (schemaHint) {
       logEvent('tengu_deferred_tool_schema_not_sent', {
         toolName: sanitizeToolNameForAnalytics(tool.name),
@@ -1073,7 +1092,7 @@ async function checkPermissionsAndCallTool(
     // Run PermissionDenied hooks for auto mode classifier denials.
     // If a hook returns {retry: true}, tell the model it may retry.
     if (
-      feature('TRANSCRIPT_CLASSIFIER') &&
+      RAYU_FEATURES.TRANSCRIPT_CLASSIFIER &&
       permissionDecision.decisionReason?.type === 'classifier' &&
       permissionDecision.decisionReason.classifier === 'auto-mode'
     ) {
@@ -1203,6 +1222,12 @@ async function checkPermissionsAndCallTool(
   } else if (processedInput !== backfilledClone) {
     callInput = processedInput
   }
+  // Orchestrator workers' shell commands: read the tree before, so the files the
+  // command changed can be checked against the worker's packet afterwards.
+  const shellAttribution = await beginShellAttribution(tool, callInput, toolUseContext).catch(error => {
+    logError(error)
+    return null
+  })
   try {
     const result = await tool.call(
       callInput,
@@ -1222,6 +1247,8 @@ async function checkPermissionsAndCallTool(
     )
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
+    // An Orchestrator verifier's commands are its evidence (src/orchestrator/verification.ts).
+    recordVerifierShellCall(tool, callInput, verifierCallOutcome(result.data), toolUseContext.agentId)
 
     // Best-effort per-tool usage tracking for Rayu accounts (no-op unless
     // USE_RAYU_OAUTH is on and the user is signed in). Fire-and-forget.
@@ -1293,9 +1320,14 @@ async function checkPermissionsAndCallTool(
 
     // Map the tool result to API format once and cache it. This block is reused
     // by addToolResult (skipping the remap) and measured here for analytics.
-    const mappedToolResultBlock = tool.mapToolResultToToolResultBlockParam(
-      result.data,
-      toolUseID,
+    // In an Orchestrator run, a worker's file change is checked against its
+    // packet first, and the worker is told in this result if it does not fit.
+    const shellWarning = shellAttribution
+      ? await endShellAttribution(shellAttribution, tool.name, toolUseContext)
+      : null
+    const mappedToolResultBlock = appendToToolResult(
+      tool.mapToolResultToToolResultBlockParam(result.data, toolUseID),
+      shellWarning ?? checkContractFit(tool.name, processedInput, result.data, toolUseContext),
     )
     const mappedContent = mappedToolResultBlock.content
     const toolResultSizeBytes = !mappedContent
@@ -1593,6 +1625,11 @@ async function checkPermissionsAndCallTool(
   } catch (error) {
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
+    recordVerifierShellCall(tool, callInput, { error }, toolUseContext.agentId)
+    // A failed command may still have changed files: check them anyway.
+    if (shellAttribution) {
+      await endShellAttribution(shellAttribution, tool.name, toolUseContext).catch(logError)
+    }
 
     endToolExecutionSpan({
       success: false,
@@ -1746,4 +1783,34 @@ async function checkPermissionsAndCallTool(
       toolUseContext.toolDecisions?.delete(toolUseID)
     }
   }
+}
+
+/**
+ * The Orchestrator contract check for a completed tool call. It reports and never
+ * blocks, so a failure in the check itself is logged and the result is returned
+ * unchanged.
+ */
+function checkContractFit(
+  toolName: string,
+  input: unknown,
+  resultData: unknown,
+  toolUseContext: ToolUseContext,
+): string | null {
+  try {
+    return attributeFileChange(
+      toolName,
+      (input ?? {}) as Record<string, unknown>,
+      resultData,
+      toolUseContext,
+    )
+  } catch (error) {
+    logError(error)
+    return null
+  }
+}
+
+/** A successful shell call that was interrupted or moved to the background is not evidence. */
+function verifierCallOutcome(data: unknown): { interrupted?: boolean; backgrounded?: boolean } {
+  const fields = (data ?? {}) as { interrupted?: unknown; backgroundTaskId?: unknown }
+  return { interrupted: fields.interrupted === true, backgrounded: typeof fields.backgroundTaskId === 'string' }
 }

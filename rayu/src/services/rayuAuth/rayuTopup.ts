@@ -17,12 +17,12 @@
 // the command can render a clear message instead of a stack trace.
 import {
   getRayuApiBaseUrl,
-  getRayuGatewayBaseUrl,
+  getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
 } from './rayuSession.js'
 
 /** Rails a top-up can be paid on, as accepted by POST /api/payments/topup. */
-export type TopupMethod = 'aba' | 'bakong' | 'stripe'
+export type TopupMethod = 'aba' | 'stripe'
 
 /** Live quote — the shape both the gateway and the backend return. */
 export interface TopupQuote {
@@ -47,7 +47,7 @@ export interface TopupQuote {
   topUpEnabled?: boolean
 }
 
-/** A created (pending) top-up purchase on the KHQR or Stripe rails. */
+/** A created (pending) top-up purchase on the ABA QR or Stripe rails. */
 export interface TopupPurchase {
   paymentId: number
   credits: number
@@ -55,16 +55,15 @@ export interface TopupPurchase {
   currency: string
   method: TopupMethod
   /**
-   * KHQR payload to render as a QR code. Present only for the KHQR rails
-   * (aba / bakong); absent for the Stripe rail, which produces a hosted
+   * ABA QR payload to render. Absent for the Stripe rail, which produces a hosted
    * Checkout URL instead.
    */
   qr?: string
-  /** KHQR md5 checksum. Present only for the KHQR rails. */
+  /** ABA QR checksum. Present only for the ABA rail. */
   md5?: string
   /**
    * Hosted Stripe Checkout URL. Present only for the Stripe rail; absent for
-   * the KHQR rails. The CLI opens this in the user's browser and prints it as
+   * the ABA rail. The CLI opens this in the user's browser and prints it as
    * a fallback for headless / SSH sessions.
    */
   checkoutUrl?: string
@@ -76,7 +75,7 @@ export interface TopupPurchase {
 /** Poll result for a pending purchase. */
 export interface TopupPaymentStatus {
   paymentId: number
-  status: 'pending' | 'paid' | 'expired' | 'canceled' | 'refunded'
+  status: 'pending' | 'paid' | 'failed' | 'expired' | 'canceled' | 'refunded'
   activated: boolean
   kind?: 'topup'
   credits?: number
@@ -127,13 +126,26 @@ export async function fetchTopupQuote(
     credits != null && Number.isFinite(credits) && credits > 0
       ? `?credits=${Math.trunc(credits)}`
       : ''
-  const urls = [
-    `${getRayuGatewayBaseUrl()}/v1/credits/topup/quote${qs}`,
-    `${getRayuApiBaseUrl()}/payments/topup/quote${qs}`,
-  ]
-  for (const url of urls) {
+  // The gateway leg carries the JWT, so its URL goes through the secure
+  // getter: a remote plaintext-http RAYU_GATEWAY_URL throws HERE, before any
+  // request. Nothing here throws, so an unsafe gateway skips to the backend
+  // quote instead of taking the whole pricing read down with it.
+  const urls: Array<{ url: string; init: Record<string, unknown> }> = []
+  try {
+    urls.push({
+      url: `${getSecureRayuGatewayBaseUrl()}/v1/credits/topup/quote${qs}`,
+      init: { redirect: 'error' },
+    })
+  } catch {
+    // Unsafe gateway URL — fall back to the backend source below.
+  }
+  urls.push({
+    url: `${getRayuApiBaseUrl()}/payments/topup/quote${qs}`,
+    init: {},
+  })
+  for (const { url, init } of urls) {
     try {
-      const res = await (globalThis.fetch as typeof fetch)(url, { headers })
+      const res = await (globalThis.fetch as typeof fetch)(url, { headers, ...init })
       if (!res.ok) continue
       return (await res.json()) as TopupQuote
     } catch {

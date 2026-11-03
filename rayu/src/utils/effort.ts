@@ -7,6 +7,11 @@ import { getAPIProvider } from './model/providers.js'
 import { usesTranslatedFormat } from './model/providerCapabilities.js'
 import { resolveAntModel } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
+import {
+  isClaude46Plus,
+  isOpus46,
+  normalizeModelNotation,
+} from './model/modelNotation.js'
 import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
@@ -40,12 +45,13 @@ export function modelSupportsEffort(model: string): boolean {
   if (usesTranslatedFormat(model)) {
     return true
   }
-  const m = model.toLowerCase()
+  // Notation-agnostic: dots and dashes both name the same model (see modelNotation.ts).
+  const m = normalizeModelNotation(model)
   if (isEnvTruthy(process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)) {
     return true
   }
-  // Supported by a subset of Claude 4 models
-  if (m.includes('opus-4-6') || m.includes('sonnet-4-6')) {
+  // Supported by Claude opus/sonnet 4.6 and newer, in either notation.
+  if (isClaude46Plus(m)) {
     return true
   }
   // Exclude any other known legacy models (haiku, older opus/sonnet variants)
@@ -77,7 +83,10 @@ export function modelSupportsMaxEffort(model: string): boolean {
   if (usesTranslatedFormat(model)) {
     return true
   }
-  if (model.toLowerCase().includes('opus-4-6')) {
+  // `max` is Opus 4.6 ONLY for public models (the API returns an error elsewhere), so this
+  // stays pinned to 4.6 — just notation-agnostic now (dots or dashes). Newer opus models
+  // keep the pill but not the 'max' entry; resolveAppliedEffort clamps max→high regardless.
+  if (isOpus46(normalizeModelNotation(model))) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
@@ -328,7 +337,8 @@ export function getDefaultEffortForModel(
 
   // Default effort on Opus 4.6 to medium for Pro.
   // Max/Team also get medium when the tengu_grey_step2 config is enabled.
-  if (model.toLowerCase().includes('opus-4-6')) {
+  // Scoped to Opus 4.6 exactly, as before — only notation-agnostic now.
+  if (isOpus46(normalizeModelNotation(model))) {
     if (isProSubscriber()) {
       return 'medium'
     }

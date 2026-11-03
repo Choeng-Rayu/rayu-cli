@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { Command } from '../commands.js'
@@ -253,7 +252,7 @@ const command = {
   type: 'prompt',
   name: 'init',
   get description() {
-    return feature('NEW_INIT') &&
+    return RAYU_FEATURES.NEW_INIT &&
       (process.env.USER_TYPE === 'ant' ||
         isEnvTruthy(process.env.RAYU_NEW_INIT))
       ? 'Initialize new RAYU.md file(s) and optional skills/hooks with codebase documentation'
@@ -270,7 +269,7 @@ const command = {
       {
         type: 'text',
         text:
-          feature('NEW_INIT') &&
+          RAYU_FEATURES.NEW_INIT &&
           (process.env.USER_TYPE === 'ant' ||
             isEnvTruthy(process.env.CLAUDE_CODE_NEW_INIT))
             ? NEW_INIT_PROMPT

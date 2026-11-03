@@ -18,7 +18,6 @@
 //
 // Everything except the cache resets is fire-and-forget: a slow network must
 // never block the /connect flow from returning to the prompt.
-import { feature } from 'bun:bundle'
 import type { AppState } from '../state/AppStateStore.js'
 import { resetCostState } from '../bootstrap/state.js'
 import { refreshGrowthBookAfterAuthChange } from '../services/analytics/growthbook.js'
@@ -73,7 +72,7 @@ export function runPostAuthChangeRefresh(
     appState.toolPermissionContext,
     context.setAppState,
   )
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
+  if (RAYU_FEATURES.TRANSCRIPT_CLASSIFIER) {
     resetAutoModeGateCheck()
     void checkAndDisableAutoModeIfNeeded(
       appState.toolPermissionContext,

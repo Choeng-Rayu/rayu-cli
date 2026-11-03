@@ -3,7 +3,8 @@ import { z } from 'zod/v4'
 import { getEmptyToolPermissionContext } from 'src/Tool'
 import { hasPermissionsToUseToolInner } from 'src/utils/permissions/permissions'
 
-// Minimal ToolUseContext for the mode-gating path: step 0 (fullManage) + steps
+// Minimal ToolUseContext for the mode-gating path: step 0 (fullManage or
+// Orchestrator) + steps
 // 1a–1e only read abortController + toolPermissionContext.
 function ctxForMode(mode: string) {
   return {
@@ -61,5 +62,29 @@ describe('fullManage mode honors requiresUserInteraction (AskUserQuestion fix)',
       ctxForMode('default'),
     )
     expect(res.behavior).toBe('ask')
+  })
+})
+
+describe('Orchestrator mode uses fullManage permission behavior', () => {
+  it('does NOT auto-allow an interactive tool', async () => {
+    const res = await hasPermissionsToUseToolInner(
+      fakeAskTool('AskUserQuestion', true),
+      {},
+      ctxForMode('orchestrator'),
+    )
+    expect(res.behavior).toBe('ask')
+  })
+
+  it('auto-allows a non-interactive tool while retaining its distinct mode', async () => {
+    const res = await hasPermissionsToUseToolInner(
+      fakeAskTool('SomeAutoTool', false),
+      {},
+      ctxForMode('orchestrator'),
+    )
+    expect(res.behavior).toBe('allow')
+    expect(res.decisionReason).toMatchObject({
+      type: 'mode',
+      mode: 'orchestrator',
+    })
   })
 })

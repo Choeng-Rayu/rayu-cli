@@ -51,6 +51,7 @@ import { getSubscriptionType, isClaudeAISubscriber, prefetchAwsCredentialsAndBed
 import { checkHasTrustDialogAccepted, getGlobalConfig, getRemoteControlAtStartup, isAutoUpdaterDisabled, saveGlobalConfig } from './utils/config.js';
 import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js';
 import { getInitialEffortSetting, parseEffortValue } from './utils/effort.js';
+import { initialEffortForProduct, initialThinkingForProduct } from './runtime/productPreferences.js';
 import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, resolveFastModeStatusFromCache } from './utils/fastMode.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import { createSystemMessage, createUserMessage } from './utils/messages.js';
@@ -84,7 +85,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/grow
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { initializeAnalyticsGates } from 'src/services/analytics/sink.js';
 import { getOriginalCwd, setAdditionalDirectoriesForClaudeMd, setIsRemoteMode, setMainLoopModelOverride, setMainThreadAgentType, setTeleportedSessionInfo } from './bootstrap/state.js';
-import { filterCommandsForRemoteMode, getCommands } from './commands.js';
+import { filterCommandsForNonInteractive, filterCommandsForRemoteMode, getCommands } from './commands.js';
 import type { StatsStore } from './context/stats.js';
 import { launchAssistantInstallWizard, launchAssistantSessionChooser, launchInvalidSettingsDialog, launchResumeChooser, launchSnapshotUpdateDialog, launchTeleportRepoMismatchDialog, launchTeleportResumeWrapper } from './dialogLaunchers.js';
 import { SHOW_CURSOR } from './ink/termio/dec.js';
@@ -103,7 +104,7 @@ import { assertMinVersion } from './utils/autoUpdater.js';
 import { getContextWindowForModel } from './utils/context.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
-import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace } from './utils/envUtils.js';
+import { hasNodeOption, isBareMode, isEnvDefinedFalsy, isEnvTruthy, isInProtectedNamespace } from './utils/envUtils.js';
 import { refreshExampleCommands } from './utils/exampleCommands.js';
 import type { FpsMetrics } from './utils/fpsTracker.js';
 import { getWorktreePaths } from './utils/getWorktreePaths.js';
@@ -144,6 +145,10 @@ import { registerCleanup } from 'src/utils/cleanupRegistry.js';
 import { eagerParseCliFlag } from 'src/utils/cliArgs.js';
 import { createEmptyAttributionState } from 'src/utils/commitAttribution.js';
 import { countConcurrentSessions, registerSession, updateSessionName } from 'src/utils/concurrentSessions.js';
+import { startSessionIpc } from 'src/ipc/sessionServer.js';
+import { registerTelegramSessionHandlers } from 'src/telegram/telegramSessionHandlers.js';
+import { startDeviceHeartbeat } from 'src/services/rayuAuth/rayuDevices.js';
+import { registerShutdownHandler } from 'src/cli/uninstall/uninstallOrchestrator.js';
 import { getCwd } from 'src/utils/cwd.js';
 import { logForDebugging, setHasFormattedOutput } from 'src/utils/debug.js';
 import { errorMessage, getErrnoCode, isENOENT, TeleportOperationError, toError } from 'src/utils/errors.js';
@@ -181,6 +186,7 @@ import { createDirectConnectSession, DirectConnectError } from './server/createD
 import { initializeLspServerManager } from './services/lsp/manager.js';
 import { shouldEnablePromptSuggestion } from './services/PromptSuggestion/promptSuggestion.js';
 import { type AppState, getDefaultAppState, IDLE_SPECULATION_STATE } from './state/AppStateStore.js';
+import { EMPTY_ORCHESTRATION_STATE } from './orchestrator/runState.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
 import { createStore } from './state/store.js';
 import { asSessionId } from './types/ids.js';
@@ -446,7 +452,7 @@ function loadSettingsFromFlag(settingsFile: string): void {
       // the cache prefix and causing a 12x input token cost penalty.
       // The content hash ensures identical settings produce the same path
       // across process boundaries (each SDK query() spawns a new process).
-      settingsPath = generateTempFilePath('claude-settings', '.json', {
+      settingsPath = generateTempFilePath('rayu-settings', '.json', {
         contentHash: trimmedSettings
       });
       writeFileSync_DEPRECATED(settingsPath, trimmedSettings, 'utf8');
@@ -1579,6 +1585,35 @@ async function run(): Promise<CommanderCommand> {
       }
     }
 
+    // ── EDITOR CONNECTION FOR NON-INTERACTIVE SESSIONS ────────────────────────
+    //
+    // The interactive REPL connects to the editor through `useIDEIntegration`, a React hook.
+    // Every other consumer of this engine — the SDK, `--print`, and the Rayucode extension's
+    // engine child — therefore had NO editor connection at all, which is why a selection in
+    // the editor could not reach a headless turn.
+    //
+    // This runs the SAME discovery the interactive path runs (`findAvailableIDE`, which reads
+    // the same lockfiles) and builds the server entry with the SAME shared mapping. Nothing
+    // about the protocol is re-implemented here; the only thing that was missing was calling
+    // it. `CLAUDE_CODE_SSE_PORT` — which an editor extension sets when it spawns the engine —
+    // makes discovery pick that extension's port specifically.
+    if (getIsNonInteractiveSession() && !isEnvDefinedFalsy(process.env.CLAUDE_CODE_AUTO_CONNECT_IDE)) {
+      try {
+        const { findAvailableIDE, ideMcpServerConfig } = await import('src/utils/ide.js');
+        const ide = await findAvailableIDE();
+        if (ide) {
+          dynamicMcpConfig = {
+            ...dynamicMcpConfig,
+            ide: ideMcpServerConfig(ide)
+          };
+          logForDebugging(`[ide] headless session connected to ${ide.name} on port ${ide.port}`);
+        }
+      } catch (error) {
+        // An editor connection is an enhancement: a failure here must not stop the turn.
+        logForDebugging(`[ide] headless discovery failed: ${errorMessage(error)}`);
+      }
+    }
+
     // Store additional directories for RAYU.md loading (controlled by env var)
     setAdditionalDirectoriesForClaudeMd(addDir);
 
@@ -2366,7 +2401,7 @@ async function run(): Promise<CommanderCommand> {
     const mcpClients: Awaited<typeof mcpPromise>['clients'] = [];
     const mcpTools: Awaited<typeof mcpPromise>['tools'] = [];
     const mcpCommands: Awaited<typeof mcpPromise>['commands'] = [];
-    let thinkingEnabled = shouldEnableThinkingByDefault();
+    let thinkingEnabled = initialThinkingForProduct(shouldEnableThinkingByDefault());
     let thinkingConfig: ThinkingConfig = thinkingEnabled !== false ? {
       type: 'adaptive'
     } : {
@@ -2445,6 +2480,22 @@ async function run(): Promise<CommanderCommand> {
       if (sessionNameArg) {
         void updateSessionName(sessionNameArg);
       }
+      // Bind this session's local IPC listener so other RAYU processes can
+      // reach it (Telegram session routing, lifecycle operations). Chained
+      // after register so the address is patched onto an existing PID file
+      // rather than racing its creation. Never throws — a session that can't
+      // bind stays fully usable, just not remotely addressable.
+      //
+      // Handlers are registered FIRST so a prompt arriving immediately after
+      // the socket binds cannot land before there is anything to answer it.
+      registerTelegramSessionHandlers();
+      registerShutdownHandler();
+      void startSessionIpc();
+      // Register this machine in the device registry so remote lifecycle
+      // operations can address it, and heartbeat so a crashed CLI stops being
+      // reported as available. No-op when signed out (BYO-bot users have no
+      // backend to register with).
+      startDeviceHeartbeat();
       void countConcurrentSessions().then(count => {
         if (count >= 2) {
           logEvent('tengu_concurrent_sessions', {
@@ -2532,7 +2583,9 @@ async function run(): Promise<CommanderCommand> {
 
       // Headless mode supports all prompt commands and some local commands
       // If disableSlashCommands is true, return empty array
-      const commandsHeadless = disableSlashCommands ? [] : commands.filter(command => command.type === 'prompt' && !command.disableNonInteractive || command.type === 'local' && command.supportsNonInteractive);
+      const commandsHeadless = disableSlashCommands
+        ? []
+        : filterCommandsForNonInteractive(commands);
       const defaultState = getDefaultAppState();
       const headlessInitialState: AppState = {
         ...defaultState,
@@ -2543,7 +2596,7 @@ async function run(): Promise<CommanderCommand> {
           tools: mcpTools
         },
         toolPermissionContext,
-        effortValue: parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+        effortValue: parseEffortValue(options.effort) ?? initialEffortForProduct(getInitialEffortSetting()),
         ...(isFastModeEnabled() && {
           fastMode: getInitialFastModeSetting(effectiveModel ?? null)
         }),
@@ -2659,6 +2712,7 @@ async function run(): Promise<CommanderCommand> {
       } = await import('src/cli/print.js');
       profileCheckpoint('after_print_import');
       void runHeadless(inputPrompt, () => headlessStore.getState(), headlessStore.setState, commandsHeadless, tools, sdkMcpConfigs, agentDefinitions.activeAgents, {
+        catalogCommands: commands,
         continue: options.continue,
         resume: options.resume,
         verbose: verbose,
@@ -2823,7 +2877,7 @@ async function run(): Promise<CommanderCommand> {
         snapshotSequence: 0
       },
       pendingFileChanges: [],
-      swarmMode: false,
+      orchestration: EMPTY_ORCHESTRATION_STATE,
       attribution: createEmptyAttributionState(),
       thinkingEnabled,
       promptSuggestionEnabled: shouldEnablePromptSuggestion(),
@@ -2855,7 +2909,7 @@ async function run(): Promise<CommanderCommand> {
           content: String(inputPrompt)
         })
       } : null,
-      effortValue: parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+      effortValue: parseEffortValue(options.effort) ?? initialEffortForProduct(getInitialEffortSetting()),
       activeOverlays: new Set<string>(),
       fastMode: getInitialFastModeSetting(resolvedInitialModel),
       ...(isAdvisorEnabled() && advisorModel && {

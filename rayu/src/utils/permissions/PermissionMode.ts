@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import z from 'zod/v4'
 import { PAUSE_ICON } from '../../constants/figures.js'
 // Types extracted to src/types/permissions.ts to break import cycles
@@ -77,6 +76,13 @@ const PERMISSION_MODE_CONFIG: Partial<
     color: 'error',
     external: 'bypassPermissions',
   },
+  orchestrator: {
+    title: 'Orchestrator Mode',
+    shortTitle: 'Orchestrator',
+    symbol: '⚡',
+    color: 'permission',
+    external: 'bypassPermissions',
+  },
   dontAsk: {
     title: "Don't Ask",
     shortTitle: 'DontAsk',
@@ -84,7 +90,7 @@ const PERMISSION_MODE_CONFIG: Partial<
     color: 'error',
     external: 'dontAsk',
   },
-  ...(feature('TRANSCRIPT_CLASSIFIER')
+  ...(RAYU_FEATURES.TRANSCRIPT_CLASSIFIER
     ? {
         auto: {
           title: 'Auto mode',
@@ -105,9 +111,14 @@ export function isExternalPermissionMode(
   mode: PermissionMode,
 ): mode is ExternalPermissionMode {
   if (process.env.USER_TYPE !== 'ant') {
-    return mode !== 'fullManage'
+    return mode !== 'fullManage' && mode !== 'orchestrator'
   }
-  return mode !== 'auto' && mode !== 'bubble' && mode !== 'fullManage'
+  return (
+    mode !== 'auto' &&
+    mode !== 'bubble' &&
+    mode !== 'fullManage' &&
+    mode !== 'orchestrator'
+  )
 }
 
 function getModeConfig(mode: PermissionMode): PermissionModeConfig {

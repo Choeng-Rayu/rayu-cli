@@ -13,15 +13,23 @@ mock.module('../src/utils/model/modelAllowlist.ts', () => ({
 }))
 
 let dir: string
+let previousConfigDir: string | undefined
+let previousAuthConfigDir: string | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'rayu-agent-model-'))
+  previousConfigDir = process.env.RAYU_CONFIG_DIR
+  previousAuthConfigDir = process.env.RAYU_AUTH_CONFIG_DIR
+  delete process.env.RAYU_AUTH_CONFIG_DIR
   process.env.RAYU_CONFIG_DIR = dir
   process.env.RAYU_DIAGNOSTICS_NO_FILE = '1'
   disallowedModels = new Set()
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
-  delete process.env.RAYU_CONFIG_DIR
+  if (previousConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
+  else process.env.RAYU_CONFIG_DIR = previousConfigDir
+  if (previousAuthConfigDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+  else process.env.RAYU_AUTH_CONFIG_DIR = previousAuthConfigDir
   delete process.env.RAYU_OPENAI_COMPATIBLE
   delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
 })
@@ -97,7 +105,7 @@ describe('getAgentModel: callback-to-inherit on a disallowed per-agent override'
     await fresh()
     disallowedModels.add('opus')
     const { getAgentModel } = await import('../src/utils/model/agent.ts')
-    // 'backend' collaborator was pinned to 'opus' (e.g. via /collaborator_model),
+    // A worker was pinned to 'opus' via its per-agent model selection,
     // but the admin allowlist no longer permits it -> falls back to inherit,
     // i.e. the exact same result 'inherit' itself would produce.
     const withOverride = getAgentModel('opus', 'claude-sonnet-4-6', undefined, 'default', 'backend')
@@ -126,5 +134,93 @@ describe('getAgentModel: callback-to-inherit on a disallowed per-agent override'
     // must not affect it — the explicit per-call choice is honored as-is.
     const res = getAgentModel('opus', 'claude-sonnet-4-6', 'sonnet', 'default', 'backend')
     expect(res).toBe('claude-sonnet-4-6')
+  })
+})
+
+// Hard-lock precedence: a saved /subagent_models selection overrides the Agent-tool model param (see getAgentModel in src/utils/model/agent.ts).
+describe('getAgentModel: saved /subagent_models selection is a hard lock', () => {
+  async function activateNvidia() {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'k',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'meta/llama-3.3-70b-instruct',
+      smallFastModel: 'nvidia/llama-3.1-nemotron-70b-instruct',
+    })
+    return cfg
+  }
+
+  test('saved selection beats a toolSpecifiedModel', async () => {
+    const cfg = await activateNvidia()
+    cfg.setSubagentSelection('nvidia', 'nvidia/locked-model')
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(
+      getAgentModel('haiku', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0'),
+    ).toBe('nvidia/locked-model')
+  })
+
+  test('saved per-agent selection beats a toolSpecifiedModel', async () => {
+    const cfg = await activateNvidia()
+    cfg.setSubagentSelection('nvidia', 'nvidia/locked-planner', 'planner')
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(
+      getAgentModel(
+        'inherit',
+        'meta/llama-3.3-70b-instruct',
+        'qwen.qwen3-32b-v1:0',
+        'default',
+        'planner',
+      ),
+    ).toBe('nvidia/locked-planner')
+  })
+
+  test('cross-provider saved selection is still encoded when a tool model is passed', async () => {
+    const cfg = await activateNvidia()
+    cfg.setSubagentSelection('bedrock', 'openai.gpt-oss-120b-1:0')
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    const res = getAgentModel('haiku', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0')
+    expect(cfg.decodeModelProvider(res)).toEqual({
+      providerId: 'bedrock',
+      model: 'openai.gpt-oss-120b-1:0',
+    })
+  })
+
+  test('CLAUDE_CODE_SUBAGENT_MODEL still beats the saved selection', async () => {
+    const cfg = await activateNvidia()
+    cfg.setSubagentSelection('nvidia', 'nvidia/locked-model')
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'haiku'
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel('sonnet', 'meta/llama-3.3-70b-instruct')).toBe(
+      'nvidia/llama-3.1-nemotron-70b-instruct',
+    )
+    expect(
+      getAgentModel('sonnet', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0'),
+    ).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
+  })
+
+  test('with no saved selection the tool param still wins', async () => {
+    await activateNvidia()
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(
+      getAgentModel('haiku', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0'),
+    ).toBe('qwen.qwen3-32b-v1:0')
+  })
+
+  test('first-party session with no saved selection is unaffected', async () => {
+    await fresh()
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel('opus', 'claude-sonnet-4-6', 'sonnet')).toBe('claude-sonnet-4-6')
+  })
+
+  test('a disallowed saved selection falls back to inherit even with a tool model', async () => {
+    const cfg = await activateNvidia()
+    cfg.setSubagentSelection('nvidia', 'nvidia/locked-model')
+    disallowedModels.add('nvidia/locked-model')
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(
+      getAgentModel('haiku', 'claude-sonnet-4-6', 'qwen.qwen3-32b-v1:0'),
+    ).toBe('claude-sonnet-4-6')
   })
 })

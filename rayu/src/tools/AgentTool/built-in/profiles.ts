@@ -1,41 +1,28 @@
-// Opt-in locale/stack profiles for the collaborator swarm.
+// Opt-in locale profiles for the Orchestrator planner.
 //
 // Previously, Cambodia-specific rules (Bakong/KHQR, KHR/USD, Khmer) were
-// HARDCODED into planner/backend/mobile prompts — biasing every project. They now live here
-// as an opt-in profile, so the default swarm carries no locale bias.
+// HARDCODED into specialist prompts — biasing every project. They now live here
+// as an opt-in profile, so the default Orchestrator plan has no locale bias.
 //
 // CONTENT (PROFILES map) is kept separate from ASSEMBLY (selectProfile /
 // getProfileFragment) so Task-5 can move each fragment into a markdown file
 // under built-in/agents/<name>/profiles/<profile>.md without touching logic.
 import { loadRayuConfig } from '../../../utils/rayuConfig.js'
-import { readShared } from '../swarmContext.js'
 
 /** Per-agent prompt fragments for a profile (keyed by agentType prefix). */
 export type ProfileFragments = Record<string, string>
 
 export type Profile = {
   name: string
-  /** Regex over shared.json constraints/goal that auto-selects this profile. */
-  appliesWhen?: RegExp
   fragmentsByAgent: ProfileFragments
 }
 
 const CAMBODIA: Profile = {
   name: 'cambodia',
-  appliesWhen: /\b(cambodia|khmer|bakong|khqr|\bKH\b|riel|KHR)\b/i,
   fragmentsByAgent: {
     planner: [
       '## Locale profile: Cambodia',
       '- Prefer locally-relevant choices: Bakong / KHQR for payments, KHR + USD dual currency, Khmer + English bilingual UI.',
-    ].join('\n'),
-    backend: [
-      '## Locale profile: Cambodia',
-      '- KHR/USD decimal precision (KHR: 0 decimals, USD: 2). Store money as integer minor units where possible.',
-      '- Use utf8mb4 (or equivalent) so Khmer Unicode is stored correctly.',
-    ].join('\n'),
-    mobile: [
-      '## Locale profile: Cambodia',
-      '- Handle KHR/USD display and Khmer + English localization in the mobile UI.',
     ].join('\n'),
   },
 }
@@ -58,28 +45,15 @@ export function loadProfile(name: string | undefined): Profile {
 }
 
 /**
- * Select the active profile (assembly):
- *   1. explicit config (projectProfile) wins;
- *   2. else auto-detect from the shared brief's constraints/goal;
- *   3. else the no-bias default.
+ * Select the explicitly configured profile, otherwise use the no-bias default.
  */
 export function selectProfile(): Profile {
-  // 1. Explicit opt-in via config.
   try {
     const configured = loadRayuConfig().projectProfile
     if (configured) return loadProfile(configured)
   } catch {
-    // ignore config errors — fall through to detection
+    // ignore config errors — fall through to the default
   }
-  // 2. Auto-detect from the shared brief.
-  const shared = readShared()
-  if (shared) {
-    const haystack = [shared.goal, ...(shared.constraints ?? [])].join(' ')
-    for (const profile of Object.values(PROFILES)) {
-      if (profile.appliesWhen?.test(haystack)) return profile
-    }
-  }
-  // 3. No locale bias.
   return DEFAULT
 }
 

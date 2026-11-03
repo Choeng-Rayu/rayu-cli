@@ -25,13 +25,12 @@ const IMAGE_CATALOG: MediaModelEntry[] = [
     isDefault: true,
   },
   {
-    id: 'black-forest-labs/flux.1-schnell',
-    label: 'FLUX.1 Schnell',
+    id: 'rayu-wan2.7-image',
+    label: 'Wan 2.7 Image',
     mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'nvidia',
-    family: 'flux',
-    isDefault: true,
+    capabilities: ['generate', 'edit'],
+    backend: 'rayu',
+    family: 'dashscope_multimodal',
   },
 ]
 
@@ -40,10 +39,8 @@ describe('isVertexImageModel', () => {
     expect(isVertexImageModel('imagen-4.0-generate-001', IMAGE_CATALOG)).toBe(true)
     expect(isVertexImageModel('imagen-3.0-capability-001', IMAGE_CATALOG)).toBe(true)
   })
-  test('rejects NVIDIA / undefined', () => {
-    expect(isVertexImageModel('black-forest-labs/flux.1-schnell', IMAGE_CATALOG)).toBe(
-      false,
-    )
+  test('rejects hosted / undefined', () => {
+    expect(isVertexImageModel('rayu-wan2.7-image', IMAGE_CATALOG)).toBe(false)
     expect(isVertexImageModel(undefined, IMAGE_CATALOG)).toBe(false)
   })
 })

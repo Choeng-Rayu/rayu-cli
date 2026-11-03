@@ -9,14 +9,18 @@ import {
   getRayuApiBaseUrl,
   getValidRayuAccessToken,
 } from '../services/rayuAuth/rayuSession.js'
-import type { TelegramUpdate } from './telegramApi.js'
+import {
+  TelegramApiError,
+  type PollFailureKind,
+  type TelegramUpdate,
+} from './telegramApi.js'
 
 async function authedFetch(
   path: string,
   init?: { method?: string; body?: string },
 ): Promise<Response> {
   const token = await getValidRayuAccessToken()
-  if (!token) throw new Error('Not signed in to Rayu')
+  if (!token) throw new NotSignedInError()
   return (globalThis.fetch as typeof fetch)(`${getRayuApiBaseUrl()}${path}`, {
     method: init?.method ?? 'GET',
     headers: {
@@ -25,6 +29,25 @@ async function authedFetch(
     },
     ...(init?.body ? { body: init.body } : {}),
   })
+}
+
+/**
+ * No usable Rayu session. Distinct class so classifyHostedResponse can map it to
+ * `auth` (not retryable) rather than to a generic network failure.
+ */
+export class NotSignedInError extends Error {
+  constructor() {
+    super('Not signed in to Rayu')
+    this.name = 'NotSignedInError'
+  }
+}
+
+/** Seconds from a `Retry-After` header, if present and numeric. */
+function retryAfterMsFromHeaders(res: Response): number | undefined {
+  const raw = res.headers.get('retry-after')
+  if (!raw) return undefined
+  const seconds = Number(raw)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined
 }
 
 export interface HostedBotInfo {
@@ -92,15 +115,68 @@ export interface HostedUpdatesBatch {
   updates: Array<{ id: number; update: TelegramUpdate }>
 }
 
-/** Long-poll inbound updates routed to this user (rows <= `after` are acked). */
-export async function getHostedUpdates(after: number): Promise<HostedUpdatesBatch> {
+/**
+ * Long-poll inbound updates routed to this user (rows <= `after` are acked).
+ *
+ * Unlike the other readers in this file this does NOT fail soft: the poll loop
+ * has to know WHY a call failed so it can back off appropriately and, when the
+ * backend reports no link, stop polling altogether (T-4/T-6). Rows are returned
+ * with their ids so the caller can advance its ack cursor.
+ */
+export async function getHostedUpdates(
+  after: number,
+): Promise<
+  | { kind: 'ok'; batch: HostedUpdatesBatch }
+  | { kind: PollFailureKind; retryAfterMs?: number; detail?: string }
+> {
+  let res: Response
   try {
-    const res = await authedFetch(`/telegram/updates?after=${after}`)
-    if (!res.ok) return { linked: false, updates: [] }
-    return (await res.json()) as HostedUpdatesBatch
-  } catch {
-    return { linked: false, updates: [] }
+    res = await authedFetch(`/telegram/updates?after=${after}`)
+  } catch (e) {
+    if (e instanceof NotSignedInError) {
+      return { kind: 'auth', detail: e.message }
+    }
+    return {
+      kind: 'network',
+      detail: e instanceof Error ? e.message : String(e),
+    }
   }
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      return { kind: 'auth', detail: `updates ${res.status}` }
+    }
+    if (res.status === 429) {
+      return {
+        kind: 'rate-limited',
+        retryAfterMs: retryAfterMsFromHeaders(res),
+        detail: 'updates 429',
+      }
+    }
+    if (res.status >= 500) {
+      return { kind: 'backend-unavailable', detail: `updates ${res.status}` }
+    }
+    return { kind: 'telegram-error', detail: `updates ${res.status}` }
+  }
+
+  let batch: HostedUpdatesBatch
+  try {
+    batch = (await res.json()) as HostedUpdatesBatch
+  } catch (e) {
+    return {
+      kind: 'telegram-error',
+      detail: `unparseable updates body: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+
+  // The backend telling us this account has no linked chat is the authoritative
+  // answer, not a transient blip. Previously discarded, which is why a
+  // server-side /disconnect left the CLI polling forever and still showing
+  // "connected" (T-6).
+  if (!batch.linked) {
+    return { kind: 'unlinked', detail: 'backend reports no linked chat' }
+  }
+  return { kind: 'ok', batch }
 }
 
 /**
@@ -129,16 +205,36 @@ export async function getHostedFile(
  * Relay an outbound Telegram call through the backend (chat_id forced to the
  * user's own chat server-side). Throws on failure so callers that care can
  * catch — the bridge already wraps its sends in .catch().
+ *
+ * Honours a single 429 retry using `Retry-After`, mirroring the BYO path in
+ * telegramApi.callApi. Without this the hosted path turned the backend's own
+ * rate limiter into a hard send failure instead of a brief wait.
  */
 export async function relayHostedSend(
   method: string,
   params: Record<string, unknown>,
+  { allowRetry = true }: { allowRetry?: boolean } = {},
 ): Promise<unknown> {
   const res = await authedFetch('/telegram/send', {
     method: 'POST',
     body: JSON.stringify({ method, params }),
   })
-  if (!res.ok) throw new Error(`hosted relay ${method} failed: ${res.status}`)
+  if (!res.ok) {
+    if (res.status === 429 && allowRetry) {
+      const waitMs = retryAfterMsFromHeaders(res) ?? 1_000
+      // Cap the wait so a hostile/misconfigured header can't park a send for
+      // minutes; anything longer is better handled by the caller failing.
+      await new Promise((r) => setTimeout(r, Math.min(waitMs, 30_000) + 200))
+      return relayHostedSend(method, params, { allowRetry: false })
+    }
+    throw new TelegramApiError(
+      `hosted relay ${method} failed: ${res.status}`,
+      res.status,
+      res.status === 429
+        ? (retryAfterMsFromHeaders(res) ?? 1_000) / 1000
+        : undefined,
+    )
+  }
   const json = (await res.json()) as { result?: unknown }
   return json.result
 }

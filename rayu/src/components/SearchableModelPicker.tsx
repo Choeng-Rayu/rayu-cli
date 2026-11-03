@@ -16,7 +16,7 @@ import {
   setActiveProviderModel,
   type RayuModelChoice,
 } from '../utils/rayuConfig.js'
-import { refreshHostedCatalog } from '../services/rayuAuth/rayuHostedProvider.js'
+import { refreshModelPickerCatalog } from '../utils/model/refreshModelPickerCatalog.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -33,8 +33,8 @@ export function SearchableModelPicker({
   onDone: OnDone
   /**
    * Optional selection handler. When provided, the picker calls this instead of
-   * setting the MAIN active provider/model — used by /model_subagent to persist
-   * the subagent selection (a possibly different provider) without touching the
+   * setting the MAIN active provider/model — used by /subagent_models to persist
+   * an agent selection (possibly on a different provider) without touching the
    * main agent. Receives the decoded providerId + model.
    */
   onSelectModel?: (providerId: string, model: string) => void
@@ -47,15 +47,20 @@ export function SearchableModelPicker({
   const [all, setAll] = React.useState(() => getAllProviderModelOptions())
   const [query, setQuery] = React.useState('')
 
-  // The hosted catalog is server-driven, so a model the admin added (or renamed)
+  // Both Rayu catalogs are server-driven, so a model the admin added (or renamed)
   // seconds ago may not be in the config this component just read — the launch
   // refresh is asynchronous. Refresh once on open and re-read only if the list
   // actually changed, so the picker never shows a stale catalog and never
   // re-renders for nothing.
   React.useEffect(() => {
     let alive = true
-    void refreshHostedCatalog().then((changed) => {
-      if (alive && changed) setAll(getAllProviderModelOptions())
+    // Refresh both Rayu providers in parallel: the OAuth hosted catalog and the
+    // API-key catalog. Either may be absent (no session / no key), in which case
+    // it returns false immediately.
+    void refreshModelPickerCatalog().then(changed => {
+      if (alive && changed) {
+        setAll(getAllProviderModelOptions())
+      }
     })
     return () => {
       alive = false
@@ -69,7 +74,7 @@ export function SearchableModelPicker({
       : all.filter(o => {
           // The admin's display name is searchable too: a user who knows the
           // model as "DeepSeek V4 Pro" should not have to know its id first.
-          const hay = `${o.providerId} ${o.model} ${o.label ?? ''}`.toLowerCase()
+          const hay = `${o.providerId} ${o.model} ${o.label ?? ''} ${o.description ?? ''}`.toLowerCase()
           return q.split(/\s+/).every(t => hay.includes(t))
         })
     return list.map(o => ({
@@ -149,13 +154,15 @@ export function SearchableModelPicker({
 }
 
 /**
- * Secondary line for one picker row: who serves it, what the admin calls it, and
- * how much context it has. All three come from the provider config (for
- * rayu-hosted, straight from /me/entitlements) — the CLI has no built-in table of
- * hosted model names or windows, so a dashboard edit is reflected as-is.
+ * Secondary line for one picker row: the admin's customer-facing model summary,
+ * the Rayu provider, display name, and context window. All of it comes from the
+ * provider config (for rayu-hosted, straight from /me/entitlements), so a dashboard
+ * edit is reflected as-is without a CLI release.
  */
 export function describeModelChoice(choice: RayuModelChoice): string {
-  const parts = [choice.providerId]
+  const parts = [choice.description, choice.providerId].filter(
+    (part): part is string => Boolean(part),
+  )
   if (choice.label) parts.push(choice.label)
   if (choice.contextWindow && choice.contextWindow > 0) {
     parts.push(`${formatContextTokens(choice.contextWindow)} ctx`)
