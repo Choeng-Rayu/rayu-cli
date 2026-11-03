@@ -36,9 +36,31 @@ function fakeJoinPath(base: { fsPath: string }, ...segments: string[]) {
 
 const WORKSPACE = '/mock/workspace'
 
+/** `vscode.ViewColumn` values the opening paths use. */
+const ViewColumn = { Active: -1, Beside: -2 }
+
+/** Opening calls made by `openReviewDiff`, reset by the tests that assert on them. */
+const commandCalls: Array<{ command: string; args: unknown[] }> = []
+const openCalls: Array<{
+  uri: unknown
+  options: { viewColumn?: number; preview?: boolean } | undefined
+}> = []
+
 mock.module('vscode', () => ({
-  window: { showWarningMessage: () => Promise.resolve(undefined), showTextDocument: () => Promise.resolve(undefined) },
-  commands: { executeCommand: () => Promise.resolve(undefined) },
+  ViewColumn,
+  window: {
+    showWarningMessage: () => Promise.resolve(undefined),
+    showTextDocument: (uri: unknown, options?: { viewColumn?: number; preview?: boolean }) => {
+      openCalls.push({ uri, options })
+      return Promise.resolve(undefined)
+    },
+  },
+  commands: {
+    executeCommand: (command: string, ...args: unknown[]) => {
+      commandCalls.push({ command, args })
+      return Promise.resolve(undefined)
+    },
+  },
   EventEmitter: class {
     event = () => ({ dispose() {} })
     fire() {}
@@ -52,7 +74,7 @@ mock.module('vscode', () => ({
   workspace: { workspaceFolders: [{ uri: { fsPath: WORKSPACE } }] },
 }))
 
-const { resolveReviewPath, resolveReviewFileUri, ReviewStore } = (await import(
+const { resolveReviewPath, resolveReviewFileUri, openReviewDiff, ReviewStore } = (await import(
   '../src/vscode/host/review/fileChangeReview.js'
 )) as typeof import('../src/vscode/host/review/fileChangeReview.js')
 
@@ -141,5 +163,42 @@ describe('the store hands the record to the resolver', () => {
   test('an unknown displayPath has no record, so the fallback path is used', () => {
     const store = new ReviewStore()
     expect(store.get('panel-1', 'nope.ts')).toBeUndefined()
+  })
+})
+
+describe('the review card\'s Diff button keeps the chat tab open', () => {
+  // THE BUG: the diff was opened in the active editor group as a preview, so it took
+  // over the tab the conversation lived in instead of appearing as its own tab. It must
+  // open beside the conversation, as a stable (non-preview) tab.
+  test('opens vscode.diff beside the conversation as a non-preview tab', async () => {
+    const store = new ReviewStore()
+    store.replace('panel-1', [
+      {
+        filePath: '/real/session/dir/src/a.ts',
+        displayPath: 'src/a.ts',
+        changeIds: ['c1'],
+        hunks: [],
+        isCreated: false,
+      },
+    ])
+
+    commandCalls.length = 0
+    await openReviewDiff(store, 'panel-1', 'src/a.ts')
+
+    expect(commandCalls).toHaveLength(1)
+    const [call] = commandCalls
+    expect(call!.command).toBe('vscode.diff')
+    const options = call!.args[3] as { viewColumn?: number; preview?: boolean }
+    expect(options.viewColumn).toBe(ViewColumn.Beside)
+    expect(options.preview).toBe(false)
+  })
+
+  test('the no-record fallback opens the file beside and non-preview too', async () => {
+    const store = new ReviewStore()
+    openCalls.length = 0
+    await openReviewDiff(store, 'panel-1', 'src/missing.ts')
+
+    expect(openCalls).toHaveLength(1)
+    expect(openCalls[0]!.options).toEqual({ viewColumn: ViewColumn.Beside, preview: false })
   })
 })
