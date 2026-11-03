@@ -17,7 +17,7 @@ import { join } from 'path'
  * @returns Temp file path
  */
 export function generateTempFilePath(
-  prefix: string = 'claude-prompt',
+  prefix: string = 'rayu-prompt',
   extension: string = '.md',
   options?: { contentHash?: string },
 ): string {

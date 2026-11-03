@@ -3,7 +3,7 @@ import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
-import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
+import { getRayuTempDir } from '../../utils/rayuTempDir.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -181,12 +181,12 @@ function getSimpleSandboxSection(): string {
   const allowUnsandboxedCommands =
     SandboxManager.areUnsandboxedCommandsAllowed()
 
-  // Replace the per-UID temp dir literal (e.g. /private/tmp/claude-1001/) with
+  // Replace the per-UID temp dir literal (e.g. /private/tmp/rayu-1001/) with
   // "$TMPDIR" so the prompt is identical across users — avoids busting the
   // cross-user global prompt cache. The sandbox already sets $TMPDIR at runtime.
-  const claudeTempDir = getClaudeTempDir()
+  const rayuTempDir = getRayuTempDir()
   const normalizeAllowOnly = (paths: string[]): string[] =>
-    [...new Set(paths)].map(p => (p === claudeTempDir ? '$TMPDIR' : p))
+    [...new Set(paths)].map(p => (p === rayuTempDir ? '$TMPDIR' : p))
 
   const filesystemConfig = {
     read: {

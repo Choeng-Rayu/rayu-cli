@@ -1530,7 +1530,7 @@ async function installFromArtifactory(command: string): Promise<string> {
     const vsixUrl = `https://artifactory.infra.ant.dev/artifactory/armorcode-claude-code-internal/claude-vscode-releases/${version}/claude-code.vsix`
     const tempVsixPath = join(
       os.tmpdir(),
-      `claude-code-${version}-${Date.now()}.vsix`,
+      `rayucode-${version}-${Date.now()}.vsix`,
     )
 
     try {

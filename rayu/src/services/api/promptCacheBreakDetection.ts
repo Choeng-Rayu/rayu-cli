@@ -8,7 +8,7 @@ import type { Message } from 'src/types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { djb2Hash } from 'src/utils/hash.js'
 import { logError } from 'src/utils/log.js'
-import { getClaudeTempDir } from 'src/utils/permissions/filesystem.js'
+import { ensureRayuTempDir, getRayuTempDir } from 'src/utils/rayuTempDir.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import {
@@ -22,7 +22,7 @@ function getCacheBreakDiffPath(): string {
   for (let i = 0; i < 4; i++) {
     suffix += chars[Math.floor(Math.random() * chars.length)]
   }
-  return join(getClaudeTempDir(), `cache-break-${suffix}.diff`)
+  return join(getRayuTempDir(), `cache-break-${suffix}.diff`)
 }
 
 type PreviousState = {
@@ -711,7 +711,8 @@ async function writeCacheBreakDiff(
 ): Promise<string | undefined> {
   try {
     const diffPath = getCacheBreakDiffPath()
-    await mkdir(getClaudeTempDir(), { recursive: true })
+    await ensureRayuTempDir()
+    await mkdir(getRayuTempDir(), { recursive: true, mode: 0o700 })
     const patch = createPatch(
       'prompt-state',
       prevContent,
@@ -719,7 +720,7 @@ async function writeCacheBreakDiff(
       'before',
       'after',
     )
-    await writeFile(diffPath, patch)
+    await writeFile(diffPath, patch, { mode: 0o600 })
     return diffPath
   } catch {
     return undefined

@@ -1570,7 +1570,7 @@ export function addSlowOperation(operation: string, durationMs: number): void {
   if (process.env.USER_TYPE !== 'ant') return
   // Skip tracking for editor sessions (user editing a prompt file in $EDITOR)
   // These are intentionally slow since the user is drafting text
-  if (operation.includes('exec') && operation.includes('claude-prompt-')) {
+  if (operation.includes('exec') && operation.includes('rayu-prompt-')) {
     return
   }
   const now = Date.now()

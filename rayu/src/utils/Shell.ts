@@ -30,8 +30,8 @@ export type { ExecResult } from './ShellCommand.js'
 
 import { accessSync } from 'fs'
 import { onCwdChangedForHooks } from './hooks/fileChangedWatcher.js'
-import { getClaudeTempDirName } from './permissions/filesystem.js'
 import { getPlatform } from './platform.js'
+import { ensureRayuTempDir, getRayuTempDirName } from './rayuTempDir.js'
 import { SandboxManager } from './sandbox/sandbox-adapter.js'
 import { invalidateSessionEnvCache } from './sessionEnvironment.js'
 import { createBashShellProvider } from './shell/bashProvider.js'
@@ -200,10 +200,12 @@ export async function exec(
     .toString(16)
     .padStart(4, '0')
 
-  // Sandbox temp directory - use per-user directory name to prevent multi-user permission conflicts
+  // Sandbox temp directory - per-user namespace shared with the rest of the engine
   const sandboxTmpDir = posixJoin(
-    process.env.CLAUDE_CODE_TMPDIR || '/tmp',
-    getClaudeTempDirName(),
+    process.env.RAYU_CODE_TMPDIR ||
+      process.env.CLAUDE_CODE_TMPDIR ||
+      '/tmp',
+    getRayuTempDirName(),
   )
 
   const { commandString: builtCommand, cwdFilePath } =
@@ -284,7 +286,8 @@ export async function exec(
   const usePipeMode = !!onStdout
   const taskId = generateTaskId('local_bash')
   const taskOutput = new TaskOutput(taskId, onProgress ?? null, !usePipeMode)
-  await mkdir(getTaskOutputDir(), { recursive: true })
+  await ensureRayuTempDir()
+  await mkdir(getTaskOutputDir(), { recursive: true, mode: 0o700 })
 
   // In file mode, both stdout and stderr go to the same file fd.
   // On POSIX, O_APPEND makes each write atomic (seek-to-end + write), so
