@@ -904,10 +904,13 @@ export function hasAccessToIDEExtensionDiffFeature(
   )
 }
 
+// Rayucode publishes under publisher `RayuCode` (see
+// src/vscode/extension.manifest.json); VS Code lowercases ids in
+// `--list-extensions`, so store the canonical lowercase form.
 const EXTENSION_ID =
   process.env.USER_TYPE === 'ant'
     ? 'anthropic.claude-code-internal'
-    : 'anthropic.claude-code'
+    : 'rayucode.rayucode'
 
 export async function isIDEExtensionInstalled(
   ideType: IdeType,
@@ -923,7 +926,7 @@ export async function isIDEExtensionInstalled(
             env: getInstallationEnv(),
           },
         )
-        if (result.stdout?.includes(EXTENSION_ID)) {
+        if (result.stdout?.toLowerCase().includes(EXTENSION_ID.toLowerCase())) {
           return true
         }
       } catch {
@@ -946,12 +949,12 @@ async function installIDEExtension(ideType: IdeType): Promise<string | null> {
       }
       let version = await getInstalledVSCodeExtensionVersion(command)
       // If it's not installed or the version is older than the one we have bundled,
-      if (!version || lt(version, getClaudeCodeVersion())) {
+      if (!version || lt(version, getRayuCodeVersion())) {
         // `code` may crash when invoked too quickly in succession
         await sleep(500)
         const result = await execFileNoThrowWithCwd(
           command,
-          ['--force', '--install-extension', 'anthropic.claude-code'],
+          ['--force', '--install-extension', EXTENSION_ID],
           {
             env: getInstallationEnv(),
           },
@@ -959,7 +962,7 @@ async function installIDEExtension(ideType: IdeType): Promise<string | null> {
         if (result.code !== 0) {
           throw new Error(`${result.code}: ${result.error} ${result.stderr}`)
         }
-        version = getClaudeCodeVersion()
+        version = getRayuCodeVersion()
       }
       return version
     }
@@ -984,7 +987,9 @@ function getInstallationEnv(): NodeJS.ProcessEnv | undefined {
   return undefined
 }
 
-function getClaudeCodeVersion() {
+// The Rayucode extension is versioned in lockstep with the CLI: both come from
+// rayu/package.json, so the engine's own version is the bundled extension's.
+function getRayuCodeVersion() {
   return MACRO.VERSION
 }
 
@@ -1001,7 +1006,7 @@ async function getInstalledVSCodeExtensionVersion(
   const lines = stdout?.split('\n') || []
   for (const line of lines) {
     const [extensionId, version] = line.split('@')
-    if (extensionId === 'anthropic.claude-code' && version) {
+    if (extensionId?.toLowerCase() === EXTENSION_ID.toLowerCase() && version) {
       return version
     }
   }
@@ -1385,8 +1390,8 @@ export async function initializeIdeIntegration(
   // Don't await so we don't block startup, but return a promise that resolves with the status
   void findAvailableIDE().then(onIdeDetected)
 
-  // Rayu has no first-party VS Code extension; do NOT auto-install Anthropic's
-  // `anthropic.claude-code` extension. Default OFF (opt in via config).
+  // Auto-install Rayucode's own extension (`rayucode.rayucode`), never
+  // Anthropic's. Default OFF (opt in via config).
   const shouldAutoInstall = getGlobalConfig().autoInstallIdeExtension ?? false
   if (
     !isEnvTruthy(process.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) &&
