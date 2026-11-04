@@ -12,8 +12,9 @@ import {
 } from '../../services/rayuAuth/mediaModels.js'
 import {
   describeMediaModel,
+  emptyHostedPickerNote,
+  hostedPickerModels,
   mediaCatalogNotice,
-  orderMediaModelsForPicker,
 } from '../../services/rayuAuth/mediaModelPicker.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 
@@ -43,12 +44,13 @@ function VideoModelPicker({
     }
   }, [])
 
+  const hosted = hostedPickerModels(catalog.video)
   const options = [
     {
-      label: 'Default (auto: Rayu-hosted when signed in, else fal.ai / Vertex Veo)',
+      label: 'Default (auto)',
       value: '',
     },
-    ...orderMediaModelsForPicker(catalog.video).map((m) => ({
+    ...hosted.map((m) => ({
       label: m.id,
       value: m.id,
       description: describeMediaModel(m),
@@ -62,15 +64,18 @@ function VideoModelPicker({
     <Box flexDirection="column" gap={1} paddingLeft={1}>
       <Text bold>Video generation model</Text>
       <Text dimColor>
-        Used by /image-video (GenerateVideo). Signed-in Rayu users get a hosted
-        model by default (no key needed, billed per second in Rayu credits): the
-        first one in the order set by your Rayu admin that matches the
-        operation, text-to-video for a prompt or image2video when a reference
-        image is supplied. Pick a fal.ai or Vertex Veo model here to use your
-        own key instead.
+        Used by /image-video (GenerateVideo). These are the Rayu-hosted video
+        models your Rayu admin publishes (no provider key needed, billed per
+        second in Rayu credits), in the admin's order; the default is the first
+        one that matches the operation — text-to-video for a prompt, image2video
+        when a reference image is supplied. Sign in (/login) or connect a Rayu
+        API key to see them.
         {current ? `  Current: ${current}` : ''}
       </Text>
       {notice ? <Text dimColor>{notice}</Text> : null}
+      {hosted.length === 0 && !notice ? (
+        <Text dimColor>{emptyHostedPickerNote('video')}</Text>
+      ) : null}
       <Select
         options={options}
         onChange={(v: string) => {
@@ -78,7 +83,7 @@ function VideoModelPicker({
           onDone(
             v
               ? `Video model set to ${v}`
-              : 'Video model reset to default (Rayu-hosted when signed in)',
+              : 'Video model reset to default (the first Rayu-hosted model available)',
           )
         }}
         onCancel={() => onDone('Video model unchanged.')}

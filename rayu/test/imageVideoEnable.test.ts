@@ -62,23 +62,37 @@ describe('image/video tools isEnabled truth table', () => {
     expect(VideoGenTool.isEnabled()).toBe(false)
   })
 
-  test('fal key only -> video enabled, image not (fal serves video only)', async () => {
+  test('fal key only -> both disabled (the fal video client was removed)', async () => {
     process.env.FAL_KEY = 'fal-key'
     const { ImageGenTool, VideoGenTool } = await tools()
     expect(ImageGenTool.isEnabled()).toBe(false)
-    expect(VideoGenTool.isEnabled()).toBe(true)
+    expect(VideoGenTool.isEnabled()).toBe(false)
   })
 
-  test('Vertex only -> enabled', async () => {
+  test('Vertex only -> IMAGE enabled, video not', async () => {
+    // Vertex is the remaining BYO backend, and it is IMAGE only: the Veo video
+    // client was removed, so a GCP project no longer enables video.
     process.env.GOOGLE_CLOUD_PROJECT = 'proj'
     const { ImageGenTool, VideoGenTool } = await tools()
     expect(ImageGenTool.isEnabled()).toBe(true)
-    expect(VideoGenTool.isEnabled()).toBe(true)
+    expect(VideoGenTool.isEnabled()).toBe(false)
   })
 
-  test('NVIDIA + Vertex -> enabled by Vertex', async () => {
+  test('NVIDIA + Vertex -> image enabled by Vertex, video still not', async () => {
     process.env.NVIDIA_API_KEY = 'nv-key'
     process.env.GOOGLE_CLOUD_PROJECT = 'proj'
+    const { ImageGenTool, VideoGenTool } = await tools()
+    expect(ImageGenTool.isEnabled()).toBe(true)
+    expect(VideoGenTool.isEnabled()).toBe(false)
+  })
+
+  test('a Rayu API key only -> both enabled (no session needed)', async () => {
+    const { writeFileSync } = await import('fs')
+    writeFileSync(
+      join(dir, 'providers.json'),
+      JSON.stringify({ providers: [{ id: 'rayu', apiKey: 'sk_rayu_test' }] }, null, 2),
+      { mode: 0o600 },
+    )
     const { ImageGenTool, VideoGenTool } = await tools()
     expect(ImageGenTool.isEnabled()).toBe(true)
     expect(VideoGenTool.isEnabled()).toBe(true)

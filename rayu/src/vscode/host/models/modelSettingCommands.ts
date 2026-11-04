@@ -90,7 +90,7 @@ const MEDIA_DEFAULT_NOTE: Record<MediaModelSettingTarget, string> = {
   image:
     'Rayu-hosted when signed in (the first hosted model in the admin order that can do the request), else Vertex Imagen',
   video:
-    'Rayu-hosted when signed in (the first hosted model in the admin order that matches the operation), else fal.ai or Vertex Veo',
+    'Rayu-hosted (the first hosted model in the admin order that matches the operation) — the only video backend',
 }
 
 const MEDIA_TIP: Record<MediaModelSettingTarget, string> = {

@@ -26,8 +26,9 @@
 // mediaModelsFallback.ts for why, and why it is not the source of truth).
 //
 // SECURITY: this is metadata only. No provider key is fetched, stored, or sent.
-// Hosted generation goes through the gateway on the Rayu session; bring-your-own
-// generation runs against the user's own fal.ai / Google Cloud credentials.
+// Hosted generation goes through the gateway on the Rayu session (or a Rayu API
+// key); the remaining bring-your-own path, IMAGE only, runs against the user's own
+// Google Cloud credentials.
 //
 // NVIDIA image and video generation (genai, NVCF, SVD) was removed from the CLI.
 // The backend can still publish rows for those backends — older CLIs read them —
@@ -52,12 +53,20 @@ export type MediaCapability = ImageCapability | VideoCapability
  * Upstream that serves a media model. The CLI picks its HTTP client from this.
  *
  * `rayu` means RAYU-HOSTED: the request goes to the Rayu gateway (Bearer Rayu
- * JWT) and the gateway holds the upstream provider key, exactly like a
- * rayu-hosted chat model. It is therefore the only backend the user needs no
- * key for. `vertex` (Imagen / Veo on the user's Google credentials) and `fal`
- * (fal.ai Kling on the user's FAL_KEY) are the bring-your-own backends.
+ * JWT or a Rayu API key) and the gateway holds the upstream provider key,
+ * exactly like a rayu-hosted chat model. It is therefore the only backend the
+ * user needs no key for, and the only one VIDEO has. `vertex` (Imagen on the
+ * user's own Google credentials) is the remaining bring-your-own IMAGE backend.
  */
-export type MediaBackend = 'vertex' | 'fal' | 'rayu'
+export type MediaBackend =
+  /** Bring-your-own Imagen, on the user's own Google Cloud project. IMAGE only. */
+  | 'vertex'
+  /**
+   * Rayu-hosted: proxied by the gateway, no provider key. The only backend for
+   * IMAGE and VIDEO generation — the fal.ai video client was removed, so `fal`
+   * is no longer a backend this CLI can serve (see RETIRED_MEDIA_BACKENDS).
+   */
+  | 'rayu'
 
 /**
  * Request-SHAPE family. The CLI maps this to a body builder (see the
@@ -126,7 +135,6 @@ const IMAGE_CAPABILITIES: readonly string[] = ['generate', 'edit']
 const VIDEO_CAPABILITIES: readonly string[] = ['text2video', 'image2video']
 const MEDIA_BACKENDS: readonly string[] = [
   'vertex',
-  'fal',
   // Hosted entries synthesized by the gateway from the admin's hosted catalog:
   // `image_models` for images (family openai_images / dashscope_multimodal) AND
   // hosted video models (family dashscope_video). mediaModelsFallback.ts stays
@@ -136,22 +144,37 @@ const MEDIA_BACKENDS: readonly string[] = [
 
 /**
  * Backends this CLI no longer serves: NVIDIA genai (FLUX / Stable Diffusion /
- * Kontext), NVCF (Cosmos) and NVIDIA SVD.
+ * Kontext), NVCF (Cosmos), NVIDIA SVD, and fal.ai.
  *
  * Rows for them are skipped QUIETLY. They are not schema drift — the backend
  * still publishes them for older CLIs — so counting them as unreadable would log
  * a "your CLI is older than the gateway" warning that is the opposite of true.
+ *
+ * `fal` joined the list when video generation became Rayu-hosted only: the
+ * fal.ai client was removed, so a `fal` row is a row this build cannot serve,
+ * not a row it failed to understand.
  */
 const RETIRED_MEDIA_BACKENDS: ReadonlySet<string> = new Set([
   'nvidia',
   'nvcf',
   'nvidia-svd',
+  'fal',
 ])
 
+/**
+ * Also retires a `vertex` VIDEO row: Vertex is an IMAGE-only backend now that the
+ * Veo video client is gone. Such a row can still arrive from a gateway publishing
+ * the old Veo catalog, or from a `rayu-media-models.json` cache written by an
+ * earlier CLI, and `vertex` alone would pass the backend check — leaving a model
+ * whose request family (`veo`) this build cannot build, which surfaces as a
+ * confusing "unknown request family" instead of "not offered".
+ */
 function isRetiredBackendItem(raw: unknown): boolean {
   if (!raw || typeof raw !== 'object') return false
-  const backend = (raw as { backend?: unknown }).backend
-  return typeof backend === 'string' && RETIRED_MEDIA_BACKENDS.has(backend)
+  const o = raw as { backend?: unknown; mediaType?: unknown }
+  if (typeof o.backend !== 'string') return false
+  if (RETIRED_MEDIA_BACKENDS.has(o.backend)) return true
+  return o.backend === 'vertex' && o.mediaType === 'video'
 }
 
 /**

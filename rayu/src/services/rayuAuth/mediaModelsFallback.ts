@@ -15,13 +15,14 @@
 // recreate the hardcoded registry that discovery replaced.
 //
 // WHY IT EXISTS AT ALL: the one case of **no gateway** — `USE_RAYU_OAUTH` off, or
-// the user not signed in. Media generation in that mode runs entirely on the
-// user's OWN credentials (FAL_KEY / GCP credentials) and never touches Rayu
-// infrastructure, so disabling the tools would be a pure regression for BYOK
-// users with no security or correctness upside (Option B of the plan). It mirrors
-// the previous hardcoded registries entry-for-entry, minus the NVIDIA backends
-// (genai FLUX / Stable Diffusion / Kontext, NVCF Cosmos, SVD), which the CLI no
-// longer serves.
+// the user not signed in. It mirrors the previous hardcoded registries
+// entry-for-entry, minus the NVIDIA backends (genai FLUX / Stable Diffusion /
+// Kontext, NVCF Cosmos, SVD), which the CLI no longer serves.
+//
+// SCOPE SHRANK when video generation became Rayu-hosted only: VIDEO is now an
+// EMPTY list, because the fal.ai and Vertex Veo clients were removed and the
+// hosted video catalog is server-owned. IMAGE keeps its Vertex Imagen rows, which
+// are the remaining bring-your-own backend.
 //
 // Entries are tagged `source: 'fallback'` so the UI can say so.
 //
@@ -67,68 +68,17 @@ const FALLBACK_IMAGE: MediaModelEntry[] = [
   },
 ]
 
-const FALLBACK_VIDEO: MediaModelEntry[] = [
-  {
-    id: 'fal-ai/kling-video/v2.1/standard/text-to-video',
-    label: 'Kling Video 2.1 (text-to-video)',
-    mediaType: 'video',
-    capabilities: ['text2video'],
-    backend: 'fal',
-    family: 'fal-kling',
-    estimatedSeconds: 90,
-    defaultParams: { duration: '5', aspect_ratio: '16:9', cfg_scale: 0.5 },
-    isDefault: true,
-  },
-  {
-    id: 'fal-ai/kling-video/v2.1/standard/image-to-video',
-    label: 'Kling Video 2.1 (image-to-video)',
-    mediaType: 'video',
-    capabilities: ['image2video'],
-    backend: 'fal',
-    family: 'fal-kling',
-    estimatedSeconds: 90,
-    defaultParams: { duration: '5', aspect_ratio: '16:9' },
-    isDefault: true,
-  },
-  // GA ids only. Google retired the …-generate-preview ids on 2026-04-02.
-  {
-    id: 'veo-3.1-generate-001',
-    label: 'Veo 3.1',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 120,
-    isDefault: true,
-  },
-  {
-    id: 'veo-3.1-fast-generate-001',
-    label: 'Veo 3.1 Fast',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 90,
-  },
-  {
-    id: 'veo-3.0-generate-001',
-    label: 'Veo 3.0',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 120,
-  },
-  {
-    id: 'veo-3.0-fast-generate-001',
-    label: 'Veo 3.0 Fast',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 90,
-  },
-]
+/**
+ * EMPTY, deliberately.
+ *
+ * Video generation is Rayu-hosted only and the hosted catalog is server-owned, so
+ * there is nothing a client can invent here: a built-in row would advertise a
+ * model the gateway may not have. Offline with no session and no Rayu API key the
+ * video picker therefore lists nothing and explains why — which is the honest
+ * answer, since there is no BYO video backend to fall back to any more (the fal.ai
+ * and Vertex Veo clients were removed).
+ */
+const FALLBACK_VIDEO: MediaModelEntry[] = []
 
 /** The offline catalog. Fresh copies, so a caller cannot mutate the fallback. */
 export function fallbackMediaCatalog(): MediaCatalog {

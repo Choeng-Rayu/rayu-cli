@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -44,9 +44,15 @@ beforeEach(async () => {
     saved[k] = process.env[k]
     delete process.env[k]
   }
-  // An image/video backend IS configured (Vertex serves both), so isEnabled() is
-  // capability-true regardless of plan — the whole point of the soft gate.
+  // An image/video capability IS configured, so isEnabled() is capability-true
+  // regardless of plan — the whole point of the soft gate. Vertex serves IMAGE;
+  // video is Rayu-hosted only, so it needs a Rayu credential (here an API key).
   process.env.GOOGLE_CLOUD_PROJECT = 'test-proj'
+  writeFileSync(
+    join(dir, 'providers.json'),
+    JSON.stringify({ providers: [{ id: 'rayu', apiKey: 'sk_rayu_test' }] }, null, 2),
+    { mode: 0o600 },
+  )
   // Default: admin catalog is known, so messages name the real upgrade target.
   const cat = await import('../src/services/rayuAuth/rayuPlansCatalog.ts')
   cat._setPlansCatalogForTesting(CATALOG)
@@ -95,8 +101,16 @@ async function usage() {
 async function tools() {
   const cfg = await import('../src/utils/rayuConfig.ts')
   cfg._resetRayuConfigCache()
-  const { ImageGenTool } = await import('../src/tools/ImageGenTool/ImageGenTool.ts')
-  const { VideoGenTool } = await import('../src/tools/VideoGenTool/VideoGenTool.ts')
+  const { ImageGenTool, _resetRayuImageAvailabilityForTesting } = await import(
+    '../src/tools/ImageGenTool/ImageGenTool.ts'
+  )
+  const { VideoGenTool, _resetRayuVideoAvailabilityForTesting } = await import(
+    '../src/tools/VideoGenTool/VideoGenTool.ts'
+  )
+  // The availability verdicts are memoized briefly; forget them so each test sees
+  // its own credential state.
+  _resetRayuImageAvailabilityForTesting()
+  _resetRayuVideoAvailabilityForTesting()
   return { ImageGenTool, VideoGenTool }
 }
 

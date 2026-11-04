@@ -23,36 +23,17 @@ import {
 import { hasRayuGatewayCredential } from './rayuApiKeyAuth.js'
 
 /**
- * Picker order: Rayu-hosted models first, then bring-your-own ones, each group
- * in the order the gateway returned it.
+ * The models a picker may OFFER: Rayu-hosted only, for every media type.
  *
- * Gateway order is the admin's: hosted rows are sorted by their Sort Order in
- * Admin → Media Catalogs, and the first hosted row that can do a request is the
- * default a signed-in user gets. Listing hosted rows first keeps the picker in
- * the same order the tools pick from.
+ * Generation ships as a Rayu-hosted capability — the user needs no provider key
+ * and is billed in Rayu credits — so the pickers list exactly the hosted rows the
+ * admin enabled, in the admin's order. Video has no other backend at all (the
+ * fal.ai and Vertex clients were removed); an IMAGE catalog may still carry BYO
+ * Imagen rows for older clients and an already-saved selection, but neither the
+ * terminal nor the editor OFFERS them as a choice, so what a user can pick here
+ * is what the dashboard publishes.
  */
-export function orderMediaModelsForPicker(
-  entries: readonly MediaModelEntry[],
-): MediaModelEntry[] {
-  return [
-    ...entries.filter((m) => m.backend === 'rayu'),
-    ...entries.filter((m) => m.backend !== 'rayu'),
-  ]
-}
-
-/**
- * The IMAGE models a picker may OFFER: Rayu-hosted only.
- *
- * Image generation ships as a Rayu-hosted capability — the user needs no
- * provider key and is billed in Rayu credits — so the picker lists exactly the
- * hosted rows the admin enabled, in the admin's order. BYO Imagen rows may
- * still exist in the catalog (older clients and an already-saved selection keep
- * working), but neither the terminal nor the editor OFFERS them as a choice, so
- * what a user can pick here is what the dashboard publishes.
- *
- * Video is deliberately NOT filtered the same way; this function is image-only.
- */
-export function hostedImagePickerModels(
+export function hostedPickerModels(
   entries: readonly MediaModelEntry[],
 ): MediaModelEntry[] {
   return entries.filter((m) => m.backend === 'rayu')
@@ -66,9 +47,8 @@ export function mediaBackendLabel(
     case 'rayu':
       return 'Rayu-hosted'
     case 'vertex':
-      return entry.mediaType === 'image' ? 'Vertex Imagen' : 'Vertex Veo'
-    case 'fal':
-      return 'fal.ai'
+      // Vertex is an IMAGE-only backend now (the Veo video client was removed).
+      return entry.mediaType === 'image' ? 'Vertex Imagen' : 'Vertex'
     default:
       return entry.backend
   }
@@ -112,10 +92,7 @@ export function mediaModelPickerOptions(
   catalog: MediaCatalog,
   mediaType: MediaType,
 ): MediaModelPickerOption[] {
-  const entries =
-    mediaType === 'image'
-      ? hostedImagePickerModels(mediaModelsFor(catalog, mediaType))
-      : orderMediaModelsForPicker(mediaModelsFor(catalog, mediaType))
+  const entries = hostedPickerModels(mediaModelsFor(catalog, mediaType))
   return entries.map((m) => ({
     value: m.id,
     label: m.label || m.id,
@@ -139,25 +116,31 @@ export function mediaCatalogNotice(
   // as a session user and must not be told to run /login.
   const signedIn = hasRayuGatewayCredential()
   if (!signedIn) {
-    return catalog.source === 'fallback'
-      ? 'Showing built-in defaults. Sign in to Rayu (/login) or connect a Rayu API key to see the hosted models your Rayu admin publishes.'
-      : undefined
+    // Hosted models are the only ones a picker offers, so without a credential
+    // there is nothing to show at all — do not promise "built-in defaults" for a
+    // media type whose built-in list is empty (video).
+    return 'No Rayu credential. Sign in (/login) or connect a Rayu API key to see the hosted models your Rayu admin publishes.'
   }
   if (refreshed) return undefined
   return catalog.source === 'gateway'
     ? 'Could not refresh the list from Rayu; showing the last list it sent.'
-    : 'Could not reach Rayu; showing built-in defaults. Check your connection and open this picker again.'
+    : 'Could not reach Rayu. Check your connection and open this picker again.'
 }
 
 /**
- * What to say when the image chooser is empty because policy hid every row.
+ * What to say when a chooser is empty because only Rayu-hosted rows may be
+ * offered and the catalog has none.
  *
- * Shared by the terminal command and the editor so the two never explain the
- * same empty list differently.
+ * Shared by both terminal commands and the editor so neither explains the same
+ * empty list differently.
  */
-export const EMPTY_HOSTED_IMAGE_PICKER_NOTE =
-  'No Rayu-hosted image models are available. They are published by your Rayu ' +
-  'admin, so ask them to enable one — signing in will not create any.'
+export function emptyHostedPickerNote(mediaType: MediaType): string {
+  const kind = mediaType === 'image' ? 'image' : 'video'
+  return (
+    `No Rayu-hosted ${kind} models are available. They are published by your Rayu ` +
+    `admin, so ask them to enable one — signing in will not create any.`
+  )
+}
 
 /**
  * Fetch the live catalog — bypassing the cache TTL, as opening a picker should —
@@ -169,21 +152,19 @@ export const EMPTY_HOSTED_IMAGE_PICKER_NOTE =
 export async function loadMediaModelPicker(mediaType: MediaType): Promise<{
   options: MediaModelPickerOption[]
   notice?: string
-  /** Set when `options` is empty although the catalog HAS models of this type. */
-  hiddenByPolicy?: boolean
 }> {
   const fresh = await refreshMediaModels(true)
   const catalog = fresh ?? getCachedMediaModels()
+  // An EMPTY option list always needs an explanation, whatever emptied it: policy
+  // (only hosted rows may be offered, and the catalog had none) or a catalog that
+  // genuinely lists nothing of this type. Without it the editor renders a bare
+  // chooser and the user cannot tell "nothing published" from "nothing reachable".
   const notice = mediaCatalogNotice(catalog, fresh !== null)
   const options = mediaModelPickerOptions(catalog, mediaType)
-  // Image generation offers Rayu-hosted models ONLY, so a catalog that carries
-  // just BYO rows yields an empty list. Say why instead of showing nothing —
-  // the fix is a hosted catalog row, not something the user can do here.
-  const hiddenByPolicy =
-    options.length === 0 && mediaModelsFor(catalog, mediaType).length > 0
+  const resolved =
+    notice ?? (options.length === 0 ? emptyHostedPickerNote(mediaType) : undefined)
   return {
     options,
-    ...(notice ? { notice } : {}),
-    ...(hiddenByPolicy ? { hiddenByPolicy } : {}),
+    ...(resolved ? { notice: resolved } : {}),
   }
 }

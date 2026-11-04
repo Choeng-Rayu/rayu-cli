@@ -12,8 +12,8 @@ import {
 } from '../../services/rayuAuth/mediaModels.js'
 import {
   describeMediaModel,
-  EMPTY_HOSTED_IMAGE_PICKER_NOTE,
-  hostedImagePickerModels,
+  emptyHostedPickerNote,
+  hostedPickerModels,
   mediaCatalogNotice,
 } from '../../services/rayuAuth/mediaModelPicker.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
@@ -45,7 +45,7 @@ function ImageModelPicker({
     }
   }, [])
 
-  const hosted = hostedImagePickerModels(catalog.image)
+  const hosted = hostedPickerModels(catalog.image)
   const options = [
     {
       // The unset sentinel: keep it neutral rather than promising a hosted model
@@ -75,7 +75,7 @@ function ImageModelPicker({
       </Text>
       {notice ? <Text dimColor>{notice}</Text> : null}
       {hosted.length === 0 && !notice ? (
-        <Text dimColor>{EMPTY_HOSTED_IMAGE_PICKER_NOTE}</Text>
+        <Text dimColor>{emptyHostedPickerNote('image')}</Text>
       ) : null}
       <Select
         options={options}
