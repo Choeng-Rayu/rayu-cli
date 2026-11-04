@@ -937,6 +937,40 @@ describe('getAssistantMessageFromError · rayu-hosted provider unavailable (Case
   })
 })
 
+// A provider failure AFTER the stream started arrives as an SSE `error` event.
+// The SDK throws it as an APIError with NO status and the event body
+// ({type:"error", error:{type, message}}), so the 5xx check cannot see it.
+describe('getAssistantMessageFromError · rayu-hosted mid-stream provider failure', () => {
+  const midStream = (type: string, message: string): APIError =>
+    new APIError(undefined, { type: 'error', error: { type, message } }, undefined, new Headers())
+
+  test('hosted: a mid-stream api_error renders the friendly guidance', () => {
+    setActiveProvider('rayu-hosted')
+    const err = midStream('api_error', 'The model provider ended the response unexpectedly.')
+    expect(isRayuHostedProviderUnavailable(err)).toBe(true)
+    const text = textOf(getAssistantMessageFromError(err, 'openai-gpt-oss-20b'))
+    expect(text.toLowerCase()).toContain('high volume')
+  })
+
+  test('hosted: a mid-stream overloaded_error renders the friendly guidance', () => {
+    setActiveProvider('rayu-hosted')
+    const err = midStream('overloaded_error', 'Overloaded')
+    expect(isRayuHostedProviderUnavailable(err)).toBe(true)
+  })
+
+  test('hosted: a mid-stream client request error is NOT masked', () => {
+    setActiveProvider('rayu-hosted')
+    const err = midStream('invalid_request_error', 'prompt is too long')
+    expect(isRayuHostedProviderUnavailable(err)).toBe(false)
+  })
+
+  test('BYO: a mid-stream api_error keeps normal handling', () => {
+    setActiveProvider('byo')
+    const err = midStream('api_error', 'upstream exploded')
+    expect(isRayuHostedProviderUnavailable(err)).toBe(false)
+  })
+})
+
 // --- Case 1b: connection failure (gateway/origin unreachable, e.g. Cloudflare
 // 5xx before the origin, or the Go gateway down). This is what surfaced in the
 // wild as "API Error: Connection error." — on rayu-hosted it must read as a
