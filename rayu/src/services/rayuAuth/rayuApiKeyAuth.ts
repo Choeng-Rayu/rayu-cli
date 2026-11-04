@@ -32,7 +32,11 @@ import { join } from 'path'
 import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { loadRayuConfig, type RayuProvider } from '../../utils/rayuConfig.js'
 import { RAYU_API_PROVIDER_ID } from '../../utils/rayuProviders.js'
-import { hasRayuSession } from './rayuSession.js'
+import {
+  getValidRayuAccessToken,
+  hasRayuSession,
+  isUseRayuOAuthEnabled,
+} from './rayuSession.js'
 import {
   validateRayuApiKey,
   type RayuApiKeyValidation,
@@ -168,6 +172,35 @@ export function hasValidatedRayuApiKey(): boolean {
  */
 export function hasRayuCredential(): boolean {
   return hasRayuSession() || hasValidatedRayuApiKey()
+}
+
+/**
+ * True when a credential exists that can authenticate a GATEWAY request: the
+ * account session (while Rayu OAuth is enabled) or a configured Rayu API key.
+ *
+ * This is the predicate the HOSTED CATALOGS and the hosted tool gates use, as
+ * opposed to [`hasRayuCredential`] (the login/first-run gate). Both credentials
+ * are equally valid at the gateway — `auth.rs` turns an API key into the same
+ * `Claims` + `ApiKeyContext` a JWT produces — so a surface that only recognised
+ * one of them silently hid every Rayu-hosted model from the other kind of user.
+ */
+export function hasRayuGatewayCredential(): boolean {
+  if (isUseRayuOAuthEnabled() && hasRayuSession()) return true
+  return hasRayuApiKeyConfigured()
+}
+
+/**
+ * The Bearer value for a gateway request: the account JWT (refreshed as needed),
+ * else the configured Rayu API key. Null when the user has neither.
+ *
+ * The JWT wins when both exist, keeping the existing session behaviour — and the
+ * billing/attribution that goes with an account session — unchanged for anyone
+ * who is signed in.
+ */
+export async function getRayuGatewayCredential(): Promise<string | null> {
+  const token = await getValidRayuAccessToken()
+  if (token) return token
+  return getRayuApiKeyProvider()?.apiKey?.trim() || null
 }
 
 /** Record a validation outcome for a key. `unavailable` is not a verdict. */

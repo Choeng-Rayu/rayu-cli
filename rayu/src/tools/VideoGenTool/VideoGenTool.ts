@@ -32,10 +32,7 @@ import {
   generateVertexVideo,
   isGeminiVertexVideoAvailable,
 } from './vertexVideoClient.js'
-import {
-  hasRayuSession,
-  isUseRayuOAuthEnabled,
-} from '../../services/rayuAuth/rayuSession.js'
+import { hasRayuGatewayCredential } from '../../services/rayuAuth/rayuApiKeyAuth.js'
 import { DESCRIPTION, getVideoGenPrompt, VIDEO_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 import {
@@ -130,9 +127,11 @@ export function resolveOutputPath(output_path: string | undefined): {
 }
 
 /**
- * True when Rayu-HOSTED video models are usable: OAuth mode on and a Rayu
- * session stored. Together they mean the gateway will accept the request with
- * the user's JWT and hold the upstream provider key — no BYO key required.
+ * True when Rayu-HOSTED video models are usable: the user has a credential the
+ * gateway accepts — an account session (/login) or a Rayu API key (/connect).
+ * Either way the gateway holds the upstream provider key, so no BYO key is
+ * required. Recognising only the session is what hid hosted video models from
+ * API-key users while their chat models listed normally.
  *
  * Synchronous and memoized briefly for the same reason as the image tool:
  * isEnabled() runs while the tool registry is assembled and whenever a picker
@@ -150,7 +149,7 @@ export function isRayuVideoAvailable(): boolean {
   ) {
     return rayuAvailability.value
   }
-  const value = isUseRayuOAuthEnabled() && hasRayuSession()
+  const value = hasRayuGatewayCredential()
   rayuAvailability = { value, at: now }
   return value
 }

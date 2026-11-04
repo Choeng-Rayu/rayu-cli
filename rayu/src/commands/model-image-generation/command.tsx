@@ -12,8 +12,9 @@ import {
 } from '../../services/rayuAuth/mediaModels.js'
 import {
   describeMediaModel,
+  EMPTY_HOSTED_IMAGE_PICKER_NOTE,
+  hostedImagePickerModels,
   mediaCatalogNotice,
-  orderMediaModelsForPicker,
 } from '../../services/rayuAuth/mediaModelPicker.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 
@@ -44,12 +45,15 @@ function ImageModelPicker({
     }
   }, [])
 
+  const hosted = hostedImagePickerModels(catalog.image)
   const options = [
     {
-      label: 'Default (auto: Rayu-hosted when signed in, else Vertex Imagen)',
+      // The unset sentinel: keep it neutral rather than promising a hosted model
+      // that may not exist — the note below already explains an empty list.
+      label: 'Default (auto)',
       value: '',
     },
-    ...orderMediaModelsForPicker(catalog.image).map((m) => ({
+    ...hosted.map((m) => ({
       label: m.id,
       value: m.id,
       description: describeMediaModel(m),
@@ -63,14 +67,16 @@ function ImageModelPicker({
     <Box flexDirection="column" gap={1} paddingLeft={1}>
       <Text bold>Image generation model</Text>
       <Text dimColor>
-        Used by /generate-image and /image-editor. Signed-in Rayu users get a
-        hosted model by default (no key needed, billed in Rayu credits): the
-        first one in the order set by your Rayu admin that can do the request.
-        Pick a Vertex Imagen model here to use your own Google Cloud project
-        instead.
+        Used by /generate-image and /image-editor. These are the Rayu-hosted
+        models your Rayu admin publishes (no provider key needed, billed in Rayu
+        credits), in the admin's order; the default is the first one that can do
+        the request. Sign in (/login) or connect a Rayu API key to see them.
         {current ? `  Current: ${current}` : ''}
       </Text>
       {notice ? <Text dimColor>{notice}</Text> : null}
+      {hosted.length === 0 && !notice ? (
+        <Text dimColor>{EMPTY_HOSTED_IMAGE_PICKER_NOTE}</Text>
+      ) : null}
       <Select
         options={options}
         onChange={(v: string) => {
@@ -78,7 +84,7 @@ function ImageModelPicker({
           onDone(
             v
               ? `Image model set to ${v}`
-              : 'Image model reset to default (Rayu-hosted when signed in)',
+              : 'Image model reset to default (the first Rayu-hosted model available)',
           )
         }}
         onCancel={() => onDone('Image model unchanged.')}

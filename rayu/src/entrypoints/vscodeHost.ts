@@ -306,13 +306,23 @@ async function runConnect(inlineAction: string | undefined): Promise<void> {
       if (action.mediaType !== 'image' && action.mediaType !== 'video') {
         throw new Error('Unknown media type for the model list.')
       }
-      const { loadMediaModelPicker } = await import('../services/rayuAuth/mediaModelPicker.js')
-      const { options, notice } = await loadMediaModelPicker(action.mediaType)
+      const { loadMediaModelPicker, EMPTY_HOSTED_IMAGE_PICKER_NOTE } = await import(
+        '../services/rayuAuth/mediaModelPicker.js'
+      )
+      const { options, notice, hiddenByPolicy } = await loadMediaModelPicker(
+        action.mediaType,
+      )
+      // Image generation offers Rayu-hosted models only, so an empty list can be
+      // a POLICY result rather than a fetch failure. Say which, or the editor
+      // shows a blank chooser with no way to tell "nothing configured" from
+      // "nothing reachable".
+      const resolvedNotice =
+        notice ?? (hiddenByPolicy ? EMPTY_HOSTED_IMAGE_PICKER_NOTE : undefined)
       emit({
         type: 'rayucode_connect_result',
         ok: true,
         catalogue: options,
-        ...(notice ? { notice } : {}),
+        ...(resolvedNotice ? { notice: resolvedNotice } : {}),
       })
       return
     }

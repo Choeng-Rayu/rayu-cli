@@ -296,7 +296,61 @@ function stubSignedIn(): void {
   )
 }
 
+/**
+ * Authenticate with a Rayu API KEY instead of an account session: no
+ * rayu-auth.json, just the `rayu` provider row carrying the key.
+ *
+ * The gateway turns a key into the same Claims + ApiKeyContext a JWT yields, so
+ * the hosted media catalog must be reachable this way too — otherwise an
+ * API-key user sees Rayu-hosted CHAT models in /model and no hosted image or
+ * video model anywhere.
+ */
+function stubApiKeyProvider(apiKey = 'sk_rayu_test_key'): void {
+  writeFileSync(
+    join(cfgDir, 'providers.json'),
+    JSON.stringify({ providers: [{ id: 'rayu', apiKey }] }, null, 2),
+    { mode: 0o600 },
+  )
+}
+
 describe('catalog cache', () => {
+  test('an API-key user fetches the hosted catalog with that key', async () => {
+    stubApiKeyProvider('sk_rayu_test_key')
+    const { invalidateRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
+    invalidateRayuConfigCache()
+
+    let authHeader = ''
+    let calls = 0
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      calls++
+      authHeader = String(
+        (init?.headers as Record<string, string> | undefined)?.Authorization ?? '',
+      )
+      return new Response(JSON.stringify(GATEWAY_PAYLOAD), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const catalog = await refreshMediaModels(true)
+    expect(calls).toBe(1)
+    expect(authHeader).toBe('Bearer sk_rayu_test_key')
+    expect(catalog?.source).toBe('gateway')
+    expect(catalog?.image).toHaveLength(1)
+  })
+
+  test('with neither a session nor a key the catalog is not requested', async () => {
+    const { invalidateRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
+    invalidateRayuConfigCache()
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response(JSON.stringify(GATEWAY_PAYLOAD), { status: 200 })
+    }) as unknown as typeof fetch
+
+    expect(await refreshMediaModels(true)).toBeNull()
+    expect(calls).toBe(0)
+    // and the picker falls back to the built-in list
+    expect(getCachedMediaModels().source).toBe('fallback')
+  })
+
   test('fetches once, then serves from memory', async () => {
     stubSignedIn()
     let calls = 0

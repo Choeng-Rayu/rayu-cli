@@ -12,6 +12,7 @@ import {
 } from '../src/services/rayuAuth/mediaModels.ts'
 import {
   describeMediaModel,
+  hostedImagePickerModels,
   loadMediaModelPicker,
   mediaBackendLabel,
   mediaCatalogNotice,
@@ -140,6 +141,8 @@ describe('presentation', () => {
   })
 
   test('editor rows lead with the display name and keep the id for matching', () => {
+    // Image generation is Rayu-hosted only, so a BYO Imagen row in the catalog is
+    // NOT offered even though it is parsed and may already be selected.
     const rows = mediaModelPickerOptions(catalogOf([IMAGEN, WAN_IMAGE]), 'image')
     expect(rows).toEqual([
       {
@@ -149,17 +152,42 @@ describe('presentation', () => {
         model: 'rayu-wan2.7-image',
         providerId: 'rayu',
       },
-      {
-        value: 'imagen-4.0-generate-001',
-        label: 'Imagen 4',
-        description: 'imagen-4.0-generate-001 · Vertex Imagen · generate',
-        model: 'imagen-4.0-generate-001',
-        providerId: 'vertex',
-      },
     ])
-    // Each media type lists only its own half of the catalog.
+    // Video is unchanged: each media type lists its own half of the catalog.
     const video = mediaModelPickerOptions(catalogOf([IMAGEN], [KLING, WAN_VIDEO]), 'video')
     expect(video.map((r) => r.value)).toEqual([WAN_VIDEO.id, KLING.id])
+  })
+
+  test('an all-BYO image catalog yields an explained empty chooser', async () => {
+    stubSignedIn()
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ object: 'list', media: 'all', data: [IMAGEN].map(wire) }),
+        { status: 200 },
+      )) as unknown as typeof fetch
+
+    const { options, hiddenByPolicy } = await loadMediaModelPicker('image')
+    expect(options).toEqual([])
+    // The distinction matters: "no hosted models published" is not "fetch failed".
+    expect(hiddenByPolicy).toBe(true)
+
+    // Video is unfiltered, so the same payload yields rows and no policy notice.
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ object: 'list', media: 'all', data: [KLING].map(wire) }),
+        { status: 200 },
+      )) as unknown as typeof fetch
+    const video = await loadMediaModelPicker('video')
+    expect(video.options.map((o) => o.value)).toEqual([KLING.id])
+    expect(video.hiddenByPolicy).toBeUndefined()
+  })
+
+  test('the image chooser offers Rayu-hosted models only, in admin order', () => {
+    expect(
+      hostedImagePickerModels([IMAGEN, WAN_IMAGE_PRO, WAN_IMAGE]).map((m) => m.id),
+    ).toEqual(['rayu-wan2.7-image-pro', 'rayu-wan2.7-image'])
+    // A BYO-only catalog offers nothing: image generation has no BYO backend here.
+    expect(hostedImagePickerModels([IMAGEN])).toEqual([])
   })
 })
 
@@ -197,10 +225,11 @@ describe('loadMediaModelPicker (the on-open live fetch)', () => {
     }) as unknown as typeof fetch
 
     const first = await loadMediaModelPicker('image')
+    // Image offers Rayu-hosted models only — the BYO Imagen row in the payload
+    // is deliberately absent from the chooser.
     expect(first.options.map((o) => o.value)).toEqual([
       'rayu-wan2.7-image',
       'rayu-wan2.7-image-pro',
-      'imagen-4.0-generate-001',
     ])
     expect(first.notice).toBeUndefined()
 
@@ -211,7 +240,6 @@ describe('loadMediaModelPicker (the on-open live fetch)', () => {
     expect(second.options.map((o) => o.value)).toEqual([
       'rayu-wan2.7-image-pro',
       'rayu-wan2.7-image',
-      'imagen-4.0-generate-001',
     ])
   })
 

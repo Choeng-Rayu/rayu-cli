@@ -28,10 +28,8 @@
 // downloaded with `redirect:'error'` (no off-host hops), https-only, a
 // timeout, and a size cap.
 import { hasHostedModelAccess, hostedModelUpgradeMessage } from '../../services/rayuAuth/rayuEntitlements.js'
-import {
-  getSecureRayuGatewayBaseUrl,
-  getValidRayuAccessToken,
-} from '../../services/rayuAuth/rayuSession.js'
+import { getRayuGatewayCredential } from '../../services/rayuAuth/rayuApiKeyAuth.js'
+import { getSecureRayuGatewayBaseUrl } from '../../services/rayuAuth/rayuSession.js'
 import { recordRayuCharge, startRayuCharge } from '../../services/rayuAuth/rayuTurnCredits.js'
 import { creditsFromRayuBody } from '../../utils/rayuRequestCharge.js'
 import { type VideoModel, type VideoParams } from './models.js'
@@ -220,10 +218,13 @@ export async function generateRayuVideo(opts: {
   // misconfigured RAYU_GATEWAY_URL must fail here, not on the wire.
   const gateway = getSecureRayuGatewayBaseUrl()
 
-  const token = await getValidRayuAccessToken()
+  // Either credential authenticates at the gateway: an account JWT, or a Rayu
+  // API key (the gateway converts a key into the same claims a JWT yields).
+  const token = await getRayuGatewayCredential()
   if (!token) {
     throw new Error(
-      'Not signed in to Rayu. Run /login to use Rayu-hosted video models.',
+      'No Rayu credential. Run /login, or connect a Rayu API key, to use ' +
+        'Rayu-hosted video models.',
     )
   }
 

@@ -16,10 +16,7 @@ import {
   MEDIA_CATALOG_UNAVAILABLE_MESSAGE,
   type MediaModelEntry,
 } from '../../services/rayuAuth/mediaModels.js'
-import {
-  hasRayuSession,
-  isUseRayuOAuthEnabled,
-} from '../../services/rayuAuth/rayuSession.js'
+import { hasRayuGatewayCredential } from '../../services/rayuAuth/rayuApiKeyAuth.js'
 import {
   isVertexImageModel,
   retainKnownImageModel,
@@ -148,9 +145,11 @@ function extForMedia(mediaType: string): string {
 }
 
 /**
- * True when Rayu-HOSTED image models are usable: OAuth mode on and a Rayu
- * session stored. Together they mean the gateway will accept the request with
- * the user's JWT and hold the upstream provider key — no BYO key required.
+ * True when Rayu-HOSTED image models are usable: the user has a credential the
+ * gateway accepts — an account session (/login) or a Rayu API key (/connect).
+ * Either way the gateway holds the upstream provider key, so no BYO key is
+ * required. Recognising only the session is what hid hosted image models from
+ * API-key users while their chat models listed normally.
  *
  * Synchronous and memoized briefly: isEnabled() runs while the tool registry is
  * assembled and whenever a picker renders, which must not hit the disk each
@@ -167,7 +166,7 @@ export function isRayuImageAvailable(): boolean {
   ) {
     return rayuAvailability.value
   }
-  const value = isUseRayuOAuthEnabled() && hasRayuSession()
+  const value = hasRayuGatewayCredential()
   rayuAvailability = { value, at: now }
   return value
 }
@@ -225,8 +224,8 @@ function noImageBackendMessage(entry: MediaModelEntry | undefined): string {
   }
   if (isRayuImageAvailable()) return MEDIA_CATALOG_UNAVAILABLE_MESSAGE
   return (
-    'Image generation needs a Rayu sign-in (/login) for hosted models, or Vertex AI ' +
-    '(/connect → Gemini / Vertex AI) for Imagen.'
+    'Image generation needs a Rayu credential (/login, or a Rayu API key) for hosted ' +
+    'models, or Vertex AI (/connect → Gemini / Vertex AI) for Imagen.'
   )
 }
 

@@ -26,10 +26,8 @@
 import { detectImageFormatFromBuffer } from '../../utils/imageResizer.js'
 import { creditsFromRayuBody } from '../../utils/rayuRequestCharge.js'
 import { hasHostedModelAccess, hostedModelUpgradeMessage } from '../../services/rayuAuth/rayuEntitlements.js'
-import {
-  getSecureRayuGatewayBaseUrl,
-  getValidRayuAccessToken,
-} from '../../services/rayuAuth/rayuSession.js'
+import { getRayuGatewayCredential } from '../../services/rayuAuth/rayuApiKeyAuth.js'
+import { getSecureRayuGatewayBaseUrl } from '../../services/rayuAuth/rayuSession.js'
 import { recordRayuCharge, startRayuCharge } from '../../services/rayuAuth/rayuTurnCredits.js'
 import { type ImageModel, type ImageParams } from './models.js'
 
@@ -190,10 +188,13 @@ export async function generateRayuImage(opts: {
   // misconfigured RAYU_GATEWAY_URL must fail here, not on the wire.
   const gateway = getSecureRayuGatewayBaseUrl()
 
-  const token = await getValidRayuAccessToken()
+  // Either credential authenticates at the gateway: an account JWT, or a Rayu
+  // API key (the gateway converts a key into the same claims a JWT yields).
+  const token = await getRayuGatewayCredential()
   if (!token) {
     throw new Error(
-      'Not signed in to Rayu. Run /login to use Rayu-hosted image models.',
+      'No Rayu credential. Run /login, or connect a Rayu API key, to use ' +
+        'Rayu-hosted image models.',
     )
   }
 

@@ -4,7 +4,13 @@
 // The catalog is admin-owned data in the backend (`media_models`) and reaches the
 // CLI through the gateway:
 //
-//     GET {gateway}/v1/models?media=all      (Authorization: Bearer <Rayu JWT>)
+//     GET {gateway}/v1/models?media=all      (Authorization: Bearer <credential>)
+//
+// The credential is whatever the user has: an account JWT (/login) OR a Rayu API
+// key (/connect → Rayu API key). The gateway accepts both — it converts an API
+// key into the same Claims + ApiKeyContext a JWT yields — so recognising only a
+// session used to hide every Rayu-hosted image/video model from API-key users
+// while their chat models listed normally. See rayuApiKeyAuth.ts.
 //
 // Adding an image or video model is therefore a backend row and nothing else — no
 // CLI release. See docs/media-models-contract.md for the response schema.
@@ -32,12 +38,10 @@ import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { logError } from '../../utils/log.js'
 import { fallbackMediaCatalog } from './mediaModelsFallback.js'
 import {
-  getSecureRayuGatewayBaseUrl,
-  getValidRayuAccessToken,
-  hasRayuSession,
-  isUseRayuOAuthEnabled,
-  readRayuSession,
-} from './rayuSession.js'
+  getRayuGatewayCredential,
+  hasRayuGatewayCredential,
+} from './rayuApiKeyAuth.js'
+import { getSecureRayuGatewayBaseUrl, readRayuSession } from './rayuSession.js'
 
 export type MediaType = 'image' | 'video'
 export type ImageCapability = 'generate' | 'edit'
@@ -359,8 +363,7 @@ function readUsableCache(): PersistedCatalog | null {
 export function getCachedMediaModels(): MediaCatalog {
   const known = readUsableCache()
   if (
-    isUseRayuOAuthEnabled() &&
-    hasRayuSession() &&
+    hasRayuGatewayCredential() &&
     isStale(known) &&
     Date.now() - lastAttempt > REFRESH_COOLDOWN_MS
   ) {
@@ -378,7 +381,7 @@ export function getCachedMediaModels(): MediaCatalog {
  */
 export async function ensureMediaModels(): Promise<MediaCatalog> {
   const known = readUsableCache()
-  if (isUseRayuOAuthEnabled() && hasRayuSession() && isStale(known)) {
+  if (hasRayuGatewayCredential() && isStale(known)) {
     const fetched = await refreshMediaModels()
     if (fetched) return fetched
   }
@@ -409,7 +412,7 @@ function stripUserId(c: PersistedCatalog): MediaCatalog {
 export async function refreshMediaModels(
   force = false,
 ): Promise<MediaCatalog | null> {
-  if (!isUseRayuOAuthEnabled() || !hasRayuSession()) return null
+  if (!hasRayuGatewayCredential()) return null
   if (fetching) return fetching
   if (!force && Date.now() - lastAttempt < REFRESH_COOLDOWN_MS) {
     const known = readUsableCache()
@@ -438,7 +441,9 @@ function reportOnce(message: string): void {
 
 async function fetchCatalog(): Promise<MediaCatalog | null> {
   try {
-    const token = await getValidRayuAccessToken()
+    // Either credential works: the gateway turns a Rayu API key into the same
+    // Claims + ApiKeyContext a JWT produces, so `?media=all` answers identically.
+    const token = await getRayuGatewayCredential()
     if (!token) return null
     const res = await (globalThis.fetch as typeof fetch)(
       `${getSecureRayuGatewayBaseUrl()}/v1/models?media=all`,

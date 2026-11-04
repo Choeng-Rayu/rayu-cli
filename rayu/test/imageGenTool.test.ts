@@ -349,7 +349,7 @@ describe('ImageGenTool with no hosted session and no Vertex', () => {
           } as never,
         ),
       ),
-    ).rejects.toThrow(/Rayu sign-in \(\/login\).*Vertex AI/)
+    ).rejects.toThrow(/Rayu credential \(\/login.*Vertex AI/)
     expect(fetched).toBe(0)
   })
 
