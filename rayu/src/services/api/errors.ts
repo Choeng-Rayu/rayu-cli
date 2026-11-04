@@ -765,10 +765,18 @@ export function isRayuHostedProviderUnavailable(error: unknown): boolean {
   if (body && typeof body === 'object') {
     if (String((body as { type?: unknown }).type ?? '') === 'provider_unavailable') return true
     const nested = (body as { error?: unknown }).error
+    const nestedType =
+      nested && typeof nested === 'object'
+        ? String((nested as { type?: unknown }).type ?? '')
+        : ''
+    if (nestedType === 'provider_unavailable') return true
+    // A failure AFTER the stream started arrives as an SSE `error` event, which
+    // the SDK throws with NO status. The gateway types provider-side failures
+    // `api_error`/`overloaded_error`; client-fixable ones (invalid_request_error)
+    // keep their real message.
     if (
-      nested &&
-      typeof nested === 'object' &&
-      String((nested as { type?: unknown }).type ?? '') === 'provider_unavailable'
+      error.status === undefined &&
+      (nestedType === 'api_error' || nestedType === 'overloaded_error')
     ) {
       return true
     }
