@@ -14,6 +14,7 @@ import {
   ensureMediaModels,
   isReferenceCapable,
   MEDIA_CATALOG_UNAVAILABLE_MESSAGE,
+  mediaCatalogEmptyMessage,
   type MediaModelEntry,
   type VideoCapability,
 } from '../../services/rayuAuth/mediaModels.js'
@@ -324,12 +325,12 @@ export const VideoGenTool = buildTool({
           // text-to-video model so the refusal below gives its precise
           // "text-to-video only" message rather than the generic catalog error.
           const textOnly = selectHostedVideoModel(catalog.video, false)
-          if (!textOnly) throw new Error(MEDIA_CATALOG_UNAVAILABLE_MESSAGE)
+          if (!textOnly) throw new Error(mediaCatalogEmptyMessage(catalog, 'video'))
           selectedEntry = textOnly
         } else {
           // The catalog itself is the problem: the gateway fetch failed, or it
           // lists no hosted video model.
-          throw new Error(MEDIA_CATALOG_UNAVAILABLE_MESSAGE)
+          throw new Error(mediaCatalogEmptyMessage(catalog, 'video'))
         }
       }
     }
@@ -344,7 +345,7 @@ export const VideoGenTool = buildTool({
     // will 400.
     if (input.input_image) {
       if (selectedEntry?.backend !== 'rayu') {
-        throw new Error(MEDIA_CATALOG_UNAVAILABLE_MESSAGE)
+        throw new Error(mediaCatalogEmptyMessage(catalog, 'video'))
       }
       if (!isReferenceCapable(selectedEntry)) {
         // A REMEMBERED/default hosted text-to-video model does not freeze the
@@ -381,7 +382,7 @@ export const VideoGenTool = buildTool({
 
     // Rayu-hosted is the only client, so a missing entry means the catalog never
     // yielded one — a configuration state the messages above already explained.
-    if (!selectedEntry) throw new Error(MEDIA_CATALOG_UNAVAILABLE_MESSAGE)
+    if (!selectedEntry) throw new Error(mediaCatalogEmptyMessage(catalog, 'video'))
     // The client reports the model it actually used, resolved from the same
     // catalog — the tool keeps no copy of the defaults.
     const generated = await generateRayuVideo({

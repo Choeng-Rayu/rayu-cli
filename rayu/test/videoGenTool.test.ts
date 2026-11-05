@@ -1296,9 +1296,10 @@ describe('VideoGenTool hosted (Rayu)', () => {
     )
   })
 
-  test('an empty video catalog errors clearly', async () => {
-    // Online, but the admin has published no hosted video model: there is
-    // nothing to pick, and a clear catalog error beats a misleading key error.
+  test('an empty video catalog says the admin has published none', async () => {
+    // Online, but the admin has published no hosted video model. Saying "check
+    // your connection" here sent users to debug a network that was fine, so the
+    // message names the real cause instead.
     useVideoCatalog([])
     const calls = mockFetch(() => {
       throw new Error('must not reach the network')
@@ -1311,7 +1312,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
           { abortController: new AbortController() } as never,
         ),
       ),
-    ).rejects.toThrow(/Rayu model catalog unavailable/)
+    ).rejects.toThrow(/No Rayu-hosted video models are published yet/)
     expect(calls).toHaveLength(0)
   })
 

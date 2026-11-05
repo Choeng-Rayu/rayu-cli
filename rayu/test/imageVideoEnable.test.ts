@@ -69,20 +69,21 @@ describe('image/video tools isEnabled truth table', () => {
     expect(VideoGenTool.isEnabled()).toBe(false)
   })
 
-  test('Vertex only -> IMAGE enabled, video not', async () => {
-    // Vertex is the remaining BYO backend, and it is IMAGE only: the Veo video
-    // client was removed, so a GCP project no longer enables video.
+  test('Vertex only -> NEITHER tool is enabled (hosted-only product)', async () => {
+    // A GCP project used to enable the Imagen image path. Image generation is
+    // now Rayu-hosted only, so Google credentials enable nothing here.
     process.env.GOOGLE_CLOUD_PROJECT = 'proj'
     const { ImageGenTool, VideoGenTool } = await tools()
-    expect(ImageGenTool.isEnabled()).toBe(true)
+    expect(ImageGenTool.isEnabled()).toBe(false)
     expect(VideoGenTool.isEnabled()).toBe(false)
   })
 
-  test('NVIDIA + Vertex -> image enabled by Vertex, video still not', async () => {
+  test('NVIDIA + Vertex -> still disabled: no external media backend exists', async () => {
+    // Both legacy BYO keys present, and neither enables image or video now.
     process.env.NVIDIA_API_KEY = 'nv-key'
     process.env.GOOGLE_CLOUD_PROJECT = 'proj'
     const { ImageGenTool, VideoGenTool } = await tools()
-    expect(ImageGenTool.isEnabled()).toBe(true)
+    expect(ImageGenTool.isEnabled()).toBe(false)
     expect(VideoGenTool.isEnabled()).toBe(false)
   })
 

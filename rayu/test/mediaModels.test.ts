@@ -425,7 +425,12 @@ describe('catalog cache', () => {
     expect(await refreshMediaModels(true)).toBeNull()
     const catalog = await ensureMediaModels()
     expect(catalog.source).toBe('fallback')
-    expect(catalog.image.length).toBeGreaterThan(0)
+    // The fallback is EMPTY now — image and video are Rayu-hosted only, and a
+    // built-in row could only advertise a model the gateway does not serve. The
+    // assertion that matters is that the chat catalog was NOT cached as a media
+    // catalog: `source` is 'fallback' (a fetch failure), not a poisoned 'gateway'.
+    expect(catalog.image).toEqual([])
+    expect(catalog.video).toEqual([])
   })
 
   test('a failed fetch keeps the last good catalog', async () => {
@@ -709,14 +714,9 @@ describe('offline fallback (no gateway)', () => {
     const catalog = getCachedMediaModels()
     expect(catalog.source).toBe('fallback')
 
-    const imageKeys = new Set(
-      catalog.image.flatMap((m) => m.capabilities.map((c) => `${c}:${m.backend}`)),
-    )
-    expect(imageKeys).toContain('generate:vertex')
-    expect(imageKeys).toContain('edit:vertex')
-
-    // Video has no BYO entry at all: the fal.ai and Vertex Veo clients were
-    // removed, so a built-in row could never be served.
+    // NEITHER list has a BYO entry: image and video are served exclusively by
+    // the Rayu-hosted gateway, so a built-in row could never be served.
+    expect(catalog.image).toEqual([])
     expect(catalog.video).toEqual([])
 
     const backends = new Set(
@@ -801,33 +801,20 @@ describe('offline fallback (no gateway)', () => {
     }
   })
 
-  test('keeps the BYO IMAGE models the CLI can still serve, and no video', () => {
-    // The image fallback is FROZEN at the set the CLI shipped when it still had a
-    // hardcoded registry, minus the removed NVIDIA backends, so an offline BYOK
-    // user keeps the Vertex Imagen models. New models go in the backend seed,
-    // never here.
-    //
-    // VIDEO is empty on purpose: video generation is Rayu-hosted only, so there is
-    // no client an offline built-in row could be served by.
+  test('ships NO built-in IMAGE or VIDEO models — both are Rayu-hosted only', () => {
+    // Image generation used to fall back to Vertex Imagen offline; that backend
+    // is gone from the product, so a built-in row would advertise a model the
+    // CLI can no longer call. Video was already empty for the same reason.
     const catalog = getCachedMediaModels()
-    expect(catalog.image.map((m) => m.id)).toEqual([
-      'imagen-4.0-generate-001',
-      'imagen-4.0-fast-generate-001',
-      'imagen-4.0-ultra-generate-001',
-      'imagen-3.0-capability-001',
-    ])
+    expect(catalog.image).toEqual([])
     expect(catalog.video).toEqual([])
   })
 
-  test('reproduces the old per-backend IMAGE defaults', async () => {
+  test('resolves NO per-backend IMAGE default offline', async () => {
     const catalog = getCachedMediaModels()
     const { defaultImageModelId } = await import('../src/tools/ImageGenTool/models.ts')
-    expect(defaultImageModelId(catalog.image, 'vertex', false)).toBe(
-      'imagen-4.0-generate-001',
-    )
-    expect(defaultImageModelId(catalog.image, 'vertex', true)).toBe(
-      'imagen-3.0-capability-001',
-    )
+    expect(defaultImageModelId(catalog.image, 'vertex', false)).toBeUndefined()
+    expect(defaultImageModelId(catalog.image, 'vertex', true)).toBeUndefined()
   })
 
   test('the fallback mirrors the backend seed (no drift between the two)', async () => {

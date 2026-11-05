@@ -187,6 +187,30 @@ function isRetiredBackendItem(raw: unknown): boolean {
 export const MEDIA_CATALOG_UNAVAILABLE_MESSAGE =
   'Rayu model catalog unavailable — check your connection, then open /model_image_generation or /model_video_generation to retry'
 
+/**
+ * The right message when a catalog has no usable hosted entry.
+ *
+ * Two very different causes, and conflating them wastes the user's time:
+ * a fetch that FAILED is transient (retry, check the connection), while a fetch
+ * that SUCCEEDED against a catalog with no hosted row means the admin has not
+ * published one — retrying forever will never fix it, and "check your
+ * connection" sends the user looking in the wrong place.
+ */
+export function mediaCatalogEmptyMessage(
+  catalog: Pick<MediaCatalog, 'source' | 'image' | 'video'>,
+  mediaType: 'image' | 'video',
+): string {
+  const reachable = catalog.source === 'gateway'
+  const hasHosted = catalog[mediaType].some((m) => m.backend === 'rayu')
+  if (reachable && !hasHosted) {
+    return (
+      `No Rayu-hosted ${mediaType} models are published yet. Ask your Rayu admin ` +
+      `to enable one in the admin dashboard (/admin/media) — signing in does not create one.`
+    )
+  }
+  return MEDIA_CATALOG_UNAVAILABLE_MESSAGE
+}
+
 let cache: PersistedCatalog | null = null
 let loadedFromDisk = false
 let fetching: Promise<MediaCatalog | null> | null = null

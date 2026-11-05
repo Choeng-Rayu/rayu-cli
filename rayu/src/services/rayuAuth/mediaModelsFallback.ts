@@ -19,10 +19,12 @@
 // entry-for-entry, minus the NVIDIA backends (genai FLUX / Stable Diffusion /
 // Kontext, NVCF Cosmos, SVD), which the CLI no longer serves.
 //
-// SCOPE SHRANK when video generation became Rayu-hosted only: VIDEO is now an
-// EMPTY list, because the fal.ai and Vertex Veo clients were removed and the
-// hosted video catalog is server-owned. IMAGE keeps its Vertex Imagen rows, which
-// are the remaining bring-your-own backend.
+// SCOPE HAS SHRUNK TO NOTHING: BOTH lists are empty. Video generation became
+// Rayu-hosted only first (the fal.ai and Vertex Veo clients were removed), and
+// image generation followed — image is served exclusively by the Rayu-hosted
+// gateway, so an offline built-in row could only advertise a model the product no
+// longer routes to. Keeping it would have re-exposed Vertex Imagen on a machine
+// with no Google credentials, which is exactly the failure this replaced.
 //
 // Entries are tagged `source: 'fallback'` so the UI can say so.
 //
@@ -30,53 +32,19 @@
 // ties when no model carries the `default` flag for a capability.
 import type { MediaCatalog, MediaModelEntry } from './mediaModels.js'
 
-const FALLBACK_IMAGE: MediaModelEntry[] = [
-  {
-    id: 'imagen-4.0-generate-001',
-    label: 'Imagen 4',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'vertex',
-    family: 'imagen',
-    isDefault: true,
-  },
-  {
-    id: 'imagen-4.0-fast-generate-001',
-    label: 'Imagen 4 Fast',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'vertex',
-    family: 'imagen',
-  },
-  {
-    id: 'imagen-4.0-ultra-generate-001',
-    label: 'Imagen 4 Ultra',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'vertex',
-    family: 'imagen',
-  },
-  {
-    // Imagen 4 is generate-only; editing needs the Imagen 3 capability model.
-    id: 'imagen-3.0-capability-001',
-    label: 'Imagen 3 Capability (edit)',
-    mediaType: 'image',
-    capabilities: ['edit'],
-    backend: 'vertex',
-    family: 'imagen',
-    isDefault: true,
-  },
-]
+/**
+ * EMPTY, deliberately — image is Rayu-hosted only.
+ *
+ * The hosted catalog is server-owned, so there is nothing a client can invent:
+ * a built-in row would advertise a model the gateway may not have (or may have
+ * priced differently). Offline with no session and no Rayu API key the image
+ * picker lists nothing and explains why, which is the honest answer now that
+ * there is no bring-your-own image backend to fall back to.
+ */
+const FALLBACK_IMAGE: MediaModelEntry[] = []
 
 /**
- * EMPTY, deliberately.
- *
- * Video generation is Rayu-hosted only and the hosted catalog is server-owned, so
- * there is nothing a client can invent here: a built-in row would advertise a
- * model the gateway may not have. Offline with no session and no Rayu API key the
- * video picker therefore lists nothing and explains why — which is the honest
- * answer, since there is no BYO video backend to fall back to any more (the fal.ai
- * and Vertex Veo clients were removed).
+ * EMPTY, deliberately — video is Rayu-hosted only, for the same reason.
  */
 const FALLBACK_VIDEO: MediaModelEntry[] = []
 
