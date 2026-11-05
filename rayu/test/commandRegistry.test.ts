@@ -6,6 +6,15 @@ import installGitHubApp from '../src/commands/install-github-app/index.ts'
 import modelImageGeneration from '../src/commands/model-image-generation/index.ts'
 import modelVideoGeneration from '../src/commands/model-video-generation/index.ts'
 import webBridge from '../src/commands/web-bridge.ts'
+import addDir from '../src/commands/add-dir/index.ts'
+import doctor from '../src/commands/doctor/index.ts'
+import exportCommand from '../src/commands/export/index.ts'
+import help from '../src/commands/help/index.ts'
+import hooks from '../src/commands/hooks/index.ts'
+import memory from '../src/commands/memory/index.ts'
+import permissions from '../src/commands/permissions/index.ts'
+import stats from '../src/commands/stats/index.ts'
+import status from '../src/commands/status/index.ts'
 import { projectRuntimeCommands } from '../src/runtime/catalog.ts'
 
 describe('Rayu command registry', () => {
@@ -95,6 +104,37 @@ describe('Rayu command registry', () => {
       modelVideoGeneration,
     ])) {
       expect(descriptor.surface).toBe('panel')
+      expect(descriptor.available).toBe(true)
+      expect(descriptor.unavailableReason).toBeUndefined()
+    }
+  })
+
+  test('the host-answered editor screens are available in Rayucode', () => {
+    // extension.ts intercepts each of these local-jsx commands and opens editor UI.
+    const descriptors = projectRuntimeCommands([
+      permissions,
+      memory,
+      doctor,
+      status,
+      stats,
+      hooks,
+      addDir,
+      exportCommand,
+      help,
+    ])
+    expect(descriptors.map(d => d.name)).toEqual([
+      'permissions',
+      'memory',
+      'doctor',
+      'status',
+      'stats',
+      'hooks',
+      'add-dir',
+      'export',
+      'help',
+    ])
+    for (const descriptor of descriptors) {
+      expect(descriptor.surface).not.toBe('terminal_only')
       expect(descriptor.available).toBe(true)
       expect(descriptor.unavailableReason).toBeUndefined()
     }

@@ -89,7 +89,16 @@ export function getHookDisplayText(
   }
 }
 
-export function getAllHooks(appState: AppState): IndividualHookConfig[] {
+/**
+ * Every hook the session knows about: those in the editable settings files, plus (when a
+ * session's app state is supplied) the in-memory session hooks.
+ *
+ * `appState` is optional so a process that only wants to SHOW the settings-file hooks —
+ * the VS Code `--rayucode-settings` child, which has no session — can call it without
+ * inventing one. Existing callers pass their state and see exactly what they did before;
+ * without it the session hooks are simply absent.
+ */
+export function getAllHooks(appState?: AppState): IndividualHookConfig[] {
   const hooks: IndividualHookConfig[] = []
 
   // Check if restricted to managed hooks only
@@ -141,18 +150,20 @@ export function getAllHooks(appState: AppState): IndividualHookConfig[] {
     }
   }
 
-  // Get session hooks
-  const sessionId = getSessionId()
-  const sessionHooks = getSessionHooks(appState, sessionId)
-  for (const [event, matchers] of sessionHooks.entries()) {
-    for (const matcher of matchers) {
-      for (const hookCommand of matcher.hooks) {
-        hooks.push({
-          event,
-          config: hookCommand,
-          matcher: matcher.matcher,
-          source: 'sessionHook',
-        })
+  // Session hooks exist only while a session is running; read-only callers omit the state.
+  if (appState) {
+    const sessionId = getSessionId()
+    const sessionHooks = getSessionHooks(appState, sessionId)
+    for (const [event, matchers] of sessionHooks.entries()) {
+      for (const matcher of matchers) {
+        for (const hookCommand of matcher.hooks) {
+          hooks.push({
+            event,
+            config: hookCommand,
+            matcher: matcher.matcher,
+            source: 'sessionHook',
+          })
+        }
       }
     }
   }

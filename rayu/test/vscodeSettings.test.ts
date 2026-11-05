@@ -15,6 +15,7 @@ import {
 } from '../src/vscode/host/settings/settingsDispatch.js'
 import { SettingsController, engineInfoView } from '../src/vscode/host/settings/settingsController.js'
 import type { GeneralSettingsDeps } from '../src/vscode/host/settings/generalSettings.js'
+import type { ModelsSettingsDeps } from '../src/vscode/host/settings/modelsSettings.js'
 import type { AccountSectionDeps, IntegrationsSectionDeps } from '../src/vscode/host/settings/settingsController.js'
 import { EMPTY_TELEGRAM_CONNECT } from '../src/vscode/host/integrations/telegramConnectController.js'
 import type { SharedSettingsSnapshot } from '../src/vscode/host/settings/sharedSettings.js'
@@ -24,6 +25,7 @@ import type {
   EngineInfoView,
   GeneralSettingsView,
   IntegrationsView,
+  ModelsSettingsView,
   SettingsHostMessage,
   SettingsViewState,
 } from '../src/vscode/shared/settingsProtocol.js'
@@ -47,6 +49,10 @@ function recordingHandlers(): { handlers: SettingsHandlers; calls: unknown[][] }
       openExtensionSettings: () => calls.push(['openExtensionSettings']),
       updateSetting: (key, value) => calls.push(['updateSetting', key, value]),
       refreshGeneral: () => calls.push(['refreshGeneral']),
+      openModelSetting: (target, agentType) => calls.push(['openModelSetting', target, agentType]),
+      chooseModelSetting: (target, value, agentType) => calls.push(['chooseModelSetting', target, value, agentType]),
+      closeModelSetting: () => calls.push(['closeModelSetting']),
+      refreshModels: () => calls.push(['refreshModels']),
       refreshAccount: () => calls.push(['refreshAccount']),
       accountAction: action => calls.push(['accountAction', action]),
       openAccountLink: link => calls.push(['openAccountLink', link]),
@@ -168,6 +174,7 @@ const SNAPSHOT: SharedSettingsSnapshot = {
 }
 
 const IDLE_GENERAL: GeneralSettingsView = { status: 'idle', error: null, saving: null, items: [] }
+const IDLE_MODELS = { status: 'idle' as const, error: null, notice: null, rows: [], editor: null }
 const IDLE_ACCOUNT: AccountSectionView = { status: 'idle', account: null, error: null, updatedAt: null }
 const INTEGRATIONS: IntegrationsView = {
   telegram: EMPTY_TELEGRAM_CONNECT,
@@ -242,6 +249,16 @@ function fakeGeneral(overrides: Partial<GeneralSettingsDeps> = {}): GeneralSetti
   }
 }
 
+function fakeModels(overrides: Partial<ModelsSettingsDeps> = {}): ModelsSettingsDeps {
+  return {
+    loadProviderCatalogue: async () => ({ ok: true, options: [] }),
+    loadMediaCatalogue: async () => ({ ok: true, options: [] }),
+    knownAgentTypes: () => [],
+    onSaved: () => {},
+    ...overrides,
+  }
+}
+
 describe('SettingsController', () => {
   function controller(general = fakeGeneral(), account = fakeAccount(), integrations = fakeIntegrations()): { controller: SettingsController; posted: SettingsHostMessage[]; opened: number[] } {
     const posted: SettingsHostMessage[] = []
@@ -254,6 +271,7 @@ describe('SettingsController', () => {
         engineInfo: () => ABOUT,
         openExtensionSettings: () => opened.push(1),
         general,
+        models: fakeModels(),
         account,
         integrations,
       }),
@@ -265,7 +283,7 @@ describe('SettingsController', () => {
     c.ready()
     expect(posted).toEqual([{
       type: 'settingsInit',
-      state: { section: 'general', about: ABOUT, general: IDLE_GENERAL, account: IDLE_ACCOUNT, integrations: INTEGRATIONS },
+      state: { section: 'general', about: ABOUT, general: IDLE_GENERAL, models: IDLE_MODELS, account: IDLE_ACCOUNT, integrations: INTEGRATIONS },
     }])
     await settle()
     const last = posted.at(-1) as Extract<SettingsHostMessage, { type: 'settingsGeneral' }>
@@ -531,7 +549,7 @@ const READY_GENERAL: GeneralSettingsView = {
 function initState(state: Partial<SettingsViewState> = {}): SettingsAppState {
   return settingsReducer(initialSettingsState(), {
     type: 'settingsInit',
-    state: { section: 'about', about: ABOUT, general: READY_GENERAL, account: IDLE_ACCOUNT, integrations: INTEGRATIONS, ...state },
+    state: { section: 'about', about: ABOUT, general: READY_GENERAL, models: IDLE_MODELS, account: IDLE_ACCOUNT, integrations: INTEGRATIONS, ...state },
   })
 }
 
@@ -546,6 +564,7 @@ describe('settings webview state', () => {
       section: 'about',
       about: ABOUT,
       general: READY_GENERAL,
+      models: IDLE_MODELS,
       account: IDLE_ACCOUNT,
       integrations: INTEGRATIONS,
     })
@@ -594,6 +613,8 @@ describe('settings webview state', () => {
     expect(asSettingsHostMessage({ type: 'settingsGeneral' })).toBeNull()
     expect(asSettingsHostMessage({ type: 'settingsAccount', account: IDLE_ACCOUNT })).toEqual({ type: 'settingsAccount', account: IDLE_ACCOUNT })
     expect(asSettingsHostMessage({ type: 'settingsAccount', account: 'x' })).toBeNull()
+    expect(asSettingsHostMessage({ type: 'settingsModels', models: IDLE_MODELS })).toEqual({ type: 'settingsModels', models: IDLE_MODELS })
+    expect(asSettingsHostMessage({ type: 'settingsModels' })).toBeNull()
     expect(asSettingsHostMessage({ type: 'init' })).toBeNull()
     expect(asSettingsHostMessage(null)).toBeNull()
   })
@@ -606,6 +627,10 @@ const render = (state: SettingsAppState): string =>
     onOpenExtensionSettings: () => {},
     onChangeSetting: () => {},
     onRetryGeneral: () => {},
+    onModelsOpen: () => {},
+    onModelsChoose: () => {},
+    onModelsClose: () => {},
+    onModelsRefresh: () => {},
     onAccountRefresh: () => {},
     onAccountAction: () => {},
     onOpenAccountLink: () => {},
@@ -618,15 +643,46 @@ const render = (state: SettingsAppState): string =>
   }))
 
 describe('Settings tab layout', () => {
-  test('lists General, Account, Integrations and About in that order, and marks the open one', () => {
+  test('lists General, Models, Account, Integrations and About in that order, and marks the open one', () => {
     const html = render(initState({ section: 'general' }))
-    expect(html.indexOf('>General<')).toBeLessThan(html.indexOf('>Account<'))
+    expect(html.indexOf('>General<')).toBeLessThan(html.indexOf('>Models<'))
+    expect(html.indexOf('>Models<')).toBeLessThan(html.indexOf('>Account<'))
     expect(html.indexOf('>Account<')).toBeLessThan(html.indexOf('>Integrations<'))
     expect(html.indexOf('>Integrations<')).toBeLessThan(html.indexOf('>About<'))
     expect(html).toMatch(/aria-current="page"[^>]*>General</)
     expect(html).toContain('<span class="rs-badge">Shared with Rayu CLI</span>')
     // The chat's header class is counted by the UI test; the tab must not reuse it.
     expect(html).not.toContain('rc-header')
+  })
+
+  test('the Models section lists each setting, and the edited row holds the shared picker', () => {
+    const models: ModelsSettingsView = {
+      status: 'ready',
+      error: null,
+      notice: null,
+      rows: [
+        { target: 'subagent', label: 'Subagent model (all agents)', summary: 'all agents model: default', current: null },
+        { target: 'image', label: 'Image generation model', summary: 'Image generation model: default', current: null },
+      ],
+      editor: {
+        target: 'image',
+        title: 'Select an image generation model',
+        tip: 'Used by /generate-image.',
+        defaultNote: 'Rayu-hosted when signed in',
+        current: null,
+        catalogue: { options: [], loading: false, error: null },
+        saving: false,
+        error: null,
+      },
+    }
+    const html = render(initState({ section: 'models', models }))
+    expect(html).toContain('Subagent model (all agents)')
+    expect(html).toContain('Image generation model')
+    expect(html).toContain('Change')
+    // The row being edited renders the shared picker inline, not a second component.
+    expect(html).toContain('Select an image generation model')
+    expect(html).toContain('Search models')
+    expect(html).toContain('Use default')
   })
 
   test('the Account section says it is loading until the host answers', () => {

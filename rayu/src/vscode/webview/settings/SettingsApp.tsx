@@ -15,6 +15,7 @@ import {
   isSettingsSectionId,
   type AccountActionId,
   type AccountLinkId,
+  type ModelSettingTargetId,
   type SettingsSectionId,
   type SettingsWebviewMessage,
   type WebBridgeAction,
@@ -86,6 +87,15 @@ export function SettingsApp(): JSX.Element {
     vscodeApi.postMessage({ type: 'settingsRemoveDevice', deviceId })
   }, [])
 
+  const models = useMemo(() => ({
+    onModelsOpen: (target: ModelSettingTargetId, agentType?: string) =>
+      vscodeApi.postMessage({ type: 'settingsModelsOpen', target, ...(agentType ? { agentType } : {}) }),
+    onModelsChoose: (target: ModelSettingTargetId, value: string | null, agentType?: string) =>
+      vscodeApi.postMessage({ type: 'settingsModelsChoose', target, value, ...(agentType ? { agentType } : {}) }),
+    onModelsClose: () => vscodeApi.postMessage({ type: 'settingsModelsClose' }),
+    onModelsRefresh: () => vscodeApi.postMessage({ type: 'settingsModelsRefresh' }),
+  }), [])
+
   const integrations = useMemo(() => ({
     onTelegramStartHosted: () => vscodeApi.postMessage({ type: 'settingsTelegramStartHosted' }),
     // The token is posted once and kept nowhere on this side (TelegramConnectPanel).
@@ -106,6 +116,7 @@ export function SettingsApp(): JSX.Element {
       onAccountAction={accountAction}
       onOpenAccountLink={openAccountLink}
       onRemoveDevice={removeDevice}
+      {...models}
       {...integrations}
     />
   )

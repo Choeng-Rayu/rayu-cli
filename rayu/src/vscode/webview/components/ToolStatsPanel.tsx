@@ -6,12 +6,7 @@
  */
 import React from 'react'
 
-export interface ToolUsageStatsView {
-  toolName: string
-  callCount: number
-  successCount: number
-  failureCount: number
-}
+import type { ToolUsageStatsView } from '../../shared/toolStats.js'
 
 export function ToolStatsPanel({
   stats,

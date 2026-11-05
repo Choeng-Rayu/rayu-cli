@@ -80,6 +80,9 @@ const PANEL_COMMANDS = new Set([
  * session); Rayucode answers it in `extension.ts` by restarting the tab's engine in place.
  * `web-bridge` and `install-github-app` are likewise intercepted by the host before a
  * prompt reaches the engine, so neither may be reported as unavailable.
+ * `permissions`, `memory`, `doctor`, `status`, `stats`, `hooks`, `add-dir`, `export` and
+ * `help` are `local-jsx` Ink screens in the CLI; the host intercepts each one and opens
+ * its own editor UI instead.
  */
 const RAYUCODE_IMPLEMENTED_COMMANDS = new Set([
   'clear',
@@ -103,6 +106,15 @@ const RAYUCODE_IMPLEMENTED_COMMANDS = new Set([
   'workflows',
   'model',
   'effort',
+  'permissions',
+  'memory',
+  'doctor',
+  'status',
+  'stats',
+  'hooks',
+  'add-dir',
+  'export',
+  'help',
 ])
 
 export type RuntimeCommandSurface =

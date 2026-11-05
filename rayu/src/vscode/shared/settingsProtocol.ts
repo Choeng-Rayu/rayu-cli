@@ -9,10 +9,10 @@
  * any other credential: the webview renders arbitrary content and is treated as
  * untrusted.
  */
-import type { TelegramConnectView } from './webviewProtocol.js'
+import type { ModelCatalogueView, ModelChooserView, TelegramConnectView } from './webviewProtocol.js'
 
 /** Every section the tab can show, in the order its list shows them. The first is the default. */
-export const SETTINGS_SECTION_IDS = ['general', 'account', 'integrations', 'about'] as const
+export const SETTINGS_SECTION_IDS = ['general', 'models', 'account', 'integrations', 'about'] as const
 
 export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number]
 
@@ -82,6 +82,55 @@ export interface GeneralSettingsView {
   /** The key being saved, so its row can show progress. */
   saving: string | null
   items: GeneralSettingView[]
+}
+
+// ── Models ─────────────────────────────────────────────────────────────────
+
+/** The model settings the Models section edits; the same set the chooser card writes. */
+export type ModelSettingTargetId = ModelChooserView['target']
+
+export const MODEL_SETTING_TARGET_IDS: readonly ModelSettingTargetId[] = ['subagent', 'image', 'video', 'webfetch']
+
+export function isModelSettingTargetId(value: unknown): value is ModelSettingTargetId {
+  return typeof value === 'string' && (MODEL_SETTING_TARGET_IDS as readonly string[]).includes(value)
+}
+
+/** One row: a setting and what it is set to now. */
+export interface ModelSettingRowView {
+  target: ModelSettingTargetId
+  /** Set on a per-agent-type override row of the subagent setting. */
+  agentType?: string
+  label: string
+  /** The CLI's own `show` wording, e.g. "all agents model: default (…)". */
+  summary: string
+  /** The identifier to mark in the picker, or null when the default applies. */
+  current: string | null
+}
+
+/** The row being edited, with its picker's list. */
+export interface ModelSettingEditorView {
+  target: ModelSettingTargetId
+  agentType?: string
+  title: string
+  tip: string
+  defaultNote: string
+  current: string | null
+  catalogue: ModelCatalogueView
+  /** A one-line caveat about the list, e.g. built-in defaults while signed out. */
+  note?: string
+  saving: boolean
+  /** Already user-facing; why the last choice was not saved. */
+  error: string | null
+}
+
+export interface ModelsSettingsView {
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  /** Already user-facing. */
+  error: string | null
+  /** The confirmation of the last save or reset. */
+  notice: string | null
+  rows: ModelSettingRowView[]
+  editor: ModelSettingEditorView | null
 }
 
 // ── Account ────────────────────────────────────────────────────────────────
@@ -231,6 +280,7 @@ export interface SettingsViewState {
   section: SettingsSectionId
   about: EngineInfoView
   general: GeneralSettingsView
+  models: ModelsSettingsView
   account: AccountSectionView
   integrations: IntegrationsView
 }
@@ -242,6 +292,7 @@ export type SettingsHostMessage =
   /** Bring a section to the front, e.g. when a command opened the tab at it. */
   | { type: 'settingsShowSection'; section: SettingsSectionId }
   | { type: 'settingsGeneral'; general: GeneralSettingsView }
+  | { type: 'settingsModels'; models: ModelsSettingsView }
   | { type: 'settingsAccount'; account: AccountSectionView }
   | { type: 'settingsIntegrations'; integrations: IntegrationsView }
 
@@ -255,6 +306,13 @@ export type SettingsWebviewMessage =
   | { type: 'settingsUpdate'; key: string; value: boolean | string }
   /** Re-read the General settings from disk. */
   | { type: 'settingsRefresh' }
+  /** Edit one model setting: opens its picker and loads the list. */
+  | { type: 'settingsModelsOpen'; target: ModelSettingTargetId; agentType?: string }
+  /** Save a model for a setting; `null` resets it to its default. */
+  | { type: 'settingsModelsChoose'; target: ModelSettingTargetId; value: string | null; agentType?: string }
+  | { type: 'settingsModelsClose' }
+  /** Read the rows again, and the open picker's list. */
+  | { type: 'settingsModelsRefresh' }
   /** Read the account again from Rayu. */
   | { type: 'settingsAccountRefresh' }
   | { type: 'settingsAccountAction'; action: AccountActionId }
