@@ -72,6 +72,14 @@ afterEach(async () => {
   cat._resetPlansCatalogForTesting()
   const fu = await import('../src/services/rayuAuth/rayuFeatureUsage.ts')
   fu._resetFeatureUsageForTesting()
+  // This file seeds a providers.json containing a Rayu API key. Deleting the
+  // temp dir is not enough: rayuConfig caches the parsed file in memory and
+  // rayuApiKeyAuth caches the key's verdict, so without these resets the next
+  // test FILE sees a usable Rayu credential and the login gate stops blocking.
+  ;(await import('../src/utils/rayuConfig.ts'))._resetRayuConfigCache()
+  ;(
+    await import('../src/services/rayuAuth/rayuApiKeyAuth.ts')
+  )._resetRayuApiKeyStateForTesting()
 })
 
 /** Entitlement cache for a plan where image/video are enabled (paid) or not (free). */

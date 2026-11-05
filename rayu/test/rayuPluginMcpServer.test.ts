@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { readFile, mkdtemp, rm, writeFile } from 'fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createLinkedTransportPair } from '../src/services/mcp/InProcessTransport.ts'
@@ -18,16 +18,40 @@ import { createLinkedTransportPair } from '../src/services/mcp/InProcessTranspor
 let workDir: string
 let client: Client
 let close: (() => Promise<void>) | undefined
-let savedGcpProject: string | undefined
+let savedConfigDir: string | undefined
+let savedAuthConfigDir: string | undefined
 
 beforeAll(async () => {
   workDir = await mkdtemp(join(tmpdir(), 'rayu-mcp-e2e-'))
   await writeFile(join(workDir, 'hello.txt'), 'hello from rayu\n')
-  // The billing-gated GenerateImage tool is listed only when an image backend is
-  // usable. Configure one explicitly (Vertex) instead of depending on whatever
-  // keys or session the developer's shell happens to have.
-  savedGcpProject = process.env.GOOGLE_CLOUD_PROJECT
-  process.env.GOOGLE_CLOUD_PROJECT = 'rayu-mcp-e2e'
+  // The billing-gated GenerateImage/GenerateVideo tools are listed only when a
+  // RAYU credential is usable — the image/video backends are Rayu-hosted only
+  // now, so a Google/Vertex project no longer enables them. Configure a Rayu API
+  // key in an isolated config dir instead of depending on whatever session,
+  // provider list or `USE_RAYU_OAUTH` value the developer's shell (or an earlier
+  // test file) happens to leave behind.
+  const configDir = join(workDir, 'config')
+  await mkdir(configDir, { recursive: true })
+  await writeFile(
+    join(configDir, 'providers.json'),
+    JSON.stringify({
+      activeProvider: 'rayu',
+      providers: [
+        { id: 'rayu', kind: 'anthropic-compatible', apiKey: 'rayu_sk_live_mcp_e2e' },
+      ],
+    }),
+    { mode: 0o600 },
+  )
+  savedConfigDir = process.env.RAYU_CONFIG_DIR
+  savedAuthConfigDir = process.env.RAYU_AUTH_CONFIG_DIR
+  process.env.RAYU_CONFIG_DIR = configDir
+  // RAYU_AUTH_CONFIG_DIR outranks RAYU_CONFIG_DIR, so an ambient value would
+  // still send session reads at the developer's real profile.
+  delete process.env.RAYU_AUTH_CONFIG_DIR
+  ;(await import('../src/utils/rayuConfig.ts'))._resetRayuConfigCache()
+  ;(
+    await import('../src/tools/ImageGenTool/ImageGenTool.ts')
+  )._resetRayuImageAvailabilityForTesting()
 
   const { createRayuMcpServer } = await import(
     '../src/plugins/mcpServer/index.ts'
@@ -52,8 +76,16 @@ beforeAll(async () => {
 afterAll(async () => {
   await close?.()
   await rm(workDir, { recursive: true, force: true })
-  if (savedGcpProject === undefined) delete process.env.GOOGLE_CLOUD_PROJECT
-  else process.env.GOOGLE_CLOUD_PROJECT = savedGcpProject
+  if (savedConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
+  else process.env.RAYU_CONFIG_DIR = savedConfigDir
+  if (savedAuthConfigDir === undefined) delete process.env.RAYU_AUTH_CONFIG_DIR
+  else process.env.RAYU_AUTH_CONFIG_DIR = savedAuthConfigDir
+  // The seeded provider row is cached in memory; without these resets the next
+  // test file would inherit a "usable Rayu credential" it never configured.
+  ;(await import('../src/utils/rayuConfig.ts'))._resetRayuConfigCache()
+  ;(
+    await import('../src/tools/ImageGenTool/ImageGenTool.ts')
+  )._resetRayuImageAvailabilityForTesting()
 })
 
 /** Exactly what `client.callTool()` resolves to, per the installed SDK. */

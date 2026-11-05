@@ -127,6 +127,118 @@ describe('getValidRayuAccessToken', () => {
     expect(await m.getValidRayuAccessToken()).toBe('new-at')
     expect(m.readRayuSession()?.accessToken).toBe('new-at')
   })
+
+  test('a transient refresh failure keeps the session for the next try', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuSession.ts')
+    m.writeRayuSession({ ...sampleSession, expiresAt: Date.now() - 1000 })
+    m._setRayuFetchForTesting(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    }))
+    expect(await m.getValidRayuAccessToken()).toBeNull()
+    expect(m.readRayuSession()?.accessToken).toBe('at')
+    expect(m.rayuLoginGateMessage()).toBeNull()
+  })
+
+  test('a refused refresh clears the dead session so /login is not blocked', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuSession.ts')
+    m.writeRayuSession({ ...sampleSession, expiresAt: Date.now() - 1000 })
+    m._setRayuFetchForTesting(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({}),
+    }))
+    expect(await m.getValidRayuAccessToken()).toBeNull()
+    expect(m.readRayuSession()).toBeNull()
+    expect(m.hasRayuSession()).toBe(false)
+    expect(m.rayuLoginGateMessage()).toContain('/login')
+  })
+
+  test('an expired session with no refresh token is not usable', async () => {
+    const m = await import('../src/services/rayuAuth/rayuSession.ts')
+    m.writeRayuSession({
+      ...sampleSession,
+      refreshToken: '',
+      expiresAt: Date.now() - 1000,
+    })
+    expect(m.hasRayuSession()).toBe(true)
+    expect(m.hasUsableRayuSession()).toBe(false)
+  })
+
+  test('refreshRayuAccessToken reuses a token renewed by another process', async () => {
+    const m = await import('../src/services/rayuAuth/rayuSession.ts')
+    m.writeRayuSession({
+      ...sampleSession,
+      accessToken: 'fresh-at',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    })
+    let called = false
+    m._setRayuFetchForTesting(async () => {
+      called = true
+      return { ok: true, status: 200, json: async () => ({}) }
+    })
+    expect(await m.refreshRayuAccessToken('stale-at')).toBe('fresh-at')
+    expect(called).toBe(false)
+  })
+
+  test('a sign-in that lands mid-refresh is not overwritten', async () => {
+    const m = await import('../src/services/rayuAuth/rayuSession.ts')
+    m.writeRayuSession({ ...sampleSession, expiresAt: Date.now() - 1000 })
+
+    let releaseFetch!: (value: unknown) => void
+    m._setRayuFetchForTesting(
+      () => new Promise(resolve => (releaseFetch = resolve)) as never,
+    )
+
+    const pending = m.getValidRayuAccessToken()
+    // Meanwhile the user signs in again (or another process renews the session).
+    m.writeRayuSession({
+      ...sampleSession,
+      accessToken: 'other-at',
+      refreshToken: 'other-rt',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    })
+    releaseFetch({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        accessToken: 'stale-refreshed',
+        refreshToken: 'stale-rt',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      }),
+    })
+
+    expect(await pending).toBe('other-at')
+    expect(m.readRayuSession()?.accessToken).toBe('other-at')
+    expect(m.readRayuSession()?.refreshToken).toBe('other-rt')
+  })
+
+  test('a refused refresh does not delete a session written meanwhile', async () => {
+    process.env.USE_RAYU_OAUTH = 'true'
+    const m = await import('../src/services/rayuAuth/rayuSession.ts')
+    m.writeRayuSession({ ...sampleSession, expiresAt: Date.now() - 1000 })
+
+    let releaseFetch!: (value: unknown) => void
+    m._setRayuFetchForTesting(
+      () => new Promise(resolve => (releaseFetch = resolve)) as never,
+    )
+
+    const pending = m.getValidRayuAccessToken()
+    m.writeRayuSession({
+      ...sampleSession,
+      accessToken: 'other-at',
+      refreshToken: 'other-rt',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    })
+    releaseFetch({ ok: false, status: 401, json: async () => ({}) })
+
+    expect(await pending).toBe('other-at')
+    expect(m.readRayuSession()?.accessToken).toBe('other-at')
+    expect(m.rayuLoginGateMessage()).toBeNull()
+  })
 })
 
 describe('recordRayuUsageBestEffort', () => {

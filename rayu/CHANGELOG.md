@@ -2,6 +2,9 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## Unreleased
+- **Fixed: an expired Rayu session no longer needs /logout before /login** — a hosted request rejected with 401 now renews the token once and replays the request; if the refresh token itself is dead, the stale session is cleared so `/login` opens instead of replying "already signed in". The login gate now treats an unrenewable session as signed out, which is what forced `/logout` → `/login` after an update or a deploy
+
 ## 2.4.4 - 2026-11-02 (Beta)
 - **The sidebar is now the first conversation** — opening Rayucode puts your first session in the sidebar with the full transcript, composer and approvals, and "New session" opens the next conversation as its own editor tab. A conversation still appears in exactly one place.
 - **Closing the sidebar conversation shows your sessions** — the sidebar falls back to the sessions list; pick a row to bring a conversation back into the sidebar.

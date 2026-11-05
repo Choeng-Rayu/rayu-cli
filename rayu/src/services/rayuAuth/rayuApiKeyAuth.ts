@@ -34,7 +34,7 @@ import { loadRayuConfig, type RayuProvider } from '../../utils/rayuConfig.js'
 import { RAYU_API_PROVIDER_ID } from '../../utils/rayuProviders.js'
 import {
   getValidRayuAccessToken,
-  hasRayuSession,
+  hasUsableRayuSession,
   isUseRayuOAuthEnabled,
 } from './rayuSession.js'
 import {
@@ -171,7 +171,7 @@ export function hasValidatedRayuApiKey(): boolean {
  * flow for a user who has none.
  */
 export function hasRayuCredential(): boolean {
-  return hasRayuSession() || hasValidatedRayuApiKey()
+  return hasUsableRayuSession() || hasValidatedRayuApiKey()
 }
 
 /**
@@ -185,7 +185,7 @@ export function hasRayuCredential(): boolean {
  * one of them silently hid every Rayu-hosted model from the other kind of user.
  */
 export function hasRayuGatewayCredential(): boolean {
-  if (isUseRayuOAuthEnabled() && hasRayuSession()) return true
+  if (isUseRayuOAuthEnabled() && hasUsableRayuSession()) return true
   return hasRayuApiKeyConfigured()
 }
 
