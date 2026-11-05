@@ -937,6 +937,111 @@ describe('getAssistantMessageFromError · rayu-hosted provider unavailable (Case
   })
 })
 
+// --- Admin-written customer message (`rayu_custom: true`) ---
+// Once every route for a hosted model has failed, the gateway may attach the
+// admin's per-model text. It must take precedence over the generic "high volume"
+// copy, while staying scoped to rayu-hosted and safe to render.
+
+function customProviderError(
+  text: string,
+  opts: {
+    status?: number
+    openaiShape?: boolean
+    headers?: Headers
+  } = {},
+): APIError {
+  const inner = {
+    type: 'provider_unavailable',
+    message: text,
+    rayu_custom: true,
+  }
+  const body = opts.openaiShape
+    ? { error: { ...inner } }
+    : { type: 'error', error: { ...inner } }
+  return APIError.generate(
+    opts.status ?? 502,
+    body,
+    'provider unavailable',
+    opts.headers ?? new Headers(),
+  ) as APIError
+}
+
+describe('getAssistantMessageFromError · rayu-hosted admin custom message', () => {
+  const ADMIN_TEXT = 'The Kimi route is down for maintenance. It returns by 18:00 UTC.'
+
+  test('the admin message beats the generic 5xx override when hosted', () => {
+    setActiveProvider('rayu-hosted')
+    const text = textOf(getAssistantMessageFromError(customProviderError(ADMIN_TEXT), 'kimi-k2.7'))
+    expect(text).toContain(ADMIN_TEXT)
+    // The generic hosted copy must NOT replace the admin's wording.
+    expect(text.toLowerCase()).not.toContain('high volume')
+    // The switch hint stays, like the neighbouring branch (`/model`, or
+    // `--model` under a non-interactive session).
+    expect(text).toContain('switch to a different model with')
+  })
+
+  test('a 503 with x-should-retry:false also shows the admin message', () => {
+    setActiveProvider('rayu-hosted')
+    const err = customProviderError(ADMIN_TEXT, {
+      status: 503,
+      headers: new Headers({ 'x-should-retry': 'false' }),
+    })
+    const text = textOf(getAssistantMessageFromError(err, 'claude-opus-5.5'))
+    expect(text).toContain(ADMIN_TEXT)
+    expect(text.toLowerCase()).not.toContain('high volume')
+  })
+
+  test('accepts the OpenAI-shaped body ({ error: { rayu_custom: true } })', () => {
+    setActiveProvider('rayu-hosted')
+    const text = textOf(
+      getAssistantMessageFromError(
+        customProviderError(ADMIN_TEXT, { openaiShape: true }),
+        'kimi-k2.7',
+      ),
+    )
+    expect(text).toContain(ADMIN_TEXT)
+  })
+
+  test('strips ANSI/ESC sequences and control characters, collapses whitespace', () => {
+    setActiveProvider('rayu-hosted')
+    const dirty =
+      '\u001b[31mRoute   offline\u001b[0m:\n\n  retry\u0007 after\u00a0a while.'
+    const text = textOf(getAssistantMessageFromError(customProviderError(dirty), 'kimi-k2.7'))
+    expect(text).toContain('Route offline: retry after a while.')
+    expect(text).not.toContain('\u001b')
+    expect(text).not.toContain('\u0007')
+    expect(text).not.toContain('\n')
+  })
+
+  test('caps the rendered message at 300 characters', () => {
+    setActiveProvider('rayu-hosted')
+    const long = 'x'.repeat(500)
+    const text = textOf(getAssistantMessageFromError(customProviderError(long), 'kimi-k2.7'))
+    expect(text).not.toContain('x'.repeat(301))
+    expect(text).toContain('x'.repeat(300))
+  })
+
+  test('without the flag the old hosted 5xx text is unchanged', () => {
+    setActiveProvider('rayu-hosted')
+    const text = textOf(getAssistantMessageFromError(providerUnavailableError(502), 'kimi-k2.7'))
+    expect(text.toLowerCase()).toContain('high volume')
+    expect(text).not.toContain(ADMIN_TEXT)
+  })
+
+  test('BYO-key providers are unaffected by a rayu_custom body', () => {
+    setActiveProvider('byo')
+    const text = textOf(
+      getAssistantMessageFromError(customProviderError(ADMIN_TEXT), 'deepseek-chat'),
+    )
+    // Not the hosted branded path: the BYO error keeps its ordinary
+    // "API Error: <status> <body>" handling, no added switch hint.
+    expect(text.startsWith('API Error')).toBe(true)
+    expect(text).not.toContain('switch to a different model with')
+    expect(text.toLowerCase()).not.toContain('high volume')
+    expect(text).not.toContain('⚠️')
+  })
+})
+
 // A provider failure AFTER the stream started arrives as an SSE `error` event.
 // The SDK throws it as an APIError with NO status and the event body
 // ({type:"error", error:{type, message}}), so the 5xx check cannot see it.

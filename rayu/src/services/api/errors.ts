@@ -45,6 +45,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
+import stripAnsi from 'strip-ansi'
 import { estimateMediaBytes } from '../../utils/mediaBytes.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -784,6 +785,70 @@ export function isRayuHostedProviderUnavailable(error: unknown): boolean {
   return /provider_unavailable/i.test(error.message ?? '')
 }
 
+/**
+ * Upper bound on an admin-written hosted error message rendered to the customer.
+ * Mirrors the backend's `hosted_models.error_message` cap; applied here too so a
+ * malformed/hostile body can never blow up the terminal or the VS Code panel.
+ */
+const RAYU_CUSTOM_ERROR_MESSAGE_MAX = 300
+
+/**
+ * Make an admin-written hosted error message safe to render.
+ *
+ * The text is server-authored, but it still crosses the network into a terminal
+ * (and into the VS Code panel's markdown renderer), so treat it as untrusted:
+ * strip ANSI/ESC sequences (a stray cursor-movement escape would garble the TUI),
+ * drop C0/C1 control characters, collapse all whitespace runs to one space, trim,
+ * and cap the length at the backend's 300-character limit.
+ */
+function sanitizeRayuCustomErrorMessage(raw: string): string {
+  return stripAnsi(raw)
+    // C0 (except \t \n \r, handled by the whitespace collapse below) and C1.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, RAYU_CUSTOM_ERROR_MESSAGE_MAX)
+    .trim()
+}
+
+/**
+ * Read the ADMIN-written customer message the gateway attaches to a hosted
+ * model failure once every route has failed (`rayu_custom: true`). Returns the
+ * raw message string, or null when the flag is absent.
+ *
+ * The SDK sets `APIError.error` to the WHOLE parsed response body, so the two
+ * wire shapes surface as:
+ *   Anthropic: { type: "error", error: { type, message, rayu_custom: true } }
+ *              -> flag at `error.error.error.rayu_custom`
+ *   OpenAI:    { error: { message, type, rayu_custom: true } }
+ *              -> the adapter re-wraps the OpenAI body as an Anthropic APIError,
+ *                 so the flag sits at `error.error.rayu_custom`
+ */
+function readRayuCustomErrorMessage(error: unknown): string | null {
+  if (!(error instanceof APIError)) return null
+  const body = (error as { error?: unknown }).error
+  if (!body || typeof body !== 'object') return null
+  // Candidates, most-specific first: the SDK body itself, its nested `error`
+  // (both wire shapes), and one level deeper for a doubly-wrapped body.
+  const candidates: unknown[] = [body]
+  const nested = (body as { error?: unknown }).error
+  if (nested && typeof nested === 'object') {
+    candidates.push(nested)
+    const nestedNested = (nested as { error?: unknown }).error
+    if (nestedNested && typeof nestedNested === 'object') {
+      candidates.push(nestedNested)
+    }
+  }
+  for (const candidate of candidates) {
+    const record = candidate as { rayu_custom?: unknown; message?: unknown }
+    if (record.rayu_custom !== true) continue
+    if (typeof record.message === 'string' && record.message.trim()) {
+      return record.message
+    }
+  }
+  return null
+}
+
 export function getAssistantMessageFromError(
   error: unknown,
   model: string,
@@ -826,11 +891,13 @@ export function getAssistantMessageFromError(
   // the customer's plan limit (that's the credit-limit branch below). Two shapes:
   //   (a) we couldn't even reach Rayu (gateway/origin down, a Cloudflare 5xx
   //       before the origin, or a dropped connection) → an APIConnectionError
-  //       with no HTTP status; and
-  //   (b) we reached Rayu but got a server error (5xx), including a gateway-
+  //       with no HTTP status;
+  //   (b) we reached Rayu and the body carries an admin-written customer message
+  //       (`rayu_custom: true`, set once every route for the model failed); and
+  //   (c) we reached Rayu but got a server error (5xx), including a gateway-
   //       sanitized provider_unavailable → a smaller model may route to a
   //       healthier upstream.
-  // In both cases we NEVER surface the raw upstream / Cloudflare body.
+  // In every case we NEVER surface the raw upstream / Cloudflare body.
   if (isRayuHostedActive()) {
     const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'
     // (a) Couldn't reach Rayu at all. Timeouts are already handled by the
@@ -844,7 +911,23 @@ export function getAssistantMessageFromError(
         content: `⚠️ Can't reach Rayu right now. The model may be under high volume, or your connection dropped. Please wait a moment or switch to a different model with ${switchCmd}.`,
       })
     }
-    // (b) Reached Rayu but the provider/origin returned a server error (5xx).
+    // (b) An admin wrote a customer-facing message for this model (shown once
+    // every route has failed). It must win over the generic 5xx text below, or
+    // the admin's wording would never reach the user. Checked only on the
+    // rayu-hosted path so BYO providers stay untouched.
+    const customMessage = readRayuCustomErrorMessage(error)
+    if (customMessage !== null) {
+      const sanitized = sanitizeRayuCustomErrorMessage(customMessage)
+      if (sanitized) {
+        return createAssistantAPIErrorMessage({
+          // Same category as the generic provider-unavailable branch below, so
+          // retry/session semantics do not change.
+          error: 'invalid_request',
+          content: `⚠️ ${sanitized} Please wait a moment or switch to a different model with ${switchCmd}.`,
+        })
+      }
+    }
+    // (c) Reached Rayu but the provider/origin returned a server error (5xx).
     if (isRayuHostedProviderUnavailable(error)) {
       return createAssistantAPIErrorMessage({
         error: 'invalid_request',
