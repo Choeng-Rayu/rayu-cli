@@ -66,10 +66,11 @@ function VideoModelPicker({
       <Text dimColor>
         Used by /image-video (GenerateVideo). These are the Rayu-hosted video
         models your Rayu admin publishes (no provider key needed, billed per
-        second in Rayu credits), in the admin's order; the default is the first
-        one that matches the operation — text-to-video for a prompt, image2video
-        when a reference image is supplied. Sign in (/login) or connect a Rayu
-        API key to see them.
+        second in Rayu credits), in the admin's order. "Default (auto)" picks the
+        catalog's flagged default for the operation — text-to-video for a
+        prompt, image2video when a reference image is supplied — falling back to
+        the first entry that matches. Sign in (/login) or connect a Rayu API key
+        to see them.
         {current ? `  Current: ${current}` : ''}
       </Text>
       {notice ? <Text dimColor>{notice}</Text> : null}
@@ -83,7 +84,7 @@ function VideoModelPicker({
           onDone(
             v
               ? `Video model set to ${v}`
-              : 'Video model reset to default (the first Rayu-hosted model available)',
+              : "Video model reset to default (the catalog's default for the operation)",
           )
         }}
         onCancel={() => onDone('Video model unchanged.')}

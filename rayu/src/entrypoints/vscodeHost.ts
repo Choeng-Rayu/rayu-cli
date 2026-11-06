@@ -56,6 +56,7 @@ import {
   type TelegramConnectFrame,
 } from '../vscode/shared/telegramConnectProtocol.js'
 import { ENGINE_EXIT_MEMORY_LIMIT } from '../vscode/shared/engineExitCodes.js'
+import { markEditorHostedEngine } from '../constants/engineHost.js'
 import {
   SETTINGS_FLAG,
   type AdditionalDirectorySource,
@@ -1109,6 +1110,12 @@ async function main(): Promise<void> {
     await runAccountAction()
     return
   }
+
+  // Mark this process as the editor's engine, for integrations that only the editor
+  // should adopt (the Telegram bridge — see src/telegram/telegramStart.ts). Session
+  // path only: the helper modes above exit before starting a session. In-process state
+  // rather than an env var, so tool subprocesses cannot inherit the mark.
+  markEditorHostedEngine()
 
   // process.argv is [node, thisScript, ...args]; main() re-reads process.argv,
   // so the merged flags have to be written back into it rather than passed.

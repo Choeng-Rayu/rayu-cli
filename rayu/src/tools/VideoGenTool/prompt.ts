@@ -17,9 +17,9 @@ Available models are owned by the Rayu catalog, not hardcoded here — the user 
 Usage:
 - No provider key is required; only a Rayu credential (sign-in or Rayu API key) is.
 - input_image: a local PNG/JPEG/WebP path or an https:// URL, for image2video-capable models (a text-to-video-only model refuses it).
-- num_frames/fps map to the hosted duration (clamped to 2-30s); width/height/aspect_ratio map to the ratio.
+- num_frames/fps map to the hosted duration (clamped to the model's published limit, or 2-30s when its catalog entry does not publish one); width/height/aspect_ratio map to the ratio.
 - Each hosted model is ONE resolution tier with its own price (e.g. separate 480P, 720P and 1080P entries). To get another resolution, pass that tier's model id; width/height do not change a hosted model's resolution.
-- Generation takes ~1-2 minutes; the tool waits and polls automatically.
+- Generation takes ~1-2 minutes (a 5s 480P clip took ~46s live). The tool makes ONE request and blocks until the render returns or the client timeout (~16 min) expires; it does not poll.
 - The MP4 is saved to disk (default: ./generated-video-<timestamp>.mp4).
 - output_path must be inside the working directory.`
 }

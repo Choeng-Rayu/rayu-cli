@@ -933,6 +933,15 @@ export class ChatSession {
     return this.currentSessionId ?? this.options.resumeSessionId ?? null
   }
 
+  /**
+   * The pid of the engine child currently serving this conversation, when one is
+   * running. Recorded in the Telegram attachment as a liveness hint; the router itself
+   * validates against the live session registry, so `undefined` is harmless.
+   */
+  get enginePid(): number | undefined {
+    return this.engine?.pid
+  }
+
   get workingDirectory(): string {
     return this.options.cwd
   }

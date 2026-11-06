@@ -60,6 +60,16 @@ export interface TelegramConnectDeps {
    * active one when it was asked from Settings) so it attaches to Telegram.
    */
   onLinked(origin: string | null): void
+  /**
+   * A BYO pairing began. Restart the conversation so its engine re-reads
+   * `telegram.json` and starts a bridge.
+   *
+   * The pending token is consumed BY THE BRIDGE when the user's `/start <token>`
+   * arrives, so without a running bridge the pairing can never complete. In the
+   * editor the engine is the only process that can poll — the extension host does
+   * not (it only watches the local link file here).
+   */
+  onPairingStarted(origin: string | null): void
   publish(view: TelegramConnectView): void
   now?(): number
 }
@@ -130,8 +140,14 @@ export class TelegramConnectController {
           waitingForLink: true,
         }
       : { busy: false, busyMessage: null, error: outcome.error ?? 'Could not verify the bot token.' })
-    if (outcome.ok) this.pollLocalLink(origin)
-    else this.stopPolling()
+    if (outcome.ok) {
+      // The token is only useful if something polls for `/start <token>`; restarting
+      // the engine is what starts that poller (telegramStart.ts: a pending BYO token
+      // is enough to start a bridge). Done after the waiting state is published, so
+      // the panel never says "waiting" while the restart tears the surface down.
+      this.deps.onPairingStarted(origin)
+      this.pollLocalLink(origin)
+    } else this.stopPolling()
   }
 
   async unlink(): Promise<void> {

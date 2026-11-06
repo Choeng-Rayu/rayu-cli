@@ -109,6 +109,8 @@ import {
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { Command } from '../types/command.js'
+import type { PastedContent } from '../utils/config.js'
+import { MAX_FRAME_BYTES } from '../ipc/protocol.js'
 
 export interface TelegramBridgeOptions {
   token: string
@@ -166,14 +168,36 @@ export function toTelegramCommandName(name: string): string {
  * underscored name matches no command in the registry. It also un-hides commands
  * from the blocked list, whose entries are the real hyphenated names.
  *
- * Only names that actually change are stored, so a lookup miss means "use it
- * verbatim". First registration wins, matching setMyCommands' dedupe order.
+ * ── ALIASES ARE MAPPED TOO, AND THAT IS A SECURITY FIX ─────────────────────────
+ *
+ * This used to be built from `cmd.name` only, so an alias of a BLOCKED command was
+ * neither translated nor present in `blocked` — `/quit`, `/new`, `/settings`,
+ * `/plugins`, `/allowed-tools`, `/checkpoint`, `/continue`, `/bashes`, `/bug`,
+ * `/buy-credits` and `/fork` were forwarded verbatim and the receiving session
+ * resolved them to `local-jsx`/terminal-only commands. Mapping every alias to its
+ * canonical name means the existing blocked check refuses them.
+ *
+ * Precedence: real commands first, then aliases. An alias must never shadow a real
+ * command name (first registration wins otherwise, matching setMyCommands' dedupe).
+ * A lookup miss still means "use it verbatim".
  */
-export function buildTelegramCommandAliases(names: string[]): Map<string, string> {
+export function buildTelegramCommandAliases(
+  commands: readonly Pick<Command, 'name' | 'aliases'>[],
+): Map<string, string> {
   const aliases = new Map<string, string>()
-  for (const name of names) {
+  for (const { name } of commands) {
     const safe = toTelegramCommandName(name)
     if (safe && safe !== name && !aliases.has(safe)) aliases.set(safe, name)
+  }
+  const realSafeNames = new Set(commands.map(c => toTelegramCommandName(c.name)))
+  for (const { name, aliases: commandAliases } of commands) {
+    for (const alias of commandAliases ?? []) {
+      const safe = toTelegramCommandName(alias)
+      if (!safe) continue
+      // A real command owns this name; aliases cannot shadow it.
+      if (realSafeNames.has(safe)) continue
+      if (!aliases.has(safe)) aliases.set(safe, name)
+    }
   }
   return aliases
 }
@@ -203,6 +227,10 @@ export function isBlockedFromTelegram(cmd: Command): boolean {
   if (TELEGRAM_SEMANTIC_HAZARDS.has(cmd.name)) return true
   if (cmd.type === 'local-jsx') return true
   if (cmd.type === 'local' && cmd.supportsNonInteractive === false) return true
+  // A PROMPT command can refuse non-interactive execution too (`/statusline` does).
+  // Forwarded to a headless engine it would be dropped or misbehave, so treat the
+  // declaration as the same signal rule 2 uses.
+  if (cmd.type === 'prompt' && cmd.disableNonInteractive === true) return true
   return false
 }
 
@@ -228,9 +256,26 @@ export const TELEGRAM_SEMANTIC_HAZARDS: ReadonlySet<string> = new Set([
  * real-name map, and which real names are refused. Both come from one registry
  * load.
  */
-interface TelegramCommandPolicy {
+export interface TelegramCommandPolicy {
+  /** Telegram-safe typed name → canonical CLI command name. */
   aliases: Map<string, string>
+  /** Canonical names refused from Telegram. */
   blocked: Set<string>
+}
+
+/**
+ * Build the policy from one registry snapshot.
+ *
+ * Pure and exported so the alias/blocked interaction is unit-testable without
+ * loading the real command registry: the alias map must cover aliases of blocked
+ * commands (see `buildTelegramCommandAliases`), and `blocked` is keyed by canonical
+ * names because the forward path translates before it checks.
+ */
+export function buildCommandPolicy(commands: readonly Command[]): TelegramCommandPolicy {
+  return {
+    aliases: buildTelegramCommandAliases(commands),
+    blocked: new Set(commands.filter(isBlockedFromTelegram).map(c => c.name)),
+  }
 }
 
 /** Cached per process: the command registry is loaded once. */
@@ -243,12 +288,7 @@ function loadCommandPolicy(): Promise<TelegramCommandPolicy> {
         const { getCommands } = await import('../commands.js')
         const { getCwd } = await import('../utils/cwd.js')
         const commands = await getCommands(getCwd())
-        return {
-          aliases: buildTelegramCommandAliases(commands.map(c => c.name)),
-          blocked: new Set(
-            commands.filter(isBlockedFromTelegram).map(c => c.name),
-          ),
-        }
+        return buildCommandPolicy(commands)
       } catch {
         // Registry unavailable — use names verbatim and block nothing. The REPL
         // still refuses unknown commands, so this degrades to "no autocomplete
@@ -582,7 +622,17 @@ async function handleUpdate(
   }
 
   // /disconnect and /stop both unlink from any chat (security: allow owner to revoke).
-  if (cmd === '/disconnect' || cmd === '/stop') {
+  //
+  // `/disconnect-telegram` is the CLI command for the same action; it is
+  // `supportNonInteractive: true`, so without this branch it would be forwarded to
+  // the session as a SECOND disconnect surface. Handling it here keeps one code path
+  // for every spelling a user may reach for.
+  if (
+    cmd === '/disconnect' ||
+    cmd === '/stop' ||
+    cmd === '/disconnect-telegram' ||
+    cmd === '/disconnect_telegram'
+  ) {
     if (chatId === linkedChatId()) {
       unlink()
       await sendMessage(options.token, chatId, '🔌 Disconnected. Run `/telegram-bot` in the CLI to link again.')
@@ -715,6 +765,14 @@ async function handleUpdate(
 }
 
 /**
+ * Largest base64 image payload one prompt may carry.
+ *
+ * Derived from the IPC frame budget rather than picked: exceeding the frame limit
+ * destroys the persistent leader link instead of failing the one prompt.
+ */
+const MAX_MEDIA_PAYLOAD_CHARS = Math.floor(MAX_FRAME_BYTES * 0.75)
+
+/**
  * Hand an image-bearing command to the attached session.
  *
  * Split from deliverToSession because the confirmation wording differs per media
@@ -726,10 +784,46 @@ async function handleUpdate(
 async function deliverMediaToSession(
   token: string,
   chatId: number,
-  command: { value: string | ContentBlockParam[]; mode?: string },
+  command: {
+    value: string | ContentBlockParam[]
+    mode?: string
+    /**
+     * The actual image bytes, keyed by paste id. Dropping this was a real defect:
+     * `buildImageQueueCommand` builds it (telegramMedia.ts), the `[Image #N]`
+     * markers in `value` refer to it, and only the markers were being delivered —
+     * so the model received an image reference with no image.
+     */
+    pastedContents?: Record<number, PastedContent>
+  },
   confirmation: string,
 ): Promise<void> {
-  const result = await routePrompt({ value: command.value, mode: 'prompt' })
+  // ── THE IPC FRAME HAS A HARD CEILING ────────────────────────────────────────
+  //
+  // Images now actually travel over IPC, so a very large photo would exceed
+  // MAX_FRAME_BYTES — and an oversized frame does not fail politely: the connection
+  // write path destroys the socket, taking the leader link down with it. Refuse here
+  // with a message the user can act on. Base64 is 4/3 of the raw bytes and JSON adds
+  // a little; 75% of the frame budget leaves room for the envelope.
+  const images = Object.values(command.pastedContents ?? {})
+  const base64Chars = images.reduce(
+    (total, paste) => total + (typeof paste.content === 'string' ? paste.content.length : 0),
+    0,
+  )
+  if (base64Chars > MAX_MEDIA_PAYLOAD_CHARS) {
+    await sendMessage(
+      token,
+      chatId,
+      `⚠️ That image is too large to forward (${Math.round(base64Chars / 1_048_576)} MB encoded). ` +
+        'Send a smaller photo, or paste it into the terminal instead.',
+    )
+    return
+  }
+
+  const result = await routePrompt({
+    value: command.value,
+    mode: 'prompt',
+    ...(command.pastedContents ? { pastedContents: command.pastedContents } : {}),
+  })
   await sendMessage(
     token,
     chatId,
@@ -780,8 +874,13 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
       { command: 'disconnect', description: 'Unlink this Telegram chat from the CLI' },
     ]
 
+    // The bridge answers this itself (see handleUpdate); listing the CLI's copy
+    // would advertise a second, equivalent disconnect command.
+    const handledNatively = new Set(['disconnect-telegram'])
+
     const fromCli = allCommands
       .filter(cmd => !cmd.isHidden)
+      .filter(cmd => !handledNatively.has(cmd.name))
       // Don't advertise what we would only refuse. Offering a terminal-only
       // command in autocomplete and then rejecting the tap is worse than not
       // listing it, and it also frees slots against Telegram's 100-command cap.

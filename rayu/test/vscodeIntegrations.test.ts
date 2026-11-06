@@ -68,6 +68,7 @@ interface Harness {
     setLinkedChat: Array<{ chatId: number; username?: string; botUsername?: string }>
     setLinkedBotUsername: string[]
     onLinked: Array<string | null>
+    onPairingStarted: Array<string | null>
   }
   setStatus: (outcome: TelegramConnectOutcome) => void
   setStarted: (outcome: TelegramConnectOutcome) => void
@@ -88,7 +89,7 @@ function harness(now: () => number = () => 0): Harness {
   const published: TelegramConnectView[] = []
   const calls: Harness['calls'] = {
     status: 0, startHosted: 0, verifyByo: [], unlink: 0, hostedLink: 0, localLinkedChatId: 0,
-    setLinkedChat: [], setLinkedBotUsername: [], onLinked: [],
+    setLinkedChat: [], setLinkedBotUsername: [], onLinked: [], onPairingStarted: [],
   }
 
   const deps: TelegramConnectDeps = {
@@ -104,6 +105,7 @@ function harness(now: () => number = () => 0): Harness {
     setLinkedChat: (chatId, username, botUsername) => { calls.setLinkedChat.push({ chatId, username, botUsername }) },
     setLinkedBotUsername: botUsername => { calls.setLinkedBotUsername.push(botUsername) },
     onLinked: origin => { calls.onLinked.push(origin) },
+    onPairingStarted: origin => { calls.onPairingStarted.push(origin) },
     publish: view => { published.push(view) },
     now,
   }
@@ -248,6 +250,9 @@ describe('TelegramConnectController: BYO pairing', () => {
     const h = harness()
     await h.controller.startByo(null, TOKEN)
     expect(h.calls.verifyByo).toEqual([TOKEN])
+    // The pending token is consumed by the bridge, not by this poller, so the
+    // conversation must be restarted to start one.
+    expect(h.calls.onPairingStarted).toEqual([null])
     expect(h.published.length).toBeGreaterThan(0)
     for (const view of h.published) {
       expect(JSON.stringify(view)).not.toContain(TOKEN)
@@ -261,6 +266,7 @@ describe('TelegramConnectController: BYO pairing', () => {
     await h.controller.startByo(null, TOKEN)
     expect(h.controller.current.error).toBe('bad token')
     expect(timerActive).toBe(false)
+    expect(h.calls.onPairingStarted).toEqual([])
   })
 
   test('polling reads the local chat id and records the bot username', async () => {

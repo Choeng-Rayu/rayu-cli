@@ -44,7 +44,10 @@ import {
   readAttachment,
   writeAttachment,
 } from '../src/telegram/telegramAttach.js'
-import { parsePromptPayload } from '../src/telegram/telegramSessionHandlers.js'
+import {
+  parseApplyModelPayload,
+  parsePromptPayload,
+} from '../src/telegram/telegramSessionHandlers.js'
 import { describeRouteFailure, type RouteFailure } from '../src/telegram/telegramRouter.js'
 import { readSessionRecords, type SessionRecord } from '../src/utils/concurrentSessions.js'
 
@@ -913,6 +916,61 @@ describe('parsePromptPayload', () => {
     // A version-skewed build is a realistic source of malformed payloads, and
     // enqueueing `undefined` as a prompt would corrupt the REPL queue.
     expect(() => parsePromptPayload(payload)).toThrow()
+  })
+
+  // ── images ──────────────────────────────────────────────────────────────────
+  // The `[Image #N]` markers in `value` are meaningless without these bytes; the
+  // bridge used to drop them, so the model saw a reference and no image.
+  test('carries pasted image bytes through', () => {
+    const pastedContents = {
+      1: { id: 1, type: 'image' as const, content: 'AAAA', mediaType: 'image/png' },
+    }
+    expect(
+      parsePromptPayload({ value: 'look\n[Image #1]', mode: 'prompt', pastedContents }),
+    ).toEqual({ value: 'look\n[Image #1]', mode: 'prompt', pastedContents })
+  })
+
+  test('drops malformed paste entries instead of rejecting the prompt', () => {
+    // The text is still useful; one bad paste must not cost the user the message.
+    const parsed = parsePromptPayload({
+      value: 'hi',
+      mode: 'prompt',
+      pastedContents: {
+        1: { id: 1, type: 'image', content: 'AAAA' },
+        2: { type: 'image' }, // no content
+        3: 'not an object',
+        bad: { type: 'image', content: 'BBBB' }, // non-numeric key
+      },
+    })
+    expect(Object.keys(parsed.pastedContents ?? {})).toEqual(['1'])
+  })
+
+  test('omits pastedContents entirely when none survive validation', () => {
+    const parsed = parsePromptPayload({
+      value: 'hi',
+      mode: 'prompt',
+      pastedContents: { 1: { type: 'image' } },
+    })
+    expect('pastedContents' in parsed).toBe(false)
+  })
+})
+
+describe('parseApplyModelPayload', () => {
+  test('accepts a model id', () => {
+    expect(parseApplyModelPayload({ model: 'deepseek-v3' })).toBe('deepseek-v3')
+  })
+
+  test.each<[string, unknown]>([
+    ['a non-object', 'x'],
+    ['null', null],
+    ['no model', {}],
+    ['an empty model', { model: '  ' }],
+    ['a numeric model', { model: 42 }],
+    ['an over-long model', { model: 'x'.repeat(201) }],
+  ])('rejects %s', (_label, payload) => {
+    // A bad id must surface as a failed switch, not be written into the override
+    // and break the next request.
+    expect(() => parseApplyModelPayload(payload)).toThrow()
   })
 })
 

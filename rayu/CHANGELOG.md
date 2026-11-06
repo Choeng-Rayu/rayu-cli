@@ -2,7 +2,7 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
-## Unreleased
+## 2.4.54 - 2026-11-06 (Beta)
 - **Fixed: an expired Rayu session no longer needs /logout before /login** — a hosted request rejected with 401 now renews the token once and replays the request; if the refresh token itself is dead, the stale session is cleared so `/login` opens instead of replying "already signed in". The login gate now treats an unrenewable session as signed out, which is what forced `/logout` → `/login` after an update or a deploy
 - **Choose your models in Settings** — the editor's Settings tab now has a Models section for the subagent model (one default plus an optional override per agent type), the image generation model, the video generation model and the WebFetch model. Changing the subagent or WebFetch model restarts idle conversations so the change takes effect; image and video choices apply to the next generation with no restart
 - **Nine commands that used to do nothing now open real editor UI** — /permissions opens a rule manager to view, add and remove allow/deny/ask rules, /memory picks a memory file and opens or creates it, /doctor, /status and /hooks show read-only reports, /stats adds a per-tool usage tab to the Runtime Center, /add-dir adds a working folder and resumes the conversation, /export saves the conversation as Markdown, and /help opens the command reference

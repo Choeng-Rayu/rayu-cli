@@ -150,6 +150,43 @@ describe('parseMediaModels (wire contract)', () => {
     expect(vid.capabilities).toEqual(['text2video', 'image2video'])
   })
 
+  test('publishes a video model clip window, in either wire spelling', () => {
+    const { video } = parseMediaModels({
+      data: [
+        {
+          id: 'rayu-short-video',
+          mediaType: 'video',
+          capabilities: ['text2video'],
+          backend: 'rayu',
+          family: 'dashscope_video',
+          min_duration_seconds: 2,
+          max_duration_seconds: 5,
+        },
+        {
+          id: 'rayu-camel-video',
+          mediaType: 'video',
+          capabilities: ['text2video'],
+          backend: 'rayu',
+          family: 'dashscope_video',
+          maxDurationSeconds: 8,
+        },
+        {
+          id: 'rayu-bad-video',
+          mediaType: 'video',
+          capabilities: ['text2video'],
+          backend: 'rayu',
+          family: 'dashscope_video',
+          max_duration_seconds: -4,
+        },
+      ],
+    })
+    expect(video[0].minDurationSeconds).toBe(2)
+    expect(video[0].maxDurationSeconds).toBe(5)
+    expect(video[1].maxDurationSeconds).toBe(8)
+    // A nonsense cap is ignored rather than clamped to something wrong.
+    expect(video[2].maxDurationSeconds).toBeUndefined()
+  })
+
   test('retired NVIDIA rows are skipped QUIETLY: not listed, not counted as drift', () => {
     // The backend still publishes nvidia / nvcf / nvidia-svd rows for older CLIs.
     // This CLI cannot serve them; counting them as unreadable would log a false

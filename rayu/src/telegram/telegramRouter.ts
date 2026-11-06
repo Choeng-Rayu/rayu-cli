@@ -17,7 +17,9 @@
  * worst possible failure mode for a remote control.
  */
 
-import { getSessionId } from '../bootstrap/state.js'
+import { getSessionId, setMainLoopModelOverride } from '../bootstrap/state.js'
+import { notifySessionMetadataChanged } from '../utils/sessionState.js'
+import { invalidateRayuConfigCache } from '../utils/rayuConfig.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { QueuePriority } from '../types/textInputTypes.js'
 import { ensureLeaderLink } from './telegramLeaderLink.js'
@@ -26,7 +28,9 @@ import { isProcessRunning } from '../utils/genericProcessUtils.js'
 import { enqueue } from '../utils/messageQueueManager.js'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
-import { attachedSessionId, readAttachment, writeAttachment } from './telegramAttach.js'
+import { setRemoteModelOverride } from '../utils/remoteModelOverride.js'
+import type { PastedContent } from '../utils/config.js'
+import { readAttachment, writeAttachment } from './telegramAttach.js'
 
 /** IPC request type: deliver a prompt to a session's REPL queue. */
 export const IPC_PROMPT = 'telegram:prompt'
@@ -41,6 +45,14 @@ export interface IpcPromptPayload {
   value: string | ContentBlockParam[]
   /** Queue mode, mirroring QueuedCommand.mode. */
   mode: 'prompt' | 'task-notification'
+  /**
+   * Image bytes for the `[Image #N]` markers in `value`.
+   *
+   * Without this the markers arrived with nothing behind them: a Telegram photo
+   * became a text reference the model could not see. Mirrors
+   * `QueuedCommand.pastedContents` so the receiving session can enqueue it as-is.
+   */
+  pastedContents?: Record<number, PastedContent>
   /** Optional SDK delivery priority (`now` steers, `next` queues). */
   priority?: QueuePriority
   /**
@@ -82,7 +94,7 @@ function titleOf(record: SessionRecord): string {
  * written before a resume would otherwise dangle even though the same terminal,
  * in the same directory, is still there and is obviously what the user meant.
  */
-async function resolveAttached(): Promise<
+export async function resolveAttachedSession(): Promise<
   { record: SessionRecord } | { missing: 'none' | 'gone' }
 > {
   const attachment = readAttachment()
@@ -111,21 +123,20 @@ async function resolveAttached(): Promise<
 }
 
 /**
- * Deliver a prompt to the attached session.
+ * Resolve the attached session, or the failure the caller should report.
  *
- * When nothing is attached but exactly ONE session exists, that session is
- * attached implicitly. Requiring an explicit `/switch` for the single-session
- * case would break every existing user's workflow for no benefit — the ambiguity
- * multi-session routing solves simply does not exist with one session.
+ * Shared by every routed operation (prompt, model switch) so the
+ * "one session auto-attaches" rule and the `/resume` cwd fallback cannot drift
+ * between them.
  */
-export async function routePrompt(
-  payload: IpcPromptPayload,
-): Promise<RouteResult> {
+async function resolveTarget(): Promise<
+  { target: SessionRecord; title: string } | { failure: RouteFailure }
+> {
   const records = await readSessionRecords()
-  if (records.length === 0) return { kind: 'no-sessions' }
+  if (records.length === 0) return { failure: { kind: 'no-sessions' } }
 
   let target: SessionRecord | undefined
-  const resolved = await resolveAttached()
+  const resolved = await resolveAttachedSession()
 
   if ('record' in resolved) {
     target = resolved.record
@@ -138,25 +149,86 @@ export async function routePrompt(
       attachedAt: Date.now(),
     })
   } else if (resolved.missing === 'gone') {
-    return { kind: 'session-gone', title: readAttachment()?.cwd ?? 'that session' }
+    return {
+      failure: { kind: 'session-gone', title: readAttachment()?.cwd ?? 'that session' },
+    }
   } else {
-    return { kind: 'not-attached', available: records.length }
+    return { failure: { kind: 'not-attached', available: records.length } }
   }
 
-  const title = titleOf(target)
+  return { target, title: titleOf(target) }
+}
 
-  // Fast path: the leader IS the attached session.
-  if (target.sessionId === getSessionId() || target.pid === process.pid) {
-    enqueue({ value: payload.value, mode: payload.mode })
-    return { kind: 'delivered', inProcess: true, title }
-  }
+/**
+ * Apply a model chosen outside this process (Telegram `/model` or `/connect`).
+ *
+ * Both setters are needed: the signal makes the REPL re-render
+ * (`useMainLoopModel`), and the bootstrap override makes the next request use it.
+ * In the headless engine only the override matters, and calling both is harmless.
+ *
+ * Deliberately lives here rather than in `remoteModelOverride.ts`: this module is
+ * already in the bootstrap-state graph, so the pair stays in one place without
+ * adding an import edge to a leaf utility.
+ */
+export function applyRemoteModelSelection(model: string): void {
+  // ── RE-READ THE PROVIDER CONFIG FIRST ──────────────────────────────────────
+  //
+  // The caller persisted the choice to disk in ANOTHER process (the bridge leader),
+  // and `loadRayuConfig()` memoizes its first read for the life of this process. A
+  // `/connect` or `/model <id> <provider>` also moves the ACTIVE PROVIDER, so without
+  // this the session would apply the new model id against the OLD provider — the
+  // half-applied switch this routing exists to prevent. The engine's own `set_model`
+  // control handler invalidates for the same reason.
+  invalidateRayuConfigCache()
+  setRemoteModelOverride(model)
+  setMainLoopModelOverride(model)
+  // Same metadata notice the engine's own `set_model` control request emits, so a
+  // panel attached to this session learns about a phone-initiated switch.
+  notifySessionMetadataChanged({ model })
+}
 
+/** Whether this process is the session being addressed. */
+function isSelf(target: SessionRecord): boolean {
+  return target.sessionId === getSessionId() || target.pid === process.pid
+}
+
+/** The failure for a target that cannot be reached over IPC, if any. */
+function unreachableFailure(target: SessionRecord, title: string): RouteFailure | null {
   if (!target.ipcAddress || !target.ipcToken) {
     return { kind: 'not-addressable', title }
   }
-  if (!isProcessRunning(target.pid)) {
-    return { kind: 'session-gone', title }
+  if (!isProcessRunning(target.pid)) return { kind: 'session-gone', title }
+  return null
+}
+
+/**
+ * Deliver a prompt to the attached session.
+ *
+ * When nothing is attached but exactly ONE session exists, that session is
+ * attached implicitly. Requiring an explicit `/switch` for the single-session
+ * case would break every existing user's workflow for no benefit — the ambiguity
+ * multi-session routing solves simply does not exist with one session.
+ */
+export async function routePrompt(
+  payload: IpcPromptPayload,
+): Promise<RouteResult> {
+  const resolved = await resolveTarget()
+  if ('failure' in resolved) return resolved.failure
+  const { target, title } = resolved
+
+  // Fast path: the leader IS the attached session.
+  if (isSelf(target)) {
+    enqueue({
+      value: payload.value,
+      mode: payload.mode,
+      ...(payload.priority ? { priority: payload.priority } : {}),
+      ...(payload.pastedContents ? { pastedContents: payload.pastedContents } : {}),
+    })
+    return { kind: 'delivered', inProcess: true, title }
   }
+
+  const unreachable = unreachableFailure(target, title)
+  if (unreachable) return unreachable
 
   // Use the leader's PERSISTENT link rather than dialling per prompt: the same
   // connection carries permission cards and streamed output back from the
@@ -172,6 +244,59 @@ export async function routePrompt(
   } catch (e) {
     const detail = errorMessage(e)
     logForDebugging(`[telegram-router] delivery to ${title} failed: ${detail}`)
+    return { kind: 'delivery-failed', title, detail }
+  }
+}
+
+/**
+ * IPC request type: switch the ATTACHED session's model.
+ *
+ * A model switch must land in the process whose next `ask()` will use it, which is
+ * not necessarily the bridge leader — the chat is often attached to the editor's
+ * engine or to a second terminal. Mutating the leader's module-level override (the
+ * old behaviour) left the real session on the previous model.
+ */
+export const IPC_APPLY_MODEL = 'telegram:apply-model'
+
+/** Payload of an IPC_APPLY_MODEL request. */
+export interface ApplyModelPayload {
+  model: string
+}
+
+export type ApplyModelResult =
+  | { kind: 'applied'; inProcess: boolean; title: string }
+  | RouteFailure
+
+/**
+ * Apply a model switch to the attached session.
+ *
+ * The caller persists the choice in the Rayu config first — that file is the durable
+ * source of truth, so a failure here means "saved, but no running session took it".
+ */
+export async function routeApplyModel(model: string): Promise<ApplyModelResult> {
+  const resolved = await resolveTarget()
+  if ('failure' in resolved) return resolved.failure
+  const { target, title } = resolved
+
+  if (isSelf(target)) {
+    applyRemoteModelSelection(model)
+    return { kind: 'applied', inProcess: true, title }
+  }
+
+  const unreachable = unreachableFailure(target, title)
+  if (unreachable) return unreachable
+
+  const connection = await ensureLeaderLink(target)
+  if (!connection) {
+    return { kind: 'delivery-failed', title, detail: 'could not open ipc link' }
+  }
+
+  try {
+    await connection.request(IPC_APPLY_MODEL, { model } satisfies ApplyModelPayload)
+    return { kind: 'applied', inProcess: false, title }
+  } catch (e) {
+    const detail = errorMessage(e)
+    logForDebugging(`[telegram-router] model switch for ${title} failed: ${detail}`)
     return { kind: 'delivery-failed', title, detail }
   }
 }

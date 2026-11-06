@@ -79,8 +79,14 @@ const outputSchema = lazySchema(() =>
   z.object({
     path: z.string(),
     model: z.string(),
-    frames: z.number(),
-    fps: z.number(),
+    /**
+     * The REQUESTED frame count / rate, present only when the caller supplied
+     * them. They are never invented: the hosted gateway may render a different
+     * length than the frame maths implies, so absent inputs must stay absent
+     * (a fabricated "57 frames @ 24fps" described no real clip).
+     */
+    frames: z.number().optional(),
+    fps: z.number().optional(),
     mediaType: z.string(),
     /**
      * ACTUAL seconds of the generated video, when the backend reported one
@@ -282,6 +288,11 @@ export const VideoGenTool = buildTool({
     if (!ok) {
       throw new Error('output_path must be a file inside the working directory.')
     }
+    // Check the credential BEFORE touching the catalog: without one the catalog
+    // is the empty offline fallback, so the selection below would fail first and
+    // report "catalog unavailable — check your connection" to a user whose real
+    // problem is being signed out.
+    if (!isRayuVideoAvailable()) throw new Error(noVideoBackendMessage())
 
     const isImage2Video = !!input.input_image
     // Hosted models accept the caller's raw reference (an https URL passes
@@ -337,7 +348,6 @@ export const VideoGenTool = buildTool({
 
     // Every remaining backend is Rayu-hosted, so there is nothing to route
     // between; a selection that survived retainKnownVideoModel is always hosted.
-    if (!isRayuVideoAvailable()) throw new Error(noVideoBackendMessage())
 
     // Hosted models with the image2video capability accept the caller's raw value
     // (URL or local path — the builder encodes it); a text-to-video-only entry is
@@ -366,6 +376,23 @@ export const VideoGenTool = buildTool({
       hostedImage = /^https?:\/\//i.test(input.input_image)
         ? input.input_image
         : expandPath(input.input_image)
+    } else if (selectedEntry && !selectedEntry.capabilities.includes('text2video')) {
+      // The inverse capability trap: an image2video-ONLY model (an explicit
+      // `model=`, or a remembered /model_video_generation pick) cannot serve a
+      // text prompt — the gateway 400s `model_requires_image`. An explicit
+      // choice is never swapped silently; a remembered one falls through to a
+      // text-to-video entry when the catalog has one.
+      const t2v = explicitModel
+        ? undefined
+        : selectHostedVideoModel(catalog.video, false)
+      if (t2v) {
+        selectedEntry = t2v
+      } else {
+        throw new Error(
+          `Hosted video model "${selectedEntry.id}" requires a reference image — ` +
+            'supply input_image or choose a text-to-video model.',
+        )
+      }
     }
 
     const vparams = {
@@ -414,8 +441,10 @@ export const VideoGenTool = buildTool({
       data: {
         path,
         model: usedModelId,
-        frames: input.num_frames ?? 57,
-        fps: input.fps ?? 24,
+        // Only what the caller asked for: the hosted result is described by
+        // `durationSeconds` below, never by invented frame metadata.
+        ...(input.num_frames != null ? { frames: input.num_frames } : {}),
+        ...(input.fps != null ? { fps: input.fps } : {}),
         mediaType: 'video/mp4',
         durationSeconds: usedDuration,
         resolution: usedResolution,
@@ -432,12 +461,18 @@ export const VideoGenTool = buildTool({
     const detail = [output.resolution, output.ratio]
       .filter((v): v is string => typeof v === 'string' && v.length > 0)
       .join(', ')
+    // Only claim frame metadata when the caller supplied BOTH values; otherwise
+    // the path + model is the whole truth.
+    const frames =
+      output.frames != null && output.fps != null
+        ? `${output.frames} frames @ ${output.fps}fps, `
+        : ''
     const headline =
       output.durationSeconds != null
         ? `Generated ${output.durationSeconds.toFixed(1)}s video` +
           (detail ? ` (${detail})` : '') +
           `, saved to ${output.path} (model ${output.model})`
-        : `Video saved to ${output.path} (${output.frames} frames @ ${output.fps}fps, model ${output.model})`
+        : `Video saved to ${output.path} (${frames}model ${output.model})`
     const content: Array<
       | { type: 'text'; text: string }
       | { type: 'image'; source: Base64ImageSource }

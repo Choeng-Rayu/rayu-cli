@@ -60,11 +60,21 @@ type DashscopeRatio = (typeof DASHSCOPE_VIDEO_RATIOS)[number]
 type DashscopeVideoRatio = DashscopeRatio | 'adaptive'
 
 /**
- * The hosted clip-length window. wan3.0-video renders 2–30 s and refuses 1 s, so
- * the floor is 2 rather than the 1 the frame-count maths could produce.
+ * The hosted clip-length window used when the catalog entry does NOT publish
+ * its own. wan3.0-video renders 2–30 s and refuses 1 s, so the floor is 2
+ * rather than the 1 the frame-count maths could produce. A model with a
+ * different cap publishes `max_duration_seconds` (see MediaModelEntry) and the
+ * requested duration is clamped to THAT instead — otherwise a 5 s model would
+ * receive a 30 s request the gateway rejects.
  */
 const DASHSCOPE_VIDEO_MIN_SECONDS = 2
 const DASHSCOPE_VIDEO_MAX_SECONDS = 30
+
+/** Clip-length window a catalog entry declares (both bounds optional). */
+export type VideoDurationLimits = {
+  minDurationSeconds?: number
+  maxDurationSeconds?: number
+}
 
 function ratioValue(r: DashscopeRatio): number {
   const [a, b] = r.split(':').map(Number) as [number, number]
@@ -73,18 +83,26 @@ function ratioValue(r: DashscopeRatio): number {
 
 /**
  * Duration in seconds from the CLI's frame-count/fps pair, clamped to the
- * hosted 2–30 s window. Either one missing means "let the gateway/model
- * default apply" — not zero.
+ * model's window: its published `min/max_duration_seconds` when the catalog
+ * carries them, else 2–30 s. Either frame input missing means "let the
+ * gateway/model default apply" — not zero.
  */
-export function dashscopeVideoDuration(p: VideoParams): number | undefined {
+export function dashscopeVideoDuration(
+  p: VideoParams,
+  limits?: VideoDurationLimits,
+): number | undefined {
   if (p.num_frames == null || p.fps == null || p.fps <= 0) return undefined
-  return Math.max(
-    DASHSCOPE_VIDEO_MIN_SECONDS,
-    Math.min(
-      DASHSCOPE_VIDEO_MAX_SECONDS,
-      Math.round(p.num_frames / p.fps),
-    ),
+  const hi = Math.max(
+    1,
+    limits?.maxDurationSeconds ?? DASHSCOPE_VIDEO_MAX_SECONDS,
   )
+  // A declared floor can never exceed the declared ceiling (a 1 s-capped model
+  // must not be forced up to the 2 s family floor).
+  const lo = Math.min(
+    Math.max(1, limits?.minDurationSeconds ?? DASHSCOPE_VIDEO_MIN_SECONDS),
+    hi,
+  )
+  return Math.min(hi, Math.max(lo, Math.round(p.num_frames / p.fps)))
 }
 
 /**
@@ -141,6 +159,7 @@ export function dashscopeVideoRatio(
 const dashscopeVideoBody = (
   p: VideoParams,
   d: VideoDefaults,
+  limits?: VideoDurationLimits,
 ): Record<string, unknown> => {
   const {
     model: _model,
@@ -152,7 +171,7 @@ const dashscopeVideoBody = (
     mask: _mask,
     ...defaults
   } = d
-  const duration = dashscopeVideoDuration(p)
+  const duration = dashscopeVideoDuration(p, limits)
   const ratio = dashscopeVideoRatio(p)
   return {
     ...defaults,
@@ -180,7 +199,11 @@ const dashscopeVideoBody = (
  */
 export const VIDEO_BODY_BUILDERS: Record<
   string,
-  (p: VideoParams, d: VideoDefaults) => Record<string, unknown>
+  (
+    p: VideoParams,
+    d: VideoDefaults,
+    limits?: VideoDurationLimits,
+  ) => Record<string, unknown>
 > = {
   // Rayu-hosted models (backend 'rayu') proxy through the gateway, which holds
   // the upstream provider key and speaks DashScope video to it.
@@ -216,6 +239,19 @@ export function withBuilder(entry: MediaModelEntry): VideoModel {
     )
   }
   const defaults = entry.defaultParams ?? {}
-  return { ...entry, buildBody: (p: VideoParams) => builder(p, defaults) }
+  // The entry's own published clip window travels with the builder, so a model
+  // capped below the family default is honoured instead of 400ing at the gateway.
+  const limits: VideoDurationLimits = {
+    ...(entry.minDurationSeconds !== undefined
+      ? { minDurationSeconds: entry.minDurationSeconds }
+      : {}),
+    ...(entry.maxDurationSeconds !== undefined
+      ? { maxDurationSeconds: entry.maxDurationSeconds }
+      : {}),
+  }
+  return {
+    ...entry,
+    buildBody: (p: VideoParams) => builder(p, defaults, limits),
+  }
 }
 

@@ -91,6 +91,16 @@ export interface MediaModelEntry {
   /** Rough generation seconds, for the user-facing wait message. */
   estimatedSeconds?: number
   /**
+   * Clip-length window the model actually accepts, when the gateway publishes
+   * it (`min_duration_seconds` / `max_duration_seconds` or the camelCase
+   * spelling). A video model's real cap is NOT always the 30 s DashScope
+   * default — a shorter model otherwise gets a request the gateway rejects,
+   * which the caller had no way to predict. Absent means "use the family's
+   * documented default window".
+   */
+  minDurationSeconds?: number
+  maxDurationSeconds?: number
+  /**
    * Per-model upstream request defaults (e.g. `{ cfg_scale: 0, steps: 4 }`).
    * This is what lets two models share one request-shape family.
    */
@@ -305,10 +315,20 @@ function coerceEntry(raw: unknown): MediaModelEntry | null {
   if (typeof o.estimatedSeconds === 'number' && o.estimatedSeconds > 0) {
     entry.estimatedSeconds = Math.floor(o.estimatedSeconds)
   }
+  const minSeconds = positiveSeconds(o.minDurationSeconds ?? o.min_duration_seconds)
+  if (minSeconds !== undefined) entry.minDurationSeconds = minSeconds
+  const maxSeconds = positiveSeconds(o.maxDurationSeconds ?? o.max_duration_seconds)
+  if (maxSeconds !== undefined) entry.maxDurationSeconds = maxSeconds
   if (o.defaultParams && typeof o.defaultParams === 'object' && !Array.isArray(o.defaultParams)) {
     entry.defaultParams = o.defaultParams as Record<string, unknown>
   }
   return entry
+}
+
+/** A positive whole number of seconds from either wire spelling, else undefined. */
+function positiveSeconds(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return undefined
+  return Math.floor(v)
 }
 
 /**

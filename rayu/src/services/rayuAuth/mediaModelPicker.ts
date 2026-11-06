@@ -60,13 +60,26 @@ function backendAndCapabilities(entry: MediaModelEntry): string {
 }
 
 /**
+ * The clip window a video entry publishes ("· 2-10s"), or '' when it declares
+ * none. Shown so a caller can tell WHY a requested length was clamped instead
+ * of discovering it from a gateway rejection.
+ */
+function durationRangeLabel(entry: MediaModelEntry): string {
+  if (entry.mediaType !== 'video') return ''
+  const max = entry.maxDurationSeconds
+  if (max === undefined) return ''
+  const min = entry.minDurationSeconds
+  return min !== undefined ? ` · ${min}-${max}s` : ` · up to ${max}s`
+}
+
+/**
  * The terminal picker's detail line: the admin's display name (when it is not
  * just the id), then backend and capabilities. The id is the row's label, as in
  * the chat /model picker, because it is what gets saved and sent.
  */
 export function describeMediaModel(entry: MediaModelEntry): string {
   const named = entry.label && entry.label !== entry.id ? `${entry.label} · ` : ''
-  return `${named}${backendAndCapabilities(entry)}`
+  return `${named}${backendAndCapabilities(entry)}${durationRangeLabel(entry)}`
 }
 
 /** One chooser row — structurally the editor's `ModelOptionView`. */
@@ -96,7 +109,7 @@ export function mediaModelPickerOptions(
   return entries.map((m) => ({
     value: m.id,
     label: m.label || m.id,
-    description: `${m.id} · ${backendAndCapabilities(m)}`,
+    description: `${m.id} · ${backendAndCapabilities(m)}${durationRangeLabel(m)}`,
     model: m.id,
     providerId: m.backend,
   }))

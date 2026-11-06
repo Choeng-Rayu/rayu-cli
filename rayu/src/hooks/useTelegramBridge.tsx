@@ -2,8 +2,6 @@ import { composeBridgePermissionCallbacks } from '../bridge/composeBridgePermiss
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import React from 'react'
 import {
-  getBotToken,
-  getTelegramMode,
   isAutoReconnectEnabled,
   readAutoAttach,
   readTelegramConfig,
@@ -17,8 +15,8 @@ import {
 } from '../telegram/telegramBridge.js'
 import type { ContentBlock, WrappedMessage } from '../telegram/formatActivity.js'
 import { isFileChangeReviewMessage } from '../telegram/formatActivity.js'
+import { resolveTelegramTransport } from '../telegram/telegramStart.js'
 import { sendMessage, setHostedRouter } from '../telegram/telegramApi.js'
-import { createHostedRouter } from '../telegram/telegramTransport.js'
 import {
   getTelegramHealthSnapshot,
   subscribeToTelegramHealth,
@@ -32,7 +30,6 @@ import {
   remoteStreamStart,
   subscribeToRemoteBridge,
 } from '../telegram/telegramRemoteBridge.js'
-import { hasRayuSession } from '../services/rayuAuth/rayuSession.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 
 /** True for user messages that are tool results (not human-typed text). */
@@ -84,30 +81,16 @@ export function useTelegramBridge(
     if (!bridgeActive) return
 
     // Resolve the transport: hosted (shared Rayu bot via backend) or BYO token.
-    const mode = getTelegramMode()
-    let token: string
-    if (mode === 'hosted') {
-      // Shared bot needs a signed-in Rayu session; route all Telegram calls
-      // through the backend. A sentinel token satisfies the (now unused) token
-      // params — the hosted router ignores it.
-      if (!hasRayuSession()) {
-        // Don't leave the session claiming to be connected when it isn't.
-        setAppState(prev => ({ ...prev, telegramBridgeActive: false }))
-        return
-      }
-      setHostedRouter(createHostedRouter())
-      token = 'hosted'
-    } else {
-      const byo = getBotToken()
-      if (!byo) {
-        setAppState(prev => ({ ...prev, telegramBridgeActive: false }))
-        return
-      }
-      setHostedRouter(null)
-      token = byo
+    // Shared with the headless engine — see telegramStart.ts.
+    const transport = resolveTelegramTransport()
+    if (!transport) {
+      // Don't leave the session claiming to be connected when it isn't: hosted
+      // mode needs a signed-in Rayu session, BYO needs a saved token.
+      setAppState(prev => ({ ...prev, telegramBridgeActive: false }))
+      return
     }
 
-    const handle = initTelegramBridge({ token })
+    const handle = initTelegramBridge({ token: transport.token })
     handleRef.current = handle
 
     setAppState(prev => ({ ...prev, telegramPermissionCallbacks: handle.permissionCallbacks }))
@@ -139,7 +122,7 @@ export function useTelegramBridge(
                   others.length === 0
                     ? '🔌 Session closed — rayu-cli disconnected.'
                     : `🔌 This session closed. ${others.length} other session${others.length === 1 ? '' : 's'} still open — send /sessions to pick one.`
-                return sendMessage(token, chatId, text)
+                return sendMessage(transport.token, chatId, text)
               })
               .then(() => undefined)
               .catch(() => undefined)

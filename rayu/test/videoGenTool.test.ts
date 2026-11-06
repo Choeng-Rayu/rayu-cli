@@ -10,6 +10,7 @@ import {
   type MediaCatalog,
   type MediaModelEntry,
 } from '../src/services/rayuAuth/mediaModels.ts'
+import { describeMediaModel } from '../src/services/rayuAuth/mediaModelPicker.ts'
 import {
   retainKnownVideoModel,
   VIDEO_BODY_BUILDERS,
@@ -259,6 +260,26 @@ describe('dashscope_video family (Rayu-hosted)', () => {
     expect(withBuilder(HOSTED_VIDEO_MODEL).buildBody({ prompt: 'x' }).duration).toBe(5)
   })
 
+  test('the entry\'s published clip window overrides the family 2–30s default', () => {
+    // A model capped at 5s would otherwise receive a 10s request the gateway
+    // rejects, with no way for the caller to predict it.
+    const short = withBuilder({
+      ...HOSTED_VIDEO_MODEL,
+      defaultParams: {},
+      maxDurationSeconds: 5,
+    })
+    expect(short.buildBody({ prompt: 'x', num_frames: 240, fps: 24 }).duration).toBe(5)
+    // A model declaring a 1s floor keeps it (no forced 2s bump).
+    const oneSec = withBuilder({
+      ...HOSTED_VIDEO_MODEL,
+      defaultParams: {},
+      minDurationSeconds: 1,
+    })
+    expect(oneSec.buildBody({ prompt: 'x', num_frames: 24, fps: 24 }).duration).toBe(1)
+    // The cap is also published to the picker detail line.
+    expect(describeMediaModel({ ...HOSTED_VIDEO_MODEL, maxDurationSeconds: 5 })).toContain('up to 5s')
+  })
+
   test('ratio takes an explicit accepted value, else derives from width/height', () => {
     expect(bare().buildBody({ prompt: 'x', aspect_ratio: '16:9' }).ratio).toBe('16:9')
     expect(bare().buildBody({ prompt: 'x', aspect_ratio: '9:16' }).ratio).toBe('9:16')
@@ -483,6 +504,16 @@ describe('VideoGenTool scaffold', () => {
     expect(VideoGenTool.inputSchema.safeParse({ prompt: 'a river' }).success).toBe(true)
   })
 
+  test('output schema does not REQUIRE frame metadata (it is never invented)', () => {
+    expect(
+      VideoGenTool.outputSchema.safeParse({
+        path: '/x/out.mp4',
+        model: 'm',
+        mediaType: 'video/mp4',
+      }).success,
+    ).toBe(true)
+  })
+
   test('resolveOutputPath accepts default, rejects outside cwd', () => {
     expect(resolveOutputPath(undefined).ok).toBe(true)
     expect(resolveOutputPath('/etc/passwd.mp4').ok).toBe(false)
@@ -599,6 +630,27 @@ describe('VideoGenTool.call', () => {
         ),
       ),
     ).rejects.toThrow(/working directory/)
+  })
+
+  test('with no credential AND the empty offline catalog, the error says SIGN IN', async () => {
+    // The catalog cannot be fetched without a credential, so it is the empty
+    // fallback. Telling this user "catalog unavailable — check your connection"
+    // sends them to debug a network that is fine.
+    _resetMediaModelsForTesting()
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+    await expect(
+      runWithCwdOverride(tmp, () =>
+        VideoGenTool.call(
+          { prompt: 'a river', output_path: './out.mp4' } as never,
+          { abortController: new AbortController() } as never,
+        ),
+      ),
+    ).rejects.toThrow(/Sign in to Rayu/)
+    expect(calls).toBe(0)
   })
 })
 
@@ -872,6 +924,75 @@ describe('VideoGenTool hosted (Rayu)', () => {
     )
     expect(download).toBeDefined()
     expect(download!.init?.redirect).toBe('error')
+  })
+
+  test('result metadata is truthful: no invented frames/fps, real duration only', async () => {
+    // The caller supplied NO frame inputs. The old result fabricated
+    // "57 frames @ 24fps" (≈2.4s) for every clip; the gateway actually served 2s.
+    mockHostedSuccess()
+    const res = await runWithCwdOverride(tmp, () =>
+      VideoGenTool.call(
+        { prompt: 'a river', output_path: './truthful.mp4' },
+        { abortController: new AbortController() } as never,
+      ),
+    )
+    expect(res.data.durationSeconds).toBe(2)
+    expect(res.data.frames).toBeUndefined()
+    expect(res.data.fps).toBeUndefined()
+    const block = VideoGenTool.mapToolResultToToolResultBlockParam(res.data, 'tid')
+    const text = (block.content as Array<{ type: string; text?: string }>).find(
+      (b) => b.type === 'text',
+    )!.text!
+    expect(text).toContain('Generated 2.0s video')
+    expect(text).not.toMatch(/57 frames|24fps/)
+  })
+
+  test('a text prompt never lands on an image2video-ONLY remembered model', async () => {
+    // The picker can save an image2video-only id; a later text prompt must not
+    // send it, or the gateway 400s model_requires_image.
+    const i2vOnly: MediaModelEntry = {
+      ...HOSTED_I2V_MODEL,
+      id: 'rayu-i2v-only',
+      capabilities: ['image2video'],
+      isDefault: false,
+    }
+    useVideoCatalog([HOSTED_VIDEO_MODEL, i2vOnly])
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    cfg.setVideoModelSelection(i2vOnly.id)
+    cfg._resetRayuConfigCache()
+    const calls = mockHostedSuccess()
+
+    const res = await runWithCwdOverride(tmp, () =>
+      VideoGenTool.call(
+        { prompt: 'a river', output_path: './t2v.mp4' },
+        { abortController: new AbortController() } as never,
+      ),
+    )
+    expect(res.data.model).toBe(HOSTED_VIDEO_MODEL.id)
+    const gateway = calls.find((c) => c.url.includes('/v1/videos/generations'))
+    const body = JSON.parse(String(gateway!.init?.body)) as Record<string, unknown>
+    expect('image' in body).toBe(false)
+  })
+
+  test('an EXPLICIT image2video-only model is refused for a text prompt', async () => {
+    const i2vOnly: MediaModelEntry = {
+      ...HOSTED_I2V_MODEL,
+      id: 'rayu-i2v-only',
+      capabilities: ['image2video'],
+    }
+    useVideoCatalog([HOSTED_VIDEO_MODEL, i2vOnly])
+    const calls = mockFetch(() => {
+      throw new Error('must not reach the network')
+    })
+    await expect(
+      runWithCwdOverride(tmp, () =>
+        VideoGenTool.call(
+          { prompt: 'a river', model: i2vOnly.id, output_path: './x.mp4' },
+          { abortController: new AbortController() } as never,
+        ),
+      ),
+    ).rejects.toThrow(/requires a reference image/)
+    expect(calls).toHaveLength(0)
   })
 
   test('a remembered model the catalog no longer carries falls back to the default', async () => {
@@ -1152,7 +1273,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
     expect(text).not.toContain('121 frames')
   })
 
-  test('duration falls back to rayu.seconds, then to the requested duration', async () => {
+  test('duration falls back to rayu.seconds, and NEVER to the requested duration', async () => {
     mockFetch((url) => {
       if (url.includes('/v1/videos/generations')) {
         return new Response(
@@ -1175,7 +1296,8 @@ describe('VideoGenTool hosted (Rayu)', () => {
     })
     expect(res.durationSeconds).toBe(3)
 
-    // No data[0].duration and no rayu.seconds → the requested duration applies.
+    // No data[0].duration and no rayu.seconds → UNDEFINED. The requested
+    // duration (a catalog default of 5 here) must not be reported as actual.
     mockFetch((url) => {
       if (url.includes('/v1/videos/generations')) {
         return new Response(
@@ -1192,8 +1314,31 @@ describe('VideoGenTool hosted (Rayu)', () => {
       model: withBuilder(HOSTED_VIDEO_MODEL),
       params: { prompt: 'x' },
     })
-    // HOSTED_VIDEO_MODEL.defaultParams.duration = 5 reaches the body.
-    expect(res2.durationSeconds).toBe(5)
+    expect(res2.durationSeconds).toBeUndefined()
+  })
+
+  test('rayu.seconds is not reported as ONE clip length when several were billed', async () => {
+    mockFetch((url) => {
+      if (url.includes('/v1/videos/generations')) {
+        return new Response(
+          JSON.stringify({
+            created: 1,
+            data: [{ url: 'https://cdn.example/multi.mp4' }],
+            rayu: { videos: 2, seconds: 10 },
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response(new Uint8Array(TINY_MP4), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4' },
+      })
+    })
+    const res = await generateRayuVideo({
+      model: withBuilder(HOSTED_VIDEO_MODEL),
+      params: { prompt: 'x' },
+    })
+    expect(res.durationSeconds).toBeUndefined()
   })
 
   test('maps a gateway {error:{message}} to a clear Error', async () => {

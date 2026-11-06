@@ -56,9 +56,9 @@ export type GeneratedVideo = {
   mediaType: string
   modelId: string
   /**
-   * ACTUAL seconds billed: `data[0].duration`, falling back to `rayu.seconds`,
-   * then to the requested duration. The gateway can return a different length
-   * than was asked for, so callers report this, not the request.
+   * ACTUAL seconds billed: `data[0].duration`, else `rayu.seconds`. Undefined
+   * when the response reported neither — the REQUESTED duration is never
+   * substituted, because callers print this value as the real length.
    */
   durationSeconds?: number
   /** Actual resolution tier the gateway served (e.g. "480P"), when returned. */
@@ -130,6 +130,46 @@ function looksLikeMp4(buf: Buffer): boolean {
 }
 
 /**
+ * Read a response body while enforcing `max` DURING the read. `arrayBuffer()`
+ * buffers the WHOLE body first, so a chunked response with no (or a lying)
+ * `Content-Length` could exhaust memory before the size was ever checked. Here
+ * the stream is cancelled the moment the running total crosses the cap.
+ */
+async function readBodyWithCap(res: Response, max: number): Promise<Buffer> {
+  const body = res.body
+  if (!body) {
+    const buf = Buffer.from(await res.arrayBuffer())
+    if (buf.length > max) {
+      throw new Error(
+        `Generated video is too large (${buf.length} bytes; max ${max}).`,
+      )
+    }
+    return buf
+  }
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > max) {
+        void reader.cancel().catch(() => {})
+        throw new Error(
+          `Generated video is too large (over ${max} bytes; download aborted).`,
+        )
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c)))
+}
+
+/**
  * Download a provider-returned video URL. The gateway returns a URL rather than
  * inline bytes, so this is the normal path for hosted video.
  */
@@ -177,14 +217,9 @@ async function downloadVideo(
       `Generated video URL returned ${contentType}, not an MP4 video.`,
     )
   }
-  const buf = Buffer.from(await res.arrayBuffer())
+  const buf = await readBodyWithCap(res, RAYU_VIDEO_MAX_DOWNLOAD_BYTES)
   if (buf.length === 0) {
     throw new Error('Generated video download returned an empty body.')
-  }
-  if (buf.length > RAYU_VIDEO_MAX_DOWNLOAD_BYTES) {
-    throw new Error(
-      `Generated video is too large (${buf.length} bytes; max ${RAYU_VIDEO_MAX_DOWNLOAD_BYTES}).`,
-    )
   }
   if (!looksLikeMp4(buf)) {
     throw new Error('Generated video download is not an MP4 (no ftyp box).')
@@ -305,19 +340,22 @@ export async function generateRayuVideo(opts: {
 
   // The gateway bills and returns ACTUAL seconds, which can differ from the
   // requested duration — prefer the per-item duration, then the billing
-  // aggregate, then (only if the response carried neither) the request.
-  // The request body is a per-family builder output (Record<string, unknown>);
-  // `duration` is set by families that map frame counts to seconds.
-  const requested = (body as Record<string, unknown>).duration
+  // aggregate. NEVER substitute the requested duration: this value is printed
+  // to the user as the real length ("Generated Xs video"), so an absent
+  // measurement must stay absent rather than become a guess.
+  // `rayu.seconds` is the BILLING TOTAL across every returned video; using it
+  // as one clip's length overstates the file we download when the gateway
+  // served several, so it is only a single-clip fallback.
+  const rayuVideos = payload?.rayu?.videos
+  const singleClip = rayuVideos == null || rayuVideos <= 1
   const durationSeconds =
     typeof item.duration === 'number' && Number.isFinite(item.duration)
       ? item.duration
-      : typeof payload?.rayu?.seconds === 'number' &&
-        Number.isFinite(payload.rayu.seconds)
+      : singleClip &&
+          typeof payload?.rayu?.seconds === 'number' &&
+          Number.isFinite(payload.rayu.seconds)
         ? payload.rayu.seconds
-        : typeof requested === 'number' && Number.isFinite(requested)
-          ? requested
-          : undefined
+        : undefined
 
   return {
     buffer,

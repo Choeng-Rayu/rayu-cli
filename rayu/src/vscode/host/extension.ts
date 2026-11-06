@@ -119,10 +119,10 @@ import {
 // no child per tick.
 import {
   readTelegramConfig,
-  saveAutoAttach,
   setLinkedBotUsername,
   setLinkedChat,
 } from '../../telegram/telegramConfig.js'
+import { writeAttachment } from '../../telegram/telegramAttach.js'
 import { getHostedLink } from '../../telegram/telegramHostedApi.js'
 import { TelegramConnectController } from './integrations/telegramConnectController.js'
 import { TELEGRAM_RESTART_SETTLE_MS, TelegramLinkRestarts } from './integrations/telegramLinkRestart.js'
@@ -516,6 +516,9 @@ export function activate(context: vscode.ExtensionContext): void {
     setLinkedChat,
     setLinkedBotUsername,
     onLinked: origin => restartTelegramLinkedSession(origin),
+    // Same restart, before the link exists: the engine must poll for the BYO
+    // pairing's `/start <token>`, because only the bridge can consume it.
+    onPairingStarted: origin => restartTelegramLinkedSession(origin),
     publish: () => settingsTab.controller.integrationsChanged(),
   })
   const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
@@ -619,10 +622,25 @@ export function activate(context: vscode.ExtensionContext): void {
    */
   function restartTelegramLinkedSession(origin: string | null): void {
     const entry = (origin ? entryFor(origin) : undefined) ?? currentEntry()
-    saveAutoAttach(
-      entry.session.engineSessionId ?? '',
-      normalizeCwdForAttachLookup(entry.session.workingDirectory),
-    )
+    // ── THE ATTACHMENT, NOT JUST THE MEMORY ────────────────────────────────────
+    //
+    // `saveAutoAttach` alone only tells a NEW engine to reconnect (it is what the
+    // REPL's auto-attach check reads). It does not tell the bridge leader which
+    // session receives chat prompts — routing reads `telegram-attached.json`
+    // (`telegramRouter.resolveAttached`). Writing just the memory left the chat with
+    // no target whenever more than one session was open, and the editor's
+    // conversation was never marked as the one to drive.
+    //
+    // `writeAttachment` persists both files so they cannot disagree. The session id
+    // is empty until a fresh conversation's engine reports one; the router then falls
+    // back to the working directory, which is the same match the auto-attach check
+    // makes.
+    writeAttachment({
+      sessionId: entry.session.engineSessionId ?? '',
+      pid: entry.session.enginePid ?? 0,
+      cwd: normalizeCwdForAttachLookup(entry.session.workingDirectory),
+      attachedAt: Date.now(),
+    })
     telegramRestarts.requestRestart(entry.key)
   }
 

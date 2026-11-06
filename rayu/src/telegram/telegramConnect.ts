@@ -31,9 +31,7 @@ import {
   saveRayuConfig,
   upsertProvider,
 } from '../utils/rayuConfig.js'
-import { enqueue } from '../utils/messageQueueManager.js'
-import { setRemoteModelOverride } from '../utils/remoteModelOverride.js'
-import { setMainLoopModelOverride } from '../bootstrap/state.js'
+import { routeApplyModel, type ApplyModelResult } from './telegramRouter.js'
 import {
   answerCallbackQuery,
   chunkText,
@@ -263,20 +261,22 @@ export async function handleConnectTextInput(
     // point at /model to switch. Anthropic is no longer special-cased — its
     // catalog comes from the same fetchProviderModels path as every other
     // provider, so there is no per-provider branch here.
-    if (preset?.defaultModel) {
-      setRemoteModelOverride(preset.defaultModel)
-      setMainLoopModelOverride(preset.defaultModel)
-      enqueue({
-        value: `[Telegram] Provider changed to ${state.providerId} · Model: ${preset.defaultModel}`,
-        mode: 'task-notification',
-      })
-    }
+    // Apply the preset default to the session the chat drives — the same routed
+    // path /model uses. No notification is enqueued: a `task-notification` in a
+    // headless engine is drained into the model as a prompt, so it would have
+    // started a spurious turn.
+    const applied = preset?.defaultModel
+      ? (await routeApplyModel(preset.defaultModel)).kind === 'applied'
+      : true
     refreshProviderModelsInBackground(state.providerId)
     clearSession(chatId)
     await editMessageWithInlineKeyboard(token, chatId, state.messageId, [
       `✅ Connected to *${state.providerId}*!`,
       ``,
       `Active model: \`${preset?.defaultModel ?? '(none)'}\``,
+      ...(applied
+        ? []
+        : ['', `_No running session received the switch — it will apply to the next one._`]),
       ``,
       `Model list is refreshing in the background. Use \`/model\` to switch anytime.`,
     ].join('\n'))
@@ -347,13 +347,16 @@ export async function handleModelCommand(token: string, chatId: number, arg: str
     return
   }
 
-  applyModelSelection(resolution.providerId, resolution.modelId)
+  const applied = await applyModelSelection(resolution.providerId, resolution.modelId)
 
   const notes = [
     resolution.switchesProvider ? `\nProvider switched to *${resolution.providerId}*.` : '',
     resolution.unlisted
       ? '\n\n_This id is not in the provider\u2019s known model list — if it is wrong, the next request will fail._'
       : '',
+    applied
+      ? ''
+      : '\n\n_No running session received the switch — it will apply to the next one._',
   ].join('')
   await sendMessage(
     token,
@@ -363,26 +366,32 @@ export async function handleModelCommand(token: string, chatId: number, arg: str
 }
 
 /**
- * Persist a (provider, model) choice and tell the running REPL about it.
+ * Persist a (provider, model) choice and apply it to the session the chat drives.
  *
  * The active provider is moved along with the model so the bare model id stays
  * unambiguous everywhere downstream — no `providerId\u0000model` encoding is
  * needed, because after this the model DOES belong to the active provider.
+ *
+ * ── THE LIVE HALF IS ROUTED, NOT APPLIED HERE ───────────────────────────────
+ *
+ * The config write is process-independent (one file on disk), but the override that
+ * changes the NEXT request lives in the process that will make it — which is not
+ * necessarily this one. `routeApplyModel` delivers it in-process or over IPC, using
+ * the same attached-session resolution prompts use.
+ *
+ * Returns whether a running session took the switch. Config is the durable source of
+ * truth either way, so a false here means "saved, applies later", never "failed".
  */
-function applyModelSelection(providerId: string, modelId: string): void {
+async function applyModelSelection(providerId: string, modelId: string): Promise<boolean> {
   const cfg = loadRayuConfig()
   const provider = cfg.providers.find(p => p.id === providerId)
-  if (!provider) return
+  if (!provider) return false
   provider.defaultModel = modelId
   cfg.activeProvider = providerId
   saveRayuConfig(cfg)
   _resetRayuConfigCache()
-  setRemoteModelOverride(modelId)
-  setMainLoopModelOverride(modelId)
-  enqueue({
-    value: `[Telegram] Model changed to ${modelId} (provider: ${providerId})`,
-    mode: 'task-notification',
-  })
+  const routed: ApplyModelResult = await routeApplyModel(modelId)
+  return routed.kind === 'applied'
 }
 
 /**
