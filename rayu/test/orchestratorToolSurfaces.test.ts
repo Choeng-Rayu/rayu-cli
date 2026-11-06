@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { validateContract } from '../src/orchestrator/contract.ts'
 import { archiveRun, type OrchestrationRun, startRun } from '../src/orchestrator/runState.ts'
-import { prepareRunWorkspace, releaseRunWorkspace } from '../src/orchestrator/runWorkspace.ts'
+import { prepareRunWorkspace, releaseRunWorkspace, resolveProjectRoot } from '../src/orchestrator/runWorkspace.ts'
 import { getVerifierSession, openVerifierSession } from '../src/orchestrator/verification.ts'
 import { settleForegroundVerifier } from '../src/orchestrator/verifierGuard.ts'
 import type { AppState } from '../src/state/AppStateStore.ts'
@@ -63,11 +63,12 @@ describe('the OrchestrationContract tool', () => {
 
     const context = (current: OrchestrationRun | null) => ({ ...store(current), agentId: undefined, options: { tools: [] } }) as never
     const none = await OrchestrationContractTool.call({ action: 'show' } as never, context(null), (() => {}) as never, {} as never)
-    expect(OrchestrationContractTool.mapToolResultToToolResultBlockParam(none.data, 't1').content).toBe('No contract has been published in this session.')
+    expect(OrchestrationContractTool.mapToolResultToToolResultBlockParam(none.data, 't1').content).toContain('No contract has been published in this session.')
     const ended = await OrchestrationContractTool.call({ action: 'show' } as never, context(archiveRun(run(), 2)), (() => {}) as never, {} as never)
     const text = String(OrchestrationContractTool.mapToolResultToToolResultBlockParam(ended.data, 't2').content)
     expect(text).toContain('Run run-1 has ended.')
     expect(text).toContain('# Orchestration contract v1')
+    expect(text).toContain(`Paths are relative to ${resolveProjectRoot()}.`)
   })
 })
 

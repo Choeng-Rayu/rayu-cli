@@ -29,6 +29,11 @@ export const ORCHESTRATOR_CONTRACT_MAX_INTERFACES = 32
 export const ORCHESTRATOR_CONTRACT_MAX_CHECKS = 16
 export const ORCHESTRATOR_CONTRACT_MAX_PATTERNS_PER_PACKET = 32
 /**
+ * Problems listed back to the model per refused contract. One wrong project root fails
+ * on every path in the contract; listing them all buries the cause and floods the retry.
+ */
+export const ORCHESTRATOR_CONTRACT_MAX_ERRORS = 12
+/**
  * Longest check command. Real checks are often a `node -e` or `grep` pipeline of a few
  * hundred characters; longer logic belongs in a script the project keeps.
  */

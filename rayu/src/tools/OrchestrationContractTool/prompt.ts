@@ -12,6 +12,8 @@ Publish the contract before you launch implementation workers. Workers cannot se
 A contract has:
 - \`goal\`: what the run delivers.
 - \`packets\`: one per worker. Each has a kebab-case \`name\` (launch its worker with that name), an \`objective\`, the files it \`owns\`, and \`acceptance\` criteria. \`owns\` are paths or globs relative to the project root (\`src/api/**\`, \`docs/CHANGELOG.md\`); an absolute path inside the project is accepted and converted. Packets that can run at the same time must not own the same files.
+
+The **project root** is the git root of the working directory, or the working directory itself when it is not a git repository. Sibling repositories are not included: if the work spans more than one, run the session from a directory that contains all of them, or publish a separate contract for each project. \`*\`, \`?\` and \`{a,b}\` are wildcards; parentheses and brackets are literal, so \`app/(main)/layout.tsx\` and \`app/[slug]/page.tsx\` name those exact directories.
 - \`sharedInterfaces\`: every type, function, endpoint or format more than one packet uses, with its exact \`definition\`, the \`owner\` packet that writes it and the \`path\` it lives in. Consumers code against the definition, so they run at the same time as the owner.
 - \`checks\`: at least one required command that proves the result works (the type-check or test command, or a short \`grep\`/\`node -e\` assertion). It runs from the project root, in a shell, and must exit 0 only when the result is right. Up to 2000 characters; longer logic belongs in a script file.
 

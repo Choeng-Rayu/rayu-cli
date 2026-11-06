@@ -19,6 +19,7 @@ import {
   ORCHESTRATOR_CHECK_COMMAND_MAX_CHARS,
   ORCHESTRATOR_CONTRACT_MAX_BYTES,
   ORCHESTRATOR_CONTRACT_MAX_CHECKS,
+  ORCHESTRATOR_CONTRACT_MAX_ERRORS,
   ORCHESTRATOR_CONTRACT_MAX_INTERFACES,
   ORCHESTRATOR_CONTRACT_MAX_PACKETS,
   ORCHESTRATOR_CONTRACT_MAX_PATTERNS_PER_PACKET,
@@ -141,9 +142,12 @@ export function validateContract(
 ): ContractValidation {
   const sizeError = checkSize(input)
   if (sizeError) return { ok: false, errors: [sizeError] }
+  // Path problems are kept apart from the rest: one wrong project root fails on every
+  // path, and the cap must drop those before it drops a cycle or a missing check.
   const errors: string[] = []
+  const pathErrors: string[] = []
   const adjustments: string[] = []
-  const paths: PatternContext = { root: options.projectRoot, adjustments }
+  const paths: PatternContext = { root: options.projectRoot, adjustments, errors: pathErrors }
   const packets = input.packets.map(packet => normalizePacket(packet, errors, paths, options.worktreesAvailable !== false))
   const names = checkPacketNames(packets, errors)
   checkDependencies(packets, names, errors)
@@ -151,10 +155,20 @@ export function validateContract(
   if (cycle) errors.push(`Packets depend on each other in a cycle: ${cycle.join(' → ')}. Remove one dependency.`)
   const reach = cycle ? null : reachability(packets)
   if (reach) checkConcurrentOwnership(packets, reach, options.caseInsensitivePaths, errors)
-  const sharedInterfaces = (input.sharedInterfaces ?? []).map(item => normalizeInterface(item, errors, paths))
-  checkInterfaces(sharedInterfaces, packets, names, options.caseInsensitivePaths, errors)
+  const interfaces = (input.sharedInterfaces ?? []).map(item => normalizeInterface(item, errors, paths))
+  const sharedInterfaces = interfaces.map(entry => entry.item)
+  checkInterfaces(
+    sharedInterfaces,
+    interfaces.map(entry => entry.pathValid),
+    packets,
+    names,
+    options.caseInsensitivePaths,
+    errors,
+  )
   const checks = normalizeChecks(input.checks ?? [], options.settingsCheckCommands, errors)
-  if (errors.length > 0 || !reach) return { ok: false, errors }
+  if (errors.length > 0 || pathErrors.length > 0 || !reach) {
+    return { ok: false, errors: finalizeErrors([...errors, ...pathErrors]) }
+  }
   const contract: OrchestrationContract = {
     goal: input.goal.trim(),
     packets,
@@ -194,7 +208,7 @@ function normalizePacket(
   if (packet.owns.length > ORCHESTRATOR_CONTRACT_MAX_PATTERNS_PER_PACKET) {
     errors.push(`${label} lists ${packet.owns.length} ownership patterns; the limit is ${ORCHESTRATOR_CONTRACT_MAX_PATTERNS_PER_PACKET}. Use globs.`)
   }
-  const owns = normalizePatterns(packet.owns, `${label}: ownership pattern`, errors, paths)
+  const owns = normalizePatterns(packet.owns, `${label}: ownership pattern`, paths)
   if (packet.acceptance.filter(item => item.trim()).length === 0) {
     errors.push(`${label} has no acceptance criteria. Say what proves it is done.`)
   }
@@ -215,21 +229,36 @@ function normalizePacket(
   }
 }
 
-type PatternContext = { root: string | undefined; adjustments: string[] }
+type PatternContext = { root: string | undefined; adjustments: string[]; errors: string[] }
 
-function normalizePatterns(raw: readonly string[], label: string, errors: string[], paths: PatternContext): string[] {
+/** One pattern in canonical form, or null when it cannot be used (the error is recorded). */
+function normalizePattern(raw: string, label: string, paths: PatternContext): string | null {
+  const result = normalizeOwnershipPattern(raw, paths.root)
+  if ('error' in result) {
+    paths.errors.push(`${label} "${raw}" ${result.error}.`)
+    return null
+  }
+  if (result.readFrom && !paths.adjustments.some(note => note.includes(`"${result.readFrom}"`))) {
+    paths.adjustments.push(`"${result.readFrom}" is "${result.pattern}" relative to the project root.`)
+  }
+  return result.pattern
+}
+
+function normalizePatterns(raw: readonly string[], label: string, paths: PatternContext): string[] {
   const out: string[] = []
   for (const item of raw) {
-    const result = normalizeOwnershipPattern(item, paths.root)
-    if ('error' in result) errors.push(`${label} "${item}" ${result.error}.`)
-    else {
-      if (result.readFrom && !paths.adjustments.some(note => note.includes(`"${result.readFrom}"`))) {
-        paths.adjustments.push(`"${result.readFrom}" is "${result.pattern}" relative to the project root.`)
-      }
-      if (!out.includes(result.pattern)) out.push(result.pattern)
-    }
+    const pattern = normalizePattern(item, label, paths)
+    if (pattern !== null && !out.includes(pattern)) out.push(pattern)
   }
   return out
+}
+
+/** Collapse duplicates and cap the list: a contract written with one wrong root can fail on every path. */
+function finalizeErrors(errors: readonly string[]): string[] {
+  const unique = [...new Set(errors)]
+  if (unique.length <= ORCHESTRATOR_CONTRACT_MAX_ERRORS) return unique
+  const hidden = unique.length - ORCHESTRATOR_CONTRACT_MAX_ERRORS
+  return [...unique.slice(0, ORCHESTRATOR_CONTRACT_MAX_ERRORS), `${hidden} more problem${hidden === 1 ? '' : 's'} not listed. Fix these and publish again.`]
 }
 
 function checkPacketNames(packets: readonly ContractPacket[], errors: string[]): Set<string> {
@@ -313,7 +342,7 @@ function checkConcurrentOwnership(
       if (reach.get(a.name)?.has(b.name) || reach.get(b.name)?.has(a.name)) continue
       const overlap = firstOverlap(a.owns, b.owns, caseInsensitive)
       if (overlap) {
-        errors.push(`Packets "${a.name}" and "${b.name}" can run at the same time but both may change the same files ("${overlap[0]}" and "${overlap[1]}"). Give each file one owner, or make one packet depend on the other.`)
+        errors.push(`Packets "${a.name}" and "${b.name}" can run at the same time, and their ownership patterns may cover the same paths ("${overlap[0]}" and "${overlap[1]}"). Give each path one owner, or make one packet depend on the other.`)
       }
     }
   }
@@ -323,40 +352,45 @@ function normalizeInterface(
   item: NonNullable<ContractInput['sharedInterfaces']>[number],
   errors: string[],
   paths: PatternContext,
-): ContractInterface {
-  const [path] = normalizePatterns([item.path], `Shared interface "${item.name}": path`, errors, paths)
+): { item: ContractInterface; pathValid: boolean } {
+  const path = normalizePattern(item.path, `Shared interface "${item.name}": path`, paths)
   if (!item.definition.trim()) errors.push(`Shared interface "${item.name}" has no definition. Give its exact signature or shape.`)
   return {
-    name: item.name.trim(),
-    owner: item.owner.trim(),
-    path: path ?? item.path.trim(),
-    definition: item.definition.trim(),
-    consumers: [...new Set((item.consumers ?? []).map(name => name.trim()))],
+    item: {
+      name: item.name.trim(),
+      owner: item.owner.trim(),
+      path: path ?? item.path.trim(),
+      definition: item.definition.trim(),
+      consumers: [...new Set((item.consumers ?? []).map(name => name.trim()))],
+    },
+    pathValid: path !== null,
   }
 }
 
 function checkInterfaces(
   items: readonly ContractInterface[],
+  pathValid: readonly boolean[],
   packets: readonly ContractPacket[],
   names: ReadonlySet<string>,
   caseInsensitive: boolean,
   errors: string[],
 ): void {
   const seen = new Set<string>()
-  for (const item of items) {
+  items.forEach((item, index) => {
     const label = `Shared interface "${item.name}"`
     if (seen.has(item.name)) errors.push(`Two shared interfaces are named "${item.name}".`)
     seen.add(item.name)
     const owner = packets.find(packet => packet.name === item.owner)
     if (!owner) {
       errors.push(`${label} is owned by "${item.owner}", which is not a packet in this contract.`)
-    } else if (!ownsPath(owner.owns, item.path, caseInsensitive)) {
+    } else if (pathValid[index] !== false && !ownsPath(owner.owns, item.path, caseInsensitive)) {
+      // The path was already rejected above; "does not own" would only repeat it.
       errors.push(`${label} lives in "${item.path}", which its owner "${item.owner}" does not own. Add the path to that packet's owns, or change the owner.`)
     }
     for (const consumer of item.consumers) {
       if (!names.has(consumer)) errors.push(`${label} lists consumer "${consumer}", which is not a packet in this contract.`)
     }
-  }
+  })
 }
 
 function normalizeChecks(

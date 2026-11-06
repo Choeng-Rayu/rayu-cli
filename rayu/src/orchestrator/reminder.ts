@@ -43,6 +43,8 @@ export type OrchestratorReminderInfo = {
   canMessageWorkers?: boolean
   /** Whether the OrchestrationContract tool is available. */
   hasContractTool?: boolean
+  /** What contract paths are relative to; the run's root when there is one. */
+  projectRoot?: string | null
   /** The active run's current contract, so the model can find it again after compaction. */
   contract?: { runId: string; version: number }
 }
@@ -116,14 +118,21 @@ function contractReferenceLines(info: OrchestratorReminderInfo): string[] {
 
 function renderSparse(info: OrchestratorReminderInfo): string {
   const base = 'Orchestrator mode is still ON. Delegate implementation to workers with disjoint file ownership; do not edit files yourself, though shell commands are allowed. Verify the integrated result before you report success.'
-  return info.contract ? `${base} Current contract: v${info.contract.version} (${info.contract.runId}).` : base
+  const contract = info.contract ? ` Current contract: v${info.contract.version} (${info.contract.runId}).` : ''
+  // Repeated here because the Orchestrator's shell can change directory mid-session,
+  // and contract paths stay relative to the run's root.
+  const root = info.projectRoot ? ` Paths are relative to ${info.projectRoot}.` : ''
+  return `${base}${contract}${root}`
 }
 
 function contractRules(info: OrchestratorReminderInfo): string[] {
   if (!info.hasContractTool) return []
   return [
+    info.projectRoot
+      ? `Contract paths are relative to ${info.projectRoot}: the git root of the working directory. It does not include sibling repositories — if the work spans more than one, run the session from a directory that contains all of them, or publish a separate contract for each project.`
+      : null,
     `Before launching implementation workers, publish the run's contract with ${ORCHESTRATION_CONTRACT_TOOL_NAME}: one packet per worker with the files it owns, the shared interfaces with their exact definitions and owners, the order packets run in, and at least one required check. To change which packet owns a file, or an interface, publish a new version instead of telling workers individually.`,
-  ]
+  ].filter((rule): rule is string => rule !== null)
 }
 
 function workerRule(info: OrchestratorReminderInfo): string {

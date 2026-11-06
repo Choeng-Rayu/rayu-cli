@@ -48,7 +48,7 @@ import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js';
 import { assignPacketWorker, orchestrationNotice, recordPacketWorktree, releasePacketWorker, settleForegroundPacket } from '../../orchestrator/packetProgress.js';
 import { finishPacketWorktree } from '../../orchestrator/worktreeIntegration.js';
 import { beginVerification, decideVerifierSpawn, sealVerification, settleForegroundVerifier } from '../../orchestrator/verifierGuard.js';
-import { getActiveRun } from '../../orchestrator/runState.js';
+import { getActiveRun, workspaceRoot } from '../../orchestrator/runState.js';
 import { getOrchestratorSettings } from '../../orchestrator/settings.js';
 import { decideWorkerSpawn } from '../../orchestrator/spawnPolicy.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
@@ -460,6 +460,12 @@ export const AgentTool = buildTool({
     }
     const verifierGrant = verifierDecision.kind === 'verifier' ? verifierDecision : null;
     const workerPrompt = packetGrant ? `${packetGrant.briefing}${prompt}` : verifierGrant ? `${verifierGrant.briefing}${prompt}` : prompt;
+    // An Orchestrator packet worker and its verifier work in the run's project root, which
+    // is what their contract paths are relative to. The Orchestrator's own shell may have
+    // `cd`-ed elsewhere since, so inheriting getCwd() would resolve those paths wrongly.
+    // Only override when it differs, so the common case keeps the pre-built prompt.
+    const runRoot = packetGrant ? packetGrant.projectRoot : verifierGrant ? workspaceRoot(verifierGrant.run.workspace) : null;
+    const runRootOverride = runRoot && runRoot !== getCwd() ? runRoot : null;
 
     // Only a synchronous foreground spawn may stop to ask the user for a model.
     // Fork, teammate, background/forced-async, packet and verifier spawns never
@@ -701,13 +707,13 @@ export const AgentTool = buildTool({
       // differing tool. useExactTools also inherits the parent's
       // thinkingConfig and isNonInteractiveSession (see runAgent.ts).
       //
-      // Normal path: when a cwd override is in effect (worktree isolation
-      // or explicit cwd), skip the pre-built system prompt so runAgent's
-      // buildAgentSystemPrompt() runs inside wrapWithCwd where getCwd()
-      // returns the override path.
+      // Normal path: when a cwd override is in effect (worktree isolation,
+      // explicit cwd, or the run's project root), skip the pre-built system
+      // prompt so runAgent's buildAgentSystemPrompt() runs inside wrapWithCwd
+      // where getCwd() returns the override path.
       override: isForkPath ? {
         systemPrompt: forkParentSystemPrompt
-      } : enhancedSystemPrompt && !worktreeInfo && !cwd ? {
+      } : enhancedSystemPrompt && !worktreeInfo && !cwd && !runRootOverride ? {
         systemPrompt: asSystemPrompt(enhancedSystemPrompt)
       } : undefined,
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
@@ -722,8 +728,9 @@ export const AgentTool = buildTool({
     };
 
     // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)
-    // takes precedence over worktree isolation path.
-    const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath;
+    // takes precedence over worktree isolation path, which takes precedence over
+    // the run's project root.
+    const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath ?? runRootOverride ?? undefined;
     const wrapWithCwd = <T,>(fn: () => T): T => cwdOverridePath ? runWithCwdOverride(cwdOverridePath, fn) : fn();
 
     // Helper to clean up worktree after agent completes

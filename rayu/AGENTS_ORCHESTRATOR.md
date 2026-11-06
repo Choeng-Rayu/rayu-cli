@@ -42,9 +42,13 @@ They are registered for the CLI, `-p` and the Rayucode engine (all non-SDK or
    relative to the **project root**: the git root, or the directory the session works in
    when the project is not in git (`runWorkspace.ts`). The root is recorded on the run,
    and the contract result names it; an absolute path inside it is converted, not
-   refused. Check commands may be up to 2,000 characters. Publishing again creates a new
-   version; started packets cannot be dropped. Contract v1 starts a run and takes a
-   baseline of the project:
+   refused. Sibling repositories are outside it, so work spanning several projects needs
+   a session started above all of them or one contract per project. `*`, `?` and
+   `{a,b}` are wildcards; route groups and dynamic segments (`app/(main)/`,
+   `app/[slug]/`) are literal directories (`ownership.ts`). Check commands may be up to
+   2,000 characters.
+   Publishing again creates a new version; started packets cannot be dropped. Contract v1
+   starts a run and takes a baseline of the project:
    - in git, a snapshot of the working tree (`gitSnapshot.ts`), kept under
      `refs/rayu/orchestration/<session>/<run>/` without touching the user's index, HEAD
      or stash;

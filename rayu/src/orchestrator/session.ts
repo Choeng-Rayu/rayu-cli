@@ -12,8 +12,8 @@ import { recordRunArchived } from './audit.js'
 import { forgetRunLedger } from './attribution.js'
 import { forgetRunCommands } from './shellChanges.js'
 import type { OrchestratorReminderKind } from './reminder.js'
-import { archiveRun, getActiveRun } from './runState.js'
-import { releaseRunWorkspace } from './runWorkspace.js'
+import { archiveRun, getActiveRun, workspaceRoot } from './runState.js'
+import { releaseRunWorkspace, resolveProjectRoot } from './runWorkspace.js'
 
 type SessionContext = Pick<ToolUseContext, 'getAppState'> & {
   options: Pick<ToolUseContext['options'], 'tools' | 'agentDefinitions'>
@@ -25,6 +25,7 @@ export type OrchestratorSessionInfo = {
   availableAgents: string[]
   canMessageWorkers: boolean
   hasContractTool: boolean
+  projectRoot: string
   contract?: { runId: string; version: number }
 }
 
@@ -39,6 +40,7 @@ export function describeOrchestratorSession(
     availableAgents: context.options.agentDefinitions.activeAgents.map(agent => agent.agentType),
     canMessageWorkers: has(SEND_MESSAGE_TOOL_NAME),
     hasContractTool: has(ORCHESTRATION_CONTRACT_TOOL_NAME),
+    projectRoot: (run && workspaceRoot(run.workspace)) || resolveProjectRoot(),
     ...(run ? { contract: { runId: run.runId, version: run.current.version } } : {}),
   }
 }

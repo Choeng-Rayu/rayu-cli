@@ -22,7 +22,7 @@ import { NOTEBOOK_EDIT_TOOL_NAME } from '../tools/NotebookEditTool/constants.js'
 import { ORCHESTRATION_CONTRACT_TOOL_NAME } from '../tools/OrchestrationContractTool/constants.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import type { ContractPacket } from './contract.js'
-import { getActiveRun, type OrchestrationRun, type PacketRunState, workspaceTracking } from './runState.js'
+import { getActiveRun, type OrchestrationRun, type PacketRunState, workspaceRoot, workspaceTracking } from './runState.js'
 import { renderWorkerBriefing } from './workerBriefing.js'
 
 const FILE_WRITING_TOOLS = [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME, NOTEBOOK_EDIT_TOOL_NAME]
@@ -49,6 +49,8 @@ export type WorkerSpawnGrant = {
   packet: ContractPacket
   /** The worktree base for a worktree packet; null runs it in the shared tree. */
   worktreeBase: string | null
+  /** The run's project root: the worker's paths are relative to it, not to the Orchestrator's shell. */
+  projectRoot: string | null
   briefing: string
 }
 
@@ -137,6 +139,7 @@ export function decideWorkerSpawn(
     runId: run.runId,
     packet: found.packet,
     worktreeBase: found.packet.isolation === 'worktree' ? (run.workspace.baseline?.commit ?? null) : null,
+    projectRoot: workspaceRoot(run.workspace),
     briefing: renderWorkerBriefing(run, found.packet),
   }
 }

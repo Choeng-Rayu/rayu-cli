@@ -596,6 +596,8 @@ export type Attachment =
       availableAgents?: string[]
       canMessageWorkers?: boolean
       hasContractTool?: boolean
+      /** What contract paths are relative to; absent on attachments recorded before it. */
+      projectRoot?: string
       contract?: { runId: string; version: number }
     }
   | {
