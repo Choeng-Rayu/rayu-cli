@@ -123,6 +123,10 @@ For an installer-managed install this re-runs the installer, which swaps
 `lib/current` to the new version. Re-running the original one-liner does exactly
 the same thing.
 
+Updates can also install themselves in the background through the rayucode.com
+installer, so a running session keeps going and you do not have to stop work to
+update by hand.
+
 ## Uninstalling
 
 ```bash

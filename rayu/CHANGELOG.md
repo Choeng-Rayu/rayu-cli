@@ -2,6 +2,13 @@
 
 All notable user-facing changes to Rayu-CLI are documented here, newest first.
 
+## 2.5.0 - 2026-11-07 (Beta)
+- **Updates install themselves in the background** — a new release is fetched and installed through the rayucode.com installer without interrupting the session you are in, so updating no longer means stopping work to run it by hand.
+- **Fixed: clipboard images paste on Windows** — pasting an image from the clipboard now attaches it to the prompt on Windows instead of silently doing nothing.
+- **Subagents run on Rayu-hosted models by default** — a subagent now prefers a Rayu-hosted model, and the Rayu provider is given priority, so a subagent no longer fails because its model resolved to nothing.
+- **Fixed: the Orchestrator no longer rejects work that was done** — verification was hardened so a run that completed its packets is not turned away on a contract problem that isn't real, and a contract result now names the project root so workers and checks resolve paths from the right place.
+- **Steadier background runs and releases** — session routing was hardened and the release pipeline tightened, so long-running Orchestrator work and the builds that ship it are less likely to break.
+
 ## 2.4.54 - 2026-11-06 (Beta)
 - **Fixed: an expired Rayu session no longer needs /logout before /login** — a hosted request rejected with 401 now renews the token once and replays the request; if the refresh token itself is dead, the stale session is cleared so `/login` opens instead of replying "already signed in". The login gate now treats an unrenewable session as signed out, which is what forced `/logout` → `/login` after an update or a deploy
 - **Choose your models in Settings** — the editor's Settings tab now has a Models section for the subagent model (one default plus an optional override per agent type), the image generation model, the video generation model and the WebFetch model. Changing the subagent or WebFetch model restarts idle conversations so the change takes effect; image and video choices apply to the next generation with no restart
