@@ -94,7 +94,7 @@ Rayu preloads original specialized skills that the orchestrator and collaborator
    - **Frontend & Mobile:** Once the backend contract (`.rayu/swarm/BACKEND.md`) lands, dispatch `frontend` ∥ `mobile`, each fanning out `builder`s per route-group / screen slice and integrating against the published API routes.
    - **Integration check:** After the waves, verify the frontend/mobile API calls match the backend's published routes; reconcile mismatches before review.
 4. **Shared Context Communication:** Collaborators synchronize via a project-local context brief (`.rayu/swarm/shared.json`) and write their respective domain sections to `.rayu/swarm/<domain>.md`.
-5. **Verification Gate (Audit & Fix):** Orchestrator dispatches the `review` subagent to audit implementation outputs against the Design PRD and generate a structured Fix List. The `fix` subagent (or the owner collaborator) applies precise edits, repeating until builds/tests pass cleanly.
+5. **Verification Gate (Audit & Fix):** Orchestrator dispatches the `review` subagent to audit implementation outputs against the Design PRD and generate a structured Fix List. The `fix` subagent (or the owner collaborator) applies precise edits, repeating until builds/tests pass cleanly. A verified run is no longer rejected by contract problems that are not real, and each check command may be up to 2,000 characters (previously 500).
 6. **Ship:** The `deploy` collaborator runs the production build and ships the app.
 
 ---

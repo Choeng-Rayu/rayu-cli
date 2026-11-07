@@ -102,20 +102,20 @@ second time and can silently reinstall the version you already have when npm
 serves cached registry metadata (packuments are cached for 5 minutes), which
 looks like a successful update that changed nothing.
 
-When a newer version is published, Rayu shows a one-line notice above the prompt
-and in the welcome box at launch, with a link to
-[the changelog](https://rayucode.com/changelog). Nothing is installed until you
-run `rayu update` yourself.
+### Automatic updates
 
-### Automatic updates (opt-in)
+Auto-updates are **on by default**. A running session checks for a new stable
+release at launch and every 30 minutes, installs it in the background next to
+the version you are running, and shows `Update installed · Restart to apply`.
+The new version takes effect the next time you start `rayu`; the running
+session keeps working on the previous one.
 
-Auto-updates are **off by default**. Rayu tells you an update exists but never
-replaces your install behind your back. To turn them on, set `autoUpdates` in
-`~/.rayu/config.json`:
+To turn automatic installs off but keep the "update available" notice, set
+`autoUpdates` in `~/.rayu/config.json`:
 
 ```json
 {
-  "autoUpdates": true
+  "autoUpdates": false
 }
 ```
 
@@ -125,7 +125,7 @@ To silence update checks and notices entirely:
 export DISABLE_AUTOUPDATER=1
 ```
 
-Two things to know before enabling automatic updates:
+Two things to know about automatic updates:
 
 - **Node version.** Rayu requires **Node.js 18 or newer**. npm only *warns* when
   a package's `engines` requirement isn't met, so if a future release raises that

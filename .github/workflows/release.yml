@@ -1,112 +1,109 @@
 name: Release
 
-# Auto-release on merge/push to main. Runs the full finalize gates, derives the
-# next semver version from conventional commits, prepends a CHANGELOG.md block
-# (parsed at runtime by the in-TUI "What's new" — see rayu/src/utils/releaseNotes.ts),
-# commits both back to main, tags vX.Y.Z, then publishes a GitHub Release with
-# native binaries + npm + VSIX.
+# MANUAL release pipeline for the CLI artifacts.
 #
-# Loop prevention / idempotency (4 layers):
-#   1. the bump/changelog commit message carries "[skip ci]"
-#   2. the prepare job is skipped when HEAD is already a `release:` commit
-#   3. release-plan.ts no-ops if the target tag already exists on origin
-#   4. npm and the GitHub Release are existence-checked before publishing
+# Publishing to npm is done by hand, from rayu/:
+#   bun run build && npm publish --access public
+# This workflow never bumps the version, never commits, never tags, and never
+# publishes to npm. It only builds and attaches the artifacts that the npm
+# tarball does not carry: standalone native binaries and the Rayucode VSIXs.
+#
+# Recommended flow:
+#   1. Bump rayu/package.json by hand and merge it to main.
+#   2. cd rayu && bun run build && npm publish --access public
+#   3. git tag -a v<version> -m "release: v<version>" && git push origin v<version>
+#      → this workflow builds the artifacts and creates the GitHub Release.
+#
+# A tag whose version disagrees with rayu/package.json is rejected before
+# anything is built.
+#
+# Quality gates are not duplicated here: .github/workflows/ci.yml runs the full
+# finalize suite on every push to dev and every PR into main/dev.
+
 on:
   push:
-    branches: [main]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: 'Plan the release only — run finalize and print the planned version + changelog, but do not commit, tag, or publish.'
-        type: boolean
-        default: true
-      force_release:
-        description: 'Release even if no feat/fix/breaking commits are found since the last release.'
+      tag:
+        description: >-
+          Existing tag to attach a GitHub Release to (e.g. v2.5.0). Leave empty to
+          only build the artifacts. This workflow never creates a tag.
+        type: string
+        required: false
+      publish_stores:
+        description: 'Also publish the VSIXs to the VS Code Marketplace / Open VSX'
         type: boolean
         default: false
 
 permissions:
-  contents: write # required to commit the bump, push the tag, and create the release
+  contents: write
 
 concurrency:
-  group: release-main
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  # Pinned: the compiled artifacts embed this exact runtime. Keep in step with @types/bun.
+  # Pinned: the compiled artifacts embed this exact runtime. Keep in step with
+  # @types/bun.
   BUN_VERSION: 1.3.14
 
 jobs:
-  # Finalize + plan + commit bump + tag. Single source of truth for the version.
-  prepare:
-    name: Finalize, plan version & tag
+  guard:
+    name: Verify version
     runs-on: ubuntu-latest
-    # Skip when HEAD is itself the automated bump commit (layer 2 of loop prevention).
-    if: ${{ github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'release:') }}
     outputs:
-      version: ${{ steps.plan.outputs.version }}
-      released: ${{ steps.plan.outputs.released }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      create_release: ${{ steps.version.outputs.create_release }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Default GITHUB_TOKEN push works for unprotected main; set RELEASE_PAT
-          # if main is branch-protected and blocks the bot push.
-          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
-
-      - uses: ./.github/actions/finalize
-
-      - name: Plan release (dry-run)
-        id: plan-dry
-        run: |
-          bun run .github/scripts/release-plan.ts \
-            ${{ inputs.force_release && '--force' || '' }} \
-            | tee /tmp/plan.txt
-          {
-            echo "version=$(grep -oE '^version=v[^ ]+' /tmp/plan.txt | head -n1 | cut -d= -f2)"
-            echo "released=$(grep -oE '^released=(true|false)' /tmp/plan.txt | head -n1 | cut -d= -f2)"
-          } >> "$GITHUB_OUTPUT"
-          {
-            echo "## Release plan"
-            echo '```'
-            cat /tmp/plan.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Commit version bump + changelog, tag, and push
-        id: plan
-        if: ${{ steps.plan-dry.outputs.released == 'true' && (github.event_name == 'push' || inputs.dry_run == false) }}
+      - name: Check the tag and package.json agree
+        id: version
         run: |
           set -euo pipefail
-          VERSION="${{ steps.plan-dry.outputs.version }}"
-          bun run .github/scripts/release-plan.ts --apply --force 2>/dev/null \
-            | grep -E '^(version|released)=' | tee /tmp/apply.txt
-          {
-            echo "version=$(grep -oE '^version=v[^ ]+' /tmp/apply.txt | cut -d= -f2)"
-            echo "released=$(grep -oE '^released=(true|false)' /tmp/apply.txt | cut -d= -f2)"
-          } >> "$GITHUB_OUTPUT"
-          if [ "$(grep -oE '^released=(true|false)' /tmp/apply.txt | cut -d= -f2)" = "true" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add rayu/package.json rayu/CHANGELOG.md
-            git commit -m "release: ${VERSION} [skip ci]"
-            git tag -a "${VERSION}" -m "release: ${VERSION}"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-            git push origin "refs/tags/${VERSION}"
+          VERSION="$(node -p "require('./rayu/package.json').version")"
+          # Only an existing tag creates a GitHub Release. A tag is never
+          # created here — `gh release create` would do that implicitly, which
+          # is why a manual run without a tag only builds artifacts.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            CREATE_RELEASE=true
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+            CREATE_RELEASE=true
+            if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+              echo "::error::Tag ${TAG} does not exist on origin. Create it first: git tag -a ${TAG} -m 'release: ${TAG}' && git push origin ${TAG}"
+              exit 1
+            fi
+          else
+            echo "::notice::No tag given — building artifacts for v${VERSION} without a GitHub Release."
+            TAG="v${VERSION}"
+            CREATE_RELEASE=false
+          fi
+          if [ "$CREATE_RELEASE" = "true" ] && [ "$TAG" != "v${VERSION}" ]; then
+            echo "::error::Tag ${TAG} does not match rayu/package.json (v${VERSION}). Bump the version and merge it before tagging."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "create_release=${CREATE_RELEASE}" >> "$GITHUB_OUTPUT"
+          if [ "$CREATE_RELEASE" = "true" ]; then
+            echo "Releasing ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Building artifacts for v${VERSION} (no release)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   # Standalone native binaries (dist-native/ + manifest.json) — what install.sh
-  # and the built-in updater download. Runs in rayu/ because build-native reads
-  # package.json from the CWD.
+  # and the built-in updater download.
   native:
     name: Native binaries
-    needs: prepare
-    if: ${{ needs.prepare.outputs.released == 'true' }}
+    needs: guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.version }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -120,50 +117,12 @@ jobs:
           path: rayu/dist-native/*
           if-no-files-found: error
 
-  npm:
-    name: Publish to npm
-    needs: prepare
-    if: ${{ needs.prepare.outputs.released == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.version }}
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-      - run: bun install --frozen-lockfile
-        working-directory: rayu
-      - run: bun run build
-        working-directory: rayu
-      - name: Publish (idempotent)
-        working-directory: rayu
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          # Skip if this version is already on the registry (layer 4 of idempotency).
-          if npm view "@rayu-dev/rayu-cli@${VERSION}" version >/dev/null 2>&1; then
-            echo "::notice::@rayu-dev/rayu-cli@${VERSION} already published; skipping"
-          else
-            npm publish --access public
-          fi
-
-  # VSIX (universal + linux/alpine/win). Mirrors the proven build-linux job in
-  # rayucode-vsix.yml — that workflow stays for manual, opt-in store publishing.
   vsix-linux:
     name: VSIX (linux/alpine/win)
-    needs: prepare
-    if: ${{ needs.prepare.outputs.released == 'true' }}
+    needs: guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.version }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -188,13 +147,10 @@ jobs:
 
   vsix-macos:
     name: VSIX (darwin)
-    needs: prepare
-    if: ${{ needs.prepare.outputs.released == 'true' }}
+    needs: guard
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.version }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -210,15 +166,15 @@ jobs:
           if-no-files-found: error
 
   # Create the GitHub Release and attach native binaries + manifest + VSIXs.
+  # Skipped when there is no tag to attach to; the artifacts are still uploaded
+  # by the build jobs above.
   release:
     name: GitHub Release
-    needs: [prepare, native, npm, vsix-linux, vsix-macos]
-    if: ${{ needs.prepare.outputs.released == 'true' }}
+    needs: [guard, native, vsix-linux, vsix-macos]
+    if: ${{ needs.guard.outputs.create_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.version }}
       - uses: actions/download-artifact@v4
         with:
           name: native
@@ -231,44 +187,49 @@ jobs:
       - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.guard.outputs.tag }}
         run: |
           set -euo pipefail
-          if ! gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release create "$VERSION" \
-              --title "Rayu CLI ${VERSION}" \
+          # Create as a draft, upload everything, then publish. Installers and
+          # the CLI auto-updater resolve /releases/latest, which skips drafts,
+          # so nobody can see this release before its binaries and
+          # manifest.json are attached. The tag already exists (the guard
+          # verified it), so no tag is created here.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "Rayu CLI $TAG" \
               --generate-notes
           fi
-          gh release upload "$VERSION" --clobber \
+          gh release upload "$TAG" --clobber \
             dist-native/rayu-cli-* \
             dist-native/manifest.json \
             vsix/*.vsix
+          gh release edit "$TAG" --draft=false --latest
 
-  # Publish the extension to the VS Code Marketplace (and Open VSX if configured).
-  # Each store step is skipped when its secret is absent, so this never fails the
-  # release just because a store is not set up. --skip-duplicate makes re-runs safe.
+  # Opt-in: publish the VSIXs to the extension stores. Each step is skipped
+  # when its secret is absent, so a missing store simply does nothing.
   publish-stores:
     name: Publish extension to stores
-    needs: [prepare, vsix-linux, vsix-macos]
-    if: ${{ needs.prepare.outputs.released == 'true' }}
+    needs: [guard, vsix-linux, vsix-macos]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_stores }}
     runs-on: ubuntu-latest
     env:
       VSCE_PAT: ${{ secrets.VSCE_PAT }}
       OVSX_PAT: ${{ secrets.OVSX_PAT }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.version }}
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - run: bun install --frozen-lockfile
-        working-directory: rayu
       - uses: actions/download-artifact@v4
         with:
           pattern: vsix-*
           path: vsix
           merge-multiple: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+        working-directory: rayu
       - name: Publish to the VS Code Marketplace
         if: env.VSCE_PAT != ''
         working-directory: rayu

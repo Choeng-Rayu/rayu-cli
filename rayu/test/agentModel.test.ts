@@ -73,7 +73,7 @@ describe('agent model resolution', () => {
     expect(getAgentModel('my-special-llm', 'meta/llama-3.3-70b-instruct')).toBe('my-special-llm')
   })
 
-  test('an UNSET agent model resolves to the main model, not the instant model', async () => {
+  test('an UNSET agent model resolves to the main model when rayu-hosted is NOT configured', async () => {
     const cfg = await fresh()
     cfg.upsertProvider({
       id: 'nvidia',
@@ -86,9 +86,8 @@ describe('agent model resolution', () => {
 
     const { getAgentModel } = await import('../src/utils/model/agent.ts')
 
-    // No env var, no tool param, no saved selection and no agent-def model:
-    // the subagent must run on the MAIN agent's model, not the provider's
-    // instant/small-fast model.
+    // No env var, no tool param, no saved selection, no agent-def model, no rayu-hosted:
+    // the subagent must run on the MAIN agent's model, not the provider's instant model.
     expect(
       getAgentModel(undefined, 'parent-model', undefined, 'default', 'Explore'),
     ).toBe('parent-model')
@@ -97,6 +96,73 @@ describe('agent model resolution', () => {
     expect(
       getAgentModel('haiku', 'parent-model', undefined, 'default', 'Explore'),
     ).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
+  })
+
+  test('an UNSET agent model prefers rayu-hosted over the active third-party provider', async () => {
+    const cfg = await fresh()
+    // nvidia is the active session provider
+    cfg.upsertProvider(
+      {
+        id: 'nvidia',
+        kind: 'openai-compatible',
+        apiKey: 'k',
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+        defaultModel: 'meta/llama-3.3-70b-instruct',
+        smallFastModel: 'nvidia/llama-3.1-nemotron-70b-instruct',
+      },
+      true,
+    )
+    // rayu-hosted is configured but not active
+    cfg.upsertProvider(
+      {
+        id: 'rayu',
+        kind: 'rayu-hosted',
+        apiKey: 'rayu-token',
+        defaultModel: 'claude-sonnet-4-6',
+        smallFastModel: 'claude-haiku-4-5-20251001',
+      },
+      false,
+    )
+
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+
+    // undefined agentModel + rayu-hosted configured: encode and route to rayu-hosted default
+    const result = getAgentModel(undefined, 'meta/llama-3.3-70b-instruct', undefined, 'default', 'Explore')
+    expect(cfg.decodeModelProvider(result)).toEqual({
+      providerId: 'rayu',
+      model: 'claude-sonnet-4-6',
+    })
+
+    // tool-specified model still wins over rayu-hosted preference
+    expect(
+      getAgentModel(undefined, 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0', 'default', 'Explore'),
+    ).toBe('qwen.qwen3-32b-v1:0')
+
+    // 'inherit' is an explicit choice — does NOT trigger rayu-hosted redirect
+    expect(
+      getAgentModel('inherit', 'meta/llama-3.3-70b-instruct', undefined, 'default', 'Explore'),
+    ).toBe('meta/llama-3.3-70b-instruct')
+  })
+
+  test('an UNSET agent model does NOT redirect when rayu-hosted is already the active provider', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider(
+      {
+        id: 'rayu',
+        kind: 'rayu-hosted',
+        apiKey: 'rayu-token',
+        defaultModel: 'claude-sonnet-4-6',
+        smallFastModel: 'claude-haiku-4-5-20251001',
+      },
+      true, // rayu-hosted IS the active provider
+    )
+
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+
+    // The session is already on rayu-hosted — no redirect needed, parentModel routes there.
+    expect(
+      getAgentModel(undefined, 'claude-sonnet-4-6', undefined, 'default', 'Explore'),
+    ).toBe('claude-sonnet-4-6')
   })
 
   test('openai-compatible with global override CLAUDE_CODE_SUBAGENT_MODEL', async () => {

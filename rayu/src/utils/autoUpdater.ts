@@ -132,14 +132,39 @@ export async function getMaxVersionMessage(): Promise<string | undefined> {
   return config.external_message || undefined
 }
 
+/**
+ * Rayu's auto-update kill switch: a static file served by rayu-web. To stop a
+ * bad release from spreading, set `maxVersion` to the last good version and
+ * deploy the site; every session caps its next update check at that version.
+ * (Upstream used a GrowthBook config, which is stubbed in Rayu.)
+ */
+export const UPDATE_POLICY_URL = 'https://rayucode.com/cli-update.json'
+
+/** Pure: turn the policy file body into the config the updaters read. */
+export function parseUpdatePolicy(data: unknown): MaxVersionConfig {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return {}
+  const { maxVersion, message } = data as Record<string, unknown>
+  const config: MaxVersionConfig = {}
+  if (typeof maxVersion === 'string' && /^\d+\.\d+\.\d+/.test(maxVersion)) {
+    config.external = maxVersion
+  }
+  if (typeof message === 'string' && message.length > 0) {
+    config.external_message = message
+  }
+  return config
+}
+
 async function getMaxVersionConfig(): Promise<MaxVersionConfig> {
   try {
-    return await getDynamicConfig_BLOCKS_ON_INIT<MaxVersionConfig>(
-      'tengu_max_version_config',
-      {},
-    )
+    const res = await axios.get(UPDATE_POLICY_URL, {
+      timeout: 5000,
+      maxRedirects: 0,
+      validateStatus: s => s === 200,
+    })
+    return parseUpdatePolicy(res.data)
   } catch (error) {
-    logError(error as Error)
+    // Unreachable or no policy published: no cap, same as upstream's default.
+    logForDebugging(`update policy fetch failed: ${error}`)
     return {}
   }
 }

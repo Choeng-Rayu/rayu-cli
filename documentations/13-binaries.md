@@ -35,14 +35,20 @@ package `@rayu-dev/rayu-cli` is updated separately via `npm i -g`.
 To cut a release:
 
 1. Bump `version` in `package.json` (and `scripts/macroValues.ts` `VERSION` if
-   you keep it separate).
-2. Add a `## <version> - <YYYY-MM-DD>` section to `rayu/CHANGELOG.md` describing
-   the user-facing changes. This is the source for the in-TUI "What's new" panel
-   and the "Update available" notice (fetched from the raw `CHANGELOG.md`).
-3. `git tag v<version> && git push origin v<version>`.
-4. `.github/workflows/release.yml` builds all platforms on a single Ubuntu
-   runner (Bun cross-compiles), then creates the GitHub Release and uploads the
-   binaries + `manifest.json` as assets.
+   you keep it separate) and merge it to `main`.
+2. Push the bump to `dev` first if you want the notes generated for you. The
+   `release-notes` workflow notices that `package.json` is ahead of the newest
+   `rayu/CHANGELOG.md` entry and opens a pull request with the new
+   `## <version> - <YYYY-MM-DD>` section plus any documentation pages the
+   release affects. Review and merge it. This file is the source for the in-TUI
+   "What's new" panel and the "Update available" notice (fetched from the raw
+   `CHANGELOG.md` on `main`).
+3. Publish to npm by hand: `cd rayu && bun run build && npm publish --access public`.
+4. `git tag v<version> && git push origin v<version>`.
+5. `.github/workflows/release.yml` then builds all platforms on a single Ubuntu
+   runner (Bun cross-compiles), creates the GitHub Release, and uploads the
+   binaries + `manifest.json` as assets. It refuses a tag that disagrees with
+   `package.json`, and it never bumps the version or publishes to npm.
 
 Until a release exists, the updater's version check returns `null` and simply
 treats the current version as up to date (no errors). Tags containing `-`
