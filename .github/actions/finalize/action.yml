@@ -1,0 +1,54 @@
+name: finalize
+description: >-
+  Shared finalize gates for the Rayu CLI. Runs the full check suite in rayu/:
+  install, typecheck (baseline gate), tests, bundle build, installer-sync check,
+  and the import-boundary check. Assumes actions/checkout (fetch-depth: 0) has
+  already run at the repo root. Used by both CI (dev/PR) and the release flow.
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        # Pinned: the compiled artifacts embed this exact runtime. Keep in step
+        # with @types/bun in package.json.
+        bun-version: 1.3.14
+
+    - name: Install dependencies
+      working-directory: rayu
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Type check (baseline gate)
+      working-directory: rayu
+      shell: bash
+      run: bun run typecheck:ci
+
+    - name: Run tests
+      working-directory: rayu
+      shell: bash
+      run: bun test
+
+    - name: Build bundle
+      working-directory: rayu
+      shell: bash
+      run: bun run build
+
+    - name: Check installer sync
+      working-directory: rayu
+      shell: bash
+      run: |
+        rc=0
+        bun run check:installer || rc=$?
+        # exit 1 = real drift (fail); exit 2 = site unreachable (warn only).
+        if [ "$rc" = "2" ]; then
+          echo "::warning::check:installer skipped (site unreachable)"
+        elif [ "$rc" != "0" ]; then
+          exit "$rc"
+        fi
+
+    - name: Import boundary check
+      working-directory: rayu
+      shell: bash
+      run: bun run boundary

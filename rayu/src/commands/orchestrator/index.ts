@@ -1,6 +1,9 @@
 import type { Command } from '../../commands.js'
 import { ORCHESTRATOR_PAID_FEATURE } from '../../constants/orchestrator.js'
-import { setOrchestratorModeUpdater } from '../../utils/orchestratorMode.js'
+import {
+  orchestratorNoGitNote,
+  setOrchestratorModeUpdater,
+} from '../../utils/orchestratorMode.js'
 
 /**
  * Enter the session-wide Orchestrator mode. The entitlement key intentionally
@@ -27,6 +30,10 @@ const command = {
     const taskLine = task
       ? `The task to orchestrate:\n\n${task}`
       : 'Orchestrate the current task or the plan already established in this conversation.'
+    const note = orchestratorNoGitNote()
+    const noteLine = note
+      ? `\n\nNote for the user (say this once before you start): ${note}`
+      : ''
 
     return [
       {
@@ -35,7 +42,7 @@ const command = {
 
 ${taskLine}
 
-Follow the Orchestrator mode rules in the system reminder. First make sure you understand the goal and ask the user about any high-impact decision the code cannot answer. Then plan and delegate implementation to subagents with disjoint file ownership, and integrate their results. Do not edit files yourself; you may run shell commands such as checks and builds. Stay in Orchestrator mode until the user selects another mode or runs /normal.`,
+Follow the Orchestrator mode rules in the system reminder. First make sure you understand the goal and ask the user about any high-impact decision the code cannot answer. Then plan and delegate implementation to subagents with disjoint file ownership, and integrate their results. Do not edit files yourself; you may run shell commands such as checks and builds. Stay in Orchestrator mode until the user selects another mode or runs /normal.${noteLine}`,
       },
     ]
   },

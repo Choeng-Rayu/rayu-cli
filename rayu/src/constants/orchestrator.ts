@@ -9,6 +9,11 @@ export const ORCHESTRATOR_PAID_FEATURE = 'collaborator_swarm'
 
 /** A full role reminder replaces the short one every N reminders, to bound drift. */
 export const ORCHESTRATOR_FULL_REMINDER_EVERY = 10
+/**
+ * Reminders attached in one human turn at most, including the one at turn start.
+ * While no contract exists, one extra mid-turn reminder keeps the publish rule in view.
+ */
+export const ORCHESTRATOR_MAX_REMINDERS_PER_TURN = 2
 
 // ── Settings defaults (`orchestrator` in settings.json) ──────────────────────
 

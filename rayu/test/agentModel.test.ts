@@ -73,6 +73,32 @@ describe('agent model resolution', () => {
     expect(getAgentModel('my-special-llm', 'meta/llama-3.3-70b-instruct')).toBe('my-special-llm')
   })
 
+  test('an UNSET agent model resolves to the main model, not the instant model', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'k',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'meta/llama-3.3-70b-instruct',
+      smallFastModel: 'nvidia/llama-3.1-nemotron-70b-instruct',
+    })
+
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+
+    // No env var, no tool param, no saved selection and no agent-def model:
+    // the subagent must run on the MAIN agent's model, not the provider's
+    // instant/small-fast model.
+    expect(
+      getAgentModel(undefined, 'parent-model', undefined, 'default', 'Explore'),
+    ).toBe('parent-model')
+
+    // An EXPLICIT 'haiku' is still a fast-tier request → instant model.
+    expect(
+      getAgentModel('haiku', 'parent-model', undefined, 'default', 'Explore'),
+    ).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
+  })
+
   test('openai-compatible with global override CLAUDE_CODE_SUBAGENT_MODEL', async () => {
     const cfg = await fresh()
     cfg.upsertProvider({
@@ -137,8 +163,10 @@ describe('getAgentModel: callback-to-inherit on a disallowed per-agent override'
   })
 })
 
-// Hard-lock precedence: a saved /subagent_models selection overrides the Agent-tool model param (see getAgentModel in src/utils/model/agent.ts).
-describe('getAgentModel: saved /subagent_models selection is a hard lock', () => {
+// Tool-param precedence: the Agent-tool `model` param overrides a saved
+// /subagent_models selection, which acts as a fallback default (see getAgentModel
+// in src/utils/model/agent.ts).
+describe('getAgentModel: the tool model param overrides a saved selection', () => {
   async function activateNvidia() {
     const cfg = await fresh()
     cfg.upsertProvider({
@@ -152,18 +180,18 @@ describe('getAgentModel: saved /subagent_models selection is a hard lock', () =>
     return cfg
   }
 
-  test('saved selection beats a toolSpecifiedModel', async () => {
+  test('toolSpecifiedModel overrides a saved global selection', async () => {
     const cfg = await activateNvidia()
-    cfg.setSubagentSelection('nvidia', 'nvidia/locked-model')
+    cfg.setSubagentSelection('nvidia', 'nvidia/saved-model')
     const { getAgentModel } = await import('../src/utils/model/agent.ts')
     expect(
       getAgentModel('haiku', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0'),
-    ).toBe('nvidia/locked-model')
+    ).toBe('qwen.qwen3-32b-v1:0')
   })
 
-  test('saved per-agent selection beats a toolSpecifiedModel', async () => {
+  test('toolSpecifiedModel overrides a saved per-agent selection', async () => {
     const cfg = await activateNvidia()
-    cfg.setSubagentSelection('nvidia', 'nvidia/locked-planner', 'planner')
+    cfg.setSubagentSelection('nvidia', 'nvidia/saved-planner', 'planner')
     const { getAgentModel } = await import('../src/utils/model/agent.ts')
     expect(
       getAgentModel(
@@ -173,23 +201,47 @@ describe('getAgentModel: saved /subagent_models selection is a hard lock', () =>
         'default',
         'planner',
       ),
-    ).toBe('nvidia/locked-planner')
+    ).toBe('qwen.qwen3-32b-v1:0')
   })
 
-  test('cross-provider saved selection is still encoded when a tool model is passed', async () => {
+  test('a saved global selection is used when no tool model is passed', async () => {
+    const cfg = await activateNvidia()
+    cfg.setSubagentSelection('nvidia', 'nvidia/saved-model')
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel('haiku', 'meta/llama-3.3-70b-instruct')).toBe(
+      'nvidia/saved-model',
+    )
+  })
+
+  test('a saved per-agent selection is used when no tool model is passed', async () => {
+    const cfg = await activateNvidia()
+    cfg.setSubagentSelection('nvidia', 'nvidia/saved-planner', 'planner')
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(
+      getAgentModel(
+        'inherit',
+        'meta/llama-3.3-70b-instruct',
+        undefined,
+        'default',
+        'planner',
+      ),
+    ).toBe('nvidia/saved-planner')
+  })
+
+  test('cross-provider saved selection is still encoded when no tool model is passed', async () => {
     const cfg = await activateNvidia()
     cfg.setSubagentSelection('bedrock', 'openai.gpt-oss-120b-1:0')
     const { getAgentModel } = await import('../src/utils/model/agent.ts')
-    const res = getAgentModel('haiku', 'meta/llama-3.3-70b-instruct', 'qwen.qwen3-32b-v1:0')
+    const res = getAgentModel('haiku', 'meta/llama-3.3-70b-instruct')
     expect(cfg.decodeModelProvider(res)).toEqual({
       providerId: 'bedrock',
       model: 'openai.gpt-oss-120b-1:0',
     })
   })
 
-  test('CLAUDE_CODE_SUBAGENT_MODEL still beats the saved selection', async () => {
+  test('CLAUDE_CODE_SUBAGENT_MODEL still beats the saved selection and the tool param', async () => {
     const cfg = await activateNvidia()
-    cfg.setSubagentSelection('nvidia', 'nvidia/locked-model')
+    cfg.setSubagentSelection('nvidia', 'nvidia/saved-model')
     process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'haiku'
     const { getAgentModel } = await import('../src/utils/model/agent.ts')
     expect(getAgentModel('sonnet', 'meta/llama-3.3-70b-instruct')).toBe(
@@ -214,13 +266,11 @@ describe('getAgentModel: saved /subagent_models selection is a hard lock', () =>
     expect(getAgentModel('opus', 'claude-sonnet-4-6', 'sonnet')).toBe('claude-sonnet-4-6')
   })
 
-  test('a disallowed saved selection falls back to inherit even with a tool model', async () => {
+  test('a disallowed saved selection falls back to inherit when no tool param is passed', async () => {
     const cfg = await activateNvidia()
-    cfg.setSubagentSelection('nvidia', 'nvidia/locked-model')
-    disallowedModels.add('nvidia/locked-model')
+    cfg.setSubagentSelection('nvidia', 'nvidia/saved-model')
+    disallowedModels.add('nvidia/saved-model')
     const { getAgentModel } = await import('../src/utils/model/agent.ts')
-    expect(
-      getAgentModel('haiku', 'claude-sonnet-4-6', 'qwen.qwen3-32b-v1:0'),
-    ).toBe('claude-sonnet-4-6')
+    expect(getAgentModel('haiku', 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
   })
 })

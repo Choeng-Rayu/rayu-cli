@@ -136,7 +136,8 @@ describe('the verifier definition', () => {
     const prompt = verifier.getSystemPrompt?.({} as never) ?? ''
     expect(prompt).toContain('You are the Orchestrator verifier')
     expect(prompt).toContain('VERDICT: PASS')
-    expect(verifier.model).toBe('inherit')
+    // No model is pinned — it defaults to the main/Orchestrator model.
+    expect(verifier.model).toBeUndefined()
   })
 })
 

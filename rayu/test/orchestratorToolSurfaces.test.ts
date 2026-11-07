@@ -55,7 +55,14 @@ function store(current: OrchestrationRun | null) {
 describe('the OrchestrationContract tool', () => {
   test('describes itself and shows the contract, or why there is none', async () => {
     expect(await OrchestrationContractTool.description({} as never, {} as never)).toBeTruthy()
-    expect(await OrchestrationContractTool.prompt({} as never)).toContain('OrchestrationContract')
+    const prompt = await OrchestrationContractTool.prompt({} as never)
+    expect(prompt).toContain('OrchestrationContract')
+    // The checks rule is explicit, distinct from packet acceptance, and uses a real command.
+    expect(prompt).toContain('checks` (required)')
+    expect(prompt).toContain("not** a packet's `acceptance`")
+    expect(prompt).toContain('at least one required check')
+    expect(prompt).toContain('bun run typecheck')
+    expect(prompt).not.toContain('checks/consistency.check.ts')
     expect(OrchestrationContractTool.isReadOnly({ action: 'show' } as never)).toBe(true)
     expect(OrchestrationContractTool.isReadOnly({ action: 'publish' } as never)).toBe(false)
     expect(OrchestrationContractTool.renderToolUseMessage({ action: 'publish', contract: { packets: [{}, {}] } } as never, {} as never)).toBe('publish · 2 packets')

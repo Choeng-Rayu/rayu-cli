@@ -1,5 +1,7 @@
-import { chmod, mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
+import { chmod, mkdir, readdir, readFile, unlink } from 'fs/promises'
 import { join } from 'path'
+import { writeFileAtomically } from './fsOperations.js'
+import { sequential } from './sequential.js'
 import {
   getOriginalCwd,
   getSessionId,
@@ -96,42 +98,34 @@ export function isBgSession(): boolean {
 export async function registerSession(): Promise<boolean> {
   if (getAgentId() != null) return false
 
-  const kind: SessionKind = envSessionKind() ?? 'interactive'
   const dir = getSessionsDir()
   const pidFile = join(dir, `${process.pid}.json`)
 
   registerCleanup(async () => {
-    try {
-      await unlink(pidFile)
-    } catch {
+    // Through the same queue as the patches: a patch that already read the file
+    // would otherwise rename it back into existence after this unlink.
+    await writeRegistry(() => unlink(pidFile)).catch(() => {
       // ENOENT is fine (already deleted or never written)
-    }
+    })
   })
 
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 })
     await chmod(dir, 0o700)
-    await writeFile(
-      pidFile,
-      jsonStringify({
-        pid: process.pid,
-        sessionId: getSessionId(),
-        cwd: getOriginalCwd(),
-        startedAt: Date.now(),
-        kind,
-        entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT,
-        ...(RAYU_FEATURES.UDS_INBOX
-          ? { messagingSocketPath: process.env.CLAUDE_CODE_MESSAGING_SOCKET }
-          : {}),
-        ...(RAYU_FEATURES.BG_SESSIONS
-          ? {
-              name: process.env.CLAUDE_CODE_SESSION_NAME,
-              logPath: process.env.CLAUDE_CODE_SESSION_LOG,
-              agent: process.env.CLAUDE_CODE_AGENT,
-            }
-          : {}),
-      }),
-    )
+    const initialRecord: Record<string, unknown> = {
+      ...baseSessionRecord(),
+      ...(RAYU_FEATURES.UDS_INBOX
+        ? { messagingSocketPath: process.env.CLAUDE_CODE_MESSAGING_SOCKET }
+        : {}),
+      ...(RAYU_FEATURES.BG_SESSIONS
+        ? {
+            name: process.env.CLAUDE_CODE_SESSION_NAME,
+            logPath: process.env.CLAUDE_CODE_SESSION_LOG,
+            agent: process.env.CLAUDE_CODE_AGENT,
+          }
+        : {}),
+    }
+    await writeRegistry(() => writeFileAtomically(pidFile, jsonStringify(initialRecord)))
     // --resume / /resume mutates getSessionId() via switchSession. Without
     // this, the PID file's sessionId goes stale and `claude ps` sparkline
     // reads the wrong transcript.
@@ -145,19 +139,98 @@ export async function registerSession(): Promise<boolean> {
   }
 }
 
+/** The IPC coordinates this session last published, for registry repair. */
+let lastIpcInfo: { address: string; token: string } | null = null
+
 /**
- * Update this session's name in its PID registry file so ListPeers
- * can surface it. Best-effort: silently no-op if name is falsy, the
- * file doesn't exist (session not registered), or read/write fails.
+ * The fields every registry record must carry.
+ *
+ * Shared by initial registration and by the repair of a corrupt file so the two
+ * cannot drift apart.
+ */
+function baseSessionRecord(): Record<string, unknown> {
+  return {
+    pid: process.pid,
+    sessionId: getSessionId(),
+    cwd: getOriginalCwd(),
+    startedAt: Date.now(),
+    kind: envSessionKind() ?? 'interactive',
+    entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT,
+    ...(lastIpcInfo
+      ? { ipcAddress: lastIpcInfo.address, ipcToken: lastIpcInfo.token }
+      : {}),
+  }
+}
+
+/**
+ * One queue for this process's registry writes.
+ *
+ * `writeFileAtomically` stops a reader seeing a torn file, but two concurrent
+ * read-modify-write cycles would still both read the same snapshot and the later
+ * write would drop the earlier patch — e.g. `startSessionIpc` publishing
+ * `ipcAddress` while a session-name write lands, leaving the session
+ * unaddressable for the rest of its life. The file belongs to this process
+ * alone, so an in-memory queue is sufficient.
+ */
+const writeRegistry = sequential(
+  async (task: () => Promise<void>): Promise<void> => task(),
+)
+
+/**
+ * Merge a patch into this session's PID registry file.
+ *
+ * Best-effort and serialised with every other write from this process.
+ * Silently no-ops when the session was never registered.
  */
 async function updatePidFile(patch: Record<string, unknown>): Promise<void> {
+  // Subagents never register (see registerSession), so they have no file to
+  // patch — and rebuilding one here would put swarm noise back into `/sessions`.
+  if (getAgentId() != null) return
+  await writeRegistry(() => patchPidFile(patch))
+}
+
+async function patchPidFile(patch: Record<string, unknown>): Promise<void> {
   const pidFile = join(getSessionsDir(), `${process.pid}.json`)
+
+  let raw: string
   try {
-    const data = jsonParse(await readFile(pidFile, 'utf8')) as Record<
-      string,
-      unknown
-    >
-    await writeFile(pidFile, jsonStringify({ ...data, ...patch }))
+    raw = await readFile(pidFile, 'utf8')
+  } catch (e) {
+    // Only a missing file means "never registered" (or already cleaned up);
+    // recreating it would resurrect a record after exit. Any other failure is
+    // a real filesystem problem worth seeing in the log.
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logForDebugging(
+        `[concurrentSessions] registry read failed: ${errorMessage(e)}`,
+      )
+    }
+    return
+  }
+
+  // Parsed SEPARATELY from the write below: a write failure must never be
+  // mistaken for a corrupt file, or a transient ENOSPC/EACCES would replace a
+  // perfectly good record with a minimal rebuild (dropping its name, IPC
+  // address, activity state, and original start time).
+  let data: Record<string, unknown> | null = null
+  try {
+    const parsed: unknown = jsonParse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      data = parsed as Record<string, unknown>
+    }
+  } catch {
+    // Torn or truncated — repaired below.
+  }
+
+  if (!data) {
+    // Skipping it used to strand the session: its old content stayed, so
+    // `readSessionRecords` dropped it for the rest of its life. Rebuild from
+    // what only this process knows, including the live IPC address and token.
+    logForDebugging('[concurrentSessions] repairing corrupt registry file')
+    data = baseSessionRecord()
+  }
+
+  try {
+    await writeFileAtomically(pidFile, jsonStringify({ ...data, ...patch }))
   } catch (e) {
     logForDebugging(
       `[concurrentSessions] updatePidFile failed: ${errorMessage(e)}`,
@@ -165,6 +238,11 @@ async function updatePidFile(patch: Record<string, unknown>): Promise<void> {
   }
 }
 
+/**
+ * Update this session's name in its PID registry file so ListPeers
+ * can surface it. Best-effort: silently no-op if name is falsy, the
+ * file doesn't exist (session not registered), or read/write fails.
+ */
 export async function updateSessionName(
   name: string | undefined,
 ): Promise<void> {
@@ -210,6 +288,11 @@ export async function updateTelegramSessionInfo(patch: {
   ipcToken?: string
   status?: SessionStatus
 }): Promise<void> {
+  // Remembered so a later repair of a corrupt file can re-publish the listener
+  // without reaching into the IPC module.
+  if (patch.ipcAddress && patch.ipcToken) {
+    lastIpcInfo = { address: patch.ipcAddress, token: patch.ipcToken }
+  }
   await updatePidFile({ ...patch, updatedAt: Date.now() })
 }
 

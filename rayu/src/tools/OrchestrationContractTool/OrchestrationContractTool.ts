@@ -46,7 +46,7 @@ import { ORCHESTRATION_CONTRACT_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getOrchestrationContractPrompt } from './prompt.js'
 
 const inputSchema = lazySchema(() =>
-  z.object({
+  z.strictObject({
     action: z
       .enum(['publish', 'show'])
       .describe('"publish" a new contract version, or "show" the current one'),
@@ -128,7 +128,7 @@ function validatePublish(input: Input, context: CallerContext): ContractValidati
  */
 function formatErrors(errors: readonly string[], root: string): string {
   const list = errors.map((error, index) => `${index + 1}. ${error}`).join('\n')
-  return `The contract was not published. Paths are relative to ${root}. Fix these and publish it again:\n${list}`
+  return `The contract was not published. Paths are relative to ${root}. Fix these, then call ${ORCHESTRATION_CONTRACT_TOOL_NAME} again with the corrected contract now; do not launch workers or ask the user first:\n${list}`
 }
 
 async function allocateRun(now: number): Promise<{ ids: NewRunIds; warnings: string[] }> {

@@ -93,31 +93,45 @@ function titleOf(record: SessionRecord): string {
  * MUTATES a session's id in place (bootstrap/state.switchSession), so a pointer
  * written before a resume would otherwise dangle even though the same terminal,
  * in the same directory, is still there and is obviously what the user meant.
+ *
+ * The fallback refuses AMBIGUITY. Several live sessions can share one directory
+ * — an editor with more than one conversation open in a workspace, or two
+ * terminals in the same project — and `readSessionRecords` returns them oldest
+ * first, so the previous `find` silently resolved to the OLDEST one. A prompt
+ * then went to a session the user was not looking at while the chat appeared
+ * dead. `ambiguous` is reported instead, and the caller tells the user to
+ * /switch, which is the only unambiguous answer.
  */
-export async function resolveAttachedSession(): Promise<
-  { record: SessionRecord } | { missing: 'none' | 'gone' }
+export async function resolveAttachedSession(
+  /** A snapshot the caller already read, to avoid a second registry scan. */
+  knownRecords?: readonly SessionRecord[],
+): Promise<
+  { record: SessionRecord } | { missing: 'none' | 'gone' | 'ambiguous' }
 > {
   const attachment = readAttachment()
   if (!attachment) return { missing: 'none' }
 
-  const records = await readSessionRecords()
+  const records = knownRecords ?? (await readSessionRecords())
   if (records.length === 0) return { missing: 'gone' }
 
   const byId = records.find(r => r.sessionId === attachment.sessionId)
   if (byId) return { record: byId }
 
-  const byCwd = records.find(
+  const byCwd = records.filter(
     r => r.cwd === attachment.cwd && isProcessRunning(r.pid),
   )
-  if (byCwd) {
+  if (byCwd.length > 1) return { missing: 'ambiguous' }
+
+  const match = byCwd[0]
+  if (match) {
     // Re-pin the pointer to the new id so the next lookup is a direct hit.
     writeAttachment({
-      sessionId: byCwd.sessionId,
-      pid: byCwd.pid,
-      cwd: byCwd.cwd,
+      sessionId: match.sessionId,
+      pid: match.pid,
+      cwd: match.cwd,
       attachedAt: attachment.attachedAt,
     })
-    return { record: byCwd }
+    return { record: match }
   }
   return { missing: 'gone' }
 }
@@ -136,7 +150,7 @@ async function resolveTarget(): Promise<
   if (records.length === 0) return { failure: { kind: 'no-sessions' } }
 
   let target: SessionRecord | undefined
-  const resolved = await resolveAttachedSession()
+  const resolved = await resolveAttachedSession(records)
 
   if ('record' in resolved) {
     target = resolved.record
@@ -153,6 +167,9 @@ async function resolveTarget(): Promise<
       failure: { kind: 'session-gone', title: readAttachment()?.cwd ?? 'that session' },
     }
   } else {
+    // `ambiguous` lands here too: the remembered cwd is shared by several live
+    // sessions, so the honest answer is the same one an unattached chat gets —
+    // list them and let the user pick.
     return { failure: { kind: 'not-attached', available: records.length } }
   }
 

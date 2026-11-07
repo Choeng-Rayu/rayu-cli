@@ -16,9 +16,10 @@
 name: Rayucode VSIX
 
 on:
-  push:
-    tags:
-      - 'v*'
+  # Called by release.yml as part of the main-branch auto-release, and runnable
+  # by hand. It deliberately does NOT trigger on v* tags — release.yml owns tag
+  # creation, so a tag trigger here would double-build every release.
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -118,7 +119,12 @@ jobs:
           fi
 
   publish:
-    name: Publish
+    # Manual re-publish escape hatch. The normal path is release.yml, which now
+    # publishes to the stores automatically after building the VSIXs; this job
+    # exists so a human can re-run a store publish on its own. --skip-duplicate
+    # keeps it idempotent when a version is already live.
+    name: Publish to stores (manual re-publish)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: smoke
     runs-on: ubuntu-latest
     env:
@@ -135,15 +141,9 @@ jobs:
           pattern: vsix-*
           path: rayu/dist
           merge-multiple: true
-      - name: Attach the VSIXs to the GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: rayu/dist/rayucode-*.vsix
-          prerelease: ${{ contains(github.ref_name, '-') }}
       - name: Publish to the VS Code Marketplace
         if: env.VSCE_PAT != ''
-        run: node_modules/.bin/vsce publish --packagePath dist/rayucode-*.vsix
+        run: node_modules/.bin/vsce publish --skip-duplicate --packagePath dist/rayucode-*.vsix
       - name: Publish to Open VSX
         if: env.OVSX_PAT != ''
         run: |

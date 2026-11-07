@@ -27,12 +27,25 @@ import {
 import { lazySchema } from '../utils/lazySchema.js'
 import { firstOverlap, normalizeOwnershipPattern, ownsPath } from './ownership.js'
 
+/**
+ * The one problem that must never be hidden by the error cap: a contract with no
+ * required check cannot be run, and settings checks are additional, not a substitute.
+ */
+export const MISSING_REQUIRED_CHECK =
+  "Add at least one required check to the contract: a command that proves the integrated result works, such as the project's test or type-check command. Commands from settings (orchestrator.checkCommands) run in addition to it; they do not replace it."
+
+/**
+ * The schema-level message adds the retry instruction, because a parse failure is
+ * reported by the generic Zod formatter and never reaches the tool's own error text.
+ */
+const MISSING_REQUIRED_CHECK_SCHEMA = `${MISSING_REQUIRED_CHECK} Retry this call now with the corrected contract.`
+
 export const contractSchema = lazySchema(() =>
-  z.object({
+  z.strictObject({
     goal: z.string().describe('What the whole run delivers, in one or two sentences'),
     packets: z
       .array(
-        z.object({
+        z.strictObject({
           name: z.string().describe('Stable lowercase kebab-case name, such as "user-types". The worker for this packet is launched with this name.'),
           objective: z.string().describe('What this packet delivers'),
           owns: z
@@ -50,7 +63,7 @@ export const contractSchema = lazySchema(() =>
       .describe('One packet per implementation worker'),
     sharedInterfaces: z
       .array(
-        z.object({
+        z.strictObject({
           name: z.string().describe('The type, function, endpoint or file format, such as "User" or "fetchUser"'),
           owner: z.string().describe('The packet that writes it'),
           path: z.string().describe('The file it lives in; the owner packet must own it'),
@@ -62,14 +75,14 @@ export const contractSchema = lazySchema(() =>
       .describe('Everything more than one packet depends on. Consumers code against these definitions, so they can run in parallel with the owner.'),
     checks: z
       .array(
-        z.object({
+        z.strictObject({
           name: z.string().describe('Short label, such as "typecheck"'),
           command: z.string().describe('One shell command, run from the project root'),
           required: z.boolean().optional().describe('Default true. Required checks must pass before the run is done.'),
         }),
       )
-      .optional()
-      .describe('Commands that prove the integrated result works'),
+      .min(1, MISSING_REQUIRED_CHECK_SCHEMA)
+      .describe('Commands that prove the integrated result works. Required: at least one with required true.'),
     notes: z.string().optional().describe('Constraints every worker must know'),
   }),
 )
@@ -165,9 +178,9 @@ export function validateContract(
     options.caseInsensitivePaths,
     errors,
   )
-  const checks = normalizeChecks(input.checks ?? [], options.settingsCheckCommands, errors)
+  const { checks, missingRequired } = normalizeChecks(input.checks ?? [], options.settingsCheckCommands, errors)
   if (errors.length > 0 || pathErrors.length > 0 || !reach) {
-    return { ok: false, errors: finalizeErrors([...errors, ...pathErrors]) }
+    return { ok: false, errors: finalizeErrors([...errors, ...pathErrors], missingRequired ? [missingRequired] : []) }
   }
   const contract: OrchestrationContract = {
     goal: input.goal.trim(),
@@ -253,12 +266,23 @@ function normalizePatterns(raw: readonly string[], label: string, paths: Pattern
   return out
 }
 
-/** Collapse duplicates and cap the list: a contract written with one wrong root can fail on every path. */
-function finalizeErrors(errors: readonly string[]): string[] {
+/**
+ * Collapse duplicates and cap the list: a contract written with one wrong root can fail on
+ * every path. `pinned` problems are always kept (and count toward the cap), so the one
+ * problem that blocks every run cannot be buried by path or packet detail.
+ */
+function finalizeErrors(errors: readonly string[], pinned: readonly string[] = []): string[] {
   const unique = [...new Set(errors)]
   if (unique.length <= ORCHESTRATOR_CONTRACT_MAX_ERRORS) return unique
-  const hidden = unique.length - ORCHESTRATOR_CONTRACT_MAX_ERRORS
-  return [...unique.slice(0, ORCHESTRATOR_CONTRACT_MAX_ERRORS), `${hidden} more problem${hidden === 1 ? '' : 's'} not listed. Fix these and publish again.`]
+  const keep = new Set(pinned.filter(error => unique.includes(error)))
+  const ordinary = unique.filter(error => !keep.has(error))
+  const selected = new Set([
+    ...ordinary.slice(0, Math.max(0, ORCHESTRATOR_CONTRACT_MAX_ERRORS - keep.size)),
+    ...keep,
+  ])
+  const listed = unique.filter(error => selected.has(error))
+  const hidden = unique.length - listed.length
+  return [...listed, `${hidden} more problem${hidden === 1 ? '' : 's'} not listed. Fix these and publish again.`]
 }
 
 function checkPacketNames(packets: readonly ContractPacket[], errors: string[]): Set<string> {
@@ -397,7 +421,7 @@ function normalizeChecks(
   raw: NonNullable<ContractInput['checks']>,
   settingsCommands: readonly string[],
   errors: string[],
-): ContractCheck[] {
+): { checks: ContractCheck[]; missingRequired: string | null } {
   const checks: ContractCheck[] = raw.map(check => ({
     name: check.name.trim() || check.command.trim(),
     command: check.command.trim(),
@@ -417,10 +441,11 @@ function normalizeChecks(
     .filter(command => !checks.some(check => check.command === command))
     .map(command => ({ name: command, command, required: true, source: 'settings' as const }))
   const all = [...checks, ...fromSettings]
-  if (!all.some(check => check.required)) {
-    errors.push('Add at least one required check: a command that proves the integrated result works, such as the project\'s test or type-check command. (It can also be set for every run in settings: orchestrator.checkCommands.)')
-  }
-  return all
+  // Settings checks are additional. The contract itself must carry at least one required
+  // check, so every run has a verification command it owns.
+  const missingRequired = checks.some(check => check.required) ? null : MISSING_REQUIRED_CHECK
+  if (missingRequired) errors.push(missingRequired)
+  return { checks: all, missingRequired }
 }
 
 /** Packets grouped by the earliest round they can start in, in contract order. */

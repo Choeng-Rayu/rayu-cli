@@ -15,8 +15,11 @@ hooks). Its workers keep auto-approval.
 Ways in: Shift+Tab (CLI), the Rayucode mode control, `/orchestrator [task]`, and the
 "Orchestrator" choice when approving a plan. Ways out: another mode, or `/normal`.
 The role reminder is attached on the first turn after entering the mode, a short form
-on every later turn, a full one every 10th, and an exit notice when the mode is left
-(`src/orchestrator/reminder.ts`).
+on every later turn, a full one every 10th (plus one bounded short reminder during tool
+rounds while no contract exists), and an exit notice when the mode is left
+(`src/orchestrator/reminder.ts`). Outside a git repository the mode still runs, but the
+user is told that worktree packets and reliable change tracking are unavailable
+(`src/utils/orchestratorMode.ts`).
 
 ## Child agents
 
@@ -37,7 +40,9 @@ They are registered for the CLI, `-p` and the Rayucode engine (all non-SDK or
 1. **Contract** (`OrchestrationContract` tool, `src/orchestrator/contract.ts`). The
    Orchestrator publishes packets (objective, owned paths, acceptance, `dependsOn`,
    isolation `shared` or `worktree`), shared interfaces with exact definitions and
-   owners, and required checks (plus `orchestrator.checkCommands` from settings).
+   owners, and **at least one required check** (the JSON schema requires a non-empty
+   `checks` array; `orchestrator.checkCommands` from settings runs in addition, not
+   instead).
    Ownership of packets that can run at the same time must not overlap. Paths are
    relative to the **project root**: the git root, or the directory the session works in
    when the project is not in git (`runWorkspace.ts`). The root is recorded on the run,
@@ -132,7 +137,7 @@ and deletes its snapshot refs.
 | `verificationGate` | `hard` | `hard` sends an unfinished run back to work; `soft` only reports |
 | `maxRepairRounds` | 3 | Verifications under one contract version that found the project failing, before the gate stops asking for repairs. Rejections that were not the project's fault do not count |
 | `maxParallelWriters` | 4 | Writing workers that may run at once |
-| `checkCommands` | `[]` | Checks required in every run, in addition to the contract's |
+| `checkCommands` | `[]` | Checks required in every run, in addition to the contract's own required check(s) |
 
 ## Source of truth
 

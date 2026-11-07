@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { call as orchestratorStatus } from '../src/commands/orchestrator-status/orchestrator-status.ts'
 import { ALL_AGENT_DISALLOWED_TOOLS } from '../src/constants/tools.ts'
-import { type ContractInput, unneededDependencies, validateContract } from '../src/orchestrator/contract.ts'
+import { type ContractInput, MISSING_REQUIRED_CHECK, unneededDependencies, validateContract } from '../src/orchestrator/contract.ts'
 import { normalizeOwnershipPattern, ownsPath, patternsOverlap } from '../src/orchestrator/ownership.ts'
 import { ORCHESTRATOR_CONTRACT_MAX_ERRORS } from '../src/constants/orchestrator.ts'
 import { renderOrchestratorReminder } from '../src/orchestrator/reminder.ts'
@@ -21,6 +21,8 @@ import { getTools } from '../src/tools.ts'
 import { OrchestrationContractTool } from '../src/tools/OrchestrationContractTool/OrchestrationContractTool.ts'
 import { getPlansDirectory } from '../src/utils/plans.ts'
 import { runWithCwdOverride } from '../src/utils/cwd.ts'
+import { formatZodValidationError } from '../src/utils/toolErrors.ts'
+import { zodToJsonSchema } from '../src/utils/zodToJsonSchema.ts'
 
 const savedConfigDir = process.env.RAYU_CONFIG_DIR
 let configDir: string
@@ -278,15 +280,32 @@ describe('validateContract', () => {
     expect(text).toContain('"Empty" has no definition')
   })
 
-  test('needs a required check, from the contract or from settings', () => {
+  test('the contract must carry its own required check; settings are additive', () => {
     const none = goodContract()
     none.checks = [{ name: 'lint', command: 'bun run lint', required: false }]
-    expect(errorsOf(none)).toContain('Add at least one required check')
-    const fromSettings = validate(none, { settingsCheckCommands: ['bun test'] })
-    expect(fromSettings.ok && fromSettings.contract.checks.at(-1)).toEqual({ name: 'bun test', command: 'bun test', required: true, source: 'settings' })
+    expect(errorsOf(none)).toContain(MISSING_REQUIRED_CHECK)
+    // settings checks cannot rescue a contract with only optional checks.
+    expect(errorsOf(none, { settingsCheckCommands: ['bun test'] })).toContain(MISSING_REQUIRED_CHECK)
+
+    const fromSettings = validate(goodContract(), { settingsCheckCommands: ['bun test'] })
+    if (!fromSettings.ok) throw new Error(fromSettings.errors.join('\n'))
+    expect(fromSettings.contract.checks.map(check => check.source)).toEqual(['contract', 'settings'])
+    expect(fromSettings.contract.checks.at(-1)).toEqual({ name: 'bun test', command: 'bun test', required: true, source: 'settings' })
+
     const multiline = goodContract()
     multiline.checks = [{ name: 'x', command: 'bun test\nrm -rf /' }]
     expect(errorsOf(multiline)).toContain('must be a single-line command')
+  })
+
+  test('the error cap never hides the missing-required-check problem', () => {
+    const contract: ContractInput = {
+      goal: 'g',
+      packets: Array.from({ length: 8 }, (_, index) => ({ name: `P${index}`, objective: 'o', owns: [], acceptance: [] })),
+      checks: [],
+    }
+    const text = errorsOf(contract)
+    expect(text).toContain(MISSING_REQUIRED_CHECK)
+    expect(text.split('\n')).toHaveLength(ORCHESTRATOR_CONTRACT_MAX_ERRORS + 1)
   })
 
   test('a worktree packet must say why, and size limits apply', () => {
@@ -296,6 +315,39 @@ describe('validateContract', () => {
     const huge = goodContract()
     huge.notes = 'x'.repeat(70_000)
     expect(errorsOf(huge)).toContain('the limit is 64000')
+  })
+})
+
+describe('the model-facing schema', () => {
+  const parse = (contract: unknown) =>
+    OrchestrationContractTool.inputSchema.safeParse({ action: 'publish', contract })
+
+  test('requires a non-empty checks array', () => {
+    const schema = zodToJsonSchema(OrchestrationContractTool.inputSchema) as any
+    const contract = schema.properties.contract
+    expect(contract.required).toContain('checks')
+    expect(contract.properties.checks.minItems).toBe(1)
+  })
+
+  test('a missing checks array fails at parse with the field named', () => {
+    const contract = goodContract() as Partial<ContractInput>
+    delete contract.checks
+    const parsed = parse(contract)
+    expect(parsed.success).toBe(false)
+    if (parsed.success) return
+    const message = formatZodValidationError(OrchestrationContractTool.name, parsed.error)
+    expect(message).toContain('contract.checks')
+    expect(message).toContain('missing')
+  })
+
+  test('empty checks reports the required-check rule; unknown keys name their full path', () => {
+    const empty = parse({ ...goodContract(), checks: [] })
+    expect(empty.success).toBe(false)
+    if (!empty.success) expect(formatZodValidationError('T', empty.error)).toContain('at least one required check')
+
+    const unknown = parse({ ...goodContract(), check: [] })
+    expect(unknown.success).toBe(false)
+    if (!unknown.success) expect(formatZodValidationError('T', unknown.error)).toContain('contract.check')
   })
 })
 

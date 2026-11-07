@@ -1,6 +1,11 @@
 import { expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import command from '../src/commands/orchestrator/index.ts'
 import { getDefaultAppState, type AppState } from '../src/state/AppStateStore.ts'
+import { runWithCwdOverride } from '../src/utils/cwd.ts'
+import { ORCHESTRATOR_NO_GIT_NOTE } from '../src/utils/orchestratorMode.ts'
 
 test('/orchestrator enters the mode and frames the task; the rules come from the reminder', async () => {
   expect(command.name).toBe('orchestrator')
@@ -27,4 +32,19 @@ test('/orchestrator enters the mode and frames the task; the rules come from the
 test('/orchestrator without a task orchestrates what the conversation established', async () => {
   const blocks = await command.getPromptForCommand('', {} as never)
   expect(blocks.map(block => block.text).join('\n')).toMatch(/plan already established/)
+  // This test runs from the git checkout, so the no-git note is not shown.
+  expect(blocks.map(block => block.text).join('\n')).not.toContain(ORCHESTRATOR_NO_GIT_NOTE)
+})
+
+test('/orchestrator tells the user when the directory is not a git repository', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rayu-orchestrator-nogit-'))
+  try {
+    const blocks = await runWithCwdOverride(dir, () => command.getPromptForCommand('ship it', {} as never))
+    const text = blocks.map(block => block.text).join('\n')
+    expect(text).toContain('ship it')
+    expect(text).toContain(ORCHESTRATOR_NO_GIT_NOTE)
+    expect(text).toMatch(/Note for the user/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

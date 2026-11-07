@@ -7,6 +7,7 @@ const clear = {
   isNonInteractiveSession: false,
   hasSetToolJSX: true,
   isSubThread: false,
+  hasDeclinedThisSession: false,
 }
 
 test('prompts when every guard is clear', () => {
@@ -41,4 +42,10 @@ test('does not prompt from a sub-thread', () => {
   expect(shouldPromptForSubagentModel({ ...clear, isSubThread: true })).toBe(
     false,
   )
+})
+
+test('does not prompt when the user declined this session', () => {
+  expect(
+    shouldPromptForSubagentModel({ ...clear, hasDeclinedThisSession: true }),
+  ).toBe(false)
 })

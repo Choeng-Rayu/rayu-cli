@@ -21,7 +21,10 @@
  * The history scan stops at the last compact boundary: the REPL keeps pre-compact
  * messages in memory, but the model no longer sees them.
  */
-import { ORCHESTRATOR_FULL_REMINDER_EVERY } from '../constants/orchestrator.js'
+import {
+  ORCHESTRATOR_FULL_REMINDER_EVERY,
+  ORCHESTRATOR_MAX_REMINDERS_PER_TURN,
+} from '../constants/orchestrator.js'
 import { ORCHESTRATION_CONTRACT_TOOL_NAME } from '../tools/OrchestrationContractTool/constants.js'
 import {
   EXPLORE_AGENT_TYPE,
@@ -47,6 +50,8 @@ export type OrchestratorReminderInfo = {
   projectRoot?: string | null
   /** The active run's current contract, so the model can find it again after compaction. */
   contract?: { runId: string; version: number }
+  /** False outside git: worktree packets and reliable change tracking are unavailable. */
+  projectIsGit?: boolean
 }
 
 type Marker = { kind: 'reminder'; reminderType: OrchestratorReminderKind } | { kind: 'exit' }
@@ -82,6 +87,46 @@ export type ReminderDecisionInput = {
   /** The turn's input text; null during tool rounds. */
   input: string | null
   messages: readonly Message[] | undefined
+  /** Whether the OrchestrationContract tool is available in this session. */
+  hasContractTool: boolean
+  /** Whether a contract has been published (an active run exists). */
+  hasActiveRun: boolean
+}
+
+/** Whether this message is the user's prompt rather than a tool result. */
+function isHumanTurn(message: Message): boolean {
+  if (message.type !== 'user' || message.isMeta) return false
+  const content = message.message?.content
+  return (
+    !Array.isArray(content) ||
+    !content.some(
+      block =>
+        typeof block === 'object' &&
+        block !== null &&
+        (block as { type?: unknown }).type === 'tool_result',
+    )
+  )
+}
+
+/** Orchestrator reminders already attached in the current human turn. */
+export function orchestratorRemindersThisTurn(
+  messages: readonly Message[],
+): number {
+  let count = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (!message) continue
+    if (message.type === 'system' && message.subtype === 'compact_boundary') break
+    if (
+      message.type === 'attachment' &&
+      message.attachment.type === 'orchestrator_mode'
+    ) {
+      count++
+      continue
+    }
+    if (isHumanTurn(message)) break
+  }
+  return count
 }
 
 /** Which reminder to attach now, if any. */
@@ -91,13 +136,22 @@ export function decideOrchestratorReminder(
   if (decision.isSubagent || decision.mode !== 'orchestrator') return null
   const { last, sparseSinceFull } = scanMarkers(decision.messages ?? [])
   if (last?.kind !== 'reminder') return 'full'
-  if (decision.input === null) return null
+  if (decision.input === null) {
+    // Until a contract exists, keep the publish rule in view during tool rounds,
+    // bounded so a long tool loop cannot flood the conversation.
+    const due =
+      decision.hasContractTool &&
+      !decision.hasActiveRun &&
+      orchestratorRemindersThisTurn(decision.messages ?? []) <
+        ORCHESTRATOR_MAX_REMINDERS_PER_TURN
+    return due ? 'sparse' : null
+  }
   return sparseSinceFull + 1 >= ORCHESTRATOR_FULL_REMINDER_EVERY ? 'full' : 'sparse'
 }
 
 /** Whether to tell the model the mode was left. */
 export function needsOrchestratorExitNotice(
-  decision: Omit<ReminderDecisionInput, 'input'>,
+  decision: Pick<ReminderDecisionInput, 'isSubagent' | 'mode' | 'messages'>,
 ): boolean {
   if (decision.isSubagent || decision.mode === 'orchestrator') return false
   return scanMarkers(decision.messages ?? []).last?.kind === 'reminder'
@@ -118,11 +172,15 @@ function contractReferenceLines(info: OrchestratorReminderInfo): string[] {
 
 function renderSparse(info: OrchestratorReminderInfo): string {
   const base = 'Orchestrator mode is still ON. Delegate implementation to workers with disjoint file ownership; do not edit files yourself, though shell commands are allowed. Verify the integrated result before you report success.'
+  const publish =
+    info.hasContractTool && !info.contract
+      ? ' Publish the run\u2019s contract with at least one required check before any implementation worker: a command that proves the integrated result works.'
+      : ''
   const contract = info.contract ? ` Current contract: v${info.contract.version} (${info.contract.runId}).` : ''
   // Repeated here because the Orchestrator's shell can change directory mid-session,
   // and contract paths stay relative to the run's root.
   const root = info.projectRoot ? ` Paths are relative to ${info.projectRoot}.` : ''
-  return `${base}${contract}${root}`
+  return `${base}${publish}${contract}${root}`
 }
 
 function contractRules(info: OrchestratorReminderInfo): string[] {
@@ -148,6 +206,9 @@ function renderFull(info: OrchestratorReminderInfo): string {
     'Do not edit or write project files yourself; delegate implementation to subagents. You may run shell commands directly, including checks and builds. Read-only tools are fine for understanding the code.',
     researchRule(agents),
     ...contractRules(info),
+    ...(info.projectIsGit === false
+      ? ['This project is not a git repository: worktree packets are unavailable and changes are tracked by file size and modification time. Orchestrator mode works best in a git repository; tell the user if they do not know.']
+      : []),
     workerRule(info),
     'Launch independent workers together in one message. Start a dependent packet only after the packets it depends on have finished.',
     ...(info.canMessageWorkers

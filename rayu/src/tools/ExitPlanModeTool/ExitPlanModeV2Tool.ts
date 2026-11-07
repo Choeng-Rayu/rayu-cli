@@ -32,6 +32,7 @@ import {
   getPlanFilePath,
   persistFileSnapshotIfRemote,
 } from '../../utils/plans.js'
+import { orchestratorNoGitNote } from '../../utils/orchestratorMode.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   getAgentName,
@@ -439,13 +440,16 @@ Request ID: ${requestId}`,
     // always switched to Orchestrator.
     const orchestrating =
       resultingMode === undefined || resultingMode === 'orchestrator'
+    // Orchestrator runs outside git too, but worktrees and reliable tracking need it.
+    const noGitNote = orchestrating ? orchestratorNoGitNote() : null
+    const noGitLine = noGitNote ? `\n\nNote: ${noGitNote}` : ''
 
     // Handle empty plan
     if (!plan || plan.trim() === '') {
       return {
         type: 'tool_result',
         content: orchestrating
-          ? 'User has approved exiting plan mode. Orchestrator mode is now active: coordinate and delegate implementation to subagents; do not edit files yourself, though you may run shell commands such as checks and builds.'
+          ? `User has approved exiting plan mode. Orchestrator mode is now active: coordinate and delegate implementation to subagents; do not edit files yourself, though you may run shell commands such as checks and builds.${noGitLine}`
           : `User has approved exiting plan mode. ${describeApprovedMode(resultingMode)} You can now proceed.`,
         tool_use_id: toolUseID,
       }
@@ -478,7 +482,7 @@ ${plan}`,
 
     return {
       type: 'tool_result',
-      content: `User has approved your plan and Orchestrator mode is now active. Do not edit files yourself. Delegate each implementation packet to a subagent, coordinate their dependencies, and integrate their results; you may run shell commands such as checks and builds yourself.${teamHint}
+      content: `User has approved your plan and Orchestrator mode is now active. Do not edit files yourself. Delegate each implementation packet to a subagent, coordinate their dependencies, and integrate their results; you may run shell commands such as checks and builds yourself.${teamHint}${noGitLine}
 
 Your plan has been saved to: ${filePath}
 Use it as the contract for delegated implementation.

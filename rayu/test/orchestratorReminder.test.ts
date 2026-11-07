@@ -20,7 +20,7 @@ const boundary = { type: 'system', subtype: 'compact_boundary' } as unknown as M
 const userTurn = { type: 'user', message: { content: 'hi' } } as unknown as Message
 
 const decide = (messages: Message[], input: string | null = 'next prompt', extra: Partial<Parameters<typeof decideOrchestratorReminder>[0]> = {}) =>
-  decideOrchestratorReminder({ isSubagent: false, mode: 'orchestrator', input, messages, ...extra })
+  decideOrchestratorReminder({ isSubagent: false, mode: 'orchestrator', input, messages, hasContractTool: false, hasActiveRun: false, ...extra })
 
 describe('when the Orchestrator reminder attaches', () => {
   test('never for a subagent or outside Orchestrator mode', () => {
@@ -38,6 +38,14 @@ describe('when the Orchestrator reminder attaches', () => {
     expect(decide(history)).toBe('sparse')
     expect(decide(history, null)).toBeNull()
     expect(decide([...history, userTurn, reminder('sparse')])).toBe('sparse')
+  })
+
+  test('one bounded mid-turn reminder while no contract exists', () => {
+    const history = [userTurn, reminder('full')]
+    expect(decide(history, null, { hasContractTool: true, hasActiveRun: false })).toBe('sparse')
+    expect(decide([...history, reminder('sparse')], null, { hasContractTool: true, hasActiveRun: false })).toBeNull()
+    expect(decide(history, null, { hasContractTool: true, hasActiveRun: true })).toBeNull()
+    expect(decide(history, null, { hasContractTool: false, hasActiveRun: false })).toBeNull()
   })
 
   test('in full again on entry: after an exit notice, even mid-turn', () => {
@@ -115,6 +123,25 @@ describe('the reminder text', () => {
     expect(sparse).toMatch(/do not edit files/)
     expect(sparse.length).toBeLessThan(300)
     expect(renderOrchestratorReminder({})).toContain(ORCHESTRATOR_REMINDER_HEADING)
+  })
+
+  test('the short reminder carries the publish rule only while no contract exists', () => {
+    const before = renderOrchestratorReminder({ reminderType: 'sparse', hasContractTool: true })
+    expect(before).toContain('Publish the run')
+    expect(before).toContain('at least one required check')
+    const after = renderOrchestratorReminder({
+      reminderType: 'sparse',
+      hasContractTool: true,
+      contract: { runId: 'run-1', version: 1 },
+    })
+    expect(after).not.toContain('Publish the run')
+  })
+
+  test('the full reminder names a non-git project, and only then', () => {
+    const noGit = renderOrchestratorReminder({ reminderType: 'full', projectIsGit: false })
+    expect(noGit).toContain('not a git repository')
+    expect(renderOrchestratorReminder({ reminderType: 'full', projectIsGit: true })).not.toContain('not a git repository')
+    expect(renderOrchestratorReminder({ reminderType: 'full' })).not.toContain('not a git repository')
   })
 
   test('the exit notice says the rules stop applying', () => {

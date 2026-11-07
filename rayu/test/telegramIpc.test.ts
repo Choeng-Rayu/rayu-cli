@@ -14,7 +14,16 @@
  *     a rendered message.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, existsSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs'
 import { connect as netConnect } from 'net'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -48,8 +57,17 @@ import {
   parseApplyModelPayload,
   parsePromptPayload,
 } from '../src/telegram/telegramSessionHandlers.js'
-import { describeRouteFailure, type RouteFailure } from '../src/telegram/telegramRouter.js'
-import { readSessionRecords, type SessionRecord } from '../src/utils/concurrentSessions.js'
+import {
+  describeRouteFailure,
+  resolveAttachedSession,
+  type RouteFailure,
+} from '../src/telegram/telegramRouter.js'
+import {
+  readSessionRecords,
+  updateSessionName,
+  updateTelegramSessionInfo,
+  type SessionRecord,
+} from '../src/utils/concurrentSessions.js'
 
 const TOKEN = 'test-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const WRONG_TOKEN = 'test-token-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
@@ -720,6 +738,167 @@ describe('session registry and views', () => {
 
     writeRecord({ pid: process.pid, cwd: '' })
     expect((await listSessionViews())[0]!.title).toBe(`pid ${process.pid}`)
+  })
+
+  // ── Registry writes survive concurrency and corruption ─────────────────────
+  //
+  // A real machine ended up with a `<pid>.json` containing a complete object
+  // with a second writer's tail appended (`…}"name":"x"}`). `readSessionRecords`
+  // drops the file, so that LIVE session disappeared from /sessions and could
+  // not be routed to from Telegram — the "session can't reach" symptom.
+
+  const pidFilePath = () => join(sessionsDir, `${process.pid}.json`)
+
+  test('repairs a torn registry file instead of stranding the session', async () => {
+    writeFileSync(
+      pidFilePath(),
+      `{"pid":${process.pid},"sessionId":"s","cwd":"/x","startedAt":1}"name":"stale"}`,
+    )
+    // Invisible to every reader while it is corrupt.
+    expect(await readSessionRecords()).toHaveLength(0)
+
+    await updateSessionName('repaired')
+
+    const records = await readSessionRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]!.pid).toBe(process.pid)
+    expect(records[0]!.name).toBe('repaired')
+    expect(readdirSync(sessionsDir).filter(f => f.endsWith('.tmp'))).toEqual([])
+  })
+
+  test('a JSON value that is not an object is repaired, not spread', async () => {
+    // `JSON.parse` succeeds on `[1,2]` and `"5"`; spreading either would write
+    // nonsense keys (array indices / character offsets) into the record.
+    writeFileSync(pidFilePath(), '[1,2,3]')
+    await updateSessionName('ok')
+    const parsed = JSON.parse(readFileSync(pidFilePath(), 'utf8')) as SessionRecord
+    expect(parsed.pid).toBe(process.pid)
+    expect(parsed.name).toBe('ok')
+    expect(parsed.sessionId).toBeString()
+  })
+
+  test('a patch never creates a record for a session that is not registered', async () => {
+    // Recreating it here would resurrect a session that already exited.
+    await updateTelegramSessionInfo({ status: 'idle' })
+    expect(existsSync(pidFilePath())).toBe(false)
+  })
+
+  test('concurrent patches cannot tear or lose each other', async () => {
+    writeRecord({ pid: process.pid })
+    await Promise.all([
+      updateSessionName('concurrent'),
+      updateTelegramSessionInfo({ status: 'idle' }),
+      updateSessionName('concurrent'),
+    ])
+
+    const parsed = JSON.parse(readFileSync(pidFilePath(), 'utf8')) as SessionRecord
+    // Atomic replace rules out a torn file; the write lock rules out one patch
+    // dropping another's field.
+    expect(parsed.pid).toBe(process.pid)
+    expect(parsed.name).toBe('concurrent')
+    expect(parsed.status).toBe('idle')
+    expect(readdirSync(sessionsDir).filter(f => f.endsWith('.tmp'))).toEqual([])
+  })
+})
+
+// ===========================================================================
+// Attached-session resolution — never route to a guess
+// ===========================================================================
+
+describe('resolveAttachedSession', () => {
+  let configDir: string
+  let sessionsDir: string
+  const origConfigDir = process.env.RAYU_CONFIG_DIR
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'rayu-resolve-'))
+    process.env.RAYU_CONFIG_DIR = configDir
+    sessionsDir = join(configDir, 'sessions')
+    mkdirSync(sessionsDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    if (origConfigDir === undefined) delete process.env.RAYU_CONFIG_DIR
+    else process.env.RAYU_CONFIG_DIR = origConfigDir
+    rmSync(configDir, { recursive: true, force: true })
+  })
+
+  function writeRecord(over: Partial<SessionRecord> & { pid: number }): void {
+    const record: SessionRecord = {
+      sessionId: `sess-${over.pid}`,
+      cwd: `/home/dev/project-${over.pid}`,
+      startedAt: Date.now() - 60_000,
+      ...over,
+    } as SessionRecord
+    writeFileSync(join(sessionsDir, `${over.pid}.json`), JSON.stringify(record))
+  }
+
+  test('matches on session id first and leaves the pointer alone', async () => {
+    writeRecord({ pid: process.pid, sessionId: 'remembered', cwd: '/home/dev/app' })
+    writeAttachment({
+      sessionId: 'remembered',
+      pid: process.pid,
+      cwd: '/home/dev/app',
+      attachedAt: 42,
+    })
+
+    const resolved = await resolveAttachedSession()
+
+    expect('record' in resolved && resolved.record.sessionId).toBe('remembered')
+    expect(readAttachment()?.attachedAt).toBe(42)
+  })
+
+  test('re-pins to the one live session in the remembered directory after /resume', async () => {
+    writeRecord({ pid: process.pid, sessionId: 'new-id', cwd: '/home/dev/app' })
+    writeAttachment({
+      sessionId: 'old-id-from-before-resume',
+      pid: 999_999,
+      cwd: '/home/dev/app',
+      attachedAt: 7,
+    })
+
+    const resolved = await resolveAttachedSession()
+
+    expect('record' in resolved && resolved.record.sessionId).toBe('new-id')
+    const pointer = readAttachment()
+    expect(pointer?.sessionId).toBe('new-id')
+    expect(pointer?.pid).toBe(process.pid)
+    // The attach time is preserved, not reset by the re-pin.
+    expect(pointer?.attachedAt).toBe(7)
+  })
+
+  test('REFUSES to guess when several live sessions share the directory', async () => {
+    // Read oldest first, so the previous `find` silently chose the first one —
+    // an unrelated session the user was not looking at.
+    const child = Bun.spawn(['sleep', '30'])
+    try {
+      writeRecord({ pid: process.pid, sessionId: 'mine', cwd: '/home/dev/shared' })
+      writeRecord({ pid: child.pid, sessionId: 'other', cwd: '/home/dev/shared' })
+      writeAttachment({
+        sessionId: 'session-that-exited',
+        pid: 999_999,
+        cwd: '/home/dev/shared',
+        attachedAt: 1,
+      })
+
+      expect(await resolveAttachedSession()).toEqual({ missing: 'ambiguous' })
+      // The pointer must not be rewritten to an arbitrary survivor.
+      expect(readAttachment()?.sessionId).toBe('session-that-exited')
+    } finally {
+      child.kill()
+    }
+  })
+
+  test('reports gone when no live session matches and none has the id', async () => {
+    writeRecord({ pid: process.pid, sessionId: 'elsewhere', cwd: '/home/dev/other' })
+    writeAttachment({
+      sessionId: 'missing',
+      pid: 999_999,
+      cwd: '/home/dev/app',
+      attachedAt: 1,
+    })
+
+    expect(await resolveAttachedSession()).toEqual({ missing: 'gone' })
   })
 })
 

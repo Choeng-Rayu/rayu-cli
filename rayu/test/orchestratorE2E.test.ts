@@ -137,6 +137,33 @@ test('without a contract, the Orchestrator cannot launch implementation workers'
   expect(run.provider.calls.some(call => call.caller === 'worker')).toBe(false)
 }, SCENARIO_TIMEOUT_MS)
 
+test('a contract published with no checks is refused with a retry instruction, and the retry succeeds', async () => {
+  run = await startOrchestratorRun({
+    script: request => {
+      if (request.caller !== 'orchestrator') return { text: 'ok' }
+      if (request.step === 0) {
+        return { text: 'Publishing the contract.', toolCalls: [publishContract({ ...FIXTURE_CONTRACT, checks: [] })] }
+      }
+      if (request.step === 1) {
+        return { text: 'The contract needs a required check.', toolCalls: [publishContract()] }
+      }
+      return { text: 'Contract published with its required check.' }
+    },
+  })
+  await run.prompt('Add a display name to users.')
+  expect(run.provider.scriptErrors).toEqual([])
+  const calls = run.provider.calls.filter(call => call.caller === 'orchestrator')
+  const refused = calls[1]!.latestToolResults[0]!.text
+  expect(refused).toContain('contract.checks')
+  expect(refused).toContain('at least one required check')
+  expect(refused).toContain('Retry this call now')
+  // The bounded mid-turn reminder repeats the publish rule while no contract exists.
+  expect(refused).toContain('Publish the run')
+  expect(refused).toContain('at least one required check before any implementation worker')
+  const published = calls[2]!.latestToolResults.find(item => item.text.includes('Contract v1 published'))?.text
+  expect(published).toContain('consistency')
+}, SCENARIO_TIMEOUT_MS)
+
 test('with a contract, workers are briefed with it, and a write outside a packet is reported', async () => {
   run = await startOrchestratorRun({ script: baselineScript() })
   const result = await run.prompt('Add a display name to users and show it in the UI.', SCENARIO_TIMEOUT_MS)
@@ -187,7 +214,8 @@ test('the Orchestrator role reaches every turn after a mid-conversation switch, 
     permissionMode: 'default',
     script: request => {
       if (request.caller !== 'orchestrator') return { text: 'ok' }
-      // The second prompt makes one tool round, to show rounds add no reminder.
+      // The second prompt makes one tool round, to show rounds keep the short rule
+      // (bounded) while no contract exists.
       if (request.firstUserText.includes('turn two') || request.turnUserText.includes('turn two')) {
         return request.latestToolResults.length === 0 ? { toolCalls: [readCall('src/types/user.ts')] } : { text: 'read it' }
       }
@@ -209,11 +237,13 @@ test('the Orchestrator role reaches every turn after a mid-conversation switch, 
   const turnTwo = mainCalls(from)
   expect(turnTwo.length).toBe(2)
   expect(occurrences(turnTwo[0]!.body, FULL_HEADING)).toBe(1)
-  expect(occurrences(turnTwo[1]!.body, FULL_HEADING)).toBe(1) // the tool round added none
+  expect(occurrences(turnTwo[1]!.body, FULL_HEADING)).toBe(1) // the tool round added no full one
+  expect(occurrences(turnTwo[1]!.body, SPARSE_TEXT)).toBe(1) // one bounded short reminder
 
   from = callsBefore()
   await run.prompt('turn three')
-  expect(occurrences(mainCalls(from)[0]!.body, SPARSE_TEXT)).toBe(1)
+  // Turn two's mid-turn reminder plus this turn's start reminder.
+  expect(occurrences(mainCalls(from)[0]!.body, SPARSE_TEXT)).toBe(2)
 
   const normal = await run.prompt('/normal')
   expect(JSON.stringify(normal)).toContain('Exited Orchestrator mode')
@@ -223,7 +253,7 @@ test('the Orchestrator role reaches every turn after a mid-conversation switch, 
   await run.prompt('turn four')
   const turnFour = mainCalls(from)[0]!.body
   expect(occurrences(turnFour, EXIT_HEADING)).toBe(1)
-  expect(occurrences(turnFour, SPARSE_TEXT)).toBe(1) // only turn three's, no new one
+  expect(occurrences(turnFour, SPARSE_TEXT)).toBe(2) // only turn two's and three's, no new one
   expect(run.provider.scriptErrors).toEqual([])
 }, SCENARIO_TIMEOUT_MS)
 

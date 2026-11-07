@@ -36,7 +36,9 @@ describe('Orchestrator agent architecture', () => {
     // Subagents cannot launch agents, so the planner researches with its own tools.
     expect(prompt).not.toMatch(/dispatch 2.5 `Explore` agents/)
     expect(prompt).toMatch(/Research with your read-only tools/)
-    expect(planner.model).toBe('inherit')
+    // No model is pinned — only RAYU_PLAN_AGENT_MODEL can supply one; otherwise
+    // it defaults to the run's (main) model.
+    expect(planner.model).toBe(process.env.RAYU_PLAN_AGENT_MODEL)
     expect(prompt).toContain('Worker packets')
     expect(prompt).toMatch(/non-overlapping file/i)
     expect(prompt).not.toContain('.rayu/swarm')

@@ -67,10 +67,10 @@ export const PLANNER_SUBAGENT: BuiltInAgentDefinition = {
   ],
   source: 'built-in',
   baseDir: 'built-in',
-  // The plan decides the whole run, so it gets the Orchestrator's model. Without
-  // this, non-Anthropic providers ran it on the instant/small-fast model (the
-  // built-in default). /subagent_models still overrides it.
-  model: 'inherit',
+  // No pinned model: with nothing else choosing one, the subagent runs on the
+  // main agent's own model. RAYU_PLAN_AGENT_MODEL, /subagent_models, or the
+  // Agent tool's `model` param can override it.
+  model: process.env.RAYU_PLAN_AGENT_MODEL,
   color: 'purple',
   criticalSystemReminder_EXPERIMENTAL:
     'You are the planner. Research and produce decision-complete worker packets; never modify the project or run implementation commands.',

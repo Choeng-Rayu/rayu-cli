@@ -1300,27 +1300,26 @@ async function getPlanModeAttachments(
 
 /**
  * The Orchestrator role reminder for the main agent: in full when the mode was just
- * entered (or after compaction), short at the start of later turns, and nothing during
- * tool rounds. See src/orchestrator/reminder.ts for the rules.
+ * entered (or after compaction), short at the start of later turns, and one bounded
+ * short reminder during tool rounds while no contract exists. See
+ * src/orchestrator/reminder.ts for the rules.
  */
 async function getOrchestratorModeAttachment(
   input: string | null,
   messages: Message[] | undefined,
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
+  const facts = describeOrchestratorSession(toolUseContext, 'sparse')
   const reminderType = decideOrchestratorReminder({
     isSubagent: !!toolUseContext.agentId,
     mode: toolUseContext.getAppState().toolPermissionContext.mode,
     input,
     messages,
+    hasContractTool: facts.hasContractTool,
+    hasActiveRun: facts.contract !== undefined,
   })
   if (!reminderType) return []
-  return [
-    {
-      type: 'orchestrator_mode',
-      ...describeOrchestratorSession(toolUseContext, reminderType),
-    },
-  ]
+  return [{ type: 'orchestrator_mode', ...facts, reminderType }]
 }
 
 /**

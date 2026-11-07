@@ -9,6 +9,15 @@ import {
 const COST_TIP =
   'Saved and reused for every future "{agent}" run. Agents run often, so prefer a small/fast model unless this agent needs more capability. Change it later with /subagent_models.'
 
+// Agent types the user dismissed this session. Asking again on the next spawn
+// would contradict the one-time prompt promise; /subagent_models still works.
+const declinedThisSession = new Set<string>()
+
+/** Test-only: clear the session decline memory. */
+export function resetSubagentPromptDeclinesForTest(): void {
+  declinedThisSession.clear()
+}
+
 /**
  * Pure guard: should the user be asked to pick a model for this subagent?
  * True only when nothing already decides the model (no tool-specified model,
@@ -20,13 +29,15 @@ export function shouldPromptForSubagentModel(params: {
   isNonInteractiveSession: boolean
   hasSetToolJSX: boolean
   isSubThread: boolean
+  hasDeclinedThisSession: boolean
 }): boolean {
   return (
     !params.toolSpecifiedModel &&
     !params.hasExistingSelection &&
     !params.isNonInteractiveSession &&
     params.hasSetToolJSX &&
-    !params.isSubThread
+    !params.isSubThread &&
+    !params.hasDeclinedThisSession
   )
 }
 
@@ -49,13 +60,22 @@ export async function maybePromptForUnassignedSubagentModel(params: {
     isNonInteractiveSession: toolUseContext.options.isNonInteractiveSession,
     hasSetToolJSX: !!toolUseContext.setToolJSX,
     isSubThread: !!toolUseContext.agentId,
+    hasDeclinedThisSession: declinedThisSession.has(agentType),
   })
   if (!shouldPrompt) return false
 
   const setToolJSX = toolUseContext.setToolJSX!
+  const signal = toolUseContext.abortController?.signal
   let picked = false
+  let onAbort: (() => void) | undefined
 
   await new Promise<void>(resolve => {
+    if (signal?.aborted) {
+      resolve()
+      return
+    }
+    onAbort = () => resolve()
+    signal?.addEventListener('abort', onAbort, { once: true })
     setToolJSX({
       jsx: (
         <SearchableModelPicker
@@ -73,6 +93,8 @@ export async function maybePromptForUnassignedSubagentModel(params: {
     })
   })
 
+  if (onAbort) signal?.removeEventListener('abort', onAbort)
   setToolJSX(null)
+  if (!picked) declinedThisSession.add(agentType)
   return picked
 }
