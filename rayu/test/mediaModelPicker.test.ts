@@ -12,11 +12,12 @@ import {
 } from '../src/services/rayuAuth/mediaModels.ts'
 import {
   describeMediaModel,
+  emptyHostedPickerNote,
+  hostedPickerModels,
   loadMediaModelPicker,
   mediaBackendLabel,
   mediaCatalogNotice,
   mediaModelPickerOptions,
-  orderMediaModelsForPicker,
 } from '../src/services/rayuAuth/mediaModelPicker.ts'
 
 const WAN_IMAGE: MediaModelEntry = {
@@ -41,14 +42,18 @@ const IMAGEN: MediaModelEntry = {
   family: 'imagen',
   isDefault: true,
 }
-const KLING: MediaModelEntry = {
+/**
+ * A RETIRED video backend (fal.ai) that an older gateway may still publish. It is
+ * here so the tests can prove such a row never reaches a picker.
+ */
+const RETIRED_FAL_VIDEO = {
   id: 'fal-ai/kling-video/v2.1/standard/text-to-video',
   label: 'fal-ai/kling-video/v2.1/standard/text-to-video',
   mediaType: 'video',
   capabilities: ['text2video'],
   backend: 'fal',
   family: 'fal-kling',
-}
+} as unknown as MediaModelEntry
 const WAN_VIDEO: MediaModelEntry = {
   id: 'rayu-wan3-video-480p',
   label: 'Wan 3.0 Video 480P',
@@ -77,7 +82,7 @@ let savedConfigDir: string | undefined
 let savedAuthDir: string | undefined
 let savedOAuth: string | undefined
 
-beforeEach(() => {
+beforeEach(async () => {
   cfgDir = mkdtempSync(join(tmpdir(), 'rayu-mediapicker-'))
   savedConfigDir = process.env.RAYU_CONFIG_DIR
   savedAuthDir = process.env.RAYU_AUTH_CONFIG_DIR
@@ -86,6 +91,11 @@ beforeEach(() => {
   process.env.RAYU_AUTH_CONFIG_DIR = cfgDir
   delete process.env.USE_RAYU_OAUTH
   _resetMediaModelsForTesting()
+  // The provider file (where a Rayu API key lives) is read through a module-level
+  // cache, so a previous test file that stored a key would otherwise still look
+  // like a credential here.
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg._resetRayuConfigCache()
 })
 
 afterEach(() => {
@@ -116,30 +126,22 @@ function stubSignedIn(): void {
 }
 
 describe('presentation', () => {
-  test('hosted models lead, each group keeps the gateway (admin) order', () => {
-    // The gateway sends BYO rows first, then hosted rows sorted by Sort Order.
-    const ordered = orderMediaModelsForPicker([IMAGEN, WAN_IMAGE_PRO, WAN_IMAGE])
-    expect(ordered.map((m) => m.id)).toEqual([
-      'rayu-wan2.7-image-pro',
-      'rayu-wan2.7-image',
-      'imagen-4.0-generate-001',
-    ])
-  })
-
-  test('backend labels name the upstream, never NVIDIA', () => {
+  test('backend labels name the upstream', () => {
     expect(mediaBackendLabel(WAN_IMAGE)).toBe('Rayu-hosted')
     expect(mediaBackendLabel(IMAGEN)).toBe('Vertex Imagen')
-    expect(mediaBackendLabel({ backend: 'vertex', mediaType: 'video' })).toBe('Vertex Veo')
-    expect(mediaBackendLabel(KLING)).toBe('fal.ai')
+    // A retired BYO video row can still be PARSED by an older gateway; the label
+    // falls back to the raw backend name rather than claiming a client we have.
+    expect(mediaBackendLabel(RETIRED_FAL_VIDEO)).toBe('fal')
   })
 
   test('the terminal detail line carries the admin name, backend and capabilities', () => {
     expect(describeMediaModel(WAN_IMAGE)).toBe('Wan 2.7 Image · Rayu-hosted · generate, edit')
-    // A label that is just the id is not repeated.
-    expect(describeMediaModel(KLING)).toBe('fal.ai · text2video')
+    expect(describeMediaModel(WAN_VIDEO)).toBe('Wan 3.0 Video 480P · Rayu-hosted · text2video')
   })
 
   test('editor rows lead with the display name and keep the id for matching', () => {
+    // Image generation is Rayu-hosted only, so a BYO Imagen row in the catalog is
+    // NOT offered even though it is parsed and may already be selected.
     const rows = mediaModelPickerOptions(catalogOf([IMAGEN, WAN_IMAGE]), 'image')
     expect(rows).toEqual([
       {
@@ -149,24 +151,71 @@ describe('presentation', () => {
         model: 'rayu-wan2.7-image',
         providerId: 'rayu',
       },
-      {
-        value: 'imagen-4.0-generate-001',
-        label: 'Imagen 4',
-        description: 'imagen-4.0-generate-001 · Vertex Imagen · generate',
-        model: 'imagen-4.0-generate-001',
-        providerId: 'vertex',
-      },
     ])
-    // Each media type lists only its own half of the catalog.
-    const video = mediaModelPickerOptions(catalogOf([IMAGEN], [KLING, WAN_VIDEO]), 'video')
-    expect(video.map((r) => r.value)).toEqual([WAN_VIDEO.id, KLING.id])
+    // Video is Rayu-hosted only too, so the retired fal row is not offered.
+    const video = mediaModelPickerOptions(
+      catalogOf([IMAGEN], [RETIRED_FAL_VIDEO, WAN_VIDEO]),
+      'video',
+    )
+    expect(video.map((r) => r.value)).toEqual([WAN_VIDEO.id])
+  })
+
+  test('a catalog with only retired/BYO rows yields an explained empty chooser', async () => {
+    stubSignedIn()
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ object: 'list', media: 'all', data: [IMAGEN].map(wire) }),
+        { status: 200 },
+      )) as unknown as typeof fetch
+
+    const image = await loadMediaModelPicker('image')
+    expect(image.options).toEqual([])
+    // An empty list is always explained: "no hosted models published" is never
+    // presented as a bare blank chooser.
+    expect(image.notice).toMatch(/No Rayu-hosted image models/)
+
+    // Same for video: a retired fal row is parsed, then hidden by policy.
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          object: 'list',
+          media: 'all',
+          data: [RETIRED_FAL_VIDEO].map(wire),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch
+    // A retired `fal` row is DROPPED at parse time (it is a backend this build no
+    // longer serves), so the video catalog genuinely has no models: same empty
+    // chooser, but not the "policy hid them" case.
+    const video = await loadMediaModelPicker('video')
+    expect(video.options).toEqual([])
+    expect(video.notice).toMatch(/No Rayu-hosted video models/)
+  })
+
+  test('the chooser offers Rayu-hosted models only, in admin order, for both types', () => {
+    expect(
+      hostedPickerModels([IMAGEN, WAN_IMAGE_PRO, WAN_IMAGE]).map((m) => m.id),
+    ).toEqual(['rayu-wan2.7-image-pro', 'rayu-wan2.7-image'])
+    // A BYO-only catalog offers nothing: neither media type has a BYO model to offer.
+    expect(hostedPickerModels([IMAGEN])).toEqual([])
+    expect(hostedPickerModels([RETIRED_FAL_VIDEO])).toEqual([])
+    expect(hostedPickerModels([RETIRED_FAL_VIDEO, WAN_VIDEO]).map((m) => m.id)).toEqual([
+      WAN_VIDEO.id,
+    ])
+  })
+
+  test('an empty hosted list is explained per media type', () => {
+    expect(emptyHostedPickerNote('image')).toMatch(/No Rayu-hosted image models/)
+    expect(emptyHostedPickerNote('video')).toMatch(/No Rayu-hosted video models/)
   })
 })
 
 describe('mediaCatalogNotice', () => {
-  test('signed out: built-in defaults say how to get the real list', () => {
+  test('signed out: says a credential is what shows the hosted list', () => {
+    // Hosted models are the only ones a picker offers, so the notice names the
+    // missing credential rather than promising built-in defaults (video has none).
     expect(mediaCatalogNotice(catalogOf([IMAGEN], [], 'fallback'), false)).toMatch(
-      /built-in defaults.*\/login/,
+      /No Rayu credential.*\/login/s,
     )
   })
 
@@ -197,10 +246,11 @@ describe('loadMediaModelPicker (the on-open live fetch)', () => {
     }) as unknown as typeof fetch
 
     const first = await loadMediaModelPicker('image')
+    // Image offers Rayu-hosted models only — the BYO Imagen row in the payload
+    // is deliberately absent from the chooser.
     expect(first.options.map((o) => o.value)).toEqual([
       'rayu-wan2.7-image',
       'rayu-wan2.7-image-pro',
-      'imagen-4.0-generate-001',
     ])
     expect(first.notice).toBeUndefined()
 
@@ -211,7 +261,6 @@ describe('loadMediaModelPicker (the on-open live fetch)', () => {
     expect(second.options.map((o) => o.value)).toEqual([
       'rayu-wan2.7-image-pro',
       'rayu-wan2.7-image',
-      'imagen-4.0-generate-001',
     ])
   })
 
@@ -258,7 +307,7 @@ describe('loadMediaModelPicker (the on-open live fetch)', () => {
     expect(notice).toMatch(/last list it sent/)
   })
 
-  test('signed out: built-in BYO defaults, no network call, a sign-in hint', async () => {
+  test('signed out: no network call, an empty chooser, a credential hint', async () => {
     let calls = 0
     globalThis.fetch = (async () => {
       calls++
@@ -267,8 +316,9 @@ describe('loadMediaModelPicker (the on-open live fetch)', () => {
 
     const { options, notice } = await loadMediaModelPicker('video')
     expect(calls).toBe(0)
-    expect(options.length).toBeGreaterThan(0)
-    expect(options.every((o) => o.providerId === 'fal' || o.providerId === 'vertex')).toBe(true)
+    // Video has no BYO fallback any more, so there is nothing to list offline —
+    // and the notice names the missing credential instead of implying models exist.
+    expect(options).toEqual([])
     expect(notice).toMatch(/\/login/)
   })
 })

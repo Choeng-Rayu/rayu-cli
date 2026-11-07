@@ -1,6 +1,26 @@
 import type { AppState } from '../state/AppStateStore.js'
 import type { PermissionMode } from '../types/permissions.js'
+import { getCwd } from './cwd.js'
+import { findGitRoot } from './git.js'
 import { transitionPermissionMode } from './permissions/permissionSetup.js'
+
+/**
+ * Orchestrator mode works in any directory, but its strongest features need git:
+ * worktree-isolated packets, a reliable baseline/diff and /undo. Outside git it falls
+ * back to file-size/mtime tracking, so tell the user rather than silently downgrading.
+ */
+export const ORCHESTRATOR_NO_GIT_NOTE =
+  'Orchestrator mode works best in a git repository: worktree-isolated packets, ' +
+  'reliable change tracking and /undo need git. This directory is not a git ' +
+  'repository, so changes are tracked by file size and modification time and ' +
+  'worktree packets are unavailable. Consider running the session from a git checkout.'
+
+/** The note to show when Orchestrator runs outside git, or null inside one. */
+export function orchestratorNoGitNote(
+  gitRoot: string | null = findGitRoot(getCwd()),
+): string | null {
+  return gitRoot ? null : ORCHESTRATOR_NO_GIT_NOTE
+}
 
 /**
  * Orchestrator is a distinct user-facing mode. Permission evaluation treats it

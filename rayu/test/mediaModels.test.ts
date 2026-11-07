@@ -40,15 +40,17 @@ const GATEWAY_PAYLOAD = {
       default: true,
     },
     {
-      id: 'veo-3.1-generate-001',
+      // A Rayu-hosted video row: the ONLY kind this CLI can serve (Vertex Veo and
+      // fal.ai are retired).
+      id: 'rayu-wan3-video-720p',
       object: 'model',
       created: 1700000000,
       owned_by: 'rayu',
-      label: 'Veo 3.1',
+      label: 'Wan 3.0 Video 720P',
       mediaType: 'video',
       capabilities: ['text2video', 'image2video'],
-      backend: 'vertex',
-      family: 'veo',
+      backend: 'rayu',
+      family: 'dashscope_video',
       defaultParams: null,
       nvcfFunctionId: null,
       estimatedSeconds: 120,
@@ -148,6 +150,43 @@ describe('parseMediaModels (wire contract)', () => {
     expect(vid.capabilities).toEqual(['text2video', 'image2video'])
   })
 
+  test('publishes a video model clip window, in either wire spelling', () => {
+    const { video } = parseMediaModels({
+      data: [
+        {
+          id: 'rayu-short-video',
+          mediaType: 'video',
+          capabilities: ['text2video'],
+          backend: 'rayu',
+          family: 'dashscope_video',
+          min_duration_seconds: 2,
+          max_duration_seconds: 5,
+        },
+        {
+          id: 'rayu-camel-video',
+          mediaType: 'video',
+          capabilities: ['text2video'],
+          backend: 'rayu',
+          family: 'dashscope_video',
+          maxDurationSeconds: 8,
+        },
+        {
+          id: 'rayu-bad-video',
+          mediaType: 'video',
+          capabilities: ['text2video'],
+          backend: 'rayu',
+          family: 'dashscope_video',
+          max_duration_seconds: -4,
+        },
+      ],
+    })
+    expect(video[0].minDurationSeconds).toBe(2)
+    expect(video[0].maxDurationSeconds).toBe(5)
+    expect(video[1].maxDurationSeconds).toBe(8)
+    // A nonsense cap is ignored rather than clamped to something wrong.
+    expect(video[2].maxDurationSeconds).toBeUndefined()
+  })
+
   test('retired NVIDIA rows are skipped QUIETLY: not listed, not counted as drift', () => {
     // The backend still publishes nvidia / nvcf / nvidia-svd rows for older CLIs.
     // This CLI cannot serve them; counting them as unreadable would log a false
@@ -160,7 +199,7 @@ describe('parseMediaModels (wire contract)', () => {
     expect(dropped).toBe(0)
     expect(chatShaped).toBe(false)
     expect(image.map((m) => m.id)).toEqual(['imagen-4.0-generate-001'])
-    expect(video.map((m) => m.id)).toEqual(['veo-3.1-generate-001'])
+    expect(video.map((m) => m.id)).toEqual(['rayu-wan3-video-720p'])
   })
 
   test('a list of only NVIDIA rows is an empty media catalog, not a chat list', () => {
@@ -296,7 +335,61 @@ function stubSignedIn(): void {
   )
 }
 
+/**
+ * Authenticate with a Rayu API KEY instead of an account session: no
+ * rayu-auth.json, just the `rayu` provider row carrying the key.
+ *
+ * The gateway turns a key into the same Claims + ApiKeyContext a JWT yields, so
+ * the hosted media catalog must be reachable this way too — otherwise an
+ * API-key user sees Rayu-hosted CHAT models in /model and no hosted image or
+ * video model anywhere.
+ */
+function stubApiKeyProvider(apiKey = 'sk_rayu_test_key'): void {
+  writeFileSync(
+    join(cfgDir, 'providers.json'),
+    JSON.stringify({ providers: [{ id: 'rayu', apiKey }] }, null, 2),
+    { mode: 0o600 },
+  )
+}
+
 describe('catalog cache', () => {
+  test('an API-key user fetches the hosted catalog with that key', async () => {
+    stubApiKeyProvider('sk_rayu_test_key')
+    const { invalidateRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
+    invalidateRayuConfigCache()
+
+    let authHeader = ''
+    let calls = 0
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      calls++
+      authHeader = String(
+        (init?.headers as Record<string, string> | undefined)?.Authorization ?? '',
+      )
+      return new Response(JSON.stringify(GATEWAY_PAYLOAD), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const catalog = await refreshMediaModels(true)
+    expect(calls).toBe(1)
+    expect(authHeader).toBe('Bearer sk_rayu_test_key')
+    expect(catalog?.source).toBe('gateway')
+    expect(catalog?.image).toHaveLength(1)
+  })
+
+  test('with neither a session nor a key the catalog is not requested', async () => {
+    const { invalidateRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
+    invalidateRayuConfigCache()
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response(JSON.stringify(GATEWAY_PAYLOAD), { status: 200 })
+    }) as unknown as typeof fetch
+
+    expect(await refreshMediaModels(true)).toBeNull()
+    expect(calls).toBe(0)
+    // and the picker falls back to the built-in list
+    expect(getCachedMediaModels().source).toBe('fallback')
+  })
+
   test('fetches once, then serves from memory', async () => {
     stubSignedIn()
     let calls = 0
@@ -369,7 +462,12 @@ describe('catalog cache', () => {
     expect(await refreshMediaModels(true)).toBeNull()
     const catalog = await ensureMediaModels()
     expect(catalog.source).toBe('fallback')
-    expect(catalog.image.length).toBeGreaterThan(0)
+    // The fallback is EMPTY now — image and video are Rayu-hosted only, and a
+    // built-in row could only advertise a model the gateway does not serve. The
+    // assertion that matters is that the chat catalog was NOT cached as a media
+    // catalog: `source` is 'fallback' (a fetch failure), not a poisoned 'gateway'.
+    expect(catalog.image).toEqual([])
+    expect(catalog.video).toEqual([])
   })
 
   test('a failed fetch keeps the last good catalog', async () => {
@@ -489,8 +587,8 @@ describe('catalog cache', () => {
       label: 'x',
       mediaType: 'video',
       capabilities: ['text2video'],
-      backend: 'fal',
-      family: 'fal-kling',
+      backend: 'rayu',
+      family: 'dashscope_video',
     })
     const second = getCachedMediaModels()
     expect(second.image).toHaveLength(1)
@@ -554,7 +652,7 @@ describe('catalog cache', () => {
       const catalog = await refreshMediaModels(true)
       expect(catalog?.source).toBe('gateway')
       expect(catalog?.image.map((m) => m.backend)).toEqual(['vertex'])
-      expect(catalog?.video.map((m) => m.backend)).toEqual(['vertex'])
+      expect(catalog?.video.map((m) => m.backend)).toEqual(['rayu'])
       const logged = getInMemoryErrors()
         .slice(before)
         .filter((e) => e.error.includes('could not be read'))
@@ -649,30 +747,79 @@ describe('gateway URL security (the catalog fetch carries the Rayu JWT)', () => 
 })
 
 describe('offline fallback (no gateway)', () => {
-  test('covers every backend/capability the CLI can talk to — and no NVIDIA', () => {
+  test('covers the remaining BYO capability — and no retired backend', () => {
     const catalog = getCachedMediaModels()
     expect(catalog.source).toBe('fallback')
 
-    const imageKeys = new Set(
-      catalog.image.flatMap((m) => m.capabilities.map((c) => `${c}:${m.backend}`)),
-    )
-    expect(imageKeys).toContain('generate:vertex')
-    expect(imageKeys).toContain('edit:vertex')
-
-    const videoKeys = new Set(
-      catalog.video.flatMap((m) => m.capabilities.map((c) => `${c}:${m.backend}`)),
-    )
-    expect(videoKeys).toContain('text2video:fal')
-    expect(videoKeys).toContain('image2video:fal')
-    expect(videoKeys).toContain('text2video:vertex')
-    expect(videoKeys).toContain('image2video:vertex')
+    // NEITHER list has a BYO entry: image and video are served exclusively by
+    // the Rayu-hosted gateway, so a built-in row could never be served.
+    expect(catalog.image).toEqual([])
+    expect(catalog.video).toEqual([])
 
     const backends = new Set(
       [...catalog.image, ...catalog.video].map((m) => m.backend as string),
     )
-    for (const retired of ['nvidia', 'nvcf', 'nvidia-svd']) {
+    for (const retired of ['nvidia', 'nvcf', 'nvidia-svd', 'fal']) {
       expect(backends.has(retired)).toBe(false)
     }
+  })
+
+  test('a fal video row from the gateway is skipped quietly, not counted as drift', () => {
+    // The backend still publishes fal rows for older CLIs; they are a known,
+    // deliberate omission, so they must not raise the "your CLI is older than the
+    // gateway" warning that unreadable rows produce.
+    const r = parseMediaModels({
+      object: 'list',
+      data: [
+        {
+          id: 'fal-ai/kling-video/v2.1/standard/text-to-video',
+          mediaType: 'video',
+          capabilities: ['text2video'],
+          backend: 'fal',
+          family: 'fal-kling',
+        },
+        {
+          id: 'rayu-wan2.7-video',
+          mediaType: 'video',
+          capabilities: ['text2video', 'image2video'],
+          backend: 'rayu',
+          family: 'dashscope_video',
+        },
+      ],
+    })
+    expect(r.dropped).toBe(0)
+    expect(r.video.map((m) => m.id)).toEqual(['rayu-wan2.7-video'])
+  })
+
+  test('a vertex VIDEO row is retired too — Vertex is image-only now', () => {
+    // A stale `rayu-media-models.json` (or a gateway still publishing the old Veo
+    // catalog) can carry backend:"vertex" video rows. They would pass the backend
+    // check, so they are retired explicitly rather than surfacing as an
+    // "unknown request family" from the tool.
+    const r = parseMediaModels({
+      object: 'list',
+      data: [
+        {
+          id: 'veo-3.1-generate-001',
+          mediaType: 'video',
+          capabilities: ['text2video', 'image2video'],
+          backend: 'vertex',
+          family: 'veo',
+        },
+        {
+          id: 'imagen-4.0-generate-001',
+          mediaType: 'image',
+          capabilities: ['generate'],
+          backend: 'vertex',
+          family: 'imagen',
+        },
+      ],
+    })
+    // Skipped quietly (not counted as unreadable schema drift).
+    expect(r.dropped).toBe(0)
+    expect(r.video).toEqual([])
+    // The IMAGE half of the same backend is still accepted.
+    expect(r.image.map((m) => m.id)).toEqual(['imagen-4.0-generate-001'])
   })
 
   test('every fallback entry names a family the CLI can actually build', async () => {
@@ -691,49 +838,20 @@ describe('offline fallback (no gateway)', () => {
     }
   })
 
-  test('keeps every BYO model the CLI can still serve', () => {
-    // The fallback is FROZEN at the set the CLI shipped when it still had a
-    // hardcoded registry, minus the removed NVIDIA backends, so an offline BYOK
-    // user keeps every Vertex and fal model. New models go in the backend seed,
-    // never here.
+  test('ships NO built-in IMAGE or VIDEO models — both are Rayu-hosted only', () => {
+    // Image generation used to fall back to Vertex Imagen offline; that backend
+    // is gone from the product, so a built-in row would advertise a model the
+    // CLI can no longer call. Video was already empty for the same reason.
     const catalog = getCachedMediaModels()
-    expect(catalog.image.map((m) => m.id)).toEqual([
-      'imagen-4.0-generate-001',
-      'imagen-4.0-fast-generate-001',
-      'imagen-4.0-ultra-generate-001',
-      'imagen-3.0-capability-001',
-    ])
-    expect(catalog.video.map((m) => m.id)).toEqual([
-      'fal-ai/kling-video/v2.1/standard/text-to-video',
-      'fal-ai/kling-video/v2.1/standard/image-to-video',
-      'veo-3.1-generate-001',
-      'veo-3.1-fast-generate-001',
-      'veo-3.0-generate-001',
-      'veo-3.0-fast-generate-001',
-    ])
+    expect(catalog.image).toEqual([])
+    expect(catalog.video).toEqual([])
   })
 
-  test('reproduces the old per-backend defaults', async () => {
+  test('resolves NO per-backend IMAGE default offline', async () => {
     const catalog = getCachedMediaModels()
     const { defaultImageModelId } = await import('../src/tools/ImageGenTool/models.ts')
-    const { defaultVideoModelId, resolveVideoModel } = await import(
-      '../src/tools/VideoGenTool/models.ts'
-    )
-    expect(defaultImageModelId(catalog.image, 'vertex', false)).toBe(
-      'imagen-4.0-generate-001',
-    )
-    expect(defaultImageModelId(catalog.image, 'vertex', true)).toBe(
-      'imagen-3.0-capability-001',
-    )
-    expect(
-      resolveVideoModel(catalog.video, undefined, false, { backends: ['fal'] }).id,
-    ).toBe('fal-ai/kling-video/v2.1/standard/text-to-video')
-    expect(
-      resolveVideoModel(catalog.video, undefined, true, { backends: ['fal'] }).id,
-    ).toBe('fal-ai/kling-video/v2.1/standard/image-to-video')
-    expect(defaultVideoModelId(catalog.video, 'vertex', false)).toBe(
-      'veo-3.1-generate-001',
-    )
+    expect(defaultImageModelId(catalog.image, 'vertex', false)).toBeUndefined()
+    expect(defaultImageModelId(catalog.image, 'vertex', true)).toBeUndefined()
   })
 
   test('the fallback mirrors the backend seed (no drift between the two)', async () => {

@@ -15,13 +15,16 @@
 // recreate the hardcoded registry that discovery replaced.
 //
 // WHY IT EXISTS AT ALL: the one case of **no gateway** — `USE_RAYU_OAUTH` off, or
-// the user not signed in. Media generation in that mode runs entirely on the
-// user's OWN credentials (FAL_KEY / GCP credentials) and never touches Rayu
-// infrastructure, so disabling the tools would be a pure regression for BYOK
-// users with no security or correctness upside (Option B of the plan). It mirrors
-// the previous hardcoded registries entry-for-entry, minus the NVIDIA backends
-// (genai FLUX / Stable Diffusion / Kontext, NVCF Cosmos, SVD), which the CLI no
-// longer serves.
+// the user not signed in. It mirrors the previous hardcoded registries
+// entry-for-entry, minus the NVIDIA backends (genai FLUX / Stable Diffusion /
+// Kontext, NVCF Cosmos, SVD), which the CLI no longer serves.
+//
+// SCOPE HAS SHRUNK TO NOTHING: BOTH lists are empty. Video generation became
+// Rayu-hosted only first (the fal.ai and Vertex Veo clients were removed), and
+// image generation followed — image is served exclusively by the Rayu-hosted
+// gateway, so an offline built-in row could only advertise a model the product no
+// longer routes to. Keeping it would have re-exposed Vertex Imagen on a machine
+// with no Google credentials, which is exactly the failure this replaced.
 //
 // Entries are tagged `source: 'fallback'` so the UI can say so.
 //
@@ -29,106 +32,21 @@
 // ties when no model carries the `default` flag for a capability.
 import type { MediaCatalog, MediaModelEntry } from './mediaModels.js'
 
-const FALLBACK_IMAGE: MediaModelEntry[] = [
-  {
-    id: 'imagen-4.0-generate-001',
-    label: 'Imagen 4',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'vertex',
-    family: 'imagen',
-    isDefault: true,
-  },
-  {
-    id: 'imagen-4.0-fast-generate-001',
-    label: 'Imagen 4 Fast',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'vertex',
-    family: 'imagen',
-  },
-  {
-    id: 'imagen-4.0-ultra-generate-001',
-    label: 'Imagen 4 Ultra',
-    mediaType: 'image',
-    capabilities: ['generate'],
-    backend: 'vertex',
-    family: 'imagen',
-  },
-  {
-    // Imagen 4 is generate-only; editing needs the Imagen 3 capability model.
-    id: 'imagen-3.0-capability-001',
-    label: 'Imagen 3 Capability (edit)',
-    mediaType: 'image',
-    capabilities: ['edit'],
-    backend: 'vertex',
-    family: 'imagen',
-    isDefault: true,
-  },
-]
+/**
+ * EMPTY, deliberately — image is Rayu-hosted only.
+ *
+ * The hosted catalog is server-owned, so there is nothing a client can invent:
+ * a built-in row would advertise a model the gateway may not have (or may have
+ * priced differently). Offline with no session and no Rayu API key the image
+ * picker lists nothing and explains why, which is the honest answer now that
+ * there is no bring-your-own image backend to fall back to.
+ */
+const FALLBACK_IMAGE: MediaModelEntry[] = []
 
-const FALLBACK_VIDEO: MediaModelEntry[] = [
-  {
-    id: 'fal-ai/kling-video/v2.1/standard/text-to-video',
-    label: 'Kling Video 2.1 (text-to-video)',
-    mediaType: 'video',
-    capabilities: ['text2video'],
-    backend: 'fal',
-    family: 'fal-kling',
-    estimatedSeconds: 90,
-    defaultParams: { duration: '5', aspect_ratio: '16:9', cfg_scale: 0.5 },
-    isDefault: true,
-  },
-  {
-    id: 'fal-ai/kling-video/v2.1/standard/image-to-video',
-    label: 'Kling Video 2.1 (image-to-video)',
-    mediaType: 'video',
-    capabilities: ['image2video'],
-    backend: 'fal',
-    family: 'fal-kling',
-    estimatedSeconds: 90,
-    defaultParams: { duration: '5', aspect_ratio: '16:9' },
-    isDefault: true,
-  },
-  // GA ids only. Google retired the …-generate-preview ids on 2026-04-02.
-  {
-    id: 'veo-3.1-generate-001',
-    label: 'Veo 3.1',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 120,
-    isDefault: true,
-  },
-  {
-    id: 'veo-3.1-fast-generate-001',
-    label: 'Veo 3.1 Fast',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 90,
-  },
-  {
-    id: 'veo-3.0-generate-001',
-    label: 'Veo 3.0',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 120,
-  },
-  {
-    id: 'veo-3.0-fast-generate-001',
-    label: 'Veo 3.0 Fast',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 90,
-  },
-]
+/**
+ * EMPTY, deliberately — video is Rayu-hosted only, for the same reason.
+ */
+const FALLBACK_VIDEO: MediaModelEntry[] = []
 
 /** The offline catalog. Fresh copies, so a caller cannot mutate the fallback. */
 export function fallbackMediaCatalog(): MediaCatalog {

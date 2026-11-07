@@ -4,7 +4,13 @@
 // The catalog is admin-owned data in the backend (`media_models`) and reaches the
 // CLI through the gateway:
 //
-//     GET {gateway}/v1/models?media=all      (Authorization: Bearer <Rayu JWT>)
+//     GET {gateway}/v1/models?media=all      (Authorization: Bearer <credential>)
+//
+// The credential is whatever the user has: an account JWT (/login) OR a Rayu API
+// key (/connect → Rayu API key). The gateway accepts both — it converts an API
+// key into the same Claims + ApiKeyContext a JWT yields — so recognising only a
+// session used to hide every Rayu-hosted image/video model from API-key users
+// while their chat models listed normally. See rayuApiKeyAuth.ts.
 //
 // Adding an image or video model is therefore a backend row and nothing else — no
 // CLI release. See docs/media-models-contract.md for the response schema.
@@ -20,8 +26,9 @@
 // mediaModelsFallback.ts for why, and why it is not the source of truth).
 //
 // SECURITY: this is metadata only. No provider key is fetched, stored, or sent.
-// Hosted generation goes through the gateway on the Rayu session; bring-your-own
-// generation runs against the user's own fal.ai / Google Cloud credentials.
+// Hosted generation goes through the gateway on the Rayu session (or a Rayu API
+// key); the remaining bring-your-own path, IMAGE only, runs against the user's own
+// Google Cloud credentials.
 //
 // NVIDIA image and video generation (genai, NVCF, SVD) was removed from the CLI.
 // The backend can still publish rows for those backends — older CLIs read them —
@@ -32,12 +39,10 @@ import { getRayuAuthConfigDir } from '../../utils/envUtils.js'
 import { logError } from '../../utils/log.js'
 import { fallbackMediaCatalog } from './mediaModelsFallback.js'
 import {
-  getSecureRayuGatewayBaseUrl,
-  getValidRayuAccessToken,
-  hasRayuSession,
-  isUseRayuOAuthEnabled,
-  readRayuSession,
-} from './rayuSession.js'
+  getRayuGatewayCredential,
+  hasRayuGatewayCredential,
+} from './rayuApiKeyAuth.js'
+import { getSecureRayuGatewayBaseUrl, readRayuSession } from './rayuSession.js'
 
 export type MediaType = 'image' | 'video'
 export type ImageCapability = 'generate' | 'edit'
@@ -48,12 +53,20 @@ export type MediaCapability = ImageCapability | VideoCapability
  * Upstream that serves a media model. The CLI picks its HTTP client from this.
  *
  * `rayu` means RAYU-HOSTED: the request goes to the Rayu gateway (Bearer Rayu
- * JWT) and the gateway holds the upstream provider key, exactly like a
- * rayu-hosted chat model. It is therefore the only backend the user needs no
- * key for. `vertex` (Imagen / Veo on the user's Google credentials) and `fal`
- * (fal.ai Kling on the user's FAL_KEY) are the bring-your-own backends.
+ * JWT or a Rayu API key) and the gateway holds the upstream provider key,
+ * exactly like a rayu-hosted chat model. It is therefore the only backend the
+ * user needs no key for, and the only one VIDEO has. `vertex` (Imagen on the
+ * user's own Google credentials) is the remaining bring-your-own IMAGE backend.
  */
-export type MediaBackend = 'vertex' | 'fal' | 'rayu'
+export type MediaBackend =
+  /** Bring-your-own Imagen, on the user's own Google Cloud project. IMAGE only. */
+  | 'vertex'
+  /**
+   * Rayu-hosted: proxied by the gateway, no provider key. The only backend for
+   * IMAGE and VIDEO generation — the fal.ai video client was removed, so `fal`
+   * is no longer a backend this CLI can serve (see RETIRED_MEDIA_BACKENDS).
+   */
+  | 'rayu'
 
 /**
  * Request-SHAPE family. The CLI maps this to a body builder (see the
@@ -77,6 +90,16 @@ export interface MediaModelEntry {
   family: MediaFamily
   /** Rough generation seconds, for the user-facing wait message. */
   estimatedSeconds?: number
+  /**
+   * Clip-length window the model actually accepts, when the gateway publishes
+   * it (`min_duration_seconds` / `max_duration_seconds` or the camelCase
+   * spelling). A video model's real cap is NOT always the 30 s DashScope
+   * default — a shorter model otherwise gets a request the gateway rejects,
+   * which the caller had no way to predict. Absent means "use the family's
+   * documented default window".
+   */
+  minDurationSeconds?: number
+  maxDurationSeconds?: number
   /**
    * Per-model upstream request defaults (e.g. `{ cfg_scale: 0, steps: 4 }`).
    * This is what lets two models share one request-shape family.
@@ -122,7 +145,6 @@ const IMAGE_CAPABILITIES: readonly string[] = ['generate', 'edit']
 const VIDEO_CAPABILITIES: readonly string[] = ['text2video', 'image2video']
 const MEDIA_BACKENDS: readonly string[] = [
   'vertex',
-  'fal',
   // Hosted entries synthesized by the gateway from the admin's hosted catalog:
   // `image_models` for images (family openai_images / dashscope_multimodal) AND
   // hosted video models (family dashscope_video). mediaModelsFallback.ts stays
@@ -132,22 +154,37 @@ const MEDIA_BACKENDS: readonly string[] = [
 
 /**
  * Backends this CLI no longer serves: NVIDIA genai (FLUX / Stable Diffusion /
- * Kontext), NVCF (Cosmos) and NVIDIA SVD.
+ * Kontext), NVCF (Cosmos), NVIDIA SVD, and fal.ai.
  *
  * Rows for them are skipped QUIETLY. They are not schema drift — the backend
  * still publishes them for older CLIs — so counting them as unreadable would log
  * a "your CLI is older than the gateway" warning that is the opposite of true.
+ *
+ * `fal` joined the list when video generation became Rayu-hosted only: the
+ * fal.ai client was removed, so a `fal` row is a row this build cannot serve,
+ * not a row it failed to understand.
  */
 const RETIRED_MEDIA_BACKENDS: ReadonlySet<string> = new Set([
   'nvidia',
   'nvcf',
   'nvidia-svd',
+  'fal',
 ])
 
+/**
+ * Also retires a `vertex` VIDEO row: Vertex is an IMAGE-only backend now that the
+ * Veo video client is gone. Such a row can still arrive from a gateway publishing
+ * the old Veo catalog, or from a `rayu-media-models.json` cache written by an
+ * earlier CLI, and `vertex` alone would pass the backend check — leaving a model
+ * whose request family (`veo`) this build cannot build, which surfaces as a
+ * confusing "unknown request family" instead of "not offered".
+ */
 function isRetiredBackendItem(raw: unknown): boolean {
   if (!raw || typeof raw !== 'object') return false
-  const backend = (raw as { backend?: unknown }).backend
-  return typeof backend === 'string' && RETIRED_MEDIA_BACKENDS.has(backend)
+  const o = raw as { backend?: unknown; mediaType?: unknown }
+  if (typeof o.backend !== 'string') return false
+  if (RETIRED_MEDIA_BACKENDS.has(o.backend)) return true
+  return o.backend === 'vertex' && o.mediaType === 'video'
 }
 
 /**
@@ -159,6 +196,30 @@ function isRetiredBackendItem(raw: unknown): boolean {
  */
 export const MEDIA_CATALOG_UNAVAILABLE_MESSAGE =
   'Rayu model catalog unavailable — check your connection, then open /model_image_generation or /model_video_generation to retry'
+
+/**
+ * The right message when a catalog has no usable hosted entry.
+ *
+ * Two very different causes, and conflating them wastes the user's time:
+ * a fetch that FAILED is transient (retry, check the connection), while a fetch
+ * that SUCCEEDED against a catalog with no hosted row means the admin has not
+ * published one — retrying forever will never fix it, and "check your
+ * connection" sends the user looking in the wrong place.
+ */
+export function mediaCatalogEmptyMessage(
+  catalog: Pick<MediaCatalog, 'source' | 'image' | 'video'>,
+  mediaType: 'image' | 'video',
+): string {
+  const reachable = catalog.source === 'gateway'
+  const hasHosted = catalog[mediaType].some((m) => m.backend === 'rayu')
+  if (reachable && !hasHosted) {
+    return (
+      `No Rayu-hosted ${mediaType} models are published yet. Ask your Rayu admin ` +
+      `to enable one in the admin dashboard (/admin/media) — signing in does not create one.`
+    )
+  }
+  return MEDIA_CATALOG_UNAVAILABLE_MESSAGE
+}
 
 let cache: PersistedCatalog | null = null
 let loadedFromDisk = false
@@ -254,10 +315,20 @@ function coerceEntry(raw: unknown): MediaModelEntry | null {
   if (typeof o.estimatedSeconds === 'number' && o.estimatedSeconds > 0) {
     entry.estimatedSeconds = Math.floor(o.estimatedSeconds)
   }
+  const minSeconds = positiveSeconds(o.minDurationSeconds ?? o.min_duration_seconds)
+  if (minSeconds !== undefined) entry.minDurationSeconds = minSeconds
+  const maxSeconds = positiveSeconds(o.maxDurationSeconds ?? o.max_duration_seconds)
+  if (maxSeconds !== undefined) entry.maxDurationSeconds = maxSeconds
   if (o.defaultParams && typeof o.defaultParams === 'object' && !Array.isArray(o.defaultParams)) {
     entry.defaultParams = o.defaultParams as Record<string, unknown>
   }
   return entry
+}
+
+/** A positive whole number of seconds from either wire spelling, else undefined. */
+function positiveSeconds(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return undefined
+  return Math.floor(v)
 }
 
 /**
@@ -359,8 +430,7 @@ function readUsableCache(): PersistedCatalog | null {
 export function getCachedMediaModels(): MediaCatalog {
   const known = readUsableCache()
   if (
-    isUseRayuOAuthEnabled() &&
-    hasRayuSession() &&
+    hasRayuGatewayCredential() &&
     isStale(known) &&
     Date.now() - lastAttempt > REFRESH_COOLDOWN_MS
   ) {
@@ -378,7 +448,7 @@ export function getCachedMediaModels(): MediaCatalog {
  */
 export async function ensureMediaModels(): Promise<MediaCatalog> {
   const known = readUsableCache()
-  if (isUseRayuOAuthEnabled() && hasRayuSession() && isStale(known)) {
+  if (hasRayuGatewayCredential() && isStale(known)) {
     const fetched = await refreshMediaModels()
     if (fetched) return fetched
   }
@@ -409,7 +479,7 @@ function stripUserId(c: PersistedCatalog): MediaCatalog {
 export async function refreshMediaModels(
   force = false,
 ): Promise<MediaCatalog | null> {
-  if (!isUseRayuOAuthEnabled() || !hasRayuSession()) return null
+  if (!hasRayuGatewayCredential()) return null
   if (fetching) return fetching
   if (!force && Date.now() - lastAttempt < REFRESH_COOLDOWN_MS) {
     const known = readUsableCache()
@@ -438,7 +508,9 @@ function reportOnce(message: string): void {
 
 async function fetchCatalog(): Promise<MediaCatalog | null> {
   try {
-    const token = await getValidRayuAccessToken()
+    // Either credential works: the gateway turns a Rayu API key into the same
+    // Claims + ApiKeyContext a JWT produces, so `?media=all` answers identically.
+    const token = await getRayuGatewayCredential()
     if (!token) return null
     const res = await (globalThis.fetch as typeof fetch)(
       `${getSecureRayuGatewayBaseUrl()}/v1/models?media=all`,

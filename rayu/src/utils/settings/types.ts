@@ -859,8 +859,9 @@ export const SettingsSchema = lazySchema(() =>
             .array(z.string())
             .optional()
             .describe(
-              'Commands every Orchestrator run must pass, in addition to the checks in its contract, ' +
-                'for example ["bun run typecheck", "bun test"].',
+              'Commands every Orchestrator run must pass, in addition to the contract\u2019s own ' +
+                'required checks. A contract without at least one required check is refused. ' +
+                'For example ["bun run typecheck", "bun test"].',
             ),
         })
         .optional()

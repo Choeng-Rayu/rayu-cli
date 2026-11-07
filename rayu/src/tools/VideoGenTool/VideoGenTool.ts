@@ -1,5 +1,5 @@
 import type { Base64ImageSource } from '@anthropic-ai/sdk/resources/messages.mjs'
-import { mkdir, readFile } from 'fs/promises'
+import { mkdir } from 'fs/promises'
 import { writeFileAtomically } from '../../utils/fsOperations.js'
 import { dirname, isAbsolute, relative } from 'path'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
@@ -14,28 +14,13 @@ import {
   ensureMediaModels,
   isReferenceCapable,
   MEDIA_CATALOG_UNAVAILABLE_MESSAGE,
+  mediaCatalogEmptyMessage,
   type MediaModelEntry,
   type VideoCapability,
 } from '../../services/rayuAuth/mediaModels.js'
-import {
-  withBuilder,
-  isVertexVideoModel,
-  retainKnownVideoModel,
-} from './models.js'
-import {
-  generateFalVideo,
-  getFalApiKey,
-  isFalVideoAvailable,
-} from './falVideoClient.js'
+import { withBuilder, retainKnownVideoModel } from './models.js'
 import { generateRayuVideo } from './rayuVideoClient.js'
-import {
-  generateVertexVideo,
-  isGeminiVertexVideoAvailable,
-} from './vertexVideoClient.js'
-import {
-  hasRayuSession,
-  isUseRayuOAuthEnabled,
-} from '../../services/rayuAuth/rayuSession.js'
+import { hasRayuGatewayCredential } from '../../services/rayuAuth/rayuApiKeyAuth.js'
 import { DESCRIPTION, getVideoGenPrompt, VIDEO_GEN_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 import {
@@ -94,8 +79,14 @@ const outputSchema = lazySchema(() =>
   z.object({
     path: z.string(),
     model: z.string(),
-    frames: z.number(),
-    fps: z.number(),
+    /**
+     * The REQUESTED frame count / rate, present only when the caller supplied
+     * them. They are never invented: the hosted gateway may render a different
+     * length than the frame maths implies, so absent inputs must stay absent
+     * (a fabricated "57 frames @ 24fps" described no real clip).
+     */
+    frames: z.number().optional(),
+    fps: z.number().optional(),
     mediaType: z.string(),
     /**
      * ACTUAL seconds of the generated video, when the backend reported one
@@ -130,9 +121,11 @@ export function resolveOutputPath(output_path: string | undefined): {
 }
 
 /**
- * True when Rayu-HOSTED video models are usable: OAuth mode on and a Rayu
- * session stored. Together they mean the gateway will accept the request with
- * the user's JWT and hold the upstream provider key — no BYO key required.
+ * True when Rayu-HOSTED video models are usable: the user has a credential the
+ * gateway accepts — an account session (/login) or a Rayu API key (/connect).
+ * Either way the gateway holds the upstream provider key, so no BYO key is
+ * required. Recognising only the session is what hid hosted video models from
+ * API-key users while their chat models listed normally.
  *
  * Synchronous and memoized briefly for the same reason as the image tool:
  * isEnabled() runs while the tool registry is assembled and whenever a picker
@@ -150,7 +143,7 @@ export function isRayuVideoAvailable(): boolean {
   ) {
     return rayuAvailability.value
   }
-  const value = isUseRayuOAuthEnabled() && hasRayuSession()
+  const value = hasRayuGatewayCredential()
   rayuAvailability = { value, at: now }
   return value
 }
@@ -160,47 +153,13 @@ export function _resetRayuVideoAvailabilityForTesting(): void {
   rayuAvailability = null
 }
 
-/**
- * True when a video backend can actually serve a request right now. The
- * catalog's backends are the source of truth.
- */
-function isVideoBackendConfigured(backend: string): boolean {
-  switch (backend) {
-    case 'fal':
-      return getFalApiKey() != null
-    case 'vertex':
-      return isGeminiVertexVideoAvailable()
-    // Hosted is "configured" whenever the user can reach it; a signed-out user
-    // never reaches the hosted fallback anyway.
-    case 'rayu':
-      return isRayuVideoAvailable()
-    default:
-      return false
-  }
-}
-
-/** The refusal when no video backend can take the request. */
+/** The refusal when the Rayu-hosted video path cannot take the request. */
 function noVideoBackendMessage(): string {
   if (isRayuVideoAvailable()) return MEDIA_CATALOG_UNAVAILABLE_MESSAGE
   return (
-    'Video generation needs a Rayu sign-in (/login) for hosted models, a fal.ai key ' +
-    '(FAL_KEY or /connect), or Vertex AI (/connect → Gemini / Vertex AI) for Veo.'
+    'Video generation is Rayu-hosted. Sign in to Rayu (/login), or connect a Rayu ' +
+    'API key, to generate video.'
   )
-}
-
-/**
- * Which client serves the request, or null when none can: the selected entry's
- * own backend, else — with nothing selected — fal.ai when its key is configured
- * (Vertex was already decided by `useVertex`).
- */
-function videoRoute(
-  entry: MediaModelEntry | undefined,
-  useVertex: boolean,
-): 'rayu' | 'vertex' | 'fal' | null {
-  if (entry?.backend === 'rayu') return 'rayu'
-  if (useVertex) return 'vertex'
-  if (entry?.backend === 'fal') return 'fal'
-  return !entry && isFalVideoAvailable() ? 'fal' : null
 }
 
 /**
@@ -233,15 +192,11 @@ export const VideoGenTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    // Visibility is capability-only: a BYO backend (fal.ai / Vertex) OR a
-    // signed-in Rayu account, which needs no key at all. Plan entitlement is
+    // Video is Rayu-hosted only, so a Rayu credential (session or API key) is the
+    // whole gate — there is no BYO backend to fall back on. Plan entitlement is
     // still enforced SOFTLY in prompt()/call() so a Free user SEES the tool and
     // gets an upgrade prompt instead of it silently vanishing.
-    return (
-      isFalVideoAvailable() ||
-      isGeminiVertexVideoAvailable() ||
-      isRayuVideoAvailable()
-    )
+    return isRayuVideoAvailable()
   },
   isReadOnly() {
     return false
@@ -333,13 +288,16 @@ export const VideoGenTool = buildTool({
     if (!ok) {
       throw new Error('output_path must be a file inside the working directory.')
     }
+    // Check the credential BEFORE touching the catalog: without one the catalog
+    // is the empty offline fallback, so the selection below would fail first and
+    // report "catalog unavailable — check your connection" to a user whose real
+    // problem is being signed out.
+    if (!isRayuVideoAvailable()) throw new Error(noVideoBackendMessage())
 
     const isImage2Video = !!input.input_image
-    // The reference image is resolved once the backend is known (below): BYO
-    // backends get base64 bytes read here, the hosted gateway gets the caller's
-    // raw value — an https URL passes through, a local path is read and encoded
-    // by the dashscope builder.
-    let image: string | undefined
+    // Hosted models accept the caller's raw reference (an https URL passes
+    // through; a local path is read and encoded by the dashscope builder), so
+    // there is no base64 read on this path any more.
     let hostedImage: string | undefined
 
     // The catalog is fetched lazily HERE (first tool use), not at import time, so
@@ -347,8 +305,7 @@ export const VideoGenTool = buildTool({
     const catalog = await ensureMediaModels()
 
     // Resolve the model: explicit input wins, else the configured default from
-    // /model_video_generation, else — for a signed-in user — the hosted catalog
-    // default, else the BYO catalog default for the configured backend.
+    // /model_video_generation, else the hosted catalog default.
     //
     // The remembered preference is dropped when it is no longer in the catalog (an
     // admin removed it, a plan withdrew it, or we are offline on built-ins), so a
@@ -364,102 +321,77 @@ export const VideoGenTool = buildTool({
       ? catalog.video.find((m) => m.id === selectedModel)
       : undefined
 
-    // Rayu-hosted is the DEFAULT for a signed-in user. An explicit input.model was
-    // validated above and is never swapped here.
-    if (!explicitModel && isRayuVideoAvailable()) {
+    // Rayu-hosted is the ONLY video path. An explicit input.model was validated
+    // above and is never swapped here.
+    if (!explicitModel) {
       if (!selectedModel) {
         // Nothing named and nothing remembered: use the hosted catalog default for
         // this operation (image2video when a reference image is given), routed
-        // through the gateway and billed to Rayu credits — even when a fal or
-        // Vertex key is also configured. A BYO model is used when the user picks
-        // one (tool argument or /model_video_generation), or when the catalog has
-        // no hosted model that can do this operation.
+        // through the gateway and billed to Rayu credits.
         const hosted = selectHostedVideoModel(catalog.video, isImage2Video)
         if (hosted) {
           selectedEntry = hosted
-        } else if (!(isFalVideoAvailable() || isGeminiVertexVideoAvailable())) {
-          // No hosted model for the operation and no BYO backend either. For a
-          // reference-image request, select the hosted text-to-video model so the
-          // refusal below gives its precise "text-to-video only" message;
-          // otherwise the catalog itself is the problem (the gateway fetch failed,
-          // or it lists no hosted model). Sending this to the fal client would
-          // report "API key not configured" — a misleading dead end.
-          const textOnly = isImage2Video
-            ? selectHostedVideoModel(catalog.video, false)
-            : undefined
-          if (!textOnly) throw new Error(MEDIA_CATALOG_UNAVAILABLE_MESSAGE)
+        } else if (isImage2Video) {
+          // A reference image with no image2video model: select the hosted
+          // text-to-video model so the refusal below gives its precise
+          // "text-to-video only" message rather than the generic catalog error.
+          const textOnly = selectHostedVideoModel(catalog.video, false)
+          if (!textOnly) throw new Error(mediaCatalogEmptyMessage(catalog, 'video'))
           selectedEntry = textOnly
-        }
-      } else {
-        // A remembered model whose backend has NO usable credentials (a stale fal
-        // id, or the user removed their key) falls back to the hosted model
-        // instead of an unactionable "API key not configured". When its backend IS
-        // configured, the user's choice stands. (An id with no catalog entry
-        // survived retainKnownVideoModel only because it is a veo-* id.)
-        const backendConfigured = isVideoBackendConfigured(
-          selectedEntry ? selectedEntry.backend : 'vertex',
-        )
-        if (!backendConfigured) {
-          // Capability-aware, with the text-to-video entry as the fallback so a
-          // catalog without an image2video model still reaches the precise
-          // refusal below instead of the generic catalog error.
-          const hosted =
-            selectHostedVideoModel(catalog.video, isImage2Video) ??
-            selectHostedVideoModel(catalog.video, false)
-          if (!hosted) throw new Error(MEDIA_CATALOG_UNAVAILABLE_MESSAGE)
-          selectedEntry = hosted
+        } else {
+          // The catalog itself is the problem: the gateway fetch failed, or it
+          // lists no hosted video model.
+          throw new Error(mediaCatalogEmptyMessage(catalog, 'video'))
         }
       }
     }
 
-    // Route to Vertex Veo when the SELECTED model is Vertex-served, or — when
-    // nothing is selected — when Vertex is the only configured video backend.
-    // Routing by the selected model's own backend keeps an explicitly requested
-    // fal model from being silently swapped for Veo on a Vertex-only machine; the
-    // fal client then reports the missing key instead.
-    const useVertex = selectedEntry
-      ? selectedEntry.backend === 'vertex'
-      : isVertexVideoModel(selectedModel, catalog.video) ||
-        (isGeminiVertexVideoAvailable() && !isFalVideoAvailable())
-    const route = videoRoute(selectedEntry, useVertex)
-    if (!route) throw new Error(noVideoBackendMessage())
+    // Every remaining backend is Rayu-hosted, so there is nothing to route
+    // between; a selection that survived retainKnownVideoModel is always hosted.
 
-    // Resolve the reference image now that the backend is known. Hosted models
-    // with the image2video capability accept the caller's raw value (URL or
-    // local path — the builder encodes it); a text-to-video-only hosted entry
-    // is refused with an actionable message instead of sending a body the
-    // gateway will 400. BYO backends keep the base64 read, exactly as before.
+    // Hosted models with the image2video capability accept the caller's raw value
+    // (URL or local path — the builder encodes it); a text-to-video-only entry is
+    // refused with an actionable message instead of sending a body the gateway
+    // will 400.
     if (input.input_image) {
-      if (selectedEntry?.backend === 'rayu') {
-        if (!isReferenceCapable(selectedEntry)) {
-          // A REMEMBERED/default hosted text-to-video model does not freeze the
-          // request: if the catalog carries a hosted image2video entry, swap to
-          // it — the same deliberate fall-through resolveVideoModel applies to
-          // BYO models. An EXPLICIT model is never swapped silently.
-          const i2v = explicitModel
-            ? undefined
-            : selectHostedVideoModel(catalog.video, true)
-          if (i2v) {
-            selectedEntry = i2v
-          } else {
-            throw new Error(
-              `Hosted video model "${selectedEntry.id}" is text-to-video only — ` +
-                'choose a model with image2video to use a reference image.',
-            )
-          }
-        }
-        hostedImage = /^https?:\/\//i.test(input.input_image)
-          ? input.input_image
-          : expandPath(input.input_image)
-      } else {
-        const imgPath = expandPath(input.input_image)
-        try {
-          image = (await readFile(imgPath)).toString('base64')
-        } catch {
+      if (selectedEntry?.backend !== 'rayu') {
+        throw new Error(mediaCatalogEmptyMessage(catalog, 'video'))
+      }
+      if (!isReferenceCapable(selectedEntry)) {
+        // A REMEMBERED/default hosted text-to-video model does not freeze the
+        // request: if the catalog carries a hosted image2video entry, swap to it.
+        // An EXPLICIT model is never swapped silently.
+        const i2v = explicitModel
+          ? undefined
+          : selectHostedVideoModel(catalog.video, true)
+        if (i2v) {
+          selectedEntry = i2v
+        } else {
           throw new Error(
-            `input_image not found or unreadable: ${input.input_image}`,
+            `Hosted video model "${selectedEntry.id}" is text-to-video only — ` +
+              'choose a model with image2video to use a reference image.',
           )
         }
+      }
+      hostedImage = /^https?:\/\//i.test(input.input_image)
+        ? input.input_image
+        : expandPath(input.input_image)
+    } else if (selectedEntry && !selectedEntry.capabilities.includes('text2video')) {
+      // The inverse capability trap: an image2video-ONLY model (an explicit
+      // `model=`, or a remembered /model_video_generation pick) cannot serve a
+      // text prompt — the gateway 400s `model_requires_image`. An explicit
+      // choice is never swapped silently; a remembered one falls through to a
+      // text-to-video entry when the catalog has one.
+      const t2v = explicitModel
+        ? undefined
+        : selectHostedVideoModel(catalog.video, false)
+      if (t2v) {
+        selectedEntry = t2v
+      } else {
+        throw new Error(
+          `Hosted video model "${selectedEntry.id}" requires a reference image — ` +
+            'supply input_image or choose a text-to-video model.',
+        )
       }
     }
 
@@ -472,40 +404,19 @@ export const VideoGenTool = buildTool({
       width: input.width,
       aspect_ratio: input.aspect_ratio,
       seed: input.seed,
-      image,
       ...(hostedImage !== undefined ? { input_image: hostedImage } : {}),
     }
 
-    // Every client reports the model it actually used, resolved from the same
-    // catalog — the tool no longer keeps its own copy of the defaults.
-    let generated: {
-      buffer: Buffer
-      mediaType: string
-      modelId: string
-      durationSeconds?: number
-      resolution?: string
-      ratio?: string
-    }
-    if (route === 'rayu' && selectedEntry) {
-      generated = await generateRayuVideo({
-        model: withBuilder(selectedEntry),
-        params: vparams,
-        signal: context.abortController.signal,
-      })
-    } else if (route === 'vertex') {
-      generated = await generateVertexVideo({
-        modelId: selectedModel,
-        params: vparams,
-        signal: context.abortController.signal,
-      })
-    } else {
-      generated = await generateFalVideo({
-        modelId: selectedModel,
-        isImage2Video,
-        params: vparams,
-        signal: context.abortController.signal,
-      })
-    }
+    // Rayu-hosted is the only client, so a missing entry means the catalog never
+    // yielded one — a configuration state the messages above already explained.
+    if (!selectedEntry) throw new Error(mediaCatalogEmptyMessage(catalog, 'video'))
+    // The client reports the model it actually used, resolved from the same
+    // catalog — the tool keeps no copy of the defaults.
+    const generated = await generateRayuVideo({
+      model: withBuilder(selectedEntry),
+      params: vparams,
+      signal: context.abortController.signal,
+    })
     const {
       buffer,
       modelId: usedModelId,
@@ -530,8 +441,10 @@ export const VideoGenTool = buildTool({
       data: {
         path,
         model: usedModelId,
-        frames: input.num_frames ?? 57,
-        fps: input.fps ?? 24,
+        // Only what the caller asked for: the hosted result is described by
+        // `durationSeconds` below, never by invented frame metadata.
+        ...(input.num_frames != null ? { frames: input.num_frames } : {}),
+        ...(input.fps != null ? { fps: input.fps } : {}),
         mediaType: 'video/mp4',
         durationSeconds: usedDuration,
         resolution: usedResolution,
@@ -548,12 +461,18 @@ export const VideoGenTool = buildTool({
     const detail = [output.resolution, output.ratio]
       .filter((v): v is string => typeof v === 'string' && v.length > 0)
       .join(', ')
+    // Only claim frame metadata when the caller supplied BOTH values; otherwise
+    // the path + model is the whole truth.
+    const frames =
+      output.frames != null && output.fps != null
+        ? `${output.frames} frames @ ${output.fps}fps, `
+        : ''
     const headline =
       output.durationSeconds != null
         ? `Generated ${output.durationSeconds.toFixed(1)}s video` +
           (detail ? ` (${detail})` : '') +
           `, saved to ${output.path} (model ${output.model})`
-        : `Video saved to ${output.path} (${output.frames} frames @ ${output.fps}fps, model ${output.model})`
+        : `Video saved to ${output.path} (${frames}model ${output.model})`
     const content: Array<
       | { type: 'text'; text: string }
       | { type: 'image'; source: Base64ImageSource }

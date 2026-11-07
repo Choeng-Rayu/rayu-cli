@@ -4,7 +4,10 @@ import { Box, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import { loginRayu } from '../../services/rayuAuth/rayuLogin.js'
-import { readRayuSession } from '../../services/rayuAuth/rayuSession.js'
+import {
+  hasUsableRayuSession,
+  readRayuSession,
+} from '../../services/rayuAuth/rayuSession.js'
 
 type Props = {
   onDone: (result?: string) => void
@@ -89,9 +92,13 @@ export function LoginFlow({ onDone }: Props): React.ReactNode {
 }
 
 export const call: LocalJSXCommandCall = async (onDone) => {
-  // Short-circuit when already signed in — no need to render the pane.
+  // Short-circuit only when the stored session can actually work. A file whose
+  // access token expired and cannot be renewed used to count as "signed in"
+  // here, so /login refused to run and the only escape from a rejected session
+  // was /logout then /login. Such a session is cleared by a refused refresh
+  // (see rayuSession.doRefresh); this guard covers a hand-edited/partial file.
   const existing = readRayuSession()
-  if (existing?.accessToken) {
+  if (existing?.accessToken && hasUsableRayuSession()) {
     const who =
       existing.user.email ?? existing.user.displayName ?? 'your account'
     onDone(`Already signed in to Rayu as ${who}. Run /logout to switch accounts.`)

@@ -77,8 +77,6 @@ export const VERIFIER_SUBAGENT: BuiltInAgentDefinition = {
   ],
   source: 'built-in',
   baseDir: 'built-in',
-  // The verdict decides whether the run is done, so it gets the Orchestrator's model.
-  model: 'inherit',
   color: 'red',
   criticalSystemReminder_EXPERIMENTAL:
     'You are the Orchestrator verifier. Do not change project files. Run every required check exactly as written, report each as a "### Check:" block with the command and its output, and end with VERDICT: PASS, VERDICT: FAIL or VERDICT: PARTIAL.',

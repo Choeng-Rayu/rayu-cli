@@ -128,6 +128,9 @@ describe('a granted launch', () => {
     expect(decision.briefing).toContain('Your packet: types')
     expect(decision.briefing).toContain('Change only files your packet owns: `src/types/**`')
     expect(decision.briefing).toContain('You write these shared interfaces: User')
+    // The worker runs in the run's root, which its contract paths are relative to,
+    // whatever directory the Orchestrator's own shell is in.
+    expect(decision.projectRoot).toBe('/repo')
     const worktree = startRun(published(input => {
       input.packets[1] = { ...input.packets[1]!, isolation: 'worktree', riskReason: 'large refactor' }
     }), { runId: 'run-1', auditDir: null, workspace: { repoRoot: '/repo', snapshotRefPrefix: 'refs/rayu/x', baseline } })

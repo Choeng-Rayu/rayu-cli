@@ -6,6 +6,11 @@
  * (`src/api/**`), always with forward slashes. The project root is the git root, or the
  * directory the run started in when the project is not in git. A path without glob
  * characters names one file; a directory is written with a trailing slash or `/**`.
+ * `*`, `?` and `{a,b}` are the wildcards. Parentheses and square brackets are escaped
+ * before matching, because real paths contain them: Next.js route groups
+ * (`app/(main)/layout.tsx`) and dynamic segments (`app/blog/[slug]/page.tsx`) are
+ * literal directories, not a regex group or a character class. Braces stay literal-free
+ * so `src/*.{ts,tsx}` keeps working.
  *
  * Overlap is decided from the patterns alone, so it also covers files no packet has
  * created yet. Two globs whose fixed leading directories are nested may overlap and are
@@ -17,11 +22,24 @@ import picomatchModule from 'picomatch'
 
 type Matcher = (path: string) => boolean
 type PicomatchOptions = { dot?: boolean; nocase?: boolean }
-type Picomatch = {
-  (patterns: string | readonly string[], options?: PicomatchOptions): Matcher
-  scan: (pattern: string) => { base: string; isGlob: boolean }
-}
+type Picomatch = (patterns: string | readonly string[], options?: PicomatchOptions) => Matcher
 const picomatch = picomatchModule as unknown as Picomatch
+
+/**
+ * Grouping characters picomatch reads as syntax even though a filesystem path may contain
+ * them. Braces are left alone: `{a,b}` is a useful pattern and no path convention uses it.
+ */
+const LITERAL_METACHARS = /[()[\]]/g
+
+/** `pattern` with literal grouping characters escaped: `*`, `?` and `{a,b}` stay wildcards. */
+export function toMatcherPattern(pattern: string): string {
+  return pattern.replace(LITERAL_METACHARS, char => `\\${char}`)
+}
+
+/** Whether the pattern contains a wildcard. One without any names exactly one file. */
+export function hasWildcard(pattern: string): boolean {
+  return pattern.includes('*') || pattern.includes('?') || pattern.includes('{')
+}
 
 /**
  * Whether paths that differ only in case are the same file here. True on Windows and
@@ -49,7 +67,9 @@ export function normalizeOwnershipPattern(raw: string, projectRoot?: string): No
   if (pattern.startsWith('/') || /^[A-Za-z]:/.test(pattern)) {
     if (!projectRoot) return { error: 'must be relative to the project root' }
     const inside = relativeToRoot(projectRoot, pattern)
-    if (inside === null) return { error: `is outside the project root ${projectRoot}; paths are relative to it` }
+    if (inside === null) {
+      return { error: `is outside the project root ${projectRoot}; paths are relative to it. Start the session from a directory that contains it, or publish a separate contract for that project` }
+    }
     readFrom = raw.trim()
     pattern = inside
   } else if (pattern.startsWith('~')) {
@@ -87,7 +107,8 @@ export function ownsPath(
   caseInsensitive: boolean,
 ): boolean {
   if (patterns.length === 0) return false
-  return picomatch(patterns, { dot: true, nocase: caseInsensitive })(normalizeRelativePath(relativePath))
+  const matchers = patterns.map(toMatcherPattern)
+  return picomatch(matchers, { dot: true, nocase: caseInsensitive })(normalizeRelativePath(relativePath))
 }
 
 /** True when `base` names `other` or a directory above it (`''` is above everything). */
@@ -95,15 +116,21 @@ function isAncestorOrSelf(base: string, other: string): boolean {
   return base === '' || other === base || other.startsWith(`${base}/`)
 }
 
+/** The directories before the first segment that contains a wildcard. */
+function wildcardBase(pattern: string): string {
+  const segments = pattern.split('/')
+  const first = segments.findIndex(segment => hasWildcard(segment))
+  return segments.slice(0, first === -1 ? -1 : first).join('/')
+}
+
 /** Whether some file could be matched by both patterns. Conservative for two globs. */
 export function patternsOverlap(a: string, b: string, caseInsensitive: boolean): boolean {
   const [x, y] = caseInsensitive ? [a.toLowerCase(), b.toLowerCase()] : [a, b]
   if (x === y) return true
-  const scanX = picomatch.scan(x)
-  const scanY = picomatch.scan(y)
-  if (!scanX.isGlob) return picomatch(y, { dot: true })(x)
-  if (!scanY.isGlob) return picomatch(x, { dot: true })(y)
-  return isAncestorOrSelf(scanX.base, scanY.base) || isAncestorOrSelf(scanY.base, scanX.base)
+  if (!hasWildcard(x)) return picomatch(toMatcherPattern(y), { dot: true })(x)
+  if (!hasWildcard(y)) return picomatch(toMatcherPattern(x), { dot: true })(y)
+  const [baseX, baseY] = [wildcardBase(x), wildcardBase(y)]
+  return isAncestorOrSelf(baseX, baseY) || isAncestorOrSelf(baseY, baseX)
 }
 
 /** The first pair of patterns from the two lists that can cover the same file. */

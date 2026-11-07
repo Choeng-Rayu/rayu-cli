@@ -9,6 +9,11 @@ export const ORCHESTRATOR_PAID_FEATURE = 'collaborator_swarm'
 
 /** A full role reminder replaces the short one every N reminders, to bound drift. */
 export const ORCHESTRATOR_FULL_REMINDER_EVERY = 10
+/**
+ * Reminders attached in one human turn at most, including the one at turn start.
+ * While no contract exists, one extra mid-turn reminder keeps the publish rule in view.
+ */
+export const ORCHESTRATOR_MAX_REMINDERS_PER_TURN = 2
 
 // ── Settings defaults (`orchestrator` in settings.json) ──────────────────────
 
@@ -28,6 +33,11 @@ export const ORCHESTRATOR_CONTRACT_MAX_PACKETS = 16
 export const ORCHESTRATOR_CONTRACT_MAX_INTERFACES = 32
 export const ORCHESTRATOR_CONTRACT_MAX_CHECKS = 16
 export const ORCHESTRATOR_CONTRACT_MAX_PATTERNS_PER_PACKET = 32
+/**
+ * Problems listed back to the model per refused contract. One wrong project root fails
+ * on every path in the contract; listing them all buries the cause and floods the retry.
+ */
+export const ORCHESTRATOR_CONTRACT_MAX_ERRORS = 12
 /**
  * Longest check command. Real checks are often a `node -e` or `grep` pipeline of a few
  * hundred characters; longer logic belongs in a script the project keeps.

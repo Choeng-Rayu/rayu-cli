@@ -34,9 +34,10 @@ export const GENERAL_PURPOSE_AGENT: BuiltInAgentDefinition = {
   disallowedTools: [AGENT_TOOL_NAME],
   source: 'built-in',
   baseDir: 'built-in',
-  // Defaults to the parent model. /subagent_models can override it globally or
-  // specifically for general-purpose; RAYU_GENERAL_AGENT_MODEL remains the
-  // environment default when no saved user selection exists.
-  model: process.env.RAYU_GENERAL_AGENT_MODEL || 'inherit',
+  // No pinned model: with nothing else choosing one, the subagent runs on the
+  // main agent's own model. /subagent_models can override it globally or
+  // specifically for general-purpose; RAYU_GENERAL_AGENT_MODEL is the
+  // environment override when no saved user selection exists.
+  model: process.env.RAYU_GENERAL_AGENT_MODEL,
   getSystemPrompt: getGeneralPurposeSystemPrompt,
 }

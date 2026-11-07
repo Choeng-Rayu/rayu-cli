@@ -8,6 +8,7 @@
 import { detectImageFormatFromBuffer } from '../../utils/imageResizer.js'
 import {
   getVertexAccessToken,
+  hasUsableVertexCredentials,
   resolveVertexProjectRegion,
 } from '../../services/api/gemini/vertexAuth.js'
 import { isGeminiVertexConfigured } from '../../utils/model/providers.js'
@@ -24,6 +25,16 @@ export type GeneratedImage = {
 /** True when Imagen-on-Vertex is configured/available (sync best-effort). */
 export function isGeminiVertexImageAvailable(): boolean {
   return isGeminiVertexConfigured()
+}
+
+/**
+ * Configured AND able to mint a token. The sync check above is satisfied by a
+ * `vertex` provider row alone, so choosing a fallback on it sent users with no
+ * Google credentials into a request that could only fail with
+ * "No Google Cloud credentials available for Vertex AI".
+ */
+export async function hasUsableVertexImageCredentials(): Promise<boolean> {
+  return isGeminiVertexConfigured() && (await hasUsableVertexCredentials())
 }
 
 type VertexPrediction = { bytesBase64Encoded?: string; mimeType?: string }

@@ -212,11 +212,12 @@ describe('image model resolution (server-owned catalog)', () => {
     expect(retainKnownImageModel(IMAGE_CATALOG, undefined)).toBeUndefined()
     // A remembered NVIDIA id is dropped too: no catalog serves it any more.
     expect(retainKnownImageModel(IMAGE_CATALOG, RETIRED_NVIDIA_MODEL)).toBeUndefined()
-    // A hand-written Vertex id is kept: the Vertex client honours it verbatim, so
-    // a brand-new Google model works before the dashboard has it.
-    expect(retainKnownImageModel(IMAGE_CATALOG, 'imagen-5.0-generate-001')).toBe(
-      'imagen-5.0-generate-001',
-    )
+    // A hand-written Vertex id is dropped as well. Image generation is
+    // Rayu-hosted only now, so the old `imagen-*` prefix escape hatch would send
+    // the tool at a backend that no longer exists.
+    expect(
+      retainKnownImageModel(IMAGE_CATALOG, 'imagen-5.0-generate-001'),
+    ).toBeUndefined()
   })
 
   test('backend filter picks the per-backend default', () => {
@@ -349,7 +350,7 @@ describe('ImageGenTool with no hosted session and no Vertex', () => {
           } as never,
         ),
       ),
-    ).rejects.toThrow(/Rayu sign-in \(\/login\).*Vertex AI/)
+    ).rejects.toThrow(/Rayu-hosted models only and needs a Rayu credential/)
     expect(fetched).toBe(0)
   })
 
@@ -450,7 +451,7 @@ describe('/generate-image command', () => {
     expect(blocks[0].text).toContain('GenerateImage')
   })
 
-  test('is gated on Vertex when signed out', async () => {
+  test('is NEVER gated on Vertex — Google credentials do not enable it', async () => {
     const { _resetRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cmd: any = (await import('../src/commands/generate-image.ts')).default
@@ -459,9 +460,11 @@ describe('/generate-image command', () => {
     try {
       _resetRayuConfigCache()
       expect(cmd.isEnabled()).toBe(false)
+      // Image generation is Rayu-hosted only: a GCP project no longer enables
+      // the command, because the Vertex image client is not part of the product.
       process.env.GOOGLE_CLOUD_PROJECT = 'test-proj'
       _resetRayuConfigCache()
-      expect(cmd.isEnabled()).toBe(true)
+      expect(cmd.isEnabled()).toBe(false)
     } finally {
       if (saved === undefined) delete process.env.GOOGLE_CLOUD_PROJECT
       else process.env.GOOGLE_CLOUD_PROJECT = saved
@@ -1140,6 +1143,37 @@ describe('ImageGenTool hosted routing', () => {
     expect(cmd.description).not.toMatch(/nvidia/i)
   })
 
+  test('hosted access with NO hosted model reports the catalog, never routes to Vertex', async () => {
+    // The reported bug: a signed-in user whose catalog carried only BYO entries
+    // (the hosted row was missing) was silently routed to Vertex — because a
+    // `vertex` provider row makes `isGeminiVertexImageAvailable()` true — and
+    // died with "No Google Cloud credentials available for Vertex AI", pointing
+    // at a backend the user never chose.
+    useCatalog(IMAGE_CATALOG) // Vertex-only: no backend:'rayu' entry
+    process.env.GOOGLE_CLOUD_PROJECT = 'some-project' // "configured"…
+    // …but no source can mint a token, which is the whole point.
+    const v = await import('../src/services/api/gemini/vertexAuth.ts')
+    v._resetVertexAuthCacheForTesting()
+    v._setVertexTokenSourcesForTesting([])
+    const calls = mockFetch(() => {
+      throw new Error('must not reach the network')
+    })
+
+    await expect(
+      runWithCwdOverride(tmp, () =>
+        ImageGenTool.call(
+          { prompt: 'a red apple', output_path: './x.png' },
+          {
+            abortController: new AbortController(),
+            options: { isNonInteractiveSession: true },
+          } as never,
+        ),
+      ),
+    ).rejects.toThrow(/No Rayu-hosted image models are published yet/)
+    // The whole point: no Vertex client was constructed, no request was sent.
+    expect(calls).toHaveLength(0)
+  })
+
   test('a generate-only hosted model refuses input_image by name', async () => {
     writeFileSync(join(tmp, 'in.png'), Buffer.from(TINY_PNG_B64, 'base64'))
     const calls = mockFetch(() => {
@@ -1333,23 +1367,34 @@ describe('ImageGenTool hosted routing', () => {
     expect(calls[0].url).toContain('/v1/images/generations')
   })
 
-  test('an EXPLICIT Vertex model is honoured, never swapped for the hosted default', async () => {
+  test('an EXPLICIT Vertex model is refused — image generation is hosted-only', async () => {
+    // Even with working Google credentials, the Vertex image client is no longer
+    // part of the product: the request must be refused, and nothing may reach
+    // aiplatform.googleapis.com.
     await enableVertex()
     const calls = gatewayOrVertexMock()
 
-    const res = await runWithCwdOverride(tmp, () =>
-      ImageGenTool.call(
-        { prompt: 'a cat', model: VERTEX_IMAGE_MODEL, output_path: './explicit.png' },
-        ctx(),
+    await expect(
+      runWithCwdOverride(tmp, () =>
+        ImageGenTool.call(
+          {
+            prompt: 'a cat',
+            model: VERTEX_IMAGE_MODEL,
+            output_path: './explicit.png',
+          },
+          ctx(),
+        ),
       ),
+    ).rejects.toThrow(/Rayu model catalog unavailable|cannot call for images/)
+    expect(calls.every((c) => !c.url.includes('aiplatform.googleapis.com'))).toBe(
+      true,
     )
-
-    expect(res.data.model).toBe(VERTEX_IMAGE_MODEL)
-    expect(calls).toHaveLength(1)
-    expect(calls[0].url).toContain(`/models/${VERTEX_IMAGE_MODEL}:predict`)
   })
 
-  test('a remembered Vertex model is used when Vertex IS configured', async () => {
+  test('a remembered Vertex model silently falls back to the hosted default', async () => {
+    // A config written before image became hosted-only still names an Imagen id.
+    // `retainKnownImageModel` drops ids the catalog no longer lists, so the
+    // hosted default serves the request instead of failing on a dead backend.
     await enableVertex()
     const cfg = await import('../src/utils/rayuConfig.ts')
     cfg.setImageModelSelection('imagen-4.0-fast-generate-001')
@@ -1360,9 +1405,10 @@ describe('ImageGenTool hosted routing', () => {
       ImageGenTool.call({ prompt: 'a cat', output_path: './byo.png' }, ctx()),
     )
 
-    expect(res.data.model).toBe('imagen-4.0-fast-generate-001')
+    expect(res.data.model).toBe(HOSTED_IMAGE_MODEL.id)
     expect(calls).toHaveLength(1)
-    expect(calls[0].url).toContain('aiplatform.googleapis.com')
+    expect(calls[0].url).toContain('/v1/images/generations')
+    expect(calls[0].url).not.toContain('aiplatform.googleapis.com')
   })
 
   // ── Hosted is the DEFAULT for a signed-in user ─────────────────────────────
@@ -1404,18 +1450,26 @@ describe('ImageGenTool hosted routing', () => {
     expect(body.image).toBe(`data:image/png;base64,${TINY_PNG_B64}`)
   })
 
-  test('with no hosted model for the operation, configured Vertex still serves it', async () => {
+  test('with no hosted model for the operation, Vertex NEVER serves it', async () => {
+    // The reported bug: a catalog without a hosted entry used to fall back to
+    // Vertex purely because a `vertex` provider row existed, then failed with
+    // "No Google Cloud credentials available for Vertex AI". Image generation is
+    // hosted-only, so the catalog is named instead and no Google host is called.
     await enableVertex()
     useCatalog([...IMAGE_CATALOG])
     const calls = gatewayOrVertexMock()
 
-    const res = await runWithCwdOverride(tmp, () =>
-      ImageGenTool.call({ prompt: 'a cat', output_path: './byo-only.png' }, ctx()),
+    await expect(
+      runWithCwdOverride(tmp, () =>
+        ImageGenTool.call(
+          { prompt: 'a cat', output_path: './byo-only.png' },
+          ctx(),
+        ),
+      ),
+    ).rejects.toThrow(/No Rayu-hosted image models are published yet/)
+    expect(calls.every((c) => !c.url.includes('aiplatform.googleapis.com'))).toBe(
+      true,
     )
-
-    expect(calls).toHaveLength(1)
-    expect(calls[0].url).toContain('aiplatform.googleapis.com')
-    expect(res.data.model).toBe(VERTEX_IMAGE_MODEL)
   })
 
   test('a fallback catalog with no BYO backend names the CATALOG', async () => {
@@ -1441,10 +1495,10 @@ describe('ImageGenTool hosted routing', () => {
     expect(calls.every((c) => !c.url.includes('nvidia.com'))).toBe(true)
   })
 
-  test('a gateway catalog with no hosted entry errors clearly too', async () => {
-    // Online, but the (gateway-sourced) catalog has only BYO models and the
-    // user has no BYO backend: the hosted fallback has nothing to pick, and a
-    // clear catalog error beats a misleading credentials error.
+  test('a gateway catalog with no hosted entry says the admin has published none', async () => {
+    // Online, but the (gateway-sourced) catalog has only BYO models. That is a
+    // publishing state, not a connectivity one, so the message must not tell the
+    // user to check their connection.
     useCatalog([...IMAGE_CATALOG])
     const calls = mockFetch(() => {
       throw new Error('must not reach the network')
@@ -1457,7 +1511,7 @@ describe('ImageGenTool hosted routing', () => {
           ctx(),
         ),
       ),
-    ).rejects.toThrow(/Rayu model catalog unavailable/)
+    ).rejects.toThrow(/No Rayu-hosted image models are published yet/)
     expect(calls).toHaveLength(0)
   })
 

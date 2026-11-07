@@ -9,13 +9,19 @@ export function renderToolUseMessage(input: Partial<Input>): React.ReactNode {
 }
 
 export function renderToolResultMessage(output: Output): React.ReactNode {
+  // Prefer the ACTUAL served length the gateway reported; the requested
+  // frames/fps are shown only when the caller supplied both, and only as a
+  // fallback. Never print fabricated frame counts.
+  const meta =
+    output.durationSeconds != null
+      ? `${output.durationSeconds.toFixed(1)}s, ${output.model}`
+      : output.frames != null && output.fps != null
+        ? `${output.frames} frames @ ${output.fps}fps, ${output.model}`
+        : output.model
   return (
     <MessageResponse>
       <Text>
-        Saved {toRelativePath(output.path)}{' '}
-        <Text dimColor>
-          ({output.frames} frames @ {output.fps}fps, {output.model})
-        </Text>
+        Saved {toRelativePath(output.path)} <Text dimColor>({meta})</Text>
       </Text>
     </MessageResponse>
   )

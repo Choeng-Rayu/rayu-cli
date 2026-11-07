@@ -71,6 +71,7 @@ import { cacheImagePath, storeImage } from '../../utils/imageStore.js';
 import { isMacosOptionChar, MACOS_OPTION_SPECIAL_CHARS } from '../../utils/keyboardShortcuts.js';
 import { logError } from '../../utils/log.js';
 import { isOpus1mMergeEnabled, modelDisplayString } from '../../utils/model/model.js';
+import { orchestratorNoGitNote } from '../../utils/orchestratorMode.js';
 import { setAutoModeActive } from '../../utils/permissions/autoModeState.js';
 import { cyclePermissionMode, getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js';
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js';
@@ -1546,6 +1547,19 @@ function PromptInput({
       mode: nextMode
     });
 
+    // Orchestrator still runs outside git, but says what it cannot do there.
+    if (nextMode === 'orchestrator') {
+      const note = orchestratorNoGitNote();
+      if (note) {
+        addNotification({
+          key: 'orchestrator-no-git',
+          text: note,
+          priority: 'medium',
+          timeoutMs: 12000
+        });
+      }
+    }
+
     // If this is a teammate, update config.json so team lead sees the change
     syncTeammateMode(nextMode, teamContext?.teamName);
 
@@ -1553,7 +1567,7 @@ function PromptInput({
     if (helpOpen) {
       setHelpOpen(false);
     }
-  }, [toolPermissionContext, teamContext, viewingAgentTaskId, viewedTeammate, setAppState, setToolPermissionContext, helpOpen, showAutoModeOptIn]);
+  }, [toolPermissionContext, teamContext, viewingAgentTaskId, viewedTeammate, setAppState, setToolPermissionContext, helpOpen, showAutoModeOptIn, addNotification]);
 
   // Handler for auto mode opt-in dialog acceptance
   const handleAutoModeOptInAccept = useCallback(() => {

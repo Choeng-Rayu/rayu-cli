@@ -116,7 +116,7 @@ export const RAYU_CODE_GUIDE_AGENT: BuiltInAgentDefinition = {
       ],
   source: 'built-in',
   baseDir: 'built-in',
-  model: process.env.RAYU_GUIDE_AGENT_MODEL || 'haiku',
+  model: process.env.RAYU_GUIDE_AGENT_MODEL,
   permissionMode: 'dontAsk',
   getSystemPrompt({ toolUseContext }) {
     const commands = toolUseContext.options.commands

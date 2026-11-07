@@ -48,7 +48,7 @@ import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js';
 import { assignPacketWorker, orchestrationNotice, recordPacketWorktree, releasePacketWorker, settleForegroundPacket } from '../../orchestrator/packetProgress.js';
 import { finishPacketWorktree } from '../../orchestrator/worktreeIntegration.js';
 import { beginVerification, decideVerifierSpawn, sealVerification, settleForegroundVerifier } from '../../orchestrator/verifierGuard.js';
-import { getActiveRun } from '../../orchestrator/runState.js';
+import { getActiveRun, workspaceRoot } from '../../orchestrator/runState.js';
 import { getOrchestratorSettings } from '../../orchestrator/settings.js';
 import { decideWorkerSpawn } from '../../orchestrator/spawnPolicy.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
@@ -85,9 +85,11 @@ function getAutoBackgroundMs(): number {
   return 0;
 }
 
-// A failed foreground spawn whose message looks model-related (bad/removed/unsupported
-// model) clears the saved per-agent selection and lets the user pick again once.
-const MODEL_ERROR_PATTERN = /(model|not found|404|unsupported|does not exist)/i;
+// Matches failures that mean the MODEL ID itself is unusable (removed, renamed,
+// unsupported). Transient problems that merely mention a model — e.g. "Rate limit
+// reached for model X" — must NOT match, or they'd clear the user's choice.
+const MODEL_ERROR_PATTERN =
+  /\bmodel\b.{0,48}\b(?:not found|not available|unsupported|does not exist|invalid|unknown|decommissioned)\b|(?:no such|unknown|unsupported|invalid) model\b|\b404\b/i;
 
 // Multi-agent type constants are defined inline inside gated blocks to enable dead code elimination
 
@@ -96,7 +98,7 @@ const baseInputSchema = lazySchema(() => z.object({
   description: z.string().describe('A short (3-5 word) description of the task'),
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
-  model: z.string().optional().describe("Model for this agent. A model the user assigned to this agent type with /subagent_models is a HARD LOCK: it always wins and this `model` is ignored for that agent type. Otherwise `model` picks the model for this one call (an alias like 'sonnet'/'opus'/'haiku', or a provider-specific model id). If neither is set, the agent's default/instant model is used, and the user may be asked once to choose a model for this agent type."),
+  model: z.string().optional().describe("Model for this agent. A model the user assigned to this agent type with /subagent_models is shown to you and is the default for that agent type. Passing `model` here overrides the user's assignment for this one call and wins. Otherwise your `model` picks the model for this one call (an alias like 'sonnet'/'opus'/'haiku', or a provider-specific model id). If neither is set, the agent's default/inherit model is used, and the user may be asked once to choose a model for this agent type."),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -460,6 +462,12 @@ export const AgentTool = buildTool({
     }
     const verifierGrant = verifierDecision.kind === 'verifier' ? verifierDecision : null;
     const workerPrompt = packetGrant ? `${packetGrant.briefing}${prompt}` : verifierGrant ? `${verifierGrant.briefing}${prompt}` : prompt;
+    // An Orchestrator packet worker and its verifier work in the run's project root, which
+    // is what their contract paths are relative to. The Orchestrator's own shell may have
+    // `cd`-ed elsewhere since, so inheriting getCwd() would resolve those paths wrongly.
+    // Only override when it differs, so the common case keeps the pre-built prompt.
+    const runRoot = packetGrant ? packetGrant.projectRoot : verifierGrant ? workspaceRoot(verifierGrant.run.workspace) : null;
+    const runRootOverride = runRoot && runRoot !== getCwd() ? runRoot : null;
 
     // Only a synchronous foreground spawn may stop to ask the user for a model.
     // Fork, teammate, background/forced-async, packet and verifier spawns never
@@ -468,7 +476,8 @@ export const AgentTool = buildTool({
     if (isPromptableForegroundSpawn) {
       // Asks once (existing picker) when nothing decides this agent's model, and
       // persists the choice so the model resolution below picks it up. A user's
-      // /subagent_models assignment is never re-asked and `model` cannot override it.
+      // /subagent_models assignment is never re-asked, but a per-call `model`
+      // still outranks it.
       await maybePromptForUnassignedSubagentModel({
         agentType: selectedAgent.agentType,
         toolSpecifiedModel: isForkPath ? undefined : model,
@@ -701,13 +710,13 @@ export const AgentTool = buildTool({
       // differing tool. useExactTools also inherits the parent's
       // thinkingConfig and isNonInteractiveSession (see runAgent.ts).
       //
-      // Normal path: when a cwd override is in effect (worktree isolation
-      // or explicit cwd), skip the pre-built system prompt so runAgent's
-      // buildAgentSystemPrompt() runs inside wrapWithCwd where getCwd()
-      // returns the override path.
+      // Normal path: when a cwd override is in effect (worktree isolation,
+      // explicit cwd, or the run's project root), skip the pre-built system
+      // prompt so runAgent's buildAgentSystemPrompt() runs inside wrapWithCwd
+      // where getCwd() returns the override path.
       override: isForkPath ? {
         systemPrompt: forkParentSystemPrompt
-      } : enhancedSystemPrompt && !worktreeInfo && !cwd ? {
+      } : enhancedSystemPrompt && !worktreeInfo && !cwd && !runRootOverride ? {
         systemPrompt: asSystemPrompt(enhancedSystemPrompt)
       } : undefined,
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
@@ -722,8 +731,9 @@ export const AgentTool = buildTool({
     };
 
     // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)
-    // takes precedence over worktree isolation path.
-    const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath;
+    // takes precedence over worktree isolation path, which takes precedence over
+    // the run's project root.
+    const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath ?? runRootOverride ?? undefined;
     const wrapWithCwd = <T,>(fn: () => T): T => cwdOverridePath ? runWithCwdOverride(cwdOverridePath, fn) : fn();
 
     // Helper to clean up worktree after agent completes
@@ -1374,7 +1384,12 @@ export const AgentTool = buildTool({
       // keep failing every run: clear it, tell the user, and let them pick again.
       // Bounded to ONE recovery per call. A worktree-isolated run is not retried
       // (its worktree is already torn down), but the stale selection is still cleared.
-      const hadSubagentSelection = isPromptableForegroundSpawn && !!getSubagentSelection(selectedAgent.agentType);
+      // Only the saved selection can be blamed when no per-call `model` was passed:
+      // the per-call model outranks it, so clearing the user's saved choice after a
+      // failure caused by the tool's model would destroy unrelated config.
+      const effectiveToolModel = isForkPath ? undefined : model
+      const hadSubagentSelection =
+        isPromptableForegroundSpawn && !effectiveToolModel && !!getSubagentSelection(selectedAgent.agentType);
       let retriedForModel = false;
       const syncRun = (async () => {
         try {

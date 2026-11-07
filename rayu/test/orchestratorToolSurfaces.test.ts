@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { validateContract } from '../src/orchestrator/contract.ts'
 import { archiveRun, type OrchestrationRun, startRun } from '../src/orchestrator/runState.ts'
-import { prepareRunWorkspace, releaseRunWorkspace } from '../src/orchestrator/runWorkspace.ts'
+import { prepareRunWorkspace, releaseRunWorkspace, resolveProjectRoot } from '../src/orchestrator/runWorkspace.ts'
 import { getVerifierSession, openVerifierSession } from '../src/orchestrator/verification.ts'
 import { settleForegroundVerifier } from '../src/orchestrator/verifierGuard.ts'
 import type { AppState } from '../src/state/AppStateStore.ts'
@@ -55,7 +55,14 @@ function store(current: OrchestrationRun | null) {
 describe('the OrchestrationContract tool', () => {
   test('describes itself and shows the contract, or why there is none', async () => {
     expect(await OrchestrationContractTool.description({} as never, {} as never)).toBeTruthy()
-    expect(await OrchestrationContractTool.prompt({} as never)).toContain('OrchestrationContract')
+    const prompt = await OrchestrationContractTool.prompt({} as never)
+    expect(prompt).toContain('OrchestrationContract')
+    // The checks rule is explicit, distinct from packet acceptance, and uses a real command.
+    expect(prompt).toContain('checks` (required)')
+    expect(prompt).toContain("not** a packet's `acceptance`")
+    expect(prompt).toContain('at least one required check')
+    expect(prompt).toContain('bun run typecheck')
+    expect(prompt).not.toContain('checks/consistency.check.ts')
     expect(OrchestrationContractTool.isReadOnly({ action: 'show' } as never)).toBe(true)
     expect(OrchestrationContractTool.isReadOnly({ action: 'publish' } as never)).toBe(false)
     expect(OrchestrationContractTool.renderToolUseMessage({ action: 'publish', contract: { packets: [{}, {}] } } as never, {} as never)).toBe('publish · 2 packets')
@@ -63,11 +70,12 @@ describe('the OrchestrationContract tool', () => {
 
     const context = (current: OrchestrationRun | null) => ({ ...store(current), agentId: undefined, options: { tools: [] } }) as never
     const none = await OrchestrationContractTool.call({ action: 'show' } as never, context(null), (() => {}) as never, {} as never)
-    expect(OrchestrationContractTool.mapToolResultToToolResultBlockParam(none.data, 't1').content).toBe('No contract has been published in this session.')
+    expect(OrchestrationContractTool.mapToolResultToToolResultBlockParam(none.data, 't1').content).toContain('No contract has been published in this session.')
     const ended = await OrchestrationContractTool.call({ action: 'show' } as never, context(archiveRun(run(), 2)), (() => {}) as never, {} as never)
     const text = String(OrchestrationContractTool.mapToolResultToToolResultBlockParam(ended.data, 't2').content)
     expect(text).toContain('Run run-1 has ended.')
     expect(text).toContain('# Orchestration contract v1')
+    expect(text).toContain(`Paths are relative to ${resolveProjectRoot()}.`)
   })
 })
 

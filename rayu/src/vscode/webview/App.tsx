@@ -50,6 +50,7 @@ import { groupTranscript } from './state/activityGroups.js'
 import { useSecondTick } from './useSecondTick.js'
 import { createSessionScrollMemory, createScrollSwitchTracker } from './sessionScrollMemory.js'
 import { promptHistoryFromTranscript } from './promptHistory.js'
+import { toolUsageStats } from '../shared/toolStats.js'
 import { WelcomeScreen } from './components/WelcomeScreen.js'
 import { ScrollToBottomButton } from './components/ScrollToBottomButton.js'
 import { isTodoToolEntry } from './components/TodoListCard.js'
@@ -471,6 +472,9 @@ export function App(): JSX.Element {
     () => promptHistoryFromTranscript(state.entries),
     [state.entries],
   )
+  // Computed here rather than host-side: the webview already holds the transcript, so
+  // the Stats tab needs no extra protocol message.
+  const toolStats = useMemo(() => toolUsageStats(state.entries), [state.entries])
 
   const submit = useCallback((
     text: string,
@@ -680,6 +684,7 @@ export function App(): JSX.Element {
           initialSection={runtimeSection}
           commands={state.runtimeCommands}
           tools={state.runtimeTools}
+          stats={toolStats}
           mcpServers={state.mcpServers}
           mcpConnectionUi={state.mcpConnectionUi}
           agents={state.runtimeAgents}

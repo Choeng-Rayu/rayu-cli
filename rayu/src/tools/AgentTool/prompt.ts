@@ -61,13 +61,14 @@ function getLockedSelection(
  * `- type: whenToUse (Tools: ...) [model: ... · ...]`.
  *
  * The trailing annotation tells the main agent which model the subagent runs
- * on and whether the user locked it via /subagent_models.
+ * on and whether the user assigned one via /subagent_models (which the Agent
+ * tool's per-call `model` param may still override).
  */
 export function formatAgentLine(agent: AgentDefinition): string {
   const toolsDescription = getToolsDescription(agent)
   const selection = getLockedSelection(agent.agentType)
   const modelAnnotation = selection
-    ? `[model: ${selection.providerId}/${selection.model} · set by you — do not override]`
+    ? `[model: ${selection.providerId}/${selection.model} · set by the user via /subagent_models — you may follow it or pass your own \`model\` to override]`
     : `[model: ${getAgentModelDisplay(agent.model)} · auto — you may pass a smaller \`model\` for simple tasks]`
   return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription}) ${modelAnnotation}`
 }
@@ -281,7 +282,7 @@ ${whenNotToUseSection}
 
 Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do${concurrencyNote}
-- Agent models: an agent marked "set by you" has a model the user chose and locked — never pass \`model\` for it. For "auto" agents, prefer a small/fast model for simple, read-only, or research-style tasks. An unassigned auto agent may show the user a one-time model picker.
+- Agent models: an agent may show a model the user assigned via /subagent_models — that is the default for that agent type, but you may pass your own \`model\` to override it when a different model fits the task. For "auto" agents, prefer a small/fast model for simple, read-only, or research-style tasks. If an agent has no assignment and you pass no \`model\`, the user may be asked once to choose.
 - When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.${
     // eslint-disable-next-line custom-rules/no-process-env-top-level
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&

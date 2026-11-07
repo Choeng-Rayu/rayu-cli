@@ -10,11 +10,14 @@ import type {
   RuntimeSectionView,
   RuntimeToolView,
 } from '../../shared/webviewProtocol.js'
+import type { ToolUsageStatsView } from '../../shared/toolStats.js'
+import { ToolStatsPanel } from './ToolStatsPanel.js'
 
 export function RuntimeCenter({
   initialSection,
   commands,
   tools,
+  stats = [],
   mcpServers,
   mcpConnectionUi,
   agents,
@@ -33,6 +36,8 @@ export function RuntimeCenter({
   initialSection: RuntimeSectionView
   commands: RuntimeCommandView[]
   tools: RuntimeToolView[]
+  /** Defaults to empty so older call sites render before the transcript exists. */
+  stats?: ToolUsageStatsView[]
   mcpServers: McpServerView[]
   mcpConnectionUi: McpConnectionUiView
   agents: RuntimeAgentView[]
@@ -60,12 +65,13 @@ export function RuntimeCenter({
   const counts = useMemo(() => ({
     commands: commands.length,
     tools: tools.length,
+    stats: stats.length,
     mcp: mcpServers.length,
     // `skills` is the complete catalogue and already contains workflow entries.
     skills: skills.length,
     agents: agents.length,
     plugins: plugins.length,
-  }), [commands, tools, mcpServers, skills, workflows, agents, plugins])
+  }), [commands, tools, stats, mcpServers, skills, workflows, agents, plugins])
 
   return (
     <section id="rayucode-runtime-center" className="rc-runtime-center" aria-label="Rayu runtime">
@@ -96,15 +102,18 @@ export function RuntimeCenter({
         ))}
       </div>
 
-      <label className="rc-runtime-search">
-        <span className="rc-sr-only">Search runtime resources</span>
-        <input
-          type="search"
-          value={query}
-          onChange={event => setQuery(event.target.value)}
-          placeholder={`Search ${title(tab).toLowerCase()}…`}
-        />
-      </label>
+      {/* The Stats tab is a fixed report, not a searchable catalogue. */}
+      {tab === 'stats' ? null : (
+        <label className="rc-runtime-search">
+          <span className="rc-sr-only">Search runtime resources</span>
+          <input
+            type="search"
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder={`Search ${title(tab).toLowerCase()}…`}
+          />
+        </label>
+      )}
 
       <div className="rc-runtime-list" role="tabpanel">
         {tab === 'commands' ? commands
@@ -131,6 +140,12 @@ export function RuntimeCenter({
               meta={[tool.source, tool.deferred ? 'deferred' : '', tool.requiresUserInteraction ? 'interactive' : ''].filter(Boolean).join(' · ')}
             />
           )) : null}
+
+        {tab === 'stats' ? (
+          stats.length === 0
+            ? <p className="rc-runtime-mcp-state">No tool calls in this conversation yet.</p>
+            : <ToolStatsPanel stats={stats} />
+        ) : null}
 
         {tab === 'mcp' ? (
           <>

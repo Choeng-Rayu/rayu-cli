@@ -138,10 +138,20 @@ describe('Rayucode wiring', () => {
     const defaults = handle.slice(handle.indexOf('const RAYUCODE_SLASH_COMMANDS'))
     expect(defaults).toContain("name: 'clear'")
     expect(defaults.match(/name: 'clear'/g)).toHaveLength(1)
-    // Headless-impossible fallbacks were dropped from the pre-initialize menu.
-    const fallback = defaults.slice(defaults.indexOf('const DEFAULT_SLASH_COMMANDS'))
-    for (const name of ['doctor', 'help', 'permissions']) {
-      expect(fallback.slice(0, fallback.indexOf(']'))).not.toContain(`name: '${name}'`)
+    // The host-answered editor screens are offered before initialize, exactly once.
+    const listed = defaults.slice(0, defaults.indexOf('function withRayucodeSlashCommands'))
+    for (const name of [
+      'permissions',
+      'memory',
+      'doctor',
+      'status',
+      'stats',
+      'hooks',
+      'add-dir',
+      'export',
+      'help',
+    ]) {
+      expect(listed.match(new RegExp(`name: '${name}'`, 'g'))).toHaveLength(1)
     }
   })
 })

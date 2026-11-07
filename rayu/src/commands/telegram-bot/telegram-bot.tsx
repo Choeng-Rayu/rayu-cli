@@ -21,6 +21,8 @@ import {
   telegramTransportKey,
   unlink,
 } from '../../telegram/telegramConfig.js'
+import { writeAttachment } from '../../telegram/telegramAttach.js'
+import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import { getBotUsername } from '../../telegram/telegramApi.js'
 import {
   createHostedPairing,
@@ -62,6 +64,25 @@ function activateBridge(setAppState: SetAppState): void {
     telegramBridgeActive: true,
     telegramTransportKey: key,
   }))
+}
+
+/**
+ * Record that THIS process is the session the chat drives.
+ *
+ * A link alone records only `telegram.json`'s `linkedChatId`, which says nothing
+ * about WHICH session receives the chat's prompts (routing reads
+ * `telegram-attached.json`) or which one should reconnect later (auto-reconnect
+ * reads `telegram.json`'s `autoAttach`). `writeAttachment` persists both, so a
+ * chat linked from a terminal survives that session closing. The editor's
+ * pairing flow has always done this; every terminal pairing path must too.
+ */
+function attachThisSession(): void {
+  writeAttachment({
+    sessionId: getSessionId(),
+    pid: process.pid,
+    cwd: getOriginalCwd(),
+    attachedAt: Date.now(),
+  })
 }
 
 function useKeyPress(target: string, handler: () => void): void {
@@ -169,6 +190,9 @@ function HostedStep({
         } else if (pairing?.botUsername) {
           setLinkedBotUsername(pairing.botUsername)
         }
+        // The chat now drives THIS session: publish the routing pointer and the
+        // auto-reconnect memory before the bridge starts polling.
+        attachThisSession()
         activateBridge(setAppState)
         onDone()
       })
@@ -516,6 +540,10 @@ function LinkStep({
         // no way to know the bot's @username — record it here so a later
         // connect can detect a bot change instead of reusing a stale link.
         if (botUsername) setLinkedBotUsername(botUsername)
+        // Same reason as HostedStep: `/start` completed, so this session is the
+        // one the chat drives. The bridge is already running, but nothing else
+        // writes the routing pointer for the BYO flow.
+        attachThisSession()
         // NOTE: deliberately no activateBridge() here. The bridge is already
         // running on this exact bot (started on mount to receive the /start) and
         // resolves the chat id dynamically, so there is nothing to rebuild —
@@ -755,6 +783,10 @@ function TelegramBotConnect({ onDone }: Props): React.ReactNode {
   const [unlinking, setUnlinking] = useState(false)
 
   const reconnect = useCallback(() => {
+    // Reusing a saved link from a NEW session: the pointer must follow the
+    // session the user is actually in, or prompts keep going wherever the
+    // previous session parked them.
+    attachThisSession()
     activateBridge(setAppState)
     onDone()
   }, [onDone, setAppState])

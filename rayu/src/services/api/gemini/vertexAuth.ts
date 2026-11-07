@@ -127,6 +127,35 @@ export async function hasAdcCredentials(): Promise<boolean> {
   return result?.token != null
 }
 
+/**
+ * True when SOME configured token source can actually mint a token right now.
+ *
+ * Unlike {@link hasAdcCredentials} this walks the same ordered source list the
+ * request path uses, so a test-injected source and the interactive Google login
+ * both count. It is the honest answer to "can Vertex serve this request?" — the
+ * sync `isGeminiVertexConfigured()` only says a project/provider row exists,
+ * which is true on a machine with no credentials at all.
+ *
+ * Each source is bounded by its own probe timeout. Callers are on a fallback
+ * path that is already about to fail, so a few seconds is acceptable.
+ */
+export async function hasUsableVertexCredentials(): Promise<boolean> {
+  if (
+    cachedToken &&
+    Date.now() < cachedToken.expiresAtMs - TOKEN_REFRESH_SKEW_MS
+  ) {
+    return true
+  }
+  for (const source of tokenSources()) {
+    const result = await source().catch(() => null)
+    if (result?.token) {
+      cachedToken = result
+      return true
+    }
+  }
+  return false
+}
+
 export type GcpProjectRegion = { project?: string; region: string }
 
 // `global` serves the newest Gemini models for chat; image/video clients

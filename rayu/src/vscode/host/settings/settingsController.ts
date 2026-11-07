@@ -14,6 +14,7 @@ import {
   type DeviceView,
   type EngineInfoView,
   type IntegrationsView,
+  type ModelSettingTargetId,
   type SettingsHostMessage,
   type SettingsSectionId,
   type SettingsViewState,
@@ -23,6 +24,7 @@ import type { DeviceRemoval } from '../account/deviceRemoval.js'
 import type { EngineSetup } from '../engine/engineSetup.js'
 import { AccountSettings } from './accountSettings.js'
 import { GeneralSettings, type GeneralSettingsDeps } from './generalSettings.js'
+import { ModelsSettings, type ModelsSettingsDeps } from './modelsSettings.js'
 import type { SettingsHandlers } from './settingsDispatch.js'
 
 export interface AccountSectionDeps {
@@ -54,6 +56,7 @@ export interface SettingsControllerDeps {
   engineInfo(): EngineInfoView
   openExtensionSettings(): void
   general: GeneralSettingsDeps
+  models: ModelsSettingsDeps
   account: AccountSectionDeps
   integrations: IntegrationsSectionDeps
 }
@@ -61,11 +64,15 @@ export interface SettingsControllerDeps {
 export class SettingsController implements SettingsHandlers {
   private section: SettingsSectionId = DEFAULT_SETTINGS_SECTION
   private readonly general: GeneralSettings
+  private readonly models: ModelsSettings
   private readonly account: AccountSettings
 
   constructor(private readonly deps: SettingsControllerDeps) {
     this.general = new GeneralSettings(deps.general, general =>
       deps.post({ type: 'settingsGeneral', general }),
+    )
+    this.models = new ModelsSettings(deps.models, models =>
+      deps.post({ type: 'settingsModels', models }),
     )
     this.account = new AccountSettings(
       () => deps.account.load(),
@@ -79,6 +86,7 @@ export class SettingsController implements SettingsHandlers {
       section: this.section,
       about: this.deps.engineInfo(),
       general: this.general.current,
+      models: this.models.current,
       account: this.account.current,
       integrations: this.deps.integrations.view(),
     }
@@ -114,6 +122,22 @@ export class SettingsController implements SettingsHandlers {
 
   refreshGeneral(): void {
     void this.general.refresh()
+  }
+
+  openModelSetting(target: ModelSettingTargetId, agentType?: string): void {
+    void this.models.open(target, agentType)
+  }
+
+  chooseModelSetting(target: ModelSettingTargetId, value: string | null, agentType?: string): void {
+    this.models.choose(target, value, agentType)
+  }
+
+  closeModelSetting(): void {
+    this.models.close()
+  }
+
+  refreshModels(): void {
+    void this.models.reload()
   }
 
   refreshAccount(): void {
@@ -183,6 +207,8 @@ export class SettingsController implements SettingsHandlers {
 
   /** Sections whose data is read over the network or through the engine load only when shown. */
   private loadSection(section: SettingsSectionId): void {
+    // Read each time it is shown: a slash command or the terminal may have changed them.
+    if (section === 'models') this.models.refresh()
     if (section === 'account') void this.account.refreshIfStale()
     if (section === 'integrations') this.refreshIntegrations()
   }

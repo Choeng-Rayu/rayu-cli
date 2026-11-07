@@ -323,7 +323,11 @@ describe('telegram command name translation', () => {
   })
 
   test('maps the advertised name back to the real command', () => {
-    const aliases = buildTelegramCommandAliases(['disconnect-telegram', 'model', 'add-dir'])
+    const aliases = buildTelegramCommandAliases([
+      { name: 'disconnect-telegram' },
+      { name: 'model' },
+      { name: 'add-dir' },
+    ])
     expect(aliases.get('disconnect_telegram')).toBe('disconnect-telegram')
     expect(aliases.get('add_dir')).toBe('add-dir')
     // Unchanged names are absent — a miss means "use it verbatim".
@@ -331,7 +335,11 @@ describe('telegram command name translation', () => {
   })
 
   test('first registration wins on collision', () => {
-    const aliases = buildTelegramCommandAliases(['a-b', 'a_b', 'A-B'])
+    const aliases = buildTelegramCommandAliases([
+      { name: 'a-b' },
+      { name: 'a_b' },
+      { name: 'A-B' },
+    ])
     expect(aliases.get('a_b')).toBe('a-b')
   })
 })

@@ -585,9 +585,16 @@ const VideoResultSchema = z
   .object({
     path: z.string(),
     model: z.string(),
-    frames: z.number(),
-    fps: z.number(),
+    // Requested frame metadata only — the tool omits these when the caller gave
+    // none, so the rich video card must not require them.
+    frames: z.number().optional(),
+    fps: z.number().optional(),
     mediaType: z.string().regex(/^video\//),
+    // An ImageGen result carries `base64`; a video result never does. Requiring
+    // its ABSENCE keeps shape discrimination strict now that frames/fps are
+    // optional (otherwise an image-shaped object that lies about mediaType
+    // would be drawn as a video).
+    base64: z.never().optional(),
     durationSeconds: z.number().optional(),
     resolution: z.string().optional(),
     ratio: z.string().optional(),

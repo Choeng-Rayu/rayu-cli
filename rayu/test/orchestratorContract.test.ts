@@ -8,8 +8,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { call as orchestratorStatus } from '../src/commands/orchestrator-status/orchestrator-status.ts'
 import { ALL_AGENT_DISALLOWED_TOOLS } from '../src/constants/tools.ts'
-import { type ContractInput, unneededDependencies, validateContract } from '../src/orchestrator/contract.ts'
-import { normalizeOwnershipPattern, patternsOverlap } from '../src/orchestrator/ownership.ts'
+import { type ContractInput, MISSING_REQUIRED_CHECK, unneededDependencies, validateContract } from '../src/orchestrator/contract.ts'
+import { normalizeOwnershipPattern, ownsPath, patternsOverlap } from '../src/orchestrator/ownership.ts'
+import { ORCHESTRATOR_CONTRACT_MAX_ERRORS } from '../src/constants/orchestrator.ts'
 import { renderOrchestratorReminder } from '../src/orchestrator/reminder.ts'
 import { amendmentProblem, amendRun, archiveRun, startRun } from '../src/orchestrator/runState.ts'
 import { resolveOrchestratorSettings } from '../src/orchestrator/settings.ts'
@@ -20,6 +21,8 @@ import { getTools } from '../src/tools.ts'
 import { OrchestrationContractTool } from '../src/tools/OrchestrationContractTool/OrchestrationContractTool.ts'
 import { getPlansDirectory } from '../src/utils/plans.ts'
 import { runWithCwdOverride } from '../src/utils/cwd.ts'
+import { formatZodValidationError } from '../src/utils/toolErrors.ts'
+import { zodToJsonSchema } from '../src/utils/zodToJsonSchema.ts'
 
 const savedConfigDir = process.env.RAYU_CONFIG_DIR
 let configDir: string
@@ -79,6 +82,24 @@ describe('ownership patterns', () => {
     expect(patternsOverlap('src/User.ts', 'src/user.ts', false)).toBe(false)
     expect(patternsOverlap('src/User.ts', 'src/user.ts', true)).toBe(true)
   })
+
+  test('route groups and dynamic segments are literal directories, not globs', () => {
+    const group = 'rayu-web/app/(main)/layout.tsx'
+    const admin = 'rayu-web/app/admin/(protected)/pop-messages/page.tsx'
+    // Stored as written: only `*` and `?` are syntax.
+    expect(normalizeOwnershipPattern(group)).toEqual({ pattern: group })
+    // Two distinct literal files cannot cover the same file.
+    expect(patternsOverlap(group, admin, false)).toBe(false)
+    // A glob over a route-group directory still owns the files in it.
+    expect(ownsPath(['rayu-web/app/(main)/**'], group, false)).toBe(true)
+    // A dynamic segment names one directory, not a one-character class.
+    expect(ownsPath(['rayu-web/app/blog/[slug]/page.tsx'], 'rayu-web/app/blog/[slug]/page.tsx', false)).toBe(true)
+    expect(ownsPath(['rayu-web/app/blog/[slug]/page.tsx'], 'rayu-web/app/blog/s/page.tsx', false)).toBe(false)
+    // Brace globs keep working: escaping parentheses must not break them.
+    expect(ownsPath(['src/*.{ts,tsx}'], 'src/a.tsx', false)).toBe(true)
+    expect(ownsPath(['src/*.{ts,tsx}'], 'src/a.js', false)).toBe(false)
+    expect(patternsOverlap('src/*.{ts,tsx}', 'src/a.ts', false)).toBe(true)
+  })
 })
 
 describe('absolute paths and the project root', () => {
@@ -89,9 +110,9 @@ describe('absolute paths and the project root', () => {
     expect(normalizeOwnershipPattern(`${ROOT}/src/`, ROOT)).toEqual({ pattern: 'src/**', readFrom: `${ROOT}/src/` })
     expect(normalizeOwnershipPattern(ROOT, ROOT)).toEqual({ pattern: '**', readFrom: ROOT })
     expect(normalizeOwnershipPattern('src/a.ts', ROOT)).toEqual({ pattern: 'src/a.ts' })
-    expect(normalizeOwnershipPattern('/home/dev/other/x.ts', ROOT)).toEqual({ error: `is outside the project root ${ROOT}; paths are relative to it` })
+    expect(normalizeOwnershipPattern('/home/dev/other/x.ts', ROOT)).toEqual({ error: expect.stringContaining(`is outside the project root ${ROOT}; paths are relative to it`) })
     // A directory that merely shares the root's prefix is not inside it.
-    expect(normalizeOwnershipPattern(`${ROOT}-old/x.ts`, ROOT)).toEqual({ error: `is outside the project root ${ROOT}; paths are relative to it` })
+    expect(normalizeOwnershipPattern(`${ROOT}-old/x.ts`, ROOT)).toEqual({ error: expect.stringContaining(`is outside the project root ${ROOT}; paths are relative to it`) })
     // Without a root there is nothing to convert against.
     expect(normalizeOwnershipPattern('/abs/x.ts')).toEqual({ error: 'must be relative to the project root' })
   })
@@ -180,10 +201,54 @@ describe('validateContract', () => {
   test('rejects concurrent packets that can write the same files, but not ordered ones', () => {
     const clash = goodContract()
     clash.packets[1]!.owns = ['src/api/**', 'src/types/user.ts']
-    expect(errorsOf(clash)).toContain('Packets "types" and "api" can run at the same time but both may change the same files')
+    expect(errorsOf(clash)).toContain('Packets "types" and "api" can run at the same time, and their ownership patterns may cover the same paths')
     const ordered = goodContract()
     ordered.packets[2]!.owns = ['src/ui/**', 'src/types/extra.ts']
     expect(validate(ordered).ok).toBe(true)
+  })
+
+  test('packets owning distinct route-group files run in parallel', () => {
+    const contract: ContractInput = {
+      goal: 'popups',
+      packets: [
+        { name: 'p6-popup', objective: 'public popup', owns: ['rayu-web/app/(main)/layout.tsx'], acceptance: ['a'] },
+        { name: 'p7-admin-web', objective: 'admin page', owns: ['rayu-web/app/admin/(protected)/pop-messages/page.tsx'], acceptance: ['a'] },
+      ],
+      checks: [{ name: 'c', command: 'true' }],
+    }
+    expect(validate(contract).ok).toBe(true)
+  })
+
+  test('an interface path that cannot be used is reported once, not also as unowned', () => {
+    const contract = goodContract()
+    contract.sharedInterfaces = [{ name: 'User', owner: 'types', path: '/elsewhere/types/user.ts', definition: 'x' }]
+    const text = errorsOf(contract, { projectRoot: '/home/dev/workspace' })
+    expect(text.match(/is outside the project root/g)).toHaveLength(1)
+    expect(text).not.toContain('does not own')
+  })
+
+  test('a contract failing on many paths lists the limit and says how many it hid', () => {
+    const contract = goodContract()
+    contract.packets[0]!.owns = Array.from({ length: 20 }, (_, index) => `/other/p${index}.ts`)
+    const text = errorsOf(contract, { projectRoot: '/home/dev/workspace' })
+    expect(text.split('\n')).toHaveLength(ORCHESTRATOR_CONTRACT_MAX_ERRORS + 1)
+    expect(text).toContain('more problems not listed')
+  })
+
+  test('the cap drops path problems before a cycle or a missing check', () => {
+    const contract: ContractInput = {
+      goal: 'g',
+      packets: [
+        { name: 'a', objective: 'o', owns: Array.from({ length: 20 }, (_, index) => `/other/p${index}.ts`), dependsOn: ['b'], acceptance: ['x'] },
+        { name: 'b', objective: 'o', owns: ['ok/**'], dependsOn: ['a'], acceptance: ['x'] },
+      ],
+      checks: [],
+    }
+    const text = errorsOf(contract, { projectRoot: '/home/dev/workspace' })
+    // errorsOf joins the raw messages; the tool numbers them.
+    expect(text).toMatch(/^Packets depend on each other in a cycle/)
+    expect(text).toContain('Add at least one required check')
+    expect(text.split('\n')[0]).toContain('cycle')
   })
 
   test('rejects bad names, unknown or cyclic dependencies', () => {
@@ -215,15 +280,32 @@ describe('validateContract', () => {
     expect(text).toContain('"Empty" has no definition')
   })
 
-  test('needs a required check, from the contract or from settings', () => {
+  test('the contract must carry its own required check; settings are additive', () => {
     const none = goodContract()
     none.checks = [{ name: 'lint', command: 'bun run lint', required: false }]
-    expect(errorsOf(none)).toContain('Add at least one required check')
-    const fromSettings = validate(none, { settingsCheckCommands: ['bun test'] })
-    expect(fromSettings.ok && fromSettings.contract.checks.at(-1)).toEqual({ name: 'bun test', command: 'bun test', required: true, source: 'settings' })
+    expect(errorsOf(none)).toContain(MISSING_REQUIRED_CHECK)
+    // settings checks cannot rescue a contract with only optional checks.
+    expect(errorsOf(none, { settingsCheckCommands: ['bun test'] })).toContain(MISSING_REQUIRED_CHECK)
+
+    const fromSettings = validate(goodContract(), { settingsCheckCommands: ['bun test'] })
+    if (!fromSettings.ok) throw new Error(fromSettings.errors.join('\n'))
+    expect(fromSettings.contract.checks.map(check => check.source)).toEqual(['contract', 'settings'])
+    expect(fromSettings.contract.checks.at(-1)).toEqual({ name: 'bun test', command: 'bun test', required: true, source: 'settings' })
+
     const multiline = goodContract()
     multiline.checks = [{ name: 'x', command: 'bun test\nrm -rf /' }]
     expect(errorsOf(multiline)).toContain('must be a single-line command')
+  })
+
+  test('the error cap never hides the missing-required-check problem', () => {
+    const contract: ContractInput = {
+      goal: 'g',
+      packets: Array.from({ length: 8 }, (_, index) => ({ name: `P${index}`, objective: 'o', owns: [], acceptance: [] })),
+      checks: [],
+    }
+    const text = errorsOf(contract)
+    expect(text).toContain(MISSING_REQUIRED_CHECK)
+    expect(text.split('\n')).toHaveLength(ORCHESTRATOR_CONTRACT_MAX_ERRORS + 1)
   })
 
   test('a worktree packet must say why, and size limits apply', () => {
@@ -233,6 +315,39 @@ describe('validateContract', () => {
     const huge = goodContract()
     huge.notes = 'x'.repeat(70_000)
     expect(errorsOf(huge)).toContain('the limit is 64000')
+  })
+})
+
+describe('the model-facing schema', () => {
+  const parse = (contract: unknown) =>
+    OrchestrationContractTool.inputSchema.safeParse({ action: 'publish', contract })
+
+  test('requires a non-empty checks array', () => {
+    const schema = zodToJsonSchema(OrchestrationContractTool.inputSchema) as any
+    const contract = schema.properties.contract
+    expect(contract.required).toContain('checks')
+    expect(contract.properties.checks.minItems).toBe(1)
+  })
+
+  test('a missing checks array fails at parse with the field named', () => {
+    const contract = goodContract() as Partial<ContractInput>
+    delete contract.checks
+    const parsed = parse(contract)
+    expect(parsed.success).toBe(false)
+    if (parsed.success) return
+    const message = formatZodValidationError(OrchestrationContractTool.name, parsed.error)
+    expect(message).toContain('contract.checks')
+    expect(message).toContain('missing')
+  })
+
+  test('empty checks reports the required-check rule; unknown keys name their full path', () => {
+    const empty = parse({ ...goodContract(), checks: [] })
+    expect(empty.success).toBe(false)
+    if (!empty.success) expect(formatZodValidationError('T', empty.error)).toContain('at least one required check')
+
+    const unknown = parse({ ...goodContract(), check: [] })
+    expect(unknown.success).toBe(false)
+    if (!unknown.success) expect(formatZodValidationError('T', unknown.error)).toContain('contract.check')
   })
 })
 
@@ -304,6 +419,39 @@ describe('the OrchestrationContract tool', () => {
     expect(verdict.message).toMatch(/2\. Add at least one required check/)
   })
 
+  test('a refused contract says which project root the paths were relative to', async () => {
+    const contract: ContractInput = {
+      goal: 'g',
+      packets: [{ name: 'x', objective: 'o', owns: ['/elsewhere/x.ts'], acceptance: ['a'] }],
+      checks: [{ name: 'c', command: 'true' }],
+    }
+    const verdict = await runWithCwdOverride(configDir, () => validateInput({ action: 'publish', contract }, session()))
+    expect(verdict.result).toBe(false)
+    expect(verdict.message).toContain(`Paths are relative to ${configDir}`)
+    expect(verdict.message).toContain('Start the session from a directory that contains it')
+  })
+
+  test('an active run keeps its root when the working directory changes', async () => {
+    const context = session()
+    const first = await callTool({ action: 'publish', contract: goodContract() }, context)
+    expect(first.projectRoot).toBe(configDir)
+    const elsewhere = mkdtempSync(join(tmpdir(), 'rayu-contract-elsewhere-'))
+    try {
+      // A second version from another directory still resolves paths against the run's root.
+      const second = await runWithCwdOverride(elsewhere, async () =>
+        ((await (OrchestrationContractTool.call as (i: unknown, c: unknown) => Promise<{ data: unknown }>)({ action: 'publish', contract: goodContract(), reason: 'same root' }, context)).data) as Record<string, unknown>,
+      )
+      expect(second).toMatchObject({ version: 2, newRun: false })
+      const shown = await runWithCwdOverride(elsewhere, async () => {
+        const data = (await (OrchestrationContractTool.call as (i: unknown, c: unknown) => Promise<{ data: unknown }>)({ action: 'show' }, context)).data
+        return String((data as { text: string }).text)
+      })
+      expect(shown).toContain(`Paths are relative to ${configDir}`)
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   test('publishing starts a run with audit history; publishing again adds a version', async () => {
     const context = session()
     const first = await callTool({ action: 'publish', contract: goodContract() }, context)
@@ -323,6 +471,7 @@ describe('the OrchestrationContract tool', () => {
 
     const shown = await callTool({ action: 'show' }, context)
     expect(String(shown.text)).toContain('Changed in this version: clarify')
+    expect(String(shown.text)).toContain(`Paths are relative to ${configDir}`)
   })
 
   test('/orchestrator-status reports the run and the full contract', async () => {
@@ -358,8 +507,15 @@ describe('status text, reminder and settings', () => {
     expect(full).toContain('The current contract is v3 of run-2.')
     const sparse = renderOrchestratorReminder({ reminderType: 'sparse', contract: { runId: 'run-2', version: 3 } })
     expect(sparse).toContain('Current contract: v3 (run-2).')
+    expect(renderOrchestratorReminder({ reminderType: 'sparse', projectRoot: '/home/dev/workspace' })).toContain('Paths are relative to /home/dev/workspace.')
     // Without the tool the reminder is unchanged.
     expect(renderOrchestratorReminder({ reminderType: 'full', availableAgents: [] })).not.toContain('OrchestrationContract')
+  })
+
+  test('the full reminder names the root contract paths are relative to', () => {
+    const full = renderOrchestratorReminder({ reminderType: 'full', availableAgents: [], hasContractTool: true, projectRoot: '/home/dev/workspace' })
+    expect(full).toContain('Contract paths are relative to /home/dev/workspace')
+    expect(full).toContain('does not include sibling repositories')
   })
 
   test('settings defaults', () => {

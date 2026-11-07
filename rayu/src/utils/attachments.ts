@@ -596,6 +596,8 @@ export type Attachment =
       availableAgents?: string[]
       canMessageWorkers?: boolean
       hasContractTool?: boolean
+      /** What contract paths are relative to; absent on attachments recorded before it. */
+      projectRoot?: string
       contract?: { runId: string; version: number }
     }
   | {
@@ -1096,28 +1098,38 @@ export async function getQueuedCommandAttachments(
     INLINE_NOTIFICATION_MODES.has(_.mode),
   )
   return Promise.all(
-    filtered.map(async _ => {
-      const imageBlocks = await buildImageContentBlocks(_.pastedContents)
-      let prompt: string | Array<ContentBlockParam> = _.value
-      if (imageBlocks.length > 0) {
-        // Build content block array with text + images so the model sees them
-        const textValue =
-          typeof _.value === 'string'
-            ? _.value
-            : extractTextContent(_.value, '\n')
-        prompt = [{ type: 'text' as const, text: textValue }, ...imageBlocks]
-      }
-      return {
-        type: 'queued_command' as const,
-        prompt,
-        source_uuid: _.uuid,
-        imagePasteIds: getImagePasteIds(_.pastedContents),
-        commandMode: _.mode,
-        origin: _.origin,
-        isMeta: _.isMeta,
-      }
-    }),
+    filtered.map(async _ => ({
+      type: 'queued_command' as const,
+      prompt: await promptValueWithImageBlocks(_.value, _.pastedContents),
+      source_uuid: _.uuid,
+      imagePasteIds: getImagePasteIds(_.pastedContents),
+      commandMode: _.mode,
+      origin: _.origin,
+      isMeta: _.isMeta,
+    })),
   )
+}
+
+/**
+ * A prompt value with its image bytes resolved into content blocks.
+ *
+ * The ONE conversion for a queued command's `pastedContents`: the REPL reaches it
+ * through `getQueuedCommandAttachments`, and the headless engine calls it directly
+ * because it sends the queued command to `ask()` without going through the REPL's
+ * input pipeline. Text comes first, matching `processTextPrompt`.
+ *
+ * Returns the value unchanged when there is nothing to attach, so a text-only prompt
+ * keeps its plain-string form (which several callers rely on).
+ */
+export async function promptValueWithImageBlocks(
+  value: string | ContentBlockParam[],
+  pastedContents: Record<number, PastedContent> | undefined,
+): Promise<string | ContentBlockParam[]> {
+  const imageBlocks = await buildImageContentBlocks(pastedContents)
+  if (imageBlocks.length === 0) return value
+  const textValue =
+    typeof value === 'string' ? value : extractTextContent(value, '\n')
+  return [{ type: 'text' as const, text: textValue }, ...imageBlocks]
 }
 
 export function getAgentPendingMessageAttachments(
@@ -1138,7 +1150,14 @@ export function getAgentPendingMessageAttachments(
   }))
 }
 
-async function buildImageContentBlocks(
+/**
+ * Turn pasted image contents into image content blocks, resizing as needed.
+ *
+ * Exported for the headless engine: the REPL resolves `pastedContents` through
+ * processUserInput, but print.ts sends a queued command straight to `ask()`, so a
+ * prompt delivered over IPC needs this conversion to carry its images.
+ */
+export async function buildImageContentBlocks(
   pastedContents: Record<number, PastedContent> | undefined,
 ): Promise<ImageBlockParam[]> {
   if (!pastedContents) {
@@ -1281,27 +1300,26 @@ async function getPlanModeAttachments(
 
 /**
  * The Orchestrator role reminder for the main agent: in full when the mode was just
- * entered (or after compaction), short at the start of later turns, and nothing during
- * tool rounds. See src/orchestrator/reminder.ts for the rules.
+ * entered (or after compaction), short at the start of later turns, and one bounded
+ * short reminder during tool rounds while no contract exists. See
+ * src/orchestrator/reminder.ts for the rules.
  */
 async function getOrchestratorModeAttachment(
   input: string | null,
   messages: Message[] | undefined,
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
+  const facts = describeOrchestratorSession(toolUseContext, 'sparse')
   const reminderType = decideOrchestratorReminder({
     isSubagent: !!toolUseContext.agentId,
     mode: toolUseContext.getAppState().toolPermissionContext.mode,
     input,
     messages,
+    hasContractTool: facts.hasContractTool,
+    hasActiveRun: facts.contract !== undefined,
   })
   if (!reminderType) return []
-  return [
-    {
-      type: 'orchestrator_mode',
-      ...describeOrchestratorSession(toolUseContext, reminderType),
-    },
-  ]
+  return [{ type: 'orchestrator_mode', ...facts, reminderType }]
 }
 
 /**

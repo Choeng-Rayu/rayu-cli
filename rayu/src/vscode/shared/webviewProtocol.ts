@@ -42,7 +42,7 @@ export type EntryId = string
 
 /** How a composer message should join an already-running engine turn. */
 export type PromptDeliveryView = 'normal' | 'queue' | 'steer'
-export type RuntimeSectionView = 'commands' | 'tools' | 'mcp' | 'skills' | 'agents' | 'plugins'
+export type RuntimeSectionView = 'commands' | 'tools' | 'stats' | 'mcp' | 'skills' | 'agents' | 'plugins'
 export type ComposerControlView = 'model' | 'effort'
 
 /**

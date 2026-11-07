@@ -46,7 +46,7 @@ import { ORCHESTRATION_CONTRACT_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getOrchestrationContractPrompt } from './prompt.js'
 
 const inputSchema = lazySchema(() =>
-  z.object({
+  z.strictObject({
     action: z
       .enum(['publish', 'show'])
       .describe('"publish" a new contract version, or "show" the current one'),
@@ -97,6 +97,14 @@ function callerProblem(context: CallerContext): string | null {
   return null
 }
 
+/**
+ * The directory this contract's paths are relative to. An existing run keeps its root;
+ * a new one uses the same root its workspace will, so validation and the run agree.
+ */
+function contractRoot(active: OrchestrationRun | null): string {
+  return (active && workspaceRoot(active.workspace)) || resolveProjectRoot()
+}
+
 /** The same checks validateInput and call run, so a race cannot slip a contract past them. */
 function validatePublish(input: Input, context: CallerContext): ContractValidation {
   if (!input.contract) {
@@ -106,8 +114,7 @@ function validatePublish(input: Input, context: CallerContext): ContractValidati
   const result = validateContract(input.contract, {
     caseInsensitivePaths: defaultCaseInsensitivePaths(),
     settingsCheckCommands: getOrchestratorSettings().checkCommands,
-    // An existing run keeps its root; a new one uses the same root its workspace will.
-    projectRoot: (active && workspaceRoot(active.workspace)) || resolveProjectRoot(),
+    projectRoot: contractRoot(active),
     worktreesAvailable: active ? workspaceTracking(active.workspace) === 'git' || active.workspace.repoRoot !== null : canUseWorktrees(),
   })
   if (!result.ok) return result
@@ -115,9 +122,13 @@ function validatePublish(input: Input, context: CallerContext): ContractValidati
   return problem ? { ok: false, errors: [problem] } : result
 }
 
-function formatErrors(errors: readonly string[]): string {
+/**
+ * Say what the paths were relative to before the list: a refused contract is the moment
+ * the root matters, and the model cannot see it anywhere else first.
+ */
+function formatErrors(errors: readonly string[], root: string): string {
   const list = errors.map((error, index) => `${index + 1}. ${error}`).join('\n')
-  return `The contract was not published. Fix these and publish it again:\n${list}`
+  return `The contract was not published. Paths are relative to ${root}. Fix these, then call ${ORCHESTRATION_CONTRACT_TOOL_NAME} again with the corrected contract now; do not launch workers or ask the user first:\n${list}`
 }
 
 async function allocateRun(now: number): Promise<{ ids: NewRunIds; warnings: string[] }> {
@@ -159,7 +170,9 @@ function applyPublished(
 
 async function publish(input: Input, context: ToolUseContext): Promise<OrchestrationContractOutput> {
   const validation = validatePublish(input, context)
-  if (!validation.ok) throw new Error(formatErrors(validation.errors))
+  if (!validation.ok) {
+    throw new Error(formatErrors(validation.errors, contractRoot(getActiveRun(context.getAppState()))))
+  }
   const now = Date.now()
   const published: PublishedContract = { contract: validation.contract, waves: validation.waves, reason: input.reason, now }
   const isNewRun = getActiveRun(context.getAppState()) === null
@@ -200,12 +213,17 @@ function sendContractUpdates(run: OrchestrationRun, context: ToolUseContext): st
 
 function show(context: CallerContext): OrchestrationContractOutput {
   const run = context.getAppState().orchestration.run
-  if (!run) return { action: 'show', text: 'No contract has been published in this session.' }
+  if (!run) {
+    return {
+      action: 'show',
+      text: `No contract has been published in this session. Paths will be relative to ${resolveProjectRoot()} (the git root of the working directory).`,
+    }
+  }
   const archived =
     run.status === 'archived'
       ? `Run ${run.runId} has ended. Publish a contract to start a new run.\n\n`
       : ''
-  return { action: 'show', text: `${archived}${renderContractMarkdown(run.current)}` }
+  return { action: 'show', text: `${archived}${renderContractMarkdown(run.current)}\nPaths are relative to ${contractRoot(run)}.\n` }
 }
 
 function publishedText(data: Extract<OrchestrationContractOutput, { action: 'publish' }>): string {
@@ -261,7 +279,9 @@ export const OrchestrationContractTool: Tool<InputSchema, OrchestrationContractO
     if (problem) return { result: false, message: problem, errorCode: 1 }
     if (input.action === 'show') return { result: true }
     const validation = validatePublish(input, context)
-    if (!validation.ok) return { result: false, message: formatErrors(validation.errors), errorCode: 2 }
+    if (!validation.ok) {
+      return { result: false, message: formatErrors(validation.errors, contractRoot(getActiveRun(context.getAppState()))), errorCode: 2 }
+    }
     return { result: true }
   },
 

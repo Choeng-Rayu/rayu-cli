@@ -172,13 +172,22 @@ const RAYUCODE_SLASH_COMMANDS: SlashCommandView[] = [
     name: 'model_video_generation',
     description: 'Set the video generation model (live list from Rayu)',
   },
+  // `local-jsx` Ink screens in the CLI; the host intercepts each and opens editor UI.
+  { name: 'permissions', description: 'Manage allow, ask and deny tool permission rules' },
+  { name: 'memory', description: 'Open and edit memory files' },
+  { name: 'doctor', description: 'Check the installation and settings for problems' },
+  { name: 'status', description: 'Show version, model, account and connection status' },
+  { name: 'stats', description: 'Show usage statistics for this session' },
+  { name: 'hooks', description: 'View hook configurations for tool events' },
+  { name: 'add-dir', description: 'Add a working directory for this session' },
+  { name: 'export', description: 'Export the conversation to a Markdown file' },
+  { name: 'help', description: 'Show help and available commands' },
 ]
 
 /**
  * The menu before the engine's `initialize` response arrives. Only commands that can
- * actually run are listed: `/doctor`, `/help` and `/permissions` are `local-jsx` in the CLI
- * (Ink pickers the headless engine strips and Rayucode has no surface for), so they are
- * omitted rather than offered and then silently doing nothing.
+ * actually run are listed; host-answered `local-jsx` commands come from
+ * RAYUCODE_SLASH_COMMANDS above.
  */
 const DEFAULT_SLASH_COMMANDS: SlashCommandView[] = [
   ...RAYUCODE_SLASH_COMMANDS,
@@ -922,6 +931,15 @@ export class ChatSession {
    */
   get engineSessionId(): string | null {
     return this.currentSessionId ?? this.options.resumeSessionId ?? null
+  }
+
+  /**
+   * The pid of the engine child currently serving this conversation, when one is
+   * running. Recorded in the Telegram attachment as a liveness hint; the router itself
+   * validates against the live session registry, so `undefined` is harmless.
+   */
+  get enginePid(): number | undefined {
+    return this.engine?.pid
   }
 
   get workingDirectory(): string {

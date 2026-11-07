@@ -7,6 +7,8 @@
 import {
   getSecureRayuGatewayBaseUrl,
   getValidRayuAccessToken,
+  hasRayuSession,
+  refreshRayuAccessToken,
 } from '../../rayuAuth/rayuSession.js'
 import {
   buildModelMetadataHeaders,
@@ -88,29 +90,104 @@ export function makeRayuHostedFetch(): typeof fetch {
     if (!token) {
       throw new Error('Not signed in to Rayu. Run /login to use Rayu-hosted models.')
     }
-    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-    const headers = new Headers(init?.headers)
-    headers.set('Authorization', `Bearer ${token}`)
 
     // Request-identity + model-metadata headers (same contract as the BYO-key
     // gateway proxy). The hosted handlers never forward client headers upstream,
     // so these stay server-side; they enable real-model logging + logical-id
     // turn accounting.
-    const meta = buildModelMetadataHeaders({
-      upstreamUrl: url,
-      body: init?.body,
+    //
+    // A 401 retry is the SAME logical request but a NEW physical attempt: the
+    // per-attempt `x-rayu-request-id` must change while the logical id stays
+    // fixed, which is exactly what those two headers are for (see
+    // gatewayHeaders.ts). So the attempt id is chosen per send().
+    const baseHeaders =
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      requestId: globalThis.crypto.randomUUID(),
-      intended: headers.get(RAYU_INTENDED_MODEL_HEADER),
-      logicalRequestId: headers.get(RAYU_LOGICAL_REQUEST_ID_HEADER),
-      querySource: headers.get(RAYU_QUERY_SOURCE_HEADER),
-    })
-    for (const [k, v] of Object.entries(meta)) {
-      headers.set(k, v)
+      new Headers(init?.headers)
+    const intended = baseHeaders.get(RAYU_INTENDED_MODEL_HEADER)
+    const querySource = baseHeaders.get(RAYU_QUERY_SOURCE_HEADER)
+    const declaredLogicalId = baseHeaders.get(RAYU_LOGICAL_REQUEST_ID_HEADER)
+    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+    const firstAttemptId = globalThis.crypto.randomUUID()
+    const logicalRequestId = declaredLogicalId ?? firstAttemptId
+
+    const send = (accessToken: string, requestId: string): Promise<Response> => {
+      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+      const headers = new Headers(baseHeaders)
+      headers.set('Authorization', `Bearer ${accessToken}`)
+      const meta = buildModelMetadataHeaders({
+        upstreamUrl: url,
+        body: init?.body,
+        requestId,
+        intended,
+        logicalRequestId,
+        querySource,
+      })
+      for (const [k, v] of Object.entries(meta)) {
+        headers.set(k, v)
+      }
+      // redirect:'error' — this fetch attaches the JWT to every request, and a
+      // redirect would move it off the vetted gateway URL.
+      return inner(input, { ...init, headers, redirect: 'error' })
     }
-    // redirect:'error' — this fetch attaches the JWT to every request, and a
-    // redirect would move it off the vetted gateway URL.
-    return inner(input, { ...init, headers, redirect: 'error' })
+
+    let res = await send(token, firstAttemptId)
+
+    // A locally-unexpired access token can still be rejected: server clock
+    // skew, an epoch/secret change on the backend, or a deploy that happened
+    // while the CLI was idle (typically noticed right after an update). Before
+    // this, that 401 surfaced as "authentication error" and the stored session
+    // stayed in place, so /login short-circuited and only /logout → /login
+    // recovered. Renew once and replay the request instead.
+    if (res.status === 401 && isReplayableBody(init?.body)) {
+      const renewed = await refreshRayuAccessToken(token)
+      // Replay whenever renewal produced a token. Even an identical string is
+      // worth one retry — the gateway may have been transiently out of sync —
+      // and it costs a single request that was rejected anyway.
+      if (renewed) {
+        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+        res = await send(renewed, globalThis.crypto.randomUUID())
+      }
+      if (res.status === 401) {
+        if (!hasRayuSession()) {
+          // The refresh token itself was refused and the session has been
+          // cleared, so /login opens instead of short-circuiting on the dead
+          // file — the /logout → /login detour is gone.
+          throw new Error(
+            'Your Rayu session has expired. Run /login to sign in again.',
+          )
+        }
+        if (renewed) {
+          // The backend renewed the token but the gateway still rejects it.
+          // Re-login cannot change that (the next token is signed the same
+          // way), so do NOT clear a session the backend considers valid.
+          throw new Error(
+            'Rayu gateway rejected your renewed session. Run /login to sign in again; if this persists, the gateway may be misconfigured.',
+          )
+        }
+        // Renewal failed for a transient reason (offline/timeout/5xx): the
+        // session may still be good, so say so rather than sending the user to
+        // a /login that would short-circuit.
+        throw new Error(
+          'Could not renew your Rayu session. Check your connection and try again.',
+        )
+      }
+    }
+
+    return res
   }
   return wrapped as typeof fetch
+}
+
+/**
+ * A 401 response was not consumed by the gateway, so the request can be
+ * replayed — unless the body is a stream, which cannot be read twice.
+ */
+function isReplayableBody(body: BodyInit | null | undefined): boolean {
+  return (
+    body === undefined ||
+    body === null ||
+    typeof body === 'string' ||
+    body instanceof Uint8Array ||
+    body instanceof ArrayBuffer
+  )
 }

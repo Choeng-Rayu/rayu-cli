@@ -77,7 +77,13 @@ export function formatZodValidationError(
 
   const unexpectedParams = error.issues
     .filter(err => err.code === 'unrecognized_keys')
-    .flatMap(err => err.keys)
+    .flatMap(err => err.keys.map(key => [...err.path, key]))
+
+  // Array minimums (for example `checks: []`) carry the tool's own message, which is
+  // far more useful than the raw ZodError JSON fallback.
+  const tooSmallParams = error.issues
+    .filter(err => err.code === 'too_small' && err.origin === 'array')
+    .map(err => ({ param: formatValidationPath(err.path), text: err.message }))
 
   const typeMismatchParams = error.issues
     .filter(
@@ -100,7 +106,7 @@ export function formatZodValidationError(
   let errorContent = error.message
 
   // Build a human-readable error message
-  const errorParts = []
+  const errorParts: string[] = []
 
   if (missingParams.length > 0) {
     const missingParamErrors = missingParams.map(
@@ -111,9 +117,15 @@ export function formatZodValidationError(
 
   if (unexpectedParams.length > 0) {
     const unexpectedParamErrors = unexpectedParams.map(
-      param => `An unexpected parameter \`${param}\` was provided`,
+      param => `An unexpected parameter \`${formatValidationPath(param)}\` was provided`,
     )
     errorParts.push(...unexpectedParamErrors)
+  }
+
+  if (tooSmallParams.length > 0) {
+    errorParts.push(
+      ...tooSmallParams.map(({ param, text }) => (param ? `${param}: ${text}` : text)),
+    )
   }
 
   if (typeMismatchParams.length > 0) {

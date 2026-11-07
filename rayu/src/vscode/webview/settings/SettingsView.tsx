@@ -7,6 +7,7 @@ import {
   SETTINGS_SECTION_IDS,
   type AccountActionId,
   type AccountLinkId,
+  type ModelSettingTargetId,
   type SettingsSectionId,
   type WebBridgeAction,
 } from '../../shared/settingsProtocol.js'
@@ -14,12 +15,17 @@ import { AboutSection } from './AboutSection.js'
 import { AccountSection } from './AccountSection.js'
 import { GeneralSection } from './GeneralSection.js'
 import { IntegrationsSection } from './IntegrationsSection.js'
+import { ModelsSection } from './ModelsSection.js'
 import type { SettingsAppState } from './settingsState.js'
 
 export const SECTION_INFO: Record<SettingsSectionId, { label: string; description: string }> = {
   general: {
     label: 'General',
     description: 'How Rayu works. Settings marked "Shared with Rayu CLI" also apply in the terminal.',
+  },
+  models: {
+    label: 'Models',
+    description: 'Which models subagents, image and video generation, and WebFetch use. Shared with Rayu CLI.',
   },
   account: { label: 'Account', description: 'Your Rayu account, plan and usage.' },
   integrations: { label: 'Integrations', description: 'Connect Rayu to Telegram, Rayu Studio and GitHub.' },
@@ -31,6 +37,10 @@ export interface SettingsActions {
   onOpenExtensionSettings: () => void
   onChangeSetting: (key: string, value: boolean | string) => void
   onRetryGeneral: () => void
+  onModelsOpen: (target: ModelSettingTargetId, agentType?: string) => void
+  onModelsChoose: (target: ModelSettingTargetId, value: string | null, agentType?: string) => void
+  onModelsClose: () => void
+  onModelsRefresh: () => void
   onAccountRefresh: () => void
   onAccountAction: (action: AccountActionId) => void
   onOpenAccountLink: (link: AccountLinkId) => void
@@ -82,6 +92,16 @@ function sectionBody(props: SettingsViewProps): JSX.Element {
     case 'general':
       return (
         <GeneralSection general={state.general} onChange={props.onChangeSetting} onRetry={props.onRetryGeneral} />
+      )
+    case 'models':
+      return (
+        <ModelsSection
+          models={state.models}
+          onOpen={props.onModelsOpen}
+          onChoose={props.onModelsChoose}
+          onClose={props.onModelsClose}
+          onRefresh={props.onModelsRefresh}
+        />
       )
     case 'account':
       return (

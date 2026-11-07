@@ -14,8 +14,13 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { withLaunchEnv, type EngineLaunch } from '../src/vscode/host/engine/engineLaunch.js'
+import { runEngineChildAction } from '../src/vscode/host/settings/engineChildAction.js'
 import { readSharedSettings, writeSharedSetting } from '../src/vscode/host/settings/sharedSettings.js'
-import { SETTINGS_FLAG } from '../src/vscode/shared/settingsChildProtocol.js'
+import {
+  SETTINGS_FLAG,
+  type PermissionRuleView,
+  type PermissionsFrame,
+} from '../src/vscode/shared/settingsChildProtocol.js'
 import { nativeLaunch, scriptLaunch } from './helpers/engineLaunch.js'
 
 const ENGINE_MJS = resolve(import.meta.dir, '../dist/vscode-stage/engine.mjs')
@@ -142,6 +147,42 @@ for (const engine of ENGINES) {
       const frames = stdout.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
       expect(frames).toEqual([{ type: 'rayucode_settings_result', ok: false, error: 'Malformed settings action.' }])
       expect(code).toBe(1)
+    }, 60_000)
+
+    const addRule = (launch: EngineLaunch, workspace: string, rule: string) =>
+      runEngineChildAction<never>(launch, {
+        cwd: workspace,
+        action: { action: 'permission-add', behavior: 'allow', rule, source: 'project' },
+      })
+
+    test.skipIf(!engine.available)('permission-add refuses a rule the engine validator rejects, and writes nothing', async () => {
+      const { workspace, launch } = sandbox(engine.launch())
+      // `Bash(unclosed` would be saved and then silently dropped on read; `Bash()` would be
+      // normalised to a blanket `Bash` allow.
+      for (const rule of ['Bash(unclosed', 'Bash()']) {
+        const result = await addRule(launch, workspace, rule)
+        expect(result.ok).toBe(false)
+        expect(!result.ok && result.error.length).toBeGreaterThan(0)
+      }
+      expect(existsSync(join(workspace, '.rayu', 'settings.json'))).toBe(false)
+    }, 60_000)
+
+    test.skipIf(!engine.available)('permission-add saves a valid rule and permissions-read lists it', async () => {
+      const { workspace, launch } = sandbox(engine.launch())
+      expect(await addRule(launch, workspace, 'Bash(git status)')).toEqual({ ok: true, value: undefined })
+
+      const read = await runEngineChildAction<PermissionRuleView[]>(launch, {
+        cwd: workspace,
+        action: { action: 'permissions-read' },
+        consumeFrame: frame =>
+          frame.type === 'rayucode_permissions' ? (frame as unknown as PermissionsFrame).rules : undefined,
+      })
+      expect(read.ok && read.value).toEqual(
+        expect.arrayContaining([{ behavior: 'allow', rule: 'Bash(git status)', source: 'project' }]),
+      )
+      expect(readJson(join(workspace, '.rayu', 'settings.json'))).toEqual({
+        permissions: { allow: ['Bash(git status)'] },
+      })
     }, 60_000)
   })
 }

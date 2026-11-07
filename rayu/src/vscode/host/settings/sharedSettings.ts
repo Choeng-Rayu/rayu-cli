@@ -5,21 +5,13 @@
  *
  * The child runs in the workspace folder, because workspace settings
  * (`.rayu/settings.local.json`) are resolved from the directory it starts in.
+ *
+ * All frame handling lives in `engineChildAction.ts`; this module only describes the
+ * settings-specific payloads.
  */
-import {
-  SETTINGS_FLAG,
-  type SettingsChildAction,
-  type SettingsSnapshotFrame,
-} from '../../shared/settingsChildProtocol.js'
-import {
-  runEngineChild,
-  stderrExcerpt,
-  type EngineChildResult,
-  type EngineLaunch,
-} from '../engine/engineLaunch.js'
-
-/** Reading settings is local file work; this is generous for a cold engine start. */
-const SETTINGS_TIMEOUT_MS = 30_000
+import type { SettingsSnapshotFrame } from '../../shared/settingsChildProtocol.js'
+import type { EngineLaunch } from '../engine/engineLaunch.js'
+import { runEngineChildAction } from './engineChildAction.js'
 
 export type SharedSettingsSnapshot = Omit<SettingsSnapshotFrame, 'type'>
 
@@ -29,16 +21,18 @@ export async function readSharedSettings(
   launch: EngineLaunch,
   cwd: string,
 ): Promise<SharedSettingsOutcome<SharedSettingsSnapshot>> {
-  let snapshot: SharedSettingsSnapshot | undefined
-  const result = await runSettingsChild(launch, cwd, { action: 'read' }, frame => {
-    if (frame.type === 'rayucode_settings_snapshot') {
+  const result = await runEngineChildAction<SharedSettingsSnapshot>(launch, {
+    cwd,
+    action: { action: 'read' },
+    consumeFrame: frame => {
+      if (frame.type !== 'rayucode_settings_snapshot') return undefined
       const { type: _type, ...rest } = frame as unknown as SettingsSnapshotFrame
-      snapshot = rest
-    }
+      return rest
+    },
   })
   if (!result.ok) return result
-  return snapshot
-    ? { ok: true, value: snapshot }
+  return result.value
+    ? { ok: true, value: result.value }
     : { ok: false, error: 'Reading Rayu settings returned nothing.' }
 }
 
@@ -48,44 +42,10 @@ export async function writeSharedSetting(
   key: string,
   value: boolean | string,
 ): Promise<SharedSettingsOutcome<true>> {
-  const result = await runSettingsChild(launch, cwd, { action: 'write', key, value })
-  return result.ok ? { ok: true, value: true } : result
-}
-
-async function runSettingsChild(
-  launch: EngineLaunch,
-  cwd: string,
-  action: SettingsChildAction,
-  onOther: (frame: Record<string, unknown>) => void = () => {},
-): Promise<SharedSettingsOutcome<true>> {
-  const result = await runEngineChild<SharedSettingsOutcome<true>>(launch, {
-    flag: SETTINGS_FLAG,
+  const result = await runEngineChildAction<true>(launch, {
     cwd,
-    stdin: JSON.stringify(action),
-    timeoutMs: SETTINGS_TIMEOUT_MS,
-    onFrame: frame => {
-      if (frame.type !== 'rayucode_settings_result') {
-        onOther(frame)
-        return undefined
-      }
-      return frame.ok === true
-        ? { ok: true, value: true }
-        : { ok: false, error: typeof frame.error === 'string' ? frame.error : 'Saving the setting failed.' }
-    },
+    action: { action: 'write', key, value },
+    fallbackError: 'Saving the setting failed.',
   })
-  return result.kind === 'done' ? result.value : failure(result)
-}
-
-function failure(result: Exclude<EngineChildResult<unknown>, { kind: 'done' }>): { ok: false; error: string } {
-  switch (result.kind) {
-    case 'timeout':
-      return { ok: false, error: 'Rayu settings did not respond in time.' }
-    case 'spawn-error':
-    case 'protocol-error':
-      return { ok: false, error: `Could not reach Rayu settings: ${result.message}` }
-    case 'exited':
-      return { ok: false, error: `Rayu settings stopped (code ${result.code}).${stderrExcerpt(result.stderrTail)}` }
-    case 'aborted':
-      return { ok: false, error: 'Cancelled.' }
-  }
+  return result.ok ? { ok: true, value: true } : result
 }

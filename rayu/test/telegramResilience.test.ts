@@ -37,6 +37,7 @@ import {
 import {
   TELEGRAM_SEMANTIC_HAZARDS,
   isBlockedFromTelegram,
+  buildCommandPolicy,
   buildTelegramCommandAliases,
   toTelegramCommandName,
 } from '../src/telegram/telegramBridge.js'
@@ -481,22 +482,28 @@ describe('getTelegramStatus', () => {
 describe('isBlockedFromTelegram', () => {
   const base = { description: 'test command', name: 'x' }
 
-  function jsx(name: string): Command {
-    return { ...base, name, type: 'local-jsx', load: async () => ({ call: async () => null }) } as unknown as Command
+  function jsx(name: string, aliases?: string[]): Command {
+    return { ...base, name, ...(aliases && { aliases }), type: 'local-jsx', load: async () => ({ call: async () => null }) } as unknown as Command
   }
-  function local(name: string, supportsNonInteractive: boolean): Command {
+  function local(name: string, supportsNonInteractive: boolean, aliases?: string[]): Command {
     return {
       ...base,
       name,
+      ...(aliases && { aliases }),
       type: 'local',
       supportsNonInteractive,
       load: async () => ({ call: async () => ({ type: 'text' as const, value: '' }) }),
     } as unknown as Command
   }
-  function prompt(name: string): Command {
+  function prompt(
+    name: string,
+    options: { aliases?: string[]; disableNonInteractive?: boolean } = {},
+  ): Command {
     return {
       ...base,
       name,
+      ...(options.aliases && { aliases: options.aliases }),
+      ...(options.disableNonInteractive && { disableNonInteractive: true }),
       type: 'prompt',
       progressMessage: 'working',
       contentLength: 10,
@@ -546,13 +553,92 @@ describe('isBlockedFromTelegram', () => {
     // maintaining a list again.
     expect(TELEGRAM_SEMANTIC_HAZARDS.size).toBeLessThanOrEqual(4)
   })
+
+  test('a prompt command that refuses non-interactive execution is blocked', () => {
+    // `/statusline` declares this. Forwarded to a headless engine it would be
+    // dropped or misbehave, which is the same signal rule 2 uses for `local`.
+    expect(isBlockedFromTelegram(prompt('statusline', { disableNonInteractive: true }))).toBe(true)
+    expect(isBlockedFromTelegram(prompt('simplify'))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Alias bypass (the forward path translates BEFORE it checks `blocked`)
+// ---------------------------------------------------------------------------
+
+describe('buildCommandPolicy', () => {
+  const base = { description: 'test command' }
+
+  function jsx(name: string, aliases?: string[]): Command {
+    return { ...base, name, ...(aliases && { aliases }), type: 'local-jsx', load: async () => null } as unknown as Command
+  }
+  function local(name: string, supportsNonInteractive: boolean, aliases?: string[]): Command {
+    return {
+      ...base,
+      name,
+      ...(aliases && { aliases }),
+      type: 'local',
+      supportsNonInteractive,
+      load: async () => null,
+    } as unknown as Command
+  }
+
+  /** How the bridge resolves an inbound `/name` — mirrors telegramBridge. */
+  function resolve(policy: ReturnType<typeof buildCommandPolicy>, typed: string) {
+    const name = policy.aliases.get(typed) ?? typed
+    return { name, blocked: policy.blocked.has(name) }
+  }
+
+  test('an alias of a blocked command resolves to it and is refused', () => {
+    // The regression: aliases were never in the map, so `/quit` was forwarded
+    // verbatim and the session resolved it to the local-jsx command.
+    const policy = buildCommandPolicy([jsx('exit', ['quit'])])
+    expect(resolve(policy, 'quit')).toEqual({ name: 'exit', blocked: true })
+  })
+
+  test('covers the aliases that reach terminal-only commands in this build', () => {
+    const policy = buildCommandPolicy([
+      jsx('clear', ['new', 'reset']),
+      jsx('config', ['settings']),
+      jsx('permissions', ['allowed-tools']),
+      local('rewind', false, ['checkpoint']),
+      jsx('resume', ['continue']),
+    ])
+    for (const typed of ['new', 'reset', 'settings', 'allowed_tools', 'checkpoint', 'continue']) {
+      expect(resolve(policy, typed).blocked).toBe(true)
+    }
+  })
+
+  test('aliases of allowed commands still translate and stay allowed', () => {
+    const policy = buildCommandPolicy([local('compact', true, ['squash'])])
+    expect(resolve(policy, 'squash')).toEqual({ name: 'compact', blocked: false })
+  })
+
+  test('a real command name is never shadowed by an alias', () => {
+    // Registration order must not matter: real names are mapped first.
+    const policy = buildCommandPolicy([
+      jsx('config', ['status']), // alias collides with the real `status`
+      local('status', true),
+    ])
+    expect(policy.aliases.has('status')).toBe(false)
+    expect(resolve(policy, 'status')).toEqual({ name: 'status', blocked: false })
+  })
+
+  test('an unchanged name needs no entry — a miss means "use it verbatim"', () => {
+    const policy = buildCommandPolicy([local('status', true)])
+    expect(policy.aliases.has('status')).toBe(false)
+    expect(policy.blocked.has('status')).toBe(false)
+  })
 })
 
 describe('buildTelegramCommandAliases', () => {
   test('maps the Telegram-safe name back to the real command name', () => {
     // Without this, tapping the autocomplete entry the bridge itself registered
     // fails with "Unknown skill: disconnect_telegram".
-    const aliases = buildTelegramCommandAliases(['telegram-bot', 'status'])
+    const aliases = buildTelegramCommandAliases([
+      { name: 'telegram-bot' },
+      { name: 'status' },
+    ])
     const safe = toTelegramCommandName('telegram-bot')
     expect(safe).not.toBe('telegram-bot')
     expect(aliases.get(safe)).toBe('telegram-bot')
@@ -561,12 +647,16 @@ describe('buildTelegramCommandAliases', () => {
   })
 
   test('first registration wins, matching setMyCommands dedupe order', () => {
-    const aliases = buildTelegramCommandAliases(['a-b', 'a_b', 'a.b'])
+    const aliases = buildTelegramCommandAliases([
+      { name: 'a-b' },
+      { name: 'a_b' },
+      { name: 'a.b' },
+    ])
     expect(aliases.get('a_b')).toBe('a-b')
   })
 
   test('un-hides blocked names, whose entries are the real hyphenated names', () => {
-    const aliases = buildTelegramCommandAliases(['telegram-remote-uninstall'])
+    const aliases = buildTelegramCommandAliases([{ name: 'telegram-remote-uninstall' }])
     const safe = toTelegramCommandName('telegram-remote-uninstall')
     // The blocklist is keyed on real names, so the reverse map has to resolve
     // first or a hazard would slip through under its Telegram-safe alias.

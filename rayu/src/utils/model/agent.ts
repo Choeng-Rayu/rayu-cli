@@ -76,8 +76,9 @@ export type AgentModelOption = {
 }
 
 /**
- * Get the default subagent model. Returns 'inherit' so subagents inherit
- * the model from the parent thread.
+ * Get the default subagent model. Returns 'inherit', which resolves to the
+ * parent/main agent's own model, so an agent definition that pins no model (and
+ * has no env/selection/tool override) runs on the model the main agent is on.
  */
 export function getDefaultSubagentModel(): string {
   return 'inherit'
@@ -99,18 +100,18 @@ export function getAgentModel(
   agentType?: string,
 ): string {
   // Rayu multi-provider agent routing. A selection saved by /subagent_models
-  // applies to every spawned Agent-tool worker, including definitions whose
-  // built-in default is `inherit` (for example general-purpose). A named
-  // selection wins because getSubagentSelection(agentType) checks it before the
-  // global selection. A saved selection is a HARD LOCK: it also overrides the
-  // Agent tool's per-call `model` param, so the main agent cannot change what
-  // the user assigned. Only CLAUDE_CODE_SUBAGENT_MODEL ranks higher. If the
-  // selected provider differs from the active provider, the encoded
-  // provider+model route sends that worker to the selected provider.
-  // Precedence: env var > saved selection > tool `model` param > built-in
-  // default / instant / inherit.
-  const usesBuiltinDefault =
-    agentModel === undefined || agentModel.toLowerCase() === 'haiku'
+  // is a FALLBACK DEFAULT for spawned Agent-tool workers, including definitions
+  // whose built-in default is `inherit` (for example general-purpose). A named
+  // selection is preferred over the global one because
+  // getSubagentSelection(agentType) checks it before the global selection. The
+  // Agent tool's per-call `model` param OVERRIDES a saved selection, so the main
+  // agent can pick a model for a specific spawn while the user's saved choice
+  // stays the default for calls that don't specify one. Only
+  // CLAUDE_CODE_SUBAGENT_MODEL ranks higher. If the selected provider differs
+  // from the active provider, the encoded provider+model route sends that
+  // worker to the selected provider.
+  // Precedence: env var > tool `model` param > saved selection > agent-def
+  // model (env override only) > the main agent's own model.
   let configuredSelection:
     | { providerId: string; model: string }
     | undefined
@@ -124,7 +125,7 @@ export function getAgentModel(
     configuredSelection = undefined
   }
 
-  if (!process.env.CLAUDE_CODE_SUBAGENT_MODEL && configuredSelection) {
+  if (!process.env.CLAUDE_CODE_SUBAGENT_MODEL && !toolSpecifiedModel && configuredSelection) {
     if (!isModelAllowed(configuredSelection.model)) {
       return getRuntimeMainLoopModel({
         permissionMode: permissionMode ?? 'default',
@@ -145,12 +146,14 @@ export function getAgentModel(
       : configuredSelection.model
   }
 
-  // With no saved choice, non-Anthropic agents using a built-in default still
-  // fall back to the active provider's instant/small-fast model.
+  // With no saved choice, an agent that EXPLICITLY asks for the fast tier
+  // ('haiku') falls back to the active provider's instant/small-fast model. An
+  // UNSET model is not a fast-tier request — it resolves to the main agent's
+  // own model below.
   if (
     !process.env.CLAUDE_CODE_SUBAGENT_MODEL &&
     !toolSpecifiedModel &&
-    usesBuiltinDefault &&
+    agentModel?.toLowerCase() === 'haiku' &&
     isRayuNonAnthropicActive()
   ) {
     const sub = resolveSubagentExecution(agentType)

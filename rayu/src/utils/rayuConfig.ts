@@ -234,9 +234,8 @@ export type RayuConfig = {
   imageModel?: string
   /**
    * Default model id for the GenerateVideo tool, chosen via
-   * /model_video_generation. When unset, a signed-in user gets the first hosted
-   * model that fits the request; otherwise the fal.ai or Vertex Veo catalog
-   * default for the configured backend.
+   * /model_video_generation. Video is Rayu-hosted only, so when unset the tool
+   * takes the first hosted model that fits the request.
    */
   videoModel?: string
   /**

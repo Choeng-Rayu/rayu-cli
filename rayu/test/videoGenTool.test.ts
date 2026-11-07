@@ -10,18 +10,12 @@ import {
   type MediaCatalog,
   type MediaModelEntry,
 } from '../src/services/rayuAuth/mediaModels.ts'
+import { describeMediaModel } from '../src/services/rayuAuth/mediaModelPicker.ts'
 import {
-  defaultVideoModelId,
-  isVertexVideoModel,
-  resolveVideoModel,
   retainKnownVideoModel,
   VIDEO_BODY_BUILDERS,
   withBuilder,
 } from '../src/tools/VideoGenTool/models.ts'
-import {
-  generateFalVideo,
-  _setFalPollInterval,
-} from '../src/tools/VideoGenTool/falVideoClient.ts'
 import {
   _resetRayuVideoAvailabilityForTesting,
   VideoGenTool,
@@ -46,59 +40,6 @@ import {
   openRayuCreditWindow,
   rayuWindowCredits,
 } from '../src/services/rayuAuth/rayuTurnCredits.ts'
-
-// A fetched-style catalog: exactly what services/rayuAuth/mediaModels.ts produces
-// from GET /v1/models?media=video. The CLI holds no video model registry, so every
-// test drives the resolver with this. fal.ai and Vertex Veo are the
-// bring-your-own video backends; NVIDIA (NVCF Cosmos, SVD) was removed.
-const VIDEO_CATALOG: MediaModelEntry[] = [
-  {
-    id: 'fal-ai/kling-video/v2.1/standard/text-to-video',
-    label: 'Kling 2.1 (t2v)',
-    mediaType: 'video',
-    capabilities: ['text2video'],
-    backend: 'fal',
-    family: 'fal-kling',
-    estimatedSeconds: 90,
-    defaultParams: { duration: '5', aspect_ratio: '16:9', cfg_scale: 0.5 },
-    isDefault: true,
-  },
-  {
-    id: 'fal-ai/kling-video/v2.1/standard/image-to-video',
-    label: 'Kling 2.1 (i2v)',
-    mediaType: 'video',
-    capabilities: ['image2video'],
-    backend: 'fal',
-    family: 'fal-kling',
-    estimatedSeconds: 90,
-    defaultParams: { duration: '5', aspect_ratio: '16:9' },
-    isDefault: true,
-  },
-  {
-    id: 'veo-3.1-generate-001',
-    label: 'Veo 3.1',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 120,
-    isDefault: true,
-  },
-  {
-    id: 'veo-3.1-fast-generate-001',
-    label: 'Veo 3.1 Fast',
-    mediaType: 'video',
-    capabilities: ['text2video', 'image2video'],
-    backend: 'vertex',
-    family: 'veo',
-    estimatedSeconds: 90,
-  },
-]
-
-const FAL_T2V = 'fal-ai/kling-video/v2.1/standard/text-to-video'
-const FAL_I2V = 'fal-ai/kling-video/v2.1/standard/image-to-video'
-/** An id the CLI used to serve through NVIDIA NVCF; it is no longer routable. */
-const RETIRED_NVIDIA_VIDEO_MODEL = 'nvidia/cosmos-predict1-5b'
 
 /**
  * The gateway synthesizes hosted video entries from the admin's hosted video
@@ -133,6 +74,19 @@ const HOSTED_I2V_MODEL: MediaModelEntry = {
   capabilities: ['text2video', 'image2video'],
   isDefault: false,
 }
+
+/**
+ * The video catalog a fetched gateway serves now: Rayu-hosted models ONLY.
+ *
+ * Video generation has no BYO backend any more — the fal.ai and Vertex Veo
+ * clients were removed — so this is the whole shape of the catalog the CLI can
+ * act on. A `fal` row an older gateway still publishes is dropped at parse time
+ * (see RETIRED_MEDIA_BACKENDS in mediaModels.ts).
+ */
+const VIDEO_CATALOG: MediaModelEntry[] = [HOSTED_VIDEO_MODEL, HOSTED_I2V_MODEL]
+
+/** An id an older CLI could route; it is not servable now. */
+const RETIRED_VIDEO_MODEL = 'nvidia/cosmos-predict1-5b'
 
 /** Minimal PNG header (magic bytes) for reference-image tests. */
 const TINY_PNG = Buffer.from([
@@ -209,187 +163,58 @@ const MODEL_ENV_VARS = [
 let savedModelEnv: Record<string, string | undefined> = {}
 
 describe('video model resolution (server-owned catalog)', () => {
-  beforeEach(() => {
-    savedModelEnv = {}
-    for (const k of MODEL_ENV_VARS) {
-      savedModelEnv[k] = process.env[k]
-      delete process.env[k]
+  test('a catalog row is usable with NO CLI change', () => {
+    const added: MediaModelEntry = {
+      ...HOSTED_VIDEO_MODEL,
+      id: 'rayu-wan-next-video',
+      label: 'Wan Next',
+      estimatedSeconds: 45,
+      defaultParams: { duration: 10 },
+      isDefault: false,
     }
-  })
-  afterEach(() => {
-    for (const [k, v] of Object.entries(savedModelEnv)) {
-      if (v === undefined) delete process.env[k]
-      else process.env[k] = v
-    }
-  })
-
-  test('the fal client default is the catalog fal model, with its metadata', () => {
-    const m = resolveVideoModel(VIDEO_CATALOG, undefined, false, { backends: ['fal'] })
-    expect(m.id).toBe(FAL_T2V)
-    expect(m.backend).toBe('fal')
+    const m = withBuilder(added)
+    expect(m.id).toBe(added.id)
     // The duration estimate comes from the CATALOG, not the CLI.
-    expect(m.estimatedSeconds).toBe(90)
+    expect(m.estimatedSeconds).toBe(45)
+    expect(m.buildBody({ prompt: 'x' }).duration).toBe(10)
   })
 
-  test('NVIDIA request families are gone: a Cosmos/SVD row cannot be built', () => {
+  test('retired request families cannot be built', () => {
+    // NVIDIA (Cosmos/SVD), fal Kling and Vertex Veo are all gone; a row naming one
+    // of their families must fail loudly rather than emit a body nobody sends.
     for (const family of [
       'cosmos-predict1',
       'cosmos-transfer1',
       'cosmos3-nano',
       'cosmos-legacy',
       'svd',
+      'fal-kling',
+      'veo',
     ]) {
       expect(family in VIDEO_BODY_BUILDERS).toBe(false)
     }
     expect(() =>
       withBuilder({
-        id: RETIRED_NVIDIA_VIDEO_MODEL,
-        label: 'Cosmos Predict1 5B',
-        mediaType: 'video',
-        capabilities: ['text2video'],
-        backend: 'fal',
-        family: 'cosmos-predict1',
-      }),
-    ).toThrow(/request family "cosmos-predict1"/)
-  })
-
-  test('fal-kling family switches shape on the presence of an image', () => {
-    const t2v = resolveVideoModel(VIDEO_CATALOG, FAL_T2V, false)
-    const textBody = t2v.buildBody({ prompt: 'a river' })
-    expect(textBody.cfg_scale).toBe(0.5)
-    expect('image_url' in textBody).toBe(false)
-    const imageBody = t2v.buildBody({ prompt: 'animate', image: 'QUJD' })
-    expect(String(imageBody.image_url)).toContain('data:image/png;base64,QUJD')
-  })
-
-  test('each operation gets its own fal default', () => {
-    expect(
-      resolveVideoModel(VIDEO_CATALOG, undefined, false, { backends: ['fal'] }).id,
-    ).toBe(FAL_T2V)
-    expect(
-      resolveVideoModel(VIDEO_CATALOG, undefined, true, { backends: ['fal'] }).id,
-    ).toBe(FAL_I2V)
-  })
-
-  test('a model added to the catalog is usable with NO CLI change', () => {
-    const added: MediaModelEntry = {
-      id: 'fal-ai/kling-video/v2.5/turbo/text-to-video',
-      label: 'Kling 2.5 Turbo',
-      mediaType: 'video',
-      capabilities: ['text2video'],
-      backend: 'fal',
-      // Reuses a known request shape, so only the catalog row is new.
-      family: 'fal-kling',
-      estimatedSeconds: 45,
-      defaultParams: { duration: '10' },
-    }
-    const m = resolveVideoModel([...VIDEO_CATALOG, added], added.id, false)
-    expect(m.id).toBe(added.id)
-    expect(m.estimatedSeconds).toBe(45)
-    expect(m.buildBody({ prompt: 'x' }).duration).toBe('10')
-  })
-
-  test('an unknown request family fails with an actionable, named error', () => {
-    expect(() =>
-      withBuilder({
-        id: 'fal-ai/brand-new',
+        id: 'rayu-brand-new-video',
         label: 'New',
         mediaType: 'video',
         capabilities: ['text2video'],
-        backend: 'fal',
+        backend: 'rayu',
         family: 'holodeck-v1',
       }),
     ).toThrow(/holodeck-v1/)
   })
 
-  test('an empty catalog fails with a dashboard hint, not a crash', () => {
-    expect(() => resolveVideoModel([], undefined, false)).toThrow(/dashboard/i)
-  })
-
-  test('an UNKNOWN named model is an error, never a silent substitution', () => {
-    // A retired NVIDIA id is just an unknown id now.
-    expect(() => resolveVideoModel(VIDEO_CATALOG, RETIRED_NVIDIA_VIDEO_MODEL, false))
-      .toThrow(/Unknown video model "nvidia\/cosmos-predict1-5b"/)
-  })
-
-  test('a KNOWN text2video-only model still falls back for image2video', () => {
-    // Deliberate: this is how input_image routes to an image-capable model.
-    expect(
-      resolveVideoModel(VIDEO_CATALOG, FAL_T2V, true, { backends: ['fal'] }).id,
-    ).toBe(FAL_I2V)
-  })
-
-  test('a model served by another backend reports a routing bug', () => {
-    expect(() =>
-      resolveVideoModel(VIDEO_CATALOG, 'veo-3.1-generate-001', false, {
-        backends: ['fal'],
-      }),
-    ).toThrow(/routing bug/)
-  })
-
-  test('a Vertex default never resolves for the fal client', () => {
-    // Regression guard: with a catalog whose ONLY default text2video model is Veo,
-    // the fal client must still pick something it can actually POST to rather
-    // than mis-routing a Veo body.
-    const veoFirst: MediaModelEntry[] = [
-      { ...VIDEO_CATALOG[2]!, isDefault: true }, // veo, default
-      { ...VIDEO_CATALOG[0]!, isDefault: false }, // fal, not default
-    ]
-    const m = resolveVideoModel(veoFirst, undefined, false, { backends: ['fal'] })
-    expect(m.backend).toBe('fal')
-    expect(m.id).toBe(FAL_T2V)
-  })
-
-  test('NVIDIA_VIDEO_MODEL no longer pins anything', () => {
-    const alt: MediaModelEntry = {
-      ...VIDEO_CATALOG[0]!,
-      id: 'fal-ai/kling-video/v2.5/turbo/text-to-video',
-      isDefault: false,
-    }
-    process.env.NVIDIA_VIDEO_MODEL = alt.id
-    expect(
-      resolveVideoModel([...VIDEO_CATALOG, alt], undefined, false, {
-        backends: ['fal'],
-      }).id,
-    ).toBe(FAL_T2V)
-  })
-
-  test('retainKnownVideoModel drops a stale remembered selection', () => {
+  test('retainKnownVideoModel keeps only ids the catalog still carries', () => {
     expect(retainKnownVideoModel(VIDEO_CATALOG, 'gone/forever')).toBeUndefined()
-    expect(retainKnownVideoModel(VIDEO_CATALOG, FAL_T2V)).toBe(FAL_T2V)
+    expect(retainKnownVideoModel(VIDEO_CATALOG, HOSTED_VIDEO_MODEL.id)).toBe(
+      HOSTED_VIDEO_MODEL.id,
+    )
     expect(retainKnownVideoModel(VIDEO_CATALOG, undefined)).toBeUndefined()
-    // A remembered NVIDIA id is dropped: no catalog serves it any more.
-    expect(
-      retainKnownVideoModel(VIDEO_CATALOG, RETIRED_NVIDIA_VIDEO_MODEL),
-    ).toBeUndefined()
-    // A hand-written Veo id is kept — the Vertex client honours it verbatim.
-    expect(retainKnownVideoModel(VIDEO_CATALOG, 'veo-4.0-generate-001')).toBe(
-      'veo-4.0-generate-001',
-    )
-  })
-
-  test('per-backend defaults come from the catalog', () => {
-    expect(defaultVideoModelId(VIDEO_CATALOG, 'vertex', false)).toBe(
-      'veo-3.1-generate-001',
-    )
-    expect(defaultVideoModelId(VIDEO_CATALOG, 'fal', false)).toBe(FAL_T2V)
-    expect(defaultVideoModelId(VIDEO_CATALOG, 'fal', true)).toBe(FAL_I2V)
-    expect(defaultVideoModelId(VIDEO_CATALOG, 'nvcf', true)).toBeUndefined()
-  })
-
-  test('VERTEX_VIDEO_MODEL pins the Vertex default only', () => {
-    process.env.VERTEX_VIDEO_MODEL = 'veo-3.1-fast-generate-001'
-    expect(defaultVideoModelId(VIDEO_CATALOG, 'vertex', false)).toBe(
-      'veo-3.1-fast-generate-001',
-    )
-    // The Vertex pin never leaks into the fal default.
-    expect(defaultVideoModelId(VIDEO_CATALOG, 'fal', false)).toBe(FAL_T2V)
-  })
-
-  test('isVertexVideoModel reads the catalog backend, not the id', () => {
-    expect(isVertexVideoModel('veo-3.1-generate-001', VIDEO_CATALOG)).toBe(true)
-    expect(isVertexVideoModel(FAL_T2V, VIDEO_CATALOG)).toBe(false)
-    expect(isVertexVideoModel(undefined, VIDEO_CATALOG)).toBe(false)
+    // A remembered NVIDIA/fal/Veo id is dropped: nothing serves it any more, and
+    // there is no hand-written-id escape hatch left.
+    expect(retainKnownVideoModel(VIDEO_CATALOG, RETIRED_VIDEO_MODEL)).toBeUndefined()
+    expect(retainKnownVideoModel(VIDEO_CATALOG, 'veo-4.0-generate-001')).toBeUndefined()
   })
 })
 
@@ -433,6 +258,26 @@ describe('dashscope_video family (Rayu-hosted)', () => {
     expect('duration' in bare().buildBody({ prompt: 'x', fps: 24 })).toBe(false)
     // A catalog default still applies when the caller gave no frame info.
     expect(withBuilder(HOSTED_VIDEO_MODEL).buildBody({ prompt: 'x' }).duration).toBe(5)
+  })
+
+  test('the entry\'s published clip window overrides the family 2–30s default', () => {
+    // A model capped at 5s would otherwise receive a 10s request the gateway
+    // rejects, with no way for the caller to predict it.
+    const short = withBuilder({
+      ...HOSTED_VIDEO_MODEL,
+      defaultParams: {},
+      maxDurationSeconds: 5,
+    })
+    expect(short.buildBody({ prompt: 'x', num_frames: 240, fps: 24 }).duration).toBe(5)
+    // A model declaring a 1s floor keeps it (no forced 2s bump).
+    const oneSec = withBuilder({
+      ...HOSTED_VIDEO_MODEL,
+      defaultParams: {},
+      minDurationSeconds: 1,
+    })
+    expect(oneSec.buildBody({ prompt: 'x', num_frames: 24, fps: 24 }).duration).toBe(1)
+    // The cap is also published to the picker detail line.
+    expect(describeMediaModel({ ...HOSTED_VIDEO_MODEL, maxDurationSeconds: 5 })).toContain('up to 5s')
   })
 
   test('ratio takes an explicit accepted value, else derives from width/height', () => {
@@ -615,13 +460,14 @@ describe('hosted video default selection', () => {
       isDefault: false,
     }
     expect(selectHostedVideoModel([first, second])?.id).toBe('rayu-first')
-    expect(selectHostedVideoModel(VIDEO_CATALOG)).toBeUndefined()
+    // A catalog with only image2video-only entries has no text2video default.
     const hostedI2V: MediaModelEntry = {
       ...HOSTED_VIDEO_MODEL,
       id: 'rayu-i2v',
       capabilities: ['image2video'],
     }
-    expect(selectHostedVideoModel([...VIDEO_CATALOG, hostedI2V])).toBeUndefined()
+    expect(selectHostedVideoModel([hostedI2V])).toBeUndefined()
+    expect(selectHostedVideoModel([])).toBeUndefined()
   })
 
   test('a reference-image request selects the image2video entry, not the text2video default', () => {
@@ -652,109 +498,20 @@ describe('hosted video default selection', () => {
   })
 })
 
-/** Mock a successful fal.ai submit → poll COMPLETED → response → download. */
-function mockFalSuccess(): Array<{ url: string; init?: RequestInit }> {
-  const calls: Array<{ url: string; init?: RequestInit }> = []
-  globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    const u = String(url)
-    calls.push({ url: u, init })
-    if (u.endsWith('/s')) {
-      return new Response(JSON.stringify({ status: 'COMPLETED' }), { status: 200 })
-    }
-    if (u.endsWith('/r')) {
-      return new Response(
-        JSON.stringify({ video: { url: 'https://cdn.fal.media/out.mp4' } }),
-        { status: 200 },
-      )
-    }
-    if (u.startsWith('https://queue.fal.run/')) {
-      return new Response(
-        JSON.stringify({
-          request_id: 'r',
-          status_url: 'https://queue.fal.run/s',
-          response_url: 'https://queue.fal.run/r',
-        }),
-        { status: 200 },
-      )
-    }
-    return new Response(new Uint8Array(TINY_MP4), { status: 200 })
-  }) as unknown as typeof fetch
-  return calls
-}
-
-describe('generateFalVideo client', () => {
-  beforeEach(() => { _setFalPollInterval(0) })
-  afterEach(() => { _setFalPollInterval(5000) })
-
-  test('submit → poll COMPLETED → download produces a buffer', async () => {
-    const calls = mockFalSuccess()
-
-    const { buffer, mediaType, modelId } = await generateFalVideo({
-      modelId: FAL_T2V,
-      params: { prompt: 'a river' },
-      apiKey: 'fal-test-key',
-    })
-    expect(buffer.length).toBeGreaterThan(0)
-    expect(mediaType).toBe('video/mp4')
-    expect(modelId).toBe(FAL_T2V)
-    // The key goes to fal's queue host only, in fal's own scheme.
-    const submit = calls[0]!
-    expect(submit.url).toBe(`https://queue.fal.run/${FAL_T2V}`)
-    const headers = submit.init?.headers as Record<string, string>
-    expect(headers.Authorization).toBe('Key fal-test-key')
-  })
-
-  test('with no id, image2video resolves the fal image-to-video model', async () => {
-    const calls = mockFalSuccess()
-    const { modelId } = await generateFalVideo({
-      isImage2Video: true,
-      params: { prompt: 'animate', image: 'QUJD' },
-      apiKey: 'fal-test-key',
-    })
-    expect(modelId).toBe(FAL_I2V)
-    const body = JSON.parse(String(calls[0]!.init?.body)) as Record<string, unknown>
-    expect(String(body.image_url)).toContain('data:image/png;base64,QUJD')
-  })
-
-  test('a missing fal key is reported before any request', async () => {
-    const saved = process.env.FAL_KEY
-    delete process.env.FAL_KEY
-    const calls = mockFalSuccess()
-    try {
-      await expect(
-        generateFalVideo({ modelId: FAL_T2V, params: { prompt: 'x' } }),
-      ).rejects.toThrow(/fal\.ai API key not configured/)
-      expect(calls).toHaveLength(0)
-    } finally {
-      if (saved !== undefined) process.env.FAL_KEY = saved
-    }
-  })
-
-  test('a non-fal model is a routing bug, never sent to fal', async () => {
-    const calls = mockFalSuccess()
-    await expect(
-      generateFalVideo({
-        modelId: 'veo-3.1-generate-001',
-        params: { prompt: 'x' },
-        apiKey: 'fal-test-key',
-      }),
-    ).rejects.toThrow(/routing bug/)
-    expect(calls).toHaveLength(0)
-  })
-
-  test('a failed submit surfaces the fal status', async () => {
-    globalThis.fetch = (async () =>
-      new Response('forbidden', { status: 403 })) as unknown as typeof fetch
-    await expect(
-      generateFalVideo({ modelId: FAL_T2V, params: { prompt: 'x' }, apiKey: 'k' }),
-    ).rejects.toThrow(/fal\.ai submit error 403/)
-  })
-})
-
 describe('VideoGenTool scaffold', () => {
   test('schema rejects empty prompt, accepts valid prompt', () => {
     expect(VideoGenTool.inputSchema.safeParse({ prompt: '' }).success).toBe(false)
     expect(VideoGenTool.inputSchema.safeParse({ prompt: 'a river' }).success).toBe(true)
+  })
+
+  test('output schema does not REQUIRE frame metadata (it is never invented)', () => {
+    expect(
+      VideoGenTool.outputSchema.safeParse({
+        path: '/x/out.mp4',
+        model: 'm',
+        mediaType: 'video/mp4',
+      }).success,
+    ).toBe(true)
   })
 
   test('resolveOutputPath accepts default, rejects outside cwd', () => {
@@ -777,7 +534,7 @@ describe('VideoGenTool.isEnabled', () => {
     process.env.RAYU_CONFIG_DIR = dir
     // The hosted path reads rayu-auth.json from RAYU_AUTH_CONFIG_DIR (which
     // outranks RAYU_CONFIG_DIR); isolate it so a developer's real session cannot
-    // make this "no key" assertion true.
+    // make this "no credential" assertion true.
     savedAuthDir = process.env.RAYU_AUTH_CONFIG_DIR
     process.env.RAYU_AUTH_CONFIG_DIR = dir
     _resetRayuVideoAvailabilityForTesting()
@@ -797,19 +554,25 @@ describe('VideoGenTool.isEnabled', () => {
     delete process.env.FAL_KEY
   })
 
-  test('false without any backend — an NVIDIA key alone does not enable it', async () => {
+  test('false without a Rayu credential — no BYO key enables it any more', async () => {
     const { _resetRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
     _resetRayuConfigCache()
     expect(VideoGenTool.isEnabled()).toBe(false)
+    // Every former BYO key: none of them reaches a video backend now.
     process.env.NVIDIA_API_KEY = 'nv-x'
+    process.env.FAL_KEY = 'fal-k'
+    process.env.GOOGLE_CLOUD_PROJECT = 'proj'
     _resetRayuConfigCache()
     expect(VideoGenTool.isEnabled()).toBe(false)
   })
 
-  test('true with FAL_KEY', async () => {
+  test('true with a Rayu API key and no session', async () => {
     const { _resetRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
-    _resetRayuConfigCache()
-    process.env.FAL_KEY = 'fal-k'
+    writeFileSync(
+      join(dir, 'providers.json'),
+      JSON.stringify({ providers: [{ id: 'rayu', apiKey: 'sk_rayu_test' }] }, null, 2),
+      { mode: 0o600 },
+    )
     _resetRayuConfigCache()
     expect(VideoGenTool.isEnabled()).toBe(true)
   })
@@ -826,8 +589,6 @@ describe('VideoGenTool.call', () => {
     delete process.env.GOOGLE_CLOUD_PROJECT
     delete process.env.GOOGLE_APPLICATION_CREDENTIALS
     delete process.env.ANTHROPIC_VERTEX_PROJECT_ID
-    process.env.FAL_KEY = 'fal-k'
-    _setFalPollInterval(0)
     _resetRayuVideoAvailabilityForTesting()
   })
   afterEach(() => {
@@ -837,34 +598,17 @@ describe('VideoGenTool.call', () => {
     else process.env.RAYU_AUTH_CONFIG_DIR = savedAuthDir
     delete process.env.FAL_KEY
     delete process.env.NVIDIA_API_KEY
-    _setFalPollInterval(5000)
     _resetRayuVideoAvailabilityForTesting()
   })
 
-  test('saves the mp4 to disk and returns a text result block', async () => {
-    const calls = mockFalSuccess()
-
-    const res = await runWithCwdOverride(tmp, () =>
-      VideoGenTool.call(
-        { prompt: 'a river', output_path: './out.mp4' } as never,
-        { abortController: new AbortController() } as never,
-      ),
-    )
-
-    expect(existsSync(join(tmp, 'out.mp4'))).toBe(true)
-    expect(res.data.mediaType).toBe('video/mp4')
-    expect(res.data.model).toBe(FAL_T2V)
-    expect(calls[0]!.url).toBe(`https://queue.fal.run/${FAL_T2V}`)
-
-    const block = VideoGenTool.mapToolResultToToolResultBlockParam(res.data, 'tid')
-    const content = block.content as Array<{ type: string }>
-    expect(content.some(b => b.type === 'text')).toBe(true)
-  })
-
-  test('with only an NVIDIA key, a call is refused with a setup hint and no request', async () => {
-    delete process.env.FAL_KEY
+  test('with no Rayu credential, a call is refused before any request', async () => {
+    process.env.FAL_KEY = 'fal-k'
     process.env.NVIDIA_API_KEY = 'nv-x'
-    const calls = mockFalSuccess()
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
 
     await expect(
       runWithCwdOverride(tmp, () =>
@@ -873,8 +617,8 @@ describe('VideoGenTool.call', () => {
           { abortController: new AbortController() } as never,
         ),
       ),
-    ).rejects.toThrow(/Rayu sign-in \(\/login\).*fal\.ai key/)
-    expect(calls).toHaveLength(0)
+    ).rejects.toThrow(/Video generation is Rayu-hosted/)
+    expect(calls).toBe(0)
   })
 
   test('rejects output_path outside the working directory', async () => {
@@ -886,6 +630,27 @@ describe('VideoGenTool.call', () => {
         ),
       ),
     ).rejects.toThrow(/working directory/)
+  })
+
+  test('with no credential AND the empty offline catalog, the error says SIGN IN', async () => {
+    // The catalog cannot be fetched without a credential, so it is the empty
+    // fallback. Telling this user "catalog unavailable — check your connection"
+    // sends them to debug a network that is fine.
+    _resetMediaModelsForTesting()
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+    await expect(
+      runWithCwdOverride(tmp, () =>
+        VideoGenTool.call(
+          { prompt: 'a river', output_path: './out.mp4' } as never,
+          { abortController: new AbortController() } as never,
+        ),
+      ),
+    ).rejects.toThrow(/Sign in to Rayu/)
+    expect(calls).toBe(0)
   })
 })
 
@@ -947,17 +712,27 @@ describe('/image-video command', () => {
     expect(blocks[0].text).toContain('GenerateVideo')
   })
 
-  test('is gated on FAL_KEY — an NVIDIA key alone does not enable it', async () => {
+  test('is gated on a Rayu credential — no BYO key enables it', async () => {
     const { _resetRayuConfigCache } = await import('../src/utils/rayuConfig.ts')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cmd: any = (await import('../src/commands/image-video.ts')).default
     _resetRayuConfigCache()
     expect(cmd.isEnabled()).toBe(false)
     process.env.NVIDIA_API_KEY = 'nv-x'
+    process.env.FAL_KEY = 'fal-k'
+    process.env.GOOGLE_CLOUD_PROJECT = 'proj'
     _resetRayuConfigCache()
     expect(cmd.isEnabled()).toBe(false)
-    process.env.FAL_KEY = 'fal-k'
+    // A Rayu API key is a credential, so it enables the command with no session.
+    writeFileSync(
+      join(dir, 'providers.json'),
+      JSON.stringify({ providers: [{ id: 'rayu', apiKey: 'sk_rayu_test' }] }, null, 2),
+      { mode: 0o600 },
+    )
     _resetRayuConfigCache()
+    // The availability verdict is memoized briefly; forget the "no credential"
+    // answer recorded earlier in this test.
+    _resetRayuVideoAvailabilityForTesting()
     expect(cmd.isEnabled()).toBe(true)
   })
 })
@@ -1080,7 +855,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
     _setRayuEntitlementsForTesting(entitlements())
     _setFeatureUsageForTesting({ video_generation: { used: 0, limit: null } })
     _resetRayuVideoAvailabilityForTesting()
-    useVideoCatalog([...VIDEO_CATALOG, HOSTED_VIDEO_MODEL])
+    useVideoCatalog(VIDEO_CATALOG)
   })
   afterEach(() => {
     globalThis.fetch = realFetch
@@ -1151,9 +926,78 @@ describe('VideoGenTool hosted (Rayu)', () => {
     expect(download!.init?.redirect).toBe('error')
   })
 
-  test('a remembered model with no credentials falls back to hosted', async () => {
+  test('result metadata is truthful: no invented frames/fps, real duration only', async () => {
+    // The caller supplied NO frame inputs. The old result fabricated
+    // "57 frames @ 24fps" (≈2.4s) for every clip; the gateway actually served 2s.
+    mockHostedSuccess()
+    const res = await runWithCwdOverride(tmp, () =>
+      VideoGenTool.call(
+        { prompt: 'a river', output_path: './truthful.mp4' },
+        { abortController: new AbortController() } as never,
+      ),
+    )
+    expect(res.data.durationSeconds).toBe(2)
+    expect(res.data.frames).toBeUndefined()
+    expect(res.data.fps).toBeUndefined()
+    const block = VideoGenTool.mapToolResultToToolResultBlockParam(res.data, 'tid')
+    const text = (block.content as Array<{ type: string; text?: string }>).find(
+      (b) => b.type === 'text',
+    )!.text!
+    expect(text).toContain('Generated 2.0s video')
+    expect(text).not.toMatch(/57 frames|24fps/)
+  })
+
+  test('a text prompt never lands on an image2video-ONLY remembered model', async () => {
+    // The picker can save an image2video-only id; a later text prompt must not
+    // send it, or the gateway 400s model_requires_image.
+    const i2vOnly: MediaModelEntry = {
+      ...HOSTED_I2V_MODEL,
+      id: 'rayu-i2v-only',
+      capabilities: ['image2video'],
+      isDefault: false,
+    }
+    useVideoCatalog([HOSTED_VIDEO_MODEL, i2vOnly])
     const cfg = await import('../src/utils/rayuConfig.ts')
-    // A stale fal selection survives in the catalog, but FAL_KEY is gone.
+    cfg.setVideoModelSelection(i2vOnly.id)
+    cfg._resetRayuConfigCache()
+    const calls = mockHostedSuccess()
+
+    const res = await runWithCwdOverride(tmp, () =>
+      VideoGenTool.call(
+        { prompt: 'a river', output_path: './t2v.mp4' },
+        { abortController: new AbortController() } as never,
+      ),
+    )
+    expect(res.data.model).toBe(HOSTED_VIDEO_MODEL.id)
+    const gateway = calls.find((c) => c.url.includes('/v1/videos/generations'))
+    const body = JSON.parse(String(gateway!.init?.body)) as Record<string, unknown>
+    expect('image' in body).toBe(false)
+  })
+
+  test('an EXPLICIT image2video-only model is refused for a text prompt', async () => {
+    const i2vOnly: MediaModelEntry = {
+      ...HOSTED_I2V_MODEL,
+      id: 'rayu-i2v-only',
+      capabilities: ['image2video'],
+    }
+    useVideoCatalog([HOSTED_VIDEO_MODEL, i2vOnly])
+    const calls = mockFetch(() => {
+      throw new Error('must not reach the network')
+    })
+    await expect(
+      runWithCwdOverride(tmp, () =>
+        VideoGenTool.call(
+          { prompt: 'a river', model: i2vOnly.id, output_path: './x.mp4' },
+          { abortController: new AbortController() } as never,
+        ),
+      ),
+    ).rejects.toThrow(/requires a reference image/)
+    expect(calls).toHaveLength(0)
+  })
+
+  test('a remembered model the catalog no longer carries falls back to the default', async () => {
+    const cfg = await import('../src/utils/rayuConfig.ts')
+    // A stale BYO selection saved by an older CLI: no catalog entry, no client.
     cfg.setVideoModelSelection(
       'fal-ai/kling-video/v2.1/standard/text-to-video',
     )
@@ -1176,7 +1020,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
     // the environment must not revive it.
     process.env.NVIDIA_API_KEY = 'nv-x'
     const cfg = await import('../src/utils/rayuConfig.ts')
-    cfg.setVideoModelSelection(RETIRED_NVIDIA_VIDEO_MODEL)
+    cfg.setVideoModelSelection(RETIRED_VIDEO_MODEL)
     cfg._resetRayuConfigCache()
     const calls = mockHostedSuccess()
 
@@ -1219,7 +1063,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
 
   test('a reference image with nothing selected uses the hosted image2video model over BYO', async () => {
     process.env.FAL_KEY = 'fal-k'
-    useVideoCatalog([...VIDEO_CATALOG, HOSTED_VIDEO_MODEL, HOSTED_I2V_MODEL])
+    useVideoCatalog(VIDEO_CATALOG)
     writeFileSync(join(tmp, 'in.png'), TINY_PNG)
     const calls = mockHostedSuccess()
 
@@ -1235,6 +1079,8 @@ describe('VideoGenTool hosted (Rayu)', () => {
   })
 
   test('a hosted entry WITHOUT image2video refuses input_image with the exact message', async () => {
+    // Only the text-to-video entry is published, so there is nothing to swap to.
+    useVideoCatalog([HOSTED_VIDEO_MODEL])
     writeFileSync(join(tmp, 'in.png'), TINY_PNG)
     const calls = mockFetch(() => {
       throw new Error('must not reach the network')
@@ -1262,7 +1108,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
     // Regression: auto-selection used to prefer text2video unconditionally, so
     // an image request died with "…is text-to-video only" even though the
     // catalog carried an image2video-capable hosted model.
-    useVideoCatalog([...VIDEO_CATALOG, HOSTED_VIDEO_MODEL, HOSTED_I2V_MODEL])
+    useVideoCatalog(VIDEO_CATALOG)
     writeFileSync(join(tmp, 'in.png'), TINY_PNG)
     const calls = mockHostedSuccess()
 
@@ -1285,7 +1131,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
     // Not an explicit tool argument — the /model_video_generation selection —
     // so the deliberate capability fall-through applies (same rule BYO models
     // already followed in resolveVideoModel).
-    useVideoCatalog([...VIDEO_CATALOG, HOSTED_VIDEO_MODEL, HOSTED_I2V_MODEL])
+    useVideoCatalog(VIDEO_CATALOG)
     const cfg = await import('../src/utils/rayuConfig.ts')
     cfg.setVideoModelSelection(HOSTED_VIDEO_MODEL.id)
     cfg._resetRayuConfigCache()
@@ -1303,58 +1149,6 @@ describe('VideoGenTool hosted (Rayu)', () => {
     const gateway = calls.find((c) => c.url.includes('/v1/videos/generations'))
     const body = JSON.parse(String(gateway!.init?.body)) as Record<string, unknown>
     expect(body.model).toBe(HOSTED_I2V_MODEL.id)
-  })
-
-  test('BYO keeps precedence when its key IS configured (hosted available too)', async () => {
-    // Truth-table edge: signed-in Rayu user WITH a fal key, remembering a fal
-    // model — the BYO backend must win; the hosted fallback is only for unusable
-    // backends, never a silent takeover of a configured one.
-    process.env.FAL_KEY = 'fal-k'
-    const cfg = await import('../src/utils/rayuConfig.ts')
-    cfg.setVideoModelSelection(FAL_T2V)
-    cfg._resetRayuConfigCache()
-    _setFalPollInterval(0)
-    let falSubmits = 0
-    mockFetch((url) => {
-      if (url.includes('/v1/videos/generations')) {
-        throw new Error('hosted must not be used when a BYO key is configured')
-      }
-      if (url.endsWith('/s')) {
-        return new Response(JSON.stringify({ status: 'COMPLETED' }), { status: 200 })
-      }
-      if (url.endsWith('/r')) {
-        return new Response(
-          JSON.stringify({ video: { url: 'https://cdn.fal.media/out.mp4' } }),
-          { status: 200 },
-        )
-      }
-      if (url === `https://queue.fal.run/${FAL_T2V}`) {
-        falSubmits++
-        return new Response(
-          JSON.stringify({
-            request_id: 'r',
-            status_url: 'https://queue.fal.run/s',
-            response_url: 'https://queue.fal.run/r',
-          }),
-          { status: 200 },
-        )
-      }
-      return new Response(new Uint8Array(TINY_MP4), { status: 200 })
-    })
-
-    try {
-      const res = await runWithCwdOverride(tmp, () =>
-        VideoGenTool.call(
-          { prompt: 'a river', output_path: './byo.mp4' },
-          { abortController: new AbortController() } as never,
-        ),
-      )
-
-      expect(res.data.model).toBe(FAL_T2V)
-      expect(falSubmits).toBe(1)
-    } finally {
-      _setFalPollInterval(5000)
-    }
   })
 
   test('the MP4 lands atomically — no temp sibling is left behind', async () => {
@@ -1383,7 +1177,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
   })
 
   test('a hosted entry WITH image2video sends the reference image', async () => {
-    useVideoCatalog([...VIDEO_CATALOG, HOSTED_VIDEO_MODEL, HOSTED_I2V_MODEL])
+    useVideoCatalog(VIDEO_CATALOG)
     writeFileSync(join(tmp, 'in.png'), TINY_PNG)
     const calls = mockHostedSuccess()
 
@@ -1410,7 +1204,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
   })
 
   test('a hosted https reference URL reaches the gateway verbatim', async () => {
-    useVideoCatalog([...VIDEO_CATALOG, HOSTED_VIDEO_MODEL, HOSTED_I2V_MODEL])
+    useVideoCatalog(VIDEO_CATALOG)
     const calls = mockHostedSuccess()
 
     const res = await runWithCwdOverride(tmp, () =>
@@ -1479,7 +1273,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
     expect(text).not.toContain('121 frames')
   })
 
-  test('duration falls back to rayu.seconds, then to the requested duration', async () => {
+  test('duration falls back to rayu.seconds, and NEVER to the requested duration', async () => {
     mockFetch((url) => {
       if (url.includes('/v1/videos/generations')) {
         return new Response(
@@ -1502,7 +1296,8 @@ describe('VideoGenTool hosted (Rayu)', () => {
     })
     expect(res.durationSeconds).toBe(3)
 
-    // No data[0].duration and no rayu.seconds → the requested duration applies.
+    // No data[0].duration and no rayu.seconds → UNDEFINED. The requested
+    // duration (a catalog default of 5 here) must not be reported as actual.
     mockFetch((url) => {
       if (url.includes('/v1/videos/generations')) {
         return new Response(
@@ -1519,8 +1314,31 @@ describe('VideoGenTool hosted (Rayu)', () => {
       model: withBuilder(HOSTED_VIDEO_MODEL),
       params: { prompt: 'x' },
     })
-    // HOSTED_VIDEO_MODEL.defaultParams.duration = 5 reaches the body.
-    expect(res2.durationSeconds).toBe(5)
+    expect(res2.durationSeconds).toBeUndefined()
+  })
+
+  test('rayu.seconds is not reported as ONE clip length when several were billed', async () => {
+    mockFetch((url) => {
+      if (url.includes('/v1/videos/generations')) {
+        return new Response(
+          JSON.stringify({
+            created: 1,
+            data: [{ url: 'https://cdn.example/multi.mp4' }],
+            rayu: { videos: 2, seconds: 10 },
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response(new Uint8Array(TINY_MP4), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4' },
+      })
+    })
+    const res = await generateRayuVideo({
+      model: withBuilder(HOSTED_VIDEO_MODEL),
+      params: { prompt: 'x' },
+    })
+    expect(res.durationSeconds).toBeUndefined()
   })
 
   test('maps a gateway {error:{message}} to a clear Error', async () => {
@@ -1623,11 +1441,11 @@ describe('VideoGenTool hosted (Rayu)', () => {
     )
   })
 
-  test('a gateway catalog with no hosted entry errors clearly too', async () => {
-    // Online, but the (gateway-sourced) catalog has only BYO models and the
-    // user has no BYO key: the hosted fallback has nothing to pick, and a
-    // clear catalog error beats a misleading key error.
-    useVideoCatalog([...VIDEO_CATALOG])
+  test('an empty video catalog says the admin has published none', async () => {
+    // Online, but the admin has published no hosted video model. Saying "check
+    // your connection" here sent users to debug a network that was fine, so the
+    // message names the real cause instead.
+    useVideoCatalog([])
     const calls = mockFetch(() => {
       throw new Error('must not reach the network')
     })
@@ -1639,7 +1457,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
           { abortController: new AbortController() } as never,
         ),
       ),
-    ).rejects.toThrow(/Rayu model catalog unavailable/)
+    ).rejects.toThrow(/No Rayu-hosted video models are published yet/)
     expect(calls).toHaveLength(0)
   })
 
@@ -1683,9 +1501,11 @@ describe('VideoGenTool hosted (Rayu)', () => {
       mediaType: 'video',
       capabilities: ['text2video'],
       backend: 'rayu',
-      family: 'fal-kling',
+      // A hosted row reusing the real hosted family; the point of the test is that
+      // its ID (not the family) decides the billed model.
+      family: 'dashscope_video',
     }
-    useVideoCatalog([...VIDEO_CATALOG, HOSTED_VIDEO_MODEL, hostile])
+    useVideoCatalog([...VIDEO_CATALOG, hostile])
     const calls = mockHostedSuccess()
 
     const res = await runWithCwdOverride(tmp, () =>
@@ -1718,7 +1538,7 @@ describe('VideoGenTool hosted (Rayu)', () => {
       backend: 'rayu',
       family: 'cosmos-predict1',
     }
-    useVideoCatalog([...VIDEO_CATALOG, HOSTED_VIDEO_MODEL, hostile])
+    useVideoCatalog([...VIDEO_CATALOG, hostile])
     const calls = mockFetch((url) => {
       throw new Error(`unexpected fetch: ${url}`)
     })

@@ -243,7 +243,10 @@ export function retainKnownImageModel(
 ): string | undefined {
   if (!id) return undefined
   if (models.some((m) => m.id === id)) return id
-  if (isVertexImageModel(id, models)) return id
+  // A remembered `imagen-*` id used to survive on its prefix alone so a
+  // hand-typed Vertex id could still route there. Image generation is now
+  // Rayu-hosted only, so an id the catalog does not list is simply stale and is
+  // dropped — keeping it would send the tool at a backend that no longer exists.
   return undefined
 }
 

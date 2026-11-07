@@ -14,9 +14,11 @@ import {
   WEB_BRIDGE_ACTIONS,
   isAccountActionId,
   isAccountLinkId,
+  isModelSettingTargetId,
   isSettingsSectionId,
   type AccountActionId,
   type AccountLinkId,
+  type ModelSettingTargetId,
   type SettingsSectionId,
   type SettingsWebviewMessage,
   type WebBridgeAction,
@@ -28,6 +30,10 @@ export interface SettingsHandlers {
   openExtensionSettings(): void
   updateSetting(key: string, value: boolean | string): void
   refreshGeneral(): void
+  openModelSetting(target: ModelSettingTargetId, agentType?: string): void
+  chooseModelSetting(target: ModelSettingTargetId, value: string | null, agentType?: string): void
+  closeModelSetting(): void
+  refreshModels(): void
   refreshAccount(): void
   accountAction(action: AccountActionId): void
   openAccountLink(link: AccountLinkId): void
@@ -44,6 +50,10 @@ export interface SettingsHandlers {
 const MAX_FIELD_CHARS = 1_024
 /** A Telegram bot token is ~46 characters; anything far longer is not one. */
 const MAX_BOT_TOKEN_CHARS = 256
+/** A model value is a catalogue id, optionally `providerId\0model`. */
+const MAX_MODEL_VALUE_CHARS = 512
+/** An agent type name; whether it is a known one is checked by the Models section. */
+const MAX_AGENT_TYPE_CHARS = 128
 
 type MessageOf<K extends SettingsWebviewMessage['type']> = Extract<SettingsWebviewMessage, { type: K }>
 
@@ -53,6 +63,10 @@ const ROUTES: { [K in SettingsWebviewMessage['type']]: (message: MessageOf<K>, h
   settingsOpenExtensionSettings: (_, h) => h.openExtensionSettings(),
   settingsUpdate: (m, h) => h.updateSetting(m.key, m.value),
   settingsRefresh: (_, h) => h.refreshGeneral(),
+  settingsModelsOpen: (m, h) => h.openModelSetting(m.target, m.agentType),
+  settingsModelsChoose: (m, h) => h.chooseModelSetting(m.target, m.value, m.agentType),
+  settingsModelsClose: (_, h) => h.closeModelSetting(),
+  settingsModelsRefresh: (_, h) => h.refreshModels(),
   settingsAccountRefresh: (_, h) => h.refreshAccount(),
   settingsAccountAction: (m, h) => h.accountAction(m.action),
   settingsOpenAccountLink: (m, h) => h.openAccountLink(m.link),
@@ -79,6 +93,8 @@ const BARE_TYPES = new Set<string>([
   'settingsReady',
   'settingsOpenExtensionSettings',
   'settingsRefresh',
+  'settingsModelsClose',
+  'settingsModelsRefresh',
   'settingsAccountRefresh',
   'settingsIntegrationsRefresh',
   'settingsTelegramStartHosted',
@@ -113,9 +129,39 @@ export function parseSettingsMessage(raw: unknown): SettingsWebviewMessage | nul
       return isBotToken(message.token) ? { type: 'settingsTelegramStartByo', token: message.token } : null
     case 'settingsUpdate':
       return parseUpdate(message)
+    case 'settingsModelsOpen':
+    case 'settingsModelsChoose':
+      return parseModelMessage(message)
     default:
       return null
   }
+}
+
+/**
+ * A Models section open or choose. The target must be a model setting; an agent type is only
+ * meaningful for the subagent setting, and a value is a catalogue id or `null` to reset.
+ */
+function parseModelMessage(message: Record<string, unknown>): SettingsWebviewMessage | null {
+  const { target, agentType, value } = message
+  if (!isModelSettingTargetId(target)) return null
+  if (agentType !== undefined && !isAgentTypeField(agentType, target)) return null
+  const scope = typeof agentType === 'string' ? { agentType } : {}
+  if (message.type === 'settingsModelsOpen') return { type: 'settingsModelsOpen', target, ...scope }
+  // `null` resets the setting; otherwise it is a catalogue id of bounded length. A value
+  // that carries no model is refused by `applySelection` rather than at this boundary.
+  if (value !== null && typeof value !== 'string') return null
+  if (typeof value === 'string' && value.length > MAX_MODEL_VALUE_CHARS) return null
+  return { type: 'settingsModelsChoose', target, value, ...scope }
+}
+
+function isAgentTypeField(value: unknown, target: ModelSettingTargetId): value is string {
+  return (
+    target === 'subagent' &&
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_AGENT_TYPE_CHARS &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  )
 }
 
 /** One line, no spaces, of plausible length; Telegram itself checks the rest. */

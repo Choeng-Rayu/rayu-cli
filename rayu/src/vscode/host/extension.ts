@@ -99,6 +99,7 @@ import {
   refreshProviderCatalogue,
   saveProvider,
   validateProvider,
+  type ConnectOutcome,
 } from './auth/providerSetup.js'
 import {
   startHostedTelegramPairing,
@@ -118,10 +119,10 @@ import {
 // no child per tick.
 import {
   readTelegramConfig,
-  saveAutoAttach,
   setLinkedBotUsername,
   setLinkedChat,
 } from '../../telegram/telegramConfig.js'
+import { writeAttachment } from '../../telegram/telegramAttach.js'
 import { getHostedLink } from '../../telegram/telegramHostedApi.js'
 import { TelegramConnectController } from './integrations/telegramConnectController.js'
 import { TELEGRAM_RESTART_SETTLE_MS, TelegramLinkRestarts } from './integrations/telegramLinkRestart.js'
@@ -149,7 +150,21 @@ import {
   parseModelSettingCommand,
   type MediaModelSettingTarget,
   type ModelSettingCommand,
+  type ModelSettingTarget,
 } from './models/modelSettingCommands.js'
+import { catalogueView } from './models/modelCatalogueView.js'
+import {
+  runAddDirectoryCommand,
+  runDoctorCommand,
+  runExportCommand,
+  runHooksCommand,
+  runMemoryCommand,
+  runPermissionsCommand,
+  runStatusCommand,
+  type HostCommandContext,
+  type StatusFacts,
+} from './commands/index.js'
+import type { CatalogueOutcome } from './settings/modelsSettings.js'
 import type {
   BackgroundTaskView,
   ChatSurfaceKind,
@@ -393,6 +408,26 @@ export function activate(context: vscode.ExtensionContext): void {
         })
       },
     },
+    // Settings → Models. The lists come from the same connect helper the chat's
+    // choosers use, and a saved subagent/WebFetch model respawns the idle engines so
+    // the config it reads at spawn is fresh; image/video need no engine at all.
+    models: {
+      loadProviderCatalogue: async () =>
+        catalogueOutcomeFromConnect(
+          await refreshProviderCatalogue({ launch: engineLaunch, cwd: engineCwd }),
+          'Could not load the model catalogue.',
+        ),
+      loadMediaCatalogue: async target =>
+        catalogueOutcomeFromConnect(
+          await refreshMediaModelOptions({ launch: engineLaunch, cwd: engineCwd }, target),
+          `Could not load the ${target} generation models.`,
+        ),
+      knownAgentTypes: () =>
+        registry.activeEntry?.session.subagentTypes ??
+        registry.sidebarEntry?.session.subagentTypes ??
+        [],
+      onSaved: target => restartIdleEnginesForModelSetting(target),
+    },
     account: {
       load: () => loadAccountView(liveAccountSources()),
       act: action => {
@@ -481,6 +516,9 @@ export function activate(context: vscode.ExtensionContext): void {
     setLinkedChat,
     setLinkedBotUsername,
     onLinked: origin => restartTelegramLinkedSession(origin),
+    // Same restart, before the link exists: the engine must poll for the BYO
+    // pairing's `/start <token>`, because only the bridge can consume it.
+    onPairingStarted: origin => restartTelegramLinkedSession(origin),
     publish: () => settingsTab.controller.integrationsChanged(),
   })
   const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
@@ -584,10 +622,25 @@ export function activate(context: vscode.ExtensionContext): void {
    */
   function restartTelegramLinkedSession(origin: string | null): void {
     const entry = (origin ? entryFor(origin) : undefined) ?? currentEntry()
-    saveAutoAttach(
-      entry.session.engineSessionId ?? '',
-      normalizeCwdForAttachLookup(entry.session.workingDirectory),
-    )
+    // ── THE ATTACHMENT, NOT JUST THE MEMORY ────────────────────────────────────
+    //
+    // `saveAutoAttach` alone only tells a NEW engine to reconnect (it is what the
+    // REPL's auto-attach check reads). It does not tell the bridge leader which
+    // session receives chat prompts — routing reads `telegram-attached.json`
+    // (`telegramRouter.resolveAttached`). Writing just the memory left the chat with
+    // no target whenever more than one session was open, and the editor's
+    // conversation was never marked as the one to drive.
+    //
+    // `writeAttachment` persists both files so they cannot disagree. The session id
+    // is empty until a fresh conversation's engine reports one; the router then falls
+    // back to the working directory, which is the same match the auto-attach check
+    // makes.
+    writeAttachment({
+      sessionId: entry.session.engineSessionId ?? '',
+      pid: entry.session.enginePid ?? 0,
+      cwd: normalizeCwdForAttachLookup(entry.session.workingDirectory),
+      attachedAt: Date.now(),
+    })
     telegramRestarts.requestRestart(entry.key)
   }
 
@@ -1604,6 +1657,71 @@ export function activate(context: vscode.ExtensionContext): void {
     prewarmSession(entry)
   }
 
+  /**
+   * Apply a saved subagent or WebFetch model to the conversations that can take it.
+   *
+   * Only those two settings reach a running engine, and the engine caches them at spawn
+   * (see `restartEngineWithResume`). A conversation is skipped when there is no live
+   * engine to restart, when a terminal CLI owns it (that CLI has its own model
+   * settings), or when a turn is running — respawning mid-turn would abort it.
+   * Image and video generation run per call and never restart anything.
+   */
+  function restartIdleEnginesForModelSetting(target: ModelSettingTarget): void {
+    if (target !== 'subagent' && target !== 'webfetch') return
+    for (const entry of registry.all) {
+      if (!entry.session.controlClient) continue
+      if (attachedFor(entry.key)) continue
+      if (entry.session.isTurnRunning) continue
+      void restartEngineWithResume(entry)
+    }
+  }
+
+  /**
+   * Run one editor-native command against this conversation.
+   *
+   * The context is built once per command so every screen resolves settings scopes and
+   * restarts against the SAME conversation that typed it. A throw is reported as an
+   * error message: escaping here would leave the webview's request unanswered.
+   */
+  async function runEditorCommand(
+    entry: SessionEntry,
+    run: (ctx: HostCommandContext) => Promise<void>,
+  ): Promise<void> {
+    const ctx: HostCommandContext = {
+      launch: engineLaunch,
+      // Workspace folder, else the engine cwd — the same rule the settings child uses.
+      cwd: workspaceDir ?? engineCwd,
+      restartConversation: () => restartEngineWithResume(entry),
+    }
+    try {
+      await run(ctx)
+    } catch (cause) {
+      void vscode.window.showErrorMessage(
+        `Rayucode could not run that command: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
+  }
+
+  /** What `/status` reports, read from the conversation that asked. */
+  function statusFacts(entry: SessionEntry, cwd: string): StatusFacts {
+    const auth = getAuthSnapshot()
+    const model = entry.session.currentModelInfo
+    return {
+      extensionVersion: version,
+      model: model.model,
+      provider: model.provider,
+      cwd,
+      sessionId: entry.session.engineSessionId,
+      permissionMode: entry.session.currentPermissionMode.label,
+      signedIn: auth.signedIn,
+      account: auth.identity?.displayName ?? auth.identity?.email ?? null,
+      mcpServers: entry.session.mcpServers.map(server => ({
+        name: server.name,
+        status: server.status,
+      })),
+    }
+  }
+
   /** Show a host-owned command result in the transcript, as the CLI shows a system line. */
   function postCommandNotice(sessionKey: string, message: string): void {
     surfaces.postToSession(sessionKey, {
@@ -1624,20 +1742,19 @@ export function activate(context: vscode.ExtensionContext): void {
   let mediaChooserRequest = 0
   async function loadMediaModelChooser(target: MediaModelSettingTarget): Promise<void> {
     const request = ++mediaChooserRequest
-    const outcome = await refreshMediaModelOptions({ launch: engineLaunch, cwd: engineCwd }, target)
+    const outcome = catalogueOutcomeFromConnect(
+      await refreshMediaModelOptions({ launch: engineLaunch, cwd: engineCwd }, target),
+      `Could not load the ${target} generation models.`,
+    )
     const open = modelChooser
     if (request !== mediaChooserRequest || open?.target !== target) return
     setModelChooser({
       ...open,
       current: currentSelectionValue(target),
       catalogue: outcome.ok
-        ? { options: outcome.catalogue ?? [], loading: false, error: null }
-        : {
-            options: [],
-            loading: false,
-            error: outcome.error ?? `Could not load the ${target} generation models.`,
-          },
-      note: outcome.ok ? outcome.notice : undefined,
+        ? { options: outcome.options, loading: false, error: null }
+        : { options: [], loading: false, error: outcome.error },
+      note: outcome.ok ? outcome.note : undefined,
     })
   }
 
@@ -1739,6 +1856,40 @@ export function activate(context: vscode.ExtensionContext): void {
             getAccessToken: getAccessTokenForHost,
           })
           return
+        }
+        // The editor-native management screens. They are real commands in the CLI, which
+        // renders its own UI, so an attached terminal session gets the text untouched —
+        // the same rule `/clear` follows above. Without that, respawning an engine or
+        // opening a quick pick here would fight the terminal's own command.
+        if (!cli) {
+          switch (hostCommand) {
+            case 'permissions':
+              await runEditorCommand(entry, runPermissionsCommand)
+              return
+            case 'memory':
+              await runEditorCommand(entry, runMemoryCommand)
+              return
+            case 'doctor':
+              await runEditorCommand(entry, runDoctorCommand)
+              return
+            case 'hooks':
+              await runEditorCommand(entry, runHooksCommand)
+              return
+            case 'add-dir':
+              await runEditorCommand(entry, runAddDirectoryCommand)
+              return
+            case 'status':
+              await runEditorCommand(entry, ctx => runStatusCommand(statusFacts(entry, ctx.cwd)))
+              return
+            case 'export':
+              await runEditorCommand(entry, ctx =>
+                runExportCommand(entry.session.transcript, {
+                  title: entry.customTitle,
+                  defaultDir: ctx.cwd,
+                }),
+              )
+              return
+          }
         }
         const runtimeSection = rayucodeRuntimeSectionCommand(text)
         if (runtimeSection === 'tasks') {
@@ -3004,19 +3155,28 @@ function buildCatalogue(session: ChatSession): ModelCatalogueView {
   if (session.availableModels) return session.availableModels
   const fromEngine = session.modelCatalogue
   const configured = readModelOptions()
-  const source = configured.length > 0 ? configured : fromEngine
-  return {
-    options: source.map(m => ({
-      value: m.value,
-      label: m.displayName || m.value,
-      description: m.description,
-      customerDescription: m.customerDescription,
-      providerId: m.providerId, model: m.model, contextWindow: m.contextWindow,
-      supportsThinking: m.supportsThinking, supportsImage: m.supportsImage, supportsTools: m.supportsTools,
-    })),
-    loading: source.length === 0,
-    error: null,
-  }
+  // `catalogueView` owns the model→option mapping; the list is the same on every surface.
+  return catalogueView(configured.length > 0 ? configured : fromEngine)
+}
+
+/**
+ * Map a connect helper's outcome onto the Models section's `CatalogueOutcome`.
+ *
+ * The chat's media chooser and Settings → Models list the same catalogues, so the
+ * success shape (options + optional notice) and the fallback error wording are decided
+ * here once, not at each call site.
+ */
+function catalogueOutcomeFromConnect(
+  outcome: ConnectOutcome,
+  fallbackError: string,
+): CatalogueOutcome {
+  return outcome.ok
+    ? {
+        ok: true,
+        options: outcome.catalogue ?? [],
+        ...(outcome.notice ? { note: outcome.notice } : {}),
+      }
+    : { ok: false, error: outcome.error ?? fallbackError }
 }
 
 function buildState(
@@ -3192,6 +3352,9 @@ function rayucodeRuntimeSectionCommand(
   if (command === '/plugin' || command === '/plugins') return 'plugins'
   if (command === '/agents') return 'agents'
   if (command === '/tasks') return 'tasks'
+  // `/help` needs no separate screen: the Runtime Center's command list IS the help.
+  if (command === '/help') return 'commands'
+  if (command === '/stats') return 'stats'
   return null
 }
 
@@ -3290,6 +3453,13 @@ function rayucodeHostSlashCommand(
   | 'logout'
   | 'reload-plugins'
   | 'install-github-app'
+  | 'permissions'
+  | 'memory'
+  | 'doctor'
+  | 'hooks'
+  | 'add-dir'
+  | 'status'
+  | 'export'
   | null {
   const command = text.trim()
   if (command === '/login') return 'login'
@@ -3297,6 +3467,15 @@ function rayucodeHostSlashCommand(
   if (command === '/logout') return 'logout'
   if (command === '/reload-plugins') return 'reload-plugins'
   if (command === '/install-github-app') return 'install-github-app'
+  // Editor-native management screens; see `commands/index.ts`. Exact matching, like the
+  // rest of this table, so a prompt that merely starts with one still reaches the model.
+  if (command === '/permissions') return 'permissions'
+  if (command === '/memory') return 'memory'
+  if (command === '/doctor') return 'doctor'
+  if (command === '/hooks') return 'hooks'
+  if (command === '/add-dir') return 'add-dir'
+  if (command === '/status') return 'status'
+  if (command === '/export') return 'export'
   return null
 }
 

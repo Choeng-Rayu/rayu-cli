@@ -20,24 +20,23 @@ import {
   type MediaModelEntry,
   type MediaType,
 } from './mediaModels.js'
-import { hasRayuSession, isUseRayuOAuthEnabled } from './rayuSession.js'
+import { hasRayuGatewayCredential } from './rayuApiKeyAuth.js'
 
 /**
- * Picker order: Rayu-hosted models first, then bring-your-own ones, each group
- * in the order the gateway returned it.
+ * The models a picker may OFFER: Rayu-hosted only, for every media type.
  *
- * Gateway order is the admin's: hosted rows are sorted by their Sort Order in
- * Admin → Media Catalogs, and the first hosted row that can do a request is the
- * default a signed-in user gets. Listing hosted rows first keeps the picker in
- * the same order the tools pick from.
+ * Generation ships as a Rayu-hosted capability — the user needs no provider key
+ * and is billed in Rayu credits — so the pickers list exactly the hosted rows the
+ * admin enabled, in the admin's order. Video has no other backend at all (the
+ * fal.ai and Vertex clients were removed); an IMAGE catalog may still carry BYO
+ * Imagen rows for older clients and an already-saved selection, but neither the
+ * terminal nor the editor OFFERS them as a choice, so what a user can pick here
+ * is what the dashboard publishes.
  */
-export function orderMediaModelsForPicker(
+export function hostedPickerModels(
   entries: readonly MediaModelEntry[],
 ): MediaModelEntry[] {
-  return [
-    ...entries.filter((m) => m.backend === 'rayu'),
-    ...entries.filter((m) => m.backend !== 'rayu'),
-  ]
+  return entries.filter((m) => m.backend === 'rayu')
 }
 
 /** Human name for the upstream that serves a model. */
@@ -48,9 +47,8 @@ export function mediaBackendLabel(
     case 'rayu':
       return 'Rayu-hosted'
     case 'vertex':
-      return entry.mediaType === 'image' ? 'Vertex Imagen' : 'Vertex Veo'
-    case 'fal':
-      return 'fal.ai'
+      // Vertex is an IMAGE-only backend now (the Veo video client was removed).
+      return entry.mediaType === 'image' ? 'Vertex Imagen' : 'Vertex'
     default:
       return entry.backend
   }
@@ -62,13 +60,26 @@ function backendAndCapabilities(entry: MediaModelEntry): string {
 }
 
 /**
+ * The clip window a video entry publishes ("· 2-10s"), or '' when it declares
+ * none. Shown so a caller can tell WHY a requested length was clamped instead
+ * of discovering it from a gateway rejection.
+ */
+function durationRangeLabel(entry: MediaModelEntry): string {
+  if (entry.mediaType !== 'video') return ''
+  const max = entry.maxDurationSeconds
+  if (max === undefined) return ''
+  const min = entry.minDurationSeconds
+  return min !== undefined ? ` · ${min}-${max}s` : ` · up to ${max}s`
+}
+
+/**
  * The terminal picker's detail line: the admin's display name (when it is not
  * just the id), then backend and capabilities. The id is the row's label, as in
  * the chat /model picker, because it is what gets saved and sent.
  */
 export function describeMediaModel(entry: MediaModelEntry): string {
   const named = entry.label && entry.label !== entry.id ? `${entry.label} · ` : ''
-  return `${named}${backendAndCapabilities(entry)}`
+  return `${named}${backendAndCapabilities(entry)}${durationRangeLabel(entry)}`
 }
 
 /** One chooser row — structurally the editor's `ModelOptionView`. */
@@ -94,15 +105,14 @@ export function mediaModelPickerOptions(
   catalog: MediaCatalog,
   mediaType: MediaType,
 ): MediaModelPickerOption[] {
-  return orderMediaModelsForPicker(mediaModelsFor(catalog, mediaType)).map(
-    (m) => ({
-      value: m.id,
-      label: m.label || m.id,
-      description: `${m.id} · ${backendAndCapabilities(m)}`,
-      model: m.id,
-      providerId: m.backend,
-    }),
-  )
+  const entries = hostedPickerModels(mediaModelsFor(catalog, mediaType))
+  return entries.map((m) => ({
+    value: m.id,
+    label: m.label || m.id,
+    description: `${m.id} · ${backendAndCapabilities(m)}${durationRangeLabel(m)}`,
+    model: m.id,
+    providerId: m.backend,
+  }))
 }
 
 /**
@@ -115,16 +125,34 @@ export function mediaCatalogNotice(
   catalog: MediaCatalog,
   refreshed: boolean,
 ): string | undefined {
-  const signedIn = isUseRayuOAuthEnabled() && hasRayuSession()
+  // Either credential reaches the gateway, so an API-key user is as "signed in"
+  // as a session user and must not be told to run /login.
+  const signedIn = hasRayuGatewayCredential()
   if (!signedIn) {
-    return catalog.source === 'fallback'
-      ? 'Showing built-in defaults. Sign in to Rayu (/login) to see the models your Rayu admin publishes.'
-      : undefined
+    // Hosted models are the only ones a picker offers, so without a credential
+    // there is nothing to show at all — do not promise "built-in defaults" for a
+    // media type whose built-in list is empty (video).
+    return 'No Rayu credential. Sign in (/login) or connect a Rayu API key to see the hosted models your Rayu admin publishes.'
   }
   if (refreshed) return undefined
   return catalog.source === 'gateway'
     ? 'Could not refresh the list from Rayu; showing the last list it sent.'
-    : 'Could not reach Rayu; showing built-in defaults. Check your connection and open this picker again.'
+    : 'Could not reach Rayu. Check your connection and open this picker again.'
+}
+
+/**
+ * What to say when a chooser is empty because only Rayu-hosted rows may be
+ * offered and the catalog has none.
+ *
+ * Shared by both terminal commands and the editor so neither explains the same
+ * empty list differently.
+ */
+export function emptyHostedPickerNote(mediaType: MediaType): string {
+  const kind = mediaType === 'image' ? 'image' : 'video'
+  return (
+    `No Rayu-hosted ${kind} models are available. They are published by your Rayu ` +
+    `admin, so ask them to enable one — signing in will not create any.`
+  )
 }
 
 /**
@@ -140,9 +168,16 @@ export async function loadMediaModelPicker(mediaType: MediaType): Promise<{
 }> {
   const fresh = await refreshMediaModels(true)
   const catalog = fresh ?? getCachedMediaModels()
+  // An EMPTY option list always needs an explanation, whatever emptied it: policy
+  // (only hosted rows may be offered, and the catalog had none) or a catalog that
+  // genuinely lists nothing of this type. Without it the editor renders a bare
+  // chooser and the user cannot tell "nothing published" from "nothing reachable".
   const notice = mediaCatalogNotice(catalog, fresh !== null)
+  const options = mediaModelPickerOptions(catalog, mediaType)
+  const resolved =
+    notice ?? (options.length === 0 ? emptyHostedPickerNote(mediaType) : undefined)
   return {
-    options: mediaModelPickerOptions(catalog, mediaType),
-    ...(notice ? { notice } : {}),
+    options,
+    ...(resolved ? { notice: resolved } : {}),
   }
 }

@@ -248,6 +248,46 @@ export function hasRayuSession(): boolean {
   return !!readRayuSession()?.accessToken
 }
 
+/**
+ * True when the stored session can authenticate now, or can renew itself.
+ *
+ * `hasRayuSession()` only answers "is there a token on disk". That is not the
+ * same question the login gate and /login need: a file whose access token has
+ * expired and whose refresh token is missing will never work again, yet the old
+ * check still called it signed in. That is what trapped users in an auth error
+ * they could only escape with /logout before /login — /login short-circuited on
+ * the dead file and told them to switch accounts.
+ *
+ * An expired access token WITH a refresh token is usable: the next call renews
+ * it. If that renewal is refused, the session is cleared (see doRefresh), so the
+ * dead state is not left behind.
+ */
+export function hasUsableRayuSession(now: number = Date.now()): boolean {
+  const store = readRayuSession()
+  if (!store?.accessToken) return false
+  if (!isRayuAccessTokenExpired(store, now)) return true
+  return typeof store.refreshToken === 'string' && store.refreshToken.length > 0
+}
+
+/**
+ * Statuses that mean the refresh token itself is dead, not that the call failed.
+ *
+ * `POST /cli/refresh` answers 401 for every refusal — expired, revoked, an
+ * advanced session epoch, a suspended account (all `UnauthorizedException`).
+ * 400 is kept as a defensive case for a malformed payload. A 403 is deliberately
+ * NOT here: that controller never returns one, so a 403 more likely came from a
+ * proxy/WAF in front of the API, and signing the user out over that would be a
+ * false logout.
+ */
+const DEAD_REFRESH_STATUSES: ReadonlySet<number> = new Set([400, 401])
+
+function isRayuAccessTokenExpired(
+  store: RayuSessionStore,
+  now: number = Date.now(),
+): boolean {
+  return !Number.isFinite(store.expiresAt) || now >= store.expiresAt - REFRESH_SKEW_MS
+}
+
 /** Forget the stored Rayu session. */
 export function clearRayuSession(): void {
   try {
@@ -312,7 +352,7 @@ export async function recordRayuToolUsageBestEffort(tool: string): Promise<void>
  */
 export function rayuLoginGateMessage(): string | null {
   if (!isUseRayuOAuthEnabled()) return null
-  if (hasRayuSession()) return null
+  if (hasUsableRayuSession()) return null
   if (hasUsableRayuApiKey()) return null
   return 'You need to sign in to use Rayu. Run /login to sign in, or /connect → Rayu to use a Rayu API key, then send your message again.'
 }
@@ -359,28 +399,116 @@ function getFetch(): FetchLike {
 
 /**
  * Return a non-expired access token, refreshing via /cli/refresh when needed.
- * Returns null when the user is not logged in or the refresh fails.
+ * Returns null when the user is not logged in or the session cannot be renewed.
  */
 export async function getValidRayuAccessToken(): Promise<string | null> {
   const store = readRayuSession()
   if (!store?.accessToken) return null
-  if (Date.now() < store.expiresAt - REFRESH_SKEW_MS) {
+  if (!isRayuAccessTokenExpired(store)) {
     return store.accessToken
   }
   // Access token expired (or about to) — refresh.
+  return refreshRayuAccessToken(store.accessToken)
+}
+
+/** A refresh that is already in flight, shared by every caller in this process. */
+let refreshInFlight: Promise<string | null> | null = null
+
+/**
+ * Exchange the stored refresh token for a new access token.
+ *
+ * `staleAccessToken` is the access token the caller found invalid. It lets a
+ * 401-triggered refresh notice that another process (the VS Code engine, a
+ * second terminal) has already renewed the session, in which case the new token
+ * is returned without another network round trip.
+ *
+ * Never throws. A DEFINITIVE refusal (see DEAD_REFRESH_STATUSES — expired,
+ * revoked, session epoch advanced, or signed by a rotated secret) clears the
+ * stored session, so the login gate and /login both stop treating it as signed
+ * in. A transient failure (offline, timeout, 5xx, a proxy 403) leaves it in
+ * place: the token may still work on the next try, and logging the user out over
+ * a network blip is worse.
+ */
+export function refreshRayuAccessToken(
+  staleAccessToken?: string,
+): Promise<string | null> {
+  const store = readRayuSession()
+  if (!store) return Promise.resolve(null)
+
+  if (
+    staleAccessToken &&
+    store.accessToken &&
+    store.accessToken !== staleAccessToken &&
+    !isRayuAccessTokenExpired(store)
+  ) {
+    return Promise.resolve(store.accessToken)
+  }
+
+  if (refreshInFlight) return refreshInFlight
+
+  const run = doRefresh(store)
+  refreshInFlight = run
+  const clearInFlight = (): void => {
+    if (refreshInFlight === run) refreshInFlight = null
+  }
+  void run.then(clearInFlight, clearInFlight)
+  return run
+}
+
+/**
+ * Has the stored session moved on since `store` was read?
+ *
+ * A refresh is an async round trip, and the session file can be rewritten
+ * meanwhile — the user runs /login, another terminal refreshes, or the VS Code
+ * engine signs in to its own profile. In that case the file no longer describes
+ * the request this refresh belongs to, so its result must NOT overwrite it.
+ * Returns the file when it is still the one we started from, else null.
+ */
+function sessionStillCurrent(store: RayuSessionStore): RayuSessionStore | null {
+  const latest = readRayuSession()
+  if (!latest || latest.refreshToken !== store.refreshToken) return null
+  return latest
+}
+
+async function doRefresh(store: RayuSessionStore): Promise<string | null> {
+  if (typeof store.refreshToken !== 'string' || store.refreshToken.length === 0) {
+    // Only drop the file we actually read — never a session another sign-in
+    // wrote in the meantime.
+    if (sessionStillCurrent(store)) clearRayuSession()
+    return null
+  }
   try {
     const res = await getFetch()(`${getRayuApiBaseUrl()}/cli/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: store.refreshToken }),
     })
-    if (!res.ok) return null
+    const current = sessionStillCurrent(store)
+    if (!res.ok) {
+      if (!current) {
+        // Another sign-in landed while this request was in flight; its tokens
+        // are newer than anything this refresh could produce.
+        return readRayuSession()?.accessToken ?? null
+      }
+      // A refused refresh token is definitive — but only for the session it was
+      // issued from, which `current` confirms is still the one on disk.
+      if (DEAD_REFRESH_STATUSES.has(res.status)) clearRayuSession()
+      return null
+    }
     const data = (await res.json()) as {
       accessToken: string
       refreshToken: string
       expiresAt: number
     }
-    writeRayuSession({ ...store, ...data })
+    if (typeof data?.accessToken !== 'string' || data.accessToken.length === 0) {
+      return null
+    }
+    if (!current) {
+      // Another sign-in landed while this refresh was in flight; its newer
+      // tokens win over the ones this request just minted.
+      return readRayuSession()?.accessToken ?? null
+    }
+    writeRayuSession({ ...current, ...data })
     return data.accessToken
   } catch {
     return null

@@ -40,6 +40,7 @@ import {
 } from 'src/tools/AgentTool/loadAgentsDir.js'
 import type { Message, NormalizedUserMessage } from 'src/types/message.js'
 import type { QueuedCommand } from 'src/types/textInputTypes.js'
+import type { PastedContent } from 'src/utils/config.js'
 import {
   dequeue,
   dequeueAllMatching,
@@ -115,6 +116,12 @@ import {
 } from 'src/utils/gracefulShutdown.js'
 import { registerCleanup } from 'src/utils/cleanupRegistry.js'
 import { createIdleTimeoutManager } from 'src/utils/idleTimeout.js'
+import { publishActiveTurn } from 'src/utils/activeTurn.js'
+import { promptValueWithImageBlocks } from 'src/utils/attachments.js'
+import {
+  clearRemoteModelOverride,
+  getRemoteModelOverride,
+} from 'src/utils/remoteModelOverride.js'
 import type {
   SDKStatus,
   ModelInfo,
@@ -147,6 +154,24 @@ import { getRemoteSessionUrl } from 'src/constants/product.js'
 import { buildBridgeConnectUrl } from 'src/bridge/bridgeStatusUtil.js'
 import { extractInboundMessageFields } from 'src/bridge/inboundMessages.js'
 import { resolveAndPrepend } from 'src/bridge/inboundAttachments.js'
+import { composeBridgePermissionCallbacks } from 'src/bridge/composeBridgePermissionCallbacks.js'
+import { isEditorHostedEngine } from 'src/constants/engineHost.js'
+import type { TelegramBridgeHandle } from 'src/telegram/telegramBridge.js'
+import {
+  isFileChangeReviewMessage,
+  type WrappedMessage,
+} from 'src/telegram/formatActivity.js'
+import { TelegramPermissionRelay } from 'src/telegram/telegramPermissionRelay.js'
+import {
+  getRemotePermissionCallbacks,
+  isRemotelyAttached,
+  remoteActivity,
+  remoteStreamDelta,
+  remoteStreamEnd,
+  remoteStreamStart,
+} from 'src/telegram/telegramRemoteBridge.js'
+import { startTelegramBridge } from 'src/telegram/telegramStart.js'
+import { TelegramStreamTap } from 'src/telegram/telegramStreamTap.js'
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
 import { safeParseJSON } from 'src/utils/json.js'
@@ -492,6 +517,35 @@ export function joinPromptValues(values: PromptValue[]): PromptValue {
     return values.join('\n')
   }
   return values.flatMap(toBlocks)
+}
+
+/**
+ * Combine the `pastedContents` of every command in a batch.
+ *
+ * `joinPromptValues` merges only the prompt TEXT, so keeping the head command's
+ * `pastedContents` alone silently dropped the images of every later command in the
+ * batch — their `[Image #N]` markers survived in the joined text, the bytes did not.
+ * Two photos sent from Telegram as separate messages can batch into one turn, which
+ * is exactly that case.
+ *
+ * Paste ids come from a process-global counter (`nextImagePasteId`), so entries do
+ * not normally collide. If a caller ever supplies duplicates, the later entry loses
+ * to the earlier one rather than silently replacing an image the text still refers
+ * to by that id.
+ */
+export function mergePastedContents(
+  commands: readonly { pastedContents?: Record<number, PastedContent> }[],
+): Record<number, PastedContent> | undefined {
+  let merged: Record<number, PastedContent> | undefined
+  for (const command of commands) {
+    if (!command.pastedContents) continue
+    merged ??= {}
+    for (const [key, paste] of Object.entries(command.pastedContents)) {
+      const id = Number(key)
+      if (merged[id] === undefined) merged[id] = paste
+    }
+  }
+  return merged
 }
 
 /**
@@ -1753,6 +1807,52 @@ function runHeadlessStreaming(
   // Same index-based diff as useReplBridge's lastWrittenIndexRef.
   let bridgeLastForwardedIndex = 0
 
+  // ── Telegram ─────────────────────────────────────────────────────────────────
+  //
+  // The bridge runs in THIS process only when it is the conversation the chat is
+  // attached to (`telegramStart.ts`). A no-op handle means another live process owns
+  // the transport; this engine then mirrors its turns over the IPC attachment instead,
+  // exactly as `useTelegramBridge` does when it loses the lock.
+  let telegramBridge: TelegramBridgeHandle | null = null
+  let telegramPermissions: TelegramPermissionRelay | null = null
+  let telegramTap: TelegramStreamTap | null = null
+  /**
+   * Detaches the queue kicker. Declared here, assigned where the kicker is installed —
+   * `stopTelegram` runs from the input loop and from `run()`, both of which can fire
+   * before that line executes, so a `const` there would be a temporal-dead-zone throw.
+   */
+  let unsubscribeQueueKick: (() => void) | null = null
+
+  /**
+   * How long the end-of-turn chat flush may hold the command loop.
+   *
+   * Only the END of a turn waits, never the turn itself, and never for longer than this
+   * — a chat that has stopped answering must not delay the next prompt.
+   */
+  const TELEGRAM_FLUSH_TIMEOUT_MS = 5_000
+  /**
+   * Cursor into mutableMessages for chat activity mirroring.
+   *
+   * Starts at the END of the loaded conversation: the engine is restarted whenever a
+   * link completes (and after a crash or a memory-limit replacement), so a resumed
+   * transcript must not be replayed into the chat. Only turns from this process on are
+   * mirrored.
+   */
+  let telegramActivityIndex = mutableMessages.length
+  /**
+   * The claude.ai remote-control bridge's half of the permission channel.
+   *
+   * `structuredIO` exposes ONE handler slot per channel, so this process installs a
+   * single dispatcher that forwards to every connected surface. Letting either surface
+   * call the setter directly would silently disable the other.
+   */
+  let replBridgeOnControlRequestSent:
+    | ((request: SDKControlRequest) => void)
+    | undefined
+  let replBridgeOnControlRequestResolved:
+    | ((requestId: string) => void)
+    | undefined
+
   // Forward new messages from mutableMessages to the bridge.
   // Called incrementally during each turn (so claude.ai sees progress
   // and stays alive during permission waits) and again after the turn.
@@ -1774,6 +1874,206 @@ function runHeadlessStreaming(
     if (newMessages.length > 0) {
       bridgeHandle.writeMessages(newMessages)
     }
+  }
+
+  // ── Telegram mirroring ───────────────────────────────────────────────────────
+  //
+  // The three functions below are the headless equivalent of `useTelegramBridge`'s
+  // activity effect and streaming wrapper. Keeping the SHAPE identical matters: a
+  // remote turn and a local one must be indistinguishable in the chat, so both go
+  // through the same `TelegramBridgeHandle` surface.
+
+  /** True for user messages that are tool results (not human-typed text). */
+  function isToolResultMessage(msg: Message): boolean {
+    if (msg.type !== 'user') return false
+    const content = (msg as { message?: { content?: unknown } }).message?.content
+    if (!Array.isArray(content)) return false
+    return content.some(
+      block =>
+        block != null &&
+        typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'tool_result',
+    )
+  }
+
+  /**
+   * Mirror every message completed since the last call.
+   *
+   * Same filter as the REPL hook: assistant messages, tool results (for their errors)
+   * and file-change reviews. The human prompt is not echoed — the chat already has it.
+   *
+   * ── THE CURSOR ADVANCES EVEN WITH NOTHING CONNECTED ─────────────────────────
+   *
+   * Returning early before the cursor moved would leave it pointing at the start of
+   * the transcript. This session can become attached LATER — the bridge leader dials
+   * in on `/switch`, which flips `isRemotelyAttached()` mid-session — and the next
+   * mirror would then push the whole earlier conversation into the chat. Only the
+   * SEND is conditional; the cursor is not.
+   */
+  function mirrorMessagesToTelegram(): void {
+    // Nothing connected: keep the cursor current so a later attachment starts from
+    // NOW rather than from the top of the transcript. Skipping the scan as well.
+    if (!hasTelegramSurface()) {
+      telegramActivityIndex = mutableMessages.length
+      return
+    }
+    const start = Math.min(telegramActivityIndex, mutableMessages.length)
+    const batch: WrappedMessage[] = []
+    for (let i = start; i < mutableMessages.length; i++) {
+      const msg = mutableMessages[i]!
+      if (
+        msg.type === 'assistant' ||
+        isToolResultMessage(msg) ||
+        isFileChangeReviewMessage(msg)
+      ) {
+        batch.push(msg as unknown as WrappedMessage)
+      }
+    }
+    telegramActivityIndex = mutableMessages.length
+    if (batch.length === 0) return
+    if (telegramBridge && !telegramBridge.isNoOp) telegramBridge.pushActivity(batch)
+    if (isRemotelyAttached()) remoteActivity(batch)
+  }
+
+  /** True when a surface will actually receive the turn (local leader or IPC attach). */
+  function hasTelegramSurface(): boolean {
+    return (
+      (telegramBridge !== null && !telegramBridge.isNoOp) || isRemotelyAttached()
+    )
+  }
+
+  /**
+   * True for a frame that belongs to a SUBAGENT rather than this conversation.
+   *
+   * A subagent's messages are forwarded with `parent_tool_use_id` set (see
+   * `normalizeMessage` in utils/queryHelpers.ts). They are not this conversation's
+   * output: mirroring their text into the chat would splice a delegated agent's answer
+   * into the user's thread, and closing the live mirror on one would cut the main
+   * reply mid-stream.
+   */
+  function isSubagentFrame(message: StdoutMessage): boolean {
+    return (
+      (message as { parent_tool_use_id?: unknown }).parent_tool_use_id != null
+    )
+  }
+
+  /**
+   * Telegram is an integration, never a dependency: a chat-side failure must not be
+   * able to abort a turn the user is waiting on. Every entry point below goes through
+   * this guard instead of letting the error reach `run()`.
+   */
+  function telegramFailure(what: string, error: unknown): void {
+    logForDebugging(
+      `[telegram] ${what} failed: ${errorMessage(error)}`,
+      { level: 'warn' },
+    )
+  }
+
+  /**
+   * A stream frame feeds the live mirror.
+   *
+   * Synchronous on purpose: this runs per token, and the tap does no I/O — it only
+   * accumulates into the mirror, which throttles its own Telegram edits.
+   */
+  function tapTelegramStream(message: StdoutMessage): void {
+    if (!hasTelegramSurface()) return
+    if (isSubagentFrame(message)) return
+    try {
+      telegramTap?.onStreamEvent((message as { event?: unknown }).event)
+    } catch (error) {
+      telegramFailure('stream tap', error)
+    }
+  }
+
+  /**
+   * A settled message closes the mirror and folds the finished batch into the chat.
+   *
+   * The close happens FIRST — `pushActivity` folds the activity summary into the
+   * message the stream just finished, and with no mirror id it would send the answer
+   * a second time. Everything that is neither assistant nor user (results, control
+   * traffic, progress) has its own path.
+   *
+   * ── NOT AWAITED, ON PURPOSE ────────────────────────────────────────────────
+   *
+   * This runs inside the loop that consumes the engine's turn. Awaiting a Telegram
+   * edit here would delay the settled frame reaching the EDITOR and stall the next
+   * step of the turn behind a chat round trip. `TelegramStreamTap` serializes the
+   * close against the following message's deltas instead (see its header), so the
+   * ordering guarantee survives without the wait.
+   */
+  function settleTelegramFrame(message: StdoutMessage): void {
+    if (message.type !== 'assistant' && message.type !== 'user') return
+    // A subagent settling must not close this conversation's live mirror.
+    if (isSubagentFrame(message)) return
+    // The cursor advances whether or not anything is connected — see
+    // `mirrorMessagesToTelegram`.
+    const tap = telegramTap
+    if (!tap) {
+      mirrorMessagesToTelegram()
+      return
+    }
+    void tap
+      .end()
+      .then(() => mirrorMessagesToTelegram())
+      .catch(error => telegramFailure('message mirror', error))
+  }
+
+  /**
+   * Close an unterminated mirror and flush anything the turn left behind.
+   *
+   * Awaited at the end of each turn — once per turn rather than once per message, so
+   * the chat is consistent before the next prompt is accepted without ever pacing the
+   * turn itself.
+   *
+   * ── BOUNDED, BECAUSE THE NEXT TURN WAITS ON IT ─────────────────────────────
+   *
+   * The close calls Telegram, and `fetch` has no default deadline: a host that stops
+   * answering without refusing would otherwise park the command loop for minutes
+   * before the next queued prompt runs. If the close has not finished in time the
+   * batch stays where it is — the next settle or flush picks it up — so a slow chat
+   * delays only the chat.
+   */
+  async function flushTelegramTurn(): Promise<void> {
+    try {
+      const tap = telegramTap
+      if (!tap) {
+        mirrorMessagesToTelegram()
+        return
+      }
+      if (!hasTelegramSurface()) {
+        await tap.end()
+        mirrorMessagesToTelegram()
+        return
+      }
+      // The timer is cleared when the close wins, so a long session does not leave a
+      // pending timer behind after every turn.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timedOut = new Promise<boolean>(resolve => {
+        timer = setTimeout(() => resolve(false), TELEGRAM_FLUSH_TIMEOUT_MS)
+        timer.unref?.()
+      })
+      const closed = await Promise.race([tap.end().then(() => true), timedOut])
+      if (timer !== undefined) clearTimeout(timer)
+      if (closed) mirrorMessagesToTelegram()
+    } catch (error) {
+      telegramFailure('turn flush', error)
+    }
+  }
+
+  /**
+   * Stop polling and stop holding the event loop open.
+   *
+   * The bridge's poll loop is long-lived by design, so a headless process whose stdin
+   * has closed would otherwise never exit. Idempotent: `TelegramBridgeHandle.stop()`
+   * is safe to call twice and `telegramBridge` is cleared here.
+   */
+  function stopTelegram(): void {
+    unsubscribeQueueKick?.()
+    unsubscribeQueueKick = null
+    telegramPermissions?.cancelAll()
+    telegramBridge?.stop()
+    telegramBridge = null
+    telegramTap = null
   }
 
   // Helper to apply MCP server changes - used by both mcp_set_servers control message
@@ -2232,10 +2532,14 @@ function runHeadlessStreaming(
               batch.push(dequeue(isMainThread)!)
             }
             if (batch.length > 1) {
+              // Text AND image bytes: merging only `value` kept the head's
+              // pastedContents and dropped every later command's images.
+              const pastedContents = mergePastedContents(batch)
               command = {
                 ...command,
                 value: joinPromptValues(batch.map(c => c.value)),
                 uuid: batch.findLast(c => c.uuid)?.uuid ?? command.uuid,
+                ...(pastedContents ? { pastedContents } : {}),
               }
             }
           }
@@ -2402,7 +2706,16 @@ function runHeadlessStreaming(
             // No continue -- fall through to ask() so the model processes the result
           }
 
-          const input = command.value
+          // ── IMAGES FROM A REMOTE PROMPT ──────────────────────────────────────
+          //
+          // The REPL resolves `pastedContents` through processUserInput; this loop
+          // calls ask() directly, so a Telegram photo arrived as a bare `[Image #N]`
+          // marker with no bytes behind it. Same conversion the REPL's queue path
+          // uses — one helper, not a second implementation.
+          const input = await promptValueWithImageBlocks(
+            command.value,
+            command.pastedContents,
+          )
 
           if (structuredIO instanceof RemoteIO && command.mode === 'prompt') {
             logEvent('tengu_bridge_message_received', {
@@ -2440,6 +2753,11 @@ function runHeadlessStreaming(
           }
 
           abortController = createAbortController()
+          // Publish the turn so a remote surface can stop it. The Telegram bridge's
+          // ⛔ Stop card and `/interrupt` call `interruptActiveTurn()`, which is the
+          // same abort Esc performs in the REPL — without this a tap in the chat
+          // reported "nothing is running" while the engine was mid-turn.
+          publishActiveTurn(abortController)
           const turnStartTime = feature('FILE_PERSISTENCE')
             ? Date.now()
             : undefined
@@ -2477,7 +2795,12 @@ function runHeadlessStreaming(
               maxBudgetUsd: options.maxBudgetUsd,
               taskBudget: options.taskBudget,
               canUseTool,
-              userSpecifiedModel: activeUserSpecifiedModel,
+              // A model switch made from the chat lands in this process through
+              // `IPC_APPLY_MODEL`, which sets the module override — but this ask()
+              // call reads a closure variable that no out-of-band write can update.
+              // Prefer the override so a phone-initiated switch actually takes effect;
+              // it is cleared by a local `set_model`, so a panel choice still wins.
+              userSpecifiedModel: getRemoteModelOverride() ?? activeUserSpecifiedModel,
               fallbackModel: options.fallbackModel,
               jsonSchema: getInitJsonSchema() ?? options.jsonSchema,
               mutableMessages,
@@ -2528,6 +2851,13 @@ function runHeadlessStreaming(
               // claude.ai sees progress and the connection stays alive
               // while blocked on permission requests.
               forwardMessagesToBridge()
+              // The chat mirror is fed from the same frames: stream deltas keep the
+              // live message growing, and a settled message closes it.
+              if (message.type === 'stream_event') {
+                tapTelegramStream(message)
+              } else {
+                settleTelegramFrame(message)
+              }
 
               if (message.type === 'result') {
                 // Flush pending SDK events so they appear before result on the stream.
@@ -2563,6 +2893,9 @@ function runHeadlessStreaming(
           // Forward messages to bridge after each turn
           forwardMessagesToBridge()
           bridgeHandle?.sendResult()
+          // Close a mirror the last frame left open and fold anything the turn
+          // appended after its final assistant message into one chat card.
+          await flushTelegramTurn()
 
           if (feature('FILE_PERSISTENCE') && turnStartTime !== undefined) {
             void executeFilePersistence(
@@ -2784,9 +3117,16 @@ function runHeadlessStreaming(
           output.enqueue(event)
         }
       }
+      // The turn is over: a remote Stop tap now has nothing to abort.
+      publishActiveTurn(null)
       running = false
       // Start idle timer when we finish processing and are waiting for input
       idleTimeout.start()
+      // Input is gone (one-shot run, or the host closed the engine's pipe). The
+      // Telegram poll loop keeps the event loop alive, so it has to stop or this
+      // process would never exit. Deferred to here rather than the input loop's end
+      // so a turn that was still running could finish and mirror its output.
+      if (inputClosed) stopTelegram()
     }
 
     // Proactive tick: if proactive is active and queue is empty, inject a tick
@@ -2998,6 +3338,113 @@ function runHeadlessStreaming(
       }
     }
   }
+
+  // ── QUEUE KICK ───────────────────────────────────────────────────────────────
+  //
+  // A Telegram prompt reaches this engine through `IPC_PROMPT` →
+  // `telegramSessionHandlers.enqueue`, with no stdin frame to follow it. The REPL
+  // drains its queue on enqueue (`useQueueProcessor`); headless has no such
+  // subscriber — the cron comment below already says so — so an idle engine used to
+  // sit on a delivered prompt until some unrelated turn happened. That is exactly why
+  // driving the editor from a chat looked dead.
+  //
+  // Safe during a turn: `run()` returns immediately under its mutex and its own
+  // post-turn re-check drains the queue. The `agentId` filter keeps subagent
+  // notifications from starting a main-thread turn by themselves.
+  unsubscribeQueueKick = subscribeToCommandQueue(() => {
+    if (running || inputClosed || isShuttingDown()) return
+    if (peek(cmd => cmd.agentId === undefined) === undefined) return
+    void run()
+  })
+
+  // ── TELEGRAM ─────────────────────────────────────────────────────────────────
+  //
+  // The bridge is started only when this engine is the conversation the chat is
+  // attached to — see `telegramStart.ts` for the rule. A no-op handle means another
+  // live process owns the transport; either way the IPC attachment still carries
+  // this session's turns to the leader when it is the attached one.
+  //
+  // ── WHY ONLY THE EDITOR'S ENGINE ADOPTS THE CHAT ────────────────────────────
+  //
+  // The auto-attach memory matches a session by id OR by working directory. A
+  // one-shot `rayu -p` run in a linked directory would therefore pass the same check
+  // as the editor's engine — and becoming the bridge leader would make a SCRIPTED
+  // run drivable from Telegram and push its output into the chat. The editor marks
+  // its engine child (constants/engineHost.ts), so the adoption is scoped to the
+  // host that actually has a user present.
+  if (isEditorHostedEngine()) {
+    try {
+      telegramBridge = startTelegramBridge()
+    } catch (error) {
+      // Telegram is an add-on. A broken config, an unwritable lock file or a bad
+      // transport must never stop the engine from starting — without this catch the
+      // whole session would fail to launch because a chat integration misbehaved.
+      logForDebugging(
+        `[telegram] bridge did not start: ${errorMessage(error)}`,
+        { level: 'warn' },
+      )
+      telegramBridge = null
+    }
+  }
+  telegramTap = new TelegramStreamTap({
+    startTurn: () => {
+      if (telegramBridge && !telegramBridge.isNoOp) telegramBridge.startTurn()
+      if (isRemotelyAttached()) remoteStreamStart()
+    },
+    onTextDelta: delta => {
+      if (telegramBridge && !telegramBridge.isNoOp) telegramBridge.onTextDelta(delta)
+      if (isRemotelyAttached()) remoteStreamDelta(delta)
+    },
+    endTurn: async () => {
+      if (telegramBridge && !telegramBridge.isNoOp) await telegramBridge.endTurn()
+      if (isRemotelyAttached()) remoteStreamEnd()
+    },
+  })
+
+  // The chat may answer a permission card while the editor shows the same ask.
+  // `structuredIO` has one handler slot per channel, so this dispatcher forwards to
+  // the claude.ai remote-control bridge (when it is enabled later) as well.
+  telegramPermissions = new TelegramPermissionRelay({
+    injectDecision: (requestId, decision) => {
+      // Resolves the local `can_use_tool` promise and writes the host a
+      // `control_cancel_request`, which is what dismisses the editor's card.
+      try {
+        structuredIO.injectControlResponse({
+          type: 'control_response',
+          response: { subtype: 'success', request_id: requestId, response: decision },
+        })
+      } catch (error) {
+        telegramFailure('permission answer', error)
+      }
+    },
+    callbacks: () =>
+      composeBridgePermissionCallbacks(
+        telegramBridge && !telegramBridge.isNoOp
+          ? telegramBridge.permissionCallbacks
+          : undefined,
+        getRemotePermissionCallbacks(),
+      ),
+  })
+  structuredIO.setOnControlRequestSent(request => {
+    replBridgeOnControlRequestSent?.(request)
+    try {
+      telegramPermissions?.onControlRequestSent(request)
+    } catch (error) {
+      telegramFailure('permission card', error)
+    }
+  })
+  structuredIO.setOnControlRequestResolved(requestId => {
+    replBridgeOnControlRequestResolved?.(requestId)
+    try {
+      telegramPermissions?.onControlRequestResolved(requestId)
+    } catch (error) {
+      telegramFailure('permission card cleanup', error)
+    }
+  })
+
+  registerCleanup(async () => {
+    stopTelegram()
+  })
 
   // Set up UDS inbox callback so the query loop is kicked off
   // when a message arrives via the UDS socket in headless mode.
@@ -3267,6 +3714,9 @@ function runHeadlessStreaming(
               : requestedModel
           activeUserSpecifiedModel = model
           setMainLoopModelOverride(model)
+          // A switch made here (the panel, or `/model` in a terminal) is the newest
+          // intent: drop any remote override so the phone does not keep winning.
+          clearRemoteModelOverride()
           notifySessionMetadataChanged({ model })
           injectModelSwitchBreadcrumbs(requestedModel, model)
 
@@ -4321,15 +4771,18 @@ function runHeadlessStreaming(
                 } else {
                   bridgeHandle = handle
                   bridgeLastForwardedIndex = mutableMessages.length
-                  // Forward permission requests to the bridge
-                  structuredIO.setOnControlRequestSent(request => {
+                  // Forward permission requests to the bridge. The structuredIO
+                  // handler slot is owned by the dispatcher installed at setup, so
+                  // this registers the bridge's half of it rather than replacing it
+                  // (which would disable the Telegram relay).
+                  replBridgeOnControlRequestSent = request => {
                     handle.sendControlRequest(request)
-                  })
+                  }
                   // Cancel stale bridge permission prompts when the SDK
                   // consumer resolves a can_use_tool request first.
-                  structuredIO.setOnControlRequestResolved(requestId => {
+                  replBridgeOnControlRequestResolved = requestId => {
                     handle.sendControlCancelRequest(requestId)
-                  })
+                  }
                   sendControlResponseSuccess(message, {
                     session_url: getRemoteSessionUrl(
                       handle.bridgeSessionId,
@@ -4349,8 +4802,8 @@ function runHeadlessStreaming(
           } else {
             // Disable
             if (bridgeHandle) {
-              structuredIO.setOnControlRequestSent(undefined)
-              structuredIO.setOnControlRequestResolved(undefined)
+              replBridgeOnControlRequestSent = undefined
+              replBridgeOnControlRequestResolved = undefined
               await bridgeHandle.teardown()
               bridgeHandle = null
             }
@@ -4462,6 +4915,9 @@ function runHeadlessStreaming(
     }
     inputClosed = true
     cronScheduler?.stop()
+    // Nothing can be delivered to this engine any more. A running turn stops the
+    // bridge itself when it ends (see run()'s finally).
+    if (!running) stopTelegram()
     if (!running) {
       // If a push-suggestion is in-flight, wait for it to emit before closing
       // the output stream (5 s safety timeout to prevent hanging).

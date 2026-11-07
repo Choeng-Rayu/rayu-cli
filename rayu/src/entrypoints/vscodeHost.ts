@@ -40,7 +40,8 @@
  * from partial source and several `require()`d modules only disappear when a
  * `--define` folds a branch to a constant.
  */
-import { realpathSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { loadDotEnv } from '../utils/envUtils.js'
 import {
   CONNECT_FLAG,
@@ -55,8 +56,17 @@ import {
   type TelegramConnectFrame,
 } from '../vscode/shared/telegramConnectProtocol.js'
 import { ENGINE_EXIT_MEMORY_LIMIT } from '../vscode/shared/engineExitCodes.js'
+import { markEditorHostedEngine } from '../constants/engineHost.js'
 import {
   SETTINGS_FLAG,
+  type AdditionalDirectorySource,
+  type DoctorReport,
+  type EditablePermissionSource,
+  type HookView,
+  type MemoryFileScope,
+  type MemoryFileView,
+  type PermissionRuleBehavior,
+  type PermissionRuleView,
   type SettingsChildAction,
   type SettingsChildFrame,
 } from '../vscode/shared/settingsChildProtocol.js'
@@ -306,7 +316,11 @@ async function runConnect(inlineAction: string | undefined): Promise<void> {
       if (action.mediaType !== 'image' && action.mediaType !== 'video') {
         throw new Error('Unknown media type for the model list.')
       }
-      const { loadMediaModelPicker } = await import('../services/rayuAuth/mediaModelPicker.js')
+      const { loadMediaModelPicker } = await import(
+        '../services/rayuAuth/mediaModelPicker.js'
+      )
+      // `notice` already explains an EMPTY catalogue (see loadMediaModelPicker), so
+      // this stays a pure pass-through.
       const { options, notice } = await loadMediaModelPicker(action.mediaType)
       emit({
         type: 'rayucode_connect_result',
@@ -786,12 +800,94 @@ async function readConnectActionFromStdin(): Promise<string | undefined> {
   return input.trim() || undefined
 }
 
+/** The editable permission scopes, in the order the editor lists them. */
+const EDITABLE_PERMISSION_SOURCES: ReadonlyArray<{
+  scope: EditablePermissionSource
+  source: 'userSettings' | 'projectSettings' | 'localSettings'
+}> = [
+  { scope: 'user', source: 'userSettings' },
+  { scope: 'project', source: 'projectSettings' },
+  { scope: 'local', source: 'localSettings' },
+]
+
+function editablePermissionSource(
+  value: unknown,
+): 'userSettings' | 'projectSettings' | 'localSettings' {
+  const match = EDITABLE_PERMISSION_SOURCES.find(entry => entry.scope === value)
+  if (!match) throw new Error('Choose where the permission rule should be saved.')
+  return match.source
+}
+
+function permissionRuleBehavior(value: unknown): PermissionRuleBehavior {
+  if (value === 'allow' || value === 'deny' || value === 'ask') return value
+  throw new Error('Choose allow, deny or ask for the permission rule.')
+}
+
+function additionalDirectorySource(value: unknown): AdditionalDirectorySource {
+  if (value === 'user' || value === 'project' || value === 'local') return value
+  throw new Error('Choose where the directory should be saved.')
+}
+
+function memoryScope(type: string): MemoryFileScope {
+  switch (type) {
+    case 'User':
+      return 'user'
+    case 'Project':
+      return 'project'
+    case 'Local':
+      return 'local'
+    case 'Managed':
+      return 'managed'
+    case 'AutoMem':
+      return 'auto'
+    default:
+      return 'other'
+  }
+}
+
+/**
+ * Parse and validate a permission rule, using the engine's own parser — the host never
+ * re-implements the `Tool` / `Tool(content)` grammar.
+ */
+async function parsePermissionRuleInput(
+  rule: unknown,
+  { validate }: { validate: boolean },
+): Promise<{ toolName: string; ruleContent?: string }> {
+  if (typeof rule !== 'string') throw new Error('A permission rule must be text.')
+  const trimmed = rule.trim()
+  if (!trimmed || /[\r\n]/.test(trimmed)) {
+    throw new Error('Enter a permission rule, for example Bash(npm test) or Read.')
+  }
+  if (trimmed.length > 1000) throw new Error('That permission rule is too long.')
+  // Adding is strict: the parser below is lenient (`Bash()` becomes a blanket `Bash`, an
+  // unclosed paren becomes a tool name the settings loader later drops), so a rule the
+  // engine's own validator rejects must never reach the file. Removing stays lenient so a
+  // rule that is already stored can still be taken out.
+  if (validate) {
+    const { validatePermissionRule } = await import('../utils/settings/permissionValidation.js')
+    const checked = validatePermissionRule(trimmed)
+    if (!checked.valid) {
+      throw new Error(
+        `${checked.error ?? 'That is not a valid permission rule.'}${checked.suggestion ? ` ${checked.suggestion}` : ''}`,
+      )
+    }
+  }
+  const { permissionRuleValueFromString } = await import('../utils/permissions/permissionRuleParser.js')
+  const value = permissionRuleValueFromString(trimmed)
+  if (!value.toolName || /\s/.test(value.toolName)) {
+    throw new Error('That is not a valid permission rule.')
+  }
+  return value
+}
+
 /**
  * One `--rayucode-settings` action, reported as frames on stdout.
  *
- * The settings store is imported dynamically, like the other helpers' heavy modules, so
- * none of it is evaluated in session mode. `read` answers with a snapshot frame; every
- * action ends with exactly one result frame.
+ * The settings store, permissions, hooks, doctor and memory modules are imported
+ * dynamically, like the other helpers' heavy modules, so none of them is evaluated in
+ * session mode — and, more importantly, the extension host never imports them. `read`
+ * answers with a snapshot frame, the command actions answer with one data frame, and
+ * every action ends with exactly one result frame.
  */
 async function runSettingsAction(): Promise<void> {
   const emit = (frame: SettingsChildFrame): void => {
@@ -808,19 +904,116 @@ async function runSettingsAction(): Promise<void> {
     // As in the CLI's own fast paths (cli.tsx): reading the config throws until this runs.
     const { enableConfigs } = await import('../utils/config.js')
     enableConfigs()
-    const store = await import('../utils/settings/editableSettingsStore.js')
     const cwd = process.cwd()
+
     if (action?.action === 'read') {
+      const store = await import('../utils/settings/editableSettingsStore.js')
       emit({ type: 'rayucode_settings_snapshot', ...(await store.readSharedSettings(cwd)) })
       emit({ type: 'rayucode_settings_result', ok: true })
       return
     }
+
     if (action?.action === 'write') {
+      const store = await import('../utils/settings/editableSettingsStore.js')
       const result = await store.writeSharedSetting({ key: action.key, value: action.value, cwd })
       emit(result.ok ? { type: 'rayucode_settings_result', ok: true } : { type: 'rayucode_settings_result', ok: false, error: result.error })
       if (!result.ok) process.exitCode = 1
       return
     }
+
+    if (action?.action === 'permissions-read') {
+      const { getPermissionRulesForSource } = await import('../utils/permissions/permissionsLoader.js')
+      const { permissionRuleValueToString } = await import('../utils/permissions/permissionRuleParser.js')
+      const rules: PermissionRuleView[] = []
+      for (const { scope, source } of EDITABLE_PERMISSION_SOURCES) {
+        for (const rule of getPermissionRulesForSource(source)) {
+          rules.push({
+            behavior: rule.ruleBehavior,
+            rule: permissionRuleValueToString(rule.ruleValue),
+            source: scope,
+          })
+        }
+      }
+      emit({ type: 'rayucode_permissions', rules })
+      emit({ type: 'rayucode_settings_result', ok: true })
+      return
+    }
+
+    if (action?.action === 'permission-add' || action?.action === 'permission-remove') {
+      const behavior = permissionRuleBehavior(action.behavior)
+      const source = editablePermissionSource(action.source)
+      const ruleValue = await parsePermissionRuleInput(action.rule, {
+        validate: action.action === 'permission-add',
+      })
+      if (action.action === 'permission-add') {
+        const { addPermissionRulesToSettings } = await import('../utils/permissions/permissionsLoader.js')
+        const saved = addPermissionRulesToSettings({ ruleValues: [ruleValue], ruleBehavior: behavior }, source)
+        if (!saved) throw new Error('Could not save that permission rule. Check the settings file and try again.')
+      } else {
+        const { deletePermissionRuleFromSettings } = await import('../utils/permissions/permissionsLoader.js')
+        const removed = deletePermissionRuleFromSettings({ source, ruleBehavior: behavior, ruleValue })
+        if (!removed) throw new Error('Could not remove that permission rule from the settings file.')
+      }
+      emit({ type: 'rayucode_settings_result', ok: true })
+      return
+    }
+
+    if (action?.action === 'hooks-read') {
+      const { getAllHooks, getHookDisplayText } = await import('../utils/hooks/hooksSettings.js')
+      const hooks: HookView[] = getAllHooks().map(hook => ({
+        event: hook.event,
+        source: hook.source,
+        ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
+        kind: hook.config.type,
+        text: getHookDisplayText(hook.config),
+      }))
+      emit({ type: 'rayucode_hooks', hooks })
+      emit({ type: 'rayucode_settings_result', ok: true })
+      return
+    }
+
+    if (action?.action === 'doctor') {
+      const { getDoctorDiagnostic } = await import('../utils/doctorDiagnostic.js')
+      const diagnostic: DoctorReport = await getDoctorDiagnostic()
+      emit({ type: 'rayucode_doctor', diagnostic })
+      emit({ type: 'rayucode_settings_result', ok: true })
+      return
+    }
+
+    if (action?.action === 'memory-list') {
+      const { getMemoryFiles } = await import('../utils/claudemd.js')
+      const { getRayuConfigHomeDir } = await import('../utils/envUtils.js')
+      const files: MemoryFileView[] = []
+      const seen = new Set<string>()
+      const add = (path: string, scope: MemoryFileScope): void => {
+        const key = resolve(path)
+        if (seen.has(key)) return
+        seen.add(key)
+        files.push({ path, scope, exists: existsSync(path) })
+      }
+      // The standard files the UI offers to create, then whatever the engine loads.
+      add(join(getRayuConfigHomeDir(), 'RAYU.md'), 'user')
+      add(join(cwd, 'RAYU.md'), 'project')
+      add(join(cwd, 'RAYU.local.md'), 'local')
+      for (const file of await getMemoryFiles(false)) add(file.path, memoryScope(file.type))
+      emit({ type: 'rayucode_memory', files })
+      emit({ type: 'rayucode_settings_result', ok: true })
+      return
+    }
+
+    if (action?.action === 'add-directory') {
+      const source = additionalDirectorySource(action.source)
+      if (typeof action.path !== 'string' || !action.path.trim()) {
+        throw new Error('Choose a directory to add.')
+      }
+      const { addAdditionalDirectory } = await import('../utils/settings/additionalDirectories.js')
+      if (!addAdditionalDirectory(source, action.path)) {
+        throw new Error('Could not add that directory to the settings file.')
+      }
+      emit({ type: 'rayucode_settings_result', ok: true })
+      return
+    }
+
     throw new Error('Unknown settings action.')
   } catch (cause) {
     emit({
@@ -917,6 +1110,12 @@ async function main(): Promise<void> {
     await runAccountAction()
     return
   }
+
+  // Mark this process as the editor's engine, for integrations that only the editor
+  // should adopt (the Telegram bridge — see src/telegram/telegramStart.ts). Session
+  // path only: the helper modes above exit before starting a session. In-process state
+  // rather than an env var, so tool subprocesses cannot inherit the mark.
+  markEditorHostedEngine()
 
   // process.argv is [node, thisScript, ...args]; main() re-reads process.argv,
   // so the merged flags have to be written back into it rather than passed.

@@ -8,6 +8,7 @@ import {
   type EngineInfoView,
   type GeneralSettingsView,
   type IntegrationsView,
+  type ModelsSettingsView,
   type SettingsHostMessage,
   type SettingsSectionId,
 } from '../../shared/settingsProtocol.js'
@@ -18,6 +19,7 @@ export interface SettingsAppState {
   section: SettingsSectionId
   about: EngineInfoView | null
   general: GeneralSettingsView
+  models: ModelsSettingsView
   account: AccountSectionView
   /** Null until the host has sent it. */
   integrations: IntegrationsView | null
@@ -28,11 +30,20 @@ export type SettingsAction = SettingsHostMessage | { type: 'select'; section: Se
 
 const EMPTY_GENERAL: GeneralSettingsView = { status: 'idle', error: null, saving: null, items: [] }
 const EMPTY_ACCOUNT: AccountSectionView = { status: 'idle', account: null, error: null, updatedAt: null }
+const EMPTY_MODELS: ModelsSettingsView = { status: 'idle', error: null, notice: null, rows: [], editor: null }
 
 export function initialSettingsState(
   section: SettingsSectionId = DEFAULT_SETTINGS_SECTION,
 ): SettingsAppState {
-  return { loaded: false, section, about: null, general: EMPTY_GENERAL, account: EMPTY_ACCOUNT, integrations: null }
+  return {
+    loaded: false,
+    section,
+    about: null,
+    general: EMPTY_GENERAL,
+    models: EMPTY_MODELS,
+    account: EMPTY_ACCOUNT,
+    integrations: null,
+  }
 }
 
 export function settingsReducer(state: SettingsAppState, action: SettingsAction): SettingsAppState {
@@ -43,6 +54,7 @@ export function settingsReducer(state: SettingsAppState, action: SettingsAction)
         section: action.state.section,
         about: action.state.about,
         general: action.state.general,
+        models: action.state.models,
         account: action.state.account,
         integrations: action.state.integrations,
       }
@@ -51,6 +63,8 @@ export function settingsReducer(state: SettingsAppState, action: SettingsAction)
       return state.section === action.section ? state : { ...state, section: action.section }
     case 'settingsGeneral':
       return { ...state, general: action.general }
+    case 'settingsModels':
+      return { ...state, models: action.models }
     case 'settingsAccount':
       return { ...state, account: action.account }
     case 'settingsIntegrations':
@@ -64,6 +78,7 @@ export function settingsReducer(state: SettingsAppState, action: SettingsAction)
 const OBJECT_PAYLOADS: Partial<Record<SettingsHostMessage['type'], string>> = {
   settingsInit: 'state',
   settingsGeneral: 'general',
+  settingsModels: 'models',
   settingsAccount: 'account',
   settingsIntegrations: 'integrations',
 }
