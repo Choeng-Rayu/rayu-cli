@@ -38,9 +38,10 @@ export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
  * multi-provider mode. Precedence:
  *  1. The user's configured agent selection (/subagent_models), which may
  *     target a DIFFERENT provider than the main agent.
- *  2. Otherwise the MAIN (active) provider's instant/small-fast model — so the
- *     subagent defaults to a cheap/fast model on the same provider, never the
- *     hardcoded 'haiku' (which doesn't exist outside Anthropic).
+ *  2. Rayu-hosted, if configured — even when the main session is on a
+ *     third-party provider. The managed gateway is always preferred so
+ *     subagents benefit from credit tracking and provider routing.
+ *  3. The active provider's instant/small-fast model as a final fallback.
  *
  * Returns { providerId, model }. The caller encodes these into the request
  * model (encodeModelWithProvider) only when providerId differs from the active
