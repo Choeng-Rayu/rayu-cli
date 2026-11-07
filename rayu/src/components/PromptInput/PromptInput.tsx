@@ -34,7 +34,6 @@ import type { BorderTextOptions } from '../../ink/render-border.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, type ClickEvent, type Key, Text, useInput } from '../../ink.js';
 import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js';
-import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
 import { abortPromptSuggestion, logSuggestionSuppressed } from '../../services/PromptSuggestion/promptSuggestion.js';
@@ -1636,13 +1635,15 @@ function PromptInput({
       if (imageData) {
         onImagePaste(imageData.base64, imageData.mediaType);
       } else {
-        const shortcutDisplay = getShortcutDisplay('chat:imagePaste', 'Chat', 'ctrl+v');
         // On Linux with no clipboard tool installed, give an actionable hint
         // instead of a misleading "nothing in clipboard".
         const toolHint = await getLinuxClipboardToolHint();
+        // Don't name the shortcut here: this handler is only ever invoked BY
+        // that shortcut, so "Use <shortcut> to paste images" would tell the
+        // user to press the key they just pressed.
         const message = toolHint
           ? toolHint
-          : env.isSSH() ? "No image found in clipboard. You're SSH'd; try scp?" : `No image found in clipboard. Use ${shortcutDisplay} to paste images.`;
+          : env.isSSH() ? "No image found in clipboard. You're SSH'd; try scp?" : "No image found in clipboard.";
         addNotification({
           key: 'no-image-in-clipboard',
           text: message,
