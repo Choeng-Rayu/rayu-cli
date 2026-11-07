@@ -305,3 +305,69 @@ test('formatAgentLine: a global selection annotates every agent, a per-agent one
     '[model: nvidia/per-agent-model · set by the user via /subagent_models — you may follow it or pass your own `model` to override]',
   )
 })
+
+test('resolveSubagentExecution: rayu-hosted preferred over a third-party active provider', async () => {
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg._resetRayuConfigCache()
+  // Active provider is a third-party; rayu-hosted is also configured but NOT active.
+  cfg.upsertProvider(
+    {
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'nv-key',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'meta/llama-3.3-70b-instruct',
+      smallFastModel: 'nvidia/llama-3.1-nemotron-nano-8b-v1',
+    },
+    true, // nvidia is the active provider
+  )
+  cfg.upsertProvider(
+    {
+      id: 'rayu',
+      kind: 'rayu-hosted',
+      apiKey: 'rayu-token',
+      defaultModel: 'claude-sonnet-4-6',
+      smallFastModel: 'claude-haiku-4-5-20251001',
+    },
+    false, // rayu-hosted is configured but not the active session provider
+  )
+  const { resolveSubagentExecution } = await import('../src/utils/model/agent.ts')
+  // Should prefer rayu-hosted even though nvidia is active.
+  expect(resolveSubagentExecution()).toEqual({
+    providerId: 'rayu',
+    model: 'claude-haiku-4-5-20251001',
+  })
+})
+
+test('resolveSubagentExecution: saved /subagent_models selection beats rayu-hosted preference', async () => {
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg._resetRayuConfigCache()
+  cfg.upsertProvider(
+    {
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'nv-key',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'meta/llama-3.3-70b-instruct',
+      smallFastModel: 'nvidia/llama-3.1-nemotron-nano-8b-v1',
+    },
+    true,
+  )
+  cfg.upsertProvider(
+    {
+      id: 'rayu',
+      kind: 'rayu-hosted',
+      apiKey: 'rayu-token',
+      defaultModel: 'claude-sonnet-4-6',
+      smallFastModel: 'claude-haiku-4-5-20251001',
+    },
+    false,
+  )
+  // An explicit /subagent_models selection must still win over rayu-hosted.
+  cfg.setSubagentSelection('bedrock', 'openai.gpt-oss-120b-1:0')
+  const { resolveSubagentExecution } = await import('../src/utils/model/agent.ts')
+  expect(resolveSubagentExecution()).toEqual({
+    providerId: 'bedrock',
+    model: 'openai.gpt-oss-120b-1:0',
+  })
+})

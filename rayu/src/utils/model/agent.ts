@@ -9,7 +9,7 @@ import {
   parseUserSpecifiedModel,
   getSmallFastModel,
 } from './model.js'
-import { getAPIProvider, isOpenAICompatibleActive, isRayuNonAnthropicActive } from './providers.js'
+import { getAPIProvider, isOpenAICompatibleActive, isRayuHostedActive, isRayuNonAnthropicActive } from './providers.js'
 
 
 function resolveOpenAICompatibleAgentModel(
@@ -55,11 +55,28 @@ export function resolveSubagentExecution(agentType?: string): {
     getSubagentSelection,
     getActiveProvider,
     getValidDefaultModel,
+    loadRayuConfig,
   } = require('../rayuConfig.js') as typeof import('../rayuConfig.js')
   /* eslint-enable @typescript-eslint/no-require-imports */
 
   const sel = getSubagentSelection(agentType)
   if (sel) return { providerId: sel.providerId, model: sel.model }
+
+  // Prefer rayu-hosted when it is configured, even when the main session is on
+  // a third-party provider. The rayu gateway is the managed path so subagents
+  // default to it. The id 'rayu' (RAYU_API_PROVIDER_ID) is inlined here to
+  // avoid a circular dependency — kept in sync with rayuConfig.ts.
+  const allProviders = loadRayuConfig().providers
+  const rayuHosted = allProviders.find(
+    (p) => p.kind === 'rayu-hosted' || p.id === 'rayu',
+  )
+  if (rayuHosted) {
+    const model =
+      rayuHosted.smallFastModel ||
+      getValidDefaultModel(rayuHosted) ||
+      rayuHosted.defaultModel
+    if (model) return { providerId: rayuHosted.id, model }
+  }
 
   const active = getActiveProvider()
   if (!active) return undefined
@@ -166,6 +183,40 @@ export function getAgentModel(
       return sub.providerId !== activeId
         ? encodeModelWithProvider(sub.providerId, sub.model)
         : sub.model
+    }
+  }
+
+  // When an agent has NO model pin at all (undefined) and the main session is
+  // NOT already on rayu-hosted, prefer rayu-hosted if it is configured — using
+  // its default (not fast) model so capability matches the user's expectation.
+  // agentModel==='haiku' is handled above; agentModel==='inherit' or any alias
+  // is an explicit choice and falls through. Only undefined (no pin at all) triggers
+  // this. If rayu-hosted IS the active provider, parentModel already routes there.
+  if (
+    !process.env.CLAUDE_CODE_SUBAGENT_MODEL &&
+    !toolSpecifiedModel &&
+    agentModel === undefined &&
+    !isRayuHostedActive()
+  ) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const {
+      loadRayuConfig,
+      getValidDefaultModel,
+      getActiveProvider,
+      encodeModelWithProvider,
+    } = require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    const rayuHosted = loadRayuConfig().providers.find(
+      (p) => p.kind === 'rayu-hosted' || p.id === 'rayu',
+    )
+    if (rayuHosted) {
+      const model = getValidDefaultModel(rayuHosted) || rayuHosted.defaultModel
+      if (model) {
+        const activeId = getActiveProvider()?.id
+        return rayuHosted.id !== activeId
+          ? encodeModelWithProvider(rayuHosted.id, model)
+          : model
+      }
     }
   }
 
