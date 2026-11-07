@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
@@ -293,11 +293,46 @@ async function executeRayu({ apiKey, maxTurns, mode, model, prompt, rayuBinary }
   env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1'
   env.RAYU_API_KEY = apiKey
 
-  const { stdout } = await run(rayuBinary, args, {
-    env,
-    maxBuffer: 10 * 1024 * 1024,
+  return runRayu(rayuBinary, args, env)
+}
+
+/**
+ * Run the CLI with stdin closed the way a shell does.
+ *
+ * execFile leaves stdin as an open pipe nothing writes to, and the CLI treats
+ * any non-TTY stdin as piped input: it waits 3s for data and then warns. A pipe
+ * that is closed immediately gives it EOF instead, so it neither stalls nor
+ * warns. (stdio: 'ignore' is not a substitute — an ignored stdin never emits
+ * 'end', so the wait still happens.)
+ */
+function runRayu(command, args, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: process.cwd(),
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => {
+      stdout += chunk
+    })
+    child.stderr.on('data', chunk => {
+      stderr += chunk
+    })
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) {
+        resolve(stdout.trim() || 'Rayu completed without a textual response.')
+        return
+      }
+      const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join('\n')
+      reject(new Error(`${command} failed${detail ? `: ${detail.slice(0, 2_000)}` : ''}`))
+    })
+    child.stdin.end()
   })
-  return stdout.trim() || 'Rayu completed without a textual response.'
 }
 
 function scrubInstallerEnvironment(source) {
@@ -477,10 +512,9 @@ async function run(command, args, options = {}) {
       cwd: process.cwd(),
       encoding: 'utf8',
       maxBuffer: options.maxBuffer ?? 2 * 1024 * 1024,
-      // Keep stdin closed. execFile leaves it as an open pipe that nothing
-      // writes to, and the CLI waits 3s for piped input before giving up —
-      // stalling every call and printing a warning that then hides the real
-      // failure when the process exits non-zero.
+      // These are git and npm calls: nothing to read from stdin, and an
+      // inherited runner stdin should not reach them. The CLI itself is run by
+      // runRayu below, which needs a closed pipe rather than 'ignore'.
       stdio: ['ignore', 'pipe', 'pipe'],
       ...options,
     })
