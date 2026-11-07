@@ -234,8 +234,13 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
+          # Create as a draft, upload everything, then publish. Installers and
+          # the CLI auto-updater resolve /releases/latest, which skips drafts,
+          # so nobody can see this release before its binaries and
+          # manifest.json are attached.
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
             gh release create "$VERSION" \
+              --draft \
               --title "Rayu CLI ${VERSION}" \
               --generate-notes
           fi
@@ -243,6 +248,7 @@ jobs:
             dist-native/rayu-cli-* \
             dist-native/manifest.json \
             vsix/*.vsix
+          gh release edit "$VERSION" --draft=false --latest
 
   # Publish the extension to the VS Code Marketplace (and Open VSX if configured).
   # Each store step is skipped when its secret is absent, so this never fails the

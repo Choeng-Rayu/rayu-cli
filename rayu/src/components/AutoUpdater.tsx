@@ -4,7 +4,10 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { useInterval } from 'usehooks-ts';
 import { useUpdateNotification } from '../hooks/useUpdateNotification.js';
 import { Box, Text } from '../ink.js';
-import { type AutoUpdaterResult, getLatestVersion, getMaxVersion, type InstallStatus, installGlobalPackage, shouldSkipVersion } from '../utils/autoUpdater.js';
+import { type AutoUpdaterResult, getLatestVersion, getLatestVersionFromNpm, getMaxVersion, type InstallStatus, installGlobalPackage, shouldSkipVersion } from '../utils/autoUpdater.js';
+import { getLatestVersionFromGitHub } from '../utils/githubReleases.js';
+import { isInstallerManagedInstall, readInstallerManifest } from '../utils/installerManifest.js';
+import { runInstallerUpdate } from '../utils/installerUpdate.js';
 import { getGlobalConfig, isAutoUpdaterDisabled } from '../utils/config.js';
 import { logForDebugging } from '../utils/debug.js';
 import { getCurrentInstallationType } from '../utils/doctorDiagnostic.js';
@@ -55,7 +58,14 @@ export function AutoUpdater({
     }
     const currentVersion = MACRO.VERSION;
     const channel = getInitialSettings()?.autoUpdatesChannel ?? 'latest';
-    let latestVersion = await getLatestVersion(channel);
+    // Installer-managed installs resolve the version from the source the
+    // installer will actually download: GitHub Releases for a native binary,
+    // the npm registry for the tarball build. Neither needs an `npm` binary,
+    // which a native install does not have. Reading npm for a native install
+    // could see a version whose binaries are not uploaded yet, and the
+    // installer would then silently fall back to the tarball build.
+    const installerManifest = isInstallerManagedInstall() ? readInstallerManifest() : null;
+    let latestVersion = installerManifest ? installerManifest.method === 'native' ? await getLatestVersionFromGitHub('stable') : await getLatestVersionFromNpm('latest') : await getLatestVersion(channel);
     const isDisabled = isAutoUpdaterDisabled();
 
     // Check if max version is set (server-side kill switch for auto-updates)
@@ -100,18 +110,27 @@ export function AutoUpdater({
         return;
       }
 
-      // An install from https://rayucode.com/install is swapped by re-running
-      // that installer, which replaces $RAYU_HOME/lib/current. Doing that
-      // underneath a live session would pull the bundle out from under the
-      // running process, and the npm fallback below would instead install a
-      // copy into npm's prefix that this install never executes — reported as a
-      // successful update that changes nothing. The "update available" notice
-      // still fires and points at `rayu update`, which drives the installer.
+      // An install from https://rayucode.com/install is updated by re-running
+      // that installer in the background, pinned to the version found above.
+      // The installer keeps the previous version's files, so this session keeps
+      // running; the new version takes effect on the next launch. npm must not
+      // be used here: it would install a copy this launcher never executes.
       if (installationType === 'installer') {
-        logForDebugging(
-          'AutoUpdater: installer-managed install — deferring to `rayu update`',
-        );
+        const result = await runInstallerUpdate({
+          version: latestVersion,
+          background: true,
+          manifest: installerManifest,
+        });
         onChangeIsUpdating(false);
+        logForDebugging(`AutoUpdater: installer update result: ${result}`);
+        // 'locked': another session or `rayu update` is already on it.
+        // 'unsupported': only an old installer is available offline, and it
+        // would delete the bundle this session runs. The notice covers both.
+        if (result === 'locked' || result === 'unsupported') return;
+        onAutoUpdaterResult({
+          version: latestVersion,
+          status: result === 'success' ? 'success' : 'install_failed'
+        });
         return;
       }
 
@@ -210,7 +229,7 @@ export function AutoUpdater({
       {(autoUpdaterResult?.status === 'install_failed' || autoUpdaterResult?.status === 'no_permissions') && <Text color="error" wrap="truncate">
           ✗ Auto-update failed &middot; Try <Text bold>rayu doctor</Text> or{' '}
           <Text bold>
-            {hasLocalInstall ? `cd ~/.rayu/local && npm update ${MACRO.PACKAGE_URL}` : `npm i -g ${MACRO.PACKAGE_URL}`}
+            {isInstallerManagedInstall() ? 'rayu update' : hasLocalInstall ? `cd ~/.rayu/local && npm update ${MACRO.PACKAGE_URL}` : `npm i -g ${MACRO.PACKAGE_URL}`}
           </Text>
         </Text>}
     </Box>;

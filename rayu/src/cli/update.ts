@@ -1,6 +1,6 @@
 import chalk from 'chalk'
-import { spawnSync } from 'child_process'
 import { isInBundledMode } from 'src/utils/bundledMode.js'
+import { runInstallerUpdate } from 'src/utils/installerUpdate.js'
 import {
   getInstallerCommand,
   getInstallerScriptPath,
@@ -72,10 +72,13 @@ async function updateInstallerManaged(): Promise<boolean> {
 
   writeToStdout('Updating with the installer that manages this install...\n\n')
 
-  // Serialize against the in-session auto-updater the same way the npm path
-  // does: two installers swapping lib/current concurrently can leave the
-  // symlink pointing at a directory the other one is deleting.
-  if (!(await acquireUpdateLock())) {
+  // The runner serializes against the in-session auto-updater (two installers
+  // swapping lib/current concurrently can leave the symlink pointing at a
+  // directory the other one is deleting) and refreshes the local installer
+  // copy from rayucode.com first, falling back to the existing copy offline.
+  const result = await runInstallerUpdate({ background: false, manifest })
+
+  if (result === 'locked') {
     process.stderr.write(
       chalk.yellow('\nAnother Rayu update is already in progress\n'),
     )
@@ -87,34 +90,11 @@ async function updateInstallerManaged(): Promise<boolean> {
     return true
   }
 
-  let status: number | null = null
-  try {
-    const result = IS_WINDOWS
-      ? spawnSync(
-          'powershell',
-          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script],
-          { stdio: 'inherit' },
-        )
-      : spawnSync(script, [], { stdio: 'inherit' })
-    if (result.error) throw result.error
-    status = result.status
-  } catch (error) {
-    await releaseUpdateLock()
-    process.stderr.write(chalk.red('\nFailed to run the installer\n'))
-    process.stderr.write(
-      `${error instanceof Error ? error.message : String(error)}\n\nRun it yourself:\n`,
-    )
+  if (result !== 'success') {
+    process.stderr.write(chalk.red('\nThe installer did not complete\n'))
+    process.stderr.write('Run it yourself:\n')
     process.stderr.write(chalk.bold(`  ${getInstallerCommand()}\n`))
     process.exit(1)
-    return true
-  }
-  await releaseUpdateLock()
-
-  if (status !== 0) {
-    process.stderr.write(
-      chalk.red(`\nThe installer exited with code ${status ?? 'unknown'}\n`),
-    )
-    process.exit(status ?? 1)
     return true
   }
 

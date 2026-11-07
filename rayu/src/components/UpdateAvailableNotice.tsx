@@ -9,7 +9,6 @@ import {
 import {
   type ReleaseChannel,
   getAutoUpdaterDisabledReason,
-  getGlobalConfig,
 } from '../utils/config.js'
 import {
   type InstallationType,
@@ -49,10 +48,11 @@ type NoticeEnvironment = Omit<
 >
 
 function readNoticeEnvironment(): NoticeEnvironment {
+  const disabledReason = getAutoUpdaterDisabledReason()
   return {
-    disabledReason: getAutoUpdaterDisabledReason(),
+    disabledReason,
     isNonInteractive: getIsNonInteractiveSession(),
-    autoUpdatesEnabled: getGlobalConfig().autoUpdates === true,
+    autoUpdatesEnabled: disabledReason === null,
   }
 }
 

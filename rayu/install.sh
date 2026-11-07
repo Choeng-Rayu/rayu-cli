@@ -1,5 +1,10 @@
 #!/bin/sh
 # Rayu CLI — universal installer for Linux and macOS.
+# rayu-installer-api: 2
+#
+# The line above tells the CLI's background auto-updater that this script is
+# safe to run underneath a live session: it keeps the previous version's files
+# (see prune_old_versions) so the running process never loses its bundle.
 #
 #   curl -fsSL https://rayucode.com/install | bash
 #
@@ -55,6 +60,10 @@ NODE_VERSION="${RAYU_NODE_VERSION:-v22.20.0}"
 NODE_DIST="${RAYU_NODE_DIST:-https://nodejs.org/dist}"
 NODE_DIST_MUSL="${RAYU_NODE_DIST_MUSL:-https://unofficial-builds.nodejs.org/download/release}"
 MIN_NODE_MAJOR=18
+
+# Bundled ripgrep provisioned alongside the JS tarball build.
+RIPGREP_VERSION="${RAYU_RIPGREP_VERSION:-14.1.1}"
+RIPGREP_DIST="${RAYU_RIPGREP_DIST:-https://github.com/BurntSushi/ripgrep/releases/download}"
 
 PROFILE_MARKER_BEGIN='# >>> rayu cli >>>'
 PROFILE_MARKER_END='# <<< rayu cli <<<'
@@ -171,7 +180,7 @@ content_length() {
 
 head_content_length() {
   if [ "$DL" = curl ]; then
-    curl -fsIL --connect-timeout 20 "$1" 2>/dev/null
+    curl -fsIL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 "$1" 2>/dev/null
   else
     wget -q --spider -S "$1" 2>&1
   fi | tr -d '\r' | tr 'A-Z' 'a-z' \
@@ -181,7 +190,7 @@ head_content_length() {
 # Parse `content-range: bytes 0-0/5006808` from a 1-byte ranged GET.
 range_total() {
   if [ "$DL" = curl ]; then
-    curl -fsSL --connect-timeout 20 -o /dev/null -D - -r 0-0 "$1" 2>/dev/null
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o /dev/null -D - -r 0-0 "$1" 2>/dev/null
   else
     wget -q -S --header='Range: bytes=0-0' -O /dev/null "$1" 2>&1
   fi | tr -d '\r' | tr 'A-Z' 'a-z' \
@@ -251,15 +260,20 @@ if sleep 0.2 2>/dev/null; then POLL_INTERVAL=0.2; fi
 fetch_file_progress() { # URL DEST LABEL
   _purl="$1"; _pdest="$2"; _plabel="$3"
 
+  _ptotal=$(content_length "$_purl" 2>/dev/null || printf '0')
+  case "$_ptotal" in ''|*[!0-9]*) _ptotal=0 ;; esac
+
   # No terminal (CI, piped output), or --quiet: one plain line, no animation.
   if [ "$IS_TTY" -eq 0 ] || [ "$QUIET" -eq 1 ]; then
     step "downloading $_plabel"
-    fetch_file "$_purl" "$_pdest"
+    fetch_file "$_purl" "$_pdest" || return $?
+    _pfinal=$(wc -c <"$_pdest" 2>/dev/null | tr -d ' \t\r\n' || printf '0')
+    case "$_pfinal" in ''|*[!0-9]*) _pfinal=0 ;; esac
+    if [ "$_pfinal" -eq 0 ] || { [ "$_ptotal" -gt 0 ] && [ "$_pfinal" -ne "$_ptotal" ]; }; then
+      return 1
+    fi
     return 0
   fi
-
-  _ptotal=$(content_length "$_purl" 2>/dev/null || printf '0')
-  case "$_ptotal" in ''|*[!0-9]*) _ptotal=0 ;; esac
 
   if [ "$_ptotal" -gt 0 ]; then
     step "downloading $_plabel $C_DIM($(human_bytes "$_ptotal"))$C_RESET"
@@ -273,7 +287,7 @@ fetch_file_progress() { # URL DEST LABEL
   _ppid=$!
 
   while kill -0 "$_ppid" 2>/dev/null; do
-    _pdone=$(wc -c <"$_pdest" 2>/dev/null || printf '0')
+    _pdone=$(wc -c <"$_pdest" 2>/dev/null | tr -d ' \t\r\n' || printf '0')
     case "$_pdone" in ''|*[!0-9]*) _pdone=0 ;; esac
     draw_bar "$_plabel" "$_pdone" "$_ptotal"
     sleep "$POLL_INTERVAL"
@@ -286,11 +300,17 @@ fetch_file_progress() { # URL DEST LABEL
 
   if [ "$_pstatus" -ne 0 ]; then
     printf '%s' "$C_CLEAR_LINE"
+    BAR_START=''
     return "$_pstatus"
   fi
 
-  _pfinal=$(wc -c <"$_pdest" 2>/dev/null || printf '0')
+  _pfinal=$(wc -c <"$_pdest" 2>/dev/null | tr -d ' \t\r\n' || printf '0')
   case "$_pfinal" in ''|*[!0-9]*) _pfinal=0 ;; esac
+  if [ "$_pfinal" -eq 0 ] || { [ "$_ptotal" -gt 0 ] && [ "$_pfinal" -ne "$_ptotal" ]; }; then
+    printf '%s' "$C_CLEAR_LINE"
+    BAR_START=''
+    return 1
+  fi
   draw_bar "$_plabel" "$_pfinal" "${_ptotal:-0}"
   printf '%s' "$C_CLEAR_LINE"
   BAR_START=''
@@ -382,27 +402,28 @@ fi
 # fetch_stdout URL -> body on stdout, non-zero exit on HTTP error
 fetch_stdout() {
   if [ "$DL" = curl ]; then
-    curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 20 "$1"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 "$1"
   else
-    wget -qO- --tries=3 --timeout=20 "$1"
+    wget -qO- --tries=5 --timeout=20 "$1"
   fi
 }
 
 # fetch_file URL DEST
 fetch_file() {
   if [ "$DL" = curl ]; then
-    curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 20 -o "$2" "$1"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$2" "$1" \
+      || curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$2" "$1"
   else
-    wget -qO "$2" --tries=3 --timeout=20 "$1"
+    wget -qO "$2" --tries=5 --timeout=20 "$1"
   fi
 }
 
 # url_exists URL
 url_exists() {
   if [ "$DL" = curl ]; then
-    curl -fsIL --connect-timeout 20 -o /dev/null "$1" 2>/dev/null
+    curl -fsIL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o /dev/null "$1" 2>/dev/null
   else
-    wget -q --spider --timeout=20 "$1" 2>/dev/null
+    wget -q --spider --tries=5 --timeout=20 "$1" 2>/dev/null
   fi
 }
 
@@ -802,6 +823,94 @@ write_module_marker() {
     >"$1/package.json"
 }
 
+# Release archive name on BurntSushi/ripgrep for this platform, or empty when
+# no official prebuilt tarball exists.
+ripgrep_tarball_name() {
+  case "$OS-$ARCH-$LIBC" in
+    darwin-arm64-*)     printf 'ripgrep-%s-aarch64-apple-darwin.tar.gz' "$RIPGREP_VERSION" ;;
+    darwin-x64-*)       printf 'ripgrep-%s-x86_64-apple-darwin.tar.gz' "$RIPGREP_VERSION" ;;
+    linux-x64-*)        printf 'ripgrep-%s-x86_64-unknown-linux-musl.tar.gz' "$RIPGREP_VERSION" ;;
+    linux-arm64-glibc)  printf 'ripgrep-%s-aarch64-unknown-linux-gnu.tar.gz' "$RIPGREP_VERSION" ;;
+    linux-armv7l-glibc) printf 'ripgrep-%s-armv7-unknown-linux-gnueabihf.tar.gz' "$RIPGREP_VERSION" ;;
+    linux-armv7l-musl)  printf 'ripgrep-%s-armv7-unknown-linux-musleabihf.tar.gz' "$RIPGREP_VERSION" ;;
+    *)                  printf '' ;;
+  esac
+}
+
+# Directory name under vendor/ripgrep/ expected by getRipgrepConfig() in
+# src/utils/ripgrep.ts: `${process.arch}-${process.platform}` (e.g. arm64-darwin).
+ripgrep_vendor_platform() {
+  case "$ARCH" in
+    armv7l) printf 'arm-%s' "$OS" ;;
+    *)      printf '%s-%s' "$ARCH" "$OS" ;;
+  esac
+}
+
+# Provision vendored ripgrep at $1/vendor/ripgrep/<arch>-<os>/rg so Glob/Grep
+# work out of the box when the npm tarball does not ship vendor/ripgrep.
+provision_ripgrep() {
+  _stage="$1"
+  _rg_plat=$(ripgrep_vendor_platform)
+  _rg_dir="$_stage/vendor/ripgrep/$_rg_plat"
+  _rg_bin="$_rg_dir/rg"
+
+  # If the unpacked package already shipped a working binary for this platform,
+  # keep it and just ensure permissions/quarantine are clean.
+  if [ -f "$_rg_bin" ]; then
+    chmod 755 "$_rg_bin"
+    if [ "$OS" = darwin ] && have xattr; then
+      xattr -d com.apple.quarantine "$_rg_bin" 2>/dev/null || true
+    fi
+    if "$_rg_bin" --version >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  _rg_archive=$(ripgrep_tarball_name)
+  if [ -z "$_rg_archive" ]; then
+    if have rg; then
+      step "no prebuilt ripgrep for $OS-$ARCH ($LIBC); using system rg ($(command -v rg))"
+    else
+      step "no prebuilt ripgrep for $OS-$ARCH ($LIBC); skipping ripgrep provisioning"
+    fi
+    return 0
+  fi
+
+  _rg_url="$RIPGREP_DIST/$RIPGREP_VERSION/$_rg_archive"
+  if ! fetch_file_progress "$_rg_url" "$TMP_DIR/$_rg_archive" "ripgrep $RIPGREP_VERSION ($_rg_plat)"; then
+    if have rg; then
+      step "could not download ripgrep; falling back to system rg ($(command -v rg))"
+      return 0
+    fi
+    die "failed to download ripgrep from $_rg_url"
+  fi
+
+  _rg_expected=''
+  if fetch_stdout "$_rg_url.sha256" >"$TMP_DIR/ripgrep.sha256" 2>/dev/null; then
+    _rg_expected=$(awk '{ print $1; exit }' "$TMP_DIR/ripgrep.sha256" 2>/dev/null | tr -d '\r\n')
+  fi
+  step "verifying the ripgrep checksum"
+  verify_checksum "$TMP_DIR/$_rg_archive" "$_rg_expected" sha256 "$_rg_archive"
+
+  rm -rf "$TMP_DIR/rg-unpack"
+  mkdir -p "$TMP_DIR/rg-unpack"
+  tar -xzf "$TMP_DIR/$_rg_archive" -C "$TMP_DIR/rg-unpack" --strip-components=1 \
+    || die "failed to extract $_rg_archive"
+
+  [ -f "$TMP_DIR/rg-unpack/rg" ] || die "extracted $_rg_archive is missing the 'rg' binary"
+
+  mkdir -p "$_rg_dir"
+  cp "$TMP_DIR/rg-unpack/rg" "$_rg_bin"
+  chmod 755 "$_rg_bin"
+  if [ "$OS" = darwin ] && have xattr; then
+    xattr -d com.apple.quarantine "$_rg_bin" 2>/dev/null || true
+  fi
+
+  "$_rg_bin" --version >/dev/null 2>&1 \
+    || die "vendored ripgrep at $_rg_bin failed to execute"
+  ok "ripgrep $RIPGREP_VERSION ready $C_DIM(vendor/ripgrep/$_rg_plat/rg)$C_RESET"
+}
+
 install_from_tarball() {
   resolve_npm_dist
   ensure_node
@@ -828,18 +937,23 @@ install_from_tarball() {
   mkdir -p "$_target.tmp"
   cp "$_entry" "$_target.tmp/rayu.js"
   write_module_marker "$_target.tmp"
+  if [ -d "$TMP_DIR/pkg/package/vendor" ]; then
+    cp -R "$TMP_DIR/pkg/package/vendor" "$_target.tmp/vendor"
+  fi
   for _extra in README.md; do
     [ -f "$TMP_DIR/pkg/package/$_extra" ] && cp "$TMP_DIR/pkg/package/$_extra" "$_target.tmp/" || true
   done
+  provision_ripgrep "$_target.tmp"
   mv "$_target.tmp" "$_target"
 
   # lib/current is the only path the launcher knows, so version switching is a
   # single atomic-enough symlink swap (`ln -sfn` replaces the link itself rather
   # than writing through it, on both GNU coreutils and BSD/macOS).
+  _previous=$(current_lib_target)
   ln -sfn "$_target" "$LIB_DIR/current"
 
   write_launcher
-  prune_old_versions "$_target"
+  prune_old_versions "$_target" "$_previous"
   INSTALL_METHOD=tarball
 }
 
@@ -898,14 +1012,28 @@ LAUNCHER
   fi
 }
 
-# Keep the current version only; old bundles are ~24 MB each.
-prune_old_versions() {
-  _keep="$1"
+# Keep the new version AND the one that was current before the swap. A running
+# session (the auto-updater runs this script underneath one) still executes the
+# previous bundle and its vendored ripgrep, so deleting it would break that
+# session. Anything older than those two is removed; bundles are ~24 MB each.
+prune_old_versions() { # KEEP [PREVIOUS]
+  _keep="$1"; _prev="${2:-}"
   for _d in "$LIB_DIR"/rayu-*; do
     [ -d "$_d" ] || continue
     [ "$_d" = "$_keep" ] && continue
+    [ -n "$_prev" ] && [ "$_d" = "$_prev" ] && continue
     rm -rf "$_d"
   done
+}
+
+# Directory lib/current points at right now, or empty.
+current_lib_target() {
+  [ -L "$LIB_DIR/current" ] || return 0
+  _t=$(readlink "$LIB_DIR/current" 2>/dev/null || true)
+  case "$_t" in
+    /*) printf '%s' "$_t" ;;
+    ?*) printf '%s' "$LIB_DIR/$_t" ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -953,7 +1081,11 @@ setup_path() {
     [ -f "$_fc" ] || : >"$_fc"
     _rc=0
     add_to_profile "$_fc" "$_fish_line" || _rc=$?
-    [ "$_rc" -eq 0 ] && PROFILES_UPDATED="$PROFILES_UPDATED $_fc"
+    if [ "$_rc" -eq 0 ]; then
+      PROFILES_UPDATED="$PROFILES_UPDATED $_fc"
+    elif [ "$_rc" -eq 2 ]; then
+      PROFILES_MANAGED="$PROFILES_MANAGED $_fc"
+    fi
   fi
 }
 

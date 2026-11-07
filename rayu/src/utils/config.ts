@@ -1752,14 +1752,17 @@ export function getAutoUpdaterDisabledReason(): AutoUpdaterDisabledReason | null
   if (essentialTrafficEnvVar) {
     return { type: 'env', envVar: essentialTrafficEnvVar }
   }
-  // Rayu: auto-updates are OFF by default (opt in with `autoUpdates: true` in
-  // config). A fork's release feed may not be configured, so silent update
-  // checks ("Failed to fetch versions") should not run unless explicitly asked.
+  // Auto-updates are ON by default. Only an explicit `autoUpdates: false` turns
+  // them off — except when the native installer wrote that value itself to keep
+  // the legacy npm updater away from its symlinks (autoUpdatesProtectedForNative),
+  // which is protection, not a user preference.
   const config = getGlobalConfig()
   if (
-    config.autoUpdates !== true &&
-    (config.installMethod !== 'native' ||
-      config.autoUpdatesProtectedForNative !== true)
+    config.autoUpdates === false &&
+    !(
+      config.installMethod === 'native' &&
+      config.autoUpdatesProtectedForNative === true
+    )
   ) {
     return { type: 'config' }
   }
