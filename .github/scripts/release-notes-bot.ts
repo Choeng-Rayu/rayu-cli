@@ -404,7 +404,14 @@ function changedPaths(): string[] {
 
 function changelogEntry(text: string, version: string): string | null {
   const sections = text.split(/^## /m)
-  const entry = sections.find(s => s.trimStart().startsWith(version))
+  // The version must end at the heading, not merely start it: a plain
+  // startsWith would let a lookup for "2.5.1" select the "2.5.10" section.
+  const entry = sections.find(s => {
+    const heading = s.trimStart()
+    if (!heading.startsWith(version)) return false
+    const next = heading.charAt(version.length)
+    return next === '' || /\s/.test(next)
+  })
   return entry ?? null
 }
 

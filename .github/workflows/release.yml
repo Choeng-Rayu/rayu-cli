@@ -25,6 +25,12 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
+      tag:
+        description: >-
+          Existing tag to attach a GitHub Release to (e.g. v2.5.0). Leave empty to
+          only build the artifacts. This workflow never creates a tag.
+        type: string
+        required: false
       publish_stores:
         description: 'Also publish the VSIXs to the VS Code Marketplace / Open VSX'
         type: boolean
@@ -49,26 +55,46 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      create_release: ${{ steps.version.outputs.create_release }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Check the tag and package.json agree
         id: version
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./rayu/package.json').version")"
+          # Only an existing tag creates a GitHub Release. A tag is never
+          # created here — `gh release create` would do that implicitly, which
+          # is why a manual run without a tag only builds artifacts.
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
-              echo "::error::Tag ${GITHUB_REF_NAME} does not match rayu/package.json (v${VERSION}). Bump the version and merge it before tagging."
+            TAG="${GITHUB_REF_NAME}"
+            CREATE_RELEASE=true
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+            CREATE_RELEASE=true
+            if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+              echo "::error::Tag ${TAG} does not exist on origin. Create it first: git tag -a ${TAG} -m 'release: ${TAG}' && git push origin ${TAG}"
               exit 1
             fi
-            TAG="${GITHUB_REF_NAME}"
           else
-            echo "::warning::Manual run without a tag — building artifacts for v${VERSION} from ${GITHUB_REF_NAME}."
+            echo "::notice::No tag given — building artifacts for v${VERSION} without a GitHub Release."
             TAG="v${VERSION}"
+            CREATE_RELEASE=false
+          fi
+          if [ "$CREATE_RELEASE" = "true" ] && [ "$TAG" != "v${VERSION}" ]; then
+            echo "::error::Tag ${TAG} does not match rayu/package.json (v${VERSION}). Bump the version and merge it before tagging."
+            exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Releasing ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "create_release=${CREATE_RELEASE}" >> "$GITHUB_OUTPUT"
+          if [ "$CREATE_RELEASE" = "true" ]; then
+            echo "Releasing ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Building artifacts for v${VERSION} (no release)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # Standalone native binaries (dist-native/ + manifest.json) — what install.sh
   # and the built-in updater download.
@@ -140,9 +166,12 @@ jobs:
           if-no-files-found: error
 
   # Create the GitHub Release and attach native binaries + manifest + VSIXs.
+  # Skipped when there is no tag to attach to; the artifacts are still uploaded
+  # by the build jobs above.
   release:
     name: GitHub Release
     needs: [guard, native, vsix-linux, vsix-macos]
+    if: ${{ needs.guard.outputs.create_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -164,11 +193,12 @@ jobs:
           # Create as a draft, upload everything, then publish. Installers and
           # the CLI auto-updater resolve /releases/latest, which skips drafts,
           # so nobody can see this release before its binaries and
-          # manifest.json are attached.
+          # manifest.json are attached. The tag already exists (the guard
+          # verified it), so no tag is created here.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --draft \
-              --target "$GITHUB_SHA" \
+              --verify-tag \
               --title "Rayu CLI $TAG" \
               --generate-notes
           fi
