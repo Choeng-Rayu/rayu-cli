@@ -1,0 +1,130 @@
+name: Release notes
+
+# Watches the version in rayu/package.json and, when it is ahead of the newest
+# entry in rayu/CHANGELOG.md, has Rayu write the changelog entry and update
+# documentations/*.md, then opens a pull request for review.
+#
+# The version itself is bumped by a human, and publishing is manual:
+#   cd rayu && bun run build && npm publish --access public
+# This workflow never writes rayu/package.json, never tags, and never publishes.
+#
+# Trigger: a push to dev that changes rayu/package.json, or a manual run.
+# The bot commits to bot/release-notes-v<version> and opens a PR against dev.
+# Merge that PR, then merge dev -> main so the runtime changelog fetch
+# (raw.githubusercontent.com/.../main/rayu/CHANGELOG.md) serves the new entry.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - rayu/package.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-notes-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: 1.3.14
+
+jobs:
+  notes:
+    name: Generate changelog + docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Keep the checkout credential out of .git/config: the agent runs with
+          # fullManage permissions, so it must not be able to push on its own.
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Detect a pending version
+        id: detect
+        run: bun run .github/scripts/release-notes-bot.ts detect
+
+      - name: Write the changelog and docs with Rayu
+        if: steps.detect.outputs.pending == 'true'
+        env:
+          RAYU_API_KEY: ${{ secrets.RAYU_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RAYU_API_KEY}" ]; then
+            echo "::error::RAYU_API_KEY is not set. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          npm install --global --ignore-scripts --no-audit --no-fund @rayu-dev/rayu-cli@latest
+          # The agent edits local files only; keep GitHub credentials out of its
+          # environment so it cannot push or call the API on its own.
+          env -u GITHUB_TOKEN -u GH_TOKEN \
+            rayu --print \
+                 --no-session-persistence \
+                 --max-turns 60 \
+                 --permission-mode fullManage \
+                 "$(cat /tmp/release-notes-prompt.md)"
+
+      - name: Validate the generated notes
+        if: steps.detect.outputs.pending == 'true'
+        env:
+          BASE_SHA: ${{ steps.detect.outputs.base }}
+        run: bun run .github/scripts/release-notes-bot.ts validate "$BASE_SHA"
+
+      - name: Open or update the release-notes pull request
+        if: steps.detect.outputs.pending == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.detect.outputs.version }}
+          BRANCH: ${{ steps.detect.outputs.branch }}
+          BASE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || steps.detect.outputs.base_branch }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "::notice::Rayu made no changes for v${VERSION}; nothing to open"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -m "docs: release notes for ${VERSION} [skip ci]"
+          # The branch is owned by this workflow; re-runs for the same version
+          # replace it so the PR always reflects the newest commits. The token
+          # is supplied through an ephemeral askpass so it never enters the
+          # remote URL or .git/config.
+          ASKPASS="${RUNNER_TEMP:-/tmp}/release-notes-askpass.sh"
+          cat > "$ASKPASS" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf "%s\n" "x-access-token" ;;
+            *) printf "%s\n" "$RAYU_GITHUB_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "$ASKPASS"
+          GIT_ASKPASS="$ASKPASS" RAYU_GITHUB_TOKEN="$GH_TOKEN" \
+            git push --force origin "HEAD:refs/heads/${BRANCH}"
+
+          TITLE="docs: release notes for v${VERSION}"
+          if gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
+            gh pr edit "$BRANCH" --title "$TITLE" --body-file /tmp/release-notes-pr-body.md
+            echo "Updated the existing pull request for $BRANCH"
+          else
+            gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body-file /tmp/release-notes-pr-body.md \
+              || {
+                echo "::warning::Could not open the pull request. Enable 'Allow GitHub Actions to create and approve pull requests' in the repository settings, or open it manually:"
+                echo "https://github.com/${GITHUB_REPOSITORY}/compare/${BASE_BRANCH}...${BRANCH}?expand=1"
+                exit 0
+              }
+          fi

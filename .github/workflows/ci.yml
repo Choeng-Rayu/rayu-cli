@@ -1,8 +1,8 @@
 name: CI
 
 # Finalize checks only — no release. Pushes to dev and PRs targeting main/dev
-# run the shared finalize gates. Releases happen exclusively on main via
-# release.yml.
+# run the shared finalize gates. Releases are manual: pushing a v* tag runs
+# release.yml, and npm publishing is done by hand.
 on:
   push:
     branches: [dev]
