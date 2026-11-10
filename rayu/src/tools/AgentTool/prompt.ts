@@ -62,14 +62,16 @@ function getLockedSelection(
  *
  * The trailing annotation tells the main agent which model the subagent runs
  * on and whether the user assigned one via /subagent_models (which the Agent
- * tool's per-call `model` param may still override).
+ * tool's per-call `model` param may still override). The auto line names only
+ * tier words, never a model id: the same text on every provider keeps the tool
+ * description cache-stable and gives the main agent nothing to hallucinate from.
  */
 export function formatAgentLine(agent: AgentDefinition): string {
   const toolsDescription = getToolsDescription(agent)
   const selection = getLockedSelection(agent.agentType)
   const modelAnnotation = selection
     ? `[model: ${selection.providerId}/${selection.model} · set by the user via /subagent_models — you may follow it or pass your own \`model\` to override]`
-    : `[model: ${getAgentModelDisplay(agent.model)} · auto — you may pass a smaller \`model\` for simple tasks]`
+    : `[model: ${getAgentModelDisplay(agent.model)} · auto — pass \`model: "fast"\` for simple tasks, \`"capable"\` for hard ones]`
   return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription}) ${modelAnnotation}`
 }
 

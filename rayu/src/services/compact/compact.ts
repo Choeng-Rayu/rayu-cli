@@ -505,7 +505,12 @@ export async function compactConversation(
       throw new Error(
         `Failed to generate conversation summary - response did not contain valid text content`,
       )
-    } else if (startsWithApiErrorPrefix(summary)) {
+    } else if (
+      // Not every API error text starts with "API Error" (a 413 reads "Request
+      // too large: …"). Without the flag check that text was saved as the summary.
+      summaryResponse.isApiErrorMessage ||
+      startsWithApiErrorPrefix(summary)
+    ) {
       logEvent('tengu_compact_failed', {
         reason:
           'api_error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -912,7 +917,10 @@ export async function partialCompactConversation(
       throw new Error(
         'Failed to generate conversation summary - response did not contain valid text content',
       )
-    } else if (startsWithApiErrorPrefix(summary)) {
+    } else if (
+      summaryResponse.isApiErrorMessage ||
+      startsWithApiErrorPrefix(summary)
+    ) {
       logEvent('tengu_partial_compact_failed', {
         reason:
           'api_error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -1301,14 +1309,17 @@ async function streamCompactSummary({
         : [FileReadTool]
 
       const streamingGen = queryModelWithStreaming({
-        messages: normalizeMessagesForAPI(
-          stripImagesFromMessages(
+        // Strip AFTER normalizing: an @-mentioned/re-injected image is an
+        // attachment message until normalizeMessagesForAPI expands it into an
+        // image block, so stripping first let those images through untouched.
+        messages: stripImagesFromMessages(
+          normalizeMessagesForAPI(
             stripReinjectedAttachments([
               ...getMessagesAfterCompactBoundary(messages),
               summaryRequest,
             ]),
+            context.options.tools,
           ),
-          context.options.tools,
         ),
         systemPrompt: asSystemPrompt([
           'You are a helpful AI assistant tasked with summarizing conversations.',

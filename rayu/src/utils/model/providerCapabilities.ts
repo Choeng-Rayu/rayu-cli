@@ -158,6 +158,28 @@ export function isFirstPartyRequest(model?: string): boolean {
 }
 
 /**
+ * True when the request BODY reaches api.anthropic.com directly, so the 32MB
+ * first-party size cap applies. Differs from isFirstPartyRequest for a BYO
+ * Anthropic API key while signed in to Rayu: that request is re-pointed at the
+ * gateway's /v1/proxy (gatewayRouting.ts), which enforces the 8 MiB cap even
+ * though the request is otherwise first-party shaped.
+ */
+export function hasFirstPartyBodyCap(model?: string): boolean {
+  const { firstParty, provider } = resolveRequestShape(model)
+  if (!firstParty) return false
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { shouldRouteViaGateway } =
+      require('../../services/api/rayuHosted/gatewayRouting.js') as typeof import('../../services/api/rayuHosted/gatewayRouting.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return !shouldRouteViaGateway(provider)
+  } catch {
+    // Unknown routing: assume the smaller gateway cap so we trim rather than 413.
+    return false
+  }
+}
+
+/**
  * False only when we POSITIVELY know the model that will serve this request
  * cannot accept image content — either the resolved provider declared it (the
  * `supportsImage` toggle in /connect → Custom, or a per-model

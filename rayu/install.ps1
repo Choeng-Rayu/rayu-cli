@@ -1,3 +1,6 @@
+# rayu-installer-api: 2
+# (Tells the CLI's background auto-updater this script keeps the previous
+# version's files, so it is safe to run underneath a live session.)
 <#
 .SYNOPSIS
   Rayu CLI installer for Windows.
@@ -645,6 +648,16 @@ function Install-FromTarball {
     Die "the published package is missing dist/rayu.js - please report this at https://github.com/$GithubRepo/issues"
   }
 
+  # The bundle the launcher runs right now. A live session (the background
+  # auto-updater runs this script underneath one) keeps executing it, so it
+  # must survive the prune below.
+  $previous = ''
+  $launcherPath = Join-Path $BinDir 'rayu.cmd'
+  if (Test-Path $launcherPath) {
+    $m = Select-String -Path $launcherPath -Pattern '^set "RAYU_ENTRY=(.+)\\rayu\.js"$' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($m) { $previous = $m.Matches[0].Groups[1].Value }
+  }
+
   # Stage, then swap, so an interrupted install leaves the previous version
   # working instead of a half-written one.
   $target = Join-Path $LibDir "rayu-$($script:InstalledVersion)"
@@ -659,9 +672,9 @@ function Install-FromTarball {
 
   $script:EntryPath = Join-Path $target 'rayu.js'
   Write-Launcher
-  # Old bundles are ~24 MB each; keep only the one in use.
+  # Old bundles are ~24 MB each; keep the new one and the previous one only.
   Get-ChildItem -Path $LibDir -Directory -Filter 'rayu-*' -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -ne $target } |
+    Where-Object { $_.FullName -ne $target -and ($previous -eq '' -or $_.FullName -ine $previous) } |
     ForEach-Object { Remove-Item -Recurse -Force $_.FullName }
 
   $script:InstallMethod = 'tarball'

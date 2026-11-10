@@ -108,12 +108,45 @@ export const API_MAX_MEDIA_PER_REQUEST = 100
  * summary request strips images (compact.ts), so a byte-triggered compaction
  * cannot itself 413.
  *
- * THE BINDING CONSTANT IS THE GATEWAY, NOT THE 32MB FIRST-PARTY CAP. The known
- * rayu-hosted gateway request-body ceiling is 16MB (GATEWAY_MAX_BODY_BYTES in
- * utils/hostedReferenceImage.ts, mirroring the gateway's DefaultBodyLimit) — a
- * budget ABOVE that would trigger only after the gateway already 413'd. 12MB
- * leaves ~4MB headroom for text context + JSON under the 16MB ceiling while
- * staying far below the 32MB first-party cap. Override with
- * RAYU_MEDIA_COMPACT_BUDGET_BYTES when a deployment's real cap is known.
+ * MUST stay >= REQUEST_MESSAGES_BUDGET_BYTES. The pre-send shedder already trims
+ * a request to that budget while KEEPING the current turn; a lower trigger would
+ * compact (full compaction returns no messagesToKeep, so the pending turn is
+ * summarized away as text) sessions the shedder could have sent intact.
+ *
+ * THE BINDING CONSTANT IS THE GATEWAY, NOT THE 32MB FIRST-PARTY CAP. The
+ * rayu-hosted gateway rejects any chat request body over 8 MiB
+ * (rayu-gateway-rust `MAX_REQUEST_BYTES`, enforced in hosted.rs). The 16MB
+ * GATEWAY_MAX_BODY_BYTES in utils/hostedReferenceImage.ts is the VIDEO route's
+ * ceiling only — a budget derived from it fired only after chat had already
+ * 413'd. 6 MiB leaves ~2 MiB for text context, system prompt, tools and JSON.
+ * Override with RAYU_MEDIA_COMPACT_BUDGET_BYTES when a deployment's cap differs.
  */
-export const MEDIA_COMPACT_BUDGET_BYTES = 12 * 1024 * 1024 // 12 MB (under the 16MB gateway body cap)
+export const MEDIA_COMPACT_BUDGET_BYTES = 8 * 1024 * 1024 // 8 MiB — at the gateway cap, above the shedder budget
+
+/**
+ * The same media budget for a direct first-party Anthropic key (32MB cap).
+ * Without this, provider-aware request shedding would be undermined by
+ * auto-compact still firing at the gateway's 6 MiB.
+ */
+export const MEDIA_COMPACT_BUDGET_BYTES_FIRST_PARTY = 24 * 1024 * 1024 // 24 MiB
+
+/**
+ * Ceiling for the serialized `messages` of ONE request, enforced just before
+ * sending (claude.ts → shedMediaToFitRequestBudget).
+ *
+ * Every turn re-sends the whole post-compact history, and a resumed session
+ * restores all of it — so a one-word "hi" can carry megabytes of old
+ * screenshots. When the history crosses this, the oldest media blocks are
+ * replaced with a text placeholder so the request fits instead of 413ing.
+ * 8 MiB gateway cap minus 1 MiB for system prompt, tool schemas and envelope.
+ * Override with RAYU_REQUEST_BODY_BUDGET_BYTES (e.g. raise it for a direct
+ * first-party key, whose cap is 32MB).
+ */
+export const REQUEST_MESSAGES_BUDGET_BYTES = 7 * 1024 * 1024 // 7 MiB
+
+/**
+ * The same ceiling for a direct first-party Anthropic key, whose documented
+ * request cap is 32MB. Shedding old images at the 7 MiB gateway budget there
+ * would discard context the server would happily have accepted.
+ */
+export const REQUEST_MESSAGES_BUDGET_BYTES_FIRST_PARTY = 24 * 1024 * 1024 // 24 MiB

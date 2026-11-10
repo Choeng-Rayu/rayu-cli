@@ -86,6 +86,7 @@ export function RayuApiKeyInput({
               fetchedModels: models,
               modelLabels: catalog.ok ? catalog.modelLabels : {},
               modelContextWindows: catalog.ok ? catalog.modelContextWindows : {},
+              subagentTierModels: catalog.ok ? catalog.subagentTierModels : {},
             }
           : {}),
       }

@@ -4,7 +4,6 @@ import {
 } from '../../commands/terminalSetup/terminalSetup.js'
 import type { Key } from '../../ink.js'
 import { getGlobalConfig } from '../../utils/config.js'
-import { env } from '../../utils/env.js'
 /**
  * Helper function to check if vim mode is currently enabled
  * @returns boolean indicating if vim mode is active
@@ -15,12 +14,12 @@ export function isVimModeEnabled(): boolean {
 }
 
 export function getNewlineInstructions(): string {
-  // Apple Terminal on macOS uses native modifier key detection for Shift+Enter
-  if (env.terminal === 'Apple_Terminal' && process.platform === 'darwin') {
-    return 'shift + ⏎ for newline'
-  }
-
-  // For iTerm2 and VSCode, show Shift+Enter instructions if installed
+  // Advertising Shift+Enter requires the terminal to actually be able to
+  // report it: either it speaks an extended-key protocol natively, or
+  // /terminal-setup installed a binding that sends a distinguishable sequence
+  // (VS Code keybindings.json, Alacritty, Terminal.app's profile key map).
+  // Apple Terminal in particular sends a plain Return until that key map is
+  // installed, so it must not be special-cased to "shift + ⏎" up front.
   if (isShiftEnterKeyBindingInstalled()) {
     return 'shift + ⏎ for newline'
   }

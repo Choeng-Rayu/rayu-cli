@@ -7,15 +7,13 @@
  * welcome-box panel (src/components/LogoV2/feedConfigs.tsx) — both go through
  * formatUpdateNotice/UPDATE_COMMAND so their wording cannot drift apart.
  *
- * This notice is deliberately INDEPENDENT of the auto-updater. Auto-updates are
- * off by default in Rayu (getAutoUpdaterDisabledReason() returns
- * `{type:'config'}` unless `autoUpdates: true`), and the pre-existing
- * PackageManagerAutoUpdater banner returns early on isAutoUpdaterDisabled() —
- * so before this module there was no path that ever told an npm user a new
- * version existed. Telling someone a version exists is not the same as silently
- * replacing their binary, so the "off by default" config reason must NOT
- * suppress the notice. An explicit opt-out still must; see
- * shouldShowUpdateNotice.
+ * This notice is the fallback for when the auto-updater will NOT install the
+ * new version itself. Auto-updates are on by default, so the notice only shows
+ * once the user turned them off with `autoUpdates: false` (getAutoUpdaterDisabledReason()
+ * returns `{type:'config'}`). Telling someone a version exists is not the same
+ * as silently replacing their binary, so that config opt-out must NOT suppress
+ * the notice. An env opt-out (DISABLE_AUTOUPDATER, essential traffic only)
+ * still does; see shouldShowUpdateNotice.
  */
 import { CHANGELOG_WEB_URL, PRODUCT_COMMAND } from 'src/constants/product.js'
 import type { AutoUpdaterDisabledReason } from './config.js'
@@ -35,7 +33,7 @@ export type UpdateNoticeInput = {
   disabledReason: AutoUpdaterDisabledReason | null
   /** True for --print / piped / bare sessions. */
   isNonInteractive: boolean
-  /** True when the user opted in with `autoUpdates: true`. */
+  /** True when the auto-updater is active (getAutoUpdaterDisabledReason() is null). */
   autoUpdatesEnabled: boolean
 }
 

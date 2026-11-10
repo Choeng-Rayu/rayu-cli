@@ -286,6 +286,22 @@ describe('syncRayuHostedProvider', () => {
     expect(cfg.activeProvider).toBe('rayu-hosted')
   })
 
+  test('stores the subagent tiers, dropping a code missing from the catalog', () => {
+    syncRayuHostedProvider({
+      ...entWith(['deepseek-v4-flash', 'deepseek-v4-pro']),
+      subagentTiers: {
+        fast: 'deepseek-v4-flash',
+        capable: 'deepseek-v4-pro',
+        balanced: 'gone-model',
+      },
+    })
+    const p = loadRayuConfig().providers.find((x) => x.id === 'rayu-hosted')
+    expect(p?.subagentTierModels).toEqual({
+      fast: 'deepseek-v4-flash',
+      capable: 'deepseek-v4-pro',
+    })
+  })
+
   test('removes the provider when entitlement has no hosted models', () => {
     syncRayuHostedProvider(entWith(['deepseek-v4-flash']), { activate: true })
     syncRayuHostedProvider(entWith([], 'free'))

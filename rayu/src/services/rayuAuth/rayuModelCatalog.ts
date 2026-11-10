@@ -135,6 +135,30 @@ export function pickRayuDefaultModels(models: ReadonlyArray<string>): {
   return { defaultModel: primary, smallFastModel: small }
 }
 
+/**
+ * Parse the server's `subagentTiers` object (`/me/entitlements` for rayu-hosted,
+ * `GET /v1/models` for the API-key provider) into the tier → model map stored on
+ * the provider.
+ *
+ * The response is untrusted, so only the three known tier names are read, only
+ * string values are kept, and a code is kept only when it is in `catalog`. The
+ * server already filters tiers to what the account can use; the catalog check
+ * also drops a tier that would point at a model this CLI has no record of.
+ */
+export function parseSubagentTiers(
+  raw: unknown,
+  catalog: ReadonlyArray<string>,
+): Partial<Record<'fast' | 'balanced' | 'capable', string>> {
+  const out: Partial<Record<'fast' | 'balanced' | 'capable', string>> = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  const known = new Set(catalog)
+  for (const tier of ['fast', 'balanced', 'capable'] as const) {
+    const code = (raw as Record<string, unknown>)[tier]
+    if (typeof code === 'string' && known.has(code)) out[tier] = code
+  }
+  return out
+}
+
 /** Preserve explicit catalog capabilities; absent is unknown, never false. */
 export function hostedModelCapabilities(catalog: ReadonlyArray<CatalogModelEntry>): {
   modelSupportsThinking: Record<string, boolean>

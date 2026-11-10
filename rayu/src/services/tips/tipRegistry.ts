@@ -169,49 +169,33 @@ const externalTips: Tip[] = [
   {
     id: 'terminal-setup',
     content: async () =>
-      env.terminal === 'Apple_Terminal'
-        ? 'Run /terminal-setup to enable convenient terminal integration like Option + Enter for new line and more'
-        : 'Run /terminal-setup to enable convenient terminal integration like Shift + Enter for new line and more',
+      'Run /terminal-setup to enable convenient terminal integration like Shift + Enter for new line and more',
     cooldownSessions: 10,
     async isRelevant() {
-      const config = getGlobalConfig()
-      if (env.terminal === 'Apple_Terminal') {
-        return !config.optionAsMetaKeyInstalled
-      }
-      return !config.shiftEnterKeyBindingInstalled
+      // shiftEnterKeyBindingInstalled is the signal that Shift+Return really
+      // sends a newline, on every terminal — including Apple Terminal, where it
+      // is set only once the profile key map is installed.
+      return !getGlobalConfig().shiftEnterKeyBindingInstalled
     },
   },
   {
     id: 'shift-enter',
-    content: async () =>
-      env.terminal === 'Apple_Terminal'
-        ? 'Press Option+Enter to send a multi-line message'
-        : 'Press Shift+Enter to send a multi-line message',
+    content: async () => 'Press Shift+Enter to send a multi-line message',
     cooldownSessions: 10,
     async isRelevant() {
       const config = getGlobalConfig()
-      return Boolean(
-        (env.terminal === 'Apple_Terminal'
-          ? config.optionAsMetaKeyInstalled
-          : config.shiftEnterKeyBindingInstalled) && config.numStartups > 3,
-      )
+      return Boolean(config.shiftEnterKeyBindingInstalled && config.numStartups > 3)
     },
   },
   {
     id: 'shift-enter-setup',
-    content: async () =>
-      env.terminal === 'Apple_Terminal'
-        ? 'Run /terminal-setup to enable Option+Enter for new lines'
-        : 'Run /terminal-setup to enable Shift+Enter for new lines',
+    content: async () => 'Run /terminal-setup to enable Shift+Enter for new lines',
     cooldownSessions: 10,
     async isRelevant() {
       if (!shouldOfferTerminalSetup()) {
         return false
       }
-      const config = getGlobalConfig()
-      return !(env.terminal === 'Apple_Terminal'
-        ? config.optionAsMetaKeyInstalled
-        : config.shiftEnterKeyBindingInstalled)
+      return !getGlobalConfig().shiftEnterKeyBindingInstalled
     },
   },
   {

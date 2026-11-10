@@ -159,7 +159,7 @@ export function Onboarding({ onDone }: Props): React.ReactNode {
               <Newline />
               for your terminal:{' '}
               {env.terminal === 'Apple_Terminal'
-                ? 'Option+Enter for newlines and visual bell'
+                ? 'Shift+Enter for newlines and visual bell'
                 : 'Shift+Enter for newlines'}
             </Text>
             <Select

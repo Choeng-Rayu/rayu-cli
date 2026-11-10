@@ -28,9 +28,10 @@ type SupportedPlatform = 'darwin' | 'linux' | 'win32'
 
 // Threshold in characters for when to consider text a "large paste"
 export const PASTE_THRESHOLD = 800
-function getClipboardCommands() {
-  const platform = process.platform as SupportedPlatform
 
+export function getClipboardCommands(
+  platform: SupportedPlatform = process.platform as SupportedPlatform,
+) {
   // Platform-specific temporary file paths
   // Use Rayu's temp-dir knob if set, otherwise fall back to platform defaults
   const baseTmpDir =
@@ -74,9 +75,17 @@ function getClipboardCommands() {
       deleteFile: `rm -f "${screenshotPath}"`,
     },
     win32: {
+      // Exit codes must be authoritative: a PowerShell expression that
+      // evaluates to False still exits 0, so the caller's exit-code gate
+      // would pass and then fail later while reading a file that was never
+      // written. Set the code explicitly.
       checkImage:
-        'powershell -NoProfile -Command "(Get-Clipboard -Format Image) -ne $null"',
-      saveImage: `powershell -NoProfile -Command "$img = Get-Clipboard -Format Image; if ($img) { $img.Save('${screenshotPath.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png) }"`,
+        'powershell -NoProfile -Command "if (Get-Clipboard -Format Image) { exit 0 } else { exit 1 }"',
+      // The path is fixed, so delete any leftover file first — otherwise a
+      // previous session's screenshot is read back for a text-only clipboard.
+      // Single-quoted PowerShell string: backslashes are literal and must NOT
+      // be doubled; only `'` needs escaping (as `''`).
+      saveImage: `powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.Drawing; $img = Get-Clipboard -Format Image; if (-not $img) { exit 1 }; $path = '${screenshotPath.replace(/'/g, "''")}'; Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)"`,
       getPath: 'powershell -NoProfile -Command "Get-Clipboard"',
       deleteFile: `del /f "${screenshotPath}"`,
     },
@@ -98,31 +107,44 @@ export type ImageWithDimensions = {
  * Check if clipboard contains an image without retrieving it.
  */
 export async function hasImageInClipboard(): Promise<boolean> {
-  if (process.platform !== 'darwin') {
+  if (process.platform === 'darwin') {
+    if (
+      feature('NATIVE_CLIPBOARD_IMAGE') &&
+      getFeatureValue_CACHED_MAY_BE_STALE('tengu_collage_kaleidoscope', true)
+    ) {
+      // Native NSPasteboard check (~0.03ms warm). Fall through to osascript
+      // when the module/export is missing. Catch a throw too: it would surface
+      // as an unhandled rejection in useClipboardImageHint's setTimeout.
+      try {
+        const { getNativeModule } = await import('image-processor-napi')
+        const hasImage = getNativeModule()?.hasClipboardImage
+        if (hasImage) {
+          return hasImage()
+        }
+      } catch (e) {
+        logError(e as Error)
+      }
+    }
+    const result = await execFileNoThrowWithCwd('osascript', [
+      '-e',
+      'the clipboard as «class PNGf»',
+    ])
+    return result.code === 0
+  }
+
+  // Windows/Linux: the platform's checkImage command is the only signal.
+  // On win32 it sets an explicit exit code (see getClipboardCommands).
+  try {
+    const { commands } = getClipboardCommands()
+    const result = await execa(commands.checkImage, {
+      shell: true,
+      reject: false,
+    })
+    return result.exitCode === 0
+  } catch (e) {
+    logError(e as Error)
     return false
   }
-  if (
-    feature('NATIVE_CLIPBOARD_IMAGE') &&
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_collage_kaleidoscope', true)
-  ) {
-    // Native NSPasteboard check (~0.03ms warm). Fall through to osascript
-    // when the module/export is missing. Catch a throw too: it would surface
-    // as an unhandled rejection in useClipboardImageHint's setTimeout.
-    try {
-      const { getNativeModule } = await import('image-processor-napi')
-      const hasImage = getNativeModule()?.hasClipboardImage
-      if (hasImage) {
-        return hasImage()
-      }
-    } catch (e) {
-      logError(e as Error)
-    }
-  }
-  const result = await execFileNoThrowWithCwd('osascript', [
-    '-e',
-    'the clipboard as «class PNGf»',
-  ])
-  return result.code === 0
 }
 
 export async function getImageFromClipboard(): Promise<ImageWithDimensions | null> {

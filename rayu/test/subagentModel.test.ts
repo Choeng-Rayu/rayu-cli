@@ -289,8 +289,30 @@ test('formatAgentLine: a saved per-agent selection is annotated as user-assigned
 test('formatAgentLine: an unassigned agent is annotated as auto', async () => {
   const { formatAgentLine } = await import('../src/tools/AgentTool/prompt.ts')
   const line = formatAgentLine(fakeAgent('Explore', 'haiku'))
-  expect(line).toContain('[model: Haiku · auto — you may pass a smaller `model` for simple tasks]')
+  expect(line).toContain(
+    '[model: Haiku · auto — pass `model: "fast"` for simple tasks, `"capable"` for hard ones]',
+  )
   expect(line).not.toContain('set by the user')
+})
+
+test('formatAgentLine: a Rayu provider line names tier words only, never a model id', async () => {
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg._resetRayuConfigCache()
+  cfg.upsertProvider({
+    id: 'rayu-hosted',
+    kind: 'rayu-hosted',
+    apiKey: 'jwt',
+    fetchedModels: ['deepseek-v4-pro', 'step-3.7-flash'],
+    defaultModel: 'deepseek-v4-pro',
+    smallFastModel: 'step-3.7-flash',
+  })
+  const { formatAgentLine } = await import('../src/tools/AgentTool/prompt.ts')
+  // The same constant text on every provider: no catalog id to hallucinate from,
+  // and no per-provider churn in the cached tool description.
+  const line = formatAgentLine(fakeAgent('general-purpose'))
+  expect(line).toContain('pass `model: "fast"` for simple tasks')
+  expect(line).not.toContain('step-3.7-flash')
+  expect(line).not.toContain('deepseek-v4-pro')
 })
 
 test('formatAgentLine: a global selection annotates every agent, a per-agent one wins for its own', async () => {
@@ -304,4 +326,70 @@ test('formatAgentLine: a global selection annotates every agent, a per-agent one
   expect(formatAgentLine(fakeAgent('planner'))).toContain(
     '[model: nvidia/per-agent-model · set by the user via /subagent_models — you may follow it or pass your own `model` to override]',
   )
+})
+
+test('resolveSubagentExecution: rayu-hosted preferred over a third-party active provider', async () => {
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg._resetRayuConfigCache()
+  // Active provider is a third-party; rayu-hosted is also configured but NOT active.
+  cfg.upsertProvider(
+    {
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'nv-key',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'meta/llama-3.3-70b-instruct',
+      smallFastModel: 'nvidia/llama-3.1-nemotron-nano-8b-v1',
+    },
+    true, // nvidia is the active provider
+  )
+  cfg.upsertProvider(
+    {
+      id: 'rayu',
+      kind: 'rayu-hosted',
+      apiKey: 'rayu-token',
+      defaultModel: 'claude-sonnet-4-6',
+      smallFastModel: 'claude-haiku-4-5-20251001',
+    },
+    false, // rayu-hosted is configured but not the active session provider
+  )
+  const { resolveSubagentExecution } = await import('../src/utils/model/agent.ts')
+  // Should prefer rayu-hosted even though nvidia is active.
+  expect(resolveSubagentExecution()).toEqual({
+    providerId: 'rayu',
+    model: 'claude-haiku-4-5-20251001',
+  })
+})
+
+test('resolveSubagentExecution: saved /subagent_models selection beats rayu-hosted preference', async () => {
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg._resetRayuConfigCache()
+  cfg.upsertProvider(
+    {
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'nv-key',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'meta/llama-3.3-70b-instruct',
+      smallFastModel: 'nvidia/llama-3.1-nemotron-nano-8b-v1',
+    },
+    true,
+  )
+  cfg.upsertProvider(
+    {
+      id: 'rayu',
+      kind: 'rayu-hosted',
+      apiKey: 'rayu-token',
+      defaultModel: 'claude-sonnet-4-6',
+      smallFastModel: 'claude-haiku-4-5-20251001',
+    },
+    false,
+  )
+  // An explicit /subagent_models selection must still win over rayu-hosted.
+  cfg.setSubagentSelection('bedrock', 'openai.gpt-oss-120b-1:0')
+  const { resolveSubagentExecution } = await import('../src/utils/model/agent.ts')
+  expect(resolveSubagentExecution()).toEqual({
+    providerId: 'bedrock',
+    model: 'openai.gpt-oss-120b-1:0',
+  })
 })

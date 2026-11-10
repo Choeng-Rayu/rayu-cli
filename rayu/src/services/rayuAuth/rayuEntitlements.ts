@@ -92,6 +92,12 @@ export interface RayuEntitlements {
    */
   hostedModels?: AllowedModel[]
   /**
+   * The hosted model behind each subagent tier word ("fast" / "balanced" /
+   * "capable"), already filtered by the backend to models this user can use.
+   * Absent on an older backend. Parsed by `parseSubagentTiers`.
+   */
+  subagentTiers?: unknown
+  /**
    * Paid-plan credit allowance from the backend (`/me/entitlements`). This is a
    * per-billing-period balance consumed by the gateway — 1 credit =
    * (1e6 / baselineCreditsPer1M) tokens.

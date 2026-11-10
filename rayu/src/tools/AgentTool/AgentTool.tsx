@@ -24,7 +24,7 @@ import { AbortError, errorMessage, toError } from '../../utils/errors.js';
 import type { CacheSafeParams } from '../../utils/forkedAgent.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { createSystemMessage, createUserMessage, extractTextContent, isSyntheticMessage, normalizeMessages } from '../../utils/messages.js';
-import { getAgentModel } from '../../utils/model/agent.js';
+import { getAgentModel, getRayuCatalogProvider, resolveRayuSubagentModel } from '../../utils/model/agent.js';
 import { clearSubagentSelection, getSubagentSelection } from '../../utils/rayuConfig.js';
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
@@ -98,7 +98,7 @@ const baseInputSchema = lazySchema(() => z.object({
   description: z.string().describe('A short (3-5 word) description of the task'),
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
-  model: z.string().optional().describe("Model for this agent. A model the user assigned to this agent type with /subagent_models is shown to you and is the default for that agent type. Passing `model` here overrides the user's assignment for this one call and wins. Otherwise your `model` picks the model for this one call (an alias like 'sonnet'/'opus'/'haiku', or a provider-specific model id). If neither is set, the agent's default/inherit model is used, and the user may be asked once to choose a model for this agent type."),
+  model: z.string().optional().describe("Model tier for this agent: \"fast\" (simple, read-only or research work), \"balanced\", or \"capable\" (hard reasoning). Omit it, or pass \"inherit\", to use the agent's default. Do not pass a model id: the tier is mapped to a real model for this provider, and an unknown value is ignored. A model the user assigned to this agent type with /subagent_models is shown in the agent list; exact model ids are the user's choice there."),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -483,6 +483,18 @@ export const AgentTool = buildTool({
         toolSpecifiedModel: isForkPath ? undefined : model,
         toolUseContext
       });
+    }
+
+    // On a Rayu provider the model list is the plan's catalog and the main agent
+    // cannot see it, so a per-call `model` is often an id that does not exist
+    // there. Resolution drops such an id (or an unset tier) instead of failing
+    // the spawn; say so with tier words only. Listing the catalog here would cost
+    // tokens and hand the main agent more ids to guess from.
+    if (!isForkPath && model && model.trim().toLowerCase() !== 'inherit') {
+      const catalogProvider = getRayuCatalogProvider(model);
+      if (catalogProvider && resolveRayuSubagentModel(model, catalogProvider) === undefined) {
+        toolUseContext.appendSystemMessage?.(createSystemMessage(`Model "${model}" is not available here, so the "${selectedAgent.agentType}" subagent runs on its default model. Use model: "fast", "balanced" or "capable", or omit it.`, 'warning'));
+      }
     }
 
     // Resolve agent params for logging (these are already resolved in runAgent)
@@ -1380,13 +1392,14 @@ export const AgentTool = buildTool({
           }
         };
       }));
-      // A saved model that no longer works (removed, renamed, unsupported) must not
-      // keep failing every run: clear it, tell the user, and let them pick again.
-      // Bounded to ONE recovery per call. A worktree-isolated run is not retried
-      // (its worktree is already torn down), but the stale selection is still cleared.
-      // Only the saved selection can be blamed when no per-call `model` was passed:
-      // the per-call model outranks it, so clearing the user's saved choice after a
-      // failure caused by the tool's model would destroy unrelated config.
+      // A model that no longer works (removed, renamed, unsupported) must not
+      // keep failing every run. Bounded to ONE recovery per call:
+      //  • no per-call `model`, a saved selection exists → it is the only thing
+      //    that could be blamed, so clear it and let the user pick again.
+      //  • a per-call `model` exists → drop just that choice and retry on the
+      //    agent's default; the user's saved selection is never touched.
+      // A worktree-isolated run is not retried (its worktree is already torn
+      // down), but a stale saved selection is still cleared.
       const effectiveToolModel = isForkPath ? undefined : model
       const hadSubagentSelection =
         isPromptableForegroundSpawn && !effectiveToolModel && !!getSubagentSelection(selectedAgent.agentType);
@@ -1395,21 +1408,36 @@ export const AgentTool = buildTool({
         try {
           return await runSyncAgentOnce();
         } catch (error) {
-          if (!hadSubagentSelection || retriedForModel || error instanceof AbortError || !MODEL_ERROR_PATTERN.test(errorMessage(error))) {
+          if (retriedForModel || error instanceof AbortError || !MODEL_ERROR_PATTERN.test(errorMessage(error))) {
             throw error;
           }
-          retriedForModel = true;
-          clearSubagentSelection(selectedAgent.agentType);
-          if (effectiveIsolation === 'worktree') throw error;
-          toolUseContext.appendSystemMessage?.(createSystemMessage(`The saved model for the "${selectedAgent.agentType}" subagent failed (${errorMessage(error).slice(0, 160)}). Cleared it.`, 'warning'));
-          const picked = await maybePromptForUnassignedSubagentModel({
-            agentType: selectedAgent.agentType,
-            toolSpecifiedModel: undefined,
-            toolUseContext
-          });
-          // Non-interactive, or the user dismissed the picker: surface the original error.
-          if (!picked) throw error;
-          return await runSyncAgentOnce();
+          if (hadSubagentSelection) {
+            retriedForModel = true;
+            clearSubagentSelection(selectedAgent.agentType);
+            if (effectiveIsolation === 'worktree') throw error;
+            toolUseContext.appendSystemMessage?.(createSystemMessage(`The saved model for the "${selectedAgent.agentType}" subagent failed (${errorMessage(error).slice(0, 160)}). Cleared it.`, 'warning'));
+            const picked = await maybePromptForUnassignedSubagentModel({
+              agentType: selectedAgent.agentType,
+              toolSpecifiedModel: undefined,
+              toolUseContext
+            });
+            // Non-interactive, or the user dismissed the picker: surface the original error.
+            if (!picked) throw error;
+            return await runSyncAgentOnce();
+          }
+          // A per-call `model` the provider rejected (an alias it does not serve,
+          // or an id that is gone). Resolution already drops unknown Rayu ids, so
+          // this is the fallback for a stale catalog or another provider: retry
+          // once without the choice so the agent runs on its default rather than
+          // failing the spawn outright.
+          if (effectiveToolModel) {
+            retriedForModel = true;
+            if (effectiveIsolation === 'worktree') throw error;
+            runAgentParams.model = undefined;
+            toolUseContext.appendSystemMessage?.(createSystemMessage(`The model "${effectiveToolModel}" for the "${selectedAgent.agentType}" subagent is not available on this provider. Retried it on the default model.`, 'warning'));
+            return await runSyncAgentOnce();
+          }
+          throw error;
         }
       })();
       // the background reports through its task's status transitions instead.

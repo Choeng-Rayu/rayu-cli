@@ -16,9 +16,9 @@
 name: Rayucode VSIX
 
 on:
-  # Called by release.yml as part of the main-branch auto-release, and runnable
-  # by hand. It deliberately does NOT trigger on v* tags — release.yml owns tag
-  # creation, so a tag trigger here would double-build every release.
+  # Runnable by hand (optionally via workflow_call from another workflow). It
+  # deliberately does NOT trigger on v* tags — release.yml builds the VSIXs it
+  # attaches to a release, so a tag trigger here would double-build every one.
   workflow_call:
   workflow_dispatch:
 
@@ -119,10 +119,10 @@ jobs:
           fi
 
   publish:
-    # Manual re-publish escape hatch. The normal path is release.yml, which now
-    # publishes to the stores automatically after building the VSIXs; this job
-    # exists so a human can re-run a store publish on its own. --skip-duplicate
-    # keeps it idempotent when a version is already live.
+    # Manual re-publish escape hatch. release.yml can publish to the stores on
+    # request (workflow_dispatch input), and this job exists so a human can
+    # re-run a store publish on its own. --skip-duplicate keeps it idempotent
+    # when a version is already live.
     name: Publish to stores (manual re-publish)
     if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: smoke
