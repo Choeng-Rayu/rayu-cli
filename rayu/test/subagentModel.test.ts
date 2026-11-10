@@ -289,8 +289,30 @@ test('formatAgentLine: a saved per-agent selection is annotated as user-assigned
 test('formatAgentLine: an unassigned agent is annotated as auto', async () => {
   const { formatAgentLine } = await import('../src/tools/AgentTool/prompt.ts')
   const line = formatAgentLine(fakeAgent('Explore', 'haiku'))
-  expect(line).toContain('[model: Haiku · auto — you may pass a smaller `model` for simple tasks]')
+  expect(line).toContain(
+    '[model: Haiku · auto — pass `model: "fast"` for simple tasks, `"capable"` for hard ones]',
+  )
   expect(line).not.toContain('set by the user')
+})
+
+test('formatAgentLine: a Rayu provider line names tier words only, never a model id', async () => {
+  const cfg = await import('../src/utils/rayuConfig.ts')
+  cfg._resetRayuConfigCache()
+  cfg.upsertProvider({
+    id: 'rayu-hosted',
+    kind: 'rayu-hosted',
+    apiKey: 'jwt',
+    fetchedModels: ['deepseek-v4-pro', 'step-3.7-flash'],
+    defaultModel: 'deepseek-v4-pro',
+    smallFastModel: 'step-3.7-flash',
+  })
+  const { formatAgentLine } = await import('../src/tools/AgentTool/prompt.ts')
+  // The same constant text on every provider: no catalog id to hallucinate from,
+  // and no per-provider churn in the cached tool description.
+  const line = formatAgentLine(fakeAgent('general-purpose'))
+  expect(line).toContain('pass `model: "fast"` for simple tasks')
+  expect(line).not.toContain('step-3.7-flash')
+  expect(line).not.toContain('deepseek-v4-pro')
 })
 
 test('formatAgentLine: a global selection annotates every agent, a per-agent one wins for its own', async () => {

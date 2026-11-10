@@ -30,6 +30,162 @@ function resolveOpenAICompatibleAgentModel(
   return trimmed
 }
 
+/** The slice of a provider record a catalog check needs. */
+type CatalogProvider = {
+  id: string
+  kind?: string
+  fetchedModels?: string[]
+  smallFastModel?: string
+  subagentTierModels?: Partial<Record<'fast' | 'balanced' | 'capable', string>>
+}
+
+/**
+ * Rayu's two providers — 'rayu-hosted' (account JWT) and 'rayu' (API key) —
+ * serve a SERVER-driven catalog. The only ids that work are the ones the
+ * account/plan published into `fetchedModels`; there is no built-in table to
+ * fall back on. Every other provider kind is judged by the request layer, not
+ * here.
+ */
+function isRayuCatalogProvider(p: CatalogProvider | undefined): p is CatalogProvider {
+  return !!p && (p.kind === 'rayu-hosted' || p.id === 'rayu')
+}
+
+/**
+ * The Rayu provider a request carrying `requested` will actually reach: the one
+ * encoded in the string when a caller routed it (`providerId\u0000model`), else
+ * the active provider. Returns undefined for every non-Rayu target, so callers
+ * leave the model untouched.
+ */
+export function getRayuCatalogProvider(
+  requested: string,
+): CatalogProvider | undefined {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { decodeModelProvider, getActiveProvider, loadRayuConfig } =
+      require('../rayuConfig.js') as typeof import('../rayuConfig.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    const decoded = decodeModelProvider(requested)
+    const provider = decoded.providerId
+      ? loadRayuConfig().providers.find(p => p.id === decoded.providerId)
+      : getActiveProvider()
+    return isRayuCatalogProvider(provider) ? provider : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The tier words the main agent may pass as a subagent `model`. */
+const SUBAGENT_TIERS = ['fast', 'balanced', 'capable'] as const
+type SubagentTierWord = (typeof SUBAGENT_TIERS)[number]
+
+function asTierWord(value: string): SubagentTierWord | undefined {
+  const lower = value.trim().toLowerCase()
+  return (SUBAGENT_TIERS as readonly string[]).includes(lower)
+    ? (lower as SubagentTierWord)
+    : undefined
+}
+
+/**
+ * Claude alias → tier. The main agent still reaches for these from habit; on a
+ * Rayu provider they mean the tier the admin configured, never a Claude id.
+ */
+const ALIAS_TIER: Record<string, SubagentTierWord> = {
+  haiku: 'fast',
+  sonnet: 'balanced',
+  'sonnet[1m]': 'balanced',
+  opusplan: 'balanced',
+  opus: 'capable',
+  'opus[1m]': 'capable',
+  best: 'capable',
+}
+
+/**
+ * Tier → the alias the existing non-Rayu resolution already understands, so a
+ * tier word is never sent to an API as a literal model id. First-party resolves
+ * the alias; OpenAI-compatible maps `haiku` to its small/fast model and the
+ * others to the parent model.
+ */
+const TIER_ALIAS: Record<SubagentTierWord, string> = {
+  fast: 'haiku',
+  balanced: 'sonnet',
+  capable: 'opus',
+}
+
+/**
+ * Exact match, or a version-prefix match at a separator boundary — asking for
+ * `claude-sonnet-4-5` must accept the catalog's dated `claude-sonnet-4-5-20250929`
+ * without matching an unrelated `claude-sonnet-4-50`.
+ */
+function matchCatalogModel(
+  catalog: readonly string[],
+  requested: string,
+): string | undefined {
+  const want = requested.trim().toLowerCase()
+  if (!want) return undefined
+  const exact = catalog.find(m => m.trim().toLowerCase() === want)
+  if (exact) return exact
+  return catalog.find(m => {
+    const id = m.trim().toLowerCase()
+    if (!id.startsWith(want)) return false
+    const next = id[want.length]
+    return next === undefined || next === '-' || next === '/' || next === '@' || next === '.'
+  })
+}
+
+/**
+ * Resolve the Agent tool's per-call `model` against a Rayu provider's catalog.
+ *
+ * The main agent picks `model` from its own knowledge and never sees this
+ * catalog, so it commonly passes a Claude alias ('sonnet'/'haiku') or an id
+ * belonging to another vendor. `parseUserSpecifiedModel` would expand an alias
+ * into a Claude id the gateway has never heard of, and the spawn would fail
+ * with a 404 the caller cannot recover from.
+ *
+ * Tier words (`fast` / `balanced` / `capable`) and Claude aliases resolve to the
+ * model the admin assigned to that tier. An unset tier, or an id the provider
+ * does not serve, returns undefined: the caller then falls back to the
+ * /subagent_models selection or the agent's default instead of failing. An exact
+ * catalog id is kept. A provider with no fetched catalog cannot be judged, so a
+ * non-tier id is kept unchanged.
+ */
+export function resolveRayuSubagentModel(
+  requested: string | undefined,
+  provider: CatalogProvider | undefined,
+): string | undefined {
+  if (!requested) return undefined
+  const trimmed = requested.trim()
+  if (!trimmed) return undefined
+  // 'inherit' is not a model id — letting it through would put the literal
+  // string on the wire. Treat it as "no per-call choice".
+  if (trimmed.toLowerCase() === 'inherit') return undefined
+
+  const tier = asTierWord(trimmed) ?? ALIAS_TIER[trimmed.toLowerCase()]
+  if (!provider) {
+    // Not a Rayu provider: translate a tier word into the alias the normal
+    // resolution understands, never forwarding "fast" as a model id.
+    const word = asTierWord(trimmed)
+    return word ? TIER_ALIAS[word] : trimmed
+  }
+
+  const catalog = (provider.fetchedModels ?? []).filter(m => !!m)
+
+  // An exact catalog id is an explicit choice and wins over tier mapping.
+  if (catalog.length > 0) {
+    const direct = matchCatalogModel(catalog, trimmed)
+    if (direct) return direct
+  }
+
+  if (tier) {
+    // Only the admin's tier assignment decides; an unset tier means "default".
+    const code = provider.subagentTierModels?.[tier]
+    if (!code) return undefined
+    return catalog.length === 0 ? code : matchCatalogModel(catalog, code)
+  }
+
+  // An unrecognised id: keep it when the catalog is unknown, drop it otherwise.
+  return catalog.length === 0 ? trimmed : undefined
+}
+
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
 
@@ -113,10 +269,24 @@ export function getDefaultSubagentModel(): string {
 export function getAgentModel(
   agentModel: string | undefined,
   parentModel: string,
-  toolSpecifiedModel?: string,
+  toolSpecifiedModelParam?: string,
   permissionMode?: PermissionMode,
   agentType?: string,
 ): string {
+  // A per-call `model` chosen by the main agent is only meaningful if the
+  // provider serving this request can run it. Rayu's providers serve a
+  // server-driven catalog the main agent cannot see, so an alias or a
+  // guessed id would otherwise be forwarded and fail the whole spawn.
+  // An unavailable id resolves to undefined: the normal fallback below
+  // (saved selection, then the agent's own default) decides instead.
+  const toolSpecifiedModel =
+    toolSpecifiedModelParam === undefined
+      ? undefined
+      : resolveRayuSubagentModel(
+          toolSpecifiedModelParam,
+          getRayuCatalogProvider(toolSpecifiedModelParam),
+        )
+
   // Rayu multi-provider agent routing. A selection saved by /subagent_models
   // is a FALLBACK DEFAULT for spawned Agent-tool workers, including definitions
   // whose built-in default is `inherit` (for example general-purpose). A named

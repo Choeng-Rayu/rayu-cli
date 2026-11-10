@@ -25,9 +25,13 @@ import {
   hostedContextWindows,
   hostedModelDescriptions,
   hostedModelLabels,
+  parseSubagentTiers,
   type CatalogModelEntry,
 } from '../../rayuAuth/rayuModelCatalog.js'
-import { sanitizeRemoteModelId } from '../../../utils/rayuConfig.js'
+import {
+  sanitizeRemoteModelId,
+  type SubagentTierModels,
+} from '../../../utils/rayuConfig.js'
 import { reportIssue } from '../../../utils/rayuDiagnostics.js'
 import {
   RAYU_CLIENT_HEADER,
@@ -70,6 +74,8 @@ export type RayuCatalogResult =
       modelDescriptions: Record<string, string>
       /** Admin context windows in tokens, keyed by model id. */
       modelContextWindows: Record<string, number>
+      /** Model code behind each subagent tier word visible to this key. */
+      subagentTierModels: SubagentTierModels
     }
   | { ok: false; reason: RayuCatalogFailure }
 
@@ -105,6 +111,7 @@ export function parseRayuCatalog(payload: unknown): {
   modelLabels: Record<string, string>
   modelDescriptions: Record<string, string>
   modelContextWindows: Record<string, number>
+  subagentTierModels: SubagentTierModels
 } {
   const data = (payload as { data?: unknown })?.data
   const items: GatewayModelItem[] = Array.isArray(data) ? data : []
@@ -122,11 +129,16 @@ export function parseRayuCatalog(payload: unknown): {
         typeof item.contextWindow === 'number' ? item.contextWindow : null,
     })
   }
+  const models = entries.map(e => e.code)
   return {
-    models: entries.map(e => e.code),
+    models,
     modelLabels: hostedModelLabels(entries),
     modelDescriptions: hostedModelDescriptions(entries),
     modelContextWindows: hostedContextWindows(entries),
+    subagentTierModels: parseSubagentTiers(
+      (payload as { subagentTiers?: unknown })?.subagentTiers,
+      models,
+    ),
   }
 }
 

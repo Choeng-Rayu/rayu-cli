@@ -20,6 +20,7 @@ import { addItemToJSONCArray, safeParseJSONC } from '../../utils/json.js';
 import { logError } from '../../utils/log.js';
 import { getPlatform } from '../../utils/platform.js';
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js';
+import { installShiftReturnKeyMap } from './appleTerminalKeyMap.js';
 const EOL = '\n';
 
 // Terminals that natively support CSI u / Kitty keyboard protocol
@@ -108,6 +109,10 @@ export async function setupTerminal(theme: ThemeName): Promise<string> {
         shiftEnterKeyBindingInstalled: true
       };
     } else if (env.terminal === 'Apple_Terminal') {
+      // shiftEnterKeyBindingInstalled is set inside enableOptionAsMetaForTerminal,
+      // and only when the Shift+Return key map actually landed on every profile.
+      // A profile whose Shift+Return is bound to something else must not make
+      // the footer advertise Shift+Enter.
       if (current.optionAsMetaKeyInstalled === true) return current;
       return {
         ...current,
@@ -330,14 +335,15 @@ async function enableOptionAsMetaForTerminal(theme: ThemeName): Promise<string> 
     if (startupCode !== 0 || !startupProfile.trim()) {
       throw new Error('Failed to read startup Terminal.app profile');
     }
-    let wasAnyProfileUpdated = false;
     const defaultProfileName = defaultProfile.trim();
+    const startupProfileName = startupProfile.trim();
+
+    let wasAnyProfileUpdated = false;
     const optionAsMetaEnabled = await enableOptionAsMetaForProfile(defaultProfileName);
     const audioBellDisabled = await disableAudioBellForProfile(defaultProfileName);
     if (optionAsMetaEnabled || audioBellDisabled) {
       wasAnyProfileUpdated = true;
     }
-    const startupProfileName = startupProfile.trim();
 
     // Only proceed if the startup profile is different from the default profile
     if (startupProfileName !== defaultProfileName) {
@@ -347,20 +353,51 @@ async function enableOptionAsMetaForTerminal(theme: ThemeName): Promise<string> 
         wasAnyProfileUpdated = true;
       }
     }
-    if (!wasAnyProfileUpdated) {
-      throw new Error('Failed to enable Option as Meta key or disable audio bell for any Terminal.app profile');
+    // Flush the preferences cache so the key-map step below reads the edits
+    // PlistBuddy just wrote straight to the plist file.
+    await execFileNoThrow('killall', ['cfprefsd']);
+
+    // Shift+Return → ESC CR, which useTextInput reads as a newline. Terminal.app
+    // has no extended-key protocol, so without this key map Shift+Return is a
+    // plain Return and submits the prompt. This goes through cfprefsd
+    // (defaults export/import), so it runs after the direct-file edits.
+    const keyMap = await installShiftReturnKeyMap(
+      startupProfileName !== defaultProfileName
+        ? [defaultProfileName, startupProfileName]
+        : [defaultProfileName],
+    );
+    const shiftEnterReady = keyMap.installed.length + keyMap.already.length > 0;
+    if (!wasAnyProfileUpdated && !shiftEnterReady) {
+      throw new Error('Failed to configure any Terminal.app profile');
     }
 
-    // Flush the preferences cache
-    await execFileNoThrow('killall', ['cfprefsd']);
+    // Only advertise Shift+Enter when every profile we touched now sends the
+    // newline sequence — a conflict or an unaddressable profile name leaves
+    // Shift+Return meaning something else, so the footer keeps the backslash
+    // hint instead.
+    if (shiftEnterReady && keyMap.conflicts.length === 0 && keyMap.skipped.length === 0) {
+      saveGlobalConfig(current => current.shiftEnterKeyBindingInstalled === true ? current : {
+        ...current,
+        shiftEnterKeyBindingInstalled: true
+      });
+    }
+
     markTerminalSetupComplete();
-    return `${color('success', theme)(`Configured Terminal.app settings:`)}${EOL}${color('success', theme)('- Enabled "Use Option as Meta key"')}${EOL}${color('success', theme)('- Switched to visual bell')}${EOL}${chalk.dim('Option+Enter will now enter a newline.')}${EOL}${chalk.dim('You must restart Terminal.app for changes to take effect.', theme)}${EOL}`;
+    // Only claim what actually landed: a conflict or skip means Shift+Return
+    // still sends something else, and Option+Enter needs useOptionAsMetaKey.
+    const shiftEnterOk = shiftEnterReady && keyMap.conflicts.length === 0 && keyMap.skipped.length === 0;
+    const shiftEnterLine = shiftEnterOk ? `${EOL}${color('success', theme)('- Shift+Enter sends a newline')}` : '';
+    const optionLine = optionAsMetaEnabled ? `${EOL}${chalk.dim('Option+Enter also enters a newline.')}` : '';
+    const conflictLines = keyMap.conflicts.map(conflict => `${EOL}${color('warning', theme)(`- Shift+Return in "${conflict.profile}" sends ${JSON.stringify(conflict.value)}; left unchanged`)}`).join('');
+    const skippedLines = keyMap.skipped.map(profile => `${EOL}${color('warning', theme)(`- Could not add Shift+Return to "${profile}"; set it by hand in Settings › Profiles › Keyboard`)}`).join('');
+    const restartLine = shiftEnterOk ? `${chalk.dim('Quit Terminal (⌘Q) and reopen it for the Shift+Enter change to take effect.', theme)}${EOL}` : '';
+    return `${color('success', theme)(`Configured Terminal.app settings:`)}${EOL}${color('success', theme)('- Enabled "Use Option as Meta key"')}${EOL}${color('success', theme)('- Switched to visual bell')}${shiftEnterLine}${conflictLines}${skippedLines}${optionLine}${EOL}${restartLine}`;
   } catch (error) {
     logError(error);
 
     // Attempt to restore from backup
     const restoreResult = await checkAndRestoreTerminalBackup();
-    const errorMessage = 'Failed to enable Option as Meta key for Terminal.app.';
+    const errorMessage = 'Failed to configure Terminal.app.';
     if (restoreResult.status === 'restored') {
       throw new Error(`${errorMessage} Your settings have been restored from backup.`);
     } else if (restoreResult.status === 'failed') {

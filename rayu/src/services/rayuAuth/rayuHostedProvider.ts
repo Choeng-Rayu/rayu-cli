@@ -18,6 +18,7 @@ import {
   hostedModelDescriptions,
   hostedModelLabels,
   hostedModelCapabilities,
+  parseSubagentTiers,
 } from './rayuModelCatalog.js'
 import type { RayuEntitlements } from './rayuEntitlements.js'
 
@@ -95,6 +96,9 @@ export function syncRayuHostedProvider(
         // needs both the concise name and the explanatory credit/use-case text.
         modelDescriptions: hostedModelDescriptions(catalog),
         ...hostedModelCapabilities(catalog),
+        // Tier word -> model code for subagent spawns. Only codes in this catalog
+        // survive, so a renamed/removed model falls back to the default model.
+        subagentTierModels: parseSubagentTiers(ent?.subagentTiers, models),
       }
       if (idx >= 0) cfg.providers[idx] = provider
       else cfg.providers.push(provider)

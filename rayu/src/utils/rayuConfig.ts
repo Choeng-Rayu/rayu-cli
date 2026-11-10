@@ -26,6 +26,12 @@ const RAYU_API_PROVIDER_ID = 'rayu'
 
 export type ProviderFeatureMode = 'auto' | 'enabled' | 'disabled'
 
+/** The tier words the main agent may pass as a subagent `model`. */
+export type SubagentTier = 'fast' | 'balanced' | 'capable'
+
+/** Model code behind each subagent tier, as published by a Rayu provider. */
+export type SubagentTierModels = Partial<Record<SubagentTier, string>>
+
 /**
  * The wire protocols Rayu speaks. A provider KIND says who you are talking to;
  * a WIRE FORMAT says which request/response shape goes over the socket. The two
@@ -151,6 +157,12 @@ export type RayuProvider = {
   models?: string[]
   /** Models fetched live from {baseURL}/models, cached for the /model picker. */
   fetchedModels?: string[]
+  /**
+   * Rayu providers only: the model each subagent tier word resolves to, as the
+   * admin set it and filtered server-side to what this account can use. A
+   * missing tier means "run the subagent on its default model".
+   */
+  subagentTierModels?: SubagentTierModels
   /** Optional OpenAI-specific prompt cache routing mode. */
   promptCacheKey?: ProviderFeatureMode
   /** Optional OpenAI-compatible reasoning_effort request parameter mode. */
@@ -1525,6 +1537,7 @@ export async function refreshRayuApiKeyCatalog(): Promise<{
   cur.modelLabels = result.modelLabels
   cur.modelDescriptions = result.modelDescriptions
   cur.modelContextWindows = result.modelContextWindows
+  cur.subagentTierModels = result.subagentTierModels
   // Keep the default/small model POINTING AT SOMETHING REAL, in both directions:
   //
   //  • Drop a code the admin has since removed. Holding on to one turns every

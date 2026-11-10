@@ -16,6 +16,7 @@ import {
   estimateMediaBytes,
   getMediaCompactBudgetBytes,
 } from '../../utils/mediaBytes.js'
+import { hasFirstPartyBodyCap } from '../../utils/model/providerCapabilities.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
@@ -260,7 +261,7 @@ async function getAutoCompactDecision(
     // rather than loops: compaction replaces old messages with an image-stripped
     // summary (compact.ts), so the bytes are gone next turn.
     const mediaBytes = estimateAccumulatedMediaBytes(messages)
-    const mediaBudget = getMediaCompactBudgetBytes()
+    const mediaBudget = getMediaCompactBudgetBytes(hasFirstPartyBodyCap(model))
     if (mediaBytes >= mediaBudget) {
       trigger = { reason: 'media_bytes', mediaBytes, mediaBudget }
       logForDebugging(

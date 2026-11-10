@@ -340,3 +340,112 @@ describe('getAgentModel: the tool model param overrides a saved selection', () =
     expect(getAgentModel('haiku', 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
   })
 })
+
+// Rayu's providers (JWT 'rayu-hosted' and API-key 'rayu') serve a SERVER-driven
+// catalog. The main agent picks the Agent-tool `model` without seeing it, so an
+// alias or an id from another vendor must be dropped and resolved on the agent's
+// default instead of being forwarded and failing the spawn with a 404.
+describe('getAgentModel: the Rayu catalog bounds the per-call model', () => {
+  async function activateRayuHosted() {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      apiKey: 'jwt',
+      fetchedModels: ['deepseek-v4-pro', 'step-3.7-flash', 'claude-sonnet-4-5-20250929'],
+      defaultModel: 'deepseek-v4-pro',
+      smallFastModel: 'step-3.7-flash',
+    })
+    return cfg
+  }
+
+  test('an id the provider does not serve is dropped, not forwarded', async () => {
+    await activateRayuHosted()
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    // Guessed id, and a real OpenAI id from another vendor: neither exists here.
+    expect(getAgentModel(undefined, 'deepseek-v4-pro', 'gpt-4o')).toBe('deepseek-v4-pro')
+    expect(getAgentModel(undefined, 'deepseek-v4-pro', 'not-a-real-model')).toBe('deepseek-v4-pro')
+  })
+
+  test('a served id is kept exactly as the catalog spells it', async () => {
+    await activateRayuHosted()
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel(undefined, 'deepseek-v4-pro', 'step-3.7-flash')).toBe('step-3.7-flash')
+  })
+
+  test('a tier word resolves to the model the admin assigned to that tier', async () => {
+    const cfg = await activateRayuHosted()
+    cfg.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      subagentTierModels: { fast: 'step-3.7-flash', capable: 'deepseek-v4-pro' },
+    })
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel(undefined, 'claude-sonnet-4-5-20250929', 'fast')).toBe('step-3.7-flash')
+    expect(getAgentModel(undefined, 'claude-sonnet-4-5-20250929', 'capable')).toBe('deepseek-v4-pro')
+  })
+
+  test('an unset tier runs the subagent on its default model', async () => {
+    await activateRayuHosted()
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    // No tiers published: "fast" must not become a guessed id or a literal.
+    expect(getAgentModel(undefined, 'deepseek-v4-pro', 'fast')).toBe('deepseek-v4-pro')
+  })
+
+  test('a Claude alias means its tier on Rayu, never a Claude id', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'rayu',
+      kind: 'anthropic-compatible',
+      apiKey: 'rayu_sk_live_test',
+      fetchedModels: ['deepseek-v4-pro', 'step-3.7-flash'],
+      defaultModel: 'deepseek-v4-pro',
+      smallFastModel: 'step-3.7-flash',
+      subagentTierModels: { fast: 'step-3.7-flash' },
+    })
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel(undefined, 'deepseek-v4-pro', 'haiku')).toBe('step-3.7-flash')
+    // "sonnet" = balanced, which is unset here → the default model.
+    expect(getAgentModel(undefined, 'deepseek-v4-pro', 'sonnet')).toBe('deepseek-v4-pro')
+  })
+
+  test('a published tier code missing from the catalog falls back to the default', async () => {
+    const cfg = await activateRayuHosted()
+    cfg.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      subagentTierModels: { fast: 'renamed-away' },
+    })
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel(undefined, 'deepseek-v4-pro', 'fast')).toBe('deepseek-v4-pro')
+  })
+
+  test("on a non-Rayu provider 'fast' maps to its small/fast model, not a literal id", async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'nvidia',
+      kind: 'openai-compatible',
+      apiKey: 'k',
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      defaultModel: 'meta/llama-3.3-70b-instruct',
+      smallFastModel: 'nvidia/llama-3.1-nemotron-70b-instruct',
+    })
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel(undefined, 'meta/llama-3.3-70b-instruct', 'fast')).toBe(
+      'nvidia/llama-3.1-nemotron-70b-instruct',
+    )
+  })
+
+  test('an empty catalog cannot be judged, so the id is kept', async () => {
+    const cfg = await fresh()
+    cfg.upsertProvider({
+      id: 'rayu-hosted',
+      kind: 'rayu-hosted',
+      apiKey: 'jwt',
+      fetchedModels: [],
+      defaultModel: 'deepseek-v4-pro',
+    })
+    const { getAgentModel } = await import('../src/utils/model/agent.ts')
+    expect(getAgentModel(undefined, 'deepseek-v4-pro', 'some-model')).toBe('some-model')
+  })
+})

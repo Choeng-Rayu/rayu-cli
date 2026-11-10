@@ -26,6 +26,7 @@ import {
   isOpenAICompatibleActive,
 } from 'src/utils/model/providers.js'
 import {
+  hasFirstPartyBodyCap,
   isFirstPartyRequest,
   providerAcceptsImages,
   usesTranslatedFormat,
@@ -202,6 +203,10 @@ import {
   isToolSearchEnabled,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
+import {
+  getRequestMessagesBudgetBytes,
+  shedMediaToFitRequestBudget,
+} from '../../utils/mediaBytes.js'
 import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
 import {
   formatDeferredToolLine,
@@ -1339,6 +1344,24 @@ async function* queryModel(
     messagesForAPI,
     API_MAX_MEDIA_PER_REQUEST,
   )
+
+  // Keep the serialized history under the request-body cap (rayu-gateway: 8 MiB).
+  // Every turn re-sends the whole post-compact history and a resumed session
+  // restores all of it, so old screenshots alone can 413 a one-word turn. This
+  // replaces the OLDEST media with a placeholder; the current turn is untouched.
+  {
+    const shed = shedMediaToFitRequestBudget(
+      messagesForAPI,
+      getRequestMessagesBudgetBytes(hasFirstPartyBodyCap(options.model)),
+    )
+    if (shed.shedCount > 0) {
+      logForDebugging(
+        `request-budget: replaced ${shed.shedCount} old media block(s) (${shed.shedBytes} bytes); messages now ${shed.totalBytes} bytes`,
+        { level: 'warn' },
+      )
+      messagesForAPI = shed.messages
+    }
+  }
 
   // Drop image content when the resolved (provider, model) is text-only.
   //

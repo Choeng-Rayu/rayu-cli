@@ -280,6 +280,17 @@ export function getRequestTooLargeContextMessage(): string {
 }
 
 /**
+ * User-facing text for a 413 whose body is mostly TEXT (long history, large
+ * tool outputs) rather than media. Media-shedding cannot fix this; only
+ * summarizing or starting fresh can.
+ */
+export function getConversationTooLargeMessage(): string {
+  return getIsNonInteractiveSession()
+    ? 'Request too large: this conversation\u2019s history exceeds the request size limit. Start a new session.'
+    : 'Request too large: this conversation\u2019s history exceeds the request size limit. Run /compact to summarize it, or /clear to start fresh.'
+}
+
+/**
  * User-facing text for "this model has no vision capability".
  *
  * Two things the user MUST be told, because neither is obvious from the raw
@@ -758,11 +769,23 @@ function isRayuHostedActive(): boolean {
  */
 export function isRayuHostedProviderUnavailable(error: unknown): boolean {
   if (!(error instanceof APIError) || !isRayuHostedActive()) return false
-  // The gateway normalizes hosted upstream failures to 5xx (502/503).
-  if (typeof error.status === 'number' && error.status >= 500) return true
+  // Do NOT match every 5xx: the gateway also uses 5xx for non-model failures
+  // (entitlement lookup failed, gateway busy, billing config unavailable) whose
+  // real message must reach the user instead of "The model is under high
+  // volume." Only a provider_unavailable marker classifies as this family.
   // Belt-and-suspenders: match the stable marker wherever it survives the
   // OpenAI/Anthropic error translation (parsed body or composed message).
   const body = (error as { error?: unknown }).error
+  // Cloudflare 5xx: when the gateway origin is down Cloudflare answers with its
+  // own JSON (`cloudflare_error: true`). That raw body must never reach the
+  // user — treat it the same as provider_unavailable.
+  if (
+    body &&
+    typeof body === 'object' &&
+    (body as { cloudflare_error?: unknown }).cloudflare_error === true
+  ) {
+    return true
+  }
   if (body && typeof body === 'object') {
     if (String((body as { type?: unknown }).type ?? '') === 'provider_unavailable') return true
     const nested = (body as { error?: unknown }).error
@@ -1028,6 +1051,38 @@ export function getAssistantMessageFromError(
     })
   }
 
+  // Team plan required: the team has no active credit plan, so the gateway
+  // refuses with 402. Falls through to this dedicated branch so the user sees
+  // a team-specific purchase prompt instead of the generic "API Error: ...".
+  if (error instanceof APIError && error.status === 402) {
+    const body = (error as { error?: unknown }).error
+    const errorType =
+      body && typeof body === 'object'
+        ? String((body as { type?: unknown }).type ?? '')
+        : ''
+    // The OpenAI→Anthropic translation can nest the discriminator, so check the
+    // nested body too.
+    const nested = body && typeof body === 'object'
+      ? (body as { error?: unknown }).error
+      : undefined
+    const nestedType =
+      nested && typeof nested === 'object'
+        ? String((nested as { type?: unknown }).type ?? '')
+        : ''
+    if (
+      errorType === 'team_plan_required' ||
+      nestedType === 'team_plan_required' ||
+      error.message.includes('team_plan_required') ||
+      error.message.includes('team has no credit')
+    ) {
+      const plansUrl = getRayuPlansUrl()
+      return createAssistantAPIErrorMessage({
+        error: 'billing_error',
+        content: `💳 Your team has no active credit plan. Purchase a team plan to continue using Rayu-hosted models: ${plansUrl}`,
+      })
+    }
+  }
+
   if (
     error instanceof APIError &&
     error.status === 429 &&
@@ -1252,6 +1307,7 @@ export function getAssistantMessageFromError(
   if (error instanceof APIError && error.status === 413) {
     const messagesForAPI = options?.messagesForAPI
     let isAccumulatedContext = false
+    let isTextDominated = false
     if (messagesForAPI && messagesForAPI.length > 0) {
       let lastUserIdx = -1
       for (let i = messagesForAPI.length - 1; i >= 0; i--) {
@@ -1262,12 +1318,32 @@ export function getAssistantMessageFromError(
       }
       const priorSlice =
         lastUserIdx > 0 ? messagesForAPI.slice(0, lastUserIdx) : []
-      isAccumulatedContext = estimateMediaBytes(priorSlice) > 0
+      const priorMedia = estimateMediaBytes(priorSlice)
+      const currentMedia = estimateMediaBytes(
+        lastUserIdx >= 0 ? messagesForAPI.slice(lastUserIdx) : messagesForAPI,
+      )
+      let totalBytes = 0
+      for (const m of messagesForAPI) {
+        totalBytes += Buffer.byteLength(
+          JSON.stringify(m.message.content ?? ''),
+          'utf8',
+        )
+      }
+      // Blame accumulated media only when it is a real share of the body. A
+      // single small screenshot in a text-heavy history used to flip this to
+      // "remove earlier images" for users who never pasted an image.
+      if (priorMedia > 0 && priorMedia * 2 >= totalBytes) {
+        isAccumulatedContext = true
+      } else if (currentMedia * 2 < totalBytes) {
+        isTextDominated = true
+      }
     }
     return createAssistantAPIErrorMessage({
       content: isAccumulatedContext
         ? getRequestTooLargeContextMessage()
-        : getRequestTooLargeErrorMessage(),
+        : isTextDominated
+          ? getConversationTooLargeMessage()
+          : getRequestTooLargeErrorMessage(),
       error: 'invalid_request',
     })
   }
@@ -1472,6 +1548,18 @@ export function getAssistantMessageFromError(
       error.message.includes('model not available on your plan') ||
       error.message.toLowerCase().includes('paid feature') ||
       error.message.includes('plan_upgrade_required')
+    // API key scope denial: the key is valid but is not scoped to this model.
+    // This is an API key restriction, NOT a plan limit, so showing the upgrade
+    // prompt would send the user to the wrong place. Checked before plan gating
+    // because both can arrive as 403 on the hosted provider.
+    if (error.message.includes('not allowed for this API key')) {
+      const dashboardUrl = getRayuDashboardUrl()
+      const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'
+      return createAssistantAPIErrorMessage({
+        error: 'invalid_request',
+        content: `🔑 Your API key doesn't have access to the model "${model}". Check your API key's model scope in your dashboard: ${dashboardUrl} — or run ${switchCmd} to switch to a model your key can access.`,
+      })
+    }
     if (onHosted || planGated) {
       const plansUrl = getRayuPlansUrl()
       const switchCmd = getIsNonInteractiveSession() ? '--model' : '/model'

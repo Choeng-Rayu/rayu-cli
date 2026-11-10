@@ -297,6 +297,28 @@ describe('catalog mapping', () => {
     expect(parseRayuCatalog({ data: 'nope' }).models).toEqual([])
   })
 
+  test('reads subagent tiers, keeping only known tiers that name a catalog model', async () => {
+    const { parseRayuCatalog } = await catalog()
+    const out = parseRayuCatalog({
+      data: [{ id: 'flash' }, { id: 'pro' }],
+      subagentTiers: {
+        fast: 'flash',
+        capable: 'pro',
+        balanced: 'not-in-catalog', // stale or renamed: dropped, so the default applies
+        turbo: 'flash', // unknown tier name: ignored
+      },
+    })
+    expect(out.subagentTierModels).toEqual({ fast: 'flash', capable: 'pro' })
+  })
+
+  test('an older gateway without subagentTiers yields no tiers', async () => {
+    const { parseRayuCatalog } = await catalog()
+    expect(parseRayuCatalog({ data: [{ id: 'flash' }] }).subagentTierModels).toEqual({})
+    expect(
+      parseRayuCatalog({ data: [{ id: 'flash' }], subagentTiers: ['flash'] }).subagentTierModels,
+    ).toEqual({})
+  })
+
   test('classifies fetch failures so a good key is never blamed', async () => {
     const { fetchRayuApiKeyCatalog } = await catalog()
 
