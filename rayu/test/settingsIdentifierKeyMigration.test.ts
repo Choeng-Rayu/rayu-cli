@@ -42,6 +42,26 @@ describe('normalizeLegacySettingsIdentifierKeys (pure)', () => {
   })
 })
 
+describe('MDM / enterprise policy parse path', () => {
+  test('parseCommandOutputAsSettings normalizes legacy keys (plist/registry delivery)', async () => {
+    const { parseCommandOutputAsSettings } = await import(
+      '../src/utils/settings/mdm/settings.ts'
+    )
+    const legacy = JSON.stringify({
+      claudeMdExcludes: ['policy-exclude.md'],
+      claudeMcpEnabled: false,
+      claudeSkillsEnabled: false,
+    })
+    const { settings, errors } = parseCommandOutputAsSettings(legacy, 'mdm-test')
+    expect(errors).toEqual([])
+    const s = settings as Record<string, unknown>
+    expect(s.rayuMdExcludes).toEqual(['policy-exclude.md'])
+    expect(s.rayuMcpEnabled).toBe(false)
+    expect(s.rayuSkillsEnabled).toBe(false)
+    expect(s.claudeMdExcludes).toBeUndefined()
+  })
+})
+
 describe('settings dual-read (filesystem, non-destructive)', () => {
   let dir: string
   beforeEach(() => {

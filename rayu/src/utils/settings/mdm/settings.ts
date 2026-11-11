@@ -25,6 +25,7 @@ import { readFileSync } from '../../fileRead.js'
 import { getFsImplementation } from '../../fsOperations.js'
 import { safeParseJSON } from '../../json.js'
 import { profileCheckpoint } from '../../startupProfiler.js'
+import { normalizeLegacySettingsIdentifierKeys } from '../identifierKeys.js'
 import {
   getManagedFilePath,
   getManagedSettingsDropInDir,
@@ -190,6 +191,9 @@ export function parseCommandOutputAsSettings(
   }
 
   const ruleWarnings = filterInvalidPermissionRules(data, sourcePath)
+  // MDM policy can set the renamed settings keys too (e.g. claudeMdExcludes);
+  // normalize in memory so enterprise policies keep applying. Non-destructive.
+  normalizeLegacySettingsIdentifierKeys(data)
   const parseResult = SettingsSchema().safeParse(data)
   if (!parseResult.success) {
     const errors = formatZodError(parseResult.error, sourcePath)
