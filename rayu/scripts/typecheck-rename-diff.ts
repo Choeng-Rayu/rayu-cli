@@ -57,9 +57,13 @@ function buildMessageMapper(): (message: string) => string {
     .sort((a, b) => b[0].length - a[0].length)
   if (pairs.length === 0) return m => m
   const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const re = new RegExp(`\\b(${pairs.map(([old]) => escape(old)).join('|')})\\b`, 'g')
+  // TS error messages quote symbol names in single quotes ('claudeMdWarning').
+  // Map ONLY quoted tokens — never bare words inside module paths, string
+  // values, or header literals (e.g. './claude-api/…', 'claude-code-20250219'),
+  // which this codemod does not change.
+  const re = new RegExp(`'(${pairs.map(([old]) => escape(old)).join('|')})'`, 'g')
   const map = new Map(pairs)
-  return message => message.replace(re, m => map.get(m) ?? m)
+  return message => message.replace(re, (m, name: string) => `'${map.get(name) ?? name}'`)
 }
 
 const { output, exitCode } = runTsc()

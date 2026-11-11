@@ -963,7 +963,6 @@
   "src/utils/telemetry/instrumentation.ts|TS2345|Argument of type 'OTLPTraceExporter' is not assignable to parameter of type 'never'.": 1,
   "src/utils/telemetry/instrumentation.ts|TS2345|Argument of type 'PeriodicExportingMetricReader' is not assignable to parameter of type 'never'.": 2,
   "src/utils/teleport.tsx|TS2345|Argument of type '\"suggestion\"' is not assignable to parameter of type 'SystemMessageLevel'.": 1,
-  "src/utils/toolErrors.ts|TS2345|Argument of type 'string' is not assignable to parameter of type 'never'.": 3,
   "src/utils/toolSearch.ts|TS2339|Property 'preCompactDiscoveredTools' does not exist on type 'CompactMetadata'.": 1,
   "test/bedrockLive.test.ts|TS2307|Cannot find module '@anthropic-ai/bedrock-sdk' or its corresponding type declarations.": 1,
   "test/reportedBugFixes.test.ts|TS2554|Expected 0 arguments, but got 1.": 2
