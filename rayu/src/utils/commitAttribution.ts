@@ -913,7 +913,17 @@ export function restoreAttributionStateFromSnapshots(
 
   state.surface = lastSnapshot.surface
   for (const [path, fileState] of Object.entries(lastSnapshot.fileStates)) {
-    state.fileStates.set(path, fileState)
+    // Transcripts written before the identifier rename stored the count under
+    // 'claudeContribution'. Dual-read it so old sessions restore correctly;
+    // new snapshots already use rayuContribution. No transcript is rewritten.
+    const record = fileState as Record<string, unknown>
+    const contribution = record.rayuContribution ?? record.claudeContribution
+    const normalized: FileAttributionState = {
+      ...fileState,
+      rayuContribution: typeof contribution === 'number' ? contribution : 0,
+    }
+    delete (normalized as Record<string, unknown>).claudeContribution
+    state.fileStates.set(path, normalized)
   }
 
   // Restore prompt counts from the last snapshot (most recent state)

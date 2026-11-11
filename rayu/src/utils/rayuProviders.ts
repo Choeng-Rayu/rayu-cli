@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import {
   type ProviderKind,
+  type RayuConfig,
   type RayuProvider,
   getActiveProvider,
   loadRayuConfig,
@@ -291,7 +292,46 @@ export function supportsMultiApiKey(providerId: string | undefined): boolean {
  * Declared next to the preset — and imported by the /connect UI from here — so
  * the UI does not have to pull in the OAuth modules just to name the provider.
  */
-export const RAYU_SUBSCRIPTION_PROVIDER_ID = 'claude-subscription'
+export const RAYU_SUBSCRIPTION_PROVIDER_ID = 'rayu-subscription'
+
+/**
+ * Pre-rename provider id. Existing installs persisted 'claude-subscription' in
+ * providers.json (providers[].id, activeProvider, subagent selections);
+ * loadRayuConfig migrates those to the new id on read.
+ */
+export const LEGACY_SUBSCRIPTION_PROVIDER_ID = 'claude-subscription'
+
+/**
+ * Rewrite the legacy subscription provider id everywhere it is persisted in a
+ * RayuConfig: providers[].id, activeProvider, subagent.providerId, and every
+ * subagentByAgent[].providerId. Mutates in place; returns whether anything
+ * changed. Pure aside from the mutation — exported for tests. Lives here (not
+ * in rayuConfig) because rayuProviders already depends on rayuConfig; the
+ * loader lazy-requires it to avoid an import cycle.
+ */
+export function migrateLegacyProviderIds(cfg: RayuConfig): boolean {
+  let changed = false
+  const remap = (id: string): string => {
+    if (id !== LEGACY_SUBSCRIPTION_PROVIDER_ID) return id
+    changed = true
+    return RAYU_SUBSCRIPTION_PROVIDER_ID
+  }
+  for (const provider of cfg.providers) {
+    provider.id = remap(provider.id)
+  }
+  if (cfg.activeProvider !== undefined) {
+    cfg.activeProvider = remap(cfg.activeProvider)
+  }
+  if (cfg.subagent) {
+    cfg.subagent.providerId = remap(cfg.subagent.providerId)
+  }
+  if (cfg.subagentByAgent) {
+    for (const selection of Object.values(cfg.subagentByAgent)) {
+      selection.providerId = remap(selection.providerId)
+    }
+  }
+  return changed
+}
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {

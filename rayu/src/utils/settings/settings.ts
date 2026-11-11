@@ -28,6 +28,7 @@ import {
   getEnabledSettingSources,
   type SettingSource,
 } from './constants.js'
+import { normalizeLegacySettingsIdentifierKeys } from './identifierKeys.js'
 import { markInternalWrite } from './internalWrites.js'
 import {
   getManagedFilePath,
@@ -216,6 +217,7 @@ function parseSettingsFileUncached(path: string): {
     // rule doesn't cause the entire settings file to be rejected.
     const ruleWarnings = filterInvalidPermissionRules(data, path)
 
+    normalizeLegacySettingsIdentifierKeys(data)
     const result = SettingsSchema().safeParse(data)
 
     if (!result.success) {
@@ -353,6 +355,7 @@ function getSettingsForSourceUncached(
   if (source === 'flagSettings') {
     const inlineSettings = getFlagSettingsInline()
     if (inlineSettings) {
+      normalizeLegacySettingsIdentifierKeys(inlineSettings)
       const parsed = SettingsSchema().safeParse(inlineSettings)
       if (parsed.success) {
         return mergeWith(
@@ -689,6 +692,7 @@ function loadSettingsFromDisk(): SettingsWithErrors {
         // 1. Remote (highest priority)
         const remoteSettings = getRemoteManagedSettingsSyncFromCache()
         if (remoteSettings && Object.keys(remoteSettings).length > 0) {
+          normalizeLegacySettingsIdentifierKeys(remoteSettings)
           const result = SettingsSchema().safeParse(remoteSettings)
           if (result.success) {
             policySettings = result.data
@@ -779,6 +783,7 @@ function loadSettingsFromDisk(): SettingsWithErrors {
       if (source === 'flagSettings') {
         const inlineSettings = getFlagSettingsInline()
         if (inlineSettings) {
+          normalizeLegacySettingsIdentifierKeys(inlineSettings)
           const parsed = SettingsSchema().safeParse(inlineSettings)
           if (parsed.success) {
             mergedSettings = mergeWith(

@@ -275,7 +275,7 @@ describe('credential slot round-trip', () => {
 
 describe('request routing for a Claude subscription provider', () => {
   const oauthProvider = {
-    id: 'claude-subscription',
+    id: 'rayu-subscription',
     kind: 'anthropic' as const,
     anthropicAuthType: 'oauth' as const,
   }
@@ -360,7 +360,7 @@ describe('/connect wiring', () => {
     )
     cfg.upsertProvider(
       {
-        id: 'claude-subscription',
+        id: 'rayu-subscription',
         kind: 'anthropic',
         anthropicAuthType: 'oauth',
         fetchedModels: ['claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
@@ -370,7 +370,7 @@ describe('/connect wiring', () => {
     )
     const options = cfg.getAllProviderModelOptions()
     expect(
-      options.filter(o => o.providerId === 'claude-subscription').map(o => o.model),
+      options.filter(o => o.providerId === 'rayu-subscription').map(o => o.model),
     ).toEqual(['claude-sonnet-4-6', 'claude-haiku-4-5-20251001'])
     expect(options.some(o => o.providerId === 'anthropic')).toBe(false)
   })
@@ -382,17 +382,17 @@ describe('/connect wiring', () => {
       false,
     )
     cfg.upsertProvider(
-      { id: 'claude-subscription', kind: 'anthropic', anthropicAuthType: 'oauth' },
+      { id: 'rayu-subscription', kind: 'anthropic', anthropicAuthType: 'oauth' },
       true,
     )
-    expect(cfg.getActiveProvider()?.id).toBe('claude-subscription')
-    expect(cfg.removeProvider('claude-subscription')).toBe(true)
+    expect(cfg.getActiveProvider()?.id).toBe('rayu-subscription')
+    expect(cfg.removeProvider('rayu-subscription')).toBe(true)
     expect(
       cfg.loadRayuConfig().providers.map(p => p.id),
     ).toEqual(['nvidia'])
     // The active selection falls back rather than dangling.
     expect(cfg.getActiveProvider()?.id).toBe('nvidia')
-    expect(cfg.removeProvider('claude-subscription')).toBe(false)
+    expect(cfg.removeProvider('rayu-subscription')).toBe(false)
   })
 })
 

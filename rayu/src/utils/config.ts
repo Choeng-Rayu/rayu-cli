@@ -13,6 +13,7 @@ import type {
 } from '../services/oauth/types.js'
 import { getCwd } from './cwd.js'
 import { registerCleanup } from './cleanupRegistry.js'
+import { normalizeGlobalConfigIdentifierKeys } from './configIdentifierKeys.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getGlobalRayuFile } from './env.js'
@@ -661,8 +662,8 @@ export const GLOBAL_CONFIG_KEYS = [
   'inputNeededNotifEnabled',
   'agentPushNotifEnabled',
   'respectGitignore',
-  'claudeInChromeDefaultEnabled',
-  'hasCompletedClaudeInChromeOnboarding',
+  'rayuInChromeDefaultEnabled',
+  'hasCompletedRayuInChromeOnboarding',
   'lspRecommendationDisabled',
   'lspRecommendationNeverPlugins',
   'lspRecommendationIgnoredCount',
@@ -829,7 +830,10 @@ export function saveGlobalConfig(
         }
         written = {
           ...config,
-          projects: removeProjectHistory(current.projects),
+          // Honor projects the updater normalized (e.g. the identifier-key
+          // migration); fall back to the disk state for updaters that only
+          // touch global fields. History is stripped either way.
+          projects: removeProjectHistory(config.projects ?? current.projects),
         }
         return written
       },
@@ -867,7 +871,7 @@ export function saveGlobalConfig(
     }
     written = {
       ...config,
-      projects: removeProjectHistory(currentConfig.projects),
+      projects: removeProjectHistory(config.projects ?? currentConfig.projects),
     }
     saveConfig(getGlobalRayuFile(), written, DEFAULT_GLOBAL_CONFIG)
     writeThroughGlobalConfigCache(written)
@@ -919,6 +923,11 @@ registerCleanup(async () => {
  * @internal
  */
 function migrateConfigFields(config: GlobalConfig): GlobalConfig {
+  // Move legacy claude-named persisted keys to their rayu names. Must run
+  // BEFORE the installMethod early-return below — that return skips the rest
+  // of this function for every already-migrated config.
+  config = normalizeGlobalConfigIdentifierKeys(config)
+
   // Already migrated
   if (config.installMethod !== undefined) {
     return config

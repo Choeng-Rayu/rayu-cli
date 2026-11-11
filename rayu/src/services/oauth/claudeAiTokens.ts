@@ -20,7 +20,32 @@ import { getSecureStorage } from '../../utils/secureStorage/index.js'
 import type { OAuthTokens } from './types.js'
 
 /** secureStorage key holding the Claude.ai subscription tokens. */
-export const RAYU_AI_OAUTH_STORAGE_KEY = 'claudeAiOauth'
+export const RAYU_AI_OAUTH_STORAGE_KEY = 'rayuAiOauth'
+
+/**
+ * Pre-rename key. Existing installs stored the subscription tokens under
+ * `claudeAiOauth`; migrate-on-read moves them to the new key without ever
+ * logging the user out. Kept readable forever (idempotent migration).
+ */
+export const LEGACY_AI_OAUTH_STORAGE_KEY = 'claudeAiOauth'
+
+/**
+ * Copy a legacy-keyed token blob to the new key. Returns the same reference
+ * when nothing changed. Pure — exported for tests.
+ */
+export function migrateLegacyStorageKey(
+  blob: Record<string, unknown> | null | undefined,
+): { blob: Record<string, unknown>; changed: boolean } {
+  if (!blob || blob[LEGACY_AI_OAUTH_STORAGE_KEY] === undefined) {
+    return { blob: blob ?? {}, changed: false }
+  }
+  const next = { ...blob }
+  if (next[RAYU_AI_OAUTH_STORAGE_KEY] === undefined) {
+    next[RAYU_AI_OAUTH_STORAGE_KEY] = next[LEGACY_AI_OAUTH_STORAGE_KEY]
+  }
+  delete next[LEGACY_AI_OAUTH_STORAGE_KEY]
+  return { blob: next, changed: true }
+}
 
 /**
  * Refresh this long before the access token actually expires, so a request that
@@ -55,7 +80,11 @@ function isUsableTokenRecord(value: unknown): value is OAuthTokens {
 /** Read the stored tokens (sync). Returns null when not signed in. */
 export function readRayuAIOAuthTokens(): OAuthTokens | null {
   try {
-    const stored = getSecureStorage().read()?.[RAYU_AI_OAUTH_STORAGE_KEY]
+    const storage = getSecureStorage()
+    const { blob, changed } = migrateLegacyStorageKey(storage.read())
+    // Opportunistic rewrite: a failed migration still returns the tokens.
+    if (changed) storage.update(blob)
+    const stored = blob[RAYU_AI_OAUTH_STORAGE_KEY]
     return isUsableTokenRecord(stored) ? stored : null
   } catch {
     // An unreadable credential store is "not signed in", never a crash.
@@ -73,7 +102,9 @@ export async function readRayuAIOAuthTokensAsync(): Promise<OAuthTokens | null> 
     const data = storage.readAsync
       ? await storage.readAsync()
       : storage.read()
-    const stored = data?.[RAYU_AI_OAUTH_STORAGE_KEY]
+    const { blob, changed } = migrateLegacyStorageKey(data)
+    if (changed) storage.update(blob)
+    const stored = blob[RAYU_AI_OAUTH_STORAGE_KEY]
     return isUsableTokenRecord(stored) ? stored : null
   } catch {
     return null
@@ -90,9 +121,9 @@ export function writeRayuAIOAuthTokens(tokens: OAuthTokens): {
 } {
   try {
     const storage = getSecureStorage()
-    const existing = storage.read() ?? {}
+    const { blob } = migrateLegacyStorageKey(storage.read())
     const result = storage.update({
-      ...existing,
+      ...blob,
       [RAYU_AI_OAUTH_STORAGE_KEY]: tokens,
     })
     return result ?? { success: false }
@@ -106,8 +137,14 @@ export function deleteRayuAIOAuthTokens(): boolean {
   try {
     const storage = getSecureStorage()
     const existing = storage.read()
-    if (!existing?.[RAYU_AI_OAUTH_STORAGE_KEY]) return true
+    if (
+      !existing?.[RAYU_AI_OAUTH_STORAGE_KEY] &&
+      !existing?.[LEGACY_AI_OAUTH_STORAGE_KEY]
+    ) {
+      return true
+    }
     delete existing[RAYU_AI_OAUTH_STORAGE_KEY]
+    delete existing[LEGACY_AI_OAUTH_STORAGE_KEY]
     return storage.update(existing)?.success ?? false
   } catch {
     return false

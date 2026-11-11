@@ -96,7 +96,7 @@ export function getRayuCodeSkillsDir(): string | undefined {
 export function getRayuCodeSkillsDirIfEnabled(): string | undefined {
   const settings = getInitialSettings()
   const enabled =
-    (settings as Record<string, unknown>).claudeSkillsEnabled !== false
+    (settings as Record<string, unknown>).rayuSkillsEnabled !== false
   if (!enabled) return undefined
   return getRayuCodeSkillsDir()
 }
@@ -109,7 +109,7 @@ export function getRayuCodeSkillsDirIfEnabled(): string | undefined {
 export function getProjectRayuSkillsDirIfEnabled(): string | undefined {
   const settings = getInitialSettings()
   const enabled =
-    (settings as Record<string, unknown>).claudeSkillsEnabled !== false
+    (settings as Record<string, unknown>).rayuSkillsEnabled !== false
   if (!enabled) return undefined
   return existingDir(join(getCwd(), '.claude', 'skills'))
 }
@@ -287,6 +287,6 @@ export function getExternalSkillSourceStatus(): ExternalSkillSourceStatus {
     extraDirsFromSettings: getExtraSkillDirsFromSettings(),
     extraDirsFromEnv: getExtraSkillDirsFromEnv(),
     agentSkillsEnabled: s.agentSkillsEnabled !== false,
-    rayuSkillsEnabled: s.claudeSkillsEnabled !== false,
+    rayuSkillsEnabled: s.rayuSkillsEnabled !== false,
   }
 }

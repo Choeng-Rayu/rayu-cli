@@ -50,7 +50,7 @@ describe('provider presets', () => {
     // claude.ai subscription sign-in right after it — both are kind:'anthropic',
     // they differ only in how they authenticate.
     expect(PROVIDER_PRESETS[0]?.id).toBe('anthropic')
-    expect(PROVIDER_PRESETS[1]?.id).toBe('claude-subscription')
+    expect(PROVIDER_PRESETS[1]?.id).toBe('rayu-subscription')
   })
 
   test('an active anthropic provider routes to the native (non-OpenAI) API path', async () => {

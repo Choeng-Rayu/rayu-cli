@@ -308,6 +308,22 @@ export function loadRayuConfig(): RayuConfig {
     try {
       cache = JSON.parse(readFileSync(path, 'utf8')) as RayuConfig
       if (!Array.isArray(cache.providers)) cache.providers = []
+      // Migrate the legacy 'claude-subscription' provider id to its rayu name
+      // wherever it is persisted. Lazy require: rayuProviders imports this
+      // module, so a static import would cycle. In-memory normalization is
+      // authoritative; the rewrite is best-effort.
+      /* eslint-disable @typescript-eslint/no-require-imports */
+      const { migrateLegacyProviderIds } = require('./rayuProviders.js') as {
+        migrateLegacyProviderIds: (cfg: RayuConfig) => boolean
+      }
+      /* eslint-enable @typescript-eslint/no-require-imports */
+      if (migrateLegacyProviderIds(cache)) {
+        try {
+          saveRayuConfig(cache)
+        } catch {
+          // A failed rewrite still leaves the in-memory config correct.
+        }
+      }
       // modelSupportsImage is a documented hand-edit point, so it is untrusted
       // input keyed by MODEL ID — and model ids feed the
       // `providerId\u0000model` routing string. Sanitize on read so a bad key can

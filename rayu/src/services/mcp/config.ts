@@ -1020,7 +1020,7 @@ export function getRayuFallbackMcpServers(): Record<
   ScopedMcpServerConfig
 > {
   const settings = getInitialSettings() as Record<string, unknown>
-  if (settings.claudeMcpEnabled === false) return {}
+  if (settings.rayuMcpEnabled === false) return {}
 
   const fs = getFsImplementation()
   const cwd = getCwd()
