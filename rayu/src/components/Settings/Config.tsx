@@ -959,7 +959,7 @@ export function Config({
     label: 'External RAYU.md includes',
     value: (() => {
       const projectConfig = getCurrentProjectConfig();
-      if (projectConfig.hasClaudeMdExternalIncludesApproved) {
+      if (projectConfig.hasRayuMdExternalIncludesApproved) {
         return 'true';
       } else {
         return 'false';

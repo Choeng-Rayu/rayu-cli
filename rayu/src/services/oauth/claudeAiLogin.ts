@@ -29,14 +29,14 @@ import {
   upsertProvider,
 } from '../../utils/rayuConfig.js'
 import {
-  CLAUDE_SUBSCRIPTION_PROVIDER_ID,
+  RAYU_SUBSCRIPTION_PROVIDER_ID,
   PROVIDER_PRESETS,
 } from '../../utils/rayuProviders.js'
 import { storeOAuthAccountInfo } from './client.js'
 import { refreshRayuAIOAuthTokensIfNeeded } from './claudeAiTokens.js'
 import type { OAuthTokens, RateLimitTier, SubscriptionType } from './types.js'
 
-export { CLAUDE_SUBSCRIPTION_PROVIDER_ID }
+export { RAYU_SUBSCRIPTION_PROVIDER_ID as CLAUDE_SUBSCRIPTION_PROVIDER_ID }
 
 /**
  * `anthropic-version` for the raw (non-SDK) calls in this module. The Anthropic
@@ -48,7 +48,7 @@ const ANTHROPIC_VERSION = '2023-06-01'
 
 /** The preset backing the subscription provider (label, default models). */
 function subscriptionPreset() {
-  return PROVIDER_PRESETS.find(p => p.id === CLAUDE_SUBSCRIPTION_PROVIDER_ID)
+  return PROVIDER_PRESETS.find(p => p.id === RAYU_SUBSCRIPTION_PROVIDER_ID)
 }
 
 /**
@@ -227,7 +227,7 @@ export async function installRayuSubscription(
 
   const preset = subscriptionPreset()
   const base: RayuProvider = {
-    id: CLAUDE_SUBSCRIPTION_PROVIDER_ID,
+    id: RAYU_SUBSCRIPTION_PROVIDER_ID,
     kind: 'anthropic',
     label: preset?.label ?? 'Claude subscription (Pro / Max plan)',
     anthropicAuthType: 'oauth',
@@ -290,7 +290,7 @@ export function getRayuSubscriptionStatus(): RayuSubscriptionStatus {
   const tokens = getRayuAIOAuthTokens()
   const cfg = loadRayuConfig()
   const provider = cfg.providers.find(
-    p => p.id === CLAUDE_SUBSCRIPTION_PROVIDER_ID,
+    p => p.id === RAYU_SUBSCRIPTION_PROVIDER_ID,
   )
   const account = getGlobalConfig().oauthAccount
   return {
@@ -314,6 +314,6 @@ export function getRayuSubscriptionStatus(): RayuSubscriptionStatus {
  */
 export function logoutRayuSubscription(): boolean {
   const cleared = logoutRayuAISubscription()
-  removeProvider(CLAUDE_SUBSCRIPTION_PROVIDER_ID)
+  removeProvider(RAYU_SUBSCRIPTION_PROVIDER_ID)
   return cleared
 }

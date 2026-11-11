@@ -66,7 +66,7 @@ export function maybeRecordPluginHint(hint: RayuCodeHint): void {
   if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_lapis_finch', false)) return
   if (hasShownHintThisSession()) return
 
-  const state = getGlobalConfig().claudeCodeHints
+  const state = getGlobalConfig().rayuCodeHints
   if (state?.disabled) return
 
   const shown = state?.plugin ?? []
@@ -140,12 +140,12 @@ export async function resolvePluginHint(
  */
 export function markHintPluginShown(pluginId: string): void {
   saveGlobalConfig(current => {
-    const existing = current.claudeCodeHints?.plugin ?? []
+    const existing = current.rayuCodeHints?.plugin ?? []
     if (existing.includes(pluginId)) return current
     return {
       ...current,
-      claudeCodeHints: {
-        ...current.claudeCodeHints,
+      rayuCodeHints: {
+        ...current.rayuCodeHints,
         plugin: [...existing, pluginId],
       },
     }
@@ -155,10 +155,10 @@ export function markHintPluginShown(pluginId: string): void {
 /** Called when the user picks "don't show plugin installation hints again". */
 export function disableHintRecommendations(): void {
   saveGlobalConfig(current => {
-    if (current.claudeCodeHints?.disabled) return current
+    if (current.rayuCodeHints?.disabled) return current
     return {
       ...current,
-      claudeCodeHints: { ...current.claudeCodeHints, disabled: true },
+      rayuCodeHints: { ...current.rayuCodeHints, disabled: true },
     }
   })
 }

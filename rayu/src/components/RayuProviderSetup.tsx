@@ -25,7 +25,7 @@ import {
   PROVIDER_PRESETS,
   type ProviderPreset,
   BEDROCK_REGIONS,
-  CLAUDE_SUBSCRIPTION_PROVIDER_ID,
+  RAYU_SUBSCRIPTION_PROVIDER_ID,
   DEFAULT_BEDROCK_REGION,
   bedrockBaseURL,
   ollamaBaseURL,
@@ -173,7 +173,7 @@ export function RayuProviderSetup({
     if (p.id === 'ollama') {
       setFetchError(null)
       setPhase('ollamaDetect')
-    } else if (p.id === CLAUDE_SUBSCRIPTION_PROVIDER_ID) {
+    } else if (p.id === RAYU_SUBSCRIPTION_PROVIDER_ID) {
       // "Login with Claude (Pro plan / Max plan)". If a subscription login already
       // exists, show its status (plan + rate-limit tier + log out) instead of
       // silently re-running the browser flow. Must be checked BEFORE the generic
@@ -1262,7 +1262,7 @@ export function RayuProviderSetup({
                 const { setActiveProvider } = await import(
                   '../utils/rayuConfig.js'
                 )
-                setActiveProvider(CLAUDE_SUBSCRIPTION_PROVIDER_ID)
+                setActiveProvider(RAYU_SUBSCRIPTION_PROVIDER_ID)
                 onDone({ authChanged: true })
               })()
             } else if (v === 'relogin') {

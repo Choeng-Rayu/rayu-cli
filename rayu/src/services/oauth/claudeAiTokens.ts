@@ -20,7 +20,7 @@ import { getSecureStorage } from '../../utils/secureStorage/index.js'
 import type { OAuthTokens } from './types.js'
 
 /** secureStorage key holding the Claude.ai subscription tokens. */
-export const CLAUDE_AI_OAUTH_STORAGE_KEY = 'claudeAiOauth'
+export const RAYU_AI_OAUTH_STORAGE_KEY = 'claudeAiOauth'
 
 /**
  * Refresh this long before the access token actually expires, so a request that
@@ -55,7 +55,7 @@ function isUsableTokenRecord(value: unknown): value is OAuthTokens {
 /** Read the stored tokens (sync). Returns null when not signed in. */
 export function readRayuAIOAuthTokens(): OAuthTokens | null {
   try {
-    const stored = getSecureStorage().read()?.[CLAUDE_AI_OAUTH_STORAGE_KEY]
+    const stored = getSecureStorage().read()?.[RAYU_AI_OAUTH_STORAGE_KEY]
     return isUsableTokenRecord(stored) ? stored : null
   } catch {
     // An unreadable credential store is "not signed in", never a crash.
@@ -73,7 +73,7 @@ export async function readRayuAIOAuthTokensAsync(): Promise<OAuthTokens | null> 
     const data = storage.readAsync
       ? await storage.readAsync()
       : storage.read()
-    const stored = data?.[CLAUDE_AI_OAUTH_STORAGE_KEY]
+    const stored = data?.[RAYU_AI_OAUTH_STORAGE_KEY]
     return isUsableTokenRecord(stored) ? stored : null
   } catch {
     return null
@@ -93,7 +93,7 @@ export function writeRayuAIOAuthTokens(tokens: OAuthTokens): {
     const existing = storage.read() ?? {}
     const result = storage.update({
       ...existing,
-      [CLAUDE_AI_OAUTH_STORAGE_KEY]: tokens,
+      [RAYU_AI_OAUTH_STORAGE_KEY]: tokens,
     })
     return result ?? { success: false }
   } catch {
@@ -106,8 +106,8 @@ export function deleteRayuAIOAuthTokens(): boolean {
   try {
     const storage = getSecureStorage()
     const existing = storage.read()
-    if (!existing?.[CLAUDE_AI_OAUTH_STORAGE_KEY]) return true
-    delete existing[CLAUDE_AI_OAUTH_STORAGE_KEY]
+    if (!existing?.[RAYU_AI_OAUTH_STORAGE_KEY]) return true
+    delete existing[RAYU_AI_OAUTH_STORAGE_KEY]
     return storage.update(existing)?.success ?? false
   } catch {
     return false

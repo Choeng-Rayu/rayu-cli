@@ -325,11 +325,11 @@ describe('request routing for a Claude subscription provider', () => {
 
 describe('/connect wiring', () => {
   test('a "Login with Claude (Pro plan / Max plan)" preset exists and needs no API key', async () => {
-    const { PROVIDER_PRESETS, CLAUDE_SUBSCRIPTION_PROVIDER_ID } = await import(
+    const { PROVIDER_PRESETS, RAYU_SUBSCRIPTION_PROVIDER_ID } = await import(
       '../src/utils/rayuProviders.ts'
     )
     const preset = PROVIDER_PRESETS.find(
-      p => p.id === CLAUDE_SUBSCRIPTION_PROVIDER_ID,
+      p => p.id === RAYU_SUBSCRIPTION_PROVIDER_ID,
     )
     expect(preset).toBeDefined()
     expect(preset!.kind).toBe('anthropic')

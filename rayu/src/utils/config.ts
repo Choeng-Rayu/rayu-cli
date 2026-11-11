@@ -112,8 +112,8 @@ export type ProjectConfig = {
 
   hasCompletedProjectOnboarding?: boolean
   projectOnboardingSeenCount: number
-  hasClaudeMdExternalIncludesApproved?: boolean
-  hasClaudeMdExternalIncludesWarningShown?: boolean
+  hasRayuMdExternalIncludesApproved?: boolean
+  hasRayuMdExternalIncludesWarningShown?: boolean
   // MCP server approval fields - migrated to settings but kept for backward compatibility
   enabledMcpjsonServers?: string[]
   disabledMcpjsonServers?: string[]
@@ -143,8 +143,8 @@ const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   disabledMcpjsonServers: [],
   hasTrustDialogAccepted: false,
   projectOnboardingSeenCount: 0,
-  hasClaudeMdExternalIncludesApproved: false,
-  hasClaudeMdExternalIncludesWarningShown: false,
+  hasRayuMdExternalIncludesApproved: false,
+  hasRayuMdExternalIncludesWarningShown: false,
 }
 
 export type InstallMethod = 'local' | 'native' | 'global' | 'unknown'
@@ -215,7 +215,7 @@ export type GlobalConfig = {
   // a connector the user has actually used is worth flagging when it breaks,
   // but an org-configured connector that's been needs-auth since day one is
   // something the user has demonstrably ignored and shouldn't nag about.
-  claudeAiMcpEverConnected?: string[]
+  rayuAiMcpEverConnected?: string[]
   preferredNotifChannel: NotificationChannel
   /**
    * @deprecated. Use the Notification hook instead (docs/hooks.md).
@@ -399,7 +399,7 @@ export type GlobalConfig = {
   agentPushNotifEnabled?: boolean
 
   // RAYU usage tracking
-  claudeCodeFirstTokenDate?: string // ISO timestamp of the user's first RAYU OAuth token
+  rayuCodeFirstTokenDate?: string // ISO timestamp of the user's first RAYU OAuth token
 
   // Model switch callout tracking (ant-only)
   modelSwitchCalloutDismissed?: boolean // Whether user chose "Don't show again"
@@ -497,8 +497,8 @@ export type GlobalConfig = {
   officialMarketplaceAutoInstallNextRetryTime?: number // Earliest time to retry again
 
   // Rayu in Chrome settings
-  hasCompletedClaudeInChromeOnboarding?: boolean // Whether Rayu in Chrome onboarding has been shown
-  claudeInChromeDefaultEnabled?: boolean // Whether Rayu in Chrome is enabled by default (undefined means platform default)
+  hasCompletedRayuInChromeOnboarding?: boolean // Whether Rayu in Chrome onboarding has been shown
+  rayuInChromeDefaultEnabled?: boolean // Whether Rayu in Chrome is enabled by default (undefined means platform default)
   cachedChromeExtensionInstalled?: boolean // Cached result of whether Chrome extension is installed
 
   // Chrome extension pairing state (persisted across sessions)
@@ -515,7 +515,7 @@ export type GlobalConfig = {
   // RAYU hint protocol state (<claude-code-hint /> tags from CLIs/SDKs).
   // Nested by hint type so future types (docs, mcp, ...) slot in without new
   // top-level keys.
-  claudeCodeHints?: {
+  rayuCodeHints?: {
     // Plugin IDs the user has already been prompted for. Show-once semantics:
     // recorded regardless of yes/no response, never re-prompted. Capped at
     // 100 entries to bound config growth — past that, hints stop entirely.

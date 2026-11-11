@@ -291,7 +291,7 @@ export function supportsMultiApiKey(providerId: string | undefined): boolean {
  * Declared next to the preset — and imported by the /connect UI from here — so
  * the UI does not have to pull in the OAuth modules just to name the provider.
  */
-export const CLAUDE_SUBSCRIPTION_PROVIDER_ID = 'claude-subscription'
+export const RAYU_SUBSCRIPTION_PROVIDER_ID = 'claude-subscription'
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
@@ -326,7 +326,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     // subscription connected without either clobbering the other's credential.
     // The token is never stored in providers.json — it lives in secureStorage
     // (see services/oauth/claudeAiTokens.ts).
-    id: CLAUDE_SUBSCRIPTION_PROVIDER_ID,
+    id: RAYU_SUBSCRIPTION_PROVIDER_ID,
     label:
       'Login with Claude (Pro plan / Max plan) · sign in with your claude.ai subscription',
     kind: 'anthropic',

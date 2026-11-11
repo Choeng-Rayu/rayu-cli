@@ -560,7 +560,7 @@ function isRayuMdExcluded(filePath: string, type: MemoryType): boolean {
     return false
   }
 
-  const patterns = getInitialSettings().claudeMdExcludes
+  const patterns = getInitialSettings().rayuMdExcludes
   if (!patterns || patterns.length === 0) {
     return false
   }
@@ -808,7 +808,7 @@ export const getMemoryFiles = memoize(
     const config = getCurrentProjectConfig()
     const includeExternal =
       forceIncludeExternal ||
-      config.hasClaudeMdExternalIncludesApproved ||
+      config.hasRayuMdExternalIncludesApproved ||
       false
 
     // Process Managed file first (always loaded - policy settings)
@@ -1450,8 +1450,8 @@ export function hasExternalRayuMdIncludes(files: MemoryFileInfo[]): boolean {
 export async function shouldShowRayuMdExternalIncludesWarning(): Promise<boolean> {
   const config = getCurrentProjectConfig()
   if (
-    config.hasClaudeMdExternalIncludesApproved ||
-    config.hasClaudeMdExternalIncludesWarningShown
+    config.hasRayuMdExternalIncludesApproved ||
+    config.hasRayuMdExternalIncludesWarningShown
   ) {
     return false
   }

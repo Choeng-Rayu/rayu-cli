@@ -120,15 +120,15 @@ function _temp4(include, i) {
 function _temp3(current_0) {
   return {
     ...current_0,
-    hasClaudeMdExternalIncludesApproved: true,
-    hasClaudeMdExternalIncludesWarningShown: true
+    hasRayuMdExternalIncludesApproved: true,
+    hasRayuMdExternalIncludesWarningShown: true
   };
 }
 function _temp2(current) {
   return {
     ...current,
-    hasClaudeMdExternalIncludesApproved: false,
-    hasClaudeMdExternalIncludesWarningShown: true
+    hasRayuMdExternalIncludesApproved: false,
+    hasRayuMdExternalIncludesWarningShown: true
   };
 }
 function _temp() {

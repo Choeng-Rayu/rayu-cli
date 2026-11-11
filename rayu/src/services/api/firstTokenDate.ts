@@ -13,7 +13,7 @@ export async function fetchAndStoreRayuCodeFirstTokenDate(): Promise<void> {
   try {
     const config = getGlobalConfig()
 
-    if (config.claudeCodeFirstTokenDate !== undefined) {
+    if (config.rayuCodeFirstTokenDate !== undefined) {
       return
     }
 
@@ -52,7 +52,7 @@ export async function fetchAndStoreRayuCodeFirstTokenDate(): Promise<void> {
 
     saveGlobalConfig(current => ({
       ...current,
-      claudeCodeFirstTokenDate: firstTokenDate,
+      rayuCodeFirstTokenDate: firstTokenDate,
     }))
   } catch (error) {
     logError(error)
