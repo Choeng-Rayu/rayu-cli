@@ -1,12 +1,12 @@
 {
   "summary": {
-    "rename": 352,
+    "rename": 314,
     "override": 50,
-    "keep": 17,
-    "refused": 2,
+    "keep": 54,
+    "refused": 0,
     "byWave": {
-      "1": 244,
-      "2": 108,
+      "1": 211,
+      "2": 103,
       "3": 23,
       "4": 27
     },
@@ -124,75 +124,83 @@
     },
     {
       "symbol": "CLAUDE_CODE_OAUTH_TOKEN",
-      "newName": "RAYU_CODE_OAUTH_TOKEN",
+      "newName": "CLAUDE_CODE_OAUTH_TOKEN",
       "declFile": "src/bridge/sessionRunner.ts",
       "line": 314,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_ENVIRONMENT_KIND",
-      "newName": "RAYU_CODE_ENVIRONMENT_KIND",
+      "newName": "CLAUDE_CODE_ENVIRONMENT_KIND",
       "declFile": "src/bridge/sessionRunner.ts",
       "line": 315,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_FORCE_SANDBOX",
-      "newName": "RAYU_CODE_FORCE_SANDBOX",
+      "newName": "CLAUDE_CODE_FORCE_SANDBOX",
       "declFile": "src/bridge/sessionRunner.ts",
       "line": 316,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
-      "newName": "RAYU_CODE_SESSION_ACCESS_TOKEN",
+      "newName": "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
       "declFile": "src/bridge/sessionRunner.ts",
       "line": 317,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2",
-      "newName": "RAYU_CODE_POST_FOR_SESSION_INGRESS_V2",
+      "newName": "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2",
       "declFile": "src/bridge/sessionRunner.ts",
       "line": 320,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_USE_CCR_V2",
-      "newName": "RAYU_CODE_USE_CCR_V2",
+      "newName": "CLAUDE_CODE_USE_CCR_V2",
       "declFile": "src/bridge/sessionRunner.ts",
       "line": 324,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_WORKER_EPOCH",
-      "newName": "RAYU_CODE_WORKER_EPOCH",
+      "newName": "CLAUDE_CODE_WORKER_EPOCH",
       "declFile": "src/bridge/sessionRunner.ts",
       "line": 325,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
-      "newName": "RAYU_CODE_SESSION_ACCESS_TOKEN",
+      "newName": "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
       "declFile": "src/bridge/sessionRunner.ts",
       "line": 540,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "getClaudeAIOAuthTokens",
@@ -1353,21 +1361,23 @@
     },
     {
       "symbol": "CLAUDE_CODE_MCP_SERVER_NAME",
-      "newName": "RAYU_CODE_MCP_SERVER_NAME",
+      "newName": "CLAUDE_CODE_MCP_SERVER_NAME",
       "declFile": "src/services/mcp/headersHelper.ts",
       "line": 68,
       "wave": 2,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_MCP_SERVER_URL",
-      "newName": "RAYU_CODE_MCP_SERVER_URL",
+      "newName": "CLAUDE_CODE_MCP_SERVER_URL",
       "declFile": "src/services/mcp/headersHelper.ts",
       "line": 69,
       "wave": 2,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "fetchClaudeSubscriptionModels",
@@ -1877,12 +1887,13 @@
     },
     {
       "symbol": "CLAUDECODE",
-      "newName": "RAYUCODE",
+      "newName": "CLAUDECODE",
       "declFile": "src/utils/bash/ShellSnapshot.ts",
       "line": 466,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "hasClaudeAiBillingAccess",
@@ -2560,26 +2571,6 @@
       "status": "rename"
     },
     {
-      "symbol": "getGlobalClaudeFile",
-      "newName": "getGlobalRayuFile",
-      "declFile": "src/utils/env.ts",
-      "line": 16,
-      "wave": 1,
-      "refs": 17,
-      "status": "refused",
-      "reason": "scope already binds 'getGlobalRayuFile' (src/utils/env.ts:16)"
-    },
-    {
-      "symbol": "getClaudeConfigHomeDir",
-      "newName": "getRayuConfigHomeDir",
-      "declFile": "src/utils/envUtils.ts",
-      "line": 212,
-      "wave": 1,
-      "refs": 1,
-      "status": "refused",
-      "reason": "scope already binds 'getRayuConfigHomeDir' (src/utils/envUtils.ts:212)"
-    },
-    {
       "symbol": "ClaudeError",
       "newName": "RayuError",
       "declFile": "src/utils/errors.ts",
@@ -2680,12 +2671,13 @@
     },
     {
       "symbol": "CLAUDE_PROJECT_DIR",
-      "newName": "RAYU_PROJECT_DIR",
+      "newName": "CLAUDE_PROJECT_DIR",
       "declFile": "src/utils/hooks.ts",
       "line": 884,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "getLocalClaudePath",
@@ -2960,39 +2952,43 @@
     },
     {
       "symbol": "CLAUDE_PLUGIN_ROOT",
-      "newName": "RAYU_PLUGIN_ROOT",
+      "newName": "CLAUDE_PLUGIN_ROOT",
       "declFile": "src/utils/plugins/lspPluginIntegration.ts",
       "line": 267,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_PLUGIN_DATA",
-      "newName": "RAYU_PLUGIN_DATA",
+      "newName": "CLAUDE_PLUGIN_DATA",
       "declFile": "src/utils/plugins/lspPluginIntegration.ts",
       "line": 268,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_PLUGIN_ROOT",
-      "newName": "RAYU_PLUGIN_ROOT",
+      "newName": "CLAUDE_PLUGIN_ROOT",
       "declFile": "src/utils/plugins/mcpPluginIntegration.ts",
       "line": 512,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_PLUGIN_DATA",
-      "newName": "RAYU_PLUGIN_DATA",
+      "newName": "CLAUDE_PLUGIN_DATA",
       "declFile": "src/utils/plugins/mcpPluginIntegration.ts",
       "line": 513,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "curatedVertexClaudeModels",
@@ -3041,21 +3037,23 @@
     },
     {
       "symbol": "CLAUDECODE",
-      "newName": "RAYUCODE",
+      "newName": "CLAUDECODE",
       "declFile": "src/utils/Shell.ts",
       "line": 324,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_SESSION_ID",
-      "newName": "RAYU_CODE_SESSION_ID",
+      "newName": "CLAUDE_CODE_SESSION_ID",
       "declFile": "src/utils/Shell.ts",
       "line": 333,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "claudeTmuxEnv",
@@ -3149,12 +3147,13 @@
     },
     {
       "symbol": "CLAUDE_CODE_OAUTH_TOKEN",
-      "newName": "RAYU_CODE_OAUTH_TOKEN",
+      "newName": "CLAUDE_CODE_OAUTH_TOKEN",
       "declFile": "src/utils/teleport.tsx",
       "line": 829,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_SOCKET_PREFIX",
@@ -3202,15 +3201,6 @@
       "status": "rename"
     },
     {
-      "symbol": "getClaudeCodeUserAgent",
-      "newName": "getRayuCodeUserAgent",
-      "declFile": "src/utils/userAgent.ts",
-      "line": 12,
-      "wave": 1,
-      "refs": 26,
-      "status": "rename"
-    },
-    {
       "symbol": "claudeBindings",
       "newName": "rayuBindings",
       "declFile": "src/utils/worktree.ts",
@@ -3221,30 +3211,33 @@
     },
     {
       "symbol": "CLAUDE_CODE_TMUX_SESSION",
-      "newName": "RAYU_CODE_TMUX_SESSION",
+      "newName": "CLAUDE_CODE_TMUX_SESSION",
       "declFile": "src/utils/worktree.ts",
       "line": 1378,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_TMUX_PREFIX",
-      "newName": "RAYU_CODE_TMUX_PREFIX",
+      "newName": "CLAUDE_CODE_TMUX_PREFIX",
       "declFile": "src/utils/worktree.ts",
       "line": 1379,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_TMUX_PREFIX_CONFLICTS",
-      "newName": "RAYU_CODE_TMUX_PREFIX_CONFLICTS",
+      "newName": "CLAUDE_CODE_TMUX_PREFIX_CONFLICTS",
       "declFile": "src/utils/worktree.ts",
       "line": 1380,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "isClaudeCliInternal",
@@ -3257,30 +3250,33 @@
     },
     {
       "symbol": "CLAUDE_CODE_SSE_PORT",
-      "newName": "RAYU_CODE_SSE_PORT",
+      "newName": "CLAUDE_CODE_SSE_PORT",
       "declFile": "src/vscode/host/extension.ts",
       "line": 775,
       "wave": 2,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
-      "newName": "RAYU_CODE_EMIT_SESSION_STATE_EVENTS",
+      "newName": "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
       "declFile": "src/vscode/host/panel/sessionHandle.ts",
       "line": 1463,
       "wave": 2,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
-      "newName": "RAYU_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+      "newName": "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
       "declFile": "src/vscode/host/panel/sessionHandle.ts",
       "line": 1467,
       "wave": 2,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "claude",
@@ -3365,12 +3361,13 @@
     },
     {
       "symbol": "claudeAiOauth",
-      "newName": "rayuAiOauth",
+      "newName": "claudeAiOauth",
       "declFile": "test/claudeSubscriptionOAuth.test.ts",
       "line": 271,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "usesClaudeSubscriptionAuth",
@@ -3446,12 +3443,13 @@
     },
     {
       "symbol": "CLAUDE_CONFIG_DIR",
-      "newName": "RAYU_CONFIG_DIR",
+      "newName": "CLAUDE_CONFIG_DIR",
       "declFile": "test/externalAgentsTerminalObserve.test.ts",
       "line": 80,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "claudeDir",
@@ -3464,93 +3462,103 @@
     },
     {
       "symbol": "CLAUDE_CONFIG_DIR",
-      "newName": "RAYU_CONFIG_DIR",
+      "newName": "CLAUDE_CONFIG_DIR",
       "declFile": "test/externalAgentsTransport.test.ts",
       "line": 260,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
-      "newName": "RAYU_CODE_ENABLE_PROMPT_SUGGESTION",
+      "newName": "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
       "declFile": "test/helpers/creditsEngine.ts",
       "line": 172,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-      "newName": "RAYU_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+      "newName": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
       "declFile": "test/helpers/creditsEngine.ts",
       "line": 174,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_AUTO_CONNECT_IDE",
-      "newName": "RAYU_CODE_AUTO_CONNECT_IDE",
+      "newName": "CLAUDE_CODE_AUTO_CONNECT_IDE",
       "declFile": "test/helpers/creditsEngine.ts",
       "line": 175,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
-      "newName": "RAYU_CODE_EMIT_SESSION_STATE_EVENTS",
+      "newName": "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
       "declFile": "test/helpers/creditsEngine.ts",
       "line": 178,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
-      "newName": "RAYU_CODE_ENABLE_PROMPT_SUGGESTION",
+      "newName": "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
       "declFile": "test/helpers/orchestratorHarness.ts",
       "line": 105,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-      "newName": "RAYU_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+      "newName": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
       "declFile": "test/helpers/orchestratorHarness.ts",
       "line": 107,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_AUTO_CONNECT_IDE",
-      "newName": "RAYU_CODE_AUTO_CONNECT_IDE",
+      "newName": "CLAUDE_CODE_AUTO_CONNECT_IDE",
       "declFile": "test/helpers/orchestratorHarness.ts",
       "line": 110,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
-      "newName": "RAYU_CODE_EMIT_SESSION_STATE_EVENTS",
+      "newName": "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
       "declFile": "test/helpers/orchestratorHarness.ts",
       "line": 113,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "claudeAiOauth",
-      "newName": "rayuAiOauth",
+      "newName": "claudeAiOauth",
       "declFile": "test/macOsKeychainStartup.test.ts",
       "line": 161,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "seedClaudeMainAndDeepSeekCollaborator",
@@ -3841,7 +3849,7 @@
     },
     {
       "file": "src/utils/env.ts",
-      "line": 332,
+      "line": 330,
       "name": "CLAUDE_CODE_HOST_PLATFORM"
     },
     {
