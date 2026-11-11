@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNotifications } from 'src/context/notifications.js';
 import { Text } from 'src/ink.js';
 import { getRateLimitWarning, getUsingOverageText } from 'src/services/claudeAiLimits.js';
-import { useClaudeAiLimits } from 'src/services/claudeAiLimitsHook.js';
+import { useRayuAiLimits } from 'src/services/claudeAiLimitsHook.js';
 import { getSubscriptionType } from 'src/utils/auth.js';
 import { hasRayuAiBillingAccess } from 'src/utils/billing.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
@@ -13,7 +13,7 @@ export function useRateLimitWarningNotification(model) {
   const {
     addNotification
   } = useNotifications();
-  const rayuAiLimits = useClaudeAiLimits();
+  const rayuAiLimits = useRayuAiLimits();
   let t0;
   if ($[0] !== rayuAiLimits || $[1] !== model) {
     t0 = getRateLimitWarning(rayuAiLimits, model);

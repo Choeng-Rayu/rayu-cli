@@ -38,13 +38,13 @@ beforeEach(async () => {
   process.env.RAYU_DIAGNOSTICS_NO_FILE = '1'
   refreshCalls = []
   const store = await import('../src/services/oauth/claudeAiTokens.ts')
-  store.resetClaudeAIOAuthRefreshState()
+  store.resetRayuAIOAuthRefreshState()
 })
 afterEach(async () => {
   rmSync(dir, { recursive: true, force: true })
   delete process.env.RAYU_CONFIG_DIR
   const store = await import('../src/services/oauth/claudeAiTokens.ts')
-  store.resetClaudeAIOAuthRefreshState()
+  store.resetRayuAIOAuthRefreshState()
 })
 
 function tokens(overrides: Partial<OAuthTokens> = {}): OAuthTokens {
@@ -75,27 +75,27 @@ const REFRESHED: OAuthTokens = {
 
 test('a token that is not near expiry is not refreshed', async () => {
   const store = await import('../src/services/oauth/claudeAiTokens.ts')
-  store.writeClaudeAIOAuthTokens(tokens())
+  store.writeRayuAIOAuthTokens(tokens())
   refreshImpl = async () => REFRESHED
 
-  expect(await store.refreshClaudeAIOAuthTokensIfNeeded()).toBe(true)
+  expect(await store.refreshRayuAIOAuthTokensIfNeeded()).toBe(true)
   expect(refreshCalls).toHaveLength(0)
-  expect(store.readClaudeAIOAuthTokens()?.accessToken).toBe('access-old')
+  expect(store.readRayuAIOAuthTokens()?.accessToken).toBe('access-old')
 })
 
 test('an expired token is refreshed and the rotated pair is persisted', async () => {
   const store = await import('../src/services/oauth/claudeAiTokens.ts')
   // Inside the 5-minute refresh buffer.
-  store.writeClaudeAIOAuthTokens(tokens({ expiresAt: Date.now() + 30_000 }))
+  store.writeRayuAIOAuthTokens(tokens({ expiresAt: Date.now() + 30_000 }))
   refreshImpl = async () => REFRESHED
 
-  expect(await store.refreshClaudeAIOAuthTokensIfNeeded()).toBe(true)
+  expect(await store.refreshRayuAIOAuthTokensIfNeeded()).toBe(true)
   expect(refreshCalls).toHaveLength(1)
   expect(refreshCalls[0]!.refreshToken).toBe('refresh-old')
   // The stored scopes are re-requested, not silently dropped.
   expect(refreshCalls[0]!.scopes).toEqual(['user:profile', 'user:inference'])
 
-  const stored = store.readClaudeAIOAuthTokens()
+  const stored = store.readRayuAIOAuthTokens()
   expect(stored?.accessToken).toBe('access-new')
   expect(stored?.refreshToken).toBe('refresh-new')
   // The refresh response carries no account block; the existing one is kept so
@@ -105,19 +105,19 @@ test('an expired token is refreshed and the rotated pair is persisted', async ()
 
 test('force refreshes even when the token looks valid', async () => {
   const store = await import('../src/services/oauth/claudeAiTokens.ts')
-  store.writeClaudeAIOAuthTokens(tokens())
+  store.writeRayuAIOAuthTokens(tokens())
   refreshImpl = async () => REFRESHED
 
-  expect(await store.refreshClaudeAIOAuthTokensIfNeeded({ force: true })).toBe(
+  expect(await store.refreshRayuAIOAuthTokensIfNeeded({ force: true })).toBe(
     true,
   )
   expect(refreshCalls).toHaveLength(1)
-  expect(store.readClaudeAIOAuthTokens()?.accessToken).toBe('access-new')
+  expect(store.readRayuAIOAuthTokens()?.accessToken).toBe('access-new')
 })
 
 test('concurrent callers share ONE refresh (the refresh token rotates)', async () => {
   const store = await import('../src/services/oauth/claudeAiTokens.ts')
-  store.writeClaudeAIOAuthTokens(tokens({ expiresAt: Date.now() + 30_000 }))
+  store.writeRayuAIOAuthTokens(tokens({ expiresAt: Date.now() + 30_000 }))
 
   let release: (() => void) | undefined
   const gate = new Promise<void>(resolve => {
@@ -129,9 +129,9 @@ test('concurrent callers share ONE refresh (the refresh token rotates)', async (
   }
 
   const all = Promise.all([
-    store.refreshClaudeAIOAuthTokensIfNeeded(),
-    store.refreshClaudeAIOAuthTokensIfNeeded(),
-    store.refreshClaudeAIOAuthTokensIfNeeded(),
+    store.refreshRayuAIOAuthTokensIfNeeded(),
+    store.refreshRayuAIOAuthTokensIfNeeded(),
+    store.refreshRayuAIOAuthTokensIfNeeded(),
   ])
   release!()
   expect(await all).toEqual([true, true, true])
@@ -142,20 +142,20 @@ test('concurrent callers share ONE refresh (the refresh token rotates)', async (
 
 test('a failing refresh returns false instead of throwing, and keeps the old tokens', async () => {
   const store = await import('../src/services/oauth/claudeAiTokens.ts')
-  store.writeClaudeAIOAuthTokens(tokens({ expiresAt: Date.now() + 30_000 }))
+  store.writeRayuAIOAuthTokens(tokens({ expiresAt: Date.now() + 30_000 }))
   refreshImpl = async () => {
     throw new Error('invalid_grant')
   }
 
-  expect(await store.refreshClaudeAIOAuthTokensIfNeeded()).toBe(false)
+  expect(await store.refreshRayuAIOAuthTokensIfNeeded()).toBe(false)
   // Retried internally before giving up.
   expect(refreshCalls.length).toBeGreaterThan(1)
-  expect(store.readClaudeAIOAuthTokens()?.accessToken).toBe('access-old')
+  expect(store.readRayuAIOAuthTokens()?.accessToken).toBe('access-old')
 })
 
 test('no stored login → no refresh attempt, reported as unavailable', async () => {
   const store = await import('../src/services/oauth/claudeAiTokens.ts')
   refreshImpl = async () => REFRESHED
-  expect(await store.refreshClaudeAIOAuthTokensIfNeeded()).toBe(false)
+  expect(await store.refreshRayuAIOAuthTokensIfNeeded()).toBe(false)
   expect(refreshCalls).toHaveLength(0)
 })

@@ -20,12 +20,12 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { join } from 'path'
 import { logForDebugging } from '../../../utils/debug.js'
 import { errorMessage, isFsInaccessible } from '../../../utils/errors.js'
-import { getClaudeCodeConfigDir } from '../../../plugins/installers/detect.js'
+import { getRayuCodeConfigDir } from '../../../plugins/installers/detect.js'
 import { parseJSONL } from '../../../utils/json.js'
 
 /** `<config>/projects` — one directory per project Claude Code has worked in. */
 export function getClaudeProjectsDir(): string {
-  return join(getClaudeCodeConfigDir(), 'projects')
+  return join(getRayuCodeConfigDir(), 'projects')
 }
 
 export type ClaudeTranscript = {

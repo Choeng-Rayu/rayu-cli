@@ -233,6 +233,41 @@ function isSpecifier(d: ts.Declaration): boolean {
   return ts.isImportSpecifier(d) || ts.isExportSpecifier(d) || ts.isImportClause(d)
 }
 
+/**
+ * Position of a declaration's NAME node. findRenameLocations must be called
+ * from the declaration — called from an import site it renames only the local
+ * binding, silently leaving the export and every other importer untouched.
+ */
+function declarationNameNode(d: ts.Declaration): ts.Node | undefined {
+  if (
+    ts.isVariableDeclaration(d) ||
+    ts.isBindingElement(d) ||
+    ts.isFunctionDeclaration(d) ||
+    ts.isClassDeclaration(d) ||
+    ts.isInterfaceDeclaration(d) ||
+    ts.isTypeAliasDeclaration(d) ||
+    ts.isEnumDeclaration(d) ||
+    ts.isEnumMember(d) ||
+    ts.isModuleDeclaration(d) ||
+    ts.isPropertySignature(d) ||
+    ts.isPropertyDeclaration(d) ||
+    ts.isPropertyAssignment(d) ||
+    ts.isShorthandPropertyAssignment(d) ||
+    ts.isMethodDeclaration(d) ||
+    ts.isMethodSignature(d) ||
+    ts.isGetAccessorDeclaration(d) ||
+    ts.isSetAccessorDeclaration(d) ||
+    ts.isParameter(d) ||
+    ts.isImportSpecifier(d) ||
+    ts.isExportSpecifier(d) ||
+    ts.isImportClause(d) ||
+    ts.isNamespaceExport(d)
+  ) {
+    return d.name ?? undefined
+  }
+  return undefined
+}
+
 function discover(ov: Overrides): {
   candidates: Candidate[]
   unresolved: Array<{ file: string; line: number; name: string }>
@@ -287,6 +322,11 @@ function discover(ov: Overrides): {
             const oldName = sym.getName()
             const pos = node.getStart(sf)
             const { line } = sf.getLineAndCharacterOfPosition(pos)
+            // Rename from the declaration's name, never from a random import
+            // site (which would rename only that file's local binding).
+            const nameNode = anchor ? declarationNameNode(anchor) : undefined
+            const renameFile = nameNode ? nameNode.getSourceFile().fileName : sf.fileName
+            const renamePos = nameNode ? nameNode.getStart() : pos
             let status: Status = 'rename'
             let reason: string | undefined
             let newName =
@@ -314,8 +354,8 @@ function discover(ov: Overrides): {
               symbol: sym,
               oldName,
               newName,
-              occFile: sf.fileName,
-              occPos: pos,
+              occFile: renameFile,
+              occPos: renamePos,
               declFile: anchorFile,
               declLine: anchor
                 ? anchor.getSourceFile().getLineAndCharacterOfPosition(anchor.getStart()).line + 1

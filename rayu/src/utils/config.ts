@@ -1813,11 +1813,11 @@ export function getMemoryPath(memoryType: MemoryType): string {
   return '' // unreachable in external builds where TeamMem is not in MemoryType
 }
 
-export function getManagedClaudeRulesDir(): string {
+export function getManagedRayuRulesDir(): string {
   return join(getManagedFilePath(), '.rayu', 'rules')
 }
 
-export function getUserClaudeRulesDir(): string {
+export function getUserRayuRulesDir(): string {
   return join(getRayuConfigHomeDir(), 'rules')
 }
 

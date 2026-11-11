@@ -1242,14 +1242,14 @@ async function fetchVertexGeminiModels(p: RayuProvider): Promise<string[]> {
  */
 async function fetchVertexModels(p: RayuProvider): Promise<string[]> {
   const gemini = await fetchVertexGeminiModels(p)
-  const { curatedVertexClaudeModels, curatedVertexMaasModels } = await import(
+  const { curatedVertexAnthropicModels, curatedVertexMaasModels } = await import(
     '../services/api/gemini/vertexAnthropic.js'
   )
   const out: string[] = []
   const seen = new Set<string>()
   for (const raw of [
     ...gemini,
-    ...curatedVertexClaudeModels(),
+    ...curatedVertexAnthropicModels(),
     ...curatedVertexMaasModels(),
   ]) {
     const id = sanitizeRemoteModelId(raw)
@@ -1382,10 +1382,10 @@ export async function fetchProviderModels(p: RayuProvider): Promise<string[]> {
   //  - api key (first-party console): x-api-key, fetched inline below.
   if (p.kind === 'anthropic') {
     if (p.anthropicAuthType === 'oauth') {
-      const { fetchClaudeSubscriptionModels } = await import(
+      const { fetchRayuSubscriptionModels } = await import(
         '../services/oauth/claudeAiLogin.js'
       )
-      return fetchClaudeSubscriptionModels()
+      return fetchRayuSubscriptionModels()
     }
     // First-party Anthropic (API key) DOES expose GET /v1/models, so the catalog
     // is listed LIVE here — it follows Anthropic's releases instead of a baked-in

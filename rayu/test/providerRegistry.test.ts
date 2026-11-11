@@ -267,7 +267,7 @@ describe('resolveWireFormat — per-model resolution (Task 3)', () => {
 
   test('model-family predicates only match real id shapes', async () => {
     const { _modelFamilyForTesting } = await registry()
-    const { isClaudeModelId: isAnthropicModelId, isGeminiModelId } = _modelFamilyForTesting
+    const { isAnthropicModelId: isAnthropicModelId, isGeminiModelId } = _modelFamilyForTesting
     for (const yes of [
       'claude-sonnet-4-6',
       'anthropic.claude-3-5-haiku-20241022-v1:0',

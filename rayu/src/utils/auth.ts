@@ -15,20 +15,20 @@ import {
   preferThirdPartyAuthentication,
 } from '../bootstrap/state.js'
 import {
-  CLAUDE_AI_INFERENCE_SCOPE,
-  CLAUDE_AI_PROFILE_SCOPE,
+  SUBSCRIPTION_INFERENCE_SCOPE,
+  SUBSCRIPTION_PROFILE_SCOPE,
 } from '../constants/oauth.js'
 import {
   getMockSubscriptionType,
   shouldUseMockSubscription,
 } from '../services/mockRateLimits.js'
 import {
-  deleteClaudeAIOAuthTokens,
-  readClaudeAIOAuthTokens,
-  readClaudeAIOAuthTokensAsync,
-  refreshClaudeAIOAuthTokensIfNeeded,
-  resetClaudeAIOAuthRefreshState,
-  writeClaudeAIOAuthTokens,
+  deleteRayuAIOAuthTokens,
+  readRayuAIOAuthTokens,
+  readRayuAIOAuthTokensAsync,
+  refreshRayuAIOAuthTokensIfNeeded,
+  resetRayuAIOAuthRefreshState,
+  writeRayuAIOAuthTokens,
 } from '../services/oauth/claudeAiTokens.js'
 import type { OAuthTokens, SubscriptionType } from '../services/oauth/types.js'
 import {
@@ -105,7 +105,7 @@ function isManagedOAuthContext(): boolean {
  * authenticate with the stored Anthropic OAuth access token rather than an
  * API key. Cheap + sync: safe on the request hot path.
  */
-export function isClaudeSubscriptionProviderActive(): boolean {
+export function isRayuSubscriptionProviderActive(): boolean {
   try {
     const active = getActiveProvider()
     return active?.kind === 'anthropic' && active.anthropicAuthType === 'oauth'
@@ -118,13 +118,13 @@ export function isClaudeSubscriptionProviderActive(): boolean {
  * True when a Claude.ai subscription login EXISTS on this machine (tokens with
  * the inference scope), regardless of which provider is currently active. Used
  * by the /connect status view; request-path decisions use
- * {@link isClaudeAISubscriber}, which additionally requires that login to be
+ * {@link isRayuAISubscriber}, which additionally requires that login to be
  * the active one.
  */
-export function hasClaudeAISubscriptionLogin(): boolean {
-  const tokens = getClaudeAIOAuthTokens()
+export function hasRayuAISubscriptionLogin(): boolean {
+  const tokens = getRayuAIOAuthTokens()
   if (!tokens?.accessToken) return false
-  return tokens.scopes?.includes(CLAUDE_AI_INFERENCE_SCOPE) ?? false
+  return tokens.scopes?.includes(SUBSCRIPTION_INFERENCE_SCOPE) ?? false
 }
 
 /** Whether we are supporting direct 1P auth. */
@@ -140,7 +140,7 @@ export function isAnthropicAuthEnabled(): boolean {
 
   // A Claude.ai subscription login is first-party Anthropic auth too — it just
   // carries a bearer OAuth token instead of an x-api-key.
-  if (isClaudeSubscriptionProviderActive() && hasClaudeAISubscriptionLogin()) {
+  if (isRayuSubscriptionProviderActive() && hasRayuAISubscriptionLogin()) {
     return true
   }
 
@@ -153,7 +153,7 @@ export function getAuthTokenSource(): {
   source: 'claudeai' | 'none'
   hasToken: boolean
 } {
-  if (isClaudeSubscriptionProviderActive() && hasClaudeAISubscriptionLogin()) {
+  if (isRayuSubscriptionProviderActive() && hasRayuAISubscriptionLogin()) {
     return { source: 'claudeai', hasToken: true }
   }
   return { source: 'none', hasToken: false }
@@ -1042,13 +1042,13 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
   success: boolean
   warning?: string
 } {
-  const result = writeClaudeAIOAuthTokens(tokens)
+  const result = writeRayuAIOAuthTokens(tokens)
   clearOAuthTokenCache()
   return result
 }
 
-export const getClaudeAIOAuthTokens = memoize((): OAuthTokens | null => {
-  return readClaudeAIOAuthTokens()
+export const getRayuAIOAuthTokens = memoize((): OAuthTokens | null => {
+  return readRayuAIOAuthTokens()
 })
 
 /**
@@ -1058,7 +1058,7 @@ export const getClaudeAIOAuthTokens = memoize((): OAuthTokens | null => {
  * server (e.g., due to clock corrections after token was issued).
  */
 export function clearOAuthTokenCache(): void {
-  getClaudeAIOAuthTokens.cache?.clear?.()
+  getRayuAIOAuthTokens.cache?.clear?.()
   clearKeychainCache()
 }
 
@@ -1073,13 +1073,13 @@ export async function handleOAuth401Error(
   failedAccessToken: string,
 ): Promise<boolean> {
   clearOAuthTokenCache()
-  const current = readClaudeAIOAuthTokens()
+  const current = readRayuAIOAuthTokens()
   if (!current?.refreshToken) return false
   if (current.accessToken !== failedAccessToken) {
     // Someone else already refreshed — the retry will pick up the new token.
     return true
   }
-  const ok = await refreshClaudeAIOAuthTokensIfNeeded({ force: true })
+  const ok = await refreshRayuAIOAuthTokensIfNeeded({ force: true })
   clearOAuthTokenCache()
   return ok
 }
@@ -1087,8 +1087,8 @@ export async function handleOAuth401Error(
 /**
  * Reads OAuth tokens asynchronously, avoiding blocking keychain reads.
  */
-export async function getClaudeAIOAuthTokensAsync(): Promise<OAuthTokens | null> {
-  return readClaudeAIOAuthTokensAsync()
+export async function getRayuAIOAuthTokensAsync(): Promise<OAuthTokens | null> {
+  return readRayuAIOAuthTokensAsync()
 }
 
 /**
@@ -1102,8 +1102,8 @@ export async function checkAndRefreshOAuthTokenIfNeeded(
   force = false,
 ): Promise<boolean> {
   void retryCount // retries are handled inside the single-flight refresh
-  if (!readClaudeAIOAuthTokens()) return false
-  const refreshed = await refreshClaudeAIOAuthTokensIfNeeded({ force })
+  if (!readRayuAIOAuthTokens()) return false
+  const refreshed = await refreshRayuAIOAuthTokensIfNeeded({ force })
   // The memoized sync reader must not keep serving the pre-refresh token.
   clearOAuthTokenCache()
   return refreshed
@@ -1115,8 +1115,8 @@ export async function checkAndRefreshOAuthTokenIfNeeded(
  * the active provider, so a user who has signed in with Claude but is currently
  * running on (say) NVIDIA does not get subscription-only request shaping.
  */
-export function isClaudeAISubscriber(): boolean {
-  return isClaudeSubscriptionProviderActive() && hasClaudeAISubscriptionLogin()
+export function isRayuAISubscriber(): boolean {
+  return isRayuSubscriptionProviderActive() && hasRayuAISubscriptionLogin()
 }
 
 /**
@@ -1125,7 +1125,7 @@ export function isClaudeAISubscriber(): boolean {
  */
 export function hasProfileScope(): boolean {
   return (
-    getClaudeAIOAuthTokens()?.scopes?.includes(CLAUDE_AI_PROFILE_SCOPE) ?? false
+    getRayuAIOAuthTokens()?.scopes?.includes(SUBSCRIPTION_PROFILE_SCOPE) ?? false
   )
 }
 
@@ -1134,9 +1134,9 @@ export function hasProfileScope(): boolean {
  * account info and every in-memory auth cache. The Rayu account JWT and all
  * other providers are left alone.
  */
-export function logoutClaudeAISubscription(): boolean {
-  const ok = deleteClaudeAIOAuthTokens()
-  resetClaudeAIOAuthRefreshState()
+export function logoutRayuAISubscription(): boolean {
+  const ok = deleteRayuAIOAuthTokens()
+  resetRayuAIOAuthRefreshState()
   saveGlobalConfig(current => ({ ...current, oauthAccount: undefined }))
   clearOAuthTokenCache()
   clearBetasCaches()
@@ -1161,7 +1161,7 @@ export function is1PApiCustomer(): boolean {
   }
 
   // Exclude subscription-account auth (unsupported in Rayu)
-  if (isClaudeAISubscriber()) {
+  if (isRayuAISubscriber()) {
     return false
   }
 
@@ -1186,7 +1186,7 @@ export function isOverageProvisioningAllowed(): boolean {
   const billingType = accountInfo?.billingType
 
   // Must be a Claude subscriber with a supported subscription type
-  if (!isClaudeAISubscriber() || !billingType) {
+  if (!isRayuAISubscriber() || !billingType) {
     return false
   }
 
@@ -1229,7 +1229,7 @@ export function getSubscriptionType(): SubscriptionType | null {
   if (!isAnthropicAuthEnabled()) {
     return null
   }
-  const oauthTokens = getClaudeAIOAuthTokens()
+  const oauthTokens = getRayuAIOAuthTokens()
   if (!oauthTokens) {
     return null
   }
@@ -1264,7 +1264,7 @@ export function getRateLimitTier(): string | null {
   if (!isAnthropicAuthEnabled()) {
     return null
   }
-  const oauthTokens = getClaudeAIOAuthTokens()
+  const oauthTokens = getRayuAIOAuthTokens()
   if (!oauthTokens) {
     return null
   }
@@ -1417,7 +1417,7 @@ function isConsumerPlan(plan: SubscriptionType): plan is 'max' | 'pro' {
 export function isConsumerSubscriber(): boolean {
   const subscriptionType = getSubscriptionType()
   return (
-    isClaudeAISubscriber() &&
+    isRayuAISubscriber() &&
     subscriptionType !== null &&
     isConsumerPlan(subscriptionType)
   )

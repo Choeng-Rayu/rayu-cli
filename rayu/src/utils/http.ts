@@ -5,7 +5,7 @@
 import axios from 'axios'
 import {
   getAnthropicApiKey,
-  getClaudeAIOAuthTokens,
+  getRayuAIOAuthTokens as getRayuAIOAuthTokens,
   handleOAuth401Error,
 } from './auth.js'
 import { getRayuUserAgent } from './userAgent.js'
@@ -105,7 +105,7 @@ export async function withOAuth401Retry<T>(
         typeof err.response?.data === 'string' &&
         err.response.data.includes('OAuth token has been revoked'))
     if (!isAuthError) throw err
-    const failedAccessToken = getClaudeAIOAuthTokens()?.accessToken
+    const failedAccessToken = getRayuAIOAuthTokens()?.accessToken
     if (!failedAccessToken) throw err
     await handleOAuth401Error(failedAccessToken)
     return await request()

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { isBridgeEnabled } from '../bridge/bridgeEnabled.js';
 import { Box, Text } from '../ink.js';
-import { getClaudeAIOAuthTokens } from '../utils/auth.js';
+import { getRayuAIOAuthTokens } from '../utils/auth.js';
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js';
 import type { OptionWithDescription } from './CustomSelect/select.js';
 import { Select } from './CustomSelect/select.js';
@@ -69,7 +69,7 @@ export function shouldShowRemoteCallout(): boolean {
   const config = getGlobalConfig();
   if (config.remoteDialogSeen) return false;
   if (!isBridgeEnabled()) return false;
-  const tokens = getClaudeAIOAuthTokens();
+  const tokens = getRayuAIOAuthTokens();
   if (!tokens?.accessToken) return false;
   return true;
 }

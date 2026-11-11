@@ -2,13 +2,13 @@ import { c as _c } from "react/compiler-runtime";
 import React, { useEffect, useMemo, useState } from 'react';
 import { extraUsage } from 'src/commands/extra-usage/index.js';
 import { Box, Text } from 'src/ink.js';
-import { useClaudeAiLimits } from 'src/services/claudeAiLimitsHook.js';
+import { useRayuAiLimits } from 'src/services/claudeAiLimitsHook.js';
 import { shouldProcessMockLimits } from 'src/services/rateLimitMocking.js'; // Used for /mock-limits command
 // Rayu credit pacing: a Rayu-hosted user hitting a session/weekly window is not a
 // claude.ai subscriber, so the upsell gate below would otherwise hide the options
 // menu from exactly the users it was built for.
 import { rayuPacingLimitFromLimits } from 'src/services/rayuAuth/rayuRateLimit.js';
-import { getRateLimitTier, getSubscriptionType, isClaudeAISubscriber } from 'src/utils/auth.js';
+import { getRateLimitTier, getSubscriptionType, isRayuAISubscriber } from 'src/utils/auth.js';
 import { hasRayuAiBillingAccess } from 'src/utils/billing.js';
 import { MessageResponse } from '../MessageResponse.js';
 type UpsellParams = {
@@ -79,7 +79,7 @@ export function RateLimitMessage(t0) {
   const isMax20x = rateLimitTier === "default_claude_max_20x";
   let t3;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = shouldProcessMockLimits() || isClaudeAISubscriber();
+    t3 = shouldProcessMockLimits() || isRayuAISubscriber();
     $[2] = t3;
   } else {
     t3 = $[2];
@@ -87,7 +87,7 @@ export function RateLimitMessage(t0) {
   const shouldShowUpsell = t3;
   const canSeeRateLimitOptionsUpsell = shouldShowUpsell && !isMax20x;
   const [hasOpenedInteractiveMenu, setHasOpenedInteractiveMenu] = useState(false);
-  const rayuAiLimits = useClaudeAiLimits();
+  const rayuAiLimits = useRayuAiLimits();
   // A Rayu pacing limit IS an actionable limit with a real alternative (the
   // dashboard switch), so it earns the same menu as a subscriber's limit. Without
   // this the notice would render but the menu would never open for a Rayu user,

@@ -38,7 +38,7 @@ export const MCP_SERVER_COMMAND_ENV_VAR = 'RAYU_MCP_SERVER_COMMAND'
 export const CODEX_HOME_ENV_VAR = 'CODEX_HOME'
 
 /** Claude Code honours CLAUDE_CONFIG_DIR as an override for `~/.claude`. */
-export const CLAUDE_CONFIG_DIR_ENV_VAR = 'CLAUDE_CONFIG_DIR'
+export const ANTHROPIC_CLI_CONFIG_DIR_ENV_VAR = 'CLAUDE_CONFIG_DIR'
 
 /** Sub-directory of the RAYU config home where pre-install backups are kept. */
 export const HOST_BACKUP_DIR = 'plugin-backups'

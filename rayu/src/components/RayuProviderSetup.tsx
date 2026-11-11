@@ -180,7 +180,7 @@ export function RayuProviderSetup({
       // `requiresOAuth` branch below, which is the Google/Vertex path.
       setFetchError(null)
       void (async () => {
-        const { getClaudeSubscriptionStatus: getRayuSubscriptionStatus, subscriptionPlanLabel } =
+        const { getRayuSubscriptionStatus: getRayuSubscriptionStatus, subscriptionPlanLabel } =
           await import('../services/oauth/claudeAiLogin.js')
         const status = getRayuSubscriptionStatus()
         if (!status.signedIn) {
@@ -1270,7 +1270,7 @@ export function RayuProviderSetup({
               setPhase('claudeLogin')
             } else if (v === 'logout') {
               void (async () => {
-                const { logoutClaudeSubscription: logoutRayuSubscription } = await import(
+                const { logoutRayuSubscription: logoutRayuSubscription } = await import(
                   '../services/oauth/claudeAiLogin.js'
                 )
                 logoutRayuSubscription()

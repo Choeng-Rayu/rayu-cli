@@ -577,11 +577,11 @@ const externalTips: Tip[] = [
   {
     id: 'guest-passes',
     content: async ctx => {
-      const claude = color('brand', ctx.theme)
+      const rayu = color('brand', ctx.theme)
       const reward = getCachedReferrerReward()
       return reward
-        ? `Share RAYU and earn ${claude(formatCreditAmount(reward))} of extra usage · ${claude('/passes')}`
-        : `You have free guest passes to share · ${claude('/passes')}`
+        ? `Share RAYU and earn ${rayu(formatCreditAmount(reward))} of extra usage · ${rayu('/passes')}`
+        : `You have free guest passes to share · ${rayu('/passes')}`
     },
     cooldownSessions: 3,
     isRelevant: async () => {
@@ -596,12 +596,12 @@ const externalTips: Tip[] = [
   {
     id: 'overage-credit',
     content: async ctx => {
-      const claude = color('brand', ctx.theme)
+      const rayu = color('brand', ctx.theme)
       const info = getCachedOverageCreditGrant()
       const amount = info ? formatGrantAmount(info) : null
       if (!amount) return ''
       // Copy from "OC & Bulk Overages copy" doc (#5 — CLI Rotating tip)
-      return `${claude(`${amount} in extra usage, on us`)} · third-party apps · ${claude('/extra-usage')}`
+      return `${rayu(`${amount} in extra usage, on us`)} · third-party apps · ${rayu('/extra-usage')}`
     },
     cooldownSessions: 3,
     isRelevant: async () => shouldShowOverageCreditUpsell(),

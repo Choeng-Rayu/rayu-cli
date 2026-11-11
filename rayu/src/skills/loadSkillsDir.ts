@@ -11,7 +11,7 @@ import {
 } from 'path'
 import { getExternalSkillDirs } from '../utils/externalSkillDiscovery.js'
 import {
-  getAdditionalDirectoriesForClaudeMd,
+  getAdditionalDirectoriesForRayuMd,
   getSessionId,
 } from '../bootstrap/state.js'
 import {
@@ -654,7 +654,7 @@ export const getSkillDirCommands = memoize(
     )
 
     // Load from additional directories (--add-dir)
-    const additionalDirs = getAdditionalDirectoriesForClaudeMd()
+    const additionalDirs = getAdditionalDirectoriesForRayuMd()
     const skillsLocked = isRestrictedToPluginOnly('skills')
     const projectSettingsEnabled =
       isSettingSourceEnabled('projectSettings') && !skillsLocked

@@ -83,7 +83,7 @@ describe('parseScopes / shouldUseClaudeAIAuth', () => {
   })
 
   test('the inference scope is what marks a subscription login', async () => {
-    const { shouldUseClaudeAIAuth: shouldUseRayuAIAuth } = await import(
+    const { shouldUseRayuAIAuth: shouldUseRayuAIAuth } = await import(
       '../src/services/oauth/client.ts'
     )
     expect(shouldUseRayuAIAuth(['user:profile', 'user:inference'])).toBe(true)
@@ -105,7 +105,7 @@ describe('buildAuthUrl', () => {
 
   test('claude.ai subscription flow: correct host, scopes and localhost redirect', async () => {
     const { buildAuthUrl } = await import('../src/services/oauth/client.ts')
-    const { getOauthConfig, CLAUDE_AI_OAUTH_SCOPES: SUBSCRIPTION_OAUTH_SCOPES } = await import(
+    const { getOauthConfig, SUBSCRIPTION_OAUTH_SCOPES: SUBSCRIPTION_OAUTH_SCOPES } = await import(
       '../src/constants/oauth.ts'
     )
     const cfg = getOauthConfig()
@@ -113,7 +113,7 @@ describe('buildAuthUrl', () => {
     const url = new URL(
       buildAuthUrl({ ...common, isManual: false, loginWithRayuAi: true }),
     )
-    const expected = new URL(cfg.CLAUDE_AI_AUTHORIZE_URL)
+    const expected = new URL(cfg.SUBSCRIPTION_AUTHORIZE_URL)
     expect(url.origin + url.pathname).toBe(expected.origin + expected.pathname)
 
     const p = url.searchParams
@@ -219,19 +219,19 @@ const SAMPLE_TOKENS = {
 describe('credential slot round-trip', () => {
   test('write → read → delete, and the file is not world-readable', async () => {
     const store = await import('../src/services/oauth/claudeAiTokens.ts')
-    expect(store.readClaudeAIOAuthTokens()).toBeNull()
+    expect(store.readRayuAIOAuthTokens()).toBeNull()
 
-    const { success } = store.writeClaudeAIOAuthTokens(SAMPLE_TOKENS)
+    const { success } = store.writeRayuAIOAuthTokens(SAMPLE_TOKENS)
     expect(success).toBe(true)
 
-    const read = store.readClaudeAIOAuthTokens()
+    const read = store.readRayuAIOAuthTokens()
     expect(read?.accessToken).toBe('access-1')
     expect(read?.refreshToken).toBe('refresh-1')
     expect(read?.subscriptionType).toBe('max')
     expect(read?.rateLimitTier).toBe('default_claude_max_20x')
     expect(read?.scopes).toEqual(['user:profile', 'user:inference'])
     expect(read?.tokenAccount?.emailAddress).toBe('user@example.com')
-    expect(await store.readClaudeAIOAuthTokensAsync()).toEqual(read)
+    expect(await store.readRayuAIOAuthTokensAsync()).toEqual(read)
 
     // On Linux the fallback store is a 0600 JSON file inside RAYU_CONFIG_DIR.
     // (On macOS the keychain backend is used, so there may be no file.)
@@ -241,10 +241,10 @@ describe('credential slot round-trip', () => {
       expect(statSync(credFile).mode & 0o077).toBe(0)
     }
 
-    expect(store.deleteClaudeAIOAuthTokens()).toBe(true)
-    expect(store.readClaudeAIOAuthTokens()).toBeNull()
+    expect(store.deleteRayuAIOAuthTokens()).toBe(true)
+    expect(store.readRayuAIOAuthTokens()).toBeNull()
     // Deleting a slot that isn't there is a no-op success, not a failure.
-    expect(store.deleteClaudeAIOAuthTokens()).toBe(true)
+    expect(store.deleteRayuAIOAuthTokens()).toBe(true)
   })
 
   test('other credentials in the shared store are preserved', async () => {
@@ -255,10 +255,10 @@ describe('credential slot round-trip', () => {
     const storage = getSecureStorage()
     storage.update({ trustedDeviceToken: 'keep-me' })
 
-    store.writeClaudeAIOAuthTokens(SAMPLE_TOKENS)
+    store.writeRayuAIOAuthTokens(SAMPLE_TOKENS)
     expect(storage.read()?.trustedDeviceToken).toBe('keep-me')
 
-    store.deleteClaudeAIOAuthTokens()
+    store.deleteRayuAIOAuthTokens()
     // Logging out of Claude must not take the Rayu-side credentials with it.
     expect(storage.read()?.trustedDeviceToken).toBe('keep-me')
   })
@@ -269,7 +269,7 @@ describe('credential slot round-trip', () => {
       '../src/utils/secureStorage/index.ts'
     )
     getSecureStorage().update({ claudeAiOauth: { accessToken: '' } })
-    expect(store.readClaudeAIOAuthTokens()).toBeNull()
+    expect(store.readRayuAIOAuthTokens()).toBeNull()
   })
 })
 
@@ -298,7 +298,7 @@ describe('request routing for a Claude subscription provider', () => {
   })
 
   test('usesClaudeSubscriptionAuth distinguishes it from the API-key provider', async () => {
-    const { usesClaudeSubscriptionAuth: usesRayuSubscriptionAuth } = await import(
+    const { usesRayuSubscriptionAuth: usesRayuSubscriptionAuth } = await import(
       '../src/services/api/claudeSubscriptionAuth.ts'
     )
     expect(usesRayuSubscriptionAuth(oauthProvider)).toBe(true)

@@ -9,7 +9,7 @@ import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import { getAntModelOverrideConfig, resolveAntModel } from './antModels.js'
 import {
   getSubscriptionType,
-  isClaudeAISubscriber,
+  isRayuAISubscriber,
   isMaxSubscriber,
   isProSubscriber,
   isTeamPremiumSubscriber,
@@ -434,7 +434,7 @@ export function isOpus1mMergeEnabled(): boolean {
   // isProSubscriber() returns false for such users and the merge leaks
   // opus[1m] into the model dropdown — the API then rejects it with a
   // misleading "rate limit reached" error.
-  if (isClaudeAISubscriber() && getSubscriptionType() === null) {
+  if (isRayuAISubscriber() && getSubscriptionType() === null) {
     return false
   }
   return true
@@ -700,7 +700,7 @@ export function modelDisplayString(model: ModelSetting): string {
   if (model === null) {
     if (process.env.USER_TYPE === 'ant') {
       return `Default for Ants (${renderDefaultModelSetting(getDefaultMainLoopModelSetting())})`
-    } else if (isClaudeAISubscriber()) {
+    } else if (isRayuAISubscriber()) {
       return `Default (${getSubscriptionUserDefaultModelDescription()})`
     }
     return `Default (${getDefaultMainLoopModel()})`

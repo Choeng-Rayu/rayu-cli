@@ -1,7 +1,7 @@
 import { getDirectConnectServerUrl, getSessionId } from '../bootstrap/state.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import type { LogOption } from '../types/logs.js'
-import { getSubscriptionName, isClaudeAISubscriber } from './auth.js'
+import { getSubscriptionName, isRayuAISubscriber } from './auth.js'
 import { getCwd } from './cwd.js'
 import { getDisplayPath } from './file.js'
 import {
@@ -265,7 +265,7 @@ export function getLogoDisplayData(): {
   // to the model. Claude AI subscribers keep their subscription/plan name; the
   // generic "API Usage Billing" only remains as a last-resort fallback when no
   // provider is configured yet.
-  const billingType = isClaudeAISubscriber()
+  const billingType = isRayuAISubscriber()
     ? getSubscriptionName()
     : (getActiveProviderDisplayName() ?? 'API Usage Billing')
   const agentName = getInitialSettings().agent

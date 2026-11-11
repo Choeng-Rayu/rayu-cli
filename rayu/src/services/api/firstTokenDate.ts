@@ -9,7 +9,7 @@ import { getRayuUserAgent } from '../../utils/userAgent.js'
  * Fetch the user's first RAYU token date and store in config.
  * This is called after successful login to cache when they started using RAYU.
  */
-export async function fetchAndStoreClaudeCodeFirstTokenDate(): Promise<void> {
+export async function fetchAndStoreRayuCodeFirstTokenDate(): Promise<void> {
   try {
     const config = getGlobalConfig()
 

@@ -48,7 +48,7 @@ export function parsePastedAuthCode(pasted: string): {
 }
 
 export type StartOAuthFlowOptions = {  /** Request the Claude.ai subscription scopes (Pro / Max plan sign-in). */
-  loginWithClaudeAi?: boolean
+  loginWithRayuAi?: boolean
   /** Ask only for inference (no Console API-key creation scope). */
   inferenceOnly?: boolean
   /** Requested access-token lifetime in seconds. */
@@ -89,7 +89,7 @@ export class OAuthService {
       codeChallenge,
       state,
       port: this.port,
-      loginWithClaudeAi: options?.loginWithClaudeAi,
+      loginWithRayuAi: options?.loginWithRayuAi,
       inferenceOnly: options?.inferenceOnly,
       orgUUID: options?.orgUUID,
       loginHint: options?.loginHint,

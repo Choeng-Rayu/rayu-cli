@@ -19,7 +19,7 @@
 import { getOauthConfig } from '../../constants/oauth.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
-  getClaudeAIOAuthTokens,
+  getRayuAIOAuthTokens,
   handleOAuth401Error,
 } from '../../utils/auth.js'
 
@@ -39,7 +39,7 @@ function isAllowedTokenHost(url: string): boolean {
   }
 }
 
-export type ClaudeSubscriptionFetchOptions = {
+export type RayuSubscriptionFetchOptions = {
   /**
    * The fetch to delegate to (the shared Anthropic transport's logging/proxy
    * fetch). Defaults to the global fetch.
@@ -57,8 +57,8 @@ export type ClaudeSubscriptionFetchOptions = {
  * server/client clock disagreement, where the local expiry check said "still
  * valid" but the server disagreed.
  */
-export function makeClaudeSubscriptionFetch(
-  opts: ClaudeSubscriptionFetchOptions = {},
+export function makeRayuSubscriptionFetch(
+  opts: RayuSubscriptionFetchOptions = {},
 ): typeof fetch {
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
   const inner = opts.inner ?? globalThis.fetch
@@ -84,7 +84,7 @@ export function makeClaudeSubscriptionFetch(
     }
 
     await checkAndRefreshOAuthTokenIfNeeded()
-    const token = getClaudeAIOAuthTokens()?.accessToken
+    const token = getRayuAIOAuthTokens()?.accessToken
     const response = await send(token)
     if (response.status !== 401 || !token) {
       return response
@@ -98,14 +98,14 @@ export function makeClaudeSubscriptionFetch(
     }
     const recovered = await handleOAuth401Error(token)
     if (!recovered) return response
-    return send(getClaudeAIOAuthTokens()?.accessToken)
+    return send(getRayuAIOAuthTokens()?.accessToken)
   }
 
   return authenticated as typeof fetch
 }
 
 /** True when this provider authenticates with a Claude.ai subscription token. */
-export function usesClaudeSubscriptionAuth(
+export function usesRayuSubscriptionAuth(
   provider: { kind?: string; anthropicAuthType?: string } | undefined,
 ): boolean {
   return provider?.kind === 'anthropic' && provider.anthropicAuthType === 'oauth'

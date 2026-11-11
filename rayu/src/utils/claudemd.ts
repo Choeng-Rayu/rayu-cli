@@ -41,7 +41,7 @@ import {
 import picomatch from 'picomatch'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
-  getAdditionalDirectoriesForClaudeMd,
+  getAdditionalDirectoriesForRayuMd as getAdditionalDirectoriesForRayuMd,
   getOriginalCwd,
 } from '../bootstrap/state.js'
 import { truncateEntrypointContent } from '../memdir/memdir.js'
@@ -49,9 +49,9 @@ import { getAutoMemEntrypoint, isAutoMemoryEnabled } from '../memdir/paths.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   getCurrentProjectConfig,
-  getManagedClaudeRulesDir,
+  getManagedRayuRulesDir as getManagedRayuRulesDir,
   getMemoryPath,
-  getUserClaudeRulesDir,
+  getUserRayuRulesDir as getUserRayuRulesDir,
 } from './config.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
@@ -555,7 +555,7 @@ const MAX_INCLUDE_DEPTH = 5
  * Matches both the original path and the realpath-resolved path to handle symlinks
  * (e.g., /tmp -> /private/tmp on macOS).
  */
-function isClaudeMdExcluded(filePath: string, type: MemoryType): boolean {
+function isRayuMdExcluded(filePath: string, type: MemoryType): boolean {
   if (type !== 'User' && type !== 'Project' && type !== 'Local') {
     return false
   }
@@ -643,7 +643,7 @@ export async function processMemoryFile(
   }
 
   // Skip if path is excluded by claudeMdExcludes setting
-  if (isClaudeMdExcluded(filePath, type)) {
+  if (isRayuMdExcluded(filePath, type)) {
     return []
   }
 
@@ -812,20 +812,20 @@ export const getMemoryFiles = memoize(
       false
 
     // Process Managed file first (always loaded - policy settings)
-    const managedClaudeMd = getMemoryPath('Managed')
+    const managedRayuMd = getMemoryPath('Managed')
     result.push(
       ...(await processMemoryFile(
-        managedClaudeMd,
+        managedRayuMd,
         'Managed',
         processedPaths,
         includeExternal,
       )),
     )
     // Process managed .rayu/rules/*.md files
-    const managedClaudeRulesDir = getManagedClaudeRulesDir()
+    const managedRayuRulesDir = getManagedRayuRulesDir()
     result.push(
       ...(await processMdRules({
-        rulesDir: managedClaudeRulesDir,
+        rulesDir: managedRayuRulesDir,
         type: 'Managed',
         processedPaths,
         includeExternal,
@@ -847,10 +847,10 @@ export const getMemoryFiles = memoize(
         )
       }
       // Process User ~/.rayu/rules/*.md files
-      const userClaudeRulesDir = getUserClaudeRulesDir()
+      const userRayuRulesDir = getUserRayuRulesDir()
       result.push(
         ...(await processMdRules({
-          rulesDir: userClaudeRulesDir,
+          rulesDir: userRayuRulesDir,
           type: 'User',
           processedPaths,
           includeExternal: true,
@@ -954,7 +954,7 @@ export const getMemoryFiles = memoize(
     // Note: we don't check isSettingSourceEnabled('projectSettings') here because --add-dir
     // is an explicit user action and the SDK defaults settingSources to [] when not specified
     if (isEnvTruthy(process.env.RAYU_ADDITIONAL_DIRECTORIES_RAYU_MD)) {
-      const additionalDirs = getAdditionalDirectoriesForClaudeMd()
+      const additionalDirs = getAdditionalDirectoriesForRayuMd()
       for (const dir of additionalDirs) {
         // Memory files (RAYU.md / AGENTS.md) at the dir root
         for (const memName of PROJECT_MEMORY_FILENAMES) {
@@ -1167,7 +1167,7 @@ export function filterInjectedMemoryFiles(
   return files.filter(f => f.type !== 'AutoMem' && f.type !== 'TeamMem')
 }
 
-export const getClaudeMds = (
+export const getRayuMds = (
   memoryFiles: MemoryFileInfo[],
   filter?: (type: MemoryType) => boolean,
 ): string => {
@@ -1226,11 +1226,11 @@ export async function getManagedAndUserConditionalRules(
   const result: MemoryFileInfo[] = []
 
   // Process managed conditional .rayu/rules/*.md files
-  const managedClaudeRulesDir = getManagedClaudeRulesDir()
+  const managedRayuRulesDir = getManagedRayuRulesDir()
   result.push(
     ...(await processConditionedMdRules(
       targetPath,
-      managedClaudeRulesDir,
+      managedRayuRulesDir,
       'Managed',
       processedPaths,
       false,
@@ -1239,11 +1239,11 @@ export async function getManagedAndUserConditionalRules(
 
   if (isSettingSourceEnabled('userSettings')) {
     // Process user conditional .rayu/rules/*.md files
-    const userClaudeRulesDir = getUserClaudeRulesDir()
+    const userRayuRulesDir = getUserRayuRulesDir()
     result.push(
       ...(await processConditionedMdRules(
         targetPath,
-        userClaudeRulesDir,
+        userRayuRulesDir,
         'User',
         processedPaths,
         true,
@@ -1426,15 +1426,15 @@ export async function processConditionedMdRules(
   })
 }
 
-export type ExternalClaudeMdInclude = {
+export type ExternalRayuMdInclude = {
   path: string
   parent: string
 }
 
-export function getExternalClaudeMdIncludes(
+export function getExternalRayuMdIncludes(
   files: MemoryFileInfo[],
-): ExternalClaudeMdInclude[] {
-  const externals: ExternalClaudeMdInclude[] = []
+): ExternalRayuMdInclude[] {
+  const externals: ExternalRayuMdInclude[] = []
   for (const file of files) {
     if (file.type !== 'User' && file.parent && !pathInOriginalCwd(file.path)) {
       externals.push({ path: file.path, parent: file.parent })
@@ -1443,11 +1443,11 @@ export function getExternalClaudeMdIncludes(
   return externals
 }
 
-export function hasExternalClaudeMdIncludes(files: MemoryFileInfo[]): boolean {
-  return getExternalClaudeMdIncludes(files).length > 0
+export function hasExternalRayuMdIncludes(files: MemoryFileInfo[]): boolean {
+  return getExternalRayuMdIncludes(files).length > 0
 }
 
-export async function shouldShowClaudeMdExternalIncludesWarning(): Promise<boolean> {
+export async function shouldShowRayuMdExternalIncludesWarning(): Promise<boolean> {
   const config = getCurrentProjectConfig()
   if (
     config.hasClaudeMdExternalIncludesApproved ||
@@ -1456,7 +1456,7 @@ export async function shouldShowClaudeMdExternalIncludesWarning(): Promise<boole
     return false
   }
 
-  return hasExternalClaudeMdIncludes(await getMemoryFiles(true))
+  return hasExternalRayuMdIncludes(await getMemoryFiles(true))
 }
 
 /**

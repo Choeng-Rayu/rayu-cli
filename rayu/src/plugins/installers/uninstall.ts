@@ -8,7 +8,7 @@
  */
 
 import { toError } from '../../utils/errors.js'
-import { uninstallClaudeCode } from './claudeCode.js'
+import { uninstallRayuCode } from './claudeCode.js'
 import { uninstallCodex } from './codex.js'
 import { type HostId, HOST_LABELS, type InstallScope } from './constants.js'
 import { detectHost } from './detect.js'
@@ -41,7 +41,7 @@ export async function uninstallFromHosts(
     try {
       const result =
         host === 'claude-code'
-          ? await uninstallClaudeCode({
+          ? await uninstallRayuCode({
               scope: request.scope,
               projectDir: request.projectDir,
             })

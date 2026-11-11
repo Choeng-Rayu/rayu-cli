@@ -20,7 +20,7 @@ import {
   rayuPacingLimitFromError,
   rayuPacingLimitFromLimits,
   setRayuLimitMode,
-  toClaudeAILimits,
+  toRayuAILimits,
 } from '../src/services/rayuAuth/rayuRateLimit.ts'
 import { currentLimits } from '../src/services/claudeAiLimits.ts'
 import { getRayuLimitScope } from '../src/services/api/errors.ts'
@@ -210,7 +210,7 @@ describe('mapping onto the engine limits vocabulary', () => {
   })
 
   test('a projection is a REJECTED limit carrying utilization', () => {
-    const projected = toClaudeAILimits({
+    const projected = toRayuAILimits({
       window: 'session',
       resetsAt: 1_800_000_000,
       usedCredits: 500,
@@ -226,7 +226,7 @@ describe('mapping onto the engine limits vocabulary', () => {
   })
 
   test('utilization is omitted when the counts are unknown', () => {
-    const projected = toClaudeAILimits({
+    const projected = toRayuAILimits({
       window: 'weekly',
       resetsAt: null,
       paced: true,

@@ -1015,7 +1015,7 @@ export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
  * Sources (mcpServers only): ~/.claude.json (top-level + projects[<cwd>]),
  * <cwd>/.claude/settings.json, ~/.claude/settings.json.
  */
-export function getClaudeFallbackMcpServers(): Record<
+export function getRayuFallbackMcpServers(): Record<
   string,
   ScopedMcpServerConfig
 > {
@@ -1041,10 +1041,10 @@ export function getClaudeFallbackMcpServers(): Record<
   // (global < project < settings.json). Every other key in these files
   // (model, provider, auth, history, …) is deliberately ignored.
   const rawSources: unknown[] = []
-  const claudeJson = readJson(join(home, '.claude.json'))
-  if (claudeJson) {
-    rawSources.push(claudeJson.mcpServers)
-    const projects = claudeJson.projects as
+  const rayuJson = readJson(join(home, '.claude.json'))
+  if (rayuJson) {
+    rawSources.push(rayuJson.mcpServers)
+    const projects = rayuJson.projects as
       | Record<string, { mcpServers?: unknown }>
       | undefined
     rawSources.push(projects?.[cwd]?.mcpServers)
@@ -1119,9 +1119,9 @@ export async function getRayuMcpConfigs(
   // Claude Code MCP servers (mcpServers ONLY) as a lowest-priority FALLBACK:
   // any rayu-defined server of the same name overrides them. Skipped when MCP
   // is policy-locked. Never reads Claude model/provider/auth.
-  const claudeFallbackServers: Record<string, ScopedMcpServerConfig> = mcpLocked
+  const rayuFallbackServers: Record<string, ScopedMcpServerConfig> = mcpLocked
     ? {}
-    : getClaudeFallbackMcpServers()
+    : getRayuFallbackMcpServers()
 
   // Load plugin MCP servers
   const pluginMcpServers: Record<string, ScopedMcpServerConfig> = {}
@@ -1241,7 +1241,7 @@ export async function getRayuMcpConfigs(
   // Merge in order of precedence: claude-fallback < plugin < user < project < local
   const configs = Object.assign(
     {},
-    claudeFallbackServers,
+    rayuFallbackServers,
     dedupedPluginServers,
     userServers,
     approvedProjectServers,

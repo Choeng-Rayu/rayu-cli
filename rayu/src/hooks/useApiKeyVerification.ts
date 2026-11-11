@@ -4,7 +4,7 @@ import { verifyApiKey } from '../services/api/claude.js'
 import {
   getAnthropicApiKeyWithSource,
   isAnthropicAuthEnabled,
-  isClaudeAISubscriber,
+  isRayuAISubscriber,
   isUsing3PServices,
 } from '../utils/auth.js'
 
@@ -25,7 +25,7 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
   const [status, setStatus] = useState<VerificationStatus>(() => {
     if (
       !isAnthropicAuthEnabled() ||
-      isClaudeAISubscriber() ||
+      isRayuAISubscriber() ||
       isUsing3PServices()
     ) {
       return 'valid'
@@ -43,7 +43,7 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
   const verify = useCallback(async (): Promise<void> => {
     if (
       !isAnthropicAuthEnabled() ||
-      isClaudeAISubscriber() ||
+      isRayuAISubscriber() ||
       isUsing3PServices()
     ) {
       setStatus('valid')

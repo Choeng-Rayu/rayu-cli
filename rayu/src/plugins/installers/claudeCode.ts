@@ -34,8 +34,8 @@ import {
   resolveMcpServerCommand,
 } from './constants.js'
 import {
-  getClaudeCodeSkillsInstallDir,
-  getClaudeCodeUserConfigFile,
+  getRayuCodeSkillsInstallDir,
+  getRayuCodeUserConfigFile,
   getProjectMcpJsonFile,
 } from './detect.js'
 import {
@@ -52,13 +52,13 @@ import {
 } from './skillFiles.js'
 
 /** The `mcpServers.rayu` entry RAYU writes. Shape is Claude Code's stdio form. */
-export type ClaudeMcpStdioEntry = {
+export type RayuMcpStdioEntry = {
   type: 'stdio'
   command: string
   args: string[]
 }
 
-export type ClaudeCodeInstallOptions = {
+export type RayuCodeInstallOptions = {
   scope: InstallScope
   /** Required for `project` scope; ignored for `user`. */
   projectDir?: string
@@ -66,7 +66,7 @@ export type ClaudeCodeInstallOptions = {
   skipSkills?: boolean
 }
 
-export type ClaudeCodeInstallResult = {
+export type RayuCodeInstallResult = {
   configFile: string
   backupPath: string | undefined
   /** False when the existing entry already matched — nothing was written. */
@@ -76,7 +76,7 @@ export type ClaudeCodeInstallResult = {
   skillsWritten: string[]
 }
 
-export type ClaudeCodeStatus = {
+export type RayuCodeStatus = {
   configFile: string
   /** RAYU is registered in this file. */
   registered: boolean
@@ -92,11 +92,11 @@ export type ClaudeCodeStatus = {
 
 type McpServerMap = Record<string, unknown>
 
-function buildEntry(cmd: McpServerCommand): ClaudeMcpStdioEntry {
+function buildEntry(cmd: McpServerCommand): RayuMcpStdioEntry {
   return { type: 'stdio', command: cmd.command, args: [...cmd.args] }
 }
 
-function sameEntry(existing: unknown, next: ClaudeMcpStdioEntry): boolean {
+function sameEntry(existing: unknown, next: RayuMcpStdioEntry): boolean {
   if (typeof existing !== 'object' || existing === null) return false
   const e = existing as Record<string, unknown>
   if (e.command !== next.command) return false
@@ -118,14 +118,14 @@ function describeEntry(existing: unknown): string | undefined {
 }
 
 /** Resolves which file a given scope writes to. */
-function resolveConfigFile(options: ClaudeCodeInstallOptions): string {
+function resolveConfigFile(options: RayuCodeInstallOptions): string {
   if (options.scope === 'project') {
     if (!options.projectDir) {
       throw new Error('project scope requires a project directory')
     }
     return getProjectMcpJsonFile(options.projectDir)
   }
-  return getClaudeCodeUserConfigFile()
+  return getRayuCodeUserConfigFile()
 }
 
 /**
@@ -152,9 +152,9 @@ async function readJsonConfig(
 }
 
 /** Registers RAYU with Claude Code and installs its host skills. */
-export async function installClaudeCode(
-  options: ClaudeCodeInstallOptions,
-): Promise<ClaudeCodeInstallResult> {
+export async function installRayuCode(
+  options: RayuCodeInstallOptions,
+): Promise<RayuCodeInstallResult> {
   const configFile = resolveConfigFile(options)
   const { source, doc } = await readJsonConfig(configFile)
 
@@ -186,7 +186,7 @@ export async function installClaudeCode(
   let skillsDir: string | undefined
   let skillsWritten: string[] = []
   if (!options.skipSkills) {
-    skillsDir = getClaudeCodeSkillsInstallDir()
+    skillsDir = getRayuCodeSkillsInstallDir()
     const result = await installHostSkills(skillsDir)
     skillsWritten = result.written
   }
@@ -201,7 +201,7 @@ export async function installClaudeCode(
   }
 }
 
-export type ClaudeCodeUninstallResult = {
+export type RayuCodeUninstallResult = {
   configFile: string
   backupPath: string | undefined
   /** False when RAYU was not registered — nothing was written. */
@@ -210,9 +210,9 @@ export type ClaudeCodeUninstallResult = {
 }
 
 /** Reverses `installClaudeCode`, leaving all other config untouched. */
-export async function uninstallClaudeCode(
-  options: ClaudeCodeInstallOptions,
-): Promise<ClaudeCodeUninstallResult> {
+export async function uninstallRayuCode(
+  options: RayuCodeInstallOptions,
+): Promise<RayuCodeUninstallResult> {
   const configFile = resolveConfigFile(options)
   const { source, doc } = await readJsonConfig(configFile)
 
@@ -240,18 +240,18 @@ export async function uninstallClaudeCode(
   }
 
   const skillsRemoved = await uninstallHostSkills(
-    getClaudeCodeSkillsInstallDir(),
+    getRayuCodeSkillsInstallDir(),
   )
 
   return { configFile, backupPath, mcpRemoved, skillsRemoved }
 }
 
 /** Reports whether and how RAYU is registered with Claude Code. */
-export async function getClaudeCodeStatus(
-  options: ClaudeCodeInstallOptions,
-): Promise<ClaudeCodeStatus> {
+export async function getRayuCodeStatus(
+  options: RayuCodeInstallOptions,
+): Promise<RayuCodeStatus> {
   const configFile = resolveConfigFile(options)
-  const skillsDir = getClaudeCodeSkillsInstallDir()
+  const skillsDir = getRayuCodeSkillsInstallDir()
   const expected = resolveMcpServerCommand()
 
   let doc: Record<string, unknown> = {}

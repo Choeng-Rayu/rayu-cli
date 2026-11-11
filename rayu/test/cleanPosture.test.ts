@@ -58,7 +58,7 @@ describe('clean posture', () => {
       isManual: false,
       loginWithRayuAi: true,
     })
-    expect(url.startsWith(cfg.CLAUDE_AI_AUTHORIZE_URL)).toBe(true)
+    expect(url.startsWith(cfg.SUBSCRIPTION_AUTHORIZE_URL)).toBe(true)
     expect(url).toContain(encodeURIComponent(cfg.CLIENT_ID))
     expect(url).not.toContain('code_verifier')
 

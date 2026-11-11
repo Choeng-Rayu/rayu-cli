@@ -15,9 +15,9 @@
 // secureStorage (0600 / keychain), never into providers.json and never logged.
 import { getOauthConfig, OAUTH_BETA_HEADER } from '../../constants/oauth.js'
 import {
-  getClaudeAIOAuthTokens,
-  hasClaudeAISubscriptionLogin,
-  logoutClaudeAISubscription,
+  getRayuAIOAuthTokens,
+  hasRayuAISubscriptionLogin as hasRayuAISubscriptionLogin,
+  logoutRayuAISubscription as logoutRayuAISubscription,
   saveOAuthTokensIfNeeded,
 } from '../../utils/auth.js'
 import { getGlobalConfig } from '../../utils/config.js'
@@ -33,7 +33,7 @@ import {
   PROVIDER_PRESETS,
 } from '../../utils/rayuProviders.js'
 import { storeOAuthAccountInfo } from './client.js'
-import { refreshClaudeAIOAuthTokensIfNeeded } from './claudeAiTokens.js'
+import { refreshRayuAIOAuthTokensIfNeeded } from './claudeAiTokens.js'
 import type { OAuthTokens, RateLimitTier, SubscriptionType } from './types.js'
 
 export { CLAUDE_SUBSCRIPTION_PROVIDER_ID }
@@ -77,9 +77,9 @@ type AnthropicModelsPage = {
  * account has no login or the call fails, so the /connect model picker is always
  * usable.
  */
-export async function fetchClaudeSubscriptionModels(): Promise<string[]> {
-  const ok = await refreshClaudeAIOAuthTokensIfNeeded()
-  const token = getClaudeAIOAuthTokens()?.accessToken
+export async function fetchRayuSubscriptionModels(): Promise<string[]> {
+  const ok = await refreshRayuAIOAuthTokensIfNeeded()
+  const token = getRayuAIOAuthTokens()?.accessToken
   if (!ok || !token) return fallbackSubscriptionModels()
 
   const ids: string[] = []
@@ -175,7 +175,7 @@ export function filterModelsForSubscription(
  * Order matters: tokens FIRST (so the catalog fetch can authenticate), then the
  * account info, then the provider entry, then the live model catalog.
  */
-export async function installClaudeSubscription(
+export async function installRayuSubscription(
   tokens: OAuthTokens,
 ): Promise<{ success: boolean; warning?: string; models: string[] }> {
   const { success, warning } = saveOAuthTokensIfNeeded(tokens)
@@ -238,7 +238,7 @@ export async function installClaudeSubscription(
   upsertProvider(base, true)
 
   const models = filterModelsForSubscription(
-    await fetchClaudeSubscriptionModels(),
+    await fetchRayuSubscriptionModels(),
     tokens.subscriptionType,
   )
   upsertProvider(
@@ -253,7 +253,7 @@ export async function installClaudeSubscription(
   return { success: true, warning, models }
 }
 
-export type ClaudeSubscriptionStatus = {
+export type RayuSubscriptionStatus = {
   signedIn: boolean
   /** True when this login is the ACTIVE provider for Claude requests. */
   active: boolean
@@ -286,15 +286,15 @@ export function subscriptionPlanLabel(
 }
 
 /** Current subscription-login state, for the /connect status view. */
-export function getClaudeSubscriptionStatus(): ClaudeSubscriptionStatus {
-  const tokens = getClaudeAIOAuthTokens()
+export function getRayuSubscriptionStatus(): RayuSubscriptionStatus {
+  const tokens = getRayuAIOAuthTokens()
   const cfg = loadRayuConfig()
   const provider = cfg.providers.find(
     p => p.id === CLAUDE_SUBSCRIPTION_PROVIDER_ID,
   )
   const account = getGlobalConfig().oauthAccount
   return {
-    signedIn: hasClaudeAISubscriptionLogin(),
+    signedIn: hasRayuAISubscriptionLogin(),
     active: !!provider && cfg.activeProvider === provider.id,
     subscriptionType: tokens?.subscriptionType ?? null,
     rateLimitTier: tokens?.rateLimitTier ?? null,
@@ -312,8 +312,8 @@ export function getClaudeSubscriptionStatus(): ClaudeSubscriptionStatus {
  * account info, and drop the provider entry so the session falls back to the
  * next configured provider. The Rayu account JWT is untouched.
  */
-export function logoutClaudeSubscription(): boolean {
-  const cleared = logoutClaudeAISubscription()
+export function logoutRayuSubscription(): boolean {
+  const cleared = logoutRayuAISubscription()
   removeProvider(CLAUDE_SUBSCRIPTION_PROVIDER_ID)
   return cleared
 }

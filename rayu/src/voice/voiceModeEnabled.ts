@@ -1,6 +1,6 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
-  getClaudeAIOAuthTokens,
+  getRayuAIOAuthTokens,
   isAnthropicAuthEnabled,
 } from '../utils/auth.js'
 
@@ -38,7 +38,7 @@ export function hasVoiceAuth(): boolean {
   // isAnthropicAuthEnabled only checks the auth *provider*, not whether
   // a token exists. Without this check, the voice UI renders but
   // connectVoiceStream fails silently when the user isn't logged in.
-  const tokens = getClaudeAIOAuthTokens()
+  const tokens = getRayuAIOAuthTokens()
   return Boolean(tokens?.accessToken)
 }
 

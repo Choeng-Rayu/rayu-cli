@@ -15,7 +15,7 @@ import { checkGate_CACHED_OR_BLOCKING, initializeGrowthBook, resetGrowthBook } f
 import { handleMcpjsonServerApprovals } from './services/mcpServerApproval.js';
 import { AppStateProvider } from './state/AppState.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
-import { getExternalClaudeMdIncludes, getMemoryFiles, shouldShowClaudeMdExternalIncludesWarning } from './utils/claudemd.js';
+import { getExternalRayuMdIncludes, getMemoryFiles, shouldShowRayuMdExternalIncludesWarning } from './utils/claudemd.js';
 import { checkHasTrustDialogAccepted, getGlobalConfig, saveGlobalConfig } from './utils/config.js';
 import { updateDeepLinkTerminalPreference } from './utils/deepLink/terminalPreference.js';
 import { isEnvTruthy } from './utils/envUtils.js';
@@ -195,8 +195,8 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     }
 
     // Check for claude.md includes that need approval
-    if (await shouldShowClaudeMdExternalIncludesWarning()) {
-      const externalIncludes = getExternalClaudeMdIncludes(await getMemoryFiles(true));
+    if (await shouldShowRayuMdExternalIncludesWarning()) {
+      const externalIncludes = getExternalRayuMdIncludes(await getMemoryFiles(true));
       const {
         RayuMdExternalIncludesDialog
       } = await import('./components/ClaudeMdExternalIncludesDialog.js');
@@ -266,7 +266,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
       const [{
         isChannelsEnabled
       }, {
-        getClaudeAIOAuthTokens: getRayuAIOAuthTokens
+        getRayuAIOAuthTokens: getRayuAIOAuthTokens
       }] = await Promise.all([import('./services/mcp/channelAllowlist.js'), import('./utils/auth.js')]);
       // Skip the dialog when channels are blocked (tengu_harbor off or no
       // OAuth) — accepting then immediately seeing "not available" in

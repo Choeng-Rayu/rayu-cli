@@ -16,9 +16,9 @@ import type {
 } from 'src/types/message.js'
 import {
   getAnthropicApiKeyWithSource,
-  getClaudeAIOAuthTokens,
+  getRayuAIOAuthTokens,
   getOauthAccountInfo,
-  isClaudeAISubscriber,
+  isRayuAISubscriber,
   isUsing3PServices,
 } from 'src/utils/auth.js'
 import {
@@ -52,7 +52,7 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import {
-  type ClaudeAILimits,
+  type RayuAILimits as RayuAILimits,
   getRateLimitErrorMessage,
   type OverageDisabledReason,
 } from '../claudeAiLimits.js'
@@ -1100,7 +1100,7 @@ export function getAssistantMessageFromError(
     // If we have the new headers, use the new message generation
     if (rateLimitType || overageStatus) {
       // Build limits object from error headers to determine the appropriate message
-      const limits: ClaudeAILimits = {
+      const limits: RayuAILimits = {
         status: 'rejected',
         unifiedRateLimitFallbackAvailable: false,
         isUsingOverage: false,
@@ -1465,9 +1465,9 @@ export function getAssistantMessageFromError(
     if (
       source === 'RAYU_ANTHROPIC_API_KEY' &&
       process.env.RAYU_ANTHROPIC_API_KEY &&
-      !isClaudeAISubscriber()
+      !isRayuAISubscriber()
     ) {
-      const hasStoredOAuth = getClaudeAIOAuthTokens()?.accessToken != null
+      const hasStoredOAuth = getRayuAIOAuthTokens()?.accessToken != null
       // Not 'authentication_failed' — that triggers VS Code's showLogin(), but
       // login can't fix this (approved env var keeps overriding OAuth). The fix
       // is configuration-based (unset the var), so invalid_request is correct.

@@ -19,7 +19,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { whichSync } from '../../utils/which.js'
 import {
-  CLAUDE_CONFIG_DIR_ENV_VAR,
+  ANTHROPIC_CLI_CONFIG_DIR_ENV_VAR,
   CODEX_HOME_ENV_VAR,
   type HostId,
   HOST_IDS,
@@ -39,8 +39,8 @@ function isDir(path: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** `~/.claude` (or `$CLAUDE_CONFIG_DIR`). */
-export function getClaudeCodeConfigDir(): string {
-  const override = process.env[CLAUDE_CONFIG_DIR_ENV_VAR]?.trim()
+export function getRayuCodeConfigDir(): string {
+  const override = process.env[ANTHROPIC_CLI_CONFIG_DIR_ENV_VAR]?.trim()
   return override && override.length > 0 ? override : join(homedir(), '.claude')
 }
 
@@ -51,8 +51,8 @@ export function getClaudeCodeConfigDir(): string {
  * `mcpServers` key of this file, not in `~/.claude/settings.json` (which holds
  * env/permissions/model/hooks/enabledPlugins).
  */
-export function getClaudeCodeUserConfigFile(): string {
-  const override = process.env[CLAUDE_CONFIG_DIR_ENV_VAR]?.trim()
+export function getRayuCodeUserConfigFile(): string {
+  const override = process.env[ANTHROPIC_CLI_CONFIG_DIR_ENV_VAR]?.trim()
   if (override && override.length > 0) {
     return join(override, '.claude.json')
   }
@@ -60,8 +60,8 @@ export function getClaudeCodeUserConfigFile(): string {
 }
 
 /** `~/.claude/skills` — where user-scope Claude Code skills live. */
-export function getClaudeCodeSkillsInstallDir(): string {
-  return join(getClaudeCodeConfigDir(), 'skills')
+export function getRayuCodeSkillsInstallDir(): string {
+  return join(getRayuCodeConfigDir(), 'skills')
 }
 
 /** `<project>/.mcp.json` — Claude Code's project-scope MCP registration file. */
@@ -108,8 +108,8 @@ export type DetectedHost = {
   present: boolean
 }
 
-function detectClaudeCode(): DetectedHost {
-  const configDir = getClaudeCodeConfigDir()
+function detectRayuCode(): DetectedHost {
+  const configDir = getRayuCodeConfigDir()
   const cliPath = whichSync('claude') ?? undefined
   const configExists = isDir(configDir)
   return {
@@ -117,8 +117,8 @@ function detectClaudeCode(): DetectedHost {
     label: HOST_LABELS['claude-code'],
     cliPath,
     configDir: configExists ? configDir : undefined,
-    configFile: getClaudeCodeUserConfigFile(),
-    skillsDir: getClaudeCodeSkillsInstallDir(),
+    configFile: getRayuCodeUserConfigFile(),
+    skillsDir: getRayuCodeSkillsInstallDir(),
     present: Boolean(cliPath) || configExists,
   }
 }
@@ -140,7 +140,7 @@ function detectCodex(): DetectedHost {
 
 /** Describes every supported host, present or not. */
 export function detectHosts(): DetectedHost[] {
-  return [detectClaudeCode(), detectCodex()]
+  return [detectRayuCode(), detectCodex()]
 }
 
 /** Only the hosts that look installed. */

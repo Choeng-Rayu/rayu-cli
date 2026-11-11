@@ -101,7 +101,7 @@ describe('real getMemoryFiles + getClaudeMds surface RAYU.md content', () => {
     expect(userPaths).toContain('RAYU.md')
     expect(userPaths).toContain('AGENTS.md')
 
-    const injected = m.getClaudeMds(files)
+    const injected = m.getRayuMds(files)
     expect(injected).toContain('RAYU_MARKER: prefer bun')
     expect(injected).toContain('AGENTS_MARKER: run tests')
     expect(injected).toContain('RAYU.md / AGENTS.md')

@@ -212,7 +212,7 @@ async function formatStatus(
       continue
     }
 
-    const status = entry.claude ?? entry.codex
+    const status = entry.rayu ?? entry.codex
     if (!status) continue
 
     if (status.parseError !== undefined) {

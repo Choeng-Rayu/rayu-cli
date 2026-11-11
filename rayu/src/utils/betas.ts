@@ -6,7 +6,7 @@ import {
 import { getIsNonInteractiveSession, getSdkBetas } from '../bootstrap/state.js'
 import {
   BEDROCK_EXTRA_PARAMS_HEADERS,
-  CLAUDE_CODE_20250219_BETA_HEADER,
+  ANTHROPIC_CODE_CLI_BETA_HEADER,
   CLI_INTERNAL_BETA_HEADER,
   CONTEXT_1M_BETA_HEADER,
   CONTEXT_MANAGEMENT_BETA_HEADER,
@@ -21,7 +21,7 @@ import {
   WEB_SEARCH_BETA_HEADER,
 } from '../constants/betas.js'
 import { OAUTH_BETA_HEADER } from '../constants/oauth.js'
-import { isClaudeAISubscriber } from './auth.js'
+import { isRayuAISubscriber as isRayuAISubscriber } from './auth.js'
 import { has1mContext, modelSupports1M } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
@@ -68,7 +68,7 @@ export function filterAllowedSdkBetas(
     return undefined
   }
 
-  if (isClaudeAISubscriber()) {
+  if (isRayuAISubscriber()) {
     // biome-ignore lint/suspicious/noConsole: intentional warning
     console.warn(
       'Warning: Custom betas are only available for API key users. Ignoring provided betas.',
@@ -251,7 +251,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   const includeFirstPartyOnlyBetas = shouldIncludeFirstPartyOnlyBetas(model)
 
   if (!isHaiku) {
-    betaHeaders.push(CLAUDE_CODE_20250219_BETA_HEADER)
+    betaHeaders.push(ANTHROPIC_CODE_CLI_BETA_HEADER)
     if (
       process.env.USER_TYPE === 'ant' &&
       process.env.CLAUDE_CODE_ENTRYPOINT === 'cli'
@@ -261,7 +261,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
       }
     }
   }
-  if (isClaudeAISubscriber()) {
+  if (isRayuAISubscriber()) {
     betaHeaders.push(OAUTH_BETA_HEADER)
   }
   // Send the 1M beta header for all models that support it — this covers both
@@ -420,8 +420,8 @@ export function getMergedBetas(
   // For non-Haiku models these are already in baseBetas; for Haiku they're
   // excluded by getAllModelBetas() since non-agentic Haiku calls don't need them.
   if (options?.isAgenticQuery) {
-    if (!baseBetas.includes(CLAUDE_CODE_20250219_BETA_HEADER)) {
-      baseBetas.push(CLAUDE_CODE_20250219_BETA_HEADER)
+    if (!baseBetas.includes(ANTHROPIC_CODE_CLI_BETA_HEADER)) {
+      baseBetas.push(ANTHROPIC_CODE_CLI_BETA_HEADER)
     }
     if (
       process.env.USER_TYPE === 'ant' &&

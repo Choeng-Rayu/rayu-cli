@@ -18,7 +18,7 @@ import type { AddressInfo } from 'net'
 import { logEvent } from '../analytics/index.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { logError } from '../../utils/log.js'
-import { shouldUseClaudeAIAuth } from './client.js'
+import { shouldUseRayuAIAuth } from './client.js'
 
 export class AuthCodeListener {
   private localServer: Server
@@ -95,8 +95,8 @@ export class AuthCodeListener {
       return
     }
 
-    const successUrl = shouldUseClaudeAIAuth(scopes)
-      ? getOauthConfig().CLAUDEAI_SUCCESS_URL
+    const successUrl = shouldUseRayuAIAuth(scopes)
+      ? getOauthConfig().SUBSCRIPTION_SUCCESS_URL
       : getOauthConfig().CONSOLE_SUCCESS_URL
 
     this.pendingResponse.writeHead(302, { Location: successUrl })
@@ -113,7 +113,7 @@ export class AuthCodeListener {
   handleErrorRedirect(): void {
     if (!this.pendingResponse) return
 
-    const errorUrl = getOauthConfig().CLAUDEAI_SUCCESS_URL
+    const errorUrl = getOauthConfig().SUBSCRIPTION_SUCCESS_URL
 
     this.pendingResponse.writeHead(302, { Location: errorUrl })
     this.pendingResponse.end()

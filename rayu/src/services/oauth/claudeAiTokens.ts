@@ -53,7 +53,7 @@ function isUsableTokenRecord(value: unknown): value is OAuthTokens {
 }
 
 /** Read the stored tokens (sync). Returns null when not signed in. */
-export function readClaudeAIOAuthTokens(): OAuthTokens | null {
+export function readRayuAIOAuthTokens(): OAuthTokens | null {
   try {
     const stored = getSecureStorage().read()?.[CLAUDE_AI_OAUTH_STORAGE_KEY]
     return isUsableTokenRecord(stored) ? stored : null
@@ -67,7 +67,7 @@ export function readClaudeAIOAuthTokens(): OAuthTokens | null {
  * Read the stored tokens without a blocking keychain read on the hot path.
  * Falls back to the sync reader when the storage backend has no async form.
  */
-export async function readClaudeAIOAuthTokensAsync(): Promise<OAuthTokens | null> {
+export async function readRayuAIOAuthTokensAsync(): Promise<OAuthTokens | null> {
   try {
     const storage = getSecureStorage()
     const data = storage.readAsync
@@ -84,7 +84,7 @@ export async function readClaudeAIOAuthTokensAsync(): Promise<OAuthTokens | null
  * Persist the tokens, preserving every other credential in the store
  * (read-modify-write — the storage API writes the whole blob).
  */
-export function writeClaudeAIOAuthTokens(tokens: OAuthTokens): {
+export function writeRayuAIOAuthTokens(tokens: OAuthTokens): {
   success: boolean
   warning?: string
 } {
@@ -102,7 +102,7 @@ export function writeClaudeAIOAuthTokens(tokens: OAuthTokens): {
 }
 
 /** Forget the subscription login. Leaves every other credential untouched. */
-export function deleteClaudeAIOAuthTokens(): boolean {
+export function deleteRayuAIOAuthTokens(): boolean {
   try {
     const storage = getSecureStorage()
     const existing = storage.read()
@@ -115,8 +115,8 @@ export function deleteClaudeAIOAuthTokens(): boolean {
 }
 
 /** Granted scopes of the stored login (empty when not signed in). */
-export function claudeAIOAuthScopes(): string[] {
-  return readClaudeAIOAuthTokens()?.scopes ?? []
+export function rayuAIOAuthScopes(): string[] {
+  return readRayuAIOAuthTokens()?.scopes ?? []
 }
 
 // --- single-flight refresh --------------------------------------------------
@@ -134,10 +134,10 @@ let refreshPromise: Promise<boolean> | null = null
  * because the refresh_token rotates — two parallel refreshes would race, and the
  * loser would persist a token the server has already invalidated.
  */
-export async function refreshClaudeAIOAuthTokensIfNeeded(
+export async function refreshRayuAIOAuthTokensIfNeeded(
   opts: { force?: boolean } = {},
 ): Promise<boolean> {
-  const tokens = readClaudeAIOAuthTokens()
+  const tokens = readRayuAIOAuthTokens()
   if (!tokens?.refreshToken) {
     // Nothing stored, or a token with no refresh capability: usable as-is if it
     // has not expired, otherwise there is nothing we can do here.
@@ -177,7 +177,7 @@ async function performRefresh(tokens: OAuthTokens): Promise<boolean> {
         tokenAccount: refreshed.tokenAccount ?? tokens.tokenAccount,
         profile: refreshed.profile ?? tokens.profile,
       }
-      const { success } = writeClaudeAIOAuthTokens(merged)
+      const { success } = writeRayuAIOAuthTokens(merged)
       if (!success) {
         logForDebugging('[oauth] refreshed token could not be persisted', {
           level: 'error',
@@ -203,6 +203,6 @@ async function performRefresh(tokens: OAuthTokens): Promise<boolean> {
 }
 
 /** Drop any in-flight refresh (tests / logout). */
-export function resetClaudeAIOAuthRefreshState(): void {
+export function resetRayuAIOAuthRefreshState(): void {
   refreshPromise = null
 }

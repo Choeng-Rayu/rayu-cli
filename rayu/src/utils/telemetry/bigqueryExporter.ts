@@ -10,7 +10,7 @@ import {
 import axios from 'axios'
 import { checkMetricsEnabled } from 'src/services/api/metricsOptOut.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
-import { getSubscriptionType, isClaudeAISubscriber } from '../auth.js'
+import { getSubscriptionType, isRayuAISubscriber } from '../auth.js'
 import { checkHasTrustDialogAccepted } from '../config.js'
 import { logForDebugging } from '../debug.js'
 import { errorMessage, toError } from '../errors.js'
@@ -170,7 +170,7 @@ export class BigQueryMetricsExporter implements PushMetricExporter {
     }
 
     // Add customer type and subscription type
-    if (isClaudeAISubscriber()) {
+    if (isRayuAISubscriber()) {
       resourceAttributes['user.customer_type'] = 'claude_ai'
       const subscriptionType = getSubscriptionType()
       if (subscriptionType) {

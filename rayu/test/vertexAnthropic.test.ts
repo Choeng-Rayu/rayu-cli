@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   VERTEX_ANTHROPIC_VERSION,
-  curatedVertexClaudeModels,
+  curatedVertexAnthropicModels,
   curatedVertexMaasModels,
   isVertexMaasModelId,
   makeVertexAnthropicFetch,
@@ -222,11 +222,11 @@ describe('model family detection', () => {
     const prevC = process.env.VERTEX_CLAUDE_MODELS
     const prevM = process.env.VERTEX_MAAS_MODELS
     try {
-      expect(curatedVertexClaudeModels()).toContain('claude-sonnet-4-5@20250929')
+      expect(curatedVertexAnthropicModels()).toContain('claude-sonnet-4-5@20250929')
       expect(curatedVertexMaasModels().length).toBeGreaterThan(0)
       process.env.VERTEX_CLAUDE_MODELS = 'claude-x@1, claude-y@2'
       process.env.VERTEX_MAAS_MODELS = 'meta/custom-maas'
-      expect(curatedVertexClaudeModels()).toEqual(['claude-x@1', 'claude-y@2'])
+      expect(curatedVertexAnthropicModels()).toEqual(['claude-x@1', 'claude-y@2'])
       expect(curatedVertexMaasModels()).toEqual(['meta/custom-maas'])
     } finally {
       if (prevC === undefined) delete process.env.VERTEX_CLAUDE_MODELS

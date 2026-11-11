@@ -211,7 +211,7 @@ export class DiagnosticTrackingService {
       .filter(file => this.baseline.has(this.normalizeFileUri(file.uri)))
       .filter(file => file.uri.startsWith('file://'))
 
-    const diagnosticsForClaudeFsRightUrisWithBaselinesMap = new Map<
+    const diagnosticsForRayuFsRightUrisWithBaselinesMap = new Map<
       string,
       DiagnosticFile
     >()
@@ -219,7 +219,7 @@ export class DiagnosticTrackingService {
       .filter(file => this.baseline.has(this.normalizeFileUri(file.uri)))
       .filter(file => file.uri.startsWith('_claude_fs_right:'))
       .forEach(file => {
-        diagnosticsForClaudeFsRightUrisWithBaselinesMap.set(
+        diagnosticsForRayuFsRightUrisWithBaselinesMap.set(
           this.normalizeFileUri(file.uri),
           file,
         )
@@ -233,13 +233,13 @@ export class DiagnosticTrackingService {
       const baselineDiagnostics = this.baseline.get(normalizedPath) || []
 
       // Get the _claude_fs_right file if it exists
-      const claudeFsRightFile =
-        diagnosticsForClaudeFsRightUrisWithBaselinesMap.get(normalizedPath)
+      const rayuFsRightFile =
+        diagnosticsForRayuFsRightUrisWithBaselinesMap.get(normalizedPath)
 
       // Determine which file to use based on the state of right file diagnostics
       let fileToUse = file
 
-      if (claudeFsRightFile) {
+      if (rayuFsRightFile) {
         const previousRightDiagnostics =
           this.rightFileDiagnosticsState.get(normalizedPath)
 
@@ -250,16 +250,16 @@ export class DiagnosticTrackingService {
           !previousRightDiagnostics ||
           !this.areDiagnosticArraysEqual(
             previousRightDiagnostics,
-            claudeFsRightFile.diagnostics,
+            rayuFsRightFile.diagnostics,
           )
         ) {
-          fileToUse = claudeFsRightFile
+          fileToUse = rayuFsRightFile
         }
 
         // Update our tracking of right file diagnostics
         this.rightFileDiagnosticsState.set(
           normalizedPath,
-          claudeFsRightFile.diagnostics,
+          rayuFsRightFile.diagnostics,
         )
       }
 

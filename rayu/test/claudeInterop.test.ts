@@ -7,7 +7,7 @@ import {
   RAYU_CONFIG_DIRS,
   getExternalSkillDirs,
 } from '../src/utils/externalSkillDiscovery.ts'
-import { getClaudeFallbackMcpServers } from '../src/services/mcp/config.ts'
+import { getRayuFallbackMcpServers } from '../src/services/mcp/config.ts'
 
 // ---- Skills interop ----
 test('.agent (singular) is a recognized config dir alongside .rayu/.agents', () => {
@@ -47,7 +47,7 @@ test('Claude MCP fallback reads mcpServers and tags them user scope', () => {
       }),
     )
     const servers = runWithCwdOverride(proj, () =>
-      getClaudeFallbackMcpServers(),
+      getRayuFallbackMcpServers(),
     )
     // The mcpServers entry is read…
     expect(servers.rayuTestClaudeServer).toBeDefined()
@@ -77,7 +77,7 @@ test('Claude MCP fallback ignores a config with no mcpServers (model/auth only)'
       JSON.stringify({ model: 'x', primaryApiKey: 'y' }),
     )
     const servers = runWithCwdOverride(proj, () =>
-      getClaudeFallbackMcpServers(),
+      getRayuFallbackMcpServers(),
     )
     // Nothing from THIS file becomes a server (it had no mcpServers).
     expect('model' in servers).toBe(false)

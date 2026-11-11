@@ -2,7 +2,7 @@ import { APIError } from '@anthropic-ai/sdk/index.js'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import isEqual from 'lodash-es/isEqual.js'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
-import { isClaudeAISubscriber } from '../utils/auth.js'
+import { isRayuAISubscriber } from '../utils/auth.js'
 import { getModelBetas } from '../utils/betas.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { logError } from '../utils/log.js'
@@ -119,7 +119,7 @@ export type OverageDisabledReason =
   | 'no_limits_configured' // No overage limits configured for account
   | 'unknown' // Unknown reason, should not happen
 
-export type ClaudeAILimits = {
+export type RayuAILimits = {
   status: QuotaStatus
   // unifiedRateLimitFallbackAvailable is currently used to warn users that set
   // their model to Opus whenever they are about to run out of quota. It does
@@ -153,7 +153,7 @@ export type ClaudeAILimits = {
 }
 
 // Exported for testing only
-export let currentLimits: ClaudeAILimits = {
+export let currentLimits: RayuAILimits = {
   status: 'allowed',
   unifiedRateLimitFallbackAvailable: false,
   isUsingOverage: false,
@@ -195,10 +195,10 @@ function extractRawUtilization(headers: globalThis.Headers): RawUtilization {
   return result
 }
 
-type StatusChangeListener = (limits: ClaudeAILimits) => void
+type StatusChangeListener = (limits: RayuAILimits) => void
 export const statusListeners: Set<StatusChangeListener> = new Set()
 
-export function emitStatusChange(limits: ClaudeAILimits) {
+export function emitStatusChange(limits: RayuAILimits) {
   currentLimits = limits
   statusListeners.forEach(listener => listener(limits))
   const hoursTillReset = Math.round(
@@ -241,7 +241,7 @@ export async function checkQuotaStatus(): Promise<void> {
   }
 
   // Check if we should process rate limits (real subscriber or mock testing)
-  if (!shouldProcessRateLimits(isClaudeAISubscriber())) {
+  if (!shouldProcessRateLimits(isRayuAISubscriber())) {
     return
   }
 
@@ -272,7 +272,7 @@ export async function checkQuotaStatus(): Promise<void> {
 function getHeaderBasedEarlyWarning(
   headers: globalThis.Headers,
   unifiedRateLimitFallbackAvailable: boolean,
-): ClaudeAILimits | null {
+): RayuAILimits | null {
   // Check each claim type for surpassed threshold header
   for (const [claimAbbrev, rateLimitType] of Object.entries(
     EARLY_WARNING_CLAIM_MAP,
@@ -319,7 +319,7 @@ function getTimeRelativeEarlyWarning(
   headers: globalThis.Headers,
   config: EarlyWarningConfig,
   unifiedRateLimitFallbackAvailable: boolean,
-): ClaudeAILimits | null {
+): RayuAILimits | null {
   const { rateLimitType, claimAbbrev, windowSeconds, thresholds } = config
 
   const utilizationHeader = headers.get(
@@ -364,7 +364,7 @@ function getTimeRelativeEarlyWarning(
 function getEarlyWarningFromHeaders(
   headers: globalThis.Headers,
   unifiedRateLimitFallbackAvailable: boolean,
-): ClaudeAILimits | null {
+): RayuAILimits | null {
   // Try header-based detection first (preferred when API sends the header)
   const headerBasedWarning = getHeaderBasedEarlyWarning(
     headers,
@@ -392,7 +392,7 @@ function getEarlyWarningFromHeaders(
 
 function computeNewLimitsFromHeaders(
   headers: globalThis.Headers,
-): ClaudeAILimits {
+): RayuAILimits {
   const status =
     (headers.get('anthropic-ratelimit-unified-status') as QuotaStatus) ||
     'allowed'
@@ -472,13 +472,13 @@ export function extractQuotaStatusFromHeaders(
   headers: globalThis.Headers,
 ): void {
   // Check if we need to process rate limits
-  const isSubscriber = isClaudeAISubscriber()
+  const isSubscriber = isRayuAISubscriber()
 
   if (!shouldProcessRateLimits(isSubscriber)) {
     // If we have any rate limit state, clear it
     rawUtilization = {}
     if (currentLimits.status !== 'allowed' || currentLimits.resetsAt) {
-      const defaultLimits: ClaudeAILimits = {
+      const defaultLimits: RayuAILimits = {
         status: 'allowed',
         unifiedRateLimitFallbackAvailable: false,
         isUsingOverage: false,
@@ -503,7 +503,7 @@ export function extractQuotaStatusFromHeaders(
 
 export function extractQuotaStatusFromError(error: APIError): void {
   if (
-    !shouldProcessRateLimits(isClaudeAISubscriber()) ||
+    !shouldProcessRateLimits(isRayuAISubscriber()) ||
     error.status !== 429
   ) {
     return

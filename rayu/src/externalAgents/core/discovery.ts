@@ -33,7 +33,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import {
   detectHosts,
-  getClaudeCodeConfigDir,
+  getRayuCodeConfigDir,
   getCodexHomeDir,
 } from '../../plugins/installers/detect.js'
 import { whichSync } from '../../utils/which.js'
@@ -450,7 +450,7 @@ export async function discoverAgents(
 /** Config directory for a provider RAYU knows, when `detectHosts` has no entry. */
 function knownConfigDir(provider: ProviderId): string | undefined {
   if (provider === CODEX_PROVIDER) return getCodexHomeDir()
-  if (provider === CLAUDE_CODE_PROVIDER) return getClaudeCodeConfigDir()
+  if (provider === CLAUDE_CODE_PROVIDER) return getRayuCodeConfigDir()
   return undefined
 }
 

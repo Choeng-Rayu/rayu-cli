@@ -3,7 +3,7 @@ import { getOauthConfig } from '../../constants/oauth.js'
 import {
   getOauthAccountInfo,
   getSubscriptionType,
-  isClaudeAISubscriber,
+  isRayuAISubscriber,
 } from '../../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -71,7 +71,7 @@ export async function fetchReferralRedemptions(
 function shouldCheckForPasses(): boolean {
   return !!(
     getOauthAccountInfo()?.organizationUuid &&
-    isClaudeAISubscriber() &&
+    isRayuAISubscriber() &&
     getSubscriptionType() === 'max'
   )
 }

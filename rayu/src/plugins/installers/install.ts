@@ -18,9 +18,9 @@ import {
   resolveMcpServerCommand,
 } from './constants.js'
 import {
-  type ClaudeCodeStatus,
-  getClaudeCodeStatus,
-  installClaudeCode,
+  type RayuCodeStatus,
+  getRayuCodeStatus,
+  installRayuCode,
 } from './claudeCode.js'
 import { type CodexStatus, getCodexStatus, installCodex } from './codex.js'
 import { detectHost, detectHosts, type DetectedHost } from './detect.js'
@@ -60,7 +60,7 @@ export async function installIntoHosts(
   for (const host of request.hosts) {
     try {
       if (host === 'claude-code') {
-        const result = await installClaudeCode({
+        const result = await installRayuCode({
           scope: request.scope,
           projectDir: request.projectDir,
           skipSkills: request.skipSkills,
@@ -106,7 +106,7 @@ export type HostStatusEntry = {
   host: HostId
   label: string
   detected: DetectedHost
-  claude?: ClaudeCodeStatus
+  rayu?: RayuCodeStatus
   codex?: CodexStatus
   error: string | undefined
 }
@@ -135,7 +135,7 @@ export async function getPluginStatus(
           host: host.id,
           label: host.label,
           detected: host,
-          claude: await getClaudeCodeStatus({ scope, projectDir }),
+          rayu: await getRayuCodeStatus({ scope, projectDir }),
           error: undefined,
         })
       } else {

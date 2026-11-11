@@ -12,7 +12,7 @@
  */
 
 import { getOauthConfig } from '../constants/oauth.js'
-import { getClaudeAIOAuthTokens } from '../utils/auth.js'
+import { getRayuAIOAuthTokens } from '../utils/auth.js'
 
 /** Ant-only dev override: CLAUDE_BRIDGE_OAUTH_TOKEN, else undefined. */
 export function getBridgeTokenOverride(): string | undefined {
@@ -36,7 +36,7 @@ export function getBridgeBaseUrlOverride(): string | undefined {
  * keychain. Undefined means "not logged in".
  */
 export function getBridgeAccessToken(): string | undefined {
-  return getBridgeTokenOverride() ?? getClaudeAIOAuthTokens()?.accessToken
+  return getBridgeTokenOverride() ?? getRayuAIOAuthTokens()?.accessToken
 }
 
 /**

@@ -90,7 +90,7 @@ export function ConsoleOAuthFlow({
             setManualUrl(url)
             setPhase('waiting')
           },
-          { loginWithClaudeAi: loginWithRayuAi },
+          { loginWithRayuAi: loginWithRayuAi },
         )
         awaitingCodeRef.current = false
         setCanPasteManually(false)
@@ -103,7 +103,7 @@ export function ConsoleOAuthFlow({
         }
 
         setPhase('installing')
-        const result = await login.installClaudeSubscription(tokens)
+        const result = await login.installRayuSubscription(tokens)
         if (cancelled) return
         if (!result.success) {
           setError(result.warning ?? 'Could not save the Claude credentials.')

@@ -51,7 +51,7 @@ export type { WireFormat }
  *   arn:aws:bedrock:…:inference-profile/global.anthropic.claude-opus-4-6-v1
  *   claude-sonnet-4-5@20250929                          (Vertex publisher form)
  */
-function isClaudeModelId(model: string): boolean {
+function isAnthropicModelId(model: string): boolean {
   return /(^|[.\-/])anthropic[.\-/]|claude/i.test(model)
 }
 
@@ -139,7 +139,7 @@ export function resolveWireFormat(
       // Claude models now use Anthropic Messages and the rest use OpenAI Chat.
       if (provider.bedrockApi === 'anthropic') return 'anthropic-messages'
       if (provider.bedrockApi === 'openai') return 'openai-chat'
-      if (bare && isClaudeModelId(bare)) return 'anthropic-messages'
+      if (bare && isAnthropicModelId(bare)) return 'anthropic-messages'
       return 'openai-chat'
     }
 
@@ -148,7 +148,7 @@ export function resolveWireFormat(
       // Anthropic Messages API at {origin}/anthropic (the shape the official
       // @anthropic-ai/foundry-sdk uses), everything else speaks the Azure OpenAI
       // v1 Responses API at {origin}/openai/v1.
-      return bare && isClaudeModelId(bare)
+      return bare && isAnthropicModelId(bare)
         ? 'anthropic-messages'
         : 'openai-responses'
 
@@ -157,7 +157,7 @@ export function resolveWireFormat(
       //   Claude → Anthropic Messages on the `anthropic` publisher
       //   MaaS   → OpenAI Chat on the openapi endpoint (llama/mistral/qwen)
       //   Gemini → GenAI on the `google` publisher (the default)
-      if (bare && isClaudeModelId(bare)) return 'anthropic-messages'
+      if (bare && isAnthropicModelId(bare)) return 'anthropic-messages'
       if (bare && isVertexMaasModelId(bare)) return 'openai-chat'
       return 'genai'
 
@@ -187,7 +187,7 @@ export function resolveWireFormat(
 
 /** Exposed for tests: the model-family predicates the per-model rules use. */
 export const _modelFamilyForTesting = {
-  isClaudeModelId,
+  isAnthropicModelId,
   isGeminiModelId,
   bareModelId,
 }
@@ -823,10 +823,10 @@ export async function buildFirstPartyAnthropicClient(opts: {
   // path loads nothing extra.
   let subscriptionFetch: typeof fetch | undefined
   if (provider?.anthropicAuthType === 'oauth') {
-    const { usesClaudeSubscriptionAuth, makeClaudeSubscriptionFetch } =
+    const { usesRayuSubscriptionAuth, makeRayuSubscriptionFetch } =
       await import('./claudeSubscriptionAuth.js')
-    if (usesClaudeSubscriptionAuth(provider)) {
-      subscriptionFetch = makeClaudeSubscriptionFetch({
+    if (usesRayuSubscriptionAuth(provider)) {
+      subscriptionFetch = makeRayuSubscriptionFetch({
         inner: (fetchOverride ?? undefined) as typeof fetch | undefined,
       })
       logForDebugging('[API:auth] using Claude subscription OAuth bearer')

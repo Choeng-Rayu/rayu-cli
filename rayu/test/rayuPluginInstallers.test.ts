@@ -64,8 +64,8 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
 describe('host detection', () => {
   test('honours the host env overrides', async () => {
     const {
-      getClaudeCodeUserConfigFile: getRayuCodeUserConfigFile,
-      getClaudeCodeSkillsInstallDir: getRayuCodeSkillsInstallDir,
+      getRayuCodeUserConfigFile: getRayuCodeUserConfigFile,
+      getRayuCodeSkillsInstallDir: getRayuCodeSkillsInstallDir,
       getCodexConfigFile,
       getCodexSkillsInstallDir,
       getProjectMcpJsonFile,
@@ -102,7 +102,7 @@ describe('host detection', () => {
 
 describe('Claude Code installer', () => {
   test('creates ~/.claude.json with the rayu MCP entry', async () => {
-    const { installClaudeCode: installRayuCode } = await import(
+    const { installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     const result = await installRayuCode({ scope: 'user' })
@@ -131,7 +131,7 @@ describe('Claude Code installer', () => {
       ),
     )
 
-    const { installClaudeCode: installRayuCode } = await import(
+    const { installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     await installRayuCode({ scope: 'user' })
@@ -148,7 +148,7 @@ describe('Claude Code installer', () => {
     const configFile = join(rayuDir, '.claude.json')
     await writeFile(configFile, JSON.stringify({ numStartups: 1 }))
 
-    const { installClaudeCode: installRayuCode } = await import(
+    const { installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     const result = await installRayuCode({ scope: 'user' })
@@ -161,7 +161,7 @@ describe('Claude Code installer', () => {
   })
 
   test('is idempotent — a second install writes nothing', async () => {
-    const { installClaudeCode: installRayuCode } = await import(
+    const { installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     await installRayuCode({ scope: 'user' })
@@ -176,7 +176,7 @@ describe('Claude Code installer', () => {
     const configFile = join(rayuDir, '.claude.json')
     await writeFile(configFile, 'not json at all {{{')
 
-    const { installClaudeCode: installRayuCode } = await import(
+    const { installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     await expect(installRayuCode({ scope: 'user' })).rejects.toThrow(
@@ -187,7 +187,7 @@ describe('Claude Code installer', () => {
   })
 
   test('project scope writes <project>/.mcp.json', async () => {
-    const { installClaudeCode: installRayuCode } = await import(
+    const { installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     const result = await installRayuCode({ scope: 'project', projectDir })
@@ -200,7 +200,7 @@ describe('Claude Code installer', () => {
   })
 
   test('installs the host SKILL.md files', async () => {
-    const { installClaudeCode: installRayuCode } = await import(
+    const { installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     const result = await installRayuCode({ scope: 'user' })
@@ -215,7 +215,7 @@ describe('Claude Code installer', () => {
   })
 
   test('--no-skills registers the server only', async () => {
-    const { installClaudeCode: installRayuCode } = await import(
+    const { installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     const result = await installRayuCode({ scope: 'user', skipSkills: true })
@@ -233,7 +233,7 @@ describe('Claude Code installer', () => {
     }
     await writeFile(configFile, `${JSON.stringify(original, null, 2)}\n`)
 
-    const { installClaudeCode: installRayuCode, uninstallClaudeCode: uninstallRayuCode } = await import(
+    const { installRayuCode: installRayuCode, uninstallRayuCode: uninstallRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     await installRayuCode({ scope: 'user' })
@@ -246,7 +246,7 @@ describe('Claude Code installer', () => {
   })
 
   test('uninstall is idempotent', async () => {
-    const { uninstallClaudeCode: uninstallRayuCode } = await import(
+    const { uninstallRayuCode: uninstallRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     const result = await uninstallRayuCode({ scope: 'user' })
@@ -255,7 +255,7 @@ describe('Claude Code installer', () => {
   })
 
   test('status reports registration, skills and staleness', async () => {
-    const { getClaudeCodeStatus: getRayuCodeStatus, installClaudeCode: installRayuCode } = await import(
+    const { getRayuCodeStatus: getRayuCodeStatus, installRayuCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
 
@@ -279,7 +279,7 @@ describe('Claude Code installer', () => {
 
   test('status surfaces an unparseable config instead of throwing', async () => {
     await writeFile(join(rayuDir, '.claude.json'), '}{')
-    const { getClaudeCodeStatus: getRayuCodeStatus } = await import(
+    const { getRayuCodeStatus: getRayuCodeStatus } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
     const status = await getRayuCodeStatus({ scope: 'user' })

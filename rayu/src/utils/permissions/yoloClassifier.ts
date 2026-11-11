@@ -5,7 +5,7 @@ import { mkdir, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { z } from 'zod/v4'
 import {
-  getCachedClaudeMdContent,
+  getCachedRayuMdContent as getCachedRayuMdContent,
   getLastClassifierRequests,
   getSessionId,
   setLastClassifierRequests,
@@ -460,7 +460,7 @@ export function buildTranscriptForClassifier(
  * pre-PR behavior.
  */
 function buildRayuMdMessage(): Anthropic.MessageParam | null {
-  const rayuMd = getCachedClaudeMdContent()
+  const rayuMd = getCachedRayuMdContent()
   if (rayuMd === null) return null
   return {
     role: 'user',

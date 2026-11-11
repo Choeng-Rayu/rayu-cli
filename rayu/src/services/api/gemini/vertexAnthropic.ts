@@ -167,7 +167,7 @@ export function makeVertexAnthropicFetch(opts: {
  * suffix (e.g. `claude-sonnet-4-5@20250929`), which is why they cannot be reused
  * from configs.ts verbatim.
  */
-export const KNOWN_VERTEX_CLAUDE_MODELS: string[] = [
+export const KNOWN_VERTEX_ANTHROPIC_MODELS: string[] = [
   'claude-sonnet-4-5@20250929',
   'claude-opus-4-1@20250805',
   'claude-opus-4@20250514',
@@ -202,8 +202,8 @@ function fromEnvList(name: string, fallback: string[]): string[] {
 }
 
 /** Curated Claude ids for Vertex (env-overridable). */
-export function curatedVertexClaudeModels(): string[] {
-  return fromEnvList('VERTEX_CLAUDE_MODELS', KNOWN_VERTEX_CLAUDE_MODELS)
+export function curatedVertexAnthropicModels(): string[] {
+  return fromEnvList('VERTEX_CLAUDE_MODELS', KNOWN_VERTEX_ANTHROPIC_MODELS)
 }
 
 /** Curated MaaS ids for Vertex (env-overridable). */

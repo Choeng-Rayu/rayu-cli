@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { hasProfileScope, isClaudeAISubscriber } from '../../utils/auth.js'
+import { hasProfileScope, isRayuAISubscriber } from '../../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -131,7 +131,7 @@ export async function checkMetricsEnabled(): Promise<MetricsStatus> {
   // This check runs before the disk read so we never persist auth-state-derived
   // answers — only real API responses go to disk. Otherwise a service-key
   // session would poison the cache for a later full-OAuth session.
-  if (isClaudeAISubscriber() && !hasProfileScope()) {
+  if (isRayuAISubscriber() && !hasProfileScope()) {
     return { enabled: false, hasError: false }
   }
 

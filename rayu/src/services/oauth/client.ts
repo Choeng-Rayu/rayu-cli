@@ -6,16 +6,16 @@ import {
 } from 'src/services/analytics/index.js'
 import {
   ALL_OAUTH_SCOPES,
-  CLAUDE_AI_INFERENCE_SCOPE,
-  CLAUDE_AI_OAUTH_SCOPES,
-  CLAUDE_AI_PROFILE_SCOPE,
+  SUBSCRIPTION_INFERENCE_SCOPE,
+  SUBSCRIPTION_OAUTH_SCOPES,
+  SUBSCRIPTION_PROFILE_SCOPE,
   getOauthConfig,
 } from '../../constants/oauth.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
-  getClaudeAIOAuthTokens,
+  getRayuAIOAuthTokens,
   hasProfileScope,
-  isClaudeAISubscriber,
+  isRayuAISubscriber,
   saveApiKey,
 } from '../../utils/auth.js'
 import type { AccountInfo } from '../../utils/config.js'
@@ -44,8 +44,8 @@ import type {
  *
  * @private Only call this from OAuth / auth related code!
  */
-export function shouldUseClaudeAIAuth(scopes: string[] | undefined): boolean {
-  return scopes?.includes(CLAUDE_AI_INFERENCE_SCOPE) ?? false
+export function shouldUseRayuAIAuth(scopes: string[] | undefined): boolean {
+  return scopes?.includes(SUBSCRIPTION_INFERENCE_SCOPE) ?? false
 }
 
 export function parseScopes(scopeString?: string): string[] {
@@ -63,14 +63,14 @@ export function parseScopes(scopeString?: string): string[] {
  *   user ends up on (see ALL_OAUTH_SCOPES in constants/oauth.ts).
  */
 function scopesForLogin(opts: {
-  loginWithClaudeAi?: boolean
+  loginWithRayuAi?: boolean
   inferenceOnly?: boolean
 }): string[] {
   if (opts.inferenceOnly) {
-    return [CLAUDE_AI_PROFILE_SCOPE, CLAUDE_AI_INFERENCE_SCOPE]
+    return [SUBSCRIPTION_PROFILE_SCOPE, SUBSCRIPTION_INFERENCE_SCOPE]
   }
-  return opts.loginWithClaudeAi
-    ? [...CLAUDE_AI_OAUTH_SCOPES]
+  return opts.loginWithRayuAi
+    ? [...SUBSCRIPTION_OAUTH_SCOPES]
     : [...ALL_OAUTH_SCOPES]
 }
 
@@ -103,7 +103,7 @@ export function buildAuthUrl({
   state,
   port,
   isManual,
-  loginWithRayuAi: loginWithClaudeAi,
+  loginWithRayuAi: loginWithRayuAi,
   inferenceOnly,
   orgUUID,
   loginHint,
@@ -120,8 +120,8 @@ export function buildAuthUrl({
   loginMethod?: string
 }): string {
   const config = getOauthConfig()
-  const base = loginWithClaudeAi
-    ? config.CLAUDE_AI_AUTHORIZE_URL
+  const base = loginWithRayuAi
+    ? config.SUBSCRIPTION_AUTHORIZE_URL
     : config.CONSOLE_AUTHORIZE_URL
 
   const url = new URL(base)
@@ -133,7 +133,7 @@ export function buildAuthUrl({
   params.set('client_id', config.CLIENT_ID)
   params.set('response_type', 'code')
   params.set('redirect_uri', oauthRedirectUri(port, isManual))
-  params.set('scope', scopesForLogin({ loginWithClaudeAi, inferenceOnly }).join(' '))
+  params.set('scope', scopesForLogin({ loginWithRayuAi, inferenceOnly }).join(' '))
   params.set('code_challenge', codeChallenge)
   params.set('code_challenge_method', 'S256')
   params.set('state', state)
@@ -142,7 +142,7 @@ export function buildAuthUrl({
   if (loginMethod) params.set('login_method', loginMethod)
 
   logForDebugging(
-    `[oauth] authorize url built (claudeAi=${!!loginWithClaudeAi}, manual=${isManual})`,
+    `[oauth] authorize url built (claudeAi=${!!loginWithRayuAi}, manual=${isManual})`,
   )
   return url.toString()
 }
@@ -199,7 +199,7 @@ export async function refreshOAuthToken(
     // registered oauth_scope.
     scope: (requestedScopes?.length
       ? requestedScopes
-      : CLAUDE_AI_OAUTH_SCOPES
+      : SUBSCRIPTION_OAUTH_SCOPES
     ).join(' '),
   }
 
@@ -239,7 +239,7 @@ export async function refreshOAuthToken(
     // the re-login path writes cached ?? wiped ?? null = cached; and if secure
     // storage was already empty we fall through to the fetch.
     const config = getGlobalConfig()
-    const existing = getClaudeAIOAuthTokens()
+    const existing = getRayuAIOAuthTokens()
     const haveProfileAlready =
       config.oauthAccount?.billingType !== undefined &&
       config.oauthAccount?.accountCreatedAt !== undefined &&
@@ -467,7 +467,7 @@ export async function fetchProfileInfo(accessToken: string): Promise<{
 export async function getOrganizationUUID(): Promise<string | null> {
   const cached = getGlobalConfig().oauthAccount?.organizationUuid
   if (cached) return cached
-  const tokens = getClaudeAIOAuthTokens()
+  const tokens = getRayuAIOAuthTokens()
   return tokens?.tokenAccount?.organizationUuid ?? null
 }
 
@@ -476,11 +476,11 @@ export async function getOrganizationUUID(): Promise<string | null> {
  * @returns Whether or not the oauth account info was populated.
  */
 export async function populateOAuthAccountInfoIfNeeded(): Promise<boolean> {
-  if (!isClaudeAISubscriber() || !hasProfileScope()) return false
+  if (!isRayuAISubscriber() || !hasProfileScope()) return false
   if (getGlobalConfig().oauthAccount?.accountUuid) return false
 
   await checkAndRefreshOAuthTokenIfNeeded()
-  const tokens = getClaudeAIOAuthTokens()
+  const tokens = getRayuAIOAuthTokens()
   if (!tokens?.accessToken) return false
 
   const profile = await getOauthProfileFromOauthToken(tokens.accessToken)

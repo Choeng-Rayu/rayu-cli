@@ -35,7 +35,7 @@ import type { APIError } from '@anthropic-ai/sdk/index.js'
 import {
   currentLimits,
   emitStatusChange,
-  type ClaudeAILimits,
+  type RayuAILimits,
   type RateLimitType,
 } from '../claudeAiLimits.js'
 import {
@@ -283,7 +283,7 @@ export function pacingWindowFromRateLimitType(
  * is correct: it has no Rayu advice to give.
  */
 export function rayuPacingLimitFromLimits(
-  limits: ClaudeAILimits,
+  limits: RayuAILimits,
 ): RayuPacingLimit | null {
   const window = pacingWindowFromRateLimitType(limits.rateLimitType)
   if (!window) return null
@@ -305,7 +305,7 @@ export function rayuPacingLimitFromLimits(
  * (the terminal warning, the VS Code status bar, the transcript message) treat it
  * as an active block rather than a warning.
  */
-export function toClaudeAILimits(limit: RayuPacingLimit): ClaudeAILimits {
+export function toRayuAILimits(limit: RayuPacingLimit): RayuAILimits {
   const utilization =
     limit.capCredits && limit.capCredits > 0 && limit.usedCredits !== undefined
       ? Math.min(1, limit.usedCredits / limit.capCredits)
@@ -340,7 +340,7 @@ export function toClaudeAILimits(limit: RayuPacingLimit): ClaudeAILimits {
  * than once on a retried request.
  */
 export function publishRayuPacingLimit(limit: RayuPacingLimit): void {
-  const next = toClaudeAILimits(limit)
+  const next = toRayuAILimits(limit)
   if (currentLimits.status === next.status &&
     currentLimits.rateLimitType === next.rateLimitType &&
     currentLimits.resetsAt === next.resetsAt) {
