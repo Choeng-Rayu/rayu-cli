@@ -1,11 +1,11 @@
 {
   "summary": {
-    "rename": 314,
+    "rename": 313,
     "override": 50,
-    "keep": 54,
+    "keep": 55,
     "refused": 0,
     "byWave": {
-      "1": 211,
+      "1": 210,
       "2": 103,
       "3": 23,
       "4": 27
@@ -3307,12 +3307,13 @@
     },
     {
       "symbol": "rayuTestClaudeServer",
-      "newName": "rayuTestRayuServer",
+      "newName": "rayuTestClaudeServer",
       "declFile": "test/claudeInterop.test.ts",
       "line": 41,
       "wave": 1,
-      "refs": 1,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "shouldUseClaudeAIAuth",
