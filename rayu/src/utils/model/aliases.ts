@@ -34,7 +34,7 @@ export function isModelFamilyAlias(model: string): boolean {
  *   - First-party IDs: claude-sonnet-4-6, claude-haiku-4-5-20251001, etc.
  *   - Bedrock cross-region IDs: us.anthropic.claude-*, eu.anthropic.claude-*, etc.
  */
-export function isClaudeModelOrAlias(model: string): boolean {
+export function isAnthropicModelOrAlias(model: string): boolean {
   const lower = model.toLowerCase().trim().replace(/\[1m\]$/i, '').trim()
   const alias = ['opus', 'sonnet', 'haiku', 'best', 'opusplan'].includes(lower)
   const id = lower.startsWith('claude-') ||

@@ -80,6 +80,6 @@ export const EXPLORE_AGENT: BuiltInAgentDefinition = {
   model: process.env.RAYU_EXPLORE_AGENT_MODEL,
   // Explore is a fast read-only search agent — it doesn't need commit/PR/lint
   // rules from RAYU.md. The main agent has full context and interprets results.
-  omitClaudeMd: true,
+  omitRayuMd: true,
   getSystemPrompt: () => getExploreSystemPrompt(),
 }

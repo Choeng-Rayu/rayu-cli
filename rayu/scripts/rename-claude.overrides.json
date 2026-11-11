@@ -57,7 +57,9 @@
     "test/externalAgentsTransport.test.ts::CLAUDE_CONFIG_DIR",
     "test/claudeSubscriptionOAuth.test.ts::claudeAiOauth",
     "test/macOsKeychainStartup.test.ts::claudeAiOauth",
-    "test/claudeInterop.test.ts::rayuTestClaudeServer"
+    "test/claudeInterop.test.ts::rayuTestClaudeServer",
+    "src/context.ts::claudeMd",
+    "src/components/ConsoleOAuthFlow.tsx::loginWithClaudeAi"
   ],
   "explicitNames": {
     "isClaudeModelId": "isAnthropicModelId",

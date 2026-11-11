@@ -59,7 +59,7 @@ import { jsonStringify } from '../slowOperations.js'
 import { profileCheckpoint } from '../startupProfiler.js'
 import { isBetaTracingEnabled } from './betaSessionTracing.js'
 import { BigQueryMetricsExporter } from './bigqueryExporter.js'
-import { ClaudeCodeDiagLogger } from './logger.js'
+import { RayuCodeDiagLogger } from './logger.js'
 import { initializePerfettoTracing } from './perfettoTracing.js'
 import {
   endInteractionSpan,
@@ -446,7 +446,7 @@ export async function initializeTelemetry() {
     }
   }
 
-  diag.setLogger(new ClaudeCodeDiagLogger(), DiagLogLevel.ERROR)
+  diag.setLogger(new RayuCodeDiagLogger(), DiagLogLevel.ERROR)
 
   // Initialize Perfetto tracing (independent of OTEL)
   // Enable via CLAUDE_CODE_PERFETTO_TRACE=1 or CLAUDE_CODE_PERFETTO_TRACE=<path>

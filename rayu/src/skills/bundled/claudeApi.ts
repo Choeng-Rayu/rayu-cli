@@ -177,7 +177,7 @@ function buildPrompt(
   return parts.join('\n\n')
 }
 
-export function registerClaudeApiSkill(): void {
+export function registerRayuApiSkill(): void {
   registerBundledSkill({
     name: 'claude-api',
     description:

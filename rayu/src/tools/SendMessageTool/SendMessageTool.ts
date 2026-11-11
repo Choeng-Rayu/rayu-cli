@@ -846,10 +846,10 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
             }
           }
           /* eslint-disable @typescript-eslint/no-require-imports */
-          const { postInterClaudeMessage } =
+          const { postInterClaudeMessage: postInterRayuMessage } =
             require('../../bridge/peerSessions.js') as typeof import('../../bridge/peerSessions.js')
           /* eslint-enable @typescript-eslint/no-require-imports */
-          const result = await postInterClaudeMessage(
+          const result = await postInterRayuMessage(
             addr.target,
             input.message,
           )

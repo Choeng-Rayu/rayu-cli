@@ -209,7 +209,7 @@ function getSettingsPaths(): string[] {
   ).filter(path => path !== undefined)
 }
 
-export function isClaudeSettingsPath(filePath: string): boolean {
+export function isRayuSettingsPath(filePath: string): boolean {
   // SECURITY: Normalize path structure first to prevent bypass via redundant ./
   // sequences like `./.rayu/./settings.json` which would evade the endsWith() check
   const expandedPath = expandPath(filePath)
@@ -234,8 +234,8 @@ export function isClaudeSettingsPath(filePath: string): boolean {
 }
 
 // Always ask when RAYU tries to edit its own config files
-function isClaudeConfigFilePath(filePath: string): boolean {
-  if (isClaudeSettingsPath(filePath)) {
+function isRayuConfigFilePath(filePath: string): boolean {
+  if (isRayuSettingsPath(filePath)) {
     return true
   }
 
@@ -602,7 +602,7 @@ export function checkPathSafetyForAutoEdit(
 
   // Check for Claude config files on all paths
   for (const pathToCheck of pathsToCheck) {
-    if (isClaudeConfigFilePath(pathToCheck)) {
+    if (isRayuConfigFilePath(pathToCheck)) {
       return {
         safe: false,
         message: `Claude requested permissions to write to ${path}, but you haven't granted it yet.`,
@@ -1221,7 +1221,7 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   // write-allow conversion), that rule would be found first and its source check
   // below would fail. Scope the search to session-only rules so the dialog's
   // "allow Claude to edit its own settings for this session" option actually works.
-  const claudeFolderAllowRule = matchingRuleForInput(
+  const rayuFolderAllowRule = matchingRuleForInput(
     path,
     {
       ...toolPermissionContext,
@@ -1232,7 +1232,7 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     'edit',
     'allow',
   )
-  if (claudeFolderAllowRule) {
+  if (rayuFolderAllowRule) {
     // Check if this rule is scoped under .rayu/ (project or global).
     // Accepts both the broad patterns ('/.rayu/**', '~/.rayu/**') and
     // narrowed ones like '/.rayu/skills/my-skill/**' so users can grant
@@ -1240,7 +1240,7 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     // or hooks/. The rule already matched the path via matchingRuleForInput;
     // this is an additional scope check. Reject '..' to prevent a rule like
     // '/.rayu/../**' from leaking this bypass outside .rayu/.
-    const ruleContent = claudeFolderAllowRule.ruleValue.ruleContent
+    const ruleContent = rayuFolderAllowRule.ruleValue.ruleContent
     if (
       ruleContent &&
       (ruleContent.startsWith(RAYU_FOLDER_PERMISSION_PATTERN.slice(0, -2)) ||
@@ -1255,7 +1255,7 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
         updatedInput: input,
         decisionReason: {
           type: 'rule',
-          rule: claudeFolderAllowRule,
+          rule: rayuFolderAllowRule,
         },
       }
     }

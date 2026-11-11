@@ -509,7 +509,7 @@ rl.on('line', line => {
 // ---------------------------------------------------------------------------
 
 /** A fake `claude` speaking `stream-json` on stdout and reading it on stdin. */
-const FAKE_CLAUDE = `
+const FAKE_RAYU = `
 const readline = require('readline')
 const scenario = process.env.FAKE_SCENARIO || 'normal'
 const args = process.argv.slice(2)
@@ -554,13 +554,13 @@ process.on('SIGINT', () => { emit({ type: 'result', subtype: 'error_during_execu
 
 describe('claude code adapter', () => {
   const adapter = () => createClaudeCodeAdapter()
-  const CLAUDE_AGENT = 'claude-code:agent_01' as AgentInstanceId
+  const RAYU_AGENT = 'claude-code:agent_01' as AgentInstanceId
 
   async function launch(scenario = 'normal'): Promise<AgentHandle> {
-    fakeBinary('claude', FAKE_CLAUDE)
+    fakeBinary('claude', FAKE_RAYU)
     return track(
       await adapter().launch({
-        agentId: CLAUDE_AGENT,
+        agentId: RAYU_AGENT,
         cwd: dir,
         env: { FAKE_SCENARIO: scenario },
       }),
@@ -570,7 +570,7 @@ describe('claude code adapter', () => {
   test('reports available once the fake binary is on PATH', async () => {
     // No false-first assertion here: a real `claude` may genuinely be installed
     // on the developer's machine, and the point of the fake is to shadow it.
-    fakeBinary('claude', FAKE_CLAUDE)
+    fakeBinary('claude', FAKE_RAYU)
     expect(await adapter().isAvailable()).toBe(true)
   })
 
@@ -626,10 +626,10 @@ describe('claude code adapter', () => {
   })
 
   test('resuming passes --resume so the conversation continues', async () => {
-    fakeBinary('claude', FAKE_CLAUDE)
+    fakeBinary('claude', FAKE_RAYU)
     const handle = track(
       await adapter().launch({
-        agentId: CLAUDE_AGENT,
+        agentId: RAYU_AGENT,
         cwd: dir,
         resumeSessionId: '11111111-2222-4333-8444-555555555555' as never,
       }),
@@ -640,9 +640,9 @@ describe('claude code adapter', () => {
   })
 
   test('a missing cwd is reported as a missing directory', async () => {
-    fakeBinary('claude', FAKE_CLAUDE)
+    fakeBinary('claude', FAKE_RAYU)
     await expect(
-      adapter().launch({ agentId: CLAUDE_AGENT, cwd: join(dir, 'nope') }),
+      adapter().launch({ agentId: RAYU_AGENT, cwd: join(dir, 'nope') }),
     ).rejects.toThrow(/does not exist/i)
   })
 

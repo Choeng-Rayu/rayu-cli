@@ -11,7 +11,7 @@ type Props = {
   isStandaloneDialog?: boolean;
   externalIncludes?: ExternalClaudeMdInclude[];
 };
-export function ClaudeMdExternalIncludesDialog(t0) {
+export function RayuMdExternalIncludesDialog(t0) {
   const $ = _c(18);
   const {
     onDone,

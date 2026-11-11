@@ -34,13 +34,13 @@ export type ContextWarning = {
 }
 
 export type ContextWarnings = {
-  claudeMdWarning: ContextWarning | null
+  rayuMdWarning: ContextWarning | null
   agentWarning: ContextWarning | null
   mcpWarning: ContextWarning | null
   unreachableRulesWarning: ContextWarning | null
 }
 
-async function checkClaudeMdFiles(): Promise<ContextWarning | null> {
+async function checkRayuMdFiles(): Promise<ContextWarning | null> {
   const largeFiles = getLargeMemoryFiles(await getMemoryFiles())
 
   // This already filters for files > 40k chars each
@@ -248,16 +248,16 @@ export async function checkContextWarnings(
   agentInfo: AgentDefinitionsResult | null,
   getToolPermissionContext: () => Promise<ToolPermissionContext>,
 ): Promise<ContextWarnings> {
-  const [claudeMdWarning, agentWarning, mcpWarning, unreachableRulesWarning] =
+  const [rayuMdWarning, agentWarning, mcpWarning, unreachableRulesWarning] =
     await Promise.all([
-      checkClaudeMdFiles(),
+      checkRayuMdFiles(),
       checkAgentDescriptions(agentInfo),
       checkMcpTools(tools, getToolPermissionContext, agentInfo),
       checkUnreachableRules(getToolPermissionContext),
     ])
 
   return {
-    claudeMdWarning,
+    rayuMdWarning,
     agentWarning,
     mcpWarning,
     unreachableRulesWarning,

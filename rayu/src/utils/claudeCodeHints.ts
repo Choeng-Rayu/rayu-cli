@@ -18,13 +18,13 @@
 import { logForDebugging } from './debug.js'
 import { createSignal } from './signal.js'
 
-export type ClaudeCodeHintType = 'plugin'
+export type RayuCodeHintType = 'plugin'
 
-export type ClaudeCodeHint = {
+export type RayuCodeHint = {
   /** Spec version declared by the emitter. Unknown versions are dropped. */
   v: number
   /** Hint discriminator. v1 defines only `plugin`. */
-  type: ClaudeCodeHintType
+  type: RayuCodeHintType
   /**
    * Hint payload. For `type: 'plugin'`: a `name@marketplace` slug
    * matching the form accepted by `parsePluginIdentifier`.
@@ -69,17 +69,17 @@ const ATTR_RE = /(\w+)=(?:"([^"]*)"|([^\s/>]+))/g
  * @param command - The command that produced the output; its first
  *   whitespace-separated token is recorded as `sourceCommand`.
  */
-export function extractClaudeCodeHints(
+export function extractRayuCodeHints(
   output: string,
   command: string,
-): { hints: ClaudeCodeHint[]; stripped: string } {
+): { hints: RayuCodeHint[]; stripped: string } {
   // Fast path: no tag open sequence → no work, no allocation.
   if (!output.includes('<claude-code-hint')) {
     return { hints: [], stripped: output }
   }
 
   const sourceCommand = firstCommandToken(command)
-  const hints: ClaudeCodeHint[] = []
+  const hints: RayuCodeHint[] = []
 
   const stripped = output.replace(HINT_TAG_RE, rawLine => {
     const attrs = parseAttrs(rawLine)
@@ -104,7 +104,7 @@ export function extractClaudeCodeHints(
       return ''
     }
 
-    hints.push({ v, type: type as ClaudeCodeHintType, value, sourceCommand })
+    hints.push({ v, type: type as RayuCodeHintType, value, sourceCommand })
     return ''
   })
 
@@ -146,13 +146,13 @@ function firstCommandToken(command: string): string {
 // the same store.
 // ============================================================================
 
-let pendingHint: ClaudeCodeHint | null = null
+let pendingHint: RayuCodeHint | null = null
 let shownThisSession = false
 const pendingHintChanged = createSignal()
 const notify = pendingHintChanged.emit
 
 /** Raw store write. Callers should gate first (see module comment). */
-export function setPendingHint(hint: ClaudeCodeHint): void {
+export function setPendingHint(hint: RayuCodeHint): void {
   if (shownThisSession) return
   pendingHint = hint
   notify()
@@ -173,7 +173,7 @@ export function markShownThisSession(): void {
 
 export const subscribeToPendingHint = pendingHintChanged.subscribe
 
-export function getPendingHintSnapshot(): ClaudeCodeHint | null {
+export function getPendingHintSnapshot(): RayuCodeHint | null {
   return pendingHint
 }
 
@@ -182,7 +182,7 @@ export function hasShownHintThisSession(): boolean {
 }
 
 /** Test-only reset. */
-export function _resetClaudeCodeHintStore(): void {
+export function _resetRayuCodeHintStore(): void {
   pendingHint = null
   shownThisSession = false
 }

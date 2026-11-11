@@ -52,7 +52,7 @@ export async function createBridgeSession({
   getAccessToken?: () => string | undefined
   permissionMode?: string
 }): Promise<string | null> {
-  const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
+  const { getClaudeAIOAuthTokens: getRayuAIOAuthTokens } = await import('../utils/auth.js')
   const { getOrganizationUUID } = await import('../services/oauth/client.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
@@ -62,7 +62,7 @@ export async function createBridgeSession({
   const { default: axios } = await import('axios')
 
   const accessToken =
-    getAccessToken?.() ?? getClaudeAIOAuthTokens()?.accessToken
+    getAccessToken?.() ?? getRayuAIOAuthTokens()?.accessToken
   if (!accessToken) {
     logForDebugging('[bridge] No access token for session creation')
     return null
@@ -191,14 +191,14 @@ export async function getBridgeSession(
   sessionId: string,
   opts?: { baseUrl?: string; getAccessToken?: () => string | undefined },
 ): Promise<{ environment_id?: string; title?: string } | null> {
-  const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
+  const { getClaudeAIOAuthTokens: getRayuAIOAuthTokens } = await import('../utils/auth.js')
   const { getOrganizationUUID } = await import('../services/oauth/client.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
 
   const accessToken =
-    opts?.getAccessToken?.() ?? getClaudeAIOAuthTokens()?.accessToken
+    opts?.getAccessToken?.() ?? getRayuAIOAuthTokens()?.accessToken
   if (!accessToken) {
     logForDebugging('[bridge] No access token for session fetch')
     return null
@@ -268,14 +268,14 @@ export async function archiveBridgeSession(
     timeoutMs?: number
   },
 ): Promise<void> {
-  const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
+  const { getClaudeAIOAuthTokens: getRayuAIOAuthTokens } = await import('../utils/auth.js')
   const { getOrganizationUUID } = await import('../services/oauth/client.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
 
   const accessToken =
-    opts?.getAccessToken?.() ?? getClaudeAIOAuthTokens()?.accessToken
+    opts?.getAccessToken?.() ?? getRayuAIOAuthTokens()?.accessToken
   if (!accessToken) {
     logForDebugging('[bridge] No access token for session archive')
     return
@@ -329,14 +329,14 @@ export async function updateBridgeSessionTitle(
   title: string,
   opts?: { baseUrl?: string; getAccessToken?: () => string | undefined },
 ): Promise<void> {
-  const { getClaudeAIOAuthTokens } = await import('../utils/auth.js')
+  const { getClaudeAIOAuthTokens: getRayuAIOAuthTokens } = await import('../utils/auth.js')
   const { getOrganizationUUID } = await import('../services/oauth/client.js')
   const { getOauthConfig } = await import('../constants/oauth.js')
   const { getOAuthHeaders } = await import('../utils/teleport/api.js')
   const { default: axios } = await import('axios')
 
   const accessToken =
-    opts?.getAccessToken?.() ?? getClaudeAIOAuthTokens()?.accessToken
+    opts?.getAccessToken?.() ?? getRayuAIOAuthTokens()?.accessToken
   if (!accessToken) {
     logForDebugging('[bridge] No access token for session title update')
     return

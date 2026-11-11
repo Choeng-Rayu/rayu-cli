@@ -32,7 +32,7 @@ export function normalizeModelNotation(model: string): string {
  * The minor version is bounded to 1-2 digits with a negative lookahead so a dated id such as
  * `claude-sonnet-4-20250514` (Sonnet 4.0) is NOT read as a huge minor version.
  */
-export function isClaude46Plus(normalized: string): boolean {
+export function isAnthropic46Plus(normalized: string): boolean {
   const match = /claude-(?:opus|sonnet)-(\d+)-(\d{1,2})(?!\d)/.exec(normalized)
   if (!match) return false
   const major = Number(match[1])
@@ -57,6 +57,6 @@ export function isOpus46(normalized: string): boolean {
  * dashed-only `includes('claude-3-')` test — making a DOTTED 3.x id look supported while its
  * DASHED twin was correctly excluded.
  */
-export function isLegacyClaude3Model(normalized: string): boolean {
+export function isLegacyAnthropic3Model(normalized: string): boolean {
   return /claude-3(-|$)/.test(normalized)
 }

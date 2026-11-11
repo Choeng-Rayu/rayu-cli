@@ -10,8 +10,8 @@ import {
   usesTranslatedFormat,
 } from './model/providerCapabilities.js'
 import {
-  isClaude46Plus,
-  isLegacyClaude3Model,
+  isAnthropic46Plus,
+  isLegacyAnthropic3Model,
   normalizeModelNotation,
 } from './model/modelNotation.js'
 import { getSettingsWithErrors } from './settings/settings.js'
@@ -126,7 +126,7 @@ export function modelSupportsThinking(model: string): boolean {
   // because `getCanonicalName` collapses a dotted/newer version to a family-only name and
   // loses the distinction. See modelNotation.ts.
   const notation = normalizeModelNotation(model)
-  if (isClaude46Plus(notation)) {
+  if (isAnthropic46Plus(notation)) {
     return true
   }
   // IMPORTANT: Do not change thinking support without notifying the model
@@ -141,7 +141,7 @@ export function modelSupportsThinking(model: string): boolean {
   // its DASHED twin; the canonical form of a dotted 3.x collapses to `claude-3` and slipped past
   // a dashed-only `includes('claude-3-')`.
   if (provider === 'foundry' || provider === 'anthropic') {
-    return !isLegacyClaude3Model(notation)
+    return !isLegacyAnthropic3Model(notation)
   }
   // 3P (Bedrock/Vertex): only Opus 4+ and Sonnet 4+
   return canonical.includes('sonnet-4') || canonical.includes('opus-4')
@@ -176,7 +176,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   // previous dashed-only `canonical.includes('opus-4-6')` test, which rejected gateway/kiro
   // dotted ids and newer 4.7/4.8/5.x because getCanonicalName collapses them. See modelNotation.ts.
   const notation = normalizeModelNotation(model)
-  if (isClaude46Plus(notation)) {
+  if (isAnthropic46Plus(notation)) {
     return true
   }
   // ORIGINAL id, not the normalized one — see the note in `modelSupportsThinking` about

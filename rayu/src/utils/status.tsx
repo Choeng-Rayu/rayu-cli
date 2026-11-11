@@ -10,7 +10,7 @@ import { getAWSRegion, getDefaultVertexRegion, isEnvTruthy } from './envUtils.js
 import { getDisplayPath } from './file.js';
 import { formatNumber } from './format.js';
 import { getIdeClientName, type IDEExtensionInstallationStatus, isJetBrainsIde, toIDEDisplayName } from './ide.js';
-import { getClaudeAiUserDefaultModelDescription, modelDisplayString } from './model/model.js';
+import { getSubscriptionUserDefaultModelDescription, modelDisplayString } from './model/model.js';
 import { getAPIProvider, isOpenAICompatibleActive } from './model/providers.js';
 import { getActiveProvider } from './rayuConfig.js';
 import { getMTLSConfig } from './mtls.js';
@@ -372,7 +372,7 @@ export function buildAPIProviderProperties(): Property[] {
 export function getModelDisplayLabel(mainLoopModel: string | null): string {
   let modelLabel = modelDisplayString(mainLoopModel);
   if (mainLoopModel === null && isClaudeAISubscriber()) {
-    const description = getClaudeAiUserDefaultModelDescription();
+    const description = getSubscriptionUserDefaultModelDescription();
     modelLabel = `${chalk.bold('Default')} ${description}`;
   }
   return modelLabel;

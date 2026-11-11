@@ -49,7 +49,7 @@ export type SessionStats = {
   timestamp: string
 }
 
-export type ClaudeCodeStats = {
+export type RayuCodeStats = {
   // Activity overview
   totalSessions: number
   totalMessages: number
@@ -439,7 +439,7 @@ async function getAllSessionFiles(): Promise<string[]> {
 function cacheToStats(
   cache: PersistedStatsCache,
   todayStats: ProcessedStats | null,
-): ClaudeCodeStats {
+): RayuCodeStats {
   // Merge cache with today's stats
   const dailyActivityMap = new Map<string, DailyActivity>()
   for (const day of cache.dailyActivity) {
@@ -589,7 +589,7 @@ function cacheToStats(
     cache.totalSpeculationTimeSavedMs +
     (todayStats?.totalSpeculationTimeSavedMs || 0)
 
-  const result: ClaudeCodeStats = {
+  const result: RayuCodeStats = {
     totalSessions,
     totalMessages,
     totalDays,
@@ -636,7 +636,7 @@ function cacheToStats(
  * Aggregates stats from all RAYU sessions across all projects.
  * Uses a disk cache to avoid reprocessing historical data.
  */
-export async function aggregateClaudeCodeStats(): Promise<ClaudeCodeStats> {
+export async function aggregateRayuCodeStats(): Promise<RayuCodeStats> {
   const allSessionFiles = await getAllSessionFiles()
 
   if (allSessionFiles.length === 0) {
@@ -714,11 +714,11 @@ export type StatsDateRange = '7d' | '30d' | 'all'
  * Aggregates stats for a specific date range.
  * For 'all', uses the cached aggregation. For other ranges, processes files directly.
  */
-export async function aggregateClaudeCodeStatsForRange(
+export async function aggregateRayuCodeStatsForRange(
   range: StatsDateRange,
-): Promise<ClaudeCodeStats> {
+): Promise<RayuCodeStats> {
   if (range === 'all') {
-    return aggregateClaudeCodeStats()
+    return aggregateRayuCodeStats()
   }
 
   const allSessionFiles = await getAllSessionFiles()
@@ -738,16 +738,16 @@ export async function aggregateClaudeCodeStatsForRange(
     fromDate: fromDateStr,
   })
 
-  return processedStatsToClaudeCodeStats(stats)
+  return processedStatsToRayuCodeStats(stats)
 }
 
 /**
  * Convert ProcessedStats to ClaudeCodeStats.
  * Used for filtered date ranges that bypass the cache.
  */
-function processedStatsToClaudeCodeStats(
+function processedStatsToRayuCodeStats(
   stats: ProcessedStats,
-): ClaudeCodeStats {
+): RayuCodeStats {
   const dailyActivitySorted = stats.dailyActivity
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date))
@@ -808,7 +808,7 @@ function processedStatsToClaudeCodeStats(
         ) + 1
       : 0
 
-  const result: ClaudeCodeStats = {
+  const result: RayuCodeStats = {
     totalSessions: stats.sessionStats.length,
     totalMessages: stats.totalMessages,
     totalDays,
@@ -1034,7 +1034,7 @@ export async function readSessionStartDate(
   }
 }
 
-function getEmptyStats(): ClaudeCodeStats {
+function getEmptyStats(): RayuCodeStats {
   return {
     totalSessions: 0,
     totalMessages: 0,

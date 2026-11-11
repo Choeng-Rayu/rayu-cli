@@ -46,7 +46,7 @@ import {
 } from '../src/externalAgents/core/types.ts'
 
 const CODEX = 'codex:agent_01' as AgentInstanceId
-const CLAUDE = 'claude-code:agent_01' as AgentInstanceId
+const RAYU = 'claude-code:agent_01' as AgentInstanceId
 const TASK = asTaskRef('task_1')
 const ROOT = '/home/u/project'
 
@@ -205,7 +205,7 @@ describe('plan validation', () => {
         plan({
           steps: [
             step({ id: 'a', target: { kind: 'agent', agentId: CODEX } }),
-            step({ id: 'b', target: { kind: 'agent', agentId: CLAUDE } }),
+            step({ id: 'b', target: { kind: 'agent', agentId: RAYU } }),
           ],
         }),
       ).warnings,
@@ -242,7 +242,7 @@ describe('race validation', () => {
         mode: 'race',
         steps: [
           step({ id: 'a', target: { kind: 'agent', agentId: CODEX } }),
-          step({ id: 'b', target: { kind: 'agent', agentId: CLAUDE } }),
+          step({ id: 'b', target: { kind: 'agent', agentId: RAYU } }),
         ],
       }),
       () => ROOT,
@@ -258,7 +258,7 @@ describe('race validation', () => {
   test('two connected agents in DIFFERENT roots may race', () => {
     const roots: Record<string, string> = {
       [CODEX]: '/wt/a',
-      [CLAUDE]: '/wt/b',
+      [RAYU]: '/wt/b',
     }
     expect(
       validatePlan(
@@ -266,7 +266,7 @@ describe('race validation', () => {
           mode: 'race',
           steps: [
             step({ id: 'a', target: { kind: 'agent', agentId: CODEX } }),
-            step({ id: 'b', target: { kind: 'agent', agentId: CLAUDE } }),
+            step({ id: 'b', target: { kind: 'agent', agentId: RAYU } }),
           ],
         }),
         id => roots[id],
@@ -315,7 +315,7 @@ describe('race validation', () => {
           allowSharedWorkspaceRace: true,
           steps: [
             step({ id: 'a', target: { kind: 'agent', agentId: CODEX } }),
-            step({ id: 'b', target: { kind: 'agent', agentId: CLAUDE } }),
+            step({ id: 'b', target: { kind: 'agent', agentId: RAYU } }),
           ],
         }),
         () => ROOT,
@@ -417,7 +417,7 @@ describe('awaiting a task outcome', () => {
 
   test('a disconnect of a DIFFERENT agent does not settle the wait', async () => {
     const promise = awaitTaskOutcome(TASK, CODEX, { timeoutMs: 60 })
-    emitEvent({ agentId: CLAUDE }, { type: 'agent_disconnected', reason: 'shutdown' })
+    emitEvent({ agentId: RAYU }, { type: 'agent_disconnected', reason: 'shutdown' })
     expect((await promise).status).toBe('timeout')
   })
 
@@ -655,12 +655,12 @@ describe('file change tracker', () => {
 
   test('two agents on one file is a conflict, newest writer first', () => {
     recordFileChange(change(CODEX, 'shared.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'shared.ts', { change: 'deleted' }), ROOT)
+    recordFileChange(change(RAYU, 'shared.ts', { change: 'deleted' }), ROOT)
     const conflicts = findConflicts()
     expect(conflicts).toHaveLength(1)
     expect(conflicts[0]!.path).toBe(`${ROOT}/shared.ts`)
     // The likely clobberer is listed first.
-    expect(conflicts[0]!.agents[0]!.agentId).toBe(CLAUDE)
+    expect(conflicts[0]!.agents[0]!.agentId).toBe(RAYU)
     expect(conflicts[0]!.agents[0]!.change).toBe('deleted')
   })
 
@@ -674,21 +674,21 @@ describe('file change tracker', () => {
     // Normalizing to absolute is what makes this true: their roots differ, so
     // the same relative path resolves to two different files.
     recordFileChange(change(CODEX, 'src/a.ts'), '/wt/a')
-    recordFileChange(change(CLAUDE, 'src/a.ts'), '/wt/b')
+    recordFileChange(change(RAYU, 'src/a.ts'), '/wt/b')
     expect(findConflicts()).toEqual([])
   })
 
   test('a mix of absolute and relative reports still detects the overlap', () => {
     recordFileChange(change(CODEX, 'src/a.ts'), ROOT)
-    recordFileChange(change(CLAUDE, `${ROOT}/src/a.ts`), ROOT)
+    recordFileChange(change(RAYU, `${ROOT}/src/a.ts`), ROOT)
     expect(findConflicts()).toHaveLength(1)
   })
 
   test('conflicts are ordered by most recent activity', () => {
     recordFileChange(change(CODEX, 'first.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'first.ts'), ROOT)
+    recordFileChange(change(RAYU, 'first.ts'), ROOT)
     recordFileChange(change(CODEX, 'second.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'second.ts'), ROOT)
+    recordFileChange(change(RAYU, 'second.ts'), ROOT)
     expect(findConflicts().map(c => c.path)).toEqual([
       `${ROOT}/second.ts`,
       `${ROOT}/first.ts`,
@@ -697,7 +697,7 @@ describe('file change tracker', () => {
 
   test('findConflictsForAgent filters to one agent', () => {
     recordFileChange(change(CODEX, 'shared.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'shared.ts'), ROOT)
+    recordFileChange(change(RAYU, 'shared.ts'), ROOT)
     recordFileChange(change(CODEX, 'solo.ts'), ROOT)
     expect(findConflictsForAgent(CODEX)).toHaveLength(1)
     expect(
@@ -732,27 +732,27 @@ describe('file change tracker', () => {
 
   test('clearing one agent leaves the others', () => {
     recordFileChange(change(CODEX, 'a.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'b.ts'), ROOT)
+    recordFileChange(change(RAYU, 'b.ts'), ROOT)
     clearAgentChanges(CODEX)
     expect(listChangedFiles(CODEX)).toEqual([])
-    expect(listChangedFiles(CLAUDE)).toHaveLength(1)
+    expect(listChangedFiles(RAYU)).toHaveLength(1)
   })
 
   test('summaries cover every tracked agent', () => {
     recordFileChange(change(CODEX, 'a.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'b.ts'), ROOT)
+    recordFileChange(change(RAYU, 'b.ts'), ROOT)
     expect(listChangeSummaries().map(s => s.agentId).sort()).toEqual(
-      [CLAUDE, CODEX].sort(),
+      [RAYU, CODEX].sort(),
     )
   })
 
   test('the conflict report names both writers and the real remedy', () => {
     recordFileChange(change(CODEX, 'shared.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'shared.ts'), ROOT)
+    recordFileChange(change(RAYU, 'shared.ts'), ROOT)
     const report = formatConflictReport(findConflicts())
     expect(report).toContain('1 file changed by more than one agent')
     expect(report).toContain(CODEX)
-    expect(report).toContain(CLAUDE)
+    expect(report).toContain(RAYU)
     // Worktree isolation is the remedy; leases are only the detector.
     expect(report).toContain('own worktree')
     expect(report).toContain('cannot serialise')
@@ -761,9 +761,9 @@ describe('file change tracker', () => {
   test('the report pluralizes and handles the empty case', () => {
     expect(formatConflictReport([])).toBe('No overlapping file changes detected.')
     recordFileChange(change(CODEX, 'a.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'a.ts'), ROOT)
+    recordFileChange(change(RAYU, 'a.ts'), ROOT)
     recordFileChange(change(CODEX, 'b.ts'), ROOT)
-    recordFileChange(change(CLAUDE, 'b.ts'), ROOT)
+    recordFileChange(change(RAYU, 'b.ts'), ROOT)
     expect(formatConflictReport(findConflicts())).toContain('2 files changed')
   })
 })

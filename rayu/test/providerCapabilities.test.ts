@@ -43,7 +43,7 @@ async function caps() {
 }
 
 /** Seed a first-party Anthropic main provider + a DeepSeek collaborator. */
-async function seedClaudeMainAndDeepSeekCollaborator() {
+async function seedRayuMainAndDeepSeekCollaborator() {
   const cfg = await import('../src/utils/rayuConfig.ts')
   cfg.upsertProvider(
     {
@@ -69,7 +69,7 @@ async function seedClaudeMainAndDeepSeekCollaborator() {
 
 describe('resolveRequestShape — provider resolution', () => {
   test('a bare model resolves the ACTIVE provider', async () => {
-    await seedClaudeMainAndDeepSeekCollaborator()
+    await seedRayuMainAndDeepSeekCollaborator()
     const { resolveRequestShape } = await caps()
     const shape = resolveRequestShape('claude-sonnet-4-6')
     expect(shape.provider?.id).toBe('anthropic')
@@ -78,7 +78,7 @@ describe('resolveRequestShape — provider resolution', () => {
   })
 
   test('a provider-encoded model resolves THAT provider, not the active one', async () => {
-    const cfg = await seedClaudeMainAndDeepSeekCollaborator()
+    const cfg = await seedRayuMainAndDeepSeekCollaborator()
     const { resolveRequestShape } = await caps()
     const routed = cfg.encodeModelWithProvider('deepseek', 'deepseek-reasoner')
     const shape = resolveRequestShape(routed)
@@ -160,7 +160,7 @@ describe('ONE provider serving several formats', () => {
 
 describe('cross-provider request shaping (the defect)', () => {
   test('thinking support follows the ROUTED provider, not the active one', async () => {
-    const cfg = await seedClaudeMainAndDeepSeekCollaborator()
+    const cfg = await seedRayuMainAndDeepSeekCollaborator()
     const { modelSupportsThinking, modelSupportsAdaptiveThinking } = await import(
       '../src/utils/thinking.ts'
     )
@@ -209,7 +209,7 @@ describe('cross-provider request shaping (the defect)', () => {
   })
 
   test('effort support follows the routed provider', async () => {
-    const cfg = await seedClaudeMainAndDeepSeekCollaborator()
+    const cfg = await seedRayuMainAndDeepSeekCollaborator()
     const { modelSupportsEffort } = await import('../src/utils/effort.ts')
     const routed = cfg.encodeModelWithProvider('deepseek', 'deepseek-chat')
     // Translated format → effort is mapped onto the target protocol's field.
@@ -217,7 +217,7 @@ describe('cross-provider request shaping (the defect)', () => {
   })
 
   test('the context window follows the routed provider', async () => {
-    const cfg = await seedClaudeMainAndDeepSeekCollaborator()
+    const cfg = await seedRayuMainAndDeepSeekCollaborator()
     const { getContextWindowForModel } = await import('../src/utils/context.ts')
     // deepseek-reasoner's own window, resolved from ITS provider — not Claude's.
     const routed = cfg.encodeModelWithProvider('deepseek', 'deepseek-reasoner')
@@ -435,7 +435,7 @@ describe('providerAcceptsImages is now per-(provider, model)', () => {
   })
 
   test('a cross-provider routed subagent is answered for ITS provider', async () => {
-    const cfg = await seedClaudeMainAndDeepSeekCollaborator()
+    const cfg = await seedRayuMainAndDeepSeekCollaborator()
     const { providerAcceptsImages } = await caps()
     // Main agent on Claude: images fine.
     expect(providerAcceptsImages('claude-sonnet-4-6')).toBe(true)

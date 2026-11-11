@@ -8,7 +8,7 @@ import {
   getSubscriptionType,
   isOverageProvisioningAllowed,
 } from '../utils/auth.js'
-import { hasClaudeAiBillingAccess } from '../utils/billing.js'
+import { hasRayuAiBillingAccess } from '../utils/billing.js'
 import { formatResetTime } from '../utils/format.js'
 import type { ClaudeAILimits } from './claudeAiLimits.js'
 
@@ -88,7 +88,7 @@ export function getRateLimitMessage(
     if (
       isTeamOrEnterprise &&
       hasExtraUsageEnabled &&
-      !hasClaudeAiBillingAccess()
+      !hasRayuAiBillingAccess()
     ) {
       return null
     }

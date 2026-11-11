@@ -101,7 +101,7 @@ export async function renderAndRun(root: Root, element: React.ReactNode): Promis
   await root.waitUntilExit();
   await gracefulShutdown(0);
 }
-export async function showSetupScreens(root: Root, permissionMode: PermissionMode, allowDangerouslySkipPermissions: boolean, commands?: Command[], claudeInChrome?: boolean, devChannels?: ChannelEntry[]): Promise<boolean> {
+export async function showSetupScreens(root: Root, permissionMode: PermissionMode, allowDangerouslySkipPermissions: boolean, commands?: Command[], rayuInChrome?: boolean, devChannels?: ChannelEntry[]): Promise<boolean> {
   if ("production" === 'test' || isEnvTruthy(false) || process.env.IS_DEMO // Skip onboarding in demo mode
   ) {
     return false;
@@ -198,9 +198,9 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     if (await shouldShowClaudeMdExternalIncludesWarning()) {
       const externalIncludes = getExternalClaudeMdIncludes(await getMemoryFiles(true));
       const {
-        ClaudeMdExternalIncludesDialog
+        RayuMdExternalIncludesDialog
       } = await import('./components/ClaudeMdExternalIncludesDialog.js');
-      await showSetupDialog(root, done => <ClaudeMdExternalIncludesDialog onDone={done} isStandaloneDialog externalIncludes={externalIncludes} />);
+      await showSetupDialog(root, done => <RayuMdExternalIncludesDialog onDone={done} isStandaloneDialog externalIncludes={externalIncludes} />);
     }
   }
 
@@ -266,7 +266,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
       const [{
         isChannelsEnabled
       }, {
-        getClaudeAIOAuthTokens
+        getClaudeAIOAuthTokens: getRayuAIOAuthTokens
       }] = await Promise.all([import('./services/mcp/channelAllowlist.js'), import('./utils/auth.js')]);
       // Skip the dialog when channels are blocked (tengu_harbor off or no
       // OAuth) — accepting then immediately seeing "not available" in
@@ -275,7 +275,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
       // named. dev:true here is for the flag label in ChannelsNotice
       // (hasNonDev check); the allowlist bypass it also grants is moot
       // since the gate blocks upstream.
-      if (!isChannelsEnabled() || !getClaudeAIOAuthTokens()?.accessToken) {
+      if (!isChannelsEnabled() || !getRayuAIOAuthTokens()?.accessToken) {
         setAllowedChannels([...getAllowedChannels(), ...devChannels.map(c => ({
           ...c,
           dev: true

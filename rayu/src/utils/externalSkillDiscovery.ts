@@ -85,7 +85,7 @@ export function getAgentSkillsDirIfEnabled(): string | undefined {
  * additional skill source so users can reuse skills they already have. ONLY
  * the SKILL.md directories are read — never any model/provider/auth config.
  */
-export function getClaudeCodeSkillsDir(): string | undefined {
+export function getRayuCodeSkillsDir(): string | undefined {
   return existingDir(join(homedir(), '.claude', 'skills'))
 }
 
@@ -93,12 +93,12 @@ export function getClaudeCodeSkillsDir(): string | undefined {
  * Returns ~/.claude/skills/ if it exists and Claude-skill loading is enabled.
  * Opt out via settings.claudeSkillsEnabled = false.
  */
-export function getClaudeCodeSkillsDirIfEnabled(): string | undefined {
+export function getRayuCodeSkillsDirIfEnabled(): string | undefined {
   const settings = getInitialSettings()
   const enabled =
     (settings as Record<string, unknown>).claudeSkillsEnabled !== false
   if (!enabled) return undefined
-  return getClaudeCodeSkillsDir()
+  return getRayuCodeSkillsDir()
 }
 
 /**
@@ -106,7 +106,7 @@ export function getClaudeCodeSkillsDirIfEnabled(): string | undefined {
  * loading is enabled. SKILLS ONLY — never reads Claude model/provider/auth or
  * any other Claude config. Lower priority than rayu-native skills.
  */
-export function getProjectClaudeSkillsDirIfEnabled(): string | undefined {
+export function getProjectRayuSkillsDirIfEnabled(): string | undefined {
   const settings = getInitialSettings()
   const enabled =
     (settings as Record<string, unknown>).claudeSkillsEnabled !== false
@@ -164,13 +164,13 @@ export function getExternalSkillDirs(): string[] {
 
   // 2. ~/.claude/skills/ — Claude Code skills (skills only; lower priority than
   //    Rayu-native and agent-framework skills). Never reads Claude config/model.
-  const claudeDir = getClaudeCodeSkillsDirIfEnabled()
-  if (claudeDir) candidates.push(claudeDir)
+  const rayuDir = getRayuCodeSkillsDirIfEnabled()
+  if (rayuDir) candidates.push(rayuDir)
 
   // 2b. <cwd>/.claude/skills/ — project-checked-in Claude Code skills (skills
   //     only; never reads Claude config/model). Lower priority than rayu-native.
-  const projectClaudeDir = getProjectClaudeSkillsDirIfEnabled()
-  if (projectClaudeDir) candidates.push(projectClaudeDir)
+  const projectRayuDir = getProjectRayuSkillsDirIfEnabled()
+  if (projectRayuDir) candidates.push(projectRayuDir)
 
   // 3. settings.extraSkillDirs
   candidates.push(...getExtraSkillDirsFromSettings())
@@ -266,11 +266,11 @@ export function getManagedConfigDirPaths(
 
 export type ExternalSkillSourceStatus = {
   agentFrameworkDir: string | undefined
-  claudeCodeDir: string | undefined
+  rayuCodeDir: string | undefined
   extraDirsFromSettings: string[]
   extraDirsFromEnv: string[]
   agentSkillsEnabled: boolean
-  claudeSkillsEnabled: boolean
+  rayuSkillsEnabled: boolean
 }
 
 /**
@@ -283,10 +283,10 @@ export function getExternalSkillSourceStatus(): ExternalSkillSourceStatus {
 
   return {
     agentFrameworkDir: getAgentFrameworkSkillsDir(),
-    claudeCodeDir: getClaudeCodeSkillsDir(),
+    rayuCodeDir: getRayuCodeSkillsDir(),
     extraDirsFromSettings: getExtraSkillDirsFromSettings(),
     extraDirsFromEnv: getExtraSkillDirsFromEnv(),
     agentSkillsEnabled: s.agentSkillsEnabled !== false,
-    claudeSkillsEnabled: s.claudeSkillsEnabled !== false,
+    rayuSkillsEnabled: s.claudeSkillsEnabled !== false,
   }
 }

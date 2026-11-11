@@ -11,7 +11,7 @@ import {
 } from '../src/utils/rayuTempDir.ts'
 
 const prevRayu = process.env.RAYU_CODE_TMPDIR
-const prevClaude = process.env.CLAUDE_CODE_TMPDIR
+const prevLegacy = process.env.CLAUDE_CODE_TMPDIR
 const scratchDirs: string[] = []
 
 function scratchBase(): string {
@@ -23,8 +23,8 @@ function scratchBase(): string {
 function restoreEnv(): void {
   if (prevRayu === undefined) delete process.env.RAYU_CODE_TMPDIR
   else process.env.RAYU_CODE_TMPDIR = prevRayu
-  if (prevClaude === undefined) delete process.env.CLAUDE_CODE_TMPDIR
-  else process.env.CLAUDE_CODE_TMPDIR = prevClaude
+  if (prevLegacy === undefined) delete process.env.CLAUDE_CODE_TMPDIR
+  else process.env.CLAUDE_CODE_TMPDIR = prevLegacy
   _resetRayuTempDirForTest()
 }
 
@@ -45,22 +45,22 @@ describe('the temp namespace is Rayu-owned', () => {
 
   test('RAYU_CODE_TMPDIR wins over the legacy CLAUDE_CODE_TMPDIR', () => {
     const rayuBase = scratchBase()
-    const claudeBase = scratchBase()
+    const legacyBase = scratchBase()
     process.env.RAYU_CODE_TMPDIR = rayuBase
-    process.env.CLAUDE_CODE_TMPDIR = claudeBase
+    process.env.CLAUDE_CODE_TMPDIR = legacyBase
     _resetRayuTempDirForTest()
 
     expect(getRayuTempDir()).toBe(join(rayuBase, getRayuTempDirName()) + sep)
   })
 
   test('CLAUDE_CODE_TMPDIR is still honoured as a fallback', () => {
-    const claudeBase = scratchBase()
+    const legacyBase = scratchBase()
     delete process.env.RAYU_CODE_TMPDIR
-    process.env.CLAUDE_CODE_TMPDIR = claudeBase
+    process.env.CLAUDE_CODE_TMPDIR = legacyBase
     _resetRayuTempDirForTest()
 
     expect(getRayuTempDir()).toBe(
-      join(realpathSync(claudeBase), getRayuTempDirName()) + sep,
+      join(realpathSync(legacyBase), getRayuTempDirName()) + sep,
     )
   })
 

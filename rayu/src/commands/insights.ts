@@ -1085,8 +1085,8 @@ export function detectMultiClauding(
 
   allSessionMessages.sort((a, b) => a.ts - b.ts)
 
-  const multiClaudeSessionPairs = new Set<string>()
-  const messagesDuringMulticlaude = new Set<string>()
+  const multiRayuSessionPairs = new Set<string>()
+  const messagesDuringMultirayu = new Set<string>()
 
   // Sliding window: sessionLastIndex tracks the most recent index for each session
   let windowStart = 0
@@ -1114,12 +1114,12 @@ export function detectMultiClauding(
         const between = allSessionMessages[j]!
         if (between.sessionId !== msg.sessionId) {
           const pair = [msg.sessionId, between.sessionId].sort().join(':')
-          multiClaudeSessionPairs.add(pair)
-          messagesDuringMulticlaude.add(
+          multiRayuSessionPairs.add(pair)
+          messagesDuringMultirayu.add(
             `${allSessionMessages[prevIndex]!.ts}:${msg.sessionId}`,
           )
-          messagesDuringMulticlaude.add(`${between.ts}:${between.sessionId}`)
-          messagesDuringMulticlaude.add(`${msg.ts}:${msg.sessionId}`)
+          messagesDuringMultirayu.add(`${between.ts}:${between.sessionId}`)
+          messagesDuringMultirayu.add(`${msg.ts}:${msg.sessionId}`)
           break
         }
       }
@@ -1129,16 +1129,16 @@ export function detectMultiClauding(
   }
 
   const sessionsWithOverlaps = new Set<string>()
-  for (const pair of multiClaudeSessionPairs) {
+  for (const pair of multiRayuSessionPairs) {
     const [s1, s2] = pair.split(':')
     if (s1) sessionsWithOverlaps.add(s1)
     if (s2) sessionsWithOverlaps.add(s2)
   }
 
   return {
-    overlap_events: multiClaudeSessionPairs.size,
+    overlap_events: multiRayuSessionPairs.size,
     sessions_involved: sessionsWithOverlaps.size,
-    user_messages_during: messagesDuringMulticlaude.size,
+    user_messages_during: messagesDuringMultirayu.size,
   }
 }
 

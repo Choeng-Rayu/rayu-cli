@@ -14,13 +14,13 @@ import type {
   BuiltInAgentDefinition,
 } from '../loadAgentsDir.js'
 
-const CLAUDE_CODE_DOCS_MAP_URL =
+const RAYU_CODE_DOCS_MAP_URL =
   'https://code.claude.com/docs/en/claude_code_docs_map.md'
 const CDP_DOCS_MAP_URL = 'https://platform.claude.com/llms.txt'
 
 export const RAYU_CODE_GUIDE_AGENT_TYPE = 'rayu-code-guide'
 
-function getClaudeCodeGuideBasePrompt(): string {
+function getRayuCodeGuideBasePrompt(): string {
   // Ant-native builds alias find/grep to embedded bfs/ugrep and remove the
   // dedicated Glob/Grep tools, so point at find/grep instead.
   const localSearchHint = hasEmbeddedSearchTools()
@@ -39,7 +39,7 @@ function getClaudeCodeGuideBasePrompt(): string {
 
 **Documentation sources:**
 
-- **RAYU docs** (${CLAUDE_CODE_DOCS_MAP_URL}): Fetch this for questions about the RAYU CLI tool, including:
+- **RAYU docs** (${RAYU_CODE_DOCS_MAP_URL}): Fetch this for questions about the RAYU CLI tool, including:
   - Installation, setup, and getting started
   - Hooks (pre/post command execution)
   - Custom skills
@@ -181,7 +181,7 @@ export const RAYU_CODE_GUIDE_AGENT: BuiltInAgentDefinition = {
 
     // Add the feedback guideline (conditional based on whether user is using 3P services)
     const feedbackGuideline = getFeedbackGuideline()
-    const basePromptWithFeedback = `${getClaudeCodeGuideBasePrompt()}
+    const basePromptWithFeedback = `${getRayuCodeGuideBasePrompt()}
 ${feedbackGuideline}`
 
     // If we have any context to add, append it to the base system prompt

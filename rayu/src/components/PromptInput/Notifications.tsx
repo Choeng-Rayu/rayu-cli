@@ -39,7 +39,7 @@ const VoiceIndicator: typeof import('./VoiceIndicator.js').VoiceIndicator = RAYU
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 export const FOOTER_TEMPORARY_STATUS_TIMEOUT = 5000;
-export function shouldShowClaudeAuthError(apiKeyStatus: VerificationStatus): boolean {
+export function shouldShowRayuAuthError(apiKeyStatus: VerificationStatus): boolean {
   return (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && !hasUsableOpenAICompatibleProvider();
 }
 
@@ -104,7 +104,7 @@ export function Notifications(t0) {
     addNotification,
     removeNotification
   } = useNotifications();
-  const claudeAiLimits = useClaudeAiLimits();
+  const rayuAiLimits = useClaudeAiLimits();
   let t5;
   let t6;
   if ($[5] !== addNotification) {
@@ -131,7 +131,7 @@ export function Notifications(t0) {
   useEffect(t5, t6);
   const shouldShowIdeSelection = ideStatus === "connected" && (ideSelection?.filePath || ideSelection?.text && ideSelection.lineCount > 0);
   const shouldShowAutoUpdater = !shouldShowIdeSelection || isAutoUpdating || autoUpdaterResult?.status !== "success";
-  const isInOverageMode = claudeAiLimits.isUsingOverage;
+  const isInOverageMode = rayuAiLimits.isUsingOverage;
   let t7;
   if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
     t7 = getSubscriptionType();
@@ -308,7 +308,7 @@ function NotificationContent({
             ({apiKeyHelperSlow})
           </Text>
         </Box>}
-      {shouldShowClaudeAuthError(apiKeyStatus) && <Box>
+      {shouldShowRayuAuthError(apiKeyStatus) && <Box>
           <Text color="error" wrap="truncate">
             {isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? 'Authentication error · Try again' : 'Not logged in · Run /login'}
           </Text>

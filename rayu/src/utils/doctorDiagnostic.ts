@@ -41,8 +41,8 @@ import { SandboxManager } from './sandbox/sandbox-adapter.js'
 import { getManagedFilePath } from './settings/managedPath.js'
 import { CUSTOMIZATION_SURFACES } from './settings/types.js'
 import {
-  findClaudeAlias,
-  findValidClaudeAlias,
+  findRayuAlias,
+  findValidRayuAlias,
   getShellConfigPaths,
 } from './shellConfig.js'
 import { jsonParse } from './slowOperations.js'
@@ -514,17 +514,17 @@ async function detectConfigurationIssues(
     })
   }
 
-  const existingAlias = await findClaudeAlias()
-  const validAlias = await findValidClaudeAlias()
+  const existingAlias = await findRayuAlias()
+  const validAlias = await findValidRayuAlias()
 
   // Check if running local installation but it's not in PATH
   if (type === 'npm-local') {
     // Check if claude is already accessible via PATH
     const whichResult = await which('rayu')
-    const claudeInPath = !!whichResult
+    const rayuInPath = !!whichResult
 
     // Only show warning if claude is NOT in PATH AND no valid alias exists
-    if (!claudeInPath && !validAlias) {
+    if (!rayuInPath && !validAlias) {
       if (existingAlias) {
         // Alias exists but points to invalid target
         warnings.push({

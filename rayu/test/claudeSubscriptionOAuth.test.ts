@@ -83,16 +83,16 @@ describe('parseScopes / shouldUseClaudeAIAuth', () => {
   })
 
   test('the inference scope is what marks a subscription login', async () => {
-    const { shouldUseClaudeAIAuth } = await import(
+    const { shouldUseClaudeAIAuth: shouldUseRayuAIAuth } = await import(
       '../src/services/oauth/client.ts'
     )
-    expect(shouldUseClaudeAIAuth(['user:profile', 'user:inference'])).toBe(true)
+    expect(shouldUseRayuAIAuth(['user:profile', 'user:inference'])).toBe(true)
     // A Console (API-key) login grants org:create_api_key, not inference.
-    expect(shouldUseClaudeAIAuth(['org:create_api_key', 'user:profile'])).toBe(
+    expect(shouldUseRayuAIAuth(['org:create_api_key', 'user:profile'])).toBe(
       false,
     )
-    expect(shouldUseClaudeAIAuth([])).toBe(false)
-    expect(shouldUseClaudeAIAuth(undefined)).toBe(false)
+    expect(shouldUseRayuAIAuth([])).toBe(false)
+    expect(shouldUseRayuAIAuth(undefined)).toBe(false)
   })
 })
 
@@ -105,13 +105,13 @@ describe('buildAuthUrl', () => {
 
   test('claude.ai subscription flow: correct host, scopes and localhost redirect', async () => {
     const { buildAuthUrl } = await import('../src/services/oauth/client.ts')
-    const { getOauthConfig, CLAUDE_AI_OAUTH_SCOPES } = await import(
+    const { getOauthConfig, CLAUDE_AI_OAUTH_SCOPES: SUBSCRIPTION_OAUTH_SCOPES } = await import(
       '../src/constants/oauth.ts'
     )
     const cfg = getOauthConfig()
 
     const url = new URL(
-      buildAuthUrl({ ...common, isManual: false, loginWithClaudeAi: true }),
+      buildAuthUrl({ ...common, isManual: false, loginWithRayuAi: true }),
     )
     const expected = new URL(cfg.CLAUDE_AI_AUTHORIZE_URL)
     expect(url.origin + url.pathname).toBe(expected.origin + expected.pathname)
@@ -123,7 +123,7 @@ describe('buildAuthUrl', () => {
     expect(p.get('code_challenge')).toBe('CHALLENGE')
     expect(p.get('code_challenge_method')).toBe('S256')
     expect(p.get('state')).toBe('STATE')
-    expect(p.get('scope')).toBe([...CLAUDE_AI_OAUTH_SCOPES].join(' '))
+    expect(p.get('scope')).toBe([...SUBSCRIPTION_OAUTH_SCOPES].join(' '))
     // `code=true` is the manual-paste marker; absent on the automatic flow.
     expect(p.get('code')).toBeNull()
     // The verifier must never appear in the URL — only its challenge.
@@ -134,7 +134,7 @@ describe('buildAuthUrl', () => {
     const { buildAuthUrl } = await import('../src/services/oauth/client.ts')
     const { getOauthConfig } = await import('../src/constants/oauth.ts')
     const url = new URL(
-      buildAuthUrl({ ...common, isManual: true, loginWithClaudeAi: true }),
+      buildAuthUrl({ ...common, isManual: true, loginWithRayuAi: true }),
     )
     expect(url.searchParams.get('redirect_uri')).toBe(
       getOauthConfig().MANUAL_REDIRECT_URL,
@@ -159,7 +159,7 @@ describe('buildAuthUrl', () => {
       buildAuthUrl({
         ...common,
         isManual: false,
-        loginWithClaudeAi: true,
+        loginWithRayuAi: true,
         inferenceOnly: true,
       }),
     )
@@ -298,12 +298,12 @@ describe('request routing for a Claude subscription provider', () => {
   })
 
   test('usesClaudeSubscriptionAuth distinguishes it from the API-key provider', async () => {
-    const { usesClaudeSubscriptionAuth } = await import(
+    const { usesClaudeSubscriptionAuth: usesRayuSubscriptionAuth } = await import(
       '../src/services/api/claudeSubscriptionAuth.ts'
     )
-    expect(usesClaudeSubscriptionAuth(oauthProvider)).toBe(true)
-    expect(usesClaudeSubscriptionAuth(apiKeyProvider)).toBe(false)
-    expect(usesClaudeSubscriptionAuth(undefined)).toBe(false)
+    expect(usesRayuSubscriptionAuth(oauthProvider)).toBe(true)
+    expect(usesRayuSubscriptionAuth(apiKeyProvider)).toBe(false)
+    expect(usesRayuSubscriptionAuth(undefined)).toBe(false)
   })
 
   test('it is never routed through the Rayu gateway (Anthropic bills the plan)', async () => {

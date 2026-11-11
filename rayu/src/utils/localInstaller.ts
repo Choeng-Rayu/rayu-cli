@@ -21,7 +21,7 @@ import { jsonStringify } from './slowOperations.js'
 function getLocalInstallDir(): string {
   return join(getRayuConfigHomeDir(), 'local')
 }
-export function getLocalClaudePath(): string {
+export function getLocalRayuPath(): string {
   return join(getLocalInstallDir(), 'claude')
 }
 
@@ -96,7 +96,7 @@ export async function ensureLocalPackageEnvironment(): Promise<boolean> {
  * @param channel - Release channel to use (latest or stable)
  * @param specificVersion - Optional specific version to install (overrides channel)
  */
-export async function installOrUpdateClaudePackage(
+export async function installOrUpdateRayuPackage(
   channel: ReleaseChannel,
   specificVersion?: string | null,
 ): Promise<'in_progress' | 'success' | 'install_failed'> {
@@ -104,12 +104,12 @@ export async function installOrUpdateClaudePackage(
   // `rayu update`). Two sessions can otherwise run `npm install` in
   // ~/.rayu/local concurrently and interleave over the same node_modules.
   const outcome = await withUpdateLock(() =>
-    installOrUpdateClaudePackageLocked(channel, specificVersion),
+    installOrUpdateRayuPackageLocked(channel, specificVersion),
   )
   return outcome.ran ? outcome.result : 'in_progress'
 }
 
-async function installOrUpdateClaudePackageLocked(
+async function installOrUpdateRayuPackageLocked(
   channel: ReleaseChannel,
   specificVersion?: string | null,
 ): Promise<'in_progress' | 'success' | 'install_failed'> {

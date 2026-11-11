@@ -33,10 +33,10 @@ describe('Rayu rebrand', () => {
 })
 
 describe('config dir', () => {
-  const prev = { rayu: process.env.RAYU_CONFIG_DIR, claude: process.env.CLAUDE_CONFIG_DIR }
+  const prev = { rayu: process.env.RAYU_CONFIG_DIR, legacy: process.env.CLAUDE_CONFIG_DIR }
   afterEach(() => {
     process.env.RAYU_CONFIG_DIR = prev.rayu
-    process.env.CLAUDE_CONFIG_DIR = prev.claude
+    process.env.CLAUDE_CONFIG_DIR = prev.legacy
   })
 
   test('defaults to ~/.rayu and honors RAYU_CONFIG_DIR override', async () => {

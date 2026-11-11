@@ -1,16 +1,16 @@
 {
   "summary": {
-    "rename": 313,
-    "override": 50,
-    "keep": 55,
+    "rename": 126,
+    "override": 27,
+    "keep": 57,
     "refused": 0,
     "byWave": {
-      "1": 210,
+      "1": 0,
       "2": 103,
       "3": 23,
       "4": 27
     },
-    "unresolved": 543,
+    "unresolved": 541,
     "skippedExcluded": 0
   },
   "entries": [
@@ -83,42 +83,6 @@
       "declFile": "src/bootstrap/state.ts",
       "line": 1670,
       "wave": 2,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeAIOAuthTokens",
-      "newName": "getRayuAIOAuthTokens",
-      "declFile": "src/bridge/createSession.ts",
-      "line": 55,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeAIOAuthTokens",
-      "newName": "getRayuAIOAuthTokens",
-      "declFile": "src/bridge/createSession.ts",
-      "line": 194,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeAIOAuthTokens",
-      "newName": "getRayuAIOAuthTokens",
-      "declFile": "src/bridge/createSession.ts",
-      "line": 271,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeAIOAuthTokens",
-      "newName": "getRayuAIOAuthTokens",
-      "declFile": "src/bridge/createSession.ts",
-      "line": 332,
-      "wave": 1,
       "refs": 2,
       "status": "rename"
     },
@@ -203,15 +167,6 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "getClaudeAIOAuthTokens",
-      "newName": "getRayuAIOAuthTokens",
-      "declFile": "src/bridge/trustedDevice.ts",
-      "line": 122,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
       "symbol": "claude_code_args",
       "newName": "claude_code_args",
       "declFile": "src/bridge/types.ts",
@@ -252,24 +207,6 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "multiClaudeSessionPairs",
-      "newName": "multiRayuSessionPairs",
-      "declFile": "src/commands/insights.ts",
-      "line": 1088,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "messagesDuringMulticlaude",
-      "newName": "messagesDuringMultirayu",
-      "declFile": "src/commands/insights.ts",
-      "line": 1089,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
       "symbol": "claude_md_additions",
       "newName": "claude_md_additions",
       "declFile": "src/commands/insights.ts",
@@ -298,15 +235,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "ClaudeMdExternalIncludesDialog",
-      "newName": "RayuMdExternalIncludesDialog",
-      "declFile": "src/components/ClaudeMdExternalIncludesDialog.tsx",
-      "line": 14,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
     },
     {
       "symbol": "hasClaudeMdExternalIncludesApproved",
@@ -346,183 +274,13 @@
     },
     {
       "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
-      "declFile": "src/components/ConsoleOAuthFlow.tsx",
-      "line": 36,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
-      "declFile": "src/components/ConsoleOAuthFlow.tsx",
-      "line": 53,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
+      "newName": "loginWithClaudeAi",
       "declFile": "src/components/ConsoleOAuthFlow.tsx",
       "line": 93,
       "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeAiLimits",
-      "newName": "rayuAiLimits",
-      "declFile": "src/components/messages/RateLimitMessage.tsx",
-      "line": 90,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "handleRespondToClaude",
-      "newName": "handleRespondToRayu",
-      "declFile": "src/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx",
-      "line": 330,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "onRespondToClaude",
-      "newName": "onRespondToRayu",
-      "declFile": "src/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx",
-      "line": 565,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
-      "symbol": "onRespondToClaude",
-      "newName": "onRespondToRayu",
-      "declFile": "src/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx",
-      "line": 33,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "onRespondToClaude",
-      "newName": "onRespondToRayu",
-      "declFile": "src/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx",
-      "line": 56,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "onRespondToClaude",
-      "newName": "onRespondToRayu",
-      "declFile": "src/components/permissions/AskUserQuestionPermissionRequest/QuestionView.tsx",
-      "line": 38,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
-      "symbol": "onRespondToClaude",
-      "newName": "onRespondToRayu",
-      "declFile": "src/components/permissions/AskUserQuestionPermissionRequest/QuestionView.tsx",
-      "line": 62,
-      "wave": 1,
-      "refs": 7,
-      "status": "rename"
-    },
-    {
-      "symbol": "onRespondToClaude",
-      "newName": "onRespondToRayu",
-      "declFile": "src/components/permissions/AskUserQuestionPermissionRequest/QuestionView.tsx",
-      "line": 239,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "shouldShowClaudeAuthError",
-      "newName": "shouldShowRayuAuthError",
-      "declFile": "src/components/PromptInput/Notifications.tsx",
-      "line": 42,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeAiLimits",
-      "newName": "rayuAiLimits",
-      "declFile": "src/components/PromptInput/Notifications.tsx",
-      "line": 107,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeStatus",
-      "newName": "rayuStatus",
-      "declFile": "src/components/RayuProviderSetup.tsx",
-      "line": 157,
-      "wave": 1,
-      "refs": 7,
-      "status": "rename"
-    },
-    {
-      "symbol": "setClaudeStatus",
-      "newName": "setRayuStatus",
-      "declFile": "src/components/RayuProviderSetup.tsx",
-      "line": 157,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeAttempt",
-      "newName": "rayuAttempt",
-      "declFile": "src/components/RayuProviderSetup.tsx",
-      "line": 162,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "setClaudeAttempt",
-      "newName": "setRayuAttempt",
-      "declFile": "src/components/RayuProviderSetup.tsx",
-      "line": 162,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeSubscriptionStatus",
-      "newName": "getRayuSubscriptionStatus",
-      "declFile": "src/components/RayuProviderSetup.tsx",
-      "line": 183,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
-      "declFile": "src/components/RayuProviderSetup.tsx",
-      "line": 1224,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "logoutClaudeSubscription",
-      "newName": "logoutRayuSubscription",
-      "declFile": "src/components/RayuProviderSetup.tsx",
-      "line": 1273,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "CLAUDE_CODE_20250219_BETA_HEADER",
@@ -688,24 +446,6 @@
       "reason": "mapping produced no change"
     },
     {
-      "symbol": "shouldDisableClaudeMd",
-      "newName": "shouldDisableRayuMd",
-      "declFile": "src/context.ts",
-      "line": 164,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMd",
-      "newName": "rayuMd",
-      "declFile": "src/context.ts",
-      "line": 169,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
       "symbol": "claudemd_length",
       "newName": "claudemd_length",
       "declFile": "src/context.ts",
@@ -727,12 +467,13 @@
     },
     {
       "symbol": "claudeMd",
-      "newName": "rayuMd",
+      "newName": "claudeMd",
       "declFile": "src/context.ts",
       "line": 184,
       "wave": 1,
-      "refs": 5,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
       "symbol": "getClaudeAIOAuthTokens",
@@ -947,60 +688,6 @@
       "declFile": "src/externalAgents/core/discovery.ts",
       "line": 272,
       "wave": 3,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeAiLimits",
-      "newName": "rayuAiLimits",
-      "declFile": "src/hooks/notifs/useRateLimitWarningNotification.tsx",
-      "line": 16,
-      "wave": 1,
-      "refs": 12,
-      "status": "rename"
-    },
-    {
-      "symbol": "UseClaudeCodeHintRecommendationResult",
-      "newName": "UseRayuCodeHintRecommendationResult",
-      "declFile": "src/hooks/useClaudeCodeHintRecommendation.tsx",
-      "line": 20,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
-      "symbol": "useClaudeCodeHintRecommendation",
-      "newName": "useRayuCodeHintRecommendation",
-      "declFile": "src/hooks/useClaudeCodeHintRecommendation.tsx",
-      "line": 24,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeInChrome",
-      "newName": "rayuInChrome",
-      "declFile": "src/interactiveHelpers.tsx",
-      "line": 104,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeMdExternalIncludesDialog",
-      "newName": "RayuMdExternalIncludesDialog",
-      "declFile": "src/interactiveHelpers.tsx",
-      "line": 201,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeAIOAuthTokens",
-      "newName": "getRayuAIOAuthTokens",
-      "declFile": "src/interactiveHelpers.tsx",
-      "line": 269,
-      "wave": 1,
       "refs": 2,
       "status": "rename"
     },
@@ -1279,6 +966,15 @@
       "status": "override"
     },
     {
+      "symbol": "isClaudeModelId",
+      "newName": "isAnthropicModelId",
+      "declFile": "src/services/api/providerRegistry.ts",
+      "line": 190,
+      "wave": 2,
+      "refs": 2,
+      "status": "override"
+    },
+    {
       "symbol": "usesClaudeSubscriptionAuth",
       "newName": "usesRayuSubscriptionAuth",
       "declFile": "src/services/api/providerRegistry.ts",
@@ -1527,15 +1223,6 @@
       "symbol": "loginWithClaudeAi",
       "newName": "loginWithRayuAi",
       "declFile": "src/services/oauth/client.ts",
-      "line": 116,
-      "wave": 2,
-      "refs": 6,
-      "status": "rename"
-    },
-    {
-      "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
-      "declFile": "src/services/oauth/client.ts",
       "line": 136,
       "wave": 2,
       "refs": 4,
@@ -1587,15 +1274,6 @@
       "status": "rename"
     },
     {
-      "symbol": "registerClaudeApiSkill",
-      "newName": "registerRayuApiSkill",
-      "declFile": "src/skills/bundled/claudeApi.ts",
-      "line": 180,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
       "symbol": "unknown",
       "newName": "unknown",
       "declFile": "src/skills/bundled/claudeApiContent.ts",
@@ -1604,96 +1282,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "mapping produced no change"
-    },
-    {
-      "symbol": "registerClaudeApiSkill",
-      "newName": "registerRayuApiSkill",
-      "declFile": "src/skills/bundled/index.ts",
-      "line": 67,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getConnectedClaudeAIConnectors",
-      "newName": "getConnectedRayuAIConnectors",
-      "declFile": "src/skills/bundled/scheduleRemoteAgents.ts",
-      "line": 29,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "omitClaudeMd",
-      "newName": "omitRayuMd",
-      "declFile": "src/tools/AgentTool/built-in/exploreAgent.ts",
-      "line": 83,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_CODE_DOCS_MAP_URL",
-      "newName": "RAYU_CODE_DOCS_MAP_URL",
-      "declFile": "src/tools/AgentTool/built-in/rayuCodeGuideAgent.ts",
-      "line": 17,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeCodeGuideBasePrompt",
-      "newName": "getRayuCodeGuideBasePrompt",
-      "declFile": "src/tools/AgentTool/built-in/rayuCodeGuideAgent.ts",
-      "line": 23,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "omitClaudeMd",
-      "newName": "omitRayuMd",
-      "declFile": "src/tools/AgentTool/loadAgentsDir.ts",
-      "line": 131,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "shouldOmitClaudeMd",
-      "newName": "shouldOmitRayuMd",
-      "declFile": "src/tools/AgentTool/runAgent.ts",
-      "line": 416,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "_omittedClaudeMd",
-      "newName": "_omittedRayuMd",
-      "declFile": "src/tools/AgentTool/runAgent.ts",
-      "line": 420,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
-      "symbol": "userContextNoClaudeMd",
-      "newName": "userContextNoRayuMd",
-      "declFile": "src/tools/AgentTool/runAgent.ts",
-      "line": 420,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "postInterClaudeMessage",
-      "newName": "postInterRayuMessage",
-      "declFile": "src/tools/SendMessageTool/SendMessageTool.ts",
-      "line": 849,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
     },
     {
       "symbol": "claudeContribution",
@@ -1705,78 +1293,6 @@
       "status": "rename"
     },
     {
-      "symbol": "claudeMdTokens",
-      "newName": "rayuMdTokens",
-      "declFile": "src/utils/analyzeContext.ts",
-      "line": 407,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdTokens",
-      "newName": "rayuMdTokens",
-      "declFile": "src/utils/analyzeContext.ts",
-      "line": 411,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdTokens",
-      "newName": "rayuMdTokens",
-      "declFile": "src/utils/analyzeContext.ts",
-      "line": 416,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdTokens",
-      "newName": "rayuMdTokens",
-      "declFile": "src/utils/analyzeContext.ts",
-      "line": 421,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdTokenCounts",
-      "newName": "rayuMdTokenCounts",
-      "declFile": "src/utils/analyzeContext.ts",
-      "line": 425,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdTokens",
-      "newName": "rayuMdTokens",
-      "declFile": "src/utils/analyzeContext.ts",
-      "line": 446,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdTokens",
-      "newName": "rayuMdTokens",
-      "declFile": "src/utils/analyzeContext.ts",
-      "line": 1221,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdSize",
-      "newName": "rayuMdSize",
-      "declFile": "src/utils/api.ts",
-      "line": 509,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
       "symbol": "claude_md_size",
       "newName": "claude_md_size",
       "declFile": "src/utils/api.ts",
@@ -1785,15 +1301,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "claudePercent",
-      "newName": "rayuPercent",
-      "declFile": "src/utils/attribution.ts",
-      "line": 345,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
     },
     {
       "symbol": "isClaudeSubscriptionProviderActive",
@@ -1850,42 +1357,6 @@
       "status": "rename"
     },
     {
-      "symbol": "removeClaudeAliasesFromShellConfigs",
-      "newName": "removeRayuAliasesFromShellConfigs",
-      "declFile": "src/utils/autoUpdater.ts",
-      "line": 584,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "checkNeedsClaudeAiLogin",
-      "newName": "checkNeedsRayuAiLogin",
-      "declFile": "src/utils/background/remote/preconditions.ts",
-      "line": 23,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeCodeSnapshotContent",
-      "newName": "getRayuCodeSnapshotContent",
-      "declFile": "src/utils/bash/ShellSnapshot.ts",
-      "line": 269,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeCodeContent",
-      "newName": "rayuCodeContent",
-      "declFile": "src/utils/bash/ShellSnapshot.ts",
-      "line": 360,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
       "symbol": "CLAUDECODE",
       "newName": "CLAUDECODE",
       "declFile": "src/utils/bash/ShellSnapshot.ts",
@@ -1894,69 +1365,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "hasClaudeAiBillingAccess",
-      "newName": "hasRayuAiBillingAccess",
-      "declFile": "src/utils/billing.ts",
-      "line": 53,
-      "wave": 1,
-      "refs": 7,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeCodeHintType",
-      "newName": "RayuCodeHintType",
-      "declFile": "src/utils/claudeCodeHints.ts",
-      "line": 21,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeCodeHint",
-      "newName": "RayuCodeHint",
-      "declFile": "src/utils/claudeCodeHints.ts",
-      "line": 23,
-      "wave": 1,
-      "refs": 9,
-      "status": "rename"
-    },
-    {
-      "symbol": "extractClaudeCodeHints",
-      "newName": "extractRayuCodeHints",
-      "declFile": "src/utils/claudeCodeHints.ts",
-      "line": 72,
-      "wave": 1,
-      "refs": 6,
-      "status": "rename"
-    },
-    {
-      "symbol": "_resetClaudeCodeHintStore",
-      "newName": "_resetRayuCodeHintStore",
-      "declFile": "src/utils/claudeCodeHints.ts",
-      "line": 185,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeDesktopConfigPath",
-      "newName": "getRayuDesktopConfigPath",
-      "declFile": "src/utils/claudeDesktop.ts",
-      "line": 13,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "readClaudeDesktopMcpServers",
-      "newName": "readRayuDesktopMcpServers",
-      "declFile": "src/utils/claudeDesktop.ts",
-      "line": 98,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
     },
     {
       "symbol": "isClaudeMdExcluded",
@@ -2058,42 +1466,6 @@
       "status": "rename"
     },
     {
-      "symbol": "claudePercent",
-      "newName": "rayuPercent",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 198,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 199,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 208,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 221,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
       "symbol": "claudeContribution",
       "newName": "rayuContribution",
       "declFile": "src/utils/commitAttribution.ts",
@@ -2130,129 +1502,12 @@
       "status": "rename"
     },
     {
-      "symbol": "totalClaudeChars",
-      "newName": "totalRayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 560,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
       "symbol": "claudeContribution",
       "newName": "rayuContribution",
       "declFile": "src/utils/commitAttribution.ts",
       "line": 607,
       "wave": 4,
       "refs": 15,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 631,
-      "wave": 1,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 684,
-      "wave": 1,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 684,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 702,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePercent",
-      "newName": "rayuPercent",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 716,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 722,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 727,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePercent",
-      "newName": "rayuPercent",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 733,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeChars",
-      "newName": "rayuChars",
-      "declFile": "src/utils/commitAttribution.ts",
-      "line": 734,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeDir",
-      "newName": "rayuDir",
-      "declFile": "src/utils/completionCache.ts",
-      "line": 28,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeBin",
-      "newName": "rayuBin",
-      "declFile": "src/utils/completionCache.ts",
-      "line": 93,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeBin",
-      "newName": "rayuBin",
-      "declFile": "src/utils/completionCache.ts",
-      "line": 149,
-      "wave": 1,
-      "refs": 2,
       "status": "rename"
     },
     {
@@ -2355,321 +1610,6 @@
       "status": "rename"
     },
     {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 56,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 59,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 75,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 144,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 185,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 216,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "resolveClaudePath",
-      "newName": "resolveRayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 241,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 264,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/registerProtocol.ts",
-      "line": 306,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 215,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeArgs",
-      "newName": "rayuArgs",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 232,
-      "wave": 1,
-      "refs": 7,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 257,
-      "wave": 1,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeArgs",
-      "newName": "rayuArgs",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 258,
-      "wave": 1,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 361,
-      "wave": 1,
-      "refs": 10,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeArgs",
-      "newName": "rayuArgs",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 362,
-      "wave": 1,
-      "refs": 10,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 421,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeArgs",
-      "newName": "rayuArgs",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 422,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudePath",
-      "newName": "rayuPath",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 506,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeArgs",
-      "newName": "rayuArgs",
-      "declFile": "src/utils/deepLink/terminalLauncher.ts",
-      "line": 507,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdWarning",
-      "newName": "rayuMdWarning",
-      "declFile": "src/utils/doctorContextWarnings.ts",
-      "line": 37,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "checkClaudeMdFiles",
-      "newName": "checkRayuMdFiles",
-      "declFile": "src/utils/doctorContextWarnings.ts",
-      "line": 43,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdWarning",
-      "newName": "rayuMdWarning",
-      "declFile": "src/utils/doctorContextWarnings.ts",
-      "line": 251,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdWarning",
-      "newName": "rayuMdWarning",
-      "declFile": "src/utils/doctorContextWarnings.ts",
-      "line": 260,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeInPath",
-      "newName": "rayuInPath",
-      "declFile": "src/utils/doctorDiagnostic.ts",
-      "line": 524,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeError",
-      "newName": "RayuError",
-      "declFile": "src/utils/errors.ts",
-      "line": 7,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeCodeSkillsDir",
-      "newName": "getRayuCodeSkillsDir",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 88,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeCodeSkillsDirIfEnabled",
-      "newName": "getRayuCodeSkillsDirIfEnabled",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 96,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getProjectClaudeSkillsDirIfEnabled",
-      "newName": "getProjectRayuSkillsDirIfEnabled",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 109,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeDir",
-      "newName": "rayuDir",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 167,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "projectClaudeDir",
-      "newName": "projectRayuDir",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 172,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeCodeDir",
-      "newName": "rayuCodeDir",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 269,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeSkillsEnabled",
-      "newName": "rayuSkillsEnabled",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 273,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeCodeDir",
-      "newName": "rayuCodeDir",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 286,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeSkillsEnabled",
-      "newName": "rayuSkillsEnabled",
-      "declFile": "src/utils/externalSkillDiscovery.ts",
-      "line": 290,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeOrange",
-      "newName": "rayuOrange",
-      "declFile": "src/utils/heatmap.ts",
-      "line": 181,
-      "wave": 1,
-      "refs": 9,
-      "status": "rename"
-    },
-    {
       "symbol": "CLAUDE_PROJECT_DIR",
       "newName": "CLAUDE_PROJECT_DIR",
       "declFile": "src/utils/hooks.ts",
@@ -2680,33 +1620,6 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "getLocalClaudePath",
-      "newName": "getLocalRayuPath",
-      "declFile": "src/utils/localInstaller.ts",
-      "line": 24,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "installOrUpdateClaudePackage",
-      "newName": "installOrUpdateRayuPackage",
-      "declFile": "src/utils/localInstaller.ts",
-      "line": 99,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "installOrUpdateClaudePackageLocked",
-      "newName": "installOrUpdateRayuPackageLocked",
-      "declFile": "src/utils/localInstaller.ts",
-      "line": 112,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
       "symbol": "claude_code_version",
       "newName": "claude_code_version",
       "declFile": "src/utils/messages/systemInit.ts",
@@ -2715,222 +1628,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "isClaudeModelOrAlias",
-      "newName": "isAnthropicModelOrAlias",
-      "declFile": "src/utils/model/aliases.ts",
-      "line": 37,
-      "wave": 1,
-      "refs": 6,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_3_7_SONNET_CONFIG",
-      "newName": "ANTHROPIC_3_7_SONNET_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 9,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_3_5_V2_SONNET_CONFIG",
-      "newName": "ANTHROPIC_3_5_V2_SONNET_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 16,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_3_5_HAIKU_CONFIG",
-      "newName": "ANTHROPIC_3_5_HAIKU_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 23,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_HAIKU_4_5_CONFIG",
-      "newName": "ANTHROPIC_HAIKU_4_5_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 30,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_SONNET_4_CONFIG",
-      "newName": "ANTHROPIC_SONNET_4_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 37,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_SONNET_4_5_CONFIG",
-      "newName": "ANTHROPIC_SONNET_4_5_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 44,
-      "wave": 1,
-      "refs": 5,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_OPUS_4_CONFIG",
-      "newName": "ANTHROPIC_OPUS_4_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 51,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_OPUS_4_1_CONFIG",
-      "newName": "ANTHROPIC_OPUS_4_1_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 58,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_OPUS_4_5_CONFIG",
-      "newName": "ANTHROPIC_OPUS_4_5_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 65,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_OPUS_4_6_CONFIG",
-      "newName": "ANTHROPIC_OPUS_4_6_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 72,
-      "wave": 1,
-      "refs": 7,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_SONNET_4_6_CONFIG",
-      "newName": "ANTHROPIC_SONNET_4_6_CONFIG",
-      "declFile": "src/utils/model/configs.ts",
-      "line": 79,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "isClaude",
-      "newName": "isRayu",
-      "declFile": "src/utils/model/model.ts",
-      "line": 70,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeAiUserDefaultModelDescription",
-      "newName": "getSubscriptionUserDefaultModelDescription",
-      "declFile": "src/utils/model/model.ts",
-      "line": 395,
-      "wave": 1,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "isClaude46Plus",
-      "newName": "isAnthropic46Plus",
-      "declFile": "src/utils/model/modelNotation.ts",
-      "line": 35,
-      "wave": 1,
-      "refs": 6,
-      "status": "override"
-    },
-    {
-      "symbol": "isLegacyClaude3Model",
-      "newName": "isLegacyAnthropic3Model",
-      "declFile": "src/utils/model/modelNotation.ts",
-      "line": 60,
-      "wave": 1,
-      "refs": 3,
-      "status": "override"
-    },
-    {
-      "symbol": "isPossibleClaudeBinary",
-      "newName": "isPossibleRayuBinary",
-      "declFile": "src/utils/nativeInstaller/installer.ts",
-      "line": 152,
-      "wave": 1,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "isClaudeProcess",
-      "newName": "isRayuProcess",
-      "declFile": "src/utils/nativeInstaller/pidLock.ts",
-      "line": 101,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "isClaudeSettingsPath",
-      "newName": "isRayuSettingsPath",
-      "declFile": "src/utils/permissions/filesystem.ts",
-      "line": 212,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "isClaudeConfigFilePath",
-      "newName": "isRayuConfigFilePath",
-      "declFile": "src/utils/permissions/filesystem.ts",
-      "line": 237,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeFolderAllowRule",
-      "newName": "rayuFolderAllowRule",
-      "declFile": "src/utils/permissions/filesystem.ts",
-      "line": 1224,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "buildClaudeMdMessage",
-      "newName": "buildRayuMdMessage",
-      "declFile": "src/utils/permissions/yoloClassifier.ts",
-      "line": 462,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMd",
-      "newName": "rayuMd",
-      "declFile": "src/utils/permissions/yoloClassifier.ts",
-      "line": 463,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeMdMessage",
-      "newName": "rayuMdMessage",
-      "declFile": "src/utils/permissions/yoloClassifier.ts",
-      "line": 1035,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
     },
     {
       "symbol": "claudeCodeHints",
@@ -3056,96 +1753,6 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "claudeTmuxEnv",
-      "newName": "rayuTmuxEnv",
-      "declFile": "src/utils/shell/bashProvider.ts",
-      "line": 226,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_ALIAS_REGEX",
-      "newName": "RAYU_ALIAS_REGEX",
-      "declFile": "src/utils/shellConfig.ts",
-      "line": 12,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "filterClaudeAliases",
-      "newName": "filterRayuAliases",
-      "declFile": "src/utils/shellConfig.ts",
-      "line": 45,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "findClaudeAlias",
-      "newName": "findRayuAlias",
-      "declFile": "src/utils/shellConfig.ts",
-      "line": 114,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "findValidClaudeAlias",
-      "newName": "findValidRayuAlias",
-      "declFile": "src/utils/shellConfig.ts",
-      "line": 142,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeCodeStats",
-      "newName": "RayuCodeStats",
-      "declFile": "src/utils/stats.ts",
-      "line": 52,
-      "wave": 1,
-      "refs": 17,
-      "status": "rename"
-    },
-    {
-      "symbol": "aggregateClaudeCodeStats",
-      "newName": "aggregateRayuCodeStats",
-      "declFile": "src/utils/stats.ts",
-      "line": 639,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "aggregateClaudeCodeStatsForRange",
-      "newName": "aggregateRayuCodeStatsForRange",
-      "declFile": "src/utils/stats.ts",
-      "line": 717,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "processedStatsToClaudeCodeStats",
-      "newName": "processedStatsToRayuCodeStats",
-      "declFile": "src/utils/stats.ts",
-      "line": 748,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeCodeDiagLogger",
-      "newName": "RayuCodeDiagLogger",
-      "declFile": "src/utils/telemetry/logger.ts",
-      "line": 4,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
       "symbol": "CLAUDE_CODE_OAUTH_TOKEN",
       "newName": "CLAUDE_CODE_OAUTH_TOKEN",
       "declFile": "src/utils/teleport.tsx",
@@ -3154,60 +1761,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "CLAUDE_SOCKET_PREFIX",
-      "newName": "RAYU_SOCKET_PREFIX",
-      "declFile": "src/utils/tmuxSocket.ts",
-      "line": 36,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeSocketName",
-      "newName": "getRayuSocketName",
-      "declFile": "src/utils/tmuxSocket.ts",
-      "line": 91,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeSocketPath",
-      "newName": "getRayuSocketPath",
-      "declFile": "src/utils/tmuxSocket.ts",
-      "line": 102,
-      "wave": 1,
-      "refs": 1,
-      "status": "rename"
-    },
-    {
-      "symbol": "setClaudeSocketInfo",
-      "newName": "setRayuSocketInfo",
-      "declFile": "src/utils/tmuxSocket.ts",
-      "line": 110,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeTmuxEnv",
-      "newName": "getRayuTmuxEnv",
-      "declFile": "src/utils/tmuxSocket.ts",
-      "line": 135,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeBindings",
-      "newName": "rayuBindings",
-      "declFile": "src/utils/worktree.ts",
-      "line": 1362,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
     },
     {
       "symbol": "CLAUDE_CODE_TMUX_SESSION",
@@ -3240,15 +1793,6 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "isClaudeCliInternal",
-      "newName": "isRayuCliInternal",
-      "declFile": "src/utils/worktree.ts",
-      "line": 1415,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
       "symbol": "CLAUDE_CODE_SSE_PORT",
       "newName": "CLAUDE_CODE_SSE_PORT",
       "declFile": "src/vscode/host/extension.ts",
@@ -3279,33 +1823,6 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "claude",
-      "newName": "rayu",
-      "declFile": "test/azureFoundry.test.ts",
-      "line": 200,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_SONNET_4_5_CONFIG",
-      "newName": "ANTHROPIC_SONNET_4_5_CONFIG",
-      "declFile": "test/azureFoundry.test.ts",
-      "line": 349,
-      "wave": 1,
-      "refs": 2,
-      "status": "override"
-    },
-    {
-      "symbol": "claude",
-      "newName": "rayu",
-      "declFile": "test/bedrockAnthropicLive.test.ts",
-      "line": 117,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
       "symbol": "rayuTestClaudeServer",
       "newName": "rayuTestClaudeServer",
       "declFile": "test/claudeInterop.test.ts",
@@ -3314,51 +1831,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "shouldUseClaudeAIAuth",
-      "newName": "shouldUseRayuAIAuth",
-      "declFile": "test/claudeSubscriptionOAuth.test.ts",
-      "line": 86,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_AI_OAUTH_SCOPES",
-      "newName": "SUBSCRIPTION_OAUTH_SCOPES",
-      "declFile": "test/claudeSubscriptionOAuth.test.ts",
-      "line": 108,
-      "wave": 1,
-      "refs": 2,
-      "status": "override"
-    },
-    {
-      "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
-      "declFile": "test/claudeSubscriptionOAuth.test.ts",
-      "line": 114,
-      "wave": 1,
-      "refs": 6,
-      "status": "rename"
-    },
-    {
-      "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
-      "declFile": "test/claudeSubscriptionOAuth.test.ts",
-      "line": 137,
-      "wave": 1,
-      "refs": 6,
-      "status": "rename"
-    },
-    {
-      "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
-      "declFile": "test/claudeSubscriptionOAuth.test.ts",
-      "line": 162,
-      "wave": 1,
-      "refs": 6,
-      "status": "rename"
     },
     {
       "symbol": "claudeAiOauth",
@@ -3371,75 +1843,12 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "usesClaudeSubscriptionAuth",
-      "newName": "usesRayuSubscriptionAuth",
-      "declFile": "test/claudeSubscriptionOAuth.test.ts",
-      "line": 301,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
       "symbol": "CLAUDE_SUBSCRIPTION_PROVIDER_ID",
       "newName": "RAYU_SUBSCRIPTION_PROVIDER_ID",
       "declFile": "test/claudeSubscriptionOAuth.test.ts",
       "line": 328,
       "wave": 4,
       "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "loginWithClaudeAi",
-      "newName": "loginWithRayuAi",
-      "declFile": "test/cleanPosture.test.ts",
-      "line": 59,
-      "wave": 1,
-      "refs": 6,
-      "status": "rename"
-    },
-    {
-      "symbol": "claude",
-      "newName": "legacyConfigDir",
-      "declFile": "test/configDir.test.ts",
-      "line": 6,
-      "wave": 1,
-      "refs": 2,
-      "status": "override"
-    },
-    {
-      "symbol": "FAKE_CLAUDE",
-      "newName": "FAKE_RAYU",
-      "declFile": "test/externalAgentsAdapters.test.ts",
-      "line": 512,
-      "wave": 1,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_AGENT",
-      "newName": "RAYU_AGENT",
-      "declFile": "test/externalAgentsAdapters.test.ts",
-      "line": 557,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE",
-      "newName": "RAYU",
-      "declFile": "test/externalAgentsPersistence.test.ts",
-      "line": 58,
-      "wave": 1,
-      "refs": 16,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE",
-      "newName": "RAYU",
-      "declFile": "test/externalAgentsPlanning.test.ts",
-      "line": 49,
-      "wave": 1,
-      "refs": 22,
       "status": "rename"
     },
     {
@@ -3451,15 +1860,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "claudeDir",
-      "newName": "rayuDir",
-      "declFile": "test/externalAgentsTerminalObserve.test.ts",
-      "line": 174,
-      "wave": 1,
-      "refs": 7,
-      "status": "rename"
     },
     {
       "symbol": "CLAUDE_CONFIG_DIR",
@@ -3560,276 +1960,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "seedClaudeMainAndDeepSeekCollaborator",
-      "newName": "seedRayuMainAndDeepSeekCollaborator",
-      "declFile": "test/providerCapabilities.test.ts",
-      "line": 46,
-      "wave": 1,
-      "refs": 7,
-      "status": "rename"
-    },
-    {
-      "symbol": "claude",
-      "newName": "rayu",
-      "declFile": "test/providerRegistry.test.ts",
-      "line": 161,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "isClaudeModelId",
-      "newName": "isAnthropicModelId",
-      "declFile": "test/providerRegistry.test.ts",
-      "line": 270,
-      "wave": 1,
-      "refs": 3,
-      "status": "override"
-    },
-    {
-      "symbol": "claudeDir",
-      "newName": "rayuDir",
-      "declFile": "test/rayuPluginCommand.test.ts",
-      "line": 19,
-      "wave": 1,
-      "refs": 15,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeDoc",
-      "newName": "rayuDoc",
-      "declFile": "test/rayuPluginCommand.test.ts",
-      "line": 95,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeDoc",
-      "newName": "rayuDoc",
-      "declFile": "test/rayuPluginCommand.test.ts",
-      "line": 197,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeDir",
-      "newName": "rayuDir",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 20,
-      "wave": 1,
-      "refs": 15,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeCodeUserConfigFile",
-      "newName": "getRayuCodeUserConfigFile",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 67,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeCodeSkillsInstallDir",
-      "newName": "getRayuCodeSkillsInstallDir",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 68,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 105,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 134,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 151,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 164,
-      "wave": 1,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 179,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 190,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 203,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 218,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 236,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "uninstallClaudeCode",
-      "newName": "uninstallRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 236,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "uninstallClaudeCode",
-      "newName": "uninstallRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 249,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeCodeStatus",
-      "newName": "getRayuCodeStatus",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 258,
-      "wave": 1,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "installClaudeCode",
-      "newName": "installRayuCode",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 258,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeCodeStatus",
-      "newName": "getRayuCodeStatus",
-      "declFile": "test/rayuPluginInstallers.test.ts",
-      "line": 282,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "prevClaude",
-      "newName": "prevLegacy",
-      "declFile": "test/rayuTempDir.test.ts",
-      "line": 14,
-      "wave": 1,
-      "refs": 3,
-      "status": "override"
-    },
-    {
-      "symbol": "claudeBase",
-      "newName": "legacyBase",
-      "declFile": "test/rayuTempDir.test.ts",
-      "line": 48,
-      "wave": 1,
-      "refs": 2,
-      "status": "override"
-    },
-    {
-      "symbol": "claudeBase",
-      "newName": "legacyBase",
-      "declFile": "test/rayuTempDir.test.ts",
-      "line": 57,
-      "wave": 1,
-      "refs": 3,
-      "status": "override"
-    },
-    {
-      "symbol": "claude",
-      "newName": "rayu",
-      "declFile": "test/rebrand.test.ts",
-      "line": 36,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claude",
-      "newName": "rayu",
-      "declFile": "test/rebrand.test.ts",
-      "line": 36,
-      "wave": 1,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "claudeDir",
-      "newName": "legacyIdeDir",
-      "declFile": "test/vscodeIdeContext.test.ts",
-      "line": 113,
-      "wave": 1,
-      "refs": 2,
-      "status": "override"
-    },
-    {
-      "symbol": "claudeIndex",
-      "newName": "legacyIdeIndex",
-      "declFile": "test/vscodeIdeContext.test.ts",
-      "line": 130,
-      "wave": 1,
-      "refs": 2,
-      "status": "override"
     }
   ],
   "unresolved": [
@@ -4944,6 +3074,11 @@
       "name": "CLAUDE_CODE_COORDINATOR_MODE"
     },
     {
+      "file": "src/tools/SendMessageTool/SendMessageTool.ts",
+      "line": 849,
+      "name": "postInterClaudeMessage"
+    },
+    {
       "file": "src/tools.ts",
       "line": 102,
       "name": "CLAUDE_CODE_VERIFY_PLAN"
@@ -5117,6 +3252,11 @@
       "file": "src/screens/REPL.tsx",
       "line": 4146,
       "name": "CLAUDE_CODE_IDLE_THRESHOLD_MINUTES"
+    },
+    {
+      "file": "src/components/permissions/AskUserQuestionPermissionRequest/QuestionView.tsx",
+      "line": 62,
+      "name": "onRespondToClaude"
     },
     {
       "file": "src/components/Spinner.tsx",
@@ -5662,26 +3802,6 @@
       "file": "src/components/Settings/Config.tsx",
       "line": 198,
       "name": "CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING"
-    },
-    {
-      "file": "src/screens/Doctor.tsx",
-      "line": 474,
-      "name": "claudeMdWarning"
-    },
-    {
-      "file": "src/screens/Doctor.tsx",
-      "line": 474,
-      "name": "claudeMdWarning"
-    },
-    {
-      "file": "src/screens/Doctor.tsx",
-      "line": 474,
-      "name": "claudeMdWarning"
-    },
-    {
-      "file": "src/screens/Doctor.tsx",
-      "line": 474,
-      "name": "claudeMdWarning"
     },
     {
       "file": "src/commands/init.ts",

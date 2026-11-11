@@ -55,7 +55,7 @@ import {
 } from '../src/externalAgents/core/types.ts'
 
 const CODEX = 'codex:agent_01' as AgentInstanceId
-const CLAUDE = 'claude-code:agent_01' as AgentInstanceId
+const RAYU = 'claude-code:agent_01' as AgentInstanceId
 
 let dir: string
 beforeEach(() => {
@@ -282,11 +282,11 @@ describe('agent records', () => {
     await writeAgentRecord(newRecord())
     await writeAgentRecord(
       newRecord({
-        agentInstanceId: CLAUDE,
+        agentInstanceId: RAYU,
         provider: asProviderId('claude-code'),
       }),
     )
-    expect((await listAgentInstanceIds()).sort()).toEqual([CLAUDE, CODEX])
+    expect((await listAgentInstanceIds()).sort()).toEqual([RAYU, CODEX])
   })
 
   test('ignores foreign directory names rather than parsing or deleting them', async () => {
@@ -306,11 +306,11 @@ describe('agent records', () => {
 
   test('listAgentRecords separates readable records from corrupt ids', async () => {
     await writeAgentRecord(newRecord())
-    mkdirSync(getAgentDir(CLAUDE), { recursive: true })
-    writeFileSync(getAgentRecordPath(CLAUDE), 'nope')
+    mkdirSync(getAgentDir(RAYU), { recursive: true })
+    writeFileSync(getAgentRecordPath(RAYU), 'nope')
     const { records, corrupt } = await listAgentRecords()
     expect(records.map(r => r.agentInstanceId)).toEqual([CODEX])
-    expect(corrupt).toEqual([CLAUDE])
+    expect(corrupt).toEqual([RAYU])
   })
 
   test('prune is the only destructive operation', async () => {
@@ -562,8 +562,8 @@ describe('stale agent sweep', () => {
   test('a corrupt record does not abort the sweep of the others', async () => {
     await writeAgentRecord(newRecord({ agentState: 'working' }))
     await patchAgentRecord(CODEX, { ownerPid: DEAD_PID })
-    mkdirSync(getAgentDir(CLAUDE), { recursive: true })
-    writeFileSync(getAgentRecordPath(CLAUDE), 'broken')
+    mkdirSync(getAgentDir(RAYU), { recursive: true })
+    writeFileSync(getAgentRecordPath(RAYU), 'broken')
     expect(await sweepStaleAgents()).toEqual([CODEX])
   })
 })
@@ -588,7 +588,7 @@ describe('write leases', () => {
 
   test('a second agent is told who holds it', async () => {
     await tryAcquireWriteLease(FILE_A, CODEX)
-    const result = await tryAcquireWriteLease(FILE_A, CLAUDE)
+    const result = await tryAcquireWriteLease(FILE_A, RAYU)
     expect(result.acquired).toBe(false)
     if (!result.acquired) {
       expect(result.heldBy?.agentInstanceId).toBe(CODEX)
@@ -603,7 +603,7 @@ describe('write leases', () => {
 
   test('different files do not contend', async () => {
     expect((await tryAcquireWriteLease(FILE_A, CODEX)).acquired).toBe(true)
-    expect((await tryAcquireWriteLease(FILE_B, CLAUDE)).acquired).toBe(true)
+    expect((await tryAcquireWriteLease(FILE_B, RAYU)).acquired).toBe(true)
     expect(await listWriteLeases()).toHaveLength(2)
   })
 
@@ -621,7 +621,7 @@ describe('write leases', () => {
 
   test('release only removes your own lease', async () => {
     await tryAcquireWriteLease(FILE_A, CODEX)
-    await releaseWriteLease(FILE_A, CLAUDE)
+    await releaseWriteLease(FILE_A, RAYU)
     expect(await listWriteLeases()).toHaveLength(1)
     await releaseWriteLease(FILE_A, CODEX)
     expect(await listWriteLeases()).toHaveLength(0)
@@ -634,10 +634,10 @@ describe('write leases', () => {
 
   test('releaseAllLeasesForAgent frees only that agent', async () => {
     await tryAcquireWriteLease(FILE_A, CODEX)
-    await tryAcquireWriteLease(FILE_B, CLAUDE)
+    await tryAcquireWriteLease(FILE_B, RAYU)
     expect(await releaseAllLeasesForAgent(CODEX)).toEqual([FILE_A])
     const remaining = await listWriteLeases()
-    expect(remaining.map(l => l.agentInstanceId)).toEqual([CLAUDE])
+    expect(remaining.map(l => l.agentInstanceId)).toEqual([RAYU])
   })
 
   test('a lease held by a dead RAYU is recovered', async () => {
@@ -648,7 +648,7 @@ describe('write leases', () => {
     const lease = JSON.parse(readFileSync(file, 'utf-8'))
     writeFileSync(file, JSON.stringify({ ...lease, ownerPid: DEAD_PID }))
 
-    const result = await tryAcquireWriteLease(FILE_A, CLAUDE)
+    const result = await tryAcquireWriteLease(FILE_A, RAYU)
     expect(result.acquired).toBe(true)
   })
 
@@ -658,12 +658,12 @@ describe('write leases', () => {
     const { readdirSync } = await import('fs')
     const file = join(getLeasesDir(), readdirSync(getLeasesDir())[0]!)
     writeFileSync(file, 'not json')
-    expect((await tryAcquireWriteLease(FILE_A, CLAUDE)).acquired).toBe(true)
+    expect((await tryAcquireWriteLease(FILE_A, RAYU)).acquired).toBe(true)
   })
 
   test('sweep drops leases from dead processes and keeps live ones', async () => {
     await tryAcquireWriteLease(FILE_A, CODEX)
-    await tryAcquireWriteLease(FILE_B, CLAUDE)
+    await tryAcquireWriteLease(FILE_B, RAYU)
     const { readdirSync } = await import('fs')
     for (const entry of readdirSync(getLeasesDir())) {
       const file = join(getLeasesDir(), entry)

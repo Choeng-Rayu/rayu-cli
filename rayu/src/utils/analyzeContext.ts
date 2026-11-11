@@ -404,25 +404,25 @@ async function countSystemTokens(
 
 async function countMemoryFileTokens(): Promise<{
   memoryFileDetails: MemoryFile[]
-  claudeMdTokens: number
+  rayuMdTokens: number
 }> {
   // Simple mode disables RAYU.md loading, so don't report tokens for them
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
-    return { memoryFileDetails: [], claudeMdTokens: 0 }
+    return { memoryFileDetails: [], rayuMdTokens: 0 }
   }
 
   const memoryFilesData = filterInjectedMemoryFiles(await getMemoryFiles())
   const memoryFileDetails: MemoryFile[] = []
-  let claudeMdTokens = 0
+  let rayuMdTokens = 0
 
   if (memoryFilesData.length < 1) {
     return {
       memoryFileDetails: [],
-      claudeMdTokens: 0,
+      rayuMdTokens: 0,
     }
   }
 
-  const claudeMdTokenCounts = await Promise.all(
+  const rayuMdTokenCounts = await Promise.all(
     memoryFilesData.map(async file => {
       const tokens = await countOrEstimate(
         [{ role: 'user', content: file.content }],
@@ -434,8 +434,8 @@ async function countMemoryFileTokens(): Promise<{
     }),
   )
 
-  for (const { file, tokens } of claudeMdTokenCounts) {
-    claudeMdTokens += tokens
+  for (const { file, tokens } of rayuMdTokenCounts) {
+    rayuMdTokens += tokens
     memoryFileDetails.push({
       path: file.path,
       type: file.type,
@@ -443,7 +443,7 @@ async function countMemoryFileTokens(): Promise<{
     })
   }
 
-  return { claudeMdTokens, memoryFileDetails }
+  return { rayuMdTokens, memoryFileDetails }
 }
 
 async function countBuiltInToolTokens(
@@ -1218,7 +1218,7 @@ export async function analyzeContextUsage(
   // Critical operations that should not fail due to skills
   const [
     { systemPromptTokens, systemPromptSections },
-    { claudeMdTokens, memoryFileDetails },
+    { rayuMdTokens, memoryFileDetails },
     {
       builtInToolTokens,
       deferredBuiltinDetails,
@@ -1339,10 +1339,10 @@ export async function analyzeContextUsage(
   }
 
   // Memory files after custom agents
-  if (claudeMdTokens > 0) {
+  if (rayuMdTokens > 0) {
     cats.push({
       name: 'Memory files',
-      tokens: claudeMdTokens,
+      tokens: rayuMdTokens,
       color: 'brand',
     })
   }

@@ -171,11 +171,11 @@ describe('terminal hosting without tmux', () => {
 // ---------------------------------------------------------------------------
 
 describe('claude code transcript observation', () => {
-  let claudeDir: string
+  let rayuDir: string
 
   beforeEach(() => {
-    claudeDir = join(dir, 'claude')
-    process.env.CLAUDE_CONFIG_DIR = claudeDir
+    rayuDir = join(dir, 'claude')
+    process.env.CLAUDE_CONFIG_DIR = rayuDir
   })
 
   /** Write a rollout, optionally back-dated. */
@@ -185,7 +185,7 @@ describe('claude code transcript observation', () => {
     lines: unknown[],
     ageMs = 0,
   ): string {
-    const projectDir = join(claudeDir, 'projects', project)
+    const projectDir = join(rayuDir, 'projects', project)
     mkdirSync(projectDir, { recursive: true })
     const path = join(projectDir, `${sessionId}.jsonl`)
     writeFileSync(path, `${lines.map(l => JSON.stringify(l)).join('\n')}\n`)
@@ -197,7 +197,7 @@ describe('claude code transcript observation', () => {
   }
 
   test('the projects dir follows CLAUDE_CONFIG_DIR', () => {
-    expect(getClaudeProjectsDir()).toBe(join(claudeDir, 'projects'))
+    expect(getClaudeProjectsDir()).toBe(join(rayuDir, 'projects'))
   })
 
   test('a machine with no Claude Code returns nothing rather than throwing', async () => {
@@ -221,7 +221,7 @@ describe('claude code transcript observation', () => {
   })
 
   test('ignores files that are not rollouts', async () => {
-    const projectDir = join(claudeDir, 'projects', '-home-u-repo')
+    const projectDir = join(rayuDir, 'projects', '-home-u-repo')
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(join(projectDir, 'notes.txt'), 'hello')
     writeFileSync(join(projectDir, 'sess.jsonl'), '{}\n')
@@ -283,7 +283,7 @@ describe('claude code transcript observation', () => {
   })
 
   test('a corrupt rollout yields what is parseable rather than throwing', async () => {
-    const projectDir = join(claudeDir, 'projects', '-p')
+    const projectDir = join(rayuDir, 'projects', '-p')
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(join(projectDir, 'mixed.jsonl'), '{"ok":1}\nnot json\n{"ok":2}\n')
     const [found] = await listClaudeTranscripts()

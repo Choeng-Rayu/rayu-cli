@@ -9,7 +9,7 @@ import { shouldProcessMockLimits } from 'src/services/rateLimitMocking.js'; // U
 // menu from exactly the users it was built for.
 import { rayuPacingLimitFromLimits } from 'src/services/rayuAuth/rayuRateLimit.js';
 import { getRateLimitTier, getSubscriptionType, isClaudeAISubscriber } from 'src/utils/auth.js';
-import { hasClaudeAiBillingAccess } from 'src/utils/billing.js';
+import { hasRayuAiBillingAccess } from 'src/utils/billing.js';
 import { MessageResponse } from '../MessageResponse.js';
 type UpsellParams = {
   shouldShowUpsell: boolean;
@@ -87,13 +87,13 @@ export function RateLimitMessage(t0) {
   const shouldShowUpsell = t3;
   const canSeeRateLimitOptionsUpsell = shouldShowUpsell && !isMax20x;
   const [hasOpenedInteractiveMenu, setHasOpenedInteractiveMenu] = useState(false);
-  const claudeAiLimits = useClaudeAiLimits();
+  const rayuAiLimits = useClaudeAiLimits();
   // A Rayu pacing limit IS an actionable limit with a real alternative (the
   // dashboard switch), so it earns the same menu as a subscriber's limit. Without
   // this the notice would render but the menu would never open for a Rayu user,
   // because `canSeeRateLimitOptionsUpsell` keys on the claude.ai subscription.
-  const isRayuPacingLimit = rayuPacingLimitFromLimits(claudeAiLimits) !== null;
-  const isCurrentlyRateLimited = claudeAiLimits.status === "rejected" && claudeAiLimits.resetsAt !== undefined && !claudeAiLimits.isUsingOverage;
+  const isRayuPacingLimit = rayuPacingLimitFromLimits(rayuAiLimits) !== null;
+  const isCurrentlyRateLimited = rayuAiLimits.status === "rejected" && rayuAiLimits.resetsAt !== undefined && !rayuAiLimits.isUsingOverage;
   const shouldAutoOpenRateLimitOptionsMenu = (canSeeRateLimitOptionsUpsell || isRayuPacingLimit) && !hasOpenedInteractiveMenu && isCurrentlyRateLimited && onOpenRateLimitOptions;
   let t4;
   let t5;
@@ -124,7 +124,7 @@ export function RateLimitMessage(t0) {
         isExtraUsageCommandEnabled: extraUsage.isEnabled(),
         shouldAutoOpenRateLimitOptionsMenu: !!shouldAutoOpenRateLimitOptionsMenu,
         isTeamOrEnterprise,
-        hasBillingAccess: hasClaudeAiBillingAccess()
+        hasBillingAccess: hasRayuAiBillingAccess()
       });
       $[7] = shouldAutoOpenRateLimitOptionsMenu;
       $[8] = t7;

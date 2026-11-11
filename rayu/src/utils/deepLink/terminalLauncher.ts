@@ -212,7 +212,7 @@ export async function detectTerminal(): Promise<TerminalInfo | null> {
  * query or cwd are preserved by argv boundaries with zero interpretation.
  */
 export async function launchInTerminal(
-  claudePath: string,
+  rayuPath: string,
   action: {
     query?: string
     cwd?: string
@@ -229,24 +229,24 @@ export async function launchInTerminal(
   logForDebugging(
     `Launching in terminal: ${terminal.name} (${terminal.command})`,
   )
-  const claudeArgs = ['--deep-link-origin']
+  const rayuArgs = ['--deep-link-origin']
   if (action.repo) {
-    claudeArgs.push('--deep-link-repo', action.repo)
+    rayuArgs.push('--deep-link-repo', action.repo)
     if (action.lastFetchMs !== undefined) {
-      claudeArgs.push('--deep-link-last-fetch', String(action.lastFetchMs))
+      rayuArgs.push('--deep-link-last-fetch', String(action.lastFetchMs))
     }
   }
   if (action.query) {
-    claudeArgs.push('--prefill', action.query)
+    rayuArgs.push('--prefill', action.query)
   }
 
   switch (process.platform) {
     case 'darwin':
-      return launchMacosTerminal(terminal, claudePath, claudeArgs, action.cwd)
+      return launchMacosTerminal(terminal, rayuPath, rayuArgs, action.cwd)
     case 'linux':
-      return launchLinuxTerminal(terminal, claudePath, claudeArgs, action.cwd)
+      return launchLinuxTerminal(terminal, rayuPath, rayuArgs, action.cwd)
     case 'win32':
-      return launchWindowsTerminal(terminal, claudePath, claudeArgs, action.cwd)
+      return launchWindowsTerminal(terminal, rayuPath, rayuArgs, action.cwd)
     default:
       return false
   }
@@ -254,8 +254,8 @@ export async function launchInTerminal(
 
 async function launchMacosTerminal(
   terminal: TerminalInfo,
-  claudePath: string,
-  claudeArgs: string[],
+  rayuPath: string,
+  rayuArgs: string[],
   cwd?: string,
 ): Promise<boolean> {
   switch (terminal.command) {
@@ -264,7 +264,7 @@ async function launchMacosTerminal(
     // macOS paths where shellQuote() correctness is load-bearing.
 
     case 'iTerm': {
-      const shCmd = buildShellCommand(claudePath, claudeArgs, cwd)
+      const shCmd = buildShellCommand(rayuPath, rayuArgs, cwd)
       // If iTerm isn't running, `tell application` launches it and iTerm's
       // default startup behavior opens a window — so `create window` would
       // make a second one. Check `running` first: if already running (even
@@ -288,7 +288,7 @@ end tell`
     }
 
     case 'Terminal': {
-      const shCmd = buildShellCommand(claudePath, claudeArgs, cwd)
+      const shCmd = buildShellCommand(rayuPath, rayuArgs, cwd)
       const script = `tell application "Terminal"
   do script ${appleScriptQuote(shCmd)}
   activate
@@ -311,7 +311,7 @@ end tell`
         '--window-save-state=never',
       ]
       if (cwd) args.push(`--working-directory=${cwd}`)
-      args.push('-e', claudePath, ...claudeArgs)
+      args.push('-e', rayuPath, ...rayuArgs)
       const { code } = await execFileNoThrow('open', args, { useCwd: false })
       if (code === 0) return true
       break
@@ -320,7 +320,7 @@ end tell`
     case 'Alacritty': {
       const args = ['-na', terminal.command, '--args']
       if (cwd) args.push('--working-directory', cwd)
-      args.push('-e', claudePath, ...claudeArgs)
+      args.push('-e', rayuPath, ...rayuArgs)
       const { code } = await execFileNoThrow('open', args, { useCwd: false })
       if (code === 0) return true
       break
@@ -329,7 +329,7 @@ end tell`
     case 'kitty': {
       const args = ['-na', terminal.command, '--args']
       if (cwd) args.push('--directory', cwd)
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       const { code } = await execFileNoThrow('open', args, { useCwd: false })
       if (code === 0) return true
       break
@@ -338,7 +338,7 @@ end tell`
     case 'WezTerm': {
       const args = ['-na', terminal.command, '--args', 'start']
       if (cwd) args.push('--cwd', cwd)
-      args.push('--', claudePath, ...claudeArgs)
+      args.push('--', rayuPath, ...rayuArgs)
       const { code } = await execFileNoThrow('open', args, { useCwd: false })
       if (code === 0) return true
       break
@@ -350,16 +350,16 @@ end tell`
   )
   return launchMacosTerminal(
     { name: 'Terminal.app', command: 'Terminal' },
-    claudePath,
-    claudeArgs,
+    rayuPath,
+    rayuArgs,
     cwd,
   )
 }
 
 async function launchLinuxTerminal(
   terminal: TerminalInfo,
-  claudePath: string,
-  claudeArgs: string[],
+  rayuPath: string,
+  rayuArgs: string[],
   cwd?: string,
 ): Promise<boolean> {
   // All Linux paths are pure argv. Each terminal's --working-directory
@@ -374,41 +374,41 @@ async function launchLinuxTerminal(
   switch (terminal.name) {
     case 'gnome-terminal':
       args = cwd ? [`--working-directory=${cwd}`, '--'] : ['--']
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       break
     case 'konsole':
       args = cwd ? ['--workdir', cwd, '-e'] : ['-e']
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       break
     case 'kitty':
       args = cwd ? ['--directory', cwd] : []
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       break
     case 'wezterm':
       args = cwd ? ['start', '--cwd', cwd, '--'] : ['start', '--']
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       break
     case 'alacritty':
       args = cwd ? ['--working-directory', cwd, '-e'] : ['-e']
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       break
     case 'ghostty':
       args = cwd ? [`--working-directory=${cwd}`, '-e'] : ['-e']
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       break
     case 'xfce4-terminal':
     case 'mate-terminal':
       args = cwd ? [`--working-directory=${cwd}`, '-x'] : ['-x']
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       break
     case 'tilix':
       args = cwd ? [`--working-directory=${cwd}`, '-e'] : ['-e']
-      args.push(claudePath, ...claudeArgs)
+      args.push(rayuPath, ...rayuArgs)
       break
     default:
       // xterm, x-terminal-emulator, $TERMINAL — no reliable cwd flag.
       // spawn({cwd}) sets the terminal's own cwd; most inherit.
-      args = ['-e', claudePath, ...claudeArgs]
+      args = ['-e', rayuPath, ...rayuArgs]
       spawnCwd = cwd
       break
   }
@@ -418,8 +418,8 @@ async function launchLinuxTerminal(
 
 async function launchWindowsTerminal(
   terminal: TerminalInfo,
-  claudePath: string,
-  claudeArgs: string[],
+  rayuPath: string,
+  rayuArgs: string[],
   cwd?: string,
 ): Promise<boolean> {
   const args: string[] = []
@@ -428,7 +428,7 @@ async function launchWindowsTerminal(
     // --- PURE ARGV PATH ---
     case 'Windows Terminal':
       if (cwd) args.push('-d', cwd)
-      args.push('--', claudePath, ...claudeArgs)
+      args.push('--', rayuPath, ...rayuArgs)
       break
 
     // --- SHELL-STRING PATHS ---
@@ -445,7 +445,7 @@ async function launchWindowsTerminal(
       args.push(
         '-NoExit',
         '-Command',
-        `${cdCmd}& ${psQuote(claudePath)} ${claudeArgs.map(psQuote).join(' ')}`,
+        `${cdCmd}& ${psQuote(rayuPath)} ${rayuArgs.map(psQuote).join(' ')}`,
       )
       break
     }
@@ -454,7 +454,7 @@ async function launchWindowsTerminal(
       const cdCmd = cwd ? `cd /d ${cmdQuote(cwd)} && ` : ''
       args.push(
         '/k',
-        `${cdCmd}${cmdQuote(claudePath)} ${claudeArgs.map(a => cmdQuote(a)).join(' ')}`,
+        `${cdCmd}${cmdQuote(rayuPath)} ${rayuArgs.map(a => cmdQuote(a)).join(' ')}`,
       )
       break
     }
@@ -503,12 +503,12 @@ function spawnDetached(
  * AppleScript paths (iTerm, Terminal.app) which have no argv interface.
  */
 function buildShellCommand(
-  claudePath: string,
-  claudeArgs: string[],
+  rayuPath: string,
+  rayuArgs: string[],
   cwd?: string,
 ): string {
   const cdPrefix = cwd ? `cd ${shellQuote(cwd)} && ` : ''
-  return `${cdPrefix}${[claudePath, ...claudeArgs].map(shellQuote).join(' ')}`
+  return `${cdPrefix}${[rayuPath, ...rayuArgs].map(shellQuote).join(' ')}`
 }
 
 /**

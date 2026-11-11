@@ -20,7 +20,7 @@ import { fetchEnvironments } from '../../teleport/environments.js'
  * Extracted from getTeleportErrors() in TeleportError.tsx
  * @returns true if login is required, false otherwise
  */
-export async function checkNeedsClaudeAiLogin(): Promise<boolean> {
+export async function checkNeedsRayuAiLogin(): Promise<boolean> {
   if (!isClaudeAISubscriber()) {
     return false
   }

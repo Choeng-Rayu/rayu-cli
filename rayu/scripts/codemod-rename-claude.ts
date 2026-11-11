@@ -176,9 +176,14 @@ function buildLanguageService(): {
     },
   )
   if (!parsed) throw new Error('failed to parse tsconfig.typecheck.json')
+  // tsconfig includes test/**/*.ts but NOT .tsx — yet bun test runs those too.
+  // Add them to the rename program so renames propagate into .tsx tests.
+  // (The typecheck gate keeps using the tsconfig program, unchanged.)
+  const tsxTests = ts.sys.readDirectory(resolve(ROOT, 'test'), ['.tsx'], ['node_modules'])
+  const fileNames = [...new Set([...parsed.fileNames, ...tsxTests])]
   const versions = new Map<string, number>()
   const host: ts.LanguageServiceHost = {
-    getScriptFileNames: () => parsed.fileNames,
+    getScriptFileNames: () => fileNames,
     getScriptVersion: f => String(versions.get(f) ?? 0),
     getScriptSnapshot: f => {
       const text = ts.sys.readFile(f)
@@ -373,10 +378,43 @@ function discover(ov: Overrides): {
 
     // Collision: an existing distinct binding already holds the new name.
     if (c.declNode) {
-      const scopeSymbols = checker.getSymbolsInScope(
-        c.declNode,
-        ts.SymbolFlags.Value | ts.SymbolFlags.Type | ts.SymbolFlags.Namespace,
-      )
+      // Object-literal / type-literal / interface / class members are not scope
+      // bindings, so getSymbolsInScope misses them — check siblings directly.
+      const memberContainer = c.declNode.parent
+      if (
+        memberContainer &&
+        (ts.isObjectLiteralExpression(memberContainer) ||
+          ts.isTypeLiteralNode(memberContainer) ||
+          ts.isInterfaceDeclaration(memberContainer) ||
+          ts.isClassDeclaration(memberContainer))
+      ) {
+        const siblings =
+          ts.isObjectLiteralExpression(memberContainer)
+            ? memberContainer.properties
+            : memberContainer.members
+        for (const m of siblings ?? []) {
+          if (m === c.declNode || !m.name) continue
+          if (ts.isIdentifier(m.name) && m.name.text === c.newName) {
+            c.status = 'refused'
+            c.reason = `sibling member already named '${c.newName}' (${c.declFile}:${c.declLine})`
+            break
+          }
+        }
+      }
+      // Property names (object/type/interface/class members) cannot collide
+      // with enclosing-scope variables — only with siblings (checked above).
+      const isPropertyDecl =
+        ts.isPropertyAssignment(c.declNode) ||
+        ts.isPropertySignature(c.declNode) ||
+        ts.isPropertyDeclaration(c.declNode) ||
+        ts.isShorthandPropertyAssignment(c.declNode) ||
+        ts.isEnumMember(c.declNode)
+      const scopeSymbols = isPropertyDecl
+        ? []
+        : checker.getSymbolsInScope(
+            c.declNode,
+            ts.SymbolFlags.Value | ts.SymbolFlags.Type | ts.SymbolFlags.Namespace,
+          )
       for (const s of scopeSymbols) {
         if (s.name !== c.newName || s === c.symbol) continue
         const resolved = s.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(s) : s
@@ -519,47 +557,71 @@ function main(): void {
     process.exit(1)
   }
 
-  const perFile = new Map<string, Edit[]>()
+  const perFile = new Map<string, Map<string, { edit: Edit; oldName: string; newName: string }[]>>()
   let editCount = 0
   for (const c of selected) {
     for (const [file, edits] of c.edits) {
-      const list = perFile.get(file) ?? []
-      list.push(...edits)
-      perFile.set(file, list)
+      let spans = perFile.get(file)
+      if (!spans) {
+        spans = new Map()
+        perFile.set(file, spans)
+      }
+      for (const e of edits) {
+        const key = `${e.start}:${e.end}`
+        const list = spans.get(key) ?? []
+        list.push({ edit: e, oldName: c.oldName, newName: c.newName })
+        spans.set(key, list)
+      }
     }
   }
-  // Dedupe identical spans (a shorthand property and its variable can produce
-  // the same rename group), then guard against real overlaps: two different
-  // edits on one span, or partial overlaps, mean the plan is inconsistent.
-  for (const [file, edits] of perFile) {
-    const seen = new Map<string, Edit>()
-    for (const e of edits) {
-      const key = `${e.start}:${e.end}`
-      const prev = seen.get(key)
-      if (prev) {
-        if (prev.text !== e.text) {
-          console.error(`✗ conflicting edits on the same span in ${rel(file)} at ${e.start} ('${prev.text}' vs '${e.text}') — aborting, nothing written`)
+  // Resolve each span. A shorthand property and its variable (or a destructured
+  // key and its local) can both target the same identifier:
+  //   - identical edits → dedupe;
+  //   - prefix/suffix variants of ONE old→new pair ('old: new' / 'new: old') →
+  //     key AND value are both being renamed, so the plain new name is correct;
+  //   - anything else → real conflict, abort without writing.
+  const resolvedFiles = new Map<string, Edit[]>()
+  for (const [file, spans] of perFile) {
+    const out: Edit[] = []
+    for (const [key, entries] of spans) {
+      const texts = new Set(entries.map(e => e.edit.text))
+      let edit: Edit
+      if (texts.size === 1) {
+        edit = entries[0].edit
+      } else {
+        const olds = new Set(entries.map(e => e.oldName))
+        const news = new Set(entries.map(e => e.newName))
+        const collapsible =
+          olds.size === 1 &&
+          news.size === 1 &&
+          [...texts].every(t => {
+            const o = [...olds][0]
+            const n = [...news][0]
+            return t === `${o}: ${n}` || t === `${n}: ${o}`
+          })
+        if (!collapsible) {
+          console.error(`✗ conflicting edits on the same span in ${rel(file)} at ${key} (${[...texts].map(t => `'${t}'`).join(' vs ')}) — aborting, nothing written`)
           process.exit(1)
         }
-        continue
+        const { start, end } = entries[0].edit
+        edit = { start, end, text: [...news][0] }
       }
-      seen.set(key, e)
+      out.push(edit)
     }
-    const deduped = [...seen.values()]
-    const sorted = [...deduped].sort((a, b) => a.start - b.start)
+    const sorted = out.sort((a, b) => a.start - b.start)
     for (let i = 1; i < sorted.length; i++) {
       if (sorted[i].start < sorted[i - 1].end) {
         console.error(`✗ overlapping edits in ${rel(file)} at ${sorted[i].start} — aborting, nothing written`)
         process.exit(1)
       }
     }
-    perFile.set(file, deduped)
-    editCount += deduped.length
+    resolvedFiles.set(file, sorted)
+    editCount += sorted.length
   }
-  for (const [file, edits] of perFile) {
+  for (const [file, edits] of resolvedFiles) {
     writeFileSync(file, applyEdits(readFileSync(file, 'utf8'), edits))
   }
-  console.log(`\n✓ applied ${selected.length} symbol(s), ${editCount} edit(s) across ${perFile.size} file(s)`)
+  console.log(`\n✓ applied ${selected.length} symbol(s), ${editCount} edit(s) across ${resolvedFiles.size} file(s)`)
   process.exit(0)
 }
 

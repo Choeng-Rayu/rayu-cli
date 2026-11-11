@@ -1359,7 +1359,7 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
 
   // Check if tmux prefix conflicts with Claude keybindings
   // Claude binds: ctrl+b (task:background), ctrl+c, ctrl+d, ctrl+t, ctrl+o, ctrl+r, ctrl+s, ctrl+g, ctrl+e
-  const claudeBindings = [
+  const rayuBindings = [
     'C-b',
     'C-c',
     'C-d',
@@ -1370,7 +1370,7 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
     'C-g',
     'C-e',
   ]
-  const prefixConflicts = claudeBindings.includes(tmuxPrefix)
+  const prefixConflicts = rayuBindings.includes(tmuxPrefix)
 
   // Set env vars for the inner Claude to display tmux info in welcome message
   const tmuxEnv = {
@@ -1412,8 +1412,8 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
 
   // For ants in claude-cli-internal, set up dev panes (watch + start)
   const isAnt = process.env.USER_TYPE === 'ant'
-  const isClaudeCliInternal = repoName === 'claude-cli-internal'
-  const shouldSetupDevPanes = isAnt && isClaudeCliInternal && !sessionExists
+  const isRayuCliInternal = repoName === 'claude-cli-internal'
+  const shouldSetupDevPanes = isAnt && isRayuCliInternal && !sessionExists
 
   if (shouldSetupDevPanes) {
     // Create detached session with Claude in first pane

@@ -17,7 +17,7 @@ import { getSessionEnvironmentScript } from '../sessionEnvironment.js'
 import { getSessionEnvVars } from '../sessionEnvVars.js'
 import {
   ensureSocketInitialized,
-  getClaudeTmuxEnv,
+  getRayuTmuxEnv,
   hasTmuxToolBeenUsed,
 } from '../tmuxSocket.js'
 import { windowsPathToPosixPath } from '../windowsPaths.js'
@@ -223,13 +223,13 @@ export async function createBashShellProvider(
       ) {
         await ensureSocketInitialized()
       }
-      const claudeTmuxEnv = getClaudeTmuxEnv()
+      const rayuTmuxEnv = getRayuTmuxEnv()
       const env: Record<string, string> = {}
       // CRITICAL: Override TMUX to isolate ALL tmux commands to Claude's socket.
       // This is NOT the user's TMUX value - it points to Claude's isolated socket.
       // When null (before socket initializes), user's TMUX is preserved.
-      if (claudeTmuxEnv) {
-        env.TMUX = claudeTmuxEnv
+      if (rayuTmuxEnv) {
+        env.TMUX = rayuTmuxEnv
       }
       if (currentSandboxTmpDir) {
         let posixTmpDir = currentSandboxTmpDir

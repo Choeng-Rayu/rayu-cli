@@ -8,7 +8,7 @@ import { usesTranslatedFormat } from './model/providerCapabilities.js'
 import { resolveAntModel } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
-  isClaude46Plus,
+  isAnthropic46Plus,
   isOpus46,
   normalizeModelNotation,
 } from './model/modelNotation.js'
@@ -51,7 +51,7 @@ export function modelSupportsEffort(model: string): boolean {
     return true
   }
   // Supported by Claude opus/sonnet 4.6 and newer, in either notation.
-  if (isClaude46Plus(m)) {
+  if (isAnthropic46Plus(m)) {
     return true
   }
   // Exclude any other known legacy models (haiku, older opus/sonnet variants)

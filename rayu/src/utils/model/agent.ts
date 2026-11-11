@@ -1,6 +1,6 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
-import { MODEL_ALIASES, isClaudeModelOrAlias } from './aliases.js'
+import { MODEL_ALIASES, isAnthropicModelOrAlias } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import {
@@ -24,7 +24,7 @@ function resolveOpenAICompatibleAgentModel(
   if (normalized === 'haiku' || normalized.startsWith('claude-3-5-haiku') || normalized.startsWith('claude-haiku')) {
     return getSmallFastModel()
   }
-  if (isClaudeModelOrAlias(trimmed)) {
+  if (isAnthropicModelOrAlias(trimmed)) {
     return parentModel
   }
   return trimmed

@@ -53,11 +53,11 @@ const WINDOWS_COMMAND_KEY = `${WINDOWS_REG_KEY}\\shell\\open\\command`
 
 const FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1000
 
-function linuxExecLine(claudePath: string): string {
-  return `Exec="${claudePath}" --handle-uri %u`
+function linuxExecLine(rayuPath: string): string {
+  return `Exec="${rayuPath}" --handle-uri %u`
 }
-function windowsCommandValue(claudePath: string): string {
-  return `"${claudePath}" --handle-uri "%1"`
+function windowsCommandValue(rayuPath: string): string {
+  return `"${rayuPath}" --handle-uri "%1"`
 }
 
 /**
@@ -72,7 +72,7 @@ function windowsCommandValue(claudePath: string): string {
  * This approach avoids shipping a separate executable (which would need
  * to be signed and allowlisted by endpoint security tools like Santa).
  */
-async function registerMacos(claudePath: string): Promise<void> {
+async function registerMacos(rayuPath: string): Promise<void> {
   const contentsDir = path.join(MACOS_APP_DIR, 'Contents')
 
   // Remove any existing app bundle to start clean
@@ -125,7 +125,7 @@ async function registerMacos(claudePath: string): Promise<void> {
   // Written LAST among the throwing fs calls: isProtocolHandlerCurrent reads
   // this symlink, so it acts as the commit marker. If Info.plist write
   // failed above, no symlink → next session retries.
-  await fs.symlink(claudePath, MACOS_SYMLINK_PATH)
+  await fs.symlink(rayuPath, MACOS_SYMLINK_PATH)
 
   // Re-register the app with LaunchServices so macOS picks up the URL scheme.
   const lsregister =
@@ -141,13 +141,13 @@ async function registerMacos(claudePath: string): Promise<void> {
  * Register the protocol handler on Linux.
  * Creates a .desktop file and registers it with xdg-mime.
  */
-async function registerLinux(claudePath: string): Promise<void> {
+async function registerLinux(rayuPath: string): Promise<void> {
   await fs.mkdir(path.dirname(linuxDesktopPath()), { recursive: true })
 
   const desktopEntry = `[Desktop Entry]
 Name=${APP_NAME}
 Comment=Handle ${DEEP_LINK_PROTOCOL}:// deep links for RAYU
-${linuxExecLine(claudePath)}
+${linuxExecLine(rayuPath)}
 Type=Application
 NoDisplay=true
 MimeType=x-scheme-handler/${DEEP_LINK_PROTOCOL};
@@ -182,7 +182,7 @@ MimeType=x-scheme-handler/${DEEP_LINK_PROTOCOL};
 /**
  * Register the protocol handler on Windows via the registry.
  */
-async function registerWindows(claudePath: string): Promise<void> {
+async function registerWindows(rayuPath: string): Promise<void> {
   for (const args of [
     ['add', WINDOWS_REG_KEY, '/ve', '/d', `URL:${APP_NAME}`, '/f'],
     ['add', WINDOWS_REG_KEY, '/v', 'URL Protocol', '/d', '', '/f'],
@@ -191,7 +191,7 @@ async function registerWindows(claudePath: string): Promise<void> {
       WINDOWS_COMMAND_KEY,
       '/ve',
       '/d',
-      windowsCommandValue(claudePath),
+      windowsCommandValue(rayuPath),
       '/f',
     ],
   ]) {
@@ -213,9 +213,9 @@ async function registerWindows(claudePath: string): Promise<void> {
  * After registration, clicking a `claude-cli://` link will invoke claude.
  */
 export async function registerProtocolHandler(
-  claudePath?: string,
+  rayuPath?: string,
 ): Promise<void> {
-  const resolved = claudePath ?? (await resolveClaudePath())
+  const resolved = rayuPath ?? (await resolveRayuPath())
 
   switch (process.platform) {
     case 'darwin':
@@ -238,7 +238,7 @@ export async function registerProtocolHandler(
  * auto-updates; falls back to process.execPath when the symlink is absent
  * (dev builds, non-native installs).
  */
-async function resolveClaudePath(): Promise<string> {
+async function resolveRayuPath(): Promise<string> {
   const binaryName = process.platform === 'win32' ? 'claude.exe' : 'claude'
   const stablePath = path.join(getUserBinDir(), binaryName)
   try {
@@ -261,17 +261,17 @@ async function resolveClaudePath(): Promise<string> {
  * Any read error (ENOENT, EACCES, reg nonzero) → false → re-register.
  */
 export async function isProtocolHandlerCurrent(
-  claudePath: string,
+  rayuPath: string,
 ): Promise<boolean> {
   try {
     switch (process.platform) {
       case 'darwin': {
         const target = await fs.readlink(MACOS_SYMLINK_PATH)
-        return target === claudePath
+        return target === rayuPath
       }
       case 'linux': {
         const content = await fs.readFile(linuxDesktopPath(), 'utf8')
-        return content.includes(linuxExecLine(claudePath))
+        return content.includes(linuxExecLine(rayuPath))
       }
       case 'win32': {
         const { stdout, code } = await execFileNoThrow(
@@ -279,7 +279,7 @@ export async function isProtocolHandlerCurrent(
           ['query', WINDOWS_COMMAND_KEY, '/ve'],
           { useCwd: false },
         )
-        return code === 0 && stdout.includes(windowsCommandValue(claudePath))
+        return code === 0 && stdout.includes(windowsCommandValue(rayuPath))
       }
       default:
         return false
@@ -303,8 +303,8 @@ export async function ensureDeepLinkProtocolRegistered(): Promise<void> {
     return
   }
 
-  const claudePath = await resolveClaudePath()
-  if (await isProtocolHandlerCurrent(claudePath)) {
+  const rayuPath = await resolveRayuPath()
+  if (await isProtocolHandlerCurrent(rayuPath)) {
     return
   }
 
@@ -326,7 +326,7 @@ export async function ensureDeepLinkProtocolRegistered(): Promise<void> {
   }
 
   try {
-    await registerProtocolHandler(claudePath)
+    await registerProtocolHandler(rayuPath)
     logEvent('tengu_deep_link_registered', { success: true })
     logForDebugging('Auto-registered claude-cli:// deep link protocol handler')
     await fs.rm(failureMarkerPath, { force: true }).catch(() => {})

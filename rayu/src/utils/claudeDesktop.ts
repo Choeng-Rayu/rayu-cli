@@ -10,7 +10,7 @@ import { safeParseJSON } from './json.js'
 import { logError } from './log.js'
 import { getPlatform, SUPPORTED_PLATFORMS } from './platform.js'
 
-export async function getClaudeDesktopConfigPath(): Promise<string> {
+export async function getRayuDesktopConfigPath(): Promise<string> {
   const platform = getPlatform()
 
   if (!SUPPORTED_PLATFORMS.includes(platform)) {
@@ -95,7 +95,7 @@ export async function getClaudeDesktopConfigPath(): Promise<string> {
   )
 }
 
-export async function readClaudeDesktopMcpServers(): Promise<
+export async function readRayuDesktopMcpServers(): Promise<
   Record<string, McpServerConfig>
 > {
   if (!SUPPORTED_PLATFORMS.includes(getPlatform())) {
@@ -104,7 +104,7 @@ export async function readClaudeDesktopMcpServers(): Promise<
     )
   }
   try {
-    const configPath = await getClaudeDesktopConfigPath()
+    const configPath = await getRayuDesktopConfigPath()
 
     let configContent: string
     try {

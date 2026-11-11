@@ -49,7 +49,7 @@ import * as lockfile from '../lockfile.js'
 import { logError } from '../log.js'
 import { gt, gte } from '../semver.js'
 import {
-  filterClaudeAliases,
+  filterRayuAliases,
   getShellConfigPaths,
   readFileLines,
   writeFileLines,
@@ -149,7 +149,7 @@ function getBaseDirectories() {
   }
 }
 
-async function isPossibleClaudeBinary(filePath: string): Promise<boolean> {
+async function isPossibleRayuBinary(filePath: string): Promise<boolean> {
   try {
     const stats = await stat(filePath)
     // before download, the version lock file (located at the same filePath) will be size 0
@@ -488,7 +488,7 @@ async function performVersionUpdate(
   await updateSymlink(executablePath, installPath)
 
   // Verify the executable was actually created/updated
-  if (!(await isPossibleClaudeBinary(executablePath))) {
+  if (!(await isPossibleRayuBinary(executablePath))) {
     let installPathExists = false
     try {
       await stat(installPath)
@@ -507,7 +507,7 @@ async function performVersionUpdate(
 
 async function versionIsAvailable(version: string): Promise<boolean> {
   const { installPath } = await getVersionPaths(version)
-  return isPossibleClaudeBinary(installPath)
+  return isPossibleRayuBinary(installPath)
 }
 
 async function updateLatest(
@@ -557,7 +557,7 @@ async function updateLatest(
     !forceReinstall &&
     version === MACRO.VERSION &&
     (await versionIsAvailable(version)) &&
-    (await isPossibleClaudeBinary(executablePath))
+    (await isPossibleRayuBinary(executablePath))
   ) {
     logForDebugging(`Found ${version} at ${executablePath}, skipping install`)
     logEvent('tengu_native_update_complete', {
@@ -872,7 +872,7 @@ export async function checkInstall(
   // with access() — that would be a TOCTOU between access and the stat.
   if (isWindows) {
     // On Windows it's a copied executable, not a symlink
-    if (!(await isPossibleClaudeBinary(dirs.executable))) {
+    if (!(await isPossibleRayuBinary(dirs.executable))) {
       messages.push({
         message: `installMethod is native, but claude command is missing or invalid at ${dirs.executable}`,
         userActionRequired: true,
@@ -883,7 +883,7 @@ export async function checkInstall(
     try {
       const target = await readlink(dirs.executable)
       const absoluteTarget = resolve(dirname(dirs.executable), target)
-      if (!(await isPossibleClaudeBinary(absoluteTarget))) {
+      if (!(await isPossibleRayuBinary(absoluteTarget))) {
         messages.push({
           message: `Claude symlink points to missing or invalid binary: ${target}`,
           userActionRequired: true,
@@ -899,7 +899,7 @@ export async function checkInstall(
         })
       } else {
         // EINVAL (not a symlink) or other — check as regular binary
-        if (!(await isPossibleClaudeBinary(dirs.executable))) {
+        if (!(await isPossibleRayuBinary(dirs.executable))) {
           messages.push({
             message: `${dirs.executable} exists but is not a valid Claude binary`,
             userActionRequired: true,
@@ -1039,7 +1039,7 @@ async function getVersionFromSymlink(
   try {
     const target = await readlink(symlinkPath)
     const absoluteTarget = resolve(dirname(symlinkPath), target)
-    if (await isPossibleClaudeBinary(absoluteTarget)) {
+    if (await isPossibleRayuBinary(absoluteTarget)) {
       return absoluteTarget
     }
   } catch {
@@ -1516,7 +1516,7 @@ export async function cleanupShellAliases(): Promise<SetupMessage[]> {
       const lines = await readFileLines(configFile)
       if (!lines) continue
 
-      const { filtered, hadAlias } = filterClaudeAliases(lines)
+      const { filtered, hadAlias } = filterRayuAliases(lines)
 
       if (hadAlias) {
         await writeFileLines(configFile, filtered)

@@ -24,8 +24,8 @@ describe('PromptInput notifications auth status', () => {
   test('missing Claude auth is shown when no Rayu provider can handle auth', async () => {
     const cfg = await import('../src/utils/rayuConfig.ts')
     cfg._resetRayuConfigCache()
-    const { shouldShowClaudeAuthError } = await import('../src/components/PromptInput/Notifications.tsx')
-    expect(shouldShowClaudeAuthError('missing')).toBe(true)
+    const { shouldShowRayuAuthError } = await import('../src/components/PromptInput/Notifications.tsx')
+    expect(shouldShowRayuAuthError('missing')).toBe(true)
   })
 
   test('configured OpenAI-compatible providers suppress Claude login as primary status', async () => {
@@ -38,8 +38,8 @@ describe('PromptInput notifications auth status', () => {
       baseURL: 'https://integrate.api.nvidia.com/v1',
       defaultModel: 'stepfun-ai/step-3.7-flash',
     })
-    const { shouldShowClaudeAuthError } = await import('../src/components/PromptInput/Notifications.tsx')
-    expect(shouldShowClaudeAuthError('missing')).toBe(false)
-    expect(shouldShowClaudeAuthError('invalid')).toBe(false)
+    const { shouldShowRayuAuthError } = await import('../src/components/PromptInput/Notifications.tsx')
+    expect(shouldShowRayuAuthError('missing')).toBe(false)
+    expect(shouldShowRayuAuthError('invalid')).toBe(false)
   })
 })

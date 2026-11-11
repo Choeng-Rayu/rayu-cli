@@ -31,7 +31,7 @@ import {
 } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
-import { type ModelAlias, isModelAlias, isClaudeModelOrAlias } from './aliases.js'
+import { type ModelAlias, isModelAlias, isAnthropicModelOrAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
 
 export type ModelShortName = string
@@ -67,8 +67,8 @@ export function getSmallFastModel(): ModelName {
     
     // If the user set a custom non-Claude model via env, use it.
     if (process.env.ANTHROPIC_SMALL_FAST_MODEL) {
-      const isClaude = isClaudeModelOrAlias(process.env.ANTHROPIC_SMALL_FAST_MODEL)
-      if (!isClaude) {
+      const isRayu = isAnthropicModelOrAlias(process.env.ANTHROPIC_SMALL_FAST_MODEL)
+      if (!isRayu) {
         return process.env.ANTHROPIC_SMALL_FAST_MODEL
       }
     }
@@ -158,7 +158,7 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
 }
 
 export function isAnthropicOnlyModelSetting(model: string): boolean {
-  return isClaudeModelOrAlias(model) || resolveAntModel(model) !== undefined
+  return isAnthropicModelOrAlias(model) || resolveAntModel(model) !== undefined
 }
 
 /**
@@ -392,7 +392,7 @@ export function getCanonicalName(fullModelName: ModelName): ModelShortName {
 }
 
 // @[MODEL LAUNCH]: Update the default model description strings shown to users.
-export function getClaudeAiUserDefaultModelDescription(
+export function getSubscriptionUserDefaultModelDescription(
   fastMode = false,
 ): string {
   if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
@@ -701,7 +701,7 @@ export function modelDisplayString(model: ModelSetting): string {
     if (process.env.USER_TYPE === 'ant') {
       return `Default for Ants (${renderDefaultModelSetting(getDefaultMainLoopModelSetting())})`
     } else if (isClaudeAISubscriber()) {
-      return `Default (${getClaudeAiUserDefaultModelDescription()})`
+      return `Default (${getSubscriptionUserDefaultModelDescription()})`
     }
     return `Default (${getDefaultMainLoopModel()})`
   }

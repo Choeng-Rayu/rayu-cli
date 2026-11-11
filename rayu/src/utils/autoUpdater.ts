@@ -14,14 +14,14 @@ import {
   getGitHubDistTags,
   getLatestVersionFromGitHub,
 } from './githubReleases.js'
-import { ClaudeError } from './errors.js'
+import { RayuError } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { logError } from './log.js'
 import { gte, lt } from './semver.js'
 import { getInitialSettings } from './settings/settings.js'
 import {
-  filterClaudeAliases,
+  filterRayuAliases,
   getShellConfigPaths,
   readFileLines,
   writeFileLines,
@@ -37,7 +37,7 @@ import { buildManagedInstallEnv } from './npmExec.js'
 const GITHUB_RELEASES_DOC =
   'Native/standalone version checks resolve via GitHub Releases (see githubReleases.ts). npm-based updates use MACRO.PACKAGE_URL.'
 
-class AutoUpdaterError extends ClaudeError {}
+class AutoUpdaterError extends RayuError {}
 
 export type InstallStatus =
   | 'success'
@@ -500,7 +500,7 @@ export async function installGlobalPackage(
   }
 
   try {
-    await removeClaudeAliasesFromShellConfigs()
+    await removeRayuAliasesFromShellConfigs()
     // Check if we're using npm from Windows path in WSL
     if (!env.isRunningWithBun() && env.isNpmFromWindowsPath()) {
       logError(new Error('Windows NPM detected in WSL environment'))
@@ -581,7 +581,7 @@ To fix this issue:
  * Remove claude aliases from shell configuration files
  * This helps clean up old installation methods when switching to native or npm global
  */
-async function removeClaudeAliasesFromShellConfigs(): Promise<void> {
+async function removeRayuAliasesFromShellConfigs(): Promise<void> {
   const configMap = getShellConfigPaths()
 
   // Process each shell config file
@@ -590,7 +590,7 @@ async function removeClaudeAliasesFromShellConfigs(): Promise<void> {
       const lines = await readFileLines(configFile)
       if (!lines) continue
 
-      const { filtered, hadAlias } = filterClaudeAliases(lines)
+      const { filtered, hadAlias } = filterRayuAliases(lines)
 
       if (hadAlias) {
         await writeFileLines(configFile, filtered)

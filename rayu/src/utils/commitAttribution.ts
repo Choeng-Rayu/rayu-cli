@@ -195,8 +195,8 @@ export type AttributionState = {
  * Summary of Claude's contribution for a commit.
  */
 export type AttributionSummary = {
-  claudePercent: number
-  claudeChars: number
+  rayuPercent: number
+  rayuChars: number
   humanChars: number
   surfaces: string[]
 }
@@ -205,7 +205,7 @@ export type AttributionSummary = {
  * Per-file attribution details for git notes.
  */
 export type FileAttribution = {
-  claudeChars: number
+  rayuChars: number
   humanChars: number
   percent: number
   surface: string
@@ -218,7 +218,7 @@ export type AttributionData = {
   version: 1
   summary: AttributionSummary
   files: Record<string, FileAttribution>
-  surfaceBreakdown: Record<string, { claudeChars: number; percent: number }>
+  surfaceBreakdown: Record<string, { rayuChars: number; percent: number }>
   excludedGenerated: string[]
   sessions: string[]
 }
@@ -557,7 +557,7 @@ export async function calculateCommitAttribution(
   const surfaces = new Set<string>()
   const surfaceCounts: Record<string, number> = {}
 
-  let totalClaudeChars = 0
+  let totalRayuChars = 0
   let totalHumanChars = 0
 
   // Merge file states from all sessions
@@ -628,7 +628,7 @@ export async function calculateCommitAttribution(
       // Get the surface for this file
       const fileSurface = states[0]!.surface
 
-      let claudeChars = 0
+      let rayuChars = 0
       let humanChars = 0
 
       // Check if file was deleted
@@ -638,7 +638,7 @@ export async function calculateCommitAttribution(
         // File was deleted
         if (fileState) {
           // Claude deleted this file (tracked deletion)
-          claudeChars = fileState.claudeContribution
+          rayuChars = fileState.claudeContribution
           humanChars = 0
         } else {
           // Human deleted this file (untracked deletion)
@@ -655,7 +655,7 @@ export async function calculateCommitAttribution(
 
           if (fileState) {
             // We have tracked modifications for this file
-            claudeChars = fileState.claudeContribution
+            rayuChars = fileState.claudeContribution
             humanChars = 0
           } else if (baseline) {
             // File was modified but not tracked - human modification
@@ -672,16 +672,16 @@ export async function calculateCommitAttribution(
       }
 
       // Ensure non-negative values
-      claudeChars = Math.max(0, claudeChars)
+      rayuChars = Math.max(0, rayuChars)
       humanChars = Math.max(0, humanChars)
 
-      const total = claudeChars + humanChars
-      const percent = total > 0 ? Math.round((claudeChars / total) * 100) : 0
+      const total = rayuChars + humanChars
+      const percent = total > 0 ? Math.round((rayuChars / total) * 100) : 0
 
       return {
         type: 'file' as const,
         file,
-        claudeChars,
+        rayuChars,
         humanChars,
         percent,
         surface: fileSurface,
@@ -699,39 +699,39 @@ export async function calculateCommitAttribution(
     }
 
     files[result.file] = {
-      claudeChars: result.claudeChars,
+      rayuChars: result.rayuChars,
       humanChars: result.humanChars,
       percent: result.percent,
       surface: result.surface,
     }
 
-    totalClaudeChars += result.claudeChars
+    totalRayuChars += result.rayuChars
     totalHumanChars += result.humanChars
 
     surfaceCounts[result.surface] =
-      (surfaceCounts[result.surface] ?? 0) + result.claudeChars
+      (surfaceCounts[result.surface] ?? 0) + result.rayuChars
   }
 
-  const totalChars = totalClaudeChars + totalHumanChars
-  const claudePercent =
-    totalChars > 0 ? Math.round((totalClaudeChars / totalChars) * 100) : 0
+  const totalChars = totalRayuChars + totalHumanChars
+  const rayuPercent =
+    totalChars > 0 ? Math.round((totalRayuChars / totalChars) * 100) : 0
 
   // Calculate surface breakdown (percentage of total content per surface)
   const surfaceBreakdown: Record<
     string,
-    { claudeChars: number; percent: number }
+    { rayuChars: number; percent: number }
   > = {}
   for (const [surface, chars] of Object.entries(surfaceCounts)) {
     // Calculate what percentage of TOTAL content this surface contributed
     const percent = totalChars > 0 ? Math.round((chars / totalChars) * 100) : 0
-    surfaceBreakdown[surface] = { claudeChars: chars, percent }
+    surfaceBreakdown[surface] = { rayuChars: chars, percent }
   }
 
   return {
     version: 1,
     summary: {
-      claudePercent,
-      claudeChars: totalClaudeChars,
+      rayuPercent,
+      rayuChars: totalRayuChars,
       humanChars: totalHumanChars,
       surfaces: Array.from(surfaces),
     },

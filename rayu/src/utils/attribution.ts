@@ -342,10 +342,10 @@ export async function getEnhancedPRAttribution(
       isInternalModelRepo(),
     ])
 
-  const claudePercent = attributionData?.summary.claudePercent ?? 0
+  const rayuPercent = attributionData?.summary.rayuPercent ?? 0
 
   logForDebugging(
-    `PR Attribution: claudePercent: ${claudePercent}, promptCount: ${promptCount}, memoryAccessCount: ${memoryAccessCount}`,
+    `PR Attribution: claudePercent: ${rayuPercent}, promptCount: ${promptCount}, memoryAccessCount: ${memoryAccessCount}`,
   )
 
   // Get short model name, sanitized for non-internal repos
@@ -355,7 +355,7 @@ export async function getEnhancedPRAttribution(
     : sanitizeModelName(rawModelName)
 
   // If no attribution data, return default
-  if (claudePercent === 0 && promptCount === 0 && memoryAccessCount === 0) {
+  if (rayuPercent === 0 && promptCount === 0 && memoryAccessCount === 0) {
     logForDebugging('PR Attribution: returning default (no data)')
     return defaultAttribution
   }
@@ -365,7 +365,7 @@ export async function getEnhancedPRAttribution(
     memoryAccessCount > 0
       ? `, ${memoryAccessCount} ${memoryAccessCount === 1 ? 'memory' : 'memories'} recalled`
       : ''
-  const summary = `🤖 Generated with [RAYU](${PRODUCT_URL}) (${claudePercent}% ${promptCount}-shotted by ${shortModelName}${memSuffix})`
+  const summary = `🤖 Generated with [RAYU](${PRODUCT_URL}) (${rayuPercent}% ${promptCount}-shotted by ${shortModelName}${memSuffix})`
 
   // Append trailer lines for squash-merge survival. Only for allowlisted repos
   // (INTERNAL_MODEL_REPOS) and only in builds with COMMIT_ATTRIBUTION enabled —

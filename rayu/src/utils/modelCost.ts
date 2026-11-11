@@ -4,17 +4,17 @@ import { logEvent } from 'src/services/analytics/index.js'
 import { setHasUnknownModelCost } from '../bootstrap/state.js'
 import { isFastModeEnabled } from './fastMode.js'
 import {
-  CLAUDE_3_5_HAIKU_CONFIG,
-  CLAUDE_3_5_V2_SONNET_CONFIG,
-  CLAUDE_3_7_SONNET_CONFIG,
-  CLAUDE_HAIKU_4_5_CONFIG,
-  CLAUDE_OPUS_4_1_CONFIG,
-  CLAUDE_OPUS_4_5_CONFIG,
-  CLAUDE_OPUS_4_6_CONFIG,
-  CLAUDE_OPUS_4_CONFIG,
-  CLAUDE_SONNET_4_5_CONFIG,
-  CLAUDE_SONNET_4_6_CONFIG,
-  CLAUDE_SONNET_4_CONFIG,
+  ANTHROPIC_3_5_HAIKU_CONFIG,
+  ANTHROPIC_3_5_V2_SONNET_CONFIG,
+  ANTHROPIC_3_7_SONNET_CONFIG,
+  ANTHROPIC_HAIKU_4_5_CONFIG,
+  ANTHROPIC_OPUS_4_1_CONFIG,
+  ANTHROPIC_OPUS_4_5_CONFIG,
+  ANTHROPIC_OPUS_4_6_CONFIG,
+  ANTHROPIC_OPUS_4_CONFIG,
+  ANTHROPIC_SONNET_4_5_CONFIG,
+  ANTHROPIC_SONNET_4_6_CONFIG,
+  ANTHROPIC_SONNET_4_CONFIG,
 } from './model/configs.js'
 import {
   anthropicNameToCanonical,
@@ -110,26 +110,26 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
 // Costs from https://rayucode.com/docs
 // Web search cost: $10 per 1000 requests = $0.01 per request
 export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
-  [anthropicNameToCanonical(CLAUDE_3_5_HAIKU_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_3_5_HAIKU_CONFIG.anthropic)]:
     COST_HAIKU_35,
-  [anthropicNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_HAIKU_4_5_CONFIG.anthropic)]:
     COST_HAIKU_45,
-  [anthropicNameToCanonical(CLAUDE_3_5_V2_SONNET_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_3_5_V2_SONNET_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [anthropicNameToCanonical(CLAUDE_3_7_SONNET_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_3_7_SONNET_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [anthropicNameToCanonical(CLAUDE_SONNET_4_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_SONNET_4_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [anthropicNameToCanonical(CLAUDE_SONNET_4_5_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_SONNET_4_5_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [anthropicNameToCanonical(CLAUDE_SONNET_4_6_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_SONNET_4_6_CONFIG.anthropic)]:
     COST_TIER_3_15,
-  [anthropicNameToCanonical(CLAUDE_OPUS_4_CONFIG.anthropic)]: COST_TIER_15_75,
-  [anthropicNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_OPUS_4_CONFIG.anthropic)]: COST_TIER_15_75,
+  [anthropicNameToCanonical(ANTHROPIC_OPUS_4_1_CONFIG.anthropic)]:
     COST_TIER_15_75,
-  [anthropicNameToCanonical(CLAUDE_OPUS_4_5_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_OPUS_4_5_CONFIG.anthropic)]:
     COST_TIER_5_25,
-  [anthropicNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.anthropic)]:
+  [anthropicNameToCanonical(ANTHROPIC_OPUS_4_6_CONFIG.anthropic)]:
     COST_TIER_5_25,
 }
 
@@ -154,7 +154,7 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
 
   // Check if this is an Opus 4.6 model with fast mode active.
   if (
-    shortName === anthropicNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.anthropic)
+    shortName === anthropicNameToCanonical(ANTHROPIC_OPUS_4_6_CONFIG.anthropic)
   ) {
     const isFastMode = usage.speed === 'fast'
     return getOpus46CostTier(isFastMode)

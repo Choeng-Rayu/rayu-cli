@@ -16,7 +16,7 @@ import type { LocalJSXCommandContext } from '../src/types/command.ts'
 const FIXED_COMMAND = '/opt/rayu/bin/rayu'
 
 let root: string
-let claudeDir: string
+let rayuDir: string
 let codexHome: string
 let projectDir: string
 const savedEnv: Record<string, string | undefined> = {}
@@ -40,14 +40,14 @@ async function run(args: string): Promise<string> {
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'rayu-plugin-cmd-'))
-  claudeDir = join(root, 'claude')
+  rayuDir = join(root, 'claude')
   codexHome = join(root, 'codex')
   projectDir = join(root, 'project')
-  await mkdir(claudeDir, { recursive: true })
+  await mkdir(rayuDir, { recursive: true })
   await mkdir(codexHome, { recursive: true })
   await mkdir(projectDir, { recursive: true })
 
-  setEnv('CLAUDE_CONFIG_DIR', claudeDir)
+  setEnv('CLAUDE_CONFIG_DIR', rayuDir)
   setEnv('CODEX_HOME', codexHome)
   setEnv('RAYU_CONFIG_DIR', join(root, 'rayu'))
   setEnv('RAYU_MCP_SERVER_COMMAND', FIXED_COMMAND)
@@ -66,7 +66,7 @@ describe('/rayu-plugin argument handling', () => {
     const output = await run('')
     expect(output).toContain('MCP server command:')
     // Nothing was written to either host.
-    expect(existsSync(join(claudeDir, '.claude.json'))).toBe(false)
+    expect(existsSync(join(rayuDir, '.claude.json'))).toBe(false)
     expect(existsSync(join(codexHome, 'config.toml'))).toBe(false)
   })
 
@@ -74,13 +74,13 @@ describe('/rayu-plugin argument handling', () => {
     const output = await run('install --wat')
     expect(output).toContain('Unknown option: --wat')
     expect(output).toContain('Usage: /rayu-plugin')
-    expect(existsSync(join(claudeDir, '.claude.json'))).toBe(false)
+    expect(existsSync(join(rayuDir, '.claude.json'))).toBe(false)
   })
 
   test('rejects an unknown host with usage', async () => {
     const output = await run('install cursor')
     expect(output).toContain('Unknown argument: cursor')
-    expect(existsSync(join(claudeDir, '.claude.json'))).toBe(false)
+    expect(existsSync(join(rayuDir, '.claude.json'))).toBe(false)
   })
 })
 
@@ -92,10 +92,10 @@ describe('/rayu-plugin install', () => {
     expect(output).toContain('Installed into Codex')
     expect(output).toContain('Restart the host agent')
 
-    const claudeDoc = JSON.parse(
-      await readFile(join(claudeDir, '.claude.json'), 'utf8'),
+    const rayuDoc = JSON.parse(
+      await readFile(join(rayuDir, '.claude.json'), 'utf8'),
     ) as { mcpServers: Record<string, { command: string }> }
-    expect(claudeDoc.mcpServers.rayu?.command).toBe(FIXED_COMMAND)
+    expect(rayuDoc.mcpServers.rayu?.command).toBe(FIXED_COMMAND)
 
     const codexToml = await readFile(join(codexHome, 'config.toml'), 'utf8')
     expect(codexToml).toContain('[mcp_servers.rayu]')
@@ -106,12 +106,12 @@ describe('/rayu-plugin install', () => {
     expect(output).toContain('Codex')
     expect(output).not.toContain('Claude Code')
     expect(existsSync(join(codexHome, 'config.toml'))).toBe(true)
-    expect(existsSync(join(claudeDir, '.claude.json'))).toBe(false)
+    expect(existsSync(join(rayuDir, '.claude.json'))).toBe(false)
   })
 
   test('accepts the `claude` alias', async () => {
     await run('install claude')
-    expect(existsSync(join(claudeDir, '.claude.json'))).toBe(true)
+    expect(existsSync(join(rayuDir, '.claude.json'))).toBe(true)
     expect(existsSync(join(codexHome, 'config.toml'))).toBe(false)
   })
 
@@ -135,18 +135,18 @@ describe('/rayu-plugin install', () => {
     expect(output).toContain('Codex has no project-scope MCP file')
     expect(existsSync(join(projectDir, '.mcp.json'))).toBe(true)
     // User-scope config was left alone.
-    expect(existsSync(join(claudeDir, '.claude.json'))).toBe(false)
+    expect(existsSync(join(rayuDir, '.claude.json'))).toBe(false)
   })
 
   test('--no-skills registers the server without skill files', async () => {
     await run('install --no-skills')
-    expect(existsSync(join(claudeDir, '.claude.json'))).toBe(true)
-    expect(existsSync(join(claudeDir, 'skills'))).toBe(false)
+    expect(existsSync(join(rayuDir, '.claude.json'))).toBe(true)
+    expect(existsSync(join(rayuDir, 'skills'))).toBe(false)
     expect(existsSync(join(codexHome, 'skills'))).toBe(false)
   })
 
   test('reports a per-host failure without aborting the other host', async () => {
-    await writeFile(join(claudeDir, '.claude.json'), 'not json {{{')
+    await writeFile(join(rayuDir, '.claude.json'), 'not json {{{')
     const output = await run('install')
 
     expect(output).toContain('✗ Claude Code')
@@ -194,10 +194,10 @@ describe('/rayu-plugin uninstall', () => {
     expect(output).toContain('Removed from Codex')
     expect(output).toContain('skills removed: rayu, rayu-media, rayu-telegram')
 
-    const claudeDoc = JSON.parse(
-      await readFile(join(claudeDir, '.claude.json'), 'utf8'),
+    const rayuDoc = JSON.parse(
+      await readFile(join(rayuDir, '.claude.json'), 'utf8'),
     ) as { mcpServers: Record<string, unknown> }
-    expect(claudeDoc.mcpServers.rayu).toBeUndefined()
+    expect(rayuDoc.mcpServers.rayu).toBeUndefined()
     expect(await readFile(join(codexHome, 'config.toml'), 'utf8')).not.toContain(
       'mcp_servers.rayu',
     )

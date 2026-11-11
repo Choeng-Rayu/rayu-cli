@@ -197,12 +197,12 @@ describe('format + client routing', () => {
     const { resolveWireFormat } = await import(
       '../src/services/api/providerRegistry.ts'
     )
-    for (const claude of [
+    for (const rayu of [
       'claude-sonnet-4-5',
       'my-claude-opus-deployment',
       'anthropic.claude-haiku-4-5',
     ]) {
-      expect<string>(resolveWireFormat(provider, claude)).toBe('anthropic-messages')
+      expect<string>(resolveWireFormat(provider, rayu)).toBe('anthropic-messages')
     }
     for (const gpt of ['gpt-5.5', 'gpt-4.1', 'o4-mini', 'my-gpt-deployment']) {
       expect<string>(resolveWireFormat(provider, gpt)).toBe('openai-responses')
@@ -346,10 +346,10 @@ describe('provider registration', () => {
   })
 
   test('foundry Claude model ids and capabilities are now reachable', async () => {
-    const { CLAUDE_SONNET_4_5_CONFIG } = await import(
+    const { ANTHROPIC_SONNET_4_5_CONFIG } = await import(
       '../src/utils/model/configs.ts'
     )
     // Declared for 'foundry' since before this migration; now selectable.
-    expect(CLAUDE_SONNET_4_5_CONFIG.foundry).toBe('claude-sonnet-4-5')
+    expect(ANTHROPIC_SONNET_4_5_CONFIG.foundry).toBe('claude-sonnet-4-5')
   })
 })

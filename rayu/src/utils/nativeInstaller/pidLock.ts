@@ -98,7 +98,7 @@ export function isProcessRunning(pid: number): boolean {
  * Validate that a running process is actually a Claude process
  * This helps mitigate PID reuse issues
  */
-function isClaudeProcess(pid: number, expectedExecPath: string): boolean {
+function isRayuProcess(pid: number, expectedExecPath: string): boolean {
   if (!isProcessRunning(pid)) {
     return false
   }
@@ -177,7 +177,7 @@ export function isLockActive(lockFilePath: string): boolean {
 
   // Secondary validation: is it actually a Claude process?
   // This helps with PID reuse scenarios
-  if (!isClaudeProcess(pid, execPath)) {
+  if (!isRayuProcess(pid, execPath)) {
     logForDebugging(
       `Lock PID ${pid} is running but does not appear to be Claude - treating as stale`,
     )

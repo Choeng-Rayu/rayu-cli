@@ -103,7 +103,7 @@ export function buildAuthUrl({
   state,
   port,
   isManual,
-  loginWithClaudeAi,
+  loginWithRayuAi: loginWithClaudeAi,
   inferenceOnly,
   orgUUID,
   loginHint,
@@ -113,7 +113,7 @@ export function buildAuthUrl({
   state: string
   port: number
   isManual: boolean
-  loginWithClaudeAi?: boolean
+  loginWithRayuAi?: boolean
   inferenceOnly?: boolean
   orgUUID?: string
   loginHint?: string

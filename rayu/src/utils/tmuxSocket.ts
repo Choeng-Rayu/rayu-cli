@@ -33,7 +33,7 @@ import { getPlatform } from './platform.js'
 
 // Constants for tmux socket management
 const TMUX_COMMAND = 'tmux'
-const CLAUDE_SOCKET_PREFIX = 'claude'
+const RAYU_SOCKET_PREFIX = 'claude'
 
 /**
  * Executes a tmux command, routing through WSL on Windows.
@@ -88,9 +88,9 @@ let tmuxToolUsed = false
  * Gets the socket name for Claude's isolated tmux session.
  * Format: claude-<PID>
  */
-export function getClaudeSocketName(): string {
+export function getRayuSocketName(): string {
   if (!socketName) {
-    socketName = `${CLAUDE_SOCKET_PREFIX}-${process.pid}`
+    socketName = `${RAYU_SOCKET_PREFIX}-${process.pid}`
   }
   return socketName
 }
@@ -99,7 +99,7 @@ export function getClaudeSocketName(): string {
  * Gets the socket path if the socket has been initialized.
  * Returns null if not yet initialized.
  */
-export function getClaudeSocketPath(): string | null {
+export function getRayuSocketPath(): string | null {
   return socketPath
 }
 
@@ -107,7 +107,7 @@ export function getClaudeSocketPath(): string | null {
  * Sets socket info after initialization.
  * Called after the tmux session is created.
  */
-export function setClaudeSocketInfo(path: string, pid: number): void {
+export function setRayuSocketInfo(path: string, pid: number): void {
   socketPath = path
   serverPid = pid
 }
@@ -132,7 +132,7 @@ export function isSocketInitialized(): boolean {
  * Returns null if socket is not yet initialized.
  * When null, Shell.ts does not override TMUX, preserving user's environment.
  */
-export function getClaudeTmuxEnv(): string | null {
+export function getRayuTmuxEnv(): string | null {
   if (!socketPath || serverPid === null) {
     return null
   }
@@ -250,7 +250,7 @@ export async function ensureSocketInitialized(): Promise<void> {
  * Called during graceful shutdown to clean up resources.
  */
 async function killTmuxServer(): Promise<void> {
-  const socket = getClaudeSocketName()
+  const socket = getRayuSocketName()
   logForDebugging(`[Socket] Killing tmux server for socket: ${socket}`)
 
   const result = await execTmux(['-L', socket, 'kill-server'])
@@ -266,7 +266,7 @@ async function killTmuxServer(): Promise<void> {
 }
 
 async function doInitialize(): Promise<void> {
-  const socket = getClaudeSocketName()
+  const socket = getRayuSocketName()
 
   // Create a new session with our custom socket
   // Pass CLAUDE_CODE_SKIP_PROMPT_HISTORY via -e so it's set in the initial shell environment
@@ -358,7 +358,7 @@ async function doInitialize(): Promise<void> {
     if (path && pidStr) {
       const pid = parseInt(pidStr, 10)
       if (!isNaN(pid)) {
-        setClaudeSocketInfo(path, pid)
+        setRayuSocketInfo(path, pid)
         return
       }
     }
@@ -396,7 +396,7 @@ async function doInitialize(): Promise<void> {
       logForDebugging(
         `[Socket] Using fallback socket path: ${fallbackPath} (server PID: ${pid})`,
       )
-      setClaudeSocketInfo(fallbackPath, pid)
+      setRayuSocketInfo(fallbackPath, pid)
       return
     }
     // PID parsing failed

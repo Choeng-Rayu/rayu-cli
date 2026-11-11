@@ -56,7 +56,7 @@ describe('clean posture', () => {
       state: 'b',
       port: 0,
       isManual: false,
-      loginWithClaudeAi: true,
+      loginWithRayuAi: true,
     })
     expect(url.startsWith(cfg.CLAUDE_AI_AUTHORIZE_URL)).toBe(true)
     expect(url).toContain(encodeURIComponent(cfg.CLIENT_ID))

@@ -114,11 +114,11 @@ maybe('live: Claude on Bedrock via the unified Anthropic client', () => {
       awsRegion: REGION,
     })
     expect(models.length).toBeGreaterThan(10)
-    const claude = models.filter(m => /anthropic|claude/i.test(m))
+    const rayu = models.filter(m => /anthropic|claude/i.test(m))
     const other = models.filter(m => !/anthropic|claude/i.test(m))
     // This is the whole point of the unified Bedrock provider: ONE entry whose
     // catalog spans both wire formats.
-    expect(claude.length).toBeGreaterThan(0)
+    expect(rayu.length).toBeGreaterThan(0)
     expect(other.length).toBeGreaterThan(0)
   }, 60_000)
 

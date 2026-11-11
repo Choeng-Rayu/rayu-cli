@@ -26,7 +26,7 @@ type ConnectorInfo = {
   url: string
 }
 
-function getConnectedClaudeAIConnectors(
+function getConnectedRayuAIConnectors(
   mcpClients: MCPServerConnection[],
 ): ConnectorInfo[] {
   void mcpClients
@@ -359,7 +359,7 @@ export function registerScheduleRemoteAgentsSkill(): void {
       // would be factually wrong — getCurrentRepoHttpsUrl() below will
       // still populate gitRepoUrl with the GHE URL.
 
-      const connectors = getConnectedClaudeAIConnectors(
+      const connectors = getConnectedRayuAIConnectors(
         context.options.mcpClients,
       )
       if (connectors.length === 0) {

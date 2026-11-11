@@ -25,10 +25,10 @@ type ShellInfo = {
 function detectShell(): ShellInfo | null {
   const shell = process.env.SHELL || ''
   const home = homedir()
-  const claudeDir = getRayuConfigHomeDir()
+  const rayuDir = getRayuConfigHomeDir()
 
   if (shell.endsWith('/zsh') || shell.endsWith('/zsh.exe')) {
-    const cacheFile = join(claudeDir, 'completion.zsh')
+    const cacheFile = join(rayuDir, 'completion.zsh')
     return {
       name: 'zsh',
       rcFile: join(home, '.zshrc'),
@@ -38,7 +38,7 @@ function detectShell(): ShellInfo | null {
     }
   }
   if (shell.endsWith('/bash') || shell.endsWith('/bash.exe')) {
-    const cacheFile = join(claudeDir, 'completion.bash')
+    const cacheFile = join(rayuDir, 'completion.bash')
     return {
       name: 'bash',
       rcFile: join(home, '.bashrc'),
@@ -49,7 +49,7 @@ function detectShell(): ShellInfo | null {
   }
   if (shell.endsWith('/fish') || shell.endsWith('/fish.exe')) {
     const xdg = process.env.XDG_CONFIG_HOME || join(home, '.config')
-    const cacheFile = join(claudeDir, 'completion.fish')
+    const cacheFile = join(rayuDir, 'completion.fish')
     return {
       name: 'fish',
       rcFile: join(xdg, 'fish', 'config.fish'),
@@ -90,8 +90,8 @@ export async function setupShellCompletion(theme: ThemeName): Promise<string> {
   // Generate the completion script by writing directly to the cache file.
   // Using --output avoids piping through stdout where process.exit() can
   // truncate output before the pipe buffer drains.
-  const claudeBin = process.argv[1] || 'claude'
-  const result = await execFileNoThrow(claudeBin, [
+  const rayuBin = process.argv[1] || 'claude'
+  const result = await execFileNoThrow(rayuBin, [
     'completion',
     shell.shellFlag,
     '--output',
@@ -146,8 +146,8 @@ export async function regenerateCompletionCache(): Promise<void> {
 
   logForDebugging(`update: Regenerating ${shell.name} completion cache`)
 
-  const claudeBin = process.argv[1] || 'claude'
-  const result = await execFileNoThrow(claudeBin, [
+  const rayuBin = process.argv[1] || 'claude'
+  const result = await execFileNoThrow(rayuBin, [
     'completion',
     shell.shellFlag,
     '--output',

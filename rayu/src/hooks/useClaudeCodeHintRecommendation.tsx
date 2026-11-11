@@ -17,11 +17,11 @@ import { logForDebugging } from '../utils/debug.js';
 import { disableHintRecommendations, markHintPluginShown, type PluginHintRecommendation, resolvePluginHint } from '../utils/plugins/hintRecommendation.js';
 import { installPluginFromMarketplace } from '../utils/plugins/pluginInstallationHelpers.js';
 import { installPluginAndNotify, usePluginRecommendationBase } from './usePluginRecommendationBase.js';
-type UseClaudeCodeHintRecommendationResult = {
+type UseRayuCodeHintRecommendationResult = {
   recommendation: PluginHintRecommendation | null;
   handleResponse: (response: 'yes' | 'no' | 'disable') => void;
 };
-export function useClaudeCodeHintRecommendation() {
+export function useRayuCodeHintRecommendation() {
   const $ = _c(11);
   const pendingHint = React.useSyncExternalStore(subscribeToPendingHint, getPendingHintSnapshot);
   const {

@@ -110,10 +110,10 @@ describe('lockfile provenance and editor preference', () => {
   test('provenance is decided by directory, since the contents are identical by design', async () => {
     const { isRayuNativeLockfile } = await import('../src/utils/ide.js')
     const rayuDir = join(process.env.RAYU_CONFIG_DIR as string, 'ide')
-    const claudeDir = join(home, '.claude', 'ide')
+    const legacyIdeDir = join(home, '.claude', 'ide')
 
     const native = writeLockfile(rayuDir, 41000, 'Visual Studio Code', 1_000)
-    const upstream = writeLockfile(claudeDir, 42000, 'Visual Studio Code', 2_000)
+    const upstream = writeLockfile(legacyIdeDir, 42000, 'Visual Studio Code', 2_000)
 
     expect(isRayuNativeLockfile(native)).toBe(true)
     expect(isRayuNativeLockfile(upstream)).toBe(false)
@@ -127,9 +127,9 @@ describe('lockfile provenance and editor preference', () => {
     const { getIdeLockfilesPaths } = await import('../src/utils/ide.js')
     const paths = await getIdeLockfilesPaths()
     const rayuIndex = paths.findIndex(p => p.includes(join('.rayu', 'ide')))
-    const claudeIndex = paths.findIndex(p => p.includes(join('.claude', 'ide')))
+    const legacyIdeIndex = paths.findIndex(p => p.includes(join('.claude', 'ide')))
     expect(rayuIndex).toBe(0)
-    expect(claudeIndex).toBeGreaterThan(rayuIndex)
+    expect(legacyIdeIndex).toBeGreaterThan(rayuIndex)
   })
 
   test('a native lockfile outranks a non-native one regardless of modification time', async () => {

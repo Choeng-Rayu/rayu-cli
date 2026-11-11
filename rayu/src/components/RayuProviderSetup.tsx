@@ -154,12 +154,12 @@ export function RayuProviderSetup({
   // Claude.ai paid-subscription login state. The status snapshot is read lazily
   // (only when the user selects that preset) so the OAuth modules and the
   // credential store are never touched on the normal /connect path.
-  const [claudeStatus, setClaudeStatus] = useState<{
+  const [rayuStatus, setRayuStatus] = useState<{
     plan: string
     rateLimitTier: string | null
     emailAddress?: string
   } | null>(null)
-  const [claudeAttempt, setClaudeAttempt] = useState(0)
+  const [rayuAttempt, setRayuAttempt] = useState(0)
 
   function pick(p: Preset): void {
     setPreset(p)
@@ -180,16 +180,16 @@ export function RayuProviderSetup({
       // `requiresOAuth` branch below, which is the Google/Vertex path.
       setFetchError(null)
       void (async () => {
-        const { getClaudeSubscriptionStatus, subscriptionPlanLabel } =
+        const { getClaudeSubscriptionStatus: getRayuSubscriptionStatus, subscriptionPlanLabel } =
           await import('../services/oauth/claudeAiLogin.js')
-        const status = getClaudeSubscriptionStatus()
+        const status = getRayuSubscriptionStatus()
         if (!status.signedIn) {
-          setClaudeStatus(null)
-          setClaudeAttempt(n => n + 1)
+          setRayuStatus(null)
+          setRayuAttempt(n => n + 1)
           setPhase('claudeLogin')
           return
         }
-        setClaudeStatus({
+        setRayuStatus({
           plan: subscriptionPlanLabel(status.subscriptionType),
           rateLimitTier: status.rateLimitTier,
           ...(status.emailAddress ? { emailAddress: status.emailAddress } : {}),
@@ -1220,8 +1220,8 @@ export function RayuProviderSetup({
     // active, so we only have to report that AUTH changed.
     return (
       <ConsoleOAuthFlow
-        key={claudeAttempt}
-        loginWithClaudeAi
+        key={rayuAttempt}
+        loginWithRayuAi
         startingMessage="Signing in with your Claude subscription (Pro plan / Max plan)."
         onDone={(success: boolean) => {
           if (success) onDone({ authChanged: true })
@@ -1231,16 +1231,16 @@ export function RayuProviderSetup({
     )
   }
 
-  if (phase === 'claudeStatus' && claudeStatus) {
+  if (phase === 'claudeStatus' && rayuStatus) {
     return (
       <Box flexDirection="column" gap={1} paddingLeft={1}>
-        <Text bold>Signed in with {claudeStatus.plan}</Text>
+        <Text bold>Signed in with {rayuStatus.plan}</Text>
         <Text dimColor>
-          {claudeStatus.emailAddress
-            ? `Account: ${claudeStatus.emailAddress}`
+          {rayuStatus.emailAddress
+            ? `Account: ${rayuStatus.emailAddress}`
             : 'Account: (email unavailable)'}
-          {claudeStatus.rateLimitTier
-            ? ` · rate-limit tier: ${claudeStatus.rateLimitTier}`
+          {rayuStatus.rateLimitTier
+            ? ` · rate-limit tier: ${rayuStatus.rateLimitTier}`
             : ''}
         </Text>
         <Text dimColor>
@@ -1266,15 +1266,15 @@ export function RayuProviderSetup({
                 onDone({ authChanged: true })
               })()
             } else if (v === 'relogin') {
-              setClaudeAttempt(n => n + 1)
+              setRayuAttempt(n => n + 1)
               setPhase('claudeLogin')
             } else if (v === 'logout') {
               void (async () => {
-                const { logoutClaudeSubscription } = await import(
+                const { logoutClaudeSubscription: logoutRayuSubscription } = await import(
                   '../services/oauth/claudeAiLogin.js'
                 )
-                logoutClaudeSubscription()
-                setClaudeStatus(null)
+                logoutRayuSubscription()
+                setRayuStatus(null)
                 onDone({ authChanged: true })
               })()
             } else onDone()

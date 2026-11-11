@@ -33,7 +33,7 @@ type Props = {
    * 'claude-subscription' provider. Without it the flow targets the Console
    * (API-key) consent page instead.
    */
-  loginWithClaudeAi?: boolean
+  loginWithRayuAi?: boolean
 }
 
 /**
@@ -50,7 +50,7 @@ type ParsePastedAuthCode = (pasted: string) => {
 export function ConsoleOAuthFlow({
   onDone,
   startingMessage,
-  loginWithClaudeAi = true,
+  loginWithRayuAi = true,
 }: Props): React.ReactNode {
   const [phase, setPhase] = React.useState<Phase>('starting')
   const [manualUrl, setManualUrl] = React.useState('')
@@ -90,13 +90,13 @@ export function ConsoleOAuthFlow({
             setManualUrl(url)
             setPhase('waiting')
           },
-          { loginWithClaudeAi },
+          { loginWithClaudeAi: loginWithRayuAi },
         )
         awaitingCodeRef.current = false
         setCanPasteManually(false)
         if (cancelled) return
 
-        if (!loginWithClaudeAi) {
+        if (!loginWithRayuAi) {
           // Console (API-key) logins are not installed as a provider here.
           onDone(true)
           return
@@ -248,7 +248,7 @@ export function ConsoleOAuthFlow({
     <Box flexDirection="column" gap={1} paddingLeft={1}>
       {startingMessage ? <Text>{startingMessage}</Text> : null}
       <Text bold>
-        {loginWithClaudeAi
+        {loginWithRayuAi
           ? 'Sign in with your Claude subscription (Pro plan / Max plan)'
           : 'Sign in to the Anthropic Console'}
       </Text>

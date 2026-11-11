@@ -17,7 +17,7 @@ import { join } from 'path'
 const FIXED_COMMAND = '/opt/rayu/bin/rayu'
 
 let root: string
-let claudeDir: string
+let rayuDir: string
 let codexHome: string
 let rayuHome: string
 let projectDir: string
@@ -31,15 +31,15 @@ function setEnv(key: string, value: string): void {
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'rayu-plugin-test-'))
-  claudeDir = join(root, 'claude')
+  rayuDir = join(root, 'claude')
   codexHome = join(root, 'codex')
   rayuHome = join(root, 'rayu')
   projectDir = join(root, 'project')
-  await mkdir(claudeDir, { recursive: true })
+  await mkdir(rayuDir, { recursive: true })
   await mkdir(codexHome, { recursive: true })
   await mkdir(projectDir, { recursive: true })
 
-  setEnv('CLAUDE_CONFIG_DIR', claudeDir)
+  setEnv('CLAUDE_CONFIG_DIR', rayuDir)
   setEnv('CODEX_HOME', codexHome)
   setEnv('RAYU_CONFIG_DIR', rayuHome)
   setEnv('RAYU_MCP_SERVER_COMMAND', FIXED_COMMAND)
@@ -64,15 +64,15 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
 describe('host detection', () => {
   test('honours the host env overrides', async () => {
     const {
-      getClaudeCodeUserConfigFile,
-      getClaudeCodeSkillsInstallDir,
+      getClaudeCodeUserConfigFile: getRayuCodeUserConfigFile,
+      getClaudeCodeSkillsInstallDir: getRayuCodeSkillsInstallDir,
       getCodexConfigFile,
       getCodexSkillsInstallDir,
       getProjectMcpJsonFile,
     } = await import('../src/plugins/installers/detect.ts')
 
-    expect(getClaudeCodeUserConfigFile()).toBe(join(claudeDir, '.claude.json'))
-    expect(getClaudeCodeSkillsInstallDir()).toBe(join(claudeDir, 'skills'))
+    expect(getRayuCodeUserConfigFile()).toBe(join(rayuDir, '.claude.json'))
+    expect(getRayuCodeSkillsInstallDir()).toBe(join(rayuDir, 'skills'))
     expect(getCodexConfigFile()).toBe(join(codexHome, 'config.toml'))
     expect(getCodexSkillsInstallDir()).toBe(join(codexHome, 'skills'))
     expect(getProjectMcpJsonFile(projectDir)).toBe(join(projectDir, '.mcp.json'))
@@ -102,10 +102,10 @@ describe('host detection', () => {
 
 describe('Claude Code installer', () => {
   test('creates ~/.claude.json with the rayu MCP entry', async () => {
-    const { installClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    const result = await installClaudeCode({ scope: 'user' })
+    const result = await installRayuCode({ scope: 'user' })
 
     expect(result.mcpChanged).toBe(true)
     expect(result.serverCommand).toBe(`${FIXED_COMMAND} mcp serve`)
@@ -117,7 +117,7 @@ describe('Claude Code installer', () => {
   })
 
   test('merges into an existing config without clobbering other keys', async () => {
-    const configFile = join(claudeDir, '.claude.json')
+    const configFile = join(rayuDir, '.claude.json')
     await writeFile(
       configFile,
       JSON.stringify(
@@ -131,10 +131,10 @@ describe('Claude Code installer', () => {
       ),
     )
 
-    const { installClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    await installClaudeCode({ scope: 'user' })
+    await installRayuCode({ scope: 'user' })
 
     const doc = await readJson(configFile)
     expect(doc.numStartups).toBe(42)
@@ -145,13 +145,13 @@ describe('Claude Code installer', () => {
   })
 
   test('backs the config up before modifying it', async () => {
-    const configFile = join(claudeDir, '.claude.json')
+    const configFile = join(rayuDir, '.claude.json')
     await writeFile(configFile, JSON.stringify({ numStartups: 1 }))
 
-    const { installClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    const result = await installClaudeCode({ scope: 'user' })
+    const result = await installRayuCode({ scope: 'user' })
 
     expect(result.backupPath).toBeDefined()
     expect(existsSync(result.backupPath!)).toBe(true)
@@ -161,11 +161,11 @@ describe('Claude Code installer', () => {
   })
 
   test('is idempotent — a second install writes nothing', async () => {
-    const { installClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    await installClaudeCode({ scope: 'user' })
-    const second = await installClaudeCode({ scope: 'user' })
+    await installRayuCode({ scope: 'user' })
+    const second = await installRayuCode({ scope: 'user' })
 
     expect(second.mcpChanged).toBe(false)
     expect(second.backupPath).toBeUndefined()
@@ -173,13 +173,13 @@ describe('Claude Code installer', () => {
   })
 
   test('refuses to modify a config that is not a JSON object', async () => {
-    const configFile = join(claudeDir, '.claude.json')
+    const configFile = join(rayuDir, '.claude.json')
     await writeFile(configFile, 'not json at all {{{')
 
-    const { installClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    await expect(installClaudeCode({ scope: 'user' })).rejects.toThrow(
+    await expect(installRayuCode({ scope: 'user' })).rejects.toThrow(
       /refusing to modify/,
     )
     // The original bytes are still there.
@@ -187,27 +187,27 @@ describe('Claude Code installer', () => {
   })
 
   test('project scope writes <project>/.mcp.json', async () => {
-    const { installClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    const result = await installClaudeCode({ scope: 'project', projectDir })
+    const result = await installRayuCode({ scope: 'project', projectDir })
 
     expect(result.configFile).toBe(join(projectDir, '.mcp.json'))
     const doc = await readJson(result.configFile)
     expect((doc.mcpServers as Record<string, unknown>).rayu).toBeDefined()
     // User-scope config was left alone.
-    expect(existsSync(join(claudeDir, '.claude.json'))).toBe(false)
+    expect(existsSync(join(rayuDir, '.claude.json'))).toBe(false)
   })
 
   test('installs the host SKILL.md files', async () => {
-    const { installClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    const result = await installClaudeCode({ scope: 'user' })
+    const result = await installRayuCode({ scope: 'user' })
 
     expect(result.skillsWritten).toEqual(['rayu', 'rayu-media', 'rayu-telegram'])
     const skill = await readFile(
-      join(claudeDir, 'skills', 'rayu', 'SKILL.md'),
+      join(rayuDir, 'skills', 'rayu', 'SKILL.md'),
       'utf8',
     )
     expect(skill).toContain('name: rayu')
@@ -215,56 +215,56 @@ describe('Claude Code installer', () => {
   })
 
   test('--no-skills registers the server only', async () => {
-    const { installClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    const result = await installClaudeCode({ scope: 'user', skipSkills: true })
+    const result = await installRayuCode({ scope: 'user', skipSkills: true })
 
     expect(result.mcpChanged).toBe(true)
     expect(result.skillsDir).toBeUndefined()
-    expect(existsSync(join(claudeDir, 'skills'))).toBe(false)
+    expect(existsSync(join(rayuDir, 'skills'))).toBe(false)
   })
 
   test('uninstall restores the pre-install config exactly', async () => {
-    const configFile = join(claudeDir, '.claude.json')
+    const configFile = join(rayuDir, '.claude.json')
     const original = {
       numStartups: 7,
       mcpServers: { Canva: { type: 'http', url: 'https://example.test' } },
     }
     await writeFile(configFile, `${JSON.stringify(original, null, 2)}\n`)
 
-    const { installClaudeCode, uninstallClaudeCode } = await import(
+    const { installClaudeCode: installRayuCode, uninstallClaudeCode: uninstallRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    await installClaudeCode({ scope: 'user' })
-    const result = await uninstallClaudeCode({ scope: 'user' })
+    await installRayuCode({ scope: 'user' })
+    const result = await uninstallRayuCode({ scope: 'user' })
 
     expect(result.mcpRemoved).toBe(true)
     expect(await readJson(configFile)).toEqual(original)
     expect(result.skillsRemoved).toEqual(['rayu', 'rayu-media', 'rayu-telegram'])
-    expect(existsSync(join(claudeDir, 'skills', 'rayu'))).toBe(false)
+    expect(existsSync(join(rayuDir, 'skills', 'rayu'))).toBe(false)
   })
 
   test('uninstall is idempotent', async () => {
-    const { uninstallClaudeCode } = await import(
+    const { uninstallClaudeCode: uninstallRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    const result = await uninstallClaudeCode({ scope: 'user' })
+    const result = await uninstallRayuCode({ scope: 'user' })
     expect(result.mcpRemoved).toBe(false)
     expect(result.skillsRemoved).toEqual([])
   })
 
   test('status reports registration, skills and staleness', async () => {
-    const { getClaudeCodeStatus, installClaudeCode } = await import(
+    const { getClaudeCodeStatus: getRayuCodeStatus, installClaudeCode: installRayuCode } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
 
-    const before = await getClaudeCodeStatus({ scope: 'user' })
+    const before = await getRayuCodeStatus({ scope: 'user' })
     expect(before.registered).toBe(false)
     expect(before.installedSkills).toEqual([])
 
-    await installClaudeCode({ scope: 'user' })
-    const after = await getClaudeCodeStatus({ scope: 'user' })
+    await installRayuCode({ scope: 'user' })
+    const after = await getRayuCodeStatus({ scope: 'user' })
     expect(after.registered).toBe(true)
     expect(after.stale).toBe(false)
     expect(after.registeredCommand).toBe(`${FIXED_COMMAND} mcp serve`)
@@ -272,17 +272,17 @@ describe('Claude Code installer', () => {
 
     // A registration pointing somewhere else is reported as stale, not absent.
     process.env.RAYU_MCP_SERVER_COMMAND = '/somewhere/else/rayu'
-    const stale = await getClaudeCodeStatus({ scope: 'user' })
+    const stale = await getRayuCodeStatus({ scope: 'user' })
     expect(stale.registered).toBe(true)
     expect(stale.stale).toBe(true)
   })
 
   test('status surfaces an unparseable config instead of throwing', async () => {
-    await writeFile(join(claudeDir, '.claude.json'), '}{')
-    const { getClaudeCodeStatus } = await import(
+    await writeFile(join(rayuDir, '.claude.json'), '}{')
+    const { getClaudeCodeStatus: getRayuCodeStatus } = await import(
       '../src/plugins/installers/claudeCode.ts'
     )
-    const status = await getClaudeCodeStatus({ scope: 'user' })
+    const status = await getRayuCodeStatus({ scope: 'user' })
     expect(status.parseError).toMatch(/refusing to modify/)
     expect(status.registered).toBe(false)
   })

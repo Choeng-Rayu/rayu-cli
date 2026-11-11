@@ -50,7 +50,7 @@ export function setMockBillingAccessOverride(value: boolean | null): void {
   mockBillingAccessOverride = value
 }
 
-export function hasClaudeAiBillingAccess(): boolean {
+export function hasRayuAiBillingAccess(): boolean {
   // Check for mock billing access first (for /mock-limits testing)
   if (mockBillingAccessOverride !== null) {
     return mockBillingAccessOverride

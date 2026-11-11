@@ -4,7 +4,7 @@
 // a 1.6 MB bundle budget for one `instanceof` check. Same path as services/api/claude.ts.
 import { APIUserAbortError } from '@anthropic-ai/sdk/error.js'
 
-export class ClaudeError extends Error {
+export class RayuError extends Error {
   constructor(message: string) {
     super(message)
     this.name = this.constructor.name

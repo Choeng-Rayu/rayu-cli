@@ -8,7 +8,7 @@ import {
   checkGithubAppInstalled,
   checkHasRemoteEnvironment,
   checkIsInGitRepo,
-  checkNeedsClaudeAiLogin,
+  checkNeedsRayuAiLogin,
 } from './preconditions.js'
 
 /**
@@ -56,7 +56,7 @@ export async function checkBackgroundRemoteSessionEligibility({
   }
 
   const [needsLogin, hasRemoteEnv, repository] = await Promise.all([
-    checkNeedsClaudeAiLogin(),
+    checkNeedsRayuAiLogin(),
     checkHasRemoteEnvironment(),
     detectCurrentRepositoryWithHost(),
   ])

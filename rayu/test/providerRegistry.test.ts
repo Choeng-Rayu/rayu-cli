@@ -158,14 +158,14 @@ describe('resolveWireFormat — per-model resolution (Task 3)', () => {
       awsRegion: 'us-east-1',
     }
     // Claude, in every id shape the catalog fetchers actually return.
-    for (const claude of [
+    for (const rayu of [
       'anthropic.claude-3-5-sonnet-20241022-v2:0',
       'us.anthropic.claude-sonnet-4-6-v1',
       'global.anthropic.claude-haiku-4-5-20251001-v1:0',
       'eu.anthropic.claude-opus-4-6-v1',
       'arn:aws:bedrock:ap-northeast-2:123:inference-profile/global.anthropic.claude-opus-4-6-v1',
     ]) {
-      expect<string>(resolveWireFormat(bedrock, claude)).toBe(
+      expect<string>(resolveWireFormat(bedrock, rayu)).toBe(
         'anthropic-messages',
       )
     }
@@ -267,14 +267,14 @@ describe('resolveWireFormat — per-model resolution (Task 3)', () => {
 
   test('model-family predicates only match real id shapes', async () => {
     const { _modelFamilyForTesting } = await registry()
-    const { isClaudeModelId, isGeminiModelId } = _modelFamilyForTesting
+    const { isClaudeModelId: isAnthropicModelId, isGeminiModelId } = _modelFamilyForTesting
     for (const yes of [
       'claude-sonnet-4-6',
       'anthropic.claude-3-5-haiku-20241022-v1:0',
       'us.anthropic.claude-opus-4-6-v1',
       'publishers/anthropic/models/claude-sonnet-4-5',
     ]) {
-      expect(isClaudeModelId(yes)).toBe(true)
+      expect(isAnthropicModelId(yes)).toBe(true)
     }
     for (const no of [
       'openai.gpt-oss-120b-1:0',
@@ -282,7 +282,7 @@ describe('resolveWireFormat — per-model resolution (Task 3)', () => {
       'gemini-3.5-flash',
       'amazon.nova-pro-v1:0',
     ]) {
-      expect(isClaudeModelId(no)).toBe(false)
+      expect(isAnthropicModelId(no)).toBe(false)
     }
     expect(isGeminiModelId('gemini-3.5-flash')).toBe(true)
     expect(isGeminiModelId('claude-sonnet-4-6')).toBe(false)
