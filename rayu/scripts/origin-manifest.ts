@@ -76,6 +76,10 @@ const ORIGINAL_FILE_MARKERS = [
   'components/tasks/OrchestrationWorkerDetail.tsx',
   'hooks/notifs/useWorkerApprovalLossNotification.ts',
   'components/RayuProviderSetup.tsx',
+  // claude→rayu identifier-rename migrations (first-party Rayu work).
+  'utils/configIdentifierKeys.ts',
+  'utils/settings/identifierKeys.ts',
+  'migrations/migrateIdentifierKeysToRayu.ts',
 ]
 
 /** Classify a src-relative path into a provenance bucket. */

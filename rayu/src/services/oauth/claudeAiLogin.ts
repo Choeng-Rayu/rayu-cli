@@ -36,7 +36,7 @@ import { storeOAuthAccountInfo } from './client.js'
 import { refreshRayuAIOAuthTokensIfNeeded } from './claudeAiTokens.js'
 import type { OAuthTokens, RateLimitTier, SubscriptionType } from './types.js'
 
-export { RAYU_SUBSCRIPTION_PROVIDER_ID as CLAUDE_SUBSCRIPTION_PROVIDER_ID }
+export { RAYU_SUBSCRIPTION_PROVIDER_ID }
 
 /**
  * `anthropic-version` for the raw (non-SDK) calls in this module. The Anthropic

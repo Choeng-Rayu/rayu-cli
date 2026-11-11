@@ -59,7 +59,7 @@ export function QuestionView(t0) {
     onSubmit,
     onTabPrev,
     onTabNext,
-    onRespondToClaude: onRespondToRayu,
+    onRespondToRayu,
     onFinishPlanInterview,
     onImagePaste,
     pastedContents,

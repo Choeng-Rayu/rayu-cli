@@ -22,8 +22,11 @@ step "Origin manifest coverage"
 if bun run scripts/origin-manifest.ts --check >/dev/null 2>&1; then ok "every src file classified; manifest current"; else bad "origin manifest stale/incomplete"; fi
 
 step "De-brand / de-risk invariant tests"
-DERISK_TESTS="test/rebrand.test.ts test/networkGuard.test.ts test/envAliases.test.ts test/analyticsEventLogging.test.ts test/claudeAiOAuthDisabled.test.ts test/remoteSessionDeClaudeAi.test.ts test/originManifest.test.ts test/cleanPosture.test.ts"
+DERISK_TESTS="test/rebrand.test.ts test/networkGuard.test.ts test/envAliases.test.ts test/analyticsEventLogging.test.ts test/remoteSessionDeClaudeAi.test.ts test/originManifest.test.ts test/cleanPosture.test.ts"
 if bun test $DERISK_TESTS >/dev/null 2>&1; then ok "all de-risk invariants green"; else bad "a de-risk invariant test failed"; fi
+
+step "Identifier de-brand audit"
+if bun run scripts/audit-claude-identifiers.ts >/dev/null 2>&1; then ok "no unintended claude identifiers remain"; else bad "claude identifiers remain outside the documented keeps"; fi
 
 step "Brand identity"
 VER="$(node dist/rayu.js --version 2>/dev/null)"

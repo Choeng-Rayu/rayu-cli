@@ -59,7 +59,22 @@
     "test/macOsKeychainStartup.test.ts::claudeAiOauth",
     "test/claudeInterop.test.ts::rayuTestClaudeServer",
     "src/context.ts::claudeMd",
-    "src/components/ConsoleOAuthFlow.tsx::loginWithClaudeAi"
+    "src/components/ConsoleOAuthFlow.tsx::loginWithClaudeAi",
+    "src/utils/api.ts::claudeMd",
+    "src/tools/AgentTool/runAgent.ts::claudeMd",
+    "src/utils/commitAttribution.ts::claudeContribution",
+    "test/configIdentifierKeyMigration.test.ts::claudeCodeFirstTokenDate",
+    "test/configIdentifierKeyMigration.test.ts::claudeAiMcpEverConnected",
+    "test/configIdentifierKeyMigration.test.ts::claudeCodeHints",
+    "test/configIdentifierKeyMigration.test.ts::claudeInChromeDefaultEnabled",
+    "test/configIdentifierKeyMigration.test.ts::hasCompletedClaudeInChromeOnboarding",
+    "test/configIdentifierKeyMigration.test.ts::hasClaudeMdExternalIncludesApproved",
+    "test/configIdentifierKeyMigration.test.ts::hasClaudeMdExternalIncludesWarningShown",
+    "test/oauthStorageKeyMigration.test.ts::claudeAiOauth",
+    "test/settingsIdentifierKeyMigration.test.ts::claudeMdExcludes",
+    "test/settingsIdentifierKeyMigration.test.ts::claudeMcpEnabled",
+    "test/settingsIdentifierKeyMigration.test.ts::claudeSkillsEnabled",
+    "test/attributionSnapshotMigration.test.ts::claudeContribution"
   ],
   "explicitNames": {
     "isClaudeModelId": "isAnthropicModelId",

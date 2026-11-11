@@ -415,4 +415,4 @@ export function createRayuCodeAdapter(
   }
 }
 
-export type { RayuCodeHandle as ClaudeCodeHandle }
+export type { RayuCodeHandle }
