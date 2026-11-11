@@ -8,5 +8,3 @@
 export function getRayuUserAgent(): string {
   return `rayu/${MACRO.VERSION}`
 }
-
-export const getClaudeCodeUserAgent = getRayuUserAgent

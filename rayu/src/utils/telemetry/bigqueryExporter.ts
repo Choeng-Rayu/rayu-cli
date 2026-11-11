@@ -17,7 +17,7 @@ import { errorMessage, toError } from '../errors.js'
 import { getAuthHeaders } from '../http.js'
 import { logError } from '../log.js'
 import { jsonStringify } from '../slowOperations.js'
-import { getClaudeCodeUserAgent } from '../userAgent.js'
+import { getRayuUserAgent } from '../userAgent.js'
 
 type DataPoint = {
   attributes: Record<string, string>
@@ -123,7 +123,7 @@ export class BigQueryMetricsExporter implements PushMetricExporter {
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'User-Agent': getClaudeCodeUserAgent(),
+        'User-Agent': getRayuUserAgent(),
         ...authResult.headers,
       }
 

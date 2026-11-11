@@ -6,7 +6,7 @@ import {
   isClaudeAISubscriber,
 } from '../../utils/auth.js'
 import { getAuthHeaders } from '../../utils/http.js'
-import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
+import { getRayuUserAgent } from '../../utils/userAgent.js'
 import { isOAuthTokenExpired } from '../oauth/client.js'
 
 export type RateLimit = {
@@ -48,7 +48,7 @@ export async function fetchUtilization(): Promise<Utilization | null> {
 
   const headers = {
     'Content-Type': 'application/json',
-    'User-Agent': getClaudeCodeUserAgent(),
+    'User-Agent': getRayuUserAgent(),
     ...authResult.headers,
   }
 

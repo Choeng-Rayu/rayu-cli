@@ -209,8 +209,6 @@ export const getRayuAuthConfigDir = memoize(
   () => `${process.env.RAYU_AUTH_CONFIG_DIR ?? ''}\u0000${process.env.RAYU_CONFIG_DIR ?? ''}`,
 )
 
-export const getClaudeConfigHomeDir = getRayuConfigHomeDir
-
 /**
  * Whether a config write would land in the DEVELOPER'S REAL config home during a test run.
  *

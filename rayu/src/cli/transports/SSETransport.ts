@@ -6,7 +6,7 @@ import { errorMessage } from '../../utils/errors.js'
 import { getSessionIngressAuthHeaders } from '../../utils/sessionIngressAuth.js'
 import { sleep } from '../../utils/sleep.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
-import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
+import { getRayuUserAgent } from '../../utils/userAgent.js'
 import type { Transport } from './Transport.js'
 
 // ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ export class SSETransport implements Transport {
       ...authHeaders,
       Accept: 'text/event-stream',
       'anthropic-version': '2023-06-01',
-      'User-Agent': getClaudeCodeUserAgent(),
+      'User-Agent': getRayuUserAgent(),
     }
     if (authHeaders['Cookie']) {
       delete headers['Authorization']
@@ -581,7 +581,7 @@ export class SSETransport implements Transport {
       ...authHeaders,
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
-      'User-Agent': getClaudeCodeUserAgent(),
+      'User-Agent': getRayuUserAgent(),
     }
 
     logForDebugging(

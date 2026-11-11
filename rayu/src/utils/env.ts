@@ -13,8 +13,6 @@ export const getGlobalRayuFile = memoize((): string => {
   return join(getRayuConfigHomeDir(), 'config.json')
 })
 
-export const getGlobalClaudeFile = getGlobalRayuFile
-
 const hasInternetAccess = memoize(async (): Promise<boolean> => {
   try {
     const { default: axiosClient } = await import('axios')
