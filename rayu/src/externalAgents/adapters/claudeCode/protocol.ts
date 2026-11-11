@@ -25,7 +25,7 @@
 import { randomUUID } from 'crypto'
 
 /** `type` values RAYU understands on the output stream. */
-export const CLAUDE_MESSAGE_TYPE = {
+export const RAYU_MESSAGE_TYPE = {
   system: 'system',
   assistant: 'assistant',
   user: 'user',
@@ -35,7 +35,7 @@ export const CLAUDE_MESSAGE_TYPE = {
 } as const
 
 /** `result.subtype` values. Anything starting `error` is a failure. */
-export const CLAUDE_RESULT_SUCCESS = 'success'
+export const RAYU_RESULT_SUCCESS = 'success'
 
 /**
  * Content block types inside an assistant message.
@@ -43,7 +43,7 @@ export const CLAUDE_RESULT_SUCCESS = 'success'
  * `thinking` is surfaced separately from `text` so the UI can style or suppress
  * it, matching how Codex reasoning is handled.
  */
-export const CLAUDE_BLOCK = {
+export const RAYU_BLOCK = {
   text: 'text',
   thinking: 'thinking',
   toolUse: 'tool_use',
@@ -58,14 +58,14 @@ export const CLAUDE_BLOCK = {
  * Workspace Manager needs for conflict detection — is to recognize the tools
  * that write. Read-only tools are deliberately excluded.
  */
-export const CLAUDE_FILE_WRITING_TOOLS = new Set([
+export const RAYU_FILE_WRITING_TOOLS = new Set([
   'Edit',
   'Write',
   'MultiEdit',
   'NotebookEdit',
 ])
 
-export type ClaudeContentBlock = {
+export type RayuContentBlock = {
   type?: string
   text?: string
   thinking?: string
@@ -79,13 +79,13 @@ export type ClaudeContentBlock = {
   is_error?: boolean
 }
 
-export type ClaudeMessageEnvelope = {
+export type RayuMessageEnvelope = {
   type?: string
   subtype?: string
   session_id?: string
   message?: {
     role?: string
-    content?: ClaudeContentBlock[] | string
+    content?: RayuContentBlock[] | string
     stop_reason?: string | null
   }
   /** `result` envelope fields. */
@@ -117,18 +117,18 @@ export function buildUserMessage(text: string): Record<string, unknown> {
 }
 
 /** Claude Code requires `--session-id` to be a valid UUID. */
-export function newClaudeSessionId(): string {
+export function newRayuSessionId(): string {
   return randomUUID()
 }
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-export function isValidClaudeSessionId(id: string): boolean {
+export function isValidRayuSessionId(id: string): boolean {
   return UUID_PATTERN.test(id)
 }
 
-export type ClaudeArgsSpec = {
+export type RayuArgsSpec = {
   /** Fresh session id. Mutually exclusive with `resumeSessionId`. */
   sessionId?: string
   /** Resume an existing conversation instead of starting one. */
@@ -162,7 +162,7 @@ export type ClaudeArgsSpec = {
  * documented constraints, so they are applied unconditionally rather than left
  * to callers to remember.
  */
-export function buildClaudeArgs(spec: ClaudeArgsSpec): string[] {
+export function buildRayuArgs(spec: RayuArgsSpec): string[] {
   const args = [
     '-p',
     '--input-format',
@@ -180,7 +180,7 @@ export function buildClaudeArgs(spec: ClaudeArgsSpec): string[] {
     args.push('--resume', spec.resumeSessionId)
     if (spec.forkSession) args.push('--fork-session')
   } else if (spec.sessionId) {
-    if (!isValidClaudeSessionId(spec.sessionId)) {
+    if (!isValidRayuSessionId(spec.sessionId)) {
       throw new Error(
         `Claude Code requires --session-id to be a UUID; got ${JSON.stringify(spec.sessionId)}.`,
       )

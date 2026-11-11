@@ -41,8 +41,8 @@ import {
   CODEX_PROVIDER,
 } from '../src/externalAgents/adapters/codex/CodexAdapter.ts'
 import {
-  createClaudeCodeAdapter,
-  CLAUDE_CODE_PROVIDER,
+  createRayuCodeAdapter,
+  ANTHROPIC_CLI_PROVIDER,
 } from '../src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts'
 import {
   createAcpAdapter,
@@ -553,7 +553,7 @@ process.on('SIGINT', () => { emit({ type: 'result', subtype: 'error_during_execu
 `
 
 describe('claude code adapter', () => {
-  const adapter = () => createClaudeCodeAdapter()
+  const adapter = () => createRayuCodeAdapter()
   const RAYU_AGENT = 'claude-code:agent_01' as AgentInstanceId
 
   async function launch(scenario = 'normal'): Promise<AgentHandle> {
@@ -576,7 +576,7 @@ describe('claude code adapter', () => {
 
   test('launch captures the session id Claude Code reports', async () => {
     const handle = await launch()
-    expect(handle.provider).toBe(CLAUDE_CODE_PROVIDER)
+    expect(handle.provider).toBe(ANTHROPIC_CLI_PROVIDER)
     expect(handle.durability).toBe('session-bound')
     expect(handle.activeSessionId()).toBeDefined()
   })

@@ -38,12 +38,12 @@ import {
 } from '../../plugins/installers/detect.js'
 import { whichSync } from '../../utils/which.js'
 import {
-  CLAUDE_CODE_PROVIDER,
+  ANTHROPIC_CLI_PROVIDER,
 } from '../adapters/claudeCode/ClaudeCodeAdapter.js'
 import {
-  findClaudeTranscriptsForCwd,
+  findRayuTranscriptsForCwd,
   looksRecentlyActive,
-  type ClaudeTranscript,
+  type RayuTranscript,
 } from '../adapters/claudeCode/observe.js'
 import {
   CODEX_PROVIDER,
@@ -269,15 +269,15 @@ async function probeOpenCode(context: ProbeContext): Promise<ProviderProbe> {
  * `observable`. The evidence distinguishes a *confirmed* process from a
  * transcript-only heuristic so the user knows how strong the signal is.
  */
-async function probeClaudeCode(context: ProbeContext): Promise<ProviderProbe> {
+async function probeRayuCode(context: ProbeContext): Promise<ProviderProbe> {
   const processes = await findProcessesNamed('claude', {
     processes: context.processes,
   })
   const pids = processes.map(p => p.pid)
 
-  let transcripts: ClaudeTranscript[] = []
+  let transcripts: RayuTranscript[] = []
   try {
-    transcripts = await findClaudeTranscriptsForCwd(context.cwd)
+    transcripts = await findRayuTranscriptsForCwd(context.cwd)
   } catch (e) {
     logForDebugging(`[discovery] claude transcripts unreadable: ${errorMessage(e)}`)
   }
@@ -316,7 +316,7 @@ async function probeClaudeCode(context: ProbeContext): Promise<ProviderProbe> {
 const PROBES: Record<string, (context: ProbeContext) => Promise<ProviderProbe>> = {
   [CODEX_PROVIDER]: probeCodex,
   [OPENCODE_PROVIDER]: probeOpenCode,
-  [CLAUDE_CODE_PROVIDER]: probeClaudeCode,
+  [ANTHROPIC_CLI_PROVIDER]: probeRayuCode,
 }
 
 /**
@@ -450,7 +450,7 @@ export async function discoverAgents(
 /** Config directory for a provider RAYU knows, when `detectHosts` has no entry. */
 function knownConfigDir(provider: ProviderId): string | undefined {
   if (provider === CODEX_PROVIDER) return getCodexHomeDir()
-  if (provider === CLAUDE_CODE_PROVIDER) return getRayuCodeConfigDir()
+  if (provider === ANTHROPIC_CLI_PROVIDER) return getRayuCodeConfigDir()
   return undefined
 }
 

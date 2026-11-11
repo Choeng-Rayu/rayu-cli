@@ -10,7 +10,7 @@
  * path) can call it without coordinating.
  */
 
-import { createClaudeCodeAdapter } from './claudeCode/ClaudeCodeAdapter.js'
+import { createRayuCodeAdapter } from './claudeCode/ClaudeCodeAdapter.js'
 import { createCodexAdapter } from './codex/CodexAdapter.js'
 import { createOpenCodeAdapter } from './opencode/OpenCodeAdapter.js'
 import {
@@ -24,7 +24,7 @@ import {
 import { asProviderId } from '../core/types.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { CODEX_PROVIDER } from './codex/CodexAdapter.js'
-import { CLAUDE_CODE_PROVIDER } from './claudeCode/ClaudeCodeAdapter.js'
+import { ANTHROPIC_CLI_PROVIDER } from './claudeCode/ClaudeCodeAdapter.js'
 import { OPENCODE_PROVIDER } from './opencode/OpenCodeAdapter.js'
 
 /**
@@ -36,8 +36,8 @@ import { OPENCODE_PROVIDER } from './opencode/OpenCodeAdapter.js'
  */
 export function registerAdapters(): void {
   if (!findAdapter(CODEX_PROVIDER)) registerAdapter(createCodexAdapter())
-  if (!findAdapter(CLAUDE_CODE_PROVIDER)) {
-    registerAdapter(createClaudeCodeAdapter())
+  if (!findAdapter(ANTHROPIC_CLI_PROVIDER)) {
+    registerAdapter(createRayuCodeAdapter())
   }
   if (!findAdapter(OPENCODE_PROVIDER)) registerAdapter(createOpenCodeAdapter())
   registerDeclaredAcpAgents()

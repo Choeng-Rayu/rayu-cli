@@ -64,21 +64,21 @@ import { createJsonLineReader, type JsonLineReader } from '../../transport/jsonL
 import {
   extractSessionId,
   isTurnTerminal,
-  normalizeClaudeEnvelope,
+  normalizeRayuEnvelope,
 } from './normalize.js'
 import {
-  buildClaudeArgs,
+  buildRayuArgs,
   buildUserMessage,
-  newClaudeSessionId,
+  newRayuSessionId,
 } from './protocol.js'
 import {
-  findClaudeTranscriptsForCwd,
+  findRayuTranscriptsForCwd,
   looksRecentlyActive,
 } from './observe.js'
 
-export const CLAUDE_CODE_PROVIDER = asProviderId('claude-code')
+export const ANTHROPIC_CLI_PROVIDER = asProviderId('claude-code')
 
-const CLAUDE_BIN = 'claude'
+const ANTHROPIC_CLI_BIN = 'claude'
 
 /**
  * Capabilities, each level chosen against a documented protocol fact.
@@ -95,7 +95,7 @@ const CLAUDE_BIN = 'claude'
  *   `process: 'full'`      — RAYU owns the child, so interrupt and kill are ours.
  *   `permissions: 'full'`  — `--permission-prompt-tool` routes prompts to RAYU.
  */
-const CLAUDE_CAPABILITIES: AgentCapabilities = {
+const ANTHROPIC_CLI_CAPABILITIES: AgentCapabilities = {
   terminal: 'observe',
   messages: 'message',
   sessions: 'observe',
@@ -103,7 +103,7 @@ const CLAUDE_CAPABILITIES: AgentCapabilities = {
   permissions: 'full',
 }
 
-export type ClaudeCodeAdapterOptions = {
+export type RayuCodeAdapterOptions = {
   /** MCP config exposing RAYU's tools to Claude Code. Supplied by Task 11. */
   readonly mcpConfigPath?: string
   /** MCP tool that answers permission prompts, e.g. `mcp__rayu__approve`. */
@@ -112,10 +112,10 @@ export type ClaudeCodeAdapterOptions = {
   readonly maxBudgetUsd?: number
 }
 
-class ClaudeCodeHandle implements AgentHandle {
+class RayuCodeHandle implements AgentHandle {
   readonly agentId: AgentInstanceId
-  readonly provider = CLAUDE_CODE_PROVIDER
-  readonly capabilities = CLAUDE_CAPABILITIES
+  readonly provider = ANTHROPIC_CLI_PROVIDER
+  readonly capabilities = ANTHROPIC_CLI_CAPABILITIES
   /** A stdio pipe belongs to this RAYU process, so the agent cannot outlive it. */
   readonly durability = 'session-bound' as const
   readonly adoption = 'managed' as const
@@ -206,7 +206,7 @@ class ClaudeCodeHandle implements AgentHandle {
       this.#patch({ connectionState: 'connected', agentState: 'idle' })
     }
 
-    const payloads = normalizeClaudeEnvelope(value)
+    const payloads = normalizeRayuEnvelope(value)
     if (payloads.length > 0) {
       emitEvents(this.#context(), payloads)
     }
@@ -306,7 +306,7 @@ class ClaudeCodeHandle implements AgentHandle {
    * ask a running instance what sessions exist.
    */
   async listSessions(): Promise<SessionSummary[]> {
-    const transcripts = await findClaudeTranscriptsForCwd(this.#cwd)
+    const transcripts = await findRayuTranscriptsForCwd(this.#cwd)
     return transcripts.map(transcript => ({
       agentSessionId: asAgentSessionId(transcript.sessionId),
       title: looksRecentlyActive(transcript) ? 'recently active' : undefined,
@@ -327,26 +327,26 @@ class ClaudeCodeHandle implements AgentHandle {
  * `spawn` — and resolving here guarantees `isAvailable()` and `launch()` refer to
  * the same binary.
  */
-function resolveClaudeBinary(): string {
-  const resolved = whichSync(CLAUDE_BIN)
+function resolveRayuBinary(): string {
+  const resolved = whichSync(ANTHROPIC_CLI_BIN)
   if (!resolved) {
     throw new Error(
-      `Cannot find the '${CLAUDE_BIN}' CLI on PATH. Install Claude Code, or add it to PATH, then retry.`,
+      `Cannot find the '${ANTHROPIC_CLI_BIN}' CLI on PATH. Install Claude Code, or add it to PATH, then retry.`,
     )
   }
   return resolved
 }
 
-export function createClaudeCodeAdapter(
-  options: ClaudeCodeAdapterOptions = {},
+export function createRayuCodeAdapter(
+  options: RayuCodeAdapterOptions = {},
 ): AgentAdapter {
   return {
-    provider: CLAUDE_CODE_PROVIDER,
+    provider: ANTHROPIC_CLI_PROVIDER,
     displayName: 'Claude Code',
-    capabilityCeiling: CLAUDE_CAPABILITIES,
+    capabilityCeiling: ANTHROPIC_CLI_CAPABILITIES,
 
     async isAvailable(): Promise<boolean> {
-      return whichSync(CLAUDE_BIN) !== null
+      return whichSync(ANTHROPIC_CLI_BIN) !== null
     },
 
     async launch(spec: LaunchSpec): Promise<AgentHandle> {
@@ -358,8 +358,8 @@ export function createClaudeCodeAdapter(
         )
       }
 
-      const sessionId = spec.resumeSessionId ? undefined : newClaudeSessionId()
-      const args = buildClaudeArgs({
+      const sessionId = spec.resumeSessionId ? undefined : newRayuSessionId()
+      const args = buildRayuArgs({
         sessionId,
         resumeSessionId: spec.resumeSessionId,
         model: spec.model,
@@ -369,7 +369,7 @@ export function createClaudeCodeAdapter(
         maxBudgetUsd: options.maxBudgetUsd,
       })
 
-      const child = spawn(resolveClaudeBinary(), args, {
+      const child = spawn(resolveRayuBinary(), args, {
         cwd: spec.cwd,
         // CLAUDE_CONFIG_DIR is forwarded by name so Claude Code finds its own
         // config and credentials. RAYU's provider keys are not forwarded.
@@ -395,7 +395,7 @@ export function createClaudeCodeAdapter(
         )
       })
 
-      return new ClaudeCodeHandle({
+      return new RayuCodeHandle({
         agentId: spec.agentId,
         child,
         cwd: spec.cwd,
@@ -415,4 +415,4 @@ export function createClaudeCodeAdapter(
   }
 }
 
-export type { ClaudeCodeHandle }
+export type { RayuCodeHandle as ClaudeCodeHandle }

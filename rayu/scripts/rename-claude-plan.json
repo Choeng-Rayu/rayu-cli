@@ -1,13 +1,13 @@
 {
   "summary": {
-    "rename": 47,
-    "override": 3,
-    "keep": 56,
+    "rename": 27,
+    "override": 0,
+    "keep": 57,
     "refused": 0,
     "byWave": {
       "1": 0,
       "2": 0,
-      "3": 23,
+      "3": 0,
       "4": 27
     },
     "unresolved": 541,
@@ -241,211 +241,14 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "CLAUDE_CODE_PROVIDER",
-      "newName": "ANTHROPIC_CLI_PROVIDER",
-      "declFile": "src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts",
-      "line": 79,
-      "wave": 3,
-      "refs": 10,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_BIN",
-      "newName": "ANTHROPIC_CLI_BIN",
-      "declFile": "src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts",
-      "line": 81,
-      "wave": 3,
-      "refs": 4,
-      "status": "override"
-    },
-    {
-      "symbol": "CLAUDE_CAPABILITIES",
-      "newName": "ANTHROPIC_CLI_CAPABILITIES",
-      "declFile": "src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts",
-      "line": 98,
-      "wave": 3,
-      "refs": 3,
-      "status": "override"
-    },
-    {
-      "symbol": "ClaudeCodeAdapterOptions",
-      "newName": "RayuCodeAdapterOptions",
-      "declFile": "src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts",
-      "line": 106,
-      "wave": 3,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeCodeHandle",
+      "symbol": "RayuCodeHandle",
       "newName": "RayuCodeHandle",
       "declFile": "src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts",
       "line": 115,
       "wave": 3,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "resolveClaudeBinary",
-      "newName": "resolveRayuBinary",
-      "declFile": "src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts",
-      "line": 330,
-      "wave": 3,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "createClaudeCodeAdapter",
-      "newName": "createRayuCodeAdapter",
-      "declFile": "src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts",
-      "line": 340,
-      "wave": 3,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "normalizeClaudeEnvelope",
-      "newName": "normalizeRayuEnvelope",
-      "declFile": "src/externalAgents/adapters/claudeCode/normalize.ts",
-      "line": 198,
-      "wave": 3,
-      "refs": 21,
-      "status": "rename"
-    },
-    {
-      "symbol": "getClaudeProjectsDir",
-      "newName": "getRayuProjectsDir",
-      "declFile": "src/externalAgents/adapters/claudeCode/observe.ts",
-      "line": 27,
-      "wave": 3,
-      "refs": 4,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeTranscript",
-      "newName": "RayuTranscript",
-      "declFile": "src/externalAgents/adapters/claudeCode/observe.ts",
-      "line": 31,
-      "wave": 3,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "listClaudeTranscripts",
-      "newName": "listRayuTranscripts",
-      "declFile": "src/externalAgents/adapters/claudeCode/observe.ts",
-      "line": 60,
-      "wave": 3,
-      "refs": 12,
-      "status": "rename"
-    },
-    {
-      "symbol": "findClaudeTranscriptsForCwd",
-      "newName": "findRayuTranscriptsForCwd",
-      "declFile": "src/externalAgents/adapters/claudeCode/observe.ts",
-      "line": 108,
-      "wave": 3,
-      "refs": 10,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_MESSAGE_TYPE",
-      "newName": "RAYU_MESSAGE_TYPE",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 28,
-      "wave": 3,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_RESULT_SUCCESS",
-      "newName": "RAYU_RESULT_SUCCESS",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 38,
-      "wave": 3,
-      "refs": 3,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_BLOCK",
-      "newName": "RAYU_BLOCK",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 46,
-      "wave": 3,
-      "refs": 6,
-      "status": "rename"
-    },
-    {
-      "symbol": "CLAUDE_FILE_WRITING_TOOLS",
-      "newName": "RAYU_FILE_WRITING_TOOLS",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 61,
-      "wave": 3,
-      "refs": 5,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeContentBlock",
-      "newName": "RayuContentBlock",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 68,
-      "wave": 3,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeMessageEnvelope",
-      "newName": "RayuMessageEnvelope",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 82,
-      "wave": 3,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "newClaudeSessionId",
-      "newName": "newRayuSessionId",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 120,
-      "wave": 3,
-      "refs": 8,
-      "status": "rename"
-    },
-    {
-      "symbol": "isValidClaudeSessionId",
-      "newName": "isValidRayuSessionId",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 127,
-      "wave": 3,
-      "refs": 6,
-      "status": "rename"
-    },
-    {
-      "symbol": "ClaudeArgsSpec",
-      "newName": "RayuArgsSpec",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 131,
-      "wave": 3,
-      "refs": 2,
-      "status": "rename"
-    },
-    {
-      "symbol": "buildClaudeArgs",
-      "newName": "buildRayuArgs",
-      "declFile": "src/externalAgents/adapters/claudeCode/protocol.ts",
-      "line": 165,
-      "wave": 3,
-      "refs": 13,
-      "status": "rename"
-    },
-    {
-      "symbol": "probeClaudeCode",
-      "newName": "probeRayuCode",
-      "declFile": "src/externalAgents/core/discovery.ts",
-      "line": 272,
-      "wave": 3,
-      "refs": 2,
-      "status": "rename"
+      "refs": 0,
+      "status": "keep",
+      "reason": "mapping produced no change"
     },
     {
       "symbol": "claude_code_version",

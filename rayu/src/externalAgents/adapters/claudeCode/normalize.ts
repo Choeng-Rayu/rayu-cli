@@ -19,12 +19,12 @@
 
 import type { EventPayload } from '../../core/normalizer.js'
 import {
-  CLAUDE_BLOCK,
-  CLAUDE_FILE_WRITING_TOOLS,
-  CLAUDE_MESSAGE_TYPE,
-  CLAUDE_RESULT_SUCCESS,
-  type ClaudeContentBlock,
-  type ClaudeMessageEnvelope,
+  RAYU_BLOCK,
+  RAYU_FILE_WRITING_TOOLS,
+  RAYU_MESSAGE_TYPE,
+  RAYU_RESULT_SUCCESS,
+  type RayuContentBlock,
+  type RayuMessageEnvelope,
 } from './protocol.js'
 
 /**
@@ -51,7 +51,7 @@ function str(value: unknown): string {
 }
 
 /** Content blocks, tolerating the string form some envelopes use. */
-function blocksOf(envelope: ClaudeMessageEnvelope): ClaudeContentBlock[] {
+function blocksOf(envelope: RayuMessageEnvelope): RayuContentBlock[] {
   const content = envelope.message?.content
   if (typeof content === 'string') {
     return content.length > 0 ? [{ type: 'text', text: content }] : []
@@ -66,7 +66,7 @@ function blocksOf(envelope: ClaudeMessageEnvelope): ClaudeContentBlock[] {
  * which is the safe direction: a missed path means a missed conflict warning,
  * while a wrong path would block an unrelated agent's write.
  */
-export function extractEditedPaths(block: ClaudeContentBlock): string[] {
+export function extractEditedPaths(block: RayuContentBlock): string[] {
   const input = asRecord(block.input)
   const single = str(input.file_path) || str(input.path) || str(input.notebook_path)
   if (single) return [single]
@@ -80,7 +80,7 @@ export function extractEditedPaths(block: ClaudeContentBlock): string[] {
 }
 
 /** Human-readable one-liner for a tool call, safe to display. */
-function summarizeToolUse(block: ClaudeContentBlock): string | undefined {
+function summarizeToolUse(block: RayuContentBlock): string | undefined {
   const input = asRecord(block.input)
   const command = str(input.command)
   if (command) return command
@@ -90,19 +90,19 @@ function summarizeToolUse(block: ClaudeContentBlock): string | undefined {
   return pattern || undefined
 }
 
-function fromAssistantBlock(block: ClaudeContentBlock): EventPayload[] {
+function fromAssistantBlock(block: RayuContentBlock): EventPayload[] {
   switch (block.type) {
-    case CLAUDE_BLOCK.text:
+    case RAYU_BLOCK.text:
       return block.text
         ? [{ type: 'agent_message', text: block.text, delta: false }]
         : []
 
-    case CLAUDE_BLOCK.thinking:
+    case RAYU_BLOCK.thinking:
       return block.thinking
         ? [{ type: 'agent_thinking', text: block.thinking, delta: false }]
         : []
 
-    case CLAUDE_BLOCK.toolUse: {
+    case RAYU_BLOCK.toolUse: {
       const callId = block.id ?? 'unknown'
       const toolName = block.name ?? 'unknown'
       const events: EventPayload[] = [
@@ -115,7 +115,7 @@ function fromAssistantBlock(block: ClaudeContentBlock): EventPayload[] {
       ]
       // Claude Code has no file-change event; infer from write-capable tools so
       // the Workspace Manager can see what this agent is touching.
-      if (CLAUDE_FILE_WRITING_TOOLS.has(toolName)) {
+      if (RAYU_FILE_WRITING_TOOLS.has(toolName)) {
         for (const path of extractEditedPaths(block)) {
           events.push({
             type: 'file_changed',
@@ -133,8 +133,8 @@ function fromAssistantBlock(block: ClaudeContentBlock): EventPayload[] {
 }
 
 /** Tool results arrive as blocks on a `user` envelope. */
-function fromUserBlock(block: ClaudeContentBlock): EventPayload[] {
-  if (block.type !== CLAUDE_BLOCK.toolResult) return []
+function fromUserBlock(block: RayuContentBlock): EventPayload[] {
+  if (block.type !== RAYU_BLOCK.toolResult) return []
   const raw = block.content
   const chunk =
     typeof raw === 'string'
@@ -153,9 +153,9 @@ function fromUserBlock(block: ClaudeContentBlock): EventPayload[] {
   ]
 }
 
-function fromResult(envelope: ClaudeMessageEnvelope): EventPayload[] {
+function fromResult(envelope: RayuMessageEnvelope): EventPayload[] {
   const subtype = envelope.subtype ?? ''
-  const succeeded = subtype === CLAUDE_RESULT_SUCCESS && envelope.is_error !== true
+  const succeeded = subtype === RAYU_RESULT_SUCCESS && envelope.is_error !== true
 
   if (succeeded) {
     return [
@@ -176,7 +176,7 @@ function fromResult(envelope: ClaudeMessageEnvelope): EventPayload[] {
 }
 
 /** Partial streaming deltas, only present with `--include-partial-messages`. */
-function fromStreamEvent(envelope: ClaudeMessageEnvelope): EventPayload[] {
+function fromStreamEvent(envelope: RayuMessageEnvelope): EventPayload[] {
   const event = envelope.event
   if (event?.type !== 'content_block_delta') return []
   const delta = event.delta
@@ -195,26 +195,26 @@ function fromStreamEvent(envelope: ClaudeMessageEnvelope): EventPayload[] {
  * @returns events in publish order; `[]` for anything not modelled, including
  *   unknown envelope types and unknown content blocks.
  */
-export function normalizeClaudeEnvelope(raw: unknown): EventPayload[] {
-  const envelope = asRecord(raw) as ClaudeMessageEnvelope
+export function normalizeRayuEnvelope(raw: unknown): EventPayload[] {
+  const envelope = asRecord(raw) as RayuMessageEnvelope
 
   switch (envelope.type) {
-    case CLAUDE_MESSAGE_TYPE.assistant:
+    case RAYU_MESSAGE_TYPE.assistant:
       return blocksOf(envelope).flatMap(block => fromAssistantBlock(block))
 
-    case CLAUDE_MESSAGE_TYPE.user:
+    case RAYU_MESSAGE_TYPE.user:
       // Also covers `--replay-user-messages` echoes, whose blocks are plain text
       // and therefore produce nothing — we do not want our own prompt echoed
       // back into the transcript as agent output.
       return blocksOf(envelope).flatMap(block => fromUserBlock(block))
 
-    case CLAUDE_MESSAGE_TYPE.result:
+    case RAYU_MESSAGE_TYPE.result:
       return fromResult(envelope)
 
-    case CLAUDE_MESSAGE_TYPE.streamEvent:
+    case RAYU_MESSAGE_TYPE.streamEvent:
       return fromStreamEvent(envelope)
 
-    case CLAUDE_MESSAGE_TYPE.system:
+    case RAYU_MESSAGE_TYPE.system:
       // `init` carries the session id, which the adapter captures directly from
       // the envelope. Nothing here is user-visible.
       return []
@@ -226,11 +226,11 @@ export function normalizeClaudeEnvelope(raw: unknown): EventPayload[] {
 
 /** The session id Claude Code reports, so RAYU records the real one. */
 export function extractSessionId(raw: unknown): string | undefined {
-  const envelope = asRecord(raw) as ClaudeMessageEnvelope
+  const envelope = asRecord(raw) as RayuMessageEnvelope
   return envelope.session_id || undefined
 }
 
 /** True when this envelope ends a turn, so the adapter can go idle. */
 export function isTurnTerminal(raw: unknown): boolean {
-  return (asRecord(raw) as ClaudeMessageEnvelope).type === CLAUDE_MESSAGE_TYPE.result
+  return (asRecord(raw) as RayuMessageEnvelope).type === RAYU_MESSAGE_TYPE.result
 }

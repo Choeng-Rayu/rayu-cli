@@ -24,11 +24,11 @@ import { getRayuCodeConfigDir } from '../../../plugins/installers/detect.js'
 import { parseJSONL } from '../../../utils/json.js'
 
 /** `<config>/projects` — one directory per project Claude Code has worked in. */
-export function getClaudeProjectsDir(): string {
+export function getRayuProjectsDir(): string {
   return join(getRayuCodeConfigDir(), 'projects')
 }
 
-export type ClaudeTranscript = {
+export type RayuTranscript = {
   /** Absolute path to the `.jsonl` rollout. */
   readonly path: string
   /** Session id, taken from the filename. */
@@ -57,8 +57,8 @@ export function encodeProjectDirName(cwd: string): string {
  * Returns `[]` when Claude Code has never run, rather than throwing — absence is
  * the normal case on a machine without it installed.
  */
-export async function listClaudeTranscripts(): Promise<ClaudeTranscript[]> {
-  const root = getClaudeProjectsDir()
+export async function listRayuTranscripts(): Promise<RayuTranscript[]> {
+  const root = getRayuProjectsDir()
   let projects: string[]
   try {
     projects = await readdir(root)
@@ -69,7 +69,7 @@ export async function listClaudeTranscripts(): Promise<ClaudeTranscript[]> {
     return []
   }
 
-  const transcripts: ClaudeTranscript[] = []
+  const transcripts: RayuTranscript[] = []
   for (const project of projects) {
     const projectDir = join(root, project)
     let entries: string[]
@@ -105,10 +105,10 @@ export async function listClaudeTranscripts(): Promise<ClaudeTranscript[]> {
  * change in Claude Code's encoding degrades ordering rather than returning
  * nothing.
  */
-export async function findClaudeTranscriptsForCwd(
+export async function findRayuTranscriptsForCwd(
   cwd: string,
-): Promise<ClaudeTranscript[]> {
-  const all = await listClaudeTranscripts()
+): Promise<RayuTranscript[]> {
+  const all = await listRayuTranscripts()
   const expected = encodeProjectDirName(cwd)
   const exact = all.filter(t => t.project === expected)
   return exact.length > 0 ? exact : all
@@ -122,7 +122,7 @@ export async function findClaudeTranscriptsForCwd(
  * never to claim RAYU can control it.
  */
 export function looksRecentlyActive(
-  transcript: ClaudeTranscript,
+  transcript: RayuTranscript,
   withinMs = 5 * 60 * 1000,
 ): boolean {
   return Date.now() - transcript.modifiedAt <= withinMs
@@ -135,7 +135,7 @@ export function looksRecentlyActive(
  * large, and only the recent entries are informative.
  */
 export async function readTranscriptTail(
-  transcript: ClaudeTranscript,
+  transcript: RayuTranscript,
   maxEntries = 20,
   maxBytes = 256 * 1024,
 ): Promise<unknown[]> {

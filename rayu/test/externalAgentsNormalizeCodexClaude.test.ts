@@ -26,14 +26,14 @@ import {
   extractEditedPaths,
   extractSessionId,
   isTurnTerminal,
-  normalizeClaudeEnvelope,
+  normalizeRayuEnvelope,
 } from '../src/externalAgents/adapters/claudeCode/normalize.ts'
 import {
-  buildClaudeArgs,
+  buildRayuArgs,
   buildUserMessage,
-  CLAUDE_FILE_WRITING_TOOLS,
-  isValidClaudeSessionId,
-  newClaudeSessionId,
+  RAYU_FILE_WRITING_TOOLS,
+  isValidRayuSessionId,
+  newRayuSessionId,
 } from '../src/externalAgents/adapters/claudeCode/protocol.ts'
 import type { EventPayload } from '../src/externalAgents/core/normalizer.ts'
 
@@ -596,7 +596,7 @@ describe('claude code argv', () => {
     // --verbose is mandatory with stream-json output, and --replay-user-messages
     // requires stream-json on both sides. Both are applied unconditionally
     // rather than left to callers to remember.
-    const args = buildClaudeArgs({})
+    const args = buildRayuArgs({})
     expect(args).toContain('-p')
     expect(args).toContain('--verbose')
     expect(args).toContain('--replay-user-messages')
@@ -607,8 +607,8 @@ describe('claude code argv', () => {
   test('NEVER emits a permission bypass flag', () => {
     // RAYU must not silently disarm another agent's approval prompts on the
     // user's behalf.
-    const args = buildClaudeArgs({
-      sessionId: newClaudeSessionId(),
+    const args = buildRayuArgs({
+      sessionId: newRayuSessionId(),
       model: 'sonnet',
       permissionPromptTool: 'mcp__rayu__approve',
       addDirs: ['/a', '/b'],
@@ -620,15 +620,15 @@ describe('claude code argv', () => {
   })
 
   test('routes prompts back to RAYU instead', () => {
-    const args = buildClaudeArgs({ permissionPromptTool: 'mcp__rayu__approve' })
+    const args = buildRayuArgs({ permissionPromptTool: 'mcp__rayu__approve' })
     expect(args.join(' ')).toContain('--permission-prompt-tool mcp__rayu__approve')
   })
 
   test('resume wins over a fresh session id', () => {
     // Sending both would be ambiguous; resume is the caller's explicit intent.
-    const args = buildClaudeArgs({
+    const args = buildRayuArgs({
       resumeSessionId: 'abcdef12-3456-7890-abcd-ef1234567890',
-      sessionId: newClaudeSessionId(),
+      sessionId: newRayuSessionId(),
     })
     expect(args).toContain('--resume')
     expect(args).not.toContain('--session-id')
@@ -636,38 +636,38 @@ describe('claude code argv', () => {
 
   test('fork only applies with resume', () => {
     expect(
-      buildClaudeArgs({
+      buildRayuArgs({
         resumeSessionId: 'abcdef12-3456-7890-abcd-ef1234567890',
         forkSession: true,
       }),
     ).toContain('--fork-session')
     expect(
-      buildClaudeArgs({ sessionId: newClaudeSessionId(), forkSession: true }),
+      buildRayuArgs({ sessionId: newRayuSessionId(), forkSession: true }),
     ).not.toContain('--fork-session')
   })
 
   test('rejects a non-UUID session id up front', () => {
     // Claude Code requires a UUID; failing here names the problem instead of
     // surfacing an opaque CLI error after spawn.
-    expect(() => buildClaudeArgs({ sessionId: 'agent_01' })).toThrow(
+    expect(() => buildRayuArgs({ sessionId: 'agent_01' })).toThrow(
       /must be a UUID|requires --session-id to be a UUID/,
     )
   })
 
   test('generated session ids validate', () => {
-    const id = newClaudeSessionId()
-    expect(isValidClaudeSessionId(id)).toBe(true)
-    expect(isValidClaudeSessionId('not-a-uuid')).toBe(false)
-    expect(isValidClaudeSessionId('')).toBe(false)
+    const id = newRayuSessionId()
+    expect(isValidRayuSessionId(id)).toBe(true)
+    expect(isValidRayuSessionId('not-a-uuid')).toBe(false)
+    expect(isValidRayuSessionId('')).toBe(false)
   })
 
   test('each add-dir gets its own flag', () => {
-    const args = buildClaudeArgs({ addDirs: ['/one', '/two'] })
+    const args = buildRayuArgs({ addDirs: ['/one', '/two'] })
     expect(args.filter(a => a === '--add-dir')).toHaveLength(2)
   })
 
   test('optional limits are omitted when unset', () => {
-    const args = buildClaudeArgs({}).join(' ')
+    const args = buildRayuArgs({}).join(' ')
     expect(args).not.toContain('--max-turns')
     expect(args).not.toContain('--max-budget-usd')
     expect(args).not.toContain('--model')
@@ -687,7 +687,7 @@ describe('claude code argv', () => {
 
 describe('claude code envelope normalization', () => {
   function assistant(content: unknown) {
-    return normalizeClaudeEnvelope({ type: 'assistant', message: { content } })
+    return normalizeRayuEnvelope({ type: 'assistant', message: { content } })
   }
 
   test('text blocks become non-delta agent messages', () => {
@@ -724,7 +724,7 @@ describe('claude code envelope normalization', () => {
     ])
   })
 
-  test.each([...CLAUDE_FILE_WRITING_TOOLS])(
+  test.each([...RAYU_FILE_WRITING_TOOLS])(
     '%s implies a file change',
     toolName => {
       const events = assistant([
@@ -816,7 +816,7 @@ describe('claude code envelope normalization', () => {
 
   test('tool results arrive on a user envelope', () => {
     expect(
-      normalizeClaudeEnvelope({
+      normalizeRayuEnvelope({
         type: 'user',
         message: {
           content: [
@@ -830,7 +830,7 @@ describe('claude code envelope normalization', () => {
   })
 
   test('an errored tool result goes to stderr', () => {
-    const events = normalizeClaudeEnvelope({
+    const events = normalizeRayuEnvelope({
       type: 'user',
       message: {
         content: [
@@ -847,7 +847,7 @@ describe('claude code envelope normalization', () => {
   })
 
   test('a block-array tool result is joined', () => {
-    const events = normalizeClaudeEnvelope({
+    const events = normalizeRayuEnvelope({
       type: 'user',
       message: {
         content: [
@@ -866,7 +866,7 @@ describe('claude code envelope normalization', () => {
     // --replay-user-messages echoes our own prompt back; emitting it would put
     // RAYU's input into the transcript as agent output.
     expect(
-      normalizeClaudeEnvelope({
+      normalizeRayuEnvelope({
         type: 'user',
         message: { content: [{ type: 'text', text: 'fix the bug' }] },
       }),
@@ -875,7 +875,7 @@ describe('claude code envelope normalization', () => {
 
   test('an empty tool result emits nothing', () => {
     expect(
-      normalizeClaudeEnvelope({
+      normalizeRayuEnvelope({
         type: 'user',
         message: {
           content: [{ type: 'tool_result', tool_use_id: 't', content: '' }],
@@ -886,7 +886,7 @@ describe('claude code envelope normalization', () => {
 
   test('a successful result completes the task and goes idle', () => {
     expect(
-      normalizeClaudeEnvelope({
+      normalizeRayuEnvelope({
         type: 'result',
         subtype: 'success',
         result: 'Refactored 3 files.',
@@ -900,7 +900,7 @@ describe('claude code envelope normalization', () => {
   test('is_error overrides a success subtype', () => {
     expect(
       types(
-        normalizeClaudeEnvelope({
+        normalizeRayuEnvelope({
           type: 'result',
           subtype: 'success',
           is_error: true,
@@ -913,7 +913,7 @@ describe('claude code envelope normalization', () => {
   test.each(['error_rate_limit', 'error_overloaded', 'error_api'])(
     '%s stays alive as a provider fault',
     subtype => {
-      const events = normalizeClaudeEnvelope({ type: 'result', subtype })
+      const events = normalizeRayuEnvelope({ type: 'result', subtype })
       expect(events).toHaveLength(1)
       expect(events[0]).toMatchObject({
         type: 'agent_error',
@@ -926,14 +926,14 @@ describe('claude code envelope normalization', () => {
     '%s is a genuine task failure',
     subtype => {
       // Retrying without change would fail identically.
-      const events = normalizeClaudeEnvelope({ type: 'result', subtype })
+      const events = normalizeRayuEnvelope({ type: 'result', subtype })
       expect(types(events)).toEqual(['task_failed', 'agent_idle'])
       expect(events[0]).toMatchObject({ code: subtype })
     },
   )
 
   test('a failure with no result text still names the subtype', () => {
-    const events = normalizeClaudeEnvelope({
+    const events = normalizeRayuEnvelope({
       type: 'result',
       subtype: 'error_max_turns',
     })
@@ -942,7 +942,7 @@ describe('claude code envelope normalization', () => {
 
   test('partial deltas are only produced for the delta types we model', () => {
     expect(
-      normalizeClaudeEnvelope({
+      normalizeRayuEnvelope({
         type: 'stream_event',
         event: {
           type: 'content_block_delta',
@@ -952,7 +952,7 @@ describe('claude code envelope normalization', () => {
     ).toEqual([{ type: 'agent_message', text: 'tok', delta: true }])
 
     expect(
-      normalizeClaudeEnvelope({
+      normalizeRayuEnvelope({
         type: 'stream_event',
         event: {
           type: 'content_block_delta',
@@ -962,13 +962,13 @@ describe('claude code envelope normalization', () => {
     ).toEqual([{ type: 'agent_thinking', text: 'hm', delta: true }])
 
     expect(
-      normalizeClaudeEnvelope({
+      normalizeRayuEnvelope({
         type: 'stream_event',
         event: { type: 'message_start' },
       }),
     ).toEqual([])
     expect(
-      normalizeClaudeEnvelope({
+      normalizeRayuEnvelope({
         type: 'stream_event',
         event: {
           type: 'content_block_delta',
@@ -984,7 +984,7 @@ describe('claude code envelope normalization', () => {
       subtype: 'init',
       session_id: 'abcdef12-3456-7890-abcd-ef1234567890',
     }
-    expect(normalizeClaudeEnvelope(envelope)).toEqual([])
+    expect(normalizeRayuEnvelope(envelope)).toEqual([])
     expect(extractSessionId(envelope)).toBe('abcdef12-3456-7890-abcd-ef1234567890')
   })
 
@@ -1003,7 +1003,7 @@ describe('claude code envelope normalization', () => {
 
   test('a malformed envelope degrades to no events', () => {
     for (const raw of [undefined, null, 42, 'text', [], {}, { type: 'brand_new' }]) {
-      expect(normalizeClaudeEnvelope(raw)).toEqual([])
+      expect(normalizeRayuEnvelope(raw)).toEqual([])
     }
   })
 

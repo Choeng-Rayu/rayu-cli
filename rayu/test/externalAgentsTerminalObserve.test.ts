@@ -52,9 +52,9 @@ import {
 } from '../src/externalAgents/terminal/index.ts'
 import {
   encodeProjectDirName,
-  findClaudeTranscriptsForCwd,
-  getClaudeProjectsDir,
-  listClaudeTranscripts,
+  findRayuTranscriptsForCwd,
+  getRayuProjectsDir,
+  listRayuTranscripts,
   looksRecentlyActive,
   readTranscriptTail,
 } from '../src/externalAgents/adapters/claudeCode/observe.ts'
@@ -197,13 +197,13 @@ describe('claude code transcript observation', () => {
   }
 
   test('the projects dir follows CLAUDE_CONFIG_DIR', () => {
-    expect(getClaudeProjectsDir()).toBe(join(rayuDir, 'projects'))
+    expect(getRayuProjectsDir()).toBe(join(rayuDir, 'projects'))
   })
 
   test('a machine with no Claude Code returns nothing rather than throwing', async () => {
     // Absence is the normal case, not an error.
-    expect(await listClaudeTranscripts()).toEqual([])
-    expect(await findClaudeTranscriptsForCwd('/home/u/repo')).toEqual([])
+    expect(await listRayuTranscripts()).toEqual([])
+    expect(await findRayuTranscriptsForCwd('/home/u/repo')).toEqual([])
   })
 
   test('encodes a cwd the way Claude Code does', () => {
@@ -214,7 +214,7 @@ describe('claude code transcript observation', () => {
   test('lists transcripts newest first, with session id and size', async () => {
     transcript('-home-u-old', 'sess-old', [{ type: 'user' }], 60_000)
     transcript('-home-u-new', 'sess-new', [{ type: 'user' }])
-    const found = await listClaudeTranscripts()
+    const found = await listRayuTranscripts()
     expect(found.map(t => t.sessionId)).toEqual(['sess-new', 'sess-old'])
     expect(found[0]!.project).toBe('-home-u-new')
     expect(found[0]!.sizeBytes).toBeGreaterThan(0)
@@ -225,14 +225,14 @@ describe('claude code transcript observation', () => {
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(join(projectDir, 'notes.txt'), 'hello')
     writeFileSync(join(projectDir, 'sess.jsonl'), '{}\n')
-    expect((await listClaudeTranscripts()).map(t => t.sessionId)).toEqual(['sess'])
+    expect((await listRayuTranscripts()).map(t => t.sessionId)).toEqual(['sess'])
   })
 
   test('prefers an exact encoded-name match for a cwd', async () => {
     transcript('-home-u-repo', 'mine', [{ a: 1 }])
     transcript('-home-u-other', 'theirs', [{ a: 1 }])
     expect(
-      (await findClaudeTranscriptsForCwd('/home/u/repo')).map(t => t.sessionId),
+      (await findRayuTranscriptsForCwd('/home/u/repo')).map(t => t.sessionId),
     ).toEqual(['mine'])
   })
 
@@ -241,7 +241,7 @@ describe('claude code transcript observation', () => {
     // Code changed how it encodes paths.
     transcript('some-unexpected-encoding', 'still-found', [{ a: 1 }])
     expect(
-      (await findClaudeTranscriptsForCwd('/home/u/repo')).map(t => t.sessionId),
+      (await findRayuTranscriptsForCwd('/home/u/repo')).map(t => t.sessionId),
     ).toEqual(['still-found'])
   })
 
@@ -250,7 +250,7 @@ describe('claude code transcript observation', () => {
     // it is used to DESCRIBE an observable instance, never to claim control.
     transcript('-p', 'fresh', [{ a: 1 }])
     transcript('-p', 'stale', [{ a: 1 }], 10 * 60 * 1000)
-    const all = await listClaudeTranscripts()
+    const all = await listRayuTranscripts()
     const fresh = all.find(t => t.sessionId === 'fresh')!
     const stale = all.find(t => t.sessionId === 'stale')!
     expect(looksRecentlyActive(fresh)).toBe(true)
@@ -261,7 +261,7 @@ describe('claude code transcript observation', () => {
   test('reads only the TAIL of a long rollout', async () => {
     const lines = Array.from({ length: 200 }, (_, i) => ({ n: i }))
     transcript('-p', 'long', lines)
-    const [found] = await listClaudeTranscripts()
+    const [found] = await listRayuTranscripts()
     const tail = await readTranscriptTail(found!, 5)
     expect(tail).toHaveLength(5)
     expect(tail[4]).toEqual({ n: 199 })
@@ -274,7 +274,7 @@ describe('claude code transcript observation', () => {
       pad: 'x'.repeat(200),
     }))
     transcript('-p', 'wide', lines)
-    const [found] = await listClaudeTranscripts()
+    const [found] = await listRayuTranscripts()
     const tail = await readTranscriptTail(found!, 100, 2_000)
     expect(tail.length).toBeGreaterThan(0)
     for (const entry of tail) {
@@ -286,13 +286,13 @@ describe('claude code transcript observation', () => {
     const projectDir = join(rayuDir, 'projects', '-p')
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(join(projectDir, 'mixed.jsonl'), '{"ok":1}\nnot json\n{"ok":2}\n')
-    const [found] = await listClaudeTranscripts()
+    const [found] = await listRayuTranscripts()
     expect(await readTranscriptTail(found!)).toEqual([{ ok: 1 }, { ok: 2 }])
   })
 
   test('a vanished transcript returns nothing rather than throwing', async () => {
     transcript('-p', 'gone', [{ a: 1 }])
-    const [found] = await listClaudeTranscripts()
+    const [found] = await listRayuTranscripts()
     rmSync(found!.path)
     expect(await readTranscriptTail(found!)).toEqual([])
   })
@@ -302,9 +302,9 @@ describe('claude code transcript observation', () => {
     // session, so this whole module is read-only by construction.
     const path = transcript('-p', 'readonly', [{ a: 1 }])
     const before = readFileSync(path, 'utf-8')
-    const [found] = await listClaudeTranscripts()
+    const [found] = await listRayuTranscripts()
     await readTranscriptTail(found!)
-    await findClaudeTranscriptsForCwd('/whatever')
+    await findRayuTranscriptsForCwd('/whatever')
     expect(readFileSync(path, 'utf-8')).toBe(before)
   })
 })
