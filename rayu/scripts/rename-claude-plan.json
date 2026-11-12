@@ -2,7 +2,7 @@
   "summary": {
     "rename": 0,
     "override": 0,
-    "keep": 58,
+    "keep": 84,
     "refused": 0,
     "byWave": {
       "1": 0,
@@ -10,7 +10,7 @@
       "3": 0,
       "4": 0
     },
-    "unresolved": 541,
+    "unresolved": 553,
     "skippedExcluded": 0
   },
   "entries": [
@@ -205,16 +205,6 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
-      "symbol": "RayuCodeHandle",
-      "newName": "RayuCodeHandle",
-      "declFile": "src/externalAgents/adapters/claudeCode/ClaudeCodeAdapter.ts",
-      "line": 115,
-      "wave": 3,
-      "refs": 0,
-      "status": "keep",
-      "reason": "mapping produced no change"
-    },
-    {
       "symbol": "claude_code_version",
       "newName": "claude_code_version",
       "declFile": "src/protocol/coreSchemas.ts",
@@ -273,16 +263,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "unknown",
-      "newName": "unknown",
-      "declFile": "src/skills/bundled/claudeApiContent.ts",
-      "line": 4,
-      "wave": 1,
-      "refs": 0,
-      "status": "keep",
-      "reason": "mapping produced no change"
     },
     {
       "symbol": "claude_md_size",
@@ -363,16 +343,6 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
-    },
-    {
-      "symbol": "RAYU_SUBSCRIPTION_PROVIDER_ID",
-      "newName": "RAYU_SUBSCRIPTION_PROVIDER_ID",
-      "declFile": "src/utils/rayuProviders.ts",
-      "line": 294,
-      "wave": 2,
-      "refs": 0,
-      "status": "keep",
-      "reason": "mapping produced no change"
     },
     {
       "symbol": "CLAUDECODE",
@@ -465,6 +435,26 @@
       "reason": "wire/prompt-coupled or explicitly kept"
     },
     {
+      "symbol": "claudeContribution",
+      "newName": "claudeContribution",
+      "declFile": "test/attributionSnapshotMigration.test.ts",
+      "line": 23,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeContribution",
+      "newName": "claudeContribution",
+      "declFile": "test/attributionSnapshotMigration.test.ts",
+      "line": 49,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
       "symbol": "rayuTestClaudeServer",
       "newName": "rayuTestClaudeServer",
       "declFile": "test/claudeInterop.test.ts",
@@ -480,6 +470,116 @@
       "declFile": "test/claudeSubscriptionOAuth.test.ts",
       "line": 271,
       "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeCodeFirstTokenDate",
+      "newName": "claudeCodeFirstTokenDate",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 15,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeAiMcpEverConnected",
+      "newName": "claudeAiMcpEverConnected",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 16,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeCodeHints",
+      "newName": "claudeCodeHints",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 17,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeInChromeDefaultEnabled",
+      "newName": "claudeInChromeDefaultEnabled",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 18,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "hasCompletedClaudeInChromeOnboarding",
+      "newName": "hasCompletedClaudeInChromeOnboarding",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 19,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "hasClaudeMdExternalIncludesApproved",
+      "newName": "hasClaudeMdExternalIncludesApproved",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 42,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "hasClaudeMdExternalIncludesWarningShown",
+      "newName": "hasClaudeMdExternalIncludesWarningShown",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 43,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeCodeFirstTokenDate",
+      "newName": "claudeCodeFirstTokenDate",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 66,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeCodeHints",
+      "newName": "claudeCodeHints",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 102,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeCodeFirstTokenDate",
+      "newName": "claudeCodeFirstTokenDate",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 103,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "hasClaudeMdExternalIncludesApproved",
+      "newName": "hasClaudeMdExternalIncludesApproved",
+      "declFile": "test/configIdentifierKeyMigration.test.ts",
+      "line": 105,
+      "wave": 4,
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
@@ -593,6 +693,166 @@
       "refs": 0,
       "status": "keep",
       "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeAiOauth",
+      "newName": "claudeAiOauth",
+      "declFile": "test/oauthStorageKeyMigration.test.ts",
+      "line": 36,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeAiOauth",
+      "newName": "claudeAiOauth",
+      "declFile": "test/oauthStorageKeyMigration.test.ts",
+      "line": 56,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeAiOauth",
+      "newName": "claudeAiOauth",
+      "declFile": "test/oauthStorageKeyMigration.test.ts",
+      "line": 74,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeAiOauth",
+      "newName": "claudeAiOauth",
+      "declFile": "test/oauthStorageKeyMigration.test.ts",
+      "line": 86,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeAiOauth",
+      "newName": "claudeAiOauth",
+      "declFile": "test/oauthStorageKeyMigration.test.ts",
+      "line": 100,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeAiOauth",
+      "newName": "claudeAiOauth",
+      "declFile": "test/oauthStorageKeyMigration.test.ts",
+      "line": 114,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeMdExcludes",
+      "newName": "claudeMdExcludes",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 16,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeMcpEnabled",
+      "newName": "claudeMcpEnabled",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 17,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeSkillsEnabled",
+      "newName": "claudeSkillsEnabled",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 18,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeMdExcludes",
+      "newName": "claudeMdExcludes",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 35,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeMdExcludes",
+      "newName": "claudeMdExcludes",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 51,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeMcpEnabled",
+      "newName": "claudeMcpEnabled",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 52,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeSkillsEnabled",
+      "newName": "claudeSkillsEnabled",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 53,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeMdExcludes",
+      "newName": "claudeMdExcludes",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 91,
+      "wave": 4,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeMcpEnabled",
+      "newName": "claudeMcpEnabled",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 92,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
+    },
+    {
+      "symbol": "claudeSkillsEnabled",
+      "newName": "claudeSkillsEnabled",
+      "declFile": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 93,
+      "wave": 1,
+      "refs": 0,
+      "status": "keep",
+      "reason": "wire/prompt-coupled or explicitly kept"
     }
   ],
   "unresolved": [
@@ -663,7 +923,7 @@
     },
     {
       "file": "src/utils/settings/settings.ts",
-      "line": 267,
+      "line": 269,
       "name": "CLAUDE_CODE_USE_COWORK_PLUGINS"
     },
     {
@@ -1267,11 +1527,6 @@
       "name": "CLAUDE_CODE_SYNC_PLUGIN_INSTALL"
     },
     {
-      "file": "src/services/mcp/config.ts",
-      "line": 1023,
-      "name": "claudeMcpEnabled"
-    },
-    {
       "file": "src/utils/ide.ts",
       "line": 730,
       "name": "CLAUDE_CODE_SSE_PORT"
@@ -1397,21 +1652,6 @@
       "name": "CLAUDE_CODE_TASK_LIST_ID"
     },
     {
-      "file": "src/utils/externalSkillDiscovery.ts",
-      "line": 99,
-      "name": "claudeSkillsEnabled"
-    },
-    {
-      "file": "src/utils/externalSkillDiscovery.ts",
-      "line": 112,
-      "name": "claudeSkillsEnabled"
-    },
-    {
-      "file": "src/utils/externalSkillDiscovery.ts",
-      "line": 290,
-      "name": "claudeSkillsEnabled"
-    },
-    {
       "file": "src/utils/advisor.ts",
       "line": 61,
       "name": "CLAUDE_CODE_DISABLE_ADVISOR_TOOL"
@@ -1488,77 +1728,77 @@
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 182,
+      "line": 183,
       "name": "CLAUDE_CODE_FORCE_FULL_LOGO"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 197,
+      "line": 198,
       "name": "CLAUDE_CODE_TMUX_SESSION"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 197,
+      "line": 198,
       "name": "CLAUDE_CODE_TMUX_SESSION"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 197,
+      "line": 198,
       "name": "CLAUDE_CODE_TMUX_PREFIX_CONFLICTS"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 197,
+      "line": 198,
       "name": "CLAUDE_CODE_TMUX_PREFIX"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 197,
+      "line": 198,
       "name": "CLAUDE_CODE_TMUX_PREFIX"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 197,
+      "line": 198,
       "name": "CLAUDE_CODE_TMUX_PREFIX"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 197,
+      "line": 198,
       "name": "CLAUDE_CODE_TMUX_PREFIX"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 471,
+      "line": 472,
       "name": "CLAUDE_CODE_TMUX_SESSION"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 471,
+      "line": 472,
       "name": "CLAUDE_CODE_TMUX_SESSION"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 471,
+      "line": 472,
       "name": "CLAUDE_CODE_TMUX_PREFIX_CONFLICTS"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 471,
+      "line": 472,
       "name": "CLAUDE_CODE_TMUX_PREFIX"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 471,
+      "line": 472,
       "name": "CLAUDE_CODE_TMUX_PREFIX"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 471,
+      "line": 472,
       "name": "CLAUDE_CODE_TMUX_PREFIX"
     },
     {
       "file": "src/components/LogoV2/LogoV2.tsx",
-      "line": 471,
+      "line": 472,
       "name": "CLAUDE_CODE_TMUX_PREFIX"
     },
     {
@@ -1707,11 +1947,6 @@
       "name": "CLAUDE_CODE_COORDINATOR_MODE"
     },
     {
-      "file": "src/tools/SendMessageTool/SendMessageTool.ts",
-      "line": 849,
-      "name": "postInterClaudeMessage"
-    },
-    {
       "file": "src/tools.ts",
       "line": 102,
       "name": "CLAUDE_CODE_VERIFY_PLAN"
@@ -1725,6 +1960,16 @@
       "file": "src/utils/commitAttribution.ts",
       "line": 230,
       "name": "CLAUDE_CODE_ENTRYPOINT"
+    },
+    {
+      "file": "src/utils/commitAttribution.ts",
+      "line": 920,
+      "name": "claudeContribution"
+    },
+    {
+      "file": "src/utils/commitAttribution.ts",
+      "line": 925,
+      "name": "claudeContribution"
     },
     {
       "file": "src/utils/undercover.ts",
@@ -1885,11 +2130,6 @@
       "file": "src/screens/REPL.tsx",
       "line": 4146,
       "name": "CLAUDE_CODE_IDLE_THRESHOLD_MINUTES"
-    },
-    {
-      "file": "src/components/permissions/AskUserQuestionPermissionRequest/QuestionView.tsx",
-      "line": 62,
-      "name": "onRespondToClaude"
     },
     {
       "file": "src/components/Spinner.tsx",
@@ -2748,47 +2988,37 @@
     },
     {
       "file": "src/main.tsx",
-      "line": 294,
+      "line": 295,
       "name": "CLAUDE_CODE_CLIENT_CERT"
     },
     {
       "file": "src/main.tsx",
-      "line": 394,
+      "line": 396,
       "name": "CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER"
     },
     {
       "file": "src/main.tsx",
-      "line": 520,
+      "line": 522,
       "name": "CLAUDE_CODE_ENTRYPOINT"
     },
     {
       "file": "src/main.tsx",
-      "line": 528,
+      "line": 530,
       "name": "CLAUDE_CODE_ENTRYPOINT"
     },
     {
       "file": "src/main.tsx",
-      "line": 531,
+      "line": 533,
       "name": "CLAUDE_CODE_ACTION"
     },
     {
       "file": "src/main.tsx",
-      "line": 532,
+      "line": 534,
       "name": "CLAUDE_CODE_ENTRYPOINT"
     },
     {
       "file": "src/main.tsx",
-      "line": 540,
-      "name": "CLAUDE_CODE_ENTRYPOINT"
-    },
-    {
-      "file": "src/main.tsx",
-      "line": 828,
-      "name": "CLAUDE_CODE_ENTRYPOINT"
-    },
-    {
-      "file": "src/main.tsx",
-      "line": 829,
+      "line": 542,
       "name": "CLAUDE_CODE_ENTRYPOINT"
     },
     {
@@ -2813,87 +3043,97 @@
     },
     {
       "file": "src/main.tsx",
-      "line": 836,
+      "line": 834,
+      "name": "CLAUDE_CODE_ENTRYPOINT"
+    },
+    {
+      "file": "src/main.tsx",
+      "line": 835,
+      "name": "CLAUDE_CODE_ENTRYPOINT"
+    },
+    {
+      "file": "src/main.tsx",
+      "line": 838,
       "name": "CLAUDE_CODE_SESSION_ACCESS_TOKEN"
     },
     {
       "file": "src/main.tsx",
-      "line": 836,
+      "line": 838,
       "name": "CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR"
     },
     {
       "file": "src/main.tsx",
-      "line": 837,
+      "line": 839,
       "name": "CLAUDE_CODE_ENTRYPOINT"
     },
     {
       "file": "src/main.tsx",
-      "line": 843,
+      "line": 845,
       "name": "CLAUDE_CODE_QUESTION_PREVIEW_FORMAT"
     },
     {
       "file": "src/main.tsx",
-      "line": 854,
+      "line": 856,
       "name": "CLAUDE_CODE_ENVIRONMENT_KIND"
     },
     {
       "file": "src/main.tsx",
-      "line": 930,
+      "line": 932,
       "name": "CLAUDE_CODE_DISABLE_TERMINAL_TITLE"
     },
     {
       "file": "src/main.tsx",
-      "line": 1125,
+      "line": 1127,
       "name": "CLAUDE_CODE_AGENT"
     },
     {
       "file": "src/main.tsx",
-      "line": 1150,
+      "line": 1152,
       "name": "CLAUDE_CODE_TASK_LIST_ID"
     },
     {
       "file": "src/main.tsx",
-      "line": 1234,
+      "line": 1236,
       "name": "CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES"
     },
     {
       "file": "src/main.tsx",
-      "line": 1239,
+      "line": 1241,
       "name": "CLAUDE_CODE_REMOTE"
     },
     {
       "file": "src/main.tsx",
-      "line": 1325,
+      "line": 1327,
       "name": "CLAUDE_CODE_REMOTE_SESSION_ID"
     },
     {
       "file": "src/main.tsx",
-      "line": 1600,
+      "line": 1602,
       "name": "CLAUDE_CODE_AUTO_CONNECT_IDE"
     },
     {
       "file": "src/main.tsx",
-      "line": 1838,
+      "line": 1840,
       "name": "CLAUDE_CODE_COORDINATOR_MODE"
     },
     {
       "file": "src/main.tsx",
-      "line": 1889,
+      "line": 1891,
       "name": "CLAUDE_CODE_ENTRYPOINT"
     },
     {
       "file": "src/main.tsx",
-      "line": 2165,
+      "line": 2167,
       "name": "CLAUDE_CODE_PROACTIVE"
     },
     {
       "file": "src/main.tsx",
-      "line": 4448,
+      "line": 4450,
       "name": "CLAUDE_CODE_PROACTIVE"
     },
     {
       "file": "src/main.tsx",
-      "line": 4461,
+      "line": 4463,
       "name": "CLAUDE_CODE_BRIEF"
     },
     {
@@ -2935,6 +3175,11 @@
       "file": "test/agentModel.test.ts",
       "line": 311,
       "name": "CLAUDE_CODE_SUBAGENT_MODEL"
+    },
+    {
+      "file": "test/attributionSnapshotMigration.test.ts",
+      "line": 28,
+      "name": "claudeContribution"
     },
     {
       "file": "test/autoCompact.test.ts",
@@ -3000,6 +3245,31 @@
       "file": "test/claudeInterop.test.ts",
       "line": 55,
       "name": "rayuTestClaudeServer"
+    },
+    {
+      "file": "test/configIdentifierKeyMigration.test.ts",
+      "line": 52,
+      "name": "hasClaudeMdExternalIncludesApproved"
+    },
+    {
+      "file": "test/configIdentifierKeyMigration.test.ts",
+      "line": 70,
+      "name": "claudeCodeFirstTokenDate"
+    },
+    {
+      "file": "test/configIdentifierKeyMigration.test.ts",
+      "line": 121,
+      "name": "claudeCodeHints"
+    },
+    {
+      "file": "test/configIdentifierKeyMigration.test.ts",
+      "line": 122,
+      "name": "claudeCodeFirstTokenDate"
+    },
+    {
+      "file": "test/configIdentifierKeyMigration.test.ts",
+      "line": 123,
+      "name": "hasClaudeMdExternalIncludesApproved"
     },
     {
       "file": "test/envAliases.test.ts",
@@ -3127,6 +3397,36 @@
       "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
     },
     {
+      "file": "test/oauthStorageKeyMigration.test.ts",
+      "line": 39,
+      "name": "claudeAiOauth"
+    },
+    {
+      "file": "test/oauthStorageKeyMigration.test.ts",
+      "line": 60,
+      "name": "claudeAiOauth"
+    },
+    {
+      "file": "test/oauthStorageKeyMigration.test.ts",
+      "line": 82,
+      "name": "claudeAiOauth"
+    },
+    {
+      "file": "test/oauthStorageKeyMigration.test.ts",
+      "line": 94,
+      "name": "claudeAiOauth"
+    },
+    {
+      "file": "test/oauthStorageKeyMigration.test.ts",
+      "line": 109,
+      "name": "claudeAiOauth"
+    },
+    {
+      "file": "test/oauthStorageKeyMigration.test.ts",
+      "line": 120,
+      "name": "claudeAiOauth"
+    },
+    {
       "file": "test/orchestratorSendMessage.test.ts",
       "line": 22,
       "name": "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
@@ -3220,6 +3520,26 @@
       "file": "test/rebrand.test.ts",
       "line": 48,
       "name": "CLAUDE_CONFIG_DIR"
+    },
+    {
+      "file": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 26,
+      "name": "claudeMdExcludes"
+    },
+    {
+      "file": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 27,
+      "name": "claudeMcpEnabled"
+    },
+    {
+      "file": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 28,
+      "name": "claudeSkillsEnabled"
+    },
+    {
+      "file": "test/settingsIdentifierKeyMigration.test.ts",
+      "line": 61,
+      "name": "claudeMdExcludes"
     },
     {
       "file": "test/subagentModel.test.ts",
