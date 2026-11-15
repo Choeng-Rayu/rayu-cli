@@ -331,7 +331,7 @@ function NotificationContent({
               </Text>
             </Box> : null}
       <MemoryUsageIndicator />
-      <UpdateAvailableNotice />
+      <UpdateAvailableNotice isAutoUpdating={isAutoUpdating} autoUpdaterStatus={autoUpdaterResult?.status ?? null} />
       <SandboxPromptFooterHint />
     </>;
 }

@@ -11,7 +11,7 @@ import { Clawd } from './Clawd.js';
 import { getActiveClawdBanner } from './bannerConfig.js';
 import { FeedColumn } from './FeedColumn.js';
 import { createRecentActivityFeed, createWhatsNewFeed, createProjectOnboardingFeed, createGuestPassesFeed, createUpdateAvailableFeed } from './feedConfigs.js';
-import { getCachedLatestNpmVersionSync } from '../../utils/autoUpdater.js';
+import { useLatestNpmVersion } from '../../hooks/useLatestNpmVersion.js';
 import { gt } from '../../utils/semver.js';
 import { getGlobalConfig, saveGlobalConfig } from 'src/utils/config.js';
 import { resolveThemeSetting } from 'src/utils/systemTheme.js';
@@ -160,6 +160,7 @@ export function LogoV2() {
   }
   useEffect(t7, t8);
   const model = useMainLoopModel();
+  const latestNpmVersion = useLatestNpmVersion();
   const fullModelDisplayName = renderModelSetting(model);
   const {
     version,
@@ -422,7 +423,7 @@ export function LogoV2() {
   } else {
     t24 = $[61];
   }
-  const _latestNpm = getCachedLatestNpmVersionSync();
+  const _latestNpm = latestNpmVersion;
   const _updateFeeds = _latestNpm && gt(_latestNpm, MACRO.VERSION) ? [createUpdateAvailableFeed(MACRO.VERSION, _latestNpm)] : [];
   const t25 = layoutMode === "horizontal" && <FeedColumn feeds={showOnboarding ? [createProjectOnboardingFeed(getSteps()), createRecentActivityFeed(activities)] : showGuestPassesUpsell ? [createRecentActivityFeed(activities), createGuestPassesFeed()] : showOverageCreditUpsell ? [createRecentActivityFeed(activities), createOverageCreditFeed()] : [createRecentActivityFeed(activities), ..._updateFeeds, createWhatsNewFeed(changelog)]} maxWidth={rightWidth} />;
   let t26;

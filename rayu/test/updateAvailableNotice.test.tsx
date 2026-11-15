@@ -12,7 +12,10 @@ import stripAnsi from 'strip-ansi'
 
 import { UpdateAvailableNotice } from '../src/components/UpdateAvailableNotice.tsx'
 import { render } from '../src/ink.ts'
-import { _resetLatestNpmVersionCacheForTesting } from '../src/utils/autoUpdater.ts'
+import {
+  type InstallStatus,
+  _resetLatestNpmVersionCacheForTesting,
+} from '../src/utils/autoUpdater.ts'
 import type { InstallationType } from '../src/utils/doctorDiagnostic.ts'
 import { CaptureStream } from './helpers/captureStream.js'
 
@@ -21,15 +24,15 @@ afterEach(() => {
 })
 
 /**
- * An ordinary interactive session on a default install: auto-updates are off
- * via config (Rayu's shipped default), which must NOT suppress the notice.
- * A test process is always reported as non-interactive, so this has to be
- * injected for the banner to be reachable at all.
+ * An ordinary interactive session on a default install: auto-updates are ON
+ * (Rayu's shipped default), so disabledReason is null. The notice must show
+ * regardless of the autoUpdates setting. A test process is always reported as
+ * non-interactive, so this has to be injected for the banner to be reachable
+ * at all.
  */
 const INTERACTIVE_DEFAULT = {
-  disabledReason: { type: 'config' } as const,
+  disabledReason: null,
   isNonInteractive: false,
-  autoUpdatesEnabled: false,
 }
 
 async function renderNotice(options: {
@@ -38,6 +41,8 @@ async function renderNotice(options: {
   currentVersion: string
   columns?: number
   environment?: typeof INTERACTIVE_DEFAULT | Record<string, unknown>
+  isAutoUpdating?: boolean
+  autoUpdaterStatus?: InstallStatus | null
 }): Promise<string> {
   const stdout = new CaptureStream({ columns: 120, rows: 40 })
   if (options.columns) stdout.columns = options.columns
@@ -47,6 +52,8 @@ async function renderNotice(options: {
       detectInstallationType={async () => options.installationType}
       fetchLatestVersion={async () => options.latestVersion}
       currentVersion={options.currentVersion}
+      isAutoUpdating={options.isAutoUpdating}
+      autoUpdaterStatus={options.autoUpdaterStatus}
       readEnvironment={() =>
         ({
           ...INTERACTIVE_DEFAULT,
@@ -177,8 +184,9 @@ describe('UpdateAvailableNotice', () => {
     }
   })
 
-  test('the shipped auto-updates-off default still shows the notice', async () => {
+  test('the autoUpdates setting never hides the notice (ON or config-off)', async () => {
     // The whole point of the feature: before this, no npm user was ever told.
+    // null is the shipped default (auto-updates ON); config-off must show too.
     for (const disabledReason of [{ type: 'config' } as const, null]) {
       const output = await renderNotice({
         installationType: 'npm-global',
@@ -214,15 +222,57 @@ describe('UpdateAvailableNotice', () => {
     expect(output).not.toContain('Update available')
   })
 
-  test('no nag when auto-update is enabled and will do the work', async () => {
+  test('hides while the auto-updater is itself reporting', async () => {
+    // success / install_failed / no_permissions mean the updater already told
+    // the user about this update; the banner must not duplicate that line.
+    for (const autoUpdaterStatus of [
+      'success',
+      'install_failed',
+      'no_permissions',
+    ] satisfies InstallStatus[]) {
+      const output = await renderNotice({
+        installationType: 'npm-global',
+        latestVersion: '1.5.12',
+        currentVersion: '1.5.0',
+        autoUpdaterStatus,
+      })
+      expect(output).not.toContain('Update available')
+    }
+
+    // Actively installing: same rule, via the boolean flag.
+    const installing = await renderNotice({
+      installationType: 'npm-global',
+      latestVersion: '1.5.12',
+      currentVersion: '1.5.0',
+      isAutoUpdating: true,
+    })
+    expect(installing).not.toContain('Update available')
+  })
+
+  test('shows by default while the updater is silent', async () => {
+    // Auto-updates ON (disabledReason: null), no updater result yet — the
+    // default-user case this whole fix targets.
     const output = await renderNotice({
       installationType: 'npm-global',
       latestVersion: '1.5.12',
       currentVersion: '1.5.0',
-      environment: { autoUpdatesEnabled: true },
+      environment: { disabledReason: null },
     })
 
-    expect(output).not.toContain('Update available')
+    expect(output).toContain('Update available')
+  })
+
+  test("an 'in_progress' status does not suppress the banner", async () => {
+    // The updater renders nothing while in_progress, so a silent no-op must
+    // still leave the banner visible.
+    const output = await renderNotice({
+      installationType: 'npm-global',
+      latestVersion: '1.5.12',
+      currentVersion: '1.5.0',
+      autoUpdaterStatus: 'in_progress',
+    })
+
+    expect(output).toContain('Update available')
   })
 
   test('does not hit the registry when the notice is not permitted', async () => {

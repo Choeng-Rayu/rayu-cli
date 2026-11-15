@@ -4,6 +4,7 @@ rayu/node_modules/
 rayu-backend/node_modules/
 rayu-web/node_modules/
 rayu-gateway/vendor/
+rayu-cli/database-pro-backup/
 
 # Build outputs (generated during CI/CD, not committed)
 packages/agent-protocol/dist/

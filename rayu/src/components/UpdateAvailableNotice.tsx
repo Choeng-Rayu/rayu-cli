@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { Box, Text } from '../ink.js'
 import {
+  type InstallStatus,
   ensureLatestNpmVersion,
   getCachedLatestNpmVersionSync,
 } from '../utils/autoUpdater.js'
@@ -38,6 +39,15 @@ import {
  * single-flight request (ensureLatestNpmVersion), so this costs no extra
  * network traffic.
  *
+ * Policy: the banner shows whenever a strictly newer version is published,
+ * regardless of the autoUpdates setting (auto-updates are ON by default, and
+ * the old "only nag when they are off" behavior meant nobody was ever told).
+ * It is hidden ONLY while the in-session auto-updater is itself reporting —
+ * isAutoUpdating, or a terminal autoUpdaterStatus of success / install_failed
+ * / no_permissions — so the two surfaces never duplicate. 'in_progress' and a
+ * null status do NOT suppress: the updater renders nothing then, and a silent
+ * no-op (disabled / locked / unsupported) must still leave the banner visible.
+ *
  * Nothing here blocks startup — the component mounts with the prompt and fills
  * itself in later.
  */
@@ -48,11 +58,9 @@ type NoticeEnvironment = Omit<
 >
 
 function readNoticeEnvironment(): NoticeEnvironment {
-  const disabledReason = getAutoUpdaterDisabledReason()
   return {
-    disabledReason,
+    disabledReason: getAutoUpdaterDisabledReason(),
     isNonInteractive: getIsNonInteractiveSession(),
-    autoUpdatesEnabled: disabledReason === null,
   }
 }
 
@@ -69,6 +77,10 @@ export type UpdateAvailableNoticeProps = {
   fetchLatestVersion?: (channel: ReleaseChannel) => Promise<string | null>
   currentVersion?: string
   readEnvironment?: () => NoticeEnvironment
+  /** True while the in-session auto-updater is actively installing. */
+  isAutoUpdating?: boolean
+  /** The auto-updater's latest result status, if it has reported one. */
+  autoUpdaterStatus?: InstallStatus | null
 }
 
 export function UpdateAvailableNotice({
@@ -76,6 +88,8 @@ export function UpdateAvailableNotice({
   fetchLatestVersion,
   currentVersion = MACRO.VERSION,
   readEnvironment = readNoticeEnvironment,
+  isAutoUpdating = false,
+  autoUpdaterStatus = null,
 }: UpdateAvailableNoticeProps = {}): React.ReactNode {
   // Seed from the startup pre-warm when it has already landed, so a session
   // that starts after the fetch completes renders the banner on first frame.
@@ -107,18 +121,24 @@ export function UpdateAvailableNotice({
 
   // Environment gates are cheap synchronous reads (cached config/settings and
   // process state), so they are evaluated on every render rather than stored.
-  // Environment gates are cheap synchronous reads (cached config/settings and
-  // process state), so they are evaluated on every render rather than stored.
-  const { disabledReason, isNonInteractive, autoUpdatesEnabled } =
-    readEnvironment()
+  const { disabledReason, isNonInteractive } = readEnvironment()
+
+  // Hide the banner only while the auto-updater is itself reporting on this
+  // update, so the two surfaces never duplicate. 'in_progress' and null do NOT
+  // suppress — the updater renders nothing then (see header comment).
+  const updaterReporting =
+    isAutoUpdating ||
+    autoUpdaterStatus === 'success' ||
+    autoUpdaterStatus === 'install_failed' ||
+    autoUpdaterStatus === 'no_permissions'
 
   const allowed =
     installationType !== null &&
+    !updaterReporting &&
     isUpdateNoticeAllowed({
       installationType,
       disabledReason,
       isNonInteractive,
-      autoUpdatesEnabled,
     })
 
   useEffect(() => {
@@ -145,13 +165,16 @@ export function UpdateAvailableNotice({
     return null
   }
 
+  if (updaterReporting) {
+    return null
+  }
+
   const show = shouldShowUpdateNotice({
     currentVersion,
     latestVersion,
     installationType,
     disabledReason,
     isNonInteractive,
-    autoUpdatesEnabled,
   })
 
   if (!show || !latestVersion) {

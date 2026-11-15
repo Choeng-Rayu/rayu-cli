@@ -366,6 +366,23 @@ let cachedLatestNpmVersion: string | null = null
 // a different channel simply joins the first (see ensureLatestNpmVersion).
 let inFlightLatestNpmVersion: Promise<string | null> | null = null
 
+// Listeners notified when ensureLatestNpmVersion() successfully caches a
+// version, so React surfaces (useLatestNpmVersion) can re-render when the
+// startup fetch lands instead of reading a stale null forever.
+const latestVersionListeners = new Set<() => void>()
+
+/**
+ * Subscribe to "the latest npm version cache landed". Returns an unsubscribe
+ * function. Listeners fire only when ensureLatestNpmVersion() successfully
+ * caches a version; failures leave the cache untouched and notify nobody.
+ */
+export function subscribeLatestNpmVersion(listener: () => void): () => void {
+  latestVersionListeners.add(listener)
+  return () => {
+    latestVersionListeners.delete(listener)
+  }
+}
+
 /**
  * Resolve the latest published version, reusing an in-flight request.
  *
@@ -395,6 +412,7 @@ export function ensureLatestNpmVersion(
   inFlightLatestNpmVersion = fetchVersion(channel).then(version => {
     if (version) {
       cachedLatestNpmVersion = version
+      for (const listener of latestVersionListeners) listener()
     } else {
       // Allow a retry later — see doc comment.
       inFlightLatestNpmVersion = null

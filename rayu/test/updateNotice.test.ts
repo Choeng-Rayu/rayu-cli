@@ -1,19 +1,23 @@
 /**
  * Tests for the passive "update available" notice.
  *
- * Two things are covered:
+ * Three things are covered:
  *
  *  1. ensureLatestNpmVersion()'s single-flight/retry behaviour. Two callers now
  *     want this value (setup.ts pre-warms it, the banner awaits it), and without
  *     sharing the in-flight promise they would each issue a registry request.
  *     The fetcher is injected so these tests never touch the network.
  *
- *  2. shouldShowUpdateNotice()'s gating policy. The important asymmetry: Rayu
- *     ships with auto-updates OFF (getAutoUpdaterDisabledReason() ->
- *     `{type:'config'}`), and the pre-existing PackageManagerAutoUpdater bails
- *     out on isAutoUpdaterDisabled(), which is why no npm user was ever told a
- *     new version existed. The notice must therefore survive the `config`
- *     reason while still honouring an explicit `env` opt-out.
+ *  2. shouldShowUpdateNotice()'s gating policy. The notice shows whenever a
+ *     strictly newer version is published, regardless of the autoUpdates
+ *     setting — auto-updates are ON by default (disabledReason: null), and the
+ *     old "only nag when they are off" behavior meant nobody was ever told.
+ *     Only an explicit `env` opt-out, development builds/installs,
+ *     package-manager installs and non-interactive sessions suppress it; the
+ *     `config` reason (auto-updates merely turned off) still shows the notice.
+ *
+ *  3. subscribeLatestNpmVersion()'s cache-landing notification — the mechanism
+ *     that lets the welcome-box panel re-render when the startup fetch lands.
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 
@@ -21,6 +25,7 @@ import {
   _resetLatestNpmVersionCacheForTesting,
   ensureLatestNpmVersion,
   getCachedLatestNpmVersionSync,
+  subscribeLatestNpmVersion,
 } from '../src/utils/autoUpdater.js'
 import type { AutoUpdaterDisabledReason } from '../src/utils/config.js'
 import type { InstallationType } from '../src/utils/doctorDiagnostic.js'
@@ -103,14 +108,70 @@ describe('ensureLatestNpmVersion', () => {
   })
 })
 
+describe('subscribeLatestNpmVersion', () => {
+  // Track removers so a failed assertion can never leak a listener into the
+  // next test (the listener Set is module-level).
+  const removers: Array<() => void> = []
+  afterEach(() => {
+    while (removers.length) removers.pop()!()
+  })
+  const subscribe = (listener: () => void) => {
+    removers.push(subscribeLatestNpmVersion(listener))
+  }
+
+  test('a listener fires exactly once when a version is cached', async () => {
+    const { fetch } = countingFetcher('1.5.11')
+    let calls = 0
+    subscribe(() => {
+      calls++
+    })
+
+    await ensureLatestNpmVersion('latest', fetch)
+    expect(calls).toBe(1)
+
+    // A cache hit must not re-notify: the panel re-renders once, not per call.
+    await ensureLatestNpmVersion('latest', fetch)
+    expect(calls).toBe(1)
+  })
+
+  test('the returned remover stops notifications', async () => {
+    let calls = 0
+    const unsubscribe = subscribeLatestNpmVersion(() => {
+      calls++
+    })
+    unsubscribe()
+
+    const { fetch } = countingFetcher('1.5.11')
+    await ensureLatestNpmVersion('latest', fetch)
+
+    expect(calls).toBe(0)
+  })
+
+  test('a null/failed lookup notifies nobody', async () => {
+    let calls = 0
+    subscribe(() => {
+      calls++
+    })
+
+    const failing = countingFetcher(null)
+    expect(await ensureLatestNpmVersion('latest', failing.fetch)).toBeNull()
+    expect(calls).toBe(0)
+
+    // The listener must survive the blip: a later success still notifies, so
+    // the panel is not stuck on null for the rest of the session.
+    const succeeding = countingFetcher('1.5.11')
+    await ensureLatestNpmVersion('latest', succeeding.fetch)
+    expect(calls).toBe(1)
+  })
+})
+
 const BASE: UpdateNoticeInput = {
   currentVersion: '1.5.0',
   latestVersion: '1.5.11',
   installationType: 'npm-global',
-  // Rayu's shipped default: auto-updates off via config, not via env.
-  disabledReason: { type: 'config' },
+  // Rayu's shipped default: auto-updates ON, so nothing is disabled.
+  disabledReason: null,
   isNonInteractive: false,
-  autoUpdatesEnabled: false,
 }
 
 describe('shouldShowUpdateNotice', () => {
@@ -118,12 +179,14 @@ describe('shouldShowUpdateNotice', () => {
     expect(shouldShowUpdateNotice(BASE)).toBe(true)
   })
 
-  test('the shipped auto-updates-off default does NOT suppress it', () => {
-    // The regression this whole feature exists to fix.
+  test('the autoUpdates setting never suppresses it (ON is the default)', () => {
+    // The regression this whole feature exists to fix: default users have
+    // auto-updates ON (disabledReason: null), and config-off users must be
+    // told too. Neither case may hide the notice.
+    expect(shouldShowUpdateNotice({ ...BASE, disabledReason: null })).toBe(true)
     expect(
       shouldShowUpdateNotice({ ...BASE, disabledReason: { type: 'config' } }),
     ).toBe(true)
-    expect(shouldShowUpdateNotice({ ...BASE, disabledReason: null })).toBe(true)
   })
 
   test('an explicit env opt-out suppresses it', () => {
@@ -161,10 +224,11 @@ describe('shouldShowUpdateNotice', () => {
     )
   })
 
-  test('no nag when auto-update is on and will do the work itself', () => {
-    expect(
-      shouldShowUpdateNotice({ ...BASE, autoUpdatesEnabled: true }),
-    ).toBe(false)
+  test('auto-updates being ON (the default) does not suppress the notice', () => {
+    // The default-user case this whole fix targets. Hiding the banner while
+    // the auto-updater is itself reporting is the component's job, not this
+    // policy's.
+    expect(shouldShowUpdateNotice({ ...BASE, disabledReason: null })).toBe(true)
   })
 
   test('still shows for the other real install types', () => {

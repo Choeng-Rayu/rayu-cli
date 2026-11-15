@@ -7,13 +7,15 @@
  * welcome-box panel (src/components/LogoV2/feedConfigs.tsx) — both go through
  * formatUpdateNotice/UPDATE_COMMAND so their wording cannot drift apart.
  *
- * This notice is the fallback for when the auto-updater will NOT install the
- * new version itself. Auto-updates are on by default, so the notice only shows
- * once the user turned them off with `autoUpdates: false` (getAutoUpdaterDisabledReason()
- * returns `{type:'config'}`). Telling someone a version exists is not the same
- * as silently replacing their binary, so that config opt-out must NOT suppress
- * the notice. An env opt-out (DISABLE_AUTOUPDATER, essential traffic only)
- * still does; see shouldShowUpdateNotice.
+ * The notice shows whenever a strictly newer version is published, regardless
+ * of the autoUpdates setting. Telling someone a version exists is not the same
+ * as silently replacing their binary, so even users with auto-updates ON (the
+ * default) must be told. The banner is hidden only while the in-session
+ * auto-updater is itself reporting (installing / succeeded / failed), so the
+ * two surfaces never duplicate; that suppression lives in the component
+ * (UpdateAvailableNotice), not in this policy. An env opt-out
+ * (DISABLE_AUTOUPDATER, essential traffic only) still suppresses the notice
+ * entirely; see isUpdateNoticeAllowed.
  */
 import { CHANGELOG_WEB_URL, PRODUCT_COMMAND } from 'src/constants/product.js'
 import type { AutoUpdaterDisabledReason } from './config.js'
@@ -33,8 +35,6 @@ export type UpdateNoticeInput = {
   disabledReason: AutoUpdaterDisabledReason | null
   /** True for --print / piped / bare sessions. */
   isNonInteractive: boolean
-  /** True when the auto-updater is active (getAutoUpdaterDisabledReason() is null). */
-  autoUpdatesEnabled: boolean
 }
 
 /**
@@ -47,6 +47,11 @@ export type UpdateNoticeInput = {
  * shared predicate means the "may I check?" and "may I show?" decisions cannot
  * drift apart.
  *
+ * The autoUpdates setting does NOT gate this predicate: the notice shows
+ * whenever a newer version is published, whether auto-updates are on or off.
+ * Hiding the banner while the auto-updater is itself reporting is applied by
+ * the banner component (UpdateAvailableNotice), not here.
+ *
  * Suppressed when:
  *  - the user explicitly opted out via env (DISABLE_AUTOUPDATER, or an
  *    essential-traffic-only var) or this is a development build;
@@ -54,21 +59,17 @@ export type UpdateNoticeInput = {
  *    existing PackageManagerAutoUpdater prints the correct upgrade command for
  *    that manager, whereas `rayu update` would be wrong there;
  *  - the session is non-interactive: nobody is watching, and polluting
- *    --print/JSON output would corrupt pipelines;
- *  - auto-updates are ON: the updater installs the new version itself and
- *    reports its own progress, so a "run rayu update" nag would be noise.
+ *    --print/JSON output would corrupt pipelines.
  *
- * Note the deliberate asymmetry: `{type:'config'}` (auto-updates merely off by
- * default) does NOT suppress the notice, while `{type:'env'}` does.
+ * Note the deliberate asymmetry: `{type:'config'}` (auto-updates merely turned
+ * off) does NOT suppress the notice, while `{type:'env'}` does.
  */
 export function isUpdateNoticeAllowed({
   installationType,
   disabledReason,
   isNonInteractive,
-  autoUpdatesEnabled,
 }: Omit<UpdateNoticeInput, 'currentVersion' | 'latestVersion'>): boolean {
   if (isNonInteractive) return false
-  if (autoUpdatesEnabled) return false
 
   // Explicit opt-out or a dev build. `config` is intentionally allowed through.
   if (disabledReason?.type === 'env' || disabledReason?.type === 'development') {
