@@ -61,6 +61,7 @@ function recordingHandlers(): { handlers: SettingsHandlers; calls: unknown[][] }
       telegramStartHosted: () => calls.push(['telegramStartHosted']),
       telegramStartByo: token => calls.push(['telegramStartByo', token]),
       telegramUnlink: () => calls.push(['telegramUnlink']),
+      telegramDrive: () => calls.push(['telegramDrive']),
       webBridgeAction: action => calls.push(['webBridgeAction', action]),
       setUpGitHub: () => calls.push(['setUpGitHub']),
     },
@@ -87,6 +88,7 @@ describe('dispatchSettingsMessage', () => {
     [{ type: 'settingsTelegramStartHosted' }, ['telegramStartHosted']],
     [{ type: 'settingsTelegramStartByo', token: '123456:AAH-token' }, ['telegramStartByo', '123456:AAH-token']],
     [{ type: 'settingsTelegramUnlink' }, ['telegramUnlink']],
+    [{ type: 'settingsTelegramDrive' }, ['telegramDrive']],
     [{ type: 'settingsWebBridge', action: 'connect' }, ['webBridgeAction', 'connect']],
     [{ type: 'settingsWebBridge', action: 'pair' }, ['webBridgeAction', 'pair']],
     [{ type: 'settingsWebBridge', action: 'stop' }, ['webBridgeAction', 'stop']],
@@ -191,6 +193,7 @@ function fakeIntegrations(): IntegrationsSectionDeps & { calls: string[] } {
     telegramStartHosted: async () => { calls.push('telegramStartHosted') },
     telegramStartByo: async token => { calls.push(`telegramStartByo ${token.length}`) },
     telegramUnlink: async () => { calls.push('telegramUnlink') },
+    telegramDrive: () => { calls.push('telegramDrive') },
     webBridge: action => { calls.push(`webBridge ${action}`) },
     setUpGitHub: async () => { calls.push('setUpGitHub') },
   }
@@ -638,6 +641,7 @@ const render = (state: SettingsAppState): string =>
     onTelegramStartHosted: () => {},
     onTelegramStartByo: () => {},
     onTelegramUnlink: () => {},
+    onTelegramDrive: () => {},
     onWebBridge: () => {},
     onGitHubSetup: () => {},
   }))

@@ -26,6 +26,8 @@ export interface TelegramConnectPanelProps {
   onStartHosted: () => void
   onStartByo: (token: string) => void
   onUnlink: () => void
+  /** Re-attach the link to the conversation on screen (shown when nothing is listening). */
+  onDrive: () => void
 }
 
 /** A card inside a Settings item, which supplies the title: no heading or close button here. */
@@ -34,6 +36,7 @@ export function TelegramConnectPanel({
   onStartHosted,
   onStartByo,
   onUnlink,
+  onDrive,
 }: TelegramConnectPanelProps): JSX.Element {
   const [token, setToken] = useState('')
   const [mode, setMode] = useState<'hosted' | 'byo' | null>(null)
@@ -64,7 +67,9 @@ export function TelegramConnectPanel({
 
       {linked ? (
         <div className="rc-setup-form">
-          <p className="rc-setup-chosen">Telegram is connected</p>
+          <p className="rc-setup-chosen">
+            {connect.bridgeRunning ? 'Telegram is connected' : 'Telegram is linked — not listening'}
+          </p>
           <p className="rc-setup-note">
             {connect.linkedBotUsername ? (
               <>
@@ -75,6 +80,20 @@ export function TelegramConnectPanel({
             )}{' '}
             Chat ID <code>{connect.linkedChatId}</code>.
           </p>
+          {!connect.bridgeRunning ? (
+            <>
+              <p className="rc-setup-note" role="status">
+                No running session is listening for Telegram messages, so messages sent
+                from the chat will not be answered. Attach this conversation to drive it
+                from Telegram.
+              </p>
+              <div className="rc-setup-actions">
+                <button type="button" className="rc-button" disabled={connect.busy} onClick={onDrive}>
+                  Drive this conversation
+                </button>
+              </div>
+            </>
+          ) : null}
           <div className="rc-setup-actions">
             <button type="button" className="rc-button" disabled={connect.busy} onClick={onUnlink}>
               {connect.busy ? (connect.busyMessage ?? 'Working…') : 'Disconnect Telegram'}

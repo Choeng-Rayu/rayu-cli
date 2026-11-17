@@ -15,6 +15,7 @@ export interface IntegrationsSectionProps {
   onTelegramStartHosted: () => void
   onTelegramStartByo: (token: string) => void
   onTelegramUnlink: () => void
+  onTelegramDrive: () => void
   onWebBridge: (action: WebBridgeAction) => void
   onGitHubSetup: () => void
 }
@@ -41,6 +42,7 @@ export function IntegrationsSection(props: IntegrationsSectionProps): JSX.Elemen
           onStartHosted={props.onTelegramStartHosted}
           onStartByo={props.onTelegramStartByo}
           onUnlink={props.onTelegramUnlink}
+          onDrive={props.onTelegramDrive}
         />
       </SettingsItem>
       <WebBridgeItem bridge={integrations.webBridge} onAction={props.onWebBridge} />

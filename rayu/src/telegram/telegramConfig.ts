@@ -36,6 +36,20 @@ export interface TelegramConfig {
    * before this field existed.
    */
   linkedBotUsername?: string
+  /**
+   * The Rayu account id that owns this hosted link.
+   *
+   * The Telegram connection is machine-wide (the CLI and the editor share this
+   * file), but a HOSTED link is per-account on the backend: only the account that
+   * paired can poll/serve it. The two surfaces may be signed into DIFFERENT Rayu
+   * accounts, so without recording the owner a bridge running as account B would
+   * adopt account A's link, poll the backend as B, be told "no link", and wipe the
+   * shared cache — destroying A's connection. Recording the owner lets a surface
+   * display/route to the machine-wide link while only the owning account leads or
+   * clears it. Absent on BYO links (token-based, no account) and on configs written
+   * before this field existed.
+   */
+  linkedAccountId?: number
   pendingToken?: PendingToken
   /**
    * The session that was last driving the chat, remembered across restarts so
@@ -114,12 +128,30 @@ export function setLinkedChat(
   chatId: number,
   username?: string,
   botUsername?: string,
+  accountId?: number,
 ): void {
   const cfg = readTelegramConfig()
   cfg.linkedChatId = chatId
   cfg.linkedUsername = username
   if (botUsername) cfg.linkedBotUsername = botUsername
+  // Stamp the owning account for hosted links so a different-account surface on
+  // this machine displays/routes to the link but never leads or wipes it.
+  if (accountId !== undefined) cfg.linkedAccountId = accountId
   writeTelegramConfig(cfg)
+}
+
+/**
+ * Whether a recorded link owner is a DIFFERENT account than the one asking.
+ *
+ * Pure (no disk/auth reads) so the leadership gate and the wipe guard share one
+ * rule. An unrecorded owner (BYO, or a pre-existing config) or an unknown current
+ * account never counts as "another account" — those cases lead as before.
+ */
+export function linkOwnedByAnotherAccount(
+  ownerId: number | undefined,
+  currentAccountId: number | undefined,
+): boolean {
+  return ownerId !== undefined && currentAccountId !== undefined && ownerId !== currentAccountId
 }
 
 /**
@@ -419,6 +451,7 @@ export function unlink(): void {
   delete next.linkedChatId
   delete next.linkedUsername
   delete next.linkedBotUsername
+  delete next.linkedAccountId
   delete next.pendingToken
   // An unlink is an explicit "stop driving my machine from this chat", so the
   // auto-reconnect memory must go too — otherwise reopening the remembered

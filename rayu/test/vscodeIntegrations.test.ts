@@ -152,6 +152,43 @@ describe('TelegramConnectController: status', () => {
     expect(h.controller.current.linkedChatId).toBe(42)
     expect(h.controller.current.error).toBe('engine failed')
   })
+
+  test('the bridge liveness probe reaches the view', async () => {
+    const h = harness()
+    h.setStatus({ ok: true, linkedChatId: 42, mode: 'hosted', botUsername: 'rayu_bot', bridgeRunning: true })
+    await h.controller.refreshStatus()
+    expect(h.controller.current.bridgeRunning).toBe(true)
+    h.setStatus({ ok: true, linkedChatId: 42, mode: 'hosted', botUsername: 'rayu_bot', bridgeRunning: false })
+    await h.controller.refreshStatus()
+    expect(h.controller.current.bridgeRunning).toBe(false)
+  })
+
+  test('an older engine without the probe reads as not known to run', async () => {
+    const h = harness()
+    h.setStatus({ ok: true, linkedChatId: 42, mode: 'hosted', botUsername: 'rayu_bot' })
+    await h.controller.refreshStatus()
+    expect(h.controller.current.bridgeRunning).toBe(false)
+  })
+})
+
+describe('TelegramConnectController: drive this conversation', () => {
+  test('re-attaches the linked chat through the same path as a completed pairing', async () => {
+    const h = harness()
+    h.setStatus({ ok: true, linkedChatId: 42, linkedBotUsername: 'rayu_bot', mode: 'hosted', botUsername: 'rayu_bot' })
+    await h.controller.refreshStatus()
+    h.controller.driveConversation()
+    // onLinked is the host's writeAttachment + engine restart — one re-attach path.
+    expect(h.calls.onLinked).toEqual([null])
+    expect(h.controller.current.linkedChatId).toBe(42)
+    h.controller.dispose()
+  })
+
+  test('does nothing without a link', () => {
+    const h = harness()
+    h.controller.driveConversation()
+    expect(h.calls.onLinked).toEqual([])
+    h.controller.dispose()
+  })
 })
 
 describe('TelegramConnectController: hosted pairing', () => {

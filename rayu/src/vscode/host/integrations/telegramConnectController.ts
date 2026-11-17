@@ -27,6 +27,12 @@ import type { TelegramConnectOutcome } from '../auth/telegramSetup.js'
 /** Same cadence as the CLI's HostedStep / BYO-step poll. */
 export const TELEGRAM_LINK_POLL_MS = 1_500
 export const TELEGRAM_LINK_POLL_TIMEOUT_MS = 10 * 60 * 1000
+/**
+ * How long after a link (or re-attach) the status is re-read once, so the card reports
+ * the restarted engine's bridge without the user reopening the section. The engine
+ * needs a moment to spawn and acquire the bridge lock.
+ */
+export const TELEGRAM_STATUS_REFRESH_DELAY_MS = 5_000
 
 export const EMPTY_TELEGRAM_CONNECT: TelegramConnectView = {
   busy: false,
@@ -40,6 +46,7 @@ export const EMPTY_TELEGRAM_CONNECT: TelegramConnectView = {
   deepLink: null,
   pairingCode: null,
   waitingForLink: false,
+  bridgeRunning: false,
 }
 
 const NO_PAIRING = { qr: null, deepLink: null, pairingCode: null, waitingForLink: false } as const
@@ -77,6 +84,7 @@ export interface TelegramConnectDeps {
 export class TelegramConnectController {
   private view: TelegramConnectView = EMPTY_TELEGRAM_CONNECT
   private timer: ReturnType<typeof setInterval> | undefined
+  private refreshTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(private readonly deps: TelegramConnectDeps) {}
 
@@ -97,10 +105,24 @@ export class TelegramConnectController {
       linkedBotUsername: outcome.ok ? (outcome.linkedBotUsername ?? null) : view.linkedBotUsername,
       mode: outcome.ok ? (outcome.mode ?? null) : view.mode,
       botUsername: outcome.ok ? (outcome.botUsername ?? view.botUsername) : view.botUsername,
+      // An older engine bundle omits the probe; treat that as "not known to run".
+      bridgeRunning: outcome.ok ? (outcome.bridgeRunning ?? false) : view.bridgeRunning,
       // A live link means any pairing artifacts are stale.
       ...(linked !== null ? NO_PAIRING : {}),
       error: outcome.ok ? null : (outcome.error ?? 'Could not load the Telegram connection.'),
     })
+  }
+
+  /**
+   * Re-attach the linked chat to the conversation on screen and restart its engine.
+   *
+   * The card's recovery action for a link that outlived its session: the same
+   * attachment write + restart a completed pairing performs (`onLinked`), so there
+   * is one re-attach path, not a second implementation.
+   */
+  driveConversation(): void {
+    if (this.view.linkedChatId === null) return
+    this.linked(null, this.view.linkedChatId)
   }
 
   async startHosted(origin: string | null): Promise<void> {
@@ -172,6 +194,7 @@ export class TelegramConnectController {
       linkedBotUsername: status.ok ? (status.linkedBotUsername ?? null) : null,
       botUsername: status.ok ? (status.botUsername ?? view.botUsername) : view.botUsername,
       mode: status.ok ? (status.mode ?? null) : view.mode,
+      bridgeRunning: status.ok ? (status.bridgeRunning ?? false) : false,
     })
   }
 
@@ -184,6 +207,8 @@ export class TelegramConnectController {
 
   dispose(): void {
     this.stopPolling()
+    clearTimeout(this.refreshTimer)
+    this.refreshTimer = undefined
   }
 
   private now(): number {
@@ -273,6 +298,13 @@ export class TelegramConnectController {
       linkedBotUsername: this.view.botUsername ?? this.view.linkedBotUsername,
     })
     this.deps.onLinked(origin)
+    // The restart spawns a fresh engine which then acquires the bridge lock; re-read
+    // once afterwards so the card shows the running state, not the pre-restart one.
+    clearTimeout(this.refreshTimer)
+    this.refreshTimer = setTimeout(() => {
+      void this.refreshStatus()
+    }, TELEGRAM_STATUS_REFRESH_DELAY_MS)
+    this.refreshTimer.unref?.()
   }
 
   private startTimer(tick: () => void): void {

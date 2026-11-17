@@ -563,13 +563,17 @@ async function runTelegramConnect(): Promise<void> {
     if (action.action === 'status') {
       // Local-only, exactly one status frame: no `getBotUsername` (a live Telegram
       // call would make a panel refresh depend on the network), and no second frame
-      // that would race the first.
+      // that would race the first. The lock probe is a local file read for the same
+      // reason — it tells the card whether anything is actually polling, not just
+      // whether a link record exists.
       const cfg = telegramConfig.readTelegramConfig()
+      const { isTelegramBridgeRunning } = await import('../telegram/telegramBridgeLock.js')
       emit({
         type: 'rayucode_tgconnect_status',
         linkedChatId: cfg.linkedChatId,
         linkedBotUsername: cfg.linkedBotUsername,
         mode: telegramConfig.getTelegramMode(),
+        bridgeRunning: isTelegramBridgeRunning(),
       })
       emit({ type: 'rayucode_tgconnect_result', ok: true })
       return

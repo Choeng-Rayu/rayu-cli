@@ -326,6 +326,8 @@ export type SettingsWebviewMessage =
   /** The bot token goes to the host once and is never sent back or stored in view state. */
   | { type: 'settingsTelegramStartByo'; token: string }
   | { type: 'settingsTelegramUnlink' }
+  /** Re-attach an existing link to the conversation on screen and restart its engine. */
+  | { type: 'settingsTelegramDrive' }
   | { type: 'settingsWebBridge'; action: WebBridgeAction }
   /** Install Rayu's GitHub workflows in this repository, with VS Code's own prompts. */
   | { type: 'settingsGitHubSetup' }

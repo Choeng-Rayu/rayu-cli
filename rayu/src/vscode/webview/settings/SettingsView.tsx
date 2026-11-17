@@ -48,6 +48,7 @@ export interface SettingsActions {
   onTelegramStartHosted: () => void
   onTelegramStartByo: (token: string) => void
   onTelegramUnlink: () => void
+  onTelegramDrive: () => void
   onWebBridge: (action: WebBridgeAction) => void
   onGitHubSetup: () => void
 }
@@ -120,6 +121,7 @@ function sectionBody(props: SettingsViewProps): JSX.Element {
           onTelegramStartHosted={props.onTelegramStartHosted}
           onTelegramStartByo={props.onTelegramStartByo}
           onTelegramUnlink={props.onTelegramUnlink}
+          onTelegramDrive={props.onTelegramDrive}
           onWebBridge={props.onWebBridge}
           onGitHubSetup={props.onGitHubSetup}
         />

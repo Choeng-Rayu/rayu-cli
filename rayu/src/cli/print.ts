@@ -170,7 +170,7 @@ import {
   remoteStreamEnd,
   remoteStreamStart,
 } from 'src/telegram/telegramRemoteBridge.js'
-import { startTelegramBridge } from 'src/telegram/telegramStart.js'
+import { adoptOrphanedTelegramLink, startTelegramBridge } from 'src/telegram/telegramStart.js'
 import { TelegramStreamTap } from 'src/telegram/telegramStreamTap.js'
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
@@ -3375,6 +3375,29 @@ function runHeadlessStreaming(
   if (isEditorHostedEngine()) {
     try {
       telegramBridge = startTelegramBridge()
+      if (!telegramBridge) {
+        // A link whose remembered session is gone is orphaned: no process polls for
+        // it, so chat messages park on the backend forever with no error anywhere.
+        // Adopt it here; the bridge lock decides which engine wins when several
+        // start at once (see adoptOrphanedTelegramLink).
+        void adoptOrphanedTelegramLink()
+          .then(handle => {
+            if (!handle) return
+            // Cleanup may have run while the registry scan was in flight; a bridge
+            // started after stopTelegram would poll with nothing left to stop it.
+            if (isShuttingDown()) {
+              handle.stop()
+              return
+            }
+            telegramBridge = handle
+          })
+          .catch(error => {
+            logForDebugging(
+              `[telegram] orphaned-link adoption failed: ${errorMessage(error)}`,
+              { level: 'warn' },
+            )
+          })
+      }
     } catch (error) {
       // Telegram is an add-on. A broken config, an unwritable lock file or a bad
       // transport must never stop the engine from starting — without this catch the

@@ -45,6 +45,7 @@ function recordingHandlers(): { handlers: SettingsHandlers; calls: unknown[][] }
       telegramStartHosted: () => calls.push(['telegramStartHosted']),
       telegramStartByo: token => calls.push(['telegramStartByo', token]),
       telegramUnlink: () => calls.push(['telegramUnlink']),
+      telegramDrive: () => calls.push(['telegramDrive']),
       webBridgeAction: action => calls.push(['webBridgeAction', action]),
       setUpGitHub: () => calls.push(['setUpGitHub']),
     },

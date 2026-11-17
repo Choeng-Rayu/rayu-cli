@@ -15,7 +15,7 @@ import {
 } from '../telegram/telegramBridge.js'
 import type { ContentBlock, WrappedMessage } from '../telegram/formatActivity.js'
 import { isFileChangeReviewMessage } from '../telegram/formatActivity.js'
-import { resolveTelegramTransport } from '../telegram/telegramStart.js'
+import { hostedLinkOwnedByAnotherAccount, resolveTelegramTransport } from '../telegram/telegramStart.js'
 import { sendMessage, setHostedRouter } from '../telegram/telegramApi.js'
 import {
   getTelegramHealthSnapshot,
@@ -163,6 +163,10 @@ export function useTelegramBridge(
     if (!isAutoReconnectEnabled()) return
     const cfg = readTelegramConfig()
     if (cfg.linkedChatId === undefined) return
+    // A hosted link owned by a different Rayu account is not this session's to
+    // reconnect: only the owning account can serve it, and leading it here would
+    // wipe the machine-wide cache. The link still shows as connected elsewhere.
+    if (hostedLinkOwnedByAnotherAccount()) return
     const remembered = readAutoAttach()
     if (!remembered) return
     const isRemembered =
