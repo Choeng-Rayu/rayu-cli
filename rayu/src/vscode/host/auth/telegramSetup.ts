@@ -52,6 +52,8 @@ export interface TelegramConnectOutcome {
   linkedBotUsername?: string
   mode?: 'hosted' | 'byo' | null
   botUsername?: string
+  /** Whether a live process is polling Telegram (holds the bridge lock). */
+  bridgeRunning?: boolean
   /** PNG data-URL of the pairing QR. Only present for a hosted pairing. */
   qr?: string
   /** The t.me deep link the user opens to complete pairing. */
@@ -99,7 +101,7 @@ export async function unlinkTelegram(
 
 type TelegramStatusFrame = Pick<
   TelegramConnectOutcome,
-  'linkedChatId' | 'linkedBotUsername' | 'mode' | 'botUsername'
+  'linkedChatId' | 'linkedBotUsername' | 'mode' | 'botUsername' | 'bridgeRunning'
 >
 
 async function runTelegramConnectChild(
@@ -145,6 +147,7 @@ function statusFrom(parsed: Record<string, unknown>): TelegramStatusFrame {
       typeof parsed.linkedBotUsername === 'string' ? parsed.linkedBotUsername : undefined,
     mode: parsed.mode === 'hosted' || parsed.mode === 'byo' ? parsed.mode : null,
     botUsername: typeof parsed.botUsername === 'string' ? parsed.botUsername : undefined,
+    bridgeRunning: typeof parsed.bridgeRunning === 'boolean' ? parsed.bridgeRunning : undefined,
   }
 }
 
@@ -165,6 +168,7 @@ function telegramOutcomeFrom(
     linkedChatId: statusFrame?.linkedChatId,
     linkedBotUsername: statusFrame?.linkedBotUsername,
     mode: statusFrame?.mode,
+    bridgeRunning: statusFrame?.bridgeRunning,
     botUsername:
       typeof parsed.botUsername === 'string' ? parsed.botUsername : statusFrame?.botUsername,
     qr,

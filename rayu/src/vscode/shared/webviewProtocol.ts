@@ -1858,9 +1858,11 @@ export interface ProviderSetupView {
  * The host never reads it back, so nothing on this type could place one in persisted
  * webview state, a diagnostic, or the transcript.
  *
- * `linkedChatId` being set means the account is already connected; the panel then offers
- * unlink instead of a mode chooser. `waitingForLink` is the in-progress pairing state the
- * UI uses to keep the deep link and "waiting" hint on screen.
+ * `linkedChatId` being set means a link RECORD exists; the panel then offers unlink
+ * instead of a mode chooser. Whether anything is actually listening is `bridgeRunning` —
+ * a link can outlive the session it was attached to, and the card must not call that
+ * "connected". `waitingForLink` is the in-progress pairing state the UI uses to keep the
+ * deep link and "waiting" hint on screen.
  */
 export interface TelegramConnectView {
   /** True while a status load, pairing, verification, or unlink is in flight. */
@@ -1884,6 +1886,12 @@ export interface TelegramConnectView {
   pairingCode: string | null
   /** True while a pairing has been created and the link is being completed. */
   waitingForLink: boolean
+  /**
+   * Whether a live process is currently polling Telegram for this link (holds the
+   * bridge lock). False with a link present means messages are not being answered;
+   * the panel offers to attach the conversation on screen.
+   */
+  bridgeRunning: boolean
 }
 
 export interface ProviderPresetView {

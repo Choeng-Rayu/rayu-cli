@@ -465,6 +465,7 @@ export function activate(context: vscode.ExtensionContext): void {
       telegramStartHosted: () => telegram.startHosted(null),
       telegramStartByo: token => telegram.startByo(null, token),
       telegramUnlink: () => telegram.unlink(),
+      telegramDrive: () => telegram.driveConversation(),
       webBridge: action => {
         void runWebBridgeCommand(action === 'connect' ? '' : action === 'pair' ? 'pair' : 'off', currentEntry())
       },
@@ -513,7 +514,10 @@ export function activate(context: vscode.ExtensionContext): void {
     unlink: () => unlinkTelegram({ launch: engineLaunch, cwd: engineCwd }),
     hostedLink: getHostedLink,
     localLinkedChatId: () => readTelegramConfig().linkedChatId,
-    setLinkedChat,
+    // Stamp the owning account so a different-account surface on this machine
+    // displays/routes to the link but never leads or wipes it (machine-wide link).
+    setLinkedChat: (chatId, username, botUsername) =>
+      setLinkedChat(chatId, username, botUsername, currentAccountUser()?.id),
     setLinkedBotUsername,
     onLinked: origin => restartTelegramLinkedSession(origin),
     // Same restart, before the link exists: the engine must poll for the BYO

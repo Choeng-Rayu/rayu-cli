@@ -101,6 +101,7 @@ export function SettingsApp(): JSX.Element {
     // The token is posted once and kept nowhere on this side (TelegramConnectPanel).
     onTelegramStartByo: (token: string) => vscodeApi.postMessage({ type: 'settingsTelegramStartByo', token }),
     onTelegramUnlink: () => vscodeApi.postMessage({ type: 'settingsTelegramUnlink' }),
+    onTelegramDrive: () => vscodeApi.postMessage({ type: 'settingsTelegramDrive' }),
     onWebBridge: (action: WebBridgeAction) => vscodeApi.postMessage({ type: 'settingsWebBridge', action }),
     onGitHubSetup: () => vscodeApi.postMessage({ type: 'settingsGitHubSetup' }),
   }), [])

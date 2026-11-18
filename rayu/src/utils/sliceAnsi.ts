@@ -1,11 +1,12 @@
 import {
   type AnsiCode,
+  type Token,
   ansiCodesToString,
   reduceAnsiCodes,
   tokenize,
   undoAnsiCodes,
 } from '@alcalzone/ansi-tokenize'
-import { stringWidth } from '../ink/stringWidth.js'
+import { hasKhmer, splitKhmerByCells, stringWidth } from '../ink/stringWidth.js'
 
 // A code is an "end code" if its code equals its endCode (e.g., hyperlink close)
 function isEndCode(code: AnsiCode): boolean {
@@ -30,7 +31,30 @@ export default function sliceAnsi(
 ): string {
   // Don't pass `end` to tokenize — it counts code units, not display cells,
   // so it drops tokens early for text with zero-width combining marks.
-  const tokens = tokenize(str)
+  let tokens = tokenize(str)
+  // A Khmer grapheme can span 2+ cells (e.g. កា = 2, មោះ = 3) yet ansi-tokenize
+  // emits it as one atomic char token, so a slice boundary inside the cluster
+  // would include the whole token and overshoot `end`. Expand wide Khmer tokens
+  // into 1-cell pieces so cuts land on real cell boundaries. Guarded to Khmer;
+  // every other script keeps its original tokens unchanged.
+  if (hasKhmer(str)) {
+    const expanded: Token[] = []
+    for (const token of tokens) {
+      if (
+        token.type === 'char' &&
+        !token.fullWidth &&
+        hasKhmer(token.value) &&
+        stringWidth(token.value) > 1
+      ) {
+        for (const piece of splitKhmerByCells(token.value, 1)) {
+          expanded.push({ type: 'char', value: piece, fullWidth: false })
+        }
+      } else {
+        expanded.push(token)
+      }
+    }
+    tokens = expanded
+  }
   let activeCodes: AnsiCode[] = []
   let position = 0
   let result = ''

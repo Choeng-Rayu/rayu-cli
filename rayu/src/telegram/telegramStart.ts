@@ -36,7 +36,9 @@
  * the linked conversation's engine. This module therefore needs no watcher.
  */
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
-import { hasRayuSession } from '../services/rayuAuth/rayuSession.js'
+import { hasRayuSession, readRayuSession } from '../services/rayuAuth/rayuSession.js'
+import { readSessionRecords } from '../utils/concurrentSessions.js'
+import { writeAttachment } from './telegramAttach.js'
 import { initTelegramBridge, type TelegramBridgeHandle } from './telegramBridge.js'
 import { setHostedRouter } from './telegramApi.js'
 import { createHostedRouter } from './telegramTransport.js'
@@ -44,6 +46,7 @@ import {
   getBotToken,
   getTelegramMode,
   isAutoReconnectEnabled,
+  linkOwnedByAnotherAccount,
   readAutoAttach,
   readTelegramConfig,
   telegramTransportKey,
@@ -134,14 +137,35 @@ export function hasPendingByoPairing(): boolean {
 }
 
 /**
+ * Whether the machine-wide hosted link belongs to a DIFFERENT Rayu account than
+ * this process is signed into.
+ *
+ * The Telegram connection is shared across the CLI and the editor, but a hosted
+ * link can only be polled/served by the account that paired it. When the two
+ * surfaces use different accounts, a non-owning surface must still DISPLAY the
+ * link and be routable via `/switch`, but it must not lead the bridge: polling the
+ * backend as the wrong account returns "no link", which would otherwise wipe the
+ * shared cache and destroy the owning account's connection. BYO links and links
+ * with no recorded owner are unaffected.
+ */
+export function hostedLinkOwnedByAnotherAccount(): boolean {
+  if (getTelegramMode() !== 'hosted') return false
+  return linkOwnedByAnotherAccount(
+    readTelegramConfig().linkedAccountId,
+    readRayuSession()?.user?.id,
+  )
+}
+
+/**
  * Whether this process should run the bridge.
  *
  * A live link with this session remembered, OR a BYO pairing in flight anywhere on
  * the machine — whichever comes first. See `shouldAutoAttach` for why "a link exists"
- * alone is not enough.
+ * alone is not enough. A hosted link owned by another account is never led here.
  */
 export function shouldStartTelegramBridge(): boolean {
   if (hasPendingByoPairing()) return true
+  if (hostedLinkOwnedByAnotherAccount()) return false
   return shouldAutoAttach({
     linkedChatId: readTelegramConfig().linkedChatId,
     autoReconnect: isAutoReconnectEnabled(),
@@ -164,4 +188,103 @@ export function startTelegramBridge(): TelegramBridgeHandle | null {
   const transport = resolveTelegramTransport()
   if (!transport) return null
   return initTelegramBridge({ token: transport.token })
+}
+
+/** The decisions `isLinkOrphaned` needs, so the rule is testable without disk. */
+export interface OrphanedLinkInput {
+  /** `telegram.json`'s link, if any. */
+  linkedChatId: number | undefined
+  autoReconnect: boolean
+  /** The remembered session, if present and within its TTL. */
+  remembered: { sessionId: string; cwd: string } | undefined
+  /** Every live session in the registry. */
+  liveRecords: readonly { sessionId: string; cwd: string }[]
+}
+
+/**
+ * Whether a link exists that NO live session will answer.
+ *
+ * The failure this names: the remembered session exited (a closed editor window, a
+ * finished terminal session) and every process started since is a different session
+ * in a different workspace, so `shouldAutoAttach` refuses all of them. Hosted
+ * delivery is pull-only, so inbound messages then park on the backend forever —
+ * the chat looks dead with no error anywhere. A link with no memory at all (cleared,
+ * or past its TTL) is orphaned the same way: nothing matches it either.
+ *
+ * The match rule is `shouldAutoAttach`'s, inverted: a live record keeps the link
+ * alive by session id, or by cwd because `/resume` mutates the id in place. An empty
+ * remembered id never matches by id (the editor writes `''` before its engine
+ * reports one), only by directory.
+ */
+export function isLinkOrphaned(input: OrphanedLinkInput): boolean {
+  if (input.linkedChatId === undefined) return false
+  if (!input.autoReconnect) return false
+  const remembered = input.remembered
+  if (!remembered) return true
+  return !input.liveRecords.some(
+    r =>
+      (remembered.sessionId !== '' && r.sessionId === remembered.sessionId) ||
+      r.cwd === remembered.cwd,
+  )
+}
+
+/**
+ * Recover an orphaned link by attaching THIS process to it and starting the bridge.
+ *
+ * Called by the editor's engine when `startTelegramBridge` declined (see print.ts),
+ * so a link whose remembered session died is picked up by the next conversation
+ * opened instead of staying dead until the user re-pairs. The terminal REPL keeps
+ * its own explicit-connect rule; scripted `-p` runs never reach this (the caller is
+ * gated on `isEditorHostedEngine`).
+ *
+ * Concurrency: several engines can start at once (a window restoring conversations).
+ * The bridge lock is the arbiter — only the process that WINS the lock re-points the
+ * attachment, so exactly one conversation adopts the chat. A no-op handle means a
+ * live leader already owns the transport; the attachment is left alone rather than
+ * stolen from under a running bridge.
+ */
+export async function adoptOrphanedTelegramLink(): Promise<TelegramBridgeHandle | null> {
+  const cfg = readTelegramConfig()
+  if (cfg.linkedChatId === undefined || !isAutoReconnectEnabled()) return null
+  // A hosted link owned by another account is not this process's to adopt: it can
+  // only be served by the owning account, and leading it here would wipe the cache.
+  if (hostedLinkOwnedByAnotherAccount()) return null
+
+  const liveRecords = await readSessionRecords()
+  // Re-read the memory AFTER the registry scan: a peer may have adopted the link
+  // (or a pairing completed) while the scan ran, and the fresh memory decides.
+  if (
+    !isLinkOrphaned({
+      linkedChatId: readTelegramConfig().linkedChatId,
+      autoReconnect: isAutoReconnectEnabled(),
+      remembered: readAutoAttach(),
+      liveRecords,
+    })
+  ) {
+    return null
+  }
+  // The normal rule may now apply to this process (the memory changed mid-scan).
+  if (shouldStartTelegramBridge()) return startTelegramBridge()
+
+  const transport = resolveTelegramTransport()
+  if (!transport) return null
+  const handle = initTelegramBridge({ token: transport.token })
+  if (!handle.isNoOp) {
+    try {
+      // Persists the attachment AND the auto-attach memory, so the next restart of
+      // this conversation reconnects through the normal rule.
+      writeAttachment({
+        sessionId: getSessionId(),
+        pid: process.pid,
+        cwd: getOriginalCwd(),
+        attachedAt: Date.now(),
+      })
+    } catch {
+      // Keep polling: routing reaches this engine anyway (it is the leader, and a
+      // single live session is attached implicitly), so stopping here would only
+      // recreate the dead chat this adoption exists to fix. The pointer is repaired
+      // by the next link/restart; the exit handler still owns the lock.
+    }
+  }
+  return handle
 }

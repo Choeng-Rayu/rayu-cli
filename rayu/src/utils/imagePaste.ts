@@ -306,6 +306,69 @@ export async function getImagePathFromClipboard(): Promise<string | null> {
 }
 
 /**
+ * Read every file path on the Windows clipboard (CF_HDROP / FileDropList).
+ *
+ * When the user copies 2+ files in Explorer, the clipboard holds ALL of them,
+ * but Windows Terminal's paste only forwards the first path as text. Reading
+ * the FileDropList directly recovers the full set so a multi-file copy attaches
+ * every image. Native Windows only — returns [] elsewhere (and on any failure),
+ * so callers fall back to the pasted paths.
+ */
+export async function getWindowsClipboardFilePaths(): Promise<string[]> {
+  if (process.platform !== 'win32') return []
+  try {
+    // Fixed command, no user input interpolated; args array (no shell) avoids
+    // injection. FileDropList prints one path per line.
+    const result = await execa(
+      'powershell',
+      ['-NoProfile', '-Command', 'Get-Clipboard -Format FileDropList'],
+      { reject: false },
+    )
+    if (result.exitCode !== 0 || !result.stdout) return []
+    return result.stdout
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+  } catch (e) {
+    logError(e as Error)
+    return []
+  }
+}
+
+/**
+ * Choose the image paths to attach for a Windows file-copy paste.
+ *
+ * The terminal pastes only the first copied file; the clipboard FileDropList
+ * has them all. Prefer the full clipboard image set, but ONLY when it actually
+ * contains the path the terminal pasted — otherwise the list may be a stale,
+ * unrelated copy and we must keep the pasted paths. Non-image files are
+ * filtered out and duplicates removed (clipboard order preserved). Pure so the
+ * selection logic is testable off-Windows.
+ */
+export function expandWindowsImagePaths(
+  pastedImagePaths: string[],
+  clipboardFilePaths: string[],
+): string[] {
+  const firstPasted = asImageFilePath(pastedImagePaths[0] ?? '')
+  if (!firstPasted) return pastedImagePaths
+
+  const clipboardImages: string[] = []
+  const seen = new Set<string>()
+  for (const raw of clipboardFilePaths) {
+    const cleaned = asImageFilePath(raw)
+    if (cleaned && !seen.has(cleaned)) {
+      seen.add(cleaned)
+      clipboardImages.push(cleaned)
+    }
+  }
+
+  if (clipboardImages.length > 0 && seen.has(firstPasted)) {
+    return clipboardImages
+  }
+  return pastedImagePaths
+}
+
+/**
  * Regex pattern to match supported image file extensions. Kept in sync with
  * MIME_BY_EXT in BriefTool/upload.ts — attachments.ts uses this to set isImage
  * on the wire, and remote viewers fetch /preview iff isImage is true. An ext

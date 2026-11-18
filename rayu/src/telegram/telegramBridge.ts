@@ -1,9 +1,12 @@
 /** In-process Telegram bridge: relays chat messages <-> REPL with no middle server. */
 
 import { hostname } from 'os'
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from 'fs'
-import { join } from 'path'
-import { getRayuConfigHomeDir } from '../utils/envUtils.js'
+import {
+  acquireBridgeLock,
+  HEARTBEAT_INTERVAL_MS,
+  releaseBridgeLock,
+  updateHeartbeat,
+} from './telegramBridgeLock.js'
 import {
   formatActivitySummary,
   formatFileChangeReview,
@@ -13,9 +16,12 @@ import {
 } from './formatActivity.js'
 import {
   consumePendingToken,
+  linkOwnedByAnotherAccount,
   readTelegramConfig,
+  setLinkedChat,
   unlink,
 } from './telegramConfig.js'
+import { readRayuSession } from '../services/rayuAuth/rayuSession.js'
 import {
   isDefinitelyNonPrivateChat,
   isPrivateChat,
@@ -60,14 +66,14 @@ import {
   handleProviderCommand,
   isConnectSessionActive,
 } from './telegramConnect.js'
+import { handleModelPickerCallback } from './telegramModelPicker.js'
 import { StreamingMirror } from './streamingMirror.js'
 import {
-  formatSessionList,
+  handleSessionCallback,
   handleStatusCommand,
   handleSwitchCommand,
-  listSessionViews,
+  showSessionPicker,
 } from './telegramSessions.js'
-import { attachedSessionId } from './telegramAttach.js'
 import {
   describeRouteFailure,
   routePrompt,
@@ -88,7 +94,7 @@ import {
   readUninstallRun,
 } from '../cli/uninstall/uninstallState.js'
 import { buildImageQueueCommand, collectAlbumImage } from './telegramMedia.js'
-import { getHostedFile } from './telegramHostedApi.js'
+import { getHostedFile, getHostedLink } from './telegramHostedApi.js'
 import {
   handleQuestionCallback,
   handleQuestionTextInput,
@@ -428,15 +434,18 @@ async function handleUpdate(
     //   pl:   — plan approval
     //   int:  — stop the running turn
     //   perm: — permission decisions
+    //   ses:  — session picker (switch / refresh / close)
+    //   mdl:  — model picker (select / next / prev / close)
     // Anything else falls through to the wizard handler, which always calls
     // answerCallbackQuery first (dismisses the spinner unconditionally) and
     // returns false for unknown data — so adding a further namespace there
-    // (cnx:, …) still requires no change here. Note /model has no namespace at
-    // all: it renders a copyable text catalog rather than a keyboard.
+    // (cnx:, …) still requires no change here.
     if (await handleQuestionCallback(options.token, chatId, cq.id, data)) return
     if (await handlePlanCallback(options.token, chatId, cq.id, data)) return
     if (await handleInterruptCallback(options.token, chatId, cq.id, data)) return
     if (await handlePermissionCallback(options.token, chatId, cq.id, data)) return
+    if (await handleSessionCallback(options.token, chatId, cq.id, data)) return
+    if (await handleModelPickerCallback(options.token, chatId, cq.id, data)) return
     if (await handleUninstallCallback(options.token, chatId, data)) {
       await answerCallbackQuery(options.token, cq.id)
       return
@@ -689,12 +698,16 @@ async function handleUpdate(
   // queued into a REPL, because they describe ALL local sessions — no single
   // session could answer them.
   if (cmd === '/sessions') {
-    const views = await listSessionViews(attachedSessionId())
-    await sendMessage(options.token, chatId, formatSessionList(views), 'HTML')
+    await showSessionPicker(options.token, chatId)
     return
   }
 
   if (cmd === '/switch') {
+    // Bare /switch opens the picker; /switch <n> still switches directly.
+    if (!arg.trim()) {
+      await showSessionPicker(options.token, chatId)
+      return
+    }
     await handleSwitchCommand(options.token, chatId, arg)
     return
   }
@@ -865,11 +878,11 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
     // Built-in bridge commands always included (these come first).
     const builtins = [
       { command: 'interrupt', description: 'Stop the AI right now (like pressing Esc)' },
-      { command: 'sessions', description: 'List your open rayu-cli sessions' },
-      { command: 'switch', description: 'Drive a different session (/switch <n>)' },
+      { command: 'sessions', description: 'List your open sessions — tap one to switch' },
+      { command: 'switch', description: 'Pick a session to drive (/switch <n> for direct)' },
       { command: 'status', description: 'Show which session Telegram is driving' },
       { command: 'connect', description: 'Connect a provider and select a model' },
-      { command: 'model', description: 'Show or set the active model (/model <name>)' },
+      { command: 'model', description: 'Pick a model from a list (/model <name> for direct)' },
       { command: 'provider', description: 'Show all configured providers' },
       { command: 'disconnect', description: 'Unlink this Telegram chat from the CLI' },
     ]
@@ -905,172 +918,9 @@ async function registerCommandsWithTelegram(token: string): Promise<void> {
   }
 }
 
-// ---- Single-session lock with heartbeat ----
-// Only one rayu-cli process should run the Telegram bridge at a time.
-// Lock file format: "PID:STARTTIME:HEARTBEAT_MS"
-//   PID          — system process ID of the holding process
-//   STARTTIME    — /proc/<pid>/stat field 22 (clock ticks since boot), used to
-//                  detect PID reuse across restarts
-//   HEARTBEAT_MS — Date.now() timestamp refreshed every HEARTBEAT_INTERVAL_MS.
-//                  If older than HEARTBEAT_STALE_MS, the lock is considered
-//                  abandoned and any session may take it (handles SIGKILL,
-//                  background sessions, and old-format locks with no heartbeat).
-
-const HEARTBEAT_INTERVAL_MS = 10_000  // refresh the lock timestamp every 10 s
-const HEARTBEAT_STALE_MS = 30_000     // consider the lock abandoned after 30 s
-
-function lockFilePath(): string {
-  return join(getRayuConfigHomeDir(), 'telegram-bridge.lock')
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * Returns the start time of the given process (Linux: /proc/<pid>/stat field 22).
- * Returns empty string on non-Linux platforms or on any read error.
- */
-function getProcessStartTime(pid: number): string {
-  try {
-    if (process.platform !== 'linux') return ''
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-    const afterComm = stat.indexOf(')')
-    if (afterComm === -1) return ''
-    const fields = stat.slice(afterComm + 2).split(' ')
-    return fields[19] ?? '' // field 22 overall (0-indexed 19 after comm)
-  } catch {
-    return ''
-  }
-}
-
-/** Build the lock file content for the current process. */
-function buildLockContent(): string {
-  const startTime = getProcessStartTime(process.pid)
-  return `${process.pid}:${startTime}:${Date.now()}`
-}
-
-/**
- * Try to acquire the Telegram bridge lock.
- * Returns true if this process now owns the lock, false if a live session holds it.
- */
-function acquireBridgeLock(): boolean {
-  const path = lockFilePath()
-  const content = buildLockContent()
-
-  // Atomic exclusive create (O_EXCL) — fails with EEXIST if the file exists.
-  try {
-    const fd = openSync(path, 'wx', 0o600)
-    writeSync(fd, content)
-    closeSync(fd)
-    return true
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code !== 'EEXIST') {
-      // Unexpected error (permissions, etc.) — proceed best-effort.
-      return true
-    }
-  }
-
-  // Lock file exists — read it and decide.
-  try {
-    const raw = readFileSync(path, 'utf8').trim()
-    const parts = raw.split(':')
-    const existingPid = parseInt(parts[0] ?? '', 10)
-    const existingStartTime = parts[1] ?? ''
-    const existingHeartbeat = parseInt(parts[2] ?? '0', 10)
-
-    // Old-format locks ("PID:STARTTIME", no heartbeat field) have parts[2] = undefined
-    // → existingHeartbeat = 0 → age = Date.now() → always stale. This cleanly
-    // migrates old-format locks without requiring manual deletion.
-    const heartbeatAge = Date.now() - (isNaN(existingHeartbeat) ? 0 : existingHeartbeat)
-    const heartbeatStale = heartbeatAge > HEARTBEAT_STALE_MS
-
-    if (
-      !isNaN(existingPid) &&
-      existingPid !== process.pid &&
-      isPidAlive(existingPid) &&
-      !heartbeatStale
-    ) {
-      // PID is alive and heartbeat is fresh — verify it's the same process
-      // instance (not a recycled PID with a different start time).
-      const myStartTime = getProcessStartTime(process.pid)
-      if (existingStartTime && myStartTime) {
-        const currentStartTime = getProcessStartTime(existingPid)
-        if (currentStartTime === existingStartTime) {
-          // Genuine live bridge with fresh heartbeat. Respect it.
-          return false
-        }
-        // Start time differs → PID recycled → fall through to overwrite.
-      } else {
-        // Can't compare start times (non-Linux) — trust the heartbeat alone.
-        return false
-      }
-    }
-
-    // Stale or dead lock — reclaim it ATOMICALLY rather than with a plain
-    // overwrite. Two sessions that both saw the SAME stale lock would each
-    // writeFileSync and each return true — two bridge leaders, hence two
-    // getUpdates consumers (409 Conflict in BYO mode). Removing the stale file
-    // and re-creating with O_EXCL means a racing peer that re-creates first wins
-    // the create; the loser gets EEXIST and concedes instead of clobbering the
-    // peer's fresh lock.
-    try {
-      unlinkSync(path)
-    } catch {
-      // ENOENT (a peer already reclaimed it) or similar — the exclusive create
-      // below is the real arbiter, so ignore and attempt it regardless.
-    }
-    try {
-      const fd = openSync(path, 'wx', 0o600)
-      writeSync(fd, content)
-      closeSync(fd)
-      return true
-    } catch (reclaimErr: unknown) {
-      // A peer won the reclaim and now holds a fresh lock — respect it.
-      if ((reclaimErr as NodeJS.ErrnoException).code === 'EEXIST') return false
-      // Any other error (permissions, etc.) falls back to best-effort ownership,
-      // exactly as the original overwrite did.
-      return true
-    }
-  } catch {
-    // Corrupt or unreadable — proceed best-effort.
-  }
-  return true
-}
-
-/** Refresh the heartbeat timestamp in the lock file. Only writes if we own it. */
-function updateHeartbeat(): void {
-  try {
-    const path = lockFilePath()
-    if (!existsSync(path)) return
-    const raw = readFileSync(path, 'utf8').trim()
-    const pid = parseInt(raw.split(':')[0] ?? '', 10)
-    if (pid === process.pid) {
-      writeFileSync(path, buildLockContent(), { mode: 0o600 })
-    }
-  } catch {
-    // Best effort
-  }
-}
-
-function releaseBridgeLock(): void {
-  try {
-    const path = lockFilePath()
-    if (existsSync(path)) {
-      const raw = readFileSync(path, 'utf8').trim()
-      const pid = parseInt(raw.split(':')[0] ?? '', 10)
-      if (pid === process.pid) unlinkSync(path)
-    }
-  } catch {
-    // Best effort
-  }
-}
+// The single-session lock (acquisition, heartbeat, reclaim and the read-only
+// liveness probe) lives in `telegramBridgeLock.ts` so readers that only need to
+// know whether a bridge is running do not import this module's full graph.
 
 /** A no-op handle returned when another session holds the bridge lock. */
 function makeNoOpHandle(): TelegramBridgeHandle {
@@ -1095,6 +945,33 @@ function makeNoOpHandle(): TelegramBridgeHandle {
 
 /** Guard: only register the process 'exit' cleanup listener once across retries. */
 let _exitListenerRegistered = false
+
+/**
+ * Heal the machine-wide link cache from the backend, which is the authority.
+ *
+ * The card and the chat filter read `telegram.json`, but that cache can be wiped
+ * (a crash, or — before ownership was tracked — a different-account surface). The
+ * live bridge is the one process that can prove the link still exists: it asks the
+ * backend AS ITS OWN ACCOUNT, and only a `linked:true` answer is written back. A
+ * non-owning account gets `linked:false` and writes nothing, so this can never stamp
+ * the wrong owner. It also backfills `linkedAccountId` for links paired by older
+ * builds, and restores `linkedChatId` so the editor shows "connected" while the CLI
+ * is driving the chat. Fail-soft: a backend hiccup must not stop the bridge.
+ */
+export async function reconcileHostedLinkCache(): Promise<void> {
+  try {
+    const link = await getHostedLink()
+    if (!link.linked || !link.chatId) return
+    const chatId = Number(link.chatId)
+    if (!Number.isFinite(chatId)) return
+    const cfg = readTelegramConfig()
+    const accountId = readRayuSession()?.user?.id
+    if (cfg.linkedChatId === chatId && cfg.linkedAccountId === accountId) return
+    setLinkedChat(chatId, link.username ?? undefined, cfg.linkedBotUsername, accountId)
+  } catch {
+    // best-effort; the poll loop keeps running regardless
+  }
+}
 
 export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBridgeHandle {
   // Ensure only one session runs the Telegram bridge at a time.
@@ -1122,6 +999,10 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
   } catch {
     // Not available in all runtimes — safe to ignore.
   }
+
+  // Heal the shared link cache from the backend now that this process owns the
+  // transport (hosted only — BYO links are local and need no server round-trip).
+  if (isHostedMode()) void reconcileHostedLinkCache()
 
   let running = true
   let offset = 0
@@ -1213,7 +1094,18 @@ export function initTelegramBridge(options: TelegramBridgeOptions): TelegramBrid
       // before reportPollFailure so the failure is counted exactly once.
       if (outcome.kind === 'unlinked') {
         reportLinkRevoked()
-        unlink()
+        // Only the account that OWNS the machine-wide link may clear it. The CLI
+        // and the editor can be signed into different Rayu accounts; a bridge that
+        // somehow polls as a non-owning account must stop itself without wiping the
+        // shared cache (that would destroy the owning account's connection).
+        if (
+          !linkOwnedByAnotherAccount(
+            readTelegramConfig().linkedAccountId,
+            readRayuSession()?.user?.id,
+          )
+        ) {
+          unlink()
+        }
         running = false
         break
       }

@@ -38,6 +38,7 @@ function renderSection(view: IntegrationsView): string {
     onTelegramStartHosted: noop,
     onTelegramStartByo: noop,
     onTelegramUnlink: noop,
+    onTelegramDrive: noop,
     onWebBridge: noop,
     onGitHubSetup: noop,
   }))
@@ -57,15 +58,29 @@ describe('the Telegram card inside Settings', () => {
     expect(html).toContain('Your own bot token')
   })
 
-  test('a linked account shows the link and a Disconnect button', () => {
+  test('a linked account with a running bridge shows the link and a Disconnect button', () => {
     const html = renderSection(integrations({
-      telegram: { linkedChatId: 42, linkedBotUsername: 'rayu_bot' },
+      telegram: { linkedChatId: 42, linkedBotUsername: 'rayu_bot', bridgeRunning: true },
     }))
     expect(html).toContain('Telegram is connected')
     expect(html).toContain('@rayu_bot')
     expect(html).toContain('Chat ID <code>42</code>')
     expect(html).toContain('Disconnect Telegram')
     expect(html).not.toContain('Rayu shared bot — recommended')
+    expect(html).not.toContain('Drive this conversation')
+  })
+
+  test('a link with no running bridge says so and offers to drive this conversation', () => {
+    // The incident this guards: the link outlived its session, nothing polls, and
+    // the card used to claim "connected" while every chat message went unanswered.
+    const html = renderSection(integrations({
+      telegram: { linkedChatId: 42, linkedBotUsername: 'rayu_bot', bridgeRunning: false },
+    }))
+    expect(html).toContain('Telegram is linked — not listening')
+    expect(html).not.toContain('Telegram is connected')
+    expect(html).toContain('No running session is listening')
+    expect(html).toContain('Drive this conversation')
+    expect(html).toContain('Disconnect Telegram')
   })
 
   test('an error is shown as an alert', () => {

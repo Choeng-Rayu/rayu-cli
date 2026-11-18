@@ -34,7 +34,6 @@ import {
 import { routeApplyModel, type ApplyModelResult } from './telegramRouter.js'
 import {
   answerCallbackQuery,
-  chunkText,
   editMessageWithInlineKeyboard,
   sendChatAction,
   sendMessage,
@@ -42,21 +41,21 @@ import {
   type InlineKeyboard,
 } from './telegramApi.js'
 import {
-  collectModelCatalog,
   formatAmbiguityHelp,
-  formatModelCatalog,
   resolveModelSelection,
 } from './telegramModelCatalog.js'
+import { showModelPicker } from './telegramModelPicker.js'
 
 // ---- Callback data prefixes ----
 // /connect wizard  (kept ≤ 32 chars to stay well under 64-byte Telegram limit)
 const CB_PROVIDER    = 'cnx:p:'    // + providerId
 const CB_CANCEL      = 'cnx:cancel'
 
-// NOTE: neither /connect nor /model uses a model-picker keyboard. Connect saves
-// the provider's preset default and warms the LIVE catalog (fetchProviderModels,
-// the same source /model reads); /model then renders a copyable text catalog
-// across every configured provider — see telegramModelCatalog.ts for why text.
+// /connect saves the provider's preset default and warms the LIVE catalog
+// (fetchProviderModels, the same source /model reads). Bare /model opens the
+// paginated inline picker (telegramModelPicker.ts); /model <id> [provider] still
+// quick-switches directly, and telegramModelCatalog.ts renders the copyable text
+// form used for ambiguity help.
 
 // ---- Session state ----
 type StepIdle         = { step: 'idle' }
@@ -382,7 +381,7 @@ export async function handleModelCommand(token: string, chatId: number, arg: str
  * Returns whether a running session took the switch. Config is the durable source of
  * truth either way, so a false here means "saved, applies later", never "failed".
  */
-async function applyModelSelection(providerId: string, modelId: string): Promise<boolean> {
+export async function applyModelSelection(providerId: string, modelId: string): Promise<boolean> {
   const cfg = loadRayuConfig()
   const provider = cfg.providers.find(p => p.id === providerId)
   if (!provider) return false
@@ -402,36 +401,41 @@ async function applyModelSelection(providerId: string, modelId: string): Promise
  * `/model` into N sequential HTTP calls on a phone.
  */
 async function sendModelCatalog(token: string, chatId: number): Promise<void> {
+  await ensureActiveProviderModels(token, chatId)
+  await showModelPicker(token, chatId)
+}
+
+/**
+ * Live-fetch the ACTIVE provider's models when it has none cached — the same
+ * one-provider refresh the picker shows. Fetching every provider would turn a
+ * `/model` into N sequential HTTP calls on a phone. Best-effort: on failure the
+ * picker renders whatever is already known.
+ */
+async function ensureActiveProviderModels(token: string, chatId: number): Promise<void> {
   const active = getActiveProvider()
   if (
-    active &&
-    active.kind === 'openai-compatible' &&
-    (active.fetchedModels ?? []).length === 0 &&
-    (active.models ?? []).length === 0
+    !active ||
+    active.kind !== 'openai-compatible' ||
+    (active.fetchedModels ?? []).length > 0 ||
+    (active.models ?? []).length > 0
   ) {
-    await sendChatAction(token, chatId, 'typing')
-    try {
-      const fetched = await fetchProviderModels(active)
-      if (fetched.length > 0) {
-        const cfg = loadRayuConfig()
-        const prov = cfg.providers.find(p => p.id === active.id)
-        if (prov) {
-          const chat = fetched.filter(isLikelyChatModel)
-          prov.fetchedModels = chat.length > 0 ? chat : fetched
-          saveRayuConfig(cfg)
-          _resetRayuConfigCache()
-        }
-      }
-    } catch {
-      // Best effort — render whatever is already known.
-    }
+    return
   }
-
-  const cfg = loadRayuConfig()
-  const entries = collectModelCatalog(cfg.providers, cfg.activeProvider)
-  const text = formatModelCatalog(entries)
-  for (const chunk of chunkText(text)) {
-    await sendMessage(token, chatId, chunk, 'HTML')
+  await sendChatAction(token, chatId, 'typing')
+  try {
+    const fetched = await fetchProviderModels(active)
+    if (fetched.length > 0) {
+      const cfg = loadRayuConfig()
+      const prov = cfg.providers.find(p => p.id === active.id)
+      if (prov) {
+        const chat = fetched.filter(isLikelyChatModel)
+        prov.fetchedModels = chat.length > 0 ? chat : fetched
+        saveRayuConfig(cfg)
+        _resetRayuConfigCache()
+      }
+    }
+  } catch {
+    // Best effort — render whatever is already known.
   }
 }
 

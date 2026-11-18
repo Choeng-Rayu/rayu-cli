@@ -104,6 +104,13 @@ export type TelegramConnectFrame =
       mode: 'hosted' | 'byo' | null
       /** The bot the CLI would talk to right now, when known. */
       botUsername?: string
+      /**
+       * Whether a live process currently holds the bridge lock (i.e. something is
+       * actually polling Telegram). A link can exist while nothing polls — the
+       * remembered session exited — and the card must not call that "connected".
+       * Optional so an older engine bundle still answers a valid status.
+       */
+      bridgeRunning?: boolean
     }
   /**
    * PNG data-URL of the QR code for the hosted pairing deep link, rendered in the

@@ -42,6 +42,7 @@ export interface SettingsHandlers {
   telegramStartHosted(): void
   telegramStartByo(token: string): void
   telegramUnlink(): void
+  telegramDrive(): void
   webBridgeAction(action: WebBridgeAction): void
   setUpGitHub(): void
 }
@@ -75,6 +76,7 @@ const ROUTES: { [K in SettingsWebviewMessage['type']]: (message: MessageOf<K>, h
   settingsTelegramStartHosted: (_, h) => h.telegramStartHosted(),
   settingsTelegramStartByo: (m, h) => h.telegramStartByo(m.token),
   settingsTelegramUnlink: (_, h) => h.telegramUnlink(),
+  settingsTelegramDrive: (_, h) => h.telegramDrive(),
   settingsWebBridge: (m, h) => h.webBridgeAction(m.action),
   settingsGitHubSetup: (_, h) => h.setUpGitHub(),
 }
@@ -99,6 +101,7 @@ const BARE_TYPES = new Set<string>([
   'settingsIntegrationsRefresh',
   'settingsTelegramStartHosted',
   'settingsTelegramUnlink',
+  'settingsTelegramDrive',
   'settingsGitHubSetup',
 ])
 

@@ -86,6 +86,7 @@ import {
   LITE_READ_BUF_SIZE,
   readHeadAndTail,
   readTranscriptForLoad,
+  resolveSessionFilePath,
   SKIP_PRECOMPACT_THRESHOLD,
 } from './sessionStoragePortable.js'
 import { getSettings_DEPRECATED } from './settings/settings.js'
@@ -3826,12 +3827,46 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
   contextCollapseCommits: ContextCollapseCommitEntry[]
   contextCollapseSnapshot: ContextCollapseSnapshotEntry | undefined
+  /** The transcript actually read — may differ from the cwd-derived path. */
+  filePath: string
 }> {
-  const sessionFile = join(
-    getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
-    `${sessionId}.jsonl`,
-  )
-  return loadTranscriptFile(sessionFile)
+  const override = getSessionProjectDir()
+  const cwd = getOriginalCwd()
+  let filePath = join(override ?? getProjectDir(cwd), `${sessionId}.jsonl`)
+  // An explicit in-process redirect (switchActiveSession on resume/branch) wins.
+  if (!override) {
+    // ── RESOLVE THE TRANSCRIPT THE SAME WAY THE EXTENSION HOST DOES ────────────
+    //
+    // The host runs `resolveSessionFilePath(id, cwd)` before spawning `--resume
+    // <id>` and only keeps the flag when it finds the file. This process re-derives
+    // the project dir from `getOriginalCwd()`, whose `realpathSync` can fall back
+    // differently — macOS File Provider mounts (iCloud/OneDrive/Dropbox) reject the
+    // per-component lstat with EPERM intermittently, so one process resolves the
+    // symlinked/cloud path and the other keeps the raw one. Transcripts can also
+    // live under a sibling git worktree or a long-path hash variant. A strict
+    // single-dir lookup then misses a transcript that exists, `getLastSessionLog`
+    // returns null, and resume dies with "No conversation found" → exit code 1
+    // (the panel sees only the exit, since the message goes to stdout as a result
+    // frame). Fall back to the shared resolver, then to a scan by the globally
+    // unique session id, so the engine finds exactly the file the host found.
+    let found = false
+    try {
+      found = (await stat(filePath)).size > 0
+    } catch {
+      // Missing or unreadable — resolve tolerantly below.
+    }
+    if (!found) {
+      const resolved =
+        (await resolveSessionFilePath(sessionId, cwd)) ??
+        (await resolveSessionFilePath(sessionId))
+      if (resolved) filePath = resolved.filePath
+    }
+  }
+  // The resolved path travels with the data: getLastSessionLog puts it in the
+  // log's fullPath, and print.ts anchors the resumed session's WRITES to
+  // dirname(fullPath) via switchSession. Returning the cwd-derived path here
+  // would split the transcript across two directories after a cross-dir resume.
+  return { ...(await loadTranscriptFile(filePath)), filePath }
 }
 
 /**
@@ -3881,6 +3916,7 @@ export async function getLastSessionLog(
     contentReplacements,
     contextCollapseCommits,
     contextCollapseSnapshot,
+    filePath,
   } = await loadSessionFile(sessionId)
   if (messages.size === 0) return null
   // Prime getSessionMessages cache so recordTranscript (called after REPL
@@ -3914,7 +3950,10 @@ export async function getLastSessionLog(
       customTitle,
       buildFileHistorySnapshotChain(fileHistorySnapshots, transcript),
       tag,
-      getTranscriptPathForSession(sessionId),
+      // The file actually read, not a cwd-derived guess: print.ts resumes with
+      // switchSession(id, dirname(fullPath)), so this anchors later writes to the
+      // same directory the transcript was loaded from (cross-dir/worktree resume).
+      filePath,
       buildAttributionSnapshotChain(attributionSnapshots, transcript),
       agentSetting,
       contentReplacements.get(sessionId) ?? [],

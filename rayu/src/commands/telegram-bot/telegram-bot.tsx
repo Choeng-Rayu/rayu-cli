@@ -31,7 +31,7 @@ import {
   getHostedLink,
   type HostedPairing,
 } from '../../telegram/telegramHostedApi.js'
-import { hasRayuSession } from '../../services/rayuAuth/rayuSession.js'
+import { hasRayuSession, readRayuSession } from '../../services/rayuAuth/rayuSession.js'
 import { useSetAppState } from '../../state/AppState.js'
 
 /** The AppState updater handed out by useSetAppState(). */
@@ -186,6 +186,9 @@ function HostedStep({
             Number(link.chatId),
             link.username ?? undefined,
             pairing?.botUsername ?? undefined,
+            // Stamp the owning account so a different-account surface on this
+            // machine displays/routes to the link but never leads or wipes it.
+            readRayuSession()?.user?.id,
           )
         } else if (pairing?.botUsername) {
           setLinkedBotUsername(pairing.botUsername)

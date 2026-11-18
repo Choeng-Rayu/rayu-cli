@@ -45,6 +45,8 @@ export interface IntegrationsSectionDeps {
   telegramStartHosted(): Promise<void>
   telegramStartByo(token: string): Promise<void>
   telegramUnlink(): Promise<void>
+  /** Re-attach the link to the conversation on screen (the card's recovery action). */
+  telegramDrive(): void
   webBridge(action: WebBridgeAction): void
   setUpGitHub(): Promise<void>
 }
@@ -194,6 +196,10 @@ export class SettingsController implements SettingsHandlers {
 
   telegramUnlink(): void {
     void this.deps.integrations.telegramUnlink()
+  }
+
+  telegramDrive(): void {
+    this.deps.integrations.telegramDrive()
   }
 
   webBridgeAction(action: WebBridgeAction): void {
