@@ -4,7 +4,9 @@ import { logError } from 'src/utils/log.js'
 import { useDebounceCallback } from 'usehooks-ts'
 import type { InputEvent, Key } from '../ink.js'
 import {
+  expandWindowsImagePaths,
   getImageFromClipboard,
+  getWindowsClipboardFilePaths,
   isImageFilePath,
   PASTE_THRESHOLD,
   tryReadImageFromPath,
@@ -135,10 +137,24 @@ export function usePasteHandler({
                   pastedText,
                 )
 
-              // Process all image paths
-              void Promise.all(
-                imagePaths.map(imagePath => tryReadImageFromPath(imagePath)),
-              ).then(results => {
+              // Process all image paths. On native Windows, Explorer copy puts
+              // every file on the clipboard (CF_HDROP) but Windows Terminal
+              // pastes only the first path — read the full file list so a
+              // multi-file copy attaches all images. Guarded to Windows; other
+              // platforms resolve to the pasted paths unchanged.
+              const pathsPromise =
+                getPlatform() === 'windows'
+                  ? getWindowsClipboardFilePaths().then(clip =>
+                      expandWindowsImagePaths(imagePaths, clip),
+                    )
+                  : Promise.resolve(imagePaths)
+              void pathsPromise
+                .then(paths =>
+                  Promise.all(
+                    paths.map(imagePath => tryReadImageFromPath(imagePath)),
+                  ),
+                )
+                .then(results => {
                 const validImages = results.filter(
                   (r): r is NonNullable<typeof r> => r !== null,
                 )

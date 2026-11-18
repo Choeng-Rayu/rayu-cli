@@ -250,12 +250,19 @@ function PromptInput({
     show: false
   });
   const [cursorOffset, setCursorOffset] = useState<number>(input.length);
+  // Synchronous mirror of cursorOffset for insertTextAtCursor. Multi-image paste
+  // calls it in a tight loop within a single event, before React can re-render,
+  // so the closure value would be stale. Re-synced from state every render and
+  // updated eagerly inside insertTextAtCursor so consecutive inserts accumulate.
+  const cursorOffsetRef = React.useRef(cursorOffset);
+  cursorOffsetRef.current = cursorOffset;
   // Track the last input value set via internal handlers so we can detect
   // external input changes (e.g. speech-to-text injection) and move cursor to end.
   const lastInternalInputRef = React.useRef(input);
   if (input !== lastInternalInputRef.current) {
     // Input changed externally (not through any internal handler) — move cursor to end
     setCursorOffset(input.length);
+    cursorOffsetRef.current = input.length;
     lastInternalInputRef.current = input;
   }
   // Wrap onInputChange to track internal changes before they trigger re-render
@@ -1245,11 +1252,22 @@ function PromptInput({
     return input;
   }, []);
   function insertTextAtCursor(text: string) {
+    // Read the freshest input/cursor from refs, not the render closure.
+    // usePasteHandler fires onImagePaste in a synchronous loop for multi-image
+    // paste; React cannot re-render between iterations, so closure `input` and
+    // `cursorOffset` stay stale and each pill would overwrite the previous one
+    // (only the last survived, then the orphan-prune deleted the other images).
+    // The refs are updated eagerly here and re-synced from state each render, so
+    // N synchronous inserts append N pills. A single insert behaves as before.
+    const baseInput = lastInternalInputRef.current;
+    const baseCursor = Math.min(cursorOffsetRef.current, baseInput.length);
     // Push current state to buffer before inserting
-    pushToBuffer(input, cursorOffset, pastedContents);
-    const newInput = input.slice(0, cursorOffset) + text + input.slice(cursorOffset);
-    trackAndSetInput(newInput);
-    setCursorOffset(cursorOffset + text.length);
+    pushToBuffer(baseInput, baseCursor, pastedContents);
+    const newInput = baseInput.slice(0, baseCursor) + text + baseInput.slice(baseCursor);
+    const newCursor = baseCursor + text.length;
+    cursorOffsetRef.current = newCursor;
+    trackAndSetInput(newInput); // also advances lastInternalInputRef synchronously
+    setCursorOffset(newCursor);
   }
   const doublePressEscFromEmpty = useDoublePress(() => {}, () => onShowMessageSelector());
 

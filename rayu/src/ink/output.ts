@@ -22,7 +22,7 @@ import {
   setCellAt,
   shiftRows,
 } from './screen.js'
-import { stringWidth } from './stringWidth.js'
+import { hasKhmer, splitKhmerByCells, stringWidth } from './stringWidth.js'
 import { widestLine } from './widest-line.js'
 
 /**
@@ -636,12 +636,20 @@ function flushBuffer(
   const styleId = stylePool.intern(filteredStyles)
 
   for (const { segment: grapheme } of getGraphemeSegmenter().segment(buffer)) {
-    out.push({
-      value: grapheme,
-      width: stringWidth(grapheme),
-      styleId,
-      hyperlink,
-    })
+    const width = stringWidth(grapheme)
+    // The cell model only has Narrow (1) and Wide (2) buckets. A Khmer cluster
+    // can be 3+ cells (base + multiple Mc spacing vowels, e.g. មោះ = ម+ោ+ះ),
+    // which a Wide bucket would compress to 2 and desync the cursor from the
+    // terminal. Split such clusters into <=2-cell pieces at spacing-code-point
+    // boundaries; zero-width Mn marks ride along with the preceding base, so no
+    // piece is ever zero-width and the concatenated bytes are unchanged.
+    if (width > 2 && hasKhmer(grapheme)) {
+      for (const piece of splitKhmerByCells(grapheme, 2)) {
+        out.push({ value: piece, width: stringWidth(piece), styleId, hyperlink })
+      }
+      continue
+    }
+    out.push({ value: grapheme, width, styleId, hyperlink })
   }
 }
 

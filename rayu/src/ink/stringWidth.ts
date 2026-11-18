@@ -74,6 +74,19 @@ function stringWidthJavaScript(str: string): number {
       continue
     }
 
+    // Khmer clusters advance one cell per spacing code point (base consonant +
+    // Mc spacing vowels); Mn marks are zero. Sum them all rather than counting
+    // only the first, so a cluster like មែ (ម + ែ) is width 2, matching wcwidth.
+    if (hasKhmer(grapheme)) {
+      for (const char of grapheme) {
+        const codePoint = char.codePointAt(0)!
+        if (!isZeroWidth(codePoint)) {
+          width += eastAsianWidth(codePoint, { ambiguousAsWide: false })
+        }
+      }
+      continue
+    }
+
     // Calculate width for non-emoji graphemes
     // For grapheme clusters (like Devanagari conjuncts with virama+ZWJ), only count
     // the first non-zero-width character's width since the cluster renders as one glyph
@@ -185,6 +198,21 @@ function isZeroWidth(codePoint: number): boolean {
     return true
   }
 
+  // Khmer combining marks (Unicode category Mn): dependent vowel signs, the
+  // coeng subscript marker (U+17D2), nikahit, and register shifts. Terminals
+  // (glibc wcwidth, xterm.js/VS Code) render these zero-width — they stack onto
+  // the base consonant. The SPACING vowels (category Mc: U+17B6, U+17BE-17C5,
+  // U+17C7-17C8) advance one cell and are deliberately NOT zeroed here.
+  if (
+    (codePoint >= 0x17b4 && codePoint <= 0x17b5) ||
+    (codePoint >= 0x17b7 && codePoint <= 0x17bd) ||
+    codePoint === 0x17c6 ||
+    (codePoint >= 0x17c9 && codePoint <= 0x17d3) ||
+    codePoint === 0x17dd
+  ) {
+    return true
+  }
+
   // Arabic formatting
   if (
     (codePoint >= 0x0600 && codePoint <= 0x0605) ||
@@ -200,6 +228,48 @@ function isZeroWidth(codePoint: number): boolean {
   if (codePoint >= 0xe0000 && codePoint <= 0xe007f) return true
 
   return false
+}
+
+// True if the string contains any code point in the Khmer block (U+1780-17FF).
+// Bun.stringWidth counts Khmer Mn combining marks as width 1, but terminals
+// render them zero-width, so Khmer text must use the corrected JS path below.
+// The scan is a tight char-code loop; non-Khmer text keeps Bun's native path.
+export function hasKhmer(str: string): boolean {
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i)
+    if (code >= 0x1780 && code <= 0x17ff) return true
+  }
+  return false
+}
+
+/**
+ * Split Khmer text into pieces of at most `maxWidth` display cells, cutting only
+ * at spacing-code-point boundaries. Each piece begins with a width>=1 code point
+ * (base consonant or Mc spacing vowel); zero-width Mn marks ride along with the
+ * preceding base, so no piece is ever zero-width and concatenating the pieces
+ * reproduces the input byte-for-byte.
+ *
+ * Needed because a Khmer grapheme can span 3+ cells (e.g. មោះ = ម+ោ+ះ) while the
+ * renderer's cell model and sliceAnsi work in 1/2-cell units. maxWidth=2 feeds
+ * the Narrow/Wide cell buckets; maxWidth=1 lets sliceAnsi cut at any cell.
+ * Only call for Khmer text (every code point is width 0 or 1).
+ */
+export function splitKhmerByCells(text: string, maxWidth: number): string[] {
+  const pieces: string[] = []
+  let current = ''
+  let width = 0
+  for (const char of text) {
+    const charWidth = stringWidth(char)
+    if (width + charWidth > maxWidth && current) {
+      pieces.push(current)
+      current = ''
+      width = 0
+    }
+    current += char
+    width += charWidth
+  }
+  if (current) pieces.push(current)
+  return pieces
 }
 
 // Note: complex-script graphemes like Devanagari क्ष (ka+virama+ZWJ+ssa) render
@@ -218,5 +288,8 @@ const bunStringWidth =
 const BUN_STRING_WIDTH_OPTS = { ambiguousIsNarrow: true } as const
 
 export const stringWidth: (str: string) => number = bunStringWidth
-  ? str => bunStringWidth(str, BUN_STRING_WIDTH_OPTS)
+  ? str =>
+      hasKhmer(str)
+        ? stringWidthJavaScript(str)
+        : bunStringWidth(str, BUN_STRING_WIDTH_OPTS)
   : stringWidthJavaScript

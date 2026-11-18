@@ -24,6 +24,7 @@ brag-output-*/
 rayu-cli/node_modules
 # Local development
 skills/
+RAYU.local.md
 rayu/cute-girl-images/
 claude-code/
 .credential/
