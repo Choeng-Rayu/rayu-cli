@@ -3,6 +3,13 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
+
+const isWindows = process.platform === 'win32';
+const ttyDevice = isWindows ? 'CON' : '/dev/tty';
+const installOneLiner = isWindows
+  ? 'irm https://rayucode.com/install.ps1 | iex'
+  : 'curl -fsSL https://rayucode.com/install | bash';
 
 const message = [
   '',
@@ -10,26 +17,19 @@ const message = [
   '  |                                                  |',
   '  |   Rayu CLI installed successfully!               |',
   '  |                                                  |',
-  '  |   Run rayu to start                              |',
+  '  |   RayuCode v3 (native Rust) transition bridge    |',
+  '  |   Legacy Node CLI is preserved as: rayu-legacy   |',
   '  |                                                  |',
   '  +--------------------------------------------------+',
   '',
-  '  Quick reference:',
-  '    rayu                  Start an interactive AI session',
-  '    rayu update           Update to the latest version',
-  '    rayu uninstall        Remove Rayu CLI from your system',
-  '    rayu --help           See all commands and options',
+  '  Install / upgrade to RayuCode v3 (Rust):',
+  `    ${installOneLiner}`,
   '',
-  '  Docs & issues:  https://github.com/Choeng-Rayu/rayu-cli',
-  '',
-  'Whats new?:',
-  '    - Improve the ask user question tool for all LLMs providers.',
-  '    - Fix the Gateway upstream error.',
-  '    - Fix the bug for plan credit calculation.',
+  '  Remove legacy npm package later:',
+  '    npm uninstall -g @rayu-dev/rayu-cli',
   '',
 ].join('\n') + '\n';
 
-// Write the first-run marker so the binary does not show the message again
 function writeMarker() {
   try {
     const dir = path.join(os.homedir(), '.rayu');
@@ -38,41 +38,87 @@ function writeMarker() {
   } catch (_) {}
 }
 
-// npm v7+ pipes lifecycle script stdout/stderr, so we open the terminal
-// device directly to write straight to the user's terminal.
-// On Unix: /dev/tty, on Windows: CON
-const isWindows = process.platform === 'win32';
-const ttyDevice = isWindows ? 'CON' : '/dev/tty';
+function writeTty(text) {
+  try {
+    const fd = fs.openSync(ttyDevice, 'w');
+    fs.writeSync(fd, text);
+    fs.closeSync(fd);
+  } catch (_) {
+    try {
+      process.stdout.write(text);
+    } catch (_e) {}
+  }
+}
 
-// Rayu-driven installs (the in-session auto-updater, and the local-install
-// updater) set this. In that case the terminal device is NOT free real estate:
-// it is the terminal an Ink TUI is actively rendering into, so writing here
-// bypasses the parent's piped stdio and smears this banner over the live UI.
-// The banner is redundant there anyway — the user already has Rayu open.
-// Still write the marker so the binary does not replay the welcome later.
-// Keep this env var name in sync with MANAGED_INSTALL_ENV_VAR in
-// src/utils/npmExec.ts (this file is CommonJS run by npm and cannot import it).
 const isManagedInstall = !!process.env.RAYU_MANAGED_INSTALL;
-
 if (isManagedInstall) {
   writeMarker();
   process.exit(0);
 }
 
-try {
-  const fd = fs.openSync(ttyDevice, 'w');
-  fs.writeSync(fd, message);
-  fs.closeSync(fd);
-  // Postinstall showed the message — mark as done so binary skips it
-  writeMarker();
-} catch (_) {
-  // No controlling terminal (CI, Docker, headless) — fall through.
-  // Write to stdout as best-effort, and still write the marker so the
-  // binary doesn't try to show it again in a non-interactive context.
-  try {
-    process.stdout.write(message);
-  } catch (_e) {
-    // stdout may be closed in some CI environments
+writeMarker();
+
+const skipMigration =
+  process.env.RAYU_SKIP_V3_MIGRATION === '1' ||
+  process.env.CI === 'true' ||
+  process.env.NODE_ENV === 'test';
+
+// Only run the network v3 installer automatically when a real controlling
+// terminal is attached (e.g. a user running `rayu update` / `npm install -g`),
+// or when explicitly forced via RAYU_FORCE_V3_MIGRATION=1. Headless/test runs
+// never block on network I/O and still print the banner cleanly.
+let migrated = false;
+if (!skipMigration) {
+  let ttyIn = null;
+  let ttyOut = null;
+  let hasTty = false;
+
+  if (isWindows) {
+    hasTty = !!(process.stdout.isTTY || process.env.RAYU_FORCE_V3_MIGRATION === '1');
+  } else {
+    try {
+      ttyIn = fs.openSync('/dev/tty', 'r');
+      ttyOut = fs.openSync('/dev/tty', 'w');
+      hasTty = true;
+    } catch (_) {
+      hasTty = process.env.RAYU_FORCE_V3_MIGRATION === '1';
+    }
   }
-  writeMarker();
+
+  if (hasTty) {
+    try {
+      const env = Object.assign({}, process.env, {
+        RAYU_FROM_NPM_POSTINSTALL: '1',
+      });
+      let res;
+      if (isWindows) {
+        const url = process.env.RAYU_INSTALLER_URL || 'https://rayucode.com/install.ps1';
+        const cmd = `irm '${url.replace(/'/g, "''")}' | iex`;
+        res = spawnSync(
+          'powershell.exe',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', cmd],
+          { env, stdio: 'inherit' },
+        );
+      } else {
+        const url = process.env.RAYU_INSTALLER_URL || 'https://rayucode.com/install.sh';
+        const escaped = url.replace(/'/g, "'\\''");
+        const cmd =
+          `if command -v curl >/dev/null 2>&1; then curl -fsSL '${escaped}' | bash; ` +
+          `elif command -v wget >/dev/null 2>&1; then wget -qO- '${escaped}' | bash; ` +
+          `else exit 1; fi`;
+        const stdio = ttyIn !== null && ttyOut !== null ? [ttyIn, ttyOut, ttyOut] : 'inherit';
+        res = spawnSync('sh', ['-c', cmd], { env, stdio });
+      }
+      migrated = !!(res && res.status === 0);
+    } catch (_) {
+      migrated = false;
+    }
+  }
+
+  if (ttyIn !== null) try { fs.closeSync(ttyIn); } catch (_) {}
+  if (ttyOut !== null) try { fs.closeSync(ttyOut); } catch (_) {}
+}
+
+if (!migrated) {
+  writeTty(message);
 }

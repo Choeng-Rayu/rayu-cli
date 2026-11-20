@@ -1,0 +1,170 @@
+name: Publish v3 Migration Bridge Release
+
+# Publishes the tiny cross-platform `rayu-v3-migrator` binary to
+# Choeng-Rayu/rayu-cli Releases using the legacy asset naming convention
+# (`rayu-cli-<platform>` + `manifest.json`) so existing users on old cached
+# `~/.rayu/bin/.rayu-installer` copies who run `rayu update` seamlessly
+# upgrade to RayuCode v3 (Rust), preserve old Node CLI as `rayu-legacy`, and
+# get prompted to uninstall `rayu-legacy`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version tag without leading v (e.g. 3.0.0)
+        required: true
+        default: '3.0.0'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-unix:
+    name: Build migrator (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+            cross: false
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            platform: linux-arm64
+            cross: linux-arm64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            platform: linux-x64-musl
+            cross: musl-x64
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            platform: linux-arm64-musl
+            cross: musl-arm64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+            cross: false
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: darwin-x64
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross-compile linkers (Linux)
+        if: matrix.cross != false
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          case "${{ matrix.cross }}" in
+            linux-arm64) sudo apt-get install -y -qq gcc-aarch64-linux-gnu ;;
+            musl-x64)    sudo apt-get install -y -qq musl-tools ;;
+            musl-arm64)  sudo apt-get install -y -qq gcc-aarch64-linux-gnu ;;
+          esac
+      - name: Build migrator binary
+        working-directory: v3-migrator
+        run: |
+          set -euo pipefail
+          case "${{ matrix.cross }}" in
+            linux-arm64) export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc ;;
+            musl-arm64)  export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc ;;
+          esac
+          cargo build --release --target "${{ matrix.target }}"
+          mkdir -p ../dist-migrator
+          cp "target/${{ matrix.target }}/release/rayu-v3-migrator" "../dist-migrator/rayu-cli-${{ matrix.platform }}"
+          chmod +x "../dist-migrator/rayu-cli-${{ matrix.platform }}"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            codesign --force --sign - "../dist-migrator/rayu-cli-${{ matrix.platform }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: migrator-${{ matrix.platform }}
+          path: dist-migrator/rayu-cli-${{ matrix.platform }}
+
+  build-windows:
+    name: Build migrator (${{ matrix.platform }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            msvc_arch: amd64
+            platform: win32-x64
+          - target: aarch64-pc-windows-msvc
+            msvc_arch: amd64_arm64
+            platform: win32-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build migrator exe
+        working-directory: v3-migrator
+        shell: pwsh
+        run: |
+          cargo build --release --target "${{ matrix.target }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force -Path ..\dist-migrator | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/rayu-v3-migrator.exe" "..\dist-migrator\rayu-cli-${{ matrix.platform }}.exe" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: migrator-${{ matrix.platform }}
+          path: dist-migrator/rayu-cli-${{ matrix.platform }}.exe
+
+  publish:
+    name: Publish legacy migration release
+    needs: [build-unix, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: migrator-*
+          merge-multiple: true
+      - name: Generate manifest.json matching legacy install.sh / install.ps1 schema
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          version = os.environ["VERSION"].lstrip("v")
+          assets_dir = Path("assets")
+          platforms = {}
+          for p in sorted(assets_dir.glob("rayu-cli-*")):
+              name = p.name
+              key = name.removeprefix("rayu-cli-").removesuffix(".exe")
+              digest = hashlib.sha256(p.read_bytes()).hexdigest()
+              platforms[key] = {
+                  "checksum": digest,
+                  "binary": name,
+                  "size": p.stat().st_size,
+              }
+          manifest = {"version": version, "platforms": platforms}
+          (assets_dir / "manifest.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
+          print(json.dumps(manifest, indent=2))
+          PY
+      - name: Create or update GitHub Release on Choeng-Rayu/rayu-cli
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES="Automated migration bridge upgrading legacy Node v2 Rayu CLI users to RayuCode v3 (Rust). Running \`rayu update\` or \`rayu\` will install RayuCode v3, rename the previous Node CLI to \`rayu-legacy\`, and prompt whether to uninstall \`rayu-legacy\`."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "RayuCode v3 Migration Bridge ($TAG)" --notes "$NOTES" --latest
+          else
+            gh release create "$TAG" --title "RayuCode v3 Migration Bridge ($TAG)" --notes "$NOTES" --latest
+          fi
+          gh release upload "$TAG" assets/rayu-cli-* assets/manifest.json --clobber
