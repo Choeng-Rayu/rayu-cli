@@ -9,8 +9,8 @@
 #   curl -fsSL https://rayucode.com/install-rayu-legacy.sh | bash
 set -euo pipefail
 
-REPO="${RAYU_RELEASE_REPO:-Choeng-Rayu/rayucode-v2-releases}"
-RELEASE_METADATA_BASE="${RAYU_RELEASE_METADATA_BASE:-https://raw.githubusercontent.com/$REPO/main/releases}"
+REPO="${RAYU_RELEASE_REPO:-Choeng-Rayu/rayucode-v2}"
+RELEASE_METADATA_BASE="${RAYU_RELEASE_METADATA_BASE:-https://raw.githubusercontent.com/$REPO/release-metadata/releases}"
 LEGACY_INSTALLER_URL="${RAYU_LEGACY_INSTALLER_URL:-https://rayucode.com/install-rayu-legacy.sh}"
 NPM_LEGACY_PACKAGE="@rayu-dev/rayu-cli"
 

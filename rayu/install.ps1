@@ -72,12 +72,12 @@ if ($PSVersionTable.PSVersion.Major -lt 5) {
 $Repo = if ($env:RAYU_RELEASE_REPO) {
     $env:RAYU_RELEASE_REPO
 } else {
-    "Choeng-Rayu/rayucode-v2-releases"
+    "Choeng-Rayu/rayucode-v2"
 }
 $ReleaseMetadataBase = if ($env:RAYU_RELEASE_METADATA_BASE) {
     $env:RAYU_RELEASE_METADATA_BASE.TrimEnd('/')
 } else {
-    "https://raw.githubusercontent.com/$Repo/main/releases"
+    "https://raw.githubusercontent.com/$Repo/release-metadata/releases"
 }
 $LegacyInstallerUrl = if ($env:RAYU_LEGACY_INSTALLER_URL) {
     $env:RAYU_LEGACY_INSTALLER_URL
@@ -172,7 +172,7 @@ function Get-LatestRayuReleaseTag {
     }
 
     if ($metadataTag) {
-        Write-Warn "GitHub release lookup unavailable; using cached rayucode.com metadata ($metadataTag)."
+        Write-Warn "GitHub release lookup unavailable; using fallback release metadata ($metadataTag)."
         return $metadataTag
     }
     Write-Err "Failed to determine latest version"
