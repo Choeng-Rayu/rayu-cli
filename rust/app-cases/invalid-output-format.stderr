@@ -1,0 +1,1 @@
+error: option '--output-format <format>' argument 'bogus' is invalid. Allowed choices are text, json, stream-json.

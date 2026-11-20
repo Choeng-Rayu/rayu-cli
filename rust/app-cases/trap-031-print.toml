@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["--print", "--output-format", "héllo wörld", "list top-level modules"]
+status.code = 1
+fs.sandbox = true

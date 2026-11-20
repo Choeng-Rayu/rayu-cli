@@ -1,0 +1,29 @@
+Usage: rayu mcp [options] [command]
+
+Configure and manage MCP servers
+
+Options:
+  -h, --help                                     Display help for command
+
+Commands:
+  add [options] <name> <commandOrUrl> [args...]  Add an MCP server to RAYU.
+  
+  Examples:
+    # Add HTTP server:
+    claude mcp add --transport http sentry https://mcp.sentry.dev/mcp
+  
+    # Add HTTP server with headers:
+    claude mcp add --transport http corridor https://app.corridor.dev/api/mcp --header "Authorization: Bearer ..."
+  
+    # Add stdio server with environment variables:
+    claude mcp add -e API_KEY=xxx my-server -- npx my-mcp-server
+  
+    # Add stdio server with subprocess flags:
+    claude mcp add my-server -- my-command --some-flag arg1
+  add-json [options] <name> <json>               Add an MCP server (stdio or SSE) with a JSON string
+  get <name>                                     Get details about an MCP server. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.
+  help [command]                                 display help for command
+  list                                           List configured MCP servers. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.
+  remove [options] <name>                        Remove an MCP server
+  reset-project-choices                          Reset all approved and rejected project-scoped (.mcp.json) servers within this project
+  serve [options]                                Start the RAYU MCP server

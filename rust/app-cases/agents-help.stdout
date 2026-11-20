@@ -1,0 +1,8 @@
+Usage: rayu agents [options]
+
+List configured agents
+
+Options:
+  -h, --help                   Display help for command
+  --setting-sources <sources>  Comma-separated list of setting sources to load
+                               (user, project, local).

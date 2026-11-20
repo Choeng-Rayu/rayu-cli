@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["--print", "--permission-mode", "ılık ırmak", "read README and summarize"]
+status.code = 1
+fs.sandbox = true

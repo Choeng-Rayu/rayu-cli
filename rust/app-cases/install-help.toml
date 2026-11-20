@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["install", "--help"]
+status.code = 0
+fs.sandbox = true

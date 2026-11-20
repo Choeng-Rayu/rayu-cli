@@ -1,0 +1,21 @@
+Usage: rayu plugin|plugins [options] [command]
+
+Manage RAYU plugins
+
+Options:
+  -h, --help                           Display help for command
+
+Commands:
+  disable [options] [plugin]           Disable an enabled plugin
+  enable [options] <plugin>            Enable a disabled plugin
+  help [command]                       display help for command
+  install|i [options] <plugin>         Install a plugin from available
+                                       marketplaces (use plugin@marketplace for
+                                       specific marketplace)
+  list [options]                       List installed plugins
+  marketplace                          Manage RAYU marketplaces
+  uninstall|remove [options] <plugin>  Uninstall an installed plugin
+  update [options] <plugin>            Update a plugin to the latest version
+                                       (restart required to apply)
+  validate [options] <path>            Validate a plugin or marketplace
+                                       manifest

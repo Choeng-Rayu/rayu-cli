@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["mcp", "--help"]
+status.code = 0
+fs.sandbox = true

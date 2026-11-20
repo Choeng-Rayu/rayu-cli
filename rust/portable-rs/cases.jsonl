@@ -1,0 +1,638 @@
+{"fn":"djb2Hash","args":["Hello World"],"ok":-862545276}
+{"fn":"djb2Hash","args":["abc"],"ok":96354}
+{"fn":"djb2Hash","args":["a"],"ok":97}
+{"fn":"djb2Hash","args":["a..b"],"ok":2935457}
+{"fn":"djb2Hash","args":["ΣΊΣΥΦΟΣ"],"ok":-1606033791}
+{"fn":"djb2Hash","args":["İstanbulhello"],"ok":484593527}
+{"fn":"djb2Hash","args":["{name} has {count} items"],"ok":596228922}
+{"fn":"djb2Hash","args":["emoji 👍🏽 mixline1\nline2"],"ok":-1385938870}
+{"fn":"djb2Hash","args":["hello worlda:b:c"],"ok":227931246}
+{"fn":"djb2Hash","args":["  padded  "],"ok":1070680720}
+{"fn":"djb2Hash","args":["src/a/b.ts"],"ok":1310336772}
+{"fn":"djb2Hash","args":["a.b.c"],"ok":91047626}
+{"fn":"djb2Hash","args":["hello"],"ok":99162322}
+{"fn":"djb2Hash","args":[".leading"],"ok":-1384744168}
+{"fn":"djb2Hash","args":["./x/**/*.json"],"ok":1219377827}
+{"fn":"djb2Hash","args":["İstanbul"],"ok":-363956677}
+{"fn":"djb2Hash","args":["key_name-1"],"ok":365907791}
+{"fn":"djb2Hash","args":[":"],"ok":58}
+{"fn":"djb2Hash","args":["a日本語のテキスト"],"ok":-163915858}
+{"fn":"djb2Hash","args":["HELLO"],"ok":68624562}
+{"fn":"djb2Hash","args":[":a"],"ok":1895}
+{"fn":"djb2Hash","args":["tab\tseparated"],"ok":-82254579}
+{"fn":"djb2Hash","args":["helloa"],"ok":-1220935217}
+{"fn":"djb2Hash","args":["line1\nline2"],"ok":-350334479}
+{"fn":"djb2Hash","args":["日本語のテキスト"],"ok":-934492083}
+{"fn":"djb2Hash","args":["line1\nline2ΣΊΣΥΦΟΣ"],"ok":-1584026768}
+{"fn":"djb2Hash","args":["emoji 👍🏽 mix  padded  "],"ok":1314368791}
+{"fn":"djb2Hash","args":["a:b:c"],"ok":91405490}
+{"fn":"djb2Hash","args":["src/a/b.tsa.b.c"],"ok":191291974}
+{"fn":"djb2Hash","args":["😀"],"ok":1772899}
+{"fn":"djb2Hash","args":[":Hello World"],"ok":-1965682166}
+{"fn":"djb2Hash","args":["hello world"],"ok":1794106052}
+{"fn":"djb2Hash","args":["a.b.c日本語のテキスト"],"ok":-988568297}
+{"fn":"djb2Hash","args":["a😀b😀c"],"ok":1173308226}
+{"fn":"djb2Hash","args":["straße"],"ok":-891990090}
+{"fn":"djb2Hash","args":["HELLO.leading"],"ok":1342360010}
+{"fn":"djb2Hash","args":["😀é"],"ok":1703759839}
+{"fn":"djb2Hash","args":["a..b😀"],"ok":-1472220220}
+{"fn":"djb2Hash","args":["trailing.:"],"ok":-2067296536}
+{"fn":"djb2Hash","args":["ab"],"ok":3105}
+{"fn":"djb2Hash","args":["日本語のテキストhello"],"ok":1505654949}
+{"fn":"djb2Hash","args":["abca"],"ok":2987071}
+{"fn":"djb2Hash","args":["trailing."],"ok":903144338}
+{"fn":"djb2Hash","args":["ünïcödé"],"ok":-609221899}
+{"fn":"djb2Hash","args":["ab  padded  "],"ok":699228529}
+{"fn":"djb2Hash","args":["straße./x/**/*.json"],"ok":-2065784147}
+{"fn":"djb2Hash","args":["a.b.ca:b:c"],"ok":672408616}
+{"fn":"djb2Hash","args":["ünïcödéΣΊΣΥΦΟΣ"],"ok":1802472940}
+{"fn":"djb2Hash","args":["ünïcödéünïcödé"],"ok":-1495682464}
+{"fn":"djb2Hash","args":["ns:key.path"],"ok":1777199209}
+{"fn":"djb2Hash","args":["İstanbulhello world"],"ok":1275906473}
+{"fn":"djb2Hash","args":["HELLO:"],"ok":2127361480}
+{"fn":"djb2Hash","args":["hello world﻿bom"],"ok":1256491813}
+{"fn":"djb2Hash","args":["é"],"ok":3900}
+{"fn":"djb2Hash","args":[""],"ok":0}
+{"fn":"djb2Hash","args":["{name} has {count} items  padded  "],"ok":377341258}
+{"fn":"djb2Hash","args":["emoji 👍🏽 mixhello"],"ok":896728555}
+{"fn":"djb2Hash","args":[":./x/**/*.json"],"ok":1961748649}
+{"fn":"djb2Hash","args":["é{name} has {count} items"],"ok":-211888522}
+{"fn":"djb2Hash","args":["emoji 👍🏽 mixstraße"],"ok":-1937240643}
+{"fn":"djb2Hash","args":["emoji 👍🏽 mix"],"ok":905940807}
+{"fn":"djb2Hash","args":["{name} has {count} itemsab"],"ok":1745346779}
+{"fn":"djb2Hash","args":["ünïcödéa"],"ok":-1706009588}
+{"fn":"djb2Hash","args":["a.b.c.leading"],"ok":-1438820382}
+{"fn":"djb2Hash","args":["trailing.ns:key.path"],"ok":-259164777}
+{"fn":"djb2Hash","args":["src/a/b.tsemoji 👍🏽 mix"],"ok":-1556668597}
+{"fn":"djb2Hash","args":["日本語のテキスト./x/**/*.json"],"ok":-1860429962}
+{"fn":"djb2Hash","args":[":line1\nline2"],"ok":-1453471369}
+{"fn":"djb2Hash","args":["﻿bomab"],"ok":665494082}
+{"fn":"djb2Hash","args":["a.b.cΣΊΣΥΦΟΣ"],"ok":-1607778185}
+{"fn":"djb2Hash","args":["﻿bom"],"ok":1944824417}
+{"fn":"djb2Hash","args":["ΣΊΣΥΦΟΣHello World"],"ok":-1390522013}
+{"fn":"djb2Hash","args":["straßehello world"],"ok":1129235790}
+{"fn":"djb2Hash","args":["key_name-1😀"],"ok":-548158222}
+{"fn":"djb2Hash","args":["HELLO  padded  "],"ok":1887745218}
+{"fn":"djb2Hash","args":["İstanbulline1\nline2"],"ok":-868534058}
+{"fn":"djb2Hash","args":["a:b:ctab\tseparated"],"ok":-886187621}
+{"fn":"djb2Hash","args":["İstanbul  padded  "],"ok":-608603381}
+{"fn":"djb2Hash","args":["😀ab"],"ok":1703759044}
+{"fn":"djb2Hash","args":["hellotrailing."],"ok":216372992}
+{"fn":"djb2Hash","args":["{name} has {count} itemsstraße"],"ok":-1928317072}
+{"fn":"djb2Hash","args":["tab\tseparatedé"],"ok":-1737235191}
+{"fn":"djb2Hash","args":["src/a/b.ts{name} has {count} items"],"ok":-1340074434}
+{"fn":"djb2Hash","args":["tab\tseparated😀"],"ok":-1735466192}
+{"fn":"djb2Hash","args":["emoji 👍🏽 mix😀"],"ok":-1267472662}
+{"fn":"djb2Hash","args":["tab\tseparatedns:key.path"],"ok":1556695356}
+{"fn":"djb2Hash","args":["tab\tseparateda:b:c"],"ok":357562309}
+{"fn":"djb2Hash","args":["straße😀"],"ok":1792755609}
+{"fn":"djb2Hash","args":["a.b.cabc"],"ok":-2019408552}
+{"fn":"djb2Hash","args":["a.b.chello world"],"ok":1422350778}
+{"fn":"djb2Hash","args":["abcemoji 👍🏽 mix"],"ok":-535972823}
+{"fn":"djb2Hash","args":["{name} has {count} itemsa😀b😀c"],"ok":-888057144}
+{"fn":"djb2Hash","args":["  padded  ns:key.path"],"ok":2067227609}
+{"fn":"djb2Hash","args":["ΣΊΣΥΦΟΣ{name} has {count} items"],"ok":65824443}
+{"fn":"djb2Hash","args":["ΣΊΣΥΦΟΣ  padded  "],"ok":1746385873}
+{"fn":"djb2Hash","args":["a😀b😀c﻿bom"],"ok":-568099677}
+{"fn":"djb2Hash","args":["  padded  ünïcödé"],"ok":-463423899}
+{"fn":"djb2Hash","args":["src/a/b.tsé"],"ok":808224064}
+{"fn":"djb2Hash","args":["😀a..b"],"ok":929853060}
+{"fn":"djb2Hash","args":["日本語のテキスト.leading"],"ok":2031134309}
+{"fn":"djb2Hash","args":["aa:b:c"],"ok":-1426534159}
+{"fn":"djb2Hash","args":["key_name-1.leading"],"ok":1671760743}
+{"fn":"djb2Hash","args":[".leadinga"],"ok":22603849}
+{"fn":"djb2Hash","args":["ns:key.path  padded  "],"ok":961184697}
+{"fn":"djb2Hash","args":["abcns:key.path"],"ok":1188216519}
+{"fn":"djb2Hash","args":["trailing.line1\nline2"],"ok":1908268831}
+{"fn":"djb2Hash","args":["HELLOns:key.path"],"ok":1336394871}
+{"fn":"djb2Hash","args":["./x/**/*.jsontrailing."],"ok":-11866033}
+{"fn":"djb2Hash","args":["hello worldtrailing."],"ok":-2049057458}
+{"fn":"djb2Hash","args":["日本語のテキストé"],"ok":-398722999}
+{"fn":"djb2Hash","args":["{name} has {count} itemskey_name-1"],"ok":-327431671}
+{"fn":"djb2Hash","args":["a😀b😀c  padded  "],"ok":1690231634}
+{"fn":"djb2Hash","args":["abhello"],"ok":-1201637039}
+{"fn":"djb2Hash","args":["ΣΊΣΥΦΟΣünïcödé"],"ok":-248774316}
+{"fn":"djb2Hash","args":["a😀b😀cΣΊΣΥΦΟΣ"],"ok":1447218431}
+{"fn":"djb2Hash","args":["abkey_name-1"],"ok":-5544400}
+{"fn":"djb2Hash","args":[":hello"],"ok":1759653080}
+{"fn":"djb2Hash","args":["straße{name} has {count} items"],"ok":-512177936}
+{"fn":"djb2Hash","args":[":tab\tseparated"],"ok":660116243}
+{"fn":"djb2Hash","args":["HELLOΣΊΣΥΦΟΣ"],"ok":-2072252017}
+{"fn":"djb2Hash","args":["./x/**/*.jsonΣΊΣΥΦΟΣ"],"ok":6420094}
+{"fn":"djb2Hash","args":["src/a/b.ts日本語のテキスト"],"ok":442608465}
+{"fn":"djb2Hash","args":["hello worldé"],"ok":1854034176}
+{"fn":"djb2Hash","args":[".leadingline1\nline2"],"ok":1795454937}
+{"fn":"djb2Hash","args":["😀ns:key.path"],"ok":-636768474}
+{"fn":"djb2Hash","args":["İstanbul{name} has {count} items"],"ok":1048047733}
+{"fn":"djb2Hash","args":[".leading  padded  "],"ok":-384120920}
+{"fn":"djb2Hash","args":["a😀b😀c:"],"ok":2012816696}
+{"fn":"djb2Hash","args":["tab\tseparateda😀b😀c"],"ok":-748026475}
+{"fn":"djb2Hash","args":["trailing.é"],"ok":338318926}
+{"fn":"djb2Hash","args":["﻿bomsrc/a/b.ts"],"ok":1637944357}
+{"fn":"djb2Hash","args":["key_name-1İstanbul"],"ok":-1602419062}
+{"fn":"djb2Hash","args":["abΣΊΣΥΦΟΣ"],"ok":-1838736576}
+{"fn":"djb2Hash","args":[".leadingtab\tseparated"],"ok":437072117}
+{"fn":"djb2Hash","args":["a:b:cabc"],"ok":51783280}
+{"fn":"djb2Hash","args":["emoji 👍🏽 mixa..b"],"ok":28663400}
+{"fn":"djb2Hash","args":["./x/**/*.json:"],"ok":-853992969}
+{"fn":"djb2Hash","args":["ΣΊΣΥΦΟΣa"],"ok":1752560128}
+{"fn":"djb2Hash","args":["tab\tseparatedstraße"],"ok":-1231063293}
+{"fn":"djb2Hash","args":["straße  padded  "],"ok":-1306071354}
+{"fn":"djb2Hash","args":["a..babc"],"ok":1550949921}
+{"fn":"djb2Hash","args":[".leadingünïcödé"],"ok":723868893}
+{"fn":"djb2Hash","args":["key_name-1﻿bom"],"ok":1741994544}
+{"fn":"djb2Hash","args":["a.b.cemoji 👍🏽 mix"],"ok":-1629737839}
+{"fn":"djb2Hash","args":["./x/**/*.jsonhello world"],"ok":-1357532095}
+{"fn":"djb2Hash","args":["ab{name} has {count} items"],"ok":1902097499}
+{"fn":"djb2Hash","args":["  padded  line1\nline2"],"ok":-60306079}
+{"fn":"djb2Hash","args":["straßens:key.path"],"ok":1112328947}
+{"fn":"djb2Hash","args":["abc:"],"ok":2987032}
+{"fn":"djb2Hash","args":["a:b:cemoji 👍🏽 mix"],"ok":1753820281}
+{"fn":"djb2Hash","args":["tab\tseparatedΣΊΣΥΦΟΣ"],"ok":767598804}
+{"fn":"djb2Hash","args":["trailing.ΣΊΣΥΦΟΣ"],"ok":-584633681}
+{"fn":"djb2Hash","args":["HELLOsrc/a/b.ts"],"ok":2127401270}
+{"fn":"djb2Hash","args":["straßea"],"ok":-1881888917}
+{"fn":"djb2Hash","args":["﻿bomemoji 👍🏽 mix"],"ok":-1285751832}
+{"fn":"djb2Hash","args":[":  padded  "],"ok":-73282998}
+{"fn":"djb2Hash","args":["emoji 👍🏽 mixİstanbul"],"ok":172609154}
+{"fn":"djb2Hash","args":["a😀b😀cİstanbul"],"ok":-202418307}
+{"fn":"djb2Hash","args":["a.b.c  padded  "],"ok":643046618}
+{"fn":"djb2Hash","args":["a:b:cline1\nline2"],"ok":962793983}
+{"fn":"djb2Hash","args":["ns:key.pathtrailing."],"ok":1730896201}
+{"fn":"djb2Hash","args":["aba"],"ok":96352}
+{"fn":"djb2Hash","args":["aa"],"ok":3104}
+{"fn":"djb2Hash","args":["aHELLO"],"ok":-1449315087}
+{"fn":"djb2Hash","args":["İstanbula:b:c"],"ok":476836695}
+{"fn":"djb2Hash","args":["ns:key.pathkey_name-1"],"ok":256411768}
+{"fn":"djb2Hash","args":["key_name-1a..b"],"ok":-199894416}
+{"fn":"djb2Hash","args":["😀trailing."],"ok":1463760271}
+{"fn":"djb2Hash","args":["key_name-1straße"],"ok":1756997573}
+{"fn":"djb2Hash","args":["ünïcödéa:b:c"],"ok":59198173}
+{"fn":"djb2Hash","args":["a.b.cab"],"ok":1597425771}
+{"fn":"djb2Hash","args":["trailing.ünïcödé"],"ok":412178211}
+{"fn":"djb2Hash","args":["ΣΊΣΥΦΟΣ:"],"ok":1752560089}
+{"fn":"djb2Hash","args":["﻿boma😀b😀c"],"ok":-2017306175}
+{"fn":"djb2Hash","args":["HELLO﻿bom"],"ok":1631527443}
+{"fn":"djb2Hash","args":["﻿bom😀"],"ok":667263876}
+{"fn":"djb2Hash","args":["é﻿bom"],"ok":1251589021}
+{"fn":"djb2Hash","args":["Hello WorldHello World"],"ok":995427712}
+{"fn":"djb2Hash","args":["./x/**/*.jsonHello World"],"ok":280783873}
+{"fn":"djb2Hash","args":["a.b.c😀"],"ok":1599195565}
+{"fn":"djb2Hash","args":["line1\nline2hello"],"ok":827676033}
+{"fn":"djb2Hash","args":["src/a/b.tsab"],"ok":808223269}
+{"fn":"djb2Hash","args":["日本語のテキストa😀b😀c"],"ok":-101975467}
+{"fn":"djb2Hash","args":["a.b.csrc/a/b.ts"],"ok":882702670}
+{"fn":"djb2Hash","args":["a.b.cé"],"ok":1597426566}
+{"fn":"djb2Hash","args":["src/a/b.tsa"],"ok":1965734365}
+{"fn":"djb2Hash","args":["aab"],"ok":96322}
+{"fn":"djb2Hash","args":["hello worldemoji 👍🏽 mix"],"ok":-763802869}
+{"fn":"djb2Hash","args":["ésrc/a/b.ts"],"ok":-1708303552}
+{"fn":"djb2Hash","args":["日本語のテキストa..b"],"ok":-921525138}
+{"fn":"djb2Hash","args":["abcstraße"],"ok":838825624}
+{"fn":"djb2Hash","args":["line1\nline2ns:key.path"],"ok":1939842520}
+{"fn":"djb2Hash","args":["ünïcödéstraße"],"ok":-1890416917}
+{"fn":"djb2Hash","args":["line1\nline2{name} has {count} items"],"ok":-830633429}
+{"fn":"djb2Hash","args":["  padded  .leading"],"ok":-1159973464}
+{"fn":"djb2Hash","args":["  padded  src/a/b.ts"],"ok":-1728348780}
+{"fn":"djb2Hash","args":[".leading.leading"],"ok":1286364720}
+{"fn":"djb2Hash","args":["ünïcödé  padded  "],"ok":-2017075387}
+{"fn":"djb2Hash","args":["Hello Worldhello"],"ok":1386377422}
+{"fn":"djb2Hash","args":["./x/**/*.jsona😀b😀c"],"ok":-1509205185}
+{"fn":"djb2Hash","args":["héllo wörld"],"ok":1628148953}
+{"fn":"djb2Hash","args":["👍🏽 thumbs"],"ok":-1097105044}
+{"fn":"djb2Hash","args":["日本語"],"ok":25921943}
+{"fn":"djb2Hash","args":["ılık ırmak"],"ok":-1082498965}
+{"fn":"djb2Hash","args":["👨‍👩‍👧 family"],"ok":-26524037}
+{"fn":"djb2Hash","args":["a b"],"ok":98275}
+{"fn":"djb2Hash","args":["a😀b"],"ok":57849694}
+{"fn":"hashContent","args":["abHello World"],"ok":"83a7687a125ed10400bbe6d5692e0defb56c19e2ce019ce603cff93829988c40"}
+{"fn":"hashContent","args":["a😀b😀c"],"ok":"3b0fa9d763b5cb38e6cdd6c5d95ca5fea8cf1d5f54570b87b06f3c8c22fe47d1"}
+{"fn":"hashContent","args":["  padded  "],"ok":"3d4a55719d2ebc89e0e90d5c6ca663ba4871cb0aa98603cf716bf343db149465"}
+{"fn":"hashContent","args":["😀"],"ok":"f0443a342c5ef54783a111b51ba56c938e474c32324d90c3a60c9c8e3a37e2d9"}
+{"fn":"hashContent","args":["a"],"ok":"ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"}
+{"fn":"hashContent","args":["tab\tseparated"],"ok":"737304a727e038b1b7006995771a6087621516d1337a62877c80a7406b1d4b1c"}
+{"fn":"hashContent","args":["{name} has {count} items"],"ok":"42ff2ad309da81ff6c5bab2538b35b5e9561d56f9ee93b7e9a5af1d03b28c40a"}
+{"fn":"hashContent","args":["key_name-1line1\nline2"],"ok":"fb08ed3d2070b5b1297c787223455859530e7a20d03f9783fd5b1d96876c8bac"}
+{"fn":"hashContent","args":["./x/**/*.json"],"ok":"018071a777fc8b5655cf853a244fa7e3e4016e259f348d4cd4a25f30831dc6f0"}
+{"fn":"hashContent","args":["ns:key.path"],"ok":"090ed4bc851381c01fc77d9df176dfe517adb082c4601d1e6241d0492bf78d83"}
+{"fn":"hashContent","args":["ünïcödéHELLO"],"ok":"89ce28d64b830899aa3a079a18f852c93bf413c691932f905f47e9b65e789f02"}
+{"fn":"hashContent","args":["hello world"],"ok":"b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"}
+{"fn":"hashContent","args":["emoji 👍🏽 mix"],"ok":"7839fd7a65ab6e7d304ce23023e26614284e9c745c139718a7d4ac50e9db5330"}
+{"fn":"hashContent","args":["key_name-1"],"ok":"4184db5447df2761afdd05c964791a1e85947449b0c6011b4c013245b7f065b3"}
+{"fn":"hashContent","args":["ab"],"ok":"fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603"}
+{"fn":"hashContent","args":["tab\tseparateda.b.c"],"ok":"c4b238a5d2e291eb756759f18b1db96bc6984bff91e3ad190cdc8b24787efa2c"}
+{"fn":"hashContent","args":["a.b.c"],"ok":"845e30448809e2bc8958eb025bfc795235d13b077a53d0c3abbd2385170dc9b8"}
+{"fn":"hashContent","args":["abc"],"ok":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}
+{"fn":"hashContent","args":["Hello Worldtab\tseparated"],"ok":"60cf65e68333c7f861ac20647a9774c59377194e40b8de80c6a659bf64cbf510"}
+{"fn":"hashContent","args":["ünïcödéhello"],"ok":"9921db23c0f4757124fb8d9c6ea8b43d1c24da6d06b8efeb4647c6f8f89190a4"}
+{"fn":"hashContent","args":[""],"ok":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+{"fn":"hashContent","args":["HELLOé"],"ok":"834fd975f4974d1fc670bc592abfb447aa42a2a9304906f3c13ef5e26ff0b66d"}
+{"fn":"hashContent","args":["😀a😀b😀c"],"ok":"9ff95947fc2554e672fd989f1724e98fa62eb630218ce18e7430752e76336f7e"}
+{"fn":"hashContent","args":["a..b"],"ok":"f62b42414c514fa689d3e087ba397c602a4ba2c897f0ac2cb32cf770c3442bf2"}
+{"fn":"hashContent","args":["line1\nline2"],"ok":"683376e290829b482c2655745caffa7a1dccfa10afaa62dac2b42dd6c68d0f83"}
+{"fn":"hashContent","args":["a:b:c"],"ok":"b0ee04f880c4ff4261479e2e7822b7410aee4c7159f4185ad5b0d88a312b495e"}
+{"fn":"hashContent","args":["﻿bom"],"ok":"2623148f0d047ef6feae63422c0d60741888ae7f45fd979ba232e1c975c14702"}
+{"fn":"hashContent","args":["é"],"ok":"bf12767b0f2a56b2190075bae8169f656e3ce8d6357d4aff184bc6c7ea48f9f6"}
+{"fn":"hashContent","args":["aa😀b😀c"],"ok":"918b8c15235da8a72a808e37b365a648a74f0ce770d8077e4b17517c627bacef"}
+{"fn":"hashContent","args":["HELLO"],"ok":"3733cd977ff8eb18b987357e22ced99f46097f31ecb239e878ae63760e83e4d5"}
+{"fn":"hashContent","args":["ns:key.patha:b:c"],"ok":"46a59bba5989c49962f2b5e843eb9e22e23c4e9f34528d9af42d35d54ef22992"}
+{"fn":"hashContent","args":["İstanbulkey_name-1"],"ok":"c652568373784ebcfb51869516f4099e3aeb9a241fbe8064de04cdf1fa683e5d"}
+{"fn":"hashContent","args":[":"],"ok":"e7ac0786668e0ff0f02b62bd04f45ff636fd82db63b1104601c975dc005f3a67"}
+{"fn":"hashContent","args":["a.b.ca.b.c"],"ok":"50b5b1980605e3d183457188d2c47173979d5b81733ef231cc2285d9c1dc2549"}
+{"fn":"hashContent","args":["日本語のテキストtab\tseparated"],"ok":"398fb66995d69c6bfdb1312037b95bfb7051237384ccb64cca7e3c0aa0fbb047"}
+{"fn":"hashContent","args":["straße"],"ok":"787f4770613d3824cbc89b6d5da90a123e41b07b90b45ea3738c216b14616140"}
+{"fn":"hashContent","args":["a.b.c😀"],"ok":"83606195ffad63e46123659f179c23157abd934a928b3508b86ea96ede605416"}
+{"fn":"hashContent","args":["abchello world"],"ok":"78ecfbc5c4f4bd0dceeae9c8a33bd029a320fe7458e13fffcbd713dc82d6f155"}
+{"fn":"hashContent","args":["hello"],"ok":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}
+{"fn":"hashContent","args":["src/a/b.ts"],"ok":"eb7041468cb32feadbbbcf82b6cf05326b26c717d315fc2a4cef3eaa16b0aaed"}
+{"fn":"hashContent","args":["😀ΣΊΣΥΦΟΣ"],"ok":"318ee8a03baf4b4b7692e3bb2a42c8f6797cb0200ec1765caf95cc53cefd1fbb"}
+{"fn":"hashContent","args":["{name} has {count} itemsa.b.c"],"ok":"8a82376661c417a2dd31f213493f784e0a813dc90e7fd00fbc6a681f216309dc"}
+{"fn":"hashContent","args":["日本語のテキスト"],"ok":"d4192d3b01dfa9f5b08388f13e5c7492e3cfdc5611bf8c77784dc97523f03efb"}
+{"fn":"hashContent","args":["trailing."],"ok":"44c12a4e432eba3f7fa634fd116eef3900ad9166688cb40c3f488ef3a5320316"}
+{"fn":"hashContent","args":["hello./x/**/*.json"],"ok":"9565d1a8676d1f959ae6442a5d20050f04412bc9332005fe2dbe2d2a5299abb0"}
+{"fn":"hashContent","args":["Hello World"],"ok":"a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"}
+{"fn":"hashContent","args":["İstanbul"],"ok":"24ec8f72b5eac4594cf4401235af1639159192194e025495d4a1055ab0f6dc9b"}
+{"fn":"hashContent","args":["aba:b:c"],"ok":"72fa22a2e5ef61447b9850ff351ddef4bde6aa11207fe15bd2a70f0e2ef3a864"}
+{"fn":"hashContent","args":["{name} has {count} itemsa..b"],"ok":"700202e127ebadca936b5060845f84610cd1b434596442c13f3d0cf5d7f7d036"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣ"],"ok":"5b04c6021d490c76e976b01f599560293d202f4aecb24178b2d793f3b08a8745"}
+{"fn":"hashContent","args":["abc﻿bom"],"ok":"72c16adf0d100c3e11467466b2c200d3debaf76d224b5658bbd24043ff61deff"}
+{"fn":"hashContent","args":["ünïcödé"],"ok":"b09ad3e278dfb341468394a32f732467e2245b4b2876c3e15e0aaf1aa5ac242a"}
+{"fn":"hashContent","args":["a😀b😀c😀"],"ok":"2dce5c030f9a52f075c551322df668bcdb9a50ab503818728a8d5d44838aafd9"}
+{"fn":"hashContent","args":["ns:key.path{name} has {count} items"],"ok":"347d0b5c535bdfee139a207ae20e5d01e6b327d10af64546673afdf79e61bcb1"}
+{"fn":"hashContent","args":["a.b.cİstanbul"],"ok":"d5e48a278e15187f2ec1261f6a54958cc7886b8204e35544c1261459043c6081"}
+{"fn":"hashContent","args":["a😀b😀cİstanbul"],"ok":"c8c65d718510548d14b53cd27c4d55747a63cfc26ad4ff21a61b781b670489fd"}
+{"fn":"hashContent","args":["straßea..b"],"ok":"bb753c6a98a39deef7a82c794fe05c3b0ed03e9c42f4d192a39855ca55074e0d"}
+{"fn":"hashContent","args":["ns:key.path😀"],"ok":"1b4618aad6f38ff8f5304d6b80702f9820c673683de6e2c0aa38d0f82d4f9808"}
+{"fn":"hashContent","args":["😀İstanbul"],"ok":"aebda622845242d7b68f5bd7e8504b4514d8324238c037e45afdaecf38ac26e1"}
+{"fn":"hashContent","args":["abcemoji 👍🏽 mix"],"ok":"40858ea1a34b4b3551b55c3c11bf13606886dc5c9952cc5f6b4032c043e68d1b"}
+{"fn":"hashContent","args":["hello worldé"],"ok":"7c8517ba5dcff9b8913f343ace60168a62d42b4f8741b36f1ceaac748919657b"}
+{"fn":"hashContent","args":["src/a/b.tsa😀b😀c"],"ok":"6034477b41e990720c18190d349e6e50e9a2d2140e697c70e6bdf1c5f6629d32"}
+{"fn":"hashContent","args":["straßesrc/a/b.ts"],"ok":"3ba038f242c126e0b6f34cde16ad278b83ad88690dd3d79a5fe5fa03f7e3f72e"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣ{name} has {count} items"],"ok":"f4f110ec9c609238645167e250dcba3b225bc6d0b9b660038cc8b6f21c28b37c"}
+{"fn":"hashContent","args":["ns:key.patha.b.c"],"ok":"5e3ad18b3f43c0a93434ce17a643d4a4a1add232495a40191e3afcd4e256c6ff"}
+{"fn":"hashContent","args":["a😀b😀cemoji 👍🏽 mix"],"ok":"ef09cd757c6b1e96ec35f48687c09c1df6fd4f73a0c44784e11d0d9408810d4c"}
+{"fn":"hashContent","args":["Hello Worlda:b:c"],"ok":"1b04834d48a4dff3d0669a01a7d30bb57c23ef1ef988ef67dbfab676f8fa396d"}
+{"fn":"hashContent","args":[".leading"],"ok":"9c74491a21e8fc7a9b48d53d4432be058b3ae9771f0d6ce92881805dc8947feb"}
+{"fn":"hashContent","args":["helloa😀b😀c"],"ok":"9a3baeef48fcc40693cbeafd6f196d2ae4cc393b2bdafc359bd423cda6fed65a"}
+{"fn":"hashContent","args":[".leadingİstanbul"],"ok":"ed307d7a5f7fcd8a08e0428cde3f2931bd30dbcac42fc13bb6a85d6b64b2a1e9"}
+{"fn":"hashContent","args":["aa:b:c"],"ok":"ce7177f753ac1037dc44bd953d4ce3a0fe58c021dd6b485227c8d3d0250bbb04"}
+{"fn":"hashContent","args":["./x/**/*.json😀"],"ok":"5ba5ebe783b1814e2f6d30d0e8d81445fb179efb907bfe9e9e93961ed6a136da"}
+{"fn":"hashContent","args":["a.b.c:"],"ok":"ac6f34955bee4ee4599264aabad48181cda780341449497a528b4d47e1499dce"}
+{"fn":"hashContent","args":["a..bstraße"],"ok":"96a265c9f9b195c7d4d2f3d3488bdc26bde1830a440d81f2ca91083d829bf0a5"}
+{"fn":"hashContent","args":["trailing.é"],"ok":"32d940a8a7a639ec5d896eed6e82c689482743ee3473a4ef471d93e86cb3dad7"}
+{"fn":"hashContent","args":["﻿bomhello"],"ok":"70cbbea389d929ede586355800bb32a9fbaa0a92a0830419150e1a922ab9c694"}
+{"fn":"hashContent","args":["a..bİstanbul"],"ok":"dffe75c40f1c0b9ca0d74fc07bf5c15abbd05fd091c8381479af583085be5382"}
+{"fn":"hashContent","args":["HELLOİstanbul"],"ok":"e5471a986d24ecb81ff0af8a535a429bff1384641eeef3b64d6028dda24689e7"}
+{"fn":"hashContent","args":["  padded  hello world"],"ok":"3bd188d8b8bdc08aa1d6e73e9ce759c2bf2d7a3400143b3987c6dcccd8871ddb"}
+{"fn":"hashContent","args":["日本語のテキスト😀"],"ok":"58e103d558597f8e0e0934deca4381f236b5bc9d810a6ce9bdfea0ac5c54107d"}
+{"fn":"hashContent","args":["ns:key.path./x/**/*.json"],"ok":"524003e854859c2ae998d78e55c126a8e1e048d080aaa02d48a98060f82daf38"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣtrailing."],"ok":"97d1ac8ac48ab30757c5acff96def69452c56916ed4e7340f9d0a13ffe8cb51e"}
+{"fn":"hashContent","args":["a:b:c.leading"],"ok":"9fe4eedcd8f8a404bd96e02068ec0fe3f2791891e2abc7e4bab8c2de7ecff54d"}
+{"fn":"hashContent","args":["ünïcödé{name} has {count} items"],"ok":"367ccb930f64de5c3bffc76b0e09831b540c9d85ed7045f39c9c665000a7b7a5"}
+{"fn":"hashContent","args":["Hello Worldline1\nline2"],"ok":"aa218990b385a0c7a632a19d04ae3bc00dbd4d7f7abfc705e26aa5ff50695fcd"}
+{"fn":"hashContent","args":["İstanbul.leading"],"ok":"444dd0d7a10fb5e6361a7fb6a1881c9cb18502571f63429828e9e7bf9fbf2390"}
+{"fn":"hashContent","args":[".leadingabc"],"ok":"be1588f0e7023b0f950cb287e6beca463ba026c4d22d57aa73578848b47880f3"}
+{"fn":"hashContent","args":["emoji 👍🏽 mixa.b.c"],"ok":"054b79a4e2f3f74cc29e5399fc9e679d57fbb7ab00c8e9a04b5f6626ab57a67a"}
+{"fn":"hashContent","args":["abΣΊΣΥΦΟΣ"],"ok":"c0697f9376aa06fe714238497877cd0d06c616c891b031a66d2c46a08e1a6dbf"}
+{"fn":"hashContent","args":["key_name-1abc"],"ok":"a9cce88e55a8d973e6fab25c39d63a1bf090f49ba9f2fa7c246fba268a9d3582"}
+{"fn":"hashContent","args":["line1\nline2src/a/b.ts"],"ok":"bbf52a76cc337e6db7d234e6f862c5a6be92251df5655d56e6ad6f2445b9d899"}
+{"fn":"hashContent","args":["a😀b😀ctrailing."],"ok":"b40c0b472a15aefd18e089ae229725cb9437c1a0de5ec03929a5266c62e2d850"}
+{"fn":"hashContent","args":["😀hello world"],"ok":"d9e04a895a4d61b02ecfe0a9f75304607de3ebf88e516d60f7711c81d47a4e01"}
+{"fn":"hashContent","args":["a:b:cİstanbul"],"ok":"ad6f06dc85612a66a7a6a851deabe5140f8ca7b17b0d94061d85d41a888bc39a"}
+{"fn":"hashContent","args":["a.b.ctab\tseparated"],"ok":"4c474dfef794fce40cf50888f844a707248457143b086c6923146bf7782f06b6"}
+{"fn":"hashContent","args":["straßekey_name-1"],"ok":"022ffc14022a8914c7a3a4ec13e63e58da0d2a16c0dd182f1bc6a285e5a52ff6"}
+{"fn":"hashContent","args":["tab\tseparatedhello"],"ok":"bb2314ef821ec9d94d479f390b8ad5a064d3bda98f9c729e3351fc4b21d503fd"}
+{"fn":"hashContent","args":["./x/**/*.jsonemoji 👍🏽 mix"],"ok":"29b825cccd9522cd37155b9356422f7a09c5edbbb6895fa23d41c6329be73d9f"}
+{"fn":"hashContent","args":["éHELLO"],"ok":"2eb8307b01a6ad8715cbc714eb3c41f12bb3d6d7015596b90fe9fa5614ea0abe"}
+{"fn":"hashContent","args":["./x/**/*.json日本語のテキスト"],"ok":"d4b867e7efab76c5bcd5dd946e98ffb72778b0a89e3a062509a5fc91bad41b34"}
+{"fn":"hashContent","args":["emoji 👍🏽 mixa:b:c"],"ok":"2dbe2378db99ed90a1bc16ce36ee572d333188a6a07bc367c1925f040c11f221"}
+{"fn":"hashContent","args":["Hello Worldns:key.path"],"ok":"80f5a2937c63b5460e0c0a3e68bc1d6c943fbfdca7ae86fc2f6a76951d291b56"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣab"],"ok":"f4e4d69ecacd11221782496258a46371e3410a087a02c07897e3c887097dca61"}
+{"fn":"hashContent","args":["a😀b😀cns:key.path"],"ok":"f44e156d18e340f43de578c98a3adfd616e412c738d1331b9d5c4326ec970657"}
+{"fn":"hashContent","args":["ahello"],"ok":"d8b21f4b9c82345707d3ec19b13a9d9e773ccfbee57bf747008e0325ff67b8a5"}
+{"fn":"hashContent","args":["a.b.ckey_name-1"],"ok":"c42a206177e431f34717c7a1efb833d80b39f07c202e416b4a03d8793fa07ba6"}
+{"fn":"hashContent","args":[".leading日本語のテキスト"],"ok":"15e86dce87ad0804432d4ade16332b64082b7b501eb58baa843a7c9077664bb9"}
+{"fn":"hashContent","args":["key_name-1.leading"],"ok":"824242ef43830cfd731100637bba04df444b30b64f500d8a159f1b4744b3495d"}
+{"fn":"hashContent","args":["HELLO﻿bom"],"ok":"ff15152b0697025de88a46499d1e3606ebf050ace15df2460ce708fc0484bbf9"}
+{"fn":"hashContent","args":["Hello Worldemoji 👍🏽 mix"],"ok":"c8fb8ca7fa8fffde7e25441f2bacf668f93e0ff3b4a1e2cf4b7e17994437ee85"}
+{"fn":"hashContent","args":["key_name-1ab"],"ok":"4386e0749399f982b8b8b8047e56419928dc6fe8e0f0cf413aecf792b92e71ce"}
+{"fn":"hashContent","args":["emoji 👍🏽 mix./x/**/*.json"],"ok":"58fd6512d80910f7acf32a858c573ce4a12025cc9b3f6f22131c5490e0d20dde"}
+{"fn":"hashContent","args":["﻿bomns:key.path"],"ok":"857073b913c1fdb661e87debaa3d209452d42b2ffe9f96a939f57874f3ab36f3"}
+{"fn":"hashContent","args":["hello worldabc"],"ok":"1dc7221c0bf926f1d9977a623129941555dc63a05da14d55e8f53f7d0a61e193"}
+{"fn":"hashContent","args":["straße﻿bom"],"ok":"2fd60876c5d4bdfcaf458c42c24a2be2047df9ecd08191161ff6b2f6a0769079"}
+{"fn":"hashContent","args":["./x/**/*.jsona.b.c"],"ok":"f204d8493a9f9ddb2d2de4c065c0d16cc13f0b60e829c518957db9427c2617f6"}
+{"fn":"hashContent","args":["./x/**/*.jsonab"],"ok":"fdd055dde4df57cb289c255dcb6c8ab5d060736e1abef3fa45db280a495e1dee"}
+{"fn":"hashContent","args":["ns:key.pathHello World"],"ok":"62d1fb809e3d5f194a0e185fa4cb887bec1c09f9138002b13a8db27d95dd9684"}
+{"fn":"hashContent","args":["abstraße"],"ok":"c13da615f5ca1ec8221ccfeddd8961d6e0b08888547418c8990e66e1ae1a8926"}
+{"fn":"hashContent","args":["Hello World.leading"],"ok":"d130ed9e68b00084ee1b05f92e689355d10508603a6aa8cf99cc6e87ef62845d"}
+{"fn":"hashContent","args":["a😀b😀c:"],"ok":"a3d19283be6bfabed650036ae6a44b5eca64f354bbceff9f36cbaa11f573ade4"}
+{"fn":"hashContent","args":["emoji 👍🏽 mix﻿bom"],"ok":"7a07c1e5224350882a3c2d4a4205cf780ad2d9f478ecf4a1e078c69c38dc104e"}
+{"fn":"hashContent","args":["a:b:c  padded  "],"ok":"f8f47b884761f5b525150953f977247fa43fa6cefb5ab981f2cf57ed91d7517f"}
+{"fn":"hashContent","args":["./x/**/*.jsonHello World"],"ok":"a1c47701fc33ebf98496b41f1077211d6bc96e497287d9c5f9f4e5340582b3c4"}
+{"fn":"hashContent","args":["éa..b"],"ok":"6794c9ad7e6b3f4a304cbf7e2f821aed6b773d46272fb8d326175a9e7fc3f0cd"}
+{"fn":"hashContent","args":["Hello Worlda.b.c"],"ok":"3c7512f75a69d0f5a74a1d9b6a7b60905370ec8fffc9bffd2c6ee596fefaf729"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣHELLO"],"ok":"22b8048eaba463a2f68396a6486e7478909004064f52b3674a752ec8395569d6"}
+{"fn":"hashContent","args":["😀ab"],"ok":"8f60607cb7584b65991861f6bc5a3e278a5918eaf09169e911a32b1293be4898"}
+{"fn":"hashContent","args":["line1\nline2straße"],"ok":"e4497c6787d0ca6975d5d7472a040129ad872d2dff0a091753332dc250d5df46"}
+{"fn":"hashContent","args":["  padded  ns:key.path"],"ok":"0ddc4856f3209b434afe8a1469866c59973baf6ce5b21d2b207450429c562333"}
+{"fn":"hashContent","args":["hello world./x/**/*.json"],"ok":"361d20e2ab750ae6685c3df0224f8e0f8f168df3b862a17c3eb84f7defe7a111"}
+{"fn":"hashContent","args":["emoji 👍🏽 mixabc"],"ok":"e66cd7f6b555862039e417959ef727b7b8fe8c43a24c453ff7b52601364519b7"}
+{"fn":"hashContent","args":["aünïcödé"],"ok":"f3a993d86caad4e1c103937fd143dc011fe12c3b7de7bba0a98f4f7e92f448a3"}
+{"fn":"hashContent","args":["emoji 👍🏽 mixemoji 👍🏽 mix"],"ok":"69f371465ee8780f699eaebb76598277545221f9e16a39828c7df50ea2b17b07"}
+{"fn":"hashContent","args":["ünïcödésrc/a/b.ts"],"ok":"b74c2dfc544713d988979f96e03358d4fdbc1e2ffe585899ae887c1c03ee539e"}
+{"fn":"hashContent","args":["./x/**/*.jsoné"],"ok":"2361153ca5c945b7fa2f5ab317bba003af75c117d4585c10cafadf6bf11fbe8f"}
+{"fn":"hashContent","args":["src/a/b.tsHello World"],"ok":"4aaa2588f0f352205467b7242cf86555a2e85f812840fbea6d1f9df1ee2d3d19"}
+{"fn":"hashContent","args":["a:b:chello"],"ok":"f847f22a9967362c479a4c6b33591592b922dc2db50a76161c9f4ab24df9d600"}
+{"fn":"hashContent","args":["a..bns:key.path"],"ok":"7c4cadf94178ed9c32d337a13979e5fe42b2b3187a1853a27e012df7a5d77410"}
+{"fn":"hashContent","args":["line1\nline2{name} has {count} items"],"ok":"31d6b7ce4dc12ef30bebab089adc76c6536b1c84b1687e9c7506f5686a86842e"}
+{"fn":"hashContent","args":["😀trailing."],"ok":"7153f37c5f0b819bd90837bee4841956dc2d1c901cd394afd26429304c42c571"}
+{"fn":"hashContent","args":["abc.leading"],"ok":"44b29710406d6a1569ed2a07d6403913c6a0d769f189a19b88c436f28bc6a5ff"}
+{"fn":"hashContent","args":["ünïcödé日本語のテキスト"],"ok":"f790fd2ef794231268519dfa11e01cd51a257bb1012166454d1fe58ede56fd3b"}
+{"fn":"hashContent","args":["éhello"],"ok":"ce6e3052a8fd7f4d21f7704a072d2fb62d197dfc10dc4057a1e85efc7de832e8"}
+{"fn":"hashContent","args":["﻿boma..b"],"ok":"8bb35bb7afa9b1d21f83f25b215ecee053c02a4ac6e55f0e15e1d6446b3645e6"}
+{"fn":"hashContent","args":["{name} has {count} itemsstraße"],"ok":"cbc3d4c12c966b67dd8cdd6908ea1e43e45953e6f3febba47565b7dc101a29de"}
+{"fn":"hashContent","args":["HELLOa..b"],"ok":"6955605f46ef666e5ecce723b5c14f0864b666311ccdc064bc748d9f6d93e2d1"}
+{"fn":"hashContent","args":["emoji 👍🏽 mixünïcödé"],"ok":"5019a9b9e93878e9c1c776254b7b9de04d538f9211be2f7ffd18cc81004fcdb9"}
+{"fn":"hashContent","args":["line1\nline2İstanbul"],"ok":"e6c7b7981058421f76eb239e747913d67f95eac1e86d305e260073aa48803f64"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣünïcödé"],"ok":"e98bc69abec604e9aa6e6382ab4b77e17dc92dbe8306207c12e92ca9d9c63ec2"}
+{"fn":"hashContent","args":["hello{name} has {count} items"],"ok":"ec9e54a65d174be1aa28f2d0c51a24bd178946d22977dfd33facc72295829f4a"}
+{"fn":"hashContent","args":["﻿bomemoji 👍🏽 mix"],"ok":"8388b3a29730f14f293244a316c6383cae291c8897892b81b4bb02d4ea3bf1ba"}
+{"fn":"hashContent","args":["ünïcödé  padded  "],"ok":"0040d9d18b840ba9b72087399e025fd6010f6de9f7652a763e7200b053af0271"}
+{"fn":"hashContent","args":["src/a/b.tsİstanbul"],"ok":"14b283e6c0e26ad8f5e626e8af7904f67b1373ffffcce2f9d73fb17b51fa4952"}
+{"fn":"hashContent","args":[".leadingab"],"ok":"db6dd1b7fe62b72fb284689d69e54d22a790c17d5dbeec798229e2d5907d4a0a"}
+{"fn":"hashContent","args":["İstanbulhello"],"ok":"2d2a0f1d01db018887e6aa1a7516101c78c112412f20b927ddb1b6049340f91c"}
+{"fn":"hashContent","args":["HELLOab"],"ok":"2a549067fd0e5a865f0fcd494e8a5221da1f25436b91944935c951ab7255be6d"}
+{"fn":"hashContent","args":["日本語のテキスト.leading"],"ok":"53191f7a6b6abb58e1af0f30a99abe373932d006f10ee57c7ac2befdf7223165"}
+{"fn":"hashContent","args":["日本語のテキスト﻿bom"],"ok":"f8d2eaf205be88c339cfd2310b45f783b0210921db8cb16cec17cd22999408cb"}
+{"fn":"hashContent","args":["a:b:cé"],"ok":"7bc80cfdfb102502380a7a07a618dedb2c0715e4e8a5dad364f4d94bcd3ffd6c"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣstraße"],"ok":"e12a8fec6792c8ef64f2a9dde7b26163aba2343780e3454938267c592e15e887"}
+{"fn":"hashContent","args":[":İstanbul"],"ok":"d0b4bab590a47720922d55d6bb867ff7eac61214221ec270a7d55195328a9ae3"}
+{"fn":"hashContent","args":["key_name-1HELLO"],"ok":"d5b6269f0f02d443cba14789bd754fd2d8747541eb810f2ad5468f2f525671a5"}
+{"fn":"hashContent","args":["./x/**/*.jsontab\tseparated"],"ok":"f348073307bf01edd866630b222c5a8c93ca73bab64c2bb12816cee5e44863b5"}
+{"fn":"hashContent","args":[".leadingline1\nline2"],"ok":"8986111cf28ba64394be85f2b2dd21b4dbaca879e2c18700d30f33d668d594bf"}
+{"fn":"hashContent","args":[":line1\nline2"],"ok":"cefe3452c3f35607f3e666ca73c6f80663dd58ac7de4c37584e194f8f250b596"}
+{"fn":"hashContent","args":["abcHELLO"],"ok":"547cab13e337929b30f7e093a7e561c317b8cbab62401b750db4b72a96b36a0b"}
+{"fn":"hashContent","args":["ns:key.path﻿bom"],"ok":"8974bb7f648c6a17a582a1b345e56ce3e96bc216cbc8d084e2c62bd259d14a72"}
+{"fn":"hashContent","args":["src/a/b.ts﻿bom"],"ok":"b0551037b87fcdb247240fd94b30118e2b9871b6a7756e0000871919cac69677"}
+{"fn":"hashContent","args":["aemoji 👍🏽 mix"],"ok":"b285f3fa379bfc00015fc891710122db1cb9b44e0d75d006b8ceb894e50127fc"}
+{"fn":"hashContent","args":["a.b.cHELLO"],"ok":"7391e146f54f3879e3d9147f55a8c51443ac14c8201835fd24ec33a954d59007"}
+{"fn":"hashContent","args":["日本語のテキストhello"],"ok":"1d9e309f9bf56235fb09059d572878a1161bc9f41f2f390ea229be24e2a81553"}
+{"fn":"hashContent","args":["emoji 👍🏽 mixhello"],"ok":"832376bf0f32a1210c6c489ebc67cc8f0dccf9bab5ae7db956a24374b344b71e"}
+{"fn":"hashContent","args":["straße😀"],"ok":"3c4644aa5117c97bfe964f0e75f0f112ae210090878b1523bc619ad94e3213bf"}
+{"fn":"hashContent","args":["src/a/b.tsa..b"],"ok":"216eb29dc2678c6d14c83cec1736b56a3686d2d05c05032b24f733757c6dc39b"}
+{"fn":"hashContent","args":["ns:key.pathΣΊΣΥΦΟΣ"],"ok":"9a5b5a6eab7784a5a74ae51b6a60fa862e712cc6e7ee0797fe6982276e377ec1"}
+{"fn":"hashContent","args":["./x/**/*.jsonΣΊΣΥΦΟΣ"],"ok":"84cc390f5b6f78934876e2c07dea46ff395b9123300a38875119ee3252157754"}
+{"fn":"hashContent","args":["straßea😀b😀c"],"ok":"6f4eeaf424c28f6e9a833a616385a8079ce9eb8a9c777b39fba1b8317bca63fd"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣa:b:c"],"ok":"98dc2b9ba49340ee052f524b951d74bb54257ceb88aef0d9166658bbcde28ab0"}
+{"fn":"hashContent","args":["  padded  😀"],"ok":"733c4b3b66be0921611da6424e07c70634799b163d5b6cbdbd3914f9f0b157af"}
+{"fn":"hashContent","args":["ΣΊΣΥΦΟΣHello World"],"ok":"389c5d381871eeabee96fd15173ad72ea4a78c3ff021ce8239664aa41d0589d7"}
+{"fn":"hashContent","args":["a.b.c日本語のテキスト"],"ok":"4e0a700951b2dd2b1b9feccb05dc764fa437b404783e344c09f5bd271e35d3d8"}
+{"fn":"hashContent","args":["a:b:c😀"],"ok":"0779ba72409ad583ee11506ed8c056ed369a730c1dedc99562f1936323c90b0c"}
+{"fn":"hashContent","args":["a./x/**/*.json"],"ok":"deff3c7602205cc12b9c7e96ef4d54c35f38c183519fb6165d1f8db2d459f8cc"}
+{"fn":"hashContent","args":["abcé"],"ok":"1ee9f43fe41b412ddf502a1403707848b3e4d08fe5590508e168c732f72ce31b"}
+{"fn":"hashContent","args":["{name} has {count} itemsΣΊΣΥΦΟΣ"],"ok":"f7f15ce950e312ca4c865665e40fad06bea20d02114d47a3b7b91cbc097b0fd2"}
+{"fn":"hashContent","args":["./x/**/*.jsonstraße"],"ok":"e3fc6893b938aa0b17e66fadaf9efc2ea58e13baef406a493216408802bbde34"}
+{"fn":"hashContent","args":["日本語のテキストΣΊΣΥΦΟΣ"],"ok":"cef94ba7d9d4ffdf1d389d22b31ef457d986f784cf57a887a403b2e6ddeb67d5"}
+{"fn":"hashContent","args":["straßea:b:c"],"ok":"6df43e250eda9ec2e99be29523723a12c4cba245388b30bd93376a3a73f5e8fb"}
+{"fn":"hashContent","args":[":ünïcödé"],"ok":"c58e6d11a484177eeef24de7f716306f435c0cb567288b9396a0442c3427456a"}
+{"fn":"hashContent","args":["emoji 👍🏽 mixa😀b😀c"],"ok":"009ea861f1efa574ca4cb345332ee11263a8e85519f696fdbaf95cbcafe1422a"}
+{"fn":"hashContent","args":["ns:key.pathHELLO"],"ok":"6e773db760b53daff5b4eb8d986f4295029c3a363586a2045bd8359afe037cbb"}
+{"fn":"hashContent","args":["straßetrailing."],"ok":"702b953dc05a198947d489c1da9d06d2b0f3da4787a7402dd78bd44290ad60d5"}
+{"fn":"hashContent","args":["tab\tseparatedkey_name-1"],"ok":"9fade3adc95a4c40b7df94576db94c70d6a1232942ad280470521890a02a691b"}
+{"fn":"hashContent","args":["src/a/b.tsa:b:c"],"ok":"2a7fc5449eb1322111d9bab92052064eb3e2bb50ac33881ec4d2ae01131e3d0a"}
+{"fn":"hashContent","args":["trailing../x/**/*.json"],"ok":"b3bd64eb8530c5d125dc89d43c70dca2971fcc16d936d41c63e8301fcd92e2b6"}
+{"fn":"hashContent","args":["Hello World﻿bom"],"ok":"b5c764fd5763f86159a3c2b45b582644921789314e2b0a4bede876a3aad41cc4"}
+{"fn":"hashContent","args":["emoji 👍🏽 mixé"],"ok":"2043cc3228476d2cbaf9baf64875c1db2fd768cdb594e62494689efbd63cebd1"}
+{"fn":"hashContent","args":["./x/**/*.jsonns:key.path"],"ok":"78eed559f40678f4cb4480523ba91aec34d22676994df67aae14b0b0e951a55a"}
+{"fn":"hashContent","args":["a..b{name} has {count} items"],"ok":"5a4d2ffda1334b216abe550fb6bac0fd7023bb424555beeb0867d6f4e77fbc71"}
+{"fn":"hashContent","args":["héllo wörld"],"ok":"a1003f7d04a4115711d0b48a2eaf1359ce565d2d2a6fd65098dfcffadeeef59f"}
+{"fn":"hashContent","args":["👍🏽 thumbs"],"ok":"2752e65dacf50732034519d1b6d574545e020fd911220a407df26a724d4b3748"}
+{"fn":"hashContent","args":["日本語"],"ok":"77710aedc74ecfa33685e33a6c7df5cc83004da1bdcef7fb280f5c2b2e97e0a5"}
+{"fn":"hashContent","args":["ılık ırmak"],"ok":"60dc09d56c2ba920b1ecc799e47c00c8c4abbc670f861e1410b3952c42e0f7e8"}
+{"fn":"hashContent","args":["👨‍👩‍👧 family"],"ok":"bb5f3770a5817fd95570670d8957256d8ee8edf3df5f80dba854595cf158e3b8"}
+{"fn":"hashContent","args":["a b"],"ok":"9507017c6d887511a5a6ac28ea7e3a438882576e1bd76fe3df27a336f49c263b"}
+{"fn":"hashContent","args":["a😀b"],"ok":"6fba5b2ea783ded096fc2444d540ffbdf49168df30993b155b7efb683313f110"}
+{"fn":"hashPair","args":["HELLO","key_name-1"],"ok":"9209e9c172096110b1aa7e61dae9dbdf2125248b865a74b0f88309c5f428807c"}
+{"fn":"hashPair","args":["ab","ünïcödé"],"ok":"2859fb06a1bbe0cc3bb362e2058c56f90060bd948523d68fedb3464b1173e705"}
+{"fn":"hashPair","args":["a","ΣΊΣΥΦΟΣ"],"ok":"2976d004001e05e3c240abf0e9367c083063a1f3da32e2ed2720ba0ccc9d1515"}
+{"fn":"hashPair","args":["😀","😀"],"ok":"0783ae15c044a5b9db2c013a6127049f8abb5b34fa8fe6f48b6d23edcec78a4f"}
+{"fn":"hashPair","args":["﻿bom","éline1\nline2"],"ok":"74d7e797d9197636ef7286d10ad126c6c369e080ede5eba778554c8af8858e6b"}
+{"fn":"hashPair","args":["é","e"],"ok":"059f879cd9050705189bc2cbaf87b27697ba052e0dde2bf1ec9f8e53e26614f4"}
+{"fn":"hashPair","args":["ab","abc"],"ok":"65520b98fb9d8f2940efa6d8c12ba2fb58a5b0dd2772bb3aedb37f988b809dee"}
+{"fn":"hashPair","args":["dé","ünïcödé"],"ok":"16602f8a670586397d395108dc77d8ebaeb34c5af5a7817a16bf619dc0f152b7"}
+{"fn":"hashPair","args":["HELLO","straße"],"ok":"037b9fa0f2615170cfd4e4222e671f9fed797fb0a497881c826ac6a6d4b635dc"}
+{"fn":"hashPair","args":["abtrailing.","a.b.c"],"ok":"bb19f80c87b219cb610c7410ebeafea716d940eef42e27ccc2eea248fb27d122"}
+{"fn":"hashPair","args":["b","a:b:c"],"ok":"27cdaaefa5a250b9a58024cca1645d809ac829d66a9db0955a21d81d3ff15f49"}
+{"fn":"hashPair","args":[":ke","HELLOns:key.path"],"ok":"25eb0bc9bb1ef03941e2da048a9a80f00a99729b238d445b2f88b46cd77eb401"}
+{"fn":"hashPair","args":["hello worldΣΊΣΥΦΟΣ","tab\tseparated"],"ok":"18abc0f5231a0aa764ab358f9452317c6fe4d935585111573292c766b5297ff4"}
+{"fn":"hashPair","args":["trailing.ns:key.path","emoji 👍🏽 mix"],"ok":"9c874c0dfb173d79486a50a035a41474cde74ee8108625681f07ab407389c9c3"}
+{"fn":"hashPair","args":["key_name-1","a:b:c"],"ok":"2d7de02ae76bb7a81353ed20574f371702a675519b7682cab3d4e32706c3b551"}
+{"fn":"hashPair","args":["line1\nline2","﻿bom"],"ok":"3210912c5e2a9ad1b09f9f5658266a87d9bbf421d4810700b5394b3898618fe5"}
+{"fn":"hashPair","args":["ünïcödé","{name} has {count} itemstrailing."],"ok":"fb926a6d14bb4a280d2d00f902991e4544c122567bb7bfb4d88f6ffef217ca1c"}
+{"fn":"hashPair","args":["a","étab\tseparated"],"ok":"b10f608a99d553550a522d72ea263531de7a4933f735780500c75cf863ca462f"}
+{"fn":"hashPair","args":["LI","line1\nline2"],"ok":"76f0b88a35a147eaa79d844fde409ddf23397368ad8aa09741deac3a766d19ea"}
+{"fn":"hashPair","args":["HELLO","./x/**/*.jsona"],"ok":"5b8c170639f8a0819736e2cc89a6b7a5705fac1409afb811eee97370e20aab1f"}
+{"fn":"hashPair","args":["B","a.b.c"],"ok":"d261a8e3af453a8e6f9cb0b832081e0a09b799872e80516dfb1518b944edf369"}
+{"fn":"hashPair","args":["emoji 👍🏽 mix","ji "],"ok":"56b38dfc141aa915761f53f610fdff166b9e853bdaaaf044af4bb6c03f2251fe"}
+{"fn":"hashPair","args":["tab\tseparated","tab\tseparated{name} has {count} items"],"ok":"5b17c2eb63d1edaf4c28ce564cf677007e6dbbbfa1412d6c216d26fb05c50d08"}
+{"fn":"hashPair","args":["./x/**/*.json","HELLO"],"ok":"214b6f283fd413d11d4c9112f540db04118bd17fe2865551a7d16be57671c2f1"}
+{"fn":"hashPair","args":["line1\nline2Hello World","﻿bom"],"ok":"d067fb6ca3f24727137ba211769598729a056a994c4aa6f613d350013c817eab"}
+{"fn":"hashPair","args":["src/a/b.ts","é"],"ok":"5811158f681ca7e11a619df4ddb2e692f7e94417bb423b3da1fd0216deb6df62"}
+{"fn":"hashPair","args":[":","a.b.c"],"ok":"323989759e073141d2b7d3d09acb8de31fb474744fec41b10b818104037cbc4f"}
+{"fn":"hashPair","args":["src/a/b.ts","hello"],"ok":"9a9dcc6488f70d93f4b017efe0d1358183369c71e06f7440002c18e1b64fed57"}
+{"fn":"hashPair","args":["c/a","src/a/b.ts"],"ok":"79007e6d35ede609207126f07a8960cc3942a13b0fa667a3225f8570f10e50c6"}
+{"fn":"hashPair","args":["a.b.c","ns:key.path"],"ok":"9112a1b635230e6221f758453eb261d98a6725512a6ca5a827ebf96e0a685221"}
+{"fn":"hashPair","args":["hello world","ünïcödé"],"ok":"73abaef7190ee3d8de95f7af26d3b7d90fa44a913bb028dfd947bca82861eaa5"}
+{"fn":"hashPair","args":["İstanbul","{name} has {count} itemsa.b.c"],"ok":"bab556efe44fac46ea1aba7e7f5b81015741cfe2951828932fe2cfd6bbf6e77f"}
+{"fn":"hashPair","args":["abc","a.b.c"],"ok":"99695fa2c49d329fa29da7eb08e8cb336e67e3664f9ba275c7a2ba6ce845eff0"}
+{"fn":"hashPair","args":["a😀b😀cemoji 👍🏽 mix","src/a/b.ts"],"ok":"ea5e54744b83e2693ab8db00d107237582a7fbb59642ea68abbb84d0d8c920b2"}
+{"fn":"hashPair","args":[".leading","a😀b😀c"],"ok":"bfab3003b30ae823ea6d2622be5e86566b0fae91eb0846923d6260a86e3ce590"}
+{"fn":"hashPair","args":[".","a..b"],"ok":"668418cf45e1e3b517083061c25e933968e390950fc4ba35dd737becf20b5f89"}
+{"fn":"hashPair","args":["line1\nline2  padded  ","é"],"ok":"98f3e69c23ad5d132f7cc7ff7c564afe3e43f1cae8b99370502699425e3903bd"}
+{"fn":"hashPair","args":["{name} has {count} items","line1\nline2hello"],"ok":"0d0a776f3e04e45183003aa5d8d55933d1a6c6f67d4f13b730f7b527e66cdb77"}
+{"fn":"hashPair","args":["{name} has {count} items","ns:key.path./x/**/*.json"],"ok":"ef5a16e4deaa93e695c35a8159410124319b8f7465f80adac83995cc4a1c0a25"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ","a.b.c﻿bom"],"ok":"32f25ab1adacc18750d63a3a3ad367ea4069cda4f98c4cbfed97a2109605206e"}
+{"fn":"hashPair","args":["emoji 👍🏽 mix","İstanbul"],"ok":"0a902dfb4b83083b9cedc907fc060dae9b4e2e1d10fcfbc107b960c3809bc58b"}
+{"fn":"hashPair","args":["Hello World😀",":"],"ok":"56b6e5af409bd5d038503e9e9518ea211f8541ac853f1d60f0f6c0d663068530"}
+{"fn":"hashPair","args":["a.b.c",":"],"ok":"4deeebb2be4208d995321714de8be6dfa9cbe743dba7fc3ac001a0ee62a99ff4"}
+{"fn":"hashPair","args":["a:b:c","é"],"ok":"857534eab66f2c4f2aa6f94fcfa5fe94d289e66605af7d6864448e707a30cf0b"}
+{"fn":"hashPair","args":["ns:key.path",""],"ok":"ccb4ec7751c6909d04e5accdee91a55c0bac4b93447eba809dd25f958dc8ec6d"}
+{"fn":"hashPair","args":["straße","line1\nline2"],"ok":"7575b5c6102964327780f6bb12f86e5542e766762f0640a96b62f179ede3187e"}
+{"fn":"hashPair","args":["tab\tseparated","trailing."],"ok":"809ca7fd44da61e0cf1de9f42df56d6e9a4b4e6fc56dfc6b53514049ea60a06f"}
+{"fn":"hashPair","args":["hello world","src/a/b.ts"],"ok":"66574bbeb6619f855946f6b41232aedb817a3043858fd9f17721844ac36e179a"}
+{"fn":"hashPair","args":["a..b","😀ab"],"ok":"3ef08eed3b9d9e48b6c0433df8d0c1ffc1f117b88471a0aebd9b089703353d3d"}
+{"fn":"hashPair","args":[".b.","a.b.c"],"ok":"c1287de1702b2ee5b08af7f6f49ea80708158a5fc977a93957a0f3c0af7ba609"}
+{"fn":"hashPair","args":["İstanbul","abc"],"ok":"309366930ac0cd66550bc438eeb18977af05058d459ac3fa8abdf141e12f6d62"}
+{"fn":"hashPair","args":["key_name-1","hello worlda:b:c"],"ok":"47bc92352020d88a101e365c63fa35c1565d24c025a2a3fa1829fcda17847ebb"}
+{"fn":"hashPair","args":["﻿bom","ünïcödé"],"ok":"3687166f8f0df816d1f2bce91fd69b94010a9be6274027af54f57a3f45e45734"}
+{"fn":"hashPair","args":["é","é"],"ok":"f316c6bf1753c1ee7e5012563c598e284f00f4fc9d5c227fc73523d61d878409"}
+{"fn":"hashPair","args":["  padded  key_name-1","NAME"],"ok":"af20a5e930b80202d3435ed54692068a6ee54f25c7231f66fe23979fa988354d"}
+{"fn":"hashPair","args":[":","emoji 👍🏽 mix"],"ok":"e1a01eca2e128947bcbfd19be8090b1080b4351d32e7be3aa008a048a011703f"}
+{"fn":"hashPair","args":["é","ab"],"ok":"919842ee1c9ef826f98c07623e2f005660b8ae37aed60e93fc92779fa0d65878"}
+{"fn":"hashPair","args":["./x/**/*.json",".leading"],"ok":"993efe2281a629c8b80d8a7b72356eb776188d1e8718d0ff035bdfb963b6571e"}
+{"fn":"hashPair","args":["straße","straße"],"ok":"bfffc3a5791db0c7bf52fafb5e96062153433504543aa3a72600be00491df0ef"}
+{"fn":"hashPair","args":["é","İstanbul"],"ok":"663389f719fd7fd0ef8ed83d01abd8971f789ce898329b2de287db493e77cd1c"}
+{"fn":"hashPair","args":["world","hello world"],"ok":"df8af93e6439fa4b21b84339d790d82eb079de11dac30a336e4d8bcd93273927"}
+{"fn":"hashPair","args":["trailing.","trailing."],"ok":"23950bb42cda9bee0cff8436784ef3e809a4ce1d22c812f9567716b2b7fcbe3b"}
+{"fn":"hashPair","args":["straße","ASS"],"ok":"3ababa4440217c9b6b910bd6b733660da91aed65f3232a9f3935e2857166c2d4"}
+{"fn":"hashPair","args":["キ","日本語のテキスト"],"ok":"f5a731448ab5113a20354cc3bb2b3d3d91509f1cf67516cc4ec4ffdb6987373b"}
+{"fn":"hashPair","args":["HELLO","LLO"],"ok":"37fd1adfc58d7dc8c6aea8652e346673e54e2e35a3583a77a34343661b6a5663"}
+{"fn":"hashPair","args":["src/a/b.ts","src/a"],"ok":"27cf93f876861effd9b27dcf1416ba84d12d03ea6c65ca97080d8f0be137d1e8"}
+{"fn":"hashPair","args":["y.","ns:key.path"],"ok":"d72d507980e45f26eb22dfafbe50bb8c68bd010135099e3112513e057a0a38b6"}
+{"fn":"hashPair","args":["./x/**/*.json","emoji 👍🏽 mix"],"ok":"70623d7fdd5b99be9f862294c96938c0d8a4b245461b16011b5fd52843f8a366"}
+{"fn":"hashPair","args":["abc",""],"ok":"dc1114cd074914bd872cc1f9a23ec910ea2203bc79779ab2e17da25782a624fc"}
+{"fn":"hashPair","args":["  padded  a:b:c","ed  a:"],"ok":"d6782eb6e99688bebc7d767a92b420c827f7a9ac9cc476980ad3979bf5cc38d0"}
+{"fn":"hashPair","args":["İstanbul","trailing."],"ok":"d8f1dfb8280b66522029abbc6933c4d70097ef9605e221503dbd98248d695fc5"}
+{"fn":"hashPair","args":["key_name-1","-1"],"ok":"e3068d7defe1acdb6aa5276ca20473671968415696836bb92047ae4fb23061a0"}
+{"fn":"hashPair","args":["c","a😀b😀c"],"ok":"2116a62136115bf70ad3a6a60cbc724f9f1afd9f4606fbb7b99967b84b0146cb"}
+{"fn":"hashPair","args":[":straße","😀"],"ok":"de428b72037115f1a1f17e35cf3391a6dfcf4a6b2341c84e27d34b7577be7423"}
+{"fn":"hashPair","args":["a..bünïcödé","src/a/b.ts"],"ok":"ce883b6574757f9e5f77f77208aadcee966b46ce460ac4251edf67648b2b838a"}
+{"fn":"hashPair","args":["a..","a..b"],"ok":"cdf3c8b98c00a6c97bb5bda51122fbc6b609f7a5a6be17993c02068179886296"}
+{"fn":"hashPair","args":["line1\nline2Hello World","ababc"],"ok":"e896acf09f9ffe92448d6efd97e472ae1851a78b82ef30610f3f72cfa3198947"}
+{"fn":"hashPair","args":["ns:key.path{name} has {count} items",""],"ok":"fa553773f2f461f0396ec8d7a14f2fbfa925c7d6f8e099350b99ae2839f8f738"}
+{"fn":"hashPair","args":["のテ","日本語のテキスト"],"ok":"c00180c2e401ee8b17787db7cb2945b5ba3ca7d5081f732fd802ef039b91b6de"}
+{"fn":"hashPair","args":["a😀b😀c","B😀"],"ok":"8263337ae3b60bbeeda0c72630fb379f22e67e98262baabb448b031e57729b28"}
+{"fn":"hashPair","args":["İstanbul","a.b.c"],"ok":"49080a0f08bca686a795bc235507acb7e8af3826d2b93c9ea6cd0c602ba12bfa"}
+{"fn":"hashPair","args":["  padded  ","日本語のテキスト"],"ok":"0c714e5835389bad0012776424927681690f867bf1ee10936d06d5238833ad11"}
+{"fn":"hashPair","args":["O","hello world"],"ok":"921a3d0315f6a73c8d7123741174962949fe9caaa9855cf404719ac9d8a54ee4"}
+{"fn":"hashPair","args":["straße","日本語のテキスト"],"ok":"491c3eb813c6947845d5a5243d7af3f8f9ae6c5cf97d590b0aa7e966e765f2c9"}
+{"fn":"hashPair","args":["ΊΣΥΦΟ","ΣΊΣΥΦΟΣ"],"ok":"1f1514613b8f361a0523329f2147de5015d1e8369cdfde029b25e606a6b822e2"}
+{"fn":"hashPair","args":[".leading","a..b{name} has {count} items"],"ok":"a4f4b778da1ff15cc2a59a799d7fc60849c948199c07a768e0620b223f9052cc"}
+{"fn":"hashPair","args":["","hello worldkey_name-1"],"ok":"3c8cb9a066b5e68c8708ee48b27ed766e7e9b72ced3a96c74e46f9dfe367b600"}
+{"fn":"hashPair","args":[".leading","é"],"ok":"f5518fe613c48d0d4cecc1d5cc55148d320273c55b37f25b70eba69667e204ba"}
+{"fn":"hashPair","args":["{name} has {count} items","ame} h"],"ok":"aab07bde69a1aa4dc9c36785b5672e60c5c5cbaf78a5795be7a61c87f378cc30"}
+{"fn":"hashPair","args":["tab\tseparated",""],"ok":"5ac443da79be4a03a60a141ec72651c6cab3734992dbf7157f0737bd43ab7af6"}
+{"fn":"hashPair","args":["a😀b😀c","İstanbul"],"ok":"bfefae845e0734c7613a3f83209033dc0e64c36b0cbd16c71d6b2e2a914ce700"}
+{"fn":"hashPair","args":["hello world","ünïcödéstraße"],"ok":"a060c97a02da103163a525caece2ec4060b3fb6f740c181ce2920e4c88224458"}
+{"fn":"hashPair","args":[".leading","trailing.hello world"],"ok":"364cc9c8c346a3f1cedf8356b11ba8c08089ea06bd5ae3652089f76abd14d5d5"}
+{"fn":"hashPair","args":["a..b","hello"],"ok":"593bd8a2430aeb5600ad97adf03d39b22f8c4ce66abeb884a2af38efc5eb710c"}
+{"fn":"hashPair","args":["M","﻿bom"],"ok":"7e040b9640325a6d546e448fab0f10c15d4830a41433704d773be57ac1393344"}
+{"fn":"hashPair","args":["日本語のテキストHELLO","hello"],"ok":"b237d81d075ebb2df882ae88602f23ae31900fe28242311199ca31d65503e75c"}
+{"fn":"hashPair","args":["ded  ","  padded  "],"ok":"7f843baaabde828ddec80eea1dad4864b6ba6590e2c0257648224775247c1188"}
+{"fn":"hashPair","args":["rld","Hello World"],"ok":"26e84ce8c0db263c8837014f20c36ea3b3574413e850422de638020185d44ee1"}
+{"fn":"hashPair","args":["","Hello WorldHELLO"],"ok":"8d4ac0dd38d6eb86a466fd1cabe36b09006ba2f4e82e42d6df89ae000c59f202"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ",".leadingstraße"],"ok":"2db22431219dab5511ce8aa7fb7a4bffb4a58eab2b68f36d2fdfad09a964c204"}
+{"fn":"hashPair","args":["hello world","😀"],"ok":"34d671314e49cb0714fb9c184008e9dd37b3866d331d5712be28425d6213f00a"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ","key_name-1"],"ok":"8d74cd29d6e49a87ffa2c4d2c0020db5adc027f85cd0fa54be73582b442f3943"}
+{"fn":"hashPair","args":["emoji 👍🏽 mix","helloabc"],"ok":"868035616017fbff37d74b94a6ea6a8e31043d52542c9233a62f6317f5a66c03"}
+{"fn":"hashPair","args":["﻿bom","hello"],"ok":"4bb18ed5634a6373ff4ec5eb4b8efef2e4e71580960e94621d9aea5a9f918018"}
+{"fn":"hashPair","args":["ey_na","key_name-1"],"ok":"4bb4fa552b264202bbd660f5fa8ab1c7c319f4366c62d17690bd845657c11425"}
+{"fn":"hashPair","args":["line1\nline2","İstanbul"],"ok":"f5a247df616c892e2a23d54b0743f2bac82c491ab11bca9023a2e14842b3a568"}
+{"fn":"hashPair","args":["a:b:c","ünïcödé"],"ok":"8c60c4883ca7560da26faaf1961ca0573b0c3108fd8479ed8bb0710ddd1ddc01"}
+{"fn":"hashPair","args":["ns:key.path","trailing."],"ok":"13a1c26dbec6dbd324054593f9bd7904f531206308a5637c021664e777b84d66"}
+{"fn":"hashPair","args":["trailing.","{name} has {count} items"],"ok":"a7ca686b1014481e37db5f34c8db89fcda76fb83adc606f7a551e55d2974511d"}
+{"fn":"hashPair","args":["nam","key_name-1"],"ok":"a8e3ba664d872e66a1c9ee0fbf925484d7014f2f868b15f7c2232cd154982d78"}
+{"fn":"hashPair","args":["./x/**/*.jsonhello world","aHello World"],"ok":"a9e57ffaa93da11addc00d3e883591c3f1633989abea4b383fb0b2be641d5cd5"}
+{"fn":"hashPair","args":["name-","key_name-1"],"ok":"c3a26ad73b935bb2cc9cb0fa614cc7a929ea5069ecb20ad17b1f041eed1b02c6"}
+{"fn":"hashPair","args":["abc","é"],"ok":"03e05cb9ff063619fdcf8d6ed0f97c41eae29ed287ea5356c4e9463910b5d204"}
+{"fn":"hashPair","args":["A","a"],"ok":"5781569f7028c3ef9c89127881e5fba307d51bb047665db0a6ad738ec6ce23b2"}
+{"fn":"hashPair","args":["hello","hello"],"ok":"4c3277ef36bb36c93e30d73a7c0998912297ef797b39f8df95b3ebd14f09a392"}
+{"fn":"hashPair","args":["  padded  ","emoji 👍🏽 mix"],"ok":"2052710999af31d34c47c82192bb41ef3d293351508049ef82033060785aa7e6"}
+{"fn":"hashPair","args":["Hello World",":a"],"ok":"732f822da3bca36f3d3e7f8a278d2b7b6bea0f4b1296d0499778ce2020a1b1a8"}
+{"fn":"hashPair","args":["a.b.c","ab"],"ok":"71fb811240f1766df5c301baf161e5e0c7b2e5c319d4b88fe727972c9dbdfd3d"}
+{"fn":"hashPair","args":["src/a/b.tsa😀b😀c","a"],"ok":"d38bd7360347f83cc58a9488e0dc47bd0969473f4fc3c41661ffb355ee38fd7f"}
+{"fn":"hashPair","args":["straße","Hello World"],"ok":"b37e3f468e0ca7ce0208253dc4180ec7ff6125a4168eed62ff63558ddfe35d80"}
+{"fn":"hashPair","args":["","src/a/b.ts"],"ok":"21cd9d4862c45dc8016307f5b977394b15ed46fca177d024df9f9caed5b73df3"}
+{"fn":"hashPair","args":["a😀b😀ca:b:c","hello worldé"],"ok":"56c7d6bb6d62cfabfff6c11bc0745809190a3afd8c7cb1a51095573a67cd5211"}
+{"fn":"hashPair","args":["́","é"],"ok":"61a5a3cf334d7bbcdd6c0d8f4d783cc04003850b0fd8c8049819eeeef1836098"}
+{"fn":"hashPair","args":["ng.","trailing.hello"],"ok":"0835d8d974d74b330a37217d29ec62eada541409eeca2facdf986188dbfa3039"}
+{"fn":"hashPair","args":["ab  padded  ","{name} has {count} items"],"ok":"f3849d88c8cfb150c2bd1b2a0c110083861d2b044ab2c05de9a4996e46d18411"}
+{"fn":"hashPair","args":["hello","  padded  "],"ok":"62de0a582960966832571f386e2cecbbb66f15a4a3e12d0ba112405893dd5e6f"}
+{"fn":"hashPair","args":["a","a"],"ok":"1de2f1d73ccc5964e0ba186e1ece291304f8d97cf78c5145aa968d58847a9ff6"}
+{"fn":"hashPair","args":["emoji 👍🏽 mix:",""],"ok":"1f51f6953eb35d13e1d581cc079a3927d9fd2c6494f77da0fc5263b784e2861e"}
+{"fn":"hashPair","args":["src/a/b.tsa.b.c","{name} has {count} itemsa"],"ok":"6e85b158fa489aab866e38e88f1e7c2aca6bffe006649f30cba71679f3b9478a"}
+{"fn":"hashPair","args":[":","abc"],"ok":"00eea1f474672cca848130ef08340977ac3f9ff36c7f5d230cdc8c9699c41ba7"}
+{"fn":"hashPair","args":["{name} has {count} itemsHELLO","HELLO"],"ok":"4b7ad6ef10fd8a79f3e1968801902939702672f19e768c4523b65de14b6c2965"}
+{"fn":"hashPair","args":["./x/**/*.json","é"],"ok":"35640be193e2d28fee11c0208936db1d25f1a24319bcde0bfbac2e585814bf37"}
+{"fn":"hashPair","args":["ns:key.path","straße"],"ok":"577ed88918097b627a4c6148f7fbecf107e74f960aa7832b0e0ef1eeb0532cb1"}
+{"fn":"hashPair","args":["tab\tseparated","key_name-1{name} has {count} items"],"ok":"5fb68264c9408386817959d2da4e26607f336841f7dea004d16dde5e7dc2f4ca"}
+{"fn":"hashPair","args":["c/a/b.ts","src/a/b.ts"],"ok":"0a3ae7279670120e5e1fc18f7ac49134798304b79915826dbe68d5cc921574e1"}
+{"fn":"hashPair","args":["a","{name} has {count} items"],"ok":"337a33e835a8cbc990943506008b1dd36ff0fcc6f9666896c3ad7e8ef0eb0a22"}
+{"fn":"hashPair","args":["﻿bom","ab"],"ok":"b83949f6cc04865522d2cc3dc4ff2ee893b1af7b8f08a9d14496c5fcc50fc8ed"}
+{"fn":"hashPair","args":["straße{name} has {count} items","./x/**/*.json"],"ok":"68e45c643267fa7c0f56a24b216c7051317b50668837d94b8c000bf22d1712bc"}
+{"fn":"hashPair","args":["﻿bom","﻿bom"],"ok":"bf90fb862aed3f2ef1066dbb5d8a4390488d2ed42dddd3b23b38f58f116fdedd"}
+{"fn":"hashPair","args":["{name} has {count} items","count"],"ok":"6a3a20ded1c5262ddd4a317bcb82dcc347b0ff3c0f793f7122a84db04cb35093"}
+{"fn":"hashPair","args":["RAILIN","trailing."],"ok":"28b79b6679d056f981e4fca8d4b6d80e4caf8f7dbbc53a985802f87a638eff91"}
+{"fn":"hashPair","args":["a😀b😀c","trailing.abc"],"ok":"dfeee73b334caaed03ed854b0eaaa28efb22389addbbf8122f9ce85cf95fda38"}
+{"fn":"hashPair","args":["ünïcödé","dé"],"ok":"c5f4ae78d14162854dc95a4f3bac86739ee4c63acb1403c79d1f0cb046ef04ee"}
+{"fn":"hashPair","args":["emoji 👍🏽 mixa.b.c","line1\nline2"],"ok":"925cc5323585413714042d0698182ef81ba4df63652dab9fcb3054c308d93095"}
+{"fn":"hashPair","args":[".leading","﻿bomHello World"],"ok":"47f8d0a17deda50b5af456222218f6d55d371da669a0cb81d891eef89065448e"}
+{"fn":"hashPair","args":["in","line1\nline2"],"ok":"99b13107db3b074877912e6cdbada31a03ab3c6fdeeb89f730233c161c1d58da"}
+{"fn":"hashPair","args":["a😀b😀c",":"],"ok":"0fd2940953104229127fff881387f41fd201de7fb7e279ef303cea3cf38a8d86"}
+{"fn":"hashPair","args":["abca.b.c","ünïcödé.leading"],"ok":"7e50b546266bd567d7a2bbaf02787aa4efe0f94b3d94cdb5bae511ac30956daf"}
+{"fn":"hashPair","args":["ab","日本語のテキスト"],"ok":"042674cf20877412a6b735447138d9cde3e6b86449ad2c3bdf026311a370b0d0"}
+{"fn":"hashPair","args":["a.b.ckey_name-1","{name} has {count} items"],"ok":"23a9080d7155aded73d2959b7f625a889e08cc887ec4e346d6e7ccb21c2cf683"}
+{"fn":"hashPair","args":["a","a..bİstanbul"],"ok":"6a55f7e1aaf82d3843a56358721c2d99fee24f2a6ebe220c6f22622341084b72"}
+{"fn":"hashPair","args":["tab\tseparatedé","trailing."],"ok":"eedaa9bb690159d2773c70743195990bb510f1ca7d83d13ee8b4461425e99b33"}
+{"fn":"hashPair","args":["line1\nline2","in"],"ok":"c3f945be78486e7a630d4da7050720889e0ee7c2ffea2f195ab8ebd802ff7a1b"}
+{"fn":"hashPair","args":["LO","HELLO"],"ok":"9b56bef56bb4ed542f03fd32c05396522ab89decf79d5964fe2cfc54be7a10bb"}
+{"fn":"hashPair","args":["abc",".leadinga.b.c"],"ok":"825aa6c27c2b25bf6d246d8a1ae8215c5dadeac9c81d9d8f8b82c22a9a069c7e"}
+{"fn":"hashPair","args":["o worldΣΊ","hello worldΣΊΣΥΦΟΣ"],"ok":"219101c53c117c2c4de5c76fce7194f2e83034e851272884dab89b17032b927a"}
+{"fn":"hashPair","args":["a..b",".leading"],"ok":"442557ce0649ab68d644c5ef0425a1f559699c82d47073962e39950851b0c6fa"}
+{"fn":"hashPair","args":["éa","key_name-1a.b.c"],"ok":"b1b93f492f20e51af3ca81d746ca4ded81dade5e4ff18397fd511afcdff6ba3a"}
+{"fn":"hashPair","args":[":",":"],"ok":"a5a05b0f0bc1145c171ca0bc05b4cd25a980fd75350aa835ababfb26a88d669f"}
+{"fn":"hashPair","args":["﻿bomé",".leading"],"ok":"21df81261f94d3f74b6f8a1432ec9851287098d43b0daf36c7bd42f5bab84963"}
+{"fn":"hashPair","args":["src/a/b.ts","ab"],"ok":"2978ad681bfe64bb74883fce46999ec8451235100a63293727f64b5fb0f6b44c"}
+{"fn":"hashPair","args":["ünïcödéHello World","HELLO"],"ok":"5468a0532a4d9b6877564ea057808684ee44603564bc7d4e3dea8ece7a837aae"}
+{"fn":"hashPair","args":["line1\nline2","emoji 👍🏽 mix"],"ok":"ddd2e48be8bdc4761575779e6e66f3c7be3e07ae3b2ee765cdef9732436ce7a4"}
+{"fn":"hashPair","args":[".leading","./x/**/*.json"],"ok":"945ad93d93d7a7f137d803c08705ade2d0a7f8706232e5fa2e5c10a717ea89f2"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ","﻿bom"],"ok":"c402baed2a1b924ecba5bbd8faaac4e911fc7b81efed8731978bf30976b4cc81"}
+{"fn":"hashPair","args":["a.b.c  padded  ","trailing."],"ok":"54e1089b7df3676dc4a021141f32daf69a902bdd4c3a23b8320b183bbc302af0"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ","a:b:c"],"ok":"4cbca6c1d5c17872fc7b1dc3e53b9186abb4e04157c03e20c817f4f8fe9b812c"}
+{"fn":"hashPair","args":["a😀b😀c","hello"],"ok":"865652231ccef49dd109c8c720321b07c3f1a0a2bcdd2618209debcf106f5737"}
+{"fn":"hashPair","args":["./x/**/*.json","tab\tseparated"],"ok":"c4e2fcb8b4929b4c898ff963252511d58c9c5e3a94e1b37aa0237db8d66d2a11"}
+{"fn":"hashPair","args":["İstanbul./x/**/*.json",""],"ok":"05c01a166bad09f5a5ea7e3ebe31d457530fcdbb02b88a98524c3171659a0463"}
+{"fn":"hashPair","args":["﻿bom","hello world"],"ok":"144ba4f23a1b8e37676e03c7aa1626cc31507ccc24392945dab0cd7894ab7aa8"}
+{"fn":"hashPair","args":["a..b","é"],"ok":"e8f6db7e7e209564d2a1d3ffc86196151b36eaf17907360d53fd02324cc51295"}
+{"fn":"hashPair","args":["a","tab\tseparated"],"ok":"c91bd37d7f929a7b4bd7b4d8e6be7b7f74e72d0d25371439295409fdb08077e4"}
+{"fn":"hashPair","args":["ns:key.patha.b.c","ns:key.path"],"ok":"20acbc83897a398c4e6f2e86b7b10dc4c20bc2bbe8f2d126176cfe316522da33"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ",":é"],"ok":"5df6aa08d9864b172390bee64508ca4f441974342cc06f526ff5d4f5b3f25710"}
+{"fn":"hashPair","args":["﻿B","hello world﻿bom"],"ok":"e751862efa708ea328fc2d0cc8eb989f0d97a249b20880394900e2c681494317"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ","ns:key.path.leading"],"ok":"c826fa1e6c2c0bb3acf5c58da4b5d3a56babbb355c79d12d9af65447a975badc"}
+{"fn":"hashPair","args":["a😀b😀c","emoji 👍🏽 mix"],"ok":"629a225033029942e3e03d6681f84b5d0188565a1b2ac8a52b6274e66b614103"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ","Ο"],"ok":"7035bb285f1a8ef27589ddd51a9307c550b73e61c3462fe600b25bac9e986a00"}
+{"fn":"hashPair","args":["{name} has {count} items","trailing.straße"],"ok":"002be0e4d07fef22621c1da1a6b0ce88b69257c1687f93eee181212c251ba999"}
+{"fn":"hashPair","args":["a😀b😀c","﻿bom"],"ok":"ca62922ca8c74b74a80835dada3d8be48aa4c1f598fb0424dd18c2e36976fdc4"}
+{"fn":"hashPair","args":["{name} has {count} itemsa😀b😀c","a.b.c"],"ok":"979fb9fe43f400abd3dea095bab5f4fdc97352dc7a1e774cf3a9063d28afe6a9"}
+{"fn":"hashPair","args":["tab\tseparated","hello"],"ok":"8c2665abda371788637dbc859ff9dab14e3b6005775cf9c0c5e55d97371b73c2"}
+{"fn":"hashPair","args":["key_name-1","astraße"],"ok":"d8141b09adbff1a13f9db96a5f43fa64ac1bdb956afcf6d1b297db0f44f78078"}
+{"fn":"hashPair","args":["a.b.c","tab\tseparated"],"ok":"f5506fe940c3ac86a1549f2227f31fc3f234b5e1318789d70c505408ba8a153d"}
+{"fn":"hashPair","args":["a:b:c","src/a/b.ts"],"ok":"95a92f5d0d37efab6b1449d735b35f19e12d6e36eb6f1ab34c09b21cda5176e0"}
+{"fn":"hashPair","args":["emoji 👍🏽 mix","HELLO"],"ok":"efb1b399a5df03e0a866646aa39481f59556ad4a0777c1df274d0d825057c90c"}
+{"fn":"hashPair","args":["  padded  a.b.c","HELLOsrc/a/b.ts"],"ok":"6d9b14cdd26a07db1af0e93d54ecbe7de403b967905d5d5185030b1a63c51d9d"}
+{"fn":"hashPair","args":[":a..b","a😀b😀c:"],"ok":"5da584f8067d7ed8b48ad451fa21a2468d9ea1646d32911695649b1f3d1c320c"}
+{"fn":"hashPair","args":["HELLO","日本語のテキスト"],"ok":"50ac729b354322a695a591bace798c6986e8739d619b9d6a7a1b1d590f8a6386"}
+{"fn":"hashPair","args":["hello world","trailing.abc"],"ok":"03010431a6d6da3b2871cec6537b41097b9867d7a937c9ffa57ab88329dbc271"}
+{"fn":"hashPair","args":["日本語のテキスト","straße"],"ok":"3a27e2d32bad5c0a36005c9c4dedbd62bf4db291a731f756cab09b5224ad9aa8"}
+{"fn":"hashPair","args":["helloa:b:c","abc"],"ok":"d3e06cb1cc55a0fbc34b8b0f808da42e4184d0e15039e45a912429238e82ec8d"}
+{"fn":"hashPair","args":["tab\tseparated","abc"],"ok":"38c38f3bfe6008f0018f9be8ec21cb0e2dd4409fb65955acbc06740d2782b462"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣΣΊΣΥΦΟΣ","İstanbul"],"ok":"b5ba4a5c655172b58e612cf62c696ea4f908f93d8b13f21c37d01aae09ca9838"}
+{"fn":"hashPair","args":["ΣΊΣΥΦΟΣ","ΣΊΣΥΦΟΣkey_name-1"],"ok":"74e288e78b341e155992b1699cea0e7140889bb0e2938b1752df2cbf1463a7d2"}
+{"fn":"hashPair","args":["b","abc"],"ok":"28f93f30612c6a20f60ba3cc46234a2a81f829a5530f3d657292ba812e212e81"}
+{"fn":"hashPair","args":["straßekey_name-1",".leading"],"ok":"48178b2a67e0f837f67fdc84954629f7b548813a993031a4bc7e2d0e5bf34a57"}
+{"fn":"hashPair","args":["epar","ΣΊΣΥΦΟΣtab\tseparated"],"ok":"d815459181e2eeac1559fca9cb44dd4f9ba954893a6200fcbab168c26fc060d4"}
+{"fn":"hashPair","args":["a.b.c","é😀"],"ok":"76d13a13423f726fa73780d975daefc5354f0de1a43a966614f5618b8b9fa639"}
+{"fn":"hashPair","args":["héllo wörld","key_name-1"],"ok":"65129a9d4e944c1b1e570e2a0f114e307623c53f6dd29e930a925a64495bcf9d"}
+{"fn":"hashPair","args":["👍🏽 thumbs","key_name-1"],"ok":"a9277a61f02af45a5cf29032fe36ef62dbea335f22b87b879454a4399bd9222b"}
+{"fn":"hashPair","args":["日本語","key_name-1"],"ok":"143ab1c4b9b4296b1e86fbc957f4a8f8c286b82822a102bb9773f97c05d1204e"}
+{"fn":"hashPair","args":["","key_name-1"],"ok":"192a4464b678ecbaf46907d7953a36aaa85afde2d2363630c5f491b4f7d2ea94"}
+{"fn":"hashPair","args":["é","key_name-1"],"ok":"7d53837fadc1f7068f208fbce096595d293d9b24a314febf8aca72dfc1318a15"}
+{"fn":"hashPair","args":["İstanbul","key_name-1"],"ok":"65e1892923783befe41ec36216f1f9e2fe2d6f47f4ebf664a350db14e8d3a2aa"}
+{"fn":"hashPair","args":["straße","key_name-1"],"ok":"9bbca35aaf04ff8d59ca870efd6224e5008f698c437ac89e2c48bfa96943ba6e"}
+{"fn":"hashPair","args":["ılık ırmak","key_name-1"],"ok":"306118a0055a0c169cb660a2bbe4e0afcfd8b1fb25a7c13bac37178299554b66"}
+{"fn":"hashPair","args":["👨‍👩‍👧 family","key_name-1"],"ok":"35a6039091aa95c6a57d398efccb08fe3a7a60732544ea65da3ca1f17dae9496"}
+{"fn":"hashPair","args":["a b","key_name-1"],"ok":"b6884a93c261248840d4628227340bfbe7ab6695a2d5423ecfae229a558a831b"}
+{"fn":"hashPair","args":["a😀b","key_name-1"],"ok":"b9205347ebf5908957c6783f6a490652a2adf453e0aa90e8d9d921df15f43403"}
+{"fn":"hashPair","args":["﻿bom","key_name-1"],"ok":"df594541bd1913bf3f2f453c16397a0b7afe50da289bfc3429a19a3d46f0073e"}
+{"fn":"hashPair","args":["HELLO","héllo wörld"],"ok":"a503d51c599c6ebed6c08dcc30571a6cc730ff93f6254d92b1373f81e4fc9ff7"}
+{"fn":"hashPair","args":["HELLO","👍🏽 thumbs"],"ok":"a9cc493a524510424667d74b501fc7f2c4c8e1ac5655563e7baaad3c8a2323cc"}
+{"fn":"hashPair","args":["HELLO","日本語"],"ok":"3b46d34fc3f25598707bb23792e467dc1a518e95f49f84723798a1a3135629fc"}
+{"fn":"hashPair","args":["HELLO",""],"ok":"e59f3a6684c7e9fa33043f929633c48a9d0cd78440c2af8f90aa4c46b5c04d74"}
+{"fn":"hashPair","args":["HELLO","é"],"ok":"3986eee10e7e2817ecbe16d67280af80b23aeec0297fac37bce4c6312991286b"}
+{"fn":"hashPair","args":["HELLO","İstanbul"],"ok":"d855552baced94f4ec5b961a4dda76acce81adfd4367a39cf6e89bb569f73a0a"}
+{"fn":"hashPair","args":["HELLO","ılık ırmak"],"ok":"d84a7d150e90321d286479a6a2d5658422304cf295077e854c10862e1c7625e0"}
+{"fn":"hashPair","args":["HELLO","👨‍👩‍👧 family"],"ok":"9273e111a1dffc50b5ed218b46102e01224a7e808854789f4a5038f3c5ffe06d"}
+{"fn":"hashPair","args":["HELLO","a b"],"ok":"412502e41aaf42b8cdba0af43711a60634a587eeb29a0adfb3311ff0f0b3e216"}
+{"fn":"hashPair","args":["HELLO","ΣΊΣΥΦΟΣ"],"ok":"3592432ab16f207a8c50a1278992e7974af67c2f965694d4abc4bf51d316b766"}
+{"fn":"hashPair","args":["HELLO","a😀b"],"ok":"1db058cb2f07c555984a41d7e1a820eaf0874aef810108c3db217a5321bf8157"}
+{"fn":"hashPair","args":["HELLO","﻿bom"],"ok":"a290628e20fd9d1d3aed2c98e8605ea28a83c23a5c0e65008bee92a52f96f915"}

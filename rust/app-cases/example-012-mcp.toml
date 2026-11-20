@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["mcp", "add", "my-server", "--", "my-command", "--flag", "arg1"]
+status.code = 1
+fs.sandbox = true

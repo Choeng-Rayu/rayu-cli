@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["mcp", "add", "-e", "API_KEY=xxx", "a b", "--", "npx", "my-mcp-server"]
+status.code = 1
+fs.sandbox = true

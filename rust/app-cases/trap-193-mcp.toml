@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["mcp", "add", "--transport", "http", "sentry", "日本語"]
+status.code = 1
+fs.sandbox = true

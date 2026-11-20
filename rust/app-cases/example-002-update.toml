@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["update"]
+status.code = 1
+fs.sandbox = true
