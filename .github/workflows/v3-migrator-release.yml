@@ -125,6 +125,8 @@ jobs:
     needs: [build-unix, build-windows]
     runs-on: ubuntu-latest
     steps:
+      # `gh release` shells out to git and refuses to run outside a repository.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: assets
@@ -158,6 +160,7 @@ jobs:
       - name: Create or update GitHub Release on Choeng-Rayu/rayu-cli
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: v${{ inputs.version }}
         run: |
           set -euo pipefail
