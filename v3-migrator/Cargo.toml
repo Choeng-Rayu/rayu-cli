@@ -1,0 +1,12 @@
+[package]
+name = "rayu-v3-migrator"
+version = "3.0.0"
+edition = "2021"
+description = "One-time migration shim upgrading legacy Node Rayu CLI installs to RayuCode v3 (Rust)"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

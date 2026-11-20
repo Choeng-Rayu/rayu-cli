@@ -1,1233 +1,964 @@
-#!/bin/sh
-# Rayu CLI — universal installer for Linux and macOS.
+#!/usr/bin/env bash
+# RayuCode CLI (v3 Rust) — universal installer for Linux, macOS, and Git Bash.
 # rayu-installer-api: 2
 #
-# The line above tells the CLI's background auto-updater that this script is
-# safe to run underneath a live session: it keeps the previous version's files
-# (see prune_old_versions) so the running process never loses its bundle.
-#
 #   curl -fsSL https://rayucode.com/install | bash
+#   curl -fsSL https://rayucode.com/install.sh | bash
 #
-# CANONICAL COPY: rayu-web/public/install.sh — that is the file the website
-# serves at /install and /install.sh. rayu/install.sh (this repo) must stay
-# byte-identical to it; `bun run check:installer` diffs this file against the
-# live URL. Edit one, copy to the other, in the same change.
-#
-# Why this exists instead of `npm install -g @rayu-dev/rayu-cli`:
-# the npm route depends on the user's Node version, npm version, global prefix
-# permissions (EACCES / sudo), and on npm building ~80 transitive dependencies
-# that the shipped bundle does not even load at runtime. Every one of those is a
-# per-machine failure mode. This script removes all of them:
-#
-#   1. Prefer a standalone native binary (embeds its own runtime) when the
-#      GitHub release for this platform exists — zero runtime dependencies.
-#   2. Otherwise fetch the published npm tarball directly from the registry and
-#      extract the single pre-bundled file (dist/rayu.js). No npm, no
-#      dependency resolution, no native compilation, no sudo.
-#   3. Run it with the system Node when it is >= 18, otherwise download a
-#      private, checksum-verified Node runtime into ~/.rayu/runtime.
-#   4. Install to ~/.rayu/bin (never a system directory) and wire that onto
-#      PATH for bash / zsh / fish / sh.
-#
-# Options (flags or environment variables):
-#   --version <v> | RAYU_VERSION=<v>      install an exact version
-#   --dir <path>  | RAYU_INSTALL_DIR      bin directory (default ~/.rayu/bin)
-#                   RAYU_HOME             state directory (default ~/.rayu)
-#   --no-modify-path                      do not touch shell profiles
-#   --npm-tarball                         skip the native binary, force tarball
-#   --uninstall                           remove Rayu installed by this script
-#   --quiet | --help
-#
-# Examples:
-#   curl -fsSL https://rayucode.com/install | bash
-#   curl -fsSL https://rayucode.com/install | bash -s -- --version 1.6.13
-#   curl -fsSL https://rayucode.com/install | bash -s -- --uninstall
+# Need the legacy Node/Bun v2 CLI instead?
+#   curl -fsSL https://rayucode.com/install-rayu-legacy.sh | bash
+set -euo pipefail
 
-set -eu
+REPO="${RAYU_RELEASE_REPO:-Choeng-Rayu/rayucode-v2-releases}"
+RELEASE_METADATA_BASE="${RAYU_RELEASE_METADATA_BASE:-https://raw.githubusercontent.com/$REPO/main/releases}"
+LEGACY_INSTALLER_URL="${RAYU_LEGACY_INSTALLER_URL:-https://rayucode.com/install-rayu-legacy.sh}"
+NPM_LEGACY_PACKAGE="@rayu-dev/rayu-cli"
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-NPM_PACKAGE='@rayu-dev/rayu-cli'
-NPM_PACKAGE_URLSAFE='@rayu-dev%2frayu-cli'
-NPM_REGISTRY="${RAYU_NPM_REGISTRY:-https://registry.npmjs.org}"
-GITHUB_REPO="${RAYU_GITHUB_REPO:-Choeng-Rayu/rayu-cli}"
-INSTALLER_URL="${RAYU_INSTALLER_URL:-https://rayucode.com/install}"
-
-# Private Node runtime used only when the machine has no usable Node.
-NODE_VERSION="${RAYU_NODE_VERSION:-v22.20.0}"
-NODE_DIST="${RAYU_NODE_DIST:-https://nodejs.org/dist}"
-NODE_DIST_MUSL="${RAYU_NODE_DIST_MUSL:-https://unofficial-builds.nodejs.org/download/release}"
-MIN_NODE_MAJOR=18
-
-# Bundled ripgrep provisioned alongside the JS tarball build.
-RIPGREP_VERSION="${RAYU_RIPGREP_VERSION:-14.1.1}"
-RIPGREP_DIST="${RAYU_RIPGREP_DIST:-https://github.com/BurntSushi/ripgrep/releases/download}"
-
-PROFILE_MARKER_BEGIN='# >>> rayu cli >>>'
-PROFILE_MARKER_END='# <<< rayu cli <<<'
-
-RAYU_HOME="${RAYU_HOME:-$HOME/.rayu}"
-BIN_DIR="${RAYU_INSTALL_DIR:-$RAYU_HOME/bin}"
-LIB_DIR="$RAYU_HOME/lib"
-RUNTIME_DIR="$RAYU_HOME/runtime"
+IS_WINDOWS=false
+IS_TERMUX=false
+INSTALL_STAGE="startup"
+INSTALL_SUCCEEDED=0
+INSTALL_OS="unknown"
+INSTALL_ARCH="unknown"
+INSTALL_VERSION="unknown"
+tmpdir=""
 
 WANT_VERSION="${RAYU_VERSION:-}"
 MODIFY_PATH=1
-FORCE_TARBALL=0
-DO_UNINSTALL=0
-DO_LOCAL=0
-LOCAL_SRC=''
 QUIET=0
-TMP_DIR=''
-
-# ---------------------------------------------------------------------------
-# Output helpers
-# ---------------------------------------------------------------------------
-
-# Colour is opt-out (NO_COLOR) and auto-off when stdout is not a terminal, so
-# piping the installer's output into a log file produces clean text.
-IS_TTY=0
-[ -t 1 ] && IS_TTY=1
-
-if [ "$IS_TTY" -eq 1 ] && [ -z "${NO_COLOR:-}" ]; then
-  C_RESET=$(printf '\033[0m'); C_DIM=$(printf '\033[2m')
-  C_RED=$(printf '\033[31m'); C_GREEN=$(printf '\033[32m')
-  C_YELLOW=$(printf '\033[33m'); C_BOLD=$(printf '\033[1m')
-  C_CYAN=$(printf '\033[36m'); C_BLUE=$(printf '\033[34m')
-  C_CLEAR_LINE=$(printf '\r\033[K')
-else
-  C_RESET=''; C_DIM=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_BOLD=''
-  C_CYAN=''; C_BLUE=''; C_CLEAR_LINE=''
+DO_UNINSTALL=0
+LEGACY_ACTION="ask"
+if [ "${RAYU_REMOVE_LEGACY:-0}" = "1" ]; then
+  LEGACY_ACTION="remove"
+elif [ "${RAYU_KEEP_LEGACY:-0}" = "1" ]; then
+  LEGACY_ACTION="keep"
 fi
 
-# Block-drawing characters make a much better progress bar, but only when the
-# terminal is actually in a UTF-8 locale — in the C/POSIX locale they render as
-# mojibake, which looks broken rather than fancy.
-case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
-  *UTF-8*|*utf-8*|*UTF8*|*utf8*) BAR_FULL='█'; BAR_EMPTY='░'; MARK_OK='✓'; MARK_STEP='▸' ;;
-  *) BAR_FULL='#'; BAR_EMPTY='-'; MARK_OK='+'; MARK_STEP='>' ;;
-esac
-
-# Indent the 2nd..nth lines of a multi-line message so wrapped guidance lines up
-# under the first one instead of hugging the left margin.
-indent_rest() { printf '%s' "$1" | sed '2,$s/^/          /'; }
-
-info() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
-step() { [ "$QUIET" -eq 1 ] || printf '  %s%s%s %s\n' "$C_CYAN" "$MARK_STEP" "$C_RESET" "$*"; }
-ok() { [ "$QUIET" -eq 1 ] || printf '  %s%s%s %s\n' "$C_GREEN" "$MARK_OK" "$C_RESET" "$*"; }
-warn() { printf '\n  %swarning%s %s\n' "$C_YELLOW" "$C_RESET" "$(indent_rest "$*")" >&2; }
-
-# A heading with a rule under it, sized to the terminal (capped, so a very wide
-# window does not draw a 300-character line).
-title() {
-  [ "$QUIET" -eq 1 ] && return 0
-  printf '\n  %s%s%s\n' "$C_BOLD" "$1" "$C_RESET"
-  _w=$(term_width); [ "$_w" -gt 62 ] && _w=62
-  printf '  %s' "$C_DIM"
-  awk -v n="$_w" 'BEGIN{ while (n-- > 0) printf "%s", "─" }' 2>/dev/null \
-    || printf '%*s' "$_w" '' | tr ' ' '-'
-  printf '%s\n' "$C_RESET"
-}
-
-# Aligned "label   value" line, for the install summary.
-field() {
-  [ "$QUIET" -eq 1 ] && return 0
-  printf '  %s%-9s%s %s\n' "$C_DIM" "$1" "$C_RESET" "$2"
-}
-
-term_width() {
-  _cols=''
-  if have tput; then _cols=$(tput cols 2>/dev/null || true); fi
-  [ -n "$_cols" ] || _cols="${COLUMNS:-80}"
-  case "$_cols" in ''|*[!0-9]*) _cols=80 ;; esac
-  [ "$_cols" -lt 40 ] && _cols=40
-  printf '%s' "$_cols"
-}
-
-# 1234567 -> "1.2 MB". awk rather than shell arithmetic because POSIX sh has no
-# floating point, and a bar that says "1 MB / 5 MB" for ten seconds is useless.
-human_bytes() {
-  awk -v b="${1:-0}" 'BEGIN{
-    if (b < 0) { printf "?"; exit }
-    if (b < 1024) { printf "%d B", b; exit }
-    if (b < 1048576) { printf "%.0f KB", b/1024; exit }
-    if (b < 1073741824) { printf "%.1f MB", b/1048576; exit }
-    printf "%.2f GB", b/1073741824
-  }'
-}
-
-# Total transfer size for a URL, or 0 when it cannot be determined (in which
-# case the bar shows an activity sweep instead of a percentage — never an error).
-#
-# Two probes, because one is not enough: nodejs.org answers HEAD with a
-# Content-Length, but registry.npmjs.org does NOT (it serves tarballs without
-# one on HEAD), and a bar with no total for the main download is the case that
-# matters most. A 1-byte ranged GET makes the registry disclose the full size in
-# Content-Range, at the cost of a single byte.
-content_length() {
-  _len=$(head_content_length "$1")
-  case "$_len" in ''|*[!0-9]*) _len=0 ;; esac
-  if [ "$_len" -gt 0 ]; then
-    printf '%s' "$_len"
-    return 0
-  fi
-  _len=$(range_total "$1")
-  case "$_len" in ''|*[!0-9]*) _len=0 ;; esac
-  printf '%s' "$_len"
-}
-
-head_content_length() {
-  if [ "$DL" = curl ]; then
-    curl -fsIL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 "$1" 2>/dev/null
-  else
-    wget -q --spider -S "$1" 2>&1
-  fi | tr -d '\r' | tr 'A-Z' 'a-z' \
-     | awk -F': *' '/^ *content-length:/ { v = $2 } END { printf "%d", v + 0 }'
-}
-
-# Parse `content-range: bytes 0-0/5006808` from a 1-byte ranged GET.
-range_total() {
-  if [ "$DL" = curl ]; then
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o /dev/null -D - -r 0-0 "$1" 2>/dev/null
-  else
-    wget -q -S --header='Range: bytes=0-0' -O /dev/null "$1" 2>&1
-  fi | tr -d '\r' | tr 'A-Z' 'a-z' \
-     | awk '/^ *content-range:/ { n = split($0, p, "/"); if (n > 1) v = p[n] } END { printf "%d", v + 0 }'
-}
-
-# Redraw the progress line in place. Never emits a newline: the caller either
-# overwrites it on the next tick or clears it when finished.
-draw_bar() { # label done total
-  _label="$1"; _done="$2"; _btotal="$3"
-  _w=$(term_width)
-  # label + counters + percentage + rate take ~56 columns; give the rest to the
-  # bar, clamped so it stays readable on an 80-column terminal and never wraps
-  # (a wrapped bar leaves a trail of dead lines behind it).
-  _barw=$((_w - 56))
-  [ "$_barw" -lt 10 ] && _barw=10
-  [ "$_barw" -gt 34 ] && _barw=34
-
-  # Transfer rate, smoothed over the whole download. `date +%s` only has
-  # 1-second resolution, so the first tick shows no rate rather than a wild one.
-  _rate=''
-  if [ -n "${BAR_START:-}" ]; then
-    _now=$(date +%s 2>/dev/null || printf '0')
-    _elapsed=$((_now - BAR_START))
-    if [ "$_elapsed" -gt 0 ] && [ "$_done" -gt 0 ]; then
-      _rate=" · $(human_bytes $((_done / _elapsed)))/s"
-    fi
-  fi
-
-  if [ "$_btotal" -gt 0 ]; then
-    _pct=$(awk -v d="$_done" -v t="$_btotal" 'BEGIN{p=int(d*100/t); if(p>100)p=100; print p}')
-    _fill=$(awk -v p="$_pct" -v w="$_barw" 'BEGIN{f=int(p*w/100); if(f>w)f=w; print f}')
-  else
-    # Unknown size: sweep a short block across the bar so it is visibly alive.
-    _pct=-1
-    _fill=$(awk -v d="$_done" -v w="$_barw" 'BEGIN{print int(d/262144) % (w+1)}')
-  fi
-
-  _bar=$(awk -v f="$_fill" -v w="$_barw" -v a="$BAR_FULL" -v b="$BAR_EMPTY" 'BEGIN{
-    for (i = 0; i < f; i++) printf "%s", a
-    for (i = f; i < w; i++) printf "%s", b
-  }')
-
-  if [ "$_pct" -ge 0 ]; then
-    printf '%s    %s%s%s %s%3d%%%s  %s%s / %s%s%s' \
-      "$C_CLEAR_LINE" "$C_CYAN" "$_bar" "$C_RESET" \
-      "$C_BOLD" "$_pct" "$C_RESET" \
-      "$C_DIM" "$(human_bytes "$_done")" "$(human_bytes "$_btotal")" "$_rate" "$C_RESET"
-  else
-    printf '%s    %s%s%s  %s%s%s%s' \
-      "$C_CLEAR_LINE" "$C_CYAN" "$_bar" "$C_RESET" \
-      "$C_DIM" "$(human_bytes "$_done")" "$_rate" "$C_RESET"
-  fi
-}
-
-# Fractional sleep is not in POSIX; probe once so the bar animates smoothly
-# where it can and still works on a busybox `sleep` that only takes integers.
-POLL_INTERVAL=1
-if sleep 0.2 2>/dev/null; then POLL_INTERVAL=0.2; fi
-
-# Download with a live progress bar.
-#
-# curl's own `--progress-bar` writes to stderr and cannot be styled or labelled,
-# and wget has no equivalent at all — so the transfer runs in the background and
-# the bar is drawn from the size of the partial file. That also means both
-# backends get the identical display.
-fetch_file_progress() { # URL DEST LABEL
-  _purl="$1"; _pdest="$2"; _plabel="$3"
-
-  _ptotal=$(content_length "$_purl" 2>/dev/null || printf '0')
-  case "$_ptotal" in ''|*[!0-9]*) _ptotal=0 ;; esac
-
-  # No terminal (CI, piped output), or --quiet: one plain line, no animation.
-  if [ "$IS_TTY" -eq 0 ] || [ "$QUIET" -eq 1 ]; then
-    step "downloading $_plabel"
-    fetch_file "$_purl" "$_pdest" || return $?
-    _pfinal=$(wc -c <"$_pdest" 2>/dev/null | tr -d ' \t\r\n' || printf '0')
-    case "$_pfinal" in ''|*[!0-9]*) _pfinal=0 ;; esac
-    if [ "$_pfinal" -eq 0 ] || { [ "$_ptotal" -gt 0 ] && [ "$_pfinal" -ne "$_ptotal" ]; }; then
-      return 1
-    fi
-    return 0
-  fi
-
-  if [ "$_ptotal" -gt 0 ]; then
-    step "downloading $_plabel $C_DIM($(human_bytes "$_ptotal"))$C_RESET"
-  else
-    step "downloading $_plabel"
-  fi
-
-  : >"$_pdest"
-  BAR_START=$(date +%s 2>/dev/null || printf '')
-  fetch_file "$_purl" "$_pdest" &
-  _ppid=$!
-
-  while kill -0 "$_ppid" 2>/dev/null; do
-    _pdone=$(wc -c <"$_pdest" 2>/dev/null | tr -d ' \t\r\n' || printf '0')
-    case "$_pdone" in ''|*[!0-9]*) _pdone=0 ;; esac
-    draw_bar "$_plabel" "$_pdone" "$_ptotal"
-    sleep "$POLL_INTERVAL"
-  done
-
-  # `wait` reports the transfer's real exit status; a failed download must not
-  # be hidden behind a bar that reached 100%.
-  _pstatus=0
-  wait "$_ppid" || _pstatus=$?
-
-  if [ "$_pstatus" -ne 0 ]; then
-    printf '%s' "$C_CLEAR_LINE"
-    BAR_START=''
-    return "$_pstatus"
-  fi
-
-  _pfinal=$(wc -c <"$_pdest" 2>/dev/null | tr -d ' \t\r\n' || printf '0')
-  case "$_pfinal" in ''|*[!0-9]*) _pfinal=0 ;; esac
-  if [ "$_pfinal" -eq 0 ] || { [ "$_ptotal" -gt 0 ] && [ "$_pfinal" -ne "$_ptotal" ]; }; then
-    printf '%s' "$C_CLEAR_LINE"
-    BAR_START=''
-    return 1
-  fi
-  draw_bar "$_plabel" "$_pfinal" "${_ptotal:-0}"
-  printf '%s' "$C_CLEAR_LINE"
-  BAR_START=''
-  printf '  %s%s%s %s %s(%s)%s\n' \
-    "$C_GREEN" "$MARK_OK" "$C_RESET" "$_plabel" \
-    "$C_DIM" "$(human_bytes "$_pfinal")" "$C_RESET"
-  return 0
-}
-
-die() {
-  # Clear any half-drawn progress bar before the error, or the two overlap.
-  [ -n "$C_CLEAR_LINE" ] && printf '%s' "$C_CLEAR_LINE" >&2
-  printf '\n  %serror%s %s\n' "$C_RED" "$C_RESET" "$(indent_rest "$*")" >&2
-  printf '\n  %sNeed help? https://rayucode.com/docs/10-troubleshooting%s\n\n' \
-    "$C_DIM" "$C_RESET" >&2
-  exit 1
-}
-
-cleanup() { [ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR" || true; }
-trap cleanup EXIT HUP INT TERM
-
-have() { command -v "$1" >/dev/null 2>&1; }
+info() { [ "$QUIET" -eq 1 ] || printf '\033[1;34m%s\033[0m\n' "$*"; }
+ok()   { [ "$QUIET" -eq 1 ] || printf '\033[1;32m%s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33mwarning: %s\033[0m\n' "$*" >&2; }
+err()  { printf '\033[1;31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 
 usage() {
-  cat <<'USAGE'
-Rayu CLI installer (Linux / macOS)
+  cat <<USAGE
+RayuCode CLI installer (v3 Rust — Linux / macOS / Git Bash)
 
   curl -fsSL https://rayucode.com/install | bash
 
 Options:
-  --version <v>      install an exact version instead of the latest
-  --dir <path>       bin directory (default: ~/.rayu/bin)
-  --no-modify-path   do not touch shell profiles
-  --npm-tarball      skip the standalone binary, use the bundled JS build
-  --local            install from a local build in this checkout
-  --from <path>      install from a specific binary or dist/rayu.js
-  --uninstall        remove a Rayu install created by this script
-  --quiet, -q        less output
-  --help, -h         this message
+  --version <v>      install an exact v3.x release tag (e.g. v3.0.0)
+  --dir <path>       launcher directory (default: ~/.local/bin)
+  --no-modify-path   do not modify shell startup profiles
+  --remove-legacy    automatically uninstall legacy Node rayu (rayu-legacy) after upgrade
+  --keep-legacy      keep legacy Node rayu as rayu-legacy without prompting
+  --uninstall        uninstall RayuCode binaries (keeps user settings in ~/.rayu)
+  --quiet, -q        reduce output (implies non-interactive)
+  --help, -h         show this help message
 
-Environment: RAYU_HOME, RAYU_INSTALL_DIR, RAYU_VERSION, RAYU_NPM_REGISTRY,
-             RAYU_NODE_VERSION, HTTPS_PROXY
+Legacy Node v2 CLI:
+  curl -fsSL $LEGACY_INSTALLER_URL | bash
 
-Pass options through the pipe with -s --, for example:
-  curl -fsSL https://rayucode.com/install | bash -s -- --version 1.6.13
+Environment:
+  RAYU_INSTALL_DIR, RAYU_HOME, RAYU_VERSION, RAYU_RELEASE_REPO,
+  RAYU_RELEASE_METADATA_BASE, RAYU_REMOVE_LEGACY, RAYU_KEEP_LEGACY
 USAGE
   exit 0
 }
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
-
-while [ $# -gt 0 ]; do
+EXPLICIT_VERSION_ARG=0
+while [ "$#" -gt 0 ]; do
   case "$1" in
-    --version) [ $# -ge 2 ] || die "--version needs a value"; WANT_VERSION="$2"; shift 2 ;;
-    --version=*) WANT_VERSION="${1#--version=}"; shift ;;
-    --dir) [ $# -ge 2 ] || die "--dir needs a value"; BIN_DIR="$2"; shift 2 ;;
-    --dir=*) BIN_DIR="${1#--dir=}"; shift ;;
-    --no-modify-path) MODIFY_PATH=0; shift ;;
-    --npm-tarball|--no-native) FORCE_TARBALL=1; shift ;;
-    --local) DO_LOCAL=1; shift ;;
-    --from) [ $# -ge 2 ] || die "--from needs a path"; DO_LOCAL=1; LOCAL_SRC="$2"; shift 2 ;;
-    --from=*) DO_LOCAL=1; LOCAL_SRC="${1#--from=}"; shift ;;
-    --uninstall|--remove) DO_UNINSTALL=1; shift ;;
-    --quiet|-q) QUIET=1; shift ;;
-    --help|-h) usage ;;
-    *) die "unknown option: $1 (try --help)" ;;
+    --version)
+      [ "$#" -ge 2 ] || err "--version requires a value"
+      WANT_VERSION="$2"
+      EXPLICIT_VERSION_ARG=1
+      shift 2
+      ;;
+    --version=*)
+      WANT_VERSION="${1#--version=}"
+      EXPLICIT_VERSION_ARG=1
+      shift
+      ;;
+    --dir)
+      [ "$#" -ge 2 ] || err "--dir requires a path"
+      RAYU_INSTALL_DIR="$2"
+      shift 2
+      ;;
+    --dir=*)
+      RAYU_INSTALL_DIR="${1#--dir=}"
+      shift
+      ;;
+    --no-modify-path)
+      MODIFY_PATH=0
+      shift
+      ;;
+    --remove-legacy)
+      LEGACY_ACTION="remove"
+      shift
+      ;;
+    --keep-legacy)
+      LEGACY_ACTION="keep"
+      shift
+      ;;
+    --uninstall|--remove)
+      DO_UNINSTALL=1
+      shift
+      ;;
+    --quiet|-q)
+      QUIET=1
+      shift
+      ;;
+    --npm-tarball|--no-native)
+      # Accepted for compatibility with legacy installer invocations.
+      shift
+      ;;
+    --help|-h)
+      usage
+      ;;
+    *)
+      err "Unknown option: $1 (try --help)"
+      ;;
   esac
 done
 
-WANT_VERSION="${WANT_VERSION#v}"
+valid_release_tag() {
+  printf '%s' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([+.-][[:alnum:].-]+)?$'
+}
+
+sha256_file() {
+  file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print tolower($1)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print tolower($1)}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$file" | awk '{print tolower($NF)}'
+  else
+    return 1
+  fi
+}
+
+valid_conversion_id() {
+  printf '%s' "${RAYU_INSTALL_CONVERSION_ID:-}" |
+    grep -Eiq '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+}
+
+telemetry_value() {
+  printf '%s' "$1" | tr -cd '[:alnum:]_. -' | cut -c1-100
+}
+
+report_install_funnel() {
+  stage="$1"
+  outcome="$2"
+  failure_stage="${3:-}"
+  [ "${RAYU_TELEMETRY:-}" = "1" ] || return 0
+  [ "${RAYU_NO_TELEMETRY:-}" != "1" ] || return 0
+  [ "${DO_NOT_TRACK:-}" != "1" ] || return 0
+  telemetry_url="${RAYU_TELEMETRY_URL:-}"
+  [ -n "$telemetry_url" ] || return 0
+  valid_conversion_id || return 0
+
+  payload=$(printf '{"id":"%s","event":"install_funnel","version":"%s","os":"%s","arch":"%s","conversion_id":"%s","stage":"%s","outcome":"%s","source":"installer","install_method":"shell","failure_stage":"%s"}' \
+    "$RAYU_INSTALL_CONVERSION_ID" \
+    "$(telemetry_value "$INSTALL_VERSION")" \
+    "$(telemetry_value "$INSTALL_OS")" \
+    "$(telemetry_value "$INSTALL_ARCH")" \
+    "$RAYU_INSTALL_CONVERSION_ID" \
+    "$(telemetry_value "$stage")" \
+    "$(telemetry_value "$outcome")" \
+    "$(telemetry_value "$failure_stage")")
+  curl -fsS --max-time 2 -H 'Content-Type: application/json' \
+    --data "$payload" "${telemetry_url%/}/v1/event" >/dev/null 2>&1 || true
+}
+
+persist_install_conversion_id() {
+  [ "${RAYU_NO_TELEMETRY:-}" != "1" ] || return 0
+  [ "${DO_NOT_TRACK:-}" != "1" ] || return 0
+  valid_conversion_id || return 0
+  rayu_home="${RAYU_HOME:-$HOME/.rayu}"
+  mkdir -p "$rayu_home" 2>/dev/null || return 0
+  (umask 077; printf '%s\n' "$RAYU_INSTALL_CONVERSION_ID" > "$rayu_home/install_conversion_id") \
+    2>/dev/null || return 0
+  chmod 600 "$rayu_home/install_conversion_id" 2>/dev/null || true
+}
+
+install_exit() {
+  status=$?
+  trap - EXIT
+  set +e
+  [ -z "$tmpdir" ] || rm -rf "$tmpdir"
+  if [ "$DO_UNINSTALL" = "0" ]; then
+    if [ "$INSTALL_SUCCEEDED" = "1" ] && [ "$status" = "0" ]; then
+      report_install_funnel "installer_finish" "success" ""
+    else
+      report_install_funnel "installer_finish" "failure" "$INSTALL_STAGE"
+    fi
+  fi
+  exit "$status"
+}
+trap install_exit EXIT
 
 # ---------------------------------------------------------------------------
-# Network + checksum primitives
+# Uninstall mode (--uninstall)
 # ---------------------------------------------------------------------------
 
-if have curl; then
-  DL=curl
-elif have wget; then
-  DL=wget
-else
-  die "need curl or wget. Install one and re-run:
-  Debian/Ubuntu: sudo apt-get install -y curl
-  Fedora/RHEL:   sudo dnf install -y curl
-  Alpine:        sudo apk add curl"
-fi
-
-# fetch_stdout URL -> body on stdout, non-zero exit on HTTP error
-fetch_stdout() {
-  if [ "$DL" = curl ]; then
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 "$1"
-  else
-    wget -qO- --tries=5 --timeout=20 "$1"
-  fi
-}
-
-# fetch_file URL DEST
-fetch_file() {
-  if [ "$DL" = curl ]; then
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$2" "$1" \
-      || curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$2" "$1"
-  else
-    wget -qO "$2" --tries=5 --timeout=20 "$1"
-  fi
-}
-
-# url_exists URL
-url_exists() {
-  if [ "$DL" = curl ]; then
-    curl -fsIL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o /dev/null "$1" 2>/dev/null
-  else
-    wget -q --spider --tries=5 --timeout=20 "$1" 2>/dev/null
-  fi
-}
-
-sha256_of() {
-  if have sha256sum; then sha256sum "$1" | cut -d' ' -f1
-  elif have shasum; then shasum -a 256 "$1" | cut -d' ' -f1
-  elif have openssl; then openssl dgst -sha256 "$1" | sed 's/.*= *//'
-  else printf ''
-  fi
-}
-
-sha1_of() {
-  if have sha1sum; then sha1sum "$1" | cut -d' ' -f1
-  elif have shasum; then shasum -a 1 "$1" | cut -d' ' -f1
-  elif have openssl; then openssl dgst -sha1 "$1" | sed 's/.*= *//'
-  else printf ''
-  fi
-}
-
-# verify_checksum FILE EXPECTED ALGO LABEL — a missing hash tool warns, a
-# mismatch is fatal (a truncated or tampered download must never be installed).
-verify_checksum() {
-  _file="$1"; _expected="$2"; _algo="$3"; _label="$4"
-  [ -n "$_expected" ] || { warn "no $_algo checksum published for $_label; skipping verification"; return 0; }
-  case "$_algo" in
-    sha256) _actual=$(sha256_of "$_file") ;;
-    sha1) _actual=$(sha1_of "$_file") ;;
-    *) return 0 ;;
+if [ "$DO_UNINSTALL" -eq 1 ]; then
+  OS_UN="$(uname -s)"
+  case "$OS_UN" in
+    MINGW*|MSYS*|CYGWIN*)
+      UN_RAYU_HOME="${RAYU_HOME:-${LOCALAPPDATA:?LOCALAPPDATA not set}/rayu}"
+      UN_DIR="${RAYU_INSTALL_DIR:-$LOCALAPPDATA/rayu/bin}"
+      rm -f "$UN_DIR/rayu.exe" "$UN_DIR/rayucode.exe"
+      rm -rf "$UN_RAYU_HOME/builds"
+      ;;
+    *)
+      UN_RAYU_HOME="${RAYU_HOME:-$HOME/.rayu}"
+      UN_DIR="${RAYU_INSTALL_DIR:-$HOME/.local/bin}"
+      rm -f "$UN_DIR/rayu" "$UN_DIR/rayucode"
+      rm -rf "$UN_RAYU_HOME/builds"
+      ;;
   esac
-  if [ -z "$_actual" ]; then
-    warn "no sha256sum/shasum/openssl found; cannot verify $_label"
-    return 0
-  fi
-  if [ "$_actual" != "$_expected" ]; then
-    die "checksum mismatch for $_label
-  expected $_expected
-  actual   $_actual
-The download was corrupted or tampered with. Nothing was installed."
-  fi
-}
+  ok "RayuCode binaries uninstalled. Your settings and sessions in $UN_RAYU_HOME were kept."
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
 
-detect_platform() {
-  _os=$(uname -s 2>/dev/null || echo unknown)
-  _arch=$(uname -m 2>/dev/null || echo unknown)
+INSTALL_STAGE="platform_detection"
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+INSTALL_OS="$OS"
+INSTALL_ARCH="$ARCH"
 
-  case "$_os" in
-    Linux) OS=linux ;;
-    Darwin) OS=darwin ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      die "this installer is for Linux and macOS.
-On Windows run this in PowerShell instead:
-  irm https://rayucode.com/install.ps1 | iex" ;;
-    *) die "unsupported operating system: $_os" ;;
-  esac
+if [ -n "${TERMUX_VERSION:-}" ] || [ "${PREFIX:-}" = "/data/data/com.termux/files/usr" ] || [ -d "/data/data/com.termux/files/usr" ]; then
+  IS_TERMUX=true
+fi
 
-  case "$_arch" in
-    x86_64|amd64) ARCH=x64 ;;
-    arm64|aarch64) ARCH=arm64 ;;
-    armv7l|armv7|armhf) ARCH=armv7l ;;
-    *) die "unsupported CPU architecture: $_arch" ;;
-  esac
-
-  # musl (Alpine and friends) needs different prebuilt runtimes than glibc.
-  LIBC=glibc
-  if [ "$OS" = linux ]; then
-    if ls /lib/ld-musl-* >/dev/null 2>&1; then
-      LIBC=musl
-    elif (ldd --version 2>&1 || true) | grep -qi musl; then
-      LIBC=musl
-    fi
-  fi
-
-  # Matches getPlatform() in src/utils/nativeInstaller/installer.ts, which is
-  # also what the release workflow names its assets after.
-  if [ "$OS" = linux ] && [ "$LIBC" = musl ]; then
-    NATIVE_PLATFORM="linux-$ARCH-musl"
-  else
-    NATIVE_PLATFORM="$OS-$ARCH"
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# Uninstall
-# ---------------------------------------------------------------------------
-
-remove_profile_block() {
-  _file="$1"
-  [ -f "$_file" ] || return 0
-  grep -qF "$PROFILE_MARKER_BEGIN" "$_file" 2>/dev/null || return 0
-  _tmp="$_file.rayu.$$"
-  awk -v b="$PROFILE_MARKER_BEGIN" -v e="$PROFILE_MARKER_END" '
-    index($0, b) { skip = 1; next }
-    index($0, e) { skip = 0; next }
-    !skip { print }
-  ' "$_file" >"$_tmp" && cat "$_tmp" >"$_file" && rm -f "$_tmp"
-  step "removed PATH entry from $_file"
-}
-
-do_uninstall() {
-  title "Uninstalling Rayu CLI"
-  for _f in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.zshenv" \
-            "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
-    remove_profile_block "$_f"
-  done
-  for _p in "$BIN_DIR/rayu" "$BIN_DIR/.rayu-installer"; do
-    [ -e "$_p" ] && rm -f "$_p" && step "removed $_p"
-  done
-  rm -rf "$LIB_DIR" "$RUNTIME_DIR" "$RAYU_HOME/install.json"
-  step "removed $LIB_DIR, $RUNTIME_DIR"
-  ok "Rayu CLI removed."
-  info ""
-  info "Your settings and credentials in $RAYU_HOME were kept."
-  info "Delete them too with:  rm -rf \"$RAYU_HOME\""
-  if have npm && npm ls -g --depth=0 "$NPM_PACKAGE" >/dev/null 2>&1; then
-    info ""
-    warn "a global npm copy is still installed. Remove it with:
-  npm uninstall -g $NPM_PACKAGE"
-  fi
-  exit 0
-}
-
-# ---------------------------------------------------------------------------
-# Path 0 — a local build in this checkout (--local / --from), for developers
-# ---------------------------------------------------------------------------
-
-# Installs from `dist/bin/rayu-<os>-<arch>*` (a compiled standalone binary) or
-# `dist/rayu.js` (the Node bundle), whichever is present — so the same script
-# that end users curl also installs what you just built.
-try_install_local() {
-  _root="${LOCAL_SRC:-}"
-  if [ -z "$_root" ]; then
-    # Directory of this script when it is a real file, else the cwd.
-    if [ -f "$0" ]; then
-      _root=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || _root=$PWD
-    else
-      _root=$PWD
-    fi
-  fi
-
-  # An explicit --from that points straight at a file.
-  if [ -f "$_root" ]; then
-    case "$_root" in
-      *.js) _local_js="$_root"; _local_bin='' ;;
-      *) _local_bin="$_root"; _local_js='' ;;
+case "$OS" in
+  Linux)
+    case "$ARCH" in
+      x86_64)        ARTIFACT="rayu-linux-x86_64" ;;
+      aarch64|arm64) ARTIFACT="rayu-linux-aarch64" ;;
+      *)             err "Unsupported Linux architecture: $ARCH" ;;
     esac
-  else
-    [ -d "$_root" ] || die "--from path not found: $_root"
-    _local_bin=$(ls -1t "$_root"/dist/bin/rayu-"$OS"-"$ARCH"* 2>/dev/null | head -n1 || true)
-    _local_js=''
-    [ -n "$_local_bin" ] || { [ -f "$_root/dist/rayu.js" ] && _local_js="$_root/dist/rayu.js"; }
-  fi
+    ;;
+  Darwin)
+    case "$ARCH" in
+      arm64)  ARTIFACT="rayu-macos-aarch64" ;;
+      x86_64) ARTIFACT="rayu-macos-x86_64" ;;
+      *)      err "Unsupported macOS architecture: $ARCH" ;;
+    esac
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    IS_WINDOWS=true
+    WINDOWS_ARCH=""
+    # Git for Windows may itself be an emulated x64 process on Windows ARM64,
+    # making `uname -m` report x86_64. Prefer any ARM64 OS environment signal.
+    for candidate in "${PROCESSOR_ARCHITEW6432:-}" "${PROCESSOR_ARCHITECTURE:-}" "$ARCH"; do
+      case "$candidate" in
+        aarch64|AARCH64|arm64|Arm64|ARM64) WINDOWS_ARCH="aarch64"; break ;;
+      esac
+    done
+    if [ -z "$WINDOWS_ARCH" ]; then
+      for candidate in "${PROCESSOR_ARCHITEW6432:-}" "${PROCESSOR_ARCHITECTURE:-}" "$ARCH"; do
+        case "$candidate" in
+          x86_64|X64|AMD64) WINDOWS_ARCH="x86_64"; break ;;
+        esac
+      done
+    fi
+    case "$WINDOWS_ARCH" in
+      x86_64)  ARTIFACT="rayu-windows-x86_64" ;;
+      aarch64) ARTIFACT="rayu-windows-aarch64" ;;
+      *)       err "Unsupported Windows architecture: $ARCH" ;;
+    esac
+    ;;
+  *)
+    err "Unsupported OS: $OS (check releases at https://github.com/$REPO/releases)"
+    ;;
+esac
 
-  if [ -n "${_local_bin:-}" ] && [ -f "$_local_bin" ]; then
-    step "installing the local build $(basename "$_local_bin")"
-    mkdir -p "$BIN_DIR"
-    cp "$_local_bin" "$BIN_DIR/rayu.new"
-    chmod 755 "$BIN_DIR/rayu.new"
-    mv -f "$BIN_DIR/rayu.new" "$BIN_DIR/rayu"
-    INSTALL_METHOD=local-binary
-    INSTALLED_VERSION='local'
-    return 0
-  fi
+report_install_funnel "installer_start" "success" ""
 
-  if [ -n "${_local_js:-}" ] && [ -f "$_local_js" ]; then
-    step "installing the local bundle $_local_js"
-    ensure_node
-    _target="$LIB_DIR/rayu-local"
-    rm -rf "$_target"
-    mkdir -p "$_target"
-    write_module_marker "$_target"
-    cp "$_local_js" "$_target/rayu.js"
-    ln -sfn "$_target" "$LIB_DIR/current"
-    write_launcher
-    prune_old_versions "$_target"
-    INSTALL_METHOD=local-bundle
-    INSTALLED_VERSION='local'
-    return 0
-  fi
-
-  die "no local build found in $_root.
-Build one first:
-  bun run build            # -> dist/rayu.js
-  bun run build:binaries   # -> dist/bin/rayu-$OS-$ARCH-<version>"
-}
+RAYU_HOME_DIR="${RAYU_HOME:-$HOME/.rayu}"
+if [ "$IS_WINDOWS" = true ]; then
+  INSTALL_DIR="${RAYU_INSTALL_DIR:-$LOCALAPPDATA/rayu/bin}"
+  EXE=".exe"
+  builds_dir="${LOCALAPPDATA}/rayu/builds"
+else
+  INSTALL_DIR="${RAYU_INSTALL_DIR:-$HOME/.local/bin}"
+  EXE=""
+  builds_dir="$RAYU_HOME_DIR/builds"
+fi
 
 # ---------------------------------------------------------------------------
-# Path 1 — standalone native binary from GitHub Releases (preferred)
+# Release resolution
 # ---------------------------------------------------------------------------
 
-# Native release assets embed their own runtime, so nothing else is needed.
-# Returns 1 (and installs nothing) when no matching release asset exists, which
-# is the normal case until a `v*` tag has been pushed and the release workflow
-# has run.
-try_install_native() {
-  [ "$FORCE_TARBALL" -eq 0 ] || return 1
+INSTALL_STAGE="release_lookup"
+VERSION="$WANT_VERSION"
+if [ -n "$VERSION" ]; then
+  case "$VERSION" in
+    v*) ;;
+    *)  VERSION="v$VERSION" ;;
+  esac
+  # Legacy v2 auto-updaters invoke this installer with `--version 2.x.y`.
+  # Upgrade seamlessly to the latest v3.x release unless explicitly opted out.
+  if [ "$EXPLICIT_VERSION_ARG" -eq 1 ] && [ "${RAYU_ALLOW_LEGACY_TAG:-0}" != "1" ]; then
+    req_major="${VERSION#v}"
+    req_major="${req_major%%.*}"
+    case "$req_major" in
+      0|1|2)
+        info "Requested legacy version $VERSION — upgrading to the latest RayuCode v3 (Rust) release."
+        info "  (To install the legacy Node v2 CLI instead: curl -fsSL $LEGACY_INSTALLER_URL | bash)"
+        VERSION=""
+        ;;
+    esac
+  fi
+fi
 
-  if [ -n "$WANT_VERSION" ]; then
-    _base="https://github.com/$GITHUB_REPO/releases/download/v$WANT_VERSION"
+if [ -z "$VERSION" ]; then
+  METADATA_VERSION=$(curl -fsSL --retry 2 --connect-timeout 10 \
+    "$RELEASE_METADATA_BASE/latest/version" 2>/dev/null | tr -d '\r\n' || true)
+  LATEST_RELEASE_URL=$(curl -fsSIL --retry 2 --connect-timeout 10 \
+    -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)
+  case "$LATEST_RELEASE_URL" in
+    */releases/tag/*) GITHUB_VERSION="${LATEST_RELEASE_URL##*/}" ;;
+    *) GITHUB_VERSION="" ;;
+  esac
+  if valid_release_tag "$GITHUB_VERSION"; then
+    VERSION="$GITHUB_VERSION"
+  elif valid_release_tag "$METADATA_VERSION"; then
+    VERSION="$METADATA_VERSION"
+    info "GitHub release lookup unavailable; using fallback release metadata ($VERSION)."
+  fi
+fi
+valid_release_tag "$VERSION" || err "Failed to determine latest version"
+INSTALL_VERSION="${VERSION#v}"
+
+GITHUB_RELEASE_BASE="https://github.com/$REPO/releases/download/$VERSION"
+
+stable_dir="$builds_dir/stable"
+current_dir="$builds_dir/current"
+version_dir="$builds_dir/versions"
+launcher_path="$INSTALL_DIR/rayu${EXE}"
+alias_path="$INSTALL_DIR/rayucode${EXE}"
+
+EXISTING=""
+if [ -x "$launcher_path" ]; then
+  EXISTING=$("$launcher_path" --version 2>/dev/null | head -1 || echo "unknown")
+fi
+
+if [ -n "$EXISTING" ]; then
+  if echo "$EXISTING" | grep -qF "${VERSION#v}"; then
+    info "rayu $VERSION is already installed — reinstalling"
   else
-    _base="https://github.com/$GITHUB_REPO/releases/latest/download"
+    info "Updating rayu $EXISTING → $VERSION"
   fi
+else
+  info "Installing rayu $VERSION"
+fi
+info "  launcher: $launcher_path"
 
-  _asset="rayu-cli-$NATIVE_PLATFORM"
-  step "looking for a standalone binary for $NATIVE_PLATFORM"
-  url_exists "$_base/$_asset" || return 1
-
-  # manifest.json carries the version and a sha256 per platform.
-  _manifest="$TMP_DIR/manifest.json"
-  _sum=''
-  _mversion=''
-  if fetch_file "$_base/manifest.json" "$_manifest" 2>/dev/null; then
-    _mversion=$(tr -d ' \n' <"$_manifest" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
-    _sum=$(tr -d ' \n' <"$_manifest" \
-      | sed -n "s/.*\"$NATIVE_PLATFORM\":{\"checksum\":\"\([0-9a-f]*\)\".*/\1/p")
-  fi
-
-  step "downloading $_asset"
-  fetch_file_progress "$_base/$_asset" "$TMP_DIR/rayu.bin" "$_asset" || return 1
-  step "verifying the binary checksum"
-  verify_checksum "$TMP_DIR/rayu.bin" "$_sum" sha256 "$_asset"
-
-  mkdir -p "$BIN_DIR"
-  chmod 755 "$TMP_DIR/rayu.bin"
-  # macOS tags files downloaded by browsers with com.apple.quarantine, which
-  # makes Gatekeeper refuse an unsigned binary. curl does not set it, but a
-  # proxy or a user's own tooling can — clearing it is a no-op otherwise.
-  if [ "$OS" = darwin ] && have xattr; then
-    xattr -d com.apple.quarantine "$TMP_DIR/rayu.bin" 2>/dev/null || true
-  fi
-  # Write via a temp name + mv so an interrupted install never leaves a
-  # half-written `rayu` on PATH, and so replacing a running binary works.
-  mv -f "$TMP_DIR/rayu.bin" "$BIN_DIR/rayu.new"
-  mv -f "$BIN_DIR/rayu.new" "$BIN_DIR/rayu"
-
-  INSTALL_METHOD=native
-  INSTALLED_VERSION="${_mversion:-${WANT_VERSION:-unknown}}"
-  return 0
-}
+tmpdir=$(mktemp -d)
 
 # ---------------------------------------------------------------------------
-# Path 2 — npm tarball + Node runtime
+# Artifact download & SHA-256 verification (before touching any legacy files!)
 # ---------------------------------------------------------------------------
 
-node_major() {
-  # "v22.20.0" -> 22 ; empty when $1 is not a usable node
-  _v=$("$1" --version 2>/dev/null || printf '')
-  [ -n "$_v" ] || { printf ''; return 0; }
-  printf '%s' "${_v#v}" | cut -d. -f1
-}
+INSTALL_STAGE="artifact_download"
+download_mode=""
+downloaded_asset=""
+DOWNLOAD_BASES=$(curl -fsSL --retry 2 --connect-timeout 10 \
+  "$RELEASE_METADATA_BASE/$VERSION/download-bases" 2>/dev/null || true)
+DOWNLOAD_BASES=$(printf '%s\n%s\n' "$DOWNLOAD_BASES" "$GITHUB_RELEASE_BASE" |
+  awk '/^https:\/\/[^[:space:]]+$/ && !seen[$0]++')
 
-# Portable Node tarball name for this platform, or empty when unavailable.
-node_tarball_name() {
-  case "$OS-$ARCH-$LIBC" in
-    linux-x64-glibc)   printf 'node-%s-linux-x64.tar.gz' "$NODE_VERSION" ;;
-    linux-arm64-glibc) printf 'node-%s-linux-arm64.tar.gz' "$NODE_VERSION" ;;
-    linux-armv7l-glibc) printf 'node-%s-linux-armv7l.tar.gz' "$NODE_VERSION" ;;
-    darwin-x64-*)      printf 'node-%s-darwin-x64.tar.gz' "$NODE_VERSION" ;;
-    darwin-arm64-*)    printf 'node-%s-darwin-arm64.tar.gz' "$NODE_VERSION" ;;
-    linux-x64-musl)    printf 'node-%s-linux-x64-musl.tar.gz' "$NODE_VERSION" ;;
-    linux-arm64-musl)  printf 'node-%s-linux-arm64-musl.tar.gz' "$NODE_VERSION" ;;
-    *) printf '' ;;
-  esac
-}
-
-download_node() {
-  _name=$(node_tarball_name)
-  [ -n "$_name" ] || die "no prebuilt Node runtime for $OS/$ARCH ($LIBC).
-Install Node >= $MIN_NODE_MAJOR yourself, then re-run this installer."
-
-  if [ "$LIBC" = musl ]; then
-    _url="$NODE_DIST_MUSL/$NODE_VERSION/$_name"
-    _sums="$NODE_DIST_MUSL/$NODE_VERSION/SHASUMS256.txt"
-  else
-    _url="$NODE_DIST/$NODE_VERSION/$_name"
-    _sums="$NODE_DIST/$NODE_VERSION/SHASUMS256.txt"
-  fi
-
-  fetch_file_progress "$_url" "$TMP_DIR/$_name" "node $NODE_VERSION ($OS-$ARCH)" \
-    || die "could not download the Node runtime from $_url.
-Install Node >= $MIN_NODE_MAJOR yourself, then re-run this installer."
-
-  _expected=''
-  if fetch_stdout "$_sums" >"$TMP_DIR/SHASUMS256.txt" 2>/dev/null; then
-    _expected=$(grep " $_name\$" "$TMP_DIR/SHASUMS256.txt" 2>/dev/null | cut -d' ' -f1 | head -1)
-  fi
-  step "verifying the runtime checksum"
-  verify_checksum "$TMP_DIR/$_name" "$_expected" sha256 "$_name"
-
-  step "unpacking the Node runtime"
-  mkdir -p "$RUNTIME_DIR"
-  rm -rf "$RUNTIME_DIR/node.tmp"
-  mkdir -p "$RUNTIME_DIR/node.tmp"
-  tar -xzf "$TMP_DIR/$_name" -C "$RUNTIME_DIR/node.tmp" --strip-components=1 \
-    || die "failed to extract the Node runtime (is 'tar' working?)"
-  rm -rf "$RUNTIME_DIR/node"
-  mv "$RUNTIME_DIR/node.tmp" "$RUNTIME_DIR/node"
-
-  NODE_BIN="$RUNTIME_DIR/node/bin/node"
-  [ -x "$NODE_BIN" ] || die "the downloaded Node runtime is not executable at $NODE_BIN"
-
-  # Actually start it. A runtime that unpacks fine but cannot load is the common
-  # failure on minimal images: the musl Node builds are dynamically linked
-  # against libstdc++/libgcc, which a bare Alpine container does not ship. Left
-  # unchecked this used to print "Node  installed privately" with an empty
-  # version and fail three steps later with an unrelated "please report this
-  # bug" message, hiding a one-command fix.
-  # `|| true` rather than `|| _nv=''`: the failure output is exactly what names
-  # the missing library, so it must survive a non-zero exit.
-  _nv=$("$NODE_BIN" --version 2>&1 || true)
-  case "$_nv" in
-    v[0-9]*) ok "Node $_nv ready $C_DIM($RUNTIME_DIR/node)$C_RESET" ;;
-    *)
-      _missing=$(printf '%s\n' "$_nv" \
-        | sed -n 's/.*shared library \([^:]*\):.*/\1/p' | sort -u | tr '\n' ' ')
-      [ -n "$_missing" ] || _missing='(could not determine)'
-      die "the Node runtime downloaded fine but cannot start on this system.
-Missing shared libraries: $_missing
-Install the C/C++ runtime it needs, then re-run this installer:
-  Alpine:        sudo apk add libstdc++ libgcc
-  Debian/Ubuntu: sudo apt-get install -y libstdc++6
-Or install Node >= $MIN_NODE_MAJOR yourself (the installer will use it):
-  Alpine:        sudo apk add nodejs
-  Debian/Ubuntu: sudo apt-get install -y nodejs"
-      ;;
-  esac
-}
-
-ensure_node() {
-  # A private runtime from an earlier run wins over an old system Node.
-  if [ -x "$RUNTIME_DIR/node/bin/node" ] && \
-     [ "$(node_major "$RUNTIME_DIR/node/bin/node")" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
-    NODE_BIN="$RUNTIME_DIR/node/bin/node"
-    step "using the private Node runtime ($("$NODE_BIN" --version))"
-    return 0
-  fi
-
-  if have node; then
-    _sys=$(command -v node)
-    _maj=$(node_major "$_sys")
-    if [ -n "$_maj" ] && [ "$_maj" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
-      NODE_BIN="$_sys"
-      step "using system Node $("$_sys" --version) ($_sys)"
-      return 0
+for candidate in "$ARTIFACT.tar.gz" "$ARTIFACT$EXE"; do
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    if curl -fsSL --retry 2 --connect-timeout 10 \
+      "${base%/}/$candidate" -o "$tmpdir/rayu.download" 2>/dev/null; then
+      downloaded_asset="$candidate"
+      case "$candidate" in
+        *.tar.gz) download_mode="tar" ;;
+        *)        download_mode="bin" ;;
+      esac
+      break 2
     fi
-    step "system Node is too old (need >= $MIN_NODE_MAJOR)"
-  fi
+  done <<EOF
+$DOWNLOAD_BASES
+EOF
+done
 
-  download_node
-}
-
-resolve_npm_dist() {
-  if [ -n "$WANT_VERSION" ]; then
-    _url="$NPM_REGISTRY/$NPM_PACKAGE_URLSAFE/$WANT_VERSION"
-  else
-    _url="$NPM_REGISTRY/$NPM_PACKAGE_URLSAFE/latest"
-  fi
-  step "resolving ${WANT_VERSION:-latest} from the npm registry"
-  # Keep the transport's own error: "could not reach the registry" is not
-  # actionable, whereas curl's message distinguishes DNS failure, a proxy
-  # rejection, and the missing-CA-bundle case that every minimal container hits.
-  _json=$(fetch_stdout "$_url" 2>"$TMP_DIR/registry.err") || {
-    _why=$(head -3 "$TMP_DIR/registry.err" 2>/dev/null | tr '\n' ' ')
-    die "could not reach the npm registry at $NPM_REGISTRY.
-${_why:+Transport said: $_why}
-Common causes:
-  - no CA certificates (minimal containers): apk add ca-certificates / apt-get install -y ca-certificates
-  - a proxy: export HTTPS_PROXY=http://host:port before running this script
-  - an internal mirror: export RAYU_NPM_REGISTRY=https://your-mirror/repository/npm"
-  }
-
-  # Newline-per-field so the sed extractions below cannot span JSON keys.
-  _flat=$(printf '%s' "$_json" | tr ',{}' '\n\n\n')
-  TARBALL_URL=$(printf '%s\n' "$_flat" | sed -n 's/.*"tarball":"\([^"]*\)".*/\1/p' | head -1)
-  TARBALL_SHA1=$(printf '%s\n' "$_flat" | sed -n 's/.*"shasum":"\([0-9a-f]*\)".*/\1/p' | head -1)
-  [ -n "$TARBALL_URL" ] || die "the npm registry returned no tarball for ${WANT_VERSION:-latest}"
-
-  # The tarball filename is the authoritative version (rayu-cli-1.6.13.tgz).
-  _file=${TARBALL_URL##*/}
-  INSTALLED_VERSION=$(printf '%s' "$_file" | sed -n 's/^rayu-cli-\(.*\)\.tgz$/\1/p')
-  [ -n "$INSTALLED_VERSION" ] || INSTALLED_VERSION=$(printf '%s\n' "$_flat" \
-    | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' | head -1)
-  [ -n "$INSTALLED_VERSION" ] || INSTALLED_VERSION="${WANT_VERSION:-unknown}"
-}
-
-# dist/rayu.js is an ES module. Node decides CommonJS-vs-ESM for a `.js` file
-# from the nearest package.json `type`, so the bundle MUST be accompanied by one
-# — exactly as the published npm package does it. Without this, Node parses it as
-# CommonJS and dies with "Cannot use import statement outside a module" on every
-# Node before 22.7, which is when ESM syntax detection became the default. That
-# is Node 18 and 20 — i.e. what Debian 12, Ubuntu 22.04/24.04 and Alpine ship.
-write_module_marker() {
-  printf '{\n  "type": "module",\n  "//": "Required so Node loads rayu.js as an ES module on Node < 22.7."\n}\n' \
-    >"$1/package.json"
-}
-
-# Release archive name on BurntSushi/ripgrep for this platform, or empty when
-# no official prebuilt tarball exists.
-ripgrep_tarball_name() {
-  case "$OS-$ARCH-$LIBC" in
-    darwin-arm64-*)     printf 'ripgrep-%s-aarch64-apple-darwin.tar.gz' "$RIPGREP_VERSION" ;;
-    darwin-x64-*)       printf 'ripgrep-%s-x86_64-apple-darwin.tar.gz' "$RIPGREP_VERSION" ;;
-    linux-x64-*)        printf 'ripgrep-%s-x86_64-unknown-linux-musl.tar.gz' "$RIPGREP_VERSION" ;;
-    linux-arm64-glibc)  printf 'ripgrep-%s-aarch64-unknown-linux-gnu.tar.gz' "$RIPGREP_VERSION" ;;
-    linux-armv7l-glibc) printf 'ripgrep-%s-armv7-unknown-linux-gnueabihf.tar.gz' "$RIPGREP_VERSION" ;;
-    linux-armv7l-musl)  printf 'ripgrep-%s-armv7-unknown-linux-musleabihf.tar.gz' "$RIPGREP_VERSION" ;;
-    *)                  printf '' ;;
-  esac
-}
-
-# Directory name under vendor/ripgrep/ expected by getRipgrepConfig() in
-# src/utils/ripgrep.ts: `${process.arch}-${process.platform}` (e.g. arm64-darwin).
-ripgrep_vendor_platform() {
-  case "$ARCH" in
-    armv7l) printf 'arm-%s' "$OS" ;;
-    *)      printf '%s-%s' "$ARCH" "$OS" ;;
-  esac
-}
-
-# Provision vendored ripgrep at $1/vendor/ripgrep/<arch>-<os>/rg so Glob/Grep
-# work out of the box when the npm tarball does not ship vendor/ripgrep.
-provision_ripgrep() {
-  _stage="$1"
-  _rg_plat=$(ripgrep_vendor_platform)
-  _rg_dir="$_stage/vendor/ripgrep/$_rg_plat"
-  _rg_bin="$_rg_dir/rg"
-
-  # If the unpacked package already shipped a working binary for this platform,
-  # keep it and just ensure permissions/quarantine are clean.
-  if [ -f "$_rg_bin" ]; then
-    chmod 755 "$_rg_bin"
-    if [ "$OS" = darwin ] && have xattr; then
-      xattr -d com.apple.quarantine "$_rg_bin" 2>/dev/null || true
+if [ -n "$download_mode" ]; then
+  INSTALL_STAGE="artifact_verification"
+  EXPECTED_SHA256=""
+  for checksum_url in \
+    "$RELEASE_METADATA_BASE/$VERSION/SHA256SUMS" \
+    "$GITHUB_RELEASE_BASE/SHA256SUMS"; do
+    CHECKSUMS=$(curl -fsSL --retry 2 --connect-timeout 10 \
+      "$checksum_url" 2>/dev/null || true)
+    EXPECTED_SHA256=$(printf '%s\n' "$CHECKSUMS" |
+      awk -v asset="$downloaded_asset" '$2 == asset || $2 == "*" asset { print tolower($1); exit }')
+    if printf '%s' "$EXPECTED_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+      break
     fi
-    if "$_rg_bin" --version >/dev/null 2>&1; then
-      return 0
-    fi
-  fi
-
-  _rg_archive=$(ripgrep_tarball_name)
-  if [ -z "$_rg_archive" ]; then
-    if have rg; then
-      step "no prebuilt ripgrep for $OS-$ARCH ($LIBC); using system rg ($(command -v rg))"
-    else
-      step "no prebuilt ripgrep for $OS-$ARCH ($LIBC); skipping ripgrep provisioning"
-    fi
-    return 0
-  fi
-
-  _rg_url="$RIPGREP_DIST/$RIPGREP_VERSION/$_rg_archive"
-  if ! fetch_file_progress "$_rg_url" "$TMP_DIR/$_rg_archive" "ripgrep $RIPGREP_VERSION ($_rg_plat)"; then
-    if have rg; then
-      step "could not download ripgrep; falling back to system rg ($(command -v rg))"
-      return 0
-    fi
-    die "failed to download ripgrep from $_rg_url"
-  fi
-
-  _rg_expected=''
-  if fetch_stdout "$_rg_url.sha256" >"$TMP_DIR/ripgrep.sha256" 2>/dev/null; then
-    _rg_expected=$(awk '{ print $1; exit }' "$TMP_DIR/ripgrep.sha256" 2>/dev/null | tr -d '\r\n')
-  fi
-  step "verifying the ripgrep checksum"
-  verify_checksum "$TMP_DIR/$_rg_archive" "$_rg_expected" sha256 "$_rg_archive"
-
-  rm -rf "$TMP_DIR/rg-unpack"
-  mkdir -p "$TMP_DIR/rg-unpack"
-  tar -xzf "$TMP_DIR/$_rg_archive" -C "$TMP_DIR/rg-unpack" --strip-components=1 \
-    || die "failed to extract $_rg_archive"
-
-  [ -f "$TMP_DIR/rg-unpack/rg" ] || die "extracted $_rg_archive is missing the 'rg' binary"
-
-  mkdir -p "$_rg_dir"
-  cp "$TMP_DIR/rg-unpack/rg" "$_rg_bin"
-  chmod 755 "$_rg_bin"
-  if [ "$OS" = darwin ] && have xattr; then
-    xattr -d com.apple.quarantine "$_rg_bin" 2>/dev/null || true
-  fi
-
-  "$_rg_bin" --version >/dev/null 2>&1 \
-    || die "vendored ripgrep at $_rg_bin failed to execute"
-  ok "ripgrep $RIPGREP_VERSION ready $C_DIM(vendor/ripgrep/$_rg_plat/rg)$C_RESET"
-}
-
-install_from_tarball() {
-  resolve_npm_dist
-  ensure_node
-
-  fetch_file_progress "$TARBALL_URL" "$TMP_DIR/pkg.tgz" "rayu-cli $INSTALLED_VERSION" \
-    || die "failed to download $TARBALL_URL"
-  step "verifying the package checksum"
-  verify_checksum "$TMP_DIR/pkg.tgz" "$TARBALL_SHA1" sha1 "rayu-cli-$INSTALLED_VERSION.tgz"
-
-  step "unpacking the bundle"
-  mkdir -p "$TMP_DIR/pkg"
-  tar -xzf "$TMP_DIR/pkg.tgz" -C "$TMP_DIR/pkg" \
-    || die "failed to extract the package (is 'tar' working?)"
-
-  _entry="$TMP_DIR/pkg/package/dist/rayu.js"
-  [ -f "$_entry" ] || die "the published package is missing dist/rayu.js — please report this at
-  https://github.com/$GITHUB_REPO/issues"
-
-  # Stage the whole version directory, then swap it in. `rayu` keeps working
-  # (from the previous version) if anything above failed.
-  _target="$LIB_DIR/rayu-$INSTALLED_VERSION"
-  mkdir -p "$LIB_DIR"
-  rm -rf "$_target.tmp" "$_target"
-  mkdir -p "$_target.tmp"
-  cp "$_entry" "$_target.tmp/rayu.js"
-  write_module_marker "$_target.tmp"
-  if [ -d "$TMP_DIR/pkg/package/vendor" ]; then
-    cp -R "$TMP_DIR/pkg/package/vendor" "$_target.tmp/vendor"
-  fi
-  for _extra in README.md; do
-    [ -f "$TMP_DIR/pkg/package/$_extra" ] && cp "$TMP_DIR/pkg/package/$_extra" "$_target.tmp/" || true
+    EXPECTED_SHA256=""
   done
-  provision_ripgrep "$_target.tmp"
-  mv "$_target.tmp" "$_target"
+  printf '%s' "$EXPECTED_SHA256" | grep -Eq '^[0-9a-f]{64}$' \
+    || err "Could not find a trusted SHA-256 checksum for $downloaded_asset in $VERSION"
+  ACTUAL_SHA256=$(sha256_file "$tmpdir/rayu.download") \
+    || err "sha256sum, shasum, or openssl is required to verify the download"
+  [ "$ACTUAL_SHA256" = "$EXPECTED_SHA256" ] \
+    || err "SHA-256 verification failed for $downloaded_asset"
+  info "Verified SHA-256: $downloaded_asset"
+fi
 
-  # lib/current is the only path the launcher knows, so version switching is a
-  # single atomic-enough symlink swap (`ln -sfn` replaces the link itself rather
-  # than writing through it, on both GNU coreutils and BSD/macOS).
-  _previous=$(current_lib_target)
-  ln -sfn "$_target" "$LIB_DIR/current"
+# ---------------------------------------------------------------------------
+# Binary installation
+# ---------------------------------------------------------------------------
 
-  write_launcher
-  prune_old_versions "$_target" "$_previous"
-  INSTALL_METHOD=tarball
+INSTALL_STAGE="binary_install"
+mkdir -p "$INSTALL_DIR" "$stable_dir" "$current_dir" "$version_dir"
+
+version="${VERSION#v}"
+dest_version_dir="$version_dir/$version"
+mkdir -p "$dest_version_dir"
+
+bin_name="rayu${EXE}"
+notices_source=""
+
+if [ "$download_mode" = "tar" ]; then
+  tar xzf "$tmpdir/rayu.download" -C "$tmpdir"
+  src_bin="$tmpdir/${ARTIFACT}${EXE}"
+  [ -f "$src_bin" ] || err "Downloaded archive did not contain expected binary: ${ARTIFACT}${EXE}"
+  find "$tmpdir" -maxdepth 1 -type f \( -name "${ARTIFACT}${EXE}.bin" -o -name 'libssl.so*' -o -name 'libcrypto.so*' \) \
+    -exec cp -f {} "$dest_version_dir/" \;
+  mv "$src_bin" "$dest_version_dir/$bin_name"
+  notices_source="$tmpdir"
+elif [ "$download_mode" = "bin" ]; then
+  mv "$tmpdir/rayu.download" "$dest_version_dir/$bin_name"
+else
+  if [ "${RAYU_ALLOW_SOURCE_BUILD:-0}" != "1" ]; then
+    err "No prebuilt binary found for $ARTIFACT in $VERSION. Check available downloads at https://github.com/$REPO/releases"
+  fi
+  info "No prebuilt asset found for $ARTIFACT in $VERSION; building from source..."
+  command -v git >/dev/null 2>&1 || err "git is required to build from source"
+  command -v cargo >/dev/null 2>&1 || err "cargo is required to build from source"
+
+  src_dir="$tmpdir/rayu-src"
+  git clone --depth 1 --branch "$VERSION" "https://github.com/$REPO.git" "$src_dir" \
+    || err "Failed to clone $REPO at $VERSION"
+  cargo build --release --manifest-path "$src_dir/Cargo.toml" \
+    || err "cargo build failed while building $REPO from source"
+
+  src_bin="$src_dir/target/release/$bin_name"
+  [ -f "$src_bin" ] || err "Built binary not found at $src_bin"
+  cp "$src_bin" "$dest_version_dir/$bin_name"
+  notices_source="$src_dir"
+fi
+
+for notice in LICENSE THIRD_PARTY_NOTICES dependency-inventory.json; do
+  if [ -n "$notices_source" ] && [ -f "$notices_source/$notice" ]; then
+    cp -f "$notices_source/$notice" "$dest_version_dir/$notice"
+  fi
+done
+
+chmod +x "$dest_version_dir/$bin_name" 2>/dev/null || true
+
+if [ "$IS_TERMUX" = true ] && [ "$IS_WINDOWS" = false ]; then
+  termux_glibc_dir="/data/data/com.termux/files/usr/glibc/lib"
+  termux_glibc_linker=""
+  case "$ARCH" in
+    aarch64|arm64) termux_glibc_linker="$termux_glibc_dir/ld-linux-aarch64.so.1" ;;
+    x86_64)        termux_glibc_linker="$termux_glibc_dir/ld-linux-x86-64.so.2" ;;
+  esac
+  if [ "$OS" = "Linux" ] && [ -n "$termux_glibc_linker" ]; then
+    if [ -x "$termux_glibc_linker" ]; then
+      if command -v patchelf >/dev/null 2>&1; then
+        patchelf --set-interpreter "$termux_glibc_linker" "$dest_version_dir/$bin_name" \
+          || err "Failed to patch rayu ELF interpreter for Termux glibc"
+        info "Patched Termux glibc ELF interpreter: $termux_glibc_linker"
+      else
+        info "Termux detected: install patchelf with 'pkg install patchelf' and rerun this installer if rayu fails to start."
+      fi
+    else
+      info "Termux detected: install glibc with 'pkg install glibc' if rayu fails due to a missing dynamic linker."
+    fi
+  fi
+fi
+
+if [ "$IS_WINDOWS" = true ]; then
+  cp -f "$dest_version_dir/$bin_name" "$stable_dir/$bin_name"
+  for notice in LICENSE THIRD_PARTY_NOTICES dependency-inventory.json; do
+    if [ -f "$dest_version_dir/$notice" ]; then
+      cp -f "$dest_version_dir/$notice" "$stable_dir/$notice"
+    fi
+  done
+  printf '%s\n' "$version" > "$builds_dir/stable-version"
+  cp -f "$stable_dir/$bin_name" "$launcher_path"
+  cp -f "$stable_dir/$bin_name" "$alias_path"
+else
+  ln -sfn "$dest_version_dir/$bin_name" "$stable_dir/$bin_name"
+  printf '%s\n' "$version" > "$builds_dir/stable-version"
+  if [ "$IS_TERMUX" = true ]; then
+    rm -f "$launcher_path" "$alias_path"
+    cat > "$launcher_path" <<EOF
+#!/usr/bin/env bash
+unset LD_PRELOAD
+exec "$stable_dir/$bin_name" "\$@"
+EOF
+    chmod +x "$launcher_path"
+    ln -sfn "$launcher_path" "$alias_path"
+  else
+    ln -sfn "$stable_dir/$bin_name" "$launcher_path"
+    ln -sfn "$stable_dir/$bin_name" "$alias_path"
+  fi
+fi
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  xattr -d com.apple.quarantine "$dest_version_dir/$bin_name" 2>/dev/null || true
+  if "$launcher_path" setup-launcher </dev/null >/dev/null 2>&1; then
+    info "Installed macOS turn-notification helper."
+  fi
+fi
+
+hotkey_setup_ready=false
+case "$(uname -s)" in
+Darwin|Linux)
+  if "$launcher_path" setup-hotkey </dev/null >/dev/null 2>&1; then
+    hotkey_setup_ready=true
+  fi
+  ;;
+esac
+
+# Gracefully retire any background server running the old Rust binary.
+INSTALL_STAGE="server_reload"
+if [ "${RAYU_SKIP_SERVER_RELOAD:-}" != "1" ]; then
+  reload_bin="$launcher_path"
+  [ -x "$reload_bin" ] || reload_bin="$stable_dir/$bin_name"
+  if [ -x "$reload_bin" ]; then
+    if "$reload_bin" server reload </dev/null >/dev/null 2>&1; then
+      info "Reloaded the running rayu server onto $VERSION (if one was active)."
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Legacy Node v2 CLI migration (runs ONLY after Rust v3 binary is installed!)
+# ---------------------------------------------------------------------------
+
+INSTALL_STAGE="legacy_migration"
+
+LEGACY_FOUND=0
+LEGACY_SCRIPT_FOUND=0
+LEGACY_RENAMED_NOW=0
+LEGACY_NPM_FOUND=0
+LEGACY_VERSION=""
+LEGACY_BIN_DIR="$RAYU_HOME_DIR/bin"
+LEGACY_BIN_PATH=""
+LEGACY_NPM_BIN_RENAMED=""
+LEGACY_SHADOW_WARNING=""
+
+read_legacy_install_json_field() {
+  _json="$1"
+  _key="$2"
+  [ -f "$_json" ] || return 0
+  sed -n "s/.*\"${_key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$_json" 2>/dev/null | head -n1 || true
 }
 
-# The launcher is a tiny sh script rather than a symlink so that it can pin the
-# Node it was installed with, fall back to whatever Node is on PATH if that one
-# disappears, and route `rayu update` back through this installer (the built-in
-# updater would shell out to `npm install -g`, which would install a *second*
-# copy that this launcher does not use).
-write_launcher() {
-  mkdir -p "$BIN_DIR"
-  cat >"$BIN_DIR/rayu.tmp" <<LAUNCHER
+write_guarded_legacy_launcher() {
+  _target="$1"
+  _node_bin="$2"
+  _entry="$3"
+  cat > "${_target}.tmp" <<LEGACY_LAUNCHER
 #!/bin/sh
-# Rayu CLI launcher — generated by the rayucode.com installer. Do not edit;
-# it is rewritten on every install/update.
-RAYU_HOME="\${RAYU_HOME:-$RAYU_HOME}"
-ENTRY="$LIB_DIR/current/rayu.js"
-NODE="$NODE_BIN"
+# Legacy Rayu CLI (Node v2) launcher — preserved as rayu-legacy during RayuCode v3 upgrade.
+RAYU_HOME="\${RAYU_HOME:-$RAYU_HOME_DIR}"
+ENTRY="$_entry"
+NODE="$_node_bin"
 
 if [ ! -x "\$NODE" ]; then
   NODE="\$(command -v node 2>/dev/null || true)"
 fi
 if [ -z "\$NODE" ] || [ ! -x "\$NODE" ]; then
-  echo "rayu: the Node runtime at $NODE_BIN is gone and no 'node' is on PATH." >&2
-  echo "rayu: reinstall with: curl -fsSL $INSTALLER_URL | bash" >&2
+  echo "rayu-legacy: Node runtime not found." >&2
   exit 127
 fi
 if [ ! -f "\$ENTRY" ]; then
-  echo "rayu: install is incomplete (\$ENTRY missing)." >&2
-  echo "rayu: reinstall with: curl -fsSL $INSTALLER_URL | bash" >&2
+  echo "rayu-legacy: legacy bundle missing (\$ENTRY)." >&2
   exit 127
 fi
 
-# 'rayu update' must go through the installer that owns this install.
+# Legacy launcher preserved as rayu-legacy; prevent self-update from overwriting rayu (rayucode-v2).
 if [ "\${1:-}" = "update" ] || [ "\${1:-}" = "upgrade" ]; then
-  if [ -x "$BIN_DIR/.rayu-installer" ]; then
-    shift
-    echo "Updating Rayu CLI with the rayucode.com installer..."
-    exec "$BIN_DIR/.rayu-installer" "\$@"
-  fi
+  echo "rayu-legacy: self-update is disabled because 'rayu' is now managed by RayuCode v3." >&2
+  echo "rayu-legacy: run 'rayu update' to update RayuCode instead." >&2
+  exit 1
 fi
 
 exec "\$NODE" "\$ENTRY" "\$@"
-LAUNCHER
-  chmod 755 "$BIN_DIR/rayu.tmp"
-  mv -f "$BIN_DIR/rayu.tmp" "$BIN_DIR/rayu"
+LEGACY_LAUNCHER
+  chmod 755 "${_target}.tmp"
+  mv -f "${_target}.tmp" "$_target"
+}
 
-  # Keep a copy of this installer so `rayu update` works offline of the website
-  # and so --uninstall is always available locally.
-  if [ -f "$0" ] && [ "$0" != "sh" ] && [ "$0" != "bash" ]; then
-    cp "$0" "$BIN_DIR/.rayu-installer" 2>/dev/null && chmod 755 "$BIN_DIR/.rayu-installer" || true
+remove_legacy_profile_block() {
+  _file="$1"
+  [ -f "$_file" ] || return 0
+  grep -qF '# >>> rayu cli >>>' "$_file" 2>/dev/null || return 0
+  _tmp="${_file}.rayu-legacy.$$"
+  awk '
+    index($0, "# >>> rayu cli >>>") { skip = 1; next }
+    index($0, "# <<< rayu cli <<<") { skip = 0; next }
+    !skip { print }
+  ' "$_file" > "$_tmp" && cat "$_tmp" > "$_file" && rm -f "$_tmp"
+}
+
+migrate_legacy_node_cli() {
+  _install_json="$RAYU_HOME_DIR/install.json"
+  _json_bin_dir="$(read_legacy_install_json_field "$_install_json" "binDir")"
+  _json_version="$(read_legacy_install_json_field "$_install_json" "version")"
+  _json_node="$(read_legacy_install_json_field "$_install_json" "node")"
+  if [ -n "$_json_bin_dir" ]; then
+    LEGACY_BIN_DIR="$_json_bin_dir"
   fi
-  if [ ! -x "$BIN_DIR/.rayu-installer" ]; then
-    # Piped from curl: $0 is not a readable file, so fetch a copy.
-    fetch_file "$INSTALLER_URL" "$BIN_DIR/.rayu-installer" 2>/dev/null \
-      && chmod 755 "$BIN_DIR/.rayu-installer" || true
+  if [ -n "$_json_version" ]; then
+    LEGACY_VERSION="$_json_version"
   fi
-}
 
-# Keep the new version AND the one that was current before the swap. A running
-# session (the auto-updater runs this script underneath one) still executes the
-# previous bundle and its vendored ripgrep, so deleting it would break that
-# session. Anything older than those two is removed; bundles are ~24 MB each.
-prune_old_versions() { # KEEP [PREVIOUS]
-  _keep="$1"; _prev="${2:-}"
-  for _d in "$LIB_DIR"/rayu-*; do
-    [ -d "$_d" ] || continue
-    [ "$_d" = "$_keep" ] && continue
-    [ -n "$_prev" ] && [ "$_d" = "$_prev" ] && continue
-    rm -rf "$_d"
-  done
-}
+  _legacy_entry="$RAYU_HOME_DIR/lib/current/rayu.js"
+  _old_rayu="$LEGACY_BIN_DIR/rayu${EXE}"
+  _legacy_rayu="$LEGACY_BIN_DIR/rayu-legacy${EXE}"
+  _old_installer="$LEGACY_BIN_DIR/.rayu-installer"
 
-# Directory lib/current points at right now, or empty.
-current_lib_target() {
-  [ -L "$LIB_DIR/current" ] || return 0
-  _t=$(readlink "$LIB_DIR/current" 2>/dev/null || true)
-  case "$_t" in
-    /*) printf '%s' "$_t" ;;
-    ?*) printf '%s' "$LIB_DIR/$_t" ;;
-  esac
-}
+  # 1. Detect legacy script-managed install (~/.rayu/bin/rayu or ~/.rayu/lib).
+  if [ "$LEGACY_BIN_DIR" != "$INSTALL_DIR" ]; then
+    if [ -e "$_old_rayu" ] || [ -L "$_old_rayu" ]; then
+      # Confirm it is a legacy Node launcher, migrator binary, or paired with legacy metadata/lib.
+      _is_legacy_old=0
+      if [ -f "$_install_json" ] || [ -f "$_legacy_entry" ] || [ -d "$RAYU_HOME_DIR/lib" ]; then
+        _is_legacy_old=1
+      elif grep -qF "rayu.js" "$_old_rayu" 2>/dev/null || grep -qF "Rayu CLI launcher" "$_old_rayu" 2>/dev/null; then
+        _is_legacy_old=1
+      fi
 
-# ---------------------------------------------------------------------------
-# PATH wiring
-# ---------------------------------------------------------------------------
-
-add_to_profile() {
-  _file="$1"; _line="$2"
-  [ -f "$_file" ] || return 1
-  if grep -qF "$PROFILE_MARKER_BEGIN" "$_file" 2>/dev/null; then
-    return 2 # already managed by us
-  fi
-  printf '\n%s\n%s\n%s\n' "$PROFILE_MARKER_BEGIN" "$_line" "$PROFILE_MARKER_END" >>"$_file"
-  return 0
-}
-
-setup_path() {
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) PATH_ALREADY_ACTIVE=1 ;;
-    *) PATH_ALREADY_ACTIVE=0 ;;
-  esac
-
-  [ "$MODIFY_PATH" -eq 1 ] || return 0
-
-  _posix_line="export PATH=\"$BIN_DIR:\$PATH\""
-  _fish_line="fish_add_path -g \"$BIN_DIR\""
-  PROFILES_UPDATED=''
-  PROFILES_MANAGED=''
-
-  # ~/.profile is created when absent so a login shell always finds Rayu.
-  [ -f "$HOME/.profile" ] || [ -f "$HOME/.bash_profile" ] || : >"$HOME/.profile"
-
-  for _f in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.profile"; do
-    _rc=0
-    add_to_profile "$_f" "$_posix_line" || _rc=$?
-    if [ "$_rc" -eq 0 ]; then
-      PROFILES_UPDATED="$PROFILES_UPDATED $_f"
-    elif [ "$_rc" -eq 2 ]; then
-      PROFILES_MANAGED="$PROFILES_MANAGED $_f"
-    fi
-  done
-
-  if [ -d "$HOME/.config/fish" ]; then
-    _fc="$HOME/.config/fish/config.fish"
-    [ -f "$_fc" ] || : >"$_fc"
-    _rc=0
-    add_to_profile "$_fc" "$_fish_line" || _rc=$?
-    if [ "$_rc" -eq 0 ]; then
-      PROFILES_UPDATED="$PROFILES_UPDATED $_fc"
-    elif [ "$_rc" -eq 2 ]; then
-      PROFILES_MANAGED="$PROFILES_MANAGED $_fc"
+      if [ "$_is_legacy_old" -eq 1 ]; then
+        LEGACY_FOUND=1
+        LEGACY_SCRIPT_FOUND=1
+        if [ -z "$LEGACY_VERSION" ] && [ -x "$_old_rayu" ]; then
+          LEGACY_VERSION=$("$_old_rayu" --version 2>/dev/null | head -n1 || true)
+        fi
+        mkdir -p "$LEGACY_BIN_DIR"
+        if [ "$IS_WINDOWS" = false ] && [ -f "$_legacy_entry" ]; then
+          # Preserve working legacy Node CLI as rayu-legacy with update guard,
+          # and remove the old rayu path so ~/.local/bin/rayu wins on PATH.
+          _node_candidate="${_json_node:-$RAYU_HOME_DIR/runtime/node/bin/node}"
+          [ "$_node_candidate" != "embedded" ] || _node_candidate=""
+          write_guarded_legacy_launcher "$_legacy_rayu" "$_node_candidate" "$_legacy_entry"
+          rm -f "$_old_rayu"
+        else
+          mv -f "$_old_rayu" "$_legacy_rayu"
+        fi
+        rm -f "$_old_installer"
+        LEGACY_RENAMED_NOW=1
+        LEGACY_BIN_PATH="$_legacy_rayu"
+      fi
+    elif [ -e "$_legacy_rayu" ] || [ -L "$_legacy_rayu" ] || [ -f "$_legacy_entry" ] || [ -f "$_install_json" ]; then
+      # Legacy install already renamed earlier (e.g. ~/.rayu/bin/rayu-legacy) or remnants remain.
+      LEGACY_FOUND=1
+      LEGACY_SCRIPT_FOUND=1
+      rm -f "$_old_installer"
+      if [ -e "$_legacy_rayu" ] || [ -L "$_legacy_rayu" ]; then
+        LEGACY_BIN_PATH="$_legacy_rayu"
+      elif [ "$IS_WINDOWS" = false ] && [ -f "$_legacy_entry" ]; then
+        mkdir -p "$LEGACY_BIN_DIR"
+        _node_candidate="${_json_node:-$RAYU_HOME_DIR/runtime/node/bin/node}"
+        [ "$_node_candidate" != "embedded" ] || _node_candidate=""
+        write_guarded_legacy_launcher "$_legacy_rayu" "$_node_candidate" "$_legacy_entry"
+        LEGACY_RENAMED_NOW=1
+        LEGACY_BIN_PATH="$_legacy_rayu"
+      fi
     fi
   fi
+
+  # 2. Detect global npm @rayu-dev/rayu-cli installation (if npm is installed).
+  if [ "${RAYU_SKIP_NPM_CHECK:-0}" != "1" ] && command -v npm >/dev/null 2>&1; then
+    _npm_ver=$(npm ls -g --depth=0 "$NPM_LEGACY_PACKAGE" 2>/dev/null \
+      | sed -n "s/.*@rayu-dev\/rayu-cli@\([^[:space:]]*\).*/\1/p" | head -n1 || true)
+    if [ -n "$_npm_ver" ]; then
+      LEGACY_FOUND=1
+      LEGACY_NPM_FOUND=1
+      [ -n "$LEGACY_VERSION" ] || LEGACY_VERSION="npm $_npm_ver"
+
+      # Check if npm's global `rayu` binary shadows our new launcher.
+      _npm_prefix=$(npm config get prefix 2>/dev/null || true)
+      _npm_bin=""
+      if [ -n "$_npm_prefix" ] && [ -e "$_npm_prefix/bin/rayu" ]; then
+        _npm_bin="$_npm_prefix/bin/rayu"
+      fi
+      if [ -n "$_npm_bin" ] && [ "$_npm_bin" != "$launcher_path" ] && [ "$_npm_bin" != "$_old_rayu" ]; then
+        _npm_bin_dir=$(dirname "$_npm_bin")
+        # If this is not already the 2.6.0 bridge (which ships rayu-legacy),
+        # rename npm's rayu symlink -> rayu-legacy when writable so Rust rayu wins.
+        if [ -w "$_npm_bin_dir" ] && [ ! -e "$_npm_bin_dir/rayu-legacy" ] && [ "${RAYU_FROM_NPM_POSTINSTALL:-0}" != "1" ] && [ -z "${npm_lifecycle_event:-}" ]; then
+          if mv "$_npm_bin" "$_npm_bin_dir/rayu-legacy" 2>/dev/null; then
+            LEGACY_RENAMED_NOW=1
+            LEGACY_NPM_BIN_RENAMED="$_npm_bin_dir/rayu-legacy"
+            [ -n "$LEGACY_BIN_PATH" ] || LEGACY_BIN_PATH="$LEGACY_NPM_BIN_RENAMED"
+          fi
+        elif [ -e "$_npm_bin_dir/rayu-legacy" ]; then
+          [ -n "$LEGACY_BIN_PATH" ] || LEGACY_BIN_PATH="$_npm_bin_dir/rayu-legacy"
+        else
+          LEGACY_SHADOW_WARNING="$_npm_bin"
+        fi
+      fi
+    fi
+  fi
 }
+
+uninstall_legacy_node_cli() {
+  if [ "$LEGACY_SCRIPT_FOUND" -eq 1 ]; then
+    rm -f "$LEGACY_BIN_DIR/rayu-legacy${EXE}" "$LEGACY_BIN_DIR/.rayu-installer"
+    rm -rf "$RAYU_HOME_DIR/lib" "$RAYU_HOME_DIR/runtime" "$RAYU_HOME_DIR/install.json"
+    rmdir "$LEGACY_BIN_DIR" 2>/dev/null || true
+    for _rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.zshenv" \
+               "$HOME/.profile" "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"; do
+      remove_legacy_profile_block "$_rc"
+    done
+  fi
+
+  if [ -n "$LEGACY_NPM_BIN_RENAMED" ] && [ -e "$LEGACY_NPM_BIN_RENAMED" ]; then
+    rm -f "$LEGACY_NPM_BIN_RENAMED"
+  fi
+
+  if [ "$LEGACY_NPM_FOUND" -eq 1 ]; then
+    if [ "${RAYU_FROM_NPM_POSTINSTALL:-0}" = "1" ] || [ -n "${npm_lifecycle_event:-}" ]; then
+      warn "Running inside npm lifecycle; finish removing the legacy npm package with:"
+      info "    npm uninstall -g $NPM_LEGACY_PACKAGE"
+    elif command -v npm >/dev/null 2>&1; then
+      if npm uninstall -g "$NPM_LEGACY_PACKAGE" >/dev/null 2>&1; then
+        ok "Uninstalled global npm package $NPM_LEGACY_PACKAGE."
+      else
+        warn "Could not run 'npm uninstall -g $NPM_LEGACY_PACKAGE' automatically. Run it manually to finish cleanup."
+      fi
+    fi
+  fi
+
+  ok "✅ Removed rayu-legacy. Your settings, API keys, and sessions in $RAYU_HOME_DIR were kept."
+}
+
+migrate_legacy_node_cli
 
 # ---------------------------------------------------------------------------
-# Post-install verification
+# PATH configuration & summary output
 # ---------------------------------------------------------------------------
 
-write_metadata() {
-  mkdir -p "$RAYU_HOME"
-  cat >"$RAYU_HOME/install.json" <<META
-{
-  "installer": "rayucode.com/install",
-  "method": "$INSTALL_METHOD",
-  "version": "$INSTALLED_VERSION",
-  "platform": "$NATIVE_PLATFORM",
-  "binDir": "$BIN_DIR",
-  "node": "${NODE_BIN:-embedded}",
-  "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
-}
-META
+if [ "$IS_WINDOWS" = true ]; then
+  INSTALL_STAGE="path_configuration"
+  win_install_dir=$(cygpath -w "$INSTALL_DIR" 2>/dev/null || echo "$INSTALL_DIR")
 
-  # Same marker the npm postinstall writes, so the CLI does not replay its
-  # "installed successfully" banner on the first run — this script already
-  # printed the equivalent, with accurate next steps.
-  _cfg="${RAYU_CONFIG_DIR:-$HOME/.rayu}"
-  mkdir -p "$_cfg" 2>/dev/null || true
-  [ -f "$_cfg/.installed" ] || printf '%s\n' "$INSTALLED_VERSION" >"$_cfg/.installed" 2>/dev/null || true
-}
+  win_path_persisted=false
+  _win_path_key() { printf '%s' "$1" | sed 's|[\\/]*$||' | tr '[:upper:]' '[:lower:]'; }
+  if [ "$MODIFY_PATH" -eq 1 ] && command -v powershell.exe >/dev/null 2>&1; then
+    current_user_path=$(powershell.exe -NoProfile -NonInteractive -Command \
+      "[Environment]::GetEnvironmentVariable('Path','User')" 2>/dev/null | tr -d '\r' || true)
+    target_key=$(_win_path_key "$win_install_dir")
+    new_user_path="$win_install_dir"
+    set -f
+    IFS=';'
+    for entry in $current_user_path; do
+      [ -n "$entry" ] || continue
+      [ "$(_win_path_key "$entry")" = "$target_key" ] && continue
+      new_user_path="$new_user_path;$entry"
+    done
+    unset IFS
+    set +f
+    if [ "$new_user_path" = "$current_user_path" ]; then
+      win_path_persisted=true
+    elif RAYU_NEW_USER_PATH="$new_user_path" powershell.exe -NoProfile -NonInteractive -Command \
+      '[Environment]::SetEnvironmentVariable("Path", $env:RAYU_NEW_USER_PATH, "User")' >/dev/null 2>&1; then
+      win_path_persisted=true
+      win_broadcast_ps=$(cat <<'RAYU_PS_BROADCAST_EOF'
+$sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
+$type = Add-Type -MemberDefinition $sig -Name 'RayuEnvBroadcast' -Namespace Win32 -PassThru
+[UIntPtr]$result = [UIntPtr]::Zero
+$type::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result) | Out-Null
+RAYU_PS_BROADCAST_EOF
+)
+      powershell.exe -NoProfile -NonInteractive -Command "$win_broadcast_ps" >/dev/null 2>&1 || true
+    fi
+  fi
 
-verify_install() {
-  step "verifying the install"
-  _out=$("$BIN_DIR/rayu" --version 2>&1) || {
-    # A dynamic-linker failure here means the runtime is unusable, not that Rayu
-    # is broken — say what to install instead of asking for a bug report.
-    case "$_out" in
-      *'shared library'*|*'relocating'*|*'not found'*)
-        die "Rayu was installed to $BIN_DIR/rayu but its runtime cannot start:
+  [ "$QUIET" -eq 1 ] || echo ""
+  ok "✅ rayu $VERSION installed successfully!"
+  [ "$QUIET" -eq 1 ] || echo ""
+  if [ "$win_path_persisted" = true ]; then
+    info "Added $win_install_dir to your user PATH. New terminals will find rayu automatically."
+  fi
+  if command -v rayu >/dev/null 2>&1; then
+    info "Run 'rayu' to get started."
+  else
+    if [ "$QUIET" -eq 0 ]; then
+      echo "  To start using rayu in THIS terminal right now, run:"
+      echo ""
+      printf '    \033[1;32mexport PATH="%s:$PATH" && rayu\033[0m\n' "$INSTALL_DIR"
+      if [ "$win_path_persisted" != true ]; then
+        echo ""
+        echo "  To add rayu to PATH permanently (PowerShell):"
+        echo ""
+        printf '    \033[1;32m[Environment]::SetEnvironmentVariable("Path", "%s;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")\033[0m\n' "$win_install_dir"
+      fi
+    fi
+  fi
+else
+  INSTALL_STAGE="path_configuration"
+  PATH_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+  added_to=""
 
-$_out
+  _have() { command -v "$1" >/dev/null 2>&1; }
 
-Install the missing system libraries, or install Node >= $MIN_NODE_MAJOR and
-re-run this installer:
-  Alpine:        sudo apk add libstdc++ libgcc   # or: sudo apk add nodejs
-  Debian/Ubuntu: sudo apt-get install -y libstdc++6"
-        ;;
-    esac
-    printf '%s\n' "$_out" >&2
-    die "'$BIN_DIR/rayu --version' failed. Nothing else was changed; please report
-this output at https://github.com/$GITHUB_REPO/issues"
+  ensure_posix_rc() {
+    rc="$1"; create="$2"
+    if [ ! -f "$rc" ]; then
+      [ "$create" = "yes" ] || return 0
+      mkdir -p "$(dirname "$rc")"
+    fi
+    if ! grep -qF "$INSTALL_DIR" "$rc" 2>/dev/null; then
+      printf '\n# Added by rayu installer\n%s\n' "$PATH_LINE" >> "$rc"
+      added_to="$added_to $rc"
+    fi
   }
-  REPORTED_VERSION=$(printf '%s' "$_out" | head -1)
-}
 
-# Another copy of `rayu` earlier on PATH (typically a previous
-# `npm install -g`) would keep winning, so say so explicitly.
-warn_if_shadowed() {
-  have rayu || return 0
-  _found=$(command -v rayu 2>/dev/null || true)
-  [ -n "$_found" ] || return 0
-  [ "$_found" = "$BIN_DIR/rayu" ] && return 0
-  warn "another 'rayu' is earlier on your PATH and will be used instead:
-  $_found
-Remove it so the new install takes effect:
-  npm uninstall -g $NPM_PACKAGE
-(or delete $_found)"
-}
+  ensure_fish_rc() {
+    create="$1"
+    rc="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+    if [ ! -f "$rc" ]; then
+      [ "$create" = "yes" ] || return 0
+      mkdir -p "$(dirname "$rc")"
+    fi
+    if ! grep -qF "$INSTALL_DIR" "$rc" 2>/dev/null; then
+      {
+        printf '\n# Added by rayu installer\n'
+        printf 'if not contains "%s" $PATH\n' "$INSTALL_DIR"
+        printf '    set -gx PATH "%s" $PATH\n' "$INSTALL_DIR"
+        printf 'end\n'
+      } >> "$rc"
+      added_to="$added_to $rc"
+    fi
+  }
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-detect_platform
-[ "$DO_UNINSTALL" -eq 1 ] && do_uninstall
-
-TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t rayu) \
-  || die "could not create a temporary directory"
-
-have tar || die "need 'tar'. Install it and re-run:
-  Debian/Ubuntu: sudo apt-get install -y tar
-  Alpine:        sudo apk add tar"
-
-title "Rayu CLI installer"
-field platform "$NATIVE_PLATFORM$([ "$LIBC" = musl ] && printf ' (musl)' || true)"
-info ""
-
-INSTALL_METHOD=''
-INSTALLED_VERSION=''
-NODE_BIN=''
-
-if [ "$DO_LOCAL" -eq 1 ]; then
-  try_install_local
-  ok "installed from a local build"
-elif try_install_native; then
-  ok "installed the standalone $NATIVE_PLATFORM binary"
-else
-  [ "$FORCE_TARBALL" -eq 1 ] || step "no standalone build for $NATIVE_PLATFORM yet ${C_DIM}— using the bundled JS build${C_RESET}"
-  install_from_tarball
-fi
-
-setup_path
-write_metadata
-verify_install
-
-case "$INSTALL_METHOD" in
-  native) _method_label="standalone binary" ;;
-  tarball) _method_label="bundled JS build" ;;
-  local-binary) _method_label="local binary" ;;
-  local-bundle) _method_label="local bundle" ;;
-  *) _method_label="$INSTALL_METHOD" ;;
-esac
-
-title "${C_GREEN}${MARK_OK}${C_RESET}${C_BOLD} Rayu CLI $INSTALLED_VERSION installed${C_RESET}"
-field version "$REPORTED_VERSION"
-field command "$BIN_DIR/rayu"
-field method "$_method_label"
-[ -n "$NODE_BIN" ] && field runtime "$NODE_BIN"
-info ""
-
-if [ "$PATH_ALREADY_ACTIVE" -eq 1 ]; then
-  info "  Run it now:"
-  info "      ${C_BOLD}${C_CYAN}rayu${C_RESET}"
-elif [ "$MODIFY_PATH" -eq 0 ]; then
-  info "  PATH was left untouched (--no-modify-path). Add this yourself:"
-  info "      ${C_BOLD}export PATH=\"$BIN_DIR:\$PATH\"${C_RESET}"
-else
-  if [ -n "${PROFILES_UPDATED:-}" ]; then
-    info "  ${C_DIM}PATH updated in:${PROFILES_UPDATED}${C_RESET}"
-  elif [ -n "${PROFILES_MANAGED:-}" ]; then
-    info "  ${C_DIM}PATH entry already present in:${PROFILES_MANAGED}${C_RESET}"
+  if [ "$MODIFY_PATH" -eq 1 ]; then
+    if _have zsh || [ "$(uname -s)" = "Darwin" ] || [ -f "$HOME/.zshenv" ] || [ -f "$HOME/.zshrc" ]; then
+      ensure_posix_rc "$HOME/.zshenv" yes
+    fi
+    if _have bash || [ -f "$HOME/.bashrc" ] || [ -f "$HOME/.bash_profile" ]; then
+      ensure_posix_rc "$HOME/.bashrc" yes
+    fi
+    ensure_posix_rc "$HOME/.profile" yes
+    if _have fish || [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ]; then
+      ensure_fish_rc yes
+    fi
+    for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bash_profile"; do
+      ensure_posix_rc "$rc" no
+    done
+    if [ -n "$added_to" ]; then
+      info "Added $INSTALL_DIR to PATH in:$added_to"
+    fi
   fi
-  info ""
-  info "  Open a new terminal — or run this once in the current one:"
-  info "      ${C_BOLD}export PATH=\"$BIN_DIR:\$PATH\"${C_RESET}"
-  info ""
-  info "  Then start Rayu:"
-  info "      ${C_BOLD}${C_CYAN}rayu${C_RESET}"
+
+  [ "$QUIET" -eq 1 ] || echo ""
+  ok "✅ rayu $VERSION installed successfully!"
+  [ "$QUIET" -eq 1 ] || echo ""
+
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if [ "$hotkey_setup_ready" = true ]; then
+      info "Global hotkey ready: Cmd+; launches a new rayu from anywhere, system-wide"
+    else
+      info "Tip: run 'rayu setup-hotkey' so Cmd+; launches rayu system-wide on macOS"
+    fi
+  fi
+
+  if command -v rayu >/dev/null 2>&1; then
+    info "Run 'rayu' to get started."
+  elif [ "$QUIET" -eq 0 ]; then
+    echo "  To start using rayu right now, run:"
+    echo ""
+    printf '    \033[1;32mexport PATH="%s:\$PATH" && rayu\033[0m\n' "$INSTALL_DIR"
+    echo ""
+    echo "  Future terminal sessions will have rayu on PATH automatically."
+  fi
 fi
 
-info ""
-info "  ${C_DIM}update     rayu update   (or re-run this installer)"
-info "  uninstall  curl -fsSL $INSTALLER_URL | bash -s -- --uninstall"
-info "  docs       https://rayucode.com/docs${C_RESET}"
-info ""
+# ---------------------------------------------------------------------------
+# Post-install legacy migration status & interactive removal prompt
+# ---------------------------------------------------------------------------
 
-warn_if_shadowed
+if [ "$LEGACY_FOUND" -eq 1 ]; then
+  _legacy_label="legacy Node Rayu"
+  [ -z "$LEGACY_VERSION" ] || _legacy_label="legacy Node Rayu ($LEGACY_VERSION)"
+  if [ "$QUIET" -eq 0 ]; then
+    echo ""
+    info "Migration status:"
+    if [ "$LEGACY_RENAMED_NOW" -eq 1 ]; then
+      info "  • Your old $_legacy_label was renamed to: rayu-legacy"
+    else
+      info "  • Existing $_legacy_label detected as: rayu-legacy"
+    fi
+    [ -z "$LEGACY_BIN_PATH" ] || info "    Location: $LEGACY_BIN_PATH"
+    info "  • New RayuCode $VERSION (Rust) is installed at: $launcher_path"
+    info "  • Your settings, API keys, and sessions in $RAYU_HOME_DIR were preserved."
+    if [ -n "$LEGACY_SHADOW_WARNING" ]; then
+      warn "Another legacy 'rayu' binary exists at $LEGACY_SHADOW_WARNING and may shadow $launcher_path."
+      info "  Remove it with: npm uninstall -g $NPM_LEGACY_PACKAGE"
+    fi
+    echo ""
+  fi
+
+  if [ "$LEGACY_ACTION" = "remove" ]; then
+    uninstall_legacy_node_cli
+  elif [ "$LEGACY_ACTION" = "keep" ] || [ "$QUIET" -eq 1 ] || [ -n "${CI:-}" ]; then
+    if [ "$QUIET" -eq 0 ]; then
+      info "Kept rayu-legacy. You can still run the old CLI with 'rayu-legacy'."
+      info "To uninstall rayu-legacy later, run:"
+      [ "$LEGACY_SCRIPT_FOUND" -eq 0 ] || info "  curl -fsSL $LEGACY_INSTALLER_URL | bash -s -- --uninstall"
+      [ "$LEGACY_NPM_FOUND" -eq 0 ] || info "  npm uninstall -g $NPM_LEGACY_PACKAGE"
+    fi
+  else
+    _prompt_done=0
+    _reply=""
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+      printf 'Do you want to uninstall rayu-legacy now? [y/N] ' >/dev/tty
+      IFS= read -r _reply </dev/tty || _reply=""
+      _prompt_done=1
+    elif [ -t 0 ]; then
+      printf 'Do you want to uninstall rayu-legacy now? [y/N] '
+      IFS= read -r _reply || _reply=""
+      _prompt_done=1
+    fi
+
+    if [ "$_prompt_done" -eq 1 ]; then
+      case "$_reply" in
+        y|Y|yes|YES|Yes)
+          uninstall_legacy_node_cli
+          ;;
+        *)
+          info "Kept rayu-legacy. You can still run the old CLI with 'rayu-legacy'."
+          info "To uninstall rayu-legacy later, run:"
+          [ "$LEGACY_SCRIPT_FOUND" -eq 0 ] || info "  curl -fsSL $LEGACY_INSTALLER_URL | bash -s -- --uninstall"
+          [ "$LEGACY_NPM_FOUND" -eq 0 ] || info "  npm uninstall -g $NPM_LEGACY_PACKAGE"
+          ;;
+      esac
+    else
+      info "Kept rayu-legacy (non-interactive shell). To uninstall it later, run:"
+      [ "$LEGACY_SCRIPT_FOUND" -eq 0 ] || info "  curl -fsSL $LEGACY_INSTALLER_URL | bash -s -- --uninstall"
+      [ "$LEGACY_NPM_FOUND" -eq 0 ] || info "  npm uninstall -g $NPM_LEGACY_PACKAGE"
+    fi
+  fi
+fi
+
+persist_install_conversion_id
+INSTALL_STAGE="complete"
+INSTALL_SUCCEEDED=1

@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["mcp", "👨‍👩‍👧 family", "--transport", "http", "sentry", "https://mcp.sentry.dev/mcp"]
+status.code = 1
+fs.sandbox = true

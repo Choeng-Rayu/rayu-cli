@@ -1,0 +1,2 @@
+Error: Server name is required.
+Usage: claude mcp add <name> <command> [args...]

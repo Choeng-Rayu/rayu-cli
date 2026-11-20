@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["uninstall"]
+status.code = 0
+fs.sandbox = true

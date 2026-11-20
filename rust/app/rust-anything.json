@@ -1,0 +1,14 @@
+{
+  "schema": "rust-anything/front-door@1",
+  "name": "rayu",
+  "commands": [
+    "agents",
+    "doctor",
+    "install",
+    "mcp",
+    "plugin",
+    "plugins",
+    "uninstall"
+  ],
+  "units": []
+}

@@ -1,0 +1,8 @@
+Usage: rayu doctor [options]
+
+Check the health of your RAYU auto-updater. Note: The workspace trust dialog is
+skipped and stdio servers from .mcp.json are spawned for health checks. Only
+use this command in directories you trust.
+
+Options:
+  -h, --help  Display help for command

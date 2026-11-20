@@ -1,0 +1,27 @@
+Rayu CLI 2.5.3
+
+Install method: unknown (could not determine how RAYU was installed (running from /home/rayu/.n/bin/node))
+RAYU cannot remove this install itself.
+
+Would remove:
+  • Telegram bridge credentials and link
+    /home/rayu/.rayu/telegram.json
+  • Telegram session attachment pointer
+    /home/rayu/.rayu/telegram-attached.json
+  • Telegram bridge leader lock
+    /home/rayu/.rayu/telegram-bridge.lock
+  • Device identity
+    /home/rayu/.rayu/device.json
+  • Session registry
+    /home/rayu/.rayu/sessions
+  • Local IPC sockets
+    /run/user/1000/rayu-ipc-1000
+  • Configuration, provider API keys, and session history
+    /home/rayu/.rayu
+
+Never removed:
+  • your projects, source code, and git repositories
+  • shell configuration (.bashrc, .zshrc, and similar)
+  • anything outside the RAYU install and config directories
+
+Cancelled — nothing was changed.

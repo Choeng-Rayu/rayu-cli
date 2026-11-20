@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["--print", "--input-format", "bogus", "hi"]
+status.code = 1
+fs.sandbox = true

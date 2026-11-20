@@ -1,0 +1,18 @@
+{
+  "schema": "rust-anything/app-cases@1",
+  "name": "rayu",
+  "run": [
+    "/usr/bin/bwrap",
+    "--bind",
+    "/",
+    "/",
+    "--ro-bind",
+    "/home/rayu",
+    "/home/rayu",
+    "--unshare-net",
+    "--",
+    "/home/rayu/.n/bin/node",
+    "/home/rayu/rayu/rayu-cli/rayu/dist/rayu.js"
+  ],
+  "timeout_secs": 30
+}

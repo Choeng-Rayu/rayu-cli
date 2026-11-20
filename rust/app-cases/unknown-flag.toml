@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["--definitely-not-a-flag"]
+status.code = 1
+fs.sandbox = true

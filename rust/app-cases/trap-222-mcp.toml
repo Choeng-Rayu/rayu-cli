@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["mcp", "add", "--transport", "http", "👍🏽 thumbs", "https://app.corridor.dev/api/mcp", "--header", "Authorization: Bearer ..."]
+status.code = 1
+fs.sandbox = true

@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["mcp", "İstanbul", "-e", "API_KEY=xxx", "my-server", "--", "npx", "my-mcp-server"]
+status.code = 1
+fs.sandbox = true

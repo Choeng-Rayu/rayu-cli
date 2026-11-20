@@ -1,0 +1,131 @@
+{
+  "schema": "rust-anything/bridge@1",
+  "root": "/home/rayu/rayu/rayu-cli",
+  "unit": "rayu/src/core/",
+  "language": "ts",
+  "kind": "napi",
+  "crate_name": "core-rs",
+  "exports": [
+    {
+      "name": "resolveBuildConfig",
+      "file": "rayu/src/core/buildConfig.ts",
+      "line": 108,
+      "params": [
+        {
+          "name": "env",
+          "ts_type": "(Readonly<Record<string, string | undefined>>)",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "version",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "{\n  VERSION: string\n  BUILD_TIME: string\n  PACKAGE_URL: string\n  NATIVE_PACKAGE_URL: string\n  FEEDBACK_CHANNEL: string\n  ISSUES_EXPLAINER: string\n  VERSION_CHANGELOG: string\n  RAYU_OAUTH_DEFAULT: string\n  RAYU_API_URL: string\n  RAYU_WEB_URL: string\n  RAYU_GATEWAY_URL: string\n}",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "isEnvTruthy",
+      "file": "rayu/src/core/buildConfig.ts",
+      "line": 140,
+      "params": [
+        {
+          "name": "value",
+          "ts_type": "string | boolean | undefined",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "boolean",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "resolveEndpoints",
+      "file": "rayu/src/core/buildConfig.ts",
+      "line": 167,
+      "params": [
+        {
+          "name": "env",
+          "ts_type": "(Readonly<Record<string, string | undefined>>)",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "baked",
+          "ts_type": "Partial<{\n  VERSION: string\n  BUILD_TIME: string\n  PACKAGE_URL: string\n  NATIVE_PACKAGE_URL: string\n  FEEDBACK_CHANNEL: string\n  ISSUES_EXPLAINER: string\n  VERSION_CHANGELOG: string\n  RAYU_OAUTH_DEFAULT: string\n  RAYU_API_URL: string\n  RAYU_WEB_URL: string\n  RAYU_GATEWAY_URL: string\n}>",
+          "optional": true,
+          "rest": false
+        }
+      ],
+      "returns": "{\n  apiBaseUrl: string\n  webBaseUrl: string\n  gatewayBaseUrl: string\n}",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "getBakedBuildConfig",
+      "file": "rayu/src/core/buildConfig.ts",
+      "line": 201,
+      "params": [],
+      "returns": "Partial<{\n  VERSION: string\n  BUILD_TIME: string\n  PACKAGE_URL: string\n  NATIVE_PACKAGE_URL: string\n  FEEDBACK_CHANNEL: string\n  ISSUES_EXPLAINER: string\n  VERSION_CHANGELOG: string\n  RAYU_OAUTH_DEFAULT: string\n  RAYU_API_URL: string\n  RAYU_WEB_URL: string\n  RAYU_GATEWAY_URL: string\n}> | undefined",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "buildFeatureTable",
+      "file": "rayu/src/core/features.ts",
+      "line": 66,
+      "params": [
+        {
+          "name": "allFlags",
+          "ts_type": "readonly string[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "enabled",
+          "ts_type": "readonly string[]",
+          "optional": true,
+          "rest": false
+        }
+      ],
+      "returns": "Record<string, boolean>",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "installFeatureTable",
+      "file": "rayu/src/core/features.ts",
+      "line": 85,
+      "params": [
+        {
+          "name": "table",
+          "ts_type": "Readonly<Record<string, boolean>>",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "void",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    }
+  ],
+  "classes": [],
+  "js_only": []
+}

@@ -1,0 +1,1 @@
+Invalid environment variable format: a b, environment variables should be added as: -e KEY1=value1 -e KEY2=value2

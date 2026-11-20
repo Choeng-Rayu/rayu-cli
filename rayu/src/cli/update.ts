@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process'
 import chalk from 'chalk'
 import { isInBundledMode } from 'src/utils/bundledMode.js'
 import { runInstallerUpdate } from 'src/utils/installerUpdate.js'
@@ -24,7 +25,51 @@ import {
 } from 'src/utils/updateLock.js'
 
 export async function update() {
-  writeToStdout(`Current version: ${MACRO.VERSION}\n`)
+  writeToStdout(`Current version: ${MACRO.VERSION} (legacy Node CLI)\n`)
+
+  // Unless explicitly opted into legacy npm updates, `rayu update` upgrades
+  // directly to RayuCode v3 (Rust) via the official rayucode.com installer,
+  // which renames the old Node CLI to `rayu-legacy` and asks to uninstall it.
+  if (process.env.RAYU_LEGACY_NPM_UPDATE !== '1') {
+    writeToStdout('Upgrading to RayuCode v3 (Rust) via rayucode.com installer...\n\n')
+    const res = IS_WINDOWS
+      ? spawnSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-Command',
+            `irm '${(process.env.RAYU_INSTALLER_URL || 'https://rayucode.com/install.ps1').replace(/'/g, "''")}' | iex`,
+          ],
+          { stdio: 'inherit' },
+        )
+      : spawnSync(
+          'sh',
+          [
+            '-c',
+            `url='${(process.env.RAYU_INSTALLER_URL || 'https://rayucode.com/install.sh').replace(/'/g, "'\\''")}'; ` +
+              `if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" | bash; ` +
+              `elif command -v wget >/dev/null 2>&1; then wget -qO- "$url" | bash; ` +
+              `else echo "rayu: curl or wget is required." >&2; exit 1; fi`,
+          ],
+          { stdio: 'inherit' },
+        )
+
+    if (res.status === 0) {
+      process.exit(0)
+    }
+    process.stderr.write(chalk.red('\nRayuCode v3 installer did not complete.\n'))
+    process.stderr.write('Run it manually:\n')
+    process.stderr.write(
+      chalk.bold(
+        IS_WINDOWS
+          ? '  irm https://rayucode.com/install.ps1 | iex\n'
+          : '  curl -fsSL https://rayucode.com/install | bash\n',
+      ),
+    )
+    process.exit(typeof res.status === 'number' ? res.status : 1)
+  }
 
   // An install created by https://rayucode.com/install is neither an npm global
   // install nor the native installer's layout: it is a launcher in

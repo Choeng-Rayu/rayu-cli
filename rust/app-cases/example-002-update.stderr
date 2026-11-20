@@ -1,0 +1,7 @@
+Failed to check for updates
+Unable to reach npm registry. Check your network.
+
+code: ETIMEDOUT
+spawnSync npm ETIMEDOUT
+
+Manual check: npm view @rayu-dev/rayu-cli version

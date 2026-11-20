@@ -1,0 +1,4 @@
+bin.name = "rayu"
+args = ["doctor", "--help"]
+status.code = 0
+fs.sandbox = true

@@ -1,0 +1,93 @@
+{
+  "schema": "rust-anything/bridge@1",
+  "root": "/home/rayu/rayu/rayu-cli",
+  "unit": "rayu/src/native-ts/file-index/",
+  "language": "ts",
+  "kind": "napi",
+  "crate_name": "file-index-rs",
+  "exports": [
+    {
+      "name": "yieldToEventLoop",
+      "file": "rayu/src/native-ts/file-index/index.ts",
+      "line": 325,
+      "params": [],
+      "returns": "Promise<void>",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    }
+  ],
+  "classes": [
+    {
+      "name": "FileIndex",
+      "file": "rayu/src/native-ts/file-index/index.ts",
+      "line": 43,
+      "constructor": [],
+      "methods": [
+        {
+          "name": "loadFromFileList",
+          "file": "rayu/src/native-ts/file-index/index.ts",
+          "line": 58,
+          "params": [
+            {
+              "name": "fileList",
+              "ts_type": "string[]",
+              "optional": false,
+              "rest": false
+            }
+          ],
+          "returns": "void",
+          "is_async": false,
+          "is_generator": false,
+          "type_params": [],
+          "uses_instanceof": false
+        },
+        {
+          "name": "loadFromFileListAsync",
+          "file": "rayu/src/native-ts/file-index/index.ts",
+          "line": 83,
+          "params": [
+            {
+              "name": "fileList",
+              "ts_type": "string[]",
+              "optional": false,
+              "rest": false
+            }
+          ],
+          "returns": "{\n    queryable: Promise<void>\n    done: Promise<void>\n  }",
+          "is_async": false,
+          "is_generator": false,
+          "type_params": [],
+          "uses_instanceof": false
+        },
+        {
+          "name": "search",
+          "file": "rayu/src/native-ts/file-index/index.ts",
+          "line": 173,
+          "params": [
+            {
+              "name": "query",
+              "ts_type": "string",
+              "optional": false,
+              "rest": false
+            },
+            {
+              "name": "limit",
+              "ts_type": "number",
+              "optional": false,
+              "rest": false
+            }
+          ],
+          "returns": "{\n  path: string\n  score: number\n}[]",
+          "is_async": false,
+          "is_generator": false,
+          "type_params": [],
+          "uses_instanceof": false
+        }
+      ],
+      "blocker": null
+    }
+  ],
+  "js_only": []
+}

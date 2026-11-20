@@ -1,0 +1,1 @@
+error: option '--permission-mode <mode>' argument '日本語' is invalid. Allowed choices are acceptEdits, bypassPermissions, default, dontAsk, plan, fullManage, orchestrator.
