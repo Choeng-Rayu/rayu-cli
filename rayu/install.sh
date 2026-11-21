@@ -319,10 +319,14 @@ if [ -n "$VERSION" ]; then
 fi
 
 if [ -z "$VERSION" ]; then
-  METADATA_VERSION=$(curl -fsSL --retry 2 --connect-timeout 10 \
+  METADATA_VERSION=$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 25 \
     "$RELEASE_METADATA_BASE/latest/version" 2>/dev/null | tr -d '\r\n' || true)
-  LATEST_RELEASE_URL=$(curl -fsSIL --retry 2 --connect-timeout 10 \
+  LATEST_RELEASE_URL=$(curl -fsSIL --retry 3 --retry-delay 2 --connect-timeout 25 \
     -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)
+  if [ -z "$LATEST_RELEASE_URL" ]; then
+    LATEST_RELEASE_URL=$(curl -4 -fsSIL --retry 2 --retry-delay 2 --connect-timeout 25 \
+      -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)
+  fi
   case "$LATEST_RELEASE_URL" in
     */releases/tag/*) GITHUB_VERSION="${LATEST_RELEASE_URL##*/}" ;;
     *) GITHUB_VERSION="" ;;
@@ -370,7 +374,8 @@ tmpdir=$(mktemp -d)
 INSTALL_STAGE="artifact_download"
 download_mode=""
 downloaded_asset=""
-DOWNLOAD_BASES=$(curl -fsSL --retry 2 --connect-timeout 10 \
+last_download_err=""
+DOWNLOAD_BASES=$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 25 \
   "$RELEASE_METADATA_BASE/$VERSION/download-bases" 2>/dev/null || true)
 DOWNLOAD_BASES=$(printf '%s\n%s\n' "$DOWNLOAD_BASES" "$GITHUB_RELEASE_BASE" |
   awk '/^https:\/\/[^[:space:]]+$/ && !seen[$0]++')
@@ -378,15 +383,25 @@ DOWNLOAD_BASES=$(printf '%s\n%s\n' "$DOWNLOAD_BASES" "$GITHUB_RELEASE_BASE" |
 for candidate in "$ARTIFACT.tar.gz" "$ARTIFACT$EXE"; do
   while IFS= read -r base; do
     [ -n "$base" ] || continue
-    if curl -fsSL --retry 2 --connect-timeout 10 \
-      "${base%/}/$candidate" -o "$tmpdir/rayu.download" 2>/dev/null; then
-      downloaded_asset="$candidate"
-      case "$candidate" in
-        *.tar.gz) download_mode="tar" ;;
-        *)        download_mode="bin" ;;
+    asset_url="${base%/}/$candidate"
+    for ip_flag in "" "-4"; do
+      rm -f "$tmpdir/rayu.download" "$tmpdir/curl.err"
+      if curl -fsSL ${ip_flag:+"$ip_flag"} --retry 3 --retry-delay 2 --connect-timeout 25 \
+        "$asset_url" -o "$tmpdir/rayu.download" 2>"$tmpdir/curl.err"; then
+        downloaded_asset="$candidate"
+        case "$candidate" in
+          *.tar.gz) download_mode="tar" ;;
+          *)        download_mode="bin" ;;
+        esac
+        break 3
+      fi
+      if [ -s "$tmpdir/curl.err" ]; then
+        last_download_err=$(tr '\r\n' ' ' < "$tmpdir/curl.err" | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')
+      fi
+      case "$last_download_err" in
+        *" 404"*|*"404 "*) break ;;
       esac
-      break 2
-    fi
+    done
   done <<EOF
 $DOWNLOAD_BASES
 EOF
@@ -398,7 +413,7 @@ if [ -n "$download_mode" ]; then
   for checksum_url in \
     "$RELEASE_METADATA_BASE/$VERSION/SHA256SUMS" \
     "$GITHUB_RELEASE_BASE/SHA256SUMS"; do
-    CHECKSUMS=$(curl -fsSL --retry 2 --connect-timeout 10 \
+    CHECKSUMS=$(curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 25 \
       "$checksum_url" 2>/dev/null || true)
     EXPECTED_SHA256=$(printf '%s\n' "$CHECKSUMS" |
       awk -v asset="$downloaded_asset" '$2 == asset || $2 == "*" asset { print tolower($1); exit }')
@@ -442,6 +457,9 @@ elif [ "$download_mode" = "bin" ]; then
   mv "$tmpdir/rayu.download" "$dest_version_dir/$bin_name"
 else
   if [ "${RAYU_ALLOW_SOURCE_BUILD:-0}" != "1" ]; then
+    if [ -n "$last_download_err" ] && ! printf '%s' "$last_download_err" | grep -qE '(^|[^0-9])404([^0-9]|$)'; then
+      err "Failed to download $ARTIFACT for $VERSION ($last_download_err). Check network access to https://github.com/$REPO/releases and retry."
+    fi
     err "No prebuilt binary found for $ARTIFACT in $VERSION. Check available downloads at https://github.com/$REPO/releases"
   fi
   info "No prebuilt asset found for $ARTIFACT in $VERSION; building from source..."
@@ -468,24 +486,44 @@ done
 
 chmod +x "$dest_version_dir/$bin_name" 2>/dev/null || true
 
+termux_glibc_dir=""
+termux_glibc_linker=""
+termux_patched_elf=0
 if [ "$IS_TERMUX" = true ] && [ "$IS_WINDOWS" = false ]; then
-  termux_glibc_dir="/data/data/com.termux/files/usr/glibc/lib"
-  termux_glibc_linker=""
+  termux_prefix="${PREFIX:-/data/data/com.termux/files/usr}"
+  termux_glibc_dir="$termux_prefix/glibc/lib"
   case "$ARCH" in
     aarch64|arm64) termux_glibc_linker="$termux_glibc_dir/ld-linux-aarch64.so.1" ;;
     x86_64)        termux_glibc_linker="$termux_glibc_dir/ld-linux-x86-64.so.2" ;;
   esac
   if [ "$OS" = "Linux" ] && [ -n "$termux_glibc_linker" ]; then
-    if [ -x "$termux_glibc_linker" ]; then
-      if command -v patchelf >/dev/null 2>&1; then
-        patchelf --set-interpreter "$termux_glibc_linker" "$dest_version_dir/$bin_name" \
-          || err "Failed to patch rayu ELF interpreter for Termux glibc"
-        info "Patched Termux glibc ELF interpreter: $termux_glibc_linker"
-      else
-        info "Termux detected: install patchelf with 'pkg install patchelf' and rerun this installer if rayu fails to start."
+    if [ "${RAYU_TERMUX_SKIP_PKG:-0}" != "1" ] && command -v pkg >/dev/null 2>&1; then
+      if [ ! -x "$termux_glibc_linker" ] || [ ! -f "$termux_glibc_dir/libgcc_s.so.1" ] || ! command -v patchelf >/dev/null 2>&1; then
+        info "Termux detected: installing glibc runtime (glibc-repo, glibc, gcc-libs-glibc, patchelf)..."
+        DEBIAN_FRONTEND=noninteractive pkg install -y glibc-repo </dev/null >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive pkg install -y glibc gcc-libs-glibc patchelf </dev/null || true
       fi
+    fi
+
+    if [ ! -x "$termux_glibc_linker" ]; then
+      err "Termux requires the glibc dynamic linker ($termux_glibc_linker) to run RayuCode binaries (Android Bionic cannot load glibc binaries directly).
+  Run:
+    pkg install -y glibc-repo && pkg install -y glibc gcc-libs-glibc patchelf
+  Then re-run:
+    curl -fsSL https://rayucode.com/install | bash"
+    fi
+
+    if [ ! -f "$termux_glibc_dir/libgcc_s.so.1" ]; then
+      warn "Termux glibc library libgcc_s.so.1 was not found in $termux_glibc_dir. If rayu fails to start, run: pkg install -y gcc-libs-glibc"
+    fi
+
+    if command -v patchelf >/dev/null 2>&1; then
+      patchelf --set-interpreter "$termux_glibc_linker" --set-rpath "$termux_glibc_dir" "$dest_version_dir/$bin_name" \
+        || err "Failed to patch rayu ELF interpreter/rpath for Termux glibc"
+      termux_patched_elf=1
+      info "Patched Termux glibc ELF interpreter & rpath: $termux_glibc_linker"
     else
-      info "Termux detected: install glibc with 'pkg install glibc' if rayu fails due to a missing dynamic linker."
+      warn "patchelf not found; wrapping rayu via $termux_glibc_linker directly (install patchelf with 'pkg install -y patchelf' for self-update support)."
     fi
   fi
 fi
@@ -505,16 +543,33 @@ else
   printf '%s\n' "$version" > "$builds_dir/stable-version"
   if [ "$IS_TERMUX" = true ]; then
     rm -f "$launcher_path" "$alias_path"
-    cat > "$launcher_path" <<EOF
+    if [ "$termux_patched_elf" -eq 1 ] || [ -z "$termux_glibc_linker" ]; then
+      cat > "$launcher_path" <<EOF
 #!/usr/bin/env bash
 unset LD_PRELOAD
 exec "$stable_dir/$bin_name" "\$@"
 EOF
+    else
+      cat > "$launcher_path" <<EOF
+#!/usr/bin/env bash
+unset LD_PRELOAD
+exec "$termux_glibc_linker" --library-path "$termux_glibc_dir" "$stable_dir/$bin_name" "\$@"
+EOF
+    fi
     chmod +x "$launcher_path"
     ln -sfn "$launcher_path" "$alias_path"
   else
     ln -sfn "$stable_dir/$bin_name" "$launcher_path"
     ln -sfn "$stable_dir/$bin_name" "$alias_path"
+  fi
+fi
+
+if [ "$IS_TERMUX" = true ] && [ "$IS_WINDOWS" = false ]; then
+  if ! "$launcher_path" --version </dev/null >/dev/null 2>&1; then
+    err "Installed rayu binary failed to start on Termux. Ensure glibc packages are installed:
+  pkg install -y glibc-repo && pkg install -y glibc gcc-libs-glibc patchelf
+Then re-run:
+  curl -fsSL https://rayucode.com/install | bash"
   fi
 fi
 
